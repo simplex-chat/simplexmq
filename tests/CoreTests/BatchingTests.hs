@@ -15,7 +15,6 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Version (Version)
 import Test.Hspec
 
 batchingTests :: Spec
@@ -253,27 +252,27 @@ testClientBatchWithLargeMessageV7 = do
   (length rs1', length rs2') `shouldBe` (74, 136)
   all lenOk [s1', s2'] `shouldBe` True
 
-testClientStub :: IO (ProtocolClient ErrorType BrokerMsg)
+testClientStub :: IO (ProtocolClient SMPVersion ErrorType BrokerMsg)
 testClientStub = do
   g <- C.newRandom
   sessId <- atomically $ C.randomBytes 32 g
-  atomically $ clientStub g sessId (authCmdsSMPVersion - 1) Nothing
+  atomically $ smpClientStub g sessId subModeSMPVersion Nothing
 
-clientStubV7 :: IO (ProtocolClient ErrorType BrokerMsg)
+clientStubV7 :: IO (ProtocolClient SMPVersion ErrorType BrokerMsg)
 clientStubV7 = do
   g <- C.newRandom
   sessId <- atomically $ C.randomBytes 32 g
   (rKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
   thAuth_ <- testTHandleAuth authCmdsSMPVersion g rKey
-  atomically $ clientStub g sessId authCmdsSMPVersion thAuth_
+  atomically $ smpClientStub g sessId authCmdsSMPVersion thAuth_
 
 randomSUB :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
-randomSUB = randomSUB_ C.SEd25519 (authCmdsSMPVersion - 1)
+randomSUB = randomSUB_ C.SEd25519 subModeSMPVersion
 
 randomSUBv7 :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSUBv7 = randomSUB_ C.SEd25519 authCmdsSMPVersion
 
-randomSUB_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> Version -> ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
+randomSUB_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> VersionSMP -> ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSUB_ a v sessId = do
   g <- C.newRandom
   rId <- atomically $ C.randomBytes 24 g
@@ -284,13 +283,13 @@ randomSUB_ a v sessId = do
       TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, rId, Cmd SRecipient SUB)
   pure $ (,tToSend) <$> authTransmission thAuth_ (Just rpKey) corrId tForAuth
 
-randomSUBCmd :: ProtocolClient ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
+randomSUBCmd :: ProtocolClient SMPVersion ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
 randomSUBCmd = randomSUBCmd_ C.SEd25519
 
-randomSUBCmdV7 :: ProtocolClient ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
+randomSUBCmdV7 :: ProtocolClient SMPVersion ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
 randomSUBCmdV7 = randomSUBCmd_ C.SEd25519 -- same as v6
 
-randomSUBCmd_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> ProtocolClient ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
+randomSUBCmd_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> ProtocolClient SMPVersion ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
 randomSUBCmd_ a c = do
   g <- C.newRandom
   rId <- atomically $ C.randomBytes 24 g
@@ -298,12 +297,12 @@ randomSUBCmd_ a c = do
   mkTransmission c (Just rpKey, rId, Cmd SRecipient SUB)
 
 randomSEND :: ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
-randomSEND = randomSEND_ C.SEd25519 (authCmdsSMPVersion - 1)
+randomSEND = randomSEND_ C.SEd25519 subModeSMPVersion
 
 randomSENDv7 :: ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSENDv7 = randomSEND_ C.SX25519 authCmdsSMPVersion
 
-randomSEND_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> Version -> ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
+randomSEND_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> VersionSMP -> ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSEND_ a v sessId len = do
   g <- C.newRandom
   sId <- atomically $ C.randomBytes 24 g
@@ -315,7 +314,7 @@ randomSEND_ a v sessId len = do
       TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, sId, Cmd SSender $ SEND noMsgFlags msg)
   pure $ (,tToSend) <$> authTransmission thAuth_ (Just spKey) corrId tForAuth
 
-testTHandleParams :: Version -> ByteString -> THandleParams
+testTHandleParams :: VersionSMP -> ByteString -> THandleParams SMPVersion
 testTHandleParams v sessionId =
   THandleParams
     { sessionId,
@@ -326,20 +325,20 @@ testTHandleParams v sessionId =
       batch = True
     }
 
-testTHandleAuth :: Version -> TVar ChaChaDRG -> C.APublicAuthKey -> IO (Maybe THandleAuth)
+testTHandleAuth :: VersionSMP -> TVar ChaChaDRG -> C.APublicAuthKey -> IO (Maybe THandleAuth)
 testTHandleAuth v g (C.APublicAuthKey a k) = case a of
   C.SX25519 | v >= authCmdsSMPVersion -> do
     (_, privKey) <- atomically $ C.generateKeyPair g
     pure $ Just THandleAuth {peerPubKey = k, privKey}
   _ -> pure Nothing
 
-randomSENDCmd :: ProtocolClient ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
+randomSENDCmd :: ProtocolClient SMPVersion ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
 randomSENDCmd = randomSENDCmd_ C.SEd25519
 
-randomSENDCmdV7 :: ProtocolClient ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
+randomSENDCmdV7 :: ProtocolClient SMPVersion ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
 randomSENDCmdV7 = randomSENDCmd_ C.SX25519
 
-randomSENDCmd_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> ProtocolClient ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
+randomSENDCmd_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> ProtocolClient SMPVersion ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
 randomSENDCmd_ a c len = do
   g <- C.newRandom
   sId <- atomically $ C.randomBytes 24 g

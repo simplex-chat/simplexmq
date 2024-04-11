@@ -16,7 +16,6 @@ module NtfClient where
 
 import Control.Monad
 import Control.Monad.Except (runExceptT)
-import Control.Monad.IO.Unlift
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
@@ -34,6 +33,7 @@ import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost,
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Notifications.Protocol (NtfResponse)
 import Simplex.Messaging.Notifications.Server (runNtfServerBlocking)
 import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Push.APNS
@@ -70,13 +70,13 @@ testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 ntfTestStoreLogFile :: FilePath
 ntfTestStoreLogFile = "tests/tmp/ntf-server-store.log"
 
-testNtfClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
+testNtfClient :: Transport c => (THandleNTF c -> IO a) -> IO a
 testNtfClient client = do
   Right host <- pure $ chooseTransportHost defaultNetworkConfig testHost
   runTransportClient defaultTransportClientConfig Nothing host ntfTestPort (Just testKeyHash) $ \h -> do
-    g <- liftIO C.newRandom
+    g <- C.newRandom
     ks <- atomically $ C.generateKeyPair g
-    liftIO (runExceptT $ ntfClientHandshake h ks testKeyHash supportedClientNTFVRange) >>= \case
+    runExceptT (ntfClientHandshake h ks testKeyHash supportedClientNTFVRange) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -114,8 +114,8 @@ ntfServerCfg =
 ntfServerCfgV2 :: NtfServerConfig
 ntfServerCfgV2 =
   ntfServerCfg
-    { ntfServerVRange = mkVersionRange 1 authBatchCmdsNTFVersion,
-      smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange 4 authCmdsSMPVersion}}
+    { ntfServerVRange = mkVersionRange initialNTFVersion authBatchCmdsNTFVersion,
+      smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}}
     }
 
 withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a
@@ -139,7 +139,7 @@ withNtfServerOn t port' = withNtfServerThreadOn t port' . const
 withNtfServer :: ATransport -> IO a -> IO a
 withNtfServer t = withNtfServerOn t ntfTestPort
 
-runNtfTest :: forall c a. Transport c => (THandle c -> IO a) -> IO a
+runNtfTest :: forall c a. Transport c => (THandleNTF c -> IO a) -> IO a
 runNtfTest test = withNtfServer (transport @c) $ testNtfClient test
 
 ntfServerTest ::
@@ -147,10 +147,10 @@ ntfServerTest ::
   (Transport c, Encoding smp) =>
   TProxy c ->
   (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
-  IO (Maybe TransmissionAuth, ByteString, ByteString, BrokerMsg)
+  IO (Maybe TransmissionAuth, ByteString, ByteString, NtfResponse)
 ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
   where
-    tPut' :: THandle c -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
+    tPut' :: THandleNTF c -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
     tPut' h@THandle {params = THandleParams {sessionId, implySessId}} (sig, corrId, queueId, smp) = do
       let t' = if implySessId then smpEncode (corrId, queueId, smp) else smpEncode (sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h [Right (sig, t')]
@@ -159,7 +159,7 @@ ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
       [(Nothing, _, (CorrId corrId, qId, Right cmd))] <- tGet h
       pure (Nothing, corrId, qId, cmd)
 
-ntfTest :: Transport c => TProxy c -> (THandle c -> IO ()) -> Expectation
+ntfTest :: Transport c => TProxy c -> (THandleNTF c -> IO ()) -> Expectation
 ntfTest _ test' = runNtfTest test' `shouldReturn` ()
 
 data APNSMockRequest = APNSMockRequest

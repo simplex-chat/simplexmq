@@ -16,9 +16,11 @@ module Simplex.FileTransfer.Client.Main
     xftpClientCLI,
     cliSendFile,
     cliSendFileOpts,
+    singleChunkSize,
     prepareChunkSizes,
     prepareChunkSpecs,
     maxFileSize,
+    maxFileSizeHard,
     fileSizeLen,
     getChunkDigest,
     SentRecipientReplica (..),
@@ -35,13 +37,14 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Char (toLower)
+import Data.Either (partitionEithers)
 import Data.Int (Int64)
 import Data.List (foldl', sortOn)
 import Data.List.NonEmpty (NonEmpty (..), nonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Text as T
 import Data.Word (Word32)
 import GHC.Records (HasField (getField))
@@ -76,11 +79,16 @@ import UnliftIO.Directory
 xftpClientVersion :: String
 xftpClientVersion = "1.0.1"
 
+-- | Soft limit for XFTP clients. Should be checked and reported to user.
 maxFileSize :: Int64
 maxFileSize = gb 1
 
 maxFileSizeStr :: String
 maxFileSizeStr = B.unpack . strEncode $ FileSize maxFileSize
+
+-- | Hard internal limit for XFTP agent after which it refuses to prepare chunks.
+maxFileSizeHard :: Int64
+maxFileSizeHard = gb 5
 
 fileSizeLen :: Int64
 fileSizeLen = 8
@@ -214,13 +222,13 @@ data SentFileChunk = SentFileChunk
     digest :: FileDigest,
     replicas :: [SentFileChunkReplica]
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 data SentFileChunkReplica = SentFileChunkReplica
   { server :: XFTPServer,
     recipients :: [(ChunkReplicaId, C.APrivateAuthKey)]
   }
-  deriving (Eq, Show)
+  deriving (Show)
 
 data SentRecipientReplica = SentRecipientReplica
   { chunkNo :: Int,
@@ -314,7 +322,9 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       -- the reason we don't do pooled downloads here within one server is that http2 library doesn't handle cleint concurrency, even though
       -- upload doesn't allow other requests within the same client until complete (but download does allow).
       logInfo $ "uploading " <> tshow (length chunks) <> " chunks..."
-      map snd . sortOn fst . concat <$> pooledForConcurrentlyN 16 chunks' (mapM $ uploadFileChunk a)
+      (errs, rs) <- partitionEithers . concat <$> liftIO (pooledForConcurrentlyN 16 chunks' . mapM $ runExceptT . uploadFileChunk a)
+      mapM_ throwError errs
+      pure $ map snd (sortOn fst rs)
       where
         uploadFileChunk :: XFTPClientAgent -> (Int, XFTPChunkSpec, XFTPServerWithAuth) -> ExceptT CLIError IO (Int, SentFileChunk)
         uploadFileChunk a (chunkNo, chunkSpec@XFTPChunkSpec {chunkSize}, ProtoServerWithAuth xftpServer auth) = do
@@ -323,9 +333,9 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
           rKeys <- atomically $ L.fromList <$> replicateM numRecipients (C.generateAuthKeyPair C.SEd25519 g)
           digest <- liftIO $ getChunkDigest chunkSpec
           let ch = FileInfo {sndKey, size = fromIntegral chunkSize, digest}
-          c <- withRetry retryCount $ getXFTPServerClient a xftpServer
+          c <- withRetry retryCount $ getXFTPServerClient g a xftpServer
           (sndId, rIds) <- withRetry retryCount $ createXFTPChunk c spKey ch (L.map fst rKeys) auth
-          withReconnect a xftpServer retryCount $ \c' -> uploadXFTPChunk c' spKey sndId chunkSpec
+          withReconnect g a xftpServer retryCount $ \c' -> uploadXFTPChunk c' spKey sndId chunkSpec
           logInfo $ "uploaded chunk " <> tshow chunkNo
           uploaded <- atomically . stateTVar uploadedChunks $ \cs ->
             let cs' = fromIntegral chunkSize : cs in (sum cs', cs')
@@ -407,7 +417,8 @@ getChunkDigest :: XFTPChunkSpec -> IO ByteString
 getChunkDigest XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =
   withFile chunkPath ReadMode $ \h -> do
     hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-    LC.sha256Hash <$> LB.hGet h (fromIntegral chunkSize)
+    chunk <- LB.hGet h (fromIntegral chunkSize)
+    pure $! LC.sha256Hash chunk
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, verbose, yes} =
@@ -425,14 +436,16 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
             FileChunkReplica {server} : _ -> server
           srvChunks = groupAllOn srv chunks
       g <- liftIO C.newRandom
-      chunkPaths <- map snd . sortOn fst . concat <$> pooledForConcurrentlyN 16 srvChunks (mapM $ downloadFileChunk g a encPath size downloadedChunks)
+      (errs, rs) <- partitionEithers . concat <$> liftIO (pooledForConcurrentlyN 16 srvChunks $ mapM $ runExceptT . downloadFileChunk g a encPath size downloadedChunks)
+      mapM_ throwError errs
+      let chunkPaths = map snd $ sortOn fst rs
       encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
       when (encDigest /= unFileDigest digest) $ throwError $ CLIError "File digest mismatch"
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       when (FileSize encSize /= size) $ throwError $ CLIError "File size mismatch"
       liftIO $ printNoNewLine "Decrypting file..."
       CryptoFile path _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ fmap CF.plain . getFilePath
-      forM_ chunks $ acknowledgeFileChunk a
+      forM_ chunks $ acknowledgeFileChunk g a
       whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
       liftIO $ do
         printNoNewLine $ "File downloaded: " <> path
@@ -443,7 +456,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       logInfo $ "downloading chunk " <> tshow chunkNo <> " from " <> showServer server <> "..."
       chunkPath <- uniqueCombine encPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
-      withReconnect a server retryCount $ \c -> downloadXFTPChunk g c replicaKey (unChunkReplicaId replicaId) chunkSpec
+      withReconnect g a server retryCount $ \c -> downloadXFTPChunk g c replicaKey (unChunkReplicaId replicaId) chunkSpec
       logInfo $ "downloaded chunk " <> tshow chunkNo <> " to " <> T.pack chunkPath
       downloaded <- atomically . stateTVar downloadedChunks $ \cs ->
         let cs' = fromIntegral (unFileSize chunkSize) : cs in (sum cs', cs')
@@ -459,12 +472,12 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
           ifM (doesDirectoryExist path) (uniqueCombine path name) $
             ifM (doesFileExist path) (throwError "File already exists") (pure path)
         _ -> (`uniqueCombine` name) . (</> "Downloads") =<< getHomeDirectory
-    acknowledgeFileChunk :: XFTPClientAgent -> FileChunk -> ExceptT CLIError IO ()
-    acknowledgeFileChunk a FileChunk {replicas = replica : _} = do
+    acknowledgeFileChunk :: TVar ChaChaDRG -> XFTPClientAgent -> FileChunk -> ExceptT CLIError IO ()
+    acknowledgeFileChunk g a FileChunk {replicas = replica : _} = do
       let FileChunkReplica {server, replicaId, replicaKey} = replica
-      c <- withRetry retryCount $ getXFTPServerClient a server
+      c <- withRetry retryCount $ getXFTPServerClient g a server
       withRetry retryCount $ ackXFTPChunk c replicaKey (unChunkReplicaId replicaId)
-    acknowledgeFileChunk _ _ = throwError $ CLIError "chunk has no replicas"
+    acknowledgeFileChunk _ _ _ = throwError $ CLIError "chunk has no replicas"
 
 printProgress :: String -> Int64 -> Int64 -> IO ()
 printProgress s part total = printNoNewLine $ s <> " " <> show ((part * 100) `div` total) <> "%"
@@ -488,7 +501,8 @@ cliDeleteFile DeleteOptions {fileDescription, retryCount, yes} = do
     deleteFileChunk :: XFTPClientAgent -> FileChunk -> ExceptT CLIError IO ()
     deleteFileChunk a FileChunk {chunkNo, replicas = replica : _} = do
       let FileChunkReplica {server, replicaId, replicaKey} = replica
-      withReconnect a server retryCount $ \c -> deleteXFTPChunk c replicaKey (unChunkReplicaId replicaId)
+      g <- liftIO C.newRandom
+      withReconnect g a server retryCount $ \c -> deleteXFTPChunk c replicaKey (unChunkReplicaId replicaId)
       logInfo $ "deleted chunk " <> tshow chunkNo <> " from " <> showServer server
     deleteFileChunk _ _ = throwError $ CLIError "chunk has no replicas"
 
@@ -522,6 +536,12 @@ getFileDescription' path =
   getFileDescription path >>= \case
     AVFD fd -> either (throwError . CLIError) pure $ checkParty fd
 
+singleChunkSize :: Int64 -> Maybe Word32
+singleChunkSize size' =
+  listToMaybe $ dropWhile (< chunkSize) serverChunkSizes
+  where
+    chunkSize = fromIntegral size'
+
 prepareChunkSizes :: Int64 -> [Word32]
 prepareChunkSizes size' = prepareSizes size'
   where
@@ -550,9 +570,9 @@ prepareChunkSpecs filePath chunkSizes = reverse . snd $ foldl' addSpec (0, []) c
 getEncPath :: MonadIO m => Maybe FilePath -> String -> m FilePath
 getEncPath path name = (`uniqueCombine` (name <> ".encrypted")) =<< maybe (liftIO getCanonicalTemporaryDirectory) pure path
 
-withReconnect :: Show e => XFTPClientAgent -> XFTPServer -> Int -> (XFTPClient -> ExceptT e IO a) -> ExceptT CLIError IO a
-withReconnect a srv n run = withRetry n $ do
-  c <- withRetry n $ getXFTPServerClient a srv
+withReconnect :: Show e => TVar ChaChaDRG -> XFTPClientAgent -> XFTPServer -> Int -> (XFTPClient -> ExceptT e IO a) -> ExceptT CLIError IO a
+withReconnect g a srv n run = withRetry n $ do
+  c <- withRetry n $ getXFTPServerClient g a srv
   withExceptT (CLIError . show) (run c) `catchError` \e -> do
     liftIO $ closeXFTPServerClient a srv
     throwError e

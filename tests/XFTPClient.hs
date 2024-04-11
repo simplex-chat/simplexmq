@@ -5,7 +5,7 @@
 
 module XFTPClient where
 
-import Control.Concurrent (ThreadId)
+import Control.Concurrent (ThreadId, threadDelay)
 import Data.String (fromString)
 import Network.Socket (ServiceName)
 import SMPClient (serverBracket)
@@ -13,6 +13,7 @@ import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Server (runXFTPServerBlocking)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration, defaultInactiveClientExpiration)
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.Transport.Server
 import Test.Hspec
@@ -52,7 +53,7 @@ withXFTPServerCfg :: HasCallStack => XFTPServerConfig -> (HasCallStack => Thread
 withXFTPServerCfg cfg =
   serverBracket
     (`runXFTPServerBlocking` cfg)
-    (pure ())
+    (threadDelay 10000)
 
 withXFTPServerThreadOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerThreadOn = withXFTPServerCfg testXFTPServerConfig
@@ -105,7 +106,10 @@ testXFTPServerConfig =
       allowedChunkSizes = [kb 64, kb 128, kb 256, mb 1, mb 4],
       allowNewFiles = True,
       newFileBasicAuth = Nothing,
+      controlPortAdminAuth = Nothing,
+      controlPortUserAuth = Nothing,
       fileExpiration = Just defaultFileExpiration,
+      fileTimeout = 10000000,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
@@ -121,7 +125,8 @@ testXFTPClientConfig :: XFTPClientConfig
 testXFTPClientConfig = defaultXFTPClientConfig
 
 testXFTPClient :: HasCallStack => (HasCallStack => XFTPClient -> IO a) -> IO a
-testXFTPClient client =
-  getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig (\_ -> pure ()) >>= \case
+testXFTPClient client = do
+  g <- C.newRandom
+  getXFTPClient g (1, testXFTPServer, Nothing) testXFTPClientConfig (\_ -> pure ()) >>= \case
     Right c -> client c
     Left e -> error $ show e

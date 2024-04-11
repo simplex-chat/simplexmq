@@ -13,7 +13,6 @@
 module SMPClient where
 
 import Control.Monad.Except (runExceptT)
-import Control.Monad.IO.Unlift
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import Network.Socket
@@ -26,7 +25,7 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
-import Simplex.Messaging.Version (VersionRange, mkVersionRange)
+import Simplex.Messaging.Version (mkVersionRange)
 import System.Environment (lookupEnv)
 import System.Info (os)
 import Test.Hspec
@@ -34,6 +33,7 @@ import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, takeTMVar)
 import UnliftIO.Timeout (timeout)
+import Util
 
 testHost :: NonEmpty TransportHost
 testHost = "localhost"
@@ -60,30 +60,30 @@ testServerStatsBackupFile :: FilePath
 testServerStatsBackupFile = "tests/tmp/smp-server-stats.log"
 
 xit' :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
-xit' = if os == "linux" then xit else it
+xit' d = if os == "linux" then skip "skipped on Linux" . it d else it d
 
 xit'' :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
 xit'' d t = do
   ci <- runIO $ lookupEnv "CI"
-  (if ci == Just "true" then xit else it) d t
+  (if ci == Just "true" then skip "skipped on CI" . it d else it d) t
 
-testSMPClient :: (Transport c, MonadUnliftIO m, MonadFail m) => (THandle c -> m a) -> m a
+testSMPClient :: Transport c => (THandleSMP c -> IO a) -> IO a
 testSMPClient = testSMPClientVR supportedClientSMPRelayVRange
 
-testSMPClientVR :: (Transport c, MonadUnliftIO m, MonadFail m) => VersionRange -> (THandle c -> m a) -> m a
+testSMPClientVR :: Transport c => VersionRangeSMP -> (THandleSMP c -> IO a) -> IO a
 testSMPClientVR vr client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
   runTransportClient defaultTransportClientConfig Nothing useHost testPort (Just testKeyHash) $ \h -> do
-    g <- liftIO C.newRandom
+    g <- C.newRandom
     ks <- atomically $ C.generateKeyPair g
-    liftIO (runExceptT $ smpClientHandshake h ks testKeyHash vr) >>= \case
+    runExceptT (smpClientHandshake h ks testKeyHash vr) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
 cfg :: ServerConfig
 cfg =
   ServerConfig
-    { transports = undefined,
+    { transports = [],
       smpHandshakeTimeout = 60000000,
       tbqSize = 1,
       -- serverTbqSize = 1,
@@ -94,6 +94,8 @@ cfg =
       storeMsgsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
+      controlPortUserAuth = Nothing,
+      controlPortAdminAuth = Nothing,
       messageExpiration = Just defaultMessageExpiration,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       logStatsInterval = Nothing,
@@ -109,7 +111,7 @@ cfg =
     }
 
 cfgV7 :: ServerConfig
-cfgV7 = cfg {smpServerVRange = mkVersionRange 4 authCmdsSMPVersion}
+cfgV7 = cfg {smpServerVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
@@ -121,12 +123,12 @@ withSmpServerConfigOn :: HasCallStack => ATransport -> ServerConfig -> ServiceNa
 withSmpServerConfigOn t cfg' port' =
   serverBracket
     (\started -> runSMPServerBlocking started cfg' {transports = [(port', t)]})
-    (pure ())
+    (threadDelay 10000)
 
 withSmpServerThreadOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerThreadOn t = withSmpServerConfigOn t cfg
 
-serverBracket :: (HasCallStack, MonadUnliftIO m) => (TMVar Bool -> m ()) -> m () -> (HasCallStack => ThreadId -> m a) -> m a
+serverBracket :: HasCallStack => (TMVar Bool -> IO ()) -> IO () -> (HasCallStack => ThreadId -> IO a) -> IO a
 serverBracket process afterProcess f = do
   started <- newEmptyTMVarIO
   E.bracket
@@ -148,16 +150,16 @@ withSmpServer t = withSmpServerOn t testPort
 withSmpServerV7 :: HasCallStack => ATransport -> IO a -> IO a
 withSmpServerV7 t = withSmpServerConfigOn t cfgV7 testPort . const
 
-runSmpTest :: forall c a. (HasCallStack, Transport c) => (HasCallStack => THandle c -> IO a) -> IO a
+runSmpTest :: forall c a. (HasCallStack, Transport c) => (HasCallStack => THandleSMP c -> IO a) -> IO a
 runSmpTest test = withSmpServer (transport @c) $ testSMPClient test
 
-runSmpTestN :: forall c a. (HasCallStack, Transport c) => Int -> (HasCallStack => [THandle c] -> IO a) -> IO a
+runSmpTestN :: forall c a. (HasCallStack, Transport c) => Int -> (HasCallStack => [THandleSMP c] -> IO a) -> IO a
 runSmpTestN = runSmpTestNCfg cfg supportedClientSMPRelayVRange
 
-runSmpTestNCfg :: forall c a. (HasCallStack, Transport c) => ServerConfig -> VersionRange -> Int -> (HasCallStack => [THandle c] -> IO a) -> IO a
+runSmpTestNCfg :: forall c a. (HasCallStack, Transport c) => ServerConfig -> VersionRangeSMP -> Int -> (HasCallStack => [THandleSMP c] -> IO a) -> IO a
 runSmpTestNCfg srvCfg clntVR nClients test = withSmpServerConfigOn (transport @c) srvCfg testPort $ \_ -> run nClients []
   where
-    run :: Int -> [THandle c] -> IO a
+    run :: Int -> [THandleSMP c] -> IO a
     run 0 hs = test hs
     run n hs = testSMPClientVR clntVR $ \h -> run (n - 1) (h : hs)
 
@@ -169,7 +171,7 @@ smpServerTest ::
   IO (Maybe TransmissionAuth, ByteString, ByteString, BrokerMsg)
 smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
   where
-    tPut' :: THandle c -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
+    tPut' :: THandleSMP c -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
     tPut' h@THandle {params = THandleParams {sessionId, implySessId}} (sig, corrId, queueId, smp) = do
       let t' = if implySessId then smpEncode (corrId, queueId, smp) else smpEncode (sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h [Right (sig, t')]
@@ -178,33 +180,33 @@ smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
       [(Nothing, _, (CorrId corrId, qId, Right cmd))] <- tGet h
       pure (Nothing, corrId, qId, cmd)
 
-smpTest :: (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandle c -> IO ()) -> Expectation
+smpTest :: (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandleSMP c -> IO ()) -> Expectation
 smpTest _ test' = runSmpTest test' `shouldReturn` ()
 
-smpTestN :: (HasCallStack, Transport c) => Int -> (HasCallStack => [THandle c] -> IO ()) -> Expectation
+smpTestN :: (HasCallStack, Transport c) => Int -> (HasCallStack => [THandleSMP c] -> IO ()) -> Expectation
 smpTestN n test' = runSmpTestN n test' `shouldReturn` ()
 
-smpTest2 :: forall c. (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandle c -> THandle c -> IO ()) -> Expectation
+smpTest2 :: forall c. (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandleSMP c -> THandleSMP c -> IO ()) -> Expectation
 smpTest2 = smpTest2Cfg cfg supportedClientSMPRelayVRange
 
-smpTest2Cfg :: forall c. (HasCallStack, Transport c) => ServerConfig -> VersionRange -> TProxy c -> (HasCallStack => THandle c -> THandle c -> IO ()) -> Expectation
+smpTest2Cfg :: forall c. (HasCallStack, Transport c) => ServerConfig -> VersionRangeSMP -> TProxy c -> (HasCallStack => THandleSMP c -> THandleSMP c -> IO ()) -> Expectation
 smpTest2Cfg srvCfg clntVR _ test' = runSmpTestNCfg srvCfg clntVR 2 _test `shouldReturn` ()
   where
-    _test :: HasCallStack => [THandle c] -> IO ()
+    _test :: HasCallStack => [THandleSMP c] -> IO ()
     _test [h1, h2] = test' h1 h2
     _test _ = error "expected 2 handles"
 
-smpTest3 :: forall c. (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandle c -> THandle c -> THandle c -> IO ()) -> Expectation
+smpTest3 :: forall c. (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandleSMP c -> THandleSMP c -> THandleSMP c -> IO ()) -> Expectation
 smpTest3 _ test' = smpTestN 3 _test
   where
-    _test :: HasCallStack => [THandle c] -> IO ()
+    _test :: HasCallStack => [THandleSMP c] -> IO ()
     _test [h1, h2, h3] = test' h1 h2 h3
     _test _ = error "expected 3 handles"
 
-smpTest4 :: forall c. (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandle c -> THandle c -> THandle c -> THandle c -> IO ()) -> Expectation
+smpTest4 :: forall c. (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandleSMP c -> THandleSMP c -> THandleSMP c -> THandleSMP c -> IO ()) -> Expectation
 smpTest4 _ test' = smpTestN 4 _test
   where
-    _test :: HasCallStack => [THandle c] -> IO ()
+    _test :: HasCallStack => [THandleSMP c] -> IO ()
     _test [h1, h2, h3, h4] = test' h1 h2 h3 h4
     _test _ = error "expected 4 handles"
 

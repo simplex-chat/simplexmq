@@ -17,13 +17,13 @@ module Simplex.Messaging.Transport.Client
     TransportHost (..),
     TransportHosts (..),
     TransportHosts_ (..),
+    validateCertificateChain
   )
 where
 
 import Control.Applicative (optional)
 import Control.Logger.Simple (logError)
 import Control.Monad (when)
-import Control.Monad.IO.Unlift
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
@@ -114,30 +114,31 @@ data TransportClientConfig = TransportClientConfig
   { socksProxy :: Maybe SocksProxy,
     tcpKeepAlive :: Maybe KeepAliveOpts,
     logTLSErrors :: Bool,
-    clientCredentials :: Maybe (X.CertificateChain, T.PrivKey)
+    clientCredentials :: Maybe (X.CertificateChain, T.PrivKey),
+    alpn :: Maybe [ALPN]
   }
   deriving (Eq, Show)
 
 defaultTransportClientConfig :: TransportClientConfig
-defaultTransportClientConfig = TransportClientConfig Nothing (Just defaultKeepAliveOpts) True Nothing
+defaultTransportClientConfig = TransportClientConfig Nothing (Just defaultKeepAliveOpts) True Nothing Nothing
 
 clientTransportConfig :: TransportClientConfig -> TransportConfig
 clientTransportConfig TransportClientConfig {logTLSErrors} =
   TransportConfig {logTLSErrors, transportTimeout = Nothing}
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: (Transport c, MonadUnliftIO m) => TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
+runTransportClient :: Transport c => TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
 runTransportClient = runTLSTransportClient supportedParameters Nothing
 
-runTLSTransportClient :: (Transport c, MonadUnliftIO m) => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> m a) -> m a
-runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials} proxyUsername host port keyHash client = do
+runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
+runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, alpn} proxyUsername host port keyHash client = do
   serverCert <- newEmptyTMVarIO
   let hostName = B.unpack $ strEncode host
-      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials serverCert
+      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials alpn serverCert
       connectTCP = case socksProxy of
         Just proxy -> connectSocksClient proxy proxyUsername $ hostAddr host
         _ -> connectTCPClient hostName
-  c <- liftIO $ do
+  c <- do
     sock <- connectTCP port
     mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive" <> tshow e)
     let tCfg = clientTransportConfig cfg
@@ -148,7 +149,7 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
           closeTLS tls >> error "onServerCertificate failed"
         Just c -> pure c
       getClientConnection tCfg chain tls
-  client c `E.finally` liftIO (closeConnection c)
+  client c `E.finally` closeConnection c
   where
     hostAddr = \case
       THIPv4 addr -> SocksAddrIPV4 $ tupleToHostAddress addr
@@ -216,14 +217,15 @@ instance ToJSON SocksProxy where
 instance FromJSON SocksProxy where
   parseJSON = strParseJSON "SocksProxy"
 
-mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe (X.CertificateChain, T.PrivKey) -> TMVar X.CertificateChain -> T.ClientParams
-mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ serverCerts =
+mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe (X.CertificateChain, T.PrivKey) -> Maybe [ALPN] -> TMVar X.CertificateChain -> T.ClientParams
+mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ alpn_ serverCerts =
   (T.defaultParamsClient host p)
     { T.clientShared = def {T.sharedCAStore = fromMaybe (T.sharedCAStore def) caStore_},
       T.clientHooks =
         def
           { T.onServerCertificate = onServerCert,
-            T.onCertificateRequest = maybe def (const . pure . Just) clientCreds_
+            T.onCertificateRequest = maybe def (const . pure . Just) clientCreds_,
+            T.onSuggestALPN = pure alpn_
           },
       T.clientSupported = supported
     }
@@ -238,7 +240,7 @@ mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ serverCerts =
 validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
 validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
 validateCertificateChain _ _ _ (X.CertificateChain [_]) = pure [XV.EmptyChain]
-validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain sc@[_, caCert]) =
+validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain [_, caCert]) =
   if Fingerprint kh == XV.getFingerprint caCert X.HashSHA256
     then x509validate
     else pure [XV.UnknownCA]
@@ -248,7 +250,7 @@ validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain sc@[_, 
       where
         hooks = XV.defaultHooks
         checks = XV.defaultChecks {XV.checkFQHN = False}
-        certStore = XS.makeCertificateStore sc
+        certStore = XS.makeCertificateStore [caCert]
         cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the identity certificate (ca.crt)
         serviceID = (host, port)
 validateCertificateChain _ _ _ _ = pure [XV.AuthorityTooDeep]

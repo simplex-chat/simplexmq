@@ -1,3 +1,33 @@
+# 5.6.1
+
+Version 5.6.1.0.
+
+- Much faster iOS notification server start time (fewer skipped notifications).
+- Fix SMP server stored message stats.
+- Prevent overwriting uploaded XFTP files with subsequent upload attempts.
+- Faster base64 encoding/parsing.
+- Control port audit log and authentication.
+
+# 5.6.0
+
+Version 5.6.0.4.
+
+SMP protocol/client/server:
+- support deniable sender command authorization (to be enabled in the next version).
+- remove support for SMP protocol versions (prior to v4, 07/2022).
+
+Agent:
+- optional post-quantum key agreement using sntrup761 in double ratchet protocol.
+- improve performance of deleting multiple connections and files by batching database operations.
+- delay connection deletion to deliver pending messages.
+- API to test for notifications server.
+- remove support for client protocols versions (prior to 10/2022).
+
+XFTP server:
+- restore storage quota in case of failed uploads.
+
+Performance and stability improvements.
+
 # 5.5.3
 
 Agent:

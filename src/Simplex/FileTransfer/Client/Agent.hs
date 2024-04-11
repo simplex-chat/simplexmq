@@ -10,6 +10,8 @@ module Simplex.FileTransfer.Client.Agent where
 import Control.Logger.Simple (logInfo)
 import Control.Monad
 import Control.Monad.Except
+import Control.Monad.Trans (lift)
+import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Char8 as B
 import Data.Text (Text)
@@ -59,15 +61,15 @@ newXFTPAgent config = do
 
 type ME a = ExceptT XFTPClientAgentError IO a
 
-getXFTPServerClient :: XFTPClientAgent -> XFTPServer -> ME XFTPClient
-getXFTPServerClient XFTPClientAgent {xftpClients, config} srv = do
+getXFTPServerClient :: TVar ChaChaDRG -> XFTPClientAgent -> XFTPServer -> ME XFTPClient
+getXFTPServerClient g XFTPClientAgent {xftpClients, config} srv = do
   atomically getClientVar >>= either newXFTPClient waitForXFTPClient
   where
     connectClient :: ME XFTPClient
     connectClient =
       ExceptT $
         first (XFTPClientAgentError srv)
-          <$> getXFTPClient (1, srv, Nothing) (xftpConfig config) clientDisconnected
+          <$> getXFTPClient g (1, srv, Nothing) (xftpConfig config) clientDisconnected
 
     clientDisconnected :: XFTPClient -> IO ()
     clientDisconnected _ = do
@@ -86,7 +88,7 @@ getXFTPServerClient XFTPClientAgent {xftpClients, config} srv = do
     waitForXFTPClient :: XFTPClientVar -> ME XFTPClient
     waitForXFTPClient clientVar = do
       let XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpConnectTimeout}} = xftpConfig config
-      client_ <- tcpConnectTimeout `timeout` atomically (readTMVar clientVar)
+      client_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar clientVar)
       liftEither $ case client_ of
         Just (Right c) -> Right c
         Just (Left e) -> Left e
@@ -110,7 +112,7 @@ getXFTPServerClient XFTPClientAgent {xftpClients, config} srv = do
                   TM.delete srv xftpClients
               throwError e
         tryConnectAsync :: ME ()
-        tryConnectAsync = void . async $ do
+        tryConnectAsync = void . lift . async . runExceptT $ do
           withRetryInterval (reconnectInterval config) $ \_ loop -> void $ tryConnectClient loop
 
 showServer :: XFTPServer -> Text

@@ -10,6 +10,8 @@ import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
+import Data.IntMap.Strict (IntMap)
+import qualified Data.IntMap.Strict as IM
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -31,9 +33,8 @@ import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport)
+import Simplex.Messaging.Transport (ATransport, VersionSMP, VersionRangeSMP)
 import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, loadFingerprint, loadTLSServerParams, newSocketState)
-import Simplex.Messaging.Version
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -52,6 +53,9 @@ data ServerConfig = ServerConfig
     allowNewQueues :: Bool,
     -- | simple password that the clients need to pass in handshake to be able to create new queues
     newQueueBasicAuth :: Maybe BasicAuth,
+    -- | control port passwords,
+    controlPortUserAuth :: Maybe BasicAuth,
+    controlPortAdminAuth :: Maybe BasicAuth,
     -- | time after which the messages can be removed from the queues and check interval, seconds
     messageExpiration :: Maybe ExpirationConfig,
     -- | time after which the socket with inactive client can be disconnected (without any messages or commands, incl. PING),
@@ -71,7 +75,7 @@ data ServerConfig = ServerConfig
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
     -- | SMP client-server protocol version range
-    smpServerVRange :: VersionRange,
+    smpServerVRange :: VersionRangeSMP,
     -- | TCP transport config
     transportConfig :: TransportServerConfig,
     -- | run listener on control port
@@ -107,7 +111,7 @@ data Env = Env
     serverStats :: ServerStats,
     sockets :: SocketState,
     clientSeq :: TVar Int,
-    clients :: TMap Int Client
+    clients :: TVar (IntMap Client)
   }
 
 data Server = Server
@@ -124,7 +128,9 @@ data Client = Client
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
-    thVersion :: Version,
+    endThreads :: TVar (IntMap (Weak ThreadId)),
+    endThreadSeq :: TVar Int,
+    thVersion :: VersionSMP,
     sessionId :: ByteString,
     connected :: TVar Bool,
     createdAt :: SystemTime,
@@ -148,42 +154,44 @@ newServer = do
   savingLock <- createLock
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
 
-newClient :: TVar Int -> Natural -> Version -> ByteString -> SystemTime -> STM Client
+newClient :: TVar Int -> Natural -> VersionSMP -> ByteString -> SystemTime -> STM Client
 newClient nextClientId qSize thVersion sessionId createdAt = do
   clientId <- stateTVar nextClientId $ \next -> (next, next + 1)
   subscriptions <- TM.empty
   ntfSubscriptions <- TM.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
+  endThreads <- newTVar IM.empty
+  endThreadSeq <- newTVar 0
   connected <- newTVar True
   rcvActiveAt <- newTVar createdAt
   sndActiveAt <- newTVar createdAt
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
+  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
   delivered <- newEmptyTMVar
   return Sub {subThread, delivered}
 
-newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
+newEnv :: ServerConfig -> IO Env
 newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile} = do
   server <- atomically newServer
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   random <- liftIO C.newRandom
   storeLog <- restoreQueues queueStore `mapM` storeLogFile
-  tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
-  Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
+  tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile
+  Fingerprint fp <- loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
-  serverStats <- atomically . newServerStats =<< liftIO getCurrentTime
+  serverStats <- atomically . newServerStats =<< getCurrentTime
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
-  clients <- atomically TM.empty
+  clients <- newTVarIO mempty
   return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
   where
-    restoreQueues :: QueueStore -> FilePath -> m (StoreLog 'WriteMode)
+    restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
-      (qs, s) <- liftIO $ readWriteStoreLog f
+      (qs, s) <- readWriteStoreLog f
       atomically $ do
         writeTVar queues =<< mapM newTVar qs
         writeTVar senders $! M.foldr' addSender M.empty qs
