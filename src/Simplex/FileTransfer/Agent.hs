@@ -179,7 +179,8 @@ runXFTPRcvWorker c srv Worker {doWork} = do
         RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []} -> rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
         fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, digest, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _} -> do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
-          withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop ->
+          withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
+            lift $ waitForUserNetwork c
             downloadFileChunk fc replica
               `catchAgentError` \e -> retryOnError "XFTP rcv worker" (retryLoop loop e delay') (retryDone e) e
           where
@@ -389,7 +390,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
       let numRecipients' = min numRecipients maxRecipients
       -- concurrently?
       -- separate worker to create chunks? record retries and delay on snd_file_chunks?
-      forM_ (filter (not . chunkCreated) chunks) $ createChunk numRecipients'
+      forM_ (filter (\SndFileChunk {replicas} -> null replicas) chunks) $ createChunk numRecipients'
       withStore' c $ \db -> updateSndFileStatus db sndFileId SFSUploading
       where
         AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients, messageRetryInterval = ri} = cfg
@@ -413,9 +414,6 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           let chunkSpecs = prepareChunkSpecs fsEncPath chunkSizes
           chunkDigests <- liftIO $ mapM getChunkDigest chunkSpecs
           pure (FileDigest digest, zip chunkSpecs $ coerce chunkDigests)
-        chunkCreated :: SndFileChunk -> Bool
-        chunkCreated SndFileChunk {replicas} =
-          any (\SndFileChunkReplica {replicaStatus} -> replicaStatus == SFRSCreated) replicas
         createChunk :: Int -> SndFileChunk -> AM ()
         createChunk numRecipients' ch = do
           atomically $ assertAgentForeground c
@@ -425,7 +423,8 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           where
             tryCreate = do
               usedSrvs <- newTVarIO ([] :: [XFTPServer])
-              withRetryInterval (riFast ri) $ \_ loop ->
+              withRetryInterval (riFast ri) $ \_ loop -> do
+                lift $ waitForUserNetwork c
                 createWithNextSrv usedSrvs
                   `catchAgentError` \e -> retryOnError "XFTP prepare worker" (retryLoop loop) (throwError e) e
               where
@@ -457,7 +456,8 @@ runXFTPSndWorker c srv Worker {doWork} = do
         SndFileChunk {sndFileId, sndFileEntityId, filePrefixPath, replicas = []} -> sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) "chunk has no replicas"
         fc@SndFileChunk {userId, sndFileId, sndFileEntityId, filePrefixPath, digest, replicas = replica@SndFileChunkReplica {sndChunkReplicaId, server, delay} : _} -> do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
-          withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop ->
+          withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
+            lift $ waitForUserNetwork c
             uploadFileChunk cfg fc replica
               `catchAgentError` \e -> retryOnError "XFTP snd worker" (retryLoop loop e delay') (retryDone e) e
           where
@@ -623,7 +623,8 @@ runXFTPDelWorker c srv Worker {doWork} = do
       where
         processDeletedReplica replica@DeletedSndChunkReplica {deletedSndChunkReplicaId, userId, server, chunkDigest, delay} = do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
-          withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop ->
+          withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
+            lift $ waitForUserNetwork c
             deleteChunkReplica
               `catchAgentError` \e -> retryOnError "XFTP del worker" (retryLoop loop e delay') (retryDone e) e
           where

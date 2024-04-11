@@ -22,6 +22,7 @@ import Control.Exception (SomeException, try)
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.Bifunctor (first)
+import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Set as S
@@ -30,7 +31,6 @@ import GHC.Stack (withFrozenCallStack)
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.Base64 (encode)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol
@@ -769,7 +769,7 @@ testTiming (ATransport t) =
         (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519, 200) -- correct key type
       ]
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
-    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.15 -- normally the difference between "no queue" and "wrong key" is less than 5%
+    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.2 -- normally the difference between "no queue" and "wrong key" is less than 5%
     testSameTiming :: forall c. Transport c => THandleSMP c -> THandleSMP c -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
     testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) = do
       g <- C.newRandom

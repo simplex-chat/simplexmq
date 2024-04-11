@@ -163,6 +163,7 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -201,7 +202,6 @@ import Simplex.Messaging.Crypto.Ratchet
     SndE2ERatchetParams
   )
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.Base64 (base64P, encode)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
@@ -405,6 +405,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   MSGNTF :: SMPMsgMeta -> ACommand Agent AEConn
   ACK :: AgentMsgId -> Maybe MsgReceiptInfo -> ACommand Client AEConn
   RCVD :: MsgMeta -> NonEmpty MsgReceipt -> ACommand Agent AEConn
+  QCONT :: ACommand Agent AEConn
   SWCH :: ACommand Client AEConn
   OFF :: ACommand Client AEConn
   DEL :: ACommand Client AEConn
@@ -467,6 +468,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   MSGNTF_ :: ACommandTag Agent AEConn
   ACK_ :: ACommandTag Client AEConn
   RCVD_ :: ACommandTag Agent AEConn
+  QCONT_ :: ACommandTag Agent AEConn
   SWCH_ :: ACommandTag Client AEConn
   OFF_ :: ACommandTag Client AEConn
   DEL_ :: ACommandTag Client AEConn
@@ -522,6 +524,7 @@ aCommandTag = \case
   MSGNTF {} -> MSGNTF_
   ACK {} -> ACK_
   RCVD {} -> RCVD_
+  QCONT -> QCONT_
   SWCH -> SWCH_
   OFF -> OFF_
   DEL -> DEL_
@@ -996,7 +999,7 @@ agentMessageType = \case
     HELLO -> AM_HELLO_
     A_MSG _ -> AM_A_MSG_
     A_RCVD {} -> AM_A_RCVD_
-    QCONT _ -> AM_QCONT_
+    A_QCONT _ -> AM_QCONT_
     QADD _ -> AM_QADD_
     QKEY _ -> AM_QKEY_
     QUSE _ -> AM_QUSE_
@@ -1020,7 +1023,7 @@ data AMsgType
   = HELLO_
   | A_MSG_
   | A_RCVD_
-  | QCONT_
+  | A_QCONT_
   | QADD_
   | QKEY_
   | QUSE_
@@ -1033,7 +1036,7 @@ instance Encoding AMsgType where
     HELLO_ -> "H"
     A_MSG_ -> "M"
     A_RCVD_ -> "V"
-    QCONT_ -> "QC"
+    A_QCONT_ -> "QC"
     QADD_ -> "QA"
     QKEY_ -> "QK"
     QUSE_ -> "QU"
@@ -1046,7 +1049,7 @@ instance Encoding AMsgType where
       'V' -> pure A_RCVD_
       'Q' ->
         A.anyChar >>= \case
-          'C' -> pure QCONT_
+          'C' -> pure A_QCONT_
           'A' -> pure QADD_
           'K' -> pure QKEY_
           'U' -> pure QUSE_
@@ -1066,7 +1069,7 @@ data AMessage
   | -- | agent envelope for delivery receipt
     A_RCVD (NonEmpty AMessageReceipt)
   | -- | the message instructing the client to continue sending messages (after ERR QUOTA)
-    QCONT SndQAddr
+    A_QCONT SndQAddr
   | -- add queue to connection (sent by recipient), with optional address of the replaced queue
     QADD (NonEmpty (SMPQueueUri, Maybe SndQAddr))
   | -- key to secure the added queues and agree e2e encryption key (sent by sender)
@@ -1124,7 +1127,7 @@ instance Encoding AMessage where
     HELLO -> smpEncode HELLO_
     A_MSG body -> smpEncode (A_MSG_, Tail body)
     A_RCVD mrs -> smpEncode (A_RCVD_, mrs)
-    QCONT addr -> smpEncode (QCONT_, addr)
+    A_QCONT addr -> smpEncode (A_QCONT_, addr)
     QADD qs -> smpEncode (QADD_, qs)
     QKEY qs -> smpEncode (QKEY_, qs)
     QUSE qs -> smpEncode (QUSE_, qs)
@@ -1136,7 +1139,7 @@ instance Encoding AMessage where
         HELLO_ -> pure HELLO
         A_MSG_ -> A_MSG . unTail <$> smpP
         A_RCVD_ -> A_RCVD <$> smpP
-        QCONT_ -> QCONT <$> smpP
+        A_QCONT_ -> A_QCONT <$> smpP
         QADD_ -> QADD <$> smpP
         QKEY_ -> QKEY <$> smpP
         QUSE_ -> QUSE <$> smpP
@@ -1668,6 +1671,7 @@ instance StrEncoding ACmdTag where
       "MSGNTF" -> ct MSGNTF_
       "ACK" -> t ACK_
       "RCVD" -> ct RCVD_
+      "QCONT" -> ct QCONT_
       "SWCH" -> t SWCH_
       "OFF" -> t OFF_
       "DEL" -> t DEL_
@@ -1725,6 +1729,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     MSGNTF_ -> "MSGNTF"
     ACK_ -> "ACK"
     RCVD_ -> "RCVD"
+    QCONT_ -> "QCONT"
     SWCH_ -> "SWCH"
     OFF_ -> "OFF"
     DEL_ -> "DEL"
@@ -1794,6 +1799,7 @@ commandP binaryP =
           MSG_ -> s (MSG <$> strP <* A.space <*> smpP <* A.space <*> binaryP)
           MSGNTF_ -> s (MSGNTF <$> strP)
           RCVD_ -> s (RCVD <$> strP <* A.space <*> strP)
+          QCONT_ -> pure QCONT
           DEL_RCVQ_ -> s (DEL_RCVQ <$> strP_ <*> strP_ <*> strP)
           DEL_CONN_ -> pure DEL_CONN
           DEL_USER_ -> s (DEL_USER <$> strP)
@@ -1857,6 +1863,7 @@ serializeCommand = \case
   MSGNTF smpMsgMeta -> s (MSGNTF_, smpMsgMeta)
   ACK mId rcptInfo_ -> s (ACK_, mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
   RCVD msgMeta rcpts -> s (RCVD_, msgMeta, rcpts)
+  QCONT -> s QCONT_
   SWCH -> s SWCH_
   OFF -> s OFF_
   DEL -> s DEL_

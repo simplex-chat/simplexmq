@@ -10,6 +10,7 @@ module Simplex.Messaging.Encoding.String
     strToJSON,
     strToJEncoding,
     strParseJSON,
+    base64urlP,
     strEncodeList,
     strListP,
   )
@@ -22,8 +23,10 @@ import qualified Data.Aeson.Encoding as JE
 import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Char (isAlphaNum)
 import Data.Int (Int64)
 import qualified Data.List.NonEmpty as L
 import Data.Set (Set)
@@ -35,7 +38,6 @@ import Data.Time.Clock.System (SystemTime (..))
 import Data.Time.Format.ISO8601
 import Data.Word (Word16, Word32)
 import Simplex.Messaging.Encoding
-import qualified Simplex.Messaging.Encoding.Base64.URL as U
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$?>))
 
@@ -52,16 +54,19 @@ class StrEncoding a where
   strDecode :: ByteString -> Either String a
   strDecode = parseAll strP
   strP :: Parser a
-  strP = strDecode <$?> U.base64urlP
+  strP = strDecode <$?> base64urlP
 
 -- base64url encoding/decoding of ByteStrings - the parser only allows non-empty strings
 instance StrEncoding ByteString where
   strEncode = U.encode
-  {-# INLINE strEncode #-}
   strDecode = U.decode
-  {-# INLINE strDecode #-}
-  strP = U.base64urlP
-  {-# INLINE strP #-}
+  strP = base64urlP
+
+base64urlP :: Parser ByteString
+base64urlP = do
+  str <- A.takeWhile1 (\c -> isAlphaNum c || c == '-' || c == '_')
+  pad <- A.takeWhile (== '=')
+  either fail pure $ U.decode (str <> pad)
 
 newtype Str = Str {unStr :: ByteString}
   deriving (Eq, Show)
