@@ -1067,7 +1067,18 @@ testExpireManyMessages t =
         liftIO $ threadDelay 1000000
         7 <- sendMessage a bId SMP.noMsgFlags "4" -- this won't expire
         get a =##> \case ("", c, MERR 4 (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
-        get a =##> \case ("", c, MERRS [5, 6] (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
+        -- get a =##> \case ("", c, MERRS [5, 6] (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
+        let expected c e = bId == c && (e == TIMEOUT || e == NETWORK)
+        get a >>= \case
+          ("", c, MERR 5 (BROKER _ e)) -> do
+            liftIO $ expected c e `shouldBe` True
+            get a =##> \case ("", c', MERR 6 (BROKER _ e')) -> expected c' e'; ("", c', MERRS [6] (BROKER _ e')) -> expected c' e'; _ -> False
+          ("", c, MERRS [5] (BROKER _ e)) -> do
+            liftIO $ expected c e `shouldBe` True
+            get a =##> \case ("", c', MERR 6 (BROKER _ e')) -> expected c' e'; _ -> False
+          ("", c, MERRS [5, 6] (BROKER _ e)) ->
+            liftIO $ expected c e `shouldBe` True
+          r -> error $ show r
       withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
         withUP a bId $ \case ("", _, SENT 7) -> True; _ -> False
         withUP b aId $ \case ("", _, MsgErr 4 (MsgSkipped 3 5) "4") -> True; _ -> False
