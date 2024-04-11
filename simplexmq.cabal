@@ -766,7 +766,7 @@ benchmark simplexmq-bench
     , async ==2.2.*
     , attoparsec ==0.14.*
     , base >=4.14 && <5
-    , base64
+    , base64 >=1.0
     , base64-bytestring
     , case-insensitive ==1.2.*
     , composition ==1.0.*
