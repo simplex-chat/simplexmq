@@ -181,7 +181,7 @@ function openOverlay() {
     if (hash) {
         const id = hash.split('#')[1];
         const el = document.getElementById(id)
-        if (el.classList.contains('overlay')) {
+        if (!!el && el.classList.contains('overlay')) {
             const scrollTo = el.getAttribute('data-scroll-to')
             if (scrollTo) {
                 const scrollToEl = document.getElementById(scrollTo)

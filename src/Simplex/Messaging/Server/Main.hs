@@ -72,7 +72,8 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
     storeLogFilePath = combine logPath "smp-server-store.log"
     httpsCertFile = combine cfgPath "web.cert"
     httpsKeyFile = combine cfgPath "web.key"
-    initializeServer opts@InitOptions {ip, fqdn, scripted}
+    defaultStaticPath = combine logPath "www"
+    initializeServer opts@InitOptions {ip, fqdn, sourceCode = src', staticPath = sp', disableWebServer = noWeb', scripted}
       | scripted = initialize opts
       | otherwise = do
           putStrLn "Use `smp-server init -h` for available options."
@@ -83,8 +84,19 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
           password <- withPrompt "'r' for random (default), 'n' - no password, or enter password: " serverPassword
           let host = fromMaybe ip fqdn
           host' <- withPrompt ("Enter server FQDN or IP address for certificate (" <> host <> "): ") getLine
-          sourceCode <- Just . T.pack <$> withPrompt ("Enter server source code URI (" <> simplexmqSource <> "): ") getServerSourceCode
-          initialize opts {enableStoreLog, logStats, fqdn = if null host' then fqdn else Just host', password, sourceCode}
+          sourceCode' <- withPrompt ("Enter server source code URI (" <> maybe simplexmqSource T.unpack src' <> "): ") getServerSourceCode
+          staticPath' <- withPrompt ("Enter path to store generated static site with server information (" <> fromMaybe defaultStaticPath sp' <> "): ") getLine
+          enableWeb <- onOffPrompt "Enable built-in web server for static site" (not noWeb')
+          initialize
+            opts
+              { enableStoreLog,
+                logStats,
+                fqdn = if null host' then fqdn else Just host',
+                password,
+                sourceCode = (T.pack <$> sourceCode') <|> src',
+                staticPath = if null staticPath' then sp' else Just staticPath',
+                disableWebServer = not enableWeb
+              }
       where
         serverPassword =
           getLine >>= \case
@@ -95,7 +107,7 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               case strDecode $ encodeUtf8 $ T.pack s of
                 Right auth -> pure . Just $ ServerPassword auth
                 _ -> putStrLn "Invalid password. Only latin letters, digits and symbols other than '@' and ':' are allowed" >> serverPassword
-        initialize InitOptions {enableStoreLog, logStats, signAlgorithm, password, sourceCode} = do
+        initialize InitOptions {enableStoreLog, logStats, signAlgorithm, password, sourceCode, staticPath, disableWebServer} = do
           clearDirIfExists cfgPath
           clearDirIfExists logPath
           createDirectoryIfMissing True cfgPath
@@ -160,17 +172,17 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                 <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
                 <> "\n\n\
                    \[WEB]\n\
-                   \# Set path to generate static mini-site for server information and qr codes/links\n\
-                   \static_path: /tmp/smp-server-web\n\n\
-                   \# Uncomment to run an embedded server on this port\n\
+                   \# Set path to generate static mini-site for server information and qr codes/links\n"
+                <> ("static_path: " <> T.pack (fromMaybe defaultStaticPath staticPath) <> "\n\n")
+                <> "# Run an embedded server on this port\n\
                    \# Onion sites can use any port and register it in the hidden service config.\n\
-                   \# http: 80\n\n\
-                   \# You can run an embedded TLS web server too if you provide port and cert and key files.\n\
+                   \# Running on a port 80 may require setting process capabilities.\n"
+                <> ((if disableWebServer then "# " else "") <> "http: 8000\n\n")
+                <> "# You can run an embedded TLS web server too if you provide port and cert and key files.\n\
                    \# Not required for running TOR-only relay.\n\
                    \# https: 443\n"
                 <> ("# cert: " <> T.pack httpsCertFile <> "\n")
                 <> ("# key: " <> T.pack httpsKeyFile <> "\n")
-                <> "\n"
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -281,11 +293,11 @@ data EmbeddedWebParams = EmbeddedWebParams
     https :: Maybe (FilePath, FilePath, Int)
   }
 
-getServerSourceCode :: IO String
+getServerSourceCode :: IO (Maybe String)
 getServerSourceCode =
   getLine >>= \case
-    "" -> pure simplexmqSource
-    s | "https://" `isPrefixOf` s || "http://" `isPrefixOf` s -> pure s
+    "" -> pure Nothing
+    s | "https://" `isPrefixOf` s || "http://" `isPrefixOf` s -> pure $ Just s
     _ -> putStrLn "Invalid source code. URI should start from http:// or https://" >> getServerSourceCode
 
 simplexmqSource :: String
@@ -379,6 +391,8 @@ data InitOptions = InitOptions
     fqdn :: Maybe HostName,
     password :: Maybe ServerPassword,
     sourceCode :: Maybe Text,
+    staticPath :: Maybe FilePath,
+    disableWebServer :: Bool,
     scripted :: Bool
   }
   deriving (Show)
@@ -449,7 +463,18 @@ cliCommandP cfgPath logPath iniFile =
         (optional . strOption)
           ( long "source-code"
               <> help "Server source code will be communicated to the users"
-              <> metavar "SOURCE"
+              <> metavar "URI"
+          )
+      staticPath <-
+        (optional . strOption)
+          ( long "web-path"
+              <> help "Directory to store generated static site with server information"
+              <> metavar "PATH"
+          )
+      disableWebServer <-
+        switch
+          ( long "disable-web-server"
+              <> help "Disable starting embedded web server for static files"
           )
       scripted <-
         switch
@@ -457,6 +482,18 @@ cliCommandP cfgPath logPath iniFile =
               <> short 'y'
               <> help "Non-interactive initialization using command-line options"
           )
-      pure InitOptions {enableStoreLog, logStats, signAlgorithm, ip, fqdn, password, sourceCode, scripted}
+      pure
+        InitOptions
+          { enableStoreLog,
+            logStats,
+            signAlgorithm,
+            ip,
+            fqdn,
+            password,
+            sourceCode,
+            staticPath,
+            disableWebServer,
+            scripted
+          }
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
