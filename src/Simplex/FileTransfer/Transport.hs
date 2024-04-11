@@ -82,8 +82,11 @@ type THandleParamsXFTP = THandleParams XFTPVersion
 initialXFTPVersion :: VersionXFTP
 initialXFTPVersion = VersionXFTP 1
 
+currentXFTPVersion :: VersionXFTP
+currentXFTPVersion = VersionXFTP 2
+
 supportedFileServerVRange :: VersionRangeXFTP
-supportedFileServerVRange = mkVersionRange initialXFTPVersion initialXFTPVersion
+supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion
 
 -- XFTP protocol does not support handshake
 xftpClientHandshakeStub :: c -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> ExceptT TransportError IO (THandle XFTPVersion c)

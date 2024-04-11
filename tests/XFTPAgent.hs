@@ -20,12 +20,14 @@ import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.Maybe (fromJust)
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
+import Simplex.FileTransfer.Client (XFTPClientConfig (..))
 import Simplex.FileTransfer.Description (FileChunk (..), FileDescription (..), FileDescriptionURI (..), ValidFileDescription, fileDescriptionURI, mb, qrSizeLimit, pattern ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType (AUTH))
 import Simplex.Messaging.Agent (AgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendDescription, xftpSendFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, xftpCfg)
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..), BrokerErrorType (..), RcvFileId, SndFileId, noAuthSrv)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
@@ -48,6 +50,7 @@ xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
   it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
   it "should send and receive large file with a redirect" testXFTPAgentSendReceiveRedirect
   it "should send and receive small file without a redirect" testXFTPAgentSendReceiveNoRedirect
+  describe "sending and receiving with version negotiation" testXFTPAgentSendReceiveMatrix
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
   it "should resume sending file after restart" testXFTPAgentSendRestore
@@ -232,6 +235,31 @@ testXFTPAgentSendReceiveNoRedirect = withXFTPServer $ do
 
       inBytes <- B.readFile filePathIn
       B.readFile out `shouldReturn` inBytes
+
+testXFTPAgentSendReceiveMatrix :: Spec
+testXFTPAgentSendReceiveMatrix = forM_ matrix $ \(label, sender, server, receiver) -> it label $ run sender server receiver
+  where
+    matrix = do
+      (lSnd, sender) <- [oldClient, newClient]
+      (lSrv, server) <- [oldServer, newServer]
+      (lRcv, receiver) <- [oldClient, newClient]
+      let label = lSnd <> "-" <> lSrv <> "-" <> lRcv
+      pure (label, sender, server, receiver)
+    oldClient = ("oc", agentCfg {xftpCfg = (xftpCfg agentCfg) {clientALPN = Nothing}})
+    newClient = ("nc", agentCfg)
+    oldServer = ("os", testXFTPServerConfig_ Nothing)
+    newServer = ("ns", testXFTPServerConfig)
+    run :: HasCallStack => AgentConfig -> XFTPServerConfig -> AgentConfig -> IO ()
+    run sender server receiver =
+      withXFTPServerCfg server $ \_t -> do
+        filePath <- createRandomFile
+        rfd <- withAgent 1 sender initAgentServers testDB $ \sndr -> do
+          (sfId, _, rfd1, _) <- runRight $ testSend sndr filePath
+          rfd1 <$ xftpDeleteSndFileInternal sndr sfId
+        withAgent 2 receiver initAgentServers testDB2 $ \rcp -> do
+          rfId <- runRight $ testReceive rcp rfd filePath
+          xftpDeleteRcvFile rcp rfId
+        logWarn "done"
 
 createRandomFile :: HasCallStack => IO FilePath
 createRandomFile = createRandomFile' "testfile"
@@ -494,7 +522,6 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
     runRight_ $ xftpStartWorkers sndr (Just senderFiles)
     xftpDeleteSndFileRemote sndr 1 sfId sndDescr
     timeout 300000 (get sndr) `shouldReturn` Nothing -- wait for worker attempt
-
   threadDelay 300000
   length <$> listDirectory xftpServerFiles `shouldReturn` 6
 
@@ -545,7 +572,7 @@ testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs $
           -- receive file 1 again
           rfId1 <- xftpReceiveFile rcp 1 rfd1_2 Nothing
           ("", rfId1', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp
-          liftIO $ rfId1 `shouldBe`  rfId1'
+          liftIO $ rfId1 `shouldBe` rfId1'
 
           -- receive file 2
           testReceive' rcp rfd2 filePath2
