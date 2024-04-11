@@ -13,7 +13,7 @@ module AgentTests (agentTests) where
 
 import AgentTests.ConnectionRequestTests
 import AgentTests.DoubleRatchetTests (doubleRatchetTests)
-import AgentTests.FunctionalAPITests (functionalAPITests, pattern Msg, pattern Msg')
+import AgentTests.FunctionalAPITests (functionalAPITests, inAnyOrder, pattern Msg, pattern Msg')
 import AgentTests.MigrationTests (migrationTests)
 import AgentTests.NotificationTests (notificationTests)
 import AgentTests.SQLiteTests (storeTests)
@@ -554,7 +554,11 @@ testResumeDeliveryQuotaExceeded _ alice bob = do
   alice #:# "the last message not sent"
   bob <#= \case ("", "alice", Msg "message 4") -> True; _ -> False
   bob #: ("4", "alice", "ACK 7") #> ("4", "alice", OK)
-  alice <# ("", "bob", SENT 8)
+  inAnyOrder
+      (tGetAgent alice)
+      [ \case ("", c, Right (SENT 8)) -> c == "bob"; _ -> False,
+        \case ("", c, Right QCONT) -> c == "bob"; _ -> False
+      ]
   bob <#= \case ("", "alice", Msg "over quota") -> True; _ -> False
   -- message 8 is skipped because of alice agent sending "QCONT" message
   bob #: ("5", "alice", "ACK 9") #> ("5", "alice", OK)

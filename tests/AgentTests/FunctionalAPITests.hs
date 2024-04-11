@@ -31,6 +31,7 @@ module AgentTests.FunctionalAPITests
     sendMessage,
     runRight,
     runRight_,
+    inAnyOrder,
     get,
     get',
     rfGet,
@@ -1111,7 +1112,10 @@ testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testP
     subscribeConnection b' aId
     get b' =##> \case ("", c, Msg "1") -> c == aId; _ -> False
     ackMessage b' aId 4 Nothing
-    get a ##> ("", bId, SENT 6)
+    liftIO . getInAnyOrder a $
+      [ \case ("", c, APC SAEConn (SENT 6)) -> c == bId; _ -> False,
+        \case ("", c, APC SAEConn QCONT) -> c == bId; _ -> False
+      ]
     get b' =##> \case ("", c, MsgErr 6 (MsgSkipped 4 4) "3") -> c == aId; _ -> False
     ackMessage b' aId 6 Nothing
   disposeAgentClient a
@@ -1145,7 +1149,10 @@ testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} 
     subscribeConnection b' aId
     get b' =##> \case ("", c, Msg "1") -> c == aId; _ -> False
     ackMessage b' aId 4 Nothing
-    get a ##> ("", bId, SENT 8)
+    liftIO . getInAnyOrder a $
+      [ \case ("", c, APC SAEConn (SENT 8)) -> c == bId; _ -> False,
+        \case ("", c, APC SAEConn QCONT) -> c == bId; _ -> False
+      ]
     get b' =##> \case ("", c, MsgErr 6 (MsgSkipped 4 6) "5") -> c == aId; _ -> False
     ackMessage b' aId 6 Nothing
   disposeAgentClient a
@@ -2499,7 +2506,7 @@ testDeliveryReceiptsVersion t = do
 
 testDeliveryReceiptsConcurrent :: HasCallStack => ATransport -> IO ()
 testDeliveryReceiptsConcurrent t =
-  withSmpServerConfigOn t cfg {msgQueueQuota = 128} testPort $ \_ -> do
+  withSmpServerConfigOn t cfg {msgQueueQuota = 256} testPort $ \_ -> do
     withAgentClients2 $ \a b -> do
       (aId, bId) <- runRight $ makeConnection a b
       t1 <- liftIO getCurrentTime

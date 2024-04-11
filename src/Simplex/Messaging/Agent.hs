@@ -2064,7 +2064,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
               pure ack'
             where
               queueDrained = case conn of
-                DuplexConnection _ _ sqs -> void $ enqueueMessages c cData sqs SMP.noMsgFlags $ QCONT (sndAddress rq)
+                DuplexConnection _ _ sqs -> void $ enqueueMessages c cData sqs SMP.noMsgFlags $ A_QCONT (sndAddress rq)
                 _ -> pure ()
               processClientMsg srvTs msgFlags msgBody = do
                 clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader phVer e2ePubKey_} <-
@@ -2113,7 +2113,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                                 notify $ MSG msgMeta msgFlags body
                                 pure ACKPending
                               A_RCVD rcpts -> qDuplex conn'' "RCVD" $ messagesRcvd rcpts msgMeta
-                              QCONT addr -> qDuplexAckDel conn'' "QCONT" $ continueSending srvMsgId addr
+                              A_QCONT addr -> qDuplexAckDel conn'' "QCONT" $ continueSending srvMsgId addr
                               QADD qs -> qDuplexAckDel conn'' "QADD" $ qAddMsg srvMsgId qs
                               QKEY qs -> qDuplexAckDel conn'' "QKEY" $ qKeyMsg srvMsgId qs
                               QUSE qs -> qDuplexAckDel conn'' "QUSE" $ qUseMsg srvMsgId qs
@@ -2327,6 +2327,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 atomically $
                   TM.lookup (qAddress sq) (smpDeliveryWorkers c)
                     >>= mapM_ (\(_, retryLock) -> tryPutTMVar retryLock ())
+                notify QCONT
               Nothing -> qError "QCONT: queue address not found"
 
           messagesRcvd :: NonEmpty AMessageReceipt -> MsgMeta -> Connection 'CDuplex -> AM ACKd
