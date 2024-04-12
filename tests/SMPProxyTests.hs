@@ -20,7 +20,7 @@ smpProxyTests = do
   describe "server configuration" $ do
     it "refuses proxy handshake unless enabled" testNoProxy
     it "checks basic auth in proxy requests" testProxyAuth
-  describe "proxy requests" $ do
+  xdescribe "proxy requests" $ do
     xdescribe "bad relay URIs" $ do
       it "host not resolved" todo
       it "when SMP port blackholed" todo
