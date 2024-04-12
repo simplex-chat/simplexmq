@@ -103,6 +103,7 @@ import Data.List (sort)
 import Data.Maybe (fromMaybe)
 import GHC.Conc (listThreads, threadStatus)
 import GHC.Conc.Sync (threadLabel)
+import qualified Data.X509 as X
 #endif
 
 -- | Runs an SMP server using passed configuration.
@@ -612,43 +613,28 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
     -- TODO limit client concurrency
     forkIO $ mapM_ reply . L.nonEmpty =<< mapConcurrently processProxiedCmd cmds
   where
-    reply :: MonadIO m => NonEmpty (Transmission BrokerMsg) -> m ()
-    reply = atomically . writeTBQueue sndQ
-    processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Transmission BrokerMsg)
-    processProxiedCmd (corrId, sessId, command) = (corrId, sessId,) <$> case command of
-      PRXY srv auth -> ifM allowProxy getRelay (pure $ ERR AUTH)
-        where
-          allowProxy = do
-            ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
-            pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
-          getRelay = do
-            ProxyAgent {smpAgent} <- asks proxyAgent
-            -- TODO catch IO errors too
-            liftIO $ proxyResp <$> runExceptT (getSMPServerClient' smpAgent srv)
-            where
-              proxyResp = \case
-                Right smp ->
-                  -- TODO return version range
-                  let THandleParams {sessionId = srvSessId, thAuth} = thParams smp
-                   in case thAuth of
-                        Just THAuthClient {serverCertKey} -> PKEY srvSessId serverCertKey
-                        Nothing -> ERR $ PROXY TRANSPORT -- TODO different error?
-                Left err -> ERR $ smpProxyError err
-      PFWD pubKey encBlock -> do
-        ProxyAgent {smpAgent} <- asks proxyAgent
-        atomically (lookupSMPServerClient smpAgent sessId) >>= \case
-          Just smp -> liftIO $ either (ERR . smpProxyError) PRES <$> runExceptT (forwardSMPMessage smp corrId pubKey encBlock)
-          Nothing -> pure $ ERR $ PROXY NO_SESSION
-    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Either (Transmission (Command 'ProxiedClient)) (Transmission BrokerMsg))
+    reply :: MonadIO m => Transmission BrokerMsg -> m ()
+    reply = atomically . writeTBQueue sndQ . pure
+    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M ()
     processCommand (qr_, (corrId, queueId, cmd)) = do
       st <- asks queueStore
       case cmd of
-        Cmd SProxiedClient command -> pure $ Left (corrId, queueId, command)
-        Cmd SSender command -> Right <$> case command of
-          SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
-          PING -> pure (corrId, "", PONG)
-          RFWD encBlock -> (corrId, "",) <$> processForwardedCommand encBlock
-        Cmd SNotifier NSUB -> Right <$> subscribeNotifications
+        Cmd SSender command ->
+          case command of
+            SEND flags msgBody -> reply =<< withQueue (\qr -> sendMessage qr flags msgBody)
+            PING -> reply (corrId, "", PONG)
+            PRXY relay auth ->
+              ifM
+                allowProxy
+                (setupProxy relay)
+                (reply $ err AUTH)
+              where
+                allowProxy = do
+                  ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
+                  pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
+            PFWD _dhPub _encBlock -> error "TODO: processCommand.PFWD"
+            RFWD _encBlock -> error "TODO: processCommand.RFWD"
+        Cmd SNotifier NSUB -> reply =<< subscribeNotifications
         Cmd SRecipient command ->
           Right <$> case command of
             NEW rKey dhKey auth subMode ->
@@ -939,8 +925,8 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               Right t'@(_, (corrId', entId', _)) ->
                 -- Left will not be returned by processCommand, as only SEND command is allowed
                 either (const (corrId', entId', ERR INTERNAL)) id <$> lift (processCommand t')
-          
-          -- encode response            
+
+          -- encode response
           r' <- case batchTransmissions (batch thParams') (blockSize thParams') [Right (Nothing, encodeTransmission thParams' r)] of
             [] -> throwError $ ERR INTERNAL -- TODO error
             TBError _ _ : _ -> throwError $ ERR INTERNAL -- TODO error
@@ -1025,6 +1011,20 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           atomically (deleteQueue st queueId $>>= \q -> delMsgQueue ms queueId $> Right q) >>= \case
             Right q -> updateDeletedStats q $> ok
             Left e -> pure $ err e
+
+        setupProxy :: SMPServer -> M ()
+        setupProxy relay = do
+          -- decide if to use existing session or to create a new one
+          -- if exists, reply straight away
+          -- TODO
+          -- if not, request session via the queue
+          ProxyAgent {connectQ} <- asks proxyAgent
+          atomically $ writeTBQueue connectQ (relay, reply . response)
+          where
+            response :: Either ErrorType (SessionId, X.CertificateChain, X.SignedExact X.PubKey) -> Transmission BrokerMsg
+            response = \case
+              Left e -> err e
+              Right (sessId, chain, key) -> (corrId, queueId, PKEY sessId chain key)
 
         ok :: Transmission BrokerMsg
         ok = (corrId, queueId, OK)

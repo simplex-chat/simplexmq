@@ -17,7 +17,7 @@ import Simplex.Messaging.Version (mkVersionRange)
 import Test.Hspec
 
 smpProxyTests :: Spec
-smpProxyTests = do
+smpProxyTests = focus $ do
   describe "server configuration" $ do
     it "refuses proxy handshake unless enabled" testNoProxy
     it "checks basic auth in proxy requests" testProxyAuth
