@@ -587,23 +587,22 @@ dummyKeyX25519 = "MCowBQYDK2VuAyEA4JGSMYht18H4mas/jHeBwfcM7jLwNYJNOAhi2/g4RXg="
 client :: Client -> Server -> M ()
 client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
-  forever $
-    atomically (readTBQueue rcvQ)
-      >>= mapM processCommand
-      >>= atomically . writeTBQueue sndQ
+  forever $ atomically (readTBQueue rcvQ) >>= mapM processCommand
   where
-    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Transmission BrokerMsg)
+    reply :: Transmission BrokerMsg -> IO ()
+    reply = atomically . writeTBQueue sndQ
+    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M ()
     processCommand (qr_, (corrId, queueId, cmd)) = do
       st <- asks queueStore
       case cmd of
         Cmd SSender command ->
           case command of
-            SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
-            PING -> pure (corrId, "", PONG)
+            SEND flags msgBody -> reply =<< withQueue (\qr -> sendMessage qr flags msgBody)
+            PING -> reply (corrId, "", PONG)
             PRXY relay auth ->
               ifM
                 allowProxy
-                (setupProxy relay)
+                (setupProxy relay $> Nothing)
                 (pure (corrId, queueId, ERR AUTH))
               where
                 allowProxy = do
@@ -611,9 +610,9 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
                   pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
             PFWD _dhPub _encBlock -> error "TODO: processCommand.PFWD"
             RFWD _encBlock -> error "TODO: processCommand.RFWD"
-        Cmd SNotifier NSUB -> subscribeNotifications
+        Cmd SNotifier NSUB -> reply =<< subscribeNotifications
         Cmd SRecipient command ->
-          case command of
+          reply =<< case command of
             NEW rKey dhKey auth subMode ->
               ifM
                 allowNew
@@ -936,14 +935,19 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
             Right q -> updateDeletedStats q $> ok
             Left e -> pure $ err e
 
-        setupProxy :: SMPServer -> M (Transmission BrokerMsg)
-        setupProxy todo'relay = undefined
-          -- do
-          -- let relaySessionId = "TODO: relaySessionId"
-          -- (dummyRelayDhPublic, _) <- atomically . C.generateKeyPair =<< asks random
-          -- (_, dummySignKey) <- atomically . C.generateKeyPair =<< asks random
-          -- let dummyRelayKeySignature = C.sign' dummySignKey $ smpEncode dummyRelayDhPublic
-          -- pure (corrId, relaySessionId, PKEY dummyRelayDhPublic dummyRelayKeySignature)
+        setupProxy :: SMPServer -> M ()
+        setupProxy relay = do
+          -- decide if to use existing session or to create a new one
+          -- if exists, reply straight away
+          -- TODO
+          -- if not, request session via the queue
+          ProxyAgent {connectQ} <- asks proxyAgent
+          writeTBQueue connectQ (relay, reply . response)
+          where
+            response :: Either ErrorType (SessionId, X.CertificateChain, X.SignedExact X.PubKey) -> Transmission BrokerMsg
+            response = \case
+              Left e -> err e
+              Right (sessId, chain, key) -> (corrId, queueId, PKEY sessId chain key)
 
         ok :: Transmission BrokerMsg
         ok = (corrId, queueId, OK)
@@ -953,6 +957,18 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
 
         okResp :: Either ErrorType () -> Transmission BrokerMsg
         okResp = either err $ const ok
+
+smpProxyAgent :: ProxyAgent -> M ()
+smpProxyAgent ProxyAgent {connectQ} = raceAny_ [connectRelay, receiveAgent]
+  where
+    -- check for session var for pending session
+    -- if exists - wait
+    -- if doesn't - create session var, and spawn worker
+    connectRelay :: M ()
+    connectRelay = pure ()
+
+    receiveAgent :: M ()
+    receiveAgent = pure ()
 
 updateDeletedStats :: QueueRec -> M ()
 updateDeletedStats q = do

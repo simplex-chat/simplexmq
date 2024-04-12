@@ -115,7 +115,7 @@ data Env = Env
     sockets :: SocketState,
     clientSeq :: TVar ClientId,
     clients :: TVar (IntMap Client),
-    proxyServer :: SMPProxyServer -- senders served on this proxy
+    proxyAgent :: ProxyAgent -- senders served on this proxy
   }
 
 data Server = Server
@@ -126,15 +126,20 @@ data Server = Server
     savingLock :: Lock
   }
 
-data SMPProxyServer = SMPProxyServer
-  { relaySessions :: TMap SessionId SMPProxiedRelay,
-    relayServers :: TMap Text SessionId -- speed up client lookups by server URI
+data ProxyAgent = ProxyAgent
+  { relaySessions :: TMap SessionId RelaySession,
+    -- Speed up client lookups by server address.
+    -- if keyhash provided by the client is different from keyhash(es?) received in session,
+    -- server can refuse the request for proxy session.
+    relays :: TMap (TransportHost, ServiceName) (SessionId, C.KeyHash),
+    connectQ :: TBQueue (SMPServer, Either ErrorType (SessionId, X.CertificateChain, X.SignedExact X.PubKey) -> IO ()) -- sndQ to send relay session to the client client
   }
 
-data SMPProxiedRelay = SMPProxiedRelay
+data RelaySession = RelaySession
   { worker :: Worker,
-    proxyKey :: C.DhSecretX25519,
-    fwdQ :: TBQueue (ClientId, CorrId, C.PublicKeyX25519, ByteString) -- FWD args from multiple clients using this server
+    -- SessionId??
+    proxyKey :: C.PublicKeyX25519, -- ???
+    relayQ :: TBQueue (ClientId, CorrId, C.PublicKeyX25519, ByteString) -- FWD args from multiple clients using this server
     -- can be used for QUOTA retries until the session is gone
   }
 
@@ -207,8 +212,8 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
-  proxyServer <- newSMPProxyServer
-  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyServer}
+  proxyAgent <- newSMPProxyAgent
+  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
@@ -225,8 +230,8 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
       Nothing -> id
       Just NtfCreds {notifierId} -> M.insert notifierId (recipientId q)
 
-newSMPProxyServer :: MonadIO m => m SMPProxyServer
-newSMPProxyServer = do
-  relayServers <- atomically TM.empty
+newSMPProxyAgent :: IO ProxyAgent
+newSMPProxyAgent = do
+  relays <- atomically TM.empty
   relaySessions <- atomically TM.empty
-  pure SMPProxyServer {relayServers, relaySessions}
+  pure ProxyAgent {relays, relaySessions}

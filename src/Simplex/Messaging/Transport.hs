@@ -349,6 +349,7 @@ data ServerHandshake = ServerHandshake
   { smpVersionRange :: VersionRangeSMP,
     sessionId :: SessionId,
     -- pub key to agree shared secrets for command authorization and entity ID encryption.
+    -- todo C.PublicKeyX25519
     authPubKey :: Maybe (X.CertificateChain, X.SignedExact X.PubKey)
   }
 

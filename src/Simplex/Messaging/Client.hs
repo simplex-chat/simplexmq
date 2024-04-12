@@ -630,6 +630,26 @@ deleteSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO 
 deleteSMPQueues = okSMPCommands DEL
 {-# INLINE deleteSMPQueues #-}
 
+-- TODO picture
+-- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
+-- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
+createSMPProxySession :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO (SessionId, C.PublicKeyX25519)
+createSMPProxySession _proxyClnt _relayServ _proxyAuth = undefined
+
+-- consider how to process slow responses - is it handled somehow locally or delegated to the caller
+-- this method is used in the client
+-- sends PFWD :: C.PublicKeyX25519 -> EncTransmission -> Command Sender
+-- receives PRES :: EncResponse -> BrokerMsg -- proxy to client
+proxySMPMessage :: SMPClient -> SessionId -> Maybe SndPrivateAuthKey -> SenderId -> MsgFlags -> MsgBody -> ExceptT SMPClientError IO ()
+proxySMPMessage _proxyClnt _relaySess _spKey _sId _flags _msg = undefined
+
+-- this method is used in the server
+-- sends RFWD :: EncFwdTransmission -> Command Sender
+-- receives RRES :: EncFwdResponse -> BrokerMsg
+-- server should send PRES to the client with EncResponse
+forwardSMPMessage :: SMPClient -> C.CbNonce -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
+forwardSMPMessage _relayClnt _corrId _cmdKey _encTrans = undefined
+
 okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateAuthKey -> QueueId -> ExceptT SMPClientError IO ()
 okSMPCommand cmd c pKey qId =
   sendSMPCommand c (Just pKey) qId cmd >>= \case

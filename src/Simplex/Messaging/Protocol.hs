@@ -403,7 +403,7 @@ newtype EncTransmission = EncTransmission ByteString
 data FwdTransmission = FwdTransmission
   { fwdCorrId :: ByteString,
     fwdKey :: C.PublicKeyX25519,
-    fwdTransmission :: ByteString
+    fwdTransmission :: EncTransmission
   }
 
 newtype EncFwdTransmission = EncFwdTransmission ByteString
@@ -419,7 +419,7 @@ data BrokerMsg where
   NID :: NotifierId -> RcvNtfPublicDhKey -> BrokerMsg
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
   -- Should include certificate chain
-  PKEY :: X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
+  PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
   RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
   PRES :: EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
