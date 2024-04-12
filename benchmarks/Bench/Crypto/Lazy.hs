@@ -46,25 +46,27 @@ benchPassthrough :: (CryptoFile, CryptoFile) -> IO ()
 benchPassthrough (CryptoFile pathIn _, CryptoFile pathOut _) = LB.readFile pathIn >>= LB.writeFile pathOut
 
 benchDoubleStreaming :: (CryptoFile, CryptoFile) -> IO ()
-benchDoubleStreaming (fromCF@CryptoFile {filePath, cryptoArgs = fromArgs}, toCF@CryptoFile {cryptoArgs = cfArgs}) = do
-  fromSizeFull <- getFileSize filePath
-  let fromSize = fromSizeFull - maybe 0 (const $ toInteger C.authTagSize) fromArgs
-  fmap (either (error . show) id) . runExceptT $
-    CF.withFile fromCF ReadMode $ \fromH ->
-      CF.withFile toCF WriteMode $ \toH -> do
-        decryptChunks fromH fromSize (liftIO . CF.hPut toH . LB.fromStrict)
-        forM_ fromArgs $ \_ -> CF.hGetTag fromH
-        forM_ cfArgs $ \_ -> liftIO $ CF.hPutTag toH
+benchDoubleStreaming (src, dst) = fmap (either (error . show) id) . runExceptT $ copyCryptoFile src dst
   where
-    decryptChunks :: CF.CryptoFileHandle -> Integer -> (B.ByteString -> ExceptT CF.FTCryptoError IO ()) -> ExceptT CF.FTCryptoError IO ()
-    decryptChunks r size f = do
-      let chSize = min size 0xFFFF
-          chSize' = fromIntegral chSize
-          size' = size - chSize
-      ch <- liftIO $ CF.hGet r chSize'
-      when (B.length ch /= chSize') $ throwError $ CF.FTCEFileIOError "encrypting file: unexpected EOF"
-      f ch
-      when (size' > 0) $ decryptChunks r size' f
+    copyCryptoFile :: CryptoFile -> CryptoFile -> ExceptT CF.FTCryptoError IO ()
+    copyCryptoFile fromCF@CryptoFile {filePath = fsFromPath, cryptoArgs = fromArgs} toCF@CryptoFile {cryptoArgs = toArgs} = do
+      fromSizeFull <- getFileSize fsFromPath
+      let fromSize = fromSizeFull - maybe 0 (const $ toInteger C.authTagSize) fromArgs
+      CF.withFile fromCF ReadMode $ \fromH ->
+        CF.withFile toCF WriteMode $ \toH -> do
+          copyChunks fromH toH fromSize
+          forM_ fromArgs $ \_ -> CF.hGetTag fromH
+          forM_ toArgs $ \_ -> liftIO $ CF.hPutTag toH
+      where
+        copyChunks :: CF.CryptoFileHandle -> CF.CryptoFileHandle -> Integer -> ExceptT CF.FTCryptoError IO ()
+        copyChunks r w size = do
+          let chSize = min size 0xFFFF
+              chSize' = fromIntegral chSize
+              size' = size - chSize
+          ch <- liftIO $ CF.hGet r chSize'
+          when (B.length ch /= chSize') $ throwError $ CF.FTCEFileIOError "encrypting file: unexpected EOF"
+          liftIO . CF.hPut w $ LB.fromStrict ch
+          when (size' > 0) $ copyChunks r w size'
 
 withSomeFile :: (IO (CryptoFile, CryptoFile) -> TestTree) -> TestTree
 withSomeFile = withResource createCF deleteCF
