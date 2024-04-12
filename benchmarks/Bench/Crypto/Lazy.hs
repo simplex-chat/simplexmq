@@ -25,10 +25,10 @@ benchCryptoLazy :: [Benchmark]
 benchCryptoLazy =
   [ bgroup
       "File"
-      [ withSomeFile $ bench "cf-readFile" . nfAppIO (>>= benchReadFile),
-        withSomeFile $ bcompare "cf-readFile" . bench "cf-streamFromFile" . nfAppIO (>>= benchStreamFromFile),
-        withSomeFile $ bcompare "cf-readFile" . bench "cf-passthrough" . nfAppIO (>>= benchPassthrough),
-        withSomeFile $ bcompare "cf-readFile" . bench "cf-double-streaming" . nfAppIO (>>= benchDoubleStreaming)
+      [ withSomeFile $ bench "cf-passthrough" . nfAppIO (>>= benchPassthrough),
+        withSomeFile $ bench "cf-double-streaming" . nfAppIO (>>= benchDoubleStreaming),
+        withSomeFile $ bench "cf-streamFromFile" . nfAppIO (>>= benchStreamFromFile),
+        withSomeFile $ bench "cf-readFile" . nfAppIO (>>= benchReadFile)
       ]
   ]
 
