@@ -25,7 +25,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
-import Simplex.FileTransfer.Transport (VersionXFTP, XFTPErrorType (..), XFTPVersion, xftpClientHandshakeStub, pattern VersionXFTP)
+import Simplex.FileTransfer.Transport (XFTPErrorType (..), XFTPVersion, xftpClientHandshakeStub)
 import Simplex.Messaging.Client (authTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -57,9 +57,6 @@ import Simplex.Messaging.Protocol
   )
 import Simplex.Messaging.Transport (THandleParams (..), TransportError (..))
 import Simplex.Messaging.Util ((<$?>))
-
-currentXFTPVersion :: VersionXFTP
-currentXFTPVersion = VersionXFTP 1
 
 xftpBlockSize :: Int
 xftpBlockSize = 16384

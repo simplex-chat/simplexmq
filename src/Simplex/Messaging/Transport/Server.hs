@@ -49,7 +49,8 @@ import UnliftIO.STM
 data TransportServerConfig = TransportServerConfig
   { logTLSErrors :: Bool,
     tlsSetupTimeout :: Int,
-    transportTimeout :: Int
+    transportTimeout :: Int,
+    alpn :: Maybe [ALPN]
   }
   deriving (Eq, Show)
 
@@ -58,7 +59,8 @@ defaultTransportServerConfig =
   TransportServerConfig
     { logTLSErrors = True,
       tlsSetupTimeout = 60000000,
-      transportTimeout = 40000000
+      transportTimeout = 40000000,
+      alpn = Nothing
     }
 
 serverTransportConfig :: TransportServerConfig -> TransportConfig
@@ -114,7 +116,7 @@ runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket serve
     forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
       cId <- atomically $ stateTVar accepted $ \cId -> let cId' = cId + 1 in cId `seq` (cId', cId')
       let closeConn _ = do
-            atomically $ modifyTVar' clients $ IM.delete cId 
+            atomically $ modifyTVar' clients $ IM.delete cId
             gracefulClose conn 5000 `catchAll_` pure () -- catchAll_ is needed here in case the connection was closed earlier
             atomically $ modifyTVar' gracefullyClosed (+1)
       tId <- mkWeakThreadId =<< server conn `forkFinally` closeConn

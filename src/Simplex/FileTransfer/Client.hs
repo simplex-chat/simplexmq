@@ -28,6 +28,7 @@ import qualified Data.X509.Validation as XV
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Protocol
+import Simplex.FileTransfer.Server.Env (supportedXFTPhandshakes)
 import Simplex.FileTransfer.Transport
 import Simplex.Messaging.Client
   ( NetworkConfig (..),
@@ -50,7 +51,7 @@ import Simplex.Messaging.Protocol
     RecipientId,
     SenderId,
   )
-import Simplex.Messaging.Transport (HandshakeError (VERSION), THandleAuth (..), THandleParams (..), TransportError (..), supportedParameters)
+import Simplex.Messaging.Transport (ALPN, HandshakeError (VERSION), THandleAuth (..), THandleParams (..), TransportError (..), supportedParameters)
 import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost, alpn)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
@@ -69,7 +70,8 @@ data XFTPClient = XFTPClient
 
 data XFTPClientConfig = XFTPClientConfig
   { xftpNetworkConfig :: NetworkConfig,
-    serverVRange :: VersionRangeXFTP
+    serverVRange :: VersionRangeXFTP,
+    clientALPN :: Maybe [ALPN]
   }
 
 data XFTPChunkBody = XFTPChunkBody
@@ -91,12 +93,13 @@ defaultXFTPClientConfig :: XFTPClientConfig
 defaultXFTPClientConfig =
   XFTPClientConfig
     { xftpNetworkConfig = defaultNetworkConfig,
-      serverVRange = supportedFileServerVRange
+      serverVRange = supportedFileServerVRange,
+      clientALPN = Just supportedXFTPhandshakes
     }
 
 getXFTPClient :: TVar ChaChaDRG -> TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
-getXFTPClient g transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetworkConfig, serverVRange} disconnected = runExceptT $ do
-  let tcConfig = (transportClientConfig xftpNetworkConfig) {alpn = Just ["xftp/1"]}
+getXFTPClient g transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} disconnected = runExceptT $ do
+  let tcConfig = (transportClientConfig xftpNetworkConfig) {alpn = clientALPN}
       http2Config = xftpHTTP2Config tcConfig config
       username = proxyUsername transportSession
       ProtocolServer _ host port keyHash = srv
@@ -108,10 +111,11 @@ getXFTPClient g transportSession@(_, srv, _) config@XFTPClientConfig {xftpNetwor
   let HTTP2Client {sessionId, sessionALPN} = http2Client
       thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = VersionXFTP 1, thAuth = Nothing, implySessId = False, batch = True}
   logDebug $ "Client negotiated handshake protocol: " <> tshow sessionALPN
-  thParams <- case sessionALPN of
+  thParams@THandleParams {thVersion} <- case sessionALPN of
     Just "xftp/1" -> xftpClientHandshakeV1 g serverVRange keyHash http2Client thParams0
     Nothing -> pure thParams0
     _ -> throwError $ PCETransportError (TEHandshake VERSION)
+  logDebug $ "Client negotiated protocol: " <> tshow thVersion
   let c = XFTPClient {http2Client, thParams, transportSession, config}
   atomically $ writeTVar clientVar $ Just c
   pure c

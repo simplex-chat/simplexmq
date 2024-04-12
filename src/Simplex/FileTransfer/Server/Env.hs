@@ -32,7 +32,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ALPN)
-import Simplex.Messaging.Transport.Server (TransportServerConfig, loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFingerprint, loadTLSServerParams)
 import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
 import UnliftIO.STM
@@ -113,13 +113,16 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertifi
     logInfo $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
     when (quota < used) $ logInfo "WARNING: storage quota is less than used storage, no files can be uploaded!"
   tlsServerParams' <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
-  let tlsServerParams =
-        tlsServerParams'
-          { T.serverHooks =
-              def
-                { T.onALPNClientSuggest = Just $ pure . fromMaybe "" . find (`elem` supportedXFTPhandshakes)
-                }
-          }
+  let TransportServerConfig {alpn} = transportConfig config
+  let tlsServerParams = case alpn of
+        Nothing -> tlsServerParams'
+        Just supported ->
+          tlsServerParams'
+            { T.serverHooks =
+                def
+                  { T.onALPNClientSuggest = Just $ pure . fromMaybe "" . find (`elem` supported)
+                  }
+            }
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   serverStats <- atomically . newFileServerStats =<< liftIO getCurrentTime
   pure XFTPEnv {config, store, storeLog, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
