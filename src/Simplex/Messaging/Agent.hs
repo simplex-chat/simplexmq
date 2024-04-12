@@ -424,13 +424,10 @@ setUserNetworkInfo c@AgentClient {userNetworkState} UserNetworkInfo {networkType
   ts <- liftIO getCurrentTime
   atomically $ do
     ns@UserNetworkState {networkType = nt, offline} <- readTVar userNetworkState
-    when (nt' /= nt || offline' /= isJust offline) $
+    when (nt' /= nt || not online /= isJust offline) $
       writeTVar userNetworkState $!
-        if nt' == UNNone || offline'
-          then ns {networkType = nt', offline = Just UNSOffline {offlineDelay = d, offlineFrom = ts}}
-          else ns {networkType = nt', offline = Nothing}      
-  where
-    offline' = not online
+        let offline' = if nt' == UNNone || not online then Just UNSOffline {offlineDelay = d, offlineFrom = ts} else Nothing
+         in ns {networkType = nt', offline = offline'}
 
 reconnectAllServers :: AgentClient -> IO ()
 reconnectAllServers c = do
