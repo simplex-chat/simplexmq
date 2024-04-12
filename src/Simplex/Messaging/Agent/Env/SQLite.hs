@@ -92,6 +92,7 @@ data AgentConfig = AgentConfig
     xftpCfg :: XFTPClientConfig,
     reconnectInterval :: RetryInterval,
     messageRetryInterval :: RetryInterval2,
+    userNetworkInterval :: RetryInterval,
     messageTimeout :: NominalDiffTime,
     connDeleteDeliveryTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
@@ -126,7 +127,7 @@ defaultReconnectInterval =
   RetryInterval
     { initialInterval = 2_000000,
       increaseAfter = 10_000000,
-      maxInterval = 180_000000
+      maxInterval = 60_000000
     }
 
 defaultMessageRetryInterval :: RetryInterval2
@@ -134,16 +135,24 @@ defaultMessageRetryInterval =
   RetryInterval2
     { riFast =
         RetryInterval
-          { initialInterval = 1_000000,
+          { initialInterval = 2_000000,
             increaseAfter = 10_000000,
             maxInterval = 60_000000
           },
       riSlow =
         RetryInterval
-          { initialInterval = 180_000000, -- 3 minutes
+          { initialInterval = 300_000000, -- 5 minutes
             increaseAfter = 60_000000,
-            maxInterval = 3 * 3600_000000 -- 3 hours
+            maxInterval = 6 * 3600_000000 -- 6 hours
           }
+    }
+
+defaultUserNetworkInterval :: RetryInterval
+defaultUserNetworkInterval =
+  RetryInterval
+    { initialInterval = 1200_000000, -- 20 minutes
+      increaseAfter = 0,
+      maxInterval = 7200_000000 -- 2 hours
     }
 
 defaultAgentConfig :: AgentConfig
@@ -161,6 +170,7 @@ defaultAgentConfig =
       xftpCfg = defaultXFTPClientConfig,
       reconnectInterval = defaultReconnectInterval,
       messageRetryInterval = defaultMessageRetryInterval,
+      userNetworkInterval = defaultUserNetworkInterval,
       messageTimeout = 2 * nominalDay,
       connDeleteDeliveryTimeout = 2 * nominalDay,
       helloTimeout = 2 * nominalDay,

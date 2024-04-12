@@ -207,7 +207,7 @@ data NetworkConfig = NetworkConfig
     -- | timeout of protocol commands (microseconds)
     tcpTimeout :: Int,
     -- | additional timeout per kilobyte (1024 bytes) to be sent
-    tcpTimeoutPerKb :: Int,
+    tcpTimeoutPerKb :: Int64,
     -- | TCP keep-alive options, Nothing to skip enabling keep-alive
     tcpKeepAlive :: Maybe KeepAliveOpts,
     -- | period for SMP ping commands (microseconds, 0 to disable)
@@ -230,7 +230,7 @@ defaultNetworkConfig =
       sessionMode = TSMUser,
       tcpConnectTimeout = 20_000_000,
       tcpTimeout = 15_000_000,
-      tcpTimeoutPerKb = 45_000, -- 45ms, should be less than 130ms to avoid Int overflow on 32 bit systems
+      tcpTimeoutPerKb = 5_000,
       tcpKeepAlive = Just defaultKeepAliveOpts,
       smpPingInterval = 600_000_000, -- 10min
       smpPingCount = 3,
@@ -239,7 +239,7 @@ defaultNetworkConfig =
 
 transportClientConfig :: NetworkConfig -> TransportClientConfig
 transportClientConfig NetworkConfig {socksProxy, tcpKeepAlive, logTLSErrors} =
-  TransportClientConfig {socksProxy, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing}
+  TransportClientConfig {socksProxy, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, alpn = Nothing}
 {-# INLINE transportClientConfig #-}
 
 -- | protocol client configuration.

@@ -22,7 +22,7 @@ import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description (kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
-import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..), XFTPErrorType (..))
+import Simplex.FileTransfer.Transport (XFTPErrorType (..), XFTPRcvChunkSpec (..))
 import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -219,7 +219,8 @@ testFileChunkExpiration = withXFTPServerCfg testXFTPServerConfig {fileExpiration
 testInactiveClientExpiration :: Expectation
 testInactiveClientExpiration = withXFTPServerCfg testXFTPServerConfig {inactiveClientExpiration} $ \_ -> runRight_ $ do
   disconnected <- newEmptyTMVarIO
-  c <- ExceptT $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig (\_ -> atomically $ putTMVar disconnected ())
+  g <- liftIO C.newRandom
+  c <- ExceptT $ getXFTPClient g (1, testXFTPServer, Nothing) testXFTPClientConfig (\_ -> atomically $ putTMVar disconnected ())
   pingXFTP c
   liftIO $ do
     threadDelay 100000

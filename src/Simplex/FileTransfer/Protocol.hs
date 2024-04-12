@@ -25,7 +25,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
-import Simplex.FileTransfer.Transport (VersionXFTP, XFTPErrorType (..), XFTPVersion, pattern VersionXFTP, xftpClientHandshake)
+import Simplex.FileTransfer.Transport (XFTPErrorType (..), XFTPVersion, xftpClientHandshakeStub)
 import Simplex.Messaging.Client (authTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -57,9 +57,6 @@ import Simplex.Messaging.Protocol
   )
 import Simplex.Messaging.Transport (THandleParams (..), TransportError (..))
 import Simplex.Messaging.Util ((<$?>))
-
-currentXFTPVersion :: VersionXFTP
-currentXFTPVersion = VersionXFTP 1
 
 xftpBlockSize :: Int
 xftpBlockSize = 16384
@@ -144,7 +141,7 @@ instance FilePartyI p => ProtocolMsgTag (FileCommandTag p) where
 instance Protocol XFTPVersion XFTPErrorType FileResponse where
   type ProtoCommand FileResponse = FileCmd
   type ProtoType FileResponse = 'PXFTP
-  protocolClientHandshake = xftpClientHandshake
+  protocolClientHandshake = xftpClientHandshakeStub
   protocolPing = FileCmd SFRecipient PING
   protocolError = \case
     FRErr e -> Just e
@@ -329,9 +326,9 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
   _ -> Nothing
 
 xftpEncodeAuthTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion -> C.APrivateAuthKey -> Transmission c -> Either TransportError ByteString
-xftpEncodeAuthTransmission thParams pKey (corrId, fId, msg) = do
+xftpEncodeAuthTransmission thParams@THandleParams {thAuth} pKey (corrId, fId, msg) = do
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, fId, msg)
-  xftpEncodeBatch1 . (,tToSend) =<< authTransmission Nothing (Just pKey) corrId tForAuth
+  xftpEncodeBatch1 . (,tToSend) =<< authTransmission thAuth (Just pKey) corrId tForAuth
 
 xftpEncodeTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion -> Transmission c -> Either TransportError ByteString
 xftpEncodeTransmission thParams (corrId, fId, msg) = do
