@@ -154,33 +154,33 @@ testSecretBox = it "should encrypt / decrypt string with a random symmetric key"
         plain = C.sbDecrypt k nonce =<< cipher
      in isRight cipher && cipher /= plain && Right b == plain
 
-testLazySecretBox :: Spec
-testLazySecretBox = it "should lazily encrypt / decrypt string with a random symmetric key" . ioProperty $ do
-  g <- C.newRandom
-  k <- atomically $ C.randomSbKey g
-  nonce <- atomically $ C.randomCbNonce g
-  pure $ \(s, pad) ->
-    let b = LE.encodeUtf8 $ LT.pack s
-        len = LB.length b
-        pad' = min (abs pad) 100000
-        paddedLen = len + pad' + 8
-        cipher = LC.sbEncrypt k nonce b len paddedLen
-        plain = LC.sbDecrypt k nonce =<< cipher
-     in isRight cipher && cipher /= plain && Right b == plain
+-- testLazySecretBox :: Spec
+-- testLazySecretBox = it "should lazily encrypt / decrypt string with a random symmetric key" . ioProperty $ do
+--   g <- C.newRandom
+--   k <- atomically $ C.randomSbKey g
+--   nonce <- atomically $ C.randomCbNonce g
+--   pure $ \(s, pad) ->
+--     let b = LE.encodeUtf8 $ LT.pack s
+--         len = LB.length b
+--         pad' = min (abs pad) 100000
+--         paddedLen = len + pad' + 8
+--         cipher = LC.sbEncrypt k nonce b len paddedLen
+--         plain = LC.sbDecrypt k nonce =<< cipher
+--      in isRight cipher && cipher /= plain && Right b == plain
 
-testLazySecretBoxFile :: Spec
-testLazySecretBoxFile = it "should lazily encrypt / decrypt file with a random symmetric key" $ do
-  g <- C.newRandom
-  k <- atomically $ C.randomSbKey g
-  nonce <- atomically $ C.randomCbNonce g
-  let f = "tests/tmp/testsecretbox"
-      paddedLen = 4 * 1024 * 1024
-      len = 4 * 1000 * 1000 :: Int64
-      s = LC.fastReplicate len 'a'
-  Right s' <- pure $ LC.sbEncrypt k nonce s len paddedLen
-  LB.writeFile (f <> ".encrypted") s'
-  Right s'' <- LC.sbDecrypt k nonce <$> LB.readFile (f <> ".encrypted")
-  s'' `shouldBe` s
+-- testLazySecretBoxFile :: Spec
+-- testLazySecretBoxFile = it "should lazily encrypt / decrypt file with a random symmetric key" $ do
+--   g <- C.newRandom
+--   k <- atomically $ C.randomSbKey g
+--   nonce <- atomically $ C.randomCbNonce g
+--   let f = "tests/tmp/testsecretbox"
+--       paddedLen = 4 * 1024 * 1024
+--       len = 4 * 1000 * 1000 :: Int64
+--       s = LC.fastReplicate len 'a'
+--   Right s' <- pure $ LC.sbEncrypt k nonce s len paddedLen
+--   LB.writeFile (f <> ".encrypted") s'
+--   Right s'' <- LC.sbDecrypt k nonce <$> LB.readFile (f <> ".encrypted")
+--   s'' `shouldBe` s
 
 testLazySecretBoxTailTag :: Spec
 testLazySecretBoxTailTag = it "should lazily encrypt / decrypt string with a random symmetric key (tail tag)" . ioProperty $ do

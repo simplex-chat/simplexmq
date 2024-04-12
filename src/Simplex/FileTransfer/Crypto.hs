@@ -57,9 +57,9 @@ decryptChunks :: Int64 -> [FilePath] -> C.SbKey -> C.CbNonce -> (String -> Excep
 decryptChunks _ [] _ _ _ = throwError $ FTCEInvalidHeader "empty"
 decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse chPaths of
   [] -> do
-    (!authOk, !f) <- liftEither . first FTCECryptoError . LC.sbDecryptTailTag key nonce (encSize - authTagSize) =<< liftIO (LB.readFile chPath)
+    (!authOk, f) <- liftEither . first FTCECryptoError . LC.sbDecryptTailTag key nonce (encSize - authTagSize) =<< liftIO (LB.readFile chPath)
     unless authOk $ throwError FTCEInvalidAuthTag
-    (FileHeader {fileName}, !f') <- parseFileHeader f
+    (FileHeader {fileName}, f') <- parseFileHeader f
     destFile <- withExceptT FTCEFileIOError $ getDestFile fileName
     CF.writeFile destFile f'
     pure destFile
@@ -79,24 +79,33 @@ decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse ch
       decryptFirstChunk = do
         sb <- liftEitherWith FTCECryptoError $ LC.sbInit key nonce
         ch <- liftIO $ LB.readFile chPath
-        let (ch1, !sb') = LC.sbDecryptChunkLazy sb ch
+        -- let (ch1, !sb') = LC.sbDecryptChunkLazy sb ch
+        sbFin <- newEmptyMVar
+        ch1 <- LC.secretBoxLazyM (\st -> pure . LC.sbDecryptChunk st) (putMVar sbFin) sb ch
         (!expectedLen, ch2) <- liftEitherWith FTCECryptoError $ LC.splitLen ch1
         let len1 = LB.length ch2
+        sb' <- takeMVar sbFin
         pure ((sb', len1), expectedLen, ch2)
       decryptChunk h (!sb, !len) chPth = do
         ch <- LB.readFile chPth
+        sbFin <- newEmptyMVar
+        ch' <- LC.secretBoxLazyM (\st -> pure . LC.sbDecryptChunk st) (putMVar sbFin) sb ch
         let len' = len + LB.length ch
-            (ch', sb') = LC.sbDecryptChunkLazy sb ch
+            -- (ch', sb') = LC.sbDecryptChunkLazy sb ch
         CF.hPut h ch'
+        sb' <- takeMVar sbFin
         pure (sb', len')
       decryptLastChunk h (!sb, !len) expectedLen = do
         ch <- LB.readFile lastPath
         let (ch1, tag') = LB.splitAt (LB.length ch - authTagSize) ch
             tag'' = LB.toStrict tag'
-            (ch2, sb') = LC.sbDecryptChunkLazy sb ch1
-            len' = len + LB.length ch2
+            -- (ch2, sb') = LC.sbDecryptChunkLazy sb ch1
+        sbFin <- newEmptyMVar
+        ch2 <- LC.secretBoxLazyM (\st -> pure . LC.sbDecryptChunk st) (putMVar sbFin) sb ch1
+        let len' = len + LB.length ch2
             ch3 = LB.take (LB.length ch2 - len' + expectedLen) ch2
-            tag :: ByteString = BA.convert (LC.sbAuth sb')
+        sb' <- takeMVar sbFin
+        let tag :: ByteString = BA.convert (LC.sbAuth sb')
         CF.hPut h ch3
         CF.hPutTag h
         pure $ B.length tag'' == 16 && BA.constEq tag'' tag

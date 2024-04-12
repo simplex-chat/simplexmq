@@ -750,6 +750,7 @@ benchmark simplexmq-bench
       Bench.Base64
       Bench.BsConcat
       Bench.Compression
+      Bench.Crypto.Lazy
       Bench.SNTRUP761
       Bench.TRcvQueues
       Paths_simplexmq

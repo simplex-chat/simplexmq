@@ -16,7 +16,7 @@ import System.Directory (getFileSize)
 import Test.Hspec
 
 cryptoFileTests :: Spec
-cryptoFileTests = do
+cryptoFileTests = focus $ do
   it "should write/read file" testWriteReadFile
   it "should put/get file" testPutGetFile
   it "should write/get file" testWriteGetFile

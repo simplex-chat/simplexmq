@@ -11,6 +11,7 @@ module Main where
 import Bench.Base64
 import Bench.BsConcat
 import Bench.Compression
+import Bench.Crypto.Lazy
 import Bench.SNTRUP761
 import Bench.TRcvQueues
 import Test.Tasty.Bench
@@ -22,5 +23,6 @@ main =
       bgroup "SNTRUP761" benchSNTRUP761,
       bgroup "Compression" benchCompression,
       bgroup "BsConcat" benchBsConcat,
-      bgroup "Base64" benchBase64
+      bgroup "Base64" benchBase64,
+      bgroup "CryptoLazy" benchCryptoLazy
     ]
