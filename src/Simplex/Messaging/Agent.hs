@@ -419,15 +419,18 @@ getNetworkConfig = fmap snd . readTVarIO . useNetworkConfig
 {-# INLINE getNetworkConfig #-}
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()
-setUserNetworkInfo c@AgentClient {userNetworkState} UserNetworkInfo {networkType = nt'} = withAgentEnv' c $ do
+setUserNetworkInfo c@AgentClient {userNetworkState} UserNetworkInfo {networkType = nt', online} = withAgentEnv' c $ do
   d <- asks $ initialInterval . userNetworkInterval . config
   ts <- liftIO getCurrentTime
   atomically $ do
-    ns@UserNetworkState {networkType = nt} <- readTVar userNetworkState
-    when (nt' /= nt) $
-      writeTVar userNetworkState $! case nt' of
-        UNNone -> ns {networkType = nt', offline = Just UNSOffline {offlineDelay = d, offlineFrom = ts}}
-        _ -> ns {networkType = nt', offline = Nothing}
+    ns@UserNetworkState {networkType = nt, offline} <- readTVar userNetworkState
+    when (nt' /= nt || offline' /= isJust offline) $
+      writeTVar userNetworkState $!
+        if nt' == UNNone || offline'
+          then ns {networkType = nt', offline = Just UNSOffline {offlineDelay = d, offlineFrom = ts}}
+          else ns {networkType = nt', offline = Nothing}      
+  where
+    offline' = not online
 
 reconnectAllServers :: AgentClient -> IO ()
 reconnectAllServers c = do
