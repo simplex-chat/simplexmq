@@ -213,7 +213,8 @@ smpServerCLI cfgPath logPath =
                 defaultTransportServerConfig
                   { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
                   },
-              controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini
+              controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini,
+              allowSMPProxy = True -- TODO: "get from INI"
             }
 
 data CliCommand

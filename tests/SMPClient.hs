@@ -73,7 +73,11 @@ testSMPClient = testSMPClientVR supportedClientSMPRelayVRange
 testSMPClientVR :: Transport c => VersionRangeSMP -> (THandleSMP c -> IO a) -> IO a
 testSMPClientVR vr client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
-  runTransportClient defaultTransportClientConfig Nothing useHost testPort (Just testKeyHash) $ \h -> do
+  testSMPClient_ useHost testPort vr client
+
+testSMPClient_ :: Transport c => TransportHost -> ServiceName -> VersionRangeSMP -> (THandleSMP c -> IO a) -> IO a
+testSMPClient_ host port vr client = do
+  runTransportClient defaultTransportClientConfig Nothing host port (Just testKeyHash) $ \h -> do
     g <- C.newRandom
     ks <- atomically $ C.generateKeyPair g
     runExceptT (smpClientHandshake h ks testKeyHash vr) >>= \case
@@ -107,11 +111,15 @@ cfg =
       certificateFile = "tests/fixtures/server.crt",
       smpServerVRange = supportedServerSMPRelayVRange,
       transportConfig = defaultTransportServerConfig,
-      controlPort = Nothing
+      controlPort = Nothing,
+      allowSMPProxy = False
     }
 
 cfgV7 :: ServerConfig
 cfgV7 = cfg {smpServerVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}
+
+proxyCfg :: ServerConfig
+proxyCfg = cfg { allowSMPProxy = True }
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}

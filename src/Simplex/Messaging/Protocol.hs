@@ -188,7 +188,9 @@ import Data.String
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import Data.Word (Word16)
+import qualified Data.X509 as X
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
+import qualified GHC.TypeLits as TE
 import Network.Socket (ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -359,6 +361,17 @@ data Command (p :: Party) where
   PING :: Command Sender
   -- SMP notification subscriber commands
   NSUB :: Command Notifier
+  PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender -- request a relay server connection by URI
+  -- Transmission to proxy:
+  -- - entity ID: ID of the session with relay returned in PKEY (response to PRXY)
+  -- - corrId: also used as a nonce to encrypt transmission to relay, corrId + 1 - from relay
+  -- - key (1st param in the command) is used to agree DH secret for this particular transmission and its response
+  -- Encrypted transmission should include session ID (tlsunique) from proxy-relay connection.
+  PFWD :: C.PublicKeyX25519 -> EncTransmission -> Command Sender -- use CorrId as CbNonce, client to proxy
+  -- Transmission forwarded to relay:
+  -- - entity ID: empty
+  -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
+  RFWD :: EncFwdTransmission -> Command Sender -- use CorrId as CbNonce, proxy to relay
 
 deriving instance Show (Command p)
 
@@ -384,6 +397,18 @@ instance Encoding SubscriptionMode where
       'C' -> pure SMOnlyCreate
       _ -> fail "bad SubscriptionMode"
 
+newtype EncTransmission = EncTransmission ByteString
+  deriving (Show)
+
+data FwdTransmission = FwdTransmission
+  { fwdCorrId :: ByteString,
+    fwdKey :: C.PublicKeyX25519,
+    fwdTransmission :: ByteString
+  }
+
+newtype EncFwdTransmission = EncFwdTransmission ByteString
+  deriving (Show)
+
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
   IDS :: QueueIdsKeys -> BrokerMsg
@@ -393,6 +418,10 @@ data BrokerMsg where
   MSG :: RcvMessage -> BrokerMsg
   NID :: NotifierId -> RcvNtfPublicDhKey -> BrokerMsg
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
+  -- Should include certificate chain
+  PKEY :: X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
+  RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
+  PRES :: EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
@@ -403,6 +432,17 @@ data RcvMessage = RcvMessage
   { msgId :: MsgId,
     msgBody :: EncRcvMsgBody -- e2e encrypted, with extra encryption for recipient
   }
+  deriving (Eq, Show)
+
+newtype EncFwdResponse = EncFwdResponse ByteString
+  deriving (Eq, Show)
+
+data FwdResponse = FwdResponse
+  { fwdCorrId :: ByteString,
+    fwdResponse :: ByteString
+  }
+
+newtype EncResponse = EncResponse ByteString
   deriving (Eq, Show)
 
 -- | received message without server/recipient encryption
@@ -567,6 +607,9 @@ data CommandTag (p :: Party) where
   DEL_ :: CommandTag Recipient
   SEND_ :: CommandTag Sender
   PING_ :: CommandTag Sender
+  PRXY_ :: CommandTag Sender
+  PFWD_ :: CommandTag Sender
+  RFWD_ :: CommandTag Sender
   NSUB_ :: CommandTag Notifier
 
 data CmdTag = forall p. PartyI p => CT (SParty p) (CommandTag p)
@@ -580,6 +623,9 @@ data BrokerMsgTag
   | MSG_
   | NID_
   | NMSG_
+  | PKEY_
+  | RRES_
+  | PRES_
   | END_
   | OK_
   | ERR_
@@ -607,6 +653,9 @@ instance PartyI p => Encoding (CommandTag p) where
     DEL_ -> "DEL"
     SEND_ -> "SEND"
     PING_ -> "PING"
+    PRXY_ -> "PRXY"
+    PFWD_ -> "PFWD"
+    RFWD_ -> "RFWD"
     NSUB_ -> "NSUB"
   smpP = messageTagP
 
@@ -623,6 +672,9 @@ instance ProtocolMsgTag CmdTag where
     "DEL" -> Just $ CT SRecipient DEL_
     "SEND" -> Just $ CT SSender SEND_
     "PING" -> Just $ CT SSender PING_
+    "PRXY" -> Just $ CT SSender PRXY_
+    "PFWD" -> Just $ CT SSender PFWD_
+    "RFWD" -> Just $ CT SSender RFWD_
     "NSUB" -> Just $ CT SNotifier NSUB_
     _ -> Nothing
 
@@ -639,6 +691,9 @@ instance Encoding BrokerMsgTag where
     MSG_ -> "MSG"
     NID_ -> "NID"
     NMSG_ -> "NMSG"
+    PKEY_ -> "PKEY"
+    RRES_ -> "RRES"
+    PRES_ -> "PRES"
     END_ -> "END"
     OK_ -> "OK"
     ERR_ -> "ERR"
@@ -651,6 +706,9 @@ instance ProtocolMsgTag BrokerMsgTag where
     "MSG" -> Just MSG_
     "NID" -> Just NID_
     "NMSG" -> Just NMSG_
+    "PKEY" -> Just PKEY_
+    "RRES" -> Just RRES_
+    "PRES" -> Just PRES_
     "END" -> Just END_
     "OK" -> Just OK_
     "ERR" -> Just ERR_
@@ -829,7 +887,7 @@ type family UserProtocol (p :: ProtocolType) :: Constraint where
   UserProtocol PSMP = ()
   UserProtocol PXFTP = ()
   UserProtocol a =
-    (Int ~ Bool, TypeError (Text "Servers for protocol " :<>: ShowType a :<>: Text " cannot be configured by the users"))
+    (Int ~ Bool, TypeError (TE.Text "Servers for protocol " :<>: ShowType a :<>: TE.Text " cannot be configured by the users"))
 
 userProtocol :: SProtocolType p -> Maybe (Dict (UserProtocol p))
 userProtocol = \case
@@ -1046,6 +1104,8 @@ data ErrorType
     NO_MSG
   | -- | sent message is too large (> maxMessageLength = 16088 bytes)
     LARGE_MSG
+  | -- | relay public key is expired
+    EXPIRED
   | -- | internal server error
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
@@ -1135,6 +1195,9 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
+    PRXY host auth_ -> e (PRXY_, ' ', strEncode host, ' ', auth_)
+    PFWD {} -> error "TODO: e (PFWD_,,)"
+    RFWD {} -> error "TODO: e (RFWD_,,)"
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -1156,6 +1219,9 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
       | otherwise -> Right cmd
     -- PING must not have queue ID or signature
     PING
+      | isNothing auth && B.null queueId -> Right cmd
+      | otherwise -> Left $ CMD HAS_AUTH
+    PRXY {}
       | isNothing auth && B.null queueId -> Right cmd
       | otherwise -> Left $ CMD HAS_AUTH
     -- other client commands must have both signature and queue ID
@@ -1189,6 +1255,10 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
       Cmd SSender <$> case tag of
         SEND_ -> SEND <$> _smpP <*> (unTail <$> _smpP)
         PING_ -> pure PING
+        PFWD_ -> error "TODO: PFWD_"
+        RFWD_ -> error "TODO: RFWD_"
+        PRXY_ -> PRXY <$> (_smpP >>= either fail pure . strDecode) <*> _smpP
+
     CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
@@ -1204,6 +1274,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
+    PKEY cert key -> e (PKEY_, ' ', C.encodeCertChain cert, C.SignedObject key)
+    RRES (EncFwdResponse encBlock) -> e (RRES_, ' ', Tail encBlock)
+    PRES (EncResponse encBlock) -> e (PRES_, ' ', Tail encBlock)
     END -> e END_
     OK -> e OK_
     ERR err -> e (ERR_, ' ', err)
@@ -1221,6 +1294,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     IDS_ -> IDS <$> (QIK <$> _smpP <*> smpP <*> smpP)
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
+    PKEY_ -> PKEY <$> (A.space *> C.certChainP) <*> (C.getSignedExact <$> smpP)
+    RRES_ -> RRES <$> (EncFwdResponse . unTail <$> _smpP)
+    PRES_ -> PRES <$> (EncResponse . unTail <$> _smpP)
     END_ -> pure END
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
@@ -1270,6 +1346,7 @@ instance Encoding ErrorType where
     CMD err -> "CMD " <> smpEncode err
     AUTH -> "AUTH"
     QUOTA -> "QUOTA"
+    EXPIRED -> "EXPIRED"
     NO_MSG -> "NO_MSG"
     LARGE_MSG -> "LARGE_MSG"
     INTERNAL -> "INTERNAL"
@@ -1282,6 +1359,7 @@ instance Encoding ErrorType where
       "CMD" -> CMD <$> _smpP
       "AUTH" -> pure AUTH
       "QUOTA" -> pure QUOTA
+      "EXPIRED" -> pure EXPIRED
       "NO_MSG" -> pure NO_MSG
       "LARGE_MSG" -> pure LARGE_MSG
       "INTERNAL" -> pure INTERNAL

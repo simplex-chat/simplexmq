@@ -524,6 +524,9 @@ verifyTransmission auth_ tAuth authorized queueId cmd =
     Cmd SSender PING -> pure $ VRVerified Nothing
     -- NSUB will not be accepted without authorization
     Cmd SNotifier NSUB -> verifyQueue (\q -> maybe dummyVerify (Just q `verifiedWith`) (notifierKey <$> notifier q)) <$> get SNotifier
+    Cmd SSender PRXY {} -> pure $ VRVerified Nothing
+    Cmd SSender PFWD {} -> pure $ VRVerified Nothing
+    Cmd SSender RFWD {} -> pure $ VRVerified Nothing
   where
     verify = verifyCmdAuthorization auth_ tAuth authorized
     dummyVerify = verify (dummyAuthKey tAuth) `seq` VRFailed
@@ -597,6 +600,17 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
           case command of
             SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
             PING -> pure (corrId, "", PONG)
+            PRXY relay auth ->
+              ifM
+                allowProxy
+                (setupProxy relay)
+                (pure (corrId, queueId, ERR AUTH))
+              where
+                allowProxy = do
+                  ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
+                  pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
+            PFWD _dhPub _encBlock -> error "TODO: processCommand.PFWD"
+            RFWD _encBlock -> error "TODO: processCommand.RFWD"
         Cmd SNotifier NSUB -> subscribeNotifications
         Cmd SRecipient command ->
           case command of
@@ -921,6 +935,15 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
           atomically (deleteQueue st queueId $>>= \q -> delMsgQueue ms queueId $> Right q) >>= \case
             Right q -> updateDeletedStats q $> ok
             Left e -> pure $ err e
+
+        setupProxy :: SMPServer -> M (Transmission BrokerMsg)
+        setupProxy todo'relay = undefined
+          -- do
+          -- let relaySessionId = "TODO: relaySessionId"
+          -- (dummyRelayDhPublic, _) <- atomically . C.generateKeyPair =<< asks random
+          -- (_, dummySignKey) <- atomically . C.generateKeyPair =<< asks random
+          -- let dummyRelayKeySignature = C.sign' dummySignKey $ smpEncode dummyRelayDhPublic
+          -- pure (corrId, relaySessionId, PKEY dummyRelayDhPublic dummyRelayKeySignature)
 
         ok :: Transmission BrokerMsg
         ok = (corrId, queueId, OK)

@@ -2,9 +2,9 @@
 
 ## Problem
 
-SMP protocol relays are chosen and can be controlled by the message recipients. It means that the recipients can find out IP addresses of message senders by modifying SMP relay code (or by using proxies and timing correlation), unless the senders use VPN or some overlay network. Tor is an audequate solution in most cases to mitigate it, but it requires additional technical knowledge to install and configure (even installing Orbot on Android is seen as "complex" by many users), and reduces usability because of higher latency.
+SMP protocol relays are chosen and can be controlled by the message recipients. It means that the recipients can find out IP addresses of message senders by modifying SMP relay code (or by using proxies and timing correlation), unless the senders use VPN or some overlay network. Tor is an adequate solution in most cases to mitigate it, but it requires additional technical knowledge to install and configure (even installing Orbot on Android is seen as "complex" by many users), and reduces usability because of higher latency.
 
-The lack of in-built IP address protection is the main concern of many users, particularly given that most people do not realise that it is lacking by default - without transport protection SimpleX is not perceived as a "whole product".
+The lack of in-built IP address protection is the main concern of many users, particularly given that most people do not realize that it is lacking by default - without transport protection SimpleX is not perceived as a "whole product".
 
 Similarly, XFTP protocol relays are chosen by senders, and they can be used to detect file recipients' IP addresses.
 
@@ -43,7 +43,7 @@ Overall, this is not a viable or even appropriate option for the current stage.
 
 3. SMP / XFTP proxy.
 
-Introduce SMP and XFTP protocol extenstions to allow message senders and file recipients to delegate the tasks of sending messages and receiving files to the proxies, so that peer-chosen relays can only observe IP addresses of the proxies and not of the users.
+Introduce SMP and XFTP protocol extensions to allow message senders and file recipients to delegate the tasks of sending messages and receiving files to the proxies, so that peer-chosen relays can only observe IP addresses of the proxies and not of the users.
 
 Pros:
 - no dependency on and lower latency than via Tor
@@ -68,7 +68,7 @@ Below considers this design.
 
 2. SMP proxy should not be able to observe queue addresses and their count on the destination relays. This requirement is not needed for XFTP proxies, as each file chunk is downloaded only once, so there is no need to hide its address.
 
-3. There must be no identifiers and cyphertext in common in outgoing and incoming traffic inside TLS (the current designs have this quality).
+3. There must be no identifiers and ciphertext in common in outgoing and incoming traffic inside TLS (the current designs have this quality).
 
 4. Traffic between the client and destination relays must be e2e encrypted, with MITM-by-proxy mitigated, relying on the relay identity (certificate fingerprint), ideally without any additional fingerprint in relay address.
 
@@ -97,11 +97,11 @@ This would also reduce the difference in how the traffic looks to the observer -
 
 The flow of the messages will be:
 
-1. Client requests proxy to create session with the relay by sending `server` command with the SMP relay address and optional proxy basic AUTH (below). It should be possible to batch multiple session requests into one block, to reduce traffic.
+1. Client requests proxy to create session with the relay by sending `PRXY` command with the SMP relay address and optional proxy basic AUTH (below). It should be possible to batch multiple session requests into one block, to reduce traffic.
 
-2. Proxy connects to SMP relay, negotiating a shared secret in the handshake that will be used to encrypt all sender blocks inside TLS (proxy-relay encryption). SMP relay also returns in handshake its temporary DH key to agree e2e encryption with the client (sender-relay encryption, to hide metadata sent to the destination relay from proxy).
+2. Proxy connects to SMP relay, negotiating a shared secret via a handshake headers - it will be used to encrypt all sender blocks inside TLS (proxy-relay encryption). DH key returned by SMP relay in handshake will also be used to encrypt client commands, combining it with random per-command keys (sender-relay encryption, to hide metadata sent to the destination relay from proxy).
 
-3. Proxy replies with `server_id` command including relay session ID to identify it in further requests, relay DH key for e2e encryption with the client - this key is signed with the TLS online private key associated with the certificate (its fingerprint is included in the relay address), and the TLS session ID between proxy and relay (this session ID must be used in transmissions, to mitigate replay attacks as before).
+3. Proxy replies to sender with `PKEY` message using "entityId" transmission field to indicate session ID for using in further requests, relay DH key for _s2r_ encryption with the client - this key is signed with the TLS online private key associated with the certificate (its fingerprint is included in the relay address), and the TLS session ID between proxy and relay (this session ID must be used in transmissions, to mitigate replay attacks as before).
 
 A possible attack here is that proxy can use this TLS session to replay commands received from the client. Possibly, it could be mitigated with a bloom filter per proxy/SMP relay connection that would reject the repeated DH keys (that need to be used for replay), and also with DH key expiration (this mitigation should allow some acceptable rate of false positives from the bloom filter).
 
@@ -113,11 +113,11 @@ It is important that the same public key from destination relay is returned to a
 
 *Unrelated cosideration for SMP protocol privacy improvement*: instead of signing commands to the destination relay, the sender could have a ratchet per queue agreed with the destination relay that would simply use authenticated encryption with per-message symmetric key to encrypt the message on the way to relay, and this encryption would be used as a proof of sender.
 
-4. Now the client sends `forward` to proxy, which it then forwards to SMP relay, applying additional encryption layer.
+4. Now the client sends `PFWD` to proxy, which it then forwards to SMP relay as `RFWD`, applying _p2r_ encryption layer.
 
-5. SMP relay sends `response` to proxy applying additional encryption layer, which it then forwards to the client removing the additional encryption layer.
+5. SMP relay sends `RRES` to proxy applying _p2r_ encryption layer, which it then forwards to the client as `PRES`, removing the _p2r_ encryption layer.
 
-Effectively it works as a simplified two-hop onion routing with the first relay (proxy) chosen by the sending client and the second relay chosen by the recipient, not only protecting senders' IP addresses from the recipients' relays, but also preventing recipients relays from correlating senders' traffic to different queues, as TLS session is owned by the proxy now and it mixes the traffic from multiple senders. To correlate traffic to users, proxy and relay would have to combine their information. SMP relays are still able to correlate traffic to receiving users via transport session.
+Effectively it works as a simplified two-hop onion routing with the first relay (proxy) chosen by the sending client and the second relay chosen by the recipient, not only protecting senders' IP addresses from the recipients' relays, but also preventing recipients' relays from correlating senders' traffic to different queues, as TLS session is owned by the proxy now and it mixes the traffic from multiple senders. To correlate traffic to users, proxy and relay would have to combine their information. SMP relays are still able to correlate traffic to receiving users via transport session.
 
 Sequence diagram for sending the message via SMP proxy:
 
@@ -126,33 +126,33 @@ Sequence diagram for sending the message via SMP proxy:
 |  sending  |               |    SMP    |                     |    SMP    |              | receiving |
 |  client   |               |   proxy   |                     |   relay   |              |  client   |
 -------------               -------------                     -------------              -------------
-     |       `server`             |                                 |                          |
-     | -------------------------> |   create TLS session, get keys  |                          |
+     |           `PRXY`           |                                 |                          |
+     | -------------------------> |                                 |                          |
      |                            | ------------------------------> |                          |
-     |        `server_id`         |       (if doesn't exist)        |                          |
+     |                            |          SMP handshake          |                          |
+     |                            | <------------------------------ |                          |
+     |           `PKEY`           |                                 |                          |
      | <------------------------- |                                 |                          |
      |                            |                                 |                          |
-     | TLS(F:s2r(SEND(e2e(msg)))) |                                 |                          |
-     | -------------------------> | TLS(F:p2r(s2r(SEND(e2e(msg))))) |                          |
+     |        `PFWD` (s2r)        |                                 |                          |
+     | -------------------------> |                                 |                          |
+     |                            |           `RFWD` (p2r)          |                          |
      |                            | ------------------------------> |                          |
-     |                            |                                 |                          |
-     |                            |     TLS(R:p2r(s2r(OK/ERR)))     |                          |
-     |     TLS(R:s2r(OK/ERR))     | <------------------------------ |                          |
-     | <------------------------- |                                 | TLS(MSG(r2c(e2e(msg))))  |
-     |                            |                                 | -----------------------> |
-     |                            |                                 |                          |
-     |                            |                                 |        TLS(ACK)          |
+     |                            |           `RRES` (p2r)          |                          |
+     |                            | <------------------------------ |                          |
+     |        `PRES` (s2r)        |                                 |           `MSG`          |
+     | <------------------------- |                                 | -----------------------> |
+     |                            |                                 |           `ACK`          |
      |                            |                                 | <----------------------- |
      |                            |                                 |                          |
      |                            |                                 |                          |
-
 ```
 
-Below diagram shows the encrypttion layers for `forward` and `response` commands:
+Below diagram shows the encrypttion layers for `PFWD`/`RFWD` commands and `RRES`/`PRES` responses:
 
-- s2r (added) - encryption between client and SMP relay, with relay key returned in server_id command, with MITM by proxy mitigated by verifying the certificate fingerprint included in the relay address.
+- s2r (added) - encryption between client and SMP relay, with relay key returned in relay handshake, with MITM by proxy mitigated by verifying the certificate fingerprint included in the relay address.
 - e2e (exists now) - end-to-end encryption per SMP queue, with double ratchet e2e encryption inside it.
-- p2r (added) - additional encryption between proxy and SMP relay with key agreed in the handshake, to mitigate traffic correlation inside TLS. This key could also be signed by the same certificate, if we don't want to rely on TLS security.
+- p2r (added) - additional encryption between proxy and SMP relay with the shared secret agreed in the handshake, to mitigate traffic correlation inside TLS.
 - r2c (exists now) additional encryption between SMP relay and client to prevent traffic correlation inside TLS.
 
 ```
@@ -167,27 +167,32 @@ Below diagram shows the encrypttion layers for `forward` and `response` commands
 -----------------             -----------------  -- TLS --  -----------------             -----------------
 ```
 
-When proxy connects to SMP relay it would indicate in the handshake that it will use proxy protocol and the SMP relay would expect the same `forward` commands and reply with `response`s.
+Question: should proxy declare its role in handshake? When proxy connects to SMP relay it would indicate in the handshake that it will act as a proxy and the SMP relay would expect the same `forward` commands and reply with `response`s.
 
-Below syntax aims to fit in 16kb block using spare capacity in SMP protocol.
+Common SMP transmission format (v4), for reference:
 
 ```abnf
-proxy_block = padded(proxy_transmission, 16384)
-proxy_transmission = corr_id relay_session_id proxy_command
-corr_id = length *8 OCTET
-proxy_command = server / server_id / forward / response / error
-server = "S" address [relay_basic_auth] ; creates transport session between proxy and relay
-server_id = "I" relay_session_id tls_session_id signed_relay_key ;
-    ; session_id is the TLS session ID between proxy and relay, it has to be included inside encrypted block to prevent replay attacks
-forward = %s"F" random_dh_pub_key encrypted_block ; it's important that a new key is used for each command, to prevent any correlation by proxy or by destination relay
-response = %s"R" encrypted_block; response received from the destination SMP relay
-relay_session_id = length *8 OCTET
-error = %s"E" error
+paddedTransmission = <padded(transmission), 16384>
+transmission = signature signed
+signature = 0 ; empty signatures here
+signed = sessionIdentifier corrId entityId (smpCommand / brokerMsg)
 ```
 
-The overhead is: 1+8 (corrId) + 1+8 (relay_session_id) + 1 (command) + 1+32 (random_dh_pub_key) + 2 (original length) + 16 (auth tag for e2e encryption) + 16 (auth tag for proxy to relay encryption) = 86 bytes. The reserve for sent messages in SMP is ~84 bytes, so it should about fit with some reduced bytes somewhere.
+- `corrId` is fully random each time and used as a nonce for encrypted blocks.
+- `entityId` carries tlsUniq from the current proxy-to-relay connection.
+- `smpCommand` gets extended with `s2p_command / p2r_command`.
+- `brokerMsg` gets extended with `r_key / r_response`.
 
-Another possible design is to allow mixing sent messages and normal SMP commands in the same transport connection, but it can make fitting in the block a bit harder, additional overhead would be: 1 (transmission count) + 2 (transmission size) + 1 (empty signature) = 4 bytes.
+```abnf
+s2p_command = proxy / forward
+p2r_command = p_handshake ; forward is
+proxy = %s"PRXY" SP relayUri SP basicAuth
+relayUri = length %s"smp://" serverIdentity "@" srvHost [":" port]
+forward = %s"PFWD" SP dhPublic SP encryptedBlock
+r_key = %s"PKEY" SP dhPublic
+r_response = %s"RRES" SP encryptedBlock
+dhPublic = length x509encoded
+```
 
 The above assumes that the client can only send one message to an SMP relay and then has to wait for response before sending the next message. Missing the response would cause re-delivery (further improvement is possible when proxy detects these redelieveries and not send them to relays but simply reply with the same response).
 

@@ -21,6 +21,7 @@ import GHC.IO.Exception (IOException (..))
 import qualified GHC.IO.Exception as IOException
 import NtfServerTests (ntfServerTests)
 import RemoteControl (remoteControlTests)
+import SMPProxyTests (smpProxyTests)
 import ServerTests
 import Simplex.Messaging.Transport (TLS, Transport (..))
 import Simplex.Messaging.Transport.WebSockets (WS)
@@ -59,6 +60,7 @@ main = do
         describe "SMP server via WebSockets" $ serverTests (transport @WS)
         describe "Notifications server" $ ntfServerTests (transport @TLS)
         describe "SMP client agent" $ agentTests (transport @TLS)
+        describe "SMP proxy" smpProxyTests
         describe "XFTP" $ do
           describe "XFTP server" xftpServerTests
           describe "XFTP file description" fileDescriptionTests
