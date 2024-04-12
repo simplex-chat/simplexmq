@@ -2665,17 +2665,17 @@ testWaitForUserNetwork :: HasCallStack => IO ()
 testWaitForUserNetwork = do
   a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
   noNetworkDelay a
-  setUserNetworkInfo a $ UserNetworkInfo UNNone
+  setUserNetworkInfo a $ UserNetworkInfo UNNone False
   networkDelay a 100000
   networkDelay a 150000
   networkDelay a 200000
   networkDelay a 200000
-  setUserNetworkInfo a $ UserNetworkInfo UNCellular
+  setUserNetworkInfo a $ UserNetworkInfo UNCellular True
   noNetworkDelay a
-  setUserNetworkInfo a $ UserNetworkInfo UNNone
+  setUserNetworkInfo a $ UserNetworkInfo UNCellular False
   networkDelay a 100000
   concurrently_
-    (threadDelay 50000 >> setUserNetworkInfo a (UserNetworkInfo UNCellular))
+    (threadDelay 50000 >> setUserNetworkInfo a (UserNetworkInfo UNCellular True))
     (networkDelay a 50000)
   noNetworkDelay a
   where
