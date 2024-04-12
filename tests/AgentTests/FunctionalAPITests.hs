@@ -428,6 +428,7 @@ functionalAPITests t = do
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent t
   describe "user network info" $ do
     it "should wait for user network" testWaitForUserNetwork
+    it "should not reset offline interval while offline" testDoNotResetOfflineInterval
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -2661,7 +2662,7 @@ testServerMultipleIdentities =
           }
         testE2ERatchetParams12
 
-testWaitForUserNetwork :: HasCallStack => IO ()
+testWaitForUserNetwork :: IO ()
 testWaitForUserNetwork = do
   a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
   noNetworkDelay a
@@ -2680,13 +2681,37 @@ testWaitForUserNetwork = do
   noNetworkDelay a
   where
     aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 100000, increaseAfter = 0, maxInterval = 200000}}
-    noNetworkDelay a = (10000 >) <$> waitNetwork a `shouldReturn` True
-    networkDelay a d' = (\d -> d' < d && d < d' + 15000) <$> waitNetwork a `shouldReturn` True
-    waitNetwork a = do
-      t <- getCurrentTime
-      waitForUserNetwork a `runReaderT` agentEnv a
-      t' <- getCurrentTime
-      pure $ diffToMicroseconds $ diffUTCTime t' t
+
+testDoNotResetOfflineInterval :: IO ()
+testDoNotResetOfflineInterval = do
+  a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
+  noNetworkDelay a
+  setUserNetworkInfo a $ UserNetworkInfo UNWifi False
+  networkDelay a 100000
+  networkDelay a 150000
+  setUserNetworkInfo a $ UserNetworkInfo UNCellular False
+  networkDelay a 200000
+  setUserNetworkInfo a $ UserNetworkInfo UNNone False
+  networkDelay a 200000
+  setUserNetworkInfo a $ UserNetworkInfo UNCellular True
+  noNetworkDelay a
+  setUserNetworkInfo a $ UserNetworkInfo UNCellular False
+  networkDelay a 100000
+  where
+    aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 100000, increaseAfter = 0, maxInterval = 200000}}
+
+noNetworkDelay :: AgentClient -> IO ()
+noNetworkDelay a = (10000 >) <$> waitNetwork a `shouldReturn` True
+
+networkDelay :: AgentClient -> Int64 -> IO ()
+networkDelay a d' = (\d -> d' < d && d < d' + 15000) <$> waitNetwork a `shouldReturn` True
+
+waitNetwork :: AgentClient -> IO Int64
+waitNetwork a = do
+  t <- getCurrentTime
+  waitForUserNetwork a `runReaderT` agentEnv a
+  t' <- getCurrentTime
+  pure $ diffToMicroseconds $ diffUTCTime t' t
 
 exchangeGreetings :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetings_ PQEncOn

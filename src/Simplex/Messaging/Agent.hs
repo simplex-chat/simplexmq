@@ -426,7 +426,10 @@ setUserNetworkInfo c@AgentClient {userNetworkState} UserNetworkInfo {networkType
     ns@UserNetworkState {networkType = nt, offline} <- readTVar userNetworkState
     when (nt' /= nt || online /= isNothing offline) $
       writeTVar userNetworkState $!
-        let offline' = if nt' /= UNNone && online then Nothing else Just UNSOffline {offlineDelay = d, offlineFrom = ts}
+        let offline'
+              | nt' /= UNNone && online = Nothing
+              | isJust offline = offline
+              | otherwise = Just UNSOffline {offlineDelay = d, offlineFrom = ts}
          in ns {networkType = nt', offline = offline'}
 
 reconnectAllServers :: AgentClient -> IO ()
