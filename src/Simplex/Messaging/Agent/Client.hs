@@ -405,7 +405,8 @@ data AgentStatsKey = AgentStatsKey
   deriving (Eq, Ord, Show)
 
 data UserNetworkInfo = UserNetworkInfo
-  { networkType :: UserNetworkType
+  { networkType :: UserNetworkType,
+    online :: Bool
   }
   deriving (Show)
 
