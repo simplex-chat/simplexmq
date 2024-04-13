@@ -1,3 +1,22 @@
+# 5.6.2
+
+Version 5.6.2.2.
+
+SMP agent:
+- Lower memory consumption (~20-25%).
+- More stable XFTP file uploads and downloads.
+- API to receive network connectivity changes from the apps.
+- to reduce battery consumption: connection attempts interval growing to every 2 hours when app reports as offline.
+- to reduce retries and traffic: 50% increased timeouts when on mobile network.
+
+XFTP server:
+- expire files on start.
+- version negotiation based on TLS ALPN and handshake.
+
+NTF server:
+- reduced downtime by ~100x faster start time.
+- exclude test tokens from statistics.
+
 # 5.6.1
 
 Version 5.6.1.0.
