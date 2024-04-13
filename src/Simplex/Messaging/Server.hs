@@ -122,11 +122,14 @@ type M a = ReaderT Env IO a
 smpServer :: TMVar Bool -> ServerConfig -> M ()
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   s <- asks server
+  pa <- asks proxyAgent
   expired <- restoreServerMessages
   restoreServerStats expired
   raceAny_
     ( serverThread s "server subscribedQ" subscribedQ subscribers subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ())
+        : smpProxyConnectRelay pa
+        : receiveFromProxyAgent pa
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
     `finally` withLock' (savingLock s) "final" (saveServer False)
@@ -178,6 +181,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
             atomically $ modifyTVar' (endThreads c) $ IM.delete tId
           mkWeakThreadId t >>= atomically . modifyTVar' (endThreads c) . IM.insert tId
           atomically $ TM.lookupDelete qId (clientSubs c)
+
+    smpProxyConnectRelay :: ProxyAgent -> M ()
+    smpProxyConnectRelay ProxyAgent {connectQ} = do
+      -- check for session var for pending session
+      -- if exists - wait
+      -- if doesn't - create session var, and spawn worker
+      forever $ pure ()
+
+    receiveFromProxyAgent :: ProxyAgent -> M ()
+    receiveFromProxyAgent = do
+      forever $ pure ()
 
     expireMessagesThread_ :: ServerConfig -> [M ()]
     expireMessagesThread_ ServerConfig {messageExpiration = Just msgExp} = [expireMessages msgExp]
@@ -957,18 +971,6 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
 
         okResp :: Either ErrorType () -> Transmission BrokerMsg
         okResp = either err $ const ok
-
-smpProxyAgent :: ProxyAgent -> M ()
-smpProxyAgent ProxyAgent {connectQ} = raceAny_ [connectRelay, receiveAgent]
-  where
-    -- check for session var for pending session
-    -- if exists - wait
-    -- if doesn't - create session var, and spawn worker
-    connectRelay :: M ()
-    connectRelay = pure ()
-
-    receiveAgent :: M ()
-    receiveAgent = pure ()
 
 updateDeletedStats :: QueueRec -> M ()
 updateDeletedStats q = do
