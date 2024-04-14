@@ -93,6 +93,7 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
+import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -102,9 +103,12 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
 import Data.Time.Clock (UTCTime (..), getCurrentTime)
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
 import Simplex.Messaging.Protocol
@@ -114,7 +118,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
-import Simplex.Messaging.Util (bshow, raceAny_, threadDelay')
+import Simplex.Messaging.Util (bshow, liftEitherWith, raceAny_, threadDelay')
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
 
@@ -648,24 +652,61 @@ deleteSMPQueues = okSMPCommands DEL
 {-# INLINE deleteSMPQueues #-}
 
 -- TODO picture
+
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
-createSMPProxySession :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO (SessionId, C.PublicKeyX25519)
-createSMPProxySession _proxyClnt _relayServ _proxyAuth = undefined
+createSMPProxySession :: SMPClient -> Maybe SndPrivateAuthKey -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO (SessionId, C.PublicKeyX25519)
+createSMPProxySession c spKey relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth =
+  sendSMPCommand c spKey "" (PRXY relayServ proxyAuth) >>= \case
+    -- XXX: rfc says sessionId should be in the entityId of response
+    PKEY sId chain key -> either (throwError . x509Error) (pure . (sId,)) $ validateRelay chain key
+    r -> throwE . PCEUnexpectedResponse $ bshow r
+  where
+    x509Error :: String -> SMPClientError
+    x509Error _msg = PCEResponseError $ error "TODO: x509 error"
+    validateRelay :: X.CertificateChain -> X.SignedExact X.PubKey -> Either String C.PublicKeyX25519
+    validateRelay (X.CertificateChain cert) exact = do
+      serverKey <- case cert of
+        [leaf, ca]
+          | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 ->
+              C.x509ToPublic (X.certPubKey . X.signedObject $ X.getSigned leaf, []) >>= C.pubKey
+        _ -> throwError "bad certificate"
+      pubKey <- C.verifyX509 serverKey exact
+      C.x509ToPublic (pubKey, []) >>= C.pubKey
 
 -- consider how to process slow responses - is it handled somehow locally or delegated to the caller
 -- this method is used in the client
 -- sends PFWD :: C.PublicKeyX25519 -> EncTransmission -> Command Sender
 -- receives PRES :: EncResponse -> BrokerMsg -- proxy to client
+-- proxySMPMessage :: SMPClient -> SessionId -> Maybe SndPrivateAuthKey -> SenderId -> MsgFlags -> MsgBody -> ExceptT SMPClientError IO ()
 proxySMPMessage :: SMPClient -> SessionId -> Maybe SndPrivateAuthKey -> SenderId -> MsgFlags -> MsgBody -> ExceptT SMPClientError IO ()
-proxySMPMessage _proxyClnt _relaySess _spKey _sId _flags _msg = undefined
+proxySMPMessage c@ProtocolClient {client_ = PClient {clientCorrId = g}} relaySess msgSpKey senderId flags msg = do
+  (cmdPubKey, cmdKey) <- liftIO . atomically $ C.generateAuthKeyPair C.SX25519 g
+
+  corrId <- liftIO . atomically $ C.randomBytes 24 g
+  let t = smpEncode (corrId, senderId) <> encodeProtocol (error "TODO: client/relay version") (Cmd SSender $ SEND flags msg)
+  _auth <- liftEitherWith PCETransportError $ authTransmission_ (Just serverKey) (Just cmdKey) (CorrId corrId) t
+
+  -- (t_, Request {}) <- liftIO $ mkTransmission c (msgSpKey, senderId, Cmd SSender $ SEND flags msg) -- XXX: deconstruct mkTransmission too?
+  -- (_auth, t) <- liftEitherWith PCETransportError t_
+  et <- liftEitherWith PCECryptoError $ encryptWith cmdKey t
+  sendSMPCommand c proxySpKey relaySess (PFWD cmdPubKey et) >>= \case
+    RRES (EncFwdResponse r) -> error "TODO: decrypt forwarded response"
+    -- PKEY sId chain key -> either (throwError . x509Error) (pure . (sId,)) $ validateRelay chain key
+    r -> throwE . PCEUnexpectedResponse $ bshow r
+  where
+    encryptWith :: C.PrivateKeyX25519 -> ByteString -> Either C.CryptoError EncTransmission
+    encryptWith k t = EncTransmission <$> C.cbDecrypt (C.dh' sk k) nonce t
 
 -- this method is used in the server
 -- sends RFWD :: EncFwdTransmission -> Command Sender
 -- receives RRES :: EncFwdResponse -> BrokerMsg
 -- server should send PRES to the client with EncResponse
-forwardSMPMessage :: SMPClient -> CorrId -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
-forwardSMPMessage _relayClnt _corrId _cmdKey _encTrans = undefined
+forwardSMPMessage :: SMPClient -> C.CbNonce -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
+forwardSMPMessage c _corrId _cmdKey _encTrans = do
+  sendSMPCommand c proxySpKey relaySess (RFWD eft) >>= \case
+    RRES (EncFwdResponse r) -> error "TODO: decrypt forwarded response"
+    r -> throwE . PCEUnexpectedResponse $ bshow r
 
 okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateAuthKey -> QueueId -> ExceptT SMPClientError IO ()
 okSMPCommand cmd c pKey qId =
@@ -750,6 +791,7 @@ getResponse :: ProtocolClient v err msg -> Request err msg -> IO (Response err m
 getResponse ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} Request {entityId, responseVar} = do
   response <-
     timeout tcpTimeout (atomically (takeTMVar responseVar)) >>= \case
+      -- BTW: another registerDelay candidate. Also, crashes caller with BlockedIndef.
       Just r -> atomically (writeTVar pingErrorCount 0) $> r
       Nothing -> pure $ Left PCEResponseTimeout
   pure Response {entityId, response}
@@ -770,13 +812,16 @@ mkTransmission ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCo
       TM.insert corrId r sentCommands
       pure r
 
-authTransmission :: Maybe (THandleAuth 'TClient) -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError (Maybe TransmissionAuth)
-authTransmission thAuth pKey_ (CorrId corrId) t = traverse authenticate pKey_
+authTransmission :: Maybe THandleAuth -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError (Maybe TransmissionAuth)
+authTransmission thAuth = authTransmission_ (peerPubKey <$> thAuth)
+
+authTransmission_ :: Maybe C.PublicKeyX25519 -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError (Maybe TransmissionAuth)
+authTransmission_ authPub_ authPriv_ (CorrId corrId) t = traverse authenticate authPriv_
   where
     authenticate :: C.APrivateAuthKey -> Either TransportError TransmissionAuth
     authenticate (C.APrivateAuthKey a pk) = case a of
-      C.SX25519 -> case thAuth of
-        Just THAuthClient {serverPeerPubKey = k} -> Right $ TAAuthenticator $ C.cbAuthenticate k pk (C.cbNonce corrId) t
+      C.SX25519 -> case authPub_ of
+        Just peerPubKey -> Right $ TAAuthenticator $ C.cbAuthenticate peerPubKey pk (C.cbNonce corrId) t
         Nothing -> Left TENoServerAuth
       C.SEd25519 -> sign pk
       C.SEd448 -> sign pk
