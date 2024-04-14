@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Notifications.Transport where
 
@@ -54,7 +55,7 @@ supportedClientNTFVRange = mkVersionRange initialNTFVersion currentClientNTFVers
 supportedServerNTFVRange :: VersionRangeNTF
 supportedServerNTFVRange = mkVersionRange initialNTFVersion currentServerNTFVersion
 
-type THandleNTF c = THandle NTFVersion c
+type THandleNTF c p = THandle NTFVersion c p
 
 data NtfServerHandshake = NtfServerHandshake
   { ntfVersionRange :: VersionRangeNTF,
@@ -133,12 +134,12 @@ ntfClientHandshake c (k, pk) keyHash ntfVRange = do
     then throwError TEBadSession
     else case ntfVersionRange `compatibleVersion` ntfVRange of
       Just (Compatible v) -> do
-        sk_ <- forM sk' $ \exact -> liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
+        ck_ <- forM sk' $ \signedKey -> liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
           serverKey <- getServerVerifyKey c
-          pubKey <- C.verifyX509 serverKey exact
-          C.x509ToPublic (pubKey, []) >>= C.pubKey
+          pubKey <- C.verifyX509 serverKey signedKey
+          (,(getServerCerts c, signedKey)) <$> (C.x509ToPublic (pubKey, []) >>= C.pubKey)
         sendHandshake th $ NtfClientHandshake {ntfVersion = v, keyHash, authPubKey = Just k}
-        pure $ ntfThHandleClient th v pk sk_
+        pure $ ntfThHandleClient th v pk ck_
       Nothing -> throwError $ TEHandshake VERSION
 
 ntfThHandleServer :: forall c. THandleNTF c 'TServer -> VersionNTF -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandleNTF c 'TServer
@@ -146,9 +147,9 @@ ntfThHandleServer th v pk k_ =
   let thAuth = (\k -> THAuthServer {clientPeerPubKey = k, serverPrivKey = pk}) <$> k_
    in ntfThHandle_ th v thAuth
 
-ntfThHandleClient :: forall c. THandleNTF c 'TClient -> VersionNTF -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandleNTF c 'TClient
-ntfThHandleClient th v pk k_ =
-  let thAuth = (\k -> THAuthClient {serverPeerPubKey = k, clientPrivKey = pk}) <$> k_
+ntfThHandleClient :: forall c. THandleNTF c 'TClient -> VersionNTF -> C.PrivateKeyX25519 -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> THandleNTF c 'TClient
+ntfThHandleClient th v pk ck_ =
+  let thAuth = (\(k, ck) -> THAuthClient {serverPeerPubKey = k, serverCertKey = ck, clientPrivKey = pk}) <$> ck_
    in ntfThHandle_ th v thAuth
 
 ntfThHandle_ :: forall c p. THandleNTF c p -> VersionNTF -> Maybe (THandleAuth p) -> THandleNTF c p

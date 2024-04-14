@@ -12,6 +12,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 -- |
@@ -340,6 +341,7 @@ data THandleParams v p = THandleParams
 data THandleAuth (p :: TransportPeer) where
   THAuthClient ::
     { serverPeerPubKey :: C.PublicKeyX25519, -- used only in the client to combine with per-queue key
+      serverCertKey :: (X.CertificateChain, X.SignedExact X.PubKey), -- the key here is clientPrivKey signed with server certificate
       clientPrivKey :: C.PrivateKeyX25519 -- used to combine with peer's per-queue key (currently only in the server)
     } ->
     THandleAuth 'TClient
@@ -490,16 +492,16 @@ smpClientHandshake c (k, pk) keyHash@(C.KeyHash kh) smpVRange = do
     then throwE TEBadSession
     else case smpVersionRange `compatibleVersion` smpVRange of
       Just (Compatible v) -> do
-        sk_ <- forM authPubKey $ \(X.CertificateChain cert, exact) ->
+        ck_ <- forM authPubKey $ \certKey@(X.CertificateChain cert, exact) ->
           liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
             case cert of
               [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
               _ -> throwError "bad certificate"
             serverKey <- getServerVerifyKey c
             pubKey <- C.verifyX509 serverKey exact
-            C.x509ToPublic (pubKey, []) >>= C.pubKey
+            (,certKey) <$> (C.x509ToPublic (pubKey, []) >>= C.pubKey)
         sendHandshake th $ ClientHandshake {smpVersion = v, keyHash, authPubKey = Just k}
-        pure $ smpThHandleClient th v pk sk_
+        pure $ smpThHandleClient th v pk ck_
       Nothing -> throwE $ TEHandshake VERSION
 
 smpThHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandleSMP c 'TServer
@@ -507,9 +509,9 @@ smpThHandleServer th v pk k_ =
   let thAuth = (\k -> THAuthServer {clientPeerPubKey = k, serverPrivKey = pk}) <$> k_
    in smpThHandle_ th v thAuth
 
-smpThHandleClient :: forall c. THandleSMP c 'TClient -> VersionSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandleSMP c 'TClient
-smpThHandleClient th v pk k_ =
-  let thAuth = (\k -> THAuthClient {serverPeerPubKey = k, clientPrivKey = pk}) <$> k_
+smpThHandleClient :: forall c. THandleSMP c 'TClient -> VersionSMP -> C.PrivateKeyX25519 -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> THandleSMP c 'TClient
+smpThHandleClient th v pk ck_ =
+  let thAuth = (\(k, ck) -> THAuthClient {serverPeerPubKey = k, serverCertKey = ck, clientPrivKey = pk}) <$> ck_
    in smpThHandle_ th v thAuth
 
 smpThHandle_ :: forall c p. THandleSMP c p -> VersionSMP -> Maybe (THandleAuth p) -> THandleSMP c p

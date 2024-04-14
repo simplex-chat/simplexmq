@@ -330,7 +330,9 @@ testTHandleAuth :: VersionSMP -> TVar ChaChaDRG -> C.APublicAuthKey -> IO (Maybe
 testTHandleAuth v g (C.APublicAuthKey a k) = case a of
   C.SX25519 | v >= authCmdsSMPVersion -> do
     (_, pk) <- atomically $ C.generateKeyPair g
-    pure $ Just THAuthClient {serverPeerPubKey = k, clientPrivKey = pk}
+    -- ca <- head <$> XS.readCertificates "tests/fixtures/ca.crt"
+    -- server <- head <$> XS.readCertificates "tests/fixtures/server.crt"
+    pure $ Just THAuthClient {serverPeerPubKey = k, serverCertKey = undefined, clientPrivKey = pk}
   _ -> pure Nothing
 
 randomSENDCmd :: ProtocolClient SMPVersion ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)

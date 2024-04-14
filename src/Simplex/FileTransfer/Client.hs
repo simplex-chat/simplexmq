@@ -122,17 +122,19 @@ getXFTPClient g transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN
 
 xftpClientHandshakeV1 :: TVar ChaChaDRG -> VersionRangeXFTP -> C.KeyHash -> HTTP2Client -> THandleParamsXFTP 'TClient -> ExceptT XFTPClientError IO (THandleParamsXFTP 'TClient)
 xftpClientHandshakeV1 g serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessionId, serverKey} thParams0 = do
-  shs <- getServerHandshake
+  shs@XFTPServerHandshake {authPubKey = ck} <- getServerHandshake
   (v, sk) <- processServerHandshake shs
   (k, pk) <- atomically $ C.generateKeyPair g
   sendClientHandshake XFTPClientHandshake {xftpVersion = v, keyHash, authPubKey = k}
-  pure thParams0 {thAuth = Just THAuthClient {serverPeerPubKey = sk, clientPrivKey = pk}, thVersion = v}
+  pure thParams0 {thAuth = Just THAuthClient {serverPeerPubKey = sk, serverCertKey = ck, clientPrivKey = pk}, thVersion = v}
   where
+    getServerHandshake :: ExceptT XFTPClientError IO XFTPServerHandshake
     getServerHandshake = do
       let helloReq = H.requestNoBody "POST" "/" []
       HTTP2Response {respBody = HTTP2Body {bodyHead = shsBody}} <-
         liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequest c helloReq Nothing
       liftHS . smpDecode =<< liftHS (C.unPad shsBody)
+    processServerHandshake :: XFTPServerHandshake -> ExceptT XFTPClientError IO (VersionXFTP, C.PublicKeyX25519)
     processServerHandshake XFTPServerHandshake {xftpVersionRange, sessionId = serverSessId, authPubKey = serverAuth} = do
       unless (sessionId == serverSessId) $ throwError $ PCEResponseError SESSION
       case xftpVersionRange `compatibleVersion` serverVRange of
@@ -145,6 +147,7 @@ xftpClientHandshakeV1 g serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessi
               _ -> throwError "bad certificate"
             pubKey <- maybe (throwError "bad server key type") (`C.verifyX509` exact) serverKey
             C.x509ToPublic (pubKey, []) >>= C.pubKey
+    sendClientHandshake :: XFTPClientHandshake -> ExceptT XFTPClientError IO ()
     sendClientHandshake chs = do
       chs' <- liftHS $ C.pad (smpEncode chs) xftpBlockSize
       let chsReq = H.requestBuilder "POST" "/" [] $ byteString chs'
