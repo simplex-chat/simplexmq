@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -314,7 +315,7 @@ randomSEND_ a v sessId len = do
       TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, sId, Cmd SSender $ SEND noMsgFlags msg)
   pure $ (,tToSend) <$> authTransmission thAuth_ (Just spKey) corrId tForAuth
 
-testTHandleParams :: VersionSMP -> ByteString -> THandleParams SMPVersion
+testTHandleParams :: VersionSMP -> ByteString -> THandleParams SMPVersion 'TClient
 testTHandleParams v sessionId =
   THandleParams
     { sessionId,
@@ -325,11 +326,11 @@ testTHandleParams v sessionId =
       batch = True
     }
 
-testTHandleAuth :: VersionSMP -> TVar ChaChaDRG -> C.APublicAuthKey -> IO (Maybe THandleAuth)
+testTHandleAuth :: VersionSMP -> TVar ChaChaDRG -> C.APublicAuthKey -> IO (Maybe (THandleAuth 'TClient))
 testTHandleAuth v g (C.APublicAuthKey a k) = case a of
   C.SX25519 | v >= authCmdsSMPVersion -> do
-    (_, privKey) <- atomically $ C.generateKeyPair g
-    pure $ Just THandleAuth {peerPubKey = k, privKey}
+    (_, pk) <- atomically $ C.generateKeyPair g
+    pure $ Just THAuthClient {serverPeerPubKey = k, clientPrivKey = pk}
   _ -> pure Nothing
 
 randomSENDCmd :: ProtocolClient SMPVersion ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)

@@ -24,16 +24,16 @@ import Numeric.Natural
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Notifications.Transport (NTFVersion, VersionRangeNTF)
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.StoreLog
+import Simplex.Messaging.Notifications.Transport (NTFVersion, VersionRangeNTF)
 import Simplex.Messaging.Protocol (CorrId, SMPServer, Transmission)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport, THandleParams)
+import Simplex.Messaging.Transport (ATransport, THandleParams, TransportPeer (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig, loadFingerprint, loadTLSServerParams)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
@@ -161,13 +161,13 @@ data NtfRequest
 data NtfServerClient = NtfServerClient
   { rcvQ :: TBQueue NtfRequest,
     sndQ :: TBQueue (Transmission NtfResponse),
-    ntfThParams :: THandleParams NTFVersion,
+    ntfThParams :: THandleParams NTFVersion 'TServer,
     connected :: TVar Bool,
     rcvActiveAt :: TVar SystemTime,
     sndActiveAt :: TVar SystemTime
   }
 
-newNtfServerClient :: Natural -> THandleParams NTFVersion -> SystemTime -> STM NtfServerClient
+newNtfServerClient :: Natural -> THandleParams NTFVersion 'TServer -> SystemTime -> STM NtfServerClient
 newNtfServerClient qSize ntfThParams ts = do
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize

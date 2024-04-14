@@ -51,7 +51,7 @@ import Simplex.Messaging.Protocol
     RecipientId,
     SenderId,
   )
-import Simplex.Messaging.Transport (ALPN, HandshakeError (VERSION), THandleAuth (..), THandleParams (..), TransportError (..), supportedParameters)
+import Simplex.Messaging.Transport (ALPN, HandshakeError (VERSION), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), supportedParameters)
 import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost, alpn)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
@@ -64,7 +64,7 @@ import UnliftIO.Directory
 data XFTPClient = XFTPClient
   { http2Client :: HTTP2Client,
     transportSession :: TransportSession FileResponse,
-    thParams :: THandleParams XFTPVersion,
+    thParams :: THandleParams XFTPVersion 'TClient,
     config :: XFTPClientConfig
   }
 
@@ -120,13 +120,13 @@ getXFTPClient g transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN
   atomically $ writeTVar clientVar $ Just c
   pure c
 
-xftpClientHandshakeV1 :: TVar ChaChaDRG -> VersionRangeXFTP -> C.KeyHash -> HTTP2Client -> THandleParamsXFTP -> ExceptT XFTPClientError IO THandleParamsXFTP
+xftpClientHandshakeV1 :: TVar ChaChaDRG -> VersionRangeXFTP -> C.KeyHash -> HTTP2Client -> THandleParamsXFTP 'TClient -> ExceptT XFTPClientError IO (THandleParamsXFTP 'TClient)
 xftpClientHandshakeV1 g serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessionId, serverKey} thParams0 = do
   shs <- getServerHandshake
   (v, sk) <- processServerHandshake shs
   (k, pk) <- atomically $ C.generateKeyPair g
   sendClientHandshake XFTPClientHandshake {xftpVersion = v, keyHash, authPubKey = k}
-  pure thParams0 {thAuth = Just THandleAuth {peerPubKey = sk, privKey = pk}, thVersion = v}
+  pure thParams0 {thAuth = Just THAuthClient {serverPeerPubKey = sk, clientPrivKey = pk}, thVersion = v}
   where
     getServerHandshake = do
       let helloReq = H.requestNoBody "POST" "/" []
