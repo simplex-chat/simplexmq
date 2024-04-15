@@ -12,6 +12,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 -- |
@@ -315,20 +316,20 @@ instance Transport TLS where
 -- * SMP transport
 
 -- | The handle for SMP encrypted transport connection over Transport.
-data THandle v c = THandle
+data THandle v c p = THandle
   { connection :: c,
-    params :: THandleParams v
+    params :: THandleParams v p
   }
 
-type THandleSMP c = THandle SMPVersion c
+type THandleSMP c p = THandle SMPVersion c p
 
-data THandleParams v = THandleParams
+data THandleParams v p = THandleParams
   { sessionId :: SessionId,
     blockSize :: Int,
     -- | agreed server protocol version
     thVersion :: Version v,
     -- | peer public key for command authorization and shared secrets for entity ID encryption
-    thAuth :: Maybe THandleAuth,
+    thAuth :: Maybe (THandleAuth p),
     -- | do NOT send session ID in transmission, but include it into signed message
     -- based on protocol version
     implySessId :: Bool,
@@ -337,10 +338,18 @@ data THandleParams v = THandleParams
     batch :: Bool
   }
 
-data THandleAuth = THandleAuth
-  { peerPubKey :: C.PublicKeyX25519, -- used only in the client to combine with per-queue key
-    privKey :: C.PrivateKeyX25519 -- used to combine with peer's per-queue key (currently only in the server)
-  }
+data THandleAuth (p :: TransportPeer) where
+  THAuthClient ::
+    { serverPeerPubKey :: C.PublicKeyX25519, -- used only in the client to combine with per-queue key
+      serverCertKey :: (X.CertificateChain, X.SignedExact X.PubKey), -- the key here is clientPrivKey signed with server certificate
+      clientPrivKey :: C.PrivateKeyX25519 -- used to combine with peer's per-queue key (currently only in the server)
+    } ->
+    THandleAuth 'TClient
+  THAuthServer ::
+    { clientPeerPubKey :: C.PublicKeyX25519, -- used only in the client to combine with per-queue key
+      serverPrivKey :: C.PrivateKeyX25519 -- used to combine with peer's per-queue key (currently only in the server)
+    } ->
+    THandleAuth 'TServer
 
 -- | TLS-unique channel binding
 type SessionId = ByteString
@@ -443,13 +452,13 @@ serializeTransportError = \case
   TEHandshake e -> "HANDSHAKE " <> bshow e
 
 -- | Pad and send block to SMP transport.
-tPutBlock :: Transport c => THandle v c -> ByteString -> IO (Either TransportError ())
+tPutBlock :: Transport c => THandle v c p -> ByteString -> IO (Either TransportError ())
 tPutBlock THandle {connection = c, params = THandleParams {blockSize}} block =
   bimapM (const $ pure TELargeMsg) (cPut c) $
     C.pad block blockSize
 
 -- | Receive block from SMP transport.
-tGetBlock :: Transport c => THandle v c -> IO (Either TransportError ByteString)
+tGetBlock :: Transport c => THandle v c p -> IO (Either TransportError ByteString)
 tGetBlock THandle {connection = c, params = THandleParams {blockSize}} = do
   msg <- cGet c blockSize
   if B.length msg == blockSize
@@ -459,7 +468,7 @@ tGetBlock THandle {connection = c, params = THandleParams {blockSize}} = do
 -- | Server SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-smpServerHandshake :: forall c. Transport c => C.APrivateSignKey -> c -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> ExceptT TransportError IO (THandleSMP c)
+smpServerHandshake :: forall c. Transport c => C.APrivateSignKey -> c -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> ExceptT TransportError IO (THandleSMP c 'TServer)
 smpServerHandshake serverSignKey c (k, pk) kh smpVRange = do
   let th@THandle {params = THandleParams {sessionId}} = smpTHandle c
       sk = C.signX509 serverSignKey $ C.publicToX509 k
@@ -470,13 +479,13 @@ smpServerHandshake serverSignKey c (k, pk) kh smpVRange = do
       | keyHash /= kh ->
           throwE $ TEHandshake IDENTITY
       | v `isCompatible` smpVRange ->
-          pure $ smpThHandle th v pk k'
+          pure $ smpThHandleServer th v pk k'
       | otherwise -> throwE $ TEHandshake VERSION
 
 -- | Client SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-smpClientHandshake :: forall c. Transport c => c -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> ExceptT TransportError IO (THandleSMP c)
+smpClientHandshake :: forall c. Transport c => c -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> ExceptT TransportError IO (THandleSMP c 'TClient)
 smpClientHandshake c (k, pk) keyHash@(C.KeyHash kh) smpVRange = do
   let th@THandle {params = THandleParams {sessionId}} = smpTHandle c
   ServerHandshake {sessionId = sessId, smpVersionRange, authPubKey} <- getHandshake th
@@ -484,33 +493,42 @@ smpClientHandshake c (k, pk) keyHash@(C.KeyHash kh) smpVRange = do
     then throwE TEBadSession
     else case smpVersionRange `compatibleVersion` smpVRange of
       Just (Compatible v) -> do
-        sk_ <- forM authPubKey $ \(X.CertificateChain cert, exact) ->
+        ck_ <- forM authPubKey $ \certKey@(X.CertificateChain cert, exact) ->
           liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
             case cert of
               [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
               _ -> throwError "bad certificate"
             serverKey <- getServerVerifyKey c
             pubKey <- C.verifyX509 serverKey exact
-            C.x509ToPublic (pubKey, []) >>= C.pubKey
+            (,certKey) <$> (C.x509ToPublic (pubKey, []) >>= C.pubKey)
         sendHandshake th $ ClientHandshake {smpVersion = v, keyHash, authPubKey = Just k}
-        pure $ smpThHandle th v pk sk_
+        pure $ smpThHandleClient th v pk ck_
       Nothing -> throwE $ TEHandshake VERSION
 
-smpThHandle :: forall c. THandleSMP c -> VersionSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandleSMP c
-smpThHandle th@THandle {params} v privKey k_ =
-  -- TODO drop SMP v6: make thAuth non-optional
-  let thAuth = (\k -> THandleAuth {peerPubKey = k, privKey}) <$> k_
-      params' = params {thVersion = v, thAuth, implySessId = v >= authCmdsSMPVersion}
-   in (th :: THandleSMP c) {params = params'}
+smpThHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandleSMP c 'TServer
+smpThHandleServer th v pk k_ =
+  let thAuth = (\k -> THAuthServer {clientPeerPubKey = k, serverPrivKey = pk}) <$> k_
+   in smpThHandle_ th v thAuth
 
-sendHandshake :: (Transport c, Encoding smp) => THandle v c -> smp -> ExceptT TransportError IO ()
+smpThHandleClient :: forall c. THandleSMP c 'TClient -> VersionSMP -> C.PrivateKeyX25519 -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> THandleSMP c 'TClient
+smpThHandleClient th v pk ck_ =
+  let thAuth = (\(k, ck) -> THAuthClient {serverPeerPubKey = k, serverCertKey = ck, clientPrivKey = pk}) <$> ck_
+   in smpThHandle_ th v thAuth
+
+smpThHandle_ :: forall c p. THandleSMP c p -> VersionSMP -> Maybe (THandleAuth p) -> THandleSMP c p
+smpThHandle_ th@THandle {params} v thAuth =
+  -- TODO drop SMP v6: make thAuth non-optional
+  let params' = params {thVersion = v, thAuth, implySessId = v >= authCmdsSMPVersion}
+   in (th :: THandleSMP c p) {params = params'}
+
+sendHandshake :: (Transport c, Encoding smp) => THandle v c p -> smp -> ExceptT TransportError IO ()
 sendHandshake th = ExceptT . tPutBlock th . smpEncode
 
 -- ignores tail bytes to allow future extensions
-getHandshake :: (Transport c, Encoding smp) => THandle v c -> ExceptT TransportError IO smp
+getHandshake :: (Transport c, Encoding smp) => THandle v c p -> ExceptT TransportError IO smp
 getHandshake th = ExceptT $ (first (\_ -> TEHandshake PARSE) . A.parseOnly smpP =<<) <$> tGetBlock th
 
-smpTHandle :: Transport c => c -> THandleSMP c
+smpTHandle :: Transport c => c -> THandleSMP c p
 smpTHandle c = THandle {connection = c, params}
   where
     params = THandleParams {sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = VersionSMP 0, thAuth = Nothing, implySessId = False, batch = True}
