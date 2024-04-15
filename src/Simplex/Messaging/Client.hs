@@ -655,11 +655,14 @@ deleteSMPQueues = okSMPCommands DEL
 
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
-createSMPProxySession :: SMPClient -> Maybe SndPrivateAuthKey -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO (SessionId, C.PublicKeyX25519)
+createSMPProxySession :: SMPClient -> Maybe SndPrivateAuthKey -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO (SessionId, VersionSMP, C.PublicKeyX25519)
 createSMPProxySession c spKey relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth =
   sendSMPCommand c spKey "" (PRXY relayServ proxyAuth) >>= \case
     -- XXX: rfc says sessionId should be in the entityId of response
-    PKEY sId chain key -> either (throwError . x509Error) (pure . (sId,)) $ validateRelay chain key
+    PKEY sId vr chain key -> do
+      case supportedClientSMPRelayVRange `compatibleVersion` vr of
+        Just (Compatible v) -> liftEitherWith x509Error $ (sId,v,) <$> validateRelay chain key
+        Nothing -> throwE PCEIncompatibleHost
     r -> throwE . PCEUnexpectedResponse $ bshow r
   where
     x509Error :: String -> SMPClientError
@@ -678,33 +681,42 @@ createSMPProxySession c spKey relayServ@ProtocolServer {keyHash = C.KeyHash kh} 
 -- this method is used in the client
 -- sends PFWD :: C.PublicKeyX25519 -> EncTransmission -> Command Sender
 -- receives PRES :: EncResponse -> BrokerMsg -- proxy to client
--- proxySMPMessage :: SMPClient -> SessionId -> Maybe SndPrivateAuthKey -> SenderId -> MsgFlags -> MsgBody -> ExceptT SMPClientError IO ()
-proxySMPMessage :: SMPClient -> SessionId -> Maybe SndPrivateAuthKey -> SenderId -> MsgFlags -> MsgBody -> ExceptT SMPClientError IO ()
-proxySMPMessage c@ProtocolClient {client_ = PClient {clientCorrId = g}} relaySess msgSpKey senderId flags msg = do
-  (cmdPubKey, cmdKey) <- liftIO . atomically $ C.generateAuthKeyPair C.SX25519 g
-
-  corrId <- liftIO . atomically $ C.randomBytes 24 g
-  let t = smpEncode (corrId, senderId) <> encodeProtocol (error "TODO: client/relay version") (Cmd SSender $ SEND flags msg)
-  _auth <- liftEitherWith PCETransportError $ authTransmission_ (Just serverKey) (Just cmdKey) (CorrId corrId) t
-
-  -- (t_, Request {}) <- liftIO $ mkTransmission c (msgSpKey, senderId, Cmd SSender $ SEND flags msg) -- XXX: deconstruct mkTransmission too?
-  -- (_auth, t) <- liftEitherWith PCETransportError t_
-  et <- liftEitherWith PCECryptoError $ encryptWith cmdKey t
-  sendSMPCommand c proxySpKey relaySess (PFWD cmdPubKey et) >>= \case
-    RRES (EncFwdResponse r) -> error "TODO: decrypt forwarded response"
-    -- PKEY sId chain key -> either (throwError . x509Error) (pure . (sId,)) $ validateRelay chain key
+proxySMPMessage ::
+  SMPClient ->
+  -- proxy session from PKEY
+  SessionId ->
+  VersionSMP ->
+  C.PublicKeyX25519 ->
+  -- message to deliver
+  Maybe SndPrivateAuthKey ->
+  SenderId ->
+  MsgFlags ->
+  MsgBody ->
+  ExceptT SMPClientError IO ()
+proxySMPMessage c@ProtocolClient {thParams = THandleParams {blockSize}, client_ = PClient {clientCorrId = g}} sId v serverKey msgSpKey senderId flags msg = do
+  (cmdPubKey, cmdKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
+  nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
+  t <- mkMsgT $ CorrId corrId
+  et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt (C.dh' serverKey cmdKey) nonce (tEncode t) blockSize
+  sendSMPCommand c Nothing sId (PFWD cmdPubKey et) >>= \case
+    RRES (EncFwdResponse todo'decrypt) -> error "TODO: decrypt forwarded response"
     r -> throwE . PCEUnexpectedResponse $ bshow r
   where
-    encryptWith :: C.PrivateKeyX25519 -> ByteString -> Either C.CryptoError EncTransmission
-    encryptWith k t = EncTransmission <$> C.cbDecrypt (C.dh' sk k) nonce t
+    mkMsgT :: CorrId -> ExceptT SMPClientError IO SentRawTransmission
+    mkMsgT corrId@(CorrId corrId') = do
+      let t = smpEncode (corrId', senderId) <> encodeProtocol v (Cmd SSender $ SEND flags msg)
+      auth <- liftEitherWith PCETransportError $ authTransmission_ (Just serverKey) msgSpKey corrId t
+      pure (auth, t)
 
 -- this method is used in the server
 -- sends RFWD :: EncFwdTransmission -> Command Sender
 -- receives RRES :: EncFwdResponse -> BrokerMsg
 -- server should send PRES to the client with EncResponse
 forwardSMPMessage :: SMPClient -> C.CbNonce -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
-forwardSMPMessage c _corrId _cmdKey _encTrans = do
-  sendSMPCommand c proxySpKey relaySess (RFWD eft) >>= \case
+forwardSMPMessage c _corrId _cmdKey encTrans = do
+  -- (cmdPubKey, cmdKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
+  eft <- error "TODO: encrypt proxy-to-server" encTrans
+  sendSMPCommand c Nothing "" (RFWD eft) >>= \case
     RRES (EncFwdResponse r) -> error "TODO: decrypt forwarded response"
     r -> throwE . PCEUnexpectedResponse $ bshow r
 
