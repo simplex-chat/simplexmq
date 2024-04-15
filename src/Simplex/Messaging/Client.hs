@@ -84,8 +84,8 @@ import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad
-import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Except
+import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
@@ -119,7 +119,7 @@ import System.Timeout (timeout)
 -- Use 'getSMPClient' to connect to an SMP server and create a client handle.
 data ProtocolClient v err msg = ProtocolClient
   { action :: Maybe (Async ()),
-    thParams :: THandleParams v,
+    thParams :: THandleParams v 'TClient,
     sessionTs :: UTCTime,
     client_ :: PClient v err msg
   }
@@ -138,7 +138,7 @@ data PClient v err msg = PClient
     msgQ :: Maybe (TBQueue (ServerTransmission v msg))
   }
 
-smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe THandleAuth -> STM SMPClient
+smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe (THandleAuth 'TClient) -> STM SMPClient
 smpClientStub g sessionId thVersion thAuth = do
   connected <- newTVar False
   clientCorrId <- C.newRandomDRG g
@@ -387,10 +387,10 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
           raceAny_ ([send c' th, process c', receive c' th] <> [ping c' | smpPingInterval > 0])
             `finally` disconnected c'
 
-    send :: Transport c => ProtocolClient v err msg -> THandle v c -> IO ()
+    send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= tPutLog h
 
-    receive :: Transport c => ProtocolClient v err msg -> THandle v c -> IO ()
+    receive :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     receive ProtocolClient {client_ = PClient {rcvQ}} h = forever $ tGet h >>= atomically . writeTBQueue rcvQ
 
     ping :: ProtocolClient v err msg -> IO ()
@@ -733,13 +733,13 @@ mkTransmission ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCo
       TM.insert corrId r sentCommands
       pure r
 
-authTransmission :: Maybe THandleAuth -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError (Maybe TransmissionAuth)
+authTransmission :: Maybe (THandleAuth 'TClient) -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError (Maybe TransmissionAuth)
 authTransmission thAuth pKey_ (CorrId corrId) t = traverse authenticate pKey_
   where
     authenticate :: C.APrivateAuthKey -> Either TransportError TransmissionAuth
     authenticate (C.APrivateAuthKey a pk) = case a of
       C.SX25519 -> case thAuth of
-        Just THandleAuth {peerPubKey} -> Right $ TAAuthenticator $ C.cbAuthenticate peerPubKey pk (C.cbNonce corrId) t
+        Just THAuthClient {serverPeerPubKey = k} -> Right $ TAAuthenticator $ C.cbAuthenticate k pk (C.cbNonce corrId) t
         Nothing -> Left TENoServerAuth
       C.SEd25519 -> sign pk
       C.SEd448 -> sign pk
