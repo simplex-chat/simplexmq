@@ -13,7 +13,6 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Simplex.Messaging.Server
@@ -54,19 +53,23 @@ import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM
 import Data.List (intercalate)
+import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (isNothing)
+import Data.Maybe (catMaybes, isNothing)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
+import qualified Data.X509 as X
 import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Simplex.Messaging.Agent.Lock
+import Simplex.Messaging.Client (ProtocolClient (thParams), smpProxyError)
+import Simplex.Messaging.Client.Agent (getSMPServerClient')
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding (Encoding (smpEncode))
 import Simplex.Messaging.Encoding.String
@@ -90,6 +93,7 @@ import System.Exit (exitFailure)
 import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (timeout)
+import UnliftIO.Async (mapConcurrently)
 import UnliftIO.Concurrent
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
@@ -122,14 +126,14 @@ type M a = ReaderT Env IO a
 smpServer :: TMVar Bool -> ServerConfig -> M ()
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   s <- asks server
-  pa <- asks proxyAgent
+  -- pa <- asks proxyAgent
   expired <- restoreServerMessages
   restoreServerStats expired
   raceAny_
     ( serverThread s "server subscribedQ" subscribedQ subscribers subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ())
-        : smpProxyConnectRelay pa
-        : receiveFromProxyAgent pa
+        -- : smpProxyConnectRelay pa
+        -- : receiveFromProxyAgent pa
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
     `finally` withLock' (savingLock s) "final" (saveServer False)
@@ -183,11 +187,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           atomically $ TM.lookupDelete qId (clientSubs c)
 
     smpProxyConnectRelay :: ProxyAgent -> M ()
-    smpProxyConnectRelay ProxyAgent {connectQ} = do
+    smpProxyConnectRelay ProxyAgent {} = forever $ do
       -- check for session var for pending session
       -- if exists - wait
       -- if doesn't - create session var, and spawn worker
-      forever $ pure ()
+      -- srv <- readTBQueue connectQ
+      pure ()
+
 
     receiveFromProxyAgent :: ProxyAgent -> M ()
     receiveFromProxyAgent = do
@@ -328,7 +334,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               CPResume -> withAdminRole $ hPutStrLn h "resume not implemented"
               CPClients -> withAdminRole $ do
                 active <- unliftIO u (asks clients) >>= readTVarIO
-                hPutStrLn h $ "clientId,sessionId,connected,createdAt,rcvActiveAt,sndActiveAt,age,subscriptions"
+                hPutStrLn h "clientId,sessionId,connected,createdAt,rcvActiveAt,sndActiveAt,age,subscriptions"
                 forM_ (IM.toList active) $ \(cid, Client {sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, subscriptions}) -> do
                   connected' <- bshow <$> readTVarIO connected
                   rcvActiveAt' <- strEncode <$> readTVarIO rcvActiveAt
@@ -536,19 +542,18 @@ verifyTransmission auth_ tAuth authorized queueId cmd =
     -- SEND will be accepted without authorization before the queue is secured with KEY command
     Cmd SSender SEND {} -> verifyQueue (\q -> Just q `verified` maybe (isNothing tAuth) verify (senderKey q)) <$> get SSender
     Cmd SSender PING -> pure $ VRVerified Nothing
-    -- NSUB will not be accepted without authorization
-    Cmd SNotifier NSUB -> verifyQueue (\q -> maybe dummyVerify (Just q `verifiedWith`) (notifierKey <$> notifier q)) <$> get SNotifier
-    Cmd SSender PRXY {} -> pure $ VRVerified Nothing
-    Cmd SSender PFWD {} -> pure $ VRVerified Nothing
     Cmd SSender RFWD {} -> pure $ VRVerified Nothing
+    -- NSUB will not be accepted without authorization
+    Cmd SNotifier NSUB -> verifyQueue (\q -> maybe dummyVerify (\n -> Just q `verifiedWith` notifierKey n) (notifier q)) <$> get SNotifier
+    Cmd SProxiedClient _ -> pure $ VRVerified Nothing
   where
     verify = verifyCmdAuthorization auth_ tAuth authorized
     dummyVerify = verify (dummyAuthKey tAuth) `seq` VRFailed
     verifyQueue :: (QueueRec -> VerificationResult) -> Either ErrorType QueueRec -> VerificationResult
-    verifyQueue = either (\_ -> dummyVerify)
+    verifyQueue = either (const dummyVerify)
     verified q cond = if cond then VRVerified q else VRFailed
     verifiedWith q k = q `verified` verify k
-    get :: SParty p -> M (Either ErrorType QueueRec)
+    get :: DirectParty p => SParty p -> M (Either ErrorType QueueRec)
     get party = do
       st <- asks queueStore
       atomically $ getQueue st party queueId
@@ -601,32 +606,48 @@ dummyKeyX25519 = "MCowBQYDK2VuAyEA4JGSMYht18H4mas/jHeBwfcM7jLwNYJNOAhi2/g4RXg="
 client :: Client -> Server -> M ()
 client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
-  forever $ atomically (readTBQueue rcvQ) >>= mapM processCommand
+  forever $ do
+    (cmds, rs) <- partitionEithers . L.toList <$> (mapM processCommand =<< atomically (readTBQueue rcvQ))
+    mapM_ reply (L.nonEmpty rs)
+    -- TODO cancel this thread if the client gets disconnected
+    forkIO $ mapM_ reply . L.nonEmpty =<< mapConcurrently processProxiedCmd cmds
   where
-    reply :: Transmission BrokerMsg -> IO ()
+    reply :: MonadIO m => NonEmpty (Transmission BrokerMsg) -> m ()
     reply = atomically . writeTBQueue sndQ
-    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M ()
+    processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Transmission BrokerMsg)
+    processProxiedCmd (corrId, _queueId, command) = case command of
+      PRXY srv auth -> ifM allowProxy getRelay (pure (corrId, "", ERR AUTH))
+        where
+          allowProxy = do
+            ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
+            pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
+          getRelay = do
+            ProxyAgent {smpAgent} <- asks proxyAgent
+            -- TODO catch IO errors too
+            liftIO $ (corrId, "",) . relayResp <$> runExceptT (getSMPServerClient' smpAgent srv)
+            where
+              relayResp = \case
+                Right smp ->
+                  -- TODO return version range
+                  let THandleParams {sessionId = srvSessId, thAuth} = thParams smp
+                   in case thAuth of
+                        Just THAuthClient {serverCertKey} -> PKEY srvSessId serverCertKey
+                        Nothing -> ERR $ PROXY TRANSPORT -- TODO different error?
+                Left err -> ERR $ smpProxyError err
+      PFWD _dhPub _encBlock -> error "TODO: processCommand.PFWD"
+    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Either (Transmission (Command 'ProxiedClient)) (Transmission BrokerMsg))
     processCommand (qr_, (corrId, queueId, cmd)) = do
       st <- asks queueStore
       case cmd of
+        Cmd SProxiedClient command -> pure $ Left (corrId, queueId, command)
         Cmd SSender command ->
           case command of
-            SEND flags msgBody -> reply =<< withQueue (\qr -> sendMessage qr flags msgBody)
-            PING -> reply (corrId, "", PONG)
-            PRXY relay auth ->
-              ifM
-                allowProxy
-                (setupProxy relay $> Nothing)
-                (pure (corrId, queueId, ERR AUTH))
-              where
-                allowProxy = do
-                  ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
-                  pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
-            PFWD _dhPub _encBlock -> error "TODO: processCommand.PFWD"
+            SEND flags msgBody -> Right <$> withQueue (\qr -> sendMessage qr flags msgBody)
+            PING -> pure $ Right (corrId, "", PONG)
             RFWD _encBlock -> error "TODO: processCommand.RFWD"
-        Cmd SNotifier NSUB -> reply =<< subscribeNotifications
+        Cmd SNotifier NSUB -> Right <$> subscribeNotifications
         Cmd SRecipient command ->
-          reply =<< case command of
+          Right <$> case command of
             NEW rKey dhKey auth subMode ->
               ifM
                 allowNew
@@ -948,20 +969,6 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
           atomically (deleteQueue st queueId $>>= \q -> delMsgQueue ms queueId $> Right q) >>= \case
             Right q -> updateDeletedStats q $> ok
             Left e -> pure $ err e
-
-        setupProxy :: SMPServer -> M ()
-        setupProxy relay = do
-          -- decide if to use existing session or to create a new one
-          -- if exists, reply straight away
-          -- TODO
-          -- if not, request session via the queue
-          ProxyAgent {connectQ} <- asks proxyAgent
-          writeTBQueue connectQ (relay, reply . response)
-          where
-            response :: Either ErrorType (SessionId, X.CertificateChain, X.SignedExact X.PubKey) -> Transmission BrokerMsg
-            response = \case
-              Left e -> err e
-              Right (sessId, chain, key) -> (corrId, queueId, PKEY sessId chain key)
 
         ok :: Transmission BrokerMsg
         ok = (corrId, queueId, OK)

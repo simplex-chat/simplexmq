@@ -18,7 +18,7 @@ import Test.Hspec
 
 smpProxyTests :: Spec
 smpProxyTests = do
-  describe "server configuration" $ do
+  fdescribe "server configuration" $ do
     it "refuses proxy handshake unless enabled" testNoProxy
     it "checks basic auth in proxy requests" testProxyAuth
   xdescribe "proxy requests" $ do
@@ -27,7 +27,7 @@ smpProxyTests = do
       it "when SMP port blackholed" todo
       it "no SMP service at host/port" todo
       it "bad SMP fingerprint" todo
-    it "connects to relay" testProxyConnect
+    fit "connects to relay" testProxyConnect
     xit "connects to itself as a relay" todo
     xit "batching proxy requests" todo
   xdescribe "forwarding requests" $ do

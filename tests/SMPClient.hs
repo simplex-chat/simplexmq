@@ -17,6 +17,7 @@ import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import Network.Socket
 import Simplex.Messaging.Client (chooseTransportHost, defaultNetworkConfig)
+import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
@@ -112,6 +113,7 @@ cfg =
       smpServerVRange = supportedServerSMPRelayVRange,
       transportConfig = defaultTransportServerConfig,
       controlPort = Nothing,
+      smpAgentCfg = defaultSMPClientAgentConfig,
       allowSMPProxy = False
     }
 

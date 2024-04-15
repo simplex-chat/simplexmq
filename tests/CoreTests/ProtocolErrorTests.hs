@@ -2,7 +2,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module CoreTests.ProtocolErrorTests where
@@ -14,9 +13,10 @@ import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import Simplex.Messaging.Agent.Protocol
+import qualified Simplex.Messaging.Agent.Protocol as Agent
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CommandError (..), ErrorType (..))
+import Simplex.Messaging.Protocol (CommandError (..), ErrorType (..), ProxyError (..))
 import Simplex.Messaging.Transport (HandshakeError (..), TransportError (..))
 import Simplex.RemoteControl.Types (RCErrorType (..))
 import Test.Hspec
@@ -33,7 +33,7 @@ protocolErrorTests = modifyMaxSuccess (const 1000) $ do
         || strDecode (strEncode err) == Right err
   where
     errHasSpaces = \case
-      BROKER srv (RESPONSE e) -> hasSpaces srv || hasSpaces e
+      BROKER srv (Agent.RESPONSE e) -> hasSpaces srv || hasSpaces e
       BROKER srv _ -> hasSpaces srv
       _ -> False
     hasSpaces s = ' ' `B.elem` encodeUtf8 (T.pack s)
@@ -53,6 +53,8 @@ deriving instance Generic AgentCryptoError
 deriving instance Generic ErrorType
 
 deriving instance Generic CommandError
+
+deriving instance Generic ProxyError
 
 deriving instance Generic TransportError
 
@@ -77,6 +79,8 @@ instance Arbitrary AgentCryptoError where arbitrary = genericArbitraryU
 instance Arbitrary ErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary CommandError where arbitrary = genericArbitraryU
+
+instance Arbitrary ProxyError where arbitrary = genericArbitraryU
 
 instance Arbitrary TransportError where arbitrary = genericArbitraryU
 

@@ -18,6 +18,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Network.Socket (HostName)
 import Options.Applicative
+import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
@@ -214,6 +215,7 @@ smpServerCLI cfgPath logPath =
                   { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
                   },
               controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini,
+              smpAgentCfg = defaultSMPClientAgentConfig,
               allowSMPProxy = True -- TODO: "get from INI"
             }
 
@@ -306,4 +308,3 @@ cliCommandP cfgPath logPath iniFile =
       pure InitOptions {enableStoreLog, logStats, signAlgorithm, ip, fqdn, password, scripted}
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
-

@@ -69,6 +69,7 @@ module Simplex.Messaging.Client
     chooseTransportHost,
     proxyUsername,
     temporaryClientError,
+    smpProxyError,
     ServerTransmission,
     ClientCommand,
 
@@ -479,6 +480,19 @@ temporaryClientError = \case
   PCEIOError _ -> True
   _ -> False
 {-# INLINE temporaryClientError #-}
+
+-- TODO keep error params
+smpProxyError :: SMPClientError -> ErrorType
+smpProxyError = \case
+  PCEProtocolError _ -> PROXY PROTOCOL
+  PCEResponseError _ -> PROXY RESPONSE
+  PCEUnexpectedResponse _ -> PROXY UNEXPECTED
+  PCEResponseTimeout -> PROXY TIMEOUT
+  PCENetworkError -> PROXY NETWORK
+  PCEIncompatibleHost -> PROXY BAD_HOST
+  PCETransportError _ -> PROXY TRANSPORT
+  PCECryptoError _ -> INTERNAL
+  PCEIOError _ -> INTERNAL
 
 -- | Create a new SMP queue.
 --

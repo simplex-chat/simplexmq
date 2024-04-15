@@ -18,12 +18,15 @@ import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
+import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
 import Simplex.Messaging.Agent.Env.SQLite (Worker)
 import Simplex.Messaging.Agent.Lock
+import Simplex.Messaging.Client (SMPClient)
+import Simplex.Messaging.Client.Agent (SMPClientAgent, SMPClientAgentConfig, newSMPClientAgent)
 import Simplex.Messaging.Crypto (KeyHash (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
@@ -35,7 +38,7 @@ import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport, SessionId, VersionSMP, VersionRangeSMP)
+import Simplex.Messaging.Transport (ATransport, SessionId, VersionRangeSMP, VersionSMP)
 import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, loadFingerprint, loadTLSServerParams, newSocketState)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
@@ -128,19 +131,13 @@ data Server = Server
   }
 
 data ProxyAgent = ProxyAgent
-  { relaySessions :: TMap RelaySessionId RelaySession,
-    -- Speed up client lookups by server address.
-    -- if keyhash provided by the client is different from keyhash(es?) received in session,
-    -- server can refuse the request for proxy session.
-    relays :: TMap (TransportHost, ServiceName) (RelaySessionId, C.KeyHash),
-    connectQ :: TBQueue (SMPServer, Either ErrorType (RelaySessionId, X.CertificateChain, X.SignedExact X.PubKey) -> IO ()), -- sndQ to send relay session to the client client
-    smpAgent :: SMPClientAgent,
+  { smpAgent :: SMPClientAgent
   }
 
 data RelaySession = RelaySession
   { worker :: Worker,
     -- SessionId??
-    proxyKey :: C.PublicKeyX25519, -- ???
+    smpClient :: SMPClient,
     relayQ :: TBQueue (ClientId, CorrId, C.PublicKeyX25519, ByteString) -- FWD args from multiple clients using this server
     -- can be used for QUOTA retries until the session is gone
   }
@@ -214,7 +211,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
-  proxyAgent <- newSMPProxyAgent smpAgentCfg random
+  proxyAgent <- atomically $ newSMPProxyAgent smpAgentCfg random
   return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
@@ -234,8 +231,5 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
 
 newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> STM ProxyAgent
 newSMPProxyAgent smpAgentCfg random = do
-  relays <- TM.empty
-  relaySessions <- TM.empty
-  connectQ <- newTBQueue
   smpAgent <- newSMPClientAgent smpAgentCfg random
-  pure ProxyAgent {relays, relaySessions, connectQ, smpAgent}
+  pure ProxyAgent {smpAgent}
