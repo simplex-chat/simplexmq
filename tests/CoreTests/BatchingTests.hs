@@ -336,10 +336,10 @@ testTHandleAuth v g (C.APublicAuthKey a k) = case a of
 
     ca <- head <$> XS.readCertificates "tests/fixtures/ca.crt"
     serverCert <- head <$> XS.readCertificates "tests/fixtures/server.crt"
-    let serverPub = X.certPubKey . X.signedObject $ X.getSigned serverCert
     serverKey <- head <$> XF.readKeyFile "tests/fixtures/server.key"
     signKey <- either error pure $ C.x509ToPrivate (serverKey, []) >>= C.privKey
-    pure $ Just THAuthClient {serverPeerPubKey = k, serverCertKey = (X.CertificateChain [serverCert, ca], C.signX509 signKey serverPub), clientPrivKey = pk}
+    (C.APublicAuthKey _ serverAuthPub, _) <- atomically $ C.generateAuthKeyPair a g
+    pure $ Just THAuthClient {serverPeerPubKey = k, serverCertKey = (X.CertificateChain [serverCert, ca], C.signX509 signKey $ C.toPubKey C.publicToX509 serverAuthPub), clientPrivKey = pk}
   _ -> pure Nothing
 
 randomSENDCmd :: ProtocolClient SMPVersion ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
