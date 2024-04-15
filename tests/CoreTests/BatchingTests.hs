@@ -12,6 +12,9 @@ import Crypto.Random (ChaChaDRG)
 import qualified Data.ByteString as B
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.List.NonEmpty as L
+import qualified Data.X509 as X
+import qualified Data.X509.CertificateStore as XS
+import qualified Data.X509.File as XF
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
@@ -330,9 +333,13 @@ testTHandleAuth :: VersionSMP -> TVar ChaChaDRG -> C.APublicAuthKey -> IO (Maybe
 testTHandleAuth v g (C.APublicAuthKey a k) = case a of
   C.SX25519 | v >= authCmdsSMPVersion -> do
     (_, pk) <- atomically $ C.generateKeyPair g
-    -- ca <- head <$> XS.readCertificates "tests/fixtures/ca.crt"
-    -- server <- head <$> XS.readCertificates "tests/fixtures/server.crt"
-    pure $ Just THAuthClient {serverPeerPubKey = k, serverCertKey = undefined, clientPrivKey = pk}
+
+    ca <- head <$> XS.readCertificates "tests/fixtures/ca.crt"
+    serverCert <- head <$> XS.readCertificates "tests/fixtures/server.crt"
+    let serverPub = X.certPubKey . X.signedObject $ X.getSigned serverCert
+    serverKey <- head <$> XF.readKeyFile "tests/fixtures/server.key"
+    signKey <- either error pure $ C.x509ToPrivate (serverKey, []) >>= C.privKey
+    pure $ Just THAuthClient {serverPeerPubKey = k, serverCertKey = (X.CertificateChain [serverCert, ca], C.signX509 signKey serverPub), clientPrivKey = pk}
   _ -> pure Nothing
 
 randomSENDCmd :: ProtocolClient SMPVersion ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
