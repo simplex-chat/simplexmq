@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
@@ -51,7 +52,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (CommandError)
-import Simplex.Messaging.Transport (HandshakeError (..), SessionId, THandle (..), THandleParams (..), TransportError (..))
+import Simplex.Messaging.Transport (HandshakeError (..), SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Transport.HTTP2.File
 import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version
@@ -76,8 +77,8 @@ type VersionRangeXFTP = VersionRange XFTPVersion
 pattern VersionXFTP :: Word16 -> VersionXFTP
 pattern VersionXFTP v = Version v
 
-type THandleXFTP c = THandle XFTPVersion c
-type THandleParamsXFTP = THandleParams XFTPVersion
+type THandleXFTP c p = THandle XFTPVersion c p
+type THandleParamsXFTP p = THandleParams XFTPVersion p
 
 initialXFTPVersion :: VersionXFTP
 initialXFTPVersion = VersionXFTP 1
@@ -89,7 +90,7 @@ supportedFileServerVRange :: VersionRangeXFTP
 supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion
 
 -- XFTP protocol does not support handshake
-xftpClientHandshakeStub :: c -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> ExceptT TransportError IO (THandle XFTPVersion c)
+xftpClientHandshakeStub :: c -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
 xftpClientHandshakeStub _c _ks _keyHash _xftpVRange = throwError $ TEHandshake VERSION
 
 data XFTPServerHandshake = XFTPServerHandshake
