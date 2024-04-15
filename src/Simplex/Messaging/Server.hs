@@ -423,7 +423,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                     logError "Unauthorized control port command"
                     hPutStrLn h "AUTH"
 
-runClientTransport :: Transport c => THandleSMP c -> M ()
+runClientTransport :: Transport c => THandleSMP c 'TServer -> M ()
 runClientTransport th@THandle {params = THandleParams {thVersion, sessionId}} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
@@ -471,7 +471,7 @@ cancelSub sub =
     Sub {subThread = SubThread t} -> liftIO $ deRefWeak t >>= mapM_ killThread
     _ -> return ()
 
-receive :: Transport c => THandleSMP c -> Client -> M ()
+receive :: Transport c => THandleSMP c 'TServer -> Client -> M ()
 receive th@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   forever $ do
@@ -492,7 +492,7 @@ receive th@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActi
               VRFailed -> Left (corrId, queueId, ERR AUTH)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
-send :: Transport c => THandleSMP c -> Client -> IO ()
+send :: Transport c => THandleSMP c 'TServer -> Client -> IO ()
 send h@THandle {params} Client {sndQ, sessionId, sndActiveAt} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ do
@@ -507,7 +507,7 @@ send h@THandle {params} Client {sndQ, sessionId, sndActiveAt} = do
       NMSG {} -> 0
       _ -> 1
 
-disconnectTransport :: Transport c => THandle v c -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
+disconnectTransport :: Transport c => THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
 disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disconnectTransport"
   loop
@@ -528,7 +528,7 @@ data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
 -- - the queue or party key do not exist.
 -- In all cases, the time of the verification should depend only on the provided authorization type,
 -- a dummy key is used to run verification in the last two cases, and failure is returned irrespective of the result.
-verifyTransmission :: Maybe (THandleAuth, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> QueueId -> Cmd -> M VerificationResult
+verifyTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> QueueId -> Cmd -> M VerificationResult
 verifyTransmission auth_ tAuth authorized queueId cmd =
   case cmd of
     Cmd SRecipient (NEW k _ _ _) -> pure $ Nothing `verifiedWith` k
@@ -553,7 +553,7 @@ verifyTransmission auth_ tAuth authorized queueId cmd =
       st <- asks queueStore
       atomically $ getQueue st party queueId
 
-verifyCmdAuthorization :: Maybe (THandleAuth, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> C.APublicAuthKey -> Bool
+verifyCmdAuthorization :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> C.APublicAuthKey -> Bool
 verifyCmdAuthorization auth_ tAuth authorized key = maybe False (verify key) tAuth
   where
     verify :: C.APublicAuthKey -> TransmissionAuth -> Bool
@@ -565,12 +565,12 @@ verifyCmdAuthorization auth_ tAuth authorized key = maybe False (verify key) tAu
         C.SX25519 -> verifyCmdAuth auth_ k s authorized
         _ -> verifyCmdAuth auth_ dummyKeyX25519 s authorized `seq` False
 
-verifyCmdAuth :: Maybe (THandleAuth, C.CbNonce) -> C.PublicKeyX25519 -> C.CbAuthenticator -> ByteString -> Bool
+verifyCmdAuth :: Maybe (THandleAuth 'TServer, C.CbNonce) -> C.PublicKeyX25519 -> C.CbAuthenticator -> ByteString -> Bool
 verifyCmdAuth auth_ k authenticator authorized = case auth_ of
-  Just (THandleAuth {privKey}, nonce) -> C.cbVerify k privKey nonce authenticator authorized
+  Just (THAuthServer {serverPrivKey = pk}, nonce) -> C.cbVerify k pk nonce authenticator authorized
   Nothing -> False
 
-dummyVerifyCmd :: Maybe (THandleAuth, C.CbNonce) -> ByteString -> TransmissionAuth -> Bool
+dummyVerifyCmd :: Maybe (THandleAuth 'TServer, C.CbNonce) -> ByteString -> TransmissionAuth -> Bool
 dummyVerifyCmd auth_ authorized = \case
   TASignature (C.ASignature a s) -> C.verify' (dummySignKey a) s authorized
   TAAuthenticator s -> verifyCmdAuth auth_ dummyKeyX25519 s authorized
