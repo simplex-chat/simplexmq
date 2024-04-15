@@ -133,7 +133,12 @@ data Server = Server
   }
 
 data ProxyAgent = ProxyAgent
-  { smpAgent :: SMPClientAgent
+  { relaySessions :: TMap SessionId RelaySession,
+    -- Speed up client lookups by server address.
+    -- if keyhash provided by the client is different from keyhash(es?) received in session,
+    -- server can refuse the request for proxy session.
+    relays :: TMap (TransportHost, ServiceName) (SessionId, C.KeyHash),
+    connectQ :: TBQueue (SMPServer, Either ErrorType (SessionId, VersionRangeSMP, X.CertificateChain, X.SignedExact X.PubKey) -> IO ()) -- sndQ to send relay session to the client client
   }
 
 data RelaySession = RelaySession

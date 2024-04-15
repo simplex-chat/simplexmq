@@ -1021,10 +1021,10 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           ProxyAgent {connectQ} <- asks proxyAgent
           atomically $ writeTBQueue connectQ (relay, reply . response)
           where
-            response :: Either ErrorType (SessionId, X.CertificateChain, X.SignedExact X.PubKey) -> Transmission BrokerMsg
+            response :: Either ErrorType (SessionId, VersionRangeSMP, X.CertificateChain, X.SignedExact X.PubKey) -> Transmission BrokerMsg
             response = \case
               Left e -> err e
-              Right (sessId, chain, key) -> (corrId, queueId, PKEY sessId chain key)
+              Right (sessId, v, chain, key) -> (corrId, queueId, PKEY sessId v chain key)
 
         ok :: Transmission BrokerMsg
         ok = (corrId, queueId, OK)
