@@ -654,9 +654,9 @@ deleteSMPQueues = okSMPCommands DEL
 
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
-createSMPProxySession :: SMPClient -> Maybe SndPrivateAuthKey -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO (SessionId, VersionSMP, C.PublicKeyX25519)
+createSMPProxySession :: SMPClient -> SndPrivateAuthKey -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO (SessionId, VersionSMP, C.PublicKeyX25519)
 createSMPProxySession c spKey relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth =
-  sendSMPCommand c spKey "" (PRXY relayServ proxyAuth) >>= \case
+  sendSMPCommand c (Just spKey) "" (PRXY relayServ proxyAuth) >>= \case
     -- XXX: rfc says sessionId should be in the entityId of response
     PKEY sId vr (chain, key) -> do
       case supportedClientSMPRelayVRange `compatibleVersion` vr of

@@ -1282,7 +1282,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
       | B.null entId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
     PING -> noAuthCmd
-    PRXY {} -> noAuthCmd
+    PRXY {} -> Right cmd -- TODO: noAuthCmd?
     PFWD {}
       | B.null entId -> Left $ CMD NO_ENTITY
       | isNothing auth -> Right cmd

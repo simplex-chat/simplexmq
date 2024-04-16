@@ -1,20 +1,31 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 module SMPProxyTests where
 
+import AgentTests.FunctionalAPITests (runRight)
+import Control.Logger.Simple
+import Control.Monad.Except (runExceptT)
 import Debug.Trace
 import SMPAgentClient (testSMPServer, testSMPServer2)
 import SMPClient
+import qualified SMPClient as SMP
 import ServerTests (sendRecv)
+import Simplex.Messaging.Client (createSMPProxySession, defaultSMPClientConfig, getProtocolClient, thParams)
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Util (tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import Test.Hspec
+import UnliftIO
 
 smpProxyTests :: Spec
 smpProxyTests = focus $ do
@@ -23,16 +34,37 @@ smpProxyTests = focus $ do
     it "checks basic auth in proxy requests" testProxyAuth
   describe "proxy requests" $ do
     describe "bad relay URIs" $ do
-      it "host not resolved" todo
-      it "when SMP port blackholed" todo
-      it "no SMP service at host/port" todo
-      it "bad SMP fingerprint" todo
+      xit "host not resolved" todo
+      xit "when SMP port blackholed" todo
+      xit "no SMP service at host/port" todo
+      xit "bad SMP fingerprint" todo
     it "connects to relay" testProxyConnect
     xit "connects to itself as a relay" todo
     xit "batching proxy requests" todo
-  xdescribe "forwarding requests" $ do
-    it "sender-proxy-relay-recipient works" todo
-    it "similar timing for proxied and direct sends" todo
+  describe "forwarding requests" $ do
+    xit "sender-proxy-relay-recipient works" todo
+    xit "similar timing for proxied and direct sends" todo
+  fit "hello proxy" helloProxy
+
+helloProxy :: IO ()
+helloProxy = do
+  withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ -> do
+    let proxyServ = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
+    let relayServ = proxyServ
+    g <- C.newRandom
+    msgQ <- newTBQueueIO 4
+    c' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig (Just msgQ) (\_ -> pure ())
+    c <- either (fail . show) pure c'
+    THAuthClient {serverPeerPubKey} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams c
+    print serverPeerPubKey
+
+    -- mimic SndQueue
+    (sndPublicKey, sndPrivateKey) <- atomically $ C.generateAuthKeyPair C.SX25519 g
+    (e2ePubKey, e2ePrivKey) <- atomically $ C.generateKeyPair @C.Ed25519 g
+
+    (sid, v, sk) <- runRight $ createSMPProxySession c sndPrivateKey relayServ (Just "correct")
+    logError $ tshow (sid, v, sk)
+    fail "TODO: getProtocolClient for client-proxy and proxy-server"
 
 proxyVRange :: VersionRangeSMP
 proxyVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion
