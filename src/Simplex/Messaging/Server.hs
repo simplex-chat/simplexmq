@@ -69,7 +69,7 @@ import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Client (ProtocolClient (thParams), forwardSMPMessage, smpProxyError)
-import Simplex.Messaging.Client.Agent (getSMPServerClient', lookupSMPServerClient)
+import Simplex.Messaging.Client.Agent (SMPClientAgent (..), SMPClientAgentEvent (..), getSMPServerClient', lookupSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -126,13 +126,13 @@ type M a = ReaderT Env IO a
 smpServer :: TMVar Bool -> ServerConfig -> M ()
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   s <- asks server
-  -- pa <- asks proxyAgent
+  pa <- asks proxyAgent
   expired <- restoreServerMessages
   restoreServerStats expired
   raceAny_
     ( serverThread s "server subscribedQ" subscribedQ subscribers subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ())
-        -- : receiveFromProxyAgent pa
+        : receiveFromProxyAgent pa
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
     `finally` withLock' (savingLock s) "final" (saveServer False)
@@ -186,8 +186,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           atomically $ TM.lookupDelete qId (clientSubs c)
 
     receiveFromProxyAgent :: ProxyAgent -> M ()
-    receiveFromProxyAgent = do
-      forever $ pure ()
+    receiveFromProxyAgent ProxyAgent {smpAgent = SMPClientAgent {agentQ}} =
+      forever $
+        atomically (readTBQueue agentQ) >>= \case
+          CAConnected srv -> logInfo $ "SMP server connected " <> showServer' srv
+          CADisconnected srv [] -> logInfo $ "SMP server disconnected " <> showServer' srv
+          CADisconnected srv subs -> logError $ "SMP server disconnected " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
+          CAReconnected srv -> logInfo $ "SMP server reconnected " <> showServer' srv
+          CAResubscribed srv subs -> logError $ "SMP server resubscribed " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
+          CASubError srv errs -> logError $ "SMP server subscription errors " <> showServer' srv <> " / errors: " <> tshow (length errs)
+      where
+        showServer' = decodeLatin1 . strEncode . host
 
     expireMessagesThread_ :: ServerConfig -> [M ()]
     expireMessagesThread_ ServerConfig {messageExpiration = Just msgExp} = [expireMessages msgExp]

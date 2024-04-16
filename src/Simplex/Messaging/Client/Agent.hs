@@ -98,6 +98,7 @@ data SMPClientAgent = SMPClientAgent
     agentQ :: TBQueue SMPClientAgentEvent,
     randomDrg :: TVar ChaChaDRG,
     smpClients :: TMap SMPServer SMPClientVar,
+    smpSessions :: TMap SessionId SMPClient,
     -- TODO add lookup by session ID
     srvSubs :: TMap SMPServer (TMap SMPSub C.APrivateAuthKey),
     pendingSrvSubs :: TMap SMPServer (TMap SMPSub C.APrivateAuthKey),
@@ -136,6 +137,7 @@ newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg
   msgQ <- newTBQueue msgQSize
   agentQ <- newTBQueue agentQSize
   smpClients <- TM.empty
+  smpSessions <- TM.empty
   srvSubs <- TM.empty
   pendingSrvSubs <- TM.empty
   reconnections <- newTVar []
@@ -148,6 +150,7 @@ newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg
         agentQ,
         randomDrg,
         smpClients,
+        smpSessions,
         srvSubs,
         pendingSrvSubs,
         reconnections,
@@ -156,7 +159,7 @@ newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg
       }
 
 getSMPServerClient' :: SMPClientAgent -> SMPServer -> ExceptT SMPClientError IO SMPClient
-getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg, workerSeq} srv =
+getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, randomDrg, workerSeq} srv =
   atomically getClientVar >>= either newSMPClient waitForSMPClient
   where
     getClientVar :: STM (Either SMPClientVar SMPClientVar)
@@ -179,7 +182,9 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg, wo
           tryE (connectClient v) >>= \r -> case r of
             Right smp -> do
               logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
-              atomically $ putTMVar (sessionVar v) r
+              atomically $ do
+                putTMVar (sessionVar v) r
+                TM.insert (sessionId $ thParams smp) smp smpSessions
               successAction smp
             Left e -> do
               if e == PCENetworkError || e == PCEResponseTimeout
@@ -201,13 +206,14 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg, wo
     connectClient v = ExceptT $ getProtocolClient randomDrg (1, srv, Nothing) (smpCfg agentCfg) (Just msgQ) (clientDisconnected v)
 
     clientDisconnected :: SMPClientVar -> SMPClient -> IO ()
-    clientDisconnected v _ = do
-      removeClientAndSubs v >>= (`forM_` serverDown)
+    clientDisconnected v smp = do
+      removeClientAndSubs v smp >>= (`forM_` serverDown)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
-    removeClientAndSubs :: SMPClientVar -> IO (Maybe (Map SMPSub C.APrivateAuthKey))
-    removeClientAndSubs v = atomically $ do
+    removeClientAndSubs :: SMPClientVar -> SMPClient -> IO (Maybe (Map SMPSub C.APrivateAuthKey))
+    removeClientAndSubs v smp = atomically $ do
       removeSessVar v srv smpClients
+      TM.delete (sessionId $ thParams smp) smpSessions
       TM.lookupDelete srv (srvSubs ca) >>= mapM updateSubs
       where
         updateSubs sVar = do
@@ -273,7 +279,7 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg, wo
     notify evt = atomically $ writeTBQueue (agentQ ca) evt
 
 lookupSMPServerClient :: SMPClientAgent -> SessionId -> STM (Maybe SMPClient)
-lookupSMPServerClient _a _sessId = undefined
+lookupSMPServerClient SMPClientAgent {smpSessions} sessId = TM.lookup sessId smpSessions
 
 closeSMPClientAgent :: SMPClientAgent -> IO ()
 closeSMPClientAgent c = do
