@@ -93,7 +93,6 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
-import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -697,21 +696,31 @@ proxySMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}
   (cmdPubKey, cmdKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
   let cmdSecret = C.dh' serverKey cmdKey
   nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
+
   t <- mkMsgT (CorrId corrId)
-  et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce (tEncode t) blockSize
+  b <- case batchTransmissions (batch thParams) (blockSize thParams) [Right t] of
+    [] -> throwError $ PCETransportError TELargeMsg
+    TBError e _ : _ -> throwError $ PCETransportError e
+    TBTransmission s _ : _ -> pure s
+    TBTransmissions s _ _ : _ -> pure s
+  et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedMsgLength
+
   sendSMPCommand c Nothing sId (PFWD cmdPubKey et) >>= \case
     RRES (EncFwdResponse efr) -> do
-      relayReplyT <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (serverNonce corrId) efr
-      error "TODO: process response"
+      t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.cbNonce $ B.reverse corrId) efr
+      case tParse thParams t' of
+        t'' :| [] -> case tDecodeParseValidate thParams t'' of
+          (_auth, _signed, (_c, _e, r)) -> case r of
+            Left e -> throwError $ PCEProtocolError e
+            Right OK -> pure ()
+            Right u -> throwE . PCEUnexpectedResponse $ bshow u
+        _ -> throwError $ PCETransportError TEBadBlock
     r -> throwE . PCEUnexpectedResponse $ bshow r
   where
-    THandleParams {blockSize, thAuth} = thParams
-    serverNonce :: ByteString -> C.CbNonce
-    serverNonce = C.cbNonce . id -- todo flip or something
     mkMsgT :: CorrId -> ExceptT SMPClientError IO SentRawTransmission
     mkMsgT corrId = do
       let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, senderId, Cmd SSender $ SEND flags msg)
-      auth <- liftEitherWith PCETransportError $ authTransmission thAuth msgSpKey corrId tForAuth
+      auth <- liftEitherWith PCETransportError $ authTransmission (thAuth thParams) msgSpKey corrId tForAuth
       pure (auth, tToSend)
 
 -- this method is used in the proxy
@@ -720,16 +729,21 @@ proxySMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}
 -- proxy should send PRES to the client with EncResponse
 forwardSMPMessage :: SMPClient -> CorrId -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
 forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdKey fwdTransmission = do
-  (cmdPubKey, cmdKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
-  serverKey <- maybe (fail "where's server key?") (\THAuthClient {serverPeerPubKey} -> pure serverPeerPubKey) thAuth
-  let cmdSecret = C.dh' serverKey cmdKey
+  -- prepare params
+  cmdSecret <- case thAuth of
+    Nothing -> throwError $ PCEProtocolError INTERNAL
+    Just THAuthClient {serverPeerPubKey, clientPrivKey} -> pure $ C.dh' serverPeerPubKey clientPrivKey
   nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
-
-  let fwdT = FwdTransmission {fwdCorrId = fwdCorrId, fwdKey, fwdTransmission}
+  -- wrap
+  let fwdT = FwdTransmission {fwdCorrId, fwdKey, fwdTransmission}
   eft <- liftEitherWith PCECryptoError $ EncFwdTransmission <$> C.cbEncrypt cmdSecret nonce (smpEncode fwdT) blockSize
-
+  -- send
   sendSMPCommand c Nothing "" (RFWD eft) >>= \case
-    RRES (EncFwdResponse r) -> error "TODO: decrypt forwarded response"
+    RRES (EncFwdResponse efr) -> do
+      -- unwrap
+      r' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.cbNonce $ B.reverse corrId) efr
+      FwdResponse {fwdCorrId = _, fwdResponse} <- liftEitherWith (const $ PCEResponseError BLOCK) $ smpDecode r'
+      pure fwdResponse
     r -> throwE . PCEUnexpectedResponse $ bshow r
   where
     THandleParams {blockSize, thAuth} = thParams
