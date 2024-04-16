@@ -659,7 +659,7 @@ createSMPProxySession :: SMPClient -> Maybe SndPrivateAuthKey -> SMPServer -> Ma
 createSMPProxySession c spKey relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth =
   sendSMPCommand c spKey "" (PRXY relayServ proxyAuth) >>= \case
     -- XXX: rfc says sessionId should be in the entityId of response
-    PKEY sId vr chain key -> do
+    PKEY sId vr (chain, key) -> do
       case supportedClientSMPRelayVRange `compatibleVersion` vr of
         Just (Compatible v) -> liftEitherWith x509Error $ (sId,v,) <$> validateRelay chain key
         Nothing -> throwE PCEIncompatibleHost
@@ -693,7 +693,7 @@ proxySMPMessage ::
   MsgFlags ->
   MsgBody ->
   ExceptT SMPClientError IO ()
-proxySMPMessage c@ProtocolClient {thParams = THandleParams {blockSize}, client_ = PClient {clientCorrId = g}} sId v serverKey msgSpKey senderId flags msg = do
+proxySMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} sId v serverKey msgSpKey senderId flags msg = do
   (cmdPubKey, cmdKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
   let cmdSecret = C.dh' serverKey cmdKey
   nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
@@ -718,14 +718,14 @@ proxySMPMessage c@ProtocolClient {thParams = THandleParams {blockSize}, client_ 
 -- sends RFWD :: EncFwdTransmission -> Command Sender
 -- receives RRES :: EncFwdResponse -> BrokerMsg
 -- proxy should send PRES to the client with EncResponse
-forwardSMPMessage :: SMPClient -> C.CbNonce -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
-forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} nonce@(C.CbNonce fwdCorrId) fwdKey fwdTransmission = do
+forwardSMPMessage :: SMPClient -> CorrId -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
+forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdKey fwdTransmission = do
   (cmdPubKey, cmdKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
   serverKey <- maybe (fail "where's server key?") (\THAuthClient {serverPeerPubKey} -> pure serverPeerPubKey) thAuth
   let cmdSecret = C.dh' serverKey cmdKey
   nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
 
-  let fwdT = FwdTransmission {fwdCorrId, fwdKey, fwdTransmission}
+  let fwdT = FwdTransmission {fwdCorrId = fwdCorrId, fwdKey, fwdTransmission}
   eft <- liftEitherWith PCECryptoError $ EncFwdTransmission <$> C.cbEncrypt cmdSecret nonce (smpEncode fwdT) blockSize
 
   sendSMPCommand c Nothing "" (RFWD eft) >>= \case
@@ -838,16 +838,13 @@ mkTransmission ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCo
       TM.insert corrId r sentCommands
       pure r
 
-authTransmission :: Maybe THandleAuth -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError (Maybe TransmissionAuth)
-authTransmission thAuth = authTransmission_ (peerPubKey <$> thAuth)
-
-authTransmission_ :: Maybe C.PublicKeyX25519 -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError (Maybe TransmissionAuth)
-authTransmission_ authPub_ authPriv_ (CorrId corrId) t = traverse authenticate authPriv_
+authTransmission :: Maybe (THandleAuth 'TClient) -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError (Maybe TransmissionAuth)
+authTransmission thAuth pKey_ (CorrId corrId) t = traverse authenticate pKey_
   where
     authenticate :: C.APrivateAuthKey -> Either TransportError TransmissionAuth
     authenticate (C.APrivateAuthKey a pk) = case a of
-      C.SX25519 -> case authPub_ of
-        Just peerPubKey -> Right $ TAAuthenticator $ C.cbAuthenticate peerPubKey pk (C.cbNonce corrId) t
+      C.SX25519 -> case thAuth of
+        Just THAuthClient {serverPeerPubKey = k} -> Right $ TAAuthenticator $ C.cbAuthenticate k pk (C.cbNonce corrId) t
         Nothing -> Left TENoServerAuth
       C.SEd25519 -> sign pk
       C.SEd448 -> sign pk

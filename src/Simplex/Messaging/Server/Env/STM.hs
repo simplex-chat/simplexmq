@@ -133,12 +133,7 @@ data Server = Server
   }
 
 data ProxyAgent = ProxyAgent
-  { relaySessions :: TMap SessionId RelaySession,
-    -- Speed up client lookups by server address.
-    -- if keyhash provided by the client is different from keyhash(es?) received in session,
-    -- server can refuse the request for proxy session.
-    relays :: TMap (TransportHost, ServiceName) (SessionId, C.KeyHash),
-    connectQ :: TBQueue (SMPServer, Either ErrorType (SessionId, VersionRangeSMP, X.CertificateChain, X.SignedExact X.PubKey) -> IO ()) -- sndQ to send relay session to the client client
+  { smpAgent :: SMPClientAgent
   }
 
 data RelaySession = RelaySession
@@ -236,9 +231,6 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
       Nothing -> id
       Just NtfCreds {notifierId} -> M.insert notifierId (recipientId q)
 
-newSMPProxyAgent :: IO ProxyAgent
-newSMPProxyAgent = do
-  relays <- atomically TM.empty
-  relaySessions <- atomically TM.empty
-  connectQ <- newTBQueueIO 64
-  pure ProxyAgent {relays, relaySessions, connectQ}
+newSMPProxyAgent smpAgentCfg random = do
+  smpAgent <- newSMPClientAgent smpAgentCfg random
+  pure ProxyAgent {smpAgent}

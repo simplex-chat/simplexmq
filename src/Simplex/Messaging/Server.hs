@@ -613,28 +613,43 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
     -- TODO limit client concurrency
     forkIO $ mapM_ reply . L.nonEmpty =<< mapConcurrently processProxiedCmd cmds
   where
-    reply :: MonadIO m => Transmission BrokerMsg -> m ()
-    reply = atomically . writeTBQueue sndQ . pure
-    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M ()
+    reply :: MonadIO m => NonEmpty (Transmission BrokerMsg) -> m ()
+    reply = atomically . writeTBQueue sndQ
+    processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Transmission BrokerMsg)
+    processProxiedCmd (corrId, sessId, command) = (corrId, sessId,) <$> case command of
+      PRXY srv auth -> ifM allowProxy getRelay (pure $ ERR AUTH)
+        where
+          allowProxy = do
+            ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
+            pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
+          getRelay = do
+            ProxyAgent {smpAgent} <- asks proxyAgent
+            -- TODO catch IO errors too
+            liftIO $ proxyResp <$> runExceptT (getSMPServerClient' smpAgent srv)
+            where
+              proxyResp = \case
+                Right smp ->
+                  let THandleParams {sessionId = srvSessId, thAuth} = thParams smp
+                      vr = error "TODO: return version range"
+                   in case thAuth of
+                        Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
+                        Nothing -> ERR $ PROXY TRANSPORT -- TODO different error?
+                Left err -> ERR $ smpProxyError err
+      PFWD pubKey encBlock -> do
+        ProxyAgent {smpAgent} <- asks proxyAgent
+        atomically (lookupSMPServerClient smpAgent sessId) >>= \case
+          Just smp -> liftIO $ either (ERR . smpProxyError) PRES <$> runExceptT (forwardSMPMessage smp corrId pubKey encBlock)
+          Nothing -> pure $ ERR $ PROXY NO_SESSION
+    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Either (Transmission (Command 'ProxiedClient)) (Transmission BrokerMsg))
     processCommand (qr_, (corrId, queueId, cmd)) = do
       st <- asks queueStore
       case cmd of
-        Cmd SSender command ->
-          case command of
-            SEND flags msgBody -> reply =<< withQueue (\qr -> sendMessage qr flags msgBody)
-            PING -> reply (corrId, "", PONG)
-            PRXY relay auth ->
-              ifM
-                allowProxy
-                (setupProxy relay)
-                (reply $ err AUTH)
-              where
-                allowProxy = do
-                  ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
-                  pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
-            PFWD _dhPub _encBlock -> error "TODO: processCommand.PFWD"
-            RFWD _encBlock -> error "TODO: processCommand.RFWD"
-        Cmd SNotifier NSUB -> reply =<< subscribeNotifications
+        Cmd SProxiedClient command -> pure $ Left (corrId, queueId, command)
+        Cmd SSender command -> Right <$> case command of
+          SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
+          PING -> pure (corrId, "", PONG)
+          RFWD encBlock -> (corrId, "",) <$> processForwardedCommand encBlock
+        Cmd SNotifier NSUB -> Right <$> subscribeNotifications
         Cmd SRecipient command ->
           Right <$> case command of
             NEW rKey dhKey auth subMode ->
@@ -1011,20 +1026,6 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           atomically (deleteQueue st queueId $>>= \q -> delMsgQueue ms queueId $> Right q) >>= \case
             Right q -> updateDeletedStats q $> ok
             Left e -> pure $ err e
-
-        setupProxy :: SMPServer -> M ()
-        setupProxy relay = do
-          -- decide if to use existing session or to create a new one
-          -- if exists, reply straight away
-          -- TODO
-          -- if not, request session via the queue
-          ProxyAgent {connectQ} <- asks proxyAgent
-          atomically $ writeTBQueue connectQ (relay, reply . response)
-          where
-            response :: Either ErrorType (SessionId, VersionRangeSMP, X.CertificateChain, X.SignedExact X.PubKey) -> Transmission BrokerMsg
-            response = \case
-              Left e -> err e
-              Right (sessId, v, chain, key) -> (corrId, queueId, PKEY sessId v chain key)
 
         ok :: Transmission BrokerMsg
         ok = (corrId, queueId, OK)

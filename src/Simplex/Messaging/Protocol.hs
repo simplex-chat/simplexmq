@@ -455,11 +455,7 @@ data BrokerMsg where
   NID :: NotifierId -> RcvNtfPublicDhKey -> BrokerMsg
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
   -- Should include certificate chain
-<<<<<<< HEAD
-  PKEY :: SessionId -> (X.CertificateChain, X.SignedExact X.PubKey) -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
-=======
-  PKEY :: SessionId -> VersionRangeSMP -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
->>>>>>> a18c7bbc (update pkey)
+  PKEY :: SessionId -> VersionRangeSMP -> (X.CertificateChain, X.SignedExact X.PubKey) -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
   RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
   PRES :: EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
@@ -1350,11 +1346,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
-<<<<<<< HEAD
-    PKEY sessId (cert, key) -> e (PKEY_, ' ', sessId, C.encodeCertChain cert, C.SignedObject key)
-=======
-    PKEY sid vr cert key -> e (PKEY_, ' ', sid, vr, C.encodeCertChain cert, C.SignedObject key)
->>>>>>> a18c7bbc (update pkey)
+    PKEY sid vr (cert, key) -> e (PKEY_, ' ', sid, vr, C.encodeCertChain cert, C.SignedObject key)
     RRES (EncFwdResponse encBlock) -> e (RRES_, ' ', Tail encBlock)
     PRES (EncResponse encBlock) -> e (PRES_, ' ', Tail encBlock)
     END -> e END_
@@ -1374,7 +1366,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     IDS_ -> IDS <$> (QIK <$> _smpP <*> smpP <*> smpP)
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
-    PKEY_ -> PKEY <$> _smpP <*> ((,) <$> C.certChainP <*> (C.getSignedExact <$> smpP))
+    PKEY_ -> PKEY <$> _smpP <*> smpP <*> ((,) <$> C.certChainP <*> (C.getSignedExact <$> smpP))
     RRES_ -> RRES <$> (EncFwdResponse . unTail <$> _smpP)
     PRES_ -> PRES <$> (EncResponse . unTail <$> _smpP)
     END_ -> pure END
