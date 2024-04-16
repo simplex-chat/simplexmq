@@ -129,7 +129,6 @@ module Simplex.Messaging.Protocol
     EncFwdTransmission (..),
     EncResponse (..),
     EncTransmission (..),
-    EncFwdTransmission (..),
     FwdResponse (..),
     FwdTransmission (..),
     MsgFlags (..),

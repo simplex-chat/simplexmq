@@ -660,12 +660,12 @@ createSMPProxySession c spKey relayServ@ProtocolServer {keyHash = C.KeyHash kh} 
     -- XXX: rfc says sessionId should be in the entityId of response
     PKEY sId vr (chain, key) -> do
       case supportedClientSMPRelayVRange `compatibleVersion` vr of
-        Nothing -> throwE PCEIncompatibleHost
+        Nothing -> throwE PCEIncompatibleHost -- TODO different error
         Just (Compatible v) -> liftEitherWith x509Error $ (sId,v,) <$> validateRelay chain key
     r -> throwE . PCEUnexpectedResponse $ bshow r
   where
     x509Error :: String -> SMPClientError
-    x509Error _msg = PCEResponseError $ error "TODO: x509 error"
+    x509Error _msg = PCEResponseError $ error "TODO: x509 error" -- TODO different error
     validateRelay :: X.CertificateChain -> X.SignedExact X.PubKey -> Either String C.PublicKeyX25519
     validateRelay (X.CertificateChain cert) exact = do
       serverKey <- case cert of
@@ -692,33 +692,37 @@ proxySMPMessage ::
   MsgFlags ->
   MsgBody ->
   ExceptT SMPClientError IO ()
-proxySMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} sId v serverKey msgSpKey senderId flags msg = do
+-- TODO use version
+proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g}} sessionId _v serverKey spKey sId flags msg = do
   -- prepare params
-  (cmdPubKey, cmdKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
-  let cmdSecret = C.dh' serverKey cmdKey
-  nonce@(C.CbNonce corrId') <- liftIO . atomically $ C.randomCbNonce g
-  let corrId = CorrId corrId'
+  let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
+      serverThParams = proxyThParams {sessionId, thAuth = serverThAuth}
+  (cmdPubKey, cmdPrivKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
+  let cmdSecret = C.dh' serverKey cmdPrivKey
+  nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
   -- encode
-  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, senderId, Cmd SSender $ SEND flags msg)
-  auth <- liftEitherWith PCETransportError $ authTransmission (thAuth thParams) msgSpKey corrId tForAuth
-  b <- case batchTransmissions (batch thParams) (blockSize thParams) [Right (auth, tToSend)] of
-    [] -> throwError $ PCETransportError TELargeMsg
-    TBError e _ : _ -> throwError $ PCETransportError e
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId corrId, sId, Cmd SSender $ SEND flags msg)
+  auth <- liftEitherWith PCETransportError $ authTransmission serverThAuth spKey nonce tForAuth
+  b <- case batchTransmissions (batch serverThParams) (blockSize serverThParams) [Right (auth, tToSend)] of
+    [] -> throwE $ PCETransportError TELargeMsg -- some other error. Internal?
+    TBError e _ : _ -> throwE $ PCETransportError e -- large message error?
     TBTransmission s _ : _ -> pure s
     TBTransmissions s _ _ : _ -> pure s
   et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedMsgLength
   -- send
   sendSMPCommand c Nothing sId (PFWD cmdPubKey et) >>= \case
+    -- TODO support PKEY + resend?
     PRES (EncResponse er) -> do
-      t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.cbNonce $ B.reverse corrId') er
-      case tParse thParams t' of
-        t'' :| [] -> case tDecodeParseValidate thParams t'' of
+      t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.reverseNonce nonce) er
+      case tParse proxyThParams t' of
+        t'' :| [] -> case tDecodeParseValidate proxyThParams t'' of
           (_auth, _signed, (_c, _e, r)) -> case r of -- TODO: verify
-            Left e -> throwError $ PCEProtocolError e
+            Left e -> throwE $ PCEResponseError e
             Right OK -> pure ()
-            Right u -> throwE . PCEUnexpectedResponse $ bshow u
-        _ -> throwError $ PCETransportError TEBadBlock
-    r -> throwE . PCEUnexpectedResponse $ bshow r
+            Right (ERR e) -> throwE $ PCEProtocolError e
+            Right u -> throwE . PCEUnexpectedResponse $ bshow u -- possibly differentiate unexpected response from server/proxy
+        _ -> throwE $ PCETransportError TEBadBlock
+    r -> throwE . PCEUnexpectedResponse $ bshow r -- from proxy
 
 -- this method is used in the proxy
 -- sends RFWD :: EncFwdTransmission -> Command Sender
@@ -727,18 +731,18 @@ proxySMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}
 forwardSMPMessage :: SMPClient -> CorrId -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
 forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdKey fwdTransmission = do
   -- prepare params
-  cmdSecret <- case thAuth thParams of
-    Nothing -> throwError $ PCEProtocolError INTERNAL
+  sessSecret <- case thAuth thParams of
+    Nothing -> throwError $ PCEProtocolError INTERNAL -- different error - proxy didn't pass key?
     Just THAuthClient {serverPeerPubKey, clientPrivKey} -> pure $ C.dh' serverPeerPubKey clientPrivKey
-  nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
+  nonce <- liftIO . atomically $ C.randomCbNonce g
   -- wrap
   let fwdT = FwdTransmission {fwdCorrId, fwdKey, fwdTransmission}
-  eft <- liftEitherWith PCECryptoError $ EncFwdTransmission <$> C.cbEncrypt cmdSecret nonce (smpEncode fwdT) paddedForwardedMsgLength
+  eft <- liftEitherWith PCECryptoError $ EncFwdTransmission <$> C.cbEncrypt sessSecret nonce (smpEncode fwdT) paddedForwardedMsgLength
   -- send
-  sendSMPCommand c Nothing "" (RFWD eft) >>= \case
+  sendProtocolCommand_ c (Just nonce) Nothing "" (Cmd SSender (RFWD eft)) >>= \case
     RRES (EncFwdResponse efr) -> do
       -- unwrap
-      r' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.cbNonce $ B.reverse corrId) efr
+      r' <- liftEitherWith PCECryptoError $ C.cbDecrypt sessSecret (C.reverseNonce nonce) efr
       FwdResponse {fwdCorrId = _, fwdResponse} <- liftEitherWith (const $ PCEResponseError BLOCK) $ smpDecode r'
       pure fwdResponse
     r -> throwE . PCEUnexpectedResponse $ bshow r
@@ -806,8 +810,11 @@ sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
 
 -- | Send Protocol command
 sendProtocolCommand :: forall v err msg. ProtocolEncoding v err (ProtoCommand msg) => ProtocolClient v err msg -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize}} pKey entId cmd =
-  ExceptT $ uncurry sendRecv =<< mkTransmission c (pKey, entId, cmd)
+sendProtocolCommand c = sendProtocolCommand_ c Nothing
+
+sendProtocolCommand_ :: forall v err msg. ProtocolEncoding v err (ProtoCommand msg) => ProtocolClient v err msg -> Maybe C.CbNonce -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
+sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize}} nonce_ pKey entId cmd =
+  ExceptT $ uncurry sendRecv =<< mkTransmission_ c nonce_ (pKey, entId, cmd)
   where
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: Either TransportError SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
@@ -831,29 +838,30 @@ getResponse ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} Requ
       Nothing -> pure $ Left PCEResponseTimeout
   pure Response {entityId, response}
 
-mkTransmission :: forall v err msg. ProtocolEncoding v err (ProtoCommand msg) => ProtocolClient v err msg -> ClientCommand msg -> IO (PCTransmission err msg)
-mkTransmission ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} (pKey_, entId, cmd) = do
-  corrId <- atomically getNextCorrId
-  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, entId, cmd)
-      auth = authTransmission (thAuth thParams) pKey_ corrId tForAuth
-  r <- atomically $ mkRequest corrId
+mkTransmission :: ProtocolEncoding v err (ProtoCommand msg) => ProtocolClient v err msg -> ClientCommand msg -> IO (PCTransmission err msg)
+mkTransmission c = mkTransmission_ c Nothing
+
+mkTransmission_ :: forall v err msg. ProtocolEncoding v err (ProtoCommand msg) => ProtocolClient v err msg -> Maybe C.CbNonce -> ClientCommand msg -> IO (PCTransmission err msg)
+mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} nonce_ (pKey_, entId, cmd) = do
+  nonce@(C.CbNonce corrId) <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entId, cmd)
+      auth = authTransmission (thAuth thParams) pKey_ nonce tForAuth
+  r <- atomically $ mkRequest (CorrId corrId)
   pure ((,tToSend) <$> auth, r)
   where
-    getNextCorrId :: STM CorrId
-    getNextCorrId = CorrId <$> C.randomBytes 24 clientCorrId -- also used as nonce
     mkRequest :: CorrId -> STM (Request err msg)
     mkRequest corrId = do
       r <- Request entId <$> newEmptyTMVar
       TM.insert corrId r sentCommands
       pure r
 
-authTransmission :: Maybe (THandleAuth 'TClient) -> Maybe C.APrivateAuthKey -> CorrId -> ByteString -> Either TransportError (Maybe TransmissionAuth)
-authTransmission thAuth pKey_ (CorrId corrId) t = traverse authenticate pKey_
+authTransmission :: Maybe (THandleAuth 'TClient) -> Maybe C.APrivateAuthKey -> C.CbNonce -> ByteString -> Either TransportError (Maybe TransmissionAuth)
+authTransmission thAuth pKey_ nonce t = traverse authenticate pKey_
   where
     authenticate :: C.APrivateAuthKey -> Either TransportError TransmissionAuth
     authenticate (C.APrivateAuthKey a pk) = case a of
       C.SX25519 -> case thAuth of
-        Just THAuthClient {serverPeerPubKey = k} -> Right $ TAAuthenticator $ C.cbAuthenticate k pk (C.cbNonce corrId) t
+        Just THAuthClient {serverPeerPubKey = k} -> Right $ TAAuthenticator $ C.cbAuthenticate k pk nonce t
         Nothing -> Left TENoServerAuth
       C.SEd25519 -> sign pk
       C.SEd448 -> sign pk

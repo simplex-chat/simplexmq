@@ -43,8 +43,6 @@ import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, l
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
-import qualified Data.X509 as X
-import Simplex.Messaging.Transport.Client (TransportHost)
 
 data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport)],
@@ -231,6 +229,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
       Nothing -> id
       Just NtfCreds {notifierId} -> M.insert notifierId (recipientId q)
 
+newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> STM ProxyAgent
 newSMPProxyAgent smpAgentCfg random = do
   smpAgent <- newSMPClientAgent smpAgentCfg random
   pure ProxyAgent {smpAgent}
