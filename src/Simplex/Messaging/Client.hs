@@ -660,8 +660,8 @@ createSMPProxySession c spKey relayServ@ProtocolServer {keyHash = C.KeyHash kh} 
     -- XXX: rfc says sessionId should be in the entityId of response
     PKEY sId vr (chain, key) -> do
       case supportedClientSMPRelayVRange `compatibleVersion` vr of
-        Just (Compatible v) -> liftEitherWith x509Error $ (sId,v,) <$> validateRelay chain key
         Nothing -> throwE PCEIncompatibleHost
+        Just (Compatible v) -> liftEitherWith x509Error $ (sId,v,) <$> validateRelay chain key
     r -> throwE . PCEUnexpectedResponse $ bshow r
   where
     x509Error :: String -> SMPClientError
@@ -693,35 +693,32 @@ proxySMPMessage ::
   MsgBody ->
   ExceptT SMPClientError IO ()
 proxySMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} sId v serverKey msgSpKey senderId flags msg = do
+  -- prepare params
   (cmdPubKey, cmdKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
   let cmdSecret = C.dh' serverKey cmdKey
-  nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
-
-  t <- mkMsgT (CorrId corrId)
-  b <- case batchTransmissions (batch thParams) (blockSize thParams) [Right t] of
+  nonce@(C.CbNonce corrId') <- liftIO . atomically $ C.randomCbNonce g
+  let corrId = CorrId corrId'
+  -- encode
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, senderId, Cmd SSender $ SEND flags msg)
+  auth <- liftEitherWith PCETransportError $ authTransmission (thAuth thParams) msgSpKey corrId tForAuth
+  b <- case batchTransmissions (batch thParams) (blockSize thParams) [Right (auth, tToSend)] of
     [] -> throwError $ PCETransportError TELargeMsg
     TBError e _ : _ -> throwError $ PCETransportError e
     TBTransmission s _ : _ -> pure s
     TBTransmissions s _ _ : _ -> pure s
   et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedMsgLength
-
+  -- send
   sendSMPCommand c Nothing sId (PFWD cmdPubKey et) >>= \case
-    RRES (EncFwdResponse efr) -> do
-      t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.cbNonce $ B.reverse corrId) efr
+    PRES (EncResponse er) -> do
+      t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.cbNonce $ B.reverse corrId') er
       case tParse thParams t' of
         t'' :| [] -> case tDecodeParseValidate thParams t'' of
-          (_auth, _signed, (_c, _e, r)) -> case r of
+          (_auth, _signed, (_c, _e, r)) -> case r of -- TODO: verify
             Left e -> throwError $ PCEProtocolError e
             Right OK -> pure ()
             Right u -> throwE . PCEUnexpectedResponse $ bshow u
         _ -> throwError $ PCETransportError TEBadBlock
     r -> throwE . PCEUnexpectedResponse $ bshow r
-  where
-    mkMsgT :: CorrId -> ExceptT SMPClientError IO SentRawTransmission
-    mkMsgT corrId = do
-      let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, senderId, Cmd SSender $ SEND flags msg)
-      auth <- liftEitherWith PCETransportError $ authTransmission (thAuth thParams) msgSpKey corrId tForAuth
-      pure (auth, tToSend)
 
 -- this method is used in the proxy
 -- sends RFWD :: EncFwdTransmission -> Command Sender
@@ -730,13 +727,13 @@ proxySMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}
 forwardSMPMessage :: SMPClient -> CorrId -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
 forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdKey fwdTransmission = do
   -- prepare params
-  cmdSecret <- case thAuth of
+  cmdSecret <- case thAuth thParams of
     Nothing -> throwError $ PCEProtocolError INTERNAL
     Just THAuthClient {serverPeerPubKey, clientPrivKey} -> pure $ C.dh' serverPeerPubKey clientPrivKey
   nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
   -- wrap
   let fwdT = FwdTransmission {fwdCorrId, fwdKey, fwdTransmission}
-  eft <- liftEitherWith PCECryptoError $ EncFwdTransmission <$> C.cbEncrypt cmdSecret nonce (smpEncode fwdT) blockSize
+  eft <- liftEitherWith PCECryptoError $ EncFwdTransmission <$> C.cbEncrypt cmdSecret nonce (smpEncode fwdT) paddedForwardedMsgLength
   -- send
   sendSMPCommand c Nothing "" (RFWD eft) >>= \case
     RRES (EncFwdResponse efr) -> do
@@ -745,8 +742,6 @@ forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = 
       FwdResponse {fwdCorrId = _, fwdResponse} <- liftEitherWith (const $ PCEResponseError BLOCK) $ smpDecode r'
       pure fwdResponse
     r -> throwE . PCEUnexpectedResponse $ bshow r
-  where
-    THandleParams {blockSize, thAuth} = thParams
 
 okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateAuthKey -> QueueId -> ExceptT SMPClientError IO ()
 okSMPCommand cmd c pKey qId =
