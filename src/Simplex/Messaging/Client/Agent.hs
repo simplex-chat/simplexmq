@@ -272,6 +272,9 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, msgQ, randomDrg, wo
     notify :: SMPClientAgentEvent -> IO ()
     notify evt = atomically $ writeTBQueue (agentQ ca) evt
 
+lookupSMPServerClient :: SMPClientAgent -> SessionId -> STM (Maybe SMPClient)
+lookupSMPServerClient _a _sessId = undefined
+
 closeSMPClientAgent :: SMPClientAgent -> IO ()
 closeSMPClientAgent c = do
   closeSMPServerClients c

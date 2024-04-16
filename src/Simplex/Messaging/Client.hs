@@ -54,6 +54,9 @@ module Simplex.Messaging.Client
     suspendSMPQueue,
     deleteSMPQueue,
     deleteSMPQueues,
+    createSMPProxySession,
+    proxySMPMessage,
+    forwardSMPMessage,
     sendProtocolCommand,
 
     -- * Supporting types and client configuration
@@ -661,7 +664,7 @@ proxySMPMessage _proxyClnt _relaySess _spKey _sId _flags _msg = undefined
 -- sends RFWD :: EncFwdTransmission -> Command Sender
 -- receives RRES :: EncFwdResponse -> BrokerMsg
 -- server should send PRES to the client with EncResponse
-forwardSMPMessage :: SMPClient -> C.CbNonce -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
+forwardSMPMessage :: SMPClient -> CorrId -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
 forwardSMPMessage _relayClnt _corrId _cmdKey _encTrans = undefined
 
 okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateAuthKey -> QueueId -> ExceptT SMPClientError IO ()

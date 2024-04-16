@@ -43,6 +43,8 @@ module Simplex.Messaging.Protocol
   ( -- * SMP protocol parameters
     supportedSMPClientVRange,
     maxMessageLength,
+    paddedProxiedMsgLength,
+    paddedForwardedMsgLength,
     e2eEncConfirmationLength,
     e2eEncMessageLength,
 
@@ -124,8 +126,12 @@ module Simplex.Messaging.Protocol
     SMPMsgMeta (..),
     NMsgMeta (..),
     MsgFlags (..),
-    EncTransmission,
-    EncResponse,
+    EncTransmission (..),
+    EncResponse (..),
+    FwdResponse (..),
+    EncFwdResponse (..),
+    FwdTransmission (..),
+    EncFwdTransmission (..),
     initialSMPClientVersion,
     userProtocol,
     rcvMessageMeta,
@@ -237,6 +243,12 @@ supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClie
 
 maxMessageLength :: Int
 maxMessageLength = 16088
+
+paddedProxiedMsgLength :: Int
+paddedProxiedMsgLength = 16288
+
+paddedForwardedMsgLength :: Int
+paddedForwardedMsgLength = 16488
 
 type MaxMessageLen = 16088
 
@@ -417,10 +429,17 @@ newtype EncTransmission = EncTransmission ByteString
   deriving (Show)
 
 data FwdTransmission = FwdTransmission
-  { fwdCorrId :: ByteString,
+  { fwdCorrId :: CorrId,
     fwdKey :: C.PublicKeyX25519,
     fwdTransmission :: EncTransmission
   }
+
+instance Encoding FwdTransmission where
+  smpEncode FwdTransmission {fwdCorrId = CorrId corrId, fwdKey, fwdTransmission = EncTransmission t} =
+    smpEncode (corrId, fwdKey, Tail t)
+  smpP = do
+    (corrId, fwdKey, Tail t) <- smpP
+    pure FwdTransmission {fwdCorrId = CorrId corrId, fwdKey, fwdTransmission = EncTransmission t}
 
 newtype EncFwdTransmission = EncFwdTransmission ByteString
   deriving (Show)
@@ -454,9 +473,16 @@ newtype EncFwdResponse = EncFwdResponse ByteString
   deriving (Eq, Show)
 
 data FwdResponse = FwdResponse
-  { fwdCorrId :: ByteString,
-    fwdResponse :: ByteString
+  { fwdCorrId :: CorrId,
+    fwdResponse :: EncResponse
   }
+
+instance Encoding FwdResponse where
+  smpEncode FwdResponse {fwdCorrId = CorrId corrId, fwdResponse = EncResponse t} =
+    smpEncode (corrId, Tail t)
+  smpP = do
+    (corrId, Tail t) <- smpP
+    pure FwdResponse {fwdCorrId = CorrId corrId, fwdResponse = EncResponse t}
 
 newtype EncResponse = EncResponse ByteString
   deriving (Eq, Show)
@@ -1168,6 +1194,7 @@ data ProxyError
   | TIMEOUT
   | NETWORK
   | BAD_HOST
+  | NO_SESSION
   | TRANSPORT -- {transportErr :: TransportError}
   deriving (Eq, Read, Show)
 
@@ -1232,9 +1259,9 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
-    PRXY host auth_ -> e (PRXY_, ' ', strEncode host, ' ', auth_)
-    PFWD {} -> error "TODO: e (PFWD_,,)"
-    RFWD {} -> error "TODO: e (RFWD_,,)"
+    PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
+    PFWD pubKey (EncTransmission s) -> e (PFWD_, ' ', pubKey, Tail s)
+    RFWD (EncFwdTransmission s) -> e (RFWD_, ' ', Tail s)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -1244,27 +1271,33 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (auth, _, queueId, _) cmd = case cmd of
+  checkCredentials (auth, _, entId, _) cmd = case cmd of
     -- NEW must have signature but NOT queue ID
     NEW {}
       | isNothing auth -> Left $ CMD NO_AUTH
-      | not (B.null queueId) -> Left $ CMD HAS_AUTH
+      | not (B.null entId) -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     -- SEND must have queue ID, signature is not always required
     SEND {}
-      | B.null queueId -> Left $ CMD NO_ENTITY
+      | B.null entId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
-    -- PING must not have queue ID or signature
-    PING
-      | isNothing auth && B.null queueId -> Right cmd
+    PING -> noAuthCmd
+    PRXY {} -> noAuthCmd
+    PFWD {}
+      | B.null entId -> Left $ CMD NO_ENTITY
+      | isNothing auth -> Right cmd
       | otherwise -> Left $ CMD HAS_AUTH
-    PRXY {}
-      | isNothing auth && B.null queueId -> Right cmd
-      | otherwise -> Left $ CMD HAS_AUTH
+    RFWD _ -> noAuthCmd
     -- other client commands must have both signature and queue ID
     _
-      | isNothing auth || B.null queueId -> Left $ CMD NO_AUTH
+      | isNothing auth || B.null entId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
+    where
+      -- command must not have entity ID (queue or session ID) or signature
+      noAuthCmd :: Either ErrorType (Command p)
+      noAuthCmd
+        | isNothing auth && B.null entId = Right cmd
+        | otherwise = Left $ CMD HAS_AUTH
 
 instance ProtocolEncoding SMPVersion ErrorType Cmd where
   type Tag Cmd = CmdTag
@@ -1292,11 +1325,11 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
       Cmd SSender <$> case tag of
         SEND_ -> SEND <$> _smpP <*> (unTail <$> _smpP)
         PING_ -> pure PING
-        RFWD_ -> error "TODO: RFWD_"
+        RFWD_ -> RFWD <$> (EncFwdTransmission . unTail <$> _smpP)
     CT SProxiedClient tag ->
       Cmd SProxiedClient <$> case tag of
-        PFWD_ -> error "TODO: PFWD_"
-        PRXY_ -> PRXY <$> (_smpP >>= either fail pure . strDecode) <*> _smpP
+        PFWD_ -> PFWD <$> _smpP <*> (EncTransmission . unTail <$> smpP)
+        PRXY_ -> PRXY <$> _smpP <*> smpP
     CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
@@ -1436,6 +1469,7 @@ instance Encoding ProxyError where
     TIMEOUT -> "TIMEOUT"
     NETWORK -> "NETWORK"
     BAD_HOST -> "BAD_HOST"
+    NO_SESSION -> "NO_SESSION"
     TRANSPORT -> "TRANSPORT"
   smpP =
     A.takeTill (== ' ') >>= \case
@@ -1445,6 +1479,7 @@ instance Encoding ProxyError where
       "TIMEOUT" -> pure TIMEOUT
       "NETWORK" -> pure NETWORK
       "BAD_HOST" -> pure BAD_HOST
+      "NO_SESSION" -> pure NO_SESSION
       "TRANSPORT" -> pure TRANSPORT
       _ -> fail "bad command error type"
 
