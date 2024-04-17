@@ -1395,6 +1395,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       | B.null queueId -> Right cmd
       | otherwise -> Left $ CMD HAS_AUTH
     -- other broker responses must have queue ID
+    RRES {} -> Right cmd
     _
       | B.null queueId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd

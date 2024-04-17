@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -16,13 +17,13 @@ import Debug.Trace
 import SMPAgentClient (testSMPServer, testSMPServer2)
 import SMPClient
 import qualified SMPClient as SMP
-import ServerTests (sendRecv)
+import ServerTests (decryptMsgV3, sendRecv)
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (tshow)
+import Simplex.Messaging.Util (liftEitherWith, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import Test.Hspec
 import UnliftIO
@@ -57,23 +58,23 @@ deliverMessageViaProxy = do
     runRight_ $ do
       THAuthClient {serverPeerPubKey} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams c
 
-    -- mimic SndQueue
+      -- mimic SndQueue
       -- (sndPublicKey, sndPrivateKey) <- atomically $ C.generateAuthKeyPair C.SX25519 g
-    -- (e2ePubKey, e2ePrivKey) <- atomically $ C.generateKeyPair @C.Ed25519 g
+      -- (e2ePubKey, e2ePrivKey) <- atomically $ C.generateKeyPair @C.Ed25519 g
       (rPub, rPriv) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (rdhPub, rdhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- createSMPQueue c (rPub, rPriv) rdhPub (Just "correct") SMSubscribe
 
-      -- let dec = decryptMsgV3 $ C.dh' srvDh rdhPriv
+      let dec = decryptMsgV3 $ C.dh' srvDh rdhPriv
 
       (sessId, v, relayKey) <- createSMPProxySession c relayServ (Just "correct")
       proxySMPMessage c sessId v relayKey Nothing sndId noMsgFlags "hello"
-      msg <- atomically $ readTBQueue msgQ
-      liftIO $ print msg
+      (_tSess, _v, _sid, _ety, MSG RcvMessage {msgId, msgBody = EncRcvMsgBody encBody}) <- atomically $ readTBQueue msgQ
+      liftIO $ dec msgId encBody `shouldBe` Right "hello"
 
-      -- logError $ tshow (sessId, v, sk)
+-- logError $ tshow (sessId, v, sk)
 
-    -- fail "TODO: getProtocolClient for client-proxy and proxy-server"
+-- fail "TODO: getProtocolClient for client-proxy and proxy-server"
 
 proxyVRange :: VersionRangeSMP
 proxyVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion
