@@ -26,7 +26,7 @@ import Test.Hspec
 import UnliftIO
 
 smpProxyTests :: Spec
-smpProxyTests = focus $ do
+smpProxyTests = do
   describe "server configuration" $ do
     it "refuses proxy handshake unless enabled" testNoProxy
     it "checks basic auth in proxy requests" testProxyAuth

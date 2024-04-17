@@ -1282,7 +1282,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
       | B.null entId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
     PING -> noAuthCmd
-    PRXY {} -> Right cmd -- TODO: noAuthCmd?
+    PRXY {} -> noAuthCmd
     PFWD {}
       | B.null entId -> Left $ CMD NO_ENTITY
       | isNothing auth -> Right cmd
@@ -1380,23 +1380,24 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PEBlock -> BLOCK
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (_, _, queueId, _) cmd = case cmd of
+  checkCredentials (_, _, entId, _) cmd = case cmd of
     -- IDS response should not have queue ID
     IDS _ -> Right cmd
     -- ERR response does not always have queue ID
     ERR _ -> Right cmd
     -- PONG response must not have queue ID
-    PONG
-      | B.null queueId -> Right cmd
-      | otherwise -> Left $ CMD HAS_AUTH
-    PKEY {}
-      | B.null queueId -> Right cmd
-      | otherwise -> Left $ CMD HAS_AUTH
+    PONG -> noEntityMsg
+    PKEY {} -> noEntityMsg
+    RRES _ -> noEntityMsg
     -- other broker responses must have queue ID
-    RRES {} -> Right cmd
     _
-      | B.null queueId -> Left $ CMD NO_ENTITY
+      | B.null entId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
+    where
+      noEntityMsg :: Either ErrorType BrokerMsg
+      noEntityMsg
+        | B.null entId = Right cmd
+        | otherwise = Left $ CMD HAS_AUTH
 
 -- | Parse SMP protocol commands and broker messages
 parseProtocol :: forall v err msg. ProtocolEncoding v err msg => Version v -> ByteString -> Either err msg
