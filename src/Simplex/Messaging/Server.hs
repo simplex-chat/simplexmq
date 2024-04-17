@@ -632,7 +632,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                       vr = supportedServerSMPRelayVRange
                    in case thAuth of
                         Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
-                        Nothing -> ERR $ PROXY TRANSPORT -- TODO different error?
+                        Nothing -> ERR $ PROXY (TRANSPORT TENoServerAuth)
                 Left err -> ERR $ smpProxyError err
       PFWD pubKey encBlock -> do
         ProxyAgent {smpAgent} <- asks proxyAgent

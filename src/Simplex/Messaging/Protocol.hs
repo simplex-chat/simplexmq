@@ -1194,16 +1194,16 @@ data CommandError
 data ProxyError
   = -- | Correctly parsed SMP server ERR response.
     -- This error is forwarded to the agent client as `ERR SMP err`.
-    PROTOCOL -- {protocolErr :: String}
+    PROTOCOL {protocolErr :: ErrorType}
   | -- | Invalid server response that failed to parse.
     -- Forwarded to the agent client as `ERR BROKER RESPONSE`.
-    RESPONSE -- {responseErr :: String}
-  | UNEXPECTED
+    RESPONSE {responseErr :: ErrorType}
+  | UNEXPECTED {unexpectedResponse :: String} -- 'String' for using derived JSON and Arbitrary instances
   | TIMEOUT
   | NETWORK
   | BAD_HOST
   | NO_SESSION
-  | TRANSPORT -- {transportErr :: TransportError}
+  | TRANSPORT {transportErr :: TransportError}
   deriving (Eq, Read, Show)
 
 -- | SMP transmission parser.
@@ -1473,24 +1473,24 @@ instance Encoding CommandError where
 
 instance Encoding ProxyError where
   smpEncode e = case e of
-    PROTOCOL -> "PROTOCOL"
-    RESPONSE -> "RESPONSE"
-    UNEXPECTED -> "UNEXPECTED"
+    PROTOCOL et -> "PROTOCOL " <> smpEncode et
+    RESPONSE et -> "RESPONSE " <> smpEncode et
+    UNEXPECTED s -> "UNEXPECTED " <> smpEncode (B.pack s)
     TIMEOUT -> "TIMEOUT"
     NETWORK -> "NETWORK"
     BAD_HOST -> "BAD_HOST"
     NO_SESSION -> "NO_SESSION"
-    TRANSPORT -> "TRANSPORT"
+    TRANSPORT t -> "TRANSPORT " <> serializeTransportError t
   smpP =
     A.takeTill (== ' ') >>= \case
-      "PROTOCOL" -> pure PROTOCOL
-      "RESPONSE" -> pure RESPONSE
-      "UNEXPECTED" -> pure UNEXPECTED
+      "PROTOCOL" -> PROTOCOL <$> _smpP
+      "RESPONSE" -> RESPONSE <$> _smpP
+      "UNEXPECTED" -> UNEXPECTED . B.unpack <$> _smpP
       "TIMEOUT" -> pure TIMEOUT
       "NETWORK" -> pure NETWORK
       "BAD_HOST" -> pure BAD_HOST
       "NO_SESSION" -> pure NO_SESSION
-      "TRANSPORT" -> pure TRANSPORT
+      "TRANSPORT" -> TRANSPORT <$> (A.space *> transportErrorP)
       _ -> fail "bad command error type"
 
 -- | Send signed SMP transmission to TCP transport.
@@ -1630,6 +1630,5 @@ $(J.deriveJSON defaultJSON ''MsgFlags)
 
 $(J.deriveJSON (sumTypeJSON id) ''CommandError)
 
-$(J.deriveJSON (sumTypeJSON id) ''ProxyError)
-
-$(J.deriveJSON (sumTypeJSON id) ''ErrorType)
+-- run deriveJSON in one TH splice to allow mutual instance
+$(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''ErrorType])
