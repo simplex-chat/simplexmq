@@ -21,9 +21,7 @@ import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
-import Simplex.Messaging.Agent.Env.SQLite (Worker)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (SMPClient)
 import Simplex.Messaging.Client.Agent (SMPClientAgent, SMPClientAgentConfig, newSMPClientAgent)
 import Simplex.Messaging.Crypto (KeyHash (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -130,14 +128,6 @@ data Server = Server
 
 data ProxyAgent = ProxyAgent
   { smpAgent :: SMPClientAgent
-  }
-
-data RelaySession = RelaySession
-  { worker :: Worker,
-    -- SessionId??
-    smpClient :: SMPClient,
-    relayQ :: TBQueue (ClientId, CorrId, C.PublicKeyX25519, ByteString) -- FWD args from multiple clients using this server
-    -- can be used for QUOTA retries until the session is gone
   }
 
 type ClientId = Int

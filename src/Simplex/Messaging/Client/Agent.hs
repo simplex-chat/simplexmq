@@ -99,7 +99,6 @@ data SMPClientAgent = SMPClientAgent
     randomDrg :: TVar ChaChaDRG,
     smpClients :: TMap SMPServer SMPClientVar,
     smpSessions :: TMap SessionId SMPClient,
-    -- TODO add lookup by session ID
     srvSubs :: TMap SMPServer (TMap SMPSub C.APrivateAuthKey),
     pendingSrvSubs :: TMap SMPServer (TMap SMPSub C.APrivateAuthKey),
     reconnections :: TVar [Async ()],
