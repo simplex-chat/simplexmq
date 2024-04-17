@@ -1376,8 +1376,8 @@ deleteQueue c rq@RcvQueue {rcvId, rcvPrivateKey} = do
 deleteQueues :: AgentClient -> [RcvQueue] -> AM' [(RcvQueue, Either AgentErrorType ())]
 deleteQueues = sendTSessionBatches "DEL" 90 id $ sendBatch deleteSMPQueues
 
-sendAgentMessage :: AgentClient -> UserId -> SndQueue -> MsgFlags -> ByteString -> AM ()
-sendAgentMessage c userId sq@SndQueue {sndId, sndPrivateKey} msgFlags agentMsg = do
+sendAgentMessage :: AgentClient -> SndQueue -> MsgFlags -> ByteString -> AM ()
+sendAgentMessage c sq@SndQueue {userId, sndId, sndPrivateKey} msgFlags agentMsg = do
   tSess <- liftIO $ mkSMPTransportSession c sq
   let clientMsg = SMP.ClientMessage SMP.PHEmpty agentMsg
   msg <- agentCbEncrypt sq Nothing $ smpEncode clientMsg

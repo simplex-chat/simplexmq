@@ -1272,7 +1272,7 @@ submitPendingMsg c cData sq = do
   void $ getDeliveryWorker True c cData sq
 
 runSmpQueueMsgDelivery :: AgentClient -> ConnData -> SndQueue -> (Worker, TMVar ()) -> AM ()
-runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId, userId} sq (Worker {doWork}, qLock) = do
+runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork}, qLock) = do
   AgentConfig {messageRetryInterval = ri, messageTimeout, helloTimeout, quotaExceededTimeout} <- asks config
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
@@ -1290,7 +1290,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId, userId} sq (Worker
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c sq msgBody
-            _ -> sendAgentMessage c userId sq msgFlags msgBody
+            _ -> sendAgentMessage c sq msgFlags msgBody
           case resp of
             Left e -> do
               let err = if msgType == AM_A_MSG_ then MERR mId e else ERR e
