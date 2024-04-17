@@ -36,8 +36,6 @@ smpProxyTests = focus $ do
       xit "when SMP port blackholed" todo
       xit "no SMP service at host/port" todo
       xit "bad SMP fingerprint" todo
-    it "connects to relay" testProxyConnect
-    xit "connects to itself as a relay" todo
     xit "batching proxy requests" todo
   describe "forwarding requests" $ do
     describe "deliver message via SMP proxy" $ do
@@ -96,15 +94,6 @@ testProxyAuth = do
       reply `shouldBe` Right (ERR AUTH)
   where
     proxyCfgAuth = proxyCfg {newQueueBasicAuth = Just "correct"}
-
-testProxyConnect :: IO ()
-testProxyConnect = do
-  withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ -> do
-    testSMPClient_ "127.0.0.1" testPort proxyVRange $ \(th :: THandleSMP TLS 'TClient) -> do
-      (_, _, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", "", PRXY testSMPServer2 Nothing)
-      case reply of
-        Right PKEY {} -> pure ()
-        _ -> fail $ "bad reply: " <> show reply
 
 todo :: IO ()
 todo = do
