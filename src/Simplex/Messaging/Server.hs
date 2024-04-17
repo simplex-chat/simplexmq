@@ -42,6 +42,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
+import Control.Monad.Trans.Except
 import Crypto.Random
 import Data.Bifunctor (first)
 import Data.ByteString.Base64 (encode)
@@ -68,7 +69,7 @@ import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Client (ProtocolClient (thParams), forwardSMPMessage, smpProxyError)
-import Simplex.Messaging.Client.Agent (getSMPServerClient', lookupSMPServerClient)
+import Simplex.Messaging.Client.Agent (SMPClientAgent (..), SMPClientAgentEvent (..), getSMPServerClient', lookupSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -125,14 +126,13 @@ type M a = ReaderT Env IO a
 smpServer :: TMVar Bool -> ServerConfig -> M ()
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   s <- asks server
-  -- pa <- asks proxyAgent
+  pa <- asks proxyAgent
   expired <- restoreServerMessages
   restoreServerStats expired
   raceAny_
     ( serverThread s "server subscribedQ" subscribedQ subscribers subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ())
-        -- : smpProxyConnectRelay pa
-        -- : receiveFromProxyAgent pa
+        : receiveFromProxyAgent pa
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
     `finally` withLock' (savingLock s) "final" (saveServer False)
@@ -185,18 +185,18 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           mkWeakThreadId t >>= atomically . modifyTVar' (endThreads c) . IM.insert tId
           atomically $ TM.lookupDelete qId (clientSubs c)
 
-    smpProxyConnectRelay :: ProxyAgent -> M ()
-    smpProxyConnectRelay ProxyAgent {} = forever $ do
-      -- check for session var for pending session
-      -- if exists - wait
-      -- if doesn't - create session var, and spawn worker
-      -- srv <- readTBQueue connectQ
-      pure ()
-
-
     receiveFromProxyAgent :: ProxyAgent -> M ()
-    receiveFromProxyAgent = do
-      forever $ pure ()
+    receiveFromProxyAgent ProxyAgent {smpAgent = SMPClientAgent {agentQ}} =
+      forever $
+        atomically (readTBQueue agentQ) >>= \case
+          CAConnected srv -> logInfo $ "SMP server connected " <> showServer' srv
+          CADisconnected srv [] -> logInfo $ "SMP server disconnected " <> showServer' srv
+          CADisconnected srv subs -> logError $ "SMP server disconnected " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
+          CAReconnected srv -> logInfo $ "SMP server reconnected " <> showServer' srv
+          CAResubscribed srv subs -> logError $ "SMP server resubscribed " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
+          CASubError srv errs -> logError $ "SMP server subscription errors " <> showServer' srv <> " / errors: " <> tshow (length errs)
+      where
+        showServer' = decodeLatin1 . strEncode . host
 
     expireMessagesThread_ :: ServerConfig -> [M ()]
     expireMessagesThread_ ServerConfig {messageExpiration = Just msgExp} = [expireMessages msgExp]
@@ -628,10 +628,10 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             where
               proxyResp = \case
                 Right smp ->
-                  -- TODO return version range
                   let THandleParams {sessionId = srvSessId, thAuth} = thParams smp
+                      vr = supportedServerSMPRelayVRange
                    in case thAuth of
-                        Just THAuthClient {serverCertKey} -> PKEY srvSessId serverCertKey
+                        Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
                         Nothing -> ERR $ PROXY TRANSPORT -- TODO different error?
                 Left err -> ERR $ smpProxyError err
       PFWD pubKey encBlock -> do
@@ -917,44 +917,44 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
         processForwardedCommand :: EncFwdTransmission -> M BrokerMsg
         processForwardedCommand (EncFwdTransmission s) = fmap (either id id) . runExceptT $ do
           -- TODO error
-          thAuth'@THAuthServer {clientPeerPubKey, serverPrivKey} <- maybe (throwError $ ERR INTERNAL) pure thAuth
+          THAuthServer {clientPeerPubKey, serverPrivKey} <- maybe (throwError $ ERR INTERNAL) pure thAuth
           -- TODO compute during handshake?
-          let dbSecret = C.dh' clientPeerPubKey serverPrivKey
-              nonce = C.cbNonce $ bs corrId
+          let sessSecret = C.dh' clientPeerPubKey serverPrivKey
+              proxyNonce = C.cbNonce $ bs corrId
           -- TODO error
-          s' <- liftEitherWith err $ C.cbDecrypt dbSecret nonce s
+          s' <- liftEitherWith internalErr $ C.cbDecrypt sessSecret proxyNonce s
           -- TODO error
-          FwdTransmission {fwdCorrId, fwdKey, fwdTransmission = EncTransmission t} <- liftEitherWith err $ smpDecode s'
+          FwdTransmission {fwdCorrId, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith internalErr $ smpDecode s'
           -- TODO error - this error is reported to proxy, as we failed to get to client's transmission
-          let clntDhSecret = C.dh' fwdKey serverPrivKey
-              clntNonce = C.cbNonce $ bs fwdCorrId
-          b <- liftEitherWith err $ C.cbDecrypt clntDhSecret clntNonce t
+          let clientSecret = C.dh' fwdKey serverPrivKey
+              clientNonce = C.cbNonce $ bs fwdCorrId
+          b <- liftEitherWith internalErr $ C.cbDecrypt clientSecret clientNonce et
           -- only allowing single forwarded transactions
-          let t = tDecodeParseValidate thParams' $ L.head $ tParse thParams' b
+          let t' = tDecodeParseValidate thParams' $ L.head $ tParse thParams' b
               clntThAuth = Just $ THAuthServer {clientPeerPubKey = fwdKey, serverPrivKey}
           -- TODO error
           r <-
-            lift (rejectOrVerify clntThAuth t) >>= \case
+            lift (rejectOrVerify clntThAuth t') >>= \case
               Left r -> pure r
-              Right t'@(_, (corrId', entId', _)) ->
+              Right t''@(_, (corrId', entId', _)) ->
                 -- Left will not be returned by processCommand, as only SEND command is allowed
-                either (const (corrId', entId', ERR INTERNAL)) id <$> lift (processCommand t')
-          
-          -- encode response            
+                fromRight (corrId', entId', ERR INTERNAL) <$> lift (processCommand t'')
+
+          -- encode response
           r' <- case batchTransmissions (batch thParams') (blockSize thParams') [Right (Nothing, encodeTransmission thParams' r)] of
-            [] -> throwError $ ERR INTERNAL -- TODO error
-            TBError _ _ : _ -> throwError $ ERR INTERNAL -- TODO error
-            TBTransmission s _ : _ -> pure s
-            TBTransmissions s _ _ : _ -> pure s
+            [] -> throwE $ ERR INTERNAL -- TODO error
+            TBError _ _ : _ -> throwE $ ERR INTERNAL -- TODO error
+            TBTransmission b' _ : _ -> pure b'
+            TBTransmissions b' _ _ : _ -> pure b'
           -- encrypt to client
-          r2 <- liftEitherWith err $ EncResponse <$> C.cbEncrypt clntDhSecret (C.cbNonce $ B.reverse $ bs fwdCorrId) r' paddedProxiedMsgLength
+          r2 <- liftEitherWith internalErr $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedMsgLength
           -- encrypt to proxy
           let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
-          r3 <- liftEitherWith err $ EncFwdResponse <$> C.cbEncrypt dbSecret (C.cbNonce $ B.reverse $ bs corrId) (smpEncode fr) paddedForwardedMsgLength
+          r3 <- liftEitherWith internalErr $ EncFwdResponse <$> C.cbEncrypt sessSecret (C.reverseNonce proxyNonce) (smpEncode fr) paddedForwardedMsgLength
           pure $ RRES r3
           where
-            err _ = ERR INTERNAL -- TODO errors
-            THandleParams {sessionId, thAuth} = thParams'
+            internalErr _ = ERR INTERNAL -- TODO errors
+            THandleParams {thAuth} = thParams'
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
             rejectOrVerify clntThAuth (tAuth, authorized, (corrId', entId', cmdOrError)) =
               case cmdOrError of
