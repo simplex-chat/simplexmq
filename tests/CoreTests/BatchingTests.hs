@@ -281,12 +281,12 @@ randomSUB_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> VersionSM
 randomSUB_ a v sessId = do
   g <- C.newRandom
   rId <- atomically $ C.randomBytes 24 g
-  corrId <- atomically $ CorrId <$> C.randomBytes 24 g
+  nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
   (rKey, rpKey) <- atomically $ C.generateAuthKeyPair a g
   thAuth_ <- testTHandleAuth v g rKey
   let thParams = testTHandleParams v sessId
-      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, rId, Cmd SRecipient SUB)
-  pure $ (,tToSend) <$> authTransmission thAuth_ (Just rpKey) corrId tForAuth
+      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, rId, Cmd SRecipient SUB)
+  pure $ (,tToSend) <$> authTransmission thAuth_ (Just rpKey) nonce tForAuth
 
 randomSUBCmd :: ProtocolClient SMPVersion ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
 randomSUBCmd = randomSUBCmd_ C.SEd25519
@@ -311,13 +311,13 @@ randomSEND_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> VersionS
 randomSEND_ a v sessId len = do
   g <- C.newRandom
   sId <- atomically $ C.randomBytes 24 g
-  corrId <- atomically $ CorrId <$> C.randomBytes 3 g
+  nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
   (sKey, spKey) <- atomically $ C.generateAuthKeyPair a g
   thAuth_ <- testTHandleAuth v g sKey
   msg <- atomically $ C.randomBytes len g
   let thParams = testTHandleParams v sessId
-      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, sId, Cmd SSender $ SEND noMsgFlags msg)
-  pure $ (,tToSend) <$> authTransmission thAuth_ (Just spKey) corrId tForAuth
+      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, sId, Cmd SSender $ SEND noMsgFlags msg)
+  pure $ (,tToSend) <$> authTransmission thAuth_ (Just spKey) nonce tForAuth
 
 testTHandleParams :: VersionSMP -> ByteString -> THandleParams SMPVersion 'TClient
 testTHandleParams v sessionId =

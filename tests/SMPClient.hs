@@ -16,7 +16,8 @@ import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import Network.Socket
-import Simplex.Messaging.Client (chooseTransportHost, defaultNetworkConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
+import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
@@ -112,6 +113,7 @@ cfg =
       smpServerVRange = supportedServerSMPRelayVRange,
       transportConfig = defaultTransportServerConfig,
       controlPort = Nothing,
+      smpAgentCfg = defaultSMPClientAgentConfig,
       allowSMPProxy = False
     }
 
@@ -119,7 +121,12 @@ cfgV7 :: ServerConfig
 cfgV7 = cfg {smpServerVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}
 
 proxyCfg :: ServerConfig
-proxyCfg = cfg {allowSMPProxy = True}
+proxyCfg =
+  cfgV7
+    { allowSMPProxy = True, 
+      smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion,
+      smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion}}
+    }
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
