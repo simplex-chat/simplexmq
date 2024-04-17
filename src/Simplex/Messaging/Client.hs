@@ -93,7 +93,6 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
-import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -709,14 +708,10 @@ proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
     TBError e _ : _ -> throwE $ PCETransportError e -- large message error?
     TBTransmission s _ : _ -> pure s
     TBTransmissions s _ _ : _ -> pure s
-  liftIO $ putStrLn $ "proxySMPMessage cmdSecret " <> show (BA.convert (C.dhBytes' cmdSecret) :: ByteString)
-  liftIO $ putStrLn $ "proxySMPMessage cmdPubKey " <> show cmdPubKey
-  liftIO $ putStrLn $ "proxySMPMessage nonce " <> show nonce
   et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedMsgLength
   sendProtocolCommand_ c (Just nonce) Nothing sessionId (Cmd SProxiedClient (PFWD cmdPubKey et)) >>= \case
     -- TODO support PKEY + resend?
     PRES (EncResponse er) -> do
-      liftIO $ print "PRES"
       t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.reverseNonce nonce) er
       case tParse proxyThParams t' of
         t'' :| [] -> case tDecodeParseValidate proxyThParams t'' of
@@ -745,7 +740,6 @@ forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = 
   -- send
   sendProtocolCommand_ c (Just nonce) Nothing "" (Cmd SSender (RFWD eft)) >>= \case
     RRES (EncFwdResponse efr) -> do
-      liftIO $ print "RRES"
       -- unwrap
       r' <- liftEitherWith PCECryptoError $ C.cbDecrypt sessSecret (C.reverseNonce nonce) efr
       FwdResponse {fwdCorrId = _, fwdResponse} <- liftEitherWith (const $ PCEResponseError BLOCK) $ smpDecode r'

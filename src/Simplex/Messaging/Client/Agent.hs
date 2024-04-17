@@ -181,7 +181,6 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, 
         tryConnectClient successAction retryAction =
           tryE (connectClient v) >>= \r -> case r of
             Right smp -> do
-              liftIO $ print $ serverVRange $ smpCfg agentCfg
               logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
               atomically $ do
                 putTMVar (sessionVar v) r
