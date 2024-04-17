@@ -488,7 +488,7 @@ smpProxyError :: SMPClientError -> ErrorType
 smpProxyError = \case
   PCEProtocolError et -> PROXY (PROTOCOL et)
   PCEResponseError et -> PROXY (RESPONSE et)
-  PCEUnexpectedResponse bs -> PROXY (UNEXPECTED $ B.unpack bs)
+  PCEUnexpectedResponse bs -> PROXY (UNEXPECTED $ B.unpack $ B.take 32 bs)
   PCEResponseTimeout -> PROXY TIMEOUT
   PCENetworkError -> PROXY NETWORK
   PCEIncompatibleHost -> PROXY BAD_HOST
