@@ -10,9 +10,7 @@
 
 module SMPProxyTests where
 
-import AgentTests.FunctionalAPITests (runRight, runRight_)
-import Control.Logger.Simple
-import Control.Monad.Except (runExceptT)
+import AgentTests.FunctionalAPITests (runRight_)
 import Debug.Trace
 import SMPAgentClient (testSMPServer, testSMPServer2)
 import SMPClient
@@ -23,13 +21,12 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (liftEitherWith, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import Test.Hspec
 import UnliftIO
 
 smpProxyTests :: Spec
-smpProxyTests = do
+smpProxyTests = focus $ do
   describe "server configuration" $ do
     it "refuses proxy handshake unless enabled" testNoProxy
     it "checks basic auth in proxy requests" testProxyAuth
@@ -43,38 +40,42 @@ smpProxyTests = do
     xit "connects to itself as a relay" todo
     xit "batching proxy requests" todo
   describe "forwarding requests" $ do
-    fit "deliver message via SMP proxy" deliverMessageViaProxy
+    describe "deliver message via SMP proxy" $ do
+      it "same server" $
+        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ -> do
+          let proxyServ = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
+          let relayServ = proxyServ
+          deliverMessageViaProxy proxyServ relayServ
+      it "different servers" $
+        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
+          withSmpServerConfigOn (transport @TLS) cfgV7 testPort2 $ \_ -> do
+            let proxyServ = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
+            let relayServ = SMPServer SMP.testHost SMP.testPort2 SMP.testKeyHash
+            deliverMessageViaProxy proxyServ relayServ
     xit "sender-proxy-relay-recipient works" todo
     xit "similar timing for proxied and direct sends" todo
 
-deliverMessageViaProxy :: IO ()
-deliverMessageViaProxy = do
-  withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ -> do
-    let proxyServ = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
-    let relayServ = proxyServ
-    g <- C.newRandom
-    msgQ <- newTBQueueIO 4
-    Right c <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} (Just msgQ) (\_ -> pure ())
-    runRight_ $ do
-      THAuthClient {serverPeerPubKey} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams c
-
-      -- mimic SndQueue
-      -- (sndPublicKey, sndPrivateKey) <- atomically $ C.generateAuthKeyPair C.SX25519 g
-      -- (e2ePubKey, e2ePrivKey) <- atomically $ C.generateKeyPair @C.Ed25519 g
-      (rPub, rPriv) <- atomically $ C.generateAuthKeyPair C.SEd448 g
-      (rdhPub, rdhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- createSMPQueue c (rPub, rPriv) rdhPub (Just "correct") SMSubscribe
-
-      let dec = decryptMsgV3 $ C.dh' srvDh rdhPriv
-
-      (sessId, v, relayKey) <- createSMPProxySession c relayServ (Just "correct")
-      proxySMPMessage c sessId v relayKey Nothing sndId noMsgFlags "hello"
-      (_tSess, _v, _sid, _ety, MSG RcvMessage {msgId, msgBody = EncRcvMsgBody encBody}) <- atomically $ readTBQueue msgQ
-      liftIO $ dec msgId encBody `shouldBe` Right "hello"
-
--- logError $ tshow (sessId, v, sk)
-
--- fail "TODO: getProtocolClient for client-proxy and proxy-server"
+deliverMessageViaProxy :: SMPServer -> SMPServer -> IO ()
+deliverMessageViaProxy proxyServ relayServ = do
+  g <- C.newRandom
+  -- set up proxy
+  Right pc <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} Nothing (\_ -> pure ())
+  THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
+  -- set up relay
+  msgQ <- newTBQueueIO 4
+  Right rc <- getProtocolClient g (2, relayServ, Nothing) defaultSMPClientConfig (Just msgQ) (\_ -> pure ())
+  runRight_ $ do
+    -- prepare receiving queue
+    (rPub, rPriv) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+    (rdhPub, rdhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+    QIK {sndId, rcvPublicDhKey = srvDh} <- createSMPQueue rc (rPub, rPriv) rdhPub (Just "correct") SMSubscribe
+    let dec = decryptMsgV3 $ C.dh' srvDh rdhPriv
+    -- run proxy test
+    (sessId, v, relayKey) <- createSMPProxySession pc relayServ (Just "correct")
+    proxySMPMessage pc sessId v relayKey Nothing sndId noMsgFlags "hello"
+    -- check delivery
+    (_tSess, _v, _sid, _ety, MSG RcvMessage {msgId, msgBody = EncRcvMsgBody encBody}) <- atomically $ readTBQueue msgQ
+    liftIO $ dec msgId encBody `shouldBe` Right "hello"
 
 proxyVRange :: VersionRangeSMP
 proxyVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion
