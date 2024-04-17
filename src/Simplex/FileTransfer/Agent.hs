@@ -43,7 +43,7 @@ import Data.List (foldl', partition, sortOn)
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (mapMaybe)
+import Data.Maybe (isJust, mapMaybe)
 import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
@@ -63,13 +63,15 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
+import Simplex.Messaging.Client (HostMode (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
-import Simplex.Messaging.Protocol (EntityId, XFTPServer)
+import Simplex.Messaging.Protocol (EntityId, ProtoServerWithAuth (..), XFTPServer)
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (catchAll_, liftError, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
@@ -112,8 +114,8 @@ closeXFTPAgent a = do
   where
     stopWorkers workers = atomically (swapTVar workers M.empty) >>= mapM_ (liftIO . cancelWorker)
 
-xftpReceiveFile' :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> AM RcvFileId
-xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redirect}) cfArgs = do
+xftpReceiveFile' :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> Bool -> AM RcvFileId
+xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redirect}) cfArgs onlyViaProxy = do
   g <- asks random
   prefixPath <- lift $ getPrefixPath "rcv.xftp"
   createDirectory prefixPath
@@ -124,7 +126,7 @@ xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redi
   lift $ createEmptyFile =<< toFSFilePath relSavePath
   let saveFile = CryptoFile relSavePath cfArgs
   fId <- case redirect of
-    Nothing -> withStore c $ \db -> createRcvFile db g userId fd relPrefixPath relTmpPath saveFile
+    Nothing -> withStore c $ \db -> createRcvFile db g userId fd relPrefixPath relTmpPath saveFile onlyViaProxy
     Just _ -> do
       -- prepare description paths
       let relTmpPathRedirect = relPrefixPath </> "xftp.redirect-encrypted"
@@ -134,7 +136,7 @@ xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redi
       cfArgsRedirect <- atomically $ CF.randomArgs g
       let saveFileRedirect = CryptoFile relSavePathRedirect $ Just cfArgsRedirect
       -- create download tasks
-      withStore c $ \db -> createRcvFileRedirect db g userId fd relPrefixPath relTmpPathRedirect saveFileRedirect relTmpPath saveFile
+      withStore c $ \db -> createRcvFileRedirect db g userId fd relPrefixPath relTmpPathRedirect saveFileRedirect relTmpPath saveFile onlyViaProxy
   forM_ chunks (downloadChunk c)
   pure fId
 
@@ -176,12 +178,12 @@ runXFTPRcvWorker c srv Worker {doWork} = do
     runXFTPOperation :: AgentConfig -> AM ()
     runXFTPOperation AgentConfig {rcvFilesTTL, reconnectInterval = ri, xftpNotifyErrsOnRetry = notifyOnRetry, xftpConsecutiveRetries} =
       withWork c doWork (\db -> getNextRcvChunkToDownload db srv rcvFilesTTL) $ \case
-        RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []} -> rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
-        fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, digest, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _} -> do
+        (RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []}, _) -> rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
+        (fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, digest, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _}, onlyViaProxy) -> do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
             lift $ waitForUserNetwork c
-            downloadFileChunk fc replica
+            downloadFileChunk fc replica onlyViaProxy
               `catchAgentError` \e -> retryOnError "XFTP rcv worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
@@ -192,8 +194,9 @@ runXFTPRcvWorker c srv Worker {doWork} = do
               atomically $ assertAgentForeground c
               loop
             retryDone e = rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) (show e)
-    downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> AM ()
-    downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica = do
+    downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> Bool -> AM ()
+    downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica onlyViaProxy = do
+      when onlyViaProxy $ whenM unknownNoProxy $ throwError $ XFTP XFTP.UNKNOWN_NO_PROXY
       fsFileTmpPath <- lift $ toFSFilePath fileTmpPath
       chunkPath <- uniqueCombine fsFileTmpPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
@@ -214,6 +217,19 @@ runXFTPRcvWorker c srv Worker {doWork} = do
       when complete . lift . void $
         getXFTPRcvWorker True c Nothing
       where
+        unknownNoProxy :: AM Bool
+        unknownNoProxy = do
+          let AgentClient {xftpServers, useNetworkConfig} = c
+          knownSrvs_ <- atomically $ TM.lookup userId xftpServers
+          let srvKnown = maybe False (\knownSrvs -> srv `elem` L.map protoServer knownSrvs) knownSrvs_
+          -- assuming specific XFTP client will have the same socksProxy config
+          (_, NetworkConfig {socksProxy, hostMode, requiredHostMode}) <- readTVarIO useNetworkConfig
+          let usingProxy =
+                -- on Android we have direct information about using proxy
+                isJust socksProxy
+                  -- on iOS we can infer based on hostMode and requiredHostMode
+                  || ((hostMode == HMOnionViaSocks || hostMode == HMOnion) && requiredHostMode)
+          pure $ not srvKnown && not usingProxy
         receivedSize :: [RcvFileChunk] -> Int64
         receivedSize = foldl' (\sz ch -> sz + receivedChunkSize ch) 0
         receivedChunkSize ch@RcvFileChunk {chunkSize = s}

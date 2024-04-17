@@ -71,6 +71,7 @@ module Simplex.Messaging.Client
     temporaryClientError,
     ServerTransmission,
     ClientCommand,
+    HostMode (..),
 
     -- * For testing
     PCTransmission,

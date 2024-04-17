@@ -287,6 +287,7 @@ CREATE TABLE rcv_files(
   redirect_entity_id BLOB,
   redirect_size INTEGER,
   redirect_digest BLOB,
+  only_via_proxy INTEGER NOT NULL DEFAULT 0,
   UNIQUE(rcv_file_entity_id)
 );
 CREATE TABLE rcv_file_chunks(

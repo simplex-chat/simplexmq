@@ -214,6 +214,8 @@ data XFTPErrorType
     TIMEOUT
   | -- | bad redirect data
     REDIRECT {redirectError :: String}
+  | -- | cannot proceed with download from unknown server without proxy
+    UNKNOWN_NO_PROXY
   | -- | internal server error
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
@@ -246,6 +248,7 @@ instance Encoding XFTPErrorType where
     FILE_IO -> "FILE_IO"
     TIMEOUT -> "TIMEOUT"
     REDIRECT err -> "REDIRECT " <> smpEncode err
+    UNKNOWN_NO_PROXY -> "UNKNOWN_NO_PROXY"
     INTERNAL -> "INTERNAL"
     DUPLICATE_ -> "DUPLICATE_"
 
@@ -265,6 +268,7 @@ instance Encoding XFTPErrorType where
       "FILE_IO" -> pure FILE_IO
       "TIMEOUT" -> pure TIMEOUT
       "REDIRECT" -> REDIRECT <$> _smpP
+      "UNKNOWN_NO_PROXY" -> pure UNKNOWN_NO_PROXY
       "INTERNAL" -> pure INTERNAL
       "DUPLICATE_" -> pure DUPLICATE_
       _ -> fail "bad error type"
