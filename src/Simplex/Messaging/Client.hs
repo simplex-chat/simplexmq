@@ -93,6 +93,7 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
+import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -654,9 +655,9 @@ deleteSMPQueues = okSMPCommands DEL
 
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
-createSMPProxySession :: SMPClient -> SndPrivateAuthKey -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO (SessionId, VersionSMP, C.PublicKeyX25519)
-createSMPProxySession c spKey relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth =
-  sendSMPCommand c (Just spKey) "" (PRXY relayServ proxyAuth) >>= \case
+createSMPProxySession :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO (SessionId, VersionSMP, C.PublicKeyX25519)
+createSMPProxySession c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth =
+  sendSMPCommand c Nothing "" (PRXY relayServ proxyAuth) >>= \case
     -- XXX: rfc says sessionId should be in the entityId of response
     PKEY sId vr (chain, key) -> do
       case supportedClientSMPRelayVRange `compatibleVersion` vr of
@@ -708,11 +709,14 @@ proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
     TBError e _ : _ -> throwE $ PCETransportError e -- large message error?
     TBTransmission s _ : _ -> pure s
     TBTransmissions s _ _ : _ -> pure s
+  liftIO $ putStrLn $ "proxySMPMessage cmdSecret " <> show (BA.convert (C.dhBytes' cmdSecret) :: ByteString)
+  liftIO $ putStrLn $ "proxySMPMessage cmdPubKey " <> show cmdPubKey
+  liftIO $ putStrLn $ "proxySMPMessage nonce " <> show nonce
   et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedMsgLength
-  -- send
-  sendSMPCommand c Nothing sId (PFWD cmdPubKey et) >>= \case
+  sendProtocolCommand_ c (Just nonce) Nothing sessionId (Cmd SProxiedClient (PFWD cmdPubKey et)) >>= \case
     -- TODO support PKEY + resend?
     PRES (EncResponse er) -> do
+      liftIO $ print "PRES"
       t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.reverseNonce nonce) er
       case tParse proxyThParams t' of
         t'' :| [] -> case tDecodeParseValidate proxyThParams t'' of
@@ -741,6 +745,7 @@ forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = 
   -- send
   sendProtocolCommand_ c (Just nonce) Nothing "" (Cmd SSender (RFWD eft)) >>= \case
     RRES (EncFwdResponse efr) -> do
+      liftIO $ print "RRES"
       -- unwrap
       r' <- liftEitherWith PCECryptoError $ C.cbDecrypt sessSecret (C.reverseNonce nonce) efr
       FwdResponse {fwdCorrId = _, fwdResponse} <- liftEitherWith (const $ PCEResponseError BLOCK) $ smpDecode r'

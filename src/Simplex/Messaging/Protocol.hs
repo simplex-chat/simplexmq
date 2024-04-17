@@ -213,6 +213,8 @@ import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
+import System.IO.Unsafe
+import Debug.Trace
 
 -- SMP client protocol version history:
 -- 1 - binary protocol encoding (1/1/2022)
@@ -245,10 +247,10 @@ maxMessageLength :: Int
 maxMessageLength = 16088
 
 paddedProxiedMsgLength :: Int
-paddedProxiedMsgLength = 16288
+paddedProxiedMsgLength = 16388
 
 paddedForwardedMsgLength :: Int
-paddedForwardedMsgLength = 16488
+paddedForwardedMsgLength = 16688
 
 type MaxMessageLen = 16088
 
@@ -1366,7 +1368,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> ((,) <$> C.certChainP <*> (C.getSignedExact <$> smpP))
-    RRES_ -> RRES <$> (EncFwdResponse . unTail <$> _smpP)
+    RRES_ -> traceShow "RRES_" $ RRES <$> (EncFwdResponse . unTail <$> _smpP)
     PRES_ -> PRES <$> (EncResponse . unTail <$> _smpP)
     END_ -> pure END
     OK_ -> pure OK
@@ -1458,7 +1460,7 @@ instance Encoding CommandError where
       "NO_AUTH" -> pure NO_AUTH
       "HAS_AUTH" -> pure HAS_AUTH
       "NO_ENTITY" -> pure NO_ENTITY
-      "NO_QUEUE" -> pure NO_ENTITY
+      "NO_QUEUE" -> pure NO_ENTITY -- for backward compatibility
       _ -> fail "bad command error type"
 
 instance Encoding ProxyError where
@@ -1603,6 +1605,7 @@ tDecodeParseValidate :: forall v p err cmd. ProtocolEncoding v err cmd => THandl
 tDecodeParseValidate THandleParams {sessionId, thVersion = v, implySessId} = \case
   Right RawTransmission {authenticator, authorized, sessId, corrId, entityId, command}
     | implySessId || sessId == sessionId ->
+        unsafePerformIO (print $ B.take 20 command) `seq`
         let decodedTransmission = (,corrId,entityId,command) <$> decodeTAuthBytes authenticator
          in either (const $ tError corrId) (tParseValidate authorized) decodedTransmission
     | otherwise -> (Nothing, "", (CorrId corrId, "", Left $ fromProtocolError @v @err @cmd PESession))
@@ -1613,7 +1616,7 @@ tDecodeParseValidate THandleParams {sessionId, thVersion = v, implySessId} = \ca
 
     tParseValidate :: ByteString -> SignedRawTransmission -> SignedTransmission err cmd
     tParseValidate signed t@(sig, corrId, entityId, command) =
-      let cmd = parseProtocol @v @err @cmd v command >>= checkCredentials t
+      let cmd = parseProtocol @v @err @cmd v command >>= \r -> traceShow ("checkCredentials " <> show (B.take 20 command)) $ checkCredentials t r
        in (sig, signed, (CorrId corrId, entityId, cmd))
 
 $(J.deriveJSON defaultJSON ''MsgFlags)

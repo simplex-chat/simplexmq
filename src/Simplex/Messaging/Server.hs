@@ -45,6 +45,7 @@ import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Crypto.Random
 import Data.Bifunctor (first)
+import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (encode)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -104,6 +105,7 @@ import Data.List (sort)
 import Data.Maybe (fromMaybe)
 import GHC.Conc (listThreads, threadStatus)
 import GHC.Conc.Sync (threadLabel)
+import Simplex.Messaging.Transport (currentServerSMPRelayVersion)
 #endif
 
 -- | Runs an SMP server using passed configuration.
@@ -629,13 +631,15 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               proxyResp = \case
                 Right smp ->
                   let THandleParams {sessionId = srvSessId, thAuth} = thParams smp
-                      vr = error "TODO: return version range"
+                      -- vr = error "TODO: return version range"
+                      vr = supportedServerSMPRelayVRange
                    in case thAuth of
                         Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
                         Nothing -> ERR $ PROXY TRANSPORT -- TODO different error?
                 Left err -> ERR $ smpProxyError err
       PFWD pubKey encBlock -> do
         ProxyAgent {smpAgent} <- asks proxyAgent
+        liftIO $ putStrLn $ "PFWD " <> show sessId
         atomically (lookupSMPServerClient smpAgent sessId) >>= \case
           Just smp -> liftIO $ either (ERR . smpProxyError) PRES <$> runExceptT (forwardSMPMessage smp corrId pubKey encBlock)
           Nothing -> pure $ ERR $ PROXY NO_SESSION
@@ -919,20 +923,26 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           -- TODO error
           THAuthServer {clientPeerPubKey, serverPrivKey} <- maybe (throwError $ ERR INTERNAL) pure thAuth
           -- TODO compute during handshake?
-          let dbSecret = C.dh' clientPeerPubKey serverPrivKey
-              nonce = C.cbNonce $ bs corrId
+          let sessSecret = C.dh' clientPeerPubKey serverPrivKey
+              proxyNonce = C.cbNonce $ bs corrId
           -- TODO error
-          s' <- liftEitherWith internalErr $ C.cbDecrypt dbSecret nonce s
+          s' <- liftEitherWith internalErr $ C.cbDecrypt sessSecret proxyNonce s
+          liftIO $ print "processForwardedCommand after cbDecrypt dbSecret proxyNonce s"
           -- TODO error
           FwdTransmission {fwdCorrId, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith internalErr $ smpDecode s'
           -- TODO error - this error is reported to proxy, as we failed to get to client's transmission
-          let clntDhSecret = C.dh' fwdKey serverPrivKey
-              clntNonce = C.cbNonce $ bs fwdCorrId
-          b <- liftEitherWith internalErr $ C.cbDecrypt clntDhSecret clntNonce et
+          let clientSecret = C.dh' fwdKey serverPrivKey
+              clientNonce = C.cbNonce $ bs fwdCorrId
+          liftIO $ print "processForwardedCommand after smpDecode"
+          liftIO $ putStrLn $ "processForwardedCommand clientSecret " <> show (BA.convert (C.dhBytes' clientSecret) :: ByteString)
+          liftIO $ putStrLn $ "processForwardedCommand fwdKey " <> show fwdKey
+          liftIO $ putStrLn $ "processForwardedCommand clientNonce " <> show (BA.convert (C.dhBytes' clientSecret) :: ByteString)
+          b <- liftEitherWith internalErr $ C.cbDecrypt clientSecret clientNonce et
           -- only allowing single forwarded transactions
           let t' = tDecodeParseValidate thParams' $ L.head $ tParse thParams' b
               clntThAuth = Just $ THAuthServer {clientPeerPubKey = fwdKey, serverPrivKey}
           -- TODO error
+          liftIO $ print "processForwardedCommand after tDecodeParseValidate"
           r <-
             lift (rejectOrVerify clntThAuth t') >>= \case
               Left r -> pure r
@@ -947,10 +957,11 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             TBTransmission b' _ : _ -> pure b'
             TBTransmissions b' _ _ : _ -> pure b'
           -- encrypt to client
-          r2 <- liftEitherWith internalErr $ EncResponse <$> C.cbEncrypt clntDhSecret (C.cbNonce $ B.reverse $ bs fwdCorrId) r' paddedProxiedMsgLength
+          r2 <- liftEitherWith internalErr $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedMsgLength
           -- encrypt to proxy
           let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
-          r3 <- liftEitherWith internalErr $ EncFwdResponse <$> C.cbEncrypt dbSecret (C.cbNonce $ B.reverse $ bs corrId) (smpEncode fr) paddedForwardedMsgLength
+          r3 <- liftEitherWith internalErr $ EncFwdResponse <$> C.cbEncrypt sessSecret (C.reverseNonce proxyNonce) (smpEncode fr) paddedForwardedMsgLength
+          liftIO $ print "processForwardedCommand end"
           pure $ RRES r3
           where
             internalErr _ = ERR INTERNAL -- TODO errors

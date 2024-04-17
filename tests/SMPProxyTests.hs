@@ -9,7 +9,7 @@
 
 module SMPProxyTests where
 
-import AgentTests.FunctionalAPITests (runRight)
+import AgentTests.FunctionalAPITests (runRight, runRight_)
 import Control.Logger.Simple
 import Control.Monad.Except (runExceptT)
 import Debug.Trace
@@ -17,7 +17,7 @@ import SMPAgentClient (testSMPServer, testSMPServer2)
 import SMPClient
 import qualified SMPClient as SMP
 import ServerTests (sendRecv)
-import Simplex.Messaging.Client (createSMPProxySession, defaultSMPClientConfig, getProtocolClient, thParams)
+import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
@@ -28,7 +28,7 @@ import Test.Hspec
 import UnliftIO
 
 smpProxyTests :: Spec
-smpProxyTests = focus $ do
+smpProxyTests = do
   describe "server configuration" $ do
     it "refuses proxy handshake unless enabled" testNoProxy
     it "checks basic auth in proxy requests" testProxyAuth
@@ -42,29 +42,38 @@ smpProxyTests = focus $ do
     xit "connects to itself as a relay" todo
     xit "batching proxy requests" todo
   describe "forwarding requests" $ do
+    fit "deliver message via SMP proxy" deliverMessageViaProxy
     xit "sender-proxy-relay-recipient works" todo
     xit "similar timing for proxied and direct sends" todo
-  fit "hello proxy" helloProxy
 
-helloProxy :: IO ()
-helloProxy = do
+deliverMessageViaProxy :: IO ()
+deliverMessageViaProxy = do
   withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ -> do
     let proxyServ = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
     let relayServ = proxyServ
     g <- C.newRandom
     msgQ <- newTBQueueIO 4
-    c' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig (Just msgQ) (\_ -> pure ())
-    c <- either (fail . show) pure c'
-    THAuthClient {serverPeerPubKey} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams c
-    print serverPeerPubKey
+    Right c <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} (Just msgQ) (\_ -> pure ())
+    runRight_ $ do
+      THAuthClient {serverPeerPubKey} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams c
 
     -- mimic SndQueue
-    (sndPublicKey, sndPrivateKey) <- atomically $ C.generateAuthKeyPair C.SX25519 g
-    (e2ePubKey, e2ePrivKey) <- atomically $ C.generateKeyPair @C.Ed25519 g
+      -- (sndPublicKey, sndPrivateKey) <- atomically $ C.generateAuthKeyPair C.SX25519 g
+    -- (e2ePubKey, e2ePrivKey) <- atomically $ C.generateKeyPair @C.Ed25519 g
+      (rPub, rPriv) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+      (rdhPub, rdhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- createSMPQueue c (rPub, rPriv) rdhPub (Just "correct") SMSubscribe
 
-    (sid, v, sk) <- runRight $ createSMPProxySession c sndPrivateKey relayServ (Just "correct")
-    logError $ tshow (sid, v, sk)
-    fail "TODO: getProtocolClient for client-proxy and proxy-server"
+      -- let dec = decryptMsgV3 $ C.dh' srvDh rdhPriv
+
+      (sessId, v, relayKey) <- createSMPProxySession c relayServ (Just "correct")
+      proxySMPMessage c sessId v relayKey Nothing sndId noMsgFlags "hello"
+      msg <- atomically $ readTBQueue msgQ
+      liftIO $ print msg
+
+      -- logError $ tshow (sessId, v, sk)
+
+    -- fail "TODO: getProtocolClient for client-proxy and proxy-server"
 
 proxyVRange :: VersionRangeSMP
 proxyVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion
