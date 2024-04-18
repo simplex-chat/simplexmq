@@ -333,14 +333,13 @@ testTHandleParams v sessionId =
 testTHandleAuth :: VersionSMP -> TVar ChaChaDRG -> C.APublicAuthKey -> IO (Maybe (THandleAuth 'TClient))
 testTHandleAuth v g (C.APublicAuthKey a serverPeerPubKey) = case a of
   C.SX25519 | v >= authCmdsSMPVersion -> do
-    (_, clientPrivKey) <- atomically $ C.generateKeyPair @'C.X25519 g
     ca <- head <$> XS.readCertificates "tests/fixtures/ca.crt"
     serverCert <- head <$> XS.readCertificates "tests/fixtures/server.crt"
     serverKey <- head <$> XF.readKeyFile "tests/fixtures/server.key"
     signKey <- either error pure $ C.x509ToPrivate (serverKey, []) >>= C.privKey @C.APrivateSignKey
     (serverAuthPub, _) <- atomically $ C.generateKeyPair @'C.X25519 g
     let serverCertKey = (X.CertificateChain [serverCert, ca], C.signX509 signKey $ C.toPubKey C.publicToX509 serverAuthPub)
-    pure $ Just THAuthClient {serverPeerPubKey, serverCertKey, clientPrivKey}
+    pure $ Just THAuthClient {serverPeerPubKey, serverCertKey, sessSecret = Nothing}
   _ -> pure Nothing
 
 randomSENDCmd :: ProtocolClient SMPVersion ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)

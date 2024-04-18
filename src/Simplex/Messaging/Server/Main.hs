@@ -217,7 +217,7 @@ smpServerCLI cfgPath logPath =
                   { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
                   },
               controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini,
-              smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion}},
+              smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion, agreeSecret = True}},
               allowSMPProxy = True -- TODO: "get from INI"
             }
 

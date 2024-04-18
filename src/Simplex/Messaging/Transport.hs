@@ -79,7 +79,7 @@ module Simplex.Messaging.Transport
   )
 where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (optional, (<|>))
 import Control.Monad (forM)
 import Control.Monad.Except
 import Control.Monad.Trans.Except (throwE)
@@ -345,14 +345,14 @@ data THandleParams v p = THandleParams
 
 data THandleAuth (p :: TransportPeer) where
   THAuthClient ::
-    { serverPeerPubKey :: C.PublicKeyX25519, -- used only in the client to combine with per-queue key
-      serverCertKey :: (X.CertificateChain, X.SignedExact X.PubKey), -- the key here is clientPrivKey signed with server certificate
-      clientPrivKey :: C.PrivateKeyX25519 -- used to combine with peer's per-queue key (currently only in the server)
+    { serverPeerPubKey :: C.PublicKeyX25519, -- used by the client to combine with client's private per-queue key
+      serverCertKey :: (X.CertificateChain, X.SignedExact X.PubKey), -- the key here is serverPeerPubKey signed with server certificate
+      sessSecret :: Maybe C.DhSecretX25519 -- session secret (will be used in SMP proxy only)
     } ->
     THandleAuth 'TClient
   THAuthServer ::
-    { clientPeerPubKey :: C.PublicKeyX25519, -- used only in the client to combine with per-queue key
-      serverPrivKey :: C.PrivateKeyX25519 -- used to combine with peer's per-queue key (currently only in the server)
+    { serverPrivKey :: C.PrivateKeyX25519, -- used by the server to combine with client's public per-queue key
+      sessSecret' :: Maybe C.DhSecretX25519 -- session secret (will be used in SMP proxy only)
     } ->
     THandleAuth 'TServer
 
@@ -409,7 +409,7 @@ encodeAuthEncryptCmds v k
   | otherwise = ""
 
 authEncryptCmdsP :: VersionSMP -> Parser a -> Parser (Maybe a)
-authEncryptCmdsP v p = if v >= authCmdsSMPVersion then Just <$> p else pure Nothing
+authEncryptCmdsP v p = if v >= authCmdsSMPVersion then optional p else pure Nothing
 
 -- | Error of SMP encrypted transport over TCP.
 data TransportError
@@ -490,8 +490,8 @@ smpServerHandshake serverSignKey c (k, pk) kh smpVRange = do
 -- | Client SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-smpClientHandshake :: forall c. Transport c => c -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> ExceptT TransportError IO (THandleSMP c 'TClient)
-smpClientHandshake c (k, pk) keyHash@(C.KeyHash kh) smpVRange = do
+smpClientHandshake :: forall c. Transport c => c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> ExceptT TransportError IO (THandleSMP c 'TClient)
+smpClientHandshake c ks_ keyHash@(C.KeyHash kh) smpVRange = do
   let th@THandle {params = THandleParams {sessionId}} = smpTHandle c
   ServerHandshake {sessionId = sessId, smpVersionRange, authPubKey} <- getHandshake th
   if sessionId /= sessId
@@ -506,18 +506,18 @@ smpClientHandshake c (k, pk) keyHash@(C.KeyHash kh) smpVRange = do
             serverKey <- getServerVerifyKey c
             pubKey <- C.verifyX509 serverKey exact
             (,certKey) <$> (C.x509ToPublic (pubKey, []) >>= C.pubKey)
-        sendHandshake th $ ClientHandshake {smpVersion = v, keyHash, authPubKey = Just k}
-        pure $ smpThHandleClient th v pk ck_
+        sendHandshake th $ ClientHandshake {smpVersion = v, keyHash, authPubKey = fst <$> ks_}
+        pure $ smpThHandleClient th v (snd <$> ks_) ck_
       Nothing -> throwE $ TEHandshake VERSION
 
 smpThHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandleSMP c 'TServer
 smpThHandleServer th v pk k_ =
-  let thAuth = (\k -> THAuthServer {clientPeerPubKey = k, serverPrivKey = pk}) <$> k_
-   in smpThHandle_ th v thAuth
+  let thAuth = THAuthServer {serverPrivKey = pk, sessSecret' = (`C.dh'` pk) <$> k_}
+   in smpThHandle_ th v (Just thAuth)
 
-smpThHandleClient :: forall c. THandleSMP c 'TClient -> VersionSMP -> C.PrivateKeyX25519 -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> THandleSMP c 'TClient
-smpThHandleClient th v pk ck_ =
-  let thAuth = (\(k, ck) -> THAuthClient {serverPeerPubKey = k, serverCertKey = ck, clientPrivKey = pk}) <$> ck_
+smpThHandleClient :: forall c. THandleSMP c 'TClient -> VersionSMP -> Maybe C.PrivateKeyX25519 -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> THandleSMP c 'TClient
+smpThHandleClient th v pk_ ck_ =
+  let thAuth = (\(k, ck) -> THAuthClient {serverPeerPubKey = k, serverCertKey = ck, sessSecret = C.dh' k <$> pk_}) <$> ck_
    in smpThHandle_ th v thAuth
 
 smpThHandle_ :: forall c p. THandleSMP c p -> VersionSMP -> Maybe (THandleAuth p) -> THandleSMP c p

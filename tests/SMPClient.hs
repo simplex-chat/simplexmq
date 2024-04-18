@@ -78,10 +78,8 @@ testSMPClientVR vr client = do
 
 testSMPClient_ :: Transport c => TransportHost -> ServiceName -> VersionRangeSMP -> (THandleSMP c 'TClient -> IO a) -> IO a
 testSMPClient_ host port vr client = do
-  runTransportClient defaultTransportClientConfig Nothing host port (Just testKeyHash) $ \h -> do
-    g <- C.newRandom
-    ks <- atomically $ C.generateKeyPair g
-    runExceptT (smpClientHandshake h ks testKeyHash vr) >>= \case
+  runTransportClient defaultTransportClientConfig Nothing host port (Just testKeyHash) $ \h ->
+    runExceptT (smpClientHandshake h Nothing testKeyHash vr) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -125,7 +123,7 @@ proxyCfg =
   cfgV7
     { allowSMPProxy = True, 
       smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion,
-      smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion}}
+      smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion, agreeSecret = True}}
     }
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a

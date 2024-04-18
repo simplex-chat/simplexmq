@@ -917,10 +917,9 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
         processForwardedCommand :: EncFwdTransmission -> M BrokerMsg
         processForwardedCommand (EncFwdTransmission s) = fmap (either id id) . runExceptT $ do
           -- TODO error
-          THAuthServer {clientPeerPubKey, serverPrivKey} <- maybe (throwError $ ERR INTERNAL) pure thAuth
-          -- TODO compute during handshake?
-          let sessSecret = C.dh' clientPeerPubKey serverPrivKey
-              proxyNonce = C.cbNonce $ bs corrId
+          THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwError $ ERR INTERNAL) pure thAuth
+          sessSecret <- maybe (throwError $ ERR INTERNAL) pure sessSecret'
+          let proxyNonce = C.cbNonce $ bs corrId
           -- TODO error
           s' <- liftEitherWith internalErr $ C.cbDecrypt sessSecret proxyNonce s
           -- TODO error
@@ -931,7 +930,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           b <- liftEitherWith internalErr $ C.cbDecrypt clientSecret clientNonce et
           -- only allowing single forwarded transactions
           let t' = tDecodeParseValidate thParams' $ L.head $ tParse thParams' b
-              clntThAuth = Just $ THAuthServer {clientPeerPubKey = fwdKey, serverPrivKey}
+              clntThAuth = Just $ THAuthServer {serverPrivKey, sessSecret' = Just clientSecret}
           -- TODO error
           r <-
             lift (rejectOrVerify clntThAuth t') >>= \case

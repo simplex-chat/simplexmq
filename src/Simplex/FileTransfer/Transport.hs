@@ -10,6 +10,7 @@
 
 module Simplex.FileTransfer.Transport
   ( supportedFileServerVRange,
+    authCmdsXFTPVersion,
     xftpClientHandshakeStub,
     XFTPClientHandshake (..),
     -- xftpClientHandshake,
@@ -83,14 +84,17 @@ type THandleParamsXFTP p = THandleParams XFTPVersion p
 initialXFTPVersion :: VersionXFTP
 initialXFTPVersion = VersionXFTP 1
 
+authCmdsXFTPVersion :: VersionXFTP
+authCmdsXFTPVersion = VersionXFTP 2
+
 currentXFTPVersion :: VersionXFTP
 currentXFTPVersion = VersionXFTP 2
 
 supportedFileServerVRange :: VersionRangeXFTP
 supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion
 
--- XFTP protocol does not support handshake
-xftpClientHandshakeStub :: c -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
+-- XFTP protocol does not use this handshake method
+xftpClientHandshakeStub :: c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
 xftpClientHandshakeStub _c _ks _keyHash _xftpVRange = throwError $ TEHandshake VERSION
 
 data XFTPServerHandshake = XFTPServerHandshake
@@ -104,19 +108,16 @@ data XFTPClientHandshake = XFTPClientHandshake
   { -- | agreed XFTP server protocol version
     xftpVersion :: VersionXFTP,
     -- | server identity - CA certificate fingerprint
-    keyHash :: C.KeyHash,
-    -- | pub key to agree shared secret for entity ID encryption, shared secret for command authorization is agreed using per-queue keys.
-    authPubKey :: C.PublicKeyX25519
+    keyHash :: C.KeyHash
   }
 
 instance Encoding XFTPClientHandshake where
-  smpEncode XFTPClientHandshake {xftpVersion, keyHash, authPubKey} =
-    smpEncode (xftpVersion, keyHash, authPubKey)
+  smpEncode XFTPClientHandshake {xftpVersion, keyHash} =
+    smpEncode (xftpVersion, keyHash)
   smpP = do
     (xftpVersion, keyHash) <- smpP
-    authPubKey <- smpP
     Tail _compat <- smpP
-    pure XFTPClientHandshake {xftpVersion, keyHash, authPubKey}
+    pure XFTPClientHandshake {xftpVersion, keyHash}
 
 instance Encoding XFTPServerHandshake where
   smpEncode XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey} =

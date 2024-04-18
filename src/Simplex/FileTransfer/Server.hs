@@ -141,11 +141,11 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         processClientHandshake pk = do
           unless (B.length bodyHead == xftpBlockSize) $ throwError HANDSHAKE
           body <- liftHS $ C.unPad bodyHead
-          XFTPClientHandshake {xftpVersion, keyHash, authPubKey} <- liftHS $ smpDecode body
+          XFTPClientHandshake {xftpVersion, keyHash} <- liftHS $ smpDecode body
           kh <- asks serverIdentity
           unless (keyHash == kh) $ throwError HANDSHAKE
           unless (xftpVersion `isCompatible` supportedFileServerVRange) $ throwError HANDSHAKE
-          let auth = THAuthServer {clientPeerPubKey = authPubKey, serverPrivKey = pk}
+          let auth = THAuthServer {serverPrivKey = pk, sessSecret' = Nothing}
           atomically $ TM.insert sessionId (HandshakeAccepted auth xftpVersion) sessions
           liftIO . sendResponse $ H.responseNoBody N.ok200 []
           pure Nothing

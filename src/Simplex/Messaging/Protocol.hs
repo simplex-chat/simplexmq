@@ -1224,7 +1224,7 @@ transmissionP THandleParams {sessionId, implySessId} = do
 class (ProtocolEncoding v err msg, ProtocolEncoding v err (ProtoCommand msg), Show err, Show msg) => Protocol v err msg | msg -> v, msg -> err where
   type ProtoCommand msg = cmd | cmd -> msg
   type ProtoType msg = (sch :: ProtocolType) | sch -> msg
-  protocolClientHandshake :: forall c. Transport c => c -> C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> ExceptT TransportError IO (THandle v c 'TClient)
+  protocolClientHandshake :: forall c. Transport c => c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> ExceptT TransportError IO (THandle v c 'TClient)
   protocolPing :: ProtoCommand msg
   protocolError :: msg -> Maybe err
 
