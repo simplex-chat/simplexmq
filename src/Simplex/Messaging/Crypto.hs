@@ -141,6 +141,7 @@ module Simplex.Messaging.Crypto
     sbEncrypt_,
     cbNonce,
     randomCbNonce,
+    reverseNonce,
 
     -- * NaCl crypto_secretbox
     SbKey (unSbKey),
@@ -1291,6 +1292,9 @@ randomCbNonce = fmap CryptoBoxNonce . randomBytes 24
 
 randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
 randomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
+
+reverseNonce :: CbNonce -> CbNonce
+reverseNonce (CryptoBoxNonce s) = CryptoBoxNonce (B.reverse s)
 
 instance Encoding CbNonce where
   smpEncode = unCbNonce

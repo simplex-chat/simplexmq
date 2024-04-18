@@ -115,6 +115,11 @@ import UnliftIO.STM
 
 -- * Transport parameters
 
+-- min size it works with:
+-- unsigned message: 16292 (paddedProxiedMsgLength = 16151, paddedForwardedMsgLength = 16239)
+-- Ed448: 16406 (16384 + 22, fails with 21)
+-- Ed25519: 16356
+-- X25519: 16381
 smpBlockSize :: Int
 smpBlockSize = 16384
 
@@ -358,6 +363,7 @@ data ServerHandshake = ServerHandshake
   { smpVersionRange :: VersionRangeSMP,
     sessionId :: SessionId,
     -- pub key to agree shared secrets for command authorization and entity ID encryption.
+    -- todo C.PublicKeyX25519
     authPubKey :: Maybe (X.CertificateChain, X.SignedExact X.PubKey)
   }
 

@@ -18,6 +18,8 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Network.Socket (HostName)
 import Options.Applicative
+import Simplex.Messaging.Client (ProtocolClientConfig (..))
+import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
@@ -25,10 +27,11 @@ import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defMsgExpirationDays, defaultInactiveClientExpiration, defaultMessageExpiration)
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (simplexMQVersion, supportedServerSMPRelayVRange)
+import Simplex.Messaging.Transport (simplexMQVersion, supportedServerSMPRelayVRange, batchCmdsSMPVersion, sendingProxySMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (safeDecodeUtf8)
+import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
@@ -214,6 +217,7 @@ smpServerCLI cfgPath logPath =
                   { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
                   },
               controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini,
+              smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion}},
               allowSMPProxy = True -- TODO: "get from INI"
             }
 
@@ -306,4 +310,3 @@ cliCommandP cfgPath logPath iniFile =
       pure InitOptions {enableStoreLog, logStats, signAlgorithm, ip, fqdn, password, scripted}
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
-

@@ -15,15 +15,14 @@ import qualified Data.IntMap.Strict as IM
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
-import Simplex.Messaging.Agent.Env.SQLite (Worker)
 import Simplex.Messaging.Agent.Lock
+import Simplex.Messaging.Client.Agent (SMPClientAgent, SMPClientAgentConfig, newSMPClientAgent)
 import Simplex.Messaging.Crypto (KeyHash (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
@@ -35,7 +34,7 @@ import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport, SessionId, VersionSMP, VersionRangeSMP)
+import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
 import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, loadFingerprint, loadTLSServerParams, newSocketState)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
@@ -82,6 +81,7 @@ data ServerConfig = ServerConfig
     transportConfig :: TransportServerConfig,
     -- | run listener on control port
     controlPort :: Maybe ServiceName,
+    smpAgentCfg :: SMPClientAgentConfig,
     allowSMPProxy :: Bool -- auth is the same with `newQueueBasicAuth`
   }
 
@@ -115,7 +115,7 @@ data Env = Env
     sockets :: SocketState,
     clientSeq :: TVar ClientId,
     clients :: TVar (IntMap Client),
-    proxyServer :: SMPProxyServer -- senders served on this proxy
+    proxyAgent :: ProxyAgent -- senders served on this proxy
   }
 
 data Server = Server
@@ -126,16 +126,8 @@ data Server = Server
     savingLock :: Lock
   }
 
-data SMPProxyServer = SMPProxyServer
-  { relaySessions :: TMap SessionId SMPProxiedRelay,
-    relayServers :: TMap Text SessionId -- speed up client lookups by server URI
-  }
-
-data SMPProxiedRelay = SMPProxiedRelay
-  { worker :: Worker,
-    proxyKey :: C.DhSecretX25519,
-    fwdQ :: TBQueue (ClientId, CorrId, C.PublicKeyX25519, ByteString) -- FWD args from multiple clients using this server
-    -- can be used for QUOTA retries until the session is gone
+data ProxyAgent = ProxyAgent
+  { smpAgent :: SMPClientAgent
   }
 
 type ClientId = Int
@@ -194,7 +186,7 @@ newSubscription subThread = do
   return Sub {subThread, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile} = do
+newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, smpAgentCfg} = do
   server <- atomically newServer
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
@@ -207,8 +199,8 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
-  proxyServer <- newSMPProxyServer
-  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyServer}
+  proxyAgent <- atomically $ newSMPProxyAgent smpAgentCfg random
+  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
@@ -225,8 +217,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
       Nothing -> id
       Just NtfCreds {notifierId} -> M.insert notifierId (recipientId q)
 
-newSMPProxyServer :: MonadIO m => m SMPProxyServer
-newSMPProxyServer = do
-  relayServers <- atomically TM.empty
-  relaySessions <- atomically TM.empty
-  pure SMPProxyServer {relayServers, relaySessions}
+newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> STM ProxyAgent
+newSMPProxyAgent smpAgentCfg random = do
+  smpAgent <- newSMPClientAgent smpAgentCfg random
+  pure ProxyAgent {smpAgent}

@@ -54,7 +54,7 @@ addQueue QueueStore {queues, senders} q@QueueRec {recipientId = rId, senderId = 
   where
     hasId = (||) <$> TM.member rId queues <*> TM.member sId senders
 
-getQueue :: QueueStore -> SParty p -> QueueId -> STM (Either ErrorType QueueRec)
+getQueue :: DirectParty p => QueueStore -> SParty p -> QueueId -> STM (Either ErrorType QueueRec)
 getQueue QueueStore {queues, senders, notifiers} party qId =
   toResult <$> (mapM readTVar =<< getVar)
   where
