@@ -82,6 +82,7 @@ module Simplex.Messaging.Agent
     setNtfServers,
     setNetworkConfig,
     getNetworkConfig,
+    getNetworkConfig',
     setUserNetworkInfo,
     reconnectAllServers,
     registerNtfToken,
@@ -415,7 +416,7 @@ setNetworkConfig c@AgentClient {useNetworkConfig} cfg' = do
 
 -- returns fast network config
 getNetworkConfig :: AgentClient -> IO NetworkConfig
-getNetworkConfig = fmap snd . readTVarIO . useNetworkConfig
+getNetworkConfig = getNetworkConfig'
 {-# INLINE getNetworkConfig #-}
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()

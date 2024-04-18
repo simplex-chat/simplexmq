@@ -105,6 +105,7 @@ module Simplex.Messaging.Agent.Client
     UserNetworkType (..),
     UserNetworkState (..),
     UNSOffline (..),
+    getNetworkConfig',
     waitForUserNetwork,
     throwWhenInactive,
     throwWhenNoDelivery,
@@ -752,6 +753,11 @@ getNetworkConfig c = do
     UNCellular -> slowCfg
     UNNone -> slowCfg
     _ -> fastCfg
+
+-- returns fast network config
+getNetworkConfig' :: AgentClient -> IO NetworkConfig
+getNetworkConfig' = fmap snd . readTVarIO . useNetworkConfig
+{-# INLINE getNetworkConfig' #-}
 
 waitForUserNetwork :: AgentClient -> AM' ()
 waitForUserNetwork AgentClient {userNetworkState} =
