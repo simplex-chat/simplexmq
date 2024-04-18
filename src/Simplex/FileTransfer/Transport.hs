@@ -214,7 +214,7 @@ data XFTPErrorType
     TIMEOUT
   | -- | bad redirect data
     REDIRECT {redirectError :: String}
-  | -- | cannot proceed with download from unknown server without proxy
+  | -- | cannot proceed with download from not approved relays without proxy
     NOT_APPROVED
   | -- | internal server error
     INTERNAL
