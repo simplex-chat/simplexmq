@@ -116,7 +116,7 @@ import UnliftIO.STM
 -- * Transport parameters
 
 smpBlockSize :: Int
-smpBlockSize = 16384 * 2
+smpBlockSize = 16384 + 1024
 
 -- SMP protocol version history:
 -- 1 - binary protocol encoding (1/1/2022)
