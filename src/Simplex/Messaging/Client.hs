@@ -129,7 +129,6 @@ data PClient v err msg = PClient
     transportSession :: TransportSession msg,
     transportHost :: TransportHost,
     tcpTimeout :: Int,
-    batchDelay :: Maybe Int,
     pingErrorCount :: TVar Int,
     clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
@@ -165,7 +164,6 @@ smpClientStub g sessionId thVersion thAuth = do
               transportSession = (1, "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001", Nothing),
               transportHost = "localhost",
               tcpTimeout = 15_000_000,
-              batchDelay = Nothing,
               pingErrorCount,
               clientCorrId,
               sentCommands,
@@ -252,8 +250,8 @@ data ProtocolClientConfig v = ProtocolClientConfig
     networkConfig :: NetworkConfig,
     -- | client-server protocol version range
     serverVRange :: VersionRange v,
-    -- | delay between sending batches of commands (microseconds)
-    batchDelay :: Maybe Int
+    -- | agree shared session secret (used in SMP proxy)
+    agreeSecret :: Bool
   }
 
 -- | Default protocol client configuration.
@@ -264,7 +262,7 @@ defaultClientConfig serverVRange =
       defaultTransport = ("443", transport @TLS),
       networkConfig = defaultNetworkConfig,
       serverVRange,
-      batchDelay = Nothing
+      agreeSecret = False
     }
 {-# INLINE defaultClientConfig #-}
 
@@ -321,7 +319,7 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe EntityId)
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> Maybe (TBQueue (ServerTransmission v msg)) -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, serverVRange, batchDelay} msgQ disconnected = do
+getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, serverVRange, agreeSecret} msgQ disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (atomically (mkProtocolClient useHost) >>= runClient useTransport useHost)
@@ -343,7 +341,6 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             transportSession,
             transportHost,
             tcpTimeout,
-            batchDelay,
             pingErrorCount,
             clientCorrId,
             sentCommands,
@@ -375,7 +372,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
 
     client :: forall c. Transport c => TProxy c -> PClient v err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient v err msg)) -> c -> IO ()
     client _ c cVar h = do
-      ks <- atomically $ C.generateKeyPair g
+      ks <- if agreeSecret then Just <$> atomically (C.generateKeyPair g) else pure Nothing
       runExceptT (protocolClientHandshake @v @err @msg h ks (keyHash srv) serverVRange) >>= \case
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
         Right th@THandle {params} -> do

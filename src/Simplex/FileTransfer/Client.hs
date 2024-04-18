@@ -97,8 +97,8 @@ defaultXFTPClientConfig =
       clientALPN = Just supportedXFTPhandshakes
     }
 
-getXFTPClient :: TVar ChaChaDRG -> TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
-getXFTPClient g transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} disconnected = runExceptT $ do
+getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
+getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} disconnected = runExceptT $ do
   let tcConfig = (transportClientConfig xftpNetworkConfig) {alpn = clientALPN}
       http2Config = xftpHTTP2Config tcConfig config
       username = proxyUsername transportSession
@@ -112,7 +112,7 @@ getXFTPClient g transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN
       thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = VersionXFTP 1, thAuth = Nothing, implySessId = False, batch = True}
   logDebug $ "Client negotiated handshake protocol: " <> tshow sessionALPN
   thParams@THandleParams {thVersion} <- case sessionALPN of
-    Just "xftp/1" -> xftpClientHandshakeV1 g serverVRange keyHash http2Client thParams0
+    Just "xftp/1" -> xftpClientHandshakeV1 serverVRange keyHash http2Client thParams0
     Nothing -> pure thParams0
     _ -> throwError $ PCETransportError (TEHandshake VERSION)
   logDebug $ "Client negotiated protocol: " <> tshow thVersion
@@ -120,13 +120,12 @@ getXFTPClient g transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN
   atomically $ writeTVar clientVar $ Just c
   pure c
 
-xftpClientHandshakeV1 :: TVar ChaChaDRG -> VersionRangeXFTP -> C.KeyHash -> HTTP2Client -> THandleParamsXFTP 'TClient -> ExceptT XFTPClientError IO (THandleParamsXFTP 'TClient)
-xftpClientHandshakeV1 g serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessionId, serverKey} thParams0 = do
+xftpClientHandshakeV1 :: VersionRangeXFTP -> C.KeyHash -> HTTP2Client -> THandleParamsXFTP 'TClient -> ExceptT XFTPClientError IO (THandleParamsXFTP 'TClient)
+xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessionId, serverKey} thParams0 = do
   shs@XFTPServerHandshake {authPubKey = ck} <- getServerHandshake
   (v, sk) <- processServerHandshake shs
-  (k, pk) <- atomically $ C.generateKeyPair g
-  sendClientHandshake XFTPClientHandshake {xftpVersion = v, keyHash, authPubKey = k}
-  pure thParams0 {thAuth = Just THAuthClient {serverPeerPubKey = sk, serverCertKey = ck, clientPrivKey = pk}, thVersion = v}
+  sendClientHandshake XFTPClientHandshake {xftpVersion = v, keyHash}
+  pure thParams0 {thAuth = Just THAuthClient {serverPeerPubKey = sk, serverCertKey = ck, sessSecret = Nothing}, thVersion = v}
   where
     getServerHandshake :: ExceptT XFTPClientError IO XFTPServerHandshake
     getServerHandshake = do
