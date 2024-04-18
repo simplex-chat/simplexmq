@@ -195,6 +195,8 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust, isNothing)
 import Data.String
+import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import Data.Word (Word16)
@@ -210,7 +212,7 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
-import Simplex.Messaging.Util (bshow, eitherToMaybe, (<$?>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 
@@ -1167,11 +1169,11 @@ data ErrorType
 instance StrEncoding ErrorType where
   strEncode = \case
     CMD e -> "CMD " <> bshow e
-    PROXY e -> "PROXY " <> bshow e
+    PROXY e -> "PROXY " <> strEncode e
     e -> bshow e
   strP =
     "CMD " *> (CMD <$> parseRead1)
-      <|> "PROXY " *> (PROXY <$> parseRead1)
+      <|> "PROXY " *> (PROXY <$> strP)
       <|> parseRead1
 
 -- | SMP command error type.
@@ -1190,7 +1192,6 @@ data CommandError
     NO_ENTITY
   deriving (Eq, Read, Show)
 
--- TODO keep error params
 data ProxyError
   = -- | Correctly parsed SMP server ERR response.
     -- This error is forwarded to the agent client as `ERR SMP err`.
@@ -1475,7 +1476,7 @@ instance Encoding ProxyError where
   smpEncode e = case e of
     PROTOCOL et -> "PROTOCOL " <> smpEncode et
     RESPONSE et -> "RESPONSE " <> smpEncode et
-    UNEXPECTED s -> "UNEXPECTED " <> smpEncode (B.pack s)
+    UNEXPECTED s -> "UNEXPECTED " <> smpEncode (encodeUtf8 $ T.pack s)
     TIMEOUT -> "TIMEOUT"
     NETWORK -> "NETWORK"
     BAD_HOST -> "BAD_HOST"
@@ -1485,13 +1486,29 @@ instance Encoding ProxyError where
     A.takeTill (== ' ') >>= \case
       "PROTOCOL" -> PROTOCOL <$> _smpP
       "RESPONSE" -> RESPONSE <$> _smpP
-      "UNEXPECTED" -> UNEXPECTED . B.unpack <$> _smpP
+      "UNEXPECTED" -> UNEXPECTED . (T.unpack . safeDecodeUtf8) <$> _smpP
       "TIMEOUT" -> pure TIMEOUT
       "NETWORK" -> pure NETWORK
       "BAD_HOST" -> pure BAD_HOST
       "NO_SESSION" -> pure NO_SESSION
       "TRANSPORT" -> TRANSPORT <$> (A.space *> transportErrorP)
       _ -> fail "bad command error type"
+
+instance StrEncoding ProxyError where
+  strEncode = \case
+    PROTOCOL et -> "PROTOCOL " <> strEncode et
+    RESPONSE et -> "RESPONSE " <> strEncode et
+    UNEXPECTED "" -> "UNEXPECTED" -- Arbitrary instance generates empty strings which String instance can't handle
+    UNEXPECTED s -> "UNEXPECTED " <> strEncode s
+    TRANSPORT t -> "TRANSPORT " <> serializeTransportError t
+    e -> bshow e
+  strP =
+    "PROTOCOL " *> (PROTOCOL <$> strP)
+      <|> "RESPONSE " *> (RESPONSE <$> strP)
+      <|> "UNEXPECTED " *> (UNEXPECTED <$> strP)
+      <|> "UNEXPECTED" $> UNEXPECTED ""
+      <|> "TRANSPORT " *> (TRANSPORT <$> transportErrorP)
+      <|> parseRead1
 
 -- | Send signed SMP transmission to TCP transport.
 tPut :: Transport c => THandle v c p -> NonEmpty (Either TransportError SentRawTransmission) -> IO [Either TransportError ()]

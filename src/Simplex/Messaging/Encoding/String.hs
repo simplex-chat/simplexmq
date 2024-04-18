@@ -32,6 +32,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime (..))
@@ -39,7 +40,7 @@ import Data.Time.Format.ISO8601
 import Data.Word (Word16, Word32)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Util (safeDecodeUtf8, (<$?>))
 
 class TextEncoding a where
   textEncode :: a -> Text
@@ -75,9 +76,10 @@ instance StrEncoding Str where
   strEncode = unStr
   strP = Str <$> A.takeTill (== ' ') <* optional A.space
 
+-- inherited from ByteString, the parser only allows non-empty strings
 instance StrEncoding String where
-  strEncode = strEncode . B.pack
-  strP = B.unpack <$> strP
+  strEncode = strEncode . encodeUtf8 . T.pack
+  strP = T.unpack . safeDecodeUtf8 <$> strP
 
 instance ToJSON Str where
   toJSON (Str s) = strToJSON s
