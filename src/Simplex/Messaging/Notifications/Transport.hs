@@ -97,7 +97,6 @@ instance Encoding NtfClientHandshake where
     smpEncode (ntfVersion, keyHash)
   smpP = do
     (ntfVersion, keyHash) <- smpP
-    -- TODO drop SMP v6: remove special parser and make key non-optional
     pure NtfClientHandshake {ntfVersion, keyHash}
 
 -- | Notifcations server transport handshake.
