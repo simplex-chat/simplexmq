@@ -71,7 +71,7 @@ import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
-import Simplex.Messaging.Protocol (EntityId, ProtoServerWithAuth (..), ProtocolServer (..), XFTPServer)
+import Simplex.Messaging.Protocol (EntityId, ProtocolServer (..), XFTPServer)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Util (catchAll_, liftError, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
