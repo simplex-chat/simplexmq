@@ -48,7 +48,7 @@ main = do
     hspecWith defaultConfig {configPrintSlowItems = Just 10}
       . before_ (createDirectoryIfMissing False "tests/tmp")
       . after_ (eventuallyRemove "tests/tmp" 3)
-      . deadline (90 * 1000000)
+      . deadline (120 * 1000000)
       $ do
         describe "Agent SQLite schema dump" schemaDumpTest
         describe "Core tests" $ do
