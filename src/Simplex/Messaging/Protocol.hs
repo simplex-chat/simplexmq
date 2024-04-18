@@ -244,11 +244,19 @@ supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClie
 maxMessageLength :: Int
 maxMessageLength = 16088
 
+-- without signature works with min 16151 (fails with 16150)
+-- with Ed448: 16265 (fails with 16264)
+-- with Ed25519: 16215 (fails with 16214)
+-- with X25519: 16232 (fails with 16231)
 paddedProxiedMsgLength :: Int
-paddedProxiedMsgLength = 16388
+paddedProxiedMsgLength = 16232
 
+-- without signature works with min 16239 (fails with 16238)
+-- with Ed448: 16353 (fails with 16352)
+-- with Ed25519: 16303 (fails with 16302)
+-- with X25519: 16320 (fails with 16319)
 paddedForwardedMsgLength :: Int
-paddedForwardedMsgLength = 16688
+paddedForwardedMsgLength = 16320
 
 type MaxMessageLen = 16088
 
