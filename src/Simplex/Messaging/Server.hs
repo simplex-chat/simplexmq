@@ -606,11 +606,11 @@ client :: THandleParams SMPVersion 'TServer -> Client -> Server -> M ()
 client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
   forever $ do
-    (cmds, rs) <- partitionEithers . L.toList <$> (mapM processCommand =<< atomically (readTBQueue rcvQ))
-    mapM_ reply (L.nonEmpty rs)
+    (proxied, rs) <- partitionEithers . L.toList <$> (mapM processCommand =<< atomically (readTBQueue rcvQ))
+    forM_ (L.nonEmpty rs) reply
     -- TODO cancel this thread if the client gets disconnected
     -- TODO limit client concurrency
-    forkIO $ mapM_ reply . L.nonEmpty =<< mapConcurrently processProxiedCmd cmds
+    forM_ (L.nonEmpty proxied) $ \cmds -> forkIO $ mapConcurrently processProxiedCmd cmds >>= reply
   where
     reply :: MonadIO m => NonEmpty (Transmission BrokerMsg) -> m ()
     reply = atomically . writeTBQueue sndQ
