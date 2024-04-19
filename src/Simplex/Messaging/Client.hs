@@ -654,14 +654,12 @@ createSMPProxySession :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT SM
 createSMPProxySession c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth =
   sendSMPCommand c Nothing "" (PRXY relayServ proxyAuth) >>= \case
     -- XXX: rfc says sessionId should be in the entityId of response
-    PKEY sId vr (chain, key) -> do
+    PKEY sId vr (chain, key) ->
       case supportedClientSMPRelayVRange `compatibleVersion` vr of
-        Nothing -> throwE PCEIncompatibleHost -- TODO different error
-        Just (Compatible v) -> liftEitherWith x509Error $ (sId,v,) <$> validateRelay chain key
+        Nothing -> throwE . PCEProtocolError $ PROXY BAD_HOST
+        Just (Compatible v) -> liftEitherWith (const . PCEResponseError . PROXY $ RESPONSE AUTH) $ (sId,v,) <$> validateRelay chain key
     r -> throwE . PCEUnexpectedResponse $ bshow r
   where
-    x509Error :: String -> SMPClientError
-    x509Error _msg = PCEResponseError $ error "TODO: x509 error" -- TODO different error
     validateRelay :: X.CertificateChain -> X.SignedExact X.PubKey -> Either String C.PublicKeyX25519
     validateRelay (X.CertificateChain cert) exact = do
       serverKey <- case cert of
@@ -705,19 +703,26 @@ proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
     TBTransmission s _ : _ -> pure s
     TBTransmissions s _ _ : _ -> pure s
   et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedMsgLength
-  sendProtocolCommand_ c (Just nonce) Nothing sessionId (Cmd SProxiedClient (PFWD cmdPubKey et)) >>= \case
+  -- proxy interaction errors are wrapped
+  proxyCmdError `handleError` sendProtocolCommand_ c (Just nonce) Nothing sessionId (Cmd SProxiedClient (PFWD cmdPubKey et)) >>= \case
     -- TODO support PKEY + resend?
     PRES (EncResponse er) -> do
+      -- server interaction errors are thrown directly
       t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.reverseNonce nonce) er
       case tParse proxyThParams t' of
         t'' :| [] -> case tDecodeParseValidate proxyThParams t'' of
           (_auth, _signed, (_c, _e, r)) -> case r of -- TODO: verify
-            Left e -> throwE $ PCEResponseError e
+            Left se -> throwE $ PCEResponseError se
             Right OK -> pure ()
-            Right (ERR e) -> throwE $ PCEProtocolError e
-            Right u -> throwE . PCEUnexpectedResponse $ bshow u -- possibly differentiate unexpected response from server/proxy
+            Right (ERR se) -> throwE $ PCEProtocolError se
+            Right sr -> throwE $ PCEUnexpectedResponse (bshow sr)
         _ -> throwE $ PCETransportError TEBadBlock
-    r -> throwE . PCEUnexpectedResponse $ bshow r -- from proxy
+    pr -> throwE $ PCEResponseError . PROXY $ UNEXPECTED (B.unpack $ B.take 32 $ bshow pr)
+  where
+    proxyCmdError :: SMPClientError -> ExceptT SMPClientError IO BrokerMsg
+    proxyCmdError = \case
+      PCETransportError te -> throwE . PCEResponseError . PROXY $ TRANSPORT te
+      err -> throwE err
 
 -- this method is used in the proxy
 -- sends RFWD :: EncFwdTransmission -> Command Sender
