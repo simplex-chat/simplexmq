@@ -856,7 +856,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> M (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
-          | B.length msgBody > maxMessageLength = pure $ err LARGE_MSG
+          | B.length msgBody > maxMessageLength thVersion = pure $ err LARGE_MSG
           | otherwise = case status qr of
               QueueOff -> return $ err AUTH
               QueueActive ->
@@ -880,6 +880,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                         atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
                         pure ok
           where
+            THandleParams {thVersion} = thParams'
             mkMessage :: C.MaxLenBS MaxMessageLen -> M Message
             mkMessage body = do
               msgId <- randomId =<< asks (msgIdBytes . config)

@@ -39,6 +39,7 @@ smpProxyTests = do
     xit "batching proxy requests" todo
   describe "forwarding requests" $ do
     describe "deliver message via SMP proxy" $ do
+      let maxLen = maxMessageLength sendingProxySMPVersion
       it "same server" $
         withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ -> do
           let proxyServ = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
@@ -50,12 +51,12 @@ smpProxyTests = do
             let proxyServ = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
             let relayServ = SMPServer SMP.testHost SMP.testPort2 SMP.testKeyHash
             deliverMessageViaProxy proxyServ relayServ C.SEd448 "hello 1" "hello 2"
-      xit "max message size, Ed448 keys" $
+      it "max message size, Ed448 keys" $
         withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
           withSmpServerConfigOn (transport @TLS) cfgV7 testPort2 $ \_ -> do
             g <- C.newRandom
-            msg <- atomically $ C.randomBytes maxMessageLength g
-            msg' <- atomically $ C.randomBytes maxMessageLength g
+            msg <- atomically $ C.randomBytes maxLen g
+            msg' <- atomically $ C.randomBytes maxLen g
             let proxyServ = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
             let relayServ = SMPServer SMP.testHost SMP.testPort2 SMP.testKeyHash
             deliverMessageViaProxy proxyServ relayServ C.SEd448 msg msg'
@@ -63,8 +64,8 @@ smpProxyTests = do
         withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
           withSmpServerConfigOn (transport @TLS) cfgV7 testPort2 $ \_ -> do
             g <- C.newRandom
-            msg <- atomically $ C.randomBytes maxMessageLength g
-            msg' <- atomically $ C.randomBytes maxMessageLength g
+            msg <- atomically $ C.randomBytes maxLen g
+            msg' <- atomically $ C.randomBytes maxLen g
             let proxyServ = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
             let relayServ = SMPServer SMP.testHost SMP.testPort2 SMP.testKeyHash
             deliverMessageViaProxy proxyServ relayServ C.SEd25519 msg msg'
@@ -72,8 +73,8 @@ smpProxyTests = do
         withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
           withSmpServerConfigOn (transport @TLS) cfgV7 testPort2 $ \_ -> do
             g <- C.newRandom
-            msg <- atomically $ C.randomBytes maxMessageLength g
-            msg' <- atomically $ C.randomBytes maxMessageLength g
+            msg <- atomically $ C.randomBytes maxLen g
+            msg' <- atomically $ C.randomBytes maxLen g
             let proxyServ = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
             let relayServ = SMPServer SMP.testHost SMP.testPort2 SMP.testKeyHash
             deliverMessageViaProxy proxyServ relayServ C.SX25519 msg msg'
