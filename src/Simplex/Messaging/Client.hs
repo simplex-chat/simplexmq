@@ -484,16 +484,15 @@ temporaryClientError = \case
   _ -> False
 {-# INLINE temporaryClientError #-}
 
--- TODO keep error params
 smpProxyError :: SMPClientError -> ErrorType
 smpProxyError = \case
-  PCEProtocolError _ -> PROXY PROTOCOL
-  PCEResponseError _ -> PROXY RESPONSE
-  PCEUnexpectedResponse _ -> PROXY UNEXPECTED
+  PCEProtocolError et -> PROXY (PROTOCOL et)
+  PCEResponseError et -> PROXY (RESPONSE et)
+  PCEUnexpectedResponse bs -> PROXY (UNEXPECTED $ B.unpack $ B.take 32 bs)
   PCEResponseTimeout -> PROXY TIMEOUT
   PCENetworkError -> PROXY NETWORK
   PCEIncompatibleHost -> PROXY BAD_HOST
-  PCETransportError _ -> PROXY TRANSPORT
+  PCETransportError t -> PROXY (TRANSPORT t)
   PCECryptoError _ -> INTERNAL
   PCEIOError _ -> INTERNAL
 
