@@ -44,7 +44,6 @@ module Simplex.Messaging.Protocol
     supportedSMPClientVRange,
     maxMessageLength,
     paddedProxiedMsgLength,
-    paddedForwardedMsgLength,
     e2eEncConfirmationLength,
     e2eEncMessageLength,
 
@@ -244,14 +243,11 @@ supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClie
 -- TODO v6.0 remove dependency on version
 maxMessageLength :: VersionSMP -> Int
 maxMessageLength v
-  | v >= sendingProxySMPVersion = 16064 -- max 16066
-  | otherwise = 16064 -- 16088 - always use this size to determine allowed ranges
+  | v >= sendingProxySMPVersion = 16064 -- max 16067
+  | otherwise = 16088 -- 16064 - always use this size to determine allowed ranges
 
 paddedProxiedMsgLength :: Int
-paddedProxiedMsgLength = 16241 -- 16241 .. 16242
-
-paddedForwardedMsgLength :: Int
-paddedForwardedMsgLength = 16330 -- 16330 .. 16331
+paddedProxiedMsgLength = 16244 -- 16241 .. 16245
 
 -- TODO v6.0 change to 16064
 type MaxMessageLen = 16088
