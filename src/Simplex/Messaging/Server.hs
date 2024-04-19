@@ -856,7 +856,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> M (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
-          | B.length msgBody > maxMessageLength = pure $ err LARGE_MSG
+          | B.length msgBody > maxMessageLength thVersion = pure $ err LARGE_MSG
           | otherwise = case status qr of
               QueueOff -> return $ err AUTH
               QueueActive ->
@@ -880,6 +880,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                         atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
                         pure ok
           where
+            THandleParams {thVersion} = thParams'
             mkMessage :: C.MaxLenBS MaxMessageLen -> M Message
             mkMessage body = do
               msgId <- randomId =<< asks (msgIdBytes . config)
@@ -921,7 +922,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           sessSecret <- maybe (throwError $ ERR INTERNAL) pure sessSecret'
           let proxyNonce = C.cbNonce $ bs corrId
           -- TODO error
-          s' <- liftEitherWith internalErr $ C.cbDecrypt sessSecret proxyNonce s
+          s' <- liftEitherWith internalErr $ C.cbDecryptNoPad sessSecret proxyNonce s
           -- TODO error
           FwdTransmission {fwdCorrId, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith internalErr $ smpDecode s'
           -- TODO error - this error is reported to proxy, as we failed to get to client's transmission
@@ -949,7 +950,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           r2 <- liftEitherWith internalErr $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedMsgLength
           -- encrypt to proxy
           let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
-          r3 <- liftEitherWith internalErr $ EncFwdResponse <$> C.cbEncrypt sessSecret (C.reverseNonce proxyNonce) (smpEncode fr) paddedForwardedMsgLength
+              r3 = EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
           pure $ RRES r3
           where
             internalErr _ = ERR INTERNAL -- TODO errors
