@@ -703,7 +703,7 @@ getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq} tSess@(userId
 waitForProtocolClient :: ProtocolTypeI (ProtoType msg) => AgentClient -> TransportSession msg -> ClientVar msg -> AM (Client msg)
 waitForProtocolClient c (_, srv, _) v = do
   NetworkConfig {tcpConnectTimeout, tcpTimeout} <- atomically $ getNetworkConfig c
-  client_ <- liftIO $ (tcpConnectTimeout + 2 * tcpTimeout) `timeout` atomically (readTMVar $ sessionVar v)
+  client_ <- liftIO $ (tcpConnectTimeout + tcpTimeout) `timeout` atomically (readTMVar $ sessionVar v)
   liftEither $ case client_ of
     Just (Right smpClient) -> Right smpClient
     Just (Left e) -> Left e
