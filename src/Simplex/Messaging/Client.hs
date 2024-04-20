@@ -107,7 +107,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), runTransportClient)
+import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, raceAny_, threadDelay')
@@ -226,7 +226,7 @@ defaultNetworkConfig =
       hostMode = HMOnionViaSocks,
       requiredHostMode = False,
       sessionMode = TSMUser,
-      tcpConnectTimeout = 20_000_000,
+      tcpConnectTimeout = defaultTcpConnectTimeout,
       tcpTimeout = 15_000_000,
       tcpTimeoutPerKb = 5_000,
       tcpKeepAlive = Just defaultKeepAliveOpts,
@@ -236,8 +236,8 @@ defaultNetworkConfig =
     }
 
 transportClientConfig :: NetworkConfig -> TransportClientConfig
-transportClientConfig NetworkConfig {socksProxy, tcpKeepAlive, logTLSErrors} =
-  TransportClientConfig {socksProxy, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, alpn = Nothing}
+transportClientConfig NetworkConfig {socksProxy, tcpConnectTimeout, tcpKeepAlive, logTLSErrors} =
+  TransportClientConfig {socksProxy, tcpConnectTimeout, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, alpn = Nothing}
 {-# INLINE transportClientConfig #-}
 
 -- | protocol client configuration.
@@ -358,7 +358,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         async $
           runTransportClient tcConfig (Just username) useHost port' (Just $ keyHash srv) (client t c cVar)
             `finally` atomically (tryPutTMVar cVar $ Left PCENetworkError)
-      c_ <- tcpConnectTimeout `timeout` atomically (takeTMVar cVar)
+      c_ <- (tcpConnectTimeout + tcpTimeout * 2) `timeout` atomically (takeTMVar cVar)
       case c_ of
         Just (Right c') -> pure $ Right c' {action = Just action}
         Just (Left e) -> pure $ Left e
