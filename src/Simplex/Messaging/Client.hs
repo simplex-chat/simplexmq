@@ -133,6 +133,7 @@ data PClient v err msg = PClient
     pingErrorCount :: TVar Int,
     clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
+    sndBatchConcurrency :: Int, -- break response-waiters into groups, with later waiters getting later deadlines
     sndQ :: TBQueue (TVar Bool, ByteString),
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission v msg))
@@ -168,6 +169,7 @@ smpClientStub g sessionId thVersion thAuth = do
               pingErrorCount,
               clientCorrId,
               sentCommands,
+              sndBatchConcurrency = 8,
               sndQ,
               rcvQ,
               msgQ = Nothing
@@ -345,6 +347,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             pingErrorCount,
             clientCorrId,
             sentCommands,
+            sndBatchConcurrency = 8,
             sndQ,
             rcvQ,
             msgQ
@@ -675,7 +678,7 @@ streamProtocolCommands c@ProtocolClient {thParams = THandleParams {batch, blockS
   mapM_ (cb <=< sendBatch c) bs
 
 sendBatch :: ProtocolClient v err msg -> TransportBatch (Request err msg) -> IO [Response err msg]
-sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
+sendBatch c@ProtocolClient {client_ = PClient {sndBatchConcurrency, sndQ}} b = do
   case b of
     TBError e Request {entityId} -> do
       putStrLn "send error: large message"
@@ -684,7 +687,7 @@ sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
       | n > 0 -> do
           active <- newTVarIO True
           atomically $ writeTBQueue sndQ (active, s)
-          pooledMapConcurrentlyN 8 (getResponse c active) rs
+          pooledMapConcurrentlyN sndBatchConcurrency (getResponse c active) rs
       | otherwise -> pure []
     TBTransmission s r -> do
       active <- newTVarIO True
