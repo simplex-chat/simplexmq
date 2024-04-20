@@ -277,7 +277,8 @@ defaultSMPClientConfig = defaultClientConfig supportedClientSMPRelayVRange
 {-# INLINE defaultSMPClientConfig #-}
 
 data Request err msg = Request
-  { entityId :: EntityId,
+  { corrId :: CorrId,
+    entityId :: EntityId,
     responseVar :: TMVar (Either (ProtocolClientError err) msg)
   }
 
@@ -719,11 +720,11 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, thParams = THand
 
 -- TODO switch to timeout or TimeManager that supports Int64
 getResponse :: ProtocolClient v err msg -> TVar Bool -> Request err msg -> IO (Response err msg)
-getResponse ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} active Request {entityId, responseVar} = do
+getResponse ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount, sentCommands}} active Request {corrId, entityId, responseVar} = do
   response <-
     timeout tcpTimeout (atomically (takeTMVar responseVar)) >>= \case
       Just r -> atomically (writeTVar pingErrorCount 0) $> r
-      Nothing -> atomically (writeTVar active False) $> Left PCEResponseTimeout
+      Nothing -> atomically (writeTVar active False >> TM.delete corrId sentCommands) $> Left PCEResponseTimeout
   pure Response {entityId, response}
 
 mkTransmission :: forall v err msg. ProtocolEncoding v err (ProtoCommand msg) => ProtocolClient v err msg -> ClientCommand msg -> IO (PCTransmission err msg)
@@ -738,7 +739,7 @@ mkTransmission ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCo
     getNextCorrId = CorrId <$> C.randomBytes 24 clientCorrId -- also used as nonce
     mkRequest :: CorrId -> STM (Request err msg)
     mkRequest corrId = do
-      r <- Request entId <$> newEmptyTMVar
+      r <- Request corrId entId <$> newEmptyTMVar
       TM.insert corrId r sentCommands
       pure r
 
