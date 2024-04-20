@@ -110,9 +110,10 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
-import Simplex.Messaging.Util (bshow, raceAny_, threadDelay')
+import Simplex.Messaging.Util (bshow, raceAny_, threadDelay', whenM)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
+import UnliftIO (pooledMapConcurrentlyN)
 
 -- | 'SMPClient' is a handle used to send commands to a specific SMP server.
 --
@@ -132,7 +133,7 @@ data PClient v err msg = PClient
     pingErrorCount :: TVar Int,
     clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
-    sndQ :: TBQueue ByteString,
+    sndQ :: TBQueue (TVar Bool, ByteString),
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission v msg))
   }
@@ -385,7 +386,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             `finally` disconnected c'
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
-    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= tPutLog h
+    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= \(active, s) -> whenM (readTVarIO active) (void $ tPutLog h s)
 
     receive :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     receive ProtocolClient {client_ = PClient {rcvQ}} h = forever $ tGet h >>= atomically . writeTBQueue rcvQ
@@ -681,12 +682,14 @@ sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
       pure [Response entityId $ Left $ PCETransportError e]
     TBTransmissions s n rs
       | n > 0 -> do
-          atomically $ writeTBQueue sndQ s
-          mapConcurrently (getResponse c) rs
+          active <- newTVarIO True
+          atomically $ writeTBQueue sndQ (active, s)
+          pooledMapConcurrentlyN 8 (getResponse c active) rs
       | otherwise -> pure []
     TBTransmission s r -> do
-      atomically $ writeTBQueue sndQ s
-      (: []) <$> getResponse c r
+      active <- newTVarIO True
+      atomically $ writeTBQueue sndQ (active, s)
+      (: []) <$> getResponse c active r
 
 -- | Send Protocol command
 sendProtocolCommand :: forall v err msg. ProtocolEncoding v err (ProtoCommand msg) => ProtocolClient v err msg -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
@@ -699,19 +702,22 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, thParams = THand
       Left e -> pure . Left $ PCETransportError e
       Right t
         | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
-        | otherwise -> atomically (writeTBQueue sndQ s) >> response <$> getResponse c r
+        | otherwise -> do
+            active <- newTVarIO True
+            atomically (writeTBQueue sndQ (active, s))
+            response <$> getResponse c active r
         where
           s
             | batch = tEncodeBatch1 t
             | otherwise = tEncode t
 
 -- TODO switch to timeout or TimeManager that supports Int64
-getResponse :: ProtocolClient v err msg -> Request err msg -> IO (Response err msg)
-getResponse ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} Request {entityId, responseVar} = do
+getResponse :: ProtocolClient v err msg -> TVar Bool -> Request err msg -> IO (Response err msg)
+getResponse ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} active Request {entityId, responseVar} = do
   response <-
     timeout tcpTimeout (atomically (takeTMVar responseVar)) >>= \case
       Just r -> atomically (writeTVar pingErrorCount 0) $> r
-      Nothing -> pure $ Left PCEResponseTimeout
+      Nothing -> atomically (writeTVar active False) $> Left PCEResponseTimeout
   pure Response {entityId, response}
 
 mkTransmission :: forall v err msg. ProtocolEncoding v err (ProtoCommand msg) => ProtocolClient v err msg -> ClientCommand msg -> IO (PCTransmission err msg)
