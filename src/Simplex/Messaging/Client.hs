@@ -130,10 +130,10 @@ data PClient v err msg = PClient
     transportSession :: TransportSession msg,
     transportHost :: TransportHost,
     tcpTimeout :: Int,
+    rcvConcurrency :: Int,
     pingErrorCount :: TVar Int,
     clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
-    sndBatchConcurrency :: Int, -- break response-waiters into groups, with later waiters getting later deadlines
     sndQ :: TBQueue (TVar Bool, ByteString),
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission v msg))
@@ -166,10 +166,10 @@ smpClientStub g sessionId thVersion thAuth = do
               transportSession = (1, "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001", Nothing),
               transportHost = "localhost",
               tcpTimeout = 15_000_000,
+              rcvConcurrency = 8,
               pingErrorCount,
               clientCorrId,
               sentCommands,
-              sndBatchConcurrency = 8,
               sndQ,
               rcvQ,
               msgQ = Nothing
@@ -209,6 +209,8 @@ data NetworkConfig = NetworkConfig
     tcpTimeout :: Int,
     -- | additional timeout per kilobyte (1024 bytes) to be sent
     tcpTimeoutPerKb :: Int64,
+    -- | break response timeouts into groups, so later responses get later deadlines
+    rcvConcurrency :: Int,
     -- | TCP keep-alive options, Nothing to skip enabling keep-alive
     tcpKeepAlive :: Maybe KeepAliveOpts,
     -- | period for SMP ping commands (microseconds, 0 to disable)
@@ -232,6 +234,7 @@ defaultNetworkConfig =
       tcpConnectTimeout = defaultTcpConnectTimeout,
       tcpTimeout = 15_000_000,
       tcpTimeoutPerKb = 5_000,
+      rcvConcurrency = 8,
       tcpKeepAlive = Just defaultKeepAliveOpts,
       smpPingInterval = 600_000_000, -- 10min
       smpPingCount = 3,
@@ -329,7 +332,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
-    NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
+    NetworkConfig {tcpConnectTimeout, tcpTimeout, rcvConcurrency, smpPingInterval} = networkConfig
     mkProtocolClient :: TransportHost -> STM (PClient v err msg)
     mkProtocolClient transportHost = do
       connected <- newTVar False
@@ -347,7 +350,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             pingErrorCount,
             clientCorrId,
             sentCommands,
-            sndBatchConcurrency = 8,
+            rcvConcurrency,
             sndQ,
             rcvQ,
             msgQ
@@ -678,7 +681,7 @@ streamProtocolCommands c@ProtocolClient {thParams = THandleParams {batch, blockS
   mapM_ (cb <=< sendBatch c) bs
 
 sendBatch :: ProtocolClient v err msg -> TransportBatch (Request err msg) -> IO [Response err msg]
-sendBatch c@ProtocolClient {client_ = PClient {sndBatchConcurrency, sndQ}} b = do
+sendBatch c@ProtocolClient {client_ = PClient {rcvConcurrency, sndQ}} b = do
   case b of
     TBError e Request {entityId} -> do
       putStrLn "send error: large message"
@@ -687,7 +690,7 @@ sendBatch c@ProtocolClient {client_ = PClient {sndBatchConcurrency, sndQ}} b = d
       | n > 0 -> do
           active <- newTVarIO True
           atomically $ writeTBQueue sndQ (active, s)
-          pooledMapConcurrentlyN sndBatchConcurrency (getResponse c active) rs
+          pooledMapConcurrentlyN rcvConcurrency (getResponse c active) rs
       | otherwise -> pure []
     TBTransmission s r -> do
       active <- newTVarIO True
