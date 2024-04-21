@@ -360,13 +360,17 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     runClient :: (ServiceName, ATransport) -> TransportHost -> PClient v err msg -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
     runClient (port', ATransport t) useHost c = do
       cVar <- newEmptyTMVarIO
-      let tcConfig = transportClientConfig networkConfig
+      let (connectTimeout, tcConfig) = case transportClientConfig networkConfig of
+            tcc@TransportClientConfig {socksProxy = Nothing} -> (tcpConnectTimeout, tcc)
+            tcc@TransportClientConfig {socksProxy = Just _} ->
+              let extended = tcpConnectTimeout + tcpTimeout -- typically, extra time for establishing TOR circuits
+              in (extended, tcc {tcpConnectTimeout = extended} :: TransportClientConfig)
           username = proxyUsername transportSession
       action <-
         async $
           runTransportClient tcConfig (Just username) useHost port' (Just $ keyHash srv) (client t c cVar)
             `finally` atomically (tryPutTMVar cVar $ Left PCENetworkError)
-      c_ <- (tcpConnectTimeout + tcpTimeout) `timeout` atomically (takeTMVar cVar)
+      c_ <- (connectTimeout + tcpTimeout) `timeout` atomically (takeTMVar cVar)
       case c_ of
         Just (Right c') -> pure $ Right c' {action = Just action}
         Just (Left e) -> pure $ Left e
