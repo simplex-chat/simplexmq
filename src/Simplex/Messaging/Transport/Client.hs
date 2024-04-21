@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -124,7 +125,7 @@ data TransportClientConfig = TransportClientConfig
 
 -- time to resolve host, connect socket, set up TLS
 defaultTcpConnectTimeout :: Int
-defaultTcpConnectTimeout = 10000000
+defaultTcpConnectTimeout = 25_000_000
 
 defaultTransportClientConfig :: TransportClientConfig
 defaultTransportClientConfig = TransportClientConfig Nothing defaultTcpConnectTimeout (Just defaultKeepAliveOpts) True Nothing Nothing
@@ -149,7 +150,7 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
     sock <- connectTCP port
     mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive" <> tshow e)
     let tCfg = clientTransportConfig cfg
-    timeout tcpConnectTimeout (connectTLS (Just hostName) tCfg clientParams sock) >>= \case
+    tcpConnectTimeout `timeout` connectTLS (Just hostName) tCfg clientParams sock >>= \case
       Nothing -> do
         close sock
         logError "connection timed out"
