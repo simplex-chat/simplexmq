@@ -68,7 +68,7 @@ import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), forwardSMPMessage, smpProxyError)
+import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (PCEIOError), forwardSMPMessage, smpProxyError)
 import Simplex.Messaging.Client.Agent (SMPClientAgent (..), SMPClientAgentEvent (..), getSMPServerClient', lookupSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -623,8 +623,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
           getRelay = do
             ProxyAgent {smpAgent} <- asks proxyAgent
-            -- TODO catch IO errors too
-            liftIO $ proxyResp <$> runExceptT (getSMPServerClient' smpAgent srv)
+            liftIO $ proxyResp <$> runExceptT (getSMPServerClient' smpAgent srv) `catch` (pure . Left . PCEIOError)
             where
               proxyResp = \case
                 Right smp ->
