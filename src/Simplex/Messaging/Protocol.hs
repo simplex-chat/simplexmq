@@ -44,7 +44,6 @@ module Simplex.Messaging.Protocol
     supportedSMPClientVRange,
     maxMessageLength,
     paddedProxiedMsgLength,
-    paddedForwardedMsgLength,
     e2eEncConfirmationLength,
     e2eEncMessageLength,
 
@@ -243,23 +242,16 @@ currentSMPClientVersion = VersionSMPC 2
 supportedSMPClientVRange :: VersionRangeSMPC
 supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClientVersion
 
-maxMessageLength :: Int
-maxMessageLength = 16088
+-- TODO v6.0 remove dependency on version
+maxMessageLength :: VersionSMP -> Int
+maxMessageLength v
+  | v >= sendingProxySMPVersion = 16064 -- max 16067
+  | otherwise = 16088 -- 16064 - always use this size to determine allowed ranges
 
--- without signature works with min 16151 (fails with 16150)
--- with Ed448: 16265 (fails with 16264)
--- with Ed25519: 16215 (fails with 16214)
--- with X25519: 16232 (fails with 16231)
 paddedProxiedMsgLength :: Int
-paddedProxiedMsgLength = 16232
+paddedProxiedMsgLength = 16244 -- 16241 .. 16245
 
--- without signature works with min 16239 (fails with 16238)
--- with Ed448: 16353 (fails with 16352)
--- with Ed25519: 16303 (fails with 16302)
--- with X25519: 16320 (fails with 16319)
-paddedForwardedMsgLength :: Int
-paddedForwardedMsgLength = 16320
-
+-- TODO v6.0 change to 16064
 type MaxMessageLen = 16088
 
 -- 16 extra bytes: 8 for timestamp and 8 for flags (7 flags and the space, only 1 flag is currently used)
@@ -267,10 +259,10 @@ type MaxRcvMessageLen = MaxMessageLen + 16 -- 16104, the padded size is 16106
 
 -- it is shorter to allow per-queue e2e encryption DH key in the "public" header
 e2eEncConfirmationLength :: Int
-e2eEncConfirmationLength = 15936
+e2eEncConfirmationLength = 15920 -- 15881 .. 15976
 
 e2eEncMessageLength :: Int
-e2eEncMessageLength = 16032
+e2eEncMessageLength = 16016 -- 16004 .. 16021
 
 -- | SMP protocol clients
 data Party = Recipient | Sender | Notifier | ProxiedClient
