@@ -214,14 +214,13 @@ testDuplexConnection _ alice bob = testDuplexConnection' (alice, IKPQOn) (bob, P
 testDuplexConnection' :: (HasCallStack, Transport c) => (c, InitialKeys) -> (c, PQSupport) -> IO ()
 testDuplexConnection' (alice, aPQ) (bob, bPQ) = do
   let pq = pqConnectionMode aPQ bPQ
-      pqSup = CR.pqEncToSupport pq
   ("1", "bob", Right (INV cReq)) <- alice #: ("1", "bob", "NEW T INV" <> pqConnModeStr aPQ <> " subscribe")
   let cReq' = strEncode cReq
   bob #: ("11", "alice", "JOIN T " <> cReq' <> enableKEMStr bPQ <> " subscribe 14\nbob's connInfo") #> ("11", "alice", OK)
   ("", "bob", Right (A.CONF confId pqSup' _ "bob's connInfo")) <- (alice <#:)
-  pqSup' `shouldBe` pqSup
+  pqSup' `shouldBe` CR.connPQEncryption aPQ
   alice #: ("2", "bob", "LET " <> confId <> " 16\nalice's connInfo") #> ("2", "bob", OK)
-  bob <# ("", "alice", A.INFO pqSup "alice's connInfo")
+  bob <# ("", "alice", A.INFO bPQ "alice's connInfo")
   bob <# ("", "alice", CON pq)
   alice <# ("", "bob", CON pq)
   -- message IDs 1 to 3 get assigned to control messages, so first MSG is assigned ID 4
@@ -253,15 +252,14 @@ testDuplexConnRandomIds _ alice bob = testDuplexConnRandomIds' (alice, IKPQOn) (
 testDuplexConnRandomIds' :: (HasCallStack, Transport c) => (c, InitialKeys) -> (c, PQSupport) -> IO ()
 testDuplexConnRandomIds' (alice, aPQ) (bob, bPQ) = do
   let pq = pqConnectionMode aPQ bPQ
-      pqSup = CR.pqEncToSupport pq
   ("1", bobConn, Right (INV cReq)) <- alice #: ("1", "", "NEW T INV" <> pqConnModeStr aPQ <> " subscribe")
   let cReq' = strEncode cReq
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN T " <> cReq' <> enableKEMStr bPQ <> " subscribe 14\nbob's connInfo")
   ("", bobConn', Right (A.CONF confId pqSup' _ "bob's connInfo")) <- (alice <#:)
-  pqSup' `shouldBe` pqSup
+  pqSup' `shouldBe` CR.connPQEncryption aPQ
   bobConn' `shouldBe` bobConn
   alice #: ("2", bobConn, "LET " <> confId <> " 16\nalice's connInfo") =#> \case ("2", c, OK) -> c == bobConn; _ -> False
-  bob <# ("", aliceConn, A.INFO pqSup "alice's connInfo")
+  bob <# ("", aliceConn, A.INFO bPQ "alice's connInfo")
   bob <# ("", aliceConn, CON pq)
   alice <# ("", bobConn, CON pq)
   alice #: ("2", bobConn, "SEND F :hello") #> ("2", bobConn, A.MID 4 pq)
@@ -291,17 +289,15 @@ testContactConnection (alice, aPQ) (bob, bPQ) (tom, tPQ) = do
   ("1", "alice_contact", Right (INV cReq)) <- alice #: ("1", "alice_contact", "NEW T CON" <> pqConnModeStr aPQ <> " subscribe")
   let cReq' = strEncode cReq
       abPQ = pqConnectionMode aPQ bPQ
-      abPQSup = CR.pqEncToSupport abPQ
       aPQMode = CR.connPQEncryption aPQ
 
   bob #: ("11", "alice", "JOIN T " <> cReq' <> enableKEMStr bPQ <> " subscribe 14\nbob's connInfo") #> ("11", "alice", OK)
-  ("", "alice_contact", Right (A.REQ aInvId pqSup' _ "bob's connInfo")) <- (alice <#:)
-  pqSup' `shouldBe` bPQ
+  ("", "alice_contact", Right (A.REQ aInvId PQSupportOn _ "bob's connInfo")) <- (alice <#:)
   alice #: ("2", "bob", "ACPT " <> aInvId <> enableKEMStr aPQMode <> " 16\nalice's connInfo") #> ("2", "bob", OK)
   ("", "alice", Right (A.CONF bConfId pqSup'' _ "alice's connInfo")) <- (bob <#:)
-  pqSup'' `shouldBe` abPQSup
+  pqSup'' `shouldBe` bPQ
   bob #: ("12", "alice", "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", "alice", OK)
-  alice <# ("", "bob", A.INFO abPQSup "bob's connInfo 2")
+  alice <# ("", "bob", A.INFO (CR.connPQEncryption aPQ) "bob's connInfo 2")
   alice <# ("", "bob", CON abPQ)
   bob <# ("", "alice", CON abPQ)
   alice #: ("3", "bob", "SEND F :hi") #> ("3", "bob", A.MID 4 abPQ)
@@ -310,15 +306,13 @@ testContactConnection (alice, aPQ) (bob, bPQ) (tom, tPQ) = do
   bob #: ("13", "alice", "ACK 4") #> ("13", "alice", OK)
 
   let atPQ = pqConnectionMode aPQ tPQ
-      atPQSup = CR.pqEncToSupport atPQ
   tom #: ("21", "alice", "JOIN T " <> cReq' <> enableKEMStr tPQ <> " subscribe 14\ntom's connInfo") #> ("21", "alice", OK)
-  ("", "alice_contact", Right (A.REQ aInvId' pqSup3 _ "tom's connInfo")) <- (alice <#:)
-  pqSup3 `shouldBe` tPQ
+  ("", "alice_contact", Right (A.REQ aInvId' PQSupportOn _ "tom's connInfo")) <- (alice <#:)
   alice #: ("4", "tom", "ACPT " <> aInvId' <> enableKEMStr aPQMode <> " 16\nalice's connInfo") #> ("4", "tom", OK)
   ("", "alice", Right (A.CONF tConfId pqSup4 _ "alice's connInfo")) <- (tom <#:)
-  pqSup4 `shouldBe` atPQSup
+  pqSup4 `shouldBe` tPQ
   tom #: ("22", "alice", "LET " <> tConfId <> " 16\ntom's connInfo 2") #> ("22", "alice", OK)
-  alice <# ("", "tom", A.INFO atPQSup "tom's connInfo 2")
+  alice <# ("", "tom", A.INFO (CR.connPQEncryption aPQ) "tom's connInfo 2")
   alice <# ("", "tom", CON atPQ)
   tom <# ("", "alice", CON atPQ)
   alice #: ("5", "tom", "SEND F :hi there") #> ("5", "tom", A.MID 4 atPQ)
@@ -329,22 +323,20 @@ testContactConnection (alice, aPQ) (bob, bPQ) (tom, tPQ) = do
 testContactConnRandomIds :: Transport c => (c, InitialKeys) -> (c, PQSupport) -> IO ()
 testContactConnRandomIds (alice, aPQ) (bob, bPQ) = do
   let pq = pqConnectionMode aPQ bPQ
-      pqSup = CR.pqEncToSupport pq
   ("1", aliceContact, Right (INV cReq)) <- alice #: ("1", "", "NEW T CON" <> pqConnModeStr aPQ <> " subscribe")
   let cReq' = strEncode cReq
 
   ("11", aliceConn, Right OK) <- bob #: ("11", "", "JOIN T " <> cReq' <> enableKEMStr bPQ <> " subscribe 14\nbob's connInfo")
-  ("", aliceContact', Right (A.REQ aInvId pqSup' _ "bob's connInfo")) <- (alice <#:)
-  pqSup' `shouldBe` bPQ
+  ("", aliceContact', Right (A.REQ aInvId PQSupportOn _ "bob's connInfo")) <- (alice <#:)
   aliceContact' `shouldBe` aliceContact
 
   ("2", bobConn, Right OK) <- alice #: ("2", "", "ACPT " <> aInvId <> enableKEMStr (CR.connPQEncryption aPQ) <> " 16\nalice's connInfo")
   ("", aliceConn', Right (A.CONF bConfId pqSup'' _ "alice's connInfo")) <- (bob <#:)
-  pqSup'' `shouldBe` pqSup
+  pqSup'' `shouldBe` bPQ
   aliceConn' `shouldBe` aliceConn
 
   bob #: ("12", aliceConn, "LET " <> bConfId <> " 16\nbob's connInfo 2") #> ("12", aliceConn, OK)
-  alice <# ("", bobConn, A.INFO pqSup "bob's connInfo 2")
+  alice <# ("", bobConn, A.INFO (CR.connPQEncryption aPQ) "bob's connInfo 2")
   alice <# ("", bobConn, CON pq)
   bob <# ("", aliceConn, CON pq)
 
@@ -358,7 +350,7 @@ testRejectContactRequest _ alice bob = do
   ("1", "a_contact", Right (INV cReq)) <- alice #: ("1", "a_contact", "NEW T CON subscribe")
   let cReq' = strEncode cReq
   bob #: ("11", "alice", "JOIN T " <> cReq' <> " subscribe 10\nbob's info") #> ("11", "alice", OK)
-  ("", "a_contact", Right (A.REQ aInvId PQSupportOff _ "bob's info")) <- (alice <#:)
+  ("", "a_contact", Right (A.REQ aInvId PQSupportOn _ "bob's info")) <- (alice <#:)
   -- RJCT must use correct contact connection
   alice #: ("2a", "bob", "RJCT " <> aInvId) #> ("2a", "bob", ERR $ CONN NOT_FOUND)
   alice #: ("2b", "a_contact", "RJCT " <> aInvId) #> ("2b", "a_contact", OK)
@@ -571,12 +563,11 @@ connect' (h1, name1, pqMode1) (h2, name2, pqMode2) = do
   ("c1", _, Right (INV cReq)) <- h1 #: ("c1", name2, "NEW T INV" <> pqConnModeStr pqMode1 <> " subscribe")
   let cReq' = strEncode cReq
       pq = pqConnectionMode pqMode1 pqMode2
-      pqSup = CR.pqEncToSupport pq
   h2 #: ("c2", name1, "JOIN T " <> cReq' <> enableKEMStr pqMode2 <> " subscribe 5\ninfo2") #> ("c2", name1, OK)
   ("", _, Right (A.CONF connId pqSup' _ "info2")) <- (h1 <#:)
-  pqSup' `shouldBe` pqSup
+  pqSup' `shouldBe` CR.connPQEncryption pqMode1
   h1 #: ("c3", name2, "LET " <> connId <> " 5\ninfo1") #> ("c3", name2, OK)
-  h2 <# ("", name1, A.INFO pqSup "info1")
+  h2 <# ("", name1, A.INFO pqMode2 "info1")
   h2 <# ("", name1, CON pq)
   h1 <# ("", name2, CON pq)
 

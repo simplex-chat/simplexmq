@@ -143,16 +143,11 @@ kdfX3DHE2EEncryptVersion = VersionE2E 2
 pqRatchetE2EEncryptVersion :: VersionE2E
 pqRatchetE2EEncryptVersion = VersionE2E 3
 
--- TODO v5.7 increase to 3
 currentE2EEncryptVersion :: VersionE2E
-currentE2EEncryptVersion = VersionE2E 2
+currentE2EEncryptVersion = VersionE2E 3
 
--- TODO v5.7 remove dependency of version range on whether PQ encryption is used
-supportedE2EEncryptVRange :: PQSupport -> VersionRangeE2E
-supportedE2EEncryptVRange pq =
-  mkVersionRange kdfX3DHE2EEncryptVersion $ case pq of 
-    PQSupportOn -> pqRatchetE2EEncryptVersion
-    PQSupportOff -> currentE2EEncryptVersion
+supportedE2EEncryptVRange :: VersionRangeE2E
+supportedE2EEncryptVRange = mkVersionRange kdfX3DHE2EEncryptVersion currentE2EEncryptVersion
 
 data RatchetKEMState
   = RKSProposed -- only KEM encapsulation key
