@@ -238,10 +238,10 @@ type MaxRcvMessageLen = MaxMessageLen + 16 -- 16104, the padded size is 16106
 
 -- it is shorter to allow per-queue e2e encryption DH key in the "public" header
 e2eEncConfirmationLength :: Int
-e2eEncConfirmationLength = 15936
+e2eEncConfirmationLength = 15920 -- 15881 .. 15976
 
 e2eEncMessageLength :: Int
-e2eEncMessageLength = 16032
+e2eEncMessageLength = 16016 -- 16004 .. 16021
 
 -- | SMP protocol clients
 data Party = Recipient | Sender | Notifier
