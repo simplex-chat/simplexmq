@@ -1142,6 +1142,8 @@ temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
   BROKER _ NETWORK -> True
   BROKER _ TIMEOUT -> True
+  SMP (SMP.PROXY SMP.TIMEOUT) -> True
+  NTF (SMP.PROXY SMP.TIMEOUT) -> True
   INACTIVE -> True
   _ -> False
 {-# INLINE temporaryAgentError #-}
