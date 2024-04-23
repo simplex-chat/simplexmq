@@ -333,9 +333,9 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
           rKeys <- atomically $ L.fromList <$> replicateM numRecipients (C.generateAuthKeyPair C.SEd25519 g)
           digest <- liftIO $ getChunkDigest chunkSpec
           let ch = FileInfo {sndKey, size = fromIntegral chunkSize, digest}
-          c <- withRetry retryCount $ getXFTPServerClient g a xftpServer
+          c <- withRetry retryCount $ getXFTPServerClient a xftpServer
           (sndId, rIds) <- withRetry retryCount $ createXFTPChunk c spKey ch (L.map fst rKeys) auth
-          withReconnect g a xftpServer retryCount $ \c' -> uploadXFTPChunk c' spKey sndId chunkSpec
+          withReconnect a xftpServer retryCount $ \c' -> uploadXFTPChunk c' spKey sndId chunkSpec
           logInfo $ "uploaded chunk " <> tshow chunkNo
           uploaded <- atomically . stateTVar uploadedChunks $ \cs ->
             let cs' = fromIntegral chunkSize : cs in (sum cs', cs')
@@ -445,7 +445,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       when (FileSize encSize /= size) $ throwError $ CLIError "File size mismatch"
       liftIO $ printNoNewLine "Decrypting file..."
       CryptoFile path _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ fmap CF.plain . getFilePath
-      forM_ chunks $ acknowledgeFileChunk g a
+      forM_ chunks $ acknowledgeFileChunk a
       whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
       liftIO $ do
         printNoNewLine $ "File downloaded: " <> path
@@ -456,7 +456,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       logInfo $ "downloading chunk " <> tshow chunkNo <> " from " <> showServer server <> "..."
       chunkPath <- uniqueCombine encPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
-      withReconnect g a server retryCount $ \c -> downloadXFTPChunk g c replicaKey (unChunkReplicaId replicaId) chunkSpec
+      withReconnect a server retryCount $ \c -> downloadXFTPChunk g c replicaKey (unChunkReplicaId replicaId) chunkSpec
       logInfo $ "downloaded chunk " <> tshow chunkNo <> " to " <> T.pack chunkPath
       downloaded <- atomically . stateTVar downloadedChunks $ \cs ->
         let cs' = fromIntegral (unFileSize chunkSize) : cs in (sum cs', cs')
@@ -472,12 +472,12 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
           ifM (doesDirectoryExist path) (uniqueCombine path name) $
             ifM (doesFileExist path) (throwError "File already exists") (pure path)
         _ -> (`uniqueCombine` name) . (</> "Downloads") =<< getHomeDirectory
-    acknowledgeFileChunk :: TVar ChaChaDRG -> XFTPClientAgent -> FileChunk -> ExceptT CLIError IO ()
-    acknowledgeFileChunk g a FileChunk {replicas = replica : _} = do
+    acknowledgeFileChunk :: XFTPClientAgent -> FileChunk -> ExceptT CLIError IO ()
+    acknowledgeFileChunk a FileChunk {replicas = replica : _} = do
       let FileChunkReplica {server, replicaId, replicaKey} = replica
-      c <- withRetry retryCount $ getXFTPServerClient g a server
+      c <- withRetry retryCount $ getXFTPServerClient a server
       withRetry retryCount $ ackXFTPChunk c replicaKey (unChunkReplicaId replicaId)
-    acknowledgeFileChunk _ _ _ = throwError $ CLIError "chunk has no replicas"
+    acknowledgeFileChunk _ _ = throwError $ CLIError "chunk has no replicas"
 
 printProgress :: String -> Int64 -> Int64 -> IO ()
 printProgress s part total = printNoNewLine $ s <> " " <> show ((part * 100) `div` total) <> "%"
@@ -501,8 +501,7 @@ cliDeleteFile DeleteOptions {fileDescription, retryCount, yes} = do
     deleteFileChunk :: XFTPClientAgent -> FileChunk -> ExceptT CLIError IO ()
     deleteFileChunk a FileChunk {chunkNo, replicas = replica : _} = do
       let FileChunkReplica {server, replicaId, replicaKey} = replica
-      g <- liftIO C.newRandom
-      withReconnect g a server retryCount $ \c -> deleteXFTPChunk c replicaKey (unChunkReplicaId replicaId)
+      withReconnect a server retryCount $ \c -> deleteXFTPChunk c replicaKey (unChunkReplicaId replicaId)
       logInfo $ "deleted chunk " <> tshow chunkNo <> " from " <> showServer server
     deleteFileChunk _ _ = throwError $ CLIError "chunk has no replicas"
 
@@ -570,9 +569,9 @@ prepareChunkSpecs filePath chunkSizes = reverse . snd $ foldl' addSpec (0, []) c
 getEncPath :: MonadIO m => Maybe FilePath -> String -> m FilePath
 getEncPath path name = (`uniqueCombine` (name <> ".encrypted")) =<< maybe (liftIO getCanonicalTemporaryDirectory) pure path
 
-withReconnect :: Show e => TVar ChaChaDRG -> XFTPClientAgent -> XFTPServer -> Int -> (XFTPClient -> ExceptT e IO a) -> ExceptT CLIError IO a
-withReconnect g a srv n run = withRetry n $ do
-  c <- withRetry n $ getXFTPServerClient g a srv
+withReconnect :: Show e => XFTPClientAgent -> XFTPServer -> Int -> (XFTPClient -> ExceptT e IO a) -> ExceptT CLIError IO a
+withReconnect a srv n run = withRetry n $ do
+  c <- withRetry n $ getXFTPServerClient a srv
   withExceptT (CLIError . show) (run c) `catchError` \e -> do
     liftIO $ closeXFTPServerClient a srv
     throwError e

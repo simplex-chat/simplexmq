@@ -24,7 +24,7 @@ import Numeric.Natural (Natural)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Transport (ALPN, SessionId, TLS (tlsALPN), getServerCerts, getServerVerifyKey, tlsUniq)
-import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), runTLSTransportClient)
+import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Util (eitherToMaybe)
 import UnliftIO.STM
@@ -70,8 +70,16 @@ defaultHTTP2ClientConfig :: HTTP2ClientConfig
 defaultHTTP2ClientConfig =
   HTTP2ClientConfig
     { qSize = 64,
-      connTimeout = 10000000,
-      transportConfig = TransportClientConfig Nothing Nothing True Nothing Nothing,
+      connTimeout = defaultTcpConnectTimeout,
+      transportConfig =
+        TransportClientConfig
+          { socksProxy = Nothing,
+            tcpConnectTimeout = defaultTcpConnectTimeout,
+            tcpKeepAlive = Nothing,
+            logTLSErrors = True,
+            clientCredentials = Nothing,
+            alpn = Nothing
+          },
       bufferSize = defaultHTTP2BufferSize,
       bodyHeadSize = 16384,
       suportedTLSParams = http2TLSParams

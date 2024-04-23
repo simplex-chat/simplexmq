@@ -13,8 +13,7 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Network.Socket (HostName)
 import Options.Applicative
-import Simplex.Messaging.Client (ProtocolClientConfig (..))
-import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
+import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server (runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..), defaultInactiveClientExpiration)
@@ -30,9 +29,6 @@ import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
-
-defaultSMPBatchDelay :: Int
-defaultSMPBatchDelay = 10000
 
 ntfServerCLI :: FilePath -> FilePath -> IO ()
 ntfServerCLI cfgPath logPath =
@@ -87,9 +83,7 @@ ntfServerCLI cfgPath logPath =
                \# host is only used to print server address on start\n"
             <> ("host: " <> host <> "\n")
             <> ("port: " <> defaultServerPort <> "\n")
-            <> "log_tls_errors: off\n\
-               \# delay between command batches sent to SMP relays (microseconds), 0 to disable\n"
-            <> ("smp_batch_delay: " <> show defaultSMPBatchDelay <> "\n")
+            <> "log_tls_errors: off\n"
             <> "websockets: off\n\n\
                \[INACTIVE_CLIENTS]\n\
                \# TTL and interval to check inactive clients\n\
@@ -111,8 +105,6 @@ ntfServerCLI cfgPath logPath =
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
-        smpBatchDelay = readIniDefault defaultSMPBatchDelay "TRANSPORT" "smp_batch_delay" ini
-        batchDelay = if smpBatchDelay <= 0 then Nothing else Just smpBatchDelay
         serverConfig =
           NtfServerConfig
             { transports = iniTransports ini,
@@ -121,7 +113,7 @@ ntfServerCLI cfgPath logPath =
               clientQSize = 64,
               subQSize = 512,
               pushQSize = 1048,
-              smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {batchDelay}},
+              smpAgentCfg = defaultSMPClientAgentConfig,
               apnsConfig = defaultAPNSPushClientConfig,
               subsBatchSize = 900,
               inactiveClientExpiration =
