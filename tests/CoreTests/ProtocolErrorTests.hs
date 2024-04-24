@@ -17,6 +17,7 @@ import qualified Simplex.Messaging.Agent.Protocol as Agent
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (CommandError (..), ErrorType (..), ProxyError (..))
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (HandshakeError (..), TransportError (..))
 import Simplex.RemoteControl.Types (RCErrorType (..))
 import Test.Hspec
@@ -28,15 +29,19 @@ protocolErrorTests = modifyMaxSuccess (const 1000) $ do
   describe "errors parsing / serializing" $ do
     it "should parse SMP protocol errors" . property $ \(err :: ErrorType) ->
       smpDecode (smpEncode err) == Right err
-    it "should parse SMP agent errors" . property $ \(err :: AgentErrorType) ->
-      errHasSpaces err
-        || strDecode (strEncode err) == Right err
+    it "should parse SMP agent errors" . property . forAll possible $ \err ->
+      strDecode (strEncode err) == Right err
   where
-    errHasSpaces = \case
-      BROKER srv (Agent.RESPONSE e) -> hasSpaces srv || hasSpaces e
-      BROKER srv _ -> hasSpaces srv
-      _ -> False
+    possible :: Gen AgentErrorType
+    possible =
+      arbitrary >>= \case
+        BROKER srv (Agent.RESPONSE e) | hasSpaces srv || hasSpaces e -> discard
+        BROKER srv _ | hasSpaces srv -> discard
+        SMP (PROXY (SMP.UNEXPECTED s)) | hasUnicode s -> discard
+        NTF (PROXY (SMP.UNEXPECTED s)) | hasUnicode s -> discard
+        ok -> pure ok
     hasSpaces s = ' ' `B.elem` encodeUtf8 (T.pack s)
+    hasUnicode = any (>= '\255')
 
 deriving instance Generic AgentErrorType
 

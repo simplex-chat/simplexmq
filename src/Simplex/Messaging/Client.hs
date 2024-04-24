@@ -484,16 +484,15 @@ temporaryClientError = \case
   _ -> False
 {-# INLINE temporaryClientError #-}
 
--- TODO keep error params
 smpProxyError :: SMPClientError -> ErrorType
 smpProxyError = \case
-  PCEProtocolError _ -> PROXY PROTOCOL
-  PCEResponseError _ -> PROXY RESPONSE
-  PCEUnexpectedResponse _ -> PROXY UNEXPECTED
+  PCEProtocolError et -> PROXY (PROTOCOL et)
+  PCEResponseError et -> PROXY (RESPONSE et)
+  PCEUnexpectedResponse bs -> PROXY (UNEXPECTED $ B.unpack $ B.take 32 bs)
   PCEResponseTimeout -> PROXY TIMEOUT
   PCENetworkError -> PROXY NETWORK
   PCEIncompatibleHost -> PROXY BAD_HOST
-  PCETransportError _ -> PROXY TRANSPORT
+  PCETransportError t -> PROXY (TRANSPORT t)
   PCECryptoError _ -> INTERNAL
   PCEIOError _ -> INTERNAL
 
@@ -733,12 +732,12 @@ forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = 
   nonce <- liftIO . atomically $ C.randomCbNonce g
   -- wrap
   let fwdT = FwdTransmission {fwdCorrId, fwdKey, fwdTransmission}
-  eft <- liftEitherWith PCECryptoError $ EncFwdTransmission <$> C.cbEncrypt sessSecret nonce (smpEncode fwdT) paddedForwardedMsgLength
+      eft = EncFwdTransmission $ C.cbEncryptNoPad sessSecret nonce (smpEncode fwdT)
   -- send
   sendProtocolCommand_ c (Just nonce) Nothing "" (Cmd SSender (RFWD eft)) >>= \case
     RRES (EncFwdResponse efr) -> do
       -- unwrap
-      r' <- liftEitherWith PCECryptoError $ C.cbDecrypt sessSecret (C.reverseNonce nonce) efr
+      r' <- liftEitherWith PCECryptoError $ C.cbDecryptNoPad sessSecret (C.reverseNonce nonce) efr
       FwdResponse {fwdCorrId = _, fwdResponse} <- liftEitherWith (const $ PCEResponseError BLOCK) $ smpDecode r'
       pure fwdResponse
     r -> throwE . PCEUnexpectedResponse $ bshow r

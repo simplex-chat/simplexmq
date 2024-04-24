@@ -44,7 +44,6 @@ module Simplex.Messaging.Protocol
     supportedSMPClientVRange,
     maxMessageLength,
     paddedProxiedMsgLength,
-    paddedForwardedMsgLength,
     e2eEncConfirmationLength,
     e2eEncMessageLength,
 
@@ -195,6 +194,8 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust, isNothing)
 import Data.String
+import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import Data.Word (Word16)
@@ -210,7 +211,7 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
-import Simplex.Messaging.Util (bshow, eitherToMaybe, (<$?>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 
@@ -241,23 +242,16 @@ currentSMPClientVersion = VersionSMPC 2
 supportedSMPClientVRange :: VersionRangeSMPC
 supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClientVersion
 
-maxMessageLength :: Int
-maxMessageLength = 16088
+-- TODO v6.0 remove dependency on version
+maxMessageLength :: VersionSMP -> Int
+maxMessageLength v
+  | v >= sendingProxySMPVersion = 16064 -- max 16067
+  | otherwise = 16088 -- 16064 - always use this size to determine allowed ranges
 
--- without signature works with min 16151 (fails with 16150)
--- with Ed448: 16265 (fails with 16264)
--- with Ed25519: 16215 (fails with 16214)
--- with X25519: 16232 (fails with 16231)
 paddedProxiedMsgLength :: Int
-paddedProxiedMsgLength = 16232
+paddedProxiedMsgLength = 16244 -- 16241 .. 16245
 
--- without signature works with min 16239 (fails with 16238)
--- with Ed448: 16353 (fails with 16352)
--- with Ed25519: 16303 (fails with 16302)
--- with X25519: 16320 (fails with 16319)
-paddedForwardedMsgLength :: Int
-paddedForwardedMsgLength = 16320
-
+-- TODO v6.0 change to 16064
 type MaxMessageLen = 16088
 
 -- 16 extra bytes: 8 for timestamp and 8 for flags (7 flags and the space, only 1 flag is currently used)
@@ -265,10 +259,10 @@ type MaxRcvMessageLen = MaxMessageLen + 16 -- 16104, the padded size is 16106
 
 -- it is shorter to allow per-queue e2e encryption DH key in the "public" header
 e2eEncConfirmationLength :: Int
-e2eEncConfirmationLength = 15936
+e2eEncConfirmationLength = 15920 -- 15881 .. 15976
 
 e2eEncMessageLength :: Int
-e2eEncMessageLength = 16032
+e2eEncMessageLength = 16016 -- 16004 .. 16021
 
 -- | SMP protocol clients
 data Party = Recipient | Sender | Notifier | ProxiedClient
@@ -1167,11 +1161,11 @@ data ErrorType
 instance StrEncoding ErrorType where
   strEncode = \case
     CMD e -> "CMD " <> bshow e
-    PROXY e -> "PROXY " <> bshow e
+    PROXY e -> "PROXY " <> strEncode e
     e -> bshow e
   strP =
     "CMD " *> (CMD <$> parseRead1)
-      <|> "PROXY " *> (PROXY <$> parseRead1)
+      <|> "PROXY " *> (PROXY <$> strP)
       <|> parseRead1
 
 -- | SMP command error type.
@@ -1190,20 +1184,19 @@ data CommandError
     NO_ENTITY
   deriving (Eq, Read, Show)
 
--- TODO keep error params
 data ProxyError
   = -- | Correctly parsed SMP server ERR response.
     -- This error is forwarded to the agent client as `ERR SMP err`.
-    PROTOCOL -- {protocolErr :: String}
+    PROTOCOL {protocolErr :: ErrorType}
   | -- | Invalid server response that failed to parse.
     -- Forwarded to the agent client as `ERR BROKER RESPONSE`.
-    RESPONSE -- {responseErr :: String}
-  | UNEXPECTED
+    RESPONSE {responseErr :: ErrorType}
+  | UNEXPECTED {unexpectedResponse :: String} -- 'String' for using derived JSON and Arbitrary instances
   | TIMEOUT
   | NETWORK
   | BAD_HOST
   | NO_SESSION
-  | TRANSPORT -- {transportErr :: TransportError}
+  | TRANSPORT {transportErr :: TransportError}
   deriving (Eq, Read, Show)
 
 -- | SMP transmission parser.
@@ -1473,25 +1466,41 @@ instance Encoding CommandError where
 
 instance Encoding ProxyError where
   smpEncode e = case e of
-    PROTOCOL -> "PROTOCOL"
-    RESPONSE -> "RESPONSE"
-    UNEXPECTED -> "UNEXPECTED"
+    PROTOCOL et -> "PROTOCOL " <> smpEncode et
+    RESPONSE et -> "RESPONSE " <> smpEncode et
+    UNEXPECTED s -> "UNEXPECTED " <> smpEncode (encodeUtf8 $ T.pack s)
     TIMEOUT -> "TIMEOUT"
     NETWORK -> "NETWORK"
     BAD_HOST -> "BAD_HOST"
     NO_SESSION -> "NO_SESSION"
-    TRANSPORT -> "TRANSPORT"
+    TRANSPORT t -> "TRANSPORT " <> serializeTransportError t
   smpP =
     A.takeTill (== ' ') >>= \case
-      "PROTOCOL" -> pure PROTOCOL
-      "RESPONSE" -> pure RESPONSE
-      "UNEXPECTED" -> pure UNEXPECTED
+      "PROTOCOL" -> PROTOCOL <$> _smpP
+      "RESPONSE" -> RESPONSE <$> _smpP
+      "UNEXPECTED" -> UNEXPECTED . (T.unpack . safeDecodeUtf8) <$> _smpP
       "TIMEOUT" -> pure TIMEOUT
       "NETWORK" -> pure NETWORK
       "BAD_HOST" -> pure BAD_HOST
       "NO_SESSION" -> pure NO_SESSION
-      "TRANSPORT" -> pure TRANSPORT
+      "TRANSPORT" -> TRANSPORT <$> (A.space *> transportErrorP)
       _ -> fail "bad command error type"
+
+instance StrEncoding ProxyError where
+  strEncode = \case
+    PROTOCOL et -> "PROTOCOL " <> strEncode et
+    RESPONSE et -> "RESPONSE " <> strEncode et
+    UNEXPECTED "" -> "UNEXPECTED" -- Arbitrary instance generates empty strings which String instance can't handle
+    UNEXPECTED s -> "UNEXPECTED " <> strEncode s
+    TRANSPORT t -> "TRANSPORT " <> serializeTransportError t
+    e -> bshow e
+  strP =
+    "PROTOCOL " *> (PROTOCOL <$> strP)
+      <|> "RESPONSE " *> (RESPONSE <$> strP)
+      <|> "UNEXPECTED " *> (UNEXPECTED <$> strP)
+      <|> "UNEXPECTED" $> UNEXPECTED ""
+      <|> "TRANSPORT " *> (TRANSPORT <$> transportErrorP)
+      <|> parseRead1
 
 -- | Send signed SMP transmission to TCP transport.
 tPut :: Transport c => THandle v c p -> NonEmpty (Either TransportError SentRawTransmission) -> IO [Either TransportError ()]
@@ -1630,6 +1639,5 @@ $(J.deriveJSON defaultJSON ''MsgFlags)
 
 $(J.deriveJSON (sumTypeJSON id) ''CommandError)
 
-$(J.deriveJSON (sumTypeJSON id) ''ProxyError)
-
-$(J.deriveJSON (sumTypeJSON id) ''ErrorType)
+-- run deriveJSON in one TH splice to allow mutual instance
+$(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''ErrorType])
