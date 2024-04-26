@@ -179,7 +179,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
     runXFTPOperation :: AgentConfig -> AM ()
     runXFTPOperation AgentConfig {rcvFilesTTL, reconnectInterval = ri, xftpNotifyErrsOnRetry = notifyOnRetry, xftpConsecutiveRetries} =
       withWork c doWork (\db -> getNextRcvChunkToDownload db srv rcvFilesTTL) $ \case
-        (RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []}, _) -> rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) "chunk has no replicas"
+        (RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []}, _) -> rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) (INTERNAL "chunk has no replicas")
         (fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, digest, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _}, approvedRelays) -> do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
@@ -194,7 +194,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
                 withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
               loop
-            retryDone e = rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) (show e)
+            retryDone = rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath)
     downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> Bool -> AM ()
     downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica approvedRelays = do
       unlessM ((approvedRelays ||) <$> ipAddressProtected') $ throwError $ XFTP XFTP.NOT_APPROVED
@@ -248,11 +248,11 @@ retryOnError name loop done e = do
     then loop
     else done
 
-rcvWorkerInternalError :: AgentClient -> DBRcvFileId -> RcvFileId -> Maybe FilePath -> String -> AM ()
-rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath internalErrStr = do
+rcvWorkerInternalError :: AgentClient -> DBRcvFileId -> RcvFileId -> Maybe FilePath -> AgentErrorType -> AM ()
+rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath err = do
   lift $ forM_ tmpPath (removePath <=< toFSFilePath)
-  withStore' c $ \db -> updateRcvFileError db rcvFileId internalErrStr
-  notify c rcvFileEntityId $ RFERR $ INTERNAL internalErrStr
+  withStore' c $ \db -> updateRcvFileError db rcvFileId (show err)
+  notify c rcvFileEntityId $ RFERR err
 
 runXFTPRcvLocalWorker :: AgentClient -> Worker -> AM ()
 runXFTPRcvLocalWorker c Worker {doWork} = do
@@ -266,7 +266,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
     runXFTPOperation AgentConfig {rcvFilesTTL} =
       withWork c doWork (`getNextRcvFileToDecrypt` rcvFilesTTL) $
         \f@RcvFile {rcvFileId, rcvFileEntityId, tmpPath} ->
-          decryptFile f `catchAgentError` (rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath . show)
+          decryptFile f `catchAgentError` rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath
     decryptFile :: RcvFile -> AM ()
     decryptFile RcvFile {rcvFileId, rcvFileEntityId, size, digest, key, nonce, tmpPath, saveFile, status, chunks, redirect} = do
       let CryptoFile savePath cfArgs = saveFile
