@@ -554,20 +554,20 @@ agentDRG AgentClient {agentEnv = Env {random}} = random
 
 class (Encoding err, Show err) => ProtocolServerClient v err msg | msg -> v, msg -> err where
   type Client msg = c | c -> msg
-  type ServerClient msg = c | c -> msg
-  protocolClient :: Client msg -> ServerClient msg
   getProtocolServerClient :: AgentClient -> TransportSession msg -> AM (Client msg)
+  type ProtoClient msg = c | c -> msg
+  protocolClient :: Client msg -> ProtoClient msg
   clientProtocolError :: err -> AgentErrorType
-  closeProtocolServerClient :: ServerClient msg -> IO ()
-  clientServer :: ServerClient msg -> String
-  clientTransportHost :: ServerClient msg -> TransportHost
-  clientSessionTs :: ServerClient msg -> UTCTime
+  closeProtocolServerClient :: ProtoClient msg -> IO ()
+  clientServer :: ProtoClient msg -> String
+  clientTransportHost :: ProtoClient msg -> TransportHost
+  clientSessionTs :: ProtoClient msg -> UTCTime
 
 instance ProtocolServerClient SMPVersion ErrorType BrokerMsg where
   type Client BrokerMsg = SMPConnectedClient
-  type ServerClient BrokerMsg = ProtocolClient SMPVersion ErrorType BrokerMsg
-  protocolClient = connectedClient
   getProtocolServerClient c tSess = getSMPConnectedClient c tSess Nothing
+  type ProtoClient BrokerMsg = ProtocolClient SMPVersion ErrorType BrokerMsg
+  protocolClient = connectedClient
   clientProtocolError = SMP
   closeProtocolServerClient = closeProtocolClient
   clientServer = protocolClientServer
@@ -576,9 +576,9 @@ instance ProtocolServerClient SMPVersion ErrorType BrokerMsg where
 
 instance ProtocolServerClient NTFVersion ErrorType NtfResponse where
   type Client NtfResponse = ProtocolClient NTFVersion ErrorType NtfResponse
-  type ServerClient NtfResponse = ProtocolClient NTFVersion ErrorType NtfResponse
-  protocolClient = id
   getProtocolServerClient = getNtfServerClient
+  type ProtoClient NtfResponse = ProtocolClient NTFVersion ErrorType NtfResponse
+  protocolClient = id
   clientProtocolError = NTF
   closeProtocolServerClient = closeProtocolClient
   clientServer = protocolClientServer
@@ -587,9 +587,9 @@ instance ProtocolServerClient NTFVersion ErrorType NtfResponse where
 
 instance ProtocolServerClient XFTPVersion XFTPErrorType FileResponse where
   type Client FileResponse = XFTPClient
-  type ServerClient FileResponse = XFTPClient
-  protocolClient = id
   getProtocolServerClient = getXFTPServerClient
+  type ProtoClient FileResponse = XFTPClient
+  protocolClient = id
   clientProtocolError = XFTP
   closeProtocolServerClient = X.closeXFTPClient
   clientServer = X.xftpClientServer
@@ -809,7 +809,7 @@ hostEvent :: forall v err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerCli
 hostEvent event = hostEvent' event . protocolClient
 {-# INLINE hostEvent #-}
 
-hostEvent' :: forall v err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient v err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> ServerClient msg -> ACommand 'Agent 'AENone
+hostEvent' :: forall v err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient v err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> ProtoClient msg -> ACommand 'Agent 'AENone
 hostEvent' event = event (AProtocolType $ protocolTypeI @(ProtoType msg)) . clientTransportHost
 
 getClientConfig :: AgentClient -> (AgentConfig -> ProtocolClientConfig v) -> AM' (ProtocolClientConfig v)
@@ -1733,7 +1733,7 @@ incClientStat :: ProtocolServerClient v err msg => AgentClient -> UserId -> Clie
 incClientStat c userId = incClientStat' c userId . protocolClient
 {-# INLINE incClientStat #-}
 
-incClientStat' :: ProtocolServerClient v err msg => AgentClient -> UserId -> ServerClient msg -> ByteString -> ByteString -> IO ()
+incClientStat' :: ProtocolServerClient v err msg => AgentClient -> UserId -> ProtoClient msg -> ByteString -> ByteString -> IO ()
 incClientStat' c userId pc = incClientStatN c userId pc 1
 {-# INLINE incClientStat' #-}
 
@@ -1744,7 +1744,7 @@ incServerStat c userId ProtocolServer {host} cmd res = do
   where
     statsKey = AgentStatsKey {userId, host = strEncode $ L.head host, clientTs = "", cmd, res}
 
-incClientStatN :: ProtocolServerClient v err msg => AgentClient -> UserId -> ServerClient msg -> Int -> ByteString -> ByteString -> IO ()
+incClientStatN :: ProtocolServerClient v err msg => AgentClient -> UserId -> ProtoClient msg -> Int -> ByteString -> ByteString -> IO ()
 incClientStatN c userId pc n cmd res = do
   atomically $ incStat c n statsKey
   where
