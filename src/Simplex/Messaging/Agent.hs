@@ -2212,7 +2212,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
             where
               processEND = \case
                 Just (Right clnt)
-                  | sessId == sessionId (thParams clnt) -> do
+                  | sessId == sessionId (thParams $ connectedClient clnt) -> do
                       removeSubscription c connId
                       notify' END
                       pure "END"
