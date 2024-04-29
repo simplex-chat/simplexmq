@@ -430,7 +430,7 @@ functionalAPITests t = do
   describe "user network info" $ do
     it "should wait for user network" testWaitForUserNetwork
     it "should not reset offline interval while offline" testDoNotResetOfflineInterval
-    fit "stuck subscription POC" stuckSubscriptionTest
+    it "stuck subscription POC" stuckSubscriptionTest
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do

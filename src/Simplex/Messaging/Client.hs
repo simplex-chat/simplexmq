@@ -30,6 +30,7 @@ module Simplex.Messaging.Client
     TransportSession,
     ProtocolClient (thParams, sessionTs),
     SMPClient,
+    ProxySession (..),
     getProtocolClient,
     closeProtocolClient,
     protocolClientServer,
@@ -672,6 +673,12 @@ createSMPProxySession c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyA
       pubKey <- C.verifyX509 serverKey exact
       C.x509ToPublic (pubKey, []) >>= C.pubKey
 
+data ProxySession = ProxySession
+  { spsSessionId :: SessionId,
+    spsVersion :: VersionSMP,
+    spsServerKey :: C.PublicKeyX25519
+  }
+
 -- consider how to process slow responses - is it handled somehow locally or delegated to the caller
 -- this method is used in the client
 -- sends PFWD :: C.PublicKeyX25519 -> EncTransmission -> Command Sender
@@ -679,9 +686,7 @@ createSMPProxySession c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyA
 proxySMPMessage ::
   SMPClient ->
   -- proxy session from PKEY
-  SessionId ->
-  VersionSMP ->
-  C.PublicKeyX25519 ->
+  ProxySession ->
   -- message to deliver
   Maybe SndPrivateAuthKey ->
   SenderId ->
@@ -689,7 +694,7 @@ proxySMPMessage ::
   MsgBody ->
   ExceptT SMPClientError IO ()
 -- TODO use version
-proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g}} sessionId _v serverKey spKey sId flags msg = do
+proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g}} (ProxySession sessionId _v serverKey) spKey sId flags msg = do
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
       serverThParams = proxyThParams {sessionId, thAuth = serverThAuth}
