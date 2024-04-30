@@ -112,7 +112,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
-import Simplex.Messaging.Util (bshow, diffToMicroseconds, raceAny_, threadDelay', tshow, unlessM, whenM)
+import Simplex.Messaging.Util (bshow, diffToMicroseconds, raceAny_, threadDelay', tshow, whenM)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
 import UnliftIO (pooledMapConcurrentlyN)
@@ -393,10 +393,10 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         Right th@THandle {params} -> do
           sessionTs <- getCurrentTime
           let c' = ProtocolClient {action = Nothing, client_ = c, thParams = params, sessionTs}
+          lastRecv <- newTVarIO sessionTs
           atomically $ do
             writeTVar (connected c) True
             putTMVar cVar $ Right c'
-          lastRecv <- newTVarIO sessionTs
           raceAny_ ([send c' th, process c', receive c' th lastRecv] <> [ping c' lastRecv | smpPingInterval > 0])
             `finally` disconnected c'
 
@@ -529,11 +529,11 @@ createSMPQueue c (rKey, rpKey) dhKey auth subMode =
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue
 subscribeSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO ()
 subscribeSMPQueue c@ProtocolClient {client_ = PClient {sendPings}} rpKey rId = do
+  liftIO . atomically $ writeTVar sendPings True
   sendSMPCommand c (Just rpKey) rId SUB >>= \case
     OK -> pure ()
     cmd@MSG {} -> liftIO $ writeSMPMessage c rId cmd
     r -> throwE . PCEUnexpectedResponse $ bshow r
-  liftIO . atomically $ writeTVar sendPings True
 
 -- | Subscribe to multiple SMP queues batching commands if supported.
 subscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
@@ -753,7 +753,8 @@ getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount, se
       Just r -> atomically (writeTVar timeoutErrorCount 0) $> r
       Nothing -> do
         atomically (writeTVar active False >> TM.delete corrId sentCommands)
-        atomically $ modifyTVar' timeoutErrorCount (+ 1) $> Left PCEResponseTimeout
+        atomically $ modifyTVar' timeoutErrorCount (+ 1)
+        pure $ Left PCEResponseTimeout
   pure Response {entityId, response}
 
 mkTransmission :: forall v err msg. ProtocolEncoding v err (ProtoCommand msg) => ProtocolClient v err msg -> ClientCommand msg -> IO (PCTransmission err msg)
