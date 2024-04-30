@@ -411,25 +411,27 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     ping :: ProtocolClient v err msg -> TVar UTCTime -> IO ()
     ping c@ProtocolClient {client_ = PClient {sendPings, pingErrorCount, transportHost}} lastRecv = do
       atomically $ unlessM (readTVar sendPings) retry
-      threadDelay' smpPingInterval
-      diff <- diffUTCTime <$> getCurrentTime <*> readTVarIO lastRecv
-      let idle = diffToMicroseconds diff
-      if idle < smpPingInterval
-        then do
-          let delay = smpPingInterval - idle
-          logDebug $ thost <> " : last response was " <> tshow diff <> " ago, delaying ping for " <> tshow (secondsToNominalDiffTime $ fromIntegral delay / 1000000)
-          threadDelay' delay
-          ping c lastRecv
-        else do
-          logDebug $ thost <> " : last response was " <> tshow diff <> " ago, sending ping"
-          -- sendProtocolCommand/getResponse updates pingErrorCount
-          runExceptT (sendProtocolCommand c Nothing "" $ protocolPing @v @err @msg) >>= \case
-            Left PCEResponseTimeout -> do
-              cnt <- readTVarIO pingErrorCount
-              -- drop client when maxCnt of commands (pings or otherwise) have timed out in sequence, but only after some time has passed after last received response
-              when (maxCnt == 0 || cnt < maxCnt || diff < recoverWindow) $ ping c lastRecv
-            _ -> ping c lastRecv
+      loop smpPingInterval
       where
+        loop :: Int64 -> IO ()
+        loop delay = do
+          threadDelay' delay
+          diff <- diffUTCTime <$> getCurrentTime <*> readTVarIO lastRecv
+          let idle = diffToMicroseconds diff
+              remaining = smpPingInterval - idle
+          if remaining > 250_000 -- delay pings only for significant time
+            then do
+              logDebug $ thost <> " : last response was " <> tshow diff <> " ago, delaying ping for " <> tshow (secondsToNominalDiffTime $ fromIntegral remaining / 1000000)
+              loop remaining
+            else do
+              logDebug $ thost <> " : last response was " <> tshow diff <> " ago, sending ping"
+              -- sendProtocolCommand/getResponse updates pingErrorCount
+              runExceptT (sendProtocolCommand c Nothing "" $ protocolPing @v @err @msg) >>= \case
+                Left PCEResponseTimeout -> do
+                  cnt <- readTVarIO pingErrorCount
+                  -- drop client when maxCnt of commands (pings or otherwise) have timed out in sequence, but only after some time has passed after last received response
+                  when (maxCnt == 0 || cnt < maxCnt || diff < recoverWindow) $ loop smpPingInterval
+                _ -> loop smpPingInterval
         recoverWindow = 15 * 60
         maxCnt = smpPingCount networkConfig
         thost = decodeLatin1 $ strEncode transportHost
