@@ -112,7 +112,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
-import Simplex.Messaging.Util (bshow, diffToMicroseconds, raceAny_, threadDelay', tshow, whenM)
+import Simplex.Messaging.Util (bshow, diffToMicroseconds, raceAny_, threadDelay', tshow, unlessM, whenM)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
 import UnliftIO (pooledMapConcurrentlyN)
@@ -133,6 +133,7 @@ data PClient v err msg = PClient
     transportHost :: TransportHost,
     tcpTimeout :: Int,
     rcvConcurrency :: Int,
+    sendPings :: TVar Bool,
     pingErrorCount :: TVar Int,
     clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
@@ -146,6 +147,7 @@ smpClientStub g sessionId thVersion thAuth = do
   connected <- newTVar False
   clientCorrId <- C.newRandomDRG g
   sentCommands <- TM.empty
+  sendPings <- newTVar False
   pingErrorCount <- newTVar 0
   sndQ <- newTBQueue 100
   rcvQ <- newTBQueue 100
@@ -169,6 +171,7 @@ smpClientStub g sessionId thVersion thAuth = do
               transportHost = "localhost",
               tcpTimeout = 15_000_000,
               rcvConcurrency = 8,
+              sendPings,
               pingErrorCount,
               clientCorrId,
               sentCommands,
@@ -339,6 +342,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     mkProtocolClient :: TransportHost -> STM (PClient v err msg)
     mkProtocolClient transportHost = do
       connected <- newTVar False
+      sendPings <- newTVar False
       pingErrorCount <- newTVar 0
       clientCorrId <- C.newRandomDRG g
       sentCommands <- TM.empty
@@ -350,6 +354,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             transportSession,
             transportHost,
             tcpTimeout,
+            sendPings,
             pingErrorCount,
             clientCorrId,
             sentCommands,
@@ -404,7 +409,8 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
       getCurrentTime >>= atomically . writeTVar lastRecv
 
     ping :: ProtocolClient v err msg -> TVar UTCTime -> IO ()
-    ping c@ProtocolClient {client_ = PClient {pingErrorCount, transportHost}} lastRecv = do
+    ping c@ProtocolClient {client_ = PClient {sendPings, pingErrorCount, transportHost}} lastRecv = do
+      atomically $ unlessM (readTVar sendPings) retry
       threadDelay' smpPingInterval
       diff <- diffUTCTime <$> getCurrentTime <*> readTVarIO lastRecv
       let idle = diffToMicroseconds diff
@@ -523,15 +529,17 @@ createSMPQueue c (rKey, rpKey) dhKey auth subMode =
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue
 subscribeSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO ()
-subscribeSMPQueue c rpKey rId =
+subscribeSMPQueue c@ProtocolClient {client_ = PClient {sendPings}} rpKey rId =
   sendSMPCommand c (Just rpKey) rId SUB >>= \case
-    OK -> return ()
+    OK -> liftIO . atomically $ writeTVar sendPings True
     cmd@MSG {} -> liftIO $ writeSMPMessage c rId cmd
     r -> throwE . PCEUnexpectedResponse $ bshow r
 
 -- | Subscribe to multiple SMP queues batching commands if supported.
 subscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
-subscribeSMPQueues c qs = sendProtocolCommands c cs >>= mapM (processSUBResponse c)
+subscribeSMPQueues c@ProtocolClient {client_ = PClient {sendPings}} qs = do
+  atomically $ writeTVar sendPings True
+  sendProtocolCommands c cs >>= mapM (processSUBResponse c)
   where
     cs = L.map (\(rpKey, rId) -> (Just rpKey, rId, Cmd SRecipient SUB)) qs
 
