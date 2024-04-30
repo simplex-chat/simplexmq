@@ -34,6 +34,7 @@ module Simplex.Messaging.Client
     getProtocolClient,
     closeProtocolClient,
     protocolClientServer,
+    protocolClientServer',
     transportHost',
     transportSession',
 
@@ -66,6 +67,8 @@ module Simplex.Messaging.Client
     ProtocolClientConfig (..),
     NetworkConfig (..),
     TransportSessionMode (..),
+    HostMode (..),
+    SendProxyMode (..),
     defaultClientConfig,
     defaultSMPClientConfig,
     defaultNetworkConfig,
@@ -208,6 +211,8 @@ data NetworkConfig = NetworkConfig
     requiredHostMode :: Bool,
     -- | transport sessions are created per user or per entity
     sessionMode :: TransportSessionMode,
+    -- | SMP proxy mode
+    sendProxyMode :: SendProxyMode,
     -- | timeout for the initial client TCP/TLS connection (microseconds)
     tcpConnectTimeout :: Int,
     -- | timeout of protocol commands (microseconds)
@@ -227,6 +232,14 @@ data NetworkConfig = NetworkConfig
 data TransportSessionMode = TSMUser | TSMEntity
   deriving (Eq, Show)
 
+-- SMP proxy mode for sending messages
+data SendProxyMode
+  = SPMAlways
+  | SPMUnknown -- use with unknown relays
+  | SPMUnprotected -- use with unknown relays when IP address is not protected (i.e., when neither SOCKS proxy nor .onion address is used)
+  | SPMNever
+  deriving (Eq, Show)
+
 defaultNetworkConfig :: NetworkConfig
 defaultNetworkConfig =
   NetworkConfig
@@ -234,6 +247,7 @@ defaultNetworkConfig =
       hostMode = HMOnionViaSocks,
       requiredHostMode = False,
       sessionMode = TSMUser,
+      sendProxyMode = SPMNever,
       tcpConnectTimeout = 20_000_000,
       tcpTimeout = 15_000_000,
       tcpTimeoutPerKb = 5_000,
@@ -303,10 +317,14 @@ chooseTransportHost NetworkConfig {socksProxy, hostMode, requiredHostMode} hosts
     publicHost = find (not . isOnionHost) hosts
 
 protocolClientServer :: ProtocolTypeI (ProtoType msg) => ProtocolClient v err msg -> String
-protocolClientServer = B.unpack . strEncode . snd3 . transportSession . client_
+protocolClientServer = B.unpack . strEncode . protocolClientServer'
+{-# INLINE protocolClientServer #-}
+
+protocolClientServer' :: ProtocolClient v err msg -> ProtoServer msg
+protocolClientServer' = snd3 . transportSession . client_
   where
     snd3 (_, s, _) = s
-{-# INLINE protocolClientServer #-}
+{-# INLINE protocolClientServer' #-}
 
 transportHost' :: ProtocolClient v err msg -> TransportHost
 transportHost' = transportHost . client_
@@ -871,5 +889,7 @@ authTransmission thAuth pKey_ nonce t = traverse authenticate pKey_
 $(J.deriveJSON (enumJSON $ dropPrefix "HM") ''HostMode)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "TSM") ''TransportSessionMode)
+
+$(J.deriveJSON (enumJSON $ dropPrefix "SPM") ''SendProxyMode)
 
 $(J.deriveJSON defaultJSON ''NetworkConfig)

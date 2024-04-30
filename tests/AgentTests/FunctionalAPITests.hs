@@ -100,7 +100,6 @@ import Test.Hspec
 import UnliftIO
 import Util
 import XFTPClient (testXFTPServer)
-import GHC.Conc (unsafeIOToSTM)
 
 type AEntityTransmission e = (ACorrId, ConnId, ACommand 'Agent e)
 
@@ -430,7 +429,6 @@ functionalAPITests t = do
   describe "user network info" $ do
     it "should wait for user network" testWaitForUserNetwork
     it "should not reset offline interval while offline" testDoNotResetOfflineInterval
-    it "stuck subscription POC" stuckSubscriptionTest
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -2701,54 +2699,6 @@ testDoNotResetOfflineInterval = do
   networkDelay a 100000
   where
     aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 100000, increaseAfter = 0, maxInterval = 200000}}
-
-data MockAgentClient = MockAgentClient
-  { currClientId :: TVar (Maybe Int),
-    activeSub :: TVar Bool,
-    pendingSub :: TVar Bool
-  }
-
-stuckSubscriptionTest :: IO ()
-stuckSubscriptionTest = do
-  c <- atomically newMockClient
-  cId <- atomically $ connectClient1 c
-  concurrently_ (atomically $ disconnectClient1 c cId) (atomically $ client2 c)
-  where
-    connectClient1 c = do
-      unsafeIOToSTM $ putStrLn "connectClient1"
-      writeTVar (currClientId c) (Just 1)
-      subscribe c
-      readTVar (currClientId c)
-    disconnectClient1 c cId = do
-      unsafeIOToSTM $ putStrLn "disconnectClient1"
-      unsafeIOToSTM $ putStrLn ("delay in disconnectClient1 " <> show cId) >> threadDelay 3000000
-      cId' <- readTVar (currClientId c)
-      unsafeIOToSTM $ putStrLn ("disconnectClient1 current cId " <> show cId')
-      -- makePending c
-      when (cId == cId') $ makePending c
-    client2 c = do
-      unsafeIOToSTM $ putStrLn "client2"
-      -- delay
-      unsafeIOToSTM $ putStrLn "delay 1 in client2" >> threadDelay 2000000
-      writeTVar (currClientId c) (Just 2)
-      unsafeIOToSTM $ putStrLn "delay 2 in client2" >> threadDelay 2000000
-      shouldSubscribe <- readTVar (pendingSub c)
-      when shouldSubscribe $ subscribe c
-    newMockClient = do
-      currClientId <- newTVar Nothing
-      activeSub <- newTVar False
-      pendingSub <- newTVar False
-      pure MockAgentClient {currClientId, activeSub, pendingSub}
-    subscribe c = do
-      cId <- readTVar (currClientId c)
-      unsafeIOToSTM $ putStrLn $ "subscribe " <> show cId
-      writeTVar (activeSub c) True
-      writeTVar (pendingSub c) False
-    makePending c = do
-      cId <- readTVar (currClientId c)
-      unsafeIOToSTM $ putStrLn $ "makePending " <> show cId
-      writeTVar (activeSub c) False
-      writeTVar (pendingSub c) True
 
 noNetworkDelay :: AgentClient -> IO ()
 noNetworkDelay a = (10000 >) <$> waitNetwork a `shouldReturn` True

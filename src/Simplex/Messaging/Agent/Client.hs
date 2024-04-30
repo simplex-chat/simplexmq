@@ -232,7 +232,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion)
-import Simplex.Messaging.Transport.Client (TransportHost)
+import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Mem.Weak (Weak)
@@ -265,7 +265,6 @@ data AgentClient = AgentClient
     msgQ :: TBQueue (ServerTransmission SMPVersion BrokerMsg),
     smpServers :: TMap UserId (NonEmpty SMPServerWithAuth),
     smpClients :: TMap SMPTransportSession SMPClientVar,
-    smpProxyMode :: TVar ProxyMode,
     -- smpProxiedRelays:
     -- SMPTransportSession defines connection from proxy to relay,
     -- SMPServerWithAuth defines client connected to SMP proxy (with the same userId and entityId in TransportSession)
@@ -308,8 +307,6 @@ data SMPConnectedClient = SMPConnectedClient
   { connectedClient :: SMPClient,
     proxiedRelays :: TMap SMPServer ProxySessionVar
   }
-
-data ProxyMode = PMAlways | PMUnknownServers | PMNever
 
 type ProxySessionVar = SessionVar (Either AgentErrorType ProxySession)
 
@@ -444,7 +441,6 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   msgQ <- newTBQueue qSize
   smpServers <- newTVar smp
   smpClients <- TM.empty
-  smpProxyMode <- newTVar PMNever -- TODO should be passed as part of NetwordConfig
   smpProxiedRelays <- TM.empty
   ntfServers <- newTVar ntf
   ntfClients <- TM.empty
@@ -481,7 +477,6 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         msgQ,
         smpServers,
         smpClients,
-        smpProxyMode,
         smpProxiedRelays,
         ntfServers,
         ntfClients,
@@ -986,17 +981,18 @@ withClient_ c tSess@(userId, srv, _) statCmd action = do
       throwError e
 
 withProxySession :: AgentClient -> SMPTransportSession -> SMP.SenderId -> ByteString -> ((SMPConnectedClient, ProxySession) -> AM a) -> AM a
-withProxySession c destSess@(userId, srv, _) entId cmdStr action = do
+withProxySession c destSess@(userId, destSrv, _) entId cmdStr action = do
   cp@(cl, _) <- getSMPProxyClient c destSess
-  logServer "-->" c srv entId cmdStr
+  logServer ("--> " <> proxySrv cl <> " >") c destSrv entId cmdStr
   r <- (action cp <* stat cl "OK") `catchAgentError` logServerError cl
-  logServer "<--" c srv entId "OK"
+  logServer ("<-- " <> proxySrv cl <> " <") c destSrv entId "OK"
   pure r
   where
     stat cl = liftIO . incClientStat c userId cl cmdStr
+    proxySrv = showServer . protocolClientServer' . protocolClient
     logServerError :: SMPConnectedClient -> AgentErrorType -> AM a
     logServerError cl e = do
-      logServer "<--" c srv "" $ strEncode e
+      logServer ("<-- " <> proxySrv cl <> " <") c destSrv "" $ strEncode e
       stat cl $ strEncode e
       throwError e
 
@@ -1025,17 +1021,28 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
   sess <- liftIO $ mkTransportSession c userId destSrv senderId
   ifM (atomically shouldUseProxy) (sendViaProxy sess) (sendDirectly sess)
   where
-    shouldUseProxy =
-      readTVar (smpProxyMode c) >>= \case
-        PMAlways -> pure True
-        PMUnknownServers -> maybe False (all ((destSrv /=) . protoServer)) <$> TM.lookup userId (userServers c)
-        PMNever -> pure False
+    shouldUseProxy = do
+      cfg <- getNetworkConfig c
+      case sendProxyMode cfg of
+        SPMAlways -> pure True
+        SPMUnknown -> unknownServer
+        SPMUnprotected
+          | ipAddressProtected cfg destSrv -> pure False
+          | otherwise -> unknownServer
+        SPMNever -> pure False
+    unknownServer = maybe True (all ((destSrv /=) . protoServer)) <$> TM.lookup userId (userServers c)
     sendViaProxy destSess =
-      withProxySession c destSess senderId cmdStr $ \(SMPConnectedClient smp _, proxySess) ->
+      withProxySession c destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess) ->
         liftClient SMP (clientServer smp) $ proxySMPMessage smp proxySess spKey_ senderId msgFlags msg
     sendDirectly tSess =
-      withLogClient_ c tSess senderId cmdStr $ \(SMPConnectedClient smp _) ->
+      withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) ->
         liftClient SMP (clientServer smp) $ sendSMPMessage smp spKey_ senderId msgFlags msg
+
+ipAddressProtected :: NetworkConfig -> ProtocolServer p -> Bool
+ipAddressProtected NetworkConfig {socksProxy, hostMode} (ProtocolServer _ hosts _ _) = do
+  isJust socksProxy || (hostMode == HMOnion && any isOnionHost hosts)
+  where
+    isOnionHost = \case THOnionHost _ -> True; _ -> False
 
 withNtfClient :: AgentClient -> NtfServer -> EntityId -> ByteString -> (NtfClient -> ExceptT NtfClientError IO a) -> AM a
 withNtfClient c srv = withLogClient c (0, srv, Nothing)
@@ -1363,13 +1370,13 @@ sendConfirmation :: AgentClient -> SndQueue -> ByteString -> AM ()
 sendConfirmation c sq@SndQueue {userId, server, sndId, sndPublicKey = Just sndPublicKey, e2ePubKey = e2ePubKey@Just {}} agentConfirmation = do
   let clientMsg = SMP.ClientMessage (SMP.PHConfirmation sndPublicKey) agentConfirmation
   msg <- agentCbEncrypt sq e2ePubKey $ smpEncode clientMsg
-  sendOrProxySMPMessage c userId server "SEND <CONF>" Nothing sndId (MsgFlags {notification = True}) msg
+  sendOrProxySMPMessage c userId server "<CONF>" Nothing sndId (MsgFlags {notification = True}) msg
 sendConfirmation _ _ _ = throwError $ INTERNAL "sendConfirmation called without snd_queue public key(s) in the database"
 
 sendInvitation :: AgentClient -> UserId -> Compatible SMPQueueInfo -> Compatible VersionSMPA -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> AM ()
 sendInvitation c userId (Compatible (SMPQueueInfo v SMPQueueAddress {smpServer, senderId, dhPublicKey})) (Compatible agentVersion) connReq connInfo = do
   msg <- mkInvitation
-  sendOrProxySMPMessage c userId smpServer "SEND <INV>" Nothing senderId (MsgFlags {notification = True}) msg
+  sendOrProxySMPMessage c userId smpServer "<INV>" Nothing senderId (MsgFlags {notification = True}) msg
   where
     mkInvitation :: AM ByteString
     -- this is only encrypted with per-queue E2E, not with double ratchet
@@ -1457,7 +1464,7 @@ sendAgentMessage :: AgentClient -> SndQueue -> MsgFlags -> ByteString -> AM ()
 sendAgentMessage c sq@SndQueue {userId, server, sndId, sndPrivateKey} msgFlags agentMsg = do
   let clientMsg = SMP.ClientMessage SMP.PHEmpty agentMsg
   msg <- agentCbEncrypt sq Nothing $ smpEncode clientMsg
-  sendOrProxySMPMessage c userId server "SEND <MSG>" (Just sndPrivateKey) sndId msgFlags msg
+  sendOrProxySMPMessage c userId server "<MSG>" (Just sndPrivateKey) sndId msgFlags msg
 
 agentNtfRegisterToken :: AgentClient -> NtfToken -> NtfPublicAuthKey -> C.PublicKeyX25519 -> AM (NtfTokenId, C.PublicKeyX25519)
 agentNtfRegisterToken c NtfToken {deviceToken, ntfServer, ntfPrivKey} ntfPubKey pubDhKey =
