@@ -531,11 +531,12 @@ createSMPQueue c (rKey, rpKey) dhKey auth subMode =
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue
 subscribeSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO ()
-subscribeSMPQueue c@ProtocolClient {client_ = PClient {sendPings}} rpKey rId =
+subscribeSMPQueue c@ProtocolClient {client_ = PClient {sendPings}} rpKey rId = do
   sendSMPCommand c (Just rpKey) rId SUB >>= \case
-    OK -> liftIO . atomically $ writeTVar sendPings True
+    OK -> pure ()
     cmd@MSG {} -> liftIO $ writeSMPMessage c rId cmd
     r -> throwE . PCEUnexpectedResponse $ bshow r
+  liftIO . atomically $ writeTVar sendPings True
 
 -- | Subscribe to multiple SMP queues batching commands if supported.
 subscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
