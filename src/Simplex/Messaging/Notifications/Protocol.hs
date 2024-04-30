@@ -152,7 +152,7 @@ instance Encoding ANewNtfEntity where
 instance Protocol NTFVersion ErrorType NtfResponse where
   type ProtoCommand NtfResponse = NtfCmd
   type ProtoType NtfResponse = 'PNTF
-  protocolClientHandshake = ntfClientHandshake
+  protocolClientHandshake c _ks = ntfClientHandshake c
   protocolPing = NtfCmd SSubscription PING
   protocolError = \case
     NRErr e -> Just e

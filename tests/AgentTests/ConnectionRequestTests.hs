@@ -68,7 +68,7 @@ testE2ERatchetParams :: RcvE2ERatchetParamsUri 'C.X448
 testE2ERatchetParams = E2ERatchetParamsUri (mkVersionRange (VersionE2E 1) (VersionE2E 1)) testDhPubKey testDhPubKey Nothing
 
 testE2ERatchetParams12 :: RcvE2ERatchetParamsUri 'C.X448
-testE2ERatchetParams12 = E2ERatchetParamsUri (supportedE2EEncryptVRange PQSupportOn) testDhPubKey testDhPubKey Nothing
+testE2ERatchetParams12 = E2ERatchetParamsUri supportedE2EEncryptVRange testDhPubKey testDhPubKey Nothing
 
 connectionRequest :: AConnectionRequestUri
 connectionRequest =
@@ -82,7 +82,7 @@ connectionRequestCurrentRange :: AConnectionRequestUri
 connectionRequestCurrentRange =
   ACR SCMInvitation $
     CRInvitationUri
-      connReqData {crAgentVRange = supportedSMPAgentVRange PQSupportOn, crSmpQueues = [queueV1, queueV1]}
+      connReqData {crAgentVRange = supportedSMPAgentVRange, crSmpQueues = [queueV1, queueV1]}
       testE2ERatchetParams12
 
 connectionRequestClientDataEmpty :: AConnectionRequestUri

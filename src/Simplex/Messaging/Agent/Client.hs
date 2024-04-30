@@ -152,7 +152,6 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Composition ((.:.))
 import Data.Either (lefts, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -227,6 +226,7 @@ import Simplex.Messaging.Protocol
     sameSrvAddr',
   )
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion)
@@ -240,11 +240,6 @@ import UnliftIO.Async (async)
 import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
-
-data SessionVar a = SessionVar
-  { sessionVar :: TMVar a,
-    sessionVarId :: Int
-  }
 
 type ClientVar msg = SessionVar (Either AgentErrorType (Client msg))
 
@@ -405,7 +400,8 @@ data AgentStatsKey = AgentStatsKey
   deriving (Eq, Ord, Show)
 
 data UserNetworkInfo = UserNetworkInfo
-  { networkType :: UserNetworkType
+  { networkType :: UserNetworkType,
+    online :: Bool
   }
   deriving (Show)
 
@@ -549,9 +545,9 @@ instance ProtocolServerClient XFTPVersion XFTPErrorType FileResponse where
   clientSessionTs = X.xftpSessionTs
 
 getSMPServerClient :: AgentClient -> SMPTransportSession -> AM SMPClient
-getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, _) = do
+getSMPServerClient c@AgentClient {active, smpClients, msgQ, workerSeq} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
-  atomically (getTSessVar c tSess smpClients)
+  atomically (getSessVar workerSeq tSess smpClients)
     >>= either newClient (waitForProtocolClient c tSess)
   where
     -- we resubscribe only on newClient error, but not on waitForProtocolClient error,
@@ -580,7 +576,7 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
         removeClientAndSubs :: IO ([RcvQueue], [ConnId])
         removeClientAndSubs = atomically $ ifM currentActiveClient removeSubs $ pure ([], [])
           where
-            currentActiveClient = (&&) <$> removeTSessVar' v tSess smpClients <*> readTVar active
+            currentActiveClient = (&&) <$> removeSessVar' v tSess smpClients <*> readTVar active
             removeSubs = do
               (qs, cs) <- RQ.getDelSessQueues tSess $ activeSubs c
               RQ.batchAddQueues (pendingSubs c) qs
@@ -599,14 +595,14 @@ getSMPServerClient c@AgentClient {active, smpClients, msgQ} tSess@(userId, srv, 
         notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
 resubscribeSMPSession :: AgentClient -> SMPTransportSession -> AM' ()
-resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
+resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess =
   atomically getWorkerVar >>= mapM_ (either newSubWorker (\_ -> pure ()))
   where
     getWorkerVar =
       ifM
         (null <$> getPending)
         (pure Nothing) -- prevent race with cleanup and adding pending queues in another call
-        (Just <$> getTSessVar c tSess smpSubWorkers)
+        (Just <$> getSessVar workerSeq tSess smpSubWorkers)
     newSubWorker v = do
       a <- async $ void (E.tryAny runSubWorker) >> atomically (cleanup v)
       atomically $ putTMVar (sessionVar v) a
@@ -625,7 +621,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers} tSess =
       -- Here we wait until TMVar is not empty to prevent worker cleanup happening before worker is added to TMVar.
       -- Not waiting may result in terminated worker remaining in the map.
       whenM (isEmptyTMVar $ sessionVar v) retry
-      removeTSessVar v tSess smpSubWorkers
+      removeSessVar v tSess smpSubWorkers
 
 reconnectSMPClient :: TVar Int -> AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> AM ()
 reconnectSMPClient tc c tSess@(_, srv, _) qs = do
@@ -659,9 +655,9 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
 getNtfServerClient :: AgentClient -> NtfTransportSession -> AM NtfClient
-getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = do
+getNtfServerClient c@AgentClient {active, ntfClients, workerSeq} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
-  atomically (getTSessVar c tSess ntfClients)
+  atomically (getSessVar workerSeq tSess ntfClients)
     >>= either
       (newProtocolClient c tSess ntfClients connectClient)
       (waitForProtocolClient c tSess)
@@ -676,15 +672,15 @@ getNtfServerClient c@AgentClient {active, ntfClients} tSess@(userId, srv, _) = d
 
     clientDisconnected :: NtfClientVar -> NtfClient -> IO ()
     clientDisconnected v client = do
-      atomically $ removeTSessVar v tSess ntfClients
+      atomically $ removeSessVar v tSess ntfClients
       incClientStat c userId client "DISCONNECT" ""
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
 getXFTPServerClient :: AgentClient -> XFTPTransportSession -> AM XFTPClient
-getXFTPServerClient c@AgentClient {active, xftpClients} tSess@(userId, srv, _) = do
+getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
-  atomically (getTSessVar c tSess xftpClients)
+  atomically (getSessVar workerSeq tSess xftpClients)
     >>= either
       (newProtocolClient c tSess xftpClients connectClient)
       (waitForProtocolClient c tSess)
@@ -692,39 +688,17 @@ getXFTPServerClient c@AgentClient {active, xftpClients} tSess@(userId, srv, _) =
     connectClient :: XFTPClientVar -> AM XFTPClient
     connectClient v = do
       cfg <- asks $ xftpCfg . config
-      g <- asks random
       xftpNetworkConfig <- atomically $ getNetworkConfig c
       liftError' (protocolClientError XFTP $ B.unpack $ strEncode srv) $
-        X.getXFTPClient g tSess cfg {xftpNetworkConfig} $
+        X.getXFTPClient tSess cfg {xftpNetworkConfig} $
           clientDisconnected v
 
     clientDisconnected :: XFTPClientVar -> XFTPClient -> IO ()
     clientDisconnected v client = do
-      atomically $ removeTSessVar v tSess xftpClients
+      atomically $ removeSessVar v tSess xftpClients
       incClientStat c userId client "DISCONNECT" ""
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
-
-getTSessVar :: forall a s. AgentClient -> TransportSession s -> TMap (TransportSession s) (SessionVar a) -> STM (Either (SessionVar a) (SessionVar a))
-getTSessVar c tSess vs = maybe (Left <$> newSessionVar) (pure . Right) =<< TM.lookup tSess vs
-  where
-    newSessionVar :: STM (SessionVar a)
-    newSessionVar = do
-      sessionVar <- newEmptyTMVar
-      sessionVarId <- stateTVar (workerSeq c) $ \next -> (next, next + 1)
-      let v = SessionVar {sessionVar, sessionVarId}
-      TM.insert tSess v vs
-      pure v
-
-removeTSessVar :: SessionVar a -> TransportSession msg -> TMap (TransportSession msg) (SessionVar a) -> STM ()
-removeTSessVar = void .:. removeTSessVar'
-{-# INLINE removeTSessVar #-}
-
-removeTSessVar' :: SessionVar a -> TransportSession msg -> TMap (TransportSession msg) (SessionVar a) -> STM Bool
-removeTSessVar' v tSess vs =
-  TM.lookup tSess vs >>= \case
-    Just v' | sessionVarId v == sessionVarId v' -> TM.delete tSess vs $> True
-    _ -> pure False
 
 waitForProtocolClient :: ProtocolTypeI (ProtoType msg) => AgentClient -> TransportSession msg -> ClientVar msg -> AM (Client msg)
 waitForProtocolClient c (_, srv, _) v = do
@@ -756,7 +730,7 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient v =
     Left e -> do
       liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
       atomically $ do
-        removeTSessVar v tSess clients
+        removeSessVar v tSess clients
         putTMVar (sessionVar v) (Left e)
       throwError e -- signal error to caller
 
@@ -780,10 +754,11 @@ getNetworkConfig c = do
 
 waitForUserNetwork :: AgentClient -> AM' ()
 waitForUserNetwork AgentClient {userNetworkState} =
-  (offline <$> readTVarIO userNetworkState) >>= mapM_ waitWhileOffline
+  readTVarIO userNetworkState >>= mapM_ waitWhileOffline . offline
   where
     waitWhileOffline UNSOffline {offlineDelay = d} =
-      unlessM (liftIO $ waitOnline d False) $ do -- network delay reached, increase delay
+      unlessM (liftIO $ waitOnline d False) $ do
+        -- network delay reached, increase delay
         ts' <- liftIO getCurrentTime
         ni <- asks $ userNetworkInterval . config
         atomically $ do
@@ -793,7 +768,7 @@ waitForUserNetwork AgentClient {userNetworkState} =
             -- and to reset `offlineDelay` if network went `on` and `off` again.
             writeTVar userNetworkState $!
               let d'' = nextRetryDelay (diffToMicroseconds $ diffUTCTime ts' ts) (min d d') ni
-                in ns {offline = Just UNSOffline {offlineDelay = d'', offlineFrom = ts}}
+               in ns {offline = Just UNSOffline {offlineDelay = d'', offlineFrom = ts}}
     waitOnline :: Int64 -> Bool -> IO Bool
     waitOnline t online'
       | t <= 0 = pure online'
@@ -865,9 +840,10 @@ closeClient c clientSel tSess =
 closeClient_ :: ProtocolServerClient v err msg => AgentClient -> ClientVar msg -> IO ()
 closeClient_ c v = do
   NetworkConfig {tcpConnectTimeout} <- atomically $ getNetworkConfig c
-  E.handle (\BlockedIndefinitelyOnSTM -> pure ()) $ tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v) >>= \case
-    Just (Right client) -> closeProtocolServerClient client `catchAll_` pure ()
-    _ -> pure ()
+  E.handle (\BlockedIndefinitelyOnSTM -> pure ()) $
+    tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v) >>= \case
+      Just (Right client) -> closeProtocolServerClient client `catchAll_` pure ()
+      _ -> pure ()
 
 closeXFTPServerClient :: AgentClient -> UserId -> XFTPServer -> FileDigest -> IO ()
 closeXFTPServerClient c userId server (FileDigest chunkDigest) =
@@ -1031,7 +1007,7 @@ runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
   rcvPath <- getTempFilePath workDir
   liftIO $ do
     let tSess = (userId, srv, Nothing)
-    X.getXFTPClient g tSess cfg {xftpNetworkConfig} (\_ -> pure ()) >>= \case
+    X.getXFTPClient tSess cfg {xftpNetworkConfig} (\_ -> pure ()) >>= \case
       Right xftp -> withTestChunk filePath $ do
         (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
         (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g

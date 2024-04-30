@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
@@ -9,6 +10,7 @@
 
 module Simplex.FileTransfer.Transport
   ( supportedFileServerVRange,
+    authCmdsXFTPVersion,
     xftpClientHandshakeStub,
     XFTPClientHandshake (..),
     -- xftpClientHandshake,
@@ -51,7 +53,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (CommandError)
-import Simplex.Messaging.Transport (HandshakeError (..), SessionId, THandle (..), THandleParams (..), TransportError (..))
+import Simplex.Messaging.Transport (HandshakeError (..), SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Transport.HTTP2.File
 import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version
@@ -76,17 +78,23 @@ type VersionRangeXFTP = VersionRange XFTPVersion
 pattern VersionXFTP :: Word16 -> VersionXFTP
 pattern VersionXFTP v = Version v
 
-type THandleXFTP c = THandle XFTPVersion c
-type THandleParamsXFTP = THandleParams XFTPVersion
+type THandleXFTP c p = THandle XFTPVersion c p
+type THandleParamsXFTP p = THandleParams XFTPVersion p
 
 initialXFTPVersion :: VersionXFTP
 initialXFTPVersion = VersionXFTP 1
 
-supportedFileServerVRange :: VersionRangeXFTP
-supportedFileServerVRange = mkVersionRange initialXFTPVersion initialXFTPVersion
+authCmdsXFTPVersion :: VersionXFTP
+authCmdsXFTPVersion = VersionXFTP 2
 
--- XFTP protocol does not support handshake
-xftpClientHandshakeStub :: c -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> ExceptT TransportError IO (THandle XFTPVersion c)
+currentXFTPVersion :: VersionXFTP
+currentXFTPVersion = VersionXFTP 2
+
+supportedFileServerVRange :: VersionRangeXFTP
+supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion
+
+-- XFTP protocol does not use this handshake method
+xftpClientHandshakeStub :: c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
 xftpClientHandshakeStub _c _ks _keyHash _xftpVRange = throwError $ TEHandshake VERSION
 
 data XFTPServerHandshake = XFTPServerHandshake
@@ -100,19 +108,16 @@ data XFTPClientHandshake = XFTPClientHandshake
   { -- | agreed XFTP server protocol version
     xftpVersion :: VersionXFTP,
     -- | server identity - CA certificate fingerprint
-    keyHash :: C.KeyHash,
-    -- | pub key to agree shared secret for entity ID encryption, shared secret for command authorization is agreed using per-queue keys.
-    authPubKey :: C.PublicKeyX25519
+    keyHash :: C.KeyHash
   }
 
 instance Encoding XFTPClientHandshake where
-  smpEncode XFTPClientHandshake {xftpVersion, keyHash, authPubKey} =
-    smpEncode (xftpVersion, keyHash, authPubKey)
+  smpEncode XFTPClientHandshake {xftpVersion, keyHash} =
+    smpEncode (xftpVersion, keyHash)
   smpP = do
     (xftpVersion, keyHash) <- smpP
-    authPubKey <- smpP
     Tail _compat <- smpP
-    pure XFTPClientHandshake {xftpVersion, keyHash, authPubKey}
+    pure XFTPClientHandshake {xftpVersion, keyHash}
 
 instance Encoding XFTPServerHandshake where
   smpEncode XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey} =

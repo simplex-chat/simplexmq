@@ -187,9 +187,9 @@ agentCfgVPrev :: AgentConfig
 agentCfgVPrev =
   agentCfg
     { sndAuthAlg = C.AuthAlg C.SEd25519,
-      smpAgentVRange = \_ -> prevRange $ smpAgentVRange agentCfg PQSupportOff,
+      smpAgentVRange = prevRange $ smpAgentVRange agentCfg,
       smpClientVRange = prevRange $ smpClientVRange agentCfg,
-      e2eEncryptVRange = \_ -> prevRange $ e2eEncryptVRange agentCfg PQSupportOff,
+      e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg,
       smpCfg = smpCfgVPrev
     }
 
@@ -198,14 +198,14 @@ agentCfgV7 :: AgentConfig
 agentCfgV7 =
   agentCfg
     { sndAuthAlg = C.AuthAlg C.SX25519,
-      smpAgentVRange = \_ -> V.mkVersionRange duplexHandshakeSMPAgentVersion $ max pqdrSMPAgentVersion currentSMPAgentVersion,
-      e2eEncryptVRange = \_ -> V.mkVersionRange CR.kdfX3DHE2EEncryptVersion $ max CR.pqRatchetE2EEncryptVersion CR.currentE2EEncryptVersion,
+      smpAgentVRange = V.mkVersionRange duplexHandshakeSMPAgentVersion $ max pqdrSMPAgentVersion currentSMPAgentVersion,
+      e2eEncryptVRange = V.mkVersionRange CR.kdfX3DHE2EEncryptVersion $ max CR.pqRatchetE2EEncryptVersion CR.currentE2EEncryptVersion,
       smpCfg = smpCfgV7,
       ntfCfg = ntfCfgV2
     }
 
 agentCfgRatchetVPrev :: AgentConfig
-agentCfgRatchetVPrev = agentCfg {e2eEncryptVRange = \_ -> prevRange $ e2eEncryptVRange agentCfg PQSupportOff}
+agentCfgRatchetVPrev = agentCfg {e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg}
 
 prevRange :: VersionRange v -> VersionRange v
 prevRange vr = vr {maxVersion = max (minVersion vr) (prevVersion $ maxVersion vr)}
@@ -428,6 +428,7 @@ functionalAPITests t = do
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent t
   describe "user network info" $ do
     it "should wait for user network" testWaitForUserNetwork
+    it "should not reset offline interval while offline" testDoNotResetOfflineInterval
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -545,28 +546,27 @@ testEnablePQEncryption =
     (a, 4, "msg 1") \#>\ b
     (b, 5, "msg 2") \#>\ a
     -- 45 bytes is used by agent message envelope inside double ratchet message envelope
-    let largeMsg g' pqEnc = atomically $ C.randomBytes (e2eEncUserMsgLength pqdrSMPAgentVersion pqEnc - 45) g'
+    let largeMsg g' pqEnc = atomically $ C.randomBytes (e2eEncAgentMsgLength pqdrSMPAgentVersion pqEnc - 45) g'
     lrg <- largeMsg g PQSupportOff
     (a, 6, lrg) \#>\ b
     (b, 7, lrg) \#>\ a
-    -- enabling PQ encryption
-    (a, 8, lrg) \#>! b
-    (b, 9, lrg) \#>! a
     -- switched to smaller envelopes (before reporting PQ encryption enabled)
     sml <- largeMsg g PQSupportOn
     -- fail because of message size
     Left (A.CMD LARGE) <- tryError $ A.sendMessage ca bId PQEncOn SMP.noMsgFlags lrg
-    (11, PQEncOff) <- A.sendMessage ca bId PQEncOn SMP.noMsgFlags sml
-    get ca =##> \case ("", connId, SENT 11) -> connId == bId; _ -> False
-    get cb =##> \case ("", connId, MsgErr' 10 MsgSkipped {} PQEncOff msg') -> connId == aId && msg' == sml; _ -> False
-    ackMessage cb aId 10 Nothing
+    (9, PQEncOff) <- A.sendMessage ca bId PQEncOn SMP.noMsgFlags sml
+    get ca =##> \case ("", connId, SENT 9) -> connId == bId; _ -> False
+    get cb =##> \case ("", connId, MsgErr' 8 MsgSkipped {} PQEncOff msg') -> connId == aId && msg' == sml; _ -> False
+    ackMessage cb aId 8 Nothing
     -- -- fail in reply to sync IDss
     Left (A.CMD LARGE) <- tryError $ A.sendMessage cb aId PQEncOn SMP.noMsgFlags lrg
-    (12, PQEncOn) <- A.sendMessage cb aId PQEncOn SMP.noMsgFlags sml
-    get cb =##> \case ("", connId, SENT 12) -> connId == aId; _ -> False
-    get ca =##> \case ("", connId, MsgErr' 12 MsgSkipped {} PQEncOn msg') -> connId == bId && msg' == sml; _ -> False
-    ackMessage ca bId 12 Nothing
+    (10, PQEncOff) <- A.sendMessage cb aId PQEncOn SMP.noMsgFlags sml
+    get cb =##> \case ("", connId, SENT 10) -> connId == aId; _ -> False
+    get ca =##> \case ("", connId, MsgErr' 10 MsgSkipped {} PQEncOff msg') -> connId == bId && msg' == sml; _ -> False
+    ackMessage ca bId 10 Nothing
+    (a, 11, sml) \#>! b
     -- PQ encryption now enabled
+    (b, 12, sml) !#>! a
     (a, 13, sml) !#>! b
     (b, 14, sml) !#>! a
     -- disabling PQ encryption
@@ -796,8 +796,8 @@ testAllowConnectionClientRestart t = do
 
 testIncreaseConnAgentVersion :: HasCallStack => ATransport -> IO ()
 testIncreaseConnAgentVersion t = do
-  alice <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 2} initAgentServers testDB
-  bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 2} initAgentServers testDB2
+  alice <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ do
       (aliceId, bobId) <- makeConnection_ PQSupportOff alice bob
@@ -809,7 +809,7 @@ testIncreaseConnAgentVersion t = do
     -- version doesn't increase if incompatible
 
     disposeAgentClient alice
-    alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB
+    alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
 
     runRight_ $ do
       subscribeConnection alice2 bobId
@@ -820,7 +820,7 @@ testIncreaseConnAgentVersion t = do
     -- version increases if compatible
 
     disposeAgentClient bob
-    bob2 <- getSMPAgentClient' 4 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB2
+    bob2 <- getSMPAgentClient' 4 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
 
     runRight_ $ do
       subscribeConnection bob2 aliceId
@@ -831,7 +831,7 @@ testIncreaseConnAgentVersion t = do
     -- version doesn't decrease, even if incompatible
 
     disposeAgentClient alice2
-    alice3 <- getSMPAgentClient' 5 agentCfg {smpAgentVRange = \_ -> mkVersionRange 2 2} initAgentServers testDB
+    alice3 <- getSMPAgentClient' 5 agentCfg {smpAgentVRange = mkVersionRange 2 2} initAgentServers testDB
 
     runRight_ $ do
       subscribeConnection alice3 bobId
@@ -840,7 +840,7 @@ testIncreaseConnAgentVersion t = do
       checkVersion bob2 aliceId 3
 
     disposeAgentClient bob2
-    bob3 <- getSMPAgentClient' 6 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 1} initAgentServers testDB2
+    bob3 <- getSMPAgentClient' 6 agentCfg {smpAgentVRange = mkVersionRange 1 1} initAgentServers testDB2
 
     runRight_ $ do
       subscribeConnection bob3 aliceId
@@ -857,8 +857,8 @@ checkVersion c connId v = do
 
 testIncreaseConnAgentVersionMaxCompatible :: HasCallStack => ATransport -> IO ()
 testIncreaseConnAgentVersionMaxCompatible t = do
-  alice <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 2} initAgentServers testDB
-  bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 2} initAgentServers testDB2
+  alice <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ do
       (aliceId, bobId) <- makeConnection_ PQSupportOff alice bob
@@ -870,7 +870,7 @@ testIncreaseConnAgentVersionMaxCompatible t = do
     -- version increases to max compatible
 
     disposeAgentClient alice
-    alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB
+    alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
     disposeAgentClient bob
     bob2 <- getSMPAgentClient' 4 agentCfg {smpAgentVRange = supportedSMPAgentVRange} initAgentServers testDB2
 
@@ -885,8 +885,8 @@ testIncreaseConnAgentVersionMaxCompatible t = do
 
 testIncreaseConnAgentVersionStartDifferentVersion :: HasCallStack => ATransport -> IO ()
 testIncreaseConnAgentVersionStartDifferentVersion t = do
-  alice <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 2} initAgentServers testDB
-  bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB2
+  alice <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ do
       (aliceId, bobId) <- makeConnection_ PQSupportOff alice bob
@@ -898,7 +898,7 @@ testIncreaseConnAgentVersionStartDifferentVersion t = do
     -- version increases to max compatible
 
     disposeAgentClient alice
-    alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB
+    alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
 
     runRight_ $ do
       subscribeConnection alice2 bobId
@@ -2453,8 +2453,8 @@ testDeliveryReceipts =
 
 testDeliveryReceiptsVersion :: HasCallStack => ATransport -> IO ()
 testDeliveryReceiptsVersion t = do
-  a <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB
-  b <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = \_ -> mkVersionRange 1 3} initAgentServers testDB2
+  a <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
+  b <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aId, bId) <- runRight $ do
       (aId, bId) <- makeConnection_ PQSupportOff a b
@@ -2481,8 +2481,8 @@ testDeliveryReceiptsVersion t = do
       subscribeConnection a' bId
       subscribeConnection b' aId
       exchangeGreetingsMsgId_ PQEncOff 6 a' bId b' aId
-      checkVersion a' bId 4
-      checkVersion b' aId 4
+      checkVersion a' bId 5
+      checkVersion b' aId 5
       (8, PQEncOff) <- A.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello"
       get a' ##> ("", bId, SENT 8)
       get b' =##> \case ("", c, Msg' 8 PQEncOff "hello") -> c == aId; _ -> False
@@ -2661,32 +2661,56 @@ testServerMultipleIdentities =
           }
         testE2ERatchetParams12
 
-testWaitForUserNetwork :: HasCallStack => IO ()
+testWaitForUserNetwork :: IO ()
 testWaitForUserNetwork = do
   a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
   noNetworkDelay a
-  setUserNetworkInfo a $ UserNetworkInfo UNNone
+  setUserNetworkInfo a $ UserNetworkInfo UNNone False
   networkDelay a 100000
   networkDelay a 150000
   networkDelay a 200000
   networkDelay a 200000
-  setUserNetworkInfo a $ UserNetworkInfo UNCellular
+  setUserNetworkInfo a $ UserNetworkInfo UNCellular True
   noNetworkDelay a
-  setUserNetworkInfo a $ UserNetworkInfo UNNone
+  setUserNetworkInfo a $ UserNetworkInfo UNCellular False
   networkDelay a 100000
   concurrently_
-    (threadDelay 50000 >> setUserNetworkInfo a (UserNetworkInfo UNCellular))
+    (threadDelay 50000 >> setUserNetworkInfo a (UserNetworkInfo UNCellular True))
     (networkDelay a 50000)
   noNetworkDelay a
   where
     aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 100000, increaseAfter = 0, maxInterval = 200000}}
-    noNetworkDelay a = (10000 >) <$> waitNetwork a `shouldReturn` True
-    networkDelay a d' = (\d -> d' < d && d < d' + 15000) <$> waitNetwork a `shouldReturn` True
-    waitNetwork a = do
-      t <- getCurrentTime
-      waitForUserNetwork a `runReaderT` agentEnv a
-      t' <- getCurrentTime
-      pure $ diffToMicroseconds $ diffUTCTime t' t
+
+testDoNotResetOfflineInterval :: IO ()
+testDoNotResetOfflineInterval = do
+  a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
+  noNetworkDelay a
+  setUserNetworkInfo a $ UserNetworkInfo UNWifi False
+  networkDelay a 100000
+  networkDelay a 150000
+  setUserNetworkInfo a $ UserNetworkInfo UNCellular False
+  networkDelay a 200000
+  setUserNetworkInfo a $ UserNetworkInfo UNNone False
+  networkDelay a 200000
+  setUserNetworkInfo a $ UserNetworkInfo UNCellular True
+  noNetworkDelay a
+  setUserNetworkInfo a $ UserNetworkInfo UNCellular False
+  networkDelay a 100000
+  where
+    aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 100000, increaseAfter = 0, maxInterval = 200000}}
+
+noNetworkDelay :: AgentClient -> IO ()
+noNetworkDelay a = (10000 >) <$> waitNetwork a `shouldReturn` True
+
+networkDelay :: AgentClient -> Int64 -> IO ()
+networkDelay a d' = (\d -> d' < d && d < d' + 15000) <$> waitNetwork a `shouldReturn` True
+
+waitNetwork :: AgentClient -> IO Int64
+waitNetwork a = do
+  t <- getCurrentTime
+  waitForUserNetwork a `runReaderT` agentEnv a
+  t' <- getCurrentTime
+  pure $ diffToMicroseconds $ diffUTCTime t' t
 
 exchangeGreetings :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetings = exchangeGreetings_ PQEncOn
