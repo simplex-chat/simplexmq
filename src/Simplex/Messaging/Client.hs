@@ -68,7 +68,7 @@ module Simplex.Messaging.Client
     NetworkConfig (..),
     TransportSessionMode (..),
     HostMode (..),
-    SendProxyMode (..),
+    SMPProxyMode (..),
     defaultClientConfig,
     defaultSMPClientConfig,
     defaultNetworkConfig,
@@ -212,7 +212,7 @@ data NetworkConfig = NetworkConfig
     -- | transport sessions are created per user or per entity
     sessionMode :: TransportSessionMode,
     -- | SMP proxy mode
-    sendProxyMode :: SendProxyMode,
+    smpProxyMode :: SMPProxyMode,
     -- | timeout for the initial client TCP/TLS connection (microseconds)
     tcpConnectTimeout :: Int,
     -- | timeout of protocol commands (microseconds)
@@ -233,7 +233,7 @@ data TransportSessionMode = TSMUser | TSMEntity
   deriving (Eq, Show)
 
 -- SMP proxy mode for sending messages
-data SendProxyMode
+data SMPProxyMode
   = SPMAlways
   | SPMUnknown -- use with unknown relays
   | SPMUnprotected -- use with unknown relays when IP address is not protected (i.e., when neither SOCKS proxy nor .onion address is used)
@@ -247,7 +247,7 @@ defaultNetworkConfig =
       hostMode = HMOnionViaSocks,
       requiredHostMode = False,
       sessionMode = TSMUser,
-      sendProxyMode = SPMNever,
+      smpProxyMode = SPMNever,
       tcpConnectTimeout = 20_000_000,
       tcpTimeout = 15_000_000,
       tcpTimeoutPerKb = 5_000,
@@ -890,6 +890,6 @@ $(J.deriveJSON (enumJSON $ dropPrefix "HM") ''HostMode)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "TSM") ''TransportSessionMode)
 
-$(J.deriveJSON (enumJSON $ dropPrefix "SPM") ''SendProxyMode)
+$(J.deriveJSON (enumJSON $ dropPrefix "SPM") ''SMPProxyMode)
 
 $(J.deriveJSON defaultJSON ''NetworkConfig)

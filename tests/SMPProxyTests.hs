@@ -49,67 +49,51 @@ smpProxyTests = do
       xit "bad SMP fingerprint" todo
     xit "batching proxy requests" todo
   describe "deliver message via SMP proxy" $ do
+    let srv1 = SMPServer testHost testPort testKeyHash
+        srv2 = SMPServer testHost testPort2 testKeyHash
     describe "client API" $ do
       let maxLen = maxMessageLength sendingProxySMPVersion
-      it "same server" $
-        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ -> do
-          let proxyServ = SMPServer testHost testPort testKeyHash
-          let relayServ = proxyServ
+      describe "one server" $ do
+        it "deliver via proxy" . oneServer $ do
+          deliverMessageViaProxy srv1 srv1 C.SEd448 "hello 1" "hello 2"
+      describe "two servers" $ do
+        let proxyServ = srv1
+            relayServ = srv2
+        (msg1, msg2) <- runIO $ do
+          g <- C.newRandom
+          atomically $ (,) <$> C.randomBytes maxLen g <*> C.randomBytes maxLen g
+        it "deliver via proxy" . twoServersFirstProxy $
           deliverMessageViaProxy proxyServ relayServ C.SEd448 "hello 1" "hello 2"
-      it "different servers" $
-        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
-          withSmpServerConfigOn (transport @TLS) cfgV7 testPort2 $ \_ -> do
-            let proxyServ = SMPServer testHost testPort testKeyHash
-            let relayServ = SMPServer testHost testPort2 testKeyHash
-            deliverMessageViaProxy proxyServ relayServ C.SEd448 "hello 1" "hello 2"
-      it "max message size, Ed448 keys" $
-        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
-          withSmpServerConfigOn (transport @TLS) cfgV7 testPort2 $ \_ -> do
-            g <- C.newRandom
-            msg <- atomically $ C.randomBytes maxLen g
-            msg' <- atomically $ C.randomBytes maxLen g
-            let proxyServ = SMPServer testHost testPort testKeyHash
-            let relayServ = SMPServer testHost testPort2 testKeyHash
-            deliverMessageViaProxy proxyServ relayServ C.SEd448 msg msg'
-      it "max message size, Ed25519 keys" $
-        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
-          withSmpServerConfigOn (transport @TLS) cfgV7 testPort2 $ \_ -> do
-            g <- C.newRandom
-            msg <- atomically $ C.randomBytes maxLen g
-            msg' <- atomically $ C.randomBytes maxLen g
-            let proxyServ = SMPServer testHost testPort testKeyHash
-            let relayServ = SMPServer testHost testPort2 testKeyHash
-            deliverMessageViaProxy proxyServ relayServ C.SEd25519 msg msg'
-      it "max message size, X25519 keys" $
-        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
-          withSmpServerConfigOn (transport @TLS) cfgV7 testPort2 $ \_ -> do
-            g <- C.newRandom
-            msg <- atomically $ C.randomBytes maxLen g
-            msg' <- atomically $ C.randomBytes maxLen g
-            let proxyServ = SMPServer testHost testPort testKeyHash
-            let relayServ = SMPServer testHost testPort2 testKeyHash
-            deliverMessageViaProxy proxyServ relayServ C.SX25519 msg msg'
+        it "max message size, Ed448 keys" . twoServersFirstProxy $
+          deliverMessageViaProxy proxyServ relayServ C.SEd448 msg1 msg2
+        it "max message size, Ed25519 keys" . twoServersFirstProxy $
+          deliverMessageViaProxy proxyServ relayServ C.SEd25519 msg1 msg2
+        it "max message size, X25519 keys" . twoServersFirstProxy $
+          deliverMessageViaProxy proxyServ relayServ C.SX25519 msg1 msg2
     describe "agent API" $ do
-      let srv1 = SMPServer testHost testPort testKeyHash
-          srv2 = SMPServer testHost testPort2 testKeyHash
-      it "same server, always via proxy" $
-        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
+      describe "one server" $ do
+        it "always via proxy" . oneServer $
           agentDeliverMessageViaProxy ([srv1], SPMAlways, True) ([srv1], SPMAlways, True) C.SEd448 "hello 1" "hello 2"
-      it "same server, without proxy" $
-        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
+        it "without proxy" . oneServer $
           agentDeliverMessageViaProxy ([srv1], SPMNever, False) ([srv1], SPMNever, False) C.SEd448 "hello 1" "hello 2"
-      it "different servers, always via proxy" $
-        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
-          withSmpServerConfigOn (transport @TLS) proxyCfg testPort2 $ \_ ->
-            agentDeliverMessageViaProxy ([srv1], SPMAlways, True) ([srv2], SPMAlways, True) C.SEd448 "hello 1" "hello 2"
-      it "different servers, without proxy" $
-        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
-          withSmpServerConfigOn (transport @TLS) proxyCfg testPort2 $ \_ ->
-            agentDeliverMessageViaProxy ([srv1], SPMNever, False) ([srv2], SPMNever, False) C.SEd448 "hello 1" "hello 2"
-      it "different servers, first via proxy" $
-        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
-          withSmpServerConfigOn (transport @TLS) proxyCfg testPort2 $ \_ ->
-            agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv1, srv2], SPMUnknown, False) C.SEd448 "hello 1" "hello 2"
+      describe "two servers" $ do
+        it "always via proxy" . twoServers $
+          agentDeliverMessageViaProxy ([srv1], SPMAlways, True) ([srv2], SPMAlways, True) C.SEd448 "hello 1" "hello 2"
+        it "both via proxy" . twoServers $
+          agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv2], SPMUnknown, True) C.SEd448 "hello 1" "hello 2"
+        it "first via proxy" . twoServers $
+          agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv2], SPMNever, False) C.SEd448 "hello 1" "hello 2"
+        it "without proxy" . twoServers $
+          agentDeliverMessageViaProxy ([srv1], SPMNever, False) ([srv2], SPMNever, False) C.SEd448 "hello 1" "hello 2"
+        it "first via proxy for unknown" . twoServers $
+          agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv1, srv2], SPMUnknown, False) C.SEd448 "hello 1" "hello 2"
+  where
+    oneServer = withSmpServerConfigOn (transport @TLS) proxyCfg testPort . const
+    twoServers = twoServers_ proxyCfg proxyCfg
+    twoServersFirstProxy = twoServers_ proxyCfg cfgV7
+    twoServers_ cfg1 cfg2 runTest =
+      withSmpServerConfigOn (transport @TLS) cfg1 testPort $ \_ ->
+        withSmpServerConfigOn (transport @TLS) cfg2 testPort2 $ const runTest
 
 deliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => SMPServer -> SMPServer -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
 deliverMessageViaProxy proxyServ relayServ alg msg msg' = do
@@ -144,7 +128,7 @@ deliverMessageViaProxy proxyServ relayServ alg msg msg' = do
     liftIO $ dec msgId' encBody' `shouldBe` Right msg'
     ackSMPMessage rc rPriv rcvId msgId'
 
-agentDeliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => (NonEmpty SMPServer, SendProxyMode, Bool) -> (NonEmpty SMPServer, SendProxyMode, Bool) -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
+agentDeliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => (NonEmpty SMPServer, SMPProxyMode, Bool) -> (NonEmpty SMPServer, SMPProxyMode, Bool) -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
 agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, bViaProxy) alg msg1 msg2 =
   withAgent 1 aCfg (servers aTestCfg) testDB $ \alice ->
     withAgent 2 aCfg (servers bTestCfg) testDB2 $ \bob -> runRight_ $ do
@@ -180,10 +164,10 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
     baseId = 3
     msgId = subtract baseId . fst
     aCfg = agentProxyCfg {sndAuthAlg = C.AuthAlg alg, rcvAuthAlg = C.AuthAlg alg}
-    servers (srvs, sendProxyMode, _) =
+    servers (srvs, smpProxyMode, _) =
       initAgentServers
         { smp = userServers $ L.map noAuthSrv srvs,
-          netCfg = (netCfg initAgentServers) {sendProxyMode}
+          netCfg = (netCfg initAgentServers) {smpProxyMode}
         }
 
 agentProxyCfg :: AgentConfig

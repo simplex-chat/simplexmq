@@ -1023,7 +1023,7 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
   where
     shouldUseProxy = do
       cfg <- getNetworkConfig c
-      case sendProxyMode cfg of
+      case smpProxyMode cfg of
         SPMAlways -> pure True
         SPMUnknown -> unknownServer
         SPMUnprotected

@@ -235,9 +235,16 @@ In any case possible options are:
 
 If option 3 is chosen, then the transport session key with the proxy would be different from the transport session key with the relay - proxy session will only use UserId as the key, and the relay session uses (UserId, Server, Maybe EntityId) as the key.
 
-If option 4 is chose, the keys would also be different, as the proxy would then use (UserId, Maybe (Server, EntityId)) as the key.
+If option 4 is chosen, the keys would also be different, as the proxy would then use (UserId, Maybe (Server, EntityId)) as the key.
 
 We could potentially key proxy sessions (and create proxy connections) per each destination relay, in the same way as we key relays themselves, but it seems to have the least sense, as we neither achieve isolation by queue in case proxy and destination relay collude, nor we sufficiently protect from traffic correlation by any observers.
+
+The implemented design is this:
+- for each destination relay a random proxy is chosen and used to send all messages - all requests from a client coalesce to a single session.
+- transport isolation mode is taken into account, that is if per-connection isolation is enabled, then a separate proxy connection will be created for each messaging queue.
+- supported modes when proxy is used: always, for unknown relays, for unknown relays when IP address is not protected, never.
+
+This decision is made because the argument for protection against collusion between proxy and relay and more balanced traffic distribution is stronger than the argument for protection against traffic correlation, because even mixing all messages to one proxy connection does not provide protection against traffic correlation by time, so in any case it requires adding delays.
 
 ### Threat model for SMP proxy and changes to threat model for SMP
 
