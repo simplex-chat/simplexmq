@@ -164,17 +164,7 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
     baseId = 3
     msgId = subtract baseId . fst
     aCfg = agentProxyCfg {sndAuthAlg = C.AuthAlg alg, rcvAuthAlg = C.AuthAlg alg}
-    servers (srvs, smpProxyMode, _) =
-      initAgentServers
-        { smp = userServers $ L.map noAuthSrv srvs,
-          netCfg = (netCfg initAgentServers) {smpProxyMode}
-        }
-
-agentProxyCfg :: AgentConfig
-agentProxyCfg = agentCfg {smpCfg = (smpCfg agentCfg) {serverVRange = proxyVRange}}
-
-proxyVRange :: VersionRangeSMP
-proxyVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion
+    servers (srvs, smpProxyMode, _) = (initAgentServersProxy smpProxyMode) {smp = userServers $ L.map noAuthSrv srvs}
 
 testNoProxy :: IO ()
 testNoProxy = do

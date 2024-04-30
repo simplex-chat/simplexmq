@@ -123,8 +123,11 @@ proxyCfg =
   cfgV7
     { allowSMPProxy = True, 
       smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion,
-      smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion, agreeSecret = True}}
+      smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = proxyVRange, agreeSecret = True}}
     }
+
+proxyVRange :: VersionRangeSMP
+proxyVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
@@ -162,6 +165,9 @@ withSmpServer t = withSmpServerOn t testPort
 
 withSmpServerV7 :: HasCallStack => ATransport -> IO a -> IO a
 withSmpServerV7 t = withSmpServerConfigOn t cfgV7 testPort . const
+
+withSmpServerProxy :: HasCallStack => ATransport -> IO a -> IO a
+withSmpServerProxy t = withSmpServerConfigOn t proxyCfg testPort . const
 
 runSmpTest :: forall c a. (HasCallStack, Transport c) => (HasCallStack => THandleSMP c 'TClient -> IO a) -> IO a
 runSmpTest test = withSmpServer (transport @c) $ testSMPClient test
