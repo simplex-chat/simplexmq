@@ -15,6 +15,8 @@ module SMPProxyTests where
 
 import AgentTests.FunctionalAPITests
 import Data.ByteString.Char8 (ByteString)
+import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as L
 import SMPAgentClient
 import SMPClient
 import ServerTests (decryptMsgV3, sendRecv)
@@ -88,22 +90,26 @@ smpProxyTests = do
             let relayServ = SMPServer testHost testPort2 testKeyHash
             deliverMessageViaProxy proxyServ relayServ C.SX25519 msg msg'
     describe "agent API" $ do
+      let srv1 = SMPServer testHost testPort testKeyHash
+          srv2 = SMPServer testHost testPort2 testKeyHash
       it "same server, always via proxy" $
-        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ -> do
-          let srv = SMPServer testHost testPort testKeyHash
-          agentDeliverMessageViaProxy (srv, SPMAlways) (srv, SPMAlways) C.SEd448 "hello 1" "hello 2"
+        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
+          agentDeliverMessageViaProxy ([srv1], SPMAlways, True) ([srv1], SPMAlways, True) C.SEd448 "hello 1" "hello 2"
+      it "same server, without proxy" $
+        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
+          agentDeliverMessageViaProxy ([srv1], SPMNever, False) ([srv1], SPMNever, False) C.SEd448 "hello 1" "hello 2"
       it "different servers, always via proxy" $
         withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
-          withSmpServerConfigOn (transport @TLS) proxyCfg testPort2 $ \_ -> do
-            let aSrv = SMPServer testHost testPort testKeyHash
-            let bSrv = SMPServer testHost testPort2 testKeyHash
-            agentDeliverMessageViaProxy (aSrv, SPMAlways) (bSrv, SPMAlways) C.SEd448 "hello 1" "hello 2"
+          withSmpServerConfigOn (transport @TLS) proxyCfg testPort2 $ \_ ->
+            agentDeliverMessageViaProxy ([srv1], SPMAlways, True) ([srv2], SPMAlways, True) C.SEd448 "hello 1" "hello 2"
       it "different servers, without proxy" $
         withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
-          withSmpServerConfigOn (transport @TLS) proxyCfg testPort2 $ \_ -> do
-            let aSrv = SMPServer testHost testPort testKeyHash
-            let bSrv = SMPServer testHost testPort2 testKeyHash
-            agentDeliverMessageViaProxy (aSrv, SPMNever) (bSrv, SPMNever) C.SEd448 "hello 1" "hello 2"
+          withSmpServerConfigOn (transport @TLS) proxyCfg testPort2 $ \_ ->
+            agentDeliverMessageViaProxy ([srv1], SPMNever, False) ([srv2], SPMNever, False) C.SEd448 "hello 1" "hello 2"
+      it "different servers, first via proxy" $
+        withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
+          withSmpServerConfigOn (transport @TLS) proxyCfg testPort2 $ \_ ->
+            agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv1, srv2], SPMUnknown, False) C.SEd448 "hello 1" "hello 2"
 
 deliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => SMPServer -> SMPServer -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
 deliverMessageViaProxy proxyServ relayServ alg msg msg' = do
@@ -138,8 +144,8 @@ deliverMessageViaProxy proxyServ relayServ alg msg msg' = do
     liftIO $ dec msgId' encBody' `shouldBe` Right msg'
     ackSMPMessage rc rPriv rcvId msgId'
 
-agentDeliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => (SMPServer, SendProxyMode) -> (SMPServer, SendProxyMode) -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
-agentDeliverMessageViaProxy aTestCfg bTestCfg alg msg1 msg2 =
+agentDeliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => (NonEmpty SMPServer, SendProxyMode, Bool) -> (NonEmpty SMPServer, SendProxyMode, Bool) -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
+agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, bViaProxy) alg msg1 msg2 =
   withAgent 1 aCfg (servers aTestCfg) testDB $ \alice ->
     withAgent 2 aCfg (servers bTestCfg) testDB2 $ \bob -> runRight_ $ do
       (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
@@ -147,26 +153,36 @@ agentDeliverMessageViaProxy aTestCfg bTestCfg alg msg1 msg2 =
       ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
       liftIO $ pqSup' `shouldBe` PQSupportOn
       allowConnection alice bobId confId "alice's connInfo"
-      let pqEnc = CR.pqSupportToEnc PQSupportOn
+      let pqEnc = CR.PQEncOn
       get alice ##> ("", bobId, A.CON pqEnc)
       get bob ##> ("", aliceId, A.INFO PQSupportOn "alice's connInfo")
       get bob ##> ("", aliceId, A.CON pqEnc)
       -- message IDs 1 to 3 (or 1 to 4 in v1) get assigned to control messages, so first MSG is assigned ID 4
+      let aProxySrv = if aViaProxy then Just $ L.head aSrvs else Nothing
       1 <- msgId <$> A.sendMessage alice bobId pqEnc noMsgFlags msg1
-      get alice ##> ("", bobId, SENT $ baseId + 1)
+      get alice ##> ("", bobId, A.SENT (baseId + 1) aProxySrv)
       2 <- msgId <$> A.sendMessage alice bobId pqEnc noMsgFlags msg2
-      get alice ##> ("", bobId, SENT $ baseId + 2)
+      get alice ##> ("", bobId, A.SENT (baseId + 2) aProxySrv)
       get bob =##> \case ("", c, Msg' _ pq msg1') -> c == aliceId && pq == pqEnc && msg1 == msg1'; _ -> False
       ackMessage bob aliceId (baseId + 1) Nothing
       get bob =##> \case ("", c, Msg' _ pq msg2') -> c == aliceId && pq == pqEnc && msg2 == msg2'; _ -> False
       ackMessage bob aliceId (baseId + 2) Nothing
+      let bProxySrv = if bViaProxy then Just $ L.head bSrvs else Nothing
+      3 <- msgId <$> A.sendMessage bob aliceId pqEnc noMsgFlags msg1
+      get bob ##> ("", aliceId, A.SENT (baseId + 3) bProxySrv)
+      4 <- msgId <$> A.sendMessage bob aliceId pqEnc noMsgFlags msg2
+      get bob ##> ("", aliceId, A.SENT (baseId + 4) bProxySrv)
+      get alice =##> \case ("", c, Msg' _ pq msg1') -> c == bobId && pq == pqEnc && msg1 == msg1'; _ -> False
+      ackMessage alice bobId (baseId + 3) Nothing
+      get alice =##> \case ("", c, Msg' _ pq msg2') -> c == bobId && pq == pqEnc && msg2 == msg2'; _ -> False
+      ackMessage alice bobId (baseId + 4) Nothing
   where
     baseId = 3
     msgId = subtract baseId . fst
     aCfg = agentProxyCfg {sndAuthAlg = C.AuthAlg alg, rcvAuthAlg = C.AuthAlg alg}
-    servers (srv, sendProxyMode) =
+    servers (srvs, sendProxyMode, _) =
       initAgentServers
-        { smp = userServers [noAuthSrv srv],
+        { smp = userServers $ L.map noAuthSrv srvs,
           netCfg = (netCfg initAgentServers) {sendProxyMode}
         }
 

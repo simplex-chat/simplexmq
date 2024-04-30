@@ -45,6 +45,7 @@ module AgentTests.FunctionalAPITests
     pattern REQ,
     pattern Msg,
     pattern Msg',
+    pattern SENT,
     agentCfgV7,
   )
 where
@@ -75,7 +76,7 @@ import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMes
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), UserNetworkInfo (..), UserNetworkType (..), waitForUserNetwork)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
-import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ)
+import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.RetryInterval (RetryInterval (..))
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
@@ -170,6 +171,9 @@ pattern MsgErr msgId err msgBody <- MSG MsgMeta {recipient = (msgId, _), integri
 
 pattern MsgErr' :: AgentMsgId -> MsgErrorType -> PQEncryption -> MsgBody -> ACommand 'Agent 'AEConn
 pattern MsgErr' msgId err pq msgBody <- MSG MsgMeta {recipient = (msgId, _), integrity = MsgError err, pqEncryption = pq} _ msgBody
+
+pattern SENT :: AgentMsgId -> ACommand 'Agent 'AEConn
+pattern SENT msgId = A.SENT msgId Nothing
 
 pattern Rcvd :: AgentMsgId -> ACommand 'Agent 'AEConn
 pattern Rcvd agentMsgId <- RCVD MsgMeta {integrity = MsgOk} [MsgReceipt {agentMsgId, msgRcptStatus = MROk}]
@@ -1493,9 +1497,9 @@ testSuspendingAgentCompleteSending t = withAgentClients2 $ \a b -> do
     liftIO $ suspendAgent b 5000000
 
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ @AgentErrorType $ do
-    pGet b =##> \case ("", c, APC _ (SENT 5)) -> c == aId; ("", "", APC _ UP {}) -> True; _ -> False
-    pGet b =##> \case ("", c, APC _ (SENT 5)) -> c == aId; ("", "", APC _ UP {}) -> True; _ -> False
-    pGet b =##> \case ("", c, APC _ (SENT 6)) -> c == aId; ("", "", APC _ UP {}) -> True; _ -> False
+    pGet b =##> \case ("", c, APC SAEConn (SENT 5)) -> c == aId; ("", "", APC _ UP {}) -> True; _ -> False
+    pGet b =##> \case ("", c, APC SAEConn (SENT 5)) -> c == aId; ("", "", APC _ UP {}) -> True; _ -> False
+    pGet b =##> \case ("", c, APC SAEConn (SENT 6)) -> c == aId; ("", "", APC _ UP {}) -> True; _ -> False
     ("", "", SUSPENDED) <- nGet b
 
     pGet a =##> \case ("", c, APC _ (Msg "hello too")) -> c == bId; ("", "", APC _ UP {}) -> True; _ -> False
