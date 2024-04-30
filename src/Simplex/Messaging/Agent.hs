@@ -815,7 +815,7 @@ joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMo
   lift (compatibleContactUri cReqUri pqSup) >>= \case
     Just (qInfo, vrsn) -> do
       (connId', cReq) <- newConnSrv c userId connId enableNtfs SCMInvitation Nothing (CR.IKNoPQ pqSup) subMode srv
-      sendInvitation c userId qInfo vrsn cReq cInfo
+      void $ sendInvitation c userId qInfo vrsn cReq cInfo
       pure connId'
     Nothing -> throwError $ AGENT A_VERSION
 
@@ -2574,7 +2574,7 @@ confirmQueueAsync c cData sq srv connInfo e2eEncryption_ subMode = do
 confirmQueue :: Compatible VersionSMPA -> AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> SubscriptionMode -> AM ()
 confirmQueue (Compatible agentVersion) c cData@ConnData {connId, pqSupport} sq srv connInfo e2eEncryption_ subMode = do
   msg <- mkConfirmation =<< mkAgentConfirmation c cData sq srv connInfo subMode
-  sendConfirmation c sq msg
+  void $ sendConfirmation c sq msg
   withStore' c $ \db -> setSndQueueStatus db sq Confirmed
   where
     mkConfirmation :: AgentMessage -> AM MsgBody

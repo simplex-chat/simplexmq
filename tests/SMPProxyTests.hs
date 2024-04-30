@@ -111,9 +111,9 @@ deliverMessageViaProxy proxyServ relayServ alg msg msg' = do
     QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- createSMPQueue rc (rPub, rPriv) rdhPub (Just "correct") SMSubscribe
     let dec = decryptMsgV3 $ C.dh' srvDh rdhPriv
     -- get proxy session
-    (sessId, v, relayKey) <- createSMPProxySession pc relayServ (Just "correct")
+    sess <- connectSMPProxiedRelay pc relayServ (Just "correct")
     -- send via proxy to unsecured queue
-    proxySMPMessage pc (ProxySession sessId v relayKey) Nothing sndId noMsgFlags msg
+    proxySMPMessage pc sess Nothing sndId noMsgFlags msg
     -- receive 1
     (_tSess, _v, _sid, _ety, SMP.MSG RcvMessage {msgId, msgBody = EncRcvMsgBody encBody}) <- atomically $ readTBQueue msgQ
     liftIO $ dec msgId encBody `shouldBe` Right msg
@@ -122,7 +122,7 @@ deliverMessageViaProxy proxyServ relayServ alg msg msg' = do
     (sPub, sPriv) <- atomically $ C.generateAuthKeyPair alg g
     secureSMPQueue rc rPriv rcvId sPub
     -- send via proxy to secured queue
-    proxySMPMessage pc (ProxySession sessId v relayKey) (Just sPriv) sndId noMsgFlags msg'
+    proxySMPMessage pc sess (Just sPriv) sndId noMsgFlags msg'
     -- receive 2
     (_tSess, _v, _sid, _ety, SMP.MSG RcvMessage {msgId = msgId', msgBody = EncRcvMsgBody encBody'}) <- atomically $ readTBQueue msgQ
     liftIO $ dec msgId' encBody' `shouldBe` Right msg'

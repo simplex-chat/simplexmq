@@ -132,7 +132,7 @@ module Simplex.Messaging.Agent.Client
     SMPTransportSession,
     NtfTransportSession,
     XFTPTransportSession,
-    ProxySession (..),
+    ProxiedRelay (..),
     SMPConnectedClient (..),
   )
 where
@@ -305,10 +305,10 @@ data AgentClient = AgentClient
 
 data SMPConnectedClient = SMPConnectedClient
   { connectedClient :: SMPClient,
-    proxiedRelays :: TMap SMPServer ProxySessionVar
+    proxiedRelays :: TMap SMPServer ProxiedRelayVar
   }
 
-type ProxySessionVar = SessionVar (Either AgentErrorType ProxySession)
+type ProxiedRelayVar = SessionVar (Either AgentErrorType ProxiedRelay)
 
 getAgentWorker :: (Ord k, Show k) => String -> Bool -> AgentClient -> k -> TMap k Worker -> (Worker -> AM ()) -> AM' Worker
 getAgentWorker = getAgentWorker' id pure
@@ -577,7 +577,7 @@ getSMPServerClient c@AgentClient {active, smpClients, workerSeq} tSess = do
       prs <- atomically TM.empty
       smpConnectClient c tSess prs v
 
-getSMPProxyClient :: AgentClient -> SMPTransportSession -> AM (SMPConnectedClient, ProxySession)
+getSMPProxyClient :: AgentClient -> SMPTransportSession -> AM (SMPConnectedClient, ProxiedRelay)
 getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq} destSess@(userId, destSrv, qId) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
   proxySrv <- getNextServer c userId [destSrv]
@@ -589,7 +589,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
       ProtoServerWithAuth srv auth <- TM.lookup destSess smpProxiedRelays >>= maybe (TM.insert destSess proxySrv smpProxiedRelays $> proxySrv) pure
       let tSess = (userId, srv, qId)
       (tSess,auth,) <$> getSessVar workerSeq tSess smpClients
-    newProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> SMPClientVar -> AM (SMPConnectedClient, ProxySession)
+    newProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> SMPClientVar -> AM (SMPConnectedClient, ProxiedRelay)
     newProxyClient tSess auth v = do
       (prs, rv) <- atomically $ do
         prs <- TM.empty
@@ -597,19 +597,18 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
         -- as the client is just created and there are no sessions yet
         (prs,) . either id id <$> getSessVar workerSeq destSrv prs
       clnt <- smpConnectClient c tSess prs v
-      (clnt,) <$> newProxySession clnt auth rv
-    waitForProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> SMPClientVar -> AM (SMPConnectedClient, ProxySession)
+      (clnt,) <$> newProxiedRelay clnt auth rv
+    waitForProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> SMPClientVar -> AM (SMPConnectedClient, ProxiedRelay)
     waitForProxyClient tSess auth v = do
       clnt@(SMPConnectedClient _ prs) <- waitForProtocolClient c tSess v
       sess <-
         atomically (getSessVar workerSeq destSrv prs)
-          >>= either (newProxySession clnt auth) (waitForProxySession tSess)
+          >>= either (newProxiedRelay clnt auth) (waitForProxiedRelay tSess)
       pure (clnt, sess)
-    newProxySession :: SMPConnectedClient -> Maybe SMP.BasicAuth -> ProxySessionVar -> AM ProxySession
-    newProxySession clnt@(SMPConnectedClient smp prs) proxyAuth rv =
-      tryAgentError (liftClient SMP (clientServer smp) $ createSMPProxySession smp destSrv proxyAuth) >>= \case
-        Right (spsSessionId, spsVersion, spsServerKey) -> do
-          let sess = ProxySession {spsSessionId, spsVersion, spsServerKey}
+    newProxiedRelay :: SMPConnectedClient -> Maybe SMP.BasicAuth -> ProxiedRelayVar -> AM ProxiedRelay
+    newProxiedRelay clnt@(SMPConnectedClient smp prs) proxyAuth rv =
+      tryAgentError (liftClient SMP (clientServer smp) $ connectSMPProxiedRelay smp destSrv proxyAuth) >>= \case
+        Right sess -> do
           atomically $ putTMVar (sessionVar rv) (Right sess)
           liftIO $ incClientStat c userId clnt "PROXY" "OK"
           pure sess
@@ -620,8 +619,8 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
             TM.delete destSess smpProxiedRelays
             putTMVar (sessionVar rv) (Left e)
           throwError e -- signal error to caller
-    waitForProxySession :: SMPTransportSession -> ProxySessionVar -> AM ProxySession
-    waitForProxySession (_, srv, _) rv = do
+    waitForProxiedRelay :: SMPTransportSession -> ProxiedRelayVar -> AM ProxiedRelay
+    waitForProxiedRelay (_, srv, _) rv = do
       NetworkConfig {tcpConnectTimeout} <- atomically $ getNetworkConfig c
       sess_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar rv)
       liftEither $ case sess_ of
@@ -629,7 +628,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
         Just (Left e) -> Left e
         Nothing -> Left $ BROKER (B.unpack $ strEncode srv) TIMEOUT
 
-smpConnectClient :: AgentClient -> SMPTransportSession -> TMap SMPServer ProxySessionVar -> SMPClientVar -> AM SMPConnectedClient
+smpConnectClient :: AgentClient -> SMPTransportSession -> TMap SMPServer ProxiedRelayVar -> SMPClientVar -> AM SMPConnectedClient
 smpConnectClient c@AgentClient {smpClients, msgQ} tSess@(_, srv, _) prs v =
   newProtocolClient c tSess smpClients connectClient v
     `catchAgentError` \e -> lift (resubscribeSMPSession c tSess) >> throwError e
@@ -643,7 +642,7 @@ smpConnectClient c@AgentClient {smpClients, msgQ} tSess@(_, srv, _) prs v =
         smp <- ExceptT $ getProtocolClient g tSess cfg (Just msgQ) $ smpClientDisconnected c tSess env v' prs
         pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
 
-smpClientDisconnected :: AgentClient -> SMPTransportSession -> Env -> SMPClientVar -> TMap SMPServer ProxySessionVar -> SMPClient -> IO ()
+smpClientDisconnected :: AgentClient -> SMPTransportSession -> Env -> SMPClientVar -> TMap SMPServer ProxiedRelayVar -> SMPClient -> IO ()
 smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess@(userId, srv, qId) env v prs client = do
   removeClientAndSubs >>= serverDown
   logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
@@ -980,7 +979,7 @@ withClient_ c tSess@(userId, srv, _) statCmd action = do
       stat cl $ strEncode e
       throwError e
 
-withProxySession :: AgentClient -> SMPTransportSession -> SMP.SenderId -> ByteString -> ((SMPConnectedClient, ProxySession) -> AM a) -> AM a
+withProxySession :: AgentClient -> SMPTransportSession -> SMP.SenderId -> ByteString -> ((SMPConnectedClient, ProxiedRelay) -> AM a) -> AM a
 withProxySession c destSess@(userId, destSrv, _) entId cmdStr action = do
   cp@(cl, _) <- getSMPProxyClient c destSess
   logServer ("--> " <> proxySrv cl <> " >") c destSrv entId cmdStr

@@ -30,7 +30,7 @@ module Simplex.Messaging.Client
     TransportSession,
     ProtocolClient (thParams, sessionTs),
     SMPClient,
-    ProxySession (..),
+    ProxiedRelay (..),
     getProtocolClient,
     closeProtocolClient,
     protocolClientServer,
@@ -56,7 +56,7 @@ module Simplex.Messaging.Client
     suspendSMPQueue,
     deleteSMPQueue,
     deleteSMPQueues,
-    createSMPProxySession,
+    connectSMPProxiedRelay,
     proxySMPMessage,
     forwardSMPMessage,
     sendProtocolCommand,
@@ -669,14 +669,14 @@ deleteSMPQueues = okSMPCommands DEL
 
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
-createSMPProxySession :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO (SessionId, VersionSMP, C.PublicKeyX25519)
-createSMPProxySession c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth =
+connectSMPProxiedRelay :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO ProxiedRelay
+connectSMPProxiedRelay c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth =
   sendSMPCommand c Nothing "" (PRXY relayServ proxyAuth) >>= \case
-    -- XXX: rfc says sessionId should be in the entityId of response
+    -- TODO: rfc says sessionId should be in the entityId of response
     PKEY sId vr (chain, key) -> do
       case supportedClientSMPRelayVRange `compatibleVersion` vr of
         Nothing -> throwE PCEIncompatibleHost -- TODO different error
-        Just (Compatible v) -> liftEitherWith x509Error $ (sId,v,) <$> validateRelay chain key
+        Just (Compatible v) -> liftEitherWith x509Error $ ProxiedRelay sId v <$> validateRelay chain key
     r -> throwE . PCEUnexpectedResponse $ bshow r
   where
     x509Error :: String -> SMPClientError
@@ -691,10 +691,10 @@ createSMPProxySession c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyA
       pubKey <- C.verifyX509 serverKey exact
       C.x509ToPublic (pubKey, []) >>= C.pubKey
 
-data ProxySession = ProxySession
-  { spsSessionId :: SessionId,
-    spsVersion :: VersionSMP,
-    spsServerKey :: C.PublicKeyX25519
+data ProxiedRelay = ProxiedRelay
+  { prSessionId :: SessionId,
+    prVersion :: VersionSMP,
+    prServerKey :: C.PublicKeyX25519
   }
 
 -- consider how to process slow responses - is it handled somehow locally or delegated to the caller
@@ -704,7 +704,7 @@ data ProxySession = ProxySession
 proxySMPMessage ::
   SMPClient ->
   -- proxy session from PKEY
-  ProxySession ->
+  ProxiedRelay ->
   -- message to deliver
   Maybe SndPrivateAuthKey ->
   SenderId ->
@@ -712,7 +712,7 @@ proxySMPMessage ::
   MsgBody ->
   ExceptT SMPClientError IO ()
 -- TODO use version
-proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g}} (ProxySession sessionId _v serverKey) spKey sId flags msg = do
+proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g}} (ProxiedRelay sessionId _v serverKey) spKey sId flags msg = do
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
       serverThParams = proxyThParams {sessionId, thAuth = serverThAuth}
