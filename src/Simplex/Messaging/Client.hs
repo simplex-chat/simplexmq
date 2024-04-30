@@ -409,8 +409,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
       getCurrentTime >>= atomically . writeTVar lastRecv
 
     ping :: ProtocolClient v err msg -> TVar UTCTime -> IO ()
-    ping c@ProtocolClient {client_ = PClient {sendPings, timeoutErrorCount, transportHost}} lastRecv = do
-      loop smpPingInterval
+    ping c@ProtocolClient {client_ = PClient {sendPings, timeoutErrorCount, transportHost}} lastRecv = loop smpPingInterval
       where
         loop :: Int64 -> IO ()
         loop delay = do
@@ -420,17 +419,16 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
               remaining = smpPingInterval - idle
           if remaining > 250_000 -- delay pings only for significant time
             then do
-              logDebug $ thost <> " : last response was " <> tshow diff <> " ago, delaying ping for " <> tshow (secondsToNominalDiffTime $ fromIntegral remaining / 1000000)
+              logDebug $ thost <> " : last response was " <> tshow diff <> " ago, waiting for " <> tshow (secondsToNominalDiffTime $ fromIntegral remaining / 1000000)
               loop remaining
             else do
-              logDebug $ thost <> " : last response was " <> tshow diff <> " ago, sending ping"
-              -- sendProtocolCommand/getResponse updates pingErrorCount
-              runExceptT (sendProtocolCommand c Nothing "" $ protocolPing @v @err @msg) >>= \case
-                Left PCEResponseTimeout -> do
-                  cnt <- readTVarIO pingErrorCount
-                  -- drop client when maxCnt of commands (pings or otherwise) have timed out in sequence, but only after some time has passed after last received response
-                  when (maxCnt == 0 || cnt < maxCnt || diff < recoverWindow) $ loop smpPingInterval
-                _ -> loop smpPingInterval
+              shouldSend <- readTVarIO sendPings
+              logDebug $ thost <> " : last response was " <> tshow diff <> " ago, " <> if shouldSend then "sending ping" else "checking"
+              when shouldSend $ void . runExceptT $ sendProtocolCommand c Nothing "" (protocolPing @v @err @msg)
+              -- sendProtocolCommand/getResponse updates counter for each command
+              cnt <- readTVarIO timeoutErrorCount
+              -- drop client when maxCnt of commands have timed out in sequence, but only after some time has passed after last received response
+              when (maxCnt == 0 || cnt < maxCnt || diff < recoverWindow) $ loop smpPingInterval
         recoverWindow = 15 * 60
         maxCnt = smpPingCount networkConfig
         thost = decodeLatin1 $ strEncode transportHost
