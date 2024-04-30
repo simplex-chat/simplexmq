@@ -134,7 +134,7 @@ data PClient v err msg = PClient
     tcpTimeout :: Int,
     rcvConcurrency :: Int,
     sendPings :: TVar Bool,
-    pingErrorCount :: TVar Int,
+    timeoutErrorCount :: TVar Int,
     clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
     sndQ :: TBQueue (TVar Bool, ByteString),
@@ -148,7 +148,7 @@ smpClientStub g sessionId thVersion thAuth = do
   clientCorrId <- C.newRandomDRG g
   sentCommands <- TM.empty
   sendPings <- newTVar False
-  pingErrorCount <- newTVar 0
+  timeoutErrorCount <- newTVar 0
   sndQ <- newTBQueue 100
   rcvQ <- newTBQueue 100
   return
@@ -172,7 +172,7 @@ smpClientStub g sessionId thVersion thAuth = do
               tcpTimeout = 15_000_000,
               rcvConcurrency = 8,
               sendPings,
-              pingErrorCount,
+              timeoutErrorCount,
               clientCorrId,
               sentCommands,
               sndQ,
@@ -343,7 +343,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     mkProtocolClient transportHost = do
       connected <- newTVar False
       sendPings <- newTVar False
-      pingErrorCount <- newTVar 0
+      timeoutErrorCount <- newTVar 0
       clientCorrId <- C.newRandomDRG g
       sentCommands <- TM.empty
       sndQ <- newTBQueue qSize
@@ -355,7 +355,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             transportHost,
             tcpTimeout,
             sendPings,
-            pingErrorCount,
+            timeoutErrorCount,
             clientCorrId,
             sentCommands,
             rcvConcurrency,
@@ -409,8 +409,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
       getCurrentTime >>= atomically . writeTVar lastRecv
 
     ping :: ProtocolClient v err msg -> TVar UTCTime -> IO ()
-    ping c@ProtocolClient {client_ = PClient {sendPings, pingErrorCount, transportHost}} lastRecv = do
-      atomically $ unlessM (readTVar sendPings) retry
+    ping c@ProtocolClient {client_ = PClient {sendPings, timeoutErrorCount, transportHost}} lastRecv = do
       loop smpPingInterval
       where
         loop :: Int64 -> IO ()
@@ -750,13 +749,13 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, thParams = THand
 
 -- TODO switch to timeout or TimeManager that supports Int64
 getResponse :: ProtocolClient v err msg -> TVar Bool -> Request err msg -> IO (Response err msg)
-getResponse ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount, sentCommands}} active Request {corrId, entityId, responseVar} = do
+getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount, sentCommands}} active Request {corrId, entityId, responseVar} = do
   response <-
     timeout tcpTimeout (atomically (takeTMVar responseVar)) >>= \case
-      Just r -> atomically (writeTVar pingErrorCount 0) $> r
+      Just r -> atomically (writeTVar timeoutErrorCount 0) $> r
       Nothing -> do
         atomically (writeTVar active False >> TM.delete corrId sentCommands)
-        atomically $ modifyTVar' pingErrorCount (+ 1) $> Left PCEResponseTimeout
+        atomically $ modifyTVar' timeoutErrorCount (+ 1) $> Left PCEResponseTimeout
   pure Response {entityId, response}
 
 mkTransmission :: forall v err msg. ProtocolEncoding v err (ProtoCommand msg) => ProtocolClient v err msg -> ClientCommand msg -> IO (PCTransmission err msg)
