@@ -672,7 +672,6 @@ deleteSMPQueues = okSMPCommands DEL
 connectSMPProxiedRelay :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO ProxiedRelay
 connectSMPProxiedRelay c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth =
   sendSMPCommand c Nothing "" (PRXY relayServ proxyAuth) >>= \case
-    -- TODO: rfc says sessionId should be in the entityId of response
     PKEY sId vr (chain, key) -> do
       case supportedClientSMPRelayVRange `compatibleVersion` vr of
         Nothing -> throwE PCEIncompatibleHost -- TODO different error
