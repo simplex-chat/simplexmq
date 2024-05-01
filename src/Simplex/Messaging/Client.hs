@@ -83,7 +83,6 @@ where
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
-import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class (liftIO)
@@ -98,8 +97,7 @@ import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe)
-import Data.Text.Encoding (decodeLatin1)
-import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime, secondsToNominalDiffTime)
+import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
@@ -112,7 +110,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
-import Simplex.Messaging.Util (bshow, diffToMicroseconds, raceAny_, threadDelay', tshow, whenM)
+import Simplex.Messaging.Util (bshow, diffToMicroseconds, raceAny_, threadDelay', whenM)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
 import UnliftIO (pooledMapConcurrentlyN)
@@ -134,6 +132,7 @@ data PClient v err msg = PClient
     tcpTimeout :: Int,
     rcvConcurrency :: Int,
     sendPings :: TVar Bool,
+    lastReceived :: TVar UTCTime,
     timeoutErrorCount :: TVar Int,
     clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
@@ -144,10 +143,12 @@ data PClient v err msg = PClient
 
 smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe (THandleAuth 'TClient) -> STM SMPClient
 smpClientStub g sessionId thVersion thAuth = do
+  let ts = UTCTime (read "2024-03-31") 0
   connected <- newTVar False
   clientCorrId <- C.newRandomDRG g
   sentCommands <- TM.empty
   sendPings <- newTVar False
+  lastReceived <- newTVar ts
   timeoutErrorCount <- newTVar 0
   sndQ <- newTBQueue 100
   rcvQ <- newTBQueue 100
@@ -163,7 +164,7 @@ smpClientStub g sessionId thVersion thAuth = do
               implySessId = thVersion >= authCmdsSMPVersion,
               batch = True
             },
-        sessionTs = UTCTime (read "2024-03-31") 0,
+        sessionTs = ts,
         client_ =
           PClient
             { connected,
@@ -172,6 +173,7 @@ smpClientStub g sessionId thVersion thAuth = do
               tcpTimeout = 15_000_000,
               rcvConcurrency = 8,
               sendPings,
+              lastReceived,
               timeoutErrorCount,
               clientCorrId,
               sentCommands,
@@ -220,7 +222,7 @@ data NetworkConfig = NetworkConfig
     tcpKeepAlive :: Maybe KeepAliveOpts,
     -- | period for SMP ping commands (microseconds, 0 to disable)
     smpPingInterval :: Int64,
-    -- | the count of PING errors after which SMP client terminates (and will be reconnected), 0 to disable
+    -- | the count of timeout errors after which SMP client terminates (and will be reconnected), 0 to disable
     smpPingCount :: Int,
     logTLSErrors :: Bool
   }
@@ -334,15 +336,16 @@ getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> T
 getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, serverVRange, agreeSecret} msgQ disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
-      (atomically (mkProtocolClient useHost) >>= runClient useTransport useHost)
+      (getCurrentTime >>= atomically . mkProtocolClient useHost >>= runClient useTransport useHost)
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
     NetworkConfig {tcpConnectTimeout, tcpTimeout, rcvConcurrency, smpPingInterval} = networkConfig
-    mkProtocolClient :: TransportHost -> STM (PClient v err msg)
-    mkProtocolClient transportHost = do
+    mkProtocolClient :: TransportHost -> UTCTime -> STM (PClient v err msg)
+    mkProtocolClient transportHost ts = do
       connected <- newTVar False
       sendPings <- newTVar False
+      lastReceived <- newTVar ts
       timeoutErrorCount <- newTVar 0
       clientCorrId <- C.newRandomDRG g
       sentCommands <- TM.empty
@@ -355,6 +358,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             transportHost,
             tcpTimeout,
             sendPings,
+            lastReceived,
             timeoutErrorCount,
             clientCorrId,
             sentCommands,
@@ -393,45 +397,41 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         Right th@THandle {params} -> do
           sessionTs <- getCurrentTime
           let c' = ProtocolClient {action = Nothing, client_ = c, thParams = params, sessionTs}
-          lastRecv <- newTVarIO sessionTs
+          atomically $ writeTVar (lastReceived c) sessionTs
           atomically $ do
             writeTVar (connected c) True
             putTMVar cVar $ Right c'
-          raceAny_ ([send c' th, process c', receive c' th lastRecv] <> [ping c' lastRecv | smpPingInterval > 0])
+          raceAny_ ([send c' th, process c', receive c' th] <> [ping c' | smpPingInterval > 0])
             `finally` disconnected c'
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= \(active, s) -> whenM (readTVarIO active) (void $ tPutLog h s)
 
-    receive :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> TVar UTCTime -> IO ()
-    receive ProtocolClient {client_ = PClient {rcvQ}} h lastRecv = forever $ do
+    receive :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
+    receive ProtocolClient {client_ = PClient {rcvQ, lastReceived, timeoutErrorCount}} h = forever $ do
       tGet h >>= atomically . writeTBQueue rcvQ
-      getCurrentTime >>= atomically . writeTVar lastRecv
+      getCurrentTime >>= atomically . writeTVar lastReceived
+      atomically $ writeTVar timeoutErrorCount 0
 
-    ping :: ProtocolClient v err msg -> TVar UTCTime -> IO ()
-    ping c@ProtocolClient {client_ = PClient {sendPings, timeoutErrorCount, transportHost}} lastRecv = loop smpPingInterval
+    ping :: ProtocolClient v err msg -> IO ()
+    ping c@ProtocolClient {client_ = PClient {sendPings, lastReceived, timeoutErrorCount}} = loop smpPingInterval
       where
         loop :: Int64 -> IO ()
         loop delay = do
           threadDelay' delay
-          diff <- diffUTCTime <$> getCurrentTime <*> readTVarIO lastRecv
+          diff <- diffUTCTime <$> getCurrentTime <*> readTVarIO lastReceived
           let idle = diffToMicroseconds diff
               remaining = smpPingInterval - idle
-          if remaining > 250_000 -- delay pings only for significant time
-            then do
-              logDebug $ thost <> " : last response was " <> tshow diff <> " ago, waiting for " <> tshow (secondsToNominalDiffTime $ fromIntegral remaining / 1000000)
-              loop remaining
+          if remaining > 1_000_000 -- delay pings only for significant time
+            then loop remaining
             else do
-              shouldSend <- readTVarIO sendPings
-              logDebug $ thost <> " : last response was " <> tshow diff <> " ago, " <> if shouldSend then "sending ping" else "checking"
-              when shouldSend $ void . runExceptT $ sendProtocolCommand c Nothing "" (protocolPing @v @err @msg)
+              whenM (readTVarIO sendPings) $ void . runExceptT $ sendProtocolCommand c Nothing "" (protocolPing @v @err @msg)
               -- sendProtocolCommand/getResponse updates counter for each command
               cnt <- readTVarIO timeoutErrorCount
               -- drop client when maxCnt of commands have timed out in sequence, but only after some time has passed after last received response
               when (maxCnt == 0 || cnt < maxCnt || diff < recoverWindow) $ loop smpPingInterval
-        recoverWindow = 15 * 60
+        recoverWindow = 15 * 60 -- seconds
         maxCnt = smpPingCount networkConfig
-        thost = decodeLatin1 $ strEncode transportHost
 
     process :: ProtocolClient v err msg -> IO ()
     process c = forever $ atomically (readTBQueue $ rcvQ $ client_ c) >>= mapM_ (processMsg c)
