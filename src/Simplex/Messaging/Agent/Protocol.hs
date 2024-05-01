@@ -206,6 +206,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( AProtocolType,
+    BrokerErrorType (..),
     EntityId,
     ErrorType,
     MsgBody,
@@ -233,7 +234,7 @@ import Simplex.Messaging.Protocol
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme
-import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
+import Simplex.Messaging.Transport (Transport (..), serializeTransportError, transportErrorP)
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts_ (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -1516,22 +1517,6 @@ data ConnectionErrorType
     NOT_AVAILABLE
   deriving (Eq, Read, Show, Exception)
 
--- | SMP server errors.
-data BrokerErrorType
-  = -- | invalid server response (failed to parse)
-    RESPONSE {smpErr :: String}
-  | -- | unexpected response
-    UNEXPECTED
-  | -- | network error
-    NETWORK
-  | -- | no compatible server host (e.g. onion when public is required, or vice versa)
-    HOST
-  | -- | handshake or other transport error
-    TRANSPORT {transportErr :: TransportError}
-  | -- | command response timeout
-    TIMEOUT
-  deriving (Eq, Read, Show, Exception)
-
 -- | Errors of another SMP agent.
 data SMPAgentError
   = -- | client or agent message that failed to parse
@@ -1976,8 +1961,6 @@ $(J.deriveJSON (sumTypeJSON fstToLower) ''MsgIntegrity)
 $(J.deriveJSON (sumTypeJSON id) ''CommandErrorType)
 
 $(J.deriveJSON (sumTypeJSON id) ''ConnectionErrorType)
-
-$(J.deriveJSON (sumTypeJSON id) ''BrokerErrorType)
 
 $(J.deriveJSON (sumTypeJSON id) ''AgentCryptoError)
 

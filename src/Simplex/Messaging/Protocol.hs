@@ -66,6 +66,7 @@ module Simplex.Messaging.Protocol
     ErrorType (..),
     CommandError (..),
     ProxyError (..),
+    BrokerErrorType (..),
     Transmission,
     TransmissionAuth (..),
     SignedTransmission,
@@ -176,6 +177,7 @@ module Simplex.Messaging.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
+import Control.Exception (Exception)
 import Control.Monad
 import Control.Monad.Except
 import Data.Aeson (FromJSON (..), ToJSON (..))
@@ -194,8 +196,6 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust, isNothing)
 import Data.String
-import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import Data.Word (Word16)
@@ -211,7 +211,7 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
-import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 
@@ -1188,16 +1188,27 @@ data ProxyError
   = -- | Correctly parsed SMP server ERR response.
     -- This error is forwarded to the agent client as `ERR SMP err`.
     PROTOCOL {protocolErr :: ErrorType}
-  | -- | Invalid server response that failed to parse.
-    -- Forwarded to the agent client as `ERR BROKER RESPONSE`.
-    RESPONSE {responseErr :: ErrorType}
-  | UNEXPECTED {unexpectedResponse :: String} -- 'String' for using derived JSON and Arbitrary instances
-  | TIMEOUT
-  | NETWORK
-  | BAD_HOST
-  | NO_SESSION
-  | TRANSPORT {transportErr :: TransportError}
+  | -- | destination server error
+    BROKER {brokerErr :: BrokerErrorType}
+  | -- no destination server error
+    NO_SESSION
   deriving (Eq, Read, Show)
+
+-- | SMP server errors.
+data BrokerErrorType
+  = -- | invalid server response (failed to parse)
+    RESPONSE {smpErr :: String}
+  | -- | unexpected response
+    UNEXPECTED {respErr :: String}
+  | -- | network error
+    NETWORK
+  | -- | no compatible server host (e.g. onion when public is required, or vice versa)
+    HOST
+  | -- | handshake or other transport error
+    TRANSPORT {transportErr :: TransportError}
+  | -- | command response timeout
+    TIMEOUT
+  deriving (Eq, Read, Show, Exception)
 
 -- | SMP transmission parser.
 transmissionP :: THandleParams v p -> Parser RawTransmission
@@ -1465,42 +1476,48 @@ instance Encoding CommandError where
       _ -> fail "bad command error type"
 
 instance Encoding ProxyError where
-  smpEncode e = case e of
-    PROTOCOL et -> "PROTOCOL " <> smpEncode et
-    RESPONSE et -> "RESPONSE " <> smpEncode et
-    UNEXPECTED s -> "UNEXPECTED " <> smpEncode (encodeUtf8 $ T.pack s)
-    TIMEOUT -> "TIMEOUT"
-    NETWORK -> "NETWORK"
-    BAD_HOST -> "BAD_HOST"
+  smpEncode = \case
+    PROTOCOL e -> "PROTOCOL " <> smpEncode e
+    BROKER e -> "BROKER " <> smpEncode e
     NO_SESSION -> "NO_SESSION"
-    TRANSPORT t -> "TRANSPORT " <> serializeTransportError t
   smpP =
     A.takeTill (== ' ') >>= \case
-      "PROTOCOL" -> PROTOCOL <$> _smpP
-      "RESPONSE" -> RESPONSE <$> _smpP
-      "UNEXPECTED" -> UNEXPECTED . (T.unpack . safeDecodeUtf8) <$> _smpP
-      "TIMEOUT" -> pure TIMEOUT
-      "NETWORK" -> pure NETWORK
-      "BAD_HOST" -> pure BAD_HOST
+      "PROTOCOL " -> PROTOCOL <$> smpP
+      "BROKER " -> BROKER <$> smpP
       "NO_SESSION" -> pure NO_SESSION
-      "TRANSPORT" -> TRANSPORT <$> (A.space *> transportErrorP)
       _ -> fail "bad command error type"
 
 instance StrEncoding ProxyError where
   strEncode = \case
-    PROTOCOL et -> "PROTOCOL " <> strEncode et
-    RESPONSE et -> "RESPONSE " <> strEncode et
-    UNEXPECTED "" -> "UNEXPECTED" -- Arbitrary instance generates empty strings which String instance can't handle
-    UNEXPECTED s -> "UNEXPECTED " <> strEncode s
-    TRANSPORT t -> "TRANSPORT " <> serializeTransportError t
-    e -> bshow e
+    PROTOCOL e -> "PROTOCOL " <> strEncode e
+    BROKER e -> "BROKER " <> strEncode e
+    NO_SESSION -> "NO_SESSION"
   strP =
     "PROTOCOL " *> (PROTOCOL <$> strP)
-      <|> "RESPONSE " *> (RESPONSE <$> strP)
-      <|> "UNEXPECTED " *> (UNEXPECTED <$> strP)
-      <|> "UNEXPECTED" $> UNEXPECTED ""
-      <|> "TRANSPORT " *> (TRANSPORT <$> transportErrorP)
-      <|> parseRead1
+      <|> "BROKER " *> (BROKER <$> strP)
+      <|> "NO_SESSION" $> NO_SESSION
+
+instance Encoding BrokerErrorType where
+  smpEncode = \case
+    RESPONSE e -> "RESPONSE " <> smpEncode e
+    TRANSPORT e -> "TRANSPORT " <> serializeTransportError e
+    e -> bshow e
+  smpP =
+    A.takeTill (== ' ') >>= \case
+      "RESPONSE " -> RESPONSE <$> smpP
+      "TRANSPORT " -> TRANSPORT <$> transportErrorP
+      s -> parseRead $ pure s
+
+instance StrEncoding BrokerErrorType where
+  strEncode = \case
+    RESPONSE e -> "RESPONSE " <> strEncode e
+    TRANSPORT e -> "TRANSPORT " <> serializeTransportError e
+    e -> bshow e
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "RESPONSE " -> RESPONSE <$> strP
+      "TRANSPORT " -> TRANSPORT <$> transportErrorP
+      s -> parseRead $ pure s
 
 -- | Send signed SMP transmission to TCP transport.
 tPut :: Transport c => THandle v c p -> NonEmpty (Either TransportError SentRawTransmission) -> IO [Either TransportError ()]
@@ -1640,4 +1657,4 @@ $(J.deriveJSON defaultJSON ''MsgFlags)
 $(J.deriveJSON (sumTypeJSON id) ''CommandError)
 
 -- run deriveJSON in one TH splice to allow mutual instance
-$(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''ErrorType])
+$(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''BrokerErrorType, ''ProxyError, ''ErrorType])

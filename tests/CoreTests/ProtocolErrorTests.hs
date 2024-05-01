@@ -16,7 +16,7 @@ import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Agent.Protocol as Agent
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CommandError (..), ErrorType (..), ProxyError (..))
+import Simplex.Messaging.Protocol (CommandError (..), ErrorType (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport (HandshakeError (..), TransportError (..))
 import Simplex.RemoteControl.Types (RCErrorType (..))
@@ -37,8 +37,8 @@ protocolErrorTests = modifyMaxSuccess (const 1000) $ do
       arbitrary >>= \case
         BROKER srv (Agent.RESPONSE e) | hasSpaces srv || hasSpaces e -> discard
         BROKER srv _ | hasSpaces srv -> discard
-        SMP (PROXY (SMP.UNEXPECTED s)) | hasUnicode s -> discard
-        NTF (PROXY (SMP.UNEXPECTED s)) | hasUnicode s -> discard
+        SMP (PROXY (SMP.BROKER (SMP.UNEXPECTED s))) | hasUnicode s -> discard
+        NTF (PROXY (SMP.BROKER (SMP.UNEXPECTED s))) | hasUnicode s -> discard
         ok -> pure ok
     hasSpaces s = ' ' `B.elem` encodeUtf8 (T.pack s)
     hasUnicode = any (>= '\255')
@@ -59,7 +59,7 @@ deriving instance Generic ErrorType
 
 deriving instance Generic CommandError
 
-deriving instance Generic ProxyError
+deriving instance Generic SMP.ProxyError
 
 deriving instance Generic TransportError
 
@@ -85,7 +85,7 @@ instance Arbitrary ErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary CommandError where arbitrary = genericArbitraryU
 
-instance Arbitrary ProxyError where arbitrary = genericArbitraryU
+instance Arbitrary SMP.ProxyError where arbitrary = genericArbitraryU
 
 instance Arbitrary TransportError where arbitrary = genericArbitraryU
 

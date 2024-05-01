@@ -632,7 +632,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                       vr = supportedServerSMPRelayVRange
                    in case thAuth of
                         Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
-                        Nothing -> ERR $ PROXY (TRANSPORT TENoServerAuth)
+                        Nothing -> ERR . PROXY . BROKER $ TRANSPORT TENoServerAuth
       PFWD pubKey encBlock -> do
         ProxyAgent {smpAgent} <- asks proxyAgent
         atomically (lookupSMPServerClient smpAgent sessId) >>= \case

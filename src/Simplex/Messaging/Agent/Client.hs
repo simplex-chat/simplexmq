@@ -1065,8 +1065,8 @@ liftClient protocolError_ = liftError . protocolClientError protocolError_
 protocolClientError :: (Show err, Encoding err) => (err -> AgentErrorType) -> HostName -> ProtocolClientError err -> AgentErrorType
 protocolClientError protocolError_ host = \case
   PCEProtocolError e -> protocolError_ e
-  PCEResponseError e -> BROKER host $ RESPONSE $ B.unpack $ smpEncode e
-  PCEUnexpectedResponse _ -> BROKER host UNEXPECTED
+  PCEResponseError e -> BROKER host $ RESPONSE $ B.unpack $ B.take 32 $ smpEncode e
+  PCEUnexpectedResponse r -> BROKER host $ UNEXPECTED (B.unpack $ B.take 32 $ bshow r)
   PCEResponseTimeout -> BROKER host TIMEOUT
   PCENetworkError -> BROKER host NETWORK
   PCEIncompatibleHost -> BROKER host HOST
@@ -1265,8 +1265,8 @@ temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
   BROKER _ NETWORK -> True
   BROKER _ TIMEOUT -> True
-  SMP (SMP.PROXY SMP.TIMEOUT) -> True
-  NTF (SMP.PROXY SMP.TIMEOUT) -> True
+  SMP (SMP.PROXY (SMP.BROKER NETWORK)) -> True
+  SMP (SMP.PROXY (SMP.BROKER TIMEOUT)) -> True
   INACTIVE -> True
   _ -> False
 {-# INLINE temporaryAgentError #-}
@@ -1274,6 +1274,7 @@ temporaryAgentError = \case
 temporaryOrHostError :: AgentErrorType -> Bool
 temporaryOrHostError = \case
   BROKER _ HOST -> True
+  SMP (SMP.PROXY (SMP.BROKER HOST)) -> True
   e -> temporaryAgentError e
 {-# INLINE temporaryOrHostError #-}
 

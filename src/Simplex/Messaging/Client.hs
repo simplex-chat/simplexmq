@@ -537,13 +537,13 @@ temporaryClientError = \case
 
 smpProxyError :: SMPClientError -> ErrorType
 smpProxyError = \case
-  PCEProtocolError et -> PROXY (PROTOCOL et)
-  PCEResponseError et -> PROXY (RESPONSE et)
-  PCEUnexpectedResponse bs -> PROXY (UNEXPECTED $ B.unpack $ B.take 32 bs)
-  PCEResponseTimeout -> PROXY TIMEOUT
-  PCENetworkError -> PROXY NETWORK
-  PCEIncompatibleHost -> PROXY BAD_HOST
-  PCETransportError t -> PROXY (TRANSPORT t)
+  PCEProtocolError e -> PROXY (PROTOCOL e)
+  PCEResponseError e -> PROXY $ BROKER (RESPONSE $ B.unpack $ B.take 32 $ smpEncode e)
+  PCEUnexpectedResponse bs -> PROXY $ BROKER (UNEXPECTED $ B.unpack $ B.take 32 bs)
+  PCEResponseTimeout -> PROXY $ BROKER TIMEOUT
+  PCENetworkError -> PROXY $ BROKER NETWORK
+  PCEIncompatibleHost -> PROXY $ BROKER HOST
+  PCETransportError t -> PROXY $ BROKER (TRANSPORT t)
   PCECryptoError _ -> INTERNAL
   PCEIOError _ -> INTERNAL
 
@@ -709,8 +709,8 @@ connectSMPProxiedRelay c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxy
   sendSMPCommand c Nothing "" (PRXY relayServ proxyAuth) >>= \case
     PKEY sId vr (chain, key) ->
       case supportedClientSMPRelayVRange `compatibleVersion` vr of
-        Nothing -> throwE . PCEProtocolError $ PROXY BAD_HOST
-        Just (Compatible v) -> liftEitherWith (const . PCEResponseError . PROXY $ RESPONSE AUTH) $ ProxiedRelay sId v <$> validateRelay chain key
+        Nothing -> throwE . PCEProtocolError . PROXY $ BROKER HOST
+        Just (Compatible v) -> liftEitherWith (const . PCEResponseError . PROXY $ PROTOCOL AUTH) $ ProxiedRelay sId v <$> validateRelay chain key
     r -> throwE . PCEUnexpectedResponse $ bshow r
   where
     validateRelay :: X.CertificateChain -> X.SignedExact X.PubKey -> Either String C.PublicKeyX25519
@@ -769,16 +769,16 @@ proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
       case tParse proxyThParams t' of
         t'' :| [] -> case tDecodeParseValidate proxyThParams t'' of
           (_auth, _signed, (_c, _e, r)) -> case r of -- TODO: verify
-            Left se -> throwE $ PCEResponseError se
+            Left e -> throwE $ PCEResponseError e
             Right OK -> pure ()
-            Right (ERR se) -> throwE $ PCEProtocolError se
-            Right sr -> throwE $ PCEUnexpectedResponse (bshow sr)
+            Right (ERR e) -> throwE $ PCEProtocolError e
+            Right e -> throwE $ PCEUnexpectedResponse (bshow e)
         _ -> throwE $ PCETransportError TEBadBlock
-    pr -> throwE $ PCEResponseError . PROXY $ UNEXPECTED (B.unpack $ B.take 32 $ bshow pr)
+    pr -> throwE $ PCEResponseError . PROXY . BROKER $ UNEXPECTED (B.unpack $ B.take 32 $ bshow pr)
   where
     proxyCmdError :: SMPClientError -> ExceptT SMPClientError IO BrokerMsg
     proxyCmdError = \case
-      PCETransportError te -> throwE . PCEResponseError . PROXY $ TRANSPORT te
+      PCETransportError te -> throwE . PCEResponseError . PROXY . BROKER $ TRANSPORT te
       err -> throwE err
 
 -- this method is used in the proxy
