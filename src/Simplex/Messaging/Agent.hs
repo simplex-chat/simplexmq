@@ -121,6 +121,7 @@ import Control.Logger.Simple (logError, logInfo, showText)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
+import Control.Monad.Trans.Except (throwE)
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import Data.Bifunctor (bimap, first, second)
@@ -171,6 +172,7 @@ import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC, XFTPServerWithAuth)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
+import Simplex.Messaging.Session (checkSessVar)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion, THandleParams (sessionId))
 import Simplex.Messaging.Util
@@ -1957,11 +1959,11 @@ getSMPServer c userId = withUserServers c userId pickServer
 {-# INLINE getSMPServer #-}
 
 subscriber :: AgentClient -> AM' ()
-subscriber c@AgentClient {msgQ} = forever $ do
+subscriber c@AgentClient {subQ, msgQ} = forever $ do
   t <- atomically $ readTBQueue msgQ
   agentOperationBracket c AORcvNetwork waitUntilActive $
     runExceptT (processSMPTransmission c t) >>= \case
-      Left e -> liftIO $ print e
+      Left e -> atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR e)
       Right _ -> return ()
 
 cleanupManager :: AgentClient -> AM' ()
@@ -2040,6 +2042,8 @@ data ACKd = ACKd | ACKPending
 -- it cannot be finally, unfortunately, as sometimes it needs to be ACK+DEL
 processSMPTransmission :: AgentClient -> ServerTransmission SMPVersion BrokerMsg -> AM ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, sessId, isResponse, rId, cmd) = do
+  unlessM (atomically $ checkSessVar smpClients tSess $ either (const False) ((== sessId) . sessionId . thParams)) . throwE $
+    CRITICAL False "Congratulations, you've caught a rare beast: zomblie delivery process!"
   (rq, SomeConn _ conn) <- withStore c (\db -> getRcvConn db srv rId)
   processSMP rq conn $ toConnData conn
   where

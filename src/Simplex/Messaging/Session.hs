@@ -40,3 +40,12 @@ removeSessVar' v sessKey vs =
 
 tryReadSessVar :: Ord k => k -> TMap k (SessionVar a) -> STM (Maybe a)
 tryReadSessVar sessKey vs = TM.lookup sessKey vs $>>= (tryReadTMVar . sessionVar)
+
+checkSessVar :: Ord k => TMap k (SessionVar a) -> k -> (a -> Bool) -> STM Bool
+checkSessVar vs sessKey p =
+  TM.lookup sessKey vs >>= \case
+    Nothing -> pure False
+    Just SessionVar {sessionVar} ->
+      tryReadTMVar sessionVar >>= \case
+        Nothing -> pure False
+        Just x -> pure $ p x

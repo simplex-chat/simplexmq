@@ -499,6 +499,8 @@ data ProtocolClientError err
     PCETransportError TransportError
   | -- | Error when cryptographically "signing" the command or when initializing crypto_box.
     PCECryptoError C.CryptoError
+  | -- | Message came from a killed session.
+    PCEZombieSession
   | -- | IO Error
     PCEIOError IOException
   deriving (Eq, Show, Exception)

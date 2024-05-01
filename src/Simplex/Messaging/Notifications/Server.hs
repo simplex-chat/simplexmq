@@ -274,6 +274,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
       PCEResponseTimeout -> pure Nothing
       PCENetworkError -> pure Nothing
       PCEIOError _ -> pure Nothing
+      PCEZombieSession -> pure Nothing
       where
         updateErr :: Show e => ByteString -> e -> M (Maybe NtfSubStatus)
         updateErr errType e = updateSubStatus smpQueue (NSErr $ errType <> bshow e) $> Just (NSErr errType)
