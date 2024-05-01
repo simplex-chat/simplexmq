@@ -107,13 +107,12 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTransportClient)
+import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
-import Simplex.Messaging.Util (bshow, raceAny_, threadDelay', whenM)
+import Simplex.Messaging.Util (bshow, raceAny_, threadDelay')
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
-import UnliftIO (pooledMapConcurrentlyN)
 
 -- | 'SMPClient' is a handle used to send commands to a specific SMP server.
 --
@@ -130,11 +129,10 @@ data PClient v err msg = PClient
     transportSession :: TransportSession msg,
     transportHost :: TransportHost,
     tcpTimeout :: Int,
-    rcvConcurrency :: Int,
     pingErrorCount :: TVar Int,
     clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
-    sndQ :: TBQueue (TVar Bool, ByteString),
+    sndQ :: TBQueue ByteString,
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission v msg))
   }
@@ -166,7 +164,6 @@ smpClientStub g sessionId thVersion thAuth = do
               transportSession = (1, "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001", Nothing),
               transportHost = "localhost",
               tcpTimeout = 15_000_000,
-              rcvConcurrency = 8,
               pingErrorCount,
               clientCorrId,
               sentCommands,
@@ -209,8 +206,6 @@ data NetworkConfig = NetworkConfig
     tcpTimeout :: Int,
     -- | additional timeout per kilobyte (1024 bytes) to be sent
     tcpTimeoutPerKb :: Int64,
-    -- | break response timeouts into groups, so later responses get later deadlines
-    rcvConcurrency :: Int,
     -- | TCP keep-alive options, Nothing to skip enabling keep-alive
     tcpKeepAlive :: Maybe KeepAliveOpts,
     -- | period for SMP ping commands (microseconds, 0 to disable)
@@ -231,10 +226,9 @@ defaultNetworkConfig =
       hostMode = HMOnionViaSocks,
       requiredHostMode = False,
       sessionMode = TSMUser,
-      tcpConnectTimeout = defaultTcpConnectTimeout,
+      tcpConnectTimeout = 20_000_000,
       tcpTimeout = 15_000_000,
       tcpTimeoutPerKb = 5_000,
-      rcvConcurrency = 8,
       tcpKeepAlive = Just defaultKeepAliveOpts,
       smpPingInterval = 600_000_000, -- 10min
       smpPingCount = 3,
@@ -242,8 +236,8 @@ defaultNetworkConfig =
     }
 
 transportClientConfig :: NetworkConfig -> TransportClientConfig
-transportClientConfig NetworkConfig {socksProxy, tcpConnectTimeout, tcpKeepAlive, logTLSErrors} =
-  TransportClientConfig {socksProxy, tcpConnectTimeout, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, alpn = Nothing}
+transportClientConfig NetworkConfig {socksProxy, tcpKeepAlive, logTLSErrors} =
+  TransportClientConfig {socksProxy, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, alpn = Nothing}
 {-# INLINE transportClientConfig #-}
 
 -- | protocol client configuration.
@@ -277,8 +271,7 @@ defaultSMPClientConfig = defaultClientConfig supportedClientSMPRelayVRange
 {-# INLINE defaultSMPClientConfig #-}
 
 data Request err msg = Request
-  { corrId :: CorrId,
-    entityId :: EntityId,
+  { entityId :: EntityId,
     responseVar :: TMVar (Either (ProtocolClientError err) msg)
   }
 
@@ -333,7 +326,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
-    NetworkConfig {tcpConnectTimeout, tcpTimeout, rcvConcurrency, smpPingInterval} = networkConfig
+    NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
     mkProtocolClient :: TransportHost -> STM (PClient v err msg)
     mkProtocolClient transportHost = do
       connected <- newTVar False
@@ -351,7 +344,6 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             pingErrorCount,
             clientCorrId,
             sentCommands,
-            rcvConcurrency,
             sndQ,
             rcvQ,
             msgQ
@@ -366,7 +358,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         async $
           runTransportClient tcConfig (Just username) useHost port' (Just $ keyHash srv) (client t c cVar)
             `finally` atomically (tryPutTMVar cVar $ Left PCENetworkError)
-      c_ <- (tcpConnectTimeout + tcpTimeout) `timeout` atomically (takeTMVar cVar)
+      c_ <- tcpConnectTimeout `timeout` atomically (takeTMVar cVar)
       case c_ of
         Just (Right c') -> pure $ Right c' {action = Just action}
         Just (Left e) -> pure $ Left e
@@ -393,7 +385,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             `finally` disconnected c'
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
-    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= \(active, s) -> whenM (readTVarIO active) (void $ tPutLog h s)
+    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= tPutLog h
 
     receive :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     receive ProtocolClient {client_ = PClient {rcvQ}} h = forever $ tGet h >>= atomically . writeTBQueue rcvQ
@@ -682,21 +674,19 @@ streamProtocolCommands c@ProtocolClient {thParams = THandleParams {batch, blockS
   mapM_ (cb <=< sendBatch c) bs
 
 sendBatch :: ProtocolClient v err msg -> TransportBatch (Request err msg) -> IO [Response err msg]
-sendBatch c@ProtocolClient {client_ = PClient {rcvConcurrency, sndQ}} b = do
+sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
   case b of
     TBError e Request {entityId} -> do
       putStrLn "send error: large message"
       pure [Response entityId $ Left $ PCETransportError e]
     TBTransmissions s n rs
       | n > 0 -> do
-          active <- newTVarIO True
-          atomically $ writeTBQueue sndQ (active, s)
-          pooledMapConcurrentlyN rcvConcurrency (getResponse c active) rs
+          atomically $ writeTBQueue sndQ s
+          mapConcurrently (getResponse c) rs
       | otherwise -> pure []
     TBTransmission s r -> do
-      active <- newTVarIO True
-      atomically $ writeTBQueue sndQ (active, s)
-      (: []) <$> getResponse c active r
+      atomically $ writeTBQueue sndQ s
+      (: []) <$> getResponse c r
 
 -- | Send Protocol command
 sendProtocolCommand :: forall v err msg. ProtocolEncoding v err (ProtoCommand msg) => ProtocolClient v err msg -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
@@ -709,22 +699,19 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, thParams = THand
       Left e -> pure . Left $ PCETransportError e
       Right t
         | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
-        | otherwise -> do
-            active <- newTVarIO True
-            atomically (writeTBQueue sndQ (active, s))
-            response <$> getResponse c active r
+        | otherwise -> atomically (writeTBQueue sndQ s) >> response <$> getResponse c r
         where
           s
             | batch = tEncodeBatch1 t
             | otherwise = tEncode t
 
 -- TODO switch to timeout or TimeManager that supports Int64
-getResponse :: ProtocolClient v err msg -> TVar Bool -> Request err msg -> IO (Response err msg)
-getResponse ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount, sentCommands}} active Request {corrId, entityId, responseVar} = do
+getResponse :: ProtocolClient v err msg -> Request err msg -> IO (Response err msg)
+getResponse ProtocolClient {client_ = PClient {tcpTimeout, pingErrorCount}} Request {entityId, responseVar} = do
   response <-
     timeout tcpTimeout (atomically (takeTMVar responseVar)) >>= \case
       Just r -> atomically (writeTVar pingErrorCount 0) $> r
-      Nothing -> atomically (writeTVar active False >> TM.delete corrId sentCommands) $> Left PCEResponseTimeout
+      Nothing -> pure $ Left PCEResponseTimeout
   pure Response {entityId, response}
 
 mkTransmission :: forall v err msg. ProtocolEncoding v err (ProtoCommand msg) => ProtocolClient v err msg -> ClientCommand msg -> IO (PCTransmission err msg)
@@ -739,7 +726,7 @@ mkTransmission ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCo
     getNextCorrId = CorrId <$> C.randomBytes 24 clientCorrId -- also used as nonce
     mkRequest :: CorrId -> STM (Request err msg)
     mkRequest corrId = do
-      r <- Request corrId entId <$> newEmptyTMVar
+      r <- Request entId <$> newEmptyTMVar
       TM.insert corrId r sentCommands
       pure r
 
