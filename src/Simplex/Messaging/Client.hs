@@ -182,7 +182,7 @@ type SMPClient = ProtocolClient SMPVersion ErrorType BrokerMsg
 type ClientCommand msg = (Maybe C.APrivateAuthKey, EntityId, ProtoCommand msg)
 
 -- | Type synonym for transmission from some SPM server queue.
-type ServerTransmission v msg = (TransportSession msg, Version v, SessionId, Bool, EntityId, msg)
+type ServerTransmission v msg = (TransportSession msg, Version v, SessionId, EntityId, msg)
 
 data HostMode
   = -- | prefer (or require) onion hosts when connecting via SOCKS proxy
@@ -366,7 +366,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         async $
           runTransportClient tcConfig (Just username) useHost port' (Just $ keyHash srv) (client t c cVar)
             `finally` atomically (tryPutTMVar cVar $ Left PCENetworkError)
-      c_ <- tcpConnectTimeout `timeout` atomically (takeTMVar cVar)
+      c_ <- (tcpConnectTimeout + tcpTimeout) `timeout` atomically (takeTMVar cVar)
       case c_ of
         Just (Right c') -> pure $ Right c' {action = Just action}
         Just (Left e) -> pure $ Left e
@@ -413,16 +413,16 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     process c = forever $ atomically (readTBQueue $ rcvQ $ client_ c) >>= mapM_ (processMsg c)
 
     processMsg :: ProtocolClient v err msg -> SignedTransmission err msg -> IO ()
-    processMsg c@ProtocolClient {client_ = PClient {sentCommands}} (_, _, (corrId, entId, respOrErr))
-      | isResponse =
+    processMsg c@ProtocolClient {client_ = PClient {sentCommands}} (_, _, (corrId, entId, respOrErr)) =
+      if B.null $ bs corrId
+        then sendMsg respOrErr
+        else do
           atomically (TM.lookup corrId sentCommands) >>= \case
             Nothing -> sendMsg respOrErr
             Just Request {entityId, responseVar} -> atomically $ do
               TM.delete corrId sentCommands
               putTMVar responseVar $ response entityId
-      | otherwise = sendMsg respOrErr
       where
-        isResponse = not $ B.null $ bs corrId
         response entityId
           | entityId == entId =
               case respOrErr of
@@ -433,7 +433,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
           | otherwise = Left . PCEUnexpectedResponse $ bshow respOrErr
         sendMsg :: Either err msg -> IO ()
         sendMsg = \case
-          Right msg -> atomically $ mapM_ (`writeTBQueue` serverTransmission c isResponse entId msg) msgQ
+          Right msg -> atomically $ mapM_ (`writeTBQueue` serverTransmission c entId msg) msgQ
           Left e -> putStrLn $ "SMP client error: " <> show e
 
 proxyUsername :: TransportSession msg -> ByteString
@@ -530,11 +530,11 @@ processSUBResponse c (Response rId r) = case r of
   Left e -> pure $ Left e
 
 writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> IO ()
-writeSMPMessage c rId msg = atomically $ mapM_ (`writeTBQueue` serverTransmission c False rId msg) (msgQ $ client_ c)
+writeSMPMessage c rId msg = atomically $ mapM_ (`writeTBQueue` serverTransmission c rId msg) (msgQ $ client_ c)
 
-serverTransmission :: ProtocolClient v err msg -> Bool -> RecipientId -> msg -> ServerTransmission v msg
-serverTransmission ProtocolClient {thParams = THandleParams {thVersion, sessionId}, client_ = PClient {transportSession}} isResponse entityId message =
-  (transportSession, thVersion, sessionId, isResponse, entityId, message)
+serverTransmission :: ProtocolClient v err msg -> RecipientId -> msg -> ServerTransmission v msg
+serverTransmission ProtocolClient {thParams = THandleParams {thVersion, sessionId}, client_ = PClient {transportSession}} entityId message =
+  (transportSession, thVersion, sessionId, entityId, message)
 
 -- | Get message from SMP queue. The server returns ERR PROHIBITED if a client uses SUB and GET via the same transport connection for the same queue
 --

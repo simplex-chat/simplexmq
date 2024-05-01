@@ -70,7 +70,7 @@ defaultHTTP2ClientConfig :: HTTP2ClientConfig
 defaultHTTP2ClientConfig =
   HTTP2ClientConfig
     { qSize = 64,
-      connTimeout = defaultTcpConnectTimeout,
+      connTimeout = 10000000,
       transportConfig =
         TransportClientConfig
           { socksProxy = Nothing,
