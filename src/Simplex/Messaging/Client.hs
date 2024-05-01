@@ -33,6 +33,7 @@ module Simplex.Messaging.Client
     getProtocolClient,
     closeProtocolClient,
     protocolClientServer,
+    protocolClientStatus,
     transportHost',
     transportSession',
 
@@ -313,6 +314,10 @@ protocolClientServer = B.unpack . strEncode . snd3 . transportSession . client_
   where
     snd3 (_, s, _) = s
 {-# INLINE protocolClientServer #-}
+
+protocolClientStatus :: ProtocolClient v err msg -> IO (Bool, Int, UTCTime)
+protocolClientStatus ProtocolClient {client_ = PClient {connected, timeoutErrorCount, lastReceived}} = do
+  (,,) <$> readTVarIO connected <*> readTVarIO timeoutErrorCount <*> readTVarIO lastReceived
 
 transportHost' :: ProtocolClient v err msg -> TransportHost
 transportHost' = transportHost . client_
