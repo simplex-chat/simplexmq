@@ -20,7 +20,8 @@ import qualified Database.SQLite.Simple as SQL
 import Network.Socket (ServiceName)
 import NtfClient (ntfTestPort)
 import SMPClient
-  ( serverBracket,
+  ( proxyVRange,
+    serverBracket,
     testKeyHash,
     testPort,
     testPort2,
@@ -34,7 +35,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
-import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultSMPClientConfig, defaultNetworkConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), SMPProxyMode, chooseTransportHost, defaultSMPClientConfig, defaultNetworkConfig)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth)
@@ -198,6 +199,9 @@ initAgentServers =
 initAgentServers2 :: InitialAgentServers
 initAgentServers2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer, noAuthSrv testSMPServer2]}
 
+initAgentServersProxy :: SMPProxyMode -> InitialAgentServers
+initAgentServersProxy smpProxyMode = initAgentServers {netCfg = (netCfg initAgentServers) {smpProxyMode}}
+
 agentCfg :: AgentConfig
 agentCfg =
   defaultAgentConfig
@@ -216,6 +220,9 @@ agentCfg =
     }
   where
     networkConfig = defaultNetworkConfig {tcpConnectTimeout = 3_000_000, tcpTimeout = 2_000_000}
+
+agentProxyCfg :: AgentConfig
+agentProxyCfg = agentCfg {smpCfg = (smpCfg agentCfg) {serverVRange = proxyVRange}}
 
 fastRetryInterval :: RetryInterval
 fastRetryInterval = defaultReconnectInterval {initialInterval = 50_000}
