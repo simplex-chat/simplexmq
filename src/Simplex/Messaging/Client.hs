@@ -30,9 +30,11 @@ module Simplex.Messaging.Client
     TransportSession,
     ProtocolClient (thParams, sessionTs),
     SMPClient,
+    ProxiedRelay (..),
     getProtocolClient,
     closeProtocolClient,
     protocolClientServer,
+    protocolClientServer',
     transportHost',
     transportSession',
 
@@ -54,7 +56,7 @@ module Simplex.Messaging.Client
     suspendSMPQueue,
     deleteSMPQueue,
     deleteSMPQueues,
-    createSMPProxySession,
+    connectSMPProxiedRelay,
     proxySMPMessage,
     forwardSMPMessage,
     sendProtocolCommand,
@@ -65,6 +67,8 @@ module Simplex.Messaging.Client
     ProtocolClientConfig (..),
     NetworkConfig (..),
     TransportSessionMode (..),
+    HostMode (..),
+    SMPProxyMode (..),
     defaultClientConfig,
     defaultSMPClientConfig,
     defaultNetworkConfig,
@@ -207,6 +211,8 @@ data NetworkConfig = NetworkConfig
     requiredHostMode :: Bool,
     -- | transport sessions are created per user or per entity
     sessionMode :: TransportSessionMode,
+    -- | SMP proxy mode
+    smpProxyMode :: SMPProxyMode,
     -- | timeout for the initial client TCP/TLS connection (microseconds)
     tcpConnectTimeout :: Int,
     -- | timeout of protocol commands (microseconds)
@@ -226,6 +232,14 @@ data NetworkConfig = NetworkConfig
 data TransportSessionMode = TSMUser | TSMEntity
   deriving (Eq, Show)
 
+-- SMP proxy mode for sending messages
+data SMPProxyMode
+  = SPMAlways
+  | SPMUnknown -- use with unknown relays
+  | SPMUnprotected -- use with unknown relays when IP address is not protected (i.e., when neither SOCKS proxy nor .onion address is used)
+  | SPMNever
+  deriving (Eq, Show)
+
 defaultNetworkConfig :: NetworkConfig
 defaultNetworkConfig =
   NetworkConfig
@@ -233,6 +247,7 @@ defaultNetworkConfig =
       hostMode = HMOnionViaSocks,
       requiredHostMode = False,
       sessionMode = TSMUser,
+      smpProxyMode = SPMNever,
       tcpConnectTimeout = 20_000_000,
       tcpTimeout = 15_000_000,
       tcpTimeoutPerKb = 5_000,
@@ -302,10 +317,14 @@ chooseTransportHost NetworkConfig {socksProxy, hostMode, requiredHostMode} hosts
     publicHost = find (not . isOnionHost) hosts
 
 protocolClientServer :: ProtocolTypeI (ProtoType msg) => ProtocolClient v err msg -> String
-protocolClientServer = B.unpack . strEncode . snd3 . transportSession . client_
+protocolClientServer = B.unpack . strEncode . protocolClientServer'
+{-# INLINE protocolClientServer #-}
+
+protocolClientServer' :: ProtocolClient v err msg -> ProtoServer msg
+protocolClientServer' = snd3 . transportSession . client_
   where
     snd3 (_, s, _) = s
-{-# INLINE protocolClientServer #-}
+{-# INLINE protocolClientServer' #-}
 
 transportHost' :: ProtocolClient v err msg -> TransportHost
 transportHost' = transportHost . client_
@@ -650,14 +669,13 @@ deleteSMPQueues = okSMPCommands DEL
 
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
-createSMPProxySession :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO (SessionId, VersionSMP, C.PublicKeyX25519)
-createSMPProxySession c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth =
+connectSMPProxiedRelay :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO ProxiedRelay
+connectSMPProxiedRelay c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth =
   sendSMPCommand c Nothing "" (PRXY relayServ proxyAuth) >>= \case
-    -- XXX: rfc says sessionId should be in the entityId of response
     PKEY sId vr (chain, key) ->
       case supportedClientSMPRelayVRange `compatibleVersion` vr of
         Nothing -> throwE . PCEProtocolError $ PROXY BAD_HOST
-        Just (Compatible v) -> liftEitherWith (const . PCEResponseError . PROXY $ RESPONSE AUTH) $ (sId,v,) <$> validateRelay chain key
+        Just (Compatible v) -> liftEitherWith (const . PCEResponseError . PROXY $ RESPONSE AUTH) $ ProxiedRelay sId v <$> validateRelay chain key
     r -> throwE . PCEUnexpectedResponse $ bshow r
   where
     validateRelay :: X.CertificateChain -> X.SignedExact X.PubKey -> Either String C.PublicKeyX25519
@@ -670,6 +688,12 @@ createSMPProxySession c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyA
       pubKey <- C.verifyX509 serverKey exact
       C.x509ToPublic (pubKey, []) >>= C.pubKey
 
+data ProxiedRelay = ProxiedRelay
+  { prSessionId :: SessionId,
+    prVersion :: VersionSMP,
+    prServerKey :: C.PublicKeyX25519
+  }
+
 -- consider how to process slow responses - is it handled somehow locally or delegated to the caller
 -- this method is used in the client
 -- sends PFWD :: C.PublicKeyX25519 -> EncTransmission -> Command Sender
@@ -677,9 +701,7 @@ createSMPProxySession c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyA
 proxySMPMessage ::
   SMPClient ->
   -- proxy session from PKEY
-  SessionId ->
-  VersionSMP ->
-  C.PublicKeyX25519 ->
+  ProxiedRelay ->
   -- message to deliver
   Maybe SndPrivateAuthKey ->
   SenderId ->
@@ -687,7 +709,7 @@ proxySMPMessage ::
   MsgBody ->
   ExceptT SMPClientError IO ()
 -- TODO use version
-proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g}} sessionId _v serverKey spKey sId flags msg = do
+proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g}} (ProxiedRelay sessionId _v serverKey) spKey sId flags msg = do
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
       serverThParams = proxyThParams {sessionId, thAuth = serverThAuth}
@@ -871,5 +893,7 @@ authTransmission thAuth pKey_ nonce t = traverse authenticate pKey_
 $(J.deriveJSON (enumJSON $ dropPrefix "HM") ''HostMode)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "TSM") ''TransportSessionMode)
+
+$(J.deriveJSON (enumJSON $ dropPrefix "SPM") ''SMPProxyMode)
 
 $(J.deriveJSON defaultJSON ''NetworkConfig)

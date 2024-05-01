@@ -196,6 +196,56 @@ dhPublic = length x509encoded
 
 The above assumes that the client can only send one message to an SMP relay and then has to wait for response before sending the next message. Missing the response would cause re-delivery (further improvement is possible when proxy detects these redelieveries and not send them to relays but simply reply with the same response).
 
+### Implementation considerations for the client
+
+While client/server protocol is rather straightforward to implement, and it is already working, there are some decisions to make about how the client makes decisions about.
+
+1. When to use proxy and when to connect directly to the destination relay.
+
+While from the perspective of threat model improvement it may be beneficial to always use the proxy, choosing the proxy that is different from other relays in the connection, initially we need to make it opt-in, with an option to only use it for unknown destination relays, to minimize any unexpected adverse effect on the delivery latency.
+
+Proxy mode will be passed from the client via NetworkConfig.
+
+2. Which proxying relays to use.
+
+Ability to request access to the session with the destination relay (and to create such session) is protected with the same basic auth approach as creating queues - the logic here is that opening private servers to all users as proxies would increase the scenarios for DoS attacks (which is the case with the public servers).
+
+The open question is whether the client should choose proxies from:
+- all configured relays.
+- there should be a subset of configured relays.
+- there should be a separate list.
+
+E.g., there could be a second toggle in the relay configuration to allow using relay as proxy, in addition to the current toggle that allows creating queues.
+
+For simplicity, initially we will just use all enabled relays as potential proxies.
+
+3. How many proxying relays should be used during one session.
+
+This is not a simple question, and it creates a contradiction between two risks:
+- collusion between proxies and destination relays simplifies correlating sending clients by session - from the point of view of this risk, clients should follow the same policy for creating connections with proxies, that is to create a new connection for each user profile, and if transport isolation is set to "per connection" - for each destination queue.
+- traffic correlation by observable traffic sessions (particularly if an attacker can observe user's ISP traffic or multiple proxies) - from this point of view, it would be beneficial to use fewer proxies and fewer connections with proxies and see the risk of proxy colluding with the destination relay as lower than the risk of traffic observation that in the case of multiple sessions would allow to correlate traffic to rarely used destination relays (any private self-hosted relays) and the traffic of the user to a given proxy, to prove the fact of user communicating with the destination relay via the proxy.
+
+While we can transfer this choice on the users, it seems a complex decision to make, and overall the second risk (traffic correlation) seems more important to address than the first.
+
+In any case possible options are:
+1. Extreme option 1: Create a new proxy session, with the new random proxy, for each potential transport session that would exist if the user were to be connected to destination relays directly. That is, never to mix access to multiple relays from multiple user profiles (and in case of per-connection isolation, to multiple queues) into a one client session with proxy. This is a rather radical option that nullifies any advantages of having fewer sessions with proxies than there would have been with the destination relays and removes any benefits of batching destination server session requests (PRXY comands).
+2. Extreme option 2: Use only one proxy session at the time, mixing traffic from all user profiles and to all destination servers (and for all queues) into a session with one proxy. This minimizes the risks of traffic correlation in case of non-colluding proxy, but maximises the risk in case it colludes with the destination relays.
+3. Balanced option: Use one proxy session per user profile, but mix traffic to multiple queues irrespective of connection isolation option and to all destination servers. Given that connection isolation is an experimental option, this makes the most sense, but it would have to be disclosed.
+4. Less balanced option: take connection isolation option into account and create a new proxy connection for each destination queue. This feels worse than option 3.
+
+If option 3 is chosen, then the transport session key with the proxy would be different from the transport session key with the relay - proxy session will only use UserId as the key, and the relay session uses (UserId, Server, Maybe EntityId) as the key.
+
+If option 4 is chosen, the keys would also be different, as the proxy would then use (UserId, Maybe (Server, EntityId)) as the key.
+
+We could potentially key proxy sessions (and create proxy connections) per each destination relay, in the same way as we key relays themselves, but it seems to have the least sense, as we neither achieve isolation by queue in case proxy and destination relay collude, nor we sufficiently protect from traffic correlation by any observers.
+
+The implemented design is this:
+- for each destination relay a random proxy is chosen and used to send all messages - all requests from a client coalesce to a single session.
+- transport isolation mode is taken into account, that is if per-connection isolation is enabled, then a separate proxy connection will be created for each messaging queue.
+- supported modes when proxy is used: always, for unknown relays, for unknown relays when IP address is not protected, never.
+
+This decision is made because the argument for protection against collusion between proxy and relay and more balanced traffic distribution is stronger than the argument for protection against traffic correlation, because even mixing all messages to one proxy connection does not provide protection against traffic correlation by time, so in any case it requires adding delays.
+
 ### Threat model for SMP proxy and changes to threat model for SMP
 
 #### SMP proxy

@@ -193,13 +193,13 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
   ( InitialKeys (..),
     PQEncryption (..),
-    pattern PQEncOff,
     PQSupport,
-    pattern PQSupportOn,
-    pattern PQSupportOff,
     RcvE2ERatchetParams,
     RcvE2ERatchetParamsUri,
-    SndE2ERatchetParams
+    SndE2ERatchetParams,
+    pattern PQEncOff,
+    pattern PQSupportOff,
+    pattern PQSupportOn,
   )
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -213,14 +213,14 @@ import Simplex.Messaging.Protocol
     MsgId,
     NMsgMeta,
     ProtocolServer (..),
+    SMPClientVersion,
     SMPMsgMeta,
     SMPServer,
     SMPServerWithAuth,
     SndPublicAuthKey,
     SubscriptionMode,
-    SMPClientVersion,
-    VersionSMPC,
     VersionRangeSMPC,
+    VersionSMPC,
     initialSMPClientVersion,
     legacyEncodeServer,
     legacyServerP,
@@ -398,7 +398,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   RSYNC :: RatchetSyncState -> Maybe AgentCryptoError -> ConnectionStats -> ACommand Agent AEConn
   SEND :: PQEncryption -> MsgFlags -> MsgBody -> ACommand Client AEConn
   MID :: AgentMsgId -> PQEncryption -> ACommand Agent AEConn
-  SENT :: AgentMsgId -> ACommand Agent AEConn
+  SENT :: AgentMsgId -> Maybe SMPServer -> ACommand Agent AEConn
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MERRS :: NonEmpty AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent AEConn
@@ -517,7 +517,7 @@ aCommandTag = \case
   RSYNC {} -> RSYNC_
   SEND {} -> SEND_
   MID {} -> MID_
-  SENT _ -> SENT_
+  SENT {} -> SENT_
   MERR {} -> MERR_
   MERRS {} -> MERRS_
   MSG {} -> MSG_
@@ -913,7 +913,7 @@ instance Encoding AgentMsgEnvelope where
 -- AgentRatchetInfo is not encrypted with double ratchet, but with per-queue E2E encryption
 data AgentMessage
   = -- used by the initiating party when confirming reply queue
-  AgentConnInfo ConnInfo
+    AgentConnInfo ConnInfo
   | -- AgentConnInfoReply is used by accepting party in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
     -- It made removed REPLY message unnecessary.
     AgentConnInfoReply (NonEmpty SMPQueueInfo) ConnInfo
@@ -1387,9 +1387,9 @@ deriving instance Show (ConnectionRequestUri m)
 data AConnectionRequestUri = forall m. ConnectionModeI m => ACR (SConnectionMode m) (ConnectionRequestUri m)
 
 instance Eq AConnectionRequestUri where
-   ACR m cr == ACR m' cr' = case testEquality m m' of
-     Just Refl -> cr == cr'
-     _ -> False
+  ACR m cr == ACR m' cr' = case testEquality m m' of
+    Just Refl -> cr == cr'
+    _ -> False
 
 deriving instance Show AConnectionRequestUri
 
@@ -1793,7 +1793,7 @@ commandP binaryP =
           SWITCH_ -> s (SWITCH <$> strP_ <*> strP_ <*> strP)
           RSYNC_ -> s (RSYNC <$> strP_ <*> strP <*> strP)
           MID_ -> s (MID <$> A.decimal <*> _strP)
-          SENT_ -> s (SENT <$> A.decimal)
+          SENT_ -> s (SENT <$> A.decimal <*> _strP)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
           MERRS_ -> s (MERRS <$> strP_ <*> strP)
           MSG_ -> s (MSG <$> strP <* A.space <*> smpP <* A.space <*> binaryP)
@@ -1856,7 +1856,7 @@ serializeCommand = \case
   RSYNC rrState cryptoErr cstats -> s (RSYNC_, rrState, cryptoErr, cstats)
   SEND pqEnc msgFlags msgBody -> B.unwords [s SEND_, s pqEnc, smpEncode msgFlags, serializeBinary msgBody]
   MID mId pqEnc -> s (MID_, mId, pqEnc)
-  SENT mId -> s (SENT_, mId)
+  SENT mId proxySrv_ -> s (SENT_, mId, proxySrv_)
   MERR mId e -> s (MERR_, mId, e)
   MERRS mIds e -> s (MERRS_, mIds, e)
   MSG msgMeta msgFlags msgBody -> B.unwords [s MSG_, s msgMeta, smpEncode msgFlags, serializeBinary msgBody]
