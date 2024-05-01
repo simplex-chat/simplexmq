@@ -64,6 +64,7 @@ module Simplex.Messaging.Client
     -- * Supporting types and client configuration
     ProtocolClientError (..),
     SMPClientError,
+    ProxyReponseError (..),
     ProtocolClientConfig (..),
     NetworkConfig (..),
     TransportSessionMode (..),
@@ -535,17 +536,35 @@ temporaryClientError = \case
   _ -> False
 {-# INLINE temporaryClientError #-}
 
+-- converts error of client running on proxy to the error sent to client connected to proxy
 smpProxyError :: SMPClientError -> ErrorType
 smpProxyError = \case
-  PCEProtocolError e -> PROXY (PROTOCOL e)
-  PCEResponseError e -> PROXY $ BROKER (RESPONSE $ B.unpack $ B.take 32 $ smpEncode e)
-  PCEUnexpectedResponse bs -> PROXY $ BROKER (UNEXPECTED $ B.unpack $ B.take 32 bs)
+  PCEProtocolError e -> PROXY $ PROTOCOL e
+  PCEResponseError e -> PROXY $ BROKER $ RESPONSE $ B.unpack $ B.take 32 $ smpEncode e
+  PCEUnexpectedResponse bs -> PROXY $ BROKER $ UNEXPECTED $ B.unpack $ B.take 32 bs
   PCEResponseTimeout -> PROXY $ BROKER TIMEOUT
   PCENetworkError -> PROXY $ BROKER NETWORK
   PCEIncompatibleHost -> PROXY $ BROKER HOST
-  PCETransportError t -> PROXY $ BROKER (TRANSPORT t)
-  PCECryptoError _ -> INTERNAL
+  PCETransportError t -> PROXY $ BROKER $ TRANSPORT t
+  PCECryptoError _ -> CRYPTO
   PCEIOError _ -> INTERNAL
+
+-- converts error received from proxy to client error
+smpReceivedProxyError :: ErrorType -> Maybe SMPClientError
+smpReceivedProxyError = \case
+  PROXY err -> case err of
+    NO_SESSION -> Nothing
+    PROTOCOL e -> Just $ PCEProtocolError e
+    BROKER e -> Just $ case e of
+      RESPONSE _ -> PCEResponseError $ CMD SYNTAX
+      UNEXPECTED s -> PCEUnexpectedResponse $ B.pack s
+      TIMEOUT -> PCEResponseTimeout
+      NETWORK -> PCENetworkError
+      HOST -> PCEIncompatibleHost
+      TRANSPORT t -> PCETransportError t
+  CRYPTO -> Just $ PCECryptoError C.CBDecryptError
+  INTERNAL -> Just $ PCEIOError $ userError "SMP proxy internal error"
+  _ -> Nothing
 
 -- | Create a new SMP queue.
 --
@@ -710,7 +729,7 @@ connectSMPProxiedRelay c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxy
     PKEY sId vr (chain, key) ->
       case supportedClientSMPRelayVRange `compatibleVersion` vr of
         Nothing -> throwE . PCEProtocolError . PROXY $ BROKER HOST
-        Just (Compatible v) -> liftEitherWith (const . PCEResponseError . PROXY $ PROTOCOL AUTH) $ ProxiedRelay sId v <$> validateRelay chain key
+        Just (Compatible v) -> liftEitherWith (const . PCEProtocolError . PROXY $ PROTOCOL AUTH) $ ProxiedRelay sId v <$> validateRelay chain key
     r -> throwE . PCEUnexpectedResponse $ bshow r
   where
     validateRelay :: X.CertificateChain -> X.SignedExact X.PubKey -> Either String C.PublicKeyX25519
@@ -729,10 +748,40 @@ data ProxiedRelay = ProxiedRelay
     prServerKey :: C.PublicKeyX25519
   }
 
+data ProxyReponseError
+  = -- | errors between client and proxy
+    PREProxyError SMPClientError
+  | -- | proxy has no requested session
+    PRENoRelaySession
+  | -- | error between proxy and server
+    PREProxiedRelayError SMPClientError
+
 -- consider how to process slow responses - is it handled somehow locally or delegated to the caller
 -- this method is used in the client
 -- sends PFWD :: C.PublicKeyX25519 -> EncTransmission -> Command Sender
 -- receives PRES :: EncResponse -> BrokerMsg -- proxy to client
+
+-- When client sends message via proxy, there may be one successful scenario and 9 error scenarios
+-- as shown below (WTF stands for unexpected response, ??? for response that failed to parse).
+--    client        proxy   relay   proxy        client
+-- 0) PFWD(SEND) -> RFWD -> RRES -> PRES(OK)  -> ok
+-- 1) PFWD(SEND) -> RFWD -> RRES -> PRES(ERR) -> PCEProtocolError - business logic error for client
+-- 2) PFWD(SEND) -> RFWD -> RRES -> PRES(WTF) -> ProxiedRelayError (PCEUnexpectedReponse) - relay/client protocol logic error
+-- 3) PFWD(SEND) -> RFWD -> RRES -> PRES(???) -> ProxiedRelayError (PCEResponseError) - relay/client syntax error
+-- 4) PFWD(SEND) -> RFWD -> ERR ->  ERR PROXY PROTOCOL -> ProxiedRelayError (PCEProtocolError) - proxy/relay business logic error
+-- 5) PFWD(SEND) -> RFWD -> WTF ->  ERR PROXY $ BROKER (UNEXPECTED s) -> ProxiedRelayError (PCEUnexpectedReponse) - proxy/relay protocol logic
+-- 6) PFWD(SEND) -> RFWD -> ??? ->  ERR PROXY $ BROKER (RESPONSE s) -> ProxiedRelayError (PCEResponseError) ? - - proxy/relay syntax
+-- 7) PFWD(SEND) -> ERR  -> PREProxyProtocolError (PCEProtocolError) - client/proxy business logic
+-- 8) PFWD(SEND) -> WTF  -> PCEUnexpectedReponse - client/proxy protocol logic
+-- 9) PFWD(SEND) -> ???  -> PCEResponseError - client/proxy syntax
+--
+-- We report as proxySMPMessage error (ExceptT error the errors of two kinds:
+-- - protocol errors from the destination relay wrapped in PRES - to simplify processing of AUTH and QUOTA errors, in this case proxy is "transparent" for such errors (PCEProtocolError, PCEUnexpectedResponse, PCEResponseError)
+-- - other response/transport/connection errors from the client connected to proxy itself
+-- Other errors are reported in the function result as `Either ProxiedRelayError ()`, including
+-- - protocol  errors from the client connected to proxy in PREProxyError (PCEProtocolError, PCEUnexpectedResponse, PCEResponseError)
+-- - other errors from the client running on proxy and connected to relay in PREProxiedRelayError
+
 proxySMPMessage ::
   SMPClient ->
   -- proxy session from PKEY
@@ -742,7 +791,7 @@ proxySMPMessage ::
   SenderId ->
   MsgFlags ->
   MsgBody ->
-  ExceptT SMPClientError IO ()
+  ExceptT SMPClientError IO (Either ProxyReponseError ())
 -- TODO use version
 proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g}} (ProxiedRelay sessionId _v serverKey) spKey sId flags msg = do
   -- prepare params
@@ -755,31 +804,38 @@ proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId corrId, sId, Cmd SSender $ SEND flags msg)
   auth <- liftEitherWith PCETransportError $ authTransmission serverThAuth spKey nonce tForAuth
   b <- case batchTransmissions (batch serverThParams) (blockSize serverThParams) [Right (auth, tToSend)] of
-    [] -> throwE $ PCETransportError TELargeMsg -- some other error. Internal?
-    TBError e _ : _ -> throwE $ PCETransportError e -- large message error?
+    [] -> throwE $ PCETransportError TELargeMsg
+    TBError e _ : _ -> throwE $ PCETransportError e
     TBTransmission s _ : _ -> pure s
     TBTransmissions s _ _ : _ -> pure s
   et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedMsgLength
   -- proxy interaction errors are wrapped
-  proxyCmdError `handleError` sendProtocolCommand_ c (Just nonce) Nothing sessionId (Cmd SProxiedClient (PFWD cmdPubKey et)) >>= \case
-    -- TODO support PKEY + resend?
-    PRES (EncResponse er) -> do
-      -- server interaction errors are thrown directly
-      t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.reverseNonce nonce) er
-      case tParse proxyThParams t' of
-        t'' :| [] -> case tDecodeParseValidate proxyThParams t'' of
-          (_auth, _signed, (_c, _e, r)) -> case r of -- TODO: verify
-            Left e -> throwE $ PCEResponseError e
-            Right OK -> pure ()
-            Right (ERR e) -> throwE $ PCEProtocolError e
-            Right e -> throwE $ PCEUnexpectedResponse (bshow e)
-        _ -> throwE $ PCETransportError TEBadBlock
-    pr -> throwE $ PCEResponseError . PROXY . BROKER $ UNEXPECTED (B.unpack $ B.take 32 $ bshow pr)
+  tryE (sendProtocolCommand_ c (Just nonce) Nothing sessionId (Cmd SProxiedClient (PFWD cmdPubKey et))) >>= \case
+    Right r -> case r of
+      PRES (EncResponse er) -> do
+        -- server interaction errors are thrown directly
+        t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.reverseNonce nonce) er
+        case tParse proxyThParams t' of
+          t'' :| [] -> case tDecodeParseValidate proxyThParams t'' of
+            (_auth, _signed, (_c, _e, cmd)) -> case cmd of
+              Right OK -> pure $ Right ()
+              Right (ERR e) -> throwE $ PCEProtocolError e -- this is the error from the destination relay
+              Right e -> throwE $ PCEUnexpectedResponse $ B.take 32 $ bshow e
+              Left e -> throwE $ PCEResponseError e
+          _ -> throwE $ PCETransportError TEBadBlock
+      ERR (PROXY NO_SESSION) -> pure . Left $ PRENoRelaySession
+      ERR e -> proxyProtocolError e -- this will not happen, this error is returned via Left
+      _ -> proxyError $ PCEUnexpectedResponse $ B.take 32 $ bshow r
+    Left e -> case e of
+      PCEProtocolError e' -> proxyProtocolError e'
+      PCEUnexpectedResponse _ -> proxyError e
+      PCEResponseError _ -> proxyError e
+      _ -> throwE e
   where
-    proxyCmdError :: SMPClientError -> ExceptT SMPClientError IO BrokerMsg
-    proxyCmdError = \case
-      PCETransportError te -> throwE . PCEResponseError . PROXY . BROKER $ TRANSPORT te
-      err -> throwE err
+    proxyProtocolError e = pure . Left $ case smpReceivedProxyError e of
+      Just pe -> PREProxiedRelayError pe
+      Nothing -> PREProxyError $ PCEProtocolError e
+    proxyError = pure . Left . PREProxyError
 
 -- this method is used in the proxy
 -- sends RFWD :: EncFwdTransmission -> Command Sender

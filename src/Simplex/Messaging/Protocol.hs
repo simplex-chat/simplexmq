@@ -1144,6 +1144,8 @@ data ErrorType
     PROXY {proxyErr :: ProxyError}
   | -- | command authorization error - bad signature or non-existing SMP queue
     AUTH
+  | -- | encryption/decryption error in proxy protocol
+    CRYPTO
   | -- | SMP queue capacity is exceeded on the server
     QUOTA
   | -- | ACK command is sent without message to be acknowledged
@@ -1197,7 +1199,7 @@ data ProxyError
 -- | SMP server errors.
 data BrokerErrorType
   = -- | invalid server response (failed to parse)
-    RESPONSE {smpErr :: String}
+    RESPONSE {respErr :: String}
   | -- | unexpected response
     UNEXPECTED {respErr :: String}
   | -- | network error
@@ -1434,6 +1436,7 @@ instance Encoding ErrorType where
     CMD err -> "CMD " <> smpEncode err
     PROXY err -> "PROXY " <> smpEncode err
     AUTH -> "AUTH"
+    CRYPTO -> "CRYPTO"
     QUOTA -> "QUOTA"
     EXPIRED -> "EXPIRED"
     NO_MSG -> "NO_MSG"
@@ -1448,6 +1451,7 @@ instance Encoding ErrorType where
       "CMD" -> CMD <$> _smpP
       "PROXY" -> PROXY <$> _smpP
       "AUTH" -> pure AUTH
+      "CRYPTO" -> pure CRYPTO
       "QUOTA" -> pure QUOTA
       "EXPIRED" -> pure EXPIRED
       "NO_MSG" -> pure NO_MSG
@@ -1482,8 +1486,8 @@ instance Encoding ProxyError where
     NO_SESSION -> "NO_SESSION"
   smpP =
     A.takeTill (== ' ') >>= \case
-      "PROTOCOL " -> PROTOCOL <$> smpP
-      "BROKER " -> BROKER <$> smpP
+      "PROTOCOL" -> PROTOCOL <$> _smpP
+      "BROKER" -> BROKER <$> _smpP
       "NO_SESSION" -> pure NO_SESSION
       _ -> fail "bad command error type"
 
@@ -1493,8 +1497,8 @@ instance StrEncoding ProxyError where
     BROKER e -> "BROKER " <> strEncode e
     NO_SESSION -> "NO_SESSION"
   strP =
-    "PROTOCOL " *> (PROTOCOL <$> strP)
-      <|> "BROKER " *> (BROKER <$> strP)
+    "PROTOCOL" *> (PROTOCOL <$> _strP)
+      <|> "BROKER" *> (BROKER <$> _strP)
       <|> "NO_SESSION" $> NO_SESSION
 
 instance Encoding BrokerErrorType where

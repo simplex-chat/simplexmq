@@ -37,8 +37,8 @@ protocolErrorTests = modifyMaxSuccess (const 1000) $ do
       arbitrary >>= \case
         BROKER srv (Agent.RESPONSE e) | hasSpaces srv || hasSpaces e -> discard
         BROKER srv _ | hasSpaces srv -> discard
-        SMP (PROXY (SMP.BROKER (SMP.UNEXPECTED s))) | hasUnicode s -> discard
-        NTF (PROXY (SMP.BROKER (SMP.UNEXPECTED s))) | hasUnicode s -> discard
+        SMP (SMP.PROXY (SMP.BROKER (SMP.UNEXPECTED s))) | hasUnicode s -> discard
+        NTF (SMP.PROXY (SMP.BROKER (SMP.UNEXPECTED s))) | hasUnicode s -> discard
         ok -> pure ok
     hasSpaces s = ' ' `B.elem` encodeUtf8 (T.pack s)
     hasUnicode = any (>= '\255')
@@ -48,6 +48,8 @@ deriving instance Generic AgentErrorType
 deriving instance Generic CommandErrorType
 
 deriving instance Generic ConnectionErrorType
+
+deriving instance Generic AgentProxyError
 
 deriving instance Generic BrokerErrorType
 
@@ -74,6 +76,8 @@ instance Arbitrary AgentErrorType where arbitrary = genericArbitraryU
 instance Arbitrary CommandErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary ConnectionErrorType where arbitrary = genericArbitraryU
+
+instance Arbitrary AgentProxyError where arbitrary = genericArbitraryU
 
 instance Arbitrary BrokerErrorType where arbitrary = genericArbitraryU
 

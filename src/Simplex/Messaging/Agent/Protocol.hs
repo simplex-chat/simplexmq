@@ -109,6 +109,7 @@ module Simplex.Messaging.Agent.Protocol
     ServiceScheme,
     simplexChat,
     AgentErrorType (..),
+    AgentProxyError (..),
     CommandErrorType (..),
     ConnectionErrorType (..),
     BrokerErrorType (..),
@@ -1475,6 +1476,8 @@ data AgentErrorType
     NTF {ntfErr :: ErrorType}
   | -- | XFTP protocol errors forwarded to agent clients
     XFTP {xftpErr :: XFTPErrorType}
+  | -- | SMP proxy errors
+    PROXY {proxyErr :: AgentProxyError}
   | -- | XRCP protocol errors forwarded to agent clients
     RCP {rcpErr :: RCErrorType}
   | -- | SMP server errors
@@ -1516,6 +1519,12 @@ data ConnectionErrorType
   | -- | connection not available on reply confirmation/HELLO after timeout
     NOT_AVAILABLE
   deriving (Eq, Read, Show, Exception)
+
+data AgentProxyError
+  = PROXY_RESP {proxyServer :: String, proxyError :: AgentErrorType}
+  | NO_PROXY {proxyServer :: String, relayServer :: String}
+  | PROXY_RELAY {proxyServer :: String, relayServer :: String, relayError :: AgentErrorType}
+  deriving (Eq, Show, Exception)
 
 -- | Errors of another SMP agent.
 data SMPAgentError
@@ -1572,6 +1581,7 @@ instance StrEncoding AgentErrorType where
       <|> "SMP " *> (SMP <$> strP)
       <|> "NTF " *> (NTF <$> strP)
       <|> "XFTP " *> (XFTP <$> strP)
+      <|> "PROXY " *> (PROXY <$> strP)
       <|> "RCP " *> (RCP <$> strP)
       <|> "BROKER " *> (BROKER <$> textP <* " RESPONSE " <*> (RESPONSE <$> textP))
       <|> "BROKER " *> (BROKER <$> textP <* " TRANSPORT " <*> (TRANSPORT <$> transportErrorP))
@@ -1590,6 +1600,7 @@ instance StrEncoding AgentErrorType where
     SMP e -> "SMP " <> strEncode e
     NTF e -> "NTF " <> strEncode e
     XFTP e -> "XFTP " <> strEncode e
+    PROXY e -> "PROXY " <> strEncode e
     RCP e -> "RCP " <> strEncode e
     BROKER srv (RESPONSE e) -> "BROKER " <> text srv <> " RESPONSE " <> text e
     BROKER srv (TRANSPORT e) -> "BROKER " <> text srv <> " TRANSPORT " <> serializeTransportError e
@@ -1602,6 +1613,10 @@ instance StrEncoding AgentErrorType where
     INACTIVE -> "INACTIVE"
     where
       text = encodeUtf8 . T.pack
+
+instance StrEncoding AgentProxyError where
+  strP = undefined
+  strEncode = undefined
 
 cryptoErrToSyncState :: AgentCryptoError -> RatchetSyncState
 cryptoErrToSyncState = \case
@@ -1966,4 +1981,5 @@ $(J.deriveJSON (sumTypeJSON id) ''AgentCryptoError)
 
 $(J.deriveJSON (sumTypeJSON id) ''SMPAgentError)
 
-$(J.deriveJSON (sumTypeJSON id) ''AgentErrorType)
+-- run deriveJSON in one TH splice to allow mutual instance
+$(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''AgentProxyError, ''AgentErrorType])

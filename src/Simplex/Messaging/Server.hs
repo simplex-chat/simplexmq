@@ -623,7 +623,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
           getRelay = do
             ProxyAgent {smpAgent} <- asks proxyAgent
-            liftIO $ proxyResp <$> runExceptT (getSMPServerClient' smpAgent srv) `catchError` (pure . Left . PCEIOError)
+            liftIO $ proxyResp <$> runExceptT (getSMPServerClient' smpAgent srv) `catch` (pure . Left . PCEIOError)
             where
               proxyResp = \case
                 Left err -> ERR $ smpProxyError err
@@ -919,13 +919,11 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE AUTH) pure (thAuth thParams')
           sessSecret <- maybe (throwE AUTH) pure sessSecret'
           let proxyNonce = C.cbNonce $ bs corrId
-          s' <- liftEitherWith (const AUTH) $ C.cbDecryptNoPad sessSecret proxyNonce s
+          s' <- liftEitherWith (const CRYPTO) $ C.cbDecryptNoPad sessSecret proxyNonce s
           FwdTransmission {fwdCorrId, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'
           let clientSecret = C.dh' fwdKey serverPrivKey
               clientNonce = C.cbNonce $ bs fwdCorrId
-          -- XXX: a client sent bad thing, so we should send a response, but its corrId isn't known due to transmission failed to decrypt
-          -- so, it would get PROXY PROTOCOL AUTH instead
-          b <- liftEitherWith (const AUTH) $ C.cbDecrypt clientSecret clientNonce et
+          b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret clientNonce et
           -- only allowing single forwarded transactions
           t' <- case tParse thParams' b of
             t :| [] -> pure $ tDecodeParseValidate thParams' t
@@ -935,9 +933,12 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           r <-
             lift (rejectOrVerify clntThAuth t') >>= \case
               Left r -> pure r
-              Right t''@(_, (corrId', entId', _)) ->
-                -- Left will not be returned by processCommand, as only SEND command is allowed
-                fromRight (corrId', entId', ERR INTERNAL) <$> lift (processCommand t'')
+              Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
+                Cmd SSender SEND {} ->
+                  -- Left will not be returned by processCommand, as only SEND command is allowed
+                  fromRight (corrId', entId', ERR INTERNAL) <$> lift (processCommand t'')
+                _ ->
+                  pure (corrId', entId', ERR $ CMD PROHIBITED)
           -- encode response
           r' <- case batchTransmissions (batch thParams') (blockSize thParams') [Right (Nothing, encodeTransmission thParams' r)] of
             [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right
@@ -945,7 +946,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             TBTransmission b' _ : _ -> pure b'
             TBTransmissions b' _ _ : _ -> pure b'
           -- encrypt to client
-          r2 <- liftEitherWith (const INTERNAL) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedMsgLength
+          r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedMsgLength
           -- encrypt to proxy
           let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
               r3 = EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
