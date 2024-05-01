@@ -115,7 +115,7 @@ deliverMessageViaProxy proxyServ relayServ alg msg msg' = do
     -- send via proxy to unsecured queue
     proxySMPMessage pc sess Nothing sndId noMsgFlags msg
     -- receive 1
-    (_tSess, _v, _sid, _ety, SMP.MSG RcvMessage {msgId, msgBody = EncRcvMsgBody encBody}) <- atomically $ readTBQueue msgQ
+    (_tSess, _v, _sid, _isResp, _entId, SMP.MSG RcvMessage {msgId, msgBody = EncRcvMsgBody encBody}) <- atomically $ readTBQueue msgQ
     liftIO $ dec msgId encBody `shouldBe` Right msg
     ackSMPMessage rc rPriv rcvId msgId
     -- secure queue
@@ -124,7 +124,7 @@ deliverMessageViaProxy proxyServ relayServ alg msg msg' = do
     -- send via proxy to secured queue
     proxySMPMessage pc sess (Just sPriv) sndId noMsgFlags msg'
     -- receive 2
-    (_tSess, _v, _sid, _ety, SMP.MSG RcvMessage {msgId = msgId', msgBody = EncRcvMsgBody encBody'}) <- atomically $ readTBQueue msgQ
+    (_tSess, _v, _sid, _isResp, _entId, SMP.MSG RcvMessage {msgId = msgId', msgBody = EncRcvMsgBody encBody'}) <- atomically $ readTBQueue msgQ
     liftIO $ dec msgId' encBody' `shouldBe` Right msg'
     ackSMPMessage rc rPriv rcvId msgId'
 

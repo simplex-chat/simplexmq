@@ -44,7 +44,7 @@ module Simplex.Messaging.Agent.Protocol
     currentSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
-    e2eEncUserMsgLength,
+    e2eEncAgentMsgLength,
 
     -- * SMP agent protocol types
     ConnInfo,
@@ -272,16 +272,11 @@ deliveryRcptsSMPAgentVersion = VersionSMPA 4
 pqdrSMPAgentVersion :: VersionSMPA
 pqdrSMPAgentVersion = VersionSMPA 5
 
--- TODO v5.7 increase to 5
 currentSMPAgentVersion :: VersionSMPA
-currentSMPAgentVersion = VersionSMPA 4
+currentSMPAgentVersion = VersionSMPA 5
 
--- TODO v5.7 remove dependency of version range on whether PQ support is needed
-supportedSMPAgentVRange :: PQSupport -> VersionRangeSMPA
-supportedSMPAgentVRange pq =
-  mkVersionRange duplexHandshakeSMPAgentVersion $ case pq of
-    PQSupportOn -> pqdrSMPAgentVersion
-    PQSupportOff -> currentSMPAgentVersion
+supportedSMPAgentVRange :: VersionRangeSMPA
+supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentSMPAgentVersion
 
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
@@ -292,8 +287,8 @@ e2eEncConnInfoLength v = \case
   PQSupportOn | v >= pqdrSMPAgentVersion -> 11122
   _ -> 14848
 
-e2eEncUserMsgLength :: VersionSMPA -> PQSupport -> Int
-e2eEncUserMsgLength v = \case
+e2eEncAgentMsgLength :: VersionSMPA -> PQSupport -> Int
+e2eEncAgentMsgLength v = \case
   -- reduced by 2222 (the increase of message ratchet header size)
   PQSupportOn | v >= pqdrSMPAgentVersion -> 13634
   _ -> 15856

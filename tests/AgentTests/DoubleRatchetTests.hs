@@ -93,9 +93,9 @@ fullMsgLen :: Ratchet a -> Int
 fullMsgLen Ratchet {rcSupportKEM, rcVersion} = headerLenLength + fullHeaderLen v rcSupportKEM + C.authTagSize + paddedMsgLen
   where
     v = current rcVersion
-    headerLenLength = case rcSupportKEM of
-      PQSupportOn | v >= pqRatchetE2EEncryptVersion -> 3 -- two bytes are added because of two Large used in new encoding
-      _ -> 1
+    headerLenLength
+      | v >= pqRatchetE2EEncryptVersion = 3 -- two bytes are added because of two Large used in new encoding
+      | otherwise = 1
 
 testMessageHeader :: forall a. AlgorithmI a => VersionE2E -> C.SAlgorithm a -> Expectation
 testMessageHeader v _ = do
@@ -520,7 +520,7 @@ initRatchets = do
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
-  let vs = testRatchetVersions PQSupportOff
+  let vs = testRatchetVersions
       bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
       alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOff
   pure (alice, bob, encrypt' noSndKEM, decrypt' noRcvKEM, (\#>))
@@ -537,7 +537,7 @@ initRatchetsKEMProposed = do
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 pKemParams_ e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
-  let vs = testRatchetVersions PQSupportOn
+  let vs = testRatchetVersions
       bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
       alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
@@ -555,7 +555,7 @@ initRatchetsKEMAccepted = do
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 pKemParams_ e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 pKem_ e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
-  let vs = testRatchetVersions PQSupportOn
+  let vs = testRatchetVersions
       bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
       alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
@@ -572,14 +572,14 @@ initRatchetsKEMProposedAgain = do
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 pKemParams_ e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 pKem_ e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
-  let vs = testRatchetVersions PQSupportOn
+  let vs = testRatchetVersions
       bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
       alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
-testRatchetVersions :: PQSupport -> RatchetVersions
-testRatchetVersions pq =
-  let v = maxVersion $ supportedE2EEncryptVRange pq
+testRatchetVersions :: RatchetVersions
+testRatchetVersions =
+  let v = maxVersion supportedE2EEncryptVRange
    in RatchetVersions v v
 
 encrypt_ :: AlgorithmI a => Maybe PQEncryption -> (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))

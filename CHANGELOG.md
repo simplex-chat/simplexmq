@@ -1,3 +1,23 @@
+# 5.7.0
+
+Version 5.7.0.4
+
+_Please note_: the earliest SimpleX Chat clients supported by this version of the servers is 5.5.3 (released on February 11, 2024).
+
+SMP server:
+- increase max SMP protocol version to 7 (support for deniable authenticators).
+
+NTF server:
+- increase max NTF protocol version to 2 (support for deniable authenticators).
+
+XFTP server:
+- version handshake using ALPN.
+
+SMP agent:
+- increase timeouts for XFTP files.
+- don't send commands after timeout.
+- PQ encryption support.
+
 # 5.6.2
 
 Version 5.6.2.2.

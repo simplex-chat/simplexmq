@@ -157,7 +157,7 @@ currentClientSMPRelayVersion :: VersionSMP
 currentClientSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 6
+currentServerSMPRelayVersion = VersionSMP 7
 
 -- minimal supported protocol version is 4
 -- TODO remove code that supports sending commands without batching
