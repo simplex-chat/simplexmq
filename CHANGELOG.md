@@ -1,3 +1,8 @@
+# 5.7.1
+
+SMP agent:
+- increase timeout for TLS connection via SOCKS
+
 # 5.7.0
 
 Version 5.7.0.4
