@@ -148,7 +148,6 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
-import Control.Monad.Trans.Except (throwE)
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as J
@@ -644,7 +643,7 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
     resubscribe :: AM ()
     resubscribe = do
       cs <- readTVarIO $ RQ.getConnections $ activeSubs c
-      rs <- subscribeQueues c $ L.toList qs
+      (sessions, rs) <- lift . subscribeQueues c $ L.toList qs
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
       liftIO $ do
         let conns = filter (`M.notMember` cs) okConns
@@ -653,7 +652,10 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
       forM_ (listToMaybe tempErrs) $ \(_, err) -> do
         when (null okConns && M.null cs && null finalErrs) . liftIO $
-          closeClient c smpClients tSess -- XXX: closing client without checking session
+          forM_ (listToMaybe sessions) $ \sessId -> do
+            -- only close the client session that was used to subscribe
+            v_ <- atomically $ ifM (activeClientSession c tSess sessId) (TM.lookupDelete tSess $ smpClients c) (pure Nothing)
+            mapM_ (closeClient_ c) v_
         throwError err
     notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
@@ -1159,28 +1161,30 @@ temporaryOrHostError = \case
 {-# INLINE temporaryOrHostError #-}
 
 -- | Subscribe to queues. The list of results can have a different order.
-subscribeQueues :: AgentClient -> [RcvQueue] -> AM [(RcvQueue, Either AgentErrorType ())]
+subscribeQueues :: AgentClient -> [RcvQueue] -> AM' ([SessionId], [(RcvQueue, Either AgentErrorType ())])
 subscribeQueues c qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
   atomically $ do
     modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs'))
     RQ.batchAddQueues (pendingSubs c) qs'
   env <- ask
-  processed <- newTVarIO False
   -- only "checked" queues are subscribed
-  rs <- lift $ sendTSessionBatches "SUB" 90 id (subscribeQueues_ env processed) c qs'
-  ifM (readTVarIO processed) (pure $ errs <> rs) $ throwE INTERNAL {internalErr = "SMP client replaced while subscribing queues"}
+  sessionsUsed <- newTVarIO []
+  rs <- sendTSessionBatches "SUB" 90 id (subscribeQueues_ env sessionsUsed) c qs'
+  sessionsUsed' <- readTVarIO sessionsUsed
+  pure (sessionsUsed', errs <> rs)
   where
     checkQueue rq = do
       prohibited <- atomically $ hasGetLock c rq
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED) else Right rq
-    subscribeQueues_ :: Env -> TVar Bool -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
-    subscribeQueues_ env processed smp qs' = do
+    subscribeQueues_ :: Env -> TVar [SessionId] -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
+    subscribeQueues_ env sessionsUsed smp qs' = do
       rs <- sendBatch subscribeSMPQueues smp qs'
-      alive <- atomically $ activeClientSession c (transportSession' smp) (sessionId $ thParams smp)
+      let sessId = sessionId $ thParams smp
+      alive <- atomically $ activeClientSession c (transportSession' smp) sessId
       if alive
         then do
-          atomically $ writeTVar processed True
+          atomically $ modifyTVar' sessionsUsed (sessId :)
           mapM_ (uncurry $ processSubResult c) rs
           when (any temporaryClientError . lefts . map snd $ L.toList rs) $
             runReaderT (resubscribeSMPSession c $ transportSession' smp) env
