@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent.Client
     getQueueMessage,
     decryptSMPMessage,
     addSubscription,
+    addNewQueueSubscription,
     getSubscriptions,
     sendConfirmation,
     sendInvitation,
@@ -77,7 +78,9 @@ module Simplex.Messaging.Agent.Client
     logSecret,
     removeSubscription,
     hasActiveSubscription,
+    hasPendingSubscription,
     hasGetLock,
+    activeClientSession,
     agentClientStore,
     agentDRG,
     getAgentSubscriptions,
@@ -229,7 +232,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPVersion)
+import Simplex.Messaging.Transport (SMPVersion, SessionId, THandleParams (sessionId))
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -1094,7 +1097,7 @@ getSessionMode :: AgentClient -> IO TransportSessionMode
 getSessionMode = atomically . fmap sessionMode . getNetworkConfig
 {-# INLINE getSessionMode #-}
 
-newRcvQueue :: AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SubscriptionMode -> AM (NewRcvQueue, SMPQueueUri)
+newRcvQueue :: AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SubscriptionMode -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
 newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
   C.AuthAlg a <- asks (rcvAuthAlg . config)
   g <- asks random
@@ -1103,8 +1106,9 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
   (e2eDhKey, e2ePrivKey) <- atomically $ C.generateKeyPair g
   logServer "-->" c srv "" "NEW"
   tSess <- liftIO $ mkTransportSession c userId srv connId
-  QIK {rcvId, sndId, rcvPublicDhKey} <-
-    withClient c tSess "NEW" $ \smp -> createSMPQueue smp rKeys dhKey auth subMode
+  (sessId, QIK {rcvId, sndId, rcvPublicDhKey}) <-
+    withClient c tSess "NEW" $ \smp ->
+      (sessionId $ thParams smp,) <$> createSMPQueue smp rKeys dhKey auth subMode
   liftIO . logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue
@@ -1126,7 +1130,8 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
             clientNtfCreds = Nothing,
             deleteErrors = 0
           }
-  pure (rq, SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey)
+      qUri = SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey
+  pure (rq, qUri, tSess, sessId)
 
 processSubResult :: AgentClient -> RcvQueue -> Either SMPClientError () -> IO (Either SMPClientError ())
 processSubResult c rq r = do
@@ -1135,7 +1140,7 @@ processSubResult c rq r = do
       unless (temporaryClientError e) . atomically $ do
         RQ.deleteQueue rq (pendingSubs c)
         TM.insert (RQ.qKey rq) e (removedSubs c)
-    _ -> addSubscription c rq
+    _ -> atomically $ addSubscription c rq
   pure r
 
 temporaryAgentError :: AgentErrorType -> Bool
@@ -1174,6 +1179,13 @@ subscribeQueues c qs = do
         runReaderT (resubscribeSMPSession c $ transportSession' smp) env
       pure rs
 
+activeClientSession :: AgentClient -> SMPTransportSession -> SessionId -> STM Bool
+activeClientSession c tSess sessId = sameSess <$> tryReadSessVar tSess (smpClients c)
+  where
+    sameSess = \case
+      Just (Right smp) -> sessId == sessionId (thParams smp)
+      _ -> False
+
 type BatchResponses e r = (NonEmpty (RcvQueue, Either e r))
 
 -- statBatchSize is not used to batch the commands, only for traffic statistics
@@ -1209,15 +1221,29 @@ sendBatch smpCmdFunc smp qs = L.zip qs <$> smpCmdFunc smp (L.map queueCreds qs)
   where
     queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvPrivateKey, rcvId)
 
-addSubscription :: AgentClient -> RcvQueue -> IO ()
-addSubscription c rq@RcvQueue {connId} = atomically $ do
+addSubscription :: AgentClient -> RcvQueue -> STM ()
+addSubscription c rq@RcvQueue {connId} = do
   modifyTVar' (subscrConns c) $ S.insert connId
   RQ.addQueue rq $ activeSubs c
   RQ.deleteQueue rq $ pendingSubs c
 
+addNewQueueSubscription :: AgentClient -> RcvQueue -> SMPTransportSession -> SessionId -> AM' ()
+addNewQueueSubscription c rq tSess sessId = do
+  same <-
+    atomically $
+      ifM
+        (activeClientSession c tSess sessId)
+        (True <$ addSubscription c rq)
+        (False <$ RQ.addQueue rq (pendingSubs c))
+  unless same $ resubscribeSMPSession c tSess
+
 hasActiveSubscription :: AgentClient -> ConnId -> STM Bool
 hasActiveSubscription c connId = RQ.hasConn connId $ activeSubs c
 {-# INLINE hasActiveSubscription #-}
+
+hasPendingSubscription :: AgentClient -> ConnId -> STM Bool
+hasPendingSubscription c connId = RQ.hasConn connId $ pendingSubs c
+{-# INLINE hasPendingSubscription #-}
 
 removeSubscription :: AgentClient -> ConnId -> STM ()
 removeSubscription c connId = do

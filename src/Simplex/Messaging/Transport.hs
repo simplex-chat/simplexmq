@@ -41,6 +41,7 @@ module Simplex.Messaging.Transport
     basicAuthSMPVersion,
     subModeSMPVersion,
     authCmdsSMPVersion,
+    sendingProxySMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -124,7 +125,7 @@ smpBlockSize = 16384
 -- 4 - support command batching (7/17/2022)
 -- 5 - basic auth for SMP servers (11/12/2022)
 -- 6 - allow creating queues without subscribing (9/10/2023)
--- 7 - support authenticated encryption to verify senders' commands, imply but do NOT send session ID in signed part (2/3/2024)
+-- 7 - support authenticated encryption to verify senders' commands, imply but do NOT send session ID in signed part (4/30/2024)
 
 data SMPVersion
 
@@ -148,6 +149,9 @@ subModeSMPVersion = VersionSMP 6
 
 authCmdsSMPVersion :: VersionSMP
 authCmdsSMPVersion = VersionSMP 7
+
+sendingProxySMPVersion :: VersionSMP
+sendingProxySMPVersion = VersionSMP 8
 
 currentClientSMPRelayVersion :: VersionSMP
 currentClientSMPRelayVersion = VersionSMP 6
