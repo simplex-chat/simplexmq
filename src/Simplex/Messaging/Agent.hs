@@ -1964,7 +1964,7 @@ subscriber c@AgentClient {subQ, msgQ} = forever $ do
     runExceptT (processSMPTransmission c t) >>= \case
       Left e -> do
         logError $ tshow e
-        atomically $ writeTBQueue subQ ("", "", APC SAENone $ AERR e)
+        atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR e)
       Right _ -> return ()
 
 cleanupManager :: AgentClient -> AM' ()
@@ -2043,8 +2043,6 @@ data ACKd = ACKd | ACKPending
 -- it cannot be finally, unfortunately, as sometimes it needs to be ACK+DEL
 processSMPTransmission :: AgentClient -> ServerTransmission SMPVersion BrokerMsg -> AM ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, sessId, isResponse, rId, cmd) = do
-  unlessM (atomically $ activeClientSession c tSess sessId) $
-    throwE INTERNAL {internalErr = "Transmission from a repalced SMP client, skipping processing"}
   (rq, SomeConn _ conn) <- withStore c (\db -> getRcvConn db srv rId)
   processSMP rq conn $ toConnData conn
   where
