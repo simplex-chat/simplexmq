@@ -892,7 +892,7 @@ subscribeConnections' c connIds = do
       (subRs, rcvQs) = M.mapEither rcvQueueOrResult cs
   mapM_ (mapM_ (\(cData, sqs) -> mapM_ (lift . resumeMsgDelivery c cData) sqs) . sndQueue) cs
   mapM_ (resumeConnCmds c) $ M.keys cs
-  rcvRs <- lift $ connResults <$> subscribeQueues c (concat $ M.elems rcvQs)
+  rcvRs <- connResults <$> subscribeQueues c (concat $ M.elems rcvQs)
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
   when (instantNotifications tkn) . void . lift . forkIO . void . runExceptT $ sendNtfCreate ns rcvRs conns
@@ -1963,7 +1963,9 @@ subscriber c@AgentClient {subQ, msgQ} = forever $ do
   t <- atomically $ readTBQueue msgQ
   agentOperationBracket c AORcvNetwork waitUntilActive $
     runExceptT (processSMPTransmission c t) >>= \case
-      Left e -> atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR e)
+      Left e -> do
+        logError $ tshow e
+        atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR e)
       Right _ -> return ()
 
 cleanupManager :: AgentClient -> AM' ()
@@ -2042,8 +2044,8 @@ data ACKd = ACKd | ACKPending
 -- it cannot be finally, unfortunately, as sometimes it needs to be ACK+DEL
 processSMPTransmission :: AgentClient -> ServerTransmission SMPVersion BrokerMsg -> AM ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, sessId, isResponse, rId, cmd) = do
-  unlessM (atomically $ checkSessVar smpClients tSess $ either (const False) ((== sessId) . sessionId . thParams)) . throwE $
-    CRITICAL False "Congratulations, you've caught a rare beast: zomblie delivery process!"
+  unlessM (atomically $ checkSessVar smpClients tSess $ either (const False) ((== sessId) . sessionId . thParams)) $
+    throwE INTERNAL {internalErr = "Transmission from a repalced SMP client, skipping processing"}
   (rq, SomeConn _ conn) <- withStore c (\db -> getRcvConn db srv rId)
   processSMP rq conn $ toConnData conn
   where

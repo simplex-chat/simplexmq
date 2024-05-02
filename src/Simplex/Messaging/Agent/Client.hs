@@ -148,6 +148,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
+import Control.Monad.Trans.Except (throwE)
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as J
@@ -644,9 +645,8 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
     resubscribe :: AM ()
     resubscribe = do
       cs <- readTVarIO $ RQ.getConnections $ activeSubs c
-      rs <- lift . subscribeQueues c $ L.toList qs
+      rs <- subscribeQueues c $ L.toList qs
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
-      mapM_ throwError $ listToMaybe [e | (_conn, e@CRITICAL {}) <- errs]
       liftIO $ do
         let conns = filter (`M.notMember` cs) okConns
         unless (null conns) $ notifySub "" $ UP srv conns
@@ -953,7 +953,6 @@ protocolClientError protocolError_ host = \case
   PCEIncompatibleHost -> BROKER host HOST
   PCETransportError e -> BROKER host $ TRANSPORT e
   e@PCECryptoError {} -> INTERNAL $ show e
-  PCEZombieSession -> CRITICAL False "A message came from a disconnected session"
   PCEIOError {} -> BROKER host NETWORK
 
 data ProtocolTestStep
@@ -1161,30 +1160,33 @@ temporaryOrHostError = \case
 {-# INLINE temporaryOrHostError #-}
 
 -- | Subscribe to queues. The list of results can have a different order.
-subscribeQueues :: AgentClient -> [RcvQueue] -> AM' [(RcvQueue, Either AgentErrorType ())]
+subscribeQueues :: AgentClient -> [RcvQueue] -> AM [(RcvQueue, Either AgentErrorType ())]
 subscribeQueues c@AgentClient {smpClients} qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
   atomically $ do
     modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs'))
     RQ.batchAddQueues (pendingSubs c) qs'
   env <- ask
+  processed <- newTVarIO False
   -- only "checked" queues are subscribed
-  (errs <>) <$> sendTSessionBatches "SUB" 90 id (subscribeQueues_ env) c qs'
+  rs <- lift $ sendTSessionBatches "SUB" 90 id (subscribeQueues_ env processed) c qs'
+  ifM (readTVarIO processed) (pure $ errs <> rs) $ throwE INTERNAL {internalErr = "SMP client replaced while subscribing queues"}
   where
     checkQueue rq = do
       prohibited <- atomically $ hasGetLock c rq
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED) else Right rq
-    subscribeQueues_ :: Env -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
-    subscribeQueues_ env smp qs' = do
+    subscribeQueues_ :: Env -> TVar Bool -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
+    subscribeQueues_ env processed smp qs' = do
       rs <- sendBatch subscribeSMPQueues smp qs'
-      ok <- atomically $ checkSessVar smpClients (transportSession' smp) (either (const False) $ sameClient smp)
-      if not ok
-        then pure $ L.map (\(q, _ignore) -> (q, Left PCEZombieSession)) rs -- the session is gone, don't touch agent state
-        else do
+      alive <- atomically $ checkSessVar smpClients (transportSession' smp) (either (const False) $ sameClient smp)
+      if alive
+        then do
+          atomically $ writeTVar processed True
           mapM_ (uncurry $ processSubResult c) rs
           when (any temporaryClientError . lefts . map snd $ L.toList rs) $
             runReaderT (resubscribeSMPSession c $ transportSession' smp) env
-          pure rs
+        else logWarn "subcription batch result for replaced SMP client, processing skipped"
+      pure rs
 
 activeClientSession :: AgentClient -> SMPTransportSession -> SessionId -> STM Bool
 activeClientSession c tSess sessId = sameSess <$> tryReadSessVar tSess (smpClients c)
