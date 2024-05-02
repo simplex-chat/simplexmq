@@ -1181,8 +1181,8 @@ subscribeQueues c qs = do
     subscribeQueues_ env sessionsUsed smp qs' = do
       rs <- sendBatch subscribeSMPQueues smp qs'
       let sessId = sessionId $ thParams smp
-      alive <- atomically $ activeClientSession c (transportSession' smp) sessId
-      if alive
+      active <- atomically $ activeClientSession c (transportSession' smp) sessId
+      if active
         then do
           atomically $ modifyTVar' sessionsUsed (sessId :)
           mapM_ (uncurry $ processSubResult c) rs
