@@ -19,7 +19,7 @@ module Simplex.Messaging.Transport.Client
     TransportHost (..),
     TransportHosts (..),
     TransportHosts_ (..),
-    validateCertificateChain
+    validateCertificateChain,
   )
 where
 
@@ -52,7 +52,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.KeepAlive
-import Simplex.Messaging.Util (bshow, (<$?>), catchAll, tshow)
+import Simplex.Messaging.Util (bshow, catchAll, tshow, (<$?>))
 import System.IO.Error
 import System.Timeout (timeout)
 import Text.Read (readMaybe)
@@ -143,14 +143,19 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
   serverCert <- newEmptyTMVarIO
   let hostName = B.unpack $ strEncode host
       clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials alpn serverCert
-      connectTCP = case socksProxy of
-        Just proxy -> connectSocksClient proxy proxyUsername $ hostAddr host
-        _ -> connectTCPClient hostName
+      (connectTCP, tlsTimeout) = case socksProxy of
+        -- We use a much larger timeout for connections via SOCKS proxy, to allow the circuits created
+        -- in the socket connection that would otherwise timeout to be used in the next connection attempt.
+        -- Using standard timeout results in permanent timeout for the clients using SOCKS in cases
+        -- when SOCKS proxy is very slow (bad network, congestion in underlying network, etc.),
+        -- because SOCKS proxy destroys circuits when the last session using them is closed.
+        Just proxy -> (connectSocksClient proxy proxyUsername (hostAddr host), tcpConnectTimeout * 10)
+        _ -> (connectTCPClient hostName, tcpConnectTimeout)
   c <- do
     sock <- connectTCP port
     mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive" <> tshow e)
     let tCfg = clientTransportConfig cfg
-    tcpConnectTimeout `timeout` connectTLS (Just hostName) tCfg clientParams sock >>= \case
+    tlsTimeout `timeout` connectTLS (Just hostName) tCfg clientParams sock >>= \case
       Nothing -> do
         close sock
         logError "connection timed out"
