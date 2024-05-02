@@ -157,7 +157,6 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (lefts, partitionEithers)
-import Data.Function (on)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
@@ -1161,7 +1160,7 @@ temporaryOrHostError = \case
 
 -- | Subscribe to queues. The list of results can have a different order.
 subscribeQueues :: AgentClient -> [RcvQueue] -> AM [(RcvQueue, Either AgentErrorType ())]
-subscribeQueues c@AgentClient {smpClients} qs = do
+subscribeQueues c qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
   atomically $ do
     modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs'))
@@ -1178,7 +1177,7 @@ subscribeQueues c@AgentClient {smpClients} qs = do
     subscribeQueues_ :: Env -> TVar Bool -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
     subscribeQueues_ env processed smp qs' = do
       rs <- sendBatch subscribeSMPQueues smp qs'
-      alive <- atomically $ checkSessVar smpClients (transportSession' smp) (either (const False) $ sameClient smp)
+      alive <- atomically $ activeClientSession c (transportSession' smp) (sessionId $ thParams smp)
       if alive
         then do
           atomically $ writeTVar processed True
@@ -1194,9 +1193,6 @@ activeClientSession c tSess sessId = sameSess <$> tryReadSessVar tSess (smpClien
     sameSess = \case
       Just (Right smp) -> sessId == sessionId (thParams smp)
       _ -> False
-
-sameClient :: ProtocolClient v err msg -> ProtocolClient v err msg -> Bool
-sameClient = (==) `on` (sessionId . thParams)
 
 type BatchResponses e r = NonEmpty (RcvQueue, Either e r)
 

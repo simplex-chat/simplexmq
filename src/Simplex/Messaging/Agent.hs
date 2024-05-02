@@ -172,7 +172,6 @@ import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC, XFTPServerWithAuth)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
-import Simplex.Messaging.Session (checkSessVar)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion, THandleParams (sessionId))
 import Simplex.Messaging.Util
@@ -2044,7 +2043,7 @@ data ACKd = ACKd | ACKPending
 -- it cannot be finally, unfortunately, as sometimes it needs to be ACK+DEL
 processSMPTransmission :: AgentClient -> ServerTransmission SMPVersion BrokerMsg -> AM ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, sessId, isResponse, rId, cmd) = do
-  unlessM (atomically $ checkSessVar smpClients tSess $ either (const False) ((== sessId) . sessionId . thParams)) $
+  unlessM (atomically $ activeClientSession c tSess sessId) $
     throwE INTERNAL {internalErr = "Transmission from a repalced SMP client, skipping processing"}
   (rq, SomeConn _ conn) <- withStore c (\db -> getRcvConn db srv rId)
   processSMP rq conn $ toConnData conn
