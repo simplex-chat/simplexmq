@@ -143,33 +143,36 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
   serverCert <- newEmptyTMVarIO
   let hostName = B.unpack $ strEncode host
       clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials alpn serverCert
-      (connectTCP, tlsTimeout) = case socksProxy of
-        -- We use a much larger timeout for connections via SOCKS proxy, to allow the circuits created
-        -- in the socket connection that would otherwise timeout to be used in the next connection attempt.
-        -- Using standard timeout results in permanent timeout for the clients using SOCKS in cases
-        -- when SOCKS proxy is very slow (bad network, congestion in underlying network, etc.),
-        -- because SOCKS proxy destroys circuits when the last session using them is closed.
-        Just proxy -> (connectSocksClient proxy proxyUsername (hostAddr host), tcpConnectTimeout * 10)
-        _ -> (connectTCPClient hostName, tcpConnectTimeout)
-  c <- do
-    sock <- connectTCP port
-    mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive" <> tshow e)
-    let tCfg = clientTransportConfig cfg
-    tlsTimeout `timeout` connectTLS (Just hostName) tCfg clientParams sock >>= \case
-      Nothing -> do
-        close sock
-        logError "connection timed out"
-        fail "connection timed out"
-      Just tls -> do
-        chain <-
-          atomically (tryTakeTMVar serverCert) >>= \case
-            Nothing -> do
-              logError "onServerCertificate didn't fire or failed to get cert chain"
-              closeTLS tls >> error "onServerCertificate failed"
-            Just c -> pure c
-        getClientConnection tCfg chain tls
+  c <- case socksProxy of
+    -- We do not timeout connections via SOCKS proxy, to allow the circuits created
+    -- in the socket connection that would otherwise timeout to be used in the next connection attempts.
+    -- Not preserving circuits results in permanent timeout for the clients using SOCKS in cases
+    -- when SOCKS proxy is very slow (bad network, congestion in underlying network, etc.),
+    -- because SOCKS proxy destroys circuits when the last session using them is closed.
+    Just proxy -> do
+      sock <- connectSocksClient proxy proxyUsername (hostAddr host) port
+      keepAlive sock
+      tls <- connectTLS (Just hostName) tCfg clientParams sock
+      connectClient serverCert tls
+    Nothing -> do
+      sock <- connectTCPClient hostName port
+      keepAlive sock
+      tcpConnectTimeout `timeout` connectTLS (Just hostName) tCfg clientParams sock >>= \case
+        Nothing -> close sock >> logError "connection timed out" >> fail "connection timed out"
+        Just tls -> connectClient serverCert tls
   client c `E.finally` closeConnection c
   where
+    tCfg = clientTransportConfig cfg
+    keepAlive sock =
+      mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive" <> tshow e)
+    connectClient serverCert tls = do
+      chain <-
+        atomically (tryTakeTMVar serverCert) >>= \case
+          Nothing -> do
+            logError "onServerCertificate didn't fire or failed to get cert chain"
+            closeTLS tls >> error "onServerCertificate failed"
+          Just c -> pure c
+      getClientConnection tCfg chain tls
     hostAddr = \case
       THIPv4 addr -> SocksAddrIPV4 $ tupleToHostAddress addr
       THIPv6 addr -> SocksAddrIPV6 addr
