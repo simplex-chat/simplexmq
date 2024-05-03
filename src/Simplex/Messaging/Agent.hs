@@ -1963,7 +1963,7 @@ subscriber c@AgentClient {subQ, msgQ} = forever $ do
     runExceptT (processSMPTransmission c t) >>= \case
       Left e -> do
         logError $ tshow e
-        atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR e)
+        -- atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR e)
       Right _ -> return ()
 
 cleanupManager :: AgentClient -> AM' ()
