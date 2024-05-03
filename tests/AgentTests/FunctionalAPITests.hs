@@ -1393,10 +1393,10 @@ makeConnection = makeConnection_ PQSupportOn
 makeConnection_ :: PQSupport -> AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection_ pqEnc alice bob = makeConnectionForUsers_ pqEnc alice 1 bob 1
 
-makeConnectionForUsers :: AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
+makeConnectionForUsers :: HasCallStack => AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnectionForUsers = makeConnectionForUsers_ PQSupportOn
 
-makeConnectionForUsers_ :: PQSupport -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
+makeConnectionForUsers_ :: HasCallStack => PQSupport -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnectionForUsers_ pqSupport alice aliceUserId bob bobUserId = do
   (bobId, qInfo) <- A.createConnection alice aliceUserId True SCMInvitation Nothing (CR.IKNoPQ pqSupport) SMSubscribe
   aliceId <- A.joinConnection bob bobUserId True qInfo "bob's connInfo" pqSupport SMSubscribe
@@ -2581,6 +2581,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     ("", "", UP _ _) <- nGet a
     ("", "", UP _ _) <- nGet a
     a `hasClients` 1
+    ("", "", UP _ _) <- nGet a
 
     aUserId2 <- createUser a [noAuthSrv testSMPServer] [noAuthSrv testXFTPServer]
     (aId2, bId2) <- makeConnectionForUsers a aUserId2 b 1
@@ -2612,6 +2613,8 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     ("", "", UP _ _) <- nGet a
     ("", "", UP _ _) <- nGet a
     a `hasClients` 2
+    ("", "", UP _ _) <- nGet a
+    ("", "", UP _ _) <- nGet a
     exchangeGreetingsMsgId 10 a bId1 b aId1
     exchangeGreetingsMsgId 10 a bId1' b aId1'
     exchangeGreetingsMsgId 8 a bId2 b aId2
