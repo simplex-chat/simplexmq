@@ -1137,12 +1137,14 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
   pure (rq, qUri, tSess, sessId)
 
 processSubResult :: AgentClient -> RcvQueue -> Either SMPClientError () -> STM ()
-processSubResult c rq = \case
+processSubResult c rq@RcvQueue {connId} = \case
   Left e ->
     unless (temporaryClientError e) $ do
       RQ.deleteQueue rq (pendingSubs c)
       TM.insert (RQ.qKey rq) e (removedSubs c)
-  Right () -> addSubscription c rq
+  Right () ->
+    whenM (hasPendingSubscription c connId) $
+      addSubscription c rq
 
 temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
