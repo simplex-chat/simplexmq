@@ -2581,7 +2581,6 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     ("", "", UP _ _) <- nGet a
     ("", "", UP _ _) <- nGet a
     a `hasClients` 1
-    ("", "", UP _ _) <- nGet a
 
     aUserId2 <- createUser a [noAuthSrv testSMPServer] [noAuthSrv testXFTPServer]
     (aId2, bId2) <- makeConnectionForUsers a aUserId2 b 1
@@ -2613,8 +2612,6 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     ("", "", UP _ _) <- nGet a
     ("", "", UP _ _) <- nGet a
     a `hasClients` 2
-    ("", "", UP _ _) <- nGet a
-    ("", "", UP _ _) <- nGet a
     exchangeGreetingsMsgId 10 a bId1 b aId1
     exchangeGreetingsMsgId 10 a bId1' b aId1'
     exchangeGreetingsMsgId 8 a bId2 b aId2

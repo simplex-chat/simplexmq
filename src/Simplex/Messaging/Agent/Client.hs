@@ -1177,20 +1177,22 @@ subscribeQueues c qs = do
     subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
     subscribeQueues_ env session smp qs' = do
       rs <- sendBatch subscribeSMPQueues smp qs'
-      let tSess = transportSession' smp
-          sessId = sessionId $ thParams smp
-      active <- 
+      active <-
         atomically $
           ifM
             (activeClientSession c tSess sessId)
             (writeTVar session (Just sessId) >> mapM_ (uncurry $ processSubResult c) rs $> True)
             (pure False)
-      when (active || hasTempErrors rs) $
-        resubscribeSMPSession c tSess `runReaderT` env
-      unless active $ logWarn "subcription batch result for replaced SMP client, resubscribing"
-      pure rs
+      if active
+        then when (hasTempErrors rs) resubscribe $> rs
+        else do
+          unless active $ logWarn "subcription batch result for replaced SMP client, resubscribing"
+          resubscribe $> L.map (second $ \_ -> Left PCENetworkError) rs
       where
+        tSess = transportSession' smp
+        sessId = sessionId $ thParams smp
         hasTempErrors = any (either temporaryClientError (const False) . snd)
+        resubscribe = resubscribeSMPSession c tSess `runReaderT` env
 
 activeClientSession :: AgentClient -> SMPTransportSession -> SessionId -> STM Bool
 activeClientSession c tSess sessId = sameSess <$> tryReadSessVar tSess (smpClients c)

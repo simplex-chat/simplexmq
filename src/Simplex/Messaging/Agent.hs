@@ -2240,7 +2240,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                   ((&&) <$> hasPendingSubscription c connId <*> activeClientSession c tSess sessId)
                   (True <$ addSubscription c rq)
                   (pure False)
-            when added . notify $ UP srv [connId]
+            when (added && isResponse) $ notify $ UP srv [connId]
 
           decryptClientMessage :: C.DhSecretX25519 -> SMP.ClientMsgEnvelope -> AM (SMP.PrivHeader, AgentMsgEnvelope)
           decryptClientMessage e2eDh SMP.ClientMsgEnvelope {cmNonce, cmEncBody} = do
