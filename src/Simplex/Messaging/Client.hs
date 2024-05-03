@@ -718,7 +718,7 @@ sendBatch c@ProtocolClient {client_ = PClient {rcvConcurrency, sndQ}} b = do
       | n > 0 -> do
           active <- newTVarIO True
           atomically $ writeTBQueue sndQ (active, s)
-          pooledMapConcurrentlyN rcvConcurrency (getResponse c active) rs
+          mapConcurrently (getResponse c active) rs
       | otherwise -> pure []
     TBTransmission s r -> do
       active <- newTVarIO True
