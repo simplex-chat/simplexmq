@@ -731,7 +731,7 @@ sendBatch c@ProtocolClient {client_ = PClient {rcvConcurrency, sndQ}} expire b =
       | n > 0 -> do
           active <- mkActive_ expire
           atomically $ writeTBQueue sndQ (active, s)
-          pooledMapConcurrentlyN rcvConcurrency (getResponse c active) rs
+          mapConcurrently (getResponse c active) rs
       | otherwise -> pure []
     TBTransmission s r -> do
       active <- mkActive_ expire
