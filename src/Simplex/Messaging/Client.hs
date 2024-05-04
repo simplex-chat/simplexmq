@@ -28,7 +28,7 @@
 module Simplex.Messaging.Client
   ( -- * Connect (disconnect) client to (from) SMP server
     TransportSession,
-    ProtocolClient (thParams, sessionTs),
+    ProtocolClient (thParams, sessionTs, sentSubs),
     SMPClient,
     getProtocolClient,
     closeProtocolClient,
@@ -122,6 +122,7 @@ data ProtocolClient v err msg = ProtocolClient
   { action :: Maybe (Async ()),
     thParams :: THandleParams v 'TClient,
     sessionTs :: UTCTime,
+    sentSubs :: TMap ByteString Bool, -- DEBUG: ConnId -> sub status
     client_ :: PClient v err msg
   }
 
@@ -148,6 +149,7 @@ smpClientStub g sessionId thVersion thAuth = do
   clientCorrId <- C.newRandomDRG g
   sentCommands <- TM.empty
   sendPings <- newTVar False
+  sentSubs <- TM.empty
   lastReceived <- newTVar ts
   timeoutErrorCount <- newTVar 0
   sndQ <- newTBQueue 100
@@ -165,6 +167,7 @@ smpClientStub g sessionId thVersion thAuth = do
               batch = True
             },
         sessionTs = ts,
+        sentSubs,
         client_ =
           PClient
             { connected,
@@ -396,7 +399,8 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
         Right th@THandle {params} -> do
           sessionTs <- getCurrentTime
-          let c' = ProtocolClient {action = Nothing, client_ = c, thParams = params, sessionTs}
+          sentSubs <- atomically TM.empty
+          let c' = ProtocolClient {action = Nothing, client_ = c, thParams = params, sessionTs, sentSubs}
           atomically $ writeTVar (lastReceived c) sessionTs
           atomically $ do
             writeTVar (connected c) True
