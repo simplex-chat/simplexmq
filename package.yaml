@@ -180,6 +180,7 @@ ghc-options:
   - -Wall
   - -Wcompat
   - -Werror=incomplete-patterns
+  - -Werror=missing-methods
   - -Wredundant-constraints
   - -Wincomplete-record-updates
   - -Wincomplete-uni-patterns

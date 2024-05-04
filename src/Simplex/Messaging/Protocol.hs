@@ -395,7 +395,6 @@ data BrokerMsg where
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
   END :: BrokerMsg
   OK :: BrokerMsg
-  SUBOK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
   deriving (Eq, Show)
@@ -583,7 +582,6 @@ data BrokerMsgTag
   | NMSG_
   | END_
   | OK_
-  | SUBOK_
   | ERR_
   | PONG_
   deriving (Show)
@@ -643,7 +641,6 @@ instance Encoding BrokerMsgTag where
     NMSG_ -> "NMSG"
     END_ -> "END"
     OK_ -> "OK"
-    SUBOK_ -> "SUBOK"
     ERR_ -> "ERR"
     PONG_ -> "PONG"
   smpP = messageTagP
@@ -656,7 +653,6 @@ instance ProtocolMsgTag BrokerMsgTag where
     "NMSG" -> Just NMSG_
     "END" -> Just END_
     "OK" -> Just OK_
-    "SUBOK" -> Just SUBOK_
     "ERR" -> Just ERR_
     "PONG" -> Just PONG_
     _ -> Nothing
@@ -1098,6 +1094,7 @@ class (ProtocolEncoding v err msg, ProtocolEncoding v err (ProtoCommand msg), Sh
   type ProtoType msg = (sch :: ProtocolType) | sch -> msg
   protocolClientHandshake :: forall c. Transport c => c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> ExceptT TransportError IO (THandle v c 'TClient)
   protocolPing :: ProtoCommand msg
+  protocolSub :: ProtoCommand msg -> Bool
   protocolError :: msg -> Maybe err
 
 type ProtoServer msg = ProtocolServer (ProtoType msg)
@@ -1107,6 +1104,10 @@ instance Protocol SMPVersion ErrorType BrokerMsg where
   type ProtoType BrokerMsg = 'PSMP
   protocolClientHandshake = smpClientHandshake
   protocolPing = Cmd SSender PING
+  protocolSub = \case
+    Cmd SRecipient SUB -> True
+    Cmd SNotifier NSUB -> True
+    _ -> False
   protocolError = \case
     ERR e -> Just e
     _ -> Nothing
@@ -1202,7 +1203,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
 
 instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
-  encodeProtocol v = \case
+  encodeProtocol _v = \case
     IDS (QIK rcvId sndId srvDh) -> e (IDS_, ' ', rcvId, sndId, srvDh)
     MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body} ->
       e (MSG_, ' ', msgId, Tail body)
@@ -1210,9 +1211,6 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
     END -> e END_
     OK -> e OK_
-    SUBOK
-      | v >= sendingProxySMPVersion -> e SUBOK_
-      | otherwise -> e OK_
     ERR err -> e (ERR_, ' ', err)
     PONG -> e PONG_
     where
@@ -1230,7 +1228,6 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     NMSG_ -> NMSG <$> _smpP <*> smpP
     END_ -> pure END
     OK_ -> pure OK
-    SUBOK_ -> pure SUBOK
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
 

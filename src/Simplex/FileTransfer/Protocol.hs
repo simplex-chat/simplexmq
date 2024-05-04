@@ -143,6 +143,7 @@ instance Protocol XFTPVersion XFTPErrorType FileResponse where
   type ProtoType FileResponse = 'PXFTP
   protocolClientHandshake = xftpClientHandshakeStub
   protocolPing = FileCmd SFRecipient PING
+  protocolSub _ = False
   protocolError = \case
     FRErr e -> Just e
     _ -> Nothing

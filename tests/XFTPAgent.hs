@@ -69,7 +69,7 @@ xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
     describe "server with password" $ do
       let auth = Just "abcd"
           srv = ProtoServerWithAuth testXFTPServer2
-          authErr = Just (ProtocolTestFailure TSCreateFile $ XFTP AUTH)
+          authErr = Just (ProtocolTestFailure TSCreateFile $ XFTP (B.unpack $ strEncode testXFTPServer2) AUTH)
       it "should pass with correct password" $ testXFTPServerTest auth (srv auth) `shouldReturn` Nothing
       it "should fail without password" $ testXFTPServerTest auth (srv Nothing) `shouldReturn` authErr
       it "should fail with incorrect password" $ testXFTPServerTest auth (srv $ Just "wrong") `shouldReturn` authErr
@@ -392,7 +392,8 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
     -- receive file - should fail with AUTH error
     withAgent 3 agentCfg initAgentServers testDB2 $ \rcp' -> do
       runRight_ $ xftpStartWorkers rcp' (Just recipientFiles)
-      ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp'
+      ("", rfId', RFERR (INTERNAL "XFTP {serverAddress = \"xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000\", xftpErr = AUTH}")) <-
+        rfGet rcp'
       rfId' `shouldBe` rfId
 
   -- tmp path should be removed after permanent error
@@ -471,7 +472,8 @@ testXFTPAgentSendCleanup = withGlobalLogging logCfgNoLogs $ do
     -- send file - should fail with AUTH error
     withAgent 2 agentCfg initAgentServers testDB $ \sndr' -> do
       runRight_ $ xftpStartWorkers sndr' (Just senderFiles)
-      ("", sfId', SFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- sfGet sndr'
+      ("", sfId', SFERR (INTERNAL "XFTP {serverAddress = \"xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000\", xftpErr = AUTH}")) <-
+        sfGet sndr'
       sfId' `shouldBe` sfId
 
   -- prefix path should be removed after permanent error
@@ -506,7 +508,8 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
       withAgent 3 agentCfg initAgentServers testDB2 $ \rcp2 -> runRight $ do
         xftpStartWorkers rcp2 (Just recipientFiles)
         rfId <- xftpReceiveFile rcp2 1 rfd2 Nothing
-        ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp2
+        ("", rfId', RFERR (INTERNAL "XFTP {serverAddress = \"xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000\", xftpErr = AUTH}")) <-
+          rfGet rcp2
         liftIO $ rfId' `shouldBe` rfId
 
 testXFTPAgentDeleteRestore :: HasCallStack => IO ()
@@ -543,7 +546,8 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
       withAgent 5 agentCfg initAgentServers testDB3 $ \rcp2 -> runRight $ do
         xftpStartWorkers rcp2 (Just recipientFiles)
         rfId <- xftpReceiveFile rcp2 1 rfd2 Nothing
-        ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp2
+        ("", rfId', RFERR (INTERNAL "XFTP {serverAddress = \"xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000\", xftpErr = AUTH}")) <-
+          rfGet rcp2
         liftIO $ rfId' `shouldBe` rfId
 
 testXFTPAgentDeleteOnServer :: HasCallStack => IO ()
@@ -577,7 +581,8 @@ testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs $
         runRight_ . void $ do
           -- receive file 1 again
           rfId1 <- xftpReceiveFile rcp 1 rfd1_2 Nothing
-          ("", rfId1', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp
+          ("", rfId1', RFERR (INTERNAL "XFTP {serverAddress = \"xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000\", xftpErr = AUTH}")) <-
+            rfGet rcp
           liftIO $ rfId1 `shouldBe` rfId1'
 
           -- receive file 2
@@ -609,7 +614,8 @@ testXFTPAgentExpiredOnServer = withGlobalLogging logCfgNoLogs $ do
         -- receive file 1 again - should fail with AUTH error
         runRight $ do
           rfId <- xftpReceiveFile rcp 1 rfd1_2 Nothing
-          ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp
+          ("", rfId', RFERR (INTERNAL "XFTP {serverAddress = \"xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000\", xftpErr = AUTH}")) <-
+            rfGet rcp
           liftIO $ rfId' `shouldBe` rfId
 
         -- create and send file 2

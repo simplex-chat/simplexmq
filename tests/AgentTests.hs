@@ -27,9 +27,9 @@ import GHC.Stack (withFrozenCallStack)
 import Network.HTTP.Types (urlEncode)
 import SMPAgentClient
 import SMPClient (testKeyHash, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
-import Simplex.Messaging.Agent.Protocol hiding (MID, CONF, INFO, REQ)
+import Simplex.Messaging.Agent.Protocol hiding (CONF, INFO, MID, REQ)
 import qualified Simplex.Messaging.Agent.Protocol as A
-import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOn, pattern IKPQOff, pattern PQEncOn, pattern PQSupportOn, pattern PQSupportOff)
+import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType (..))
@@ -242,7 +242,7 @@ testDuplexConnection' (alice, aPQ) (bob, bPQ) = do
   alice #: ("4a", "bob", "ACK 7") #> ("4a", "bob", OK)
   alice #: ("5", "bob", "OFF") #> ("5", "bob", OK)
   bob #: ("17", "alice", "SEND F 9\nmessage 3") #> ("17", "alice", A.MID 8 pq)
-  bob <# ("", "alice", MERR 8 (SMP AUTH))
+  bob <#= \case ("", "alice", MERR 8 (SMP _ AUTH)) -> True; _ -> False
   alice #: ("6", "bob", "DEL") #> ("6", "bob", OK)
   alice #:# "nothing else should be delivered to alice"
 
@@ -280,7 +280,7 @@ testDuplexConnRandomIds' (alice, aPQ) (bob, bPQ) = do
   alice #: ("4a", bobConn, "ACK 7") #> ("4a", bobConn, OK)
   alice #: ("5", bobConn, "OFF") #> ("5", bobConn, OK)
   bob #: ("17", aliceConn, "SEND F 9\nmessage 3") #> ("17", aliceConn, A.MID 8 pq)
-  bob <# ("", aliceConn, MERR 8 (SMP AUTH))
+  bob <#= \case ("", cId, MERR 8 (SMP _ AUTH)) -> cId == aliceConn; _ -> False
   alice #: ("6", bobConn, "DEL") #> ("6", bobConn, OK)
   alice #:# "nothing else should be delivered to alice"
 
@@ -383,7 +383,7 @@ testSubscrNotification t (server, _) client = do
   killThread server
   client <#. ("", "", DOWN testSMPServer ["conn1"])
   withSmpServer (ATransport t) $
-    client <# ("", "conn1", ERR (SMP AUTH)) -- this new server does not have the queue
+    client <#= \case ("", "conn1", ERR (SMP _ AUTH)) -> True; _ -> False -- this new server does not have the queue
 
 testMsgDeliveryServerRestart :: forall c. Transport c => (c, InitialKeys) -> (c, PQSupport) -> IO ()
 testMsgDeliveryServerRestart (alice, aPQ) (bob, bPQ) = do
@@ -547,10 +547,10 @@ testResumeDeliveryQuotaExceeded _ alice bob = do
   bob <#= \case ("", "alice", Msg "message 4") -> True; _ -> False
   bob #: ("4", "alice", "ACK 7") #> ("4", "alice", OK)
   inAnyOrder
-      (tGetAgent alice)
-      [ \case ("", c, Right (SENT 8)) -> c == "bob"; _ -> False,
-        \case ("", c, Right QCONT) -> c == "bob"; _ -> False
-      ]
+    (tGetAgent alice)
+    [ \case ("", c, Right (SENT 8)) -> c == "bob"; _ -> False,
+      \case ("", c, Right QCONT) -> c == "bob"; _ -> False
+    ]
   bob <#= \case ("", "alice", Msg "over quota") -> True; _ -> False
   -- message 8 is skipped because of alice agent sending "QCONT" message
   bob #: ("5", "alice", "ACK 9") #> ("5", "alice", OK)
@@ -580,7 +580,7 @@ enableKEMStr _ = ""
 
 pqConnModeStr :: InitialKeys -> ByteString
 pqConnModeStr (IKNoPQ PQSupportOff) = ""
-pqConnModeStr pq =  " " <> strEncode pq
+pqConnModeStr pq = " " <> strEncode pq
 
 sendMessage :: Transport c => (c, ConnId) -> (c, ConnId) -> ByteString -> IO ()
 sendMessage (h1, name1) (h2, name2) msg = do
@@ -630,7 +630,7 @@ syntaxTests t = do
             <> " subscribe "
             <> "14\nbob's connInfo"
         )
-          >#> ("311", "a", "ERR SMP AUTH")
+          >#> ("311", "a", "ERR SMP smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001 AUTH")
     describe "invalid" $ do
       it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")
   where

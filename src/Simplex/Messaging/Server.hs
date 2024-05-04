@@ -724,7 +724,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
             deliver sub = do
               q <- getStoreMsgQueue "SUB" rId
               msg_ <- atomically $ tryPeekMsg q
-              deliverMessage "SUB" qr rId sub q msg_ SUBOK
+              deliverMessage "SUB" qr rId sub q msg_
 
         getMessage :: QueueRec -> M (Transmission BrokerMsg)
         getMessage qr = time "GET" $ do
@@ -781,7 +781,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
                     _ -> do
                       (deletedMsg_, msg_) <- atomically $ tryDelPeekMsg q msgId
                       mapM_ updateStats deletedMsg_
-                      deliverMessage "ACK" qr queueId sub q msg_ OK
+                      deliverMessage "ACK" qr queueId sub q msg_
                 _ -> pure $ err NO_MSG
           where
             getDelivered :: TVar Sub -> STM (Maybe Sub)
@@ -863,8 +863,8 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
                   encNMsgMeta = C.cbEncrypt rcvNtfDhSecret cbNonce (smpEncode msgMeta) 128
               pure . (cbNonce,) $ fromRight "" encNMsgMeta
 
-        deliverMessage :: T.Text -> QueueRec -> RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> BrokerMsg -> M (Transmission BrokerMsg)
-        deliverMessage name qr rId sub q msg_ respCmd = time (name <> " deliver") $ do
+        deliverMessage :: T.Text -> QueueRec -> RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> M (Transmission BrokerMsg)
+        deliverMessage name qr rId sub q msg_ = time (name <> " deliver") $ do
           readTVarIO sub >>= \case
             s@Sub {subThread = NoSub} ->
               case msg_ of
@@ -874,7 +874,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
                 _ -> forkSub $> resp
             _ -> pure resp
           where
-            resp = (corrId, rId, respCmd)
+            resp = (corrId, rId, OK)
             forkSub :: M ()
             forkSub = do
               atomically . modifyTVar' sub $ \s -> s {subThread = SubPending}

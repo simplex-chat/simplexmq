@@ -85,6 +85,7 @@ module Simplex.Messaging.Agent.Client
     agentDRG,
     getAgentSubscriptions,
     slowNetworkConfig,
+    protocolClientError,
     Worker (..),
     SessionVar (..),
     SubscriptionsInfo (..),
@@ -263,7 +264,7 @@ data AgentClient = AgentClient
     active :: TVar Bool,
     rcvQ :: TBQueue (ATransmission 'Client),
     subQ :: TBQueue (ATransmission 'Agent),
-    msgQ :: TBQueue (ServerTransmission SMPVersion BrokerMsg),
+    msgQ :: TBQueue (ServerTransmission SMPVersion ErrorType BrokerMsg),
     smpServers :: TMap UserId (NonEmpty SMPServerWithAuth),
     smpClients :: TMap SMPTransportSession SMPClientVar,
     ntfServers :: TVar [NtfServer],
@@ -514,7 +515,7 @@ agentDRG AgentClient {agentEnv = Env {random}} = random
 class (Encoding err, Show err) => ProtocolServerClient v err msg | msg -> v, msg -> err where
   type Client msg = c | c -> msg
   getProtocolServerClient :: AgentClient -> TransportSession msg -> AM (Client msg)
-  clientProtocolError :: err -> AgentErrorType
+  clientProtocolError :: HostName -> err -> AgentErrorType
   closeProtocolServerClient :: Client msg -> IO ()
   clientServer :: Client msg -> String
   clientTransportHost :: Client msg -> TransportHost
@@ -940,13 +941,13 @@ withXFTPClient c (userId, srv, entityId) cmdStr action = do
   tSess <- liftIO $ mkTransportSession c userId srv entityId
   withLogClient c tSess entityId cmdStr action
 
-liftClient :: (Show err, Encoding err) => (err -> AgentErrorType) -> HostName -> ExceptT (ProtocolClientError err) IO a -> AM a
+liftClient :: (Show err, Encoding err) => (HostName -> err -> AgentErrorType) -> HostName -> ExceptT (ProtocolClientError err) IO a -> AM a
 liftClient protocolError_ = liftError . protocolClientError protocolError_
 {-# INLINE liftClient #-}
 
-protocolClientError :: (Show err, Encoding err) => (err -> AgentErrorType) -> HostName -> ProtocolClientError err -> AgentErrorType
+protocolClientError :: (Show err, Encoding err) => (HostName -> err -> AgentErrorType) -> HostName -> ProtocolClientError err -> AgentErrorType
 protocolClientError protocolError_ host = \case
-  PCEProtocolError e -> protocolError_ e
+  PCEProtocolError e -> protocolError_ host e
   PCEResponseError e -> BROKER host $ RESPONSE $ B.unpack $ smpEncode e
   PCEUnexpectedResponse _ -> BROKER host UNEXPECTED
   PCEResponseTimeout -> BROKER host TIMEOUT
@@ -1025,7 +1026,7 @@ runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
           liftError (testErr TSUploadFile) $ X.uploadXFTPChunk xftp spKey sId chunkSpec
           liftError (testErr TSDownloadFile) $ X.downloadXFTPChunk g xftp rpKey rId $ XFTPRcvChunkSpec rcvPath chSize digest
           rcvDigest <- liftIO $ C.sha256Hash <$> B.readFile rcvPath
-          unless (digest == rcvDigest) $ throwError $ ProtocolTestFailure TSCompareFile $ XFTP DIGEST
+          unless (digest == rcvDigest) $ throwError $ ProtocolTestFailure TSCompareFile $ XFTP (B.unpack $ strEncode srv) DIGEST
           liftError (testErr TSDeleteFile) $ X.deleteXFTPChunk xftp spKey sId
         ok <- tcpTimeout xftpNetworkConfig `timeout` X.closeXFTPClient xftp
         incClientStat c userId xftp "XFTP_TEST" "OK"

@@ -41,7 +41,6 @@ module Simplex.Messaging.Transport
     basicAuthSMPVersion,
     subModeSMPVersion,
     authCmdsSMPVersion,
-    sendingProxySMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -149,9 +148,6 @@ subModeSMPVersion = VersionSMP 6
 
 authCmdsSMPVersion :: VersionSMP
 authCmdsSMPVersion = VersionSMP 7
-
-sendingProxySMPVersion :: VersionSMP
-sendingProxySMPVersion = VersionSMP 8
 
 currentClientSMPRelayVersion :: VersionSMP
 currentClientSMPRelayVersion = VersionSMP 6

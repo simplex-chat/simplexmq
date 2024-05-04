@@ -154,6 +154,7 @@ instance Protocol NTFVersion ErrorType NtfResponse where
   type ProtoType NtfResponse = 'PNTF
   protocolClientHandshake c _ks = ntfClientHandshake c
   protocolPing = NtfCmd SSubscription PING
+  protocolSub _ = False
   protocolError = \case
     NRErr e -> Just e
     _ -> Nothing
