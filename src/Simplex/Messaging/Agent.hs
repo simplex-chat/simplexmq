@@ -117,7 +117,7 @@ module Simplex.Messaging.Agent
   )
 where
 
-import Control.Logger.Simple (logError, logInfo, showText)
+import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
@@ -2042,7 +2042,9 @@ data ACKd = ACKd | ACKPending
 -- it cannot be finally, unfortunately, as sometimes it needs to be ACK+DEL
 processSMPTransmission :: AgentClient -> ServerTransmission SMPVersion BrokerMsg -> AM ()
 processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, sessId, isResponse, rId, cmd) = do
-  (rq, SomeConn _ conn) <- withStore c (\db -> getRcvConn db srv rId)
+  active <- atomically $ activeClientSession c tSess sessId
+  unless active $ logNote $ "Inactive client for " <> tshow (strEncode srv)
+  (rq, SomeConn _ conn) <- withStore c (\db -> getRcvConn db srv rId) `catchAgentError` \e -> logError ("getRcvConn: " <> tshow e) >> throwError e
   processSMP rq conn $ toConnData conn
   where
     processSMP :: forall c. RcvQueue -> Connection c -> ConnData -> AM ()
