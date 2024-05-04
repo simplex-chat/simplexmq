@@ -1245,6 +1245,11 @@ addSubscription c rq@RcvQueue {connId} = do
   RQ.addQueue rq $ activeSubs c
   RQ.deleteQueue rq $ pendingSubs c
 
+addPendingSubscription :: AgentClient -> RcvQueue -> STM ()
+addPendingSubscription c rq@RcvQueue {connId} = do
+  modifyTVar' (subscrConns c) $ S.insert connId
+  RQ.addQueue rq $ pendingSubs c
+
 addNewQueueSubscription :: AgentClient -> RcvQueue -> SMPTransportSession -> SessionId -> AM' ()
 addNewQueueSubscription c rq tSess sessId = do
   same <-
@@ -1252,7 +1257,7 @@ addNewQueueSubscription c rq tSess sessId = do
       ifM
         (activeClientSession c tSess sessId)
         (True <$ addSubscription c rq)
-        (False <$ RQ.addQueue rq (pendingSubs c))
+        (False <$ addPendingSubscription c rq)
   unless same $ resubscribeSMPSession c tSess
 
 hasActiveSubscription :: AgentClient -> ConnId -> STM Bool
