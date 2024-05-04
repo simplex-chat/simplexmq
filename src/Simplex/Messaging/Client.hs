@@ -533,6 +533,7 @@ subscribeSMPQueue c@ProtocolClient {client_ = PClient {sendPings}} rpKey rId = d
   liftIO . atomically $ writeTVar sendPings True
   sendSMPCommand c (Just rpKey) rId SUB >>= \case
     OK -> pure ()
+    SUBOK -> pure ()
     cmd@MSG {} -> liftIO $ writeSMPMessage c rId cmd
     r -> throwE . PCEUnexpectedResponse $ bshow r
 

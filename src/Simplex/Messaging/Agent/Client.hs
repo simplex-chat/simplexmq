@@ -1188,7 +1188,7 @@ subscribeQueues c qs = do
       if active
         then when (hasTempErrors rs) resubscribe $> rs
         else do
-          unless active $ logWarn "subcription batch result for replaced SMP client, resubscribing"
+          logWarn "subcription batch result for replaced SMP client, resubscribing"
           resubscribe $> L.map (second $ \_ -> Left PCENetworkError) rs
       where
         tSess = transportSession' smp

@@ -1963,7 +1963,7 @@ subscriber c@AgentClient {subQ, msgQ} = forever $ do
     runExceptT (processSMPTransmission c t) >>= \case
       Left e -> do
         logError $ tshow e
-        -- atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR e)
+        atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR e)
       Right _ -> return ()
 
 cleanupManager :: AgentClient -> AM' ()
@@ -2054,7 +2054,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
           SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
             void . handleNotifyAck $ do
               isGET <- atomically $ hasGetLock c rq
-              unless isGET checkSubscription
+              when (not isGET && isResponse) checkSubscription
               msg' <- decryptSMPMessage rq msg
               ack' <- handleNotifyAck $ case msg' of
                 SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} -> processClientMsg srvTs msgFlags msgBody
