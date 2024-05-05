@@ -54,7 +54,6 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Util (bshow, catchAll, tshow, (<$?>))
 import System.IO.Error
-import System.Timeout (timeout)
 import Text.Read (readMaybe)
 import UnliftIO.Exception (IOException)
 import qualified UnliftIO.Exception as E
@@ -139,35 +138,30 @@ runTransportClient :: Transport c => TransportClientConfig -> Maybe ByteString -
 runTransportClient = runTLSTransportClient supportedParameters Nothing
 
 runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
-runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpConnectTimeout, tcpKeepAlive, clientCredentials, alpn} proxyUsername host port keyHash client = do
+runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, alpn} proxyUsername host port keyHash client = do
   serverCert <- newEmptyTMVarIO
   let hostName = B.unpack $ strEncode host
       clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials alpn serverCert
-      (connectTCP, tlsTimeout) = case socksProxy of
+      connectTCP = case socksProxy of
         -- We use a much larger timeout for connections via SOCKS proxy, to allow the circuits created
         -- in the socket connection that would otherwise timeout to be used in the next connection attempt.
         -- Using standard timeout results in permanent timeout for the clients using SOCKS in cases
         -- when SOCKS proxy is very slow (bad network, congestion in underlying network, etc.),
         -- because SOCKS proxy destroys circuits when the last session using them is closed.
-        Just proxy -> (connectSocksClient proxy proxyUsername (hostAddr host), tcpConnectTimeout * 10)
-        _ -> (connectTCPClient hostName, tcpConnectTimeout)
+        Just proxy -> connectSocksClient proxy proxyUsername (hostAddr host)
+        _ -> connectTCPClient hostName
   c <- do
     sock <- connectTCP port
     mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive" <> tshow e)
     let tCfg = clientTransportConfig cfg
-    tlsTimeout `timeout` connectTLS (Just hostName) tCfg clientParams sock >>= \case
-      Nothing -> do
-        close sock
-        logError "connection timed out"
-        fail "connection timed out"
-      Just tls -> do
-        chain <-
-          atomically (tryTakeTMVar serverCert) >>= \case
-            Nothing -> do
-              logError "onServerCertificate didn't fire or failed to get cert chain"
-              closeTLS tls >> error "onServerCertificate failed"
-            Just c -> pure c
-        getClientConnection tCfg chain tls
+    tls <- connectTLS (Just hostName) tCfg clientParams sock
+    chain <-
+      atomically (tryTakeTMVar serverCert) >>= \case
+        Nothing -> do
+          logError "onServerCertificate didn't fire or failed to get cert chain"
+          closeTLS tls >> error "onServerCertificate failed"
+        Just c -> pure c
+    getClientConnection tCfg chain tls
   client c `E.finally` closeConnection c
   where
     hostAddr = \case
