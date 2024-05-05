@@ -143,17 +143,13 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
   let hostName = B.unpack $ strEncode host
       clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials alpn serverCert
       connectTCP = case socksProxy of
-        -- We use a much larger timeout for connections via SOCKS proxy, to allow the circuits created
-        -- in the socket connection that would otherwise timeout to be used in the next connection attempt.
-        -- Using standard timeout results in permanent timeout for the clients using SOCKS in cases
-        -- when SOCKS proxy is very slow (bad network, congestion in underlying network, etc.),
-        -- because SOCKS proxy destroys circuits when the last session using them is closed.
         Just proxy -> connectSocksClient proxy proxyUsername (hostAddr host)
         _ -> connectTCPClient hostName
   c <- do
     sock <- connectTCP port
     mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive" <> tshow e)
     let tCfg = clientTransportConfig cfg
+    -- No TLS timeout to avoid failing connections via SOCKS
     tls <- connectTLS (Just hostName) tCfg clientParams sock
     chain <-
       atomically (tryTakeTMVar serverCert) >>= \case
