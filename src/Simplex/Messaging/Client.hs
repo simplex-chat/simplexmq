@@ -113,7 +113,6 @@ import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, diffToMicroseconds, raceAny_, threadDelay', whenM)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
-import UnliftIO (pooledMapConcurrentlyN)
 
 -- | 'SMPClient' is a handle used to send commands to a specific SMP server.
 --
