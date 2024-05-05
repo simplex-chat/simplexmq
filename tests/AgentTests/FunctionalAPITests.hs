@@ -630,7 +630,9 @@ runAgentClientContactTest :: HasCallStack => PQSupport -> AgentClient -> AgentCl
 runAgentClientContactTest pqSupport alice bob baseId =
   runRight_ $ do
     (_, qInfo) <- A.createConnection alice 1 True SCMContact Nothing (IKNoPQ pqSupport) SMSubscribe
-    aliceId <- A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" pqSupport SMSubscribe
+    aliceId <- A.prepareConnectionToJoin bob 1 True qInfo pqSupport
+    aliceId' <- A.joinConnection bob 1 (Just aliceId) True qInfo "bob's connInfo" pqSupport SMSubscribe
+    liftIO $ aliceId' `shouldBe` aliceId
     ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` pqSupport
     bobId <- acceptContact alice True invId "alice's connInfo" PQSupportOn SMSubscribe
