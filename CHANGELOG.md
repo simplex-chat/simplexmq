@@ -1,3 +1,10 @@
+# 5.7.2
+
+SMP agent:
+- fix connections failing when connecting via link due to race condition on slow network.
+- remove concurrency limit when waiting for connection subscription.
+- remove TLS timeout.
+
 # 5.7.1
 
 SMP agent:
