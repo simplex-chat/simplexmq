@@ -1034,14 +1034,13 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
       withProxySession c destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess) -> do
         liftClient SMP (clientServer smp) (proxySMPMessage smp proxySess spKey_ senderId msgFlags msg) >>= \case
           Right () -> pure . Just $ protocolClientServer' smp
-          Left e -> do
-            let proxyServer = protocolClientServer smp
-                relayServer = B.unpack $ strEncode destSrv
-                err = protocolClientError SMP
-            throwError . PROXY $ case e of
-              PREProxyError e' -> PROXY_RESP {proxyServer, proxyError = err proxyServer e'}
-              PRENoRelaySession -> NO_PROXY {proxyServer, relayServer}
-              PREProxiedRelayError e' -> PROXY_RELAY {proxyServer, relayServer, relayError = err relayServer e'}
+          Left proxyErr ->
+            throwError
+              PROXY
+                { proxyServer = protocolClientServer smp,
+                  relayServer = B.unpack $ strEncode destSrv,
+                  proxyErr
+                }
     sendDirectly tSess =
       withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) ->
         liftClient SMP (clientServer smp) $ sendSMPMessage smp spKey_ senderId msgFlags msg

@@ -109,7 +109,6 @@ module Simplex.Messaging.Agent.Protocol
     ServiceScheme,
     simplexChat,
     AgentErrorType (..),
-    AgentProxyError (..),
     CommandErrorType (..),
     ConnectionErrorType (..),
     BrokerErrorType (..),
@@ -190,6 +189,7 @@ import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
+import Simplex.Messaging.Client (ProxyClientError)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
   ( InitialKeys (..),
@@ -1477,7 +1477,7 @@ data AgentErrorType
   | -- | XFTP protocol errors forwarded to agent clients
     XFTP {xftpErr :: XFTPErrorType}
   | -- | SMP proxy errors
-    PROXY {proxyErr :: AgentProxyError}
+    PROXY {proxyServer :: String, relayServer :: String, proxyErr :: ProxyClientError}
   | -- | XRCP protocol errors forwarded to agent clients
     RCP {rcpErr :: RCErrorType}
   | -- | SMP server errors
@@ -1519,12 +1519,6 @@ data ConnectionErrorType
   | -- | connection not available on reply confirmation/HELLO after timeout
     NOT_AVAILABLE
   deriving (Eq, Read, Show, Exception)
-
-data AgentProxyError
-  = PROXY_RESP {proxyServer :: String, proxyError :: AgentErrorType}
-  | NO_PROXY {proxyServer :: String, relayServer :: String}
-  | PROXY_RELAY {proxyServer :: String, relayServer :: String, relayError :: AgentErrorType}
-  deriving (Eq, Show, Exception)
 
 -- | Errors of another SMP agent.
 data SMPAgentError
@@ -1581,9 +1575,10 @@ instance StrEncoding AgentErrorType where
       <|> "SMP " *> (SMP <$> strP)
       <|> "NTF " *> (NTF <$> strP)
       <|> "XFTP " *> (XFTP <$> strP)
-      <|> "PROXY " *> (PROXY <$> strP)
+      <|> "PROXY " *> (PROXY <$> textP <* A.space <*> textP <*> _strP)
       <|> "RCP " *> (RCP <$> strP)
       <|> "BROKER " *> (BROKER <$> textP <* " RESPONSE " <*> (RESPONSE <$> textP))
+      <|> "BROKER " *> (BROKER <$> textP <* " UNEXPECTED " <*> (UNEXPECTED <$> textP))
       <|> "BROKER " *> (BROKER <$> textP <* " TRANSPORT " <*> (TRANSPORT <$> transportErrorP))
       <|> "BROKER " *> (BROKER <$> textP <* A.space <*> parseRead1)
       <|> "AGENT CRYPTO " *> (AGENT . A_CRYPTO <$> parseRead A.takeByteString)
@@ -1600,9 +1595,10 @@ instance StrEncoding AgentErrorType where
     SMP e -> "SMP " <> strEncode e
     NTF e -> "NTF " <> strEncode e
     XFTP e -> "XFTP " <> strEncode e
-    PROXY e -> "PROXY " <> strEncode e
+    PROXY pxy srv e -> B.unwords ["PROXY", text pxy, text srv, strEncode e]
     RCP e -> "RCP " <> strEncode e
     BROKER srv (RESPONSE e) -> "BROKER " <> text srv <> " RESPONSE " <> text e
+    BROKER srv (UNEXPECTED e) -> "BROKER " <> text srv <> " UNEXPECTED " <> text e
     BROKER srv (TRANSPORT e) -> "BROKER " <> text srv <> " TRANSPORT " <> serializeTransportError e
     BROKER srv e -> "BROKER " <> text srv <> " " <> bshow e
     AGENT (A_CRYPTO e) -> "AGENT CRYPTO " <> bshow e
@@ -1613,10 +1609,6 @@ instance StrEncoding AgentErrorType where
     INACTIVE -> "INACTIVE"
     where
       text = encodeUtf8 . T.pack
-
-instance StrEncoding AgentProxyError where
-  strP = undefined
-  strEncode = undefined
 
 cryptoErrToSyncState :: AgentCryptoError -> RatchetSyncState
 cryptoErrToSyncState = \case
@@ -1981,5 +1973,4 @@ $(J.deriveJSON (sumTypeJSON id) ''AgentCryptoError)
 
 $(J.deriveJSON (sumTypeJSON id) ''SMPAgentError)
 
--- run deriveJSON in one TH splice to allow mutual instance
-$(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''AgentProxyError, ''AgentErrorType])
+$(J.deriveJSON (sumTypeJSON id) ''AgentErrorType)

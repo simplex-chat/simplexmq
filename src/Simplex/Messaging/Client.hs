@@ -64,7 +64,7 @@ module Simplex.Messaging.Client
     -- * Supporting types and client configuration
     ProtocolClientError (..),
     SMPClientError,
-    ProxyReponseError (..),
+    ProxyClientError (..),
     ProtocolClientConfig (..),
     NetworkConfig (..),
     TransportSessionMode (..),
@@ -98,6 +98,7 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -548,23 +549,6 @@ smpProxyError = \case
   PCECryptoError _ -> CRYPTO
   PCEIOError _ -> INTERNAL
 
--- converts error received from proxy to client error
-smpReceivedProxyError :: ErrorType -> Maybe SMPClientError
-smpReceivedProxyError = \case
-  PROXY err -> case err of
-    NO_SESSION -> Nothing
-    PROTOCOL e -> Just $ PCEProtocolError e
-    BROKER e -> Just $ case e of
-      RESPONSE _ -> PCEResponseError $ CMD SYNTAX
-      UNEXPECTED s -> PCEUnexpectedResponse $ B.pack s
-      TIMEOUT -> PCEResponseTimeout
-      NETWORK -> PCENetworkError
-      HOST -> PCEIncompatibleHost
-      TRANSPORT t -> PCETransportError t
-  CRYPTO -> Just $ PCECryptoError C.CBDecryptError
-  INTERNAL -> Just $ PCEIOError $ userError "SMP proxy internal error"
-  _ -> Nothing
-
 -- | Create a new SMP queue.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#create-queue-command
@@ -747,13 +731,26 @@ data ProxiedRelay = ProxiedRelay
     prServerKey :: C.PublicKeyX25519
   }
 
-data ProxyReponseError
-  = -- | errors between client and proxy
-    PREProxyError SMPClientError
-  | -- | proxy has no requested session
-    PRENoRelaySession
+data ProxyClientError
+  = -- | protocol error response from proxy
+    ProxyProtocolError ErrorType
+  | -- | unexpexted response
+    ProxyUnexpectedResponse String
   | -- | error between proxy and server
-    PREProxiedRelayError SMPClientError
+    ProxyResponseError ErrorType
+  deriving (Eq, Show, Exception)
+
+instance StrEncoding ProxyClientError where
+  strEncode = \case
+    ProxyProtocolError e -> "SMP " <> strEncode e
+    ProxyUnexpectedResponse s -> "UNEXPECTED " <> B.pack s
+    ProxyResponseError e -> "SYNTAX " <> strEncode e
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "SMP" -> ProxyProtocolError <$> _strP
+      "UNEXPECTED" -> ProxyUnexpectedResponse . B.unpack <$> (A.space *> A.takeByteString)
+      "SYNTAX" -> ProxyResponseError <$> _strP
+      _ -> fail "bad ProxyClientError"
 
 -- consider how to process slow responses - is it handled somehow locally or delegated to the caller
 -- this method is used in the client
@@ -765,20 +762,20 @@ data ProxyReponseError
 --    client        proxy   relay   proxy        client
 -- 0) PFWD(SEND) -> RFWD -> RRES -> PRES(OK)  -> ok
 -- 1) PFWD(SEND) -> RFWD -> RRES -> PRES(ERR) -> PCEProtocolError - business logic error for client
--- 2) PFWD(SEND) -> RFWD -> RRES -> PRES(WTF) -> ProxiedRelayError (PCEUnexpectedReponse) - relay/client protocol logic error
--- 3) PFWD(SEND) -> RFWD -> RRES -> PRES(???) -> ProxiedRelayError (PCEResponseError) - relay/client syntax error
--- 4) PFWD(SEND) -> RFWD -> ERR ->  ERR PROXY PROTOCOL -> ProxiedRelayError (PCEProtocolError) - proxy/relay business logic error
--- 5) PFWD(SEND) -> RFWD -> WTF ->  ERR PROXY $ BROKER (UNEXPECTED s) -> ProxiedRelayError (PCEUnexpectedReponse) - proxy/relay protocol logic
--- 6) PFWD(SEND) -> RFWD -> ??? ->  ERR PROXY $ BROKER (RESPONSE s) -> ProxiedRelayError (PCEResponseError) ? - - proxy/relay syntax
--- 7) PFWD(SEND) -> ERR  -> PREProxyProtocolError (PCEProtocolError) - client/proxy business logic
--- 8) PFWD(SEND) -> WTF  -> PCEUnexpectedReponse - client/proxy protocol logic
--- 9) PFWD(SEND) -> ???  -> PCEResponseError - client/proxy syntax
+-- 2) PFWD(SEND) -> RFWD -> RRES -> PRES(WTF) -> PCEUnexpectedReponse - relay/client protocol logic error
+-- 3) PFWD(SEND) -> RFWD -> RRES -> PRES(???) -> PCEResponseError - relay/client syntax error
+-- 4) PFWD(SEND) -> RFWD -> ERR ->  ERR PROXY PROTOCOL -> ProxyProtocolError - proxy/relay business logic error
+-- 5) PFWD(SEND) -> RFWD -> WTF ->  ERR PROXY $ BROKER (UNEXPECTED s) -> ProxyProtocolError - proxy/relay protocol logic
+-- 6) PFWD(SEND) -> RFWD -> ??? ->  ERR PROXY $ BROKER (RESPONSE s) -> ProxyProtocolError - - proxy/relay syntax
+-- 7) PFWD(SEND) -> ERR  -> ProxyProtocolError - client/proxy business logic
+-- 8) PFWD(SEND) -> WTF  -> ProxyUnexpectedResponse - client/proxy protocol logic
+-- 9) PFWD(SEND) -> ???  -> ProxyResponseError - client/proxy syntax
 --
--- We report as proxySMPMessage error (ExceptT error the errors of two kinds:
+-- We report as proxySMPMessage error (ExceptT error) the errors of two kinds:
 -- - protocol errors from the destination relay wrapped in PRES - to simplify processing of AUTH and QUOTA errors, in this case proxy is "transparent" for such errors (PCEProtocolError, PCEUnexpectedResponse, PCEResponseError)
 -- - other response/transport/connection errors from the client connected to proxy itself
 -- Other errors are reported in the function result as `Either ProxiedRelayError ()`, including
--- - protocol  errors from the client connected to proxy in PREProxyError (PCEProtocolError, PCEUnexpectedResponse, PCEResponseError)
+-- - protocol  errors from the client connected to proxy in ProxyClientError (PCEProtocolError, PCEUnexpectedResponse, PCEResponseError)
 -- - other errors from the client running on proxy and connected to relay in PREProxiedRelayError
 
 proxySMPMessage ::
@@ -790,7 +787,7 @@ proxySMPMessage ::
   SenderId ->
   MsgFlags ->
   MsgBody ->
-  ExceptT SMPClientError IO (Either ProxyReponseError ())
+  ExceptT SMPClientError IO (Either ProxyClientError ())
 -- TODO use version
 proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g}} (ProxiedRelay sessionId _v serverKey) spKey sId flags msg = do
   -- prepare params
@@ -822,19 +819,13 @@ proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
               Right e -> throwE $ PCEUnexpectedResponse $ B.take 32 $ bshow e
               Left e -> throwE $ PCEResponseError e
           _ -> throwE $ PCETransportError TEBadBlock
-      ERR (PROXY NO_SESSION) -> pure . Left $ PRENoRelaySession
-      ERR e -> proxyProtocolError e -- this will not happen, this error is returned via Left
-      _ -> proxyError $ PCEUnexpectedResponse $ B.take 32 $ bshow r
+      ERR e -> pure . Left $ ProxyProtocolError e -- this will not happen, this error is returned via Left
+      _ -> pure . Left $ ProxyUnexpectedResponse $ take 32 $ show r
     Left e -> case e of
-      PCEProtocolError e' -> proxyProtocolError e'
-      PCEUnexpectedResponse _ -> proxyError e
-      PCEResponseError _ -> proxyError e
+      PCEProtocolError e' -> pure . Left $ ProxyProtocolError e'
+      PCEUnexpectedResponse r -> pure . Left $ ProxyUnexpectedResponse $ B.unpack r
+      PCEResponseError e' -> pure . Left $ ProxyResponseError e'
       _ -> throwE e
-  where
-    proxyProtocolError e = pure . Left $ case smpReceivedProxyError e of
-      Just pe -> PREProxiedRelayError pe
-      Nothing -> PREProxyError $ PCEProtocolError e
-    proxyError = pure . Left . PREProxyError
 
 -- this method is used in the proxy
 -- sends RFWD :: EncFwdTransmission -> Command Sender
@@ -906,7 +897,7 @@ streamProtocolCommands c@ProtocolClient {thParams = THandleParams {batch, blockS
   mapM_ (cb <=< sendBatch c) bs
 
 sendBatch :: ProtocolClient v err msg -> TransportBatch (Request err msg) -> IO [Response err msg]
-sendBatch c@ProtocolClient {client_ = PClient {rcvConcurrency, sndQ}} b = do
+sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
   case b of
     TBError e Request {entityId} -> do
       putStrLn "send error: large message"
@@ -994,3 +985,5 @@ $(J.deriveJSON (enumJSON $ dropPrefix "TSM") ''TransportSessionMode)
 $(J.deriveJSON (enumJSON $ dropPrefix "SPM") ''SMPProxyMode)
 
 $(J.deriveJSON defaultJSON ''NetworkConfig)
+
+$(J.deriveJSON (enumJSON $ dropPrefix "Proxy") ''ProxyClientError)

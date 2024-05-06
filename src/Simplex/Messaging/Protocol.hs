@@ -1504,23 +1504,27 @@ instance StrEncoding ProxyError where
 instance Encoding BrokerErrorType where
   smpEncode = \case
     RESPONSE e -> "RESPONSE " <> smpEncode e
+    UNEXPECTED e -> "UNEXPECTED " <> smpEncode e
     TRANSPORT e -> "TRANSPORT " <> serializeTransportError e
     e -> bshow e
   smpP =
     A.takeTill (== ' ') >>= \case
-      "RESPONSE " -> RESPONSE <$> smpP
-      "TRANSPORT " -> TRANSPORT <$> transportErrorP
+      "RESPONSE" -> RESPONSE <$> _smpP
+      "UNEXPECTED" -> UNEXPECTED <$> _smpP
+      "TRANSPORT" -> TRANSPORT <$> (A.space *> transportErrorP)
       s -> parseRead $ pure s
 
 instance StrEncoding BrokerErrorType where
   strEncode = \case
     RESPONSE e -> "RESPONSE " <> strEncode e
+    UNEXPECTED e -> "UNEXPECTED " <> strEncode e
     TRANSPORT e -> "TRANSPORT " <> serializeTransportError e
     e -> bshow e
   strP =
     A.takeTill (== ' ') >>= \case
-      "RESPONSE " -> RESPONSE <$> strP
-      "TRANSPORT " -> TRANSPORT <$> transportErrorP
+      "RESPONSE" -> RESPONSE <$> _strP
+      "UNEXPECTED" -> UNEXPECTED <$> _strP
+      "TRANSPORT" -> TRANSPORT <$> (A.space *> transportErrorP)
       s -> parseRead $ pure s
 
 -- | Send signed SMP transmission to TCP transport.

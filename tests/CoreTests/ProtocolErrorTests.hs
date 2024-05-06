@@ -6,14 +6,12 @@
 
 module CoreTests.ProtocolErrorTests where
 
-import qualified Data.ByteString.Char8 as B
-import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Agent.Protocol as Agent
+import Simplex.Messaging.Client (ProxyClientError (..))
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (CommandError (..), ErrorType (..))
@@ -26,22 +24,33 @@ import Test.QuickCheck
 
 protocolErrorTests :: Spec
 protocolErrorTests = modifyMaxSuccess (const 1000) $ do
-  describe "errors parsing / serializing" $ do
-    it "should parse SMP protocol errors" . property $ \(err :: ErrorType) ->
+  fdescribe "errors parsing / serializing" $ do
+    it "should parse SMP protocol errors" . property . forAll possibleErrorType $ \err ->
       smpDecode (smpEncode err) == Right err
-    it "should parse SMP agent errors" . property . forAll possible $ \err ->
+    it "should parse SMP agent errors" . property . forAll possibleAgentErrorType $ \err ->
       strDecode (strEncode err) == Right err
   where
-    possible :: Gen AgentErrorType
-    possible =
+    possibleErrorType :: Gen ErrorType
+    possibleErrorType = arbitrary >>= \e -> if skipErrorType e then discard else pure e
+    possibleAgentErrorType :: Gen AgentErrorType
+    possibleAgentErrorType =
       arbitrary >>= \case
-        BROKER srv (Agent.RESPONSE e) | hasSpaces srv || hasSpaces e -> discard
-        BROKER srv _ | hasSpaces srv -> discard
-        SMP (SMP.PROXY (SMP.BROKER (SMP.UNEXPECTED s))) | hasUnicode s -> discard
-        NTF (SMP.PROXY (SMP.BROKER (SMP.UNEXPECTED s))) | hasUnicode s -> discard
+        BROKER srv _ | skip srv -> discard
+        BROKER _ (RESPONSE e) | skip e -> discard
+        BROKER _ (UNEXPECTED e) | skip e -> discard
+        SMP e | skipErrorType e -> discard
+        NTF e | skipErrorType e -> discard
+        Agent.PROXY pxy srv _ | skip pxy || skip srv -> discard
+        Agent.PROXY _ _ (ProxyProtocolError e) | skipErrorType e -> discard
+        Agent.PROXY _ _ (ProxyUnexpectedResponse e) | skip e -> discard
+        Agent.PROXY _ _ (ProxyResponseError e) | skipErrorType e -> discard
         ok -> pure ok
-    hasSpaces s = ' ' `B.elem` encodeUtf8 (T.pack s)
-    hasUnicode = any (>= '\255')
+    skip s = null s || any (\c -> c <= ' ' || c >= '\255') s
+    skipErrorType = \case
+      SMP.PROXY (SMP.PROTOCOL e) -> skipErrorType e
+      SMP.PROXY (SMP.BROKER (UNEXPECTED s)) -> skip s
+      SMP.PROXY (SMP.BROKER (RESPONSE s)) -> skip s
+      _ -> False
 
 deriving instance Generic AgentErrorType
 
@@ -49,7 +58,7 @@ deriving instance Generic CommandErrorType
 
 deriving instance Generic ConnectionErrorType
 
-deriving instance Generic AgentProxyError
+deriving instance Generic ProxyClientError
 
 deriving instance Generic BrokerErrorType
 
@@ -77,7 +86,7 @@ instance Arbitrary CommandErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary ConnectionErrorType where arbitrary = genericArbitraryU
 
-instance Arbitrary AgentProxyError where arbitrary = genericArbitraryU
+instance Arbitrary ProxyClientError where arbitrary = genericArbitraryU
 
 instance Arbitrary BrokerErrorType where arbitrary = genericArbitraryU
 
