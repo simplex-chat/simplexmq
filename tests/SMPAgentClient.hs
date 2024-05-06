@@ -35,7 +35,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Server (runSMPAgentBlocking)
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
-import Simplex.Messaging.Client (ProtocolClientConfig (..), SMPProxyMode, chooseTransportHost, defaultNetworkConfig, defaultSMPClientConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), SMPProxyFallback, SMPProxyMode, chooseTransportHost, defaultNetworkConfig, defaultSMPClientConfig)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth)
@@ -199,8 +199,9 @@ initAgentServers =
 initAgentServers2 :: InitialAgentServers
 initAgentServers2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer, noAuthSrv testSMPServer2]}
 
-initAgentServersProxy :: SMPProxyMode -> InitialAgentServers
-initAgentServersProxy smpProxyMode = initAgentServers {netCfg = (netCfg initAgentServers) {smpProxyMode}}
+initAgentServersProxy :: SMPProxyMode -> SMPProxyFallback -> InitialAgentServers
+initAgentServersProxy smpProxyMode smpProxyFallback =
+  initAgentServers {netCfg = (netCfg initAgentServers) {smpProxyMode, smpProxyFallback}}
 
 agentCfg :: AgentConfig
 agentCfg =

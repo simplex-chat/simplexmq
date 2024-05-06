@@ -628,16 +628,20 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               proxyResp = \case
                 Left err -> ERR $ smpProxyError err
                 Right smp ->
-                  let THandleParams {sessionId = srvSessId, thAuth} = thParams smp
-                      vr = supportedServerSMPRelayVRange
-                   in case thAuth of
-                        Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
-                        Nothing -> ERR . PROXY . BROKER $ TRANSPORT TENoServerAuth
+                  let THandleParams {sessionId = srvSessId, thVersion, thAuth} = thParams smp
+                      vr = supportedServerSMPRelayVRange -- TODO this should be destination relay version range
+                   in if thVersion >= sendingProxySMPVersion
+                        then case thAuth of
+                          Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
+                          Nothing -> ERR pxyNoAuthErr
+                        else ERR . PROXY . BROKER . TRANSPORT $ TEHandshake VERSION
       PFWD pubKey encBlock -> do
         ProxyAgent {smpAgent} <- asks proxyAgent
         atomically (lookupSMPServerClient smpAgent sessId) >>= \case
           Just smp -> liftIO $ either (ERR . smpProxyError) PRES <$> runExceptT (forwardSMPMessage smp corrId pubKey encBlock) `catchError` (pure . Left . PCEIOError)
           Nothing -> pure $ ERR $ PROXY NO_SESSION
+    pxyNoAuthErr :: ErrorType
+    pxyNoAuthErr = PROXY . BROKER $ TRANSPORT TENoServerAuth
     processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Either (Transmission (Command 'ProxiedClient)) (Transmission BrokerMsg))
     processCommand (qr_, (corrId, queueId, cmd)) = do
       st <- asks queueStore
@@ -916,8 +920,8 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
 
         processForwardedCommand :: EncFwdTransmission -> M BrokerMsg
         processForwardedCommand (EncFwdTransmission s) = fmap (either ERR id) . runExceptT $ do
-          THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE noRelayAuth) pure (thAuth thParams')
-          sessSecret <- maybe (throwE noRelayAuth) pure sessSecret'
+          THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE pxyNoAuthErr) pure (thAuth thParams')
+          sessSecret <- maybe (throwE pxyNoAuthErr) pure sessSecret'
           let proxyNonce = C.cbNonce $ bs corrId
           s' <- liftEitherWith (const CRYPTO) $ C.cbDecryptNoPad sessSecret proxyNonce s
           FwdTransmission {fwdCorrId, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'
@@ -952,7 +956,6 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               r3 = EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
           pure $ RRES r3
           where
-            noRelayAuth = PROXY $ BROKER $ TRANSPORT TENoServerAuth
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
             rejectOrVerify clntThAuth (tAuth, authorized, (corrId', entId', cmdOrError)) =
               case cmdOrError of
