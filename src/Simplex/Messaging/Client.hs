@@ -742,12 +742,12 @@ data ProxyClientError
 
 instance StrEncoding ProxyClientError where
   strEncode = \case
-    ProxyProtocolError e -> "SMP " <> strEncode e
+    ProxyProtocolError e -> "PROTOCOL " <> strEncode e
     ProxyUnexpectedResponse s -> "UNEXPECTED " <> B.pack s
     ProxyResponseError e -> "SYNTAX " <> strEncode e
   strP =
     A.takeTill (== ' ') >>= \case
-      "SMP" -> ProxyProtocolError <$> _strP
+      "PROTOCOL" -> ProxyProtocolError <$> _strP
       "UNEXPECTED" -> ProxyUnexpectedResponse . B.unpack <$> (A.space *> A.takeByteString)
       "SYNTAX" -> ProxyResponseError <$> _strP
       _ -> fail "bad ProxyClientError"

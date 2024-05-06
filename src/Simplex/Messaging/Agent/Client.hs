@@ -1270,18 +1270,23 @@ processSubResult c rq r = do
 
 temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
-  BROKER _ NETWORK -> True
-  BROKER _ TIMEOUT -> True
-  SMP (SMP.PROXY (SMP.BROKER NETWORK)) -> True
-  SMP (SMP.PROXY (SMP.BROKER TIMEOUT)) -> True
+  BROKER _ e -> tempBrokerError e
+  SMP (SMP.PROXY (SMP.BROKER e)) -> tempBrokerError e
+  PROXY _ _ (ProxyProtocolError (SMP.PROXY (SMP.BROKER e))) -> tempBrokerError e
   INACTIVE -> True
   _ -> False
+  where
+    tempBrokerError = \case
+      NETWORK -> True
+      TIMEOUT -> True
+      _ -> False
 {-# INLINE temporaryAgentError #-}
 
 temporaryOrHostError :: AgentErrorType -> Bool
 temporaryOrHostError = \case
   BROKER _ HOST -> True
   SMP (SMP.PROXY (SMP.BROKER HOST)) -> True
+  PROXY _ _ (ProxyProtocolError (SMP.PROXY (SMP.BROKER HOST))) -> True
   e -> temporaryAgentError e
 {-# INLINE temporaryOrHostError #-}
 

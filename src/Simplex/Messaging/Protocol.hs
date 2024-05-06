@@ -1458,7 +1458,7 @@ instance Encoding ErrorType where
       "LARGE_MSG" -> pure LARGE_MSG
       "INTERNAL" -> pure INTERNAL
       "DUPLICATE_" -> pure DUPLICATE_
-      _ -> fail "bad error type"
+      _ -> fail "bad ErrorType"
 
 instance Encoding CommandError where
   smpEncode e = case e of
@@ -1477,7 +1477,7 @@ instance Encoding CommandError where
       "HAS_AUTH" -> pure HAS_AUTH
       "NO_ENTITY" -> pure NO_ENTITY
       "NO_QUEUE" -> pure NO_ENTITY -- for backward compatibility
-      _ -> fail "bad command error type"
+      _ -> fail "bad CommandError"
 
 instance Encoding ProxyError where
   smpEncode = \case
@@ -1489,7 +1489,7 @@ instance Encoding ProxyError where
       "PROTOCOL" -> PROTOCOL <$> _smpP
       "BROKER" -> BROKER <$> _smpP
       "NO_SESSION" -> pure NO_SESSION
-      _ -> fail "bad command error type"
+      _ -> fail "bad ProxyError"
 
 instance StrEncoding ProxyError where
   strEncode = \case
@@ -1506,13 +1506,18 @@ instance Encoding BrokerErrorType where
     RESPONSE e -> "RESPONSE " <> smpEncode e
     UNEXPECTED e -> "UNEXPECTED " <> smpEncode e
     TRANSPORT e -> "TRANSPORT " <> serializeTransportError e
-    e -> bshow e
+    NETWORK -> "NETWORK"
+    TIMEOUT -> "TIMEOUT"
+    HOST -> "HOST"
   smpP =
     A.takeTill (== ' ') >>= \case
       "RESPONSE" -> RESPONSE <$> _smpP
       "UNEXPECTED" -> UNEXPECTED <$> _smpP
       "TRANSPORT" -> TRANSPORT <$> (A.space *> transportErrorP)
-      s -> parseRead $ pure s
+      "NETWORK" -> pure NETWORK
+      "TIMEOUT" -> pure TIMEOUT
+      "HOST" -> pure HOST
+      _ -> fail "bad BrokerErrorType"
 
 instance StrEncoding BrokerErrorType where
   strEncode = \case
