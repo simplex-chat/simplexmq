@@ -81,11 +81,13 @@ module Simplex.Messaging.Agent.Client
     agentClientStore,
     agentDRG,
     getAgentSubscriptions,
+    diffSubscriptions,
     slowNetworkConfig,
     Worker (..),
     SessionVar (..),
     SubscriptionsInfo (..),
     SubInfo (..),
+    SubscriptionsDiff (..),
     AgentOperation (..),
     AgentOpState (..),
     AgentState (..),
@@ -153,6 +155,7 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (lefts, partitionEithers)
+import Data.Foldable (fold)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
@@ -1168,7 +1171,9 @@ subscribeQueues c qs = do
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED) else Right rq
     subscribeQueues_ :: Env -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
     subscribeQueues_ env smp qs' = do
+      atomically . modifyTVar (sentSubs smp) . M.union $ M.fromList [(connId, False) | RcvQueue {connId} <- L.toList qs']
       rs <- sendBatch subscribeSMPQueues smp qs'
+      atomically . modifyTVar (sentSubs smp) . M.union $ M.fromList [(connId, True) | (RcvQueue {connId}, Right _) <- L.toList rs]
       mapM_ (uncurry $ processSubResult c) rs
       when (any temporaryClientError . lefts . map snd $ L.toList rs) $
         runReaderT (resubscribeSMPSession c $ transportSession' smp) env
@@ -1682,6 +1687,31 @@ getAgentSubscriptions c = do
     enc :: StrEncoding a => a -> Text
     enc = decodeLatin1 . strEncode
 
+diffSubscriptions :: AgentClient -> IO SubscriptionsDiff
+diffSubscriptions AgentClient {smpClients, subscrConns} = do
+  agentConns <- readTVarIO subscrConns
+  clients <- readTVarIO smpClients
+  clientSubscribed <- fmap (M.keysSet . fold) . forM (M.assocs clients) $ \((_, srv, _), SessionVar {sessionVar}) ->
+    atomically (tryReadTMVar sessionVar) >>= \case
+      Just (Right smp) -> readTVarIO (sentSubs smp)
+      _ -> mempty <$ putStrLn ("no client for " <> show srv)
+  pure
+    SubscriptionsDiff
+      { inBoth = S.size $ agentConns `S.intersection` clientSubscribed,
+        onlyInAgent = agentConns `notIn` clientSubscribed,
+        onlyInClients = clientSubscribed `notIn` agentConns
+      }
+  where
+    notIn :: Set ConnId -> Set ConnId -> [Text]
+    notIn a b = map (decodeLatin1 . strEncode) . S.toList $ S.difference a b
+
+data SubscriptionsDiff = SubscriptionsDiff
+  { inBoth :: Int,
+    onlyInAgent :: [Text],
+    onlyInClients :: [Text]
+  }
+  deriving (Show)
+
 data AgentWorkersDetails = AgentWorkersDetails
   { smpClients_ :: [Text],
     ntfClients_ :: [Text],
@@ -1818,6 +1848,8 @@ $(J.deriveJSON defaultJSON ''ProtocolTestFailure)
 $(J.deriveJSON defaultJSON ''SubInfo)
 
 $(J.deriveJSON defaultJSON ''SubscriptionsInfo)
+
+$(J.deriveJSON defaultJSON ''SubscriptionsDiff)
 
 $(J.deriveJSON defaultJSON ''WorkersDetails)
 
