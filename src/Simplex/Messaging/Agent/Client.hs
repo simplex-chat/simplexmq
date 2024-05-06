@@ -1691,24 +1691,24 @@ diffSubscriptions :: AgentClient -> IO SubscriptionsDiff
 diffSubscriptions AgentClient {smpClients, subscrConns} = do
   agentConns <- readTVarIO subscrConns
   clients <- readTVarIO smpClients
-  clientSubscribed <- fmap (M.keysSet . fold) . forM (M.assocs clients) $ \((_, srv, _), SessionVar {sessionVar}) ->
+  clientsSubs <- fmap fold . forM (M.assocs clients) $ \((_, srv, _), SessionVar {sessionVar}) ->
     atomically (tryReadTMVar sessionVar) >>= \case
       Just (Right smp) -> readTVarIO (sentSubs smp)
       _ -> mempty <$ putStrLn ("no client for " <> show srv)
+  let allClientsSubs = M.keysSet clientsSubs
   pure
     SubscriptionsDiff
-      { inBoth = S.size $ agentConns `S.intersection` clientSubscribed,
-        onlyInAgent = agentConns `notIn` clientSubscribed,
-        onlyInClients = clientSubscribed `notIn` agentConns
+      { inBoth = S.size $ agentConns `S.intersection` allClientsSubs,
+        inAgent = map textId . S.toList $ agentConns `S.difference` allClientsSubs,
+        inClients = M.fromList . map (\k -> (textId k, M.lookup k clientsSubs == Just True)) . S.toList $ allClientsSubs `S.difference` agentConns
       }
   where
-    notIn :: Set ConnId -> Set ConnId -> [Text]
-    notIn a b = map (decodeLatin1 . strEncode) . S.toList $ S.difference a b
+    textId = decodeLatin1 . strEncode
 
 data SubscriptionsDiff = SubscriptionsDiff
   { inBoth :: Int,
-    onlyInAgent :: [Text],
-    onlyInClients :: [Text]
+    inAgent :: [Text],
+    inClients :: Map Text Bool
   }
   deriving (Show)
 
