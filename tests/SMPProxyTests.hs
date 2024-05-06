@@ -133,7 +133,7 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
   withAgent 1 aCfg (servers aTestCfg) testDB $ \alice ->
     withAgent 2 aCfg (servers bTestCfg) testDB2 $ \bob -> runRight_ $ do
       (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
-      aliceId <- A.joinConnection bob 1 True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      aliceId <- A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
       liftIO $ pqSup' `shouldBe` PQSupportOn
       allowConnection alice bobId confId "alice's connInfo"
