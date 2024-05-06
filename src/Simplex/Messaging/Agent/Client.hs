@@ -1745,7 +1745,6 @@ diffSubscriptions AgentClient {smpClients, subscrConns} = do
     atomically (tryReadTMVar sessionVar) >>= \case
       Just (Right smp) -> readTVarIO (sentSubs smp)
       _ -> mempty <$ putStrLn ("no client for " <> show srv)
-  print (agentConns, clientSubscribed, agentConns `S.intersection` clientSubscribed)
   pure
     SubscriptionsDiff
       { inBoth = S.size $ agentConns `S.intersection` clientSubscribed,
