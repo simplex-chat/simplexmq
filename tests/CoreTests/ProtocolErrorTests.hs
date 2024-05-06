@@ -24,7 +24,7 @@ import Test.QuickCheck
 
 protocolErrorTests :: Spec
 protocolErrorTests = modifyMaxSuccess (const 1000) $ do
-  fdescribe "errors parsing / serializing" $ do
+  describe "errors parsing / serializing" $ do
     it "should parse SMP protocol errors" . property . forAll possibleErrorType $ \err ->
       smpDecode (smpEncode err) == Right err
     it "should parse SMP agent errors" . property . forAll possibleAgentErrorType $ \err ->
