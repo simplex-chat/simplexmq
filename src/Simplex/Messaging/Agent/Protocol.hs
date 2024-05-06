@@ -189,6 +189,7 @@ import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
+import Simplex.Messaging.Client (ProxyClientError)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
   ( InitialKeys (..),
@@ -206,6 +207,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( AProtocolType,
+    BrokerErrorType (..),
     EntityId,
     ErrorType,
     MsgBody,
@@ -233,7 +235,7 @@ import Simplex.Messaging.Protocol
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme
-import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
+import Simplex.Messaging.Transport (Transport (..), serializeTransportError, transportErrorP)
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts_ (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -1474,6 +1476,8 @@ data AgentErrorType
     NTF {ntfErr :: ErrorType}
   | -- | XFTP protocol errors forwarded to agent clients
     XFTP {xftpErr :: XFTPErrorType}
+  | -- | SMP proxy errors
+    PROXY {proxyServer :: String, relayServer :: String, proxyErr :: ProxyClientError}
   | -- | XRCP protocol errors forwarded to agent clients
     RCP {rcpErr :: RCErrorType}
   | -- | SMP server errors
@@ -1514,22 +1518,6 @@ data ConnectionErrorType
     NOT_ACCEPTED
   | -- | connection not available on reply confirmation/HELLO after timeout
     NOT_AVAILABLE
-  deriving (Eq, Read, Show, Exception)
-
--- | SMP server errors.
-data BrokerErrorType
-  = -- | invalid server response (failed to parse)
-    RESPONSE {smpErr :: String}
-  | -- | unexpected response
-    UNEXPECTED
-  | -- | network error
-    NETWORK
-  | -- | no compatible server host (e.g. onion when public is required, or vice versa)
-    HOST
-  | -- | handshake or other transport error
-    TRANSPORT {transportErr :: TransportError}
-  | -- | command response timeout
-    TIMEOUT
   deriving (Eq, Read, Show, Exception)
 
 -- | Errors of another SMP agent.
@@ -1587,8 +1575,10 @@ instance StrEncoding AgentErrorType where
       <|> "SMP " *> (SMP <$> strP)
       <|> "NTF " *> (NTF <$> strP)
       <|> "XFTP " *> (XFTP <$> strP)
+      <|> "PROXY " *> (PROXY <$> textP <* A.space <*> textP <*> _strP)
       <|> "RCP " *> (RCP <$> strP)
       <|> "BROKER " *> (BROKER <$> textP <* " RESPONSE " <*> (RESPONSE <$> textP))
+      <|> "BROKER " *> (BROKER <$> textP <* " UNEXPECTED " <*> (UNEXPECTED <$> textP))
       <|> "BROKER " *> (BROKER <$> textP <* " TRANSPORT " <*> (TRANSPORT <$> transportErrorP))
       <|> "BROKER " *> (BROKER <$> textP <* A.space <*> parseRead1)
       <|> "AGENT CRYPTO " *> (AGENT . A_CRYPTO <$> parseRead A.takeByteString)
@@ -1605,8 +1595,10 @@ instance StrEncoding AgentErrorType where
     SMP e -> "SMP " <> strEncode e
     NTF e -> "NTF " <> strEncode e
     XFTP e -> "XFTP " <> strEncode e
+    PROXY pxy srv e -> B.unwords ["PROXY", text pxy, text srv, strEncode e]
     RCP e -> "RCP " <> strEncode e
     BROKER srv (RESPONSE e) -> "BROKER " <> text srv <> " RESPONSE " <> text e
+    BROKER srv (UNEXPECTED e) -> "BROKER " <> text srv <> " UNEXPECTED " <> text e
     BROKER srv (TRANSPORT e) -> "BROKER " <> text srv <> " TRANSPORT " <> serializeTransportError e
     BROKER srv e -> "BROKER " <> text srv <> " " <> bshow e
     AGENT (A_CRYPTO e) -> "AGENT CRYPTO " <> bshow e
@@ -1976,8 +1968,6 @@ $(J.deriveJSON (sumTypeJSON fstToLower) ''MsgIntegrity)
 $(J.deriveJSON (sumTypeJSON id) ''CommandErrorType)
 
 $(J.deriveJSON (sumTypeJSON id) ''ConnectionErrorType)
-
-$(J.deriveJSON (sumTypeJSON id) ''BrokerErrorType)
 
 $(J.deriveJSON (sumTypeJSON id) ''AgentCryptoError)
 

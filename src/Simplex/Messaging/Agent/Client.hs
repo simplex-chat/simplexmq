@@ -1032,8 +1032,15 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
     unknownServer = maybe True (all ((destSrv /=) . protoServer)) <$> TM.lookup userId (userServers c)
     sendViaProxy destSess =
       withProxySession c destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess) -> do
-        liftClient SMP (clientServer smp) $ proxySMPMessage smp proxySess spKey_ senderId msgFlags msg
-        pure . Just $ protocolClientServer' smp
+        liftClient SMP (clientServer smp) (proxySMPMessage smp proxySess spKey_ senderId msgFlags msg) >>= \case
+          Right () -> pure . Just $ protocolClientServer' smp
+          Left proxyErr ->
+            throwError
+              PROXY
+                { proxyServer = protocolClientServer smp,
+                  relayServer = B.unpack $ strEncode destSrv,
+                  proxyErr
+                }
     sendDirectly tSess =
       withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) ->
         liftClient SMP (clientServer smp) $ sendSMPMessage smp spKey_ senderId msgFlags msg
@@ -1066,7 +1073,7 @@ protocolClientError :: (Show err, Encoding err) => (err -> AgentErrorType) -> Ho
 protocolClientError protocolError_ host = \case
   PCEProtocolError e -> protocolError_ e
   PCEResponseError e -> BROKER host $ RESPONSE $ B.unpack $ smpEncode e
-  PCEUnexpectedResponse _ -> BROKER host UNEXPECTED
+  PCEUnexpectedResponse r -> BROKER host $ UNEXPECTED $ take 32 $ show r
   PCEResponseTimeout -> BROKER host TIMEOUT
   PCENetworkError -> BROKER host NETWORK
   PCEIncompatibleHost -> BROKER host HOST
@@ -1263,15 +1270,23 @@ processSubResult c rq r = do
 
 temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
-  BROKER _ NETWORK -> True
-  BROKER _ TIMEOUT -> True
+  BROKER _ e -> tempBrokerError e
+  SMP (SMP.PROXY (SMP.BROKER e)) -> tempBrokerError e
+  PROXY _ _ (ProxyProtocolError (SMP.PROXY (SMP.BROKER e))) -> tempBrokerError e
   INACTIVE -> True
   _ -> False
+  where
+    tempBrokerError = \case
+      NETWORK -> True
+      TIMEOUT -> True
+      _ -> False
 {-# INLINE temporaryAgentError #-}
 
 temporaryOrHostError :: AgentErrorType -> Bool
 temporaryOrHostError = \case
   BROKER _ HOST -> True
+  SMP (SMP.PROXY (SMP.BROKER HOST)) -> True
+  PROXY _ _ (ProxyProtocolError (SMP.PROXY (SMP.BROKER HOST))) -> True
   e -> temporaryAgentError e
 {-# INLINE temporaryOrHostError #-}
 

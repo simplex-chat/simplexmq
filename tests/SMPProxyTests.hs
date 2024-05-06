@@ -113,7 +113,7 @@ deliverMessageViaProxy proxyServ relayServ alg msg msg' = do
     -- get proxy session
     sess <- connectSMPProxiedRelay pc relayServ (Just "correct")
     -- send via proxy to unsecured queue
-    proxySMPMessage pc sess Nothing sndId noMsgFlags msg
+    Right () <- proxySMPMessage pc sess Nothing sndId noMsgFlags msg
     -- receive 1
     (_tSess, _v, _sid, _isResp, _entId, SMP.MSG RcvMessage {msgId, msgBody = EncRcvMsgBody encBody}) <- atomically $ readTBQueue msgQ
     liftIO $ dec msgId encBody `shouldBe` Right msg
@@ -122,7 +122,7 @@ deliverMessageViaProxy proxyServ relayServ alg msg msg' = do
     (sPub, sPriv) <- atomically $ C.generateAuthKeyPair alg g
     secureSMPQueue rc rPriv rcvId sPub
     -- send via proxy to secured queue
-    proxySMPMessage pc sess (Just sPriv) sndId noMsgFlags msg'
+    Right () <- proxySMPMessage pc sess (Just sPriv) sndId noMsgFlags msg'
     -- receive 2
     (_tSess, _v, _sid, _isResp, _entId, SMP.MSG RcvMessage {msgId = msgId', msgBody = EncRcvMsgBody encBody'}) <- atomically $ readTBQueue msgQ
     liftIO $ dec msgId' encBody' `shouldBe` Right msg'
@@ -171,14 +171,14 @@ testNoProxy = do
   withSmpServerConfigOn (transport @TLS) cfg testPort2 $ \_ -> do
     testSMPClient_ "127.0.0.1" testPort2 proxyVRange $ \(th :: THandleSMP TLS 'TClient) -> do
       (_, _, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", "", PRXY testSMPServer Nothing)
-      reply `shouldBe` Right (SMP.ERR SMP.AUTH)
+      reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
 
 testProxyAuth :: IO ()
 testProxyAuth = do
   withSmpServerConfigOn (transport @TLS) proxyCfgAuth testPort $ \_ -> do
     testSMPClient_ "127.0.0.1" testPort proxyVRange $ \(th :: THandleSMP TLS 'TClient) -> do
       (_, _s, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", "", PRXY testSMPServer2 $ Just "wrong")
-      reply `shouldBe` Right (SMP.ERR SMP.AUTH)
+      reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
   where
     proxyCfgAuth = proxyCfg {newQueueBasicAuth = Just "correct"}
 
