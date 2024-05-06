@@ -1682,5 +1682,7 @@ $(J.deriveJSON defaultJSON ''MsgFlags)
 
 $(J.deriveJSON (sumTypeJSON id) ''CommandError)
 
+$(J.deriveJSON (sumTypeJSON id) ''BrokerErrorType)
+
 -- run deriveJSON in one TH splice to allow mutual instance
-$(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''BrokerErrorType, ''ProxyError, ''ErrorType])
+$(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''ErrorType])
