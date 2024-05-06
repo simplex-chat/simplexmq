@@ -540,8 +540,8 @@ temporaryClientError = \case
 smpProxyError :: SMPClientError -> ErrorType
 smpProxyError = \case
   PCEProtocolError e -> PROXY $ PROTOCOL e
-  PCEResponseError e -> PROXY $ BROKER $ RESPONSE $ B.unpack $ B.take 32 $ smpEncode e
-  PCEUnexpectedResponse bs -> PROXY $ BROKER $ UNEXPECTED $ B.unpack $ B.take 32 bs
+  PCEResponseError e -> PROXY $ BROKER $ RESPONSE $ B.unpack $ strEncode e
+  PCEUnexpectedResponse s -> PROXY $ BROKER $ UNEXPECTED $ B.unpack $ B.take 32 s
   PCEResponseTimeout -> PROXY $ BROKER TIMEOUT
   PCENetworkError -> PROXY $ BROKER NETWORK
   PCEIncompatibleHost -> PROXY $ BROKER HOST
@@ -847,7 +847,7 @@ forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = 
       r' <- liftEitherWith PCECryptoError $ C.cbDecryptNoPad sessSecret (C.reverseNonce nonce) efr
       FwdResponse {fwdCorrId = _, fwdResponse} <- liftEitherWith (const $ PCEResponseError BLOCK) $ smpDecode r'
       pure fwdResponse
-    r -> throwE . PCEUnexpectedResponse $ bshow r
+    r -> throwE . PCEUnexpectedResponse $ B.take 32 $ bshow r
 
 okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateAuthKey -> QueueId -> ExceptT SMPClientError IO ()
 okSMPCommand cmd c pKey qId =

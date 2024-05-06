@@ -1072,8 +1072,8 @@ liftClient protocolError_ = liftError . protocolClientError protocolError_
 protocolClientError :: (Show err, Encoding err) => (err -> AgentErrorType) -> HostName -> ProtocolClientError err -> AgentErrorType
 protocolClientError protocolError_ host = \case
   PCEProtocolError e -> protocolError_ e
-  PCEResponseError e -> BROKER host $ RESPONSE $ B.unpack $ B.take 32 $ smpEncode e
-  PCEUnexpectedResponse r -> BROKER host $ UNEXPECTED (B.unpack $ B.take 32 $ bshow r)
+  PCEResponseError e -> BROKER host $ RESPONSE $ B.unpack $ smpEncode e
+  PCEUnexpectedResponse r -> BROKER host $ UNEXPECTED $ take 32 $ show r
   PCEResponseTimeout -> BROKER host TIMEOUT
   PCENetworkError -> BROKER host NETWORK
   PCEIncompatibleHost -> BROKER host HOST
