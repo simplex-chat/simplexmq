@@ -124,7 +124,6 @@ import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, diffToMicroseconds, liftEitherWith, raceAny_, threadDelay', whenM)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
-import UnliftIO (pooledMapConcurrentlyN)
 
 -- | 'SMPClient' is a handle used to send commands to a specific SMP server.
 --
@@ -846,7 +845,7 @@ streamProtocolCommands c@ProtocolClient {thParams = THandleParams {batch, blockS
   mapM_ (cb <=< sendBatch c) bs
 
 sendBatch :: ProtocolClient v err msg -> TransportBatch (Request err msg) -> IO [Response err msg]
-sendBatch c@ProtocolClient {client_ = PClient {rcvConcurrency, sndQ}} b = do
+sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
   case b of
     TBError e Request {entityId} -> do
       putStrLn "send error: large message"
@@ -855,7 +854,7 @@ sendBatch c@ProtocolClient {client_ = PClient {rcvConcurrency, sndQ}} b = do
       | n > 0 -> do
           active <- newTVarIO True
           atomically $ writeTBQueue sndQ (active, s)
-          pooledMapConcurrentlyN rcvConcurrency (getResponse c active) rs
+          mapConcurrently (getResponse c active) rs
       | otherwise -> pure []
     TBTransmission s r -> do
       active <- newTVarIO True

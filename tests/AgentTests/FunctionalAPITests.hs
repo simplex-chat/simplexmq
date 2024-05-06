@@ -248,7 +248,7 @@ createConnection :: AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe 
 createConnection c userId enableNtfs cMode clientData = A.createConnection c userId enableNtfs cMode clientData (IKNoPQ PQSupportOn)
 
 joinConnection :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> AE ConnId
-joinConnection c userId enableNtfs cReq connInfo = A.joinConnection c userId enableNtfs cReq connInfo PQSupportOn
+joinConnection c userId enableNtfs cReq connInfo = A.joinConnection c userId Nothing enableNtfs cReq connInfo PQSupportOn
 
 sendMessage :: AgentClient -> ConnId -> SMP.MsgFlags -> MsgBody -> AE AgentMsgId
 sendMessage c connId msgFlags msgBody = do
@@ -513,7 +513,7 @@ runAgentClientTest :: HasCallStack => PQSupport -> Bool -> AgentClient -> AgentC
 runAgentClientTest pqSupport viaProxy alice@AgentClient {} bob baseId =
   runRight_ $ do
     (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (IKNoPQ pqSupport) SMSubscribe
-    aliceId <- A.joinConnection bob 1 True qInfo "bob's connInfo" pqSupport SMSubscribe
+    aliceId <- A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" pqSupport SMSubscribe
     ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` pqSupport
     allowConnection alice bobId confId "alice's connInfo"
@@ -641,7 +641,9 @@ runAgentClientContactTest :: HasCallStack => PQSupport -> Bool -> AgentClient ->
 runAgentClientContactTest pqSupport viaProxy alice bob baseId =
   runRight_ $ do
     (_, qInfo) <- A.createConnection alice 1 True SCMContact Nothing (IKNoPQ pqSupport) SMSubscribe
-    aliceId <- A.joinConnection bob 1 True qInfo "bob's connInfo" pqSupport SMSubscribe
+    aliceId <- A.prepareConnectionToJoin bob 1 True qInfo pqSupport
+    aliceId' <- A.joinConnection bob 1 (Just aliceId) True qInfo "bob's connInfo" pqSupport SMSubscribe
+    liftIO $ aliceId' `shouldBe` aliceId
     ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` pqSupport
     bobId <- acceptContact alice True invId "alice's connInfo" PQSupportOn SMSubscribe
@@ -1411,7 +1413,9 @@ makeConnectionForUsers = makeConnectionForUsers_ PQSupportOn
 makeConnectionForUsers_ :: PQSupport -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnectionForUsers_ pqSupport alice aliceUserId bob bobUserId = do
   (bobId, qInfo) <- A.createConnection alice aliceUserId True SCMInvitation Nothing (CR.IKNoPQ pqSupport) SMSubscribe
-  aliceId <- A.joinConnection bob bobUserId True qInfo "bob's connInfo" pqSupport SMSubscribe
+  aliceId <- A.prepareConnectionToJoin bob bobUserId True qInfo pqSupport
+  aliceId' <- A.joinConnection bob bobUserId (Just aliceId) True qInfo "bob's connInfo" pqSupport SMSubscribe
+  liftIO $ aliceId' `shouldBe` aliceId
   ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
   liftIO $ pqSup' `shouldBe` pqSupport
   allowConnection alice bobId confId "alice's connInfo"

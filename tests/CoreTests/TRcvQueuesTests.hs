@@ -22,10 +22,13 @@ tRcvQueuesTests = do
   describe "connection API" $ do
     it "hasConn" hasConnTest
     it "hasConn, batch add" hasConnTestBatch
+    it "hasConn, batch idempotent" batchIdempotentTest
     it "deleteConn" deleteConnTest
   describe "session API" $ do
     it "getSessQueues" getSessQueuesTest
     it "getDelSessQueues" getDelSessQueuesTest
+  describe "queue transfer" $ do
+    it "getDelSessQueues-batchAddQueues preserves total length" removeSubsTest
 
 checkDataInvariant :: RQ.TRcvQueues -> IO Bool
 checkDataInvariant trq = atomically $ do
@@ -61,6 +64,19 @@ hasConnTestBatch = do
   atomically (RQ.hasConn "c2" trq) `shouldReturn` True
   atomically (RQ.hasConn "c3" trq) `shouldReturn` True
   atomically (RQ.hasConn "nope" trq) `shouldReturn` False
+
+batchIdempotentTest :: IO ()
+batchIdempotentTest = do
+  trq <- atomically RQ.empty
+  let qs = [dummyRQ 0 "smp://1234-w==@alpha" "c1", dummyRQ 0 "smp://1234-w==@alpha" "c2", dummyRQ 0 "smp://1234-w==@beta" "c3"]
+  atomically $ RQ.batchAddQueues trq qs
+  checkDataInvariant trq `shouldReturn` True
+  qs' <- readTVarIO $ RQ.getRcvQueues trq
+  cs' <- readTVarIO $ RQ.getConnections trq
+  atomically $ RQ.batchAddQueues trq qs
+  checkDataInvariant trq `shouldReturn` True
+  readTVarIO (RQ.getRcvQueues trq) `shouldReturn` qs'
+  fmap L.nub <$> readTVarIO (RQ.getConnections trq) `shouldReturn`cs' -- connections get duplicated, but that doesn't appear to affect anybody
 
 deleteConnTest :: IO ()
 deleteConnTest = do
@@ -120,6 +136,40 @@ getDelSessQueuesTest = do
   -- non-matched connections intact
   atomically (RQ.hasConn "c3" trq) `shouldReturn` True
   atomically (RQ.hasConn "c4" trq) `shouldReturn` True
+
+removeSubsTest :: IO ()
+removeSubsTest = do
+  aq <- atomically RQ.empty
+  let qs =
+        [ dummyRQ 0 "smp://1234-w==@alpha" "c1",
+          dummyRQ 0 "smp://1234-w==@alpha" "c2",
+          dummyRQ 0 "smp://1234-w==@beta" "c3",
+          dummyRQ 1 "smp://1234-w==@beta" "c4"
+        ]
+  atomically $ RQ.batchAddQueues aq qs
+
+  pq <- atomically RQ.empty
+  atomically (totalSize aq pq) `shouldReturn` (4, 4)
+
+  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@alpha", Nothing) aq >>= RQ.batchAddQueues pq . fst
+  atomically (totalSize aq pq) `shouldReturn` (4, 4)
+
+  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@beta", Just "non-existent") aq >>= RQ.batchAddQueues pq . fst
+  atomically (totalSize aq pq) `shouldReturn` (4, 4)
+
+  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@localhost", Nothing) aq >>= RQ.batchAddQueues pq . fst
+  atomically (totalSize aq pq) `shouldReturn` (4, 4)
+
+  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@beta", Just "c3") aq >>= RQ.batchAddQueues pq . fst
+  atomically (totalSize aq pq) `shouldReturn` (4, 4)
+
+totalSize :: RQ.TRcvQueues -> RQ.TRcvQueues -> STM (Int, Int)
+totalSize a b = do
+  qsizeA <- M.size <$> readTVar (RQ.getRcvQueues a)
+  qsizeB <- M.size <$> readTVar (RQ.getRcvQueues b)
+  csizeA <- M.size <$> readTVar (RQ.getConnections a)
+  csizeB <- M.size <$> readTVar (RQ.getConnections b)
+  pure (qsizeA + qsizeB, csizeA + csizeB)
 
 dummyRQ :: UserId -> SMPServer -> ConnId -> RcvQueue
 dummyRQ userId server connId =
