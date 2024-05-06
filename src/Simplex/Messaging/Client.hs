@@ -702,8 +702,6 @@ deleteSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO 
 deleteSMPQueues = okSMPCommands DEL
 {-# INLINE deleteSMPQueues #-}
 
--- TODO picture
-
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
 connectSMPProxiedRelay :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO ProxiedRelay
@@ -711,10 +709,11 @@ connectSMPProxiedRelay c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxy
   sendSMPCommand c Nothing "" (PRXY relayServ proxyAuth) >>= \case
     PKEY sId vr (chain, key) ->
       case supportedClientSMPRelayVRange `compatibleVersion` vr of
-        Nothing -> throwE . PCEProtocolError . PROXY $ BROKER HOST
-        Just (Compatible v) -> liftEitherWith (const . PCEProtocolError . PROXY $ PROTOCOL AUTH) $ ProxiedRelay sId v <$> validateRelay chain key
+        Nothing -> throwE $ relayErr VERSION
+        Just (Compatible v) -> liftEitherWith (const $ relayErr IDENTITY) $ ProxiedRelay sId v <$> validateRelay chain key
     r -> throwE . PCEUnexpectedResponse $ bshow r
   where
+    relayErr = PCEProtocolError . PROXY . BROKER . TRANSPORT . TEHandshake
     validateRelay :: X.CertificateChain -> X.SignedExact X.PubKey -> Either String C.PublicKeyX25519
     validateRelay (X.CertificateChain cert) exact = do
       serverKey <- case cert of
@@ -835,8 +834,8 @@ forwardSMPMessage :: SMPClient -> CorrId -> C.PublicKeyX25519 -> EncTransmission
 forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdKey fwdTransmission = do
   -- prepare params
   sessSecret <- case thAuth thParams of
-    Nothing -> throwError $ PCEProtocolError INTERNAL -- different error - proxy didn't pass key?
-    Just THAuthClient {sessSecret} -> maybe (throwError $ PCEProtocolError INTERNAL) pure sessSecret
+    Nothing -> throwError $ PCETransportError TENoServerAuth
+    Just THAuthClient {sessSecret} -> maybe (throwError $ PCETransportError TENoServerAuth) pure sessSecret
   nonce <- liftIO . atomically $ C.randomCbNonce g
   -- wrap
   let fwdT = FwdTransmission {fwdCorrId, fwdKey, fwdTransmission}

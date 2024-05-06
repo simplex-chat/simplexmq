@@ -616,7 +616,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
     reply = atomically . writeTBQueue sndQ
     processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Transmission BrokerMsg)
     processProxiedCmd (corrId, sessId, command) = (corrId, sessId,) <$> case command of
-      PRXY srv auth -> ifM allowProxy getRelay (pure $ ERR AUTH)
+      PRXY srv auth -> ifM allowProxy getRelay (pure $ ERR $ PROXY BASIC_AUTH)
         where
           allowProxy = do
             ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
@@ -916,8 +916,8 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
 
         processForwardedCommand :: EncFwdTransmission -> M BrokerMsg
         processForwardedCommand (EncFwdTransmission s) = fmap (either ERR id) . runExceptT $ do
-          THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE AUTH) pure (thAuth thParams')
-          sessSecret <- maybe (throwE AUTH) pure sessSecret'
+          THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE noRelayAuth) pure (thAuth thParams')
+          sessSecret <- maybe (throwE noRelayAuth) pure sessSecret'
           let proxyNonce = C.cbNonce $ bs corrId
           s' <- liftEitherWith (const CRYPTO) $ C.cbDecryptNoPad sessSecret proxyNonce s
           FwdTransmission {fwdCorrId, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'
@@ -952,6 +952,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               r3 = EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
           pure $ RRES r3
           where
+            noRelayAuth = PROXY $ BROKER $ TRANSPORT TENoServerAuth
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
             rejectOrVerify clntThAuth (tAuth, authorized, (corrId', entId', cmdOrError)) =
               case cmdOrError of

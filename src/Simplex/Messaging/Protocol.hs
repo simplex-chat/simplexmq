@@ -1188,10 +1188,12 @@ data CommandError
 
 data ProxyError
   = -- | Correctly parsed SMP server ERR response.
-    -- This error is forwarded to the agent client as `ERR SMP err`.
+    -- This error is forwarded to the agent client as AgentErrorType `ERR PROXY PROTOCOL err`.
     PROTOCOL {protocolErr :: ErrorType}
   | -- | destination server error
     BROKER {brokerErr :: BrokerErrorType}
+  | -- | basic auth provided to proxy is invalid
+    BASIC_AUTH
   | -- no destination server error
     NO_SESSION
   deriving (Eq, Read, Show)
@@ -1483,11 +1485,13 @@ instance Encoding ProxyError where
   smpEncode = \case
     PROTOCOL e -> "PROTOCOL " <> smpEncode e
     BROKER e -> "BROKER " <> smpEncode e
+    BASIC_AUTH -> "BASIC_AUTH"
     NO_SESSION -> "NO_SESSION"
   smpP =
     A.takeTill (== ' ') >>= \case
       "PROTOCOL" -> PROTOCOL <$> _smpP
       "BROKER" -> BROKER <$> _smpP
+      "BASIC_AUTH" -> pure BASIC_AUTH
       "NO_SESSION" -> pure NO_SESSION
       _ -> fail "bad ProxyError"
 
@@ -1495,11 +1499,15 @@ instance StrEncoding ProxyError where
   strEncode = \case
     PROTOCOL e -> "PROTOCOL " <> strEncode e
     BROKER e -> "BROKER " <> strEncode e
+    BASIC_AUTH -> "BASIC_AUTH"
     NO_SESSION -> "NO_SESSION"
   strP =
-    "PROTOCOL" *> (PROTOCOL <$> _strP)
-      <|> "BROKER" *> (BROKER <$> _strP)
-      <|> "NO_SESSION" $> NO_SESSION
+    A.takeTill (== ' ') >>= \case
+      "PROTOCOL" -> PROTOCOL <$> _strP
+      "BROKER" -> BROKER <$> _strP
+      "BASIC_AUTH" -> pure BASIC_AUTH
+      "NO_SESSION" -> pure NO_SESSION
+      _ -> fail "bad ProxyError"
 
 instance Encoding BrokerErrorType where
   smpEncode = \case
@@ -1524,13 +1532,18 @@ instance StrEncoding BrokerErrorType where
     RESPONSE e -> "RESPONSE " <> strEncode e
     UNEXPECTED e -> "UNEXPECTED " <> strEncode e
     TRANSPORT e -> "TRANSPORT " <> serializeTransportError e
-    e -> bshow e
+    NETWORK -> "NETWORK"
+    TIMEOUT -> "TIMEOUT"
+    HOST -> "HOST"
   strP =
     A.takeTill (== ' ') >>= \case
       "RESPONSE" -> RESPONSE <$> _strP
       "UNEXPECTED" -> UNEXPECTED <$> _strP
       "TRANSPORT" -> TRANSPORT <$> (A.space *> transportErrorP)
-      s -> parseRead $ pure s
+      "NETWORK" -> pure NETWORK
+      "TIMEOUT" -> pure TIMEOUT
+      "HOST" -> pure HOST
+      _ -> fail "bad BrokerErrorType"
 
 -- | Send signed SMP transmission to TCP transport.
 tPut :: Transport c => THandle v c p -> NonEmpty (Either TransportError SentRawTransmission) -> IO [Either TransportError ()]
