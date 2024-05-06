@@ -1623,6 +1623,12 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
       rqs = concat $ M.elems rcvQs
       connIds' = M.keys rcvQs
   lift . forM_ connIds' $ disableConn c
+  -- remove from subs tracking in clients
+  clients <- readTVarIO (smpClients c)
+  forM_ clients $ \SessionVar {sessionVar} ->
+    atomically $ tryReadTMVar sessionVar >>= \case
+      Just (Right smp) -> modifyTVar' (sentSubs smp) . M.filterWithKey $ \k _v -> k `M.notMember` rcvQs
+      _ -> pure ()
   -- ! delRs is not used to notify about the result in any of the calling functions,
   -- ! it is only used to check results count in deleteConnections_;
   -- ! if it was used to notify about the result, it might be necessary to differentiate
@@ -2246,6 +2252,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 Just (Right clnt)
                   | sessId == sessionId (thParams clnt) -> do
                       removeSubscription c connId
+                      modifyTVar (sentSubs clnt) $ M.delete connId
                       notify' END
                       pure "END"
                   | otherwise -> ignored
