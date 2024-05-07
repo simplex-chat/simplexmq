@@ -720,12 +720,12 @@ connectSMPProxiedRelay c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxy
       sendSMPCommand c Nothing "" (PRXY relayServ proxyAuth) >>= \case
         PKEY sId vr (chain, key) ->
           case supportedClientSMPRelayVRange `compatibleVersion` vr of
-            Nothing -> throwE $ relayErr VERSION
-            Just (Compatible v) -> liftEitherWith (const $ relayErr IDENTITY) $ ProxiedRelay sId v <$> validateRelay chain key
+            Nothing -> throwE $ transportErr TEVersion
+            Just (Compatible v) -> liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) $ ProxiedRelay sId v <$> validateRelay chain key
         r -> throwE . PCEUnexpectedResponse $ bshow r
-  | otherwise = throwE $ PCETransportError $ TEHandshake VERSION
+  | otherwise = throwE $ PCETransportError TEVersion
   where
-    relayErr = PCEProtocolError . PROXY . BROKER . TRANSPORT . TEHandshake
+    transportErr = PCEProtocolError . PROXY . BROKER . TRANSPORT
     validateRelay :: X.CertificateChain -> X.SignedExact X.PubKey -> Either String C.PublicKeyX25519
     validateRelay (X.CertificateChain cert) exact = do
       serverKey <- case cert of

@@ -633,15 +633,21 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                    in if thVersion >= sendingProxySMPVersion
                         then case thAuth of
                           Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
-                          Nothing -> ERR pxyNoAuthErr
-                        else ERR . PROXY . BROKER . TRANSPORT $ TEHandshake VERSION
+                          Nothing -> ERR $ transportErr TENoServerAuth
+                        else ERR $ transportErr TEVersion
       PFWD pubKey encBlock -> do
         ProxyAgent {smpAgent} <- asks proxyAgent
         atomically (lookupSMPServerClient smpAgent sessId) >>= \case
-          Just smp -> liftIO $ either (ERR . smpProxyError) PRES <$> runExceptT (forwardSMPMessage smp corrId pubKey encBlock) `catchError` (pure . Left . PCEIOError)
+          Just smp
+            | v >= sendingProxySMPVersion ->
+                liftIO $ either (ERR . smpProxyError) PRES <$>
+                   runExceptT (forwardSMPMessage smp corrId pubKey encBlock) `catchError` (pure . Left . PCEIOError)
+            | otherwise -> pure . ERR $ transportErr TEVersion
+            where
+              THandleParams {thVersion = v} = thParams smp
           Nothing -> pure $ ERR $ PROXY NO_SESSION
-    pxyNoAuthErr :: ErrorType
-    pxyNoAuthErr = PROXY . BROKER $ TRANSPORT TENoServerAuth
+    transportErr :: TransportError -> ErrorType
+    transportErr = PROXY . BROKER . TRANSPORT
     processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Either (Transmission (Command 'ProxiedClient)) (Transmission BrokerMsg))
     processCommand (qr_, (corrId, queueId, cmd)) = do
       st <- asks queueStore
@@ -920,8 +926,8 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
 
         processForwardedCommand :: EncFwdTransmission -> M BrokerMsg
         processForwardedCommand (EncFwdTransmission s) = fmap (either ERR id) . runExceptT $ do
-          THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE pxyNoAuthErr) pure (thAuth thParams')
-          sessSecret <- maybe (throwE pxyNoAuthErr) pure sessSecret'
+          THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE $ transportErr TENoServerAuth) pure (thAuth thParams')
+          sessSecret <- maybe (throwE $ transportErr TENoServerAuth) pure sessSecret'
           let proxyNonce = C.cbNonce $ bs corrId
           s' <- liftEitherWith (const CRYPTO) $ C.cbDecryptNoPad sessSecret proxyNonce s
           FwdTransmission {fwdCorrId, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'

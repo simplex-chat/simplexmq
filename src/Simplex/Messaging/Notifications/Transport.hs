@@ -11,6 +11,7 @@ module Simplex.Messaging.Notifications.Transport where
 
 import Control.Monad (forM)
 import Control.Monad.Except
+import Control.Monad.Trans.Except
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -111,7 +112,7 @@ ntfServerHandshake serverSignKey c (k, pk) kh ntfVRange = do
           throwError $ TEHandshake IDENTITY
       | v `isCompatible` ntfVRange ->
           pure $ ntfThHandleServer th v pk
-      | otherwise -> throwError $ TEHandshake VERSION
+      | otherwise -> throwE TEVersion
 
 -- | Notifcations server client transport handshake.
 ntfClientHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRangeNTF -> ExceptT TransportError IO (THandleNTF c 'TClient)
@@ -128,7 +129,7 @@ ntfClientHandshake c keyHash ntfVRange = do
           (,(getServerCerts c, signedKey)) <$> (C.x509ToPublic (pubKey, []) >>= C.pubKey)
         sendHandshake th $ NtfClientHandshake {ntfVersion = v, keyHash}
         pure $ ntfThHandleClient th v ck_
-      Nothing -> throwError $ TEHandshake VERSION
+      Nothing -> throwE TEVersion
 
 ntfThHandleServer :: forall c. THandleNTF c 'TServer -> VersionNTF -> C.PrivateKeyX25519 -> THandleNTF c 'TServer
 ntfThHandleServer th v pk =

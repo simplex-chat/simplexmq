@@ -235,7 +235,7 @@ import Simplex.Messaging.Protocol
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme
-import Simplex.Messaging.Transport (Transport (..), serializeTransportError, transportErrorP)
+import Simplex.Messaging.Transport (Transport (..))
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts_ (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -1554,12 +1554,14 @@ data AgentCryptoError
 
 instance StrEncoding AgentCryptoError where
   strP =
-    "DECRYPT_AES" $> DECRYPT_AES
-      <|> "DECRYPT_CB" $> DECRYPT_CB
-      <|> "RATCHET_HEADER" $> RATCHET_HEADER
-      <|> "RATCHET_EARLIER " *> (RATCHET_EARLIER <$> strP)
-      <|> "RATCHET_SKIPPED " *> (RATCHET_SKIPPED <$> strP)
-      <|> "RATCHET_SYNC" $> RATCHET_SYNC
+    A.takeTill (== ' ') >>= \case
+      "DECRYPT_AES" -> pure DECRYPT_AES
+      "DECRYPT_CB" -> pure DECRYPT_CB
+      "RATCHET_HEADER" -> pure RATCHET_HEADER
+      "RATCHET_EARLIER" -> RATCHET_EARLIER <$> _strP
+      "RATCHET_SKIPPED" -> RATCHET_SKIPPED <$> _strP
+      "RATCHET_SYNC" -> pure RATCHET_SYNC
+      _ -> fail "AgentCryptoError"
   strEncode = \case
     DECRYPT_AES -> "DECRYPT_AES"
     DECRYPT_CB -> "DECRYPT_CB"
@@ -1570,25 +1572,24 @@ instance StrEncoding AgentCryptoError where
 
 instance StrEncoding AgentErrorType where
   strP =
-    "CMD " *> (CMD <$> parseRead1)
-      <|> "CONN " *> (CONN <$> parseRead1)
-      <|> "SMP " *> (SMP <$> strP)
-      <|> "NTF " *> (NTF <$> strP)
-      <|> "XFTP " *> (XFTP <$> strP)
-      <|> "PROXY " *> (PROXY <$> textP <* A.space <*> textP <*> _strP)
-      <|> "RCP " *> (RCP <$> strP)
-      <|> "BROKER " *> (BROKER <$> textP <* " RESPONSE " <*> (RESPONSE <$> textP))
-      <|> "BROKER " *> (BROKER <$> textP <* " UNEXPECTED " <*> (UNEXPECTED <$> textP))
-      <|> "BROKER " *> (BROKER <$> textP <* " TRANSPORT " <*> (TRANSPORT <$> transportErrorP))
-      <|> "BROKER " *> (BROKER <$> textP <* A.space <*> parseRead1)
-      <|> "AGENT CRYPTO " *> (AGENT . A_CRYPTO <$> parseRead A.takeByteString)
-      <|> "AGENT QUEUE " *> (AGENT . A_QUEUE <$> parseRead A.takeByteString)
-      <|> "AGENT " *> (AGENT <$> parseRead1)
-      <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
-      <|> "CRITICAL " *> (CRITICAL <$> parseRead1 <* A.space <*> parseRead A.takeByteString)
-      <|> "INACTIVE" $> INACTIVE
+    A.takeTill (== ' ')
+      >>= \case
+        "CMD" -> CMD <$> (A.space *> parseRead1)
+        "CONN" -> CONN <$> (A.space *> parseRead1)
+        "SMP" -> SMP <$> _strP
+        "NTF" -> NTF <$> _strP
+        "XFTP" -> XFTP <$> _strP
+        "PROXY" -> PROXY <$> (A.space *> srvP) <* A.space <*> srvP <*> _strP
+        "RCP" -> RCP <$> _strP
+        "BROKER" -> BROKER <$> (A.space *> srvP) <*> _strP
+        "AGENT" -> AGENT <$> _strP
+        "INTERNAL" -> INTERNAL <$> (A.space *> textP)
+        "CRITICAL" -> CRITICAL <$> (A.space *> parseRead1) <*> (A.space *> textP)
+        "INACTIVE" -> pure INACTIVE
+        _ -> fail "bad AgentErrorType"
     where
-      textP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
+      srvP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
+      textP = T.unpack . safeDecodeUtf8 <$> A.takeByteString
   strEncode = \case
     CMD e -> "CMD " <> bshow e
     CONN e -> "CONN " <> bshow e
@@ -1597,18 +1598,32 @@ instance StrEncoding AgentErrorType where
     XFTP e -> "XFTP " <> strEncode e
     PROXY pxy srv e -> B.unwords ["PROXY", text pxy, text srv, strEncode e]
     RCP e -> "RCP " <> strEncode e
-    BROKER srv (RESPONSE e) -> "BROKER " <> text srv <> " RESPONSE " <> text e
-    BROKER srv (UNEXPECTED e) -> "BROKER " <> text srv <> " UNEXPECTED " <> text e
-    BROKER srv (TRANSPORT e) -> "BROKER " <> text srv <> " TRANSPORT " <> serializeTransportError e
-    BROKER srv e -> "BROKER " <> text srv <> " " <> bshow e
-    AGENT (A_CRYPTO e) -> "AGENT CRYPTO " <> bshow e
-    AGENT (A_QUEUE e) -> "AGENT QUEUE " <> bshow e
-    AGENT e -> "AGENT " <> bshow e
-    INTERNAL e -> "INTERNAL " <> bshow e
-    CRITICAL restart e -> "CRITICAL " <> bshow restart <> " " <> bshow e
+    BROKER srv e -> B.unwords ["BROKER", text srv, strEncode e]
+    AGENT e -> "AGENT " <> strEncode e
+    INTERNAL e -> "INTERNAL " <> encodeUtf8 (T.pack e)
+    CRITICAL restart e -> "CRITICAL " <> bshow restart <> " " <> encodeUtf8 (T.pack e)
     INACTIVE -> "INACTIVE"
     where
       text = encodeUtf8 . T.pack
+
+instance StrEncoding SMPAgentError where
+  strP =
+    A.takeTill (== ' ')
+      >>= \case
+        "MESSAGE" -> pure A_MESSAGE
+        "PROHIBITED" -> pure A_PROHIBITED
+        "VERSION" -> pure A_VERSION
+        "CRYPTO" -> A_CRYPTO <$> _strP
+        "DUPLICATE" -> pure A_DUPLICATE
+        "QUEUE" -> A_QUEUE . T.unpack . safeDecodeUtf8 <$> (A.space *> A.takeByteString)
+        _ -> fail "bad SMPAgentError"
+  strEncode = \case
+    A_MESSAGE -> "MESSAGE"
+    A_PROHIBITED -> "PROHIBITED"
+    A_VERSION -> "VERSION"
+    A_CRYPTO e -> "CRYPTO " <> strEncode e
+    A_DUPLICATE -> "DUPLICATE"
+    A_QUEUE e -> "QUEUE " <> encodeUtf8 (T.pack e)
 
 cryptoErrToSyncState :: AgentCryptoError -> RatchetSyncState
 cryptoErrToSyncState = \case

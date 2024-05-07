@@ -232,7 +232,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (HandshakeError (..), SMPVersion, TransportError (..))
+import Simplex.Messaging.Transport (SMPVersion, TransportError (..))
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -1055,8 +1055,9 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
                 }
       case r of
         Right r' -> pure r'
-        Left e | persistentProxyError e -> ifM (atomically directAllowed) (sendDirectly destSess $> Nothing) (throwE e)
-        Left e -> throwE e
+        Left e
+          | persistentProxyError e -> ifM (atomically directAllowed) (sendDirectly destSess $> Nothing) (throwE e)
+          | otherwise -> throwE e
     sendDirectly tSess =
       withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) ->
         liftClient SMP (clientServer smp) $ sendSMPMessage smp spKey_ senderId msgFlags msg
@@ -1306,8 +1307,8 @@ temporaryOrHostError = \case
 
 persistentProxyError :: AgentErrorType -> Bool
 persistentProxyError = \case
-  BROKER _ (SMP.TRANSPORT (TEHandshake VERSION)) -> True
-  SMP (SMP.PROXY (SMP.BROKER (SMP.TRANSPORT (TEHandshake VERSION)))) -> True
+  BROKER _ (SMP.TRANSPORT TEVersion) -> True
+  SMP (SMP.PROXY (SMP.BROKER (SMP.TRANSPORT TEVersion))) -> True
   _ -> False
 
 -- | Subscribe to queues. The list of results can have a different order.

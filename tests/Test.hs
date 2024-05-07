@@ -47,7 +47,7 @@ main = do
       $ do
         describe "Agent SQLite schema dump" schemaDumpTest
         describe "Core tests" $ do
-          xdescribe "Batching tests" batchingTests
+          describe "Batching tests" batchingTests
           describe "Encoding tests" encodingTests
           describe "Protocol error tests" protocolErrorTests
           describe "Version range" versionRangeTests
