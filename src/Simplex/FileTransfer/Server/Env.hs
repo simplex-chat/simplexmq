@@ -13,12 +13,9 @@ import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
-import Data.Default (def)
 import Data.Int (Int64)
-import Data.List (find)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe)
 import Data.Time.Clock (getCurrentTime)
 import Data.Word (Word32)
 import Data.X509.Validation (Fingerprint (..))
@@ -103,7 +100,7 @@ supportedXFTPhandshakes :: [ALPN]
 supportedXFTPhandshakes = ["xftp/1"]
 
 newXFTPServerEnv :: XFTPServerConfig -> IO XFTPEnv
-newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertificateFile, certificateFile, privateKeyFile} = do
+newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertificateFile, certificateFile, privateKeyFile, transportConfig} = do
   random <- liftIO C.newRandom
   store <- atomically newFileStore
   storeLog <- liftIO $ mapM (`readWriteFileStore` store) storeLogFile
@@ -112,17 +109,7 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertifi
   forM_ fileSizeQuota $ \quota -> do
     logInfo $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
     when (quota < used) $ logInfo "WARNING: storage quota is less than used storage, no files can be uploaded!"
-  tlsServerParams' <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
-  let TransportServerConfig {alpn} = transportConfig config
-  let tlsServerParams = case alpn of
-        Nothing -> tlsServerParams'
-        Just supported ->
-          tlsServerParams'
-            { T.serverHooks =
-                def
-                  { T.onALPNClientSuggest = Just $ pure . fromMaybe "" . find (`elem` supported)
-                  }
-            }
+  tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   serverStats <- atomically . newFileServerStats =<< liftIO getCurrentTime
   pure XFTPEnv {config, store, storeLog, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}

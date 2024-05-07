@@ -36,6 +36,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol (NtfResponse)
 import Simplex.Messaging.Notifications.Server (runNtfServerBlocking)
 import Simplex.Messaging.Notifications.Server.Env
+import qualified Simplex.Messaging.Notifications.Server.Env as Env
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
 import Simplex.Messaging.Notifications.Transport
@@ -45,6 +46,7 @@ import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2TLSParams)
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Transport.Server
+import qualified Simplex.Messaging.Transport.Server as Server
 import Simplex.Messaging.Version (mkVersionRange)
 import Test.Hspec
 import UnliftIO.Async
@@ -113,7 +115,8 @@ ntfServerCfgV2 :: NtfServerConfig
 ntfServerCfgV2 =
   ntfServerCfg
     { ntfServerVRange = mkVersionRange initialNTFVersion authBatchCmdsNTFVersion,
-      smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}}
+      smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}},
+      Env.transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedNTFHandshakes}
     }
 
 withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a
