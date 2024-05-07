@@ -148,7 +148,7 @@ compatibleVRange x vr =
 
 compatibleVRange' :: VersionRangeI v a => a -> Version v -> Maybe (Compatible a)
 compatibleVRange' x v
-  | v <= max1 = compatibleVRange_ x min1 (min max1 v)
+  | v <= max1 = compatibleVRange_ x min1 v
   | otherwise = Nothing
   where
     VRange min1 max1 = versionRange x
