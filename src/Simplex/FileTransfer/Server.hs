@@ -91,7 +91,7 @@ runXFTPServerBlocking started cfg = newXFTPServerEnv cfg >>= runReaderT (xftpSer
 
 data Handshake
   = HandshakeSent C.PrivateKeyX25519
-  | HandshakeAccepted (THandleAuth 'TServer) VersionXFTP VersionRangeXFTP
+  | HandshakeAccepted (THandleParams XFTPVersion 'TServer)
 
 xftpServer :: XFTPServerConfig -> TMVar Bool -> M ()
 xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange} started = do
@@ -123,12 +123,12 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               Just thParams -> processRequest req0 {thParams} -- proceed with new version (XXX: may as well switch the request handler here)
           _ -> liftIO . sendResponse $ H.responseNoBody N.ok200 [] -- shouldn't happen: means server picked handshake protocol it doesn't know about
     xftpServerHandshakeV1 :: X.CertificateChain -> C.APrivateSignKey -> TMap SessionId Handshake -> XFTPTransportRequest -> M (Maybe (THandleParams XFTPVersion 'TServer))
-    xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams@THandleParams {sessionId}, reqBody = HTTP2Body {bodyHead}, sendResponse} = do
+    xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams0@THandleParams {sessionId}, reqBody = HTTP2Body {bodyHead}, sendResponse} = do
       s <- atomically $ TM.lookup sessionId sessions
       r <- runExceptT $ case s of
         Nothing -> processHello
         Just (HandshakeSent pk) -> processClientHandshake pk
-        Just (HandshakeAccepted auth v vr) -> pure $ Just thParams {thAuth = Just auth, thVersion = v, thServerVRange = vr}
+        Just (HandshakeAccepted thParams) -> pure $ Just thParams
       either sendError pure r
       where
         processHello = do
@@ -149,7 +149,8 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           case compatibleVRange' xftpServerVRange v of
             Just (Compatible vr) -> do
               let auth = THAuthServer {serverPrivKey = pk, sessSecret' = Nothing}
-              atomically $ TM.insert sessionId (HandshakeAccepted auth v vr) sessions
+                  thParams = thParams0 {thAuth = Just auth, thVersion = v, thServerVRange = vr}
+              atomically $ TM.insert sessionId (HandshakeAccepted thParams) sessions
               liftIO . sendResponse $ H.responseNoBody N.ok200 []
               pure Nothing
             Nothing -> throwError HANDSHAKE
