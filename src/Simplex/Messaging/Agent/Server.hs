@@ -49,7 +49,7 @@ runSMPAgentBlocking (ATransport t) cfg@AgentConfig {tcpPort, caCertificateFile, 
     smpAgent :: forall c. Transport c => TProxy c -> ServiceName -> Env -> IO ()
     smpAgent _ port env = do
       -- tlsServerParams is not in Env to avoid breaking functional API w/t key and certificate generation
-      tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile
+      tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile Nothing
       clientId <- newTVarIO initClientId
       runTransportServer started port tlsServerParams defaultTransportServerConfig $ \(h :: c) -> do
         putLn h $ "Welcome to SMP agent v" <> B.pack simplexMQVersion
