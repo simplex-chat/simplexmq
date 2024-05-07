@@ -711,8 +711,6 @@ instance Encoding EncMessageHeader where
 -- the encoder always uses 2-byte lengths for the new version, even for short headers without PQ keys.
 encodeLarge :: VersionE2E -> ByteString -> ByteString
 encodeLarge v s
-  -- the condition for length is not necessary, it's here as a fallback.
-  -- \| v >= pqRatchetE2EEncryptVersion || B.length s > 255 = smpEncode $ Large s
   | v >= pqRatchetE2EEncryptVersion = smpEncode $ Large s
   | otherwise = smpEncode s
 
