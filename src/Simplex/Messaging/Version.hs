@@ -139,6 +139,7 @@ compatibleVersion x vr =
     max1 = maxVersion $ versionRange x
     max2 = maxVersion vr
 
+-- | intersection of version ranges
 compatibleVRange :: VersionRangeI v a => a -> VersionRange v -> Maybe (Compatible a)
 compatibleVRange x vr =
   compatibleVRange_ x (max min1 min2) (min max1 max2)
@@ -146,6 +147,7 @@ compatibleVRange x vr =
     VRange min1 max1 = versionRange x
     VRange min2 max2 = vr
 
+-- | version range capped by compatible version
 compatibleVRange' :: VersionRangeI v a => a -> Version v -> Maybe (Compatible a)
 compatibleVRange' x v
   | v <= max1 = compatibleVRange_ x min1 v
