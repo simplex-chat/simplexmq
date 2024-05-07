@@ -36,9 +36,9 @@ module Simplex.Messaging.Transport
     supportedSMPHandshakes,
     supportedClientSMPRelayVRange,
     supportedServerSMPRelayVRange,
-    supportedServerSMPRelayVRangeOldHS,
+    legacyServerSMPRelayVRange,
     currentClientSMPRelayVersion,
-    currentServerSMPRelayVersionOldHS,
+    legacyServerSMPRelayVersion,
     currentServerSMPRelayVersion,
     batchCmdsSMPVersion,
     basicAuthSMPVersion,
@@ -155,8 +155,8 @@ authCmdsSMPVersion = VersionSMP 7
 currentClientSMPRelayVersion :: VersionSMP
 currentClientSMPRelayVersion = VersionSMP 6
 
-currentServerSMPRelayVersionOldHS :: VersionSMP
-currentServerSMPRelayVersionOldHS = VersionSMP 6
+legacyServerSMPRelayVersion :: VersionSMP
+legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
 currentServerSMPRelayVersion = VersionSMP 7
@@ -166,11 +166,14 @@ currentServerSMPRelayVersion = VersionSMP 7
 supportedClientSMPRelayVRange :: VersionRangeSMP
 supportedClientSMPRelayVRange = mkVersionRange batchCmdsSMPVersion currentClientSMPRelayVersion
 
-supportedServerSMPRelayVRangeOldHS :: VersionRangeSMP
-supportedServerSMPRelayVRangeOldHS = mkVersionRange batchCmdsSMPVersion currentServerSMPRelayVersionOldHS
+legacyServerSMPRelayVRange :: VersionRangeSMP
+legacyServerSMPRelayVRange = mkVersionRange batchCmdsSMPVersion legacyServerSMPRelayVersion
 
 supportedServerSMPRelayVRange :: VersionRangeSMP
 supportedServerSMPRelayVRange = mkVersionRange batchCmdsSMPVersion currentServerSMPRelayVersion
+
+supportedSMPHandshakes :: [ALPN]
+supportedSMPHandshakes = ["smp/1"]
 
 simplexMQVersion :: String
 simplexMQVersion = showVersion SMQ.version
@@ -363,9 +366,6 @@ data THandleAuth (p :: TransportPeer) where
 -- | TLS-unique channel binding
 type SessionId = ByteString
 
-supportedSMPHandshakes :: [ALPN]
-supportedSMPHandshakes = ["smp/1"]
-
 data ServerHandshake = ServerHandshake
   { smpVersionRange :: VersionRangeSMP,
     sessionId :: SessionId,
@@ -484,7 +484,7 @@ smpServerHandshake serverSignKey c (k, pk) kh smpVRange = do
   let th@THandle {params = THandleParams {sessionId}} = smpTHandle c
       sk = C.signX509 serverSignKey $ C.publicToX509 k
       certChain = getServerCerts c
-      smpVersionRange = maybe supportedServerSMPRelayVRangeOldHS (const smpVRange) $ getSessionALPN c
+      smpVersionRange = maybe legacyServerSMPRelayVRange (const smpVRange) $ getSessionALPN c
   sendHandshake th $ ServerHandshake {sessionId, smpVersionRange, authPubKey = Just (certChain, sk)}
   getHandshake th >>= \case
     ClientHandshake {smpVersion = v, keyHash, authPubKey = k'}

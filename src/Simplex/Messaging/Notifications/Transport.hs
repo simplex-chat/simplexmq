@@ -52,16 +52,16 @@ currentServerNTFVersion = VersionNTF 2
 supportedClientNTFVRange :: VersionRangeNTF
 supportedClientNTFVRange = mkVersionRange initialNTFVersion currentClientNTFVersion
 
-supportedServerNTFVRangeOldHS :: VersionRangeNTF
-supportedServerNTFVRangeOldHS = mkVersionRange initialNTFVersion initialNTFVersion
+legacyServerNTFVRange :: VersionRangeNTF
+legacyServerNTFVRange = mkVersionRange initialNTFVersion initialNTFVersion
 
 supportedServerNTFVRange :: VersionRangeNTF
 supportedServerNTFVRange = mkVersionRange initialNTFVersion currentServerNTFVersion
 
-type THandleNTF c p = THandle NTFVersion c p
-
 supportedNTFHandshakes :: [ALPN]
 supportedNTFHandshakes = ["ntf/1"]
+
+type THandleNTF c p = THandle NTFVersion c p
 
 data NtfServerHandshake = NtfServerHandshake
   { ntfVersionRange :: VersionRangeNTF,
@@ -110,7 +110,7 @@ ntfServerHandshake :: forall c. Transport c => C.APrivateSignKey -> c -> C.KeyPa
 ntfServerHandshake serverSignKey c (k, pk) kh ntfVRange = do
   let th@THandle {params = THandleParams {sessionId}} = ntfTHandle c
   let sk = C.signX509 serverSignKey $ C.publicToX509 k
-  let ntfVersionRange = maybe supportedServerNTFVRangeOldHS (const ntfVRange) $ getSessionALPN c
+  let ntfVersionRange = maybe legacyServerNTFVRange (const ntfVRange) $ getSessionALPN c
   sendHandshake th $ NtfServerHandshake {sessionId, ntfVersionRange, authPubKey = Just sk}
   getHandshake th >>= \case
     NtfClientHandshake {ntfVersion = v, keyHash}
