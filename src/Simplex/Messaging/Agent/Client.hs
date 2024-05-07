@@ -1107,7 +1107,13 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
   logServer "-->" c srv "" "NEW"
   tSess <- liftIO $ mkTransportSession c userId srv connId
   QIK {rcvId, sndId, rcvPublicDhKey} <-
-    withClient c tSess "NEW" $ \smp -> createSMPQueue smp rKeys dhKey auth subMode
+    withClient c tSess "NEW" $ \smp -> case subMode of
+      SMOnlyCreate -> createSMPQueue smp rKeys dhKey auth subMode
+      SMSubscribe -> do
+        atomically $ TM.insert connId False (sentSubs smp)
+        r <- createSMPQueue smp rKeys dhKey auth subMode
+        atomically $ TM.insert connId True (sentSubs smp)
+        pure r
   liftIO . logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue
