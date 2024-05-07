@@ -196,6 +196,8 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust, isNothing)
 import Data.String
+import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
 import Data.Word (Word16)
@@ -211,7 +213,7 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
-import Simplex.Messaging.Util (bshow, eitherToMaybe, (<$?>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 
@@ -1513,7 +1515,7 @@ instance Encoding BrokerErrorType where
   smpEncode = \case
     RESPONSE e -> "RESPONSE " <> smpEncode e
     UNEXPECTED e -> "UNEXPECTED " <> smpEncode e
-    TRANSPORT e -> "TRANSPORT " <> serializeTransportError e
+    TRANSPORT e -> "TRANSPORT " <> smpEncode e
     NETWORK -> "NETWORK"
     TIMEOUT -> "TIMEOUT"
     HOST -> "HOST"
@@ -1521,7 +1523,7 @@ instance Encoding BrokerErrorType where
     A.takeTill (== ' ') >>= \case
       "RESPONSE" -> RESPONSE <$> _smpP
       "UNEXPECTED" -> UNEXPECTED <$> _smpP
-      "TRANSPORT" -> TRANSPORT <$> (A.space *> transportErrorP)
+      "TRANSPORT" -> TRANSPORT <$> _smpP
       "NETWORK" -> pure NETWORK
       "TIMEOUT" -> pure TIMEOUT
       "HOST" -> pure HOST
@@ -1529,21 +1531,23 @@ instance Encoding BrokerErrorType where
 
 instance StrEncoding BrokerErrorType where
   strEncode = \case
-    RESPONSE e -> "RESPONSE " <> strEncode e
-    UNEXPECTED e -> "UNEXPECTED " <> strEncode e
-    TRANSPORT e -> "TRANSPORT " <> serializeTransportError e
+    RESPONSE e -> "RESPONSE " <> encodeUtf8 (T.pack e)
+    UNEXPECTED e -> "UNEXPECTED " <> encodeUtf8 (T.pack e)
+    TRANSPORT e -> "TRANSPORT " <> smpEncode e
     NETWORK -> "NETWORK"
     TIMEOUT -> "TIMEOUT"
     HOST -> "HOST"
   strP =
     A.takeTill (== ' ') >>= \case
-      "RESPONSE" -> RESPONSE <$> _strP
-      "UNEXPECTED" -> UNEXPECTED <$> _strP
-      "TRANSPORT" -> TRANSPORT <$> (A.space *> transportErrorP)
+      "RESPONSE" -> RESPONSE <$> _textP
+      "UNEXPECTED" -> UNEXPECTED <$> _textP
+      "TRANSPORT" -> TRANSPORT <$> _smpP
       "NETWORK" -> pure NETWORK
       "TIMEOUT" -> pure TIMEOUT
       "HOST" -> pure HOST
       _ -> fail "bad BrokerErrorType"
+    where
+      _textP = A.space *> (T.unpack . safeDecodeUtf8 <$> A.takeByteString)
 
 -- | Send signed SMP transmission to TCP transport.
 tPut :: Transport c => THandle v c p -> NonEmpty (Either TransportError SentRawTransmission) -> IO [Either TransportError ()]

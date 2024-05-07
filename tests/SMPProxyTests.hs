@@ -14,6 +14,7 @@
 module SMPProxyTests where
 
 import AgentTests.FunctionalAPITests
+import Control.Monad.Trans.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -87,10 +88,14 @@ smpProxyTests = do
           agentDeliverMessageViaProxy ([srv1], SPMNever, False) ([srv2], SPMNever, False) C.SEd448 "hello 1" "hello 2"
         it "first via proxy for unknown" . twoServers $
           agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv1, srv2], SPMUnknown, False) C.SEd448 "hello 1" "hello 2"
+        it "without proxy with fallback" . twoServers_ proxyCfg cfgV7 $
+          agentDeliverMessageViaProxy ([srv1], SPMUnknown, False) ([srv2], SPMUnknown, False) C.SEd448 "hello 1" "hello 2"
+        it "fails when fallback is prohibited" . twoServers_ proxyCfg cfgV7 $
+          agentViaProxyVersionError
   where
     oneServer = withSmpServerConfigOn (transport @TLS) proxyCfg testPort . const
     twoServers = twoServers_ proxyCfg proxyCfg
-    twoServersFirstProxy = twoServers_ proxyCfg cfgV7
+    twoServersFirstProxy = twoServers_ proxyCfg cfgV8
     twoServers_ cfg1 cfg2 runTest =
       withSmpServerConfigOn (transport @TLS) cfg1 testPort $ \_ ->
         withSmpServerConfigOn (transport @TLS) cfg2 testPort2 $ const runTest
@@ -164,7 +169,18 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
     baseId = 3
     msgId = subtract baseId . fst
     aCfg = agentProxyCfg {sndAuthAlg = C.AuthAlg alg, rcvAuthAlg = C.AuthAlg alg}
-    servers (srvs, smpProxyMode, _) = (initAgentServersProxy smpProxyMode) {smp = userServers $ L.map noAuthSrv srvs}
+    servers (srvs, smpProxyMode, _) = (initAgentServersProxy smpProxyMode SPFAllow) {smp = userServers $ L.map noAuthSrv srvs}
+
+agentViaProxyVersionError :: IO ()
+agentViaProxyVersionError =
+  withAgent 1 agentProxyCfg (servers [SMPServer testHost testPort testKeyHash]) testDB $ \alice -> do
+    Left (A.BROKER _ (TRANSPORT TEVersion)) <-
+      withAgent 2 agentProxyCfg (servers [SMPServer testHost testPort2 testKeyHash]) testDB2 $ \bob -> runExceptT $ do
+        (_bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
+        A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    pure ()
+  where
+    servers srvs = (initAgentServersProxy SPMUnknown SPFProhibit) {smp = userServers $ L.map noAuthSrv srvs}
 
 testNoProxy :: IO ()
 testNoProxy = do

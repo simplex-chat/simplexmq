@@ -35,21 +35,22 @@ protocolErrorTests = modifyMaxSuccess (const 1000) $ do
     possibleAgentErrorType :: Gen AgentErrorType
     possibleAgentErrorType =
       arbitrary >>= \case
-        BROKER srv _ | skip srv -> discard
-        BROKER _ (RESPONSE e) | skip e -> discard
-        BROKER _ (UNEXPECTED e) | skip e -> discard
+        BROKER srv _ | hasSpaces srv -> discard
         SMP e | skipErrorType e -> discard
         NTF e | skipErrorType e -> discard
-        Agent.PROXY pxy srv _ | skip pxy || skip srv -> discard
+        Agent.PROXY pxy srv _ | hasSpaces pxy || hasSpaces srv -> discard
         Agent.PROXY _ _ (ProxyProtocolError e) | skipErrorType e -> discard
-        Agent.PROXY _ _ (ProxyUnexpectedResponse e) | skip e -> discard
+        Agent.PROXY _ _ (ProxyUnexpectedResponse e) | hasUnicode e -> discard
         Agent.PROXY _ _ (ProxyResponseError e) | skipErrorType e -> discard
         ok -> pure ok
-    skip s = null s || any (\c -> c <= ' ' || c >= '\255') s
+    hasSpaces :: String -> Bool
+    hasSpaces = any (== ' ')
+    hasUnicode :: String -> Bool
+    hasUnicode = any (>= '\255')
     skipErrorType = \case
       SMP.PROXY (SMP.PROTOCOL e) -> skipErrorType e
-      SMP.PROXY (SMP.BROKER (UNEXPECTED s)) -> skip s
-      SMP.PROXY (SMP.BROKER (RESPONSE s)) -> skip s
+      SMP.PROXY (SMP.BROKER (UNEXPECTED s)) -> hasUnicode s
+      SMP.PROXY (SMP.BROKER (RESPONSE s)) -> hasUnicode s
       _ -> False
 
 deriving instance Generic AgentErrorType

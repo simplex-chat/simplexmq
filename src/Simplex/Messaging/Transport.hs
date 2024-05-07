@@ -72,14 +72,12 @@ module Simplex.Messaging.Transport
     smpClientHandshake,
     tPutBlock,
     tGetBlock,
-    serializeTransportError,
-    transportErrorP,
     sendHandshake,
     getHandshake,
   )
 where
 
-import Control.Applicative (optional, (<|>))
+import Control.Applicative (optional)
 import Control.Monad (forM)
 import Control.Monad.Except
 import Control.Monad.Trans.Except (throwE)
@@ -410,6 +408,8 @@ authEncryptCmdsP v p = if v >= authCmdsSMPVersion then optional p else pure Noth
 data TransportError
   = -- | error parsing transport block
     TEBadBlock
+  | -- | incompatible client or server version
+    TEVersion
   | -- | message does not fit in transport block
     TELargeMsg
   | -- | incorrect session ID
@@ -425,31 +425,29 @@ data TransportError
 data HandshakeError
   = -- | parsing error
     PARSE
-  | -- | incompatible peer version
-    VERSION
   | -- | incorrect server identity
     IDENTITY
   | -- | v7 authentication failed
     BAD_AUTH
   deriving (Eq, Read, Show, Exception)
 
--- | SMP encrypted transport error parser.
-transportErrorP :: Parser TransportError
-transportErrorP =
-  "BLOCK" $> TEBadBlock
-    <|> "LARGE_MSG" $> TELargeMsg
-    <|> "SESSION" $> TEBadSession
-    <|> "NO_AUTH" $> TENoServerAuth
-    <|> "HANDSHAKE " *> (TEHandshake <$> parseRead1)
-
--- | Serialize SMP encrypted transport error.
-serializeTransportError :: TransportError -> ByteString
-serializeTransportError = \case
-  TEBadBlock -> "BLOCK"
-  TELargeMsg -> "LARGE_MSG"
-  TEBadSession -> "SESSION"
-  TENoServerAuth -> "NO_AUTH"
-  TEHandshake e -> "HANDSHAKE " <> bshow e
+instance Encoding TransportError where
+  smpP =
+    A.takeTill (== ' ') >>= \case
+      "BLOCK" -> pure TEBadBlock
+      "VERSION" -> pure TEVersion
+      "LARGE_MSG" -> pure TELargeMsg
+      "SESSION" -> pure TEBadSession
+      "NO_AUTH" -> pure TENoServerAuth
+      "HANDSHAKE" -> TEHandshake <$> (A.space *> parseRead1)
+      _ -> fail "bad TransportError"
+  smpEncode = \case
+    TEBadBlock -> "BLOCK"
+    TEVersion -> "VERSION"
+    TELargeMsg -> "LARGE_MSG"
+    TEBadSession -> "SESSION"
+    TENoServerAuth -> "NO_AUTH"
+    TEHandshake e -> "HANDSHAKE " <> bshow e
 
 -- | Pad and send block to SMP transport.
 tPutBlock :: Transport c => THandle v c p -> ByteString -> IO (Either TransportError ())
@@ -480,7 +478,7 @@ smpServerHandshake serverSignKey c (k, pk) kh smpVRange = do
           throwE $ TEHandshake IDENTITY
       | v `isCompatible` smpVRange ->
           pure $ smpThHandleServer th v pk k'
-      | otherwise -> throwE $ TEHandshake VERSION
+      | otherwise -> throwE TEVersion
 
 -- | Client SMP transport handshake.
 --
@@ -503,7 +501,7 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) smpVRange = do
             (,certKey) <$> (C.x509ToPublic (pubKey, []) >>= C.pubKey)
         sendHandshake th $ ClientHandshake {smpVersion = v, keyHash, authPubKey = fst <$> ks_}
         pure $ smpThHandleClient th v (snd <$> ks_) ck_
-      Nothing -> throwE $ TEHandshake VERSION
+      Nothing -> throwE TEVersion
 
 smpThHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandleSMP c 'TServer
 smpThHandleServer th v pk k_ =

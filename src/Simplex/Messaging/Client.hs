@@ -70,6 +70,7 @@ module Simplex.Messaging.Client
     TransportSessionMode (..),
     HostMode (..),
     SMPProxyMode (..),
+    SMPProxyFallback (..),
     defaultClientConfig,
     defaultSMPClientConfig,
     defaultNetworkConfig,
@@ -224,6 +225,8 @@ data NetworkConfig = NetworkConfig
     sessionMode :: TransportSessionMode,
     -- | SMP proxy mode
     smpProxyMode :: SMPProxyMode,
+    -- | Fallback to direct connection when destination SMP relay does not support SMP proxy protocol extensions
+    smpProxyFallback :: SMPProxyFallback,
     -- | timeout for the initial client TCP/TLS connection (microseconds)
     tcpConnectTimeout :: Int,
     -- | timeout of protocol commands (microseconds)
@@ -253,6 +256,12 @@ data SMPProxyMode
   | SPMNever
   deriving (Eq, Show)
 
+data SMPProxyFallback
+  = SPFAllow -- connect directly when chosen proxy or destination relay do not support proxy protocol.
+  | SPFAllowProtected -- connect directly only when IP address is protected (SOCKS proxy or .onion address is used).
+  | SPFProhibit -- prohibit direct connection to destination relay.
+  deriving (Eq, Show)
+
 defaultNetworkConfig :: NetworkConfig
 defaultNetworkConfig =
   NetworkConfig
@@ -261,6 +270,7 @@ defaultNetworkConfig =
       requiredHostMode = False,
       sessionMode = TSMUser,
       smpProxyMode = SPMNever,
+      smpProxyFallback = SPFAllow,
       tcpConnectTimeout = defaultTcpConnectTimeout,
       tcpTimeout = 15_000_000,
       tcpTimeoutPerKb = 5_000,
@@ -705,15 +715,17 @@ deleteSMPQueues = okSMPCommands DEL
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
 connectSMPProxiedRelay :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO ProxiedRelay
-connectSMPProxiedRelay c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth =
-  sendSMPCommand c Nothing "" (PRXY relayServ proxyAuth) >>= \case
-    PKEY sId vr (chain, key) ->
-      case supportedClientSMPRelayVRange `compatibleVersion` vr of
-        Nothing -> throwE $ relayErr VERSION
-        Just (Compatible v) -> liftEitherWith (const $ relayErr IDENTITY) $ ProxiedRelay sId v <$> validateRelay chain key
-    r -> throwE . PCEUnexpectedResponse $ bshow r
+connectSMPProxiedRelay c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth
+  | thVersion (thParams c) >= sendingProxySMPVersion =
+      sendSMPCommand c Nothing "" (PRXY relayServ proxyAuth) >>= \case
+        PKEY sId vr (chain, key) ->
+          case supportedClientSMPRelayVRange `compatibleVersion` vr of
+            Nothing -> throwE $ transportErr TEVersion
+            Just (Compatible v) -> liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) $ ProxiedRelay sId v <$> validateRelay chain key
+        r -> throwE . PCEUnexpectedResponse $ bshow r
+  | otherwise = throwE $ PCETransportError TEVersion
   where
-    relayErr = PCEProtocolError . PROXY . BROKER . TRANSPORT . TEHandshake
+    transportErr = PCEProtocolError . PROXY . BROKER . TRANSPORT
     validateRelay :: X.CertificateChain -> X.SignedExact X.PubKey -> Either String C.PublicKeyX25519
     validateRelay (X.CertificateChain cert) exact = do
       serverKey <- case cert of
@@ -982,6 +994,8 @@ $(J.deriveJSON (enumJSON $ dropPrefix "HM") ''HostMode)
 $(J.deriveJSON (enumJSON $ dropPrefix "TSM") ''TransportSessionMode)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "SPM") ''SMPProxyMode)
+
+$(J.deriveJSON (enumJSON $ dropPrefix "SPF") ''SMPProxyFallback)
 
 $(J.deriveJSON defaultJSON ''NetworkConfig)
 

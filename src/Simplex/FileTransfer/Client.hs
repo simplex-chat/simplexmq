@@ -51,7 +51,7 @@ import Simplex.Messaging.Protocol
     RecipientId,
     SenderId,
   )
-import Simplex.Messaging.Transport (ALPN, HandshakeError (VERSION), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), supportedParameters)
+import Simplex.Messaging.Transport (ALPN, THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), supportedParameters)
 import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost, alpn)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
@@ -114,7 +114,7 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
   thParams@THandleParams {thVersion} <- case sessionALPN of
     Just "xftp/1" -> xftpClientHandshakeV1 serverVRange keyHash http2Client thParams0
     Nothing -> pure thParams0
-    _ -> throwError $ PCETransportError (TEHandshake VERSION)
+    _ -> throwError $ PCETransportError TEVersion
   logDebug $ "Client negotiated protocol: " <> tshow thVersion
   let c = XFTPClient {http2Client, thParams, transportSession, config}
   atomically $ writeTVar clientVar $ Just c

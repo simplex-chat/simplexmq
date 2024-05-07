@@ -118,10 +118,13 @@ cfg =
 cfgV7 :: ServerConfig
 cfgV7 = cfg {smpServerVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}
 
+cfgV8 :: ServerConfig
+cfgV8 = cfg {smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion}
+
 proxyCfg :: ServerConfig
 proxyCfg =
   cfgV7
-    { allowSMPProxy = True, 
+    { allowSMPProxy = True,
       smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion,
       smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = proxyVRange, agreeSecret = True}}
     }
