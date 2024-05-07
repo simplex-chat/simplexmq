@@ -295,6 +295,7 @@ data ProtocolClientConfig v = ProtocolClientConfig
     defaultTransport :: (ServiceName, ATransport),
     -- | network configuration
     networkConfig :: NetworkConfig,
+    clientALPN :: Maybe [ALPN],
     -- | client-server protocol version range
     serverVRange :: VersionRange v,
     -- | agree shared session secret (used in SMP proxy)
@@ -302,19 +303,20 @@ data ProtocolClientConfig v = ProtocolClientConfig
   }
 
 -- | Default protocol client configuration.
-defaultClientConfig :: VersionRange v -> ProtocolClientConfig v
-defaultClientConfig serverVRange =
+defaultClientConfig :: Maybe [ALPN] -> VersionRange v -> ProtocolClientConfig v
+defaultClientConfig clientALPN serverVRange =
   ProtocolClientConfig
     { qSize = 64,
       defaultTransport = ("443", transport @TLS),
       networkConfig = defaultNetworkConfig,
+      clientALPN,
       serverVRange,
       agreeSecret = False
     }
 {-# INLINE defaultClientConfig #-}
 
 defaultSMPClientConfig :: ProtocolClientConfig SMPVersion
-defaultSMPClientConfig = defaultClientConfig supportedClientSMPRelayVRange
+defaultSMPClientConfig = defaultClientConfig (Just supportedSMPHandshakes) supportedClientSMPRelayVRange
 {-# INLINE defaultSMPClientConfig #-}
 
 data Request err msg = Request
@@ -371,7 +373,7 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe EntityId)
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> Maybe (TBQueue (ServerTransmission v msg)) -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, serverVRange, agreeSecret} msgQ disconnected = do
+getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret} msgQ disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= atomically . mkProtocolClient useHost >>= runClient useTransport useHost)
@@ -409,7 +411,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     runClient :: (ServiceName, ATransport) -> TransportHost -> PClient v err msg -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
     runClient (port', ATransport t) useHost c = do
       cVar <- newEmptyTMVarIO
-      let tcConfig = transportClientConfig networkConfig
+      let tcConfig = (transportClientConfig networkConfig) {alpn = clientALPN}
           username = proxyUsername transportSession
       action <-
         async $
