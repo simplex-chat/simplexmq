@@ -188,7 +188,7 @@ sendXFTPCommand c@XFTPClient {thParams} pKey fId cmd chunkSpec_ = do
   t <-
     liftEither . first PCETransportError $
       xftpEncodeAuthTransmission thParams pKey ("", fId, FileCmd (sFileParty @p) cmd)
-  sendXFTPTransmission c t chunkSpec_ -- `catch` \(_e :: SomeException) -> throwError PCENetworkError
+  sendXFTPTransmission c t chunkSpec_
 
 sendXFTPTransmission :: XFTPClient -> ByteString -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
 sendXFTPTransmission XFTPClient {config, thParams, http2Client} t chunkSpec_ = do
@@ -245,10 +245,10 @@ downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {
         let dhSecret = C.dh' sDhKey rpDhKey
         cbState <- liftEither . first PCECryptoError $ LC.cbInit dhSecret cbNonce
         let t = chunkTimeout config chunkSize
-        ExceptT (sequence <$> (t `timeout` download cbState)) >>= maybe (throwError PCEResponseTimeout) pure
+        ExceptT (sequence <$> (t `timeout` download' cbState)) >>= maybe (throwError PCEResponseTimeout) pure
         where
-          -- download' cbState =
-          --   download cbState `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
+          download' cbState =
+            download cbState `catch` \(_e :: SomeException) -> pure $ Left PCENetworkError
           download cbState =
             runExceptT . withExceptT PCEResponseError $
               receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->

@@ -23,7 +23,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtocolServer (..), XFTPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (catchAll_, tryAllErrors)
+import Simplex.Messaging.Util (catchAll_)
 import UnliftIO
 
 type XFTPClientVar = TMVar (Either XFTPClientAgentError XFTPClient)
@@ -98,7 +98,7 @@ getXFTPServerClient XFTPClientAgent {xftpClients, config} srv = do
       where
         tryConnectClient :: ME () -> ME XFTPClient
         tryConnectClient retryAction =
-          tryAllErrors (const $ XFTPClientAgentError srv PCENetworkError) connectClient >>= \r -> case r of
+          tryError connectClient >>= \r -> case r of
             Right client -> do
               logInfo $ "connected to " <> showServer srv
               atomically $ putTMVar clientVar r
