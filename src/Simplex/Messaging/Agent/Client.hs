@@ -81,13 +81,11 @@ module Simplex.Messaging.Agent.Client
     agentClientStore,
     agentDRG,
     getAgentSubscriptions,
-    diffSubscriptions,
     slowNetworkConfig,
     Worker (..),
     SessionVar (..),
     SubscriptionsInfo (..),
     SubInfo (..),
-    SubscriptionsDiff (..),
     AgentOperation (..),
     AgentOpState (..),
     AgentState (..),
@@ -155,7 +153,6 @@ import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (lefts, partitionEithers)
-import Data.Foldable (fold)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
@@ -163,7 +160,7 @@ import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (isJust, isNothing, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -186,7 +183,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..), withTransaction)
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
-import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues (getRcvQueues))
+import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues)
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
@@ -1669,54 +1666,77 @@ withNextSrv c userId usedSrvs initUsed action = do
     writeTVar usedSrvs $! used'
   action srvAuth
 
-data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text, subError :: Maybe String}
+data SubscriptionsInfo = SubscriptionsInfo
+  { summary :: ActivePendingSubs,
+    servers :: Map Text ActivePendingSubs
+  }
   deriving (Show)
 
-data SubscriptionsInfo = SubscriptionsInfo
-  { activeSubscriptions :: [SubInfo],
-    pendingSubscriptions :: [SubInfo],
-    removedSubscriptions :: [SubInfo]
+data ActivePendingSubs = ActivePendingSubs
+  { active_ :: SubInfo,
+    pending_ :: SubInfo
+  }
+  deriving (Show)
+
+data SubInfo = SubInfo
+  { count :: Int,
+    clientsMissing :: Int,
+    clientsExtra :: Int
   }
   deriving (Show)
 
 getAgentSubscriptions :: AgentClient -> IO SubscriptionsInfo
 getAgentSubscriptions c = do
-  activeSubscriptions <- getSubs activeSubs
-  pendingSubscriptions <- getSubs pendingSubs
-  removedSubscriptions <- getRemovedSubs
-  pure $ SubscriptionsInfo {activeSubscriptions, pendingSubscriptions, removedSubscriptions}
+  servers <- collect <$> atomically snapshot
+  pure SubscriptionsInfo {summary = foldl' mergeAPS (ActivePendingSubs (SubInfo 0 0 0) (SubInfo 0 0 0)) servers, servers}
   where
-    getSubs sel = map (`subInfo` Nothing) . M.keys <$> readTVarIO (getRcvQueues $ sel c)
-    getRemovedSubs = map (uncurry subInfo . second Just) . M.assocs <$> readTVarIO (removedSubs c)
-    subInfo :: (UserId, SMPServer, SMP.RecipientId) -> Maybe SMPClientError -> SubInfo
-    subInfo (uId, srv, rId) err = SubInfo {userId = uId, server = enc srv, rcvId = enc rId, subError = show <$> err}
-    enc :: StrEncoding a => a -> Text
-    enc = decodeLatin1 . strEncode
-
-diffSubscriptions :: AgentClient -> IO SubscriptionsDiff
-diffSubscriptions AgentClient {smpClients, subscrConns} = do
-  agentConns <- readTVarIO subscrConns
-  clients <- readTVarIO smpClients
-  clientsSubs <- fmap fold . forM (M.assocs clients) $ \((_, srv, _), SessionVar {sessionVar}) ->
-    atomically (tryReadTMVar sessionVar) >>= \case
-      Just (Right smp) -> readTVarIO (sentSubs smp)
-      _ -> mempty <$ putStrLn ("no client for " <> show srv)
-  let allClientsSubs = M.keysSet clientsSubs
-  pure
-    SubscriptionsDiff
-      { inBoth = S.size $ agentConns `S.intersection` allClientsSubs,
-        inAgent = map textId . S.toList $ agentConns `S.difference` allClientsSubs,
-        inClients = M.fromList . map (\k -> (textId k, M.lookup k clientsSubs == Just True)) . S.toList $ allClientsSubs `S.difference` agentConns
-      }
-  where
-    textId = decodeLatin1 . strEncode
-
-data SubscriptionsDiff = SubscriptionsDiff
-  { inBoth :: Int,
-    inAgent :: [Text],
-    inClients :: Map Text Bool
-  }
-  deriving (Show)
+    mergeAPS a b = ActivePendingSubs (active_ a `mergeSI` active_ b) (pending_ a `mergeSI` pending_ b)
+    mergeSI a b = SubInfo (count a + count b) (clientsMissing a + clientsMissing b) (clientsExtra a + clientsExtra b)
+    -- read out the current state in one go for the numbers to be consistent.
+    -- takes up to 3+2*smpClients TVars into the transaction.
+    snapshot :: STM (RQ.Connections, RQ.Connections, Map SMPTransportSession (Map ConnId Bool))
+    snapshot = do
+      as <- readTVar $ RQ.getConnections (activeSubs c)
+      ps <- readTVar $ RQ.getConnections (pendingSubs c)
+      clients <- readTVar (smpClients c)
+      cs <- forM clients $ \SessionVar {sessionVar} ->
+        tryReadTMVar sessionVar >>= \case
+          Just (Right smp) -> readTVar (sentSubs smp)
+          _ -> pure mempty
+      pure (as, ps, cs)
+    collect :: (RQ.Connections, RQ.Connections, Map SMPTransportSession (Map ConnId Bool)) -> Map Text ActivePendingSubs
+    collect (as, ps, cs) = M.fromListWith mergeAPS $ map byServer $ S.toList allServers
+      where
+        byServer :: SMPServer -> (Text, ActivePendingSubs)
+        byServer srv = (decodeLatin1 $ strEncode srv, ActivePendingSubs {active_, pending_})
+          where
+            active_ = subInfo (srvConns as') (srvConns ac')
+            pending_ = subInfo (srvConns ps') (srvConns pc')
+            subInfo inAgent inClients =
+              SubInfo
+                { count = S.size inAgent,
+                  clientsMissing = S.size $ inAgent `S.difference` inClients,
+                  clientsExtra = S.size $ inClients `S.difference` inAgent
+                }
+            srvConns = fromMaybe S.empty . M.lookup srv
+        allServers :: Set SMPServer
+        allServers = M.keysSet as' <> M.keysSet ps' <> S.fromList (map fst cs')
+        -- from agent
+        as' :: Map SMPServer (Set ConnId)
+        as' = M.fromListWith (<>) $ map (\(acId, servs) -> (qServ servs, S.singleton acId)) $ M.assocs as
+        ps' :: Map SMPServer (Set ConnId)
+        ps' = M.fromListWith (<>) $ map (\(acId, servs) -> (qServ servs, S.singleton acId)) $ M.assocs ps
+        qServ :: NonEmpty RQ.QKey -> SMPServer
+        qServ ((_, srv, _) :| _) = srv
+        -- from clients
+        cs' :: [(SMPServer, Map ConnId Bool)]
+        cs' = map (first $ \(_, srv, _) -> srv) $ M.assocs cs
+        -- partition client connections
+        (ac', pc') = foldl' (\acc (srv, conns) -> M.foldlWithKey' (p srv) acc conns) (M.empty, M.empty) cs'
+          where
+            p srv (active, pending) acId subscribed
+              | subscribed = (M.insertWith (<>) srv (S.singleton acId) active, pending)
+              | otherwise = (active, M.insertWith (<>) srv (S.singleton acId) pending)
 
 data AgentWorkersDetails = AgentWorkersDetails
   { smpClients_ :: [Text],
@@ -1853,9 +1873,9 @@ $(J.deriveJSON defaultJSON ''ProtocolTestFailure)
 
 $(J.deriveJSON defaultJSON ''SubInfo)
 
-$(J.deriveJSON defaultJSON ''SubscriptionsInfo)
+$(J.deriveJSON defaultJSON {J.fieldLabelModifier = takeWhile (/= '_')} ''ActivePendingSubs)
 
-$(J.deriveJSON defaultJSON ''SubscriptionsDiff)
+$(J.deriveJSON defaultJSON ''SubscriptionsInfo)
 
 $(J.deriveJSON defaultJSON ''WorkersDetails)
 
