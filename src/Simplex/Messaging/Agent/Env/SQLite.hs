@@ -181,7 +181,7 @@ defaultAgentConfig =
       maxWorkerRestartsPerMin = 5,
       -- 3 consecutive subscription timeouts will result in alert to the user
       -- this is a fallback, as the timeout set to 3x of expected timeout, to avoid potential locking.
-      maxSubscriptionTimeouts = 3,
+      maxSubscriptionTimeouts = 5,
       storedMsgDataTTL = 21 * nominalDay,
       rcvFilesTTL = 2 * nominalDay,
       sndFilesTTL = nominalDay,
