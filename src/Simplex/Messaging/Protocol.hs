@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -46,6 +47,10 @@ module Simplex.Messaging.Protocol
     e2eEncMessageLength,
 
     -- * SMP protocol types
+    SMPClientVersion,
+    VersionSMPC,
+    VersionRangeSMPC,
+    pattern VersionSMPC,
     ProtocolEncoding (..),
     Command (..),
     SubscriptionMode (..),
@@ -80,6 +85,7 @@ module Simplex.Messaging.Protocol
     SMPServerWithAuth,
     NtfServer,
     pattern NtfServer,
+    NtfServerWithAuth,
     XFTPServer,
     pattern XFTPServer,
     XFTPServerWithAuth,
@@ -116,6 +122,7 @@ module Simplex.Messaging.Protocol
     SMPMsgMeta (..),
     NMsgMeta (..),
     MsgFlags (..),
+    initialSMPClientVersion,
     userProtocol,
     rcvMessageMeta,
     noMsgFlags,
@@ -151,6 +158,7 @@ module Simplex.Messaging.Protocol
     tEncodeBatch1,
     batchTransmissions,
     batchTransmissions',
+    batchTransmissions_,
 
     -- * exports for tests
     CommandTag (..),
@@ -165,6 +173,7 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -178,6 +187,7 @@ import Data.Maybe (isJust, isNothing)
 import Data.String
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Type.Equality
+import Data.Word (Word16)
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import Network.Socket (ServiceName)
 import qualified Simplex.Messaging.Crypto as C
@@ -189,19 +199,34 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, (<$?>))
 import Simplex.Messaging.Version
+import Simplex.Messaging.Version.Internal
 
 -- SMP client protocol version history:
 -- 1 - binary protocol encoding (1/1/2022)
 -- 2 - multiple server hostnames and versioned queue addresses (8/12/2022)
 
-srvHostnamesSMPClientVersion :: Version
-srvHostnamesSMPClientVersion = 2
+data SMPClientVersion
 
-currentSMPClientVersion :: Version
-currentSMPClientVersion = 2
+instance VersionScope SMPClientVersion
 
-supportedSMPClientVRange :: VersionRange
-supportedSMPClientVRange = mkVersionRange 1 currentSMPClientVersion
+type VersionSMPC = Version SMPClientVersion
+
+type VersionRangeSMPC = VersionRange SMPClientVersion
+
+pattern VersionSMPC :: Word16 -> VersionSMPC
+pattern VersionSMPC v = Version v
+
+initialSMPClientVersion :: VersionSMPC
+initialSMPClientVersion = VersionSMPC 1
+
+srvHostnamesSMPClientVersion :: VersionSMPC
+srvHostnamesSMPClientVersion = VersionSMPC 2
+
+currentSMPClientVersion :: VersionSMPC
+currentSMPClientVersion = VersionSMPC 2
+
+supportedSMPClientVRange :: VersionRangeSMPC
+supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClientVersion
 
 maxMessageLength :: Int
 maxMessageLength = 16088
@@ -213,10 +238,10 @@ type MaxRcvMessageLen = MaxMessageLen + 16 -- 16104, the padded size is 16106
 
 -- it is shorter to allow per-queue e2e encryption DH key in the "public" header
 e2eEncConfirmationLength :: Int
-e2eEncConfirmationLength = 15936
+e2eEncConfirmationLength = 15920 -- 15881 .. 15976
 
 e2eEncMessageLength :: Int
-e2eEncMessageLength = 16032
+e2eEncMessageLength = 16016 -- 16004 .. 16021
 
 -- | SMP protocol clients
 data Party = Recipient | Sender | Notifier
@@ -271,7 +296,7 @@ data RawTransmission = RawTransmission
 data TransmissionAuth
   = TASignature C.ASignature
   | TAAuthenticator C.CbAuthenticator
-  deriving (Eq, Show)
+  deriving (Show)
 
 -- this encoding is backwards compatible with v6 that used Maybe C.ASignature instead of TAuthorization
 tAuthBytes :: Maybe TransmissionAuth -> ByteString
@@ -336,8 +361,6 @@ data Command (p :: Party) where
   NSUB :: Command Notifier
 
 deriving instance Show (Command p)
-
-deriving instance Eq (Command p)
 
 data SubscriptionMode = SMSubscribe | SMOnlyCreate
   deriving (Eq, Show)
@@ -643,7 +666,7 @@ data ClientMsgEnvelope = ClientMsgEnvelope
   deriving (Show)
 
 data PubHeader = PubHeader
-  { phVersion :: Version,
+  { phVersion :: VersionSMPC,
     phE2ePubDhKey :: Maybe C.PublicKeyX25519
   }
   deriving (Show)
@@ -696,6 +719,8 @@ pattern NtfServer host port keyHash = ProtocolServer SPNTF host port keyHash
 
 {-# COMPLETE NtfServer #-}
 
+type NtfServerWithAuth = ProtoServerWithAuth 'PNTF
+
 type XFTPServer = ProtocolServer 'PXFTP
 
 pattern XFTPServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> ProtocolServer 'PXFTP
@@ -741,10 +766,10 @@ deriving instance Show (SProtocolType p)
 
 data AProtocolType = forall p. ProtocolTypeI p => AProtocolType (SProtocolType p)
 
-deriving instance Show AProtocolType
-
 instance Eq AProtocolType where
   AProtocolType p == AProtocolType p' = isJust $ testEquality p p'
+
+deriving instance Show AProtocolType
 
 instance TestEquality SProtocolType where
   testEquality SPSMP SPSMP = Just Refl
@@ -1050,7 +1075,7 @@ data CommandError
   deriving (Eq, Read, Show)
 
 -- | SMP transmission parser.
-transmissionP :: THandleParams -> Parser RawTransmission
+transmissionP :: THandleParams v p -> Parser RawTransmission
 transmissionP THandleParams {sessionId, implySessId} = do
   authenticator <- smpP
   authorized <- A.takeByteString
@@ -1064,16 +1089,16 @@ transmissionP THandleParams {sessionId, implySessId} = do
       command <- A.takeByteString
       pure RawTransmission {authenticator, authorized = authorized', sessId, corrId, entityId, command}
 
-class (ProtocolEncoding err msg, ProtocolEncoding err (ProtoCommand msg), Show err, Show msg) => Protocol err msg | msg -> err where
+class (ProtocolEncoding v err msg, ProtocolEncoding v err (ProtoCommand msg), Show err, Show msg) => Protocol v err msg | msg -> v, msg -> err where
   type ProtoCommand msg = cmd | cmd -> msg
   type ProtoType msg = (sch :: ProtocolType) | sch -> msg
-  protocolClientHandshake :: forall c. Transport c => c -> C.KeyPairX25519 -> C.KeyHash -> VersionRange -> ExceptT TransportError IO (THandle c)
+  protocolClientHandshake :: forall c. Transport c => c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> ExceptT TransportError IO (THandle v c 'TClient)
   protocolPing :: ProtoCommand msg
   protocolError :: msg -> Maybe err
 
 type ProtoServer msg = ProtocolServer (ProtoType msg)
 
-instance Protocol ErrorType BrokerMsg where
+instance Protocol SMPVersion ErrorType BrokerMsg where
   type ProtoCommand BrokerMsg = Cmd
   type ProtoType BrokerMsg = 'PSMP
   protocolClientHandshake = smpClientHandshake
@@ -1082,14 +1107,14 @@ instance Protocol ErrorType BrokerMsg where
     ERR e -> Just e
     _ -> Nothing
 
-class ProtocolMsgTag (Tag msg) => ProtocolEncoding err msg | msg -> err where
+class ProtocolMsgTag (Tag msg) => ProtocolEncoding v err msg | msg -> err, msg -> v where
   type Tag msg
-  encodeProtocol :: Version -> msg -> ByteString
-  protocolP :: Version -> Tag msg -> Parser msg
+  encodeProtocol :: Version v -> msg -> ByteString
+  protocolP :: Version v -> Tag msg -> Parser msg
   fromProtocolError :: ProtocolErrorType -> err
   checkCredentials :: SignedRawTransmission -> msg -> Either err msg
 
-instance PartyI p => ProtocolEncoding ErrorType (Command p) where
+instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol v = \case
     NEW rKey dhKey auth_ subMode
@@ -1116,7 +1141,7 @@ instance PartyI p => ProtocolEncoding ErrorType (Command p) where
 
   protocolP v tag = (\(Cmd _ c) -> checkParty c) <$?> protocolP v (CT (sParty @p) tag)
 
-  fromProtocolError = fromProtocolError @ErrorType @BrokerMsg
+  fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
 
   checkCredentials (auth, _, queueId, _) cmd = case cmd of
@@ -1138,7 +1163,7 @@ instance PartyI p => ProtocolEncoding ErrorType (Command p) where
       | isNothing auth || B.null queueId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
 
-instance ProtocolEncoding ErrorType Cmd where
+instance ProtocolEncoding SMPVersion ErrorType Cmd where
   type Tag Cmd = CmdTag
   encodeProtocol v (Cmd _ c) = encodeProtocol v c
 
@@ -1166,12 +1191,12 @@ instance ProtocolEncoding ErrorType Cmd where
         PING_ -> pure PING
     CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
 
-  fromProtocolError = fromProtocolError @ErrorType @BrokerMsg
+  fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
 
   checkCredentials t (Cmd p c) = Cmd p <$> checkCredentials t c
 
-instance ProtocolEncoding ErrorType BrokerMsg where
+instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
   encodeProtocol _v = \case
     IDS (QIK rcvId sndId srvDh) -> e (IDS_, ' ', rcvId, sndId, srvDh)
@@ -1223,12 +1248,12 @@ instance ProtocolEncoding ErrorType BrokerMsg where
       | otherwise -> Right cmd
 
 -- | Parse SMP protocol commands and broker messages
-parseProtocol :: forall err msg. ProtocolEncoding err msg => Version -> ByteString -> Either err msg
+parseProtocol :: forall v err msg. ProtocolEncoding v err msg => Version v -> ByteString -> Either err msg
 parseProtocol v s =
   let (tag, params) = B.break (== ' ') s
    in case decodeTag tag of
-        Just cmd -> parse (protocolP v cmd) (fromProtocolError @err @msg $ PECmdSyntax) params
-        Nothing -> Left $ fromProtocolError @err @msg $ PECmdUnknown
+        Just cmd -> parse (protocolP v cmd) (fromProtocolError @v @err @msg $ PECmdSyntax) params
+        Nothing -> Left $ fromProtocolError @v @err @msg $ PECmdUnknown
 
 checkParty :: forall t p p'. (PartyI p, PartyI p') => t p' -> Either String (t p)
 checkParty c = case testEquality (sParty @p) (sParty @p') of
@@ -1283,7 +1308,7 @@ instance Encoding CommandError where
       _ -> fail "bad command error type"
 
 -- | Send signed SMP transmission to TCP transport.
-tPut :: Transport c => THandle c -> NonEmpty (Either TransportError SentRawTransmission) -> IO [Either TransportError ()]
+tPut :: Transport c => THandle v c p -> NonEmpty (Either TransportError SentRawTransmission) -> IO [Either TransportError ()]
 tPut th@THandle {params} = fmap concat . mapM tPutBatch . batchTransmissions (batch params) (blockSize params)
   where
     tPutBatch :: TransportBatch () -> IO [Either TransportError ()]
@@ -1292,7 +1317,7 @@ tPut th@THandle {params} = fmap concat . mapM tPutBatch . batchTransmissions (ba
       TBTransmissions s n _ -> replicate n <$> tPutLog th s
       TBTransmission s _ -> (: []) <$> tPutLog th s
 
-tPutLog :: Transport c => THandle c -> ByteString -> IO (Either TransportError ())
+tPutLog :: Transport c => THandle v c p -> ByteString -> IO (Either TransportError ())
 tPutLog th s = do
   r <- tPutBlock th s
   case r of
@@ -1306,11 +1331,11 @@ data TransportBatch r = TBTransmissions ByteString Int [r] | TBTransmission Byte
 batchTransmissions :: Bool -> Int -> NonEmpty (Either TransportError SentRawTransmission) -> [TransportBatch ()]
 batchTransmissions batch bSize = batchTransmissions' batch bSize . L.map (,())
 
--- | encodes and batches transmissions into blocks,
+-- | encodes and batches transmissions into blocks
 batchTransmissions' :: forall r. Bool -> Int -> NonEmpty (Either TransportError SentRawTransmission, r) -> [TransportBatch r]
-batchTransmissions' batch bSize
-  | batch = addBatch . foldr addTransmission ([], 0, 0, [], [])
-  | otherwise = map mkBatch1 . L.toList
+batchTransmissions' batch bSize ts
+  | batch = batchTransmissions_ bSize $ L.map (first $ fmap tEncodeForBatch) ts
+  | otherwise = map mkBatch1 $ L.toList ts
   where
     mkBatch1 :: (Either TransportError SentRawTransmission, r) -> TransportBatch r
     mkBatch1 (t_, r) = case t_ of
@@ -1321,17 +1346,21 @@ batchTransmissions' batch bSize
         | otherwise -> TBError TELargeMsg r
         where
           s = tEncode t
+
+-- | Pack encoded transmissions into batches
+batchTransmissions_ :: Int -> NonEmpty (Either TransportError ByteString, r) -> [TransportBatch r]
+batchTransmissions_ bSize = addBatch . foldr addTransmission ([], 0, 0, [], [])
+  where
     -- 3 = 2 bytes reserved for pad size + 1 for transmission count
     bSize' = bSize - 3
-    addTransmission :: (Either TransportError SentRawTransmission, r) -> ([TransportBatch r], Int, Int, [ByteString], [r]) -> ([TransportBatch r], Int, Int, [ByteString], [r])
-    addTransmission (t_, r) acc@(bs, len, n, ss, rs) = case t_ of
+    addTransmission :: (Either TransportError ByteString, r) -> ([TransportBatch r], Int, Int, [ByteString], [r]) -> ([TransportBatch r], Int, Int, [ByteString], [r])
+    addTransmission (t_, r) acc@(bs, !len, !n, ss, rs) = case t_ of
       Left e -> (TBError e r : addBatch acc, 0, 0, [], [])
-      Right t
+      Right s
         | len' <= bSize' && n < 255 -> (bs, len', 1 + n, s : ss, r : rs)
         | sLen <= bSize' -> (addBatch acc, sLen, 1, [s], [r])
         | otherwise -> (TBError TELargeMsg r : addBatch acc, 0, 0, [], [])
         where
-          s = tEncodeForBatch t
           sLen = B.length s
           len' = len + sLen
     addBatch :: ([TransportBatch r], Int, Int, [ByteString], [r]) -> [TransportBatch r]
@@ -1354,7 +1383,7 @@ tEncodeBatch1 t = lenEncode 1 `B.cons` tEncodeForBatch t
 -- tForAuth is lazy to avoid computing it when there is no key to sign
 data TransmissionForAuth = TransmissionForAuth {tForAuth :: ~ByteString, tToSend :: ByteString}
 
-encodeTransmissionForAuth :: ProtocolEncoding e c => THandleParams -> Transmission c -> TransmissionForAuth
+encodeTransmissionForAuth :: ProtocolEncoding v e c => THandleParams v p -> Transmission c -> TransmissionForAuth
 encodeTransmissionForAuth THandleParams {thVersion = v, sessionId, implySessId} t =
   TransmissionForAuth {tForAuth, tToSend = if implySessId then t' else tForAuth}
   where
@@ -1362,24 +1391,24 @@ encodeTransmissionForAuth THandleParams {thVersion = v, sessionId, implySessId} 
     t' = encodeTransmission_ v t
 {-# INLINE encodeTransmissionForAuth #-}
 
-encodeTransmission :: ProtocolEncoding e c => THandleParams -> Transmission c -> ByteString
+encodeTransmission :: ProtocolEncoding v e c => THandleParams v p -> Transmission c -> ByteString
 encodeTransmission THandleParams {thVersion = v, sessionId, implySessId} t =
   if implySessId then t' else smpEncode sessionId <> t'
   where
     t' = encodeTransmission_ v t
 {-# INLINE encodeTransmission #-}
 
-encodeTransmission_ :: ProtocolEncoding e c => Version -> Transmission c -> ByteString
+encodeTransmission_ :: ProtocolEncoding v e c => Version v -> Transmission c -> ByteString
 encodeTransmission_ v (CorrId corrId, queueId, command) =
   smpEncode (corrId, queueId) <> encodeProtocol v command
 {-# INLINE encodeTransmission_ #-}
 
 -- | Receive and parse transmission from the TCP transport (ignoring any trailing padding).
-tGetParse :: Transport c => THandle c -> IO (NonEmpty (Either TransportError RawTransmission))
+tGetParse :: Transport c => THandle v c p -> IO (NonEmpty (Either TransportError RawTransmission))
 tGetParse th@THandle {params} = eitherList (tParse params) <$> tGetBlock th
 {-# INLINE tGetParse #-}
 
-tParse :: THandleParams -> ByteString -> NonEmpty (Either TransportError RawTransmission)
+tParse :: THandleParams v p -> ByteString -> NonEmpty (Either TransportError RawTransmission)
 tParse thParams@THandleParams {batch} s
   | batch = eitherList (L.map (\(Large t) -> tParse1 t)) ts
   | otherwise = [tParse1 s]
@@ -1391,24 +1420,24 @@ eitherList :: (a -> NonEmpty (Either e b)) -> Either e a -> NonEmpty (Either e b
 eitherList = either (\e -> [Left e])
 
 -- | Receive client and server transmissions (determined by `cmd` type).
-tGet :: forall err cmd c. (ProtocolEncoding err cmd, Transport c) => THandle c -> IO (NonEmpty (SignedTransmission err cmd))
+tGet :: forall v err cmd c p. (ProtocolEncoding v err cmd, Transport c) => THandle v c p -> IO (NonEmpty (SignedTransmission err cmd))
 tGet th@THandle {params} = L.map (tDecodeParseValidate params) <$> tGetParse th
 
-tDecodeParseValidate :: forall err cmd. ProtocolEncoding err cmd => THandleParams -> Either TransportError RawTransmission -> SignedTransmission err cmd
+tDecodeParseValidate :: forall v p err cmd. ProtocolEncoding v err cmd => THandleParams v p -> Either TransportError RawTransmission -> SignedTransmission err cmd
 tDecodeParseValidate THandleParams {sessionId, thVersion = v, implySessId} = \case
   Right RawTransmission {authenticator, authorized, sessId, corrId, entityId, command}
     | implySessId || sessId == sessionId ->
         let decodedTransmission = (,corrId,entityId,command) <$> decodeTAuthBytes authenticator
          in either (const $ tError corrId) (tParseValidate authorized) decodedTransmission
-    | otherwise -> (Nothing, "", (CorrId corrId, "", Left $ fromProtocolError @err @cmd PESession))
+    | otherwise -> (Nothing, "", (CorrId corrId, "", Left $ fromProtocolError @v @err @cmd PESession))
   Left _ -> tError ""
   where
     tError :: ByteString -> SignedTransmission err cmd
-    tError corrId = (Nothing, "", (CorrId corrId, "", Left $ fromProtocolError @err @cmd PEBlock))
+    tError corrId = (Nothing, "", (CorrId corrId, "", Left $ fromProtocolError @v @err @cmd PEBlock))
 
     tParseValidate :: ByteString -> SignedRawTransmission -> SignedTransmission err cmd
     tParseValidate signed t@(sig, corrId, entityId, command) =
-      let cmd = parseProtocol @err @cmd v command >>= checkCredentials t
+      let cmd = parseProtocol @v @err @cmd v command >>= checkCredentials t
        in (sig, signed, (CorrId corrId, entityId, cmd))
 
 $(J.deriveJSON defaultJSON ''MsgFlags)

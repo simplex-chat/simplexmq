@@ -11,7 +11,6 @@ module Simplex.FileTransfer.Server.Store
     newFileStore,
     addFile,
     setFilePath,
-    setFilePath',
     addRecipient,
     deleteFile,
     deleteRecipient,
@@ -23,12 +22,12 @@ where
 
 import Control.Concurrent.STM
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Time.Clock.System (SystemTime (..))
-import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..), XFTPErrorType (..), XFTPFileId)
+import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..), XFTPFileId)
+import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (RcvPublicAuthKey, RecipientId, SenderId)
@@ -49,7 +48,6 @@ data FileRec = FileRec
     recipientIds :: TVar (Set RecipientId),
     createdAt :: SystemTime
   }
-  deriving (Eq)
 
 data FileRecipient = FileRecipient RecipientId RcvPublicAuthKey
 
@@ -79,12 +77,10 @@ newFileRec senderId fileInfo createdAt = do
 
 setFilePath :: FileStore -> SenderId -> FilePath -> STM (Either XFTPErrorType ())
 setFilePath st sId fPath =
-  withFile st sId $ \fr -> setFilePath' st fr fPath $> Right ()
-
-setFilePath' :: FileStore -> FileRec -> FilePath -> STM ()
-setFilePath' st FileRec {fileInfo, filePath} fPath = do
-  writeTVar filePath (Just fPath)
-  modifyTVar' (usedStorage st) (+ fromIntegral (size fileInfo))
+  withFile st sId $ \FileRec {fileInfo, filePath} -> do
+    writeTVar filePath (Just fPath)
+    modifyTVar' (usedStorage st) (+ fromIntegral (size fileInfo))
+    pure $ Right ()
 
 addRecipient :: FileStore -> SenderId -> FileRecipient -> STM (Either XFTPErrorType ())
 addRecipient st@FileStore {recipients} senderId (FileRecipient rId rKey) =

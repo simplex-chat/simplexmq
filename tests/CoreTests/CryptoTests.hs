@@ -1,5 +1,7 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module CoreTests.CryptoTests (cryptoTests) where
 
@@ -13,9 +15,15 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.Lazy as LT
 import qualified Data.Text.Lazy.Encoding as LE
+import Data.Type.Equality
+import qualified Data.X509 as X
+import qualified Data.X509.CertificateStore as XS
+import qualified Data.X509.Validation as XV
+import qualified SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
+import Simplex.Messaging.Transport.Client
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck
@@ -88,8 +96,20 @@ cryptoTests = do
     describe "Ed448" $ testEncoding C.SEd448
     describe "X25519" $ testEncoding C.SX25519
     describe "X448" $ testEncoding C.SX448
+  describe "X509 chains" $ do
+    it "should validate certificates" testValidateX509
   describe "sntrup761" $
     it "should enc/dec key" testSNTRUP761
+
+instance Eq C.APublicKey where
+  C.APublicKey a k == C.APublicKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
+
+instance Eq C.APrivateKey where
+  C.APrivateKey a k == C.APrivateKey a' k' = case testEquality a a' of
+    Just Refl -> k == k'
+    Nothing -> False
 
 testPadUnpadFile :: IO ()
 testPadUnpadFile = do
@@ -209,6 +229,39 @@ testEncoding alg = it "should encode / decode key" . ioProperty $ do
   pure $ \(_ :: Int) ->
     C.decodePubKey (C.encodePubKey k) == Right k
       && C.decodePrivKey (C.encodePrivKey pk) == Right pk
+
+testValidateX509 :: IO ()
+testValidateX509 = do
+  let checkChain = validateCertificateChain SMPClient.testKeyHash "localhost" "5223" . X.CertificateChain
+  checkChain [] `shouldReturn` [XV.EmptyChain]
+
+  caCreds <- XS.readCertificates "tests/fixtures/ca.crt"
+  caCreds `shouldNotBe` []
+  let ca = head caCreds
+
+  serverCreds <- XS.readCertificates "tests/fixtures/server.crt"
+  serverCreds `shouldNotBe` []
+  let server = head serverCreds
+  checkChain [server, ca] `shouldReturn` []
+
+  ca2Creds <- XS.readCertificates "tests/fixtures/ca2.crt"
+  ca2Creds `shouldNotBe` []
+  let ca2 = head ca2Creds
+
+  -- signed by another CA
+  server2Creds <- XS.readCertificates "tests/fixtures/server2.crt"
+  server2Creds `shouldNotBe` []
+  let server2 = head server2Creds
+  checkChain [server2, ca2] `shouldReturn` [XV.UnknownCA]
+
+  -- messed up key rotation or other configuration problems
+  checkChain [server2, ca] `shouldReturn` [XV.InvalidSignature XV.SignatureInvalid]
+
+  -- self-signed, unrelated to CA
+  ssCreds <- XS.readCertificates "tests/fixtures/ss.crt"
+  ssCreds `shouldNotBe` []
+  let ss = head ssCreds
+  checkChain [ss, ca] `shouldReturn` [XV.SelfSigned]
 
 testSNTRUP761 :: IO ()
 testSNTRUP761 = do

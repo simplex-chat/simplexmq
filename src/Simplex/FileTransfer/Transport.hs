@@ -1,10 +1,28 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.FileTransfer.Transport
   ( supportedFileServerVRange,
+    authCmdsXFTPVersion,
+    xftpClientHandshakeStub,
+    XFTPClientHandshake (..),
+    -- xftpClientHandshake,
+    XFTPServerHandshake (..),
+    -- xftpServerHandshake,
+    THandleXFTP,
+    THandleParamsXFTP,
+    VersionXFTP,
+    VersionRangeXFTP,
+    XFTPVersion,
+    pattern VersionXFTP,
+    XFTPErrorType (..),
     XFTPRcvChunkSpec (..),
     ReceiveFileError (..),
     receiveFile,
@@ -14,22 +32,32 @@ module Simplex.FileTransfer.Transport
   )
 where
 
+import Control.Applicative ((<|>))
 import qualified Control.Exception as E
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
-import Data.Bifunctor (first)
+import qualified Data.Aeson.TH as J
+import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Bifunctor (bimap, first)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
-import Data.Word (Word32)
-import Simplex.FileTransfer.Protocol (XFTPErrorType (..))
+import Data.Word (Word16, Word32)
+import qualified Data.X509 as X
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Parsers
+import Simplex.Messaging.Protocol (CommandError)
+import Simplex.Messaging.Transport (HandshakeError (..), SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Transport.HTTP2.File
+import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version
+import Simplex.Messaging.Version.Internal
 import System.IO (Handle, IOMode (..), withFile)
 
 data XFTPRcvChunkSpec = XFTPRcvChunkSpec
@@ -39,8 +67,69 @@ data XFTPRcvChunkSpec = XFTPRcvChunkSpec
   }
   deriving (Show)
 
-supportedFileServerVRange :: VersionRange
-supportedFileServerVRange = mkVersionRange 1 1
+data XFTPVersion
+
+instance VersionScope XFTPVersion
+
+type VersionXFTP = Version XFTPVersion
+
+type VersionRangeXFTP = VersionRange XFTPVersion
+
+pattern VersionXFTP :: Word16 -> VersionXFTP
+pattern VersionXFTP v = Version v
+
+type THandleXFTP c p = THandle XFTPVersion c p
+type THandleParamsXFTP p = THandleParams XFTPVersion p
+
+initialXFTPVersion :: VersionXFTP
+initialXFTPVersion = VersionXFTP 1
+
+authCmdsXFTPVersion :: VersionXFTP
+authCmdsXFTPVersion = VersionXFTP 2
+
+currentXFTPVersion :: VersionXFTP
+currentXFTPVersion = VersionXFTP 2
+
+supportedFileServerVRange :: VersionRangeXFTP
+supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion
+
+-- XFTP protocol does not use this handshake method
+xftpClientHandshakeStub :: c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
+xftpClientHandshakeStub _c _ks _keyHash _xftpVRange = throwError $ TEHandshake VERSION
+
+data XFTPServerHandshake = XFTPServerHandshake
+  { xftpVersionRange :: VersionRangeXFTP,
+    sessionId :: SessionId,
+    -- | pub key to agree shared secrets for command authorization and entity ID encryption.
+    authPubKey :: (X.CertificateChain, X.SignedExact X.PubKey)
+  }
+
+data XFTPClientHandshake = XFTPClientHandshake
+  { -- | agreed XFTP server protocol version
+    xftpVersion :: VersionXFTP,
+    -- | server identity - CA certificate fingerprint
+    keyHash :: C.KeyHash
+  }
+
+instance Encoding XFTPClientHandshake where
+  smpEncode XFTPClientHandshake {xftpVersion, keyHash} =
+    smpEncode (xftpVersion, keyHash)
+  smpP = do
+    (xftpVersion, keyHash) <- smpP
+    Tail _compat <- smpP
+    pure XFTPClientHandshake {xftpVersion, keyHash}
+
+instance Encoding XFTPServerHandshake where
+  smpEncode XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey} =
+    smpEncode (xftpVersionRange, sessionId, auth)
+    where
+      auth = bimap C.encodeCertChain C.SignedObject authPubKey
+  smpP = do
+    (xftpVersionRange, sessionId) <- smpP
+    cert <- C.certChainP
+    C.SignedObject key <- smpP
+    Tail _compat <- smpP
+    pure XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey = (cert, key)}
 
 sendEncFile :: Handle -> (Builder -> IO ()) -> LC.SbState -> Word32 -> IO ()
 sendEncFile h send = go
@@ -97,3 +186,89 @@ receiveFile_ receive XFTPRcvChunkSpec {filePath, chunkSize, chunkDigest} = do
   ExceptT $ withFile filePath WriteMode (`receive` chunkSize)
   digest' <- liftIO $ LC.sha256Hash <$> LB.readFile filePath
   when (digest' /= chunkDigest) $ throwError DIGEST
+
+data XFTPErrorType
+  = -- | incorrect block format, encoding or signature size
+    BLOCK
+  | -- | incorrect SMP session ID (TLS Finished message / tls-unique binding RFC5929)
+    SESSION
+  | -- | incorrect handshake command
+    HANDSHAKE
+  | -- | SMP command is unknown or has invalid syntax
+    CMD {cmdErr :: CommandError}
+  | -- | command authorization error - bad signature or non-existing SMP queue
+    AUTH
+  | -- | incorrent file size
+    SIZE
+  | -- | storage quota exceeded
+    QUOTA
+  | -- | incorrent file digest
+    DIGEST
+  | -- | file encryption/decryption failed
+    CRYPTO
+  | -- | no expected file body in request/response or no file on the server
+    NO_FILE
+  | -- | unexpected file body
+    HAS_FILE
+  | -- | file IO error
+    FILE_IO
+  | -- | file sending timeout
+    TIMEOUT
+  | -- | bad redirect data
+    REDIRECT {redirectError :: String}
+  | -- | internal server error
+    INTERNAL
+  | -- | used internally, never returned by the server (to be removed)
+    DUPLICATE_ -- not part of SMP protocol, used internally
+  deriving (Eq, Read, Show)
+
+instance StrEncoding XFTPErrorType where
+  strEncode = \case
+    CMD e -> "CMD " <> bshow e
+    REDIRECT e -> "REDIRECT " <> bshow e
+    e -> bshow e
+  strP =
+    "CMD " *> (CMD <$> parseRead1)
+      <|> "REDIRECT " *> (REDIRECT <$> parseRead A.takeByteString)
+      <|> parseRead1
+
+instance Encoding XFTPErrorType where
+  smpEncode = \case
+    BLOCK -> "BLOCK"
+    SESSION -> "SESSION"
+    HANDSHAKE -> "HANDSHAKE"
+    CMD err -> "CMD " <> smpEncode err
+    AUTH -> "AUTH"
+    SIZE -> "SIZE"
+    QUOTA -> "QUOTA"
+    DIGEST -> "DIGEST"
+    CRYPTO -> "CRYPTO"
+    NO_FILE -> "NO_FILE"
+    HAS_FILE -> "HAS_FILE"
+    FILE_IO -> "FILE_IO"
+    TIMEOUT -> "TIMEOUT"
+    REDIRECT err -> "REDIRECT " <> smpEncode err
+    INTERNAL -> "INTERNAL"
+    DUPLICATE_ -> "DUPLICATE_"
+
+  smpP =
+    A.takeTill (== ' ') >>= \case
+      "BLOCK" -> pure BLOCK
+      "SESSION" -> pure SESSION
+      "HANDSHAKE" -> pure HANDSHAKE
+      "CMD" -> CMD <$> _smpP
+      "AUTH" -> pure AUTH
+      "SIZE" -> pure SIZE
+      "QUOTA" -> pure QUOTA
+      "DIGEST" -> pure DIGEST
+      "CRYPTO" -> pure CRYPTO
+      "NO_FILE" -> pure NO_FILE
+      "HAS_FILE" -> pure HAS_FILE
+      "FILE_IO" -> pure FILE_IO
+      "TIMEOUT" -> pure TIMEOUT
+      "REDIRECT" -> REDIRECT <$> _smpP
+      "INTERNAL" -> pure INTERNAL
+      "DUPLICATE_" -> pure DUPLICATE_
+      _ -> fail "bad error type"
+
+$(J.deriveJSON (sumTypeJSON id) ''XFTPErrorType)

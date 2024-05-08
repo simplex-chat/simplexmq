@@ -227,7 +227,7 @@ validateFileDescription fd@FileDescription {size, chunks}
   | otherwise = Right $ ValidFD fd
   where
     chunkNos = map (\FileChunk {chunkNo} -> chunkNo) chunks
-    chunksSize = fromIntegral . foldl' (\s FileChunk {chunkSize} -> s + unFileSize chunkSize) 0
+    chunksSize = foldl' (\(s :: Int64) FileChunk {chunkSize} -> s + fromIntegral (unFileSize chunkSize)) 0
 
 encodeFileDescription :: FileDescription p -> YAMLFileDescription
 encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSize, chunks, redirect} =

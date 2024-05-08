@@ -26,18 +26,17 @@ where
 import Control.Applicative ((<|>))
 import Control.Logger.Simple
 import Control.Monad
-import Control.Monad.IO.Unlift
 import qualified Crypto.Store.X509 as SX
 import Data.Default (def)
+import Data.IntMap.Strict (IntMap)
+import qualified Data.IntMap.Strict as IM
 import Data.List (find)
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
 import qualified Data.X509.Validation as XV
 import Network.Socket
 import qualified Network.TLS as T
-import Simplex.Messaging.TMap (TMap)
-import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (catchAll_, labelMyThread, tshow)
 import System.Exit (exitFailure)
@@ -50,7 +49,8 @@ import UnliftIO.STM
 data TransportServerConfig = TransportServerConfig
   { logTLSErrors :: Bool,
     tlsSetupTimeout :: Int,
-    transportTimeout :: Int
+    transportTimeout :: Int,
+    alpn :: Maybe [ALPN]
   }
   deriving (Eq, Show)
 
@@ -59,7 +59,8 @@ defaultTransportServerConfig =
   TransportServerConfig
     { logTLSErrors = True,
       tlsSetupTimeout = 60000000,
-      transportTimeout = 40000000
+      transportTimeout = 40000000,
+      alpn = Nothing
     }
 
 serverTransportConfig :: TransportServerConfig -> TransportConfig
@@ -70,27 +71,26 @@ serverTransportConfig TransportServerConfig {logTLSErrors} =
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
 -- All accepted connections are passed to the passed function.
-runTransportServer :: forall c m. (Transport c, MonadUnliftIO m) => TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (c -> m ()) -> m ()
+runTransportServer :: forall c. Transport c => TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (c -> IO ()) -> IO ()
 runTransportServer started port params cfg server = do
   ss <- atomically newSocketState
   runTransportServerState ss started port params cfg server
 
-runTransportServerState :: forall c m. (Transport c, MonadUnliftIO m) => SocketState -> TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (c -> m ()) -> m ()
+runTransportServerState :: forall c . Transport c => SocketState -> TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (c -> IO ()) -> IO ()
 runTransportServerState ss started port = runTransportServerSocketState ss started (startTCPServer started port) (transportName (TProxy :: TProxy c))
 
 -- | Run a transport server with provided connection setup and handler.
-runTransportServerSocket :: (MonadUnliftIO m, Transport a) => TMVar Bool -> IO Socket -> String -> T.ServerParams -> TransportServerConfig -> (a -> m ()) -> m ()
+runTransportServerSocket :: Transport a => TMVar Bool -> IO Socket -> String -> T.ServerParams -> TransportServerConfig -> (a -> IO ()) -> IO ()
 runTransportServerSocket started getSocket threadLabel serverParams cfg server = do
   ss <- atomically newSocketState
   runTransportServerSocketState ss started getSocket threadLabel serverParams cfg server
 
 -- | Run a transport server with provided connection setup and handler.
-runTransportServerSocketState :: (MonadUnliftIO m, Transport a) => SocketState -> TMVar Bool -> IO Socket -> String -> T.ServerParams -> TransportServerConfig -> (a -> m ()) -> m ()
+runTransportServerSocketState :: Transport a => SocketState -> TMVar Bool -> IO Socket -> String -> T.ServerParams -> TransportServerConfig -> (a -> IO ()) -> IO ()
 runTransportServerSocketState ss started getSocket threadLabel serverParams cfg server = do
-  u <- askUnliftIO
   labelMyThread $ "transport server for " <> threadLabel
-  liftIO . runTCPServerSocket ss started getSocket $ \conn ->
-    E.bracket (setup conn >>= maybe (fail "tls setup timeout") pure) closeConnection (unliftIO u . server)
+  runTCPServerSocket ss started getSocket $ \conn ->
+    E.bracket (setup conn >>= maybe (fail "tls setup timeout") pure) closeConnection server
   where
     tCfg = serverTransportConfig cfg
     setup conn = timeout (tlsSetupTimeout cfg) $ do
@@ -116,18 +116,18 @@ runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket serve
     forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
       cId <- atomically $ stateTVar accepted $ \cId -> let cId' = cId + 1 in cId `seq` (cId', cId')
       let closeConn _ = do
-            atomically $ TM.delete cId clients
+            atomically $ modifyTVar' clients $ IM.delete cId
             gracefulClose conn 5000 `catchAll_` pure () -- catchAll_ is needed here in case the connection was closed earlier
             atomically $ modifyTVar' gracefullyClosed (+1)
       tId <- mkWeakThreadId =<< server conn `forkFinally` closeConn
-      atomically $ TM.insert cId tId clients
+      atomically $ modifyTVar' clients $ IM.insert cId tId
 
-type SocketState = (TVar Int, TVar Int, TMap Int (Weak ThreadId))
+type SocketState = (TVar Int, TVar Int, TVar (IntMap (Weak ThreadId)))
 
 newSocketState :: STM SocketState
 newSocketState = (,,) <$> newTVar 0 <*> newTVar 0 <*> newTVar mempty
 
-closeServer :: TMVar Bool -> TMap Int (Weak ThreadId) -> Socket -> IO ()
+closeServer :: TMVar Bool -> TVar (IntMap (Weak ThreadId)) -> Socket -> IO ()
 closeServer started clients sock = do
   readTVarIO clients >>= mapM_ (deRefWeak >=> mapM_ killThread)
   close sock
@@ -152,12 +152,13 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
       pure sock
     setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
-loadTLSServerParams :: FilePath -> FilePath -> FilePath -> IO T.ServerParams
+loadTLSServerParams :: FilePath -> FilePath -> FilePath -> Maybe [ALPN] -> IO T.ServerParams
 loadTLSServerParams = loadSupportedTLSServerParams supportedParameters
 
-loadSupportedTLSServerParams :: T.Supported -> FilePath -> FilePath -> FilePath -> IO T.ServerParams
-loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile privateKeyFile =
-  fromCredential <$> loadServerCredential
+loadSupportedTLSServerParams :: T.Supported -> FilePath -> FilePath -> FilePath -> Maybe [ALPN] -> IO T.ServerParams
+loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile privateKeyFile alpn_ = do
+  tlsServerParams <- fromCredential <$> loadServerCredential
+  pure tlsServerParams {T.serverHooks = maybe def alpnHooks alpn_}
   where
     loadServerCredential :: IO T.Credential
     loadServerCredential =
@@ -172,6 +173,7 @@ loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile p
           T.serverHooks = def,
           T.serverSupported = serverSupported
         }
+    alpnHooks supported = def {T.onALPNClientSuggest = Just $ pure . fromMaybe "" . find (`elem` supported)}
 
 loadFingerprint :: FilePath -> IO Fingerprint
 loadFingerprint certificateFile = do

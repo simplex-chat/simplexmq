@@ -25,7 +25,7 @@ import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defMsgExpirationDays, defaultInactiveClientExpiration, defaultMessageExpiration)
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (simplexMQVersion, supportedServerSMPRelayVRange)
+import Simplex.Messaging.Transport (simplexMQVersion, supportedSMPHandshakes, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (safeDecodeUtf8)
@@ -128,6 +128,8 @@ smpServerCLI cfgPath logPath =
                       _ -> "# create_password: password to create new queues (any printable ASCII characters without whitespace, '@', ':' and '/')"
                    )
                 <> "\n\n\
+                   \# control_port_admin_password:\n\
+                   \# control_port_user_password:\n\
                    \[TRANSPORT]\n\
                    \# host is only used to print server address on start\n"
                 <> ("host: " <> host <> "\n")
@@ -189,6 +191,8 @@ smpServerCLI cfgPath logPath =
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
               newQueueBasicAuth = either error id <$> strDecodeIni "AUTH" "create_password" ini,
+              controlPortAdminAuth = either error id <$> strDecodeIni "AUTH" "control_port_admin_password" ini,
+              controlPortUserAuth = either error id <$> strDecodeIni "AUTH" "control_port_user_password" ini,
               messageExpiration =
                 Just
                   defaultMessageExpiration
@@ -207,7 +211,8 @@ smpServerCLI cfgPath logPath =
               smpServerVRange = supportedServerSMPRelayVRange,
               transportConfig =
                 defaultTransportServerConfig
-                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
+                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini,
+                    alpn = Just supportedSMPHandshakes
                   },
               controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini
             }

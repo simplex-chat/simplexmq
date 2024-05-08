@@ -11,12 +11,14 @@
 
 module Simplex.Messaging.Notifications.Protocol where
 
+import Control.Applicative ((<|>))
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Functor (($>))
 import Data.Kind
 import Data.Maybe (isNothing)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -28,7 +30,7 @@ import Simplex.Messaging.Agent.Protocol (updateSMPServerHosts)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Transport (ntfClientHandshake)
+import Simplex.Messaging.Notifications.Transport (NTFVersion, ntfClientHandshake)
 import Simplex.Messaging.Parsers (fromTextField_)
 import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
 import Simplex.Messaging.Util (eitherToMaybe, (<$?>))
@@ -147,10 +149,10 @@ instance Encoding ANewNtfEntity where
       'S' -> ANE SSubscription <$> (NewNtfSub <$> smpP <*> smpP <*> smpP)
       _ -> fail "bad ANewNtfEntity"
 
-instance Protocol ErrorType NtfResponse where
+instance Protocol NTFVersion ErrorType NtfResponse where
   type ProtoCommand NtfResponse = NtfCmd
   type ProtoType NtfResponse = 'PNTF
-  protocolClientHandshake = ntfClientHandshake
+  protocolClientHandshake c _ks = ntfClientHandshake c
   protocolPing = NtfCmd SSubscription PING
   protocolError = \case
     NRErr e -> Just e
@@ -184,7 +186,7 @@ data NtfCmd = forall e. NtfEntityI e => NtfCmd (SNtfEntity e) (NtfCommand e)
 
 deriving instance Show NtfCmd
 
-instance NtfEntityI e => ProtocolEncoding ErrorType (NtfCommand e) where
+instance NtfEntityI e => ProtocolEncoding NTFVersion ErrorType (NtfCommand e) where
   type Tag (NtfCommand e) = NtfCommandTag e
   encodeProtocol _v = \case
     TNEW newTkn -> e (TNEW_, ' ', newTkn)
@@ -203,7 +205,7 @@ instance NtfEntityI e => ProtocolEncoding ErrorType (NtfCommand e) where
 
   protocolP _v tag = (\(NtfCmd _ c) -> checkEntity c) <$?> protocolP _v (NCT (sNtfEntity @e) tag)
 
-  fromProtocolError = fromProtocolError @ErrorType @NtfResponse
+  fromProtocolError = fromProtocolError @NTFVersion @ErrorType @NtfResponse
   {-# INLINE fromProtocolError #-}
 
   checkCredentials (auth, _, entityId, _) cmd = case cmd of
@@ -223,7 +225,7 @@ instance NtfEntityI e => ProtocolEncoding ErrorType (NtfCommand e) where
         | not (B.null entityId) = Left $ CMD HAS_AUTH
         | otherwise = Right cmd
 
-instance ProtocolEncoding ErrorType NtfCmd where
+instance ProtocolEncoding NTFVersion ErrorType NtfCmd where
   type Tag NtfCmd = NtfCmdTag
   encodeProtocol _v (NtfCmd _ c) = encodeProtocol _v c
 
@@ -243,7 +245,7 @@ instance ProtocolEncoding ErrorType NtfCmd where
         SDEL_ -> pure SDEL
         PING_ -> pure PING
 
-  fromProtocolError = fromProtocolError @ErrorType @NtfResponse
+  fromProtocolError = fromProtocolError @NTFVersion @ErrorType @NtfResponse
   {-# INLINE fromProtocolError #-}
 
   checkCredentials t (NtfCmd e c) = NtfCmd e <$> checkCredentials t c
@@ -290,7 +292,7 @@ data NtfResponse
   | NRPong
   deriving (Show)
 
-instance ProtocolEncoding ErrorType NtfResponse where
+instance ProtocolEncoding NTFVersion ErrorType NtfResponse where
   type Tag NtfResponse = NtfResponseTag
   encodeProtocol _v = \case
     NRTknId entId dhKey -> e (NRTknId_, ' ', entId, dhKey)
@@ -358,7 +360,11 @@ instance StrEncoding SMPQueueNtf where
     notifierId <- A.char '/' *> strP
     pure SMPQueueNtf {smpServer, notifierId}
 
-data PushProvider = PPApnsDev | PPApnsProd | PPApnsTest
+data PushProvider
+  = PPApnsDev -- provider for Apple development environment
+  | PPApnsProd -- production environment, including TestFlight
+  | PPApnsTest -- used for tests, to use APNS mock server
+  | PPApnsNull -- used to test servers from the client - does not communicate with APNS
   deriving (Eq, Ord, Show)
 
 instance Encoding PushProvider where
@@ -366,11 +372,13 @@ instance Encoding PushProvider where
     PPApnsDev -> "AD"
     PPApnsProd -> "AP"
     PPApnsTest -> "AT"
+    PPApnsNull -> "AN"
   smpP =
     A.take 2 >>= \case
       "AD" -> pure PPApnsDev
       "AP" -> pure PPApnsProd
       "AT" -> pure PPApnsTest
+      "AN" -> pure PPApnsNull
       _ -> fail "bad PushProvider"
 
 instance StrEncoding PushProvider where
@@ -378,11 +386,13 @@ instance StrEncoding PushProvider where
     PPApnsDev -> "apns_dev"
     PPApnsProd -> "apns_prod"
     PPApnsTest -> "apns_test"
+    PPApnsNull -> "apns_null"
   strP =
     A.takeTill (== ' ') >>= \case
       "apns_dev" -> pure PPApnsDev
       "apns_prod" -> pure PPApnsProd
       "apns_test" -> pure PPApnsTest
+      "apns_null" -> pure PPApnsNull
       _ -> fail "bad PushProvider"
 
 instance FromField PushProvider where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
@@ -398,10 +408,12 @@ instance Encoding DeviceToken where
 
 instance StrEncoding DeviceToken where
   strEncode (DeviceToken p t) = strEncode p <> " " <> t
-  strP = DeviceToken <$> strP <* A.space <*> hexStringP
+  strP = nullToken <|> hexToken
     where
+      nullToken = "apns_null test_ntf_token" $> DeviceToken PPApnsNull "test_ntf_token"
+      hexToken = DeviceToken <$> strP <* A.space <*> hexStringP
       hexStringP =
-        A.takeWhile (\c -> A.isDigit c || (c >= 'a' && c <= 'f')) >>= \s ->
+        A.takeWhile (`B.elem` "0123456789abcdef") >>= \s ->
           if even (B.length s) then pure s else fail "odd number of hex characters"
 
 instance ToJSON DeviceToken where

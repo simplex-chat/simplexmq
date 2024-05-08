@@ -1,3 +1,84 @@
+# 5.7.2
+
+SMP agent:
+- fix connections failing when connecting via link due to race condition on slow network.
+- remove concurrency limit when waiting for connection subscription.
+- remove TLS timeout.
+
+# 5.7.1
+
+SMP agent:
+- increase timeout for TLS connection via SOCKS
+
+# 5.7.0
+
+Version 5.7.0.4
+
+_Please note_: the earliest SimpleX Chat clients supported by this version of the servers is 5.5.3 (released on February 11, 2024).
+
+SMP server:
+- increase max SMP protocol version to 7 (support for deniable authenticators).
+
+NTF server:
+- increase max NTF protocol version to 2 (support for deniable authenticators).
+
+XFTP server:
+- version handshake using ALPN.
+
+SMP agent:
+- increase timeouts for XFTP files.
+- don't send commands after timeout.
+- PQ encryption support.
+
+# 5.6.2
+
+Version 5.6.2.2.
+
+SMP agent:
+- Lower memory consumption (~20-25%).
+- More stable XFTP file uploads and downloads.
+- API to receive network connectivity changes from the apps.
+- to reduce battery consumption: connection attempts interval growing to every 2 hours when app reports as offline.
+- to reduce retries and traffic: 50% increased timeouts when on mobile network.
+
+XFTP server:
+- expire files on start.
+- version negotiation based on TLS ALPN and handshake.
+
+NTF server:
+- reduced downtime by ~100x faster start time.
+- exclude test tokens from statistics.
+
+# 5.6.1
+
+Version 5.6.1.0.
+
+- Much faster iOS notification server start time (fewer skipped notifications).
+- Fix SMP server stored message stats.
+- Prevent overwriting uploaded XFTP files with subsequent upload attempts.
+- Faster base64 encoding/parsing.
+- Control port audit log and authentication.
+
+# 5.6.0
+
+Version 5.6.0.4.
+
+SMP protocol/client/server:
+- support deniable sender command authorization (to be enabled in the next version).
+- remove support for SMP protocol versions (prior to v4, 07/2022).
+
+Agent:
+- optional post-quantum key agreement using sntrup761 in double ratchet protocol.
+- improve performance of deleting multiple connections and files by batching database operations.
+- delay connection deletion to deliver pending messages.
+- API to test for notifications server.
+- remove support for client protocols versions (prior to 10/2022).
+
+XFTP server:
+- restore storage quota in case of failed uploads.
+
+Performance and stability improvements.
+
 # 5.5.3
 
 Agent:
