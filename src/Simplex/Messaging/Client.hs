@@ -172,6 +172,7 @@ smpClientStub g sessionId thVersion thAuth = do
           THandleParams
             { sessionId,
               thVersion,
+              thServerVRange = supportedServerSMPRelayVRange,
               thAuth,
               blockSize = smpBlockSize,
               implySessId = thVersion >= authCmdsSMPVersion,

@@ -325,6 +325,7 @@ testTHandleParams v sessionId =
     { sessionId,
       blockSize = smpBlockSize,
       thVersion = v,
+      thServerVRange = supportedServerSMPRelayVRange,
       thAuth = Nothing,
       implySessId = v >= authCmdsSMPVersion,
       batch = True

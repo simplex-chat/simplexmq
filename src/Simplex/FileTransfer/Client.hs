@@ -57,7 +57,7 @@ import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Transport.HTTP2.File
 import Simplex.Messaging.Util (bshow, liftEitherWith, liftError', tshow, whenM)
-import Simplex.Messaging.Version (compatibleVersion, pattern Compatible)
+import Simplex.Messaging.Version
 import UnliftIO
 import UnliftIO.Directory
 
@@ -109,7 +109,9 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
       clientDisconnected = readTVarIO clientVar >>= mapM_ disconnected
   http2Client <- liftError' xftpClientError $ getVerifiedHTTP2Client (Just username) useHost usePort (Just keyHash) Nothing http2Config clientDisconnected
   let HTTP2Client {sessionId, sessionALPN} = http2Client
-      thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = VersionXFTP 1, thAuth = Nothing, implySessId = False, batch = True}
+      v = VersionXFTP 1
+      thServerVRange = versionToRange v
+      thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, batch = True}
   logDebug $ "Client negotiated handshake protocol: " <> tshow sessionALPN
   thParams@THandleParams {thVersion} <- case sessionALPN of
     Just "xftp/1" -> xftpClientHandshakeV1 serverVRange keyHash http2Client thParams0
@@ -123,9 +125,10 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
 xftpClientHandshakeV1 :: VersionRangeXFTP -> C.KeyHash -> HTTP2Client -> THandleParamsXFTP 'TClient -> ExceptT XFTPClientError IO (THandleParamsXFTP 'TClient)
 xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessionId, serverKey} thParams0 = do
   shs@XFTPServerHandshake {authPubKey = ck} <- getServerHandshake
-  (v, sk) <- processServerHandshake shs
+  (vr, sk) <- processServerHandshake shs
+  let v = maxVersion vr
   sendClientHandshake XFTPClientHandshake {xftpVersion = v, keyHash}
-  pure thParams0 {thAuth = Just THAuthClient {serverPeerPubKey = sk, serverCertKey = ck, sessSecret = Nothing}, thVersion = v}
+  pure thParams0 {thAuth = Just THAuthClient {serverPeerPubKey = sk, serverCertKey = ck, sessSecret = Nothing}, thVersion = v, thServerVRange = vr}
   where
     getServerHandshake :: ExceptT XFTPClientError IO XFTPServerHandshake
     getServerHandshake = do
@@ -133,13 +136,13 @@ xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {session
       HTTP2Response {respBody = HTTP2Body {bodyHead = shsBody}} <-
         liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequest c helloReq Nothing
       liftHS . smpDecode =<< liftHS (C.unPad shsBody)
-    processServerHandshake :: XFTPServerHandshake -> ExceptT XFTPClientError IO (VersionXFTP, C.PublicKeyX25519)
+    processServerHandshake :: XFTPServerHandshake -> ExceptT XFTPClientError IO (VersionRangeXFTP, C.PublicKeyX25519)
     processServerHandshake XFTPServerHandshake {xftpVersionRange, sessionId = serverSessId, authPubKey = serverAuth} = do
       unless (sessionId == serverSessId) $ throwError $ PCEResponseError SESSION
-      case xftpVersionRange `compatibleVersion` serverVRange of
-        Nothing -> throwError $ PCEResponseError HANDSHAKE
-        Just (Compatible v) ->
-          fmap (v,) . liftHS $ do
+      case xftpVersionRange `compatibleVRange` serverVRange of
+        Nothing -> throwError $ PCETransportError TEVersion
+        Just (Compatible vr) ->
+          fmap (vr,) . liftHS $ do
             let (X.CertificateChain cert, exact) = serverAuth
             case cert of
               [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()

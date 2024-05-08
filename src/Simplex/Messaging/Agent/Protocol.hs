@@ -1302,6 +1302,7 @@ instance VersionRangeI SMPClientVersion SMPQueueUri where
   type VersionT SMPClientVersion SMPQueueUri = SMPQueueInfo
   versionRange = clientVRange
   toVersionT (SMPQueueUri _vr addr) v = SMPQueueInfo v addr
+  toVersionRange (SMPQueueUri _vr addr) vr = SMPQueueUri vr addr
 
 -- | SMP queue information sent out-of-band.
 --
