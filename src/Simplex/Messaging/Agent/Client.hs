@@ -627,11 +627,12 @@ reconnectSMPClient :: TVar Int -> AgentClient -> SMPTransportSession -> NonEmpty
 reconnectSMPClient tc c tSess@(_, srv, _) qs = do
   NetworkConfig {tcpTimeout} <- atomically $ getNetworkConfig c
   -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
-  let t = (length qs `div` 90 + 1) * tcpTimeout * 4
+  let t = (length qs `div` 90 + 1) * tcpTimeout * 3
   ExceptT (sequence <$> (t `timeout` runExceptT resubscribe)) >>= \case
     Just _ -> atomically $ writeTVar tc 0
     Nothing ->
       (offline <$> readTVarIO (userNetworkState c)) >>= \case
+        -- reset and do not report consequitive timeouts while offline
         Just _ -> atomically $ writeTVar tc 0
         Nothing -> do
           tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
