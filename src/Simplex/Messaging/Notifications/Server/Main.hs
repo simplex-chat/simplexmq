@@ -18,7 +18,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server (runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..), defaultInactiveClientExpiration)
 import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientConfig)
-import Simplex.Messaging.Notifications.Transport (supportedServerNTFVRange)
+import Simplex.Messaging.Notifications.Transport (supportedNTFHandshakes, supportedServerNTFVRange)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
@@ -133,7 +133,8 @@ ntfServerCLI cfgPath logPath =
               ntfServerVRange = supportedServerNTFVRange,
               transportConfig =
                 defaultTransportServerConfig
-                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
+                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini,
+                    alpn = Just supportedNTFHandshakes
                   }
             }
 
