@@ -337,7 +337,7 @@ functionalAPITests t = do
     skip "faster version of the previous test (200 subscriptions gets very slow with test coverage)" $
       it "should subscribe to multiple (6) subscriptions with batching" $
         testBatchedSubscriptions 6 3 t
-    fit "should subscribe to multiple connections with pending messages" $
+    it "should subscribe to multiple connections with pending messages" $
       withSmpServer t $
         testBatchedPendingMessages 10 5
   describe "Async agent commands" $ do
