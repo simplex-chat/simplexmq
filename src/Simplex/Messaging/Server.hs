@@ -491,7 +491,12 @@ send h@THandle {params} Client {sndQ, sessionId, sndActiveAt} = do
       | L.length ts <= 2 = tSend ts
       | otherwise = do
           let (msgs, ts') = mapAccumR splitMessages [] ts
+          -- If the request had batched subscriptions (L.length ts > 2)
+          -- this will reply OK to all SUBs in the first batched transmission,
+          -- to reduce client timeouts.
           tSend ts'
+          -- After that all messages will be sent in separate transmissions,
+          -- without any client response timeouts.
           mapM_ tSend (L.nonEmpty msgs)
       where
         splitMessages :: [Transmission BrokerMsg] -> Transmission BrokerMsg -> ([Transmission BrokerMsg], Transmission BrokerMsg)
