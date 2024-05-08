@@ -1708,7 +1708,7 @@ getAgentSubscriptions c = do
     collect (as, ps, cs) = M.fromListWith mergeAPS $ map byServer $ S.toList allServers
       where
         byServer :: SMPServer -> (Text, ActivePendingSubs)
-        byServer srv = (decodeLatin1 $ strEncode srv, ActivePendingSubs {active_, pending_})
+        byServer srv = (decodeLatin1 . strEncode $ SMP.host srv, ActivePendingSubs {active_, pending_})
           where
             active_ = subInfo (srvConns as') (srvConns ac')
             pending_ = subInfo (srvConns ps') (srvConns pc')
