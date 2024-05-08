@@ -630,12 +630,16 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
   let t = (length qs `div` 90 + 1) * tcpTimeout * 3
   ExceptT (sequence <$> (t `timeout` runExceptT resubscribe)) >>= \case
     Just _ -> atomically $ writeTVar tc 0
-    Nothing -> do
-      tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
-      maxTC <- asks $ maxSubscriptionTimeouts . config
-      let err = if tc' >= maxTC then CRITICAL True else INTERNAL
-          msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
-      atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
+    Nothing ->
+      (offline <$> readTVarIO (userNetworkState c)) >>= \case
+        -- reset and do not report consequitive timeouts while offline
+        Just _ -> atomically $ writeTVar tc 0
+        Nothing -> do
+          tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
+          maxTC <- asks $ maxSubscriptionTimeouts . config
+          let err = if tc' >= maxTC then CRITICAL True else INTERNAL
+              msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
+          atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
   where
     resubscribe :: AM ()
     resubscribe = do
