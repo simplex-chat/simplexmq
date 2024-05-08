@@ -85,6 +85,7 @@ module Simplex.Messaging.Agent.Client
     Worker (..),
     SessionVar (..),
     SubscriptionsInfo (..),
+    ActivePendingSubs (..),
     SubInfo (..),
     AgentOperation (..),
     AgentOpState (..),
