@@ -198,7 +198,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
       chunkPath <- uniqueCombine fsFileTmpPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
           relChunkPath = fileTmpPath </> takeFileName chunkPath
-      agentXFTPDownloadChunk c userId digest replica chunkSpec
+      agentXFTPDownloadChunk c userId digest replica chunkSpec `catchAgentError` \_ -> throwError (BROKER (show srv) NETWORK)
       atomically $ waitUntilForeground c
       (entityId, complete, progress) <- withStore c $ \db -> runExceptT $ do
         liftIO $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId relChunkPath
