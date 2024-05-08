@@ -153,7 +153,7 @@ authCmdsSMPVersion :: VersionSMP
 authCmdsSMPVersion = VersionSMP 7
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 6
+currentClientSMPRelayVersion = VersionSMP 7
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
