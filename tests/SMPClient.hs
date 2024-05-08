@@ -24,8 +24,10 @@ import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
+import qualified Simplex.Messaging.Transport.Client as Client
 import Simplex.Messaging.Transport.Server
-import Simplex.Messaging.Version (mkVersionRange)
+import qualified Simplex.Messaging.Transport.Server as Server
+import Simplex.Messaging.Version
 import System.Environment (lookupEnv)
 import System.Info (os)
 import Test.Hspec
@@ -73,10 +75,15 @@ testSMPClient = testSMPClientVR supportedClientSMPRelayVRange
 testSMPClientVR :: Transport c => VersionRangeSMP -> (THandleSMP c 'TClient -> IO a) -> IO a
 testSMPClientVR vr client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
-  runTransportClient defaultTransportClientConfig Nothing useHost testPort (Just testKeyHash) $ \h ->
+  let tcConfig = defaultTransportClientConfig {Client.alpn = clientALPN}
+  runTransportClient tcConfig Nothing useHost testPort (Just testKeyHash) $ \h ->
     runExceptT (smpClientHandshake h Nothing testKeyHash vr) >>= \case
       Right th -> client th
       Left e -> error $ show e
+  where
+    clientALPN
+      | authCmdsSMPVersion `isCompatible` vr = Just supportedSMPHandshakes
+      | otherwise = Nothing
 
 cfg :: ServerConfig
 cfg =
@@ -104,7 +111,7 @@ cfg =
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
       smpServerVRange = supportedServerSMPRelayVRange,
-      transportConfig = defaultTransportServerConfig,
+      transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedSMPHandshakes},
       controlPort = Nothing
     }
 

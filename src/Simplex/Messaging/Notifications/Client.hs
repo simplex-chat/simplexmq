@@ -10,7 +10,7 @@ import Data.Word (Word16)
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Notifications.Transport (NTFVersion, supportedClientNTFVRange)
+import Simplex.Messaging.Notifications.Transport (NTFVersion, supportedClientNTFVRange, supportedNTFHandshakes)
 import Simplex.Messaging.Protocol (ErrorType)
 import Simplex.Messaging.Util (bshow)
 
@@ -19,7 +19,7 @@ type NtfClient = ProtocolClient NTFVersion ErrorType NtfResponse
 type NtfClientError = ProtocolClientError ErrorType
 
 defaultNTFClientConfig :: ProtocolClientConfig NTFVersion
-defaultNTFClientConfig = defaultClientConfig supportedClientNTFVRange
+defaultNTFClientConfig = defaultClientConfig (Just supportedNTFHandshakes) supportedClientNTFVRange
 
 ntfRegisterToken :: NtfClient -> C.APrivateAuthKey -> NewNtfEntity 'Token -> ExceptT NtfClientError IO (NtfTokenId, C.PublicKeyX25519)
 ntfRegisterToken c pKey newTkn =

@@ -245,8 +245,13 @@ downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {
         let dhSecret = C.dh' sDhKey rpDhKey
         cbState <- liftEither . first PCECryptoError $ LC.cbInit dhSecret cbNonce
         let t = chunkTimeout config chunkSize
-        ExceptT (sequence <$> (t `timeout` download cbState)) >>= maybe (throwError PCEResponseTimeout) pure
+        ExceptT (sequence <$> (t `timeout` (download cbState `catches` errors))) >>= maybe (throwError PCEResponseTimeout) pure
         where
+          errors =
+            [ Handler $ \(_e :: H.HTTP2Error) -> pure $ Left PCENetworkError,
+              Handler $ \(e :: IOException) -> pure $ Left (PCEIOError e),
+              Handler $ \(_e :: SomeException) -> pure $ Left PCENetworkError
+            ]
           download cbState =
             runExceptT . withExceptT PCEResponseError $
               receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
