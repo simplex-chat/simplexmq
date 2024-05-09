@@ -144,13 +144,14 @@ smpServerCLI cfgPath logPath =
                    \[PROXY]\n\
                    \# Network configuration for SMP proxy client.\n\
                    \# `host_mode` can be 'public' (default) or 'onion'.\n\
-                   \# It defines prefferred hostname for server address with multiple hostnames\n\
+                   \# It defines prefferred hostname for destination servers with multiple hostnames.\n\
                    \# host_mode: public\n\
                    \# required_host_mode: off\n\n\
-                   \# It is recommended to run SOCKS proxy for outgoing requests on a non-standard port.\n\
+                   \# SOCKS proxy port for forwarding messages to destination servers.\n\
+                   \# You may need a separate instance of SOCKS proxy for incoming single-hop requests.\n\
                    \# socks_proxy: localhost:9050\n\n\
                    \# `socks_mode` can be 'onion' for SOCKS proxy to be used for .onion destination hosts only (default)\n\
-                   \# or 'always' to be used for all destination hosts (can be used if it is .onion server).\n\
+                   \# or 'always' to be used for all destination hosts (can be used if it is an .onion server).\n\
                    \# socks_mode: onion\n\n\
                    \[INACTIVE_CLIENTS]\n\
                    \# TTL and interval to check inactive clients\n\
