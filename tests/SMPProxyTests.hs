@@ -149,18 +149,18 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
       -- message IDs 1 to 3 (or 1 to 4 in v1) get assigned to control messages, so first MSG is assigned ID 4
       let aProxySrv = if aViaProxy then Just $ L.head aSrvs else Nothing
       1 <- msgId <$> A.sendMessage alice bobId pqEnc noMsgFlags msg1
-      get alice ##> ("", bobId, A.SENT (baseId + 1) aProxySrv)
+      get alice =##> \case ("", c, A.SENT mId DeliveryPath {smpProxy}) -> c == bobId && mId == baseId + 1 && (fst <$> smpProxy) == aProxySrv; _ -> False
       2 <- msgId <$> A.sendMessage alice bobId pqEnc noMsgFlags msg2
-      get alice ##> ("", bobId, A.SENT (baseId + 2) aProxySrv)
+      get alice =##> \case ("", c, A.SENT mId DeliveryPath {smpProxy}) -> c == bobId && mId == baseId + 2 && (fst <$> smpProxy) == aProxySrv; _ -> False
       get bob =##> \case ("", c, Msg' _ pq msg1') -> c == aliceId && pq == pqEnc && msg1 == msg1'; _ -> False
       ackMessage bob aliceId (baseId + 1) Nothing
       get bob =##> \case ("", c, Msg' _ pq msg2') -> c == aliceId && pq == pqEnc && msg2 == msg2'; _ -> False
       ackMessage bob aliceId (baseId + 2) Nothing
       let bProxySrv = if bViaProxy then Just $ L.head bSrvs else Nothing
       3 <- msgId <$> A.sendMessage bob aliceId pqEnc noMsgFlags msg1
-      get bob ##> ("", aliceId, A.SENT (baseId + 3) bProxySrv)
+      get bob =##> \case ("", c, A.SENT mId DeliveryPath {smpProxy}) -> c == aliceId && mId == baseId + 3 && (fst <$> smpProxy) == bProxySrv; _ -> False
       4 <- msgId <$> A.sendMessage bob aliceId pqEnc noMsgFlags msg2
-      get bob ##> ("", aliceId, A.SENT (baseId + 4) bProxySrv)
+      get bob =##> \case ("", c, A.SENT mId DeliveryPath {smpProxy}) -> c == aliceId && mId == baseId + 4 && (fst <$> smpProxy) == bProxySrv; _ -> False
       get alice =##> \case ("", c, Msg' _ pq msg1') -> c == bobId && pq == pqEnc && msg1 == msg1'; _ -> False
       ackMessage alice bobId (baseId + 3) Nothing
       get alice =##> \case ("", c, Msg' _ pq msg2') -> c == bobId && pq == pqEnc && msg2 == msg2'; _ -> False

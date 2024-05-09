@@ -31,12 +31,15 @@ module Simplex.Messaging.Client
     ProtocolClient (thParams, sessionTs),
     SMPClient,
     ProxiedRelay (..),
+    DeliveryPath (..),
     getProtocolClient,
     closeProtocolClient,
     protocolClientServer,
     protocolClientServer',
     transportHost',
     transportSession',
+    directDeliveryPath,
+    proxyDeliveryPath,
 
     -- * SMP protocol command functions
     createSMPQueue,
@@ -91,6 +94,7 @@ module Simplex.Messaging.Client
   )
 where
 
+import Control.Applicative (optional)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
@@ -108,7 +112,7 @@ import Data.Int (Int64)
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
@@ -141,6 +145,7 @@ data ProtocolClient v err msg = ProtocolClient
 
 data PClient v err msg = PClient
   { connected :: TVar Bool,
+    viaSocks :: Bool,
     transportSession :: TransportSession msg,
     transportHost :: TransportHost,
     tcpTimeout :: Int,
@@ -183,6 +188,7 @@ smpClientStub g sessionId thVersion thAuth = do
         client_ =
           PClient
             { connected,
+              viaSocks = False,
               transportSession = (1, "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001", Nothing),
               transportHost = "localhost",
               tcpTimeout = 15_000_000,
@@ -379,6 +385,43 @@ transportSession' :: ProtocolClient v err msg -> TransportSession msg
 transportSession' = transportSession . client_
 {-# INLINE transportSession' #-}
 
+directDeliveryPath :: SMPClient -> DeliveryPath
+directDeliveryPath ProtocolClient {client_ = PClient {viaSocks, transportSession = (_, srv, _), transportHost}} =
+  DeliveryPath {viaSocks, smpProxy = Nothing, smpRelay = (srv, transportHost)}
+{-# INLINE directDeliveryPath #-}
+
+proxyDeliveryPath :: SMPClient -> SMPServer -> ProxiedRelay -> DeliveryPath
+proxyDeliveryPath
+  ProtocolClient {client_ = PClient {viaSocks, transportSession = (_, srv, _), transportHost}}
+  destSrv
+  ProxiedRelay {prTransportHost} =
+    DeliveryPath {viaSocks, smpProxy = Just (srv, transportHost), smpRelay = (destSrv, prTransportHost)}
+{-# INLINE proxyDeliveryPath #-}
+
+data DeliveryPath = DeliveryPath
+  { viaSocks :: Bool,
+    smpProxy :: Maybe (SMPServer, TransportHost),
+    smpRelay :: (SMPServer, TransportHost)
+  }
+  deriving (Eq, Show)
+
+instance StrEncoding DeliveryPath where
+  strEncode DeliveryPath {viaSocks, smpProxy, smpRelay} =
+    B.unwords
+      [ "socks=" <> strEncode viaSocks,
+        "proxy=" <> maybe "" encodeServer smpProxy,
+        "relay=" <> encodeServer smpRelay
+      ]
+    where
+      encodeServer (srv, host) = strEncode srv <> ";" <> strEncode host
+  strP = do
+    viaSocks <- "socks=" *> strP
+    smpProxy <- " proxy=" *> optional serverP
+    smpRelay <- " relay=" *> serverP
+    pure DeliveryPath {viaSocks, smpProxy, smpRelay}
+    where
+      serverP = (,) <$> strP <* A.char ';' <*> strP
+
 type UserId = Int64
 
 -- | Transport session key - includes entity ID if `sessionMode = TSMEntity`.
@@ -392,14 +435,15 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe EntityId)
 getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> Maybe (TBQueue (ServerTransmission v msg)) -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
 getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret} msgQ disconnected = do
   case chooseTransportHost networkConfig (host srv) of
-    Right useHost ->
-      (getCurrentTime >>= atomically . mkProtocolClient useHost >>= runClient useTransport useHost)
+    Right useHost -> do
+      let tcConfig = (transportClientConfig networkConfig useHost) {alpn = clientALPN}
+      (getCurrentTime >>= atomically . mkProtocolClient useHost tcConfig >>= runClient useTransport useHost)
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
     NetworkConfig {tcpConnectTimeout, tcpTimeout, rcvConcurrency, smpPingInterval} = networkConfig
-    mkProtocolClient :: TransportHost -> UTCTime -> STM (PClient v err msg)
-    mkProtocolClient transportHost ts = do
+    mkProtocolClient :: TransportHost -> TransportClientConfig -> UTCTime -> STM (PClient v err msg)
+    mkProtocolClient transportHost TransportClientConfig {socksProxy} ts = do
       connected <- newTVar False
       sendPings <- newTVar False
       lastReceived <- newTVar ts
@@ -411,6 +455,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
       return
         PClient
           { connected,
+            viaSocks = isJust socksProxy,
             transportSession,
             transportHost,
             tcpTimeout,
@@ -738,10 +783,10 @@ connectSMPProxiedRelay :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT S
 connectSMPProxiedRelay c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth
   | thVersion (thParams c) >= sendingProxySMPVersion =
       sendSMPCommand c Nothing "" (PRXY relayServ proxyAuth) >>= \case
-        PKEY sId vr (chain, key) ->
+        PKEY host sId vr (chain, key) ->
           case supportedClientSMPRelayVRange `compatibleVersion` vr of
             Nothing -> throwE $ transportErr TEVersion
-            Just (Compatible v) -> liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) $ ProxiedRelay sId v <$> validateRelay chain key
+            Just (Compatible v) -> liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) $ ProxiedRelay host sId v <$> validateRelay chain key
         r -> throwE . PCEUnexpectedResponse $ bshow r
   | otherwise = throwE $ PCETransportError TEVersion
   where
@@ -757,7 +802,8 @@ connectSMPProxiedRelay c relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxy
       C.x509ToPublic (pubKey, []) >>= C.pubKey
 
 data ProxiedRelay = ProxiedRelay
-  { prSessionId :: SessionId,
+  { prTransportHost :: TransportHost,
+    prSessionId :: SessionId,
     prVersion :: VersionSMP,
     prServerKey :: C.PublicKeyX25519
   }
@@ -820,7 +866,7 @@ proxySMPMessage ::
   MsgBody ->
   ExceptT SMPClientError IO (Either ProxyClientError ())
 -- TODO use version
-proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g}} (ProxiedRelay sessionId _v serverKey) spKey sId flags msg = do
+proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g}} (ProxiedRelay _ sessionId _v serverKey) spKey sId flags msg = do
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
       serverThParams = proxyThParams {sessionId, thAuth = serverThAuth}
