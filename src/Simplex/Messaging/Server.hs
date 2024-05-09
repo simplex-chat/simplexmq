@@ -483,29 +483,9 @@ send :: Transport c => THandleSMP c 'TServer -> Client -> IO ()
 send h@THandle {params} Client {sndQ, sessionId, sndActiveAt} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ do
-    sendTransmissions =<< atomically (readTBQueue sndQ)
+    ts <- atomically $ readTBQueue sndQ
+    void . liftIO . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
     atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
-  where
-    sendTransmissions :: NonEmpty (Transmission BrokerMsg) -> IO ()
-    sendTransmissions ts
-      | L.length ts <= 2 = tSend ts
-      | otherwise = do
-          let (msgs, ts') = mapAccumR splitMessages [] ts
-          -- If the request had batched subscriptions (L.length ts > 2)
-          -- this will reply OK to all SUBs in the first batched transmission,
-          -- to reduce client timeouts.
-          tSend ts'
-          -- After that all messages will be sent in separate transmissions,
-          -- without any client response timeouts.
-          mapM_ tSend (L.nonEmpty msgs)
-      where
-        splitMessages :: [Transmission BrokerMsg] -> Transmission BrokerMsg -> ([Transmission BrokerMsg], Transmission BrokerMsg)
-        splitMessages msgs t@(corrId, entId, cmd) = case cmd of
-          -- replace MSG response with OK, accumulating MSG in a separate list.
-          MSG {} -> ((CorrId "", entId, cmd) : msgs, (corrId, entId, OK))
-          _ -> (msgs, t)
-        tSend :: NonEmpty (Transmission BrokerMsg) -> IO ()
-        tSend = void . tPut h . L.map (\t -> Right (Nothing, encodeTransmission params t))
 
 disconnectTransport :: Transport c => THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
 disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
@@ -601,8 +581,29 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
   forever $
     atomically (readTBQueue rcvQ)
       >>= mapM processCommand
-      >>= atomically . writeTBQueue sndQ
+      >>= liftIO . sendTransmissions
   where
+    sendTransmissions :: NonEmpty (Transmission BrokerMsg) -> IO ()
+    sendTransmissions ts
+      | L.length ts <= 2 = tSend ts
+      | otherwise = do
+          let (msgs, ts') = mapAccumR splitMessages [] ts
+          -- If the request had batched subscriptions (L.length ts > 2)
+          -- this will reply OK to all SUBs in the first batched transmission,
+          -- to reduce client timeouts.
+          tSend ts'
+          -- After that all messages will be sent in separate transmissions,
+          -- without any client response timeouts, and allowing them to interleave
+          -- with other requests responses.
+          unless (null msgs) $ void . forkIO $ forM_ msgs $ \msg -> tSend [msg]
+      where
+        splitMessages :: [Transmission BrokerMsg] -> Transmission BrokerMsg -> ([Transmission BrokerMsg], Transmission BrokerMsg)
+        splitMessages msgs t@(corrId, entId, cmd) = case cmd of
+          -- replace MSG response with OK, accumulating MSG in a separate list.
+          MSG {} -> ((CorrId "", entId, cmd) : msgs, (corrId, entId, OK))
+          _ -> (msgs, t)
+        tSend :: NonEmpty (Transmission BrokerMsg) -> IO ()
+        tSend = atomically . writeTBQueue sndQ
     processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Transmission BrokerMsg)
     processCommand (qr_, (corrId, queueId, cmd)) = do
       st <- asks queueStore
@@ -989,9 +990,10 @@ saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessag
             >>= mapM_ (B.hPutStrLn h . strEncode . MLRv3 rId)
 
 restoreServerMessages :: M Int
-restoreServerMessages = asks (storeMsgsFile . config) >>= \case
-  Just f -> ifM (doesFileExist f) (restoreMessages f) (pure 0)
-  Nothing -> pure 0
+restoreServerMessages =
+  asks (storeMsgsFile . config) >>= \case
+    Just f -> ifM (doesFileExist f) (restoreMessages f) (pure 0)
+    Nothing -> pure 0
   where
     restoreMessages f = do
       logInfo $ "restoring messages from file " <> T.pack f
