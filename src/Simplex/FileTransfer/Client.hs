@@ -99,11 +99,11 @@ defaultXFTPClientConfig =
 
 getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
 getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} disconnected = runExceptT $ do
-  let tcConfig = (transportClientConfig xftpNetworkConfig) {alpn = clientALPN}
-      http2Config = xftpHTTP2Config tcConfig config
-      username = proxyUsername transportSession
+  let username = proxyUsername transportSession
       ProtocolServer _ host port keyHash = srv
   useHost <- liftEither $ chooseTransportHost xftpNetworkConfig host
+  let tcConfig = (transportClientConfig xftpNetworkConfig useHost) {alpn = clientALPN}
+      http2Config = xftpHTTP2Config tcConfig config
   clientVar <- newTVarIO Nothing
   let usePort = if null port then "443" else port
       clientDisconnected = readTVarIO clientVar >>= mapM_ disconnected
