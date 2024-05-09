@@ -53,7 +53,8 @@ import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM
-import Data.List (intercalate)
+import Data.List (intercalate, mapAccumR)
+import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing)
@@ -482,16 +483,29 @@ send :: Transport c => THandleSMP c 'TServer -> Client -> IO ()
 send h@THandle {params} Client {sndQ, sessionId, sndActiveAt} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ do
-    ts <- atomically $ L.sortWith tOrder <$> readTBQueue sndQ
-    -- TODO we can authorize responses as well
-    void . liftIO . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
+    sendTransmissions =<< atomically (readTBQueue sndQ)
     atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
   where
-    tOrder :: Transmission BrokerMsg -> Int
-    tOrder (_, _, cmd) = case cmd of
-      MSG {} -> 0
-      NMSG {} -> 0
-      _ -> 1
+    sendTransmissions :: NonEmpty (Transmission BrokerMsg) -> IO ()
+    sendTransmissions ts
+      | L.length ts <= 2 = tSend ts
+      | otherwise = do
+          let (msgs, ts') = mapAccumR splitMessages [] ts
+          -- If the request had batched subscriptions (L.length ts > 2)
+          -- this will reply OK to all SUBs in the first batched transmission,
+          -- to reduce client timeouts.
+          tSend ts'
+          -- After that all messages will be sent in separate transmissions,
+          -- without any client response timeouts.
+          mapM_ tSend (L.nonEmpty msgs)
+      where
+        splitMessages :: [Transmission BrokerMsg] -> Transmission BrokerMsg -> ([Transmission BrokerMsg], Transmission BrokerMsg)
+        splitMessages msgs t@(corrId, entId, cmd) = case cmd of
+          -- replace MSG response with OK, accumulating MSG in a separate list.
+          MSG {} -> ((CorrId "", entId, cmd) : msgs, (corrId, entId, OK))
+          _ -> (msgs, t)
+        tSend :: NonEmpty (Transmission BrokerMsg) -> IO ()
+        tSend = void . tPut h . L.map (\t -> Right (Nothing, encodeTransmission params t))
 
 disconnectTransport :: Transport c => THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
 disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
