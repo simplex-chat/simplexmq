@@ -14,11 +14,12 @@ import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Maybe (fromMaybe)
+import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Network.Socket (HostName)
 import Options.Applicative
-import Simplex.Messaging.Client (ProtocolClientConfig (..))
+import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -132,7 +133,7 @@ smpServerCLI cfgPath logPath =
                    )
                 <> "\n\n\
                    \# control_port_admin_password:\n\
-                   \# control_port_user_password:\n\
+                   \# control_port_user_password:\n\n\
                    \[TRANSPORT]\n\
                    \# host is only used to print server address on start\n"
                 <> ("host: " <> host <> "\n")
@@ -140,6 +141,17 @@ smpServerCLI cfgPath logPath =
                 <> "log_tls_errors: off\n\
                    \websockets: off\n\
                    \# control_port: 5224\n\n\
+                   \[PROXY]\n\
+                   \# Network configuration for SMP proxy client.\n\
+                   \# `host_mode` can be 'public' (default) or 'onion'.\n\
+                   \# It defines prefferred hostname for server address with multiple hostnames\n\
+                   \# host_mode: public\n\
+                   \# required_host_mode: off\n\n\
+                   \# It is recommended to run SOCKS proxy for outgoing requests on a non-standard port.\n\
+                   \# socks_proxy: localhost:9050\n\n\
+                   \# `socks_mode` can be 'onion' for SOCKS proxy to be used for .onion destination hosts only (default)\n\
+                   \# or 'always' to be used for all destination hosts (can be used if it is .onion server).\n\
+                   \# socks_mode: onion\n\n\
                    \[INACTIVE_CLIENTS]\n\
                    \# TTL and interval to check inactive clients\n\
                    \disconnect: off\n"
@@ -218,9 +230,33 @@ smpServerCLI cfgPath logPath =
                     alpn = Just supportedSMPHandshakes
                   },
               controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini,
-              smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion, agreeSecret = True}},
-              allowSMPProxy = True -- TODO: "get from INI"
+              smpAgentCfg =
+                defaultSMPClientAgentConfig
+                  { smpCfg =
+                      (smpCfg defaultSMPClientAgentConfig)
+                        { serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion,
+                          agreeSecret = True,
+                          networkConfig =
+                            defaultNetworkConfig
+                              { socksProxy = either error id <$> strDecodeIni "PROXY" "socks_proxy" ini,
+                                socksMode = either (const SMOnion) textToSocksMode $ lookupValue "PROXY" "socks_mode" ini,
+                                hostMode = either (const HMPublic) textToHostMode $ lookupValue "PROXY" "host_mode" ini,
+                                requiredHostMode = fromMaybe False $ iniOnOff "PROXY" "required_host_mode" ini
+                              }
+                        }
+                  },
+              allowSMPProxy = True
             }
+        textToSocksMode :: Text -> SocksMode
+        textToSocksMode = \case
+          "always" -> SMAlways
+          "onion" -> SMOnion
+          s -> error . T.unpack $ "Invalid socks_mode: " <> s
+        textToHostMode :: Text -> HostMode
+        textToHostMode = \case
+          "public" -> HMPublic
+          "onion" -> HMOnionViaSocks
+          s -> error . T.unpack $ "Invalid host_mode: " <> s
 
 data CliCommand
   = Init InitOptions

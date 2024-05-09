@@ -69,6 +69,7 @@ module Simplex.Messaging.Client
     NetworkConfig (..),
     TransportSessionMode (..),
     HostMode (..),
+    SocksMode (..),
     SMPProxyMode (..),
     SMPProxyFallback (..),
     defaultClientConfig,
@@ -214,10 +215,20 @@ data HostMode
     HMPublic
   deriving (Eq, Show)
 
+data SocksMode
+  = -- | always use SOCKS proxy when enabled
+    SMAlways
+  | -- | use SOCKS proxy only for .onion hosts when no public host is available
+    -- This mode is used in SMP proxy to minimize SOCKS proxy usage.
+    SMOnion
+  deriving (Eq, Show)
+
 -- | network configuration for the client
 data NetworkConfig = NetworkConfig
   { -- | use SOCKS5 proxy
     socksProxy :: Maybe SocksProxy,
+    -- | when to use SOCKS proxy
+    socksMode :: SocksMode,
     -- | determines critera which host is chosen from the list
     hostMode :: HostMode,
     -- | if above criteria is not met, if the below setting is True return error, otherwise use the first host
@@ -267,6 +278,7 @@ defaultNetworkConfig :: NetworkConfig
 defaultNetworkConfig =
   NetworkConfig
     { socksProxy = Nothing,
+      socksMode = SMAlways,
       hostMode = HMOnionViaSocks,
       requiredHostMode = False,
       sessionMode = TSMUser,
@@ -282,9 +294,14 @@ defaultNetworkConfig =
       logTLSErrors = False
     }
 
-transportClientConfig :: NetworkConfig -> TransportClientConfig
-transportClientConfig NetworkConfig {socksProxy, tcpConnectTimeout, tcpKeepAlive, logTLSErrors} =
-  TransportClientConfig {socksProxy, tcpConnectTimeout, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, alpn = Nothing}
+transportClientConfig :: NetworkConfig -> TransportHost -> TransportClientConfig
+transportClientConfig NetworkConfig {socksProxy, socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors} host =
+  TransportClientConfig {socksProxy = useSocksProxy socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, alpn = Nothing}
+  where
+    useSocksProxy SMAlways = socksProxy
+    useSocksProxy SMOnion = case host of
+      THOnionHost _ -> socksProxy
+      _ -> Nothing
 {-# INLINE transportClientConfig #-}
 
 -- | protocol client configuration.
@@ -298,7 +315,7 @@ data ProtocolClientConfig v = ProtocolClientConfig
     clientALPN :: Maybe [ALPN],
     -- | client-server protocol version range
     serverVRange :: VersionRange v,
-    -- | agree shared session secret (used in SMP proxy)
+    -- | agree shared session secret (used in SMP proxy for additional encryption layer)
     agreeSecret :: Bool
   }
 
@@ -411,7 +428,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     runClient :: (ServiceName, ATransport) -> TransportHost -> PClient v err msg -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
     runClient (port', ATransport t) useHost c = do
       cVar <- newEmptyTMVarIO
-      let tcConfig = (transportClientConfig networkConfig) {alpn = clientALPN}
+      let tcConfig = (transportClientConfig networkConfig useHost) {alpn = clientALPN}
           username = proxyUsername transportSession
       action <-
         async $
@@ -993,6 +1010,8 @@ authTransmission thAuth pKey_ nonce t = traverse authenticate pKey_
     sign pk = Right $ TASignature $ C.ASignature (C.sAlgorithm @a) (C.sign' pk t)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "HM") ''HostMode)
+
+$(J.deriveJSON (enumJSON $ dropPrefix "SM") ''SocksMode)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "TSM") ''TransportSessionMode)
 
