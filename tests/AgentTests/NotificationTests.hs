@@ -106,7 +106,7 @@ notificationTests t = do
   describe "Managing notification subscriptions" $ do
     describe "should create notification subscription for existing connection" $
       testNtfMatrix t testNotificationSubscriptionExistingConnection
-    describe "should create notification subscription for new connection" $
+    fdescribe "should create notification subscription for new connection" $
       testNtfMatrix t testNotificationSubscriptionNewConnection
     it "should change notifications mode" $
       withSmpServer t $
@@ -398,38 +398,63 @@ testNotificationSubscriptionNewConnection :: APNSMockServer -> AgentClient -> Ag
 testNotificationSubscriptionNewConnection APNSMockServer {apnsQ} alice bob =
   runRight_ $ do
     -- alice registers notification token
+    liftIO $ print 1
     DeviceToken {} <- registerTestToken alice "abcd" NMInstant apnsQ
     -- bob registers notification token
+    liftIO $ print 2
     DeviceToken {} <- registerTestToken bob "bcde" NMInstant apnsQ
     -- establish connection
     liftIO $ threadDelay 50000
+    liftIO $ print 3
     (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
     liftIO $ threadDelay 1000000
+    liftIO $ print 4
     aliceId <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     liftIO $ threadDelay 750000
+    liftIO $ print 5
     void $ messageNotificationData alice apnsQ
+    liftIO $ print 6
     ("", _, CONF confId _ "bob's connInfo") <- get alice
+    liftIO $ print 7
     liftIO $ threadDelay 500000
+    liftIO $ print 8
     allowConnection alice bobId confId "alice's connInfo"
+    liftIO $ print 9
     void $ messageNotificationData bob apnsQ
+    liftIO $ print 10
     get bob ##> ("", aliceId, INFO "alice's connInfo")
+    liftIO $ print 11
     void $ messageNotificationData alice apnsQ
+    liftIO $ print 12
     get alice ##> ("", bobId, CON)
+    liftIO $ print 13
     void $ messageNotificationData bob apnsQ
+    liftIO $ print 14
     get bob ##> ("", aliceId, CON)
     -- bob sends message
+    liftIO $ print 15
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
+    liftIO $ print 16
     get bob ##> ("", aliceId, SENT $ baseId + 1)
+    liftIO $ print 17
     void $ messageNotificationData alice apnsQ
+    liftIO $ print 18
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
+    liftIO $ print 19
     ackMessage alice bobId (baseId + 1) Nothing
     -- alice sends message
+    liftIO $ print 20
     2 <- msgId <$> sendMessage alice bobId (SMP.MsgFlags True) "hey there"
+    liftIO $ print 21
     get alice ##> ("", bobId, SENT $ baseId + 2)
+    liftIO $ print 22
     void $ messageNotificationData bob apnsQ
+    liftIO $ print 23
     get bob =##> \case ("", c, Msg "hey there") -> c == aliceId; _ -> False
+    liftIO $ print 24
     ackMessage bob aliceId (baseId + 2) Nothing
     -- no unexpected notifications should follow
+    liftIO $ print 25
     noNotification apnsQ
   where
     baseId = 3
