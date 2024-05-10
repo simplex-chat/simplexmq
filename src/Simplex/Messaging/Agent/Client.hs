@@ -1026,10 +1026,10 @@ withSMPClient c q cmdStr action = do
   tSess <- liftIO $ mkSMPTransportSession c q
   withLogClient c tSess (queueId q) cmdStr $ action . connectedClient
 
-sendOrProxySMPMessage :: AgentClient -> UserId -> SMPServer -> ByteString -> Maybe SMP.SndPrivateAuthKey -> SMP.SenderId -> MsgFlags -> SMP.MsgBody -> AM DeliveryPath
+sendOrProxySMPMessage :: AgentClient -> UserId -> SMPServer -> ByteString -> Maybe SMP.SndPrivateAuthKey -> SMP.SenderId -> MsgFlags -> SMP.MsgBody -> AM (Maybe SMPServer)
 sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
   sess <- liftIO $ mkTransportSession c userId destSrv senderId
-  ifM (atomically shouldUseProxy) (sendViaProxy sess) (sendDirectly sess)
+  ifM (atomically shouldUseProxy) (sendViaProxy sess) (sendDirectly sess $> Nothing)
   where
     shouldUseProxy = do
       cfg <- getNetworkConfig c
@@ -1050,7 +1050,7 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
     sendViaProxy destSess = do
       r <- tryAgentError . withProxySession c destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess) -> do
         liftClient SMP (clientServer smp) (proxySMPMessage smp proxySess spKey_ senderId msgFlags msg) >>= \case
-          Right () -> pure $ proxyDeliveryPath smp destSrv proxySess
+          Right () -> pure . Just $ protocolClientServer' smp
           Left proxyErr ->
             throwE
               PROXY
@@ -1061,12 +1061,11 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
       case r of
         Right r' -> pure r'
         Left e
-          | serverHostError e -> ifM (atomically directAllowed) (sendDirectly destSess) (throwE e)
+          | serverHostError e -> ifM (atomically directAllowed) (sendDirectly destSess $> Nothing) (throwE e)
           | otherwise -> throwE e
     sendDirectly tSess =
-      withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) -> do
+      withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) ->
         liftClient SMP (clientServer smp) $ sendSMPMessage smp spKey_ senderId msgFlags msg
-        pure $ directDeliveryPath smp
 
 ipAddressProtected :: NetworkConfig -> ProtocolServer p -> Bool
 ipAddressProtected NetworkConfig {socksProxy, hostMode} (ProtocolServer _ hosts _ _) = do
@@ -1411,14 +1410,14 @@ logSecret :: ByteString -> ByteString
 logSecret bs = encode $ B.take 3 bs
 {-# INLINE logSecret #-}
 
-sendConfirmation :: AgentClient -> SndQueue -> ByteString -> AM DeliveryPath
+sendConfirmation :: AgentClient -> SndQueue -> ByteString -> AM (Maybe SMPServer)
 sendConfirmation c sq@SndQueue {userId, server, sndId, sndPublicKey = Just sndPublicKey, e2ePubKey = e2ePubKey@Just {}} agentConfirmation = do
   let clientMsg = SMP.ClientMessage (SMP.PHConfirmation sndPublicKey) agentConfirmation
   msg <- agentCbEncrypt sq e2ePubKey $ smpEncode clientMsg
   sendOrProxySMPMessage c userId server "<CONF>" Nothing sndId (MsgFlags {notification = True}) msg
 sendConfirmation _ _ _ = throwError $ INTERNAL "sendConfirmation called without snd_queue public key(s) in the database"
 
-sendInvitation :: AgentClient -> UserId -> Compatible SMPQueueInfo -> Compatible VersionSMPA -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> AM DeliveryPath
+sendInvitation :: AgentClient -> UserId -> Compatible SMPQueueInfo -> Compatible VersionSMPA -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> AM (Maybe SMPServer)
 sendInvitation c userId (Compatible (SMPQueueInfo v SMPQueueAddress {smpServer, senderId, dhPublicKey})) (Compatible agentVersion) connReq connInfo = do
   msg <- mkInvitation
   sendOrProxySMPMessage c userId smpServer "<INV>" Nothing senderId (MsgFlags {notification = True}) msg
@@ -1505,7 +1504,7 @@ deleteQueue c rq@RcvQueue {rcvId, rcvPrivateKey} = do
 deleteQueues :: AgentClient -> [RcvQueue] -> AM' [(RcvQueue, Either AgentErrorType ())]
 deleteQueues = sendTSessionBatches "DEL" 90 id $ sendBatch deleteSMPQueues
 
-sendAgentMessage :: AgentClient -> SndQueue -> MsgFlags -> ByteString -> AM DeliveryPath
+sendAgentMessage :: AgentClient -> SndQueue -> MsgFlags -> ByteString -> AM (Maybe SMPServer)
 sendAgentMessage c sq@SndQueue {userId, server, sndId, sndPrivateKey} msgFlags agentMsg = do
   let clientMsg = SMP.ClientMessage SMP.PHEmpty agentMsg
   msg <- agentCbEncrypt sq Nothing $ smpEncode clientMsg

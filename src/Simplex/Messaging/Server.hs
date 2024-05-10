@@ -68,7 +68,7 @@ import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), forwardSMPMessage, smpProxyError, transportHost')
+import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), forwardSMPMessage, smpProxyError)
 import Simplex.Messaging.Client.Agent (SMPClientAgent (..), SMPClientAgentEvent (..), getSMPServerClient', lookupSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -629,11 +629,10 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                 Left err -> ERR $ smpProxyError err
                 Right smp ->
                   let THandleParams {sessionId = srvSessId, thVersion, thAuth} = thParams smp
-                      host = transportHost' smp
                       vr = supportedServerSMPRelayVRange -- TODO this should be destination relay version range
                    in if thVersion >= sendingProxySMPVersion
                         then case thAuth of
-                          Just THAuthClient {serverCertKey} -> PKEY host srvSessId vr serverCertKey
+                          Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
                           Nothing -> ERR $ transportErr TENoServerAuth
                         else ERR $ transportErr TEVersion
       PFWD pubKey encBlock -> do

@@ -27,9 +27,9 @@ import GHC.Stack (withFrozenCallStack)
 import Network.HTTP.Types (urlEncode)
 import SMPAgentClient
 import SMPClient (testKeyHash, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
-import Simplex.Messaging.Agent.Protocol hiding (CONF, INFO, MID, REQ, SENT)
+import Simplex.Messaging.Agent.Protocol hiding (MID, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
-import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
+import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOn, pattern IKPQOff, pattern PQEncOn, pattern PQSupportOn, pattern PQSupportOff)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType (..))
@@ -225,19 +225,19 @@ testDuplexConnection' (alice, aPQ) (bob, bPQ) = do
   alice <# ("", "bob", CON pq)
   -- message IDs 1 to 3 get assigned to control messages, so first MSG is assigned ID 4
   alice #: ("3", "bob", "SEND F :hello") #> ("3", "bob", A.MID 4 pq)
-  alice <#= \case ("", "bob", SENT 4) -> True; _ -> False
+  alice <# ("", "bob", SENT 4)
   bob <#= \case ("", "alice", Msg' 4 pq' "hello") -> pq == pq'; _ -> False
   bob #: ("12", "alice", "ACK 4") #> ("12", "alice", OK)
   alice #: ("4", "bob", "SEND F :how are you?") #> ("4", "bob", A.MID 5 pq)
-  alice <#= \case ("", "bob", SENT 5) -> True; _ -> False
+  alice <# ("", "bob", SENT 5)
   bob <#= \case ("", "alice", Msg' 5 pq' "how are you?") -> pq == pq'; _ -> False
   bob #: ("13", "alice", "ACK 5") #> ("13", "alice", OK)
   bob #: ("14", "alice", "SEND F 9\nhello too") #> ("14", "alice", A.MID 6 pq)
-  bob <#= \case ("", "alice", SENT 6) -> True; _ -> False
+  bob <# ("", "alice", SENT 6)
   alice <#= \case ("", "bob", Msg' 6 pq' "hello too") -> pq == pq'; _ -> False
   alice #: ("3a", "bob", "ACK 6") #> ("3a", "bob", OK)
   bob #: ("15", "alice", "SEND F 9\nmessage 1") #> ("15", "alice", A.MID 7 pq)
-  bob <#= \case ("", "alice", SENT 7) -> True; _ -> False
+  bob <# ("", "alice", SENT 7)
   alice <#= \case ("", "bob", Msg' 7 pq' "message 1") -> pq == pq'; _ -> False
   alice #: ("4a", "bob", "ACK 7") #> ("4a", "bob", OK)
   alice #: ("5", "bob", "OFF") #> ("5", "bob", OK)
@@ -263,19 +263,19 @@ testDuplexConnRandomIds' (alice, aPQ) (bob, bPQ) = do
   bob <# ("", aliceConn, CON pq)
   alice <# ("", bobConn, CON pq)
   alice #: ("2", bobConn, "SEND F :hello") #> ("2", bobConn, A.MID 4 pq)
-  alice <#= \case ("", c, SENT 4) -> c == bobConn; _ -> False
+  alice <# ("", bobConn, SENT 4)
   bob <#= \case ("", c, Msg' 4 pq' "hello") -> c == aliceConn && pq == pq'; _ -> False
   bob #: ("12", aliceConn, "ACK 4") #> ("12", aliceConn, OK)
   alice #: ("3", bobConn, "SEND F :how are you?") #> ("3", bobConn, A.MID 5 pq)
-  alice <#= \case ("", c, SENT 5) -> c == bobConn; _ -> False
+  alice <# ("", bobConn, SENT 5)
   bob <#= \case ("", c, Msg' 5 pq' "how are you?") -> c == aliceConn && pq == pq'; _ -> False
   bob #: ("13", aliceConn, "ACK 5") #> ("13", aliceConn, OK)
   bob #: ("14", aliceConn, "SEND F 9\nhello too") #> ("14", aliceConn, A.MID 6 pq)
-  bob <#= \case ("", c, SENT 6) -> c == aliceConn; _ -> False
+  bob <# ("", aliceConn, SENT 6)
   alice <#= \case ("", c, Msg' 6 pq' "hello too") -> c == bobConn && pq == pq'; _ -> False
   alice #: ("3a", bobConn, "ACK 6") #> ("3a", bobConn, OK)
   bob #: ("15", aliceConn, "SEND F 9\nmessage 1") #> ("15", aliceConn, A.MID 7 pq)
-  bob <#= \case ("", c, SENT 7) -> c == aliceConn; _ -> False
+  bob <# ("", aliceConn, SENT 7)
   alice <#= \case ("", c, Msg' 7 pq' "message 1") -> c == bobConn && pq == pq'; _ -> False
   alice #: ("4a", bobConn, "ACK 7") #> ("4a", bobConn, OK)
   alice #: ("5", bobConn, "OFF") #> ("5", bobConn, OK)
@@ -301,7 +301,7 @@ testContactConnection (alice, aPQ) (bob, bPQ) (tom, tPQ) = do
   alice <# ("", "bob", CON abPQ)
   bob <# ("", "alice", CON abPQ)
   alice #: ("3", "bob", "SEND F :hi") #> ("3", "bob", A.MID 4 abPQ)
-  alice <#= \case ("", "bob", SENT 4) -> True; _ -> False
+  alice <# ("", "bob", SENT 4)
   bob <#= \case ("", "alice", Msg' 4 pq' "hi") -> pq' == abPQ; _ -> False
   bob #: ("13", "alice", "ACK 4") #> ("13", "alice", OK)
 
@@ -316,7 +316,7 @@ testContactConnection (alice, aPQ) (bob, bPQ) (tom, tPQ) = do
   alice <# ("", "tom", CON atPQ)
   tom <# ("", "alice", CON atPQ)
   alice #: ("5", "tom", "SEND F :hi there") #> ("5", "tom", A.MID 4 atPQ)
-  alice <#= \case ("", "tom", SENT 4) -> True; _ -> False
+  alice <# ("", "tom", SENT 4)
   tom <#= \case ("", "alice", Msg' 4 pq' "hi there") -> pq' == atPQ; _ -> False
   tom #: ("23", "alice", "ACK 4") #> ("23", "alice", OK)
 
@@ -341,7 +341,7 @@ testContactConnRandomIds (alice, aPQ) (bob, bPQ) = do
   bob <# ("", aliceConn, CON pq)
 
   alice #: ("3", bobConn, "SEND F :hi") #> ("3", bobConn, A.MID 4 pq)
-  alice <#= \case ("", c, SENT 4) -> c == bobConn; _ -> False
+  alice <# ("", bobConn, SENT 4)
   bob <#= \case ("", c, Msg' 4 pq' "hi") -> c == aliceConn && pq == pq'; _ -> False
   bob #: ("13", aliceConn, "ACK 4") #> ("13", aliceConn, OK)
 
@@ -361,17 +361,17 @@ testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
 testSubscription _ alice1 alice2 bob = do
   (alice1, "alice") `connect` (bob, "bob")
   bob #: ("12", "alice", "SEND F 5\nhello") #> ("12", "alice", MID 4)
-  bob <#= \case ("", "alice", SENT 4) -> True; _ -> False
+  bob <# ("", "alice", SENT 4)
   alice1 <#= \case ("", "bob", Msg "hello") -> True; _ -> False
   alice1 #: ("1", "bob", "ACK 4") #> ("1", "bob", OK)
   bob #: ("13", "alice", "SEND F 11\nhello again") #> ("13", "alice", MID 5)
-  bob <#= \case ("", "alice", SENT 5) -> True; _ -> False
+  bob <# ("", "alice", SENT 5)
   alice1 <#= \case ("", "bob", Msg "hello again") -> True; _ -> False
   alice1 #: ("2", "bob", "ACK 5") #> ("2", "bob", OK)
   alice2 #: ("21", "bob", "SUB") #> ("21", "bob", OK)
   alice1 <# ("", "bob", END)
   bob #: ("14", "alice", "SEND F 2\nhi") #> ("14", "alice", MID 6)
-  bob <#= \case ("", "alice", SENT 6) -> True; _ -> False
+  bob <# ("", "alice", SENT 6)
   alice2 <#= \case ("", "bob", Msg "hi") -> True; _ -> False
   alice2 #: ("22", "bob", "ACK 6") #> ("22", "bob", OK)
   alice1 #:# "nothing else should be delivered to alice1"
@@ -391,7 +391,7 @@ testMsgDeliveryServerRestart (alice, aPQ) (bob, bPQ) = do
   withServer $ do
     connect' (alice, "alice", aPQ) (bob, "bob", bPQ)
     bob #: ("1", "alice", "SEND F 2\nhi") #> ("1", "alice", A.MID 4 pq)
-    bob <#= \case ("", "alice", SENT 4) -> True; _ -> False
+    bob <# ("", "alice", SENT 4)
     alice <#= \case ("", "bob", Msg' _ pq' "hi") -> pq == pq'; _ -> False
     alice #: ("11", "bob", "ACK 4") #> ("11", "bob", OK)
     alice #:# "nothing else delivered before the server is killed"
@@ -403,7 +403,7 @@ testMsgDeliveryServerRestart (alice, aPQ) (bob, bPQ) = do
   alice #:# "nothing else delivered before the server is restarted"
 
   withServer $ do
-    bob <#= \case ("", "alice", SENT 5) -> True; _ -> False
+    bob <# ("", "alice", SENT 5)
     alice <#. ("", "", UP server ["bob"])
     alice <#= \case ("", "bob", Msg' _ pq' "hello again") -> pq == pq'; _ -> False
     alice #: ("12", "bob", "ACK 5") #> ("12", "bob", OK)
@@ -435,7 +435,7 @@ testServerConnectionAfterError t _ = do
         bob <#=? \case ("", "alice", APC _ (Msg "hello")) -> True; ("", "", APC _ (UP s ["alice"])) -> s == server; _ -> False
         bob #: ("2", "alice", "ACK 4") #> ("2", "alice", OK)
         alice #: ("1", "bob", "SEND F 11\nhello again") #> ("1", "bob", MID 5)
-        alice <#= \case ("", "bob", SENT 5) -> True; _ -> False
+        alice <# ("", "bob", SENT 5)
         bob <#= \case ("", "alice", Msg "hello again") -> True; _ -> False
 
   removeFile testStoreLogFile
@@ -456,7 +456,7 @@ testMsgDeliveryAgentRestart t bob = do
     withServer $ do
       connect (bob, "bob") (alice, "alice")
       alice #: ("1", "bob", "SEND F 5\nhello") #> ("1", "bob", MID 4)
-      alice <#= \case ("", "bob", SENT 4) -> True; _ -> False
+      alice <# ("", "bob", SENT 4)
       bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
       bob #: ("11", "alice", "ACK 4") #> ("11", "alice", OK)
       bob #:# "nothing else delivered before the server is down"
@@ -470,8 +470,9 @@ testMsgDeliveryAgentRestart t bob = do
     withServer $ do
       tPutRaw alice ("3", "bob", "SUB")
       alice <#= \case
-        ("3", "bob", OK) -> True
-        ("", "bob", SENT 5) -> True
+        (corrId, "bob", cmd) ->
+          (corrId == "3" && cmd == OK)
+            || (corrId == "" && cmd == SENT 5)
         _ -> False
       bob <#=? \case ("", "alice", APC _ (Msg "hello again")) -> True; ("", "", APC _ (UP s ["alice"])) -> s == server; _ -> False
       bob <#=? \case ("", "alice", APC _ (Msg "hello again")) -> True; ("", "", APC _ (UP s ["alice"])) -> s == server; _ -> False
@@ -500,11 +501,11 @@ testConcurrentMsgDelivery _ alice bob = do
   -- the first connection should not be blocked by the second one
   sendMessage (alice, "alice") (bob, "bob") "hello"
   -- alice #: ("2", "bob", "SEND F :hello") #> ("2", "bob", MID 1)
-  -- alice <#= \case ("", "bob", SENT 1) -> True; _ -> False
+  -- alice <# ("", "bob", SENT 1)
   -- bob <#= \case ("", "alice", Msg "hello") -> True; _ -> False
   -- bob #: ("12", "alice", "ACK 1") #> ("12", "alice", OK)
   bob #: ("14", "alice", "SEND F 9\nhello too") #> ("14", "alice", MID 5)
-  bob <#= \case ("", "alice", SENT 5) -> True; _ -> False
+  bob <# ("", "alice", SENT 5)
   -- if delivery is blocked it won't go further
   alice <#= \case ("", "bob", Msg "hello too") -> True; _ -> False
   alice #: ("3", "bob", "ACK 5") #> ("3", "bob", OK)
@@ -522,7 +523,7 @@ testMsgDeliveryQuotaExceeded _ alice bob = do
 
   alice #: ("1", "bob2", "SEND F :hello") #> ("1", "bob2", MID 4)
   -- if delivery is blocked it won't go further
-  alice <#= \case ("", "bob2", SENT 4) -> True; _ -> False
+  alice <# ("", "bob2", SENT 4)
 
 testResumeDeliveryQuotaExceeded :: Transport c => TProxy c -> c -> c -> IO ()
 testResumeDeliveryQuotaExceeded _ alice bob = do
@@ -546,10 +547,10 @@ testResumeDeliveryQuotaExceeded _ alice bob = do
   bob <#= \case ("", "alice", Msg "message 4") -> True; _ -> False
   bob #: ("4", "alice", "ACK 7") #> ("4", "alice", OK)
   inAnyOrder
-    (tGetAgent alice)
-    [ \case ("", c, Right (SENT 8)) -> c == "bob"; _ -> False,
-      \case ("", c, Right QCONT) -> c == "bob"; _ -> False
-    ]
+      (tGetAgent alice)
+      [ \case ("", c, Right (SENT 8)) -> c == "bob"; _ -> False,
+        \case ("", c, Right QCONT) -> c == "bob"; _ -> False
+      ]
   bob <#= \case ("", "alice", Msg "over quota") -> True; _ -> False
   -- message 8 is skipped because of alice agent sending "QCONT" message
   bob #: ("5", "alice", "ACK 9") #> ("5", "alice", OK)
@@ -579,7 +580,7 @@ enableKEMStr _ = ""
 
 pqConnModeStr :: InitialKeys -> ByteString
 pqConnModeStr (IKNoPQ PQSupportOff) = ""
-pqConnModeStr pq = " " <> strEncode pq
+pqConnModeStr pq =  " " <> strEncode pq
 
 sendMessage :: Transport c => (c, ConnId) -> (c, ConnId) -> ByteString -> IO ()
 sendMessage (h1, name1) (h2, name2) msg = do
