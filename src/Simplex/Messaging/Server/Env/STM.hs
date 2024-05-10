@@ -128,7 +128,7 @@ data Client = Client
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
-    sndMsgQ :: TBQueue (Transmission BrokerMsg), -- MSGs are sent one by one
+    msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)), -- MSGs are sent one by one
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
     thVersion :: VersionSMP,
@@ -162,13 +162,13 @@ newClient nextClientId qSize thVersion sessionId createdAt = do
   ntfSubscriptions <- TM.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
-  sndMsgQ <- newTBQueue qSize
+  msgQ <- newTBQueue qSize
   endThreads <- newTVar IM.empty
   endThreadSeq <- newTVar 0
   connected <- newTVar True
   rcvActiveAt <- newTVar createdAt
   sndActiveAt <- newTVar createdAt
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, sndMsgQ, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
+  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do

@@ -423,8 +423,8 @@ runClientTransport th@THandle {params = THandleParams {thVersion, sessionId}} = 
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
   labelMyThread . B.unpack $ "client $" <> encode sessionId
-  sndLock <- newMVar th -- put TH under a fair lock to interleave messages and command responses
-  raceAny_ ([liftIO $ send sndLock c, liftIO $ sendMsg sndLock c, client c s, receive th c] <> disconnectThread_ c expCfg)
+  thLock <- newMVar th -- put TH under a fair lock to interleave messages and command responses
+  raceAny_ ([liftIO $ sendResp c thLock, liftIO $ sendMsg c thLock, client c s, receive th c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
   where
     disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (rcvActiveAt c) (sndActiveAt c) expCfg (noSubscriptions c)]
@@ -480,23 +480,21 @@ receive th@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActi
               VRFailed -> Left (corrId, queueId, ERR AUTH)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
-send :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> IO ()
-send thLock Client {sndQ, sessionId, sndActiveAt} = do
-  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
-  forever $ do
-    ts <- atomically $ readTBQueue sndQ
-    withMVar thLock $ \h@THandle {params} ->
-      void . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
-    atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
+sendResp :: Transport c => Client -> MVar (THandleSMP c 'TServer) -> IO ()
+sendResp c@Client {sndQ, sessionId} thLock = do
+  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " sendResp"
+  forever $ atomically (readTBQueue sndQ) >>= tSend c thLock
 
-sendMsg :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> IO ()
-sendMsg thLock Client {sndMsgQ, sessionId, sndActiveAt} = do
+sendMsg :: Transport c => Client -> MVar (THandleSMP c 'TServer) -> IO ()
+sendMsg c@Client {msgQ, sessionId} thLock = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " sendMsg"
-  forever $ do
-    t <- atomically $ readTBQueue sndMsgQ
-    withMVar thLock $ \h@THandle {params} ->
-      void $ tPut h [Right (Nothing, encodeTransmission params t)]
-    atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
+  forever $ atomically (readTBQueue msgQ) >>= mapM_ (\t -> tSend c thLock [t])
+
+tSend :: Transport c => Client -> MVar (THandleSMP c 'TServer) -> NonEmpty (Transmission BrokerMsg) -> IO ()
+tSend Client {sndActiveAt} thLock ts = do
+  withMVar thLock $ \h@THandle {params} ->
+    void . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
+  atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
 
 disconnectTransport :: Transport c => THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
 disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
@@ -587,7 +585,7 @@ dummyKeyX25519 :: C.PublicKey 'C.X25519
 dummyKeyX25519 = "MCowBQYDK2VuAyEA4JGSMYht18H4mas/jHeBwfcM7jLwNYJNOAhi2/g4RXg="
 
 client :: Client -> Server -> M ()
-client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sndMsgQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
+client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
   forever $
     atomically (readTBQueue rcvQ)
@@ -598,7 +596,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sndMsgQ, sessio
     sendTransmissions ts
       | L.length ts <= 2 = atomically $ writeTBQueue sndQ ts
       | otherwise = do
-          let (msgs, ts') = mapAccumR splitMessages [] ts
+          let (msgs_, ts') = mapAccumR splitMessages [] ts
           -- If the request had batched subscriptions (L.length ts > 2)
           -- this will reply OK to all SUBs in the first batched transmission,
           -- to reduce client timeouts.
@@ -606,7 +604,8 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sndMsgQ, sessio
           -- After that all messages will be sent in separate transmissions,
           -- without any client response timeouts, and allowing them to interleave
           -- with other requests responses.
-          unless (null msgs) $ void . forkIO . forM_ msgs $ atomically . writeTBQueue sndMsgQ
+          mapM_ (atomically . writeTBQueue msgQ) $ L.nonEmpty msgs_
+          -- unless (null msgs) $ void . forkIO . forM_ msgs $ atomically . writeTBQueue msgQ
       where
         splitMessages :: [Transmission BrokerMsg] -> Transmission BrokerMsg -> ([Transmission BrokerMsg], Transmission BrokerMsg)
         splitMessages msgs t@(corrId, entId, cmd) = case cmd of
@@ -911,7 +910,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sndMsgQ, sessio
                   msg <- atomically $ peekMsg q
                   time "subscriber" . atomically $ do
                     let encMsg = encryptMsg qr msg
-                    writeTBQueue sndMsgQ (CorrId "", rId, MSG encMsg)
+                    writeTBQueue sndQ [(CorrId "", rId, MSG encMsg)]
                     s <- readTVar sub
                     void $ setDelivered s msg
                     writeTVar sub $! s {subThread = NoSub}
