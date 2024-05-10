@@ -1,0 +1,34 @@
+# You must pass ADDR, PASS and QUOTA as environment variables to docker-compose like so:
+# ADDR=your-ip-or-domain.com PASS=p@ssw0rd QUOTA=100gb docker-compose up -d
+# Or replace the variables with your own values in the file below
+
+services:
+  smp:
+    image: simplexchat/smp-server:latest
+    environment:
+      ADDR: ${ADDR}
+      PASS: ${PASS}
+    ports:
+      - 5223:5223
+    volumes:
+      - smp_config:/etc/opt/simplex
+      - smp_logs:/var/opt/simplex
+
+  xftp:
+    image: simplexchat/xftp-server:latest
+    environment:
+      ADDR: ${ADDR}
+      QUOTA: ${QUOTA}
+    ports:
+      - 443:443
+    volumes:
+      - xftp_config:/etc/opt/simplex-xftp
+      - xftp_logs:/var/opt/simplex-xftp
+      - xftp_files:/srv/xftp
+
+volumes:
+  smp_config:
+  smp_logs:
+  xftp_config:
+  xftp_logs:
+  xftp_files:
