@@ -128,7 +128,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   raceAny_
     ( serverThread s "server subscribedQ" subscribedQ subscribers subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ())
-        : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
+        : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> rateStatsThread_ cfg <> controlPortThread_ cfg
     )
     `finally` withLock' (savingLock s) "final" (saveServer False)
   where
@@ -205,6 +205,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       [logServerStats logStatsStartTime interval serverStatsLogFile]
     serverStatsThread_ _ = []
 
+    rateStatsThread_ :: ServerConfig -> [M ()]
+    rateStatsThread_ ServerConfig {rateStatsInterval = Just bucketWidth, logStatsInterval = Just logInterval, logStatsStartTime, rateStatsLogFile} =
+      [ monitorServerRates bucketWidth, -- roll windows, collect counters, runs at a faster rate so the measurements can be used for online anomaly detection
+        logServerRates logStatsStartTime logInterval rateStatsLogFile -- log distributions once in a while
+      ]
+    rateStatsThread_ _ = []
+
     logServerStats :: Int64 -> Int64 -> FilePath -> M ()
     logServerStats startAt logInterval statsFilePath = do
       labelMyThread "logServerStats"
@@ -255,6 +262,25 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 show qDeletedNew',
                 show qDeletedSecured'
               ]
+        liftIO $ threadDelay' interval
+
+    monitorServerRates :: Int64 -> M ()
+    monitorServerRates bucketWidth = do
+      labelMyThread "monitorServerRates"
+      forever $ do
+        -- TODO: calculate delay for the next bucket closing time
+        liftIO $ threadDelay' bucketWidth
+        -- TODO: collect and reset buckets
+
+    logServerRates :: Int64 -> Int64 -> FilePath -> M ()
+    logServerRates startAt logInterval statsFilePath = do
+      labelMyThread "logServerStats"
+      initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
+      liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
+      liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
+      let interval = 1000000 * logInterval
+      forever $ do
+        -- write the thing
         liftIO $ threadDelay' interval
 
     runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
@@ -411,13 +437,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                     hPutStrLn h "AUTH"
 
 runClientTransport :: Transport c => THandleSMP c 'TServer -> M ()
-runClientTransport h@THandle {params = THandleParams {thVersion, sessionId}} = do
+runClientTransport h@THandle {connection, params = THandleParams {thVersion, sessionId}} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
   active <- asks clients
   nextClientId <- asks clientSeq
   c <- atomically $ do
-    new@Client {clientId} <- newClient nextClientId q thVersion sessionId ts
+    new@Client {clientId} <- newClient (getPeerId connection) nextClientId q thVersion sessionId ts
     modifyTVar' active $ IM.insert clientId new
     pure new
   s <- asks server
@@ -643,6 +669,10 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
       where
         createQueue :: QueueStore -> RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> M (Transmission BrokerMsg)
         createQueue st recipientKey dhKey subMode = time "NEW" $ do
+          -- TODO: read client Q rate
+          -- TODO: read server Q rate for peerId
+          -- TODO: read global server Q rate
+          -- TODO: add throttling delay/blackhole request if needed
           (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
           let rcvDhSecret = C.dh' dhKey privDhKey
               qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey}
@@ -673,6 +703,9 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
                   stats <- asks serverStats
                   atomically $ modifyTVar' (qCreated stats) (+ 1)
                   atomically $ modifyTVar' (qCount stats) (+ 1)
+                  -- TODO: increment client Q counter
+                  -- TODO: increment current Q counter in IP timeline
+                  -- TODO: increment current Q counter in server timeline
                   case subMode of
                     SMOnlyCreate -> pure ()
                     SMSubscribe -> void $ subscribeQueue qr rId
@@ -835,6 +868,10 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
                 case C.maxLenBS msgBody of
                   Left _ -> pure $ err LARGE_MSG
                   Right body -> do
+                    -- TODO: read client S rate
+                    -- TODO: read server S rate for peerId
+                    -- TODO: read global server S rate
+                    -- TODO: add throttling delay/blackhole request if needed
                     msg_ <- time "SEND" $ do
                       q <- getStoreMsgQueue "SEND" $ recipientId qr
                       expireMessages q
@@ -850,6 +887,9 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
                         atomically $ modifyTVar' (msgSent stats) (+ 1)
                         atomically $ modifyTVar' (msgCount stats) (+ 1)
                         atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
+                        -- TODO: increment client S counter
+                        -- TODO: increment current S counter in IP timeline
+                        -- TODO: increment current S counter in server timeline
                         pure ok
           where
             mkMessage :: C.MaxLenBS MaxMessageLen -> M Message

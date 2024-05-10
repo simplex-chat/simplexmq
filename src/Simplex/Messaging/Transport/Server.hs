@@ -19,7 +19,7 @@ module Simplex.Messaging.Transport.Server
     loadTLSServerParams,
     loadFingerprint,
     smpServerHandshake,
-    tlsServerCredentials
+    tlsServerCredentials,
   )
 where
 
@@ -95,8 +95,9 @@ runTransportServerSocketState ss started getSocket threadLabel serverParams cfg 
     tCfg = serverTransportConfig cfg
     setup conn = timeout (tlsSetupTimeout cfg) $ do
       labelMyThread $ threadLabel <> "/setup"
+      peerId <- clientPeerId conn
       tls <- connectTLS Nothing tCfg serverParams conn
-      getServerConnection tCfg (fst $ tlsServerCredentials serverParams) tls
+      getServerConnection peerId tCfg (fst $ tlsServerCredentials serverParams) tls
 
 tlsServerCredentials :: T.ServerParams -> (X.CertificateChain, X.PrivKey)
 tlsServerCredentials serverParams = case T.sharedCredentials $ T.serverShared serverParams of

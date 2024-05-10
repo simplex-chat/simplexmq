@@ -54,6 +54,9 @@ module Simplex.Messaging.Transport
     ATransport (..),
     TransportPeer (..),
     getServerVerifyKey,
+    PeerId,
+    clientPeerId,
+    addrPeerId,
 
     -- * TLS Transport
     TLS (..),
@@ -95,12 +98,14 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
+import Data.Hashable (hash)
 import Data.Version (showVersion)
 import Data.Word (Word16)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import GHC.IO.Handle.Internals (ioe_EOF)
 import Network.Socket
+import qualified Network.Socket.Address as SA
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
 import qualified Paths_simplexmq as SMQ
@@ -196,12 +201,14 @@ class Transport c where
   transportConfig :: c -> TransportConfig
 
   -- | Upgrade server TLS context to connection (used in the server)
-  getServerConnection :: TransportConfig -> X.CertificateChain -> T.Context -> IO c
+  getServerConnection :: PeerId -> TransportConfig -> X.CertificateChain -> T.Context -> IO c
 
   -- | Upgrade client TLS context to connection (used in the client)
   getClientConnection :: TransportConfig -> X.CertificateChain -> T.Context -> IO c
 
   getServerCerts :: c -> X.CertificateChain
+
+  getPeerId :: c -> PeerId
 
   -- | tls-unique channel binding per RFC5929
   tlsUnique :: c -> SessionId
@@ -243,6 +250,7 @@ getServerVerifyKey c =
 data TLS = TLS
   { tlsContext :: T.Context,
     tlsPeer :: TransportPeer,
+    tlsPeerId :: PeerId,
     tlsUniq :: ByteString,
     tlsBuffer :: TBuffer,
     tlsALPN :: Maybe ALPN,
@@ -261,13 +269,13 @@ connectTLS host_ TransportConfig {logTLSErrors} params sock =
     logThrow e = putStrLn ("TLS error" <> host <> ": " <> show e) >> E.throwIO e
     host = maybe "" (\h -> " (" <> h <> ")") host_
 
-getTLS :: TransportPeer -> TransportConfig -> X.CertificateChain -> T.Context -> IO TLS
-getTLS tlsPeer cfg tlsServerCerts cxt = withTlsUnique tlsPeer cxt newTLS
+getTLS :: TransportPeer -> PeerId -> TransportConfig -> X.CertificateChain -> T.Context -> IO TLS
+getTLS tlsPeer tlsPeerId cfg tlsServerCerts cxt = withTlsUnique tlsPeer cxt newTLS
   where
     newTLS tlsUniq = do
       tlsBuffer <- atomically newTBuffer
       tlsALPN <- T.getNegotiatedProtocol cxt
-      pure TLS {tlsContext = cxt, tlsALPN, tlsTransportConfig = cfg, tlsServerCerts, tlsPeer, tlsUniq, tlsBuffer}
+      pure TLS {tlsContext = cxt, tlsPeerId, tlsALPN, tlsTransportConfig = cfg, tlsServerCerts, tlsPeer, tlsUniq, tlsBuffer}
 
 withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
 withTlsUnique peer cxt f =
@@ -301,7 +309,8 @@ instance Transport TLS where
   transportPeer = tlsPeer
   transportConfig = tlsTransportConfig
   getServerConnection = getTLS TServer
-  getClientConnection = getTLS TClient
+  getClientConnection = getTLS TClient 0
+  getPeerId = tlsPeerId
   getServerCerts = tlsServerCerts
   getSessionALPN = tlsALPN
   tlsUnique = tlsUniq
@@ -544,6 +553,23 @@ smpTHandle :: Transport c => c -> THandleSMP c p
 smpTHandle c = THandle {connection = c, params}
   where
     params = THandleParams {sessionId = tlsUnique c, blockSize = smpBlockSize, thVersion = VersionSMP 0, thAuth = Nothing, implySessId = False, batch = True}
+
+-- | Stats key, hashed from IPs, circuits etc. We don't want to keep actual identities, just attach counters to them.
+type PeerId = Int -- XXX: perhaps more fields needed if we want subnet escalation
+
+clientPeerId :: Socket -> IO PeerId
+clientPeerId = fmap addrPeerId . SA.getPeerName
+
+addrPeerId :: SockAddr -> PeerId
+addrPeerId peer = hash peer6 -- XXX: for extra paranoia can be salted with a seed randomized on server start
+  where
+    -- ingore ports and fluff, normalize to ipv6 address space
+    -- most of the ipv6 is unused as clients get /64 subnets for a few IPs, so 128bit to 64bit hashing is ok for using as intmap keys
+    peer6 = case peer of
+      SockAddrInet _port a -> embed4in6 a
+      SockAddrInet6 _port _flow a _scope -> a
+      SockAddrUnix _path -> error "use for TOR circuits?"
+    embed4in6 v4 = (0, 0, 0xFFFF, v4) -- RFC4038: the IPv6 address ::FFFF:x.y.z.w represents the IPv4 address x.y.z.w.
 
 $(J.deriveJSON (sumTypeJSON id) ''HandshakeError)
 

@@ -16,6 +16,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Time.Clock (getCurrentTime)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
@@ -33,7 +34,7 @@ import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
+import Simplex.Messaging.Transport (ATransport, PeerId, VersionRangeSMP, VersionSMP)
 import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, alpn, loadFingerprint, loadTLSServerParams, newSocketState)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
@@ -70,6 +71,10 @@ data ServerConfig = ServerConfig
     serverStatsLogFile :: FilePath,
     -- | file to save and restore stats
     serverStatsBackupFile :: Maybe FilePath,
+    -- | rate limit monitoring interval / bucket width, seconds
+    rateStatsInterval :: Maybe Int64,
+    rateStatsLogFile :: FilePath,
+    rateStatsBackupFile :: Maybe FilePath,
     -- | CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -109,6 +114,8 @@ data Env = Env
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerParams :: T.ServerParams,
     serverStats :: ServerStats,
+    qCreatedByIp :: Timeline,
+    msgSentByIp :: Timeline,
     sockets :: SocketState,
     clientSeq :: TVar Int,
     clients :: TVar (IntMap Client)
@@ -124,6 +131,8 @@ data Server = Server
 
 data Client = Client
   { clientId :: Int,
+    peerId :: PeerId, -- send updates for this Id to time series
+    clientStats :: ClientStats, -- capture final values on disconnect
     subscriptions :: TMap RecipientId (TVar Sub),
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
@@ -155,8 +164,8 @@ newServer = do
   savingLock <- createLock
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
 
-newClient :: TVar Int -> Natural -> VersionSMP -> ByteString -> SystemTime -> STM Client
-newClient nextClientId qSize thVersion sessionId createdAt = do
+newClient :: PeerId -> TVar Int -> Natural -> VersionSMP -> ByteString -> SystemTime -> STM Client
+newClient peerId nextClientId qSize thVersion sessionId createdAt = do
   clientId <- stateTVar nextClientId $ \next -> (next, next + 1)
   subscriptions <- TM.empty
   ntfSubscriptions <- TM.empty
@@ -168,7 +177,8 @@ newClient nextClientId qSize thVersion sessionId createdAt = do
   connected <- newTVar True
   rcvActiveAt <- newTVar createdAt
   sndActiveAt <- newTVar createdAt
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
+  clientStats <- ClientStats <$> newTVar 0 <*> newTVar 0
+  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, peerId, clientStats}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
@@ -189,7 +199,10 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
-  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
+  now <- getPOSIXTime
+  qCreatedByIp <- atomically $ newTimeline perMinute now
+  msgSentByIp <- atomically $ newTimeline perMinute now
+  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, qCreatedByIp, msgSentByIp, sockets, clientSeq, clients}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do

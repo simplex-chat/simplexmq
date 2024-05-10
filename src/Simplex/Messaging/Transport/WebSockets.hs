@@ -20,6 +20,7 @@ import Simplex.Messaging.Transport
     TransportConfig (..),
     TransportError (..),
     TransportPeer (..),
+    PeerId,
     closeTLS,
     smpBlockSize,
     withTlsUnique,
@@ -28,6 +29,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 
 data WS = WS
   { wsPeer :: TransportPeer,
+    wsPeerId :: PeerId,
     tlsUniq :: ByteString,
     wsALPN :: Maybe ALPN,
     wsStream :: Stream,
@@ -54,11 +56,14 @@ instance Transport WS where
   transportConfig :: WS -> TransportConfig
   transportConfig = wsTransportConfig
 
-  getServerConnection :: TransportConfig -> X.CertificateChain -> T.Context -> IO WS
+  getServerConnection :: PeerId -> TransportConfig -> X.CertificateChain -> T.Context -> IO WS
   getServerConnection = getWS TServer
 
   getClientConnection :: TransportConfig -> X.CertificateChain -> T.Context -> IO WS
-  getClientConnection = getWS TClient
+  getClientConnection = getWS TClient 0
+
+  getPeerId :: WS -> PeerId
+  getPeerId = wsPeerId
 
   getServerCerts :: WS -> X.CertificateChain
   getServerCerts = wsServerCerts
@@ -89,14 +94,14 @@ instance Transport WS where
       then E.throwIO TEBadBlock
       else pure $ B.init s
 
-getWS :: TransportPeer -> TransportConfig -> X.CertificateChain -> T.Context -> IO WS
-getWS wsPeer cfg wsServerCerts cxt = withTlsUnique wsPeer cxt connectWS
+getWS :: TransportPeer -> PeerId -> TransportConfig -> X.CertificateChain -> T.Context -> IO WS
+getWS wsPeer wsPeerId cfg wsServerCerts cxt = withTlsUnique wsPeer cxt connectWS
   where
     connectWS tlsUniq = do
       s <- makeTLSContextStream cxt
       wsConnection <- connectPeer wsPeer s
       wsALPN <- T.getNegotiatedProtocol cxt
-      pure $ WS {wsPeer, tlsUniq, wsALPN, wsStream = s, wsConnection, wsTransportConfig = cfg, wsServerCerts}
+      pure $ WS {wsPeer, wsPeerId, tlsUniq, wsALPN, wsStream = s, wsConnection, wsTransportConfig = cfg, wsServerCerts}
     connectPeer :: TransportPeer -> Stream -> IO Connection
     connectPeer TServer = acceptClientRequest
     connectPeer TClient = sendClientRequest
