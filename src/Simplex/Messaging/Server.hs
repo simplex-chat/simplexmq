@@ -485,7 +485,7 @@ send thLock Client {sndQ, sessionId, sndActiveAt} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ do
     ts <- atomically $ readTBQueue sndQ
-    liftIO $ withMVar thLock $ \h@THandle {params} ->
+    withMVar thLock $ \h@THandle {params} ->
       void . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
     atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
 
@@ -494,7 +494,7 @@ sendMsg thLock Client {sndMsgQ, sessionId, sndActiveAt} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " sendMsg"
   forever $ do
     t <- atomically $ readTBQueue sndMsgQ
-    liftIO $ withMVar thLock $ \h@THandle {params} ->
+    withMVar thLock $ \h@THandle {params} ->
       void $ tPut h [Right (Nothing, encodeTransmission params t)]
     atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
 
