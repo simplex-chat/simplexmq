@@ -424,7 +424,7 @@ runClientTransport th@THandle {params = THandleParams {thVersion, sessionId}} = 
   expCfg <- asks $ inactiveClientExpiration . config
   labelMyThread . B.unpack $ "client $" <> encode sessionId
   thLock <- newMVar th -- put TH under a fair lock to interleave messages and command responses
-  raceAny_ ([liftIO $ sendResp c thLock, liftIO $ sendMsg c thLock, client c s, receive th c] <> disconnectThread_ c expCfg)
+  raceAny_ ([liftIO $ send c thLock, liftIO $ sendMsg c thLock, client c s, receive th c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
   where
     disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (rcvActiveAt c) (sndActiveAt c) expCfg (noSubscriptions c)]
@@ -480,10 +480,31 @@ receive th@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActi
               VRFailed -> Left (corrId, queueId, ERR AUTH)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
-sendResp :: Transport c => Client -> MVar (THandleSMP c 'TServer) -> IO ()
-sendResp c@Client {sndQ, sessionId} thLock = do
-  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " sendResp"
-  forever $ atomically (readTBQueue sndQ) >>= tSend c thLock
+send :: Transport c => Client -> MVar (THandleSMP c 'TServer) -> IO ()
+send c@Client {sndQ, msgQ, sessionId} thLock = do
+  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
+  forever $ atomically (readTBQueue sndQ) >>= sendTransmissions
+  where
+    sendTransmissions :: NonEmpty (Transmission BrokerMsg) -> IO ()
+    sendTransmissions ts
+      | L.length ts <= 2 = atomically $ writeTBQueue sndQ ts
+      | otherwise = do
+          let (msgs_, ts') = mapAccumR splitMessages [] ts
+          -- If the request had batched subscriptions (L.length ts > 2)
+          -- this will reply OK to all SUBs in the first batched transmission,
+          -- to reduce client timeouts.
+          tSend c thLock ts'
+          -- After that all messages will be sent in separate transmissions,
+          -- without any client response timeouts, and allowing them to interleave
+          -- with other requests responses.
+          mapM_ (atomically . writeTBQueue msgQ) $ L.nonEmpty msgs_
+          -- unless (null msgs) $ void . forkIO . forM_ msgs $ atomically . writeTBQueue msgQ
+      where
+        splitMessages :: [Transmission BrokerMsg] -> Transmission BrokerMsg -> ([Transmission BrokerMsg], Transmission BrokerMsg)
+        splitMessages msgs t@(corrId, entId, cmd) = case cmd of
+          -- replace MSG response with OK, accumulating MSG in a separate list.
+          MSG {} -> ((CorrId "", entId, cmd) : msgs, (corrId, entId, OK))
+          _ -> (msgs, t)
 
 sendMsg :: Transport c => Client -> MVar (THandleSMP c 'TServer) -> IO ()
 sendMsg c@Client {msgQ, sessionId} thLock = do
@@ -585,33 +606,13 @@ dummyKeyX25519 :: C.PublicKey 'C.X25519
 dummyKeyX25519 = "MCowBQYDK2VuAyEA4JGSMYht18H4mas/jHeBwfcM7jLwNYJNOAhi2/g4RXg="
 
 client :: Client -> Server -> M ()
-client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
+client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
   forever $
     atomically (readTBQueue rcvQ)
       >>= mapM processCommand
-      >>= liftIO . sendTransmissions
+      >>= atomically . writeTBQueue sndQ
   where
-    sendTransmissions :: NonEmpty (Transmission BrokerMsg) -> IO ()
-    sendTransmissions ts
-      | L.length ts <= 2 = atomically $ writeTBQueue sndQ ts
-      | otherwise = do
-          let (msgs_, ts') = mapAccumR splitMessages [] ts
-          -- If the request had batched subscriptions (L.length ts > 2)
-          -- this will reply OK to all SUBs in the first batched transmission,
-          -- to reduce client timeouts.
-          atomically $ writeTBQueue sndQ ts'
-          -- After that all messages will be sent in separate transmissions,
-          -- without any client response timeouts, and allowing them to interleave
-          -- with other requests responses.
-          mapM_ (atomically . writeTBQueue msgQ) $ L.nonEmpty msgs_
-          -- unless (null msgs) $ void . forkIO . forM_ msgs $ atomically . writeTBQueue msgQ
-      where
-        splitMessages :: [Transmission BrokerMsg] -> Transmission BrokerMsg -> ([Transmission BrokerMsg], Transmission BrokerMsg)
-        splitMessages msgs t@(corrId, entId, cmd) = case cmd of
-          -- replace MSG response with OK, accumulating MSG in a separate list.
-          MSG {} -> ((CorrId "", entId, cmd) : msgs, (corrId, entId, OK))
-          _ -> (msgs, t)
     processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Transmission BrokerMsg)
     processCommand (qr_, (corrId, queueId, cmd)) = do
       st <- asks queueStore
