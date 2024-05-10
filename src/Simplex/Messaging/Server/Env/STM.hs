@@ -128,7 +128,7 @@ data Client = Client
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
-    msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)), -- MSGs are sent one by one
+    msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
     thVersion :: VersionSMP,
