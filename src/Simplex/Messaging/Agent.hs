@@ -1358,7 +1358,11 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
                   | temporaryOrHostError e -> do
                       let msgTimeout = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
                       expireTs <- addUTCTime (-msgTimeout) <$> liftIO getCurrentTime
-                      if internalTs < expireTs then notifyDelMsgs msgId e expireTs else retrySndMsg RIFast
+                      if internalTs < expireTs
+                        then notifyDelMsgs msgId e expireTs
+                        else do
+                          when (serverHostError e) $ notify $ MWARN (unId msgId) e
+                          retrySndMsg RIFast
                   | otherwise -> notifyDel msgId err
               where
                 retrySndMsg riMode = do

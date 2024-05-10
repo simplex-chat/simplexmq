@@ -396,6 +396,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   SEND :: PQEncryption -> MsgFlags -> MsgBody -> ACommand Client AEConn
   MID :: AgentMsgId -> PQEncryption -> ACommand Agent AEConn
   SENT :: AgentMsgId -> Maybe SMPServer -> ACommand Agent AEConn
+  MWARN :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MERRS :: NonEmpty AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent AEConn
@@ -459,6 +460,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   SEND_ :: ACommandTag Client AEConn
   MID_ :: ACommandTag Agent AEConn
   SENT_ :: ACommandTag Agent AEConn
+  MWARN_ :: ACommandTag Agent AEConn
   MERR_ :: ACommandTag Agent AEConn
   MERRS_ :: ACommandTag Agent AEConn
   MSG_ :: ACommandTag Agent AEConn
@@ -515,6 +517,7 @@ aCommandTag = \case
   SEND {} -> SEND_
   MID {} -> MID_
   SENT {} -> SENT_
+  MWARN {} -> MWARN_
   MERR {} -> MERR_
   MERRS {} -> MERRS_
   MSG {} -> MSG_
@@ -1668,6 +1671,7 @@ instance StrEncoding ACmdTag where
       "SEND" -> t SEND_
       "MID" -> ct MID_
       "SENT" -> ct SENT_
+      "MWARN" -> ct MWARN_
       "MERR" -> ct MERR_
       "MERRS" -> ct MERRS_
       "MSG" -> ct MSG_
@@ -1726,6 +1730,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     SEND_ -> "SEND"
     MID_ -> "MID"
     SENT_ -> "SENT"
+    MWARN_ -> "MWARN"
     MERR_ -> "MERR"
     MERRS_ -> "MERRS"
     MSG_ -> "MSG"
@@ -1797,6 +1802,7 @@ commandP binaryP =
           RSYNC_ -> s (RSYNC <$> strP_ <*> strP <*> strP)
           MID_ -> s (MID <$> A.decimal <*> _strP)
           SENT_ -> s (SENT <$> A.decimal <*> _strP)
+          MWARN_ -> s (MWARN <$> A.decimal <* A.space <*> strP)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
           MERRS_ -> s (MERRS <$> strP_ <*> strP)
           MSG_ -> s (MSG <$> strP <* A.space <*> smpP <* A.space <*> binaryP)
@@ -1860,6 +1866,7 @@ serializeCommand = \case
   SEND pqEnc msgFlags msgBody -> B.unwords [s SEND_, s pqEnc, smpEncode msgFlags, serializeBinary msgBody]
   MID mId pqEnc -> s (MID_, mId, pqEnc)
   SENT mId proxySrv_ -> s (SENT_, mId, proxySrv_)
+  MWARN mId e -> s (MWARN_, mId, e)
   MERR mId e -> s (MERR_, mId, e)
   MERRS mIds e -> s (MERRS_, mIds, e)
   MSG msgMeta msgFlags msgBody -> B.unwords [s MSG_, s msgMeta, smpEncode msgFlags, serializeBinary msgBody]

@@ -46,6 +46,7 @@ module Simplex.Messaging.Agent.Client
     sendInvitation,
     temporaryAgentError,
     temporaryOrHostError,
+    serverHostError,
     secureQueue,
     enableQueueNotifications,
     enableQueuesNtfs,
@@ -616,7 +617,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
         Left e -> do
           liftIO $ incClientStat c userId clnt "PROXY" $ strEncode e
           atomically $ do
-            unless (persistentProxyError e) $ do
+            unless (serverHostError e) $ do
               removeSessVar rv destSrv prs
               TM.delete destSess smpProxiedRelays
             putTMVar (sessionVar rv) (Left e)
@@ -1060,7 +1061,7 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
       case r of
         Right r' -> pure r'
         Left e
-          | persistentProxyError e -> ifM (atomically directAllowed) (sendDirectly destSess $> Nothing) (throwE e)
+          | serverHostError e -> ifM (atomically directAllowed) (sendDirectly destSess $> Nothing) (throwE e)
           | otherwise -> throwE e
     sendDirectly tSess =
       withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) ->
@@ -1303,17 +1304,20 @@ temporaryAgentError = \case
       _ -> False
 
 temporaryOrHostError :: AgentErrorType -> Bool
-temporaryOrHostError = \case
-  BROKER _ HOST -> True
-  SMP (SMP.PROXY (SMP.BROKER HOST)) -> True
-  PROXY _ _ (ProxyProtocolError (SMP.PROXY (SMP.BROKER HOST))) -> True
-  e -> temporaryAgentError e
+temporaryOrHostError e = temporaryAgentError e || serverHostError e
+{-# INLINE temporaryOrHostError #-}
 
-persistentProxyError :: AgentErrorType -> Bool
-persistentProxyError = \case
-  BROKER _ (SMP.TRANSPORT TEVersion) -> True
-  SMP (SMP.PROXY (SMP.BROKER (SMP.TRANSPORT TEVersion))) -> True
+serverHostError :: AgentErrorType -> Bool
+serverHostError = \case
+  BROKER _ e -> brokerHostError e
+  SMP (SMP.PROXY (SMP.BROKER e)) -> brokerHostError e
+  PROXY _ _ (ProxyProtocolError (SMP.PROXY (SMP.BROKER e))) -> brokerHostError e
   _ -> False
+  where
+    brokerHostError = \case
+      HOST -> True
+      SMP.TRANSPORT TEVersion -> True
+      _ -> False
 
 -- | Subscribe to queues. The list of results can have a different order.
 subscribeQueues :: AgentClient -> [RcvQueue] -> AM' [(RcvQueue, Either AgentErrorType ())]
