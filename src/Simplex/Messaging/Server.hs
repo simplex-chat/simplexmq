@@ -498,7 +498,6 @@ send th c@Client {sndQ, msgQ, sessionId} = do
           -- without any client response timeouts, and allowing them to interleave
           -- with other requests responses.
           mapM_ (atomically . writeTBQueue msgQ) $ L.nonEmpty msgs_
-          -- unless (null msgs) $ void . forkIO . forM_ msgs $ atomically . writeTBQueue msgQ
       where
         splitMessages :: [Transmission BrokerMsg] -> Transmission BrokerMsg -> ([Transmission BrokerMsg], Transmission BrokerMsg)
         splitMessages msgs t@(corrId, entId, cmd) = case cmd of
