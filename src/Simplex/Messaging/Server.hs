@@ -422,8 +422,8 @@ runClientTransport h@THandle {params = THandleParams {thVersion, sessionId}} = d
     pure new
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
-  labelMyThread . B.unpack $ "client $" <> encode sessionId
   th <- newMVar h -- put TH under a fair lock to interleave messages and command responses
+  labelMyThread . B.unpack $ "client $" <> encode sessionId
   raceAny_ ([liftIO $ send th c, liftIO $ sendMsg th c, client c s, receive h c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
   where
