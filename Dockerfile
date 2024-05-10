@@ -5,7 +5,9 @@ FROM ubuntu:${TAG} AS build
 ### Build stage
 
 # Install curl and git and simplexmq dependencies
-RUN apt-get update && apt-get install -y curl git build-essential libgmp3-dev zlib1g-dev llvm-12 llvm-12-dev libnuma-dev libssl-dev
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl git ca-certificates build-essential libgmp3-dev zlib1g-dev llvm-12 llvm-12-dev libnuma-dev libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
 
 # Specify bootstrap Haskell versions
 ENV BOOTSTRAP_HASKELL_GHC_VERSION=9.6.3
@@ -21,8 +23,8 @@ ENV PATH="/root/.cabal/bin:/root/.ghcup/bin:$PATH"
 RUN ghcup set ghc "${BOOTSTRAP_HASKELL_GHC_VERSION}" && \
     ghcup set cabal "${BOOTSTRAP_HASKELL_CABAL_VERSION}"
 
-COPY . /project
 WORKDIR /project
+COPY . .
 
 ARG APP
 ARG APP_PORT
@@ -33,7 +35,6 @@ RUN cabal update
 RUN cabal build exe:$APP
 
 # Create new path containing all files needed
-RUN mkdir /final
 WORKDIR /final
 
 # Strip the binary from debug symbols to reduce size
@@ -46,7 +47,9 @@ RUN bin=$(find /project/dist-newstyle -name "$APP" -type f -executable) && \
 FROM ubuntu:${TAG}
 
 # Install OpenSSL dependency
-RUN apt-get update && apt-get install -y openssl libnuma-dev
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends openssl libnuma-dev && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy compiled app from build stage
 COPY --from=build /final /usr/local/bin/
