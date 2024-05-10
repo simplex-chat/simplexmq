@@ -1108,7 +1108,6 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
     withClient c tSess "NEW" $ \smp -> case subMode of
       SMOnlyCreate -> createSMPQueue smp rKeys dhKey auth subMode
       SMSubscribe -> do
-        atomically $ TM.insert connId False (sentSubs smp)
         r <- createSMPQueue smp rKeys dhKey auth subMode
         atomically $ TM.insert connId True (sentSubs smp)
         pure r
