@@ -487,7 +487,7 @@ send th c@Client {sndQ, msgQ, sessionId} = do
   where
     sendTransmissions :: NonEmpty (Transmission BrokerMsg) -> IO ()
     sendTransmissions ts
-      | L.length ts <= 2 = atomically $ writeTBQueue sndQ ts
+      | L.length ts <= 2 = tSend th c ts
       | otherwise = do
           let (msgs_, ts') = mapAccumR splitMessages [] ts
           -- If the request had batched subscriptions (L.length ts > 2)
