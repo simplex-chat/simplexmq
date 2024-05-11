@@ -17,7 +17,7 @@ import qualified Network.Wai.Handler.WarpTLS as W
 import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.Main (EmbeddedWebParams (..))
-import Simplex.Messaging.Util (bshow, tshow)
+import Simplex.Messaging.Util (tshow)
 import Static.Embedded as E
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath
@@ -58,10 +58,12 @@ serverInformation ServerInformation {config, information} = render E.indexHtml s
             SPMMessages -> "Queues and messages"
         ),
         ("messageExpiration", Just $ maybe "Never" (fromString . timedTTLText) $ messageExpiration config),
-        ("statsEnabled", Just . bshow $ statsEnabled config),
-        ("newQueuesAllowed", Just . bshow $ newQueuesAllowed config),
-        ("basicAuthEnabled", Just . bshow $ basicAuthEnabled config)
+        ("statsEnabled", Just . yesNo $ statsEnabled config),
+        ("newQueuesAllowed", Just . yesNo $ newQueuesAllowed config),
+        ("basicAuthEnabled", Just . yesNo $ basicAuthEnabled config)
       ]
+    yesNo True = "Yes"
+    yesNo False = "No"
     substInfo spi =
       concat
         [ basic,

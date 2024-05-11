@@ -18,9 +18,13 @@
   <section class="w-full bg-transparent fixed top-0 z-50">
     <header class="">
       <div class="flex items-center flex-row justify-end m-auto px-4 lg:px-7 h-[66px]"><a href="/"
-          class="h-full hidden dark:hidden lg:flex items-center ltr:mr-auto rtl:ml-auto"><img class="w-auto max-h-[50px] pr-10" src="/media/logo-light.png" alt="logo"></a><a           href="/" class="h-full hidden dark:lg:flex items-center ltr:mr-auto rtl:ml-auto"><img
-            class="w-auto max-h-[50px] pr-10" src="/media/logo-dark.png" alt="logo"></a><a href="/" class="dark:hidden lg:hidden ltr:mr-auto rtl:ml-auto"><img class="h-[32px]"
-            src="/media/logo-symbol-light.svg" alt="" srcset=""></a><a href="/" class="hidden dark:inline-block dark:lg:hidden lg:hidden ltr:mr-auto rtl:ml-auto"><img class="h-[32px]"
+          class="h-full hidden dark:hidden lg:flex items-center ltr:mr-auto rtl:ml-auto"><img
+            class="w-auto max-h-[50px] pr-10" src="/media/logo-light.png" alt="logo"></a><a href="/"
+          class="h-full hidden dark:lg:flex items-center ltr:mr-auto rtl:ml-auto"><img class="w-auto max-h-[50px] pr-10"
+            src="/media/logo-dark.png" alt="logo"></a><a href="/"
+          class="dark:hidden lg:hidden ltr:mr-auto rtl:ml-auto"><img class="h-[32px]" src="/media/logo-symbol-light.svg"
+            alt="" srcset=""></a><a href="/"
+          class="hidden dark:inline-block dark:lg:hidden lg:hidden ltr:mr-auto rtl:ml-auto"><img class="h-[32px]"
             src="/media/logo-symbol-dark.svg" alt="" srcset=""></a>
         <nav
           class="bg-[#F0F1F2] dark:bg-gradient-radial-mobile dark:lg:bg-none lg:bg-transparent fixed top-[66px] left-0 right-0 bottom-0 lg:top-0 lg:relative"
@@ -29,7 +33,8 @@
             <ul class="flex flex-col lg:flex-row lg:items-center gap-3 py-4 lg:py-0 lg:gap-5 xl:gap-8">
               <li class="nav-link relative"><a href="/"
                   class="flex items-center justify-between gap-2 lg:py-5 whitespace-nowrap"><span
-                    class="text-[16px] leading-[26px] tracking-[0.01em] nav-link-text text-black dark:text-white before:bg-black dark:before:bg-white">Server information</span></a>
+                    class="text-[16px] leading-[26px] tracking-[0.01em] nav-link-text text-black dark:text-white before:bg-black dark:before:bg-white">Server
+                    information</span></a>
               </li>
             </ul><a target="_blank" href="https://github.com/simplex-chat/simplex-chat#help-us-with-donations"
               class="whitespace-nowrap flex items-center gap-1 self-center text-white dark:text-black text-[16px] font-medium tracking-[0.02em] rounded-[34px] bg-primary-light dark:bg-primary-dark py-3 lg:py-2 px-20 lg:px-5 mb-16 lg:mb-0">Donate</a>
@@ -145,69 +150,62 @@
         <h2 class="text-[20px] leading-[28px] text-[#606C71] dark:text-white font-bold max-w-[475px]">Configuration</h2>
 
         <p class="text-grey-black dark:text-white text-base mb-[16px]">
-          <strong>Persistence:</strong>
-          ${persistence}
+          <strong>Persistence:</strong> ${persistence}
         </p>
         <p class="text-grey-black dark:text-white text-base mb-[16px]">
-          <strong>Message expiration:</strong>
-          ${messageExpiration}
+          <strong>Message expiration:</strong> ${messageExpiration}
         </p>
         <p class="text-grey-black dark:text-white text-base mb-[16px]">
-          <strong>Stats enabled:</strong>
-          ${statsEnabled}
+          <strong>Stats enabled:</strong> ${statsEnabled}
         </p>
         <p class="text-grey-black dark:text-white text-base mb-[16px]">
-          <strong>New queues allowed:</strong>
-          ${newQueuesAllowed}
+          <strong>New queues allowed:</strong> ${newQueuesAllowed}
         </p>
         <p class="text-grey-black dark:text-white text-base mb-[16px]">
-          <strong>Auth enabled:</strong>
-          ${basicAuthEnabled}
+          <strong>Basic auth enabled:</strong> ${basicAuthEnabled}
         </p>
 
         <h2 class="text-[20px] leading-[28px] text-[#606C71] dark:text-white font-bold max-w-[475px]">Public information
         </h2>
         <p class="text-grey-black dark:text-white text-base mb-[16px]">
           <strong>Source code:</strong>
-          <a href="${sourceCode}">${sourceCode}</a>
+          <a href="${sourceCode}" target="_blank">${sourceCode}</a>
         </p>
         <x-website>
           <p class="text-grey-black dark:text-white text-base mb-[16px]">
             <strong>Web site:</strong>
-            <a href="${website}">${website}</a>
+            <a href="${website}" target="_blank">${website}</a>
           </p>
         </x-website>
         <x-usageConditions>
           <p class="text-grey-black dark:text-white text-base mb-[16px]">
             <strong>Usage conditions:</strong>
-            ${usageConditions}
+            <a href="${usageConditions}" target="_blank">${usageConditions}</a>
           </p>
         </x-usageConditions>
         <x-usageAmendments>
           <p class="text-grey-black dark:text-white text-base mb-[16px]">
             <strong>Amendments:</strong>
-            ${usageAmendments}
+            <a href="${usageAmendments}" target="_blank">${usageAmendments}</a>
           </p>
         </x-usageAmendments>
         <x-operator>
           <p class="text-grey-black dark:text-white text-base mb-[16px]">
-            <strong>Operator:</strong>
-            ${operatorEntity}
-            ${operatorCountry}
+            <strong>Operator:</strong> ${operatorEntity} (${operatorCountry})
           </p>
         </x-operator>
         <x-admin>
           <p class="text-grey-black dark:text-white text-base mb-[16px]">
-            <strong>Server contacts:</strong>
+            <strong>Administrator contacts:</strong>
           <ul class="text-grey-black dark:text-white text-base mb-[16px]">
             <x-adminSimplex>
-              <li><a href="${adminSimplex}">SimpleXChat</a></li>
+              <li>SimpleX: <a href="${adminSimplex}">Open in the app</a></li>
             </x-adminSimplex>
             <x-adminEmail>
-              <li><a href="mailto:${adminEmail}">${adminEmail}</a></li>
+              <li>Email: <a href="mailto:${adminEmail}">${adminEmail}</a></li>
             </x-adminEmail>
             <x-adminPGP>
-              <li>PGP: ${adminPGP}</li>
+              <li>PGP: <a href="${adminPGP}">${adminPGP}</a></li>
             </x-adminPGP>
           </ul>
           </p>
@@ -217,22 +215,20 @@
             <strong>Complaints contacts:</strong>
           <ul class="text-grey-black dark:text-white text-base mb-[16px]">
             <x-complaintsSimplex>
-              <li><a href="${complaintsSimplex}">SimpleXChat</a></li>
+              <li>SimpleX: <a href="${complaintsSimplex}">Open in the app</a></li>
             </x-complaintsSimplex>
             <x-complaintsEmail>
-              <li><a href="mailto:${complaintsEmail}">${complaintsEmail}</a></li>
+              <li>Email: <a href="mailto:${complaintsEmail}">${complaintsEmail}</a></li>
             </x-complaintsEmail>
             <x-complaintsPGP>
-              <li>PGP: ${complaintsPGP}</li>
+              <li>PGP: <a href="${complaintsPGP}">${complaintsPGP}</a></li>
             </x-complaintsPGP>
           </ul>
           </p>
         </x-complaints>
         <x-hosting>
           <p class="text-grey-black dark:text-white text-base mb-[16px]">
-            <strong>Hosting:</strong>
-            ${hostingEntity}
-            ${hostingCountry}
+            <strong>Hosting:</strong> ${hostingEntity} (${hostingCountry})
           </p>
         </x-hosting>
         <x-serverCountry>
@@ -317,7 +313,7 @@
     <div class="container flex flex-col items-center">
       <h2
         class="text-[38px] leading-[36px] md:leading-[55px] text-grey-black dark:text-white text-center font-bold mb-5">
-        <span class="text-active-blue">Join</span>SimpleX
+        <span class="text-active-blue">Join</span> SimpleX
       </h2>
       <p class="text-black dark:text-white text-base text-center mb-14">We invite you to join the conversation</p>
       <div class="flex flex-col items-center gap-5 self-stretch mb-12"><a target="_blank"
