@@ -22,8 +22,8 @@ import Database.SQLite.Simple (SQLError)
 import qualified Database.SQLite.Simple as SQL
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Util (diffToMilliseconds)
-import UnliftIO.Exception (bracket)
 import qualified UnliftIO.Exception as E
+import UnliftIO.MVar
 import UnliftIO.STM
 
 storeKey :: ScrubbedBytes -> Bool -> Maybe ScrubbedBytes
@@ -32,16 +32,13 @@ storeKey key keepKey = if keepKey || BA.null key then Just key else Nothing
 data SQLiteStore = SQLiteStore
   { dbFilePath :: FilePath,
     dbKey :: TVar (Maybe ScrubbedBytes),
-    dbConnection :: TMVar DB.Connection,
+    dbConnection :: MVar DB.Connection,
     dbClosed :: TVar Bool,
     dbNew :: Bool
   }
 
 withConnection :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withConnection SQLiteStore {dbConnection} =
-  bracket
-    (atomically $ takeTMVar dbConnection)
-    (atomically . putTMVar dbConnection)
+withConnection SQLiteStore {dbConnection} = withMVar dbConnection
 
 withConnection' :: SQLiteStore -> (SQL.Connection -> IO a) -> IO a
 withConnection' st action = withConnection st $ action . DB.conn
@@ -71,9 +68,9 @@ dbBusyLoop action = loop 500 3000000
     loop :: Int -> Int -> IO a
     loop t tLim =
       action `E.catch` \(e :: SQLError) ->
-        let se = SQL.sqlError e in
-        if tLim > t && (se == SQL.ErrorBusy || se == SQL.ErrorLocked)
-          then do
-            threadDelay t
-            loop (t * 9 `div` 8) (tLim - t)
-          else E.throwIO e
+        let se = SQL.sqlError e
+         in if tLim > t && (se == SQL.ErrorBusy || se == SQL.ErrorLocked)
+              then do
+                threadDelay t
+                loop (t * 9 `div` 8) (tLim - t)
+              else E.throwIO e
