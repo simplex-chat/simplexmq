@@ -1,3 +1,79 @@
+# 5.7.3
+
+SMP/NTF protocol:
+- add ALPN for handshake version negotiation, similar to XFTP (to preserve backwards compatibility with the old clients).
+- upgrade clients to versions v7/v2 of the protocols.
+
+SMP server:
+- faster responses to subscription requests.
+
+XFTP client:
+- fix network exception during file download treated as permanent file error.
+
+SMP agent:
+- do not report subscription timeouts while client is offline.
+
+# 5.7.2
+
+SMP agent:
+- fix connections failing when connecting via link due to race condition on slow network.
+- remove concurrency limit when waiting for connection subscription.
+- remove TLS timeout.
+
+# 5.7.1
+
+SMP agent:
+- increase timeout for TLS connection via SOCKS
+
+# 5.7.0
+
+Version 5.7.0.4
+
+_Please note_: the earliest SimpleX Chat clients supported by this version of the servers is 5.5.3 (released on February 11, 2024).
+
+SMP server:
+- increase max SMP protocol version to 7 (support for deniable authenticators).
+
+NTF server:
+- increase max NTF protocol version to 2 (support for deniable authenticators).
+
+XFTP server:
+- version handshake using ALPN.
+
+SMP agent:
+- increase timeouts for XFTP files.
+- don't send commands after timeout.
+- PQ encryption support.
+
+# 5.6.2
+
+Version 5.6.2.2.
+
+SMP agent:
+- Lower memory consumption (~20-25%).
+- More stable XFTP file uploads and downloads.
+- API to receive network connectivity changes from the apps.
+- to reduce battery consumption: connection attempts interval growing to every 2 hours when app reports as offline.
+- to reduce retries and traffic: 50% increased timeouts when on mobile network.
+
+XFTP server:
+- expire files on start.
+- version negotiation based on TLS ALPN and handshake.
+
+NTF server:
+- reduced downtime by ~100x faster start time.
+- exclude test tokens from statistics.
+
+# 5.6.1
+
+Version 5.6.1.0.
+
+- Much faster iOS notification server start time (fewer skipped notifications).
+- Fix SMP server stored message stats.
+- Prevent overwriting uploaded XFTP files with subsequent upload attempts.
+- Faster base64 encoding/parsing.
+- Control port audit log and authentication.
+
 # 5.6.0
 
 Version 5.6.0.4.

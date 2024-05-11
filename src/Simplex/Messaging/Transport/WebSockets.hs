@@ -14,7 +14,8 @@ import Network.WebSockets
 import Network.WebSockets.Stream (Stream)
 import qualified Network.WebSockets.Stream as S
 import Simplex.Messaging.Transport
-  ( TProxy,
+  ( ALPN,
+    TProxy,
     Transport (..),
     TransportConfig (..),
     TransportError (..),
@@ -28,6 +29,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 data WS = WS
   { wsPeer :: TransportPeer,
     tlsUniq :: ByteString,
+    wsALPN :: Maybe ALPN,
     wsStream :: Stream,
     wsConnection :: Connection,
     wsTransportConfig :: TransportConfig,
@@ -61,6 +63,9 @@ instance Transport WS where
   getServerCerts :: WS -> X.CertificateChain
   getServerCerts = wsServerCerts
 
+  getSessionALPN :: WS -> Maybe ALPN
+  getSessionALPN = wsALPN
+
   tlsUnique :: WS -> ByteString
   tlsUnique = tlsUniq
 
@@ -90,7 +95,8 @@ getWS wsPeer cfg wsServerCerts cxt = withTlsUnique wsPeer cxt connectWS
     connectWS tlsUniq = do
       s <- makeTLSContextStream cxt
       wsConnection <- connectPeer wsPeer s
-      pure $ WS {wsPeer, tlsUniq, wsStream = s, wsConnection, wsTransportConfig = cfg, wsServerCerts}
+      wsALPN <- T.getNegotiatedProtocol cxt
+      pure $ WS {wsPeer, tlsUniq, wsALPN, wsStream = s, wsConnection, wsTransportConfig = cfg, wsServerCerts}
     connectPeer :: TransportPeer -> Stream -> IO Connection
     connectPeer TServer = acceptClientRequest
     connectPeer TClient = sendClientRequest

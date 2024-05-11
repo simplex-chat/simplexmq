@@ -23,15 +23,20 @@ import qualified Network.TLS as T
 import Numeric.Natural (Natural)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Transport (SessionId, TLS)
-import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), runTLSTransportClient)
+import Simplex.Messaging.Transport (ALPN, SessionId, TLS (tlsALPN), getServerCerts, getServerVerifyKey, tlsUniq)
+import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2
+import Simplex.Messaging.Util (eitherToMaybe)
 import UnliftIO.STM
 import UnliftIO.Timeout
+import qualified Data.X509 as X
 
 data HTTP2Client = HTTP2Client
   { action :: Maybe (Async HTTP2Response),
     sessionId :: SessionId,
+    sessionALPN :: Maybe ALPN,
+    serverKey :: Maybe C.APublicVerifyKey, -- may not always be a key we control (i.e. APNS with apple-mandated key types)
+    serverCerts :: X.CertificateChain,
     sessionTs :: UTCTime,
     sendReq :: Request -> (Response -> IO HTTP2Response) -> IO HTTP2Response,
     client_ :: HClient
@@ -65,8 +70,16 @@ defaultHTTP2ClientConfig :: HTTP2ClientConfig
 defaultHTTP2ClientConfig =
   HTTP2ClientConfig
     { qSize = 64,
-      connTimeout = 10000000,
-      transportConfig = TransportClientConfig Nothing Nothing True Nothing,
+      connTimeout = defaultTcpConnectTimeout,
+      transportConfig =
+        TransportClientConfig
+          { socksProxy = Nothing,
+            tcpConnectTimeout = defaultTcpConnectTimeout,
+            tcpKeepAlive = Nothing,
+            logTLSErrors = True,
+            clientCredentials = Nothing,
+            alpn = Nothing
+          },
       bufferSize = defaultHTTP2BufferSize,
       bodyHeadSize = 16384,
       suportedTLSParams = http2TLSParams
@@ -86,9 +99,10 @@ getVerifiedHTTP2Client proxyUsername host port keyHash caStore config disconnect
 attachHTTP2Client :: HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> Int -> TLS -> IO (Either HTTP2ClientError HTTP2Client)
 attachHTTP2Client config host port disconnected bufferSize tls = getVerifiedHTTP2ClientWith config host port disconnected setup
   where
+    setup :: (TLS -> H.Client HTTP2Response) -> IO HTTP2Response
     setup = runHTTP2ClientWith bufferSize host ($ tls)
 
-getVerifiedHTTP2ClientWith :: HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> ((SessionId -> H.Client HTTP2Response) -> IO HTTP2Response) -> IO (Either HTTP2ClientError HTTP2Client)
+getVerifiedHTTP2ClientWith :: HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> ((TLS -> H.Client HTTP2Response) -> IO HTTP2Response) -> IO (Either HTTP2ClientError HTTP2Client)
 getVerifiedHTTP2ClientWith config host port disconnected setup =
   (atomically mkHTTPS2Client >>= runClient)
     `E.catch` \(e :: IOException) -> pure . Left $ HCIOError e
@@ -104,15 +118,25 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
       cVar <- newEmptyTMVarIO
       action <- async $ setup (client c cVar) `E.finally` atomically (putTMVar cVar $ Left HCNetworkError)
       c_ <- connTimeout config `timeout` atomically (takeTMVar cVar)
-      pure $ case c_ of
-        Just (Right c') -> Right c' {action = Just action}
-        Just (Left e) -> Left e
-        Nothing -> Left HCNetworkError
+      case c_ of
+        Just (Right c') -> pure $ Right c' {action = Just action}
+        Just (Left e) -> pure $ Left e
+        Nothing -> cancel action $> Left HCNetworkError
 
-    client :: HClient -> TMVar (Either HTTP2ClientError HTTP2Client) -> SessionId -> H.Client HTTP2Response
-    client c cVar sessionId sendReq = do
+    client :: HClient -> TMVar (Either HTTP2ClientError HTTP2Client) -> TLS -> H.Client HTTP2Response
+    client c cVar tls sendReq = do
       sessionTs <- getCurrentTime
-      let c' = HTTP2Client {action = Nothing, client_ = c, sendReq, sessionId, sessionTs}
+      let c' =
+            HTTP2Client
+              { action = Nothing,
+                client_ = c,
+                serverKey = eitherToMaybe $ getServerVerifyKey tls,
+                serverCerts = getServerCerts tls,
+                sendReq,
+                sessionTs,
+                sessionId = tlsUniq tls,
+                sessionALPN = tlsALPN tls
+              }
       atomically $ do
         writeTVar (connected c) True
         putTMVar cVar (Right c')
@@ -154,13 +178,14 @@ sendRequestDirect HTTP2Client {client_ = HClient {config, disconnected}, sendReq
 http2RequestTimeout :: HTTP2ClientConfig -> Maybe Int -> Int
 http2RequestTimeout HTTP2ClientConfig {connTimeout} = maybe connTimeout (connTimeout +)
 
-runHTTP2Client :: forall a. T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> BufferSize -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (SessionId -> H.Client a) -> IO a
+runHTTP2Client :: forall a. T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> BufferSize -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (TLS -> H.Client a) -> IO a
 runHTTP2Client tlsParams caStore tcConfig bufferSize proxyUsername host port keyHash = runHTTP2ClientWith bufferSize host setup
   where
+    setup :: (TLS -> IO a) -> IO a
     setup = runTLSTransportClient tlsParams caStore tcConfig proxyUsername host port keyHash
 
-runHTTP2ClientWith :: forall a. BufferSize -> TransportHost -> ((TLS -> IO a) -> IO a) -> (SessionId -> H.Client a) -> IO a
-runHTTP2ClientWith bufferSize host setup client = setup $ withHTTP2 bufferSize run
+runHTTP2ClientWith :: forall a. BufferSize -> TransportHost -> ((TLS -> IO a) -> IO a) -> (TLS -> H.Client a) -> IO a
+runHTTP2ClientWith bufferSize host setup client = setup $ \tls -> withHTTP2 bufferSize (run tls) (pure ()) tls
   where
-    run :: H.Config -> SessionId -> IO a
-    run cfg sessId = H.run (ClientConfig "https" (strEncode host) 20) cfg $ client sessId
+    run :: TLS -> H.Config -> IO a
+    run tls cfg = H.run (ClientConfig "https" (strEncode host) 20) cfg $ client tls

@@ -27,9 +27,8 @@ import Data.Aeson (ToJSON, (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
 import qualified Data.Aeson.TH as JQ
-import Data.Base64.Types (extractBase64)
 import Data.Bifunctor (first)
-import qualified Data.ByteString.Base64.URL as UP
+import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -47,7 +46,6 @@ import Network.HTTP2.Client (Request)
 import qualified Network.HTTP2.Client as H
 import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
-import qualified Simplex.Messaging.Encoding.Base64.URL as U
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
@@ -56,7 +54,7 @@ import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Protocol (EncNMsgMeta)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import Simplex.Messaging.Transport.HTTP2.Client
-import Simplex.Messaging.Util (safeDecodeUtf8)
+import Simplex.Messaging.Util (safeDecodeUtf8, tshow)
 import System.Environment (getEnv)
 import UnliftIO.STM
 
@@ -93,8 +91,8 @@ signedJWTToken pk (JWTToken hdr claims) = do
   pure $ hc <> "." <> serialize sig
   where
     jwtEncode :: ToJSON a => a -> ByteString
-    jwtEncode = extractBase64 . UP.encodeBase64Unpadded' . LB.toStrict . J.encode
-    serialize sig = extractBase64 . UP.encodeBase64Unpadded' $ encodeASN1' DER [Start Sequence, IntVal (EC.sign_r sig), IntVal (EC.sign_s sig), End Sequence]
+    jwtEncode = U.encodeUnpadded . LB.toStrict . J.encode
+    serialize sig = U.encodeUnpadded $ encodeASN1' DER [Start Sequence, IntVal (EC.sign_r sig), IntVal (EC.sign_s sig), End Sequence]
 
 readECPrivateKey :: FilePath -> IO EC.PrivateKey
 readECPrivateKey f = do
@@ -260,11 +258,11 @@ mkApnsJWTToken appTeamId jwtHeader privateKey = do
 connectHTTPS2 :: HostName -> APNSPushClientConfig -> TVar (Maybe HTTP2Client) -> IO (Either HTTP2ClientError HTTP2Client)
 connectHTTPS2 apnsHost APNSPushClientConfig {apnsPort, http2cfg, caStoreFile} https2Client = do
   caStore_ <- XS.readCertificateStore caStoreFile
-  when (isNothing caStore_) $ putStrLn $ "Error loading CertificateStore from " <> caStoreFile
+  when (isNothing caStore_) $ logError $ "Error loading CertificateStore from " <> T.pack caStoreFile
   r <- getHTTP2Client apnsHost apnsPort caStore_ http2cfg disconnected
   case r of
     Right client -> atomically . writeTVar https2Client $ Just client
-    Left e -> putStrLn $ "Error connecting to APNS: " <> show e
+    Left e -> logError $ "Error connecting to APNS: " <> tshow e
   pure r
   where
     disconnected = atomically $ writeTVar https2Client Nothing
