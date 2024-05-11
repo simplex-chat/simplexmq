@@ -638,9 +638,9 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
         Nothing -> do
           tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
           maxTC <- asks $ maxSubscriptionTimeouts . config
-          let err = if tc' >= maxTC then CRITICAL True else INTERNAL
-              msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
-          atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
+          when (tc' >= maxTC) $ do
+            let msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
+            atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ INTERNAL msg)
   where
     resubscribe :: AM ()
     resubscribe = do
