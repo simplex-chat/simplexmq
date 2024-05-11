@@ -59,10 +59,10 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
-import Data.List (nub)
+import Data.List (find, nub)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
-import Data.Maybe (isNothing)
+import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as S
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
@@ -341,6 +341,9 @@ functionalAPITests t = do
     skip "faster version of the previous test (200 subscriptions gets very slow with test coverage)" $
       it "should subscribe to multiple (6) subscriptions with batching" $
         testBatchedSubscriptions 6 3 t
+    it "should subscribe to multiple connections with pending messages" $
+      withSmpServer t $
+        testBatchedPendingMessages 10 5
   describe "Async agent commands" $ do
     it "should connect using async agent commands" $
       withSmpServer t testAsyncCommands
@@ -1546,7 +1549,7 @@ testBatchedSubscriptions :: Int -> Int -> ATransport -> IO ()
 testBatchedSubscriptions nCreate nDel t =
   withAgentClientsCfgServers2 agentCfg agentCfg initAgentServers2 $ \a b -> do
     conns <- runServers $ do
-      conns <- replicateM (nCreate :: Int) $ makeConnection_ PQSupportOff a b
+      conns <- replicateM nCreate $ makeConnection_ PQSupportOff a b
       forM_ conns $ \(aId, bId) -> exchangeGreetings_ PQEncOff a bId b aId
       let (aIds', bIds') = unzip $ take nDel conns
       delete a bIds'
@@ -1604,6 +1607,25 @@ testBatchedSubscriptions nCreate nDel t =
           runRight a `finally` killThread t2
         killThread t1
         pure res
+
+testBatchedPendingMessages :: Int -> Int -> IO ()
+testBatchedPendingMessages nCreate nMsgs =
+  withA $ \a -> do
+    conns <- withB $ \b -> runRight $ do
+      replicateM nCreate $ makeConnection a b
+    let msgConns = take nMsgs conns
+    runRight_ $ forM_ msgConns $ \(_, bId) -> sendMessage a bId SMP.noMsgFlags "hello"
+    replicateM_ nMsgs $ get a =##> \case ("", cId, SENT _) -> isJust $ find ((cId ==) . snd) msgConns; _ -> False
+    withB $ \b -> runRight_ $ do
+      r <- subscribeConnections b $ map fst conns
+      liftIO $ all isRight r `shouldBe` True
+      replicateM_ nMsgs $ do
+        ("", cId, Msg' msgId _ "hello") <- get b
+        liftIO $ isJust (find ((cId ==) . fst) msgConns) `shouldBe` True
+        ackMessage b cId msgId Nothing
+  where
+    withA = withAgent 1 agentCfg initAgentServers testDB
+    withB = withAgent 2 agentCfg initAgentServers testDB2
 
 testAsyncCommands :: IO ()
 testAsyncCommands =

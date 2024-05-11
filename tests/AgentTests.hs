@@ -27,9 +27,9 @@ import GHC.Stack (withFrozenCallStack)
 import Network.HTTP.Types (urlEncode)
 import SMPAgentClient
 import SMPClient (testKeyHash, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
-import Simplex.Messaging.Agent.Protocol hiding (MID, CONF, INFO, REQ, SENT)
+import Simplex.Messaging.Agent.Protocol hiding (CONF, INFO, MID, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
-import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOn, pattern IKPQOff, pattern PQEncOn, pattern PQSupportOn, pattern PQSupportOff)
+import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType (..))
@@ -547,10 +547,10 @@ testResumeDeliveryQuotaExceeded _ alice bob = do
   bob <#= \case ("", "alice", Msg "message 4") -> True; _ -> False
   bob #: ("4", "alice", "ACK 7") #> ("4", "alice", OK)
   inAnyOrder
-      (tGetAgent alice)
-      [ \case ("", c, Right (SENT 8)) -> c == "bob"; _ -> False,
-        \case ("", c, Right QCONT) -> c == "bob"; _ -> False
-      ]
+    (tGetAgent alice)
+    [ \case ("", c, Right (SENT 8)) -> c == "bob"; _ -> False,
+      \case ("", c, Right QCONT) -> c == "bob"; _ -> False
+    ]
   bob <#= \case ("", "alice", Msg "over quota") -> True; _ -> False
   -- message 8 is skipped because of alice agent sending "QCONT" message
   bob #: ("5", "alice", "ACK 9") #> ("5", "alice", OK)
@@ -580,7 +580,7 @@ enableKEMStr _ = ""
 
 pqConnModeStr :: InitialKeys -> ByteString
 pqConnModeStr (IKNoPQ PQSupportOff) = ""
-pqConnModeStr pq =  " " <> strEncode pq
+pqConnModeStr pq = " " <> strEncode pq
 
 sendMessage :: Transport c => (c, ConnId) -> (c, ConnId) -> ByteString -> IO ()
 sendMessage (h1, name1) (h2, name2) msg = do

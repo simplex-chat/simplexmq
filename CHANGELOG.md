@@ -1,3 +1,18 @@
+# 5.7.3
+
+SMP/NTF protocol:
+- add ALPN for handshake version negotiation, similar to XFTP (to preserve backwards compatibility with the old clients).
+- upgrade clients to versions v7/v2 of the protocols.
+
+SMP server:
+- faster responses to subscription requests.
+
+XFTP client:
+- fix network exception during file download treated as permanent file error.
+
+SMP agent:
+- do not report subscription timeouts while client is offline.
+
 # 5.7.2
 
 SMP agent:
