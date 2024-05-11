@@ -89,6 +89,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
+import Simplex.Messaging.Version
 import System.Exit (exitFailure)
 import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
@@ -650,20 +651,21 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               proxyResp = \case
                 Left err -> ERR $ smpProxyError err
                 Right smp ->
-                  let THandleParams {sessionId = srvSessId, thVersion, thAuth} = thParams smp
-                      vr = supportedServerSMPRelayVRange -- TODO this should be destination relay version range
-                   in if thVersion >= sendingProxySMPVersion
-                        then case thAuth of
+                  let THandleParams {sessionId = srvSessId, thVersion, thServerVRange, thAuth} = thParams smp
+                   in case compatibleVRange thServerVRange proxiedSMPRelayVRange of
+                        -- Cap the destination relay version range to prevent client version fingerprinting.
+                        -- See comment for proxiedSMPRelayVersion.
+                        Just (Compatible vr) | thVersion >= sendingProxySMPVersion -> case thAuth of
                           Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
                           Nothing -> ERR $ transportErr TENoServerAuth
-                        else ERR $ transportErr TEVersion
-      PFWD pubKey encBlock -> do
+                        _ -> ERR $ transportErr TEVersion                    
+      PFWD fwdV pubKey encBlock -> do
         ProxyAgent {smpAgent} <- asks proxyAgent
         atomically (lookupSMPServerClient smpAgent sessId) >>= \case
           Just smp
             | v >= sendingProxySMPVersion ->
                 liftIO $ either (ERR . smpProxyError) PRES <$>
-                   runExceptT (forwardSMPMessage smp corrId pubKey encBlock) `catchError` (pure . Left . PCEIOError)
+                   runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catchError` (pure . Left . PCEIOError)
             | otherwise -> pure . ERR $ transportErr TEVersion
             where
               THandleParams {thVersion = v} = thParams smp
@@ -952,13 +954,14 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           sessSecret <- maybe (throwE $ transportErr TENoServerAuth) pure sessSecret'
           let proxyNonce = C.cbNonce $ bs corrId
           s' <- liftEitherWith (const CRYPTO) $ C.cbDecryptNoPad sessSecret proxyNonce s
-          FwdTransmission {fwdCorrId, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'
+          FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'
           let clientSecret = C.dh' fwdKey serverPrivKey
               clientNonce = C.cbNonce $ bs fwdCorrId
           b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret clientNonce et
+          let clntTHParams = smpTHParamsSetVersion fwdVersion thParams'
           -- only allowing single forwarded transactions
-          t' <- case tParse thParams' b of
-            t :| [] -> pure $ tDecodeParseValidate thParams' t
+          t' <- case tParse clntTHParams b of
+            t :| [] -> pure $ tDecodeParseValidate clntTHParams t
             _ -> throwE BLOCK
           let clntThAuth = Just $ THAuthServer {serverPrivKey, sessSecret' = Just clientSecret}
           -- process forwarded SEND
@@ -972,7 +975,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                 _ ->
                   pure (corrId', entId', ERR $ CMD PROHIBITED)
           -- encode response
-          r' <- case batchTransmissions (batch thParams') (blockSize thParams') [Right (Nothing, encodeTransmission thParams' r)] of
+          r' <- case batchTransmissions (batch clntTHParams) (blockSize clntTHParams) [Right (Nothing, encodeTransmission clntTHParams r)] of
             [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right
             TBError _ _ : _ -> throwE BLOCK
             TBTransmission b' _ : _ -> pure b'

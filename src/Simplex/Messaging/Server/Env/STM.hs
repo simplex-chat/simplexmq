@@ -146,8 +146,7 @@ data Client = Client
     connected :: TVar Bool,
     createdAt :: SystemTime,
     rcvActiveAt :: TVar SystemTime,
-    sndActiveAt :: TVar SystemTime,
-    proxyClient_ :: TVar (Maybe C.DhSecretX25519) -- this client is actually an SMP proxy
+    sndActiveAt :: TVar SystemTime
   }
 
 data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId) | ProhibitSub
@@ -179,8 +178,7 @@ newClient nextClientId qSize thVersion sessionId createdAt = do
   connected <- newTVar True
   rcvActiveAt <- newTVar createdAt
   sndActiveAt <- newTVar createdAt
-  proxyClient_ <- newTVar Nothing
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, proxyClient_}
+  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
