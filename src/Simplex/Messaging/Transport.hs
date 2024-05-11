@@ -558,6 +558,7 @@ smpTHandle_ th@THandle {params} v vr thAuth =
 -- It may require some parameters update in the future, to be consistent with smpTHandle_.
 smpTHParamsSetVersion :: VersionSMP -> THandleParams SMPVersion p -> THandleParams SMPVersion p
 smpTHParamsSetVersion v params = params {thVersion = v}
+{-# INLINE smpTHParamsSetVersion #-}
 
 sendHandshake :: (Transport c, Encoding smp) => THandle v c p -> smp -> ExceptT TransportError IO ()
 sendHandshake th = ExceptT . tPutBlock th . smpEncode
