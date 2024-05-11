@@ -823,7 +823,7 @@ proxySMPMessage ::
 proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g}} (ProxiedRelay sessionId v serverKey) spKey sId flags msg = do
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
-      serverThParams = proxyThParams {sessionId, thVersion = v, thAuth = serverThAuth}
+      serverThParams = smpTHParamsSetVersion v proxyThParams {sessionId, thAuth = serverThAuth}
   (cmdPubKey, cmdPrivKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
   let cmdSecret = C.dh' serverKey cmdPrivKey
   nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g

@@ -36,7 +36,7 @@ module Simplex.Messaging.Transport
     supportedSMPHandshakes,
     supportedClientSMPRelayVRange,
     supportedServerSMPRelayVRange,
-    supportedProxiedServerSMPRelayVRange,
+    proxiedSMPRelayVRange,
     legacyServerSMPRelayVRange,
     currentClientSMPRelayVersion,
     legacyServerSMPRelayVersion,
@@ -170,8 +170,8 @@ currentServerSMPRelayVersion = VersionSMP 8
 -- SMP proxy sets it to lower than its current version
 -- to prevent client version fingerprinting by the
 -- destination relays when clients upgrade at different times.
-currentProxiedServerSMPRelayVersion :: VersionSMP
-currentProxiedServerSMPRelayVersion = VersionSMP 8
+proxiedSMPRelayVersion :: VersionSMP
+proxiedSMPRelayVersion = VersionSMP 8
 
 -- minimal supported protocol version is 4
 -- TODO remove code that supports sending commands without batching
@@ -185,8 +185,8 @@ supportedServerSMPRelayVRange :: VersionRangeSMP
 supportedServerSMPRelayVRange = mkVersionRange batchCmdsSMPVersion currentServerSMPRelayVersion
 
 -- This range initially allows only version 8 - see the comment above.
-supportedProxiedServerSMPRelayVRange :: VersionRangeSMP
-supportedProxiedServerSMPRelayVRange = mkVersionRange sendingProxySMPVersion currentProxiedServerSMPRelayVersion
+proxiedSMPRelayVRange :: VersionRangeSMP
+proxiedSMPRelayVRange = mkVersionRange sendingProxySMPVersion proxiedSMPRelayVersion
 
 supportedSMPHandshakes :: [ALPN]
 supportedSMPHandshakes = ["smp/1"]

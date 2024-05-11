@@ -652,9 +652,9 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                 Left err -> ERR $ smpProxyError err
                 Right smp ->
                   let THandleParams {sessionId = srvSessId, thVersion, thServerVRange, thAuth} = thParams smp
-                   in case compatibleVRange thServerVRange supportedProxiedServerSMPRelayVRange of
+                   in case compatibleVRange thServerVRange proxiedSMPRelayVRange of
                         -- Cap the destination relay version range to prevent client version fingerprinting.
-                        -- See comment for supportedProxiedServerSMPRelayVersion.
+                        -- See comment for proxiedSMPRelayVersion.
                         Just (Compatible vr) | thVersion >= sendingProxySMPVersion -> case thAuth of
                           Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
                           Nothing -> ERR $ transportErr TENoServerAuth
@@ -958,10 +958,10 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           let clientSecret = C.dh' fwdKey serverPrivKey
               clientNonce = C.cbNonce $ bs fwdCorrId
           b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret clientNonce et
-          let clientTHParams = smpTHParamsSetVersion fwdVersion thParams'
+          let clntTHParams = smpTHParamsSetVersion fwdVersion thParams'
           -- only allowing single forwarded transactions
-          t' <- case tParse clientTHParams b of
-            t :| [] -> pure $ tDecodeParseValidate clientTHParams t
+          t' <- case tParse clntTHParams b of
+            t :| [] -> pure $ tDecodeParseValidate clntTHParams t
             _ -> throwE BLOCK
           let clntThAuth = Just $ THAuthServer {serverPrivKey, sessSecret' = Just clientSecret}
           -- process forwarded SEND
@@ -975,7 +975,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                 _ ->
                   pure (corrId', entId', ERR $ CMD PROHIBITED)
           -- encode response
-          r' <- case batchTransmissions (batch clientTHParams) (blockSize clientTHParams) [Right (Nothing, encodeTransmission clientTHParams r)] of
+          r' <- case batchTransmissions (batch clntTHParams) (blockSize clntTHParams) [Right (Nothing, encodeTransmission clntTHParams r)] of
             [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right
             TBError _ _ : _ -> throwE BLOCK
             TBTransmission b' _ : _ -> pure b'
