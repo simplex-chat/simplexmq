@@ -10,13 +10,14 @@
 module Simplex.Messaging.Server.Main where
 
 import Control.Concurrent.STM
-import Control.Monad (void, (<$!>))
+import Control.Logger.Simple
+import Control.Monad (void, when, (<$!>))
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlpha, isAscii, toUpper)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
 import Data.List (isPrefixOf)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -41,7 +42,10 @@ import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 
 smpServerCLI :: FilePath -> FilePath -> IO ()
-smpServerCLI cfgPath logPath =
+smpServerCLI = smpServerCLI_ (\_ _ -> pure ()) (\_ -> pure ())
+
+smpServerCLI_ :: (ServerInformation -> FilePath -> IO ()) -> (EmbeddedWebParams -> IO ()) -> FilePath -> FilePath -> IO ()
+smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
   getCliCommand' (cliCommandP cfgPath logPath iniFile) serverVersion >>= \case
     Init opts ->
       doesFileExist iniFile >>= \case
@@ -66,7 +70,10 @@ smpServerCLI cfgPath logPath =
     defaultServerPort = "5223"
     executableName = "smp-server"
     storeLogFilePath = combine logPath "smp-server-store.log"
-    initializeServer opts@InitOptions {ip, fqdn, scripted}
+    httpsCertFile = combine cfgPath "web.cert"
+    httpsKeyFile = combine cfgPath "web.key"
+    defaultStaticPath = combine logPath "www"
+    initializeServer opts@InitOptions {ip, fqdn, sourceCode = src', staticPath = sp', disableWebServer = noWeb', scripted}
       | scripted = initialize opts
       | otherwise = do
           putStrLn "Use `smp-server init -h` for available options."
@@ -77,8 +84,19 @@ smpServerCLI cfgPath logPath =
           password <- withPrompt "'r' for random (default), 'n' - no password, or enter password: " serverPassword
           let host = fromMaybe ip fqdn
           host' <- withPrompt ("Enter server FQDN or IP address for certificate (" <> host <> "): ") getLine
-          sourceCode <- Just . T.pack <$> withPrompt ("Enter server source code URI (" <> simplexmqSource <> "): ") getServerSourceCode
-          initialize opts {enableStoreLog, logStats, fqdn = if null host' then fqdn else Just host', password, sourceCode}
+          sourceCode' <- withPrompt ("Enter server source code URI (" <> maybe simplexmqSource T.unpack src' <> "): ") getServerSourceCode
+          staticPath' <- withPrompt ("Enter path to store generated static site with server information (" <> fromMaybe defaultStaticPath sp' <> "): ") getLine
+          enableWeb <- onOffPrompt "Enable built-in web server for static site" (not noWeb')
+          initialize
+            opts
+              { enableStoreLog,
+                logStats,
+                fqdn = if null host' then fqdn else Just host',
+                password,
+                sourceCode = (T.pack <$> sourceCode') <|> src',
+                staticPath = if null staticPath' then sp' else Just staticPath',
+                disableWebServer = not enableWeb
+              }
       where
         serverPassword =
           getLine >>= \case
@@ -89,7 +107,7 @@ smpServerCLI cfgPath logPath =
               case strDecode $ encodeUtf8 $ T.pack s of
                 Right auth -> pure . Just $ ServerPassword auth
                 _ -> putStrLn "Invalid password. Only latin letters, digits and symbols other than '@' and ':' are allowed" >> serverPassword
-        initialize InitOptions {enableStoreLog, logStats, signAlgorithm, password, sourceCode} = do
+        initialize InitOptions {enableStoreLog, logStats, signAlgorithm, password, sourceCode, staticPath, disableWebServer} = do
           clearDirIfExists cfgPath
           clearDirIfExists logPath
           createDirectoryIfMissing True cfgPath
@@ -152,6 +170,19 @@ smpServerCLI cfgPath logPath =
                    \disconnect: off\n"
                 <> ("# ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
                 <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
+                <> "\n\n\
+                   \[WEB]\n\
+                   \# Set path to generate static mini-site for server information and qr codes/links\n"
+                <> ("static_path: " <> T.pack (fromMaybe defaultStaticPath staticPath) <> "\n\n")
+                <> "# Run an embedded server on this port\n\
+                   \# Onion sites can use any port and register it in the hidden service config.\n\
+                   \# Running on a port 80 may require setting process capabilities.\n"
+                <> ((if disableWebServer then "# " else "") <> "http: 8000\n\n")
+                <> "# You can run an embedded TLS web server too if you provide port and cert and key files.\n\
+                   \# Not required for running TOR-only relay.\n\
+                   \# https: 443\n"
+                <> ("# cert: " <> T.pack httpsCertFile <> "\n")
+                <> ("# key: " <> T.pack httpsKeyFile <> "\n")
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -176,6 +207,19 @@ smpServerCLI cfgPath logPath =
             then maybe "allowed" (const "requires password") newQueueBasicAuth
             else "NOT allowed"
       -- print information
+      let persistence
+            | isNothing storeLogFile = SPMMemoryOnly
+            | isJust (storeMsgsFile cfg) = SPMMessages
+            | otherwise = SPMQueues
+      let config =
+            ServerPublicConfig
+              { persistence,
+                messageExpiration = ttl <$> messageExpiration,
+                statsEnabled = isJust logStats,
+                newQueuesAllowed = allowNewQueues cfg,
+                basicAuthEnabled = isJust newQueueBasicAuth
+              }
+      runWebServer ini ServerInformation {config, information}
       runSMPServer cfg
       where
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
@@ -230,12 +274,31 @@ smpServerCLI cfgPath logPath =
               controlPort = eitherToMaybe $ T.unpack <$> lookupValue "TRANSPORT" "control_port" ini,
               information = serverPublicInfo ini
             }
+    runWebServer ini si =
+      case eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini of
+        Nothing -> logWarn "No server static path set"
+        Just staticPath -> do
+          let http = eitherToMaybe $ read . T.unpack <$> lookupValue "WEB" "http" ini
+          let https =
+                eitherToMaybe $
+                  (,,)
+                    <$> (T.unpack <$> lookupValue "WEB" "cert" ini)
+                    <*> (T.unpack <$> lookupValue "WEB" "key" ini)
+                    <*> (read . T.unpack <$> lookupValue "WEB" "https" ini)
+          generateSite si staticPath
+          when (isJust http || isJust https) $ serveStaticFiles EmbeddedWebParams {http, https, staticPath}
 
-getServerSourceCode :: IO String
+data EmbeddedWebParams = EmbeddedWebParams
+  { staticPath :: FilePath,
+    http :: Maybe Int,
+    https :: Maybe (FilePath, FilePath, Int)
+  }
+
+getServerSourceCode :: IO (Maybe String)
 getServerSourceCode =
   getLine >>= \case
-    "" -> pure simplexmqSource
-    s | "https://" `isPrefixOf` s || "http://" `isPrefixOf` s -> pure s
+    "" -> pure Nothing
+    s | "https://" `isPrefixOf` s || "http://" `isPrefixOf` s -> pure $ Just s
     _ -> putStrLn "Invalid source code. URI should start from http:// or https://" >> getServerSourceCode
 
 simplexmqSource :: String
@@ -249,7 +312,7 @@ informationIniContent sourceCode_ =
   \# LICENSE: https://github.com/simplex-chat/simplexmq/blob/stable/LICENSE\n\
   \# Include correct source code URI in case the server source code is modified in any way.\n\
   \# If any other information fields are present, source code property also MUST be present.\n\n"
-    <> (maybe ("# source_code: URI") ("source_code: " <>) sourceCode_ <> "\n\n")
+    <> (maybe "# source_code: URI" ("source_code: " <>) sourceCode_ <> "\n\n")
     <> "# Declaring all below information is optional, any of these fields can be omitted.\n\
        \\n\
        \# Server usage conditions and amendments.\n\
@@ -329,6 +392,8 @@ data InitOptions = InitOptions
     fqdn :: Maybe HostName,
     password :: Maybe ServerPassword,
     sourceCode :: Maybe Text,
+    staticPath :: Maybe FilePath,
+    disableWebServer :: Bool,
     scripted :: Bool
   }
   deriving (Show)
@@ -399,7 +464,18 @@ cliCommandP cfgPath logPath iniFile =
         (optional . strOption)
           ( long "source-code"
               <> help "Server source code will be communicated to the users"
-              <> metavar "SOURCE"
+              <> metavar "URI"
+          )
+      staticPath <-
+        (optional . strOption)
+          ( long "web-path"
+              <> help "Directory to store generated static site with server information"
+              <> metavar "PATH"
+          )
+      disableWebServer <-
+        switch
+          ( long "disable-web-server"
+              <> help "Disable starting embedded web server for static files"
           )
       scripted <-
         switch
@@ -407,6 +483,18 @@ cliCommandP cfgPath logPath iniFile =
               <> short 'y'
               <> help "Non-interactive initialization using command-line options"
           )
-      pure InitOptions {enableStoreLog, logStats, signAlgorithm, ip, fqdn, password, sourceCode, scripted}
+      pure
+        InitOptions
+          { enableStoreLog,
+            logStats,
+            signAlgorithm,
+            ip,
+            fqdn,
+            password,
+            sourceCode,
+            staticPath,
+            disableWebServer,
+            scripted
+          }
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
