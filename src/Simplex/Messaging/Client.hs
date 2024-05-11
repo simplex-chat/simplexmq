@@ -841,8 +841,8 @@ proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
       PRES (EncResponse er) -> do
         -- server interaction errors are thrown directly
         t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.reverseNonce nonce) er
-        case tParse proxyThParams t' of
-          t'' :| [] -> case tDecodeParseValidate proxyThParams t'' of
+        case tParse serverThParams t' of
+          t'' :| [] -> case tDecodeParseValidate serverThParams t'' of
             (_auth, _signed, (_c, _e, cmd)) -> case cmd of
               Right OK -> pure $ Right ()
               Right (ERR e) -> throwE $ PCEProtocolError e -- this is the error from the destination relay
