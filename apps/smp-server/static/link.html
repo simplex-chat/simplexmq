@@ -7,12 +7,10 @@
   <title>SimpleX Chat - Invitation</title>
   <meta name="description" content="">
   <meta name="Content-Type" content="text/html;charset=utf-8">
-  <meta http-equiv="onion-location" content="http://isdb4l77sjqoy2qq7ipum6x3at6hyn3jmxfx4zdhc72ufbmuq4ilwkqd.onion/">
   <link rel="icon" type="image/png" sizes="96x96" href="/media/favicon.ico">
   <link rel="stylesheet" href="/media/swiper-bundle.min.css">
   <link href="/media/tailwind.css" rel="stylesheet">
   <link rel="stylesheet" href="/media/style.css">
-  <script src="/media/flag-anchor.js"></script>
 </head>
 
 <body class="bg-white dark:bg-[#0C0B13]">
@@ -140,13 +138,11 @@
 
       window.addEventListener('scroll', changeHeaderBg);</script>
   </section>
-  <script src="/media/flag-anchor.js"></script>
-  <script src="/media/qrcode.js"></script>
-  <script async="" defer="" src="/media/contact.js"></script>
+
   <section
-    class="hidden xl:block h-screen pt-[66px] bg-white dark:bg-gradient-radial-mobile dark:lg:bg-gradient-radial">
-    <div class="container m-auto h-full flex items-center justify-between px-5">
-      <div class="flex flex-col items-start justify-center w-full h-full">
+    class="pt-[106px] py-[90px] hidden xl:block bg-white dark:bg-gradient-radial-mobile dark:lg:bg-gradient-radial">
+    <div class="container m-auto flex items-center justify-between px-5">
+      <div class="flex flex-col items-start justify-center w-full">
         <h1 class="text-[38px] leading-[43px] font-bold max-w-[500px] mb-[30px] primary-header-contact">You received a
           1-time link to connect on SimpleX Chat</h1>
         <h2
@@ -185,8 +181,8 @@
     </div>
   </section>
   <section
-    class="block xl:hidden pt-[106px] pb-[90px] bg-white dark:bg-gradient-radial-mobile dark:lg:bg-gradient-radial">
-    <div class="container m-auto h-full px-5">
+    class="block xl:hidden pt-[106px] py-[90px] bg-white dark:bg-gradient-radial-mobile dark:lg:bg-gradient-radial">
+    <div class="container m-auto px-5">
       <div class="flex flex-col items-center">
         <h1 class="text-[28px] font-bold text-center max-w-[602px] mb-[40px] primary-header-contact">You received a
           1-time link to connect on SimpleX Chat</h1>
@@ -233,7 +229,7 @@
       </div>
     </div>
   </section>
-  <section class="hidden md:block bg-secondary-bg-light dark:bg-secondary-bg-dark py-[20px]">
+  <section id="join-simplex" class="bg-primary-bg-light dark:bg-primary-bg-dark py-[90px] px-5">
     <div class="container px-5">
       <div class="text-grey-black dark:text-white">
         <div class="hidden md:block xl:hidden for-tablet">
@@ -311,7 +307,7 @@
       </div>
     </div>
   </section>
-  <section id="join-simplex" class="bg-primary-bg-light dark:bg-primary-bg-dark lg:h-[855px] py-[90px] px-5">
+  <section id="join-simplex" class="bg-primary-bg-light dark:bg-primary-bg-dark py-[90px] px-5">
     <div class="container flex flex-col items-center">
       <h2
         class="text-[38px] leading-[36px] md:leading-[55px] text-grey-black dark:text-white text-center font-bold mb-5">
@@ -502,12 +498,18 @@
         </article>
       </div><a href="#"
         class="text-grey-black dark:text-white text-[16px] text-center lg:ltr:text-left lg:rtl:text-right font-medium leading-[28px] tracking-[0.01em] block mt-[60px]">©
-        2020-2023 SimpleX | Open-Source Project</a>
+        2020-2024 SimpleX | Open-Source Project</a>
     </div>
   </section>
+
+  <script src="/media/flag-anchor.js"></script>
+  <script src="/media/qrcode.js"></script>
+  <script async="" defer="" src="/media/contact.js"></script>
+  <script>document.querySelectorAll('.d-none-if-js-disabled').forEach(el => el.classList.remove('d-none-if-js-disabled'));</script>
   <script src="/media/animation.js"></script>
   <script src="/media/swiper-bundle.min.js"></script>
   <script src="/media/script.js"></script>
+
 </body>
 
 </html>
