@@ -819,7 +819,6 @@ proxySMPMessage ::
   MsgFlags ->
   MsgBody ->
   ExceptT SMPClientError IO (Either ProxyClientError ())
--- TODO use version
 proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g}} (ProxiedRelay sessionId v serverKey) spKey sId flags msg = do
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
