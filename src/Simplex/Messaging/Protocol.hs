@@ -251,7 +251,7 @@ maxMessageLength v
   | otherwise = 16088 -- 16064 - always use this size to determine allowed ranges
 
 paddedProxiedMsgLength :: Int
-paddedProxiedMsgLength = 16244 -- 16241 .. 16245
+paddedProxiedMsgLength = 16242 -- 16241 .. 16243
 
 -- TODO v6.0 change to 16064
 type MaxMessageLen = 16088
@@ -399,7 +399,7 @@ data Command (p :: Party) where
   -- - corrId: also used as a nonce to encrypt transmission to relay, corrId + 1 - from relay
   -- - key (1st param in the command) is used to agree DH secret for this particular transmission and its response
   -- Encrypted transmission should include session ID (tlsunique) from proxy-relay connection.
-  PFWD :: C.PublicKeyX25519 -> EncTransmission -> Command ProxiedClient -- use CorrId as CbNonce, client to proxy
+  PFWD :: VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> Command ProxiedClient -- use CorrId as CbNonce, client to proxy
   -- Transmission forwarded to relay:
   -- - entity ID: empty
   -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
@@ -434,16 +434,17 @@ newtype EncTransmission = EncTransmission ByteString
 
 data FwdTransmission = FwdTransmission
   { fwdCorrId :: CorrId,
+    fwdVersion :: VersionSMP,
     fwdKey :: C.PublicKeyX25519,
     fwdTransmission :: EncTransmission
   }
 
 instance Encoding FwdTransmission where
-  smpEncode FwdTransmission {fwdCorrId = CorrId corrId, fwdKey, fwdTransmission = EncTransmission t} =
-    smpEncode (corrId, fwdKey, Tail t)
+  smpEncode FwdTransmission {fwdCorrId = CorrId corrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t} =
+    smpEncode (corrId, fwdVersion, fwdKey, Tail t)
   smpP = do
-    (corrId, fwdKey, Tail t) <- smpP
-    pure FwdTransmission {fwdCorrId = CorrId corrId, fwdKey, fwdTransmission = EncTransmission t}
+    (corrId, fwdVersion, fwdKey, Tail t) <- smpP
+    pure FwdTransmission {fwdCorrId = CorrId corrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t}
 
 newtype EncFwdTransmission = EncFwdTransmission ByteString
   deriving (Show)
@@ -1278,7 +1279,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PING -> e PING_
     NSUB -> e NSUB_
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
-    PFWD pubKey (EncTransmission s) -> e (PFWD_, ' ', pubKey, Tail s)
+    PFWD fwdV pubKey (EncTransmission s) -> e (PFWD_, ' ', fwdV, pubKey, Tail s)
     RFWD (EncFwdTransmission s) -> e (RFWD_, ' ', Tail s)
     where
       e :: Encoding a => a -> ByteString
@@ -1346,7 +1347,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
         RFWD_ -> RFWD <$> (EncFwdTransmission . unTail <$> _smpP)
     CT SProxiedClient tag ->
       Cmd SProxiedClient <$> case tag of
-        PFWD_ -> PFWD <$> _smpP <*> (EncTransmission . unTail <$> smpP)
+        PFWD_ -> PFWD <$> _smpP <*> smpP <*> (EncTransmission . unTail <$> smpP)
         PRXY_ -> PRXY <$> _smpP <*> smpP
     CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
 

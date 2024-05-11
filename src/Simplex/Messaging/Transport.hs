@@ -36,6 +36,7 @@ module Simplex.Messaging.Transport
     supportedSMPHandshakes,
     supportedClientSMPRelayVRange,
     supportedServerSMPRelayVRange,
+    supportedProxiedServerSMPRelayVRange,
     legacyServerSMPRelayVRange,
     currentClientSMPRelayVersion,
     legacyServerSMPRelayVersion,
@@ -77,6 +78,7 @@ module Simplex.Messaging.Transport
     tGetBlock,
     sendHandshake,
     getHandshake,
+    smpTHParamsSetVersion,
   )
 where
 
@@ -155,13 +157,21 @@ sendingProxySMPVersion :: VersionSMP
 sendingProxySMPVersion = VersionSMP 8
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 7
+currentClientSMPRelayVersion = VersionSMP 8
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 7
+currentServerSMPRelayVersion = VersionSMP 8
+
+-- Max SMP protocol version to be used in e2e encrypted
+-- connection between client and server, as defined by SMP proxy.
+-- SMP proxy sets it to lower than its current version
+-- to prevent client version fingerprinting by the
+-- destination relays when clients upgrade at different times.
+currentProxiedServerSMPRelayVersion :: VersionSMP
+currentProxiedServerSMPRelayVersion = VersionSMP 8
 
 -- minimal supported protocol version is 4
 -- TODO remove code that supports sending commands without batching
@@ -173,6 +183,10 @@ legacyServerSMPRelayVRange = mkVersionRange batchCmdsSMPVersion legacyServerSMPR
 
 supportedServerSMPRelayVRange :: VersionRangeSMP
 supportedServerSMPRelayVRange = mkVersionRange batchCmdsSMPVersion currentServerSMPRelayVersion
+
+-- This range initially allows only version 8 - see the comment above.
+supportedProxiedServerSMPRelayVRange :: VersionRangeSMP
+supportedProxiedServerSMPRelayVRange = mkVersionRange sendingProxySMPVersion currentProxiedServerSMPRelayVersion
 
 supportedSMPHandshakes :: [ALPN]
 supportedSMPHandshakes = ["smp/1"]
@@ -497,7 +511,7 @@ smpServerHandshake serverSignKey c (k, pk) kh smpVRange = do
           throwE $ TEHandshake IDENTITY
       | otherwise ->
           case compatibleVRange' smpVersionRange v of
-            Just (Compatible vr) -> pure $ smpThHandleServer th v vr pk k'
+            Just (Compatible vr) -> pure $ smpTHandleServer th v vr pk k'
             Nothing -> throwE TEVersion
 
 -- | Client SMP transport handshake.
@@ -521,24 +535,29 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) smpVRange = do
             (,certKey) <$> (C.x509ToPublic (pubKey, []) >>= C.pubKey)
         let v = maxVersion vr
         sendHandshake th $ ClientHandshake {smpVersion = v, keyHash, authPubKey = fst <$> ks_}
-        pure $ smpThHandleClient th v vr (snd <$> ks_) ck_
+        pure $ smpTHandleClient th v vr (snd <$> ks_) ck_
       Nothing -> throwE TEVersion
 
-smpThHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> VersionRangeSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandleSMP c 'TServer
-smpThHandleServer th v vr pk k_ =
+smpTHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> VersionRangeSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandleSMP c 'TServer
+smpTHandleServer th v vr pk k_ =
   let thAuth = THAuthServer {serverPrivKey = pk, sessSecret' = (`C.dh'` pk) <$> k_}
-   in smpThHandle_ th v vr (Just thAuth)
+   in smpTHandle_ th v vr (Just thAuth)
 
-smpThHandleClient :: forall c. THandleSMP c 'TClient -> VersionSMP -> VersionRangeSMP -> Maybe C.PrivateKeyX25519 -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> THandleSMP c 'TClient
-smpThHandleClient th v vr pk_ ck_ =
+smpTHandleClient :: forall c. THandleSMP c 'TClient -> VersionSMP -> VersionRangeSMP -> Maybe C.PrivateKeyX25519 -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> THandleSMP c 'TClient
+smpTHandleClient th v vr pk_ ck_ =
   let thAuth = (\(k, ck) -> THAuthClient {serverPeerPubKey = k, serverCertKey = ck, sessSecret = C.dh' k <$> pk_}) <$> ck_
-   in smpThHandle_ th v vr thAuth
+   in smpTHandle_ th v vr thAuth
 
-smpThHandle_ :: forall c p. THandleSMP c p -> VersionSMP -> VersionRangeSMP -> Maybe (THandleAuth p) -> THandleSMP c p
-smpThHandle_ th@THandle {params} v vr thAuth =
+smpTHandle_ :: forall c p. THandleSMP c p -> VersionSMP -> VersionRangeSMP -> Maybe (THandleAuth p) -> THandleSMP c p
+smpTHandle_ th@THandle {params} v vr thAuth =
   -- TODO drop SMP v6: make thAuth non-optional
   let params' = params {thVersion = v, thServerVRange = vr, thAuth, implySessId = v >= authCmdsSMPVersion}
    in (th :: THandleSMP c p) {params = params'}
+
+-- This function is only used with v >= 8, so currently it's a simple record update.
+-- It may require some parameters update in the future, to be consistent with smpTHandle_.
+smpTHParamsSetVersion :: VersionSMP -> THandleParams SMPVersion p -> THandleParams SMPVersion p
+smpTHParamsSetVersion v params = params {thVersion = v}
 
 sendHandshake :: (Transport c, Encoding smp) => THandle v c p -> smp -> ExceptT TransportError IO ()
 sendHandshake th = ExceptT . tPutBlock th . smpEncode

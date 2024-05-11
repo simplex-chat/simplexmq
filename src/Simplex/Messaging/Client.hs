@@ -820,10 +820,10 @@ proxySMPMessage ::
   MsgBody ->
   ExceptT SMPClientError IO (Either ProxyClientError ())
 -- TODO use version
-proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g}} (ProxiedRelay sessionId _v serverKey) spKey sId flags msg = do
+proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g}} (ProxiedRelay sessionId v serverKey) spKey sId flags msg = do
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
-      serverThParams = proxyThParams {sessionId, thAuth = serverThAuth}
+      serverThParams = proxyThParams {sessionId, thVersion = v, thAuth = serverThAuth}
   (cmdPubKey, cmdPrivKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
   let cmdSecret = C.dh' serverKey cmdPrivKey
   nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
@@ -837,7 +837,7 @@ proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
     TBTransmissions s _ _ : _ -> pure s
   et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedMsgLength
   -- proxy interaction errors are wrapped
-  tryE (sendProtocolCommand_ c (Just nonce) Nothing sessionId (Cmd SProxiedClient (PFWD cmdPubKey et))) >>= \case
+  tryE (sendProtocolCommand_ c (Just nonce) Nothing sessionId (Cmd SProxiedClient (PFWD v cmdPubKey et))) >>= \case
     Right r -> case r of
       PRES (EncResponse er) -> do
         -- server interaction errors are thrown directly
@@ -862,15 +862,15 @@ proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
 -- sends RFWD :: EncFwdTransmission -> Command Sender
 -- receives RRES :: EncFwdResponse -> BrokerMsg
 -- proxy should send PRES to the client with EncResponse
-forwardSMPMessage :: SMPClient -> CorrId -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
-forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdKey fwdTransmission = do
+forwardSMPMessage :: SMPClient -> CorrId -> VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
+forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdVersion fwdKey fwdTransmission = do
   -- prepare params
   sessSecret <- case thAuth thParams of
     Nothing -> throwError $ PCETransportError TENoServerAuth
     Just THAuthClient {sessSecret} -> maybe (throwError $ PCETransportError TENoServerAuth) pure sessSecret
   nonce <- liftIO . atomically $ C.randomCbNonce g
   -- wrap
-  let fwdT = FwdTransmission {fwdCorrId, fwdKey, fwdTransmission}
+  let fwdT = FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission}
       eft = EncFwdTransmission $ C.cbEncryptNoPad sessSecret nonce (smpEncode fwdT)
   -- send
   sendProtocolCommand_ c (Just nonce) Nothing "" (Cmd SSender (RFWD eft)) >>= \case
