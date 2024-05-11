@@ -17,6 +17,7 @@ import qualified Network.Wai.Handler.WarpTLS as W
 import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.Main (EmbeddedWebParams (..))
+import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Util (tshow)
 import Static.Embedded as E
 import System.Directory (createDirectoryIfMissing)
@@ -34,10 +35,10 @@ serveStaticFiles EmbeddedWebParams {staticPath, http, https} = do
   where
     mkSettings port = setPort port defaultSettings
 
-generateSite :: ServerInformation -> FilePath -> IO ()
-generateSite si sitePath = do
+generateSite :: ServerInformation -> Maybe TransportHost -> FilePath -> IO ()
+generateSite si onionHost sitePath = do
   createDirectoryIfMissing True sitePath
-  B.writeFile (sitePath </> "index.html") $ serverInformation si
+  B.writeFile (sitePath </> "index.html") $ serverInformation si onionHost
   createDirectoryIfMissing True $ sitePath </> "media"
   forM_ E.mediaContent $ \(path, bs) -> B.writeFile (sitePath </> "media" </> path) bs
   createDirectoryIfMissing True $ sitePath </> "contact"
@@ -46,10 +47,10 @@ generateSite si sitePath = do
   B.writeFile (sitePath </> "invitation" </> "index.html") E.linkHtml
   logInfo $ "Generated static site contents at " <> tshow sitePath
 
-serverInformation :: ServerInformation -> ByteString
-serverInformation ServerInformation {config, information} = render E.indexHtml substs
+serverInformation :: ServerInformation -> Maybe TransportHost -> ByteString
+serverInformation ServerInformation {config, information} onionHost = render E.indexHtml substs
   where
-    substs = substConfig <> maybe [] substInfo information
+    substs = substConfig <> maybe [] substInfo information <> [("onionHost", strEncode <$> onionHost)]
     substConfig =
       [ ( "persistence",
           Just $ case persistence config of
@@ -92,13 +93,15 @@ serverInformation ServerInformation {config, information} = render E.indexHtml s
           [ ("admin", Just ""),
             ("adminSimplex", strEncode <$> simplex),
             ("adminEmail", encodeUtf8 <$> email),
-            ("adminPGP", encodeUtf8 <$> pgp)
+            ("adminPGP", encodeUtf8 . pkURI <$> pgp),
+            ("adminPGPFingerprint", encodeUtf8 . pkFingerprint <$> pgp)
           ]
         complaints ServerContactAddress {simplex, email, pgp} =
           [ ("complaints", Just ""),
             ("complaintsSimplex", strEncode <$> simplex),
             ("complaintsEmail", encodeUtf8 <$> email),
-            ("complaintsPGP", encodeUtf8 <$> pgp)
+            ("complaintsPGP", encodeUtf8 . pkURI <$> pgp),
+            ("complaintsPGPFingerprint", encodeUtf8 . pkFingerprint <$> pgp)
           ]
         hostingE Entity {name, country} =
           [ ("hosting", Just ""),

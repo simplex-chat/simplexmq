@@ -7,6 +7,9 @@
   <title>SimpleX Chat - Server Information</title>
   <meta name="description" content="">
   <meta name="Content-Type" content="text/html;charset=utf-8">
+  <x-onionHost>
+    <meta http-equiv="onion-location" content="http://${onionHost}">
+  </x-onionHost>
   <link rel="icon" type="image/png" sizes="96x96" href="/media/favicon.ico">
   <link rel="stylesheet" href="/media/swiper-bundle.min.css">
   <link href="/media/tailwind.css" rel="stylesheet">
@@ -205,14 +208,14 @@
               <li>Email: <a href="mailto:${adminEmail}">${adminEmail}</a></li>
             </x-adminEmail>
             <x-adminPGP>
-              <li>PGP: <a href="${adminPGP}">${adminPGP}</a></li>
+              <li>PGP: <a href="${adminPGP}">${adminPGPFingerprint}</a></li>
             </x-adminPGP>
           </ul>
           </p>
         </x-admin>
         <x-complaints>
           <p class="text-grey-black dark:text-white text-base mb-[16px]">
-            <strong>Complaints contacts:</strong>
+            <strong>Contacts for complaints and feedback:</strong>
           <ul class="text-grey-black dark:text-white text-base mb-[16px]">
             <x-complaintsSimplex>
               <li>SimpleX: <a href="${complaintsSimplex}">Open in the app</a></li>
@@ -221,7 +224,7 @@
               <li>Email: <a href="mailto:${complaintsEmail}">${complaintsEmail}</a></li>
             </x-complaintsEmail>
             <x-complaintsPGP>
-              <li>PGP: <a href="${complaintsPGP}">${complaintsPGP}</a></li>
+              <li>PGP: <a href="${complaintsPGP}">${complaintsPGPFingerprint}</a></li>
             </x-complaintsPGP>
           </ul>
           </p>
@@ -239,8 +242,6 @@
 
         <hr class="block mb-7 mx-5 dark:opacity-[0.2] w-full">
 
-        <p class="text-grey-black dark:text-white text-base">Not downloaded the SimpleX Chat yet?</p>
-        <p class="text-grey-black dark:text-white text-base mb-[24px]">Use the links below to download the app.</p>
         <div class="flex items-center justify-center gap-4 flex-wrap"><a target="_blank"
             href="https://apps.apple.com/us/app/simplex-chat/id1605771084"><img class="h-[40px] w-auto"
               src="/media/apple_store.svg"></a><a target="_blank"

@@ -5,7 +5,9 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Server.Main where
 
@@ -16,7 +18,8 @@ import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlpha, isAscii, toUpper)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
-import Data.List (isPrefixOf)
+import Data.List (find, isPrefixOf)
+import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -42,9 +45,9 @@ import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 
 smpServerCLI :: FilePath -> FilePath -> IO ()
-smpServerCLI = smpServerCLI_ (\_ _ -> pure ()) (\_ -> pure ())
+smpServerCLI = smpServerCLI_ (\_ _ _ -> pure ()) (\_ -> pure ())
 
-smpServerCLI_ :: (ServerInformation -> FilePath -> IO ()) -> (EmbeddedWebParams -> IO ()) -> FilePath -> FilePath -> IO ()
+smpServerCLI_ :: (ServerInformation -> Maybe TransportHost -> FilePath -> IO ()) -> (EmbeddedWebParams -> IO ()) -> FilePath -> FilePath -> IO ()
 smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
   getCliCommand' (cliCommandP cfgPath logPath iniFile) serverVersion >>= \case
     Init opts ->
@@ -278,15 +281,20 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
       case eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini of
         Nothing -> logWarn "No server static path set"
         Just staticPath -> do
-          let http = eitherToMaybe $ read . T.unpack <$> lookupValue "WEB" "http" ini
-          let https =
+          let onionHost =
+                either (const Nothing) (find isOnion) $
+                  strDecode @(L.NonEmpty TransportHost) . encodeUtf8 =<< lookupValue "TRANSPORT" "host" ini
+              http = eitherToMaybe $ read . T.unpack <$> lookupValue "WEB" "http" ini
+              https =
                 eitherToMaybe $
                   (,,)
                     <$> (T.unpack <$> lookupValue "WEB" "cert" ini)
                     <*> (T.unpack <$> lookupValue "WEB" "key" ini)
                     <*> (read . T.unpack <$> lookupValue "WEB" "https" ini)
-          generateSite si staticPath
-          when (isJust http || isJust https) $ serveStaticFiles EmbeddedWebParams {http, https, staticPath}
+          generateSite si onionHost staticPath
+          when (isJust http || isJust https) $ serveStaticFiles EmbeddedWebParams {staticPath, http, https}
+          where
+            isOnion = \case THOnionHost _ -> True; _ -> False
 
 data EmbeddedWebParams = EmbeddedWebParams
   { staticPath :: FilePath,
@@ -330,11 +338,13 @@ informationIniContent sourceCode_ =
        \# admin_simplex: SimpleX address\n\
        \# admin_email:\n\
        \# admin_pgp:\n\
+       \# admin_pgp_fingerprint:\n\
        \\n\
        \# Contacts for complaints and feedback.\n\
        \# complaints_simplex: SimpleX address\n\
        \# complaints_email:\n\
        \# complaints_pgp:\n\
+       \# complaints_pgp_fingerprint:\n\
        \\n\
        \# Hosting provider.\n\
        \# hosting: entity (organization or person name)\n\
@@ -352,8 +362,8 @@ serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
           serverCountry = countryValue "server_country",
           operator = iniEntity "operator" "operator_country",
           website = infoValue "website",
-          adminContacts = iniContacts "admin_simplex" "admin_email" "admin_pgp",
-          complaintsContacts = iniContacts "complaints_simplex" "complaints_email" "complaints_pgp",
+          adminContacts = iniContacts "admin_simplex" "admin_email" "admin_pgp" "admin_pgp_fingerprint",
+          complaintsContacts = iniContacts "complaints_simplex" "complaints_email" "complaints_pgp" "complaints_pgp_fingerprint",
           hosting = iniEntity "hosting" "hosting_country"
         }
     infoValue name = eitherToMaybe $ lookupValue "INFORMATION" name ini
@@ -363,13 +373,15 @@ serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
     countryValue field =
       (\cs -> if T.length cs == 2 && T.all (\c -> isAscii c && isAlpha c) cs then T.map toUpper cs else error $ "Use ISO3166 2-letter code for " <> T.unpack field)
         <$!> infoValue field
-    iniContacts simplexField emailField pgpField =
+    iniContacts simplexField emailField pgpKeyUriField pgpKeyFingerprintField =
       let simplex = either error id <$!> strDecodeIni "INFORMATION" simplexField ini
           email = infoValue emailField
-          pgp = infoValue pgpField
-       in case (simplex, email, pgp) of
-            (Nothing, Nothing, Nothing) -> Nothing
-            _ -> Just ServerContactAddress {simplex, email, pgp}
+          pkURI_ = infoValue pgpKeyUriField
+          pkFingerprint_ = infoValue pgpKeyFingerprintField
+       in case (simplex, email, pkURI_, pkFingerprint_) of
+            (Nothing, Nothing, Nothing, _) -> Nothing
+            (Nothing, Nothing, _, Nothing) -> Nothing
+            (_, _, pkURI, pkFingerprint) -> Just ServerContactAddress {simplex, email, pgp = PGPKey <$> pkURI <*> pkFingerprint}
 
 printSourceCode :: Maybe Text -> IO ()
 printSourceCode = \case

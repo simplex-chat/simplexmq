@@ -8,7 +8,7 @@ module Simplex.Messaging.Server.Information where
 import qualified Data.Aeson.TH as J
 import Data.Int (Int64)
 import Data.Text (Text)
-import Simplex.Messaging.Agent.Protocol (ConnectionRequestUri, ConnectionMode (..))
+import Simplex.Messaging.Agent.Protocol (ConnectionMode (..), ConnectionRequestUri)
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
 
 data ServerInformation = ServerInformation
@@ -52,8 +52,11 @@ data Entity = Entity {name :: Text, country :: Maybe Text}
 data ServerContactAddress = ServerContactAddress
   { simplex :: Maybe (ConnectionRequestUri 'CMContact),
     email :: Maybe Text, -- it is recommended that it matches DNS email address, if either is present
-    pgp :: Maybe Text
+    pgp :: Maybe PGPKey
   }
+  deriving (Show)
+
+data PGPKey = PGPKey {pkURI :: Text, pkFingerprint :: Text}
   deriving (Show)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "SPM") ''ServerPersistenceMode)
@@ -61,6 +64,8 @@ $(J.deriveJSON (enumJSON $ dropPrefix "SPM") ''ServerPersistenceMode)
 $(J.deriveJSON defaultJSON ''ServerConditions)
 
 $(J.deriveJSON defaultJSON ''Entity)
+
+$(J.deriveJSON defaultJSON ''PGPKey)
 
 $(J.deriveJSON defaultJSON ''ServerContactAddress)
 
