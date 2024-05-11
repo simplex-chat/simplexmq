@@ -10,6 +10,7 @@ module Simplex.FileTransfer.Client.Agent where
 import Control.Logger.Simple (logInfo)
 import Control.Monad
 import Control.Monad.Except
+import Control.Monad.Trans (lift)
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Char8 as B
 import Data.Text (Text)
@@ -86,7 +87,7 @@ getXFTPServerClient XFTPClientAgent {xftpClients, config} srv = do
     waitForXFTPClient :: XFTPClientVar -> ME XFTPClient
     waitForXFTPClient clientVar = do
       let XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpConnectTimeout}} = xftpConfig config
-      client_ <- tcpConnectTimeout `timeout` atomically (readTMVar clientVar)
+      client_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar clientVar)
       liftEither $ case client_ of
         Just (Right c) -> Right c
         Just (Left e) -> Left e
@@ -110,7 +111,7 @@ getXFTPServerClient XFTPClientAgent {xftpClients, config} srv = do
                   TM.delete srv xftpClients
               throwError e
         tryConnectAsync :: ME ()
-        tryConnectAsync = void . async $ do
+        tryConnectAsync = void . lift . async . runExceptT $ do
           withRetryInterval (reconnectInterval config) $ \_ loop -> void $ tryConnectClient loop
 
 showServer :: XFTPServer -> Text

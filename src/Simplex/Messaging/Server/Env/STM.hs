@@ -36,8 +36,8 @@ import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport, VersionSMP, VersionRangeSMP)
-import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, loadFingerprint, loadTLSServerParams, newSocketState)
+import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
+import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, alpn, loadFingerprint, loadTLSServerParams, newSocketState)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -134,6 +134,7 @@ data Client = Client
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
+    msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
     thVersion :: VersionSMP,
@@ -167,37 +168,38 @@ newClient nextClientId qSize thVersion sessionId createdAt = do
   ntfSubscriptions <- TM.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
+  msgQ <- newTBQueue qSize
   endThreads <- newTVar IM.empty
   endThreadSeq <- newTVar 0
   connected <- newTVar True
   rcvActiveAt <- newTVar createdAt
   sndActiveAt <- newTVar createdAt
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
+  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
   delivered <- newEmptyTMVar
   return Sub {subThread, delivered}
 
-newEnv :: forall m. (MonadUnliftIO m, MonadRandom m) => ServerConfig -> m Env
-newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, information, messageExpiration} = do
+newEnv :: ServerConfig -> IO Env
+newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, information, messageExpiration, transportConfig} = do
   server <- atomically newServer
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   random <- liftIO C.newRandom
   storeLog <- restoreQueues queueStore `mapM` storeLogFile
-  tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
-  Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
+  tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
+  Fingerprint fp <- loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
-  serverStats <- atomically . newServerStats =<< liftIO getCurrentTime
+  serverStats <- atomically . newServerStats =<< getCurrentTime
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   return Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
   where
-    restoreQueues :: QueueStore -> FilePath -> m (StoreLog 'WriteMode)
+    restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
-      (qs, s) <- liftIO $ readWriteStoreLog f
+      (qs, s) <- readWriteStoreLog f
       atomically $ do
         writeTVar queues =<< mapM newTVar qs
         writeTVar senders $! M.foldr' addSender M.empty qs

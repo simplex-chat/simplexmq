@@ -31,7 +31,7 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defMsgExpirationDays, defaultInactiveClientExpiration, defaultMessageExpiration)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Transport (simplexMQVersion, supportedServerSMPRelayVRange)
+import Simplex.Messaging.Transport (simplexMQVersion, supportedSMPHandshakes, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, tshow)
@@ -224,7 +224,8 @@ smpServerCLI cfgPath logPath =
               smpServerVRange = supportedServerSMPRelayVRange,
               transportConfig =
                 defaultTransportServerConfig
-                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
+                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini,
+                    alpn = Just supportedSMPHandshakes
                   },
               controlPort = eitherToMaybe $ T.unpack <$> lookupValue "TRANSPORT" "control_port" ini,
               information = serverPublicInfo ini
@@ -250,31 +251,31 @@ informationIniContent sourceCode_ =
   \# If any other information fields are present, source code property also MUST be present.\n\n"
     <> (maybe ("# source_code: URI") ("source_code: " <>) sourceCode_ <> "\n\n")
     <> "# Declaring all below information is optional, any of these fields can be omitted.\n\
-      \\n\
-      \# Server usage conditions and amendments.\n\
-      \# It is recommended to use standard conditions with any amendments in a separate document.\n\
-      \# usage_conditions: https://github.com/simplex-chat/simplex-chat/blob/stable/PRIVACY.md\n\
-      \# condition_amendments: link\n\
-      \\n\
-      \# Server location and operator.\n\
-      \# server_country: ISO-3166 2-letter code\n\
-      \# operator: entity (organization or person name)\n\
-      \# operator_country: ISO-3166 2-letter code\n\
-      \# website:\n\
-      \\n\
-      \# Administrative contacts.\n\
-      \# admin_simplex: SimpleX address\n\
-      \# admin_email:\n\
-      \# admin_pgp:\n\
-      \\n\
-      \# Contacts for complaints and feedback.\n\
-      \# complaints_simplex: SimpleX address\n\
-      \# complaints_email:\n\
-      \# complaints_pgp:\n\
-      \\n\
-      \# Hosting provider.\n\
-      \# hosting: entity (organization or person name)\n\
-      \# hosting_country: ISO-3166 2-letter code\n\n"
+       \\n\
+       \# Server usage conditions and amendments.\n\
+       \# It is recommended to use standard conditions with any amendments in a separate document.\n\
+       \# usage_conditions: https://github.com/simplex-chat/simplex-chat/blob/stable/PRIVACY.md\n\
+       \# condition_amendments: link\n\
+       \\n\
+       \# Server location and operator.\n\
+       \# server_country: ISO-3166 2-letter code\n\
+       \# operator: entity (organization or person name)\n\
+       \# operator_country: ISO-3166 2-letter code\n\
+       \# website:\n\
+       \\n\
+       \# Administrative contacts.\n\
+       \# admin_simplex: SimpleX address\n\
+       \# admin_email:\n\
+       \# admin_pgp:\n\
+       \\n\
+       \# Contacts for complaints and feedback.\n\
+       \# complaints_simplex: SimpleX address\n\
+       \# complaints_email:\n\
+       \# complaints_pgp:\n\
+       \\n\
+       \# Hosting provider.\n\
+       \# hosting: entity (organization or person name)\n\
+       \# hosting_country: ISO-3166 2-letter code\n\n"
 
 serverPublicInfo :: Ini -> Maybe ServerPublicInfo
 serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
@@ -282,7 +283,7 @@ serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
     serverInfo sourceCode =
       ServerPublicInfo
         { sourceCode,
-          usageConditions  =
+          usageConditions =
             (\conditions -> ServerConditions {conditions, amendments = infoValue "condition_amendments"})
               <$!> infoValue "usage_conditions",
           serverCountry = countryValue "server_country",
@@ -303,7 +304,7 @@ serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
       let simplex = either error id <$!> strDecodeIni "INFORMATION" simplexField ini
           email = infoValue emailField
           pgp = infoValue pgpField
-        in case (simplex, email, pgp) of
+       in case (simplex, email, pgp) of
             (Nothing, Nothing, Nothing) -> Nothing
             _ -> Just ServerContactAddress {simplex, email, pgp}
 
@@ -409,4 +410,3 @@ cliCommandP cfgPath logPath iniFile =
       pure InitOptions {enableStoreLog, logStats, signAlgorithm, ip, fqdn, password, sourceCode, scripted}
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
-

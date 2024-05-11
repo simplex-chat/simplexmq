@@ -6,8 +6,8 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
+{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module NtfServerTests where
 
@@ -15,6 +15,7 @@ import Control.Concurrent (threadDelay)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
+import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import Data.Text.Encoding (encodeUtf8)
 import NtfClient
@@ -34,7 +35,6 @@ import ServerTests
 import qualified Simplex.Messaging.Agent.Protocol as AP
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import qualified Simplex.Messaging.Encoding.Base64.URL as U
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
@@ -72,13 +72,13 @@ pattern RespNtf corrId queueId command <- (_, _, (corrId, queueId, Right command
 
 deriving instance Eq NtfResponse
 
-sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c -> (Maybe TransmissionAuth, ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
+sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c 'TClient -> (Maybe TransmissionAuth, ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
 sendRecvNtf h@THandle {params} (sgn, corrId, qId, cmd) = do
   let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (sgn, tToSend)
   tGet1 h
 
-signSendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c -> C.APrivateAuthKey -> (ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
+signSendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c 'TClient -> C.APrivateAuthKey -> (ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
 signSendRecvNtf h@THandle {params} (C.APrivateAuthKey a pk) (corrId, qId, cmd) = do
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (authorize tForAuth, tToSend)

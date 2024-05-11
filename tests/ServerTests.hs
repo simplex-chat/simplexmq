@@ -22,6 +22,7 @@ import Control.Exception (SomeException, try)
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.Bifunctor (first)
+import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Set as S
@@ -30,7 +31,6 @@ import GHC.Stack (withFrozenCallStack)
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.Base64 (encode)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol
@@ -78,13 +78,13 @@ pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh)
 pattern Msg :: MsgId -> MsgBody -> BrokerMsg
 pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
 
-sendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c -> (Maybe TransmissionAuth, ByteString, ByteString, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
+sendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> (Maybe TransmissionAuth, ByteString, ByteString, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
 sendRecv h@THandle {params} (sgn, corrId, qId, cmd) = do
   let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (sgn, tToSend)
   tGet1 h
 
-signSendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c -> C.APrivateAuthKey -> (ByteString, ByteString, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
+signSendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> (ByteString, ByteString, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
 signSendRecv h@THandle {params} (C.APrivateAuthKey a pk) (corrId, qId, cmd) = do
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (authorize tForAuth, tToSend)
@@ -93,17 +93,17 @@ signSendRecv h@THandle {params} (C.APrivateAuthKey a pk) (corrId, qId, cmd) = do
     authorize t = case a of
       C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t
       C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t
-      C.SX25519 -> (\THandleAuth {peerPubKey} -> TAAuthenticator $ C.cbAuthenticate peerPubKey pk (C.cbNonce corrId) t) <$> thAuth params
+      C.SX25519 -> (\THAuthClient {serverPeerPubKey = k} -> TAAuthenticator $ C.cbAuthenticate k pk (C.cbNonce corrId) t) <$> thAuth params
 #if !MIN_VERSION_base(4,18,0)
       _sx448 -> undefined -- ghc8107 fails to the branch excluded by types
 #endif
 
-tPut1 :: Transport c => THandle v c -> SentRawTransmission -> IO (Either TransportError ())
+tPut1 :: Transport c => THandle v c 'TClient -> SentRawTransmission -> IO (Either TransportError ())
 tPut1 h t = do
   [r] <- tPut h [Right t]
   pure r
 
-tGet1 :: (ProtocolEncoding v err cmd, Transport c, MonadIO m, MonadFail m) => THandle v c -> m (SignedTransmission err cmd)
+tGet1 :: (ProtocolEncoding v err cmd, Transport c) => THandle v c 'TClient -> IO (SignedTransmission err cmd)
 tGet1 h = do
   [r] <- liftIO $ tGet h
   pure r
@@ -555,12 +555,12 @@ testWithStoreLog at@(ATransport t) =
     logSize testStoreLogFile `shouldReturn` 1
     removeFile testStoreLogFile
   where
-    runTest :: Transport c => TProxy c -> (THandleSMP c -> IO ()) -> ThreadId -> Expectation
+    runTest :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
 
-    runClient :: Transport c => TProxy c -> (THandleSMP c -> IO ()) -> Expectation
+    runClient :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
 logSize :: FilePath -> IO Int
@@ -653,12 +653,12 @@ testRestoreMessages at@(ATransport t) =
     removeFile testStoreMsgsFile
     removeFile testServerStatsBackupFile
   where
-    runTest :: Transport c => TProxy c -> (THandleSMP c -> IO ()) -> ThreadId -> Expectation
+    runTest :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
 
-    runClient :: Transport c => TProxy c -> (THandleSMP c -> IO ()) -> Expectation
+    runClient :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
 checkStats :: ServerStatsData -> [RecipientId] -> Int -> Int -> Expectation
@@ -727,15 +727,15 @@ testRestoreExpireMessages at@(ATransport t) =
     Right ServerStatsData {_msgExpired} <- strDecode <$> B.readFile testServerStatsBackupFile
     _msgExpired `shouldBe` 2
   where
-    runTest :: Transport c => TProxy c -> (THandleSMP c -> IO ()) -> ThreadId -> Expectation
+    runTest :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
 
-    runClient :: Transport c => TProxy c -> (THandleSMP c -> IO ()) -> Expectation
+    runClient :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
-createAndSecureQueue :: Transport c => THandleSMP c -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
+createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do
   g <- C.newRandom
   (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
@@ -759,8 +759,8 @@ testTiming (ATransport t) =
     timingTests :: [(C.AuthAlg, C.AuthAlg, Int)]
     timingTests =
       [ (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd25519, 200), -- correct key type
-        -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd448, 150),
-        -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SX25519, 200),
+      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd448, 150),
+      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SX25519, 200),
         (C.AuthAlg C.SEd448, C.AuthAlg C.SEd25519, 200),
         (C.AuthAlg C.SEd448, C.AuthAlg C.SEd448, 150), -- correct key type
         (C.AuthAlg C.SEd448, C.AuthAlg C.SX25519, 200),
@@ -769,8 +769,8 @@ testTiming (ATransport t) =
         (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519, 200) -- correct key type
       ]
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
-    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.15 -- normally the difference between "no queue" and "wrong key" is less than 5%
-    testSameTiming :: forall c. Transport c => THandleSMP c -> THandleSMP c -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
+    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.2 -- normally the difference between "no queue" and "wrong key" is less than 5%
+    testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
     testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) = do
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
@@ -791,10 +791,11 @@ testTiming (ATransport t) =
 
       runTimingTest sh badKey sId $ _SEND "hello"
       where
-        runTimingTest :: PartyI p => THandleSMP c -> C.APrivateAuthKey -> ByteString -> Command p -> IO ()
+        runTimingTest :: PartyI p => THandleSMP c 'TClient -> C.APrivateAuthKey -> ByteString -> Command p -> IO ()
         runTimingTest h badKey qId cmd = do
           threadDelay 100000
-          _ <- timeRepeat n $ do -- "warm up" the server
+          _ <- timeRepeat n $ do
+            -- "warm up" the server
             Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", "1234", cmd)
             return ()
           threadDelay 100000

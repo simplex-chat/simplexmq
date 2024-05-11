@@ -24,9 +24,12 @@ module Simplex.Messaging.Notifications.Server.StoreLog
 where
 
 import Control.Concurrent.STM
+import Control.Logger.Simple
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
+import qualified Data.Text as T
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -34,7 +37,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Protocol (NtfPrivateAuthKey)
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Util (whenM)
+import Simplex.Messaging.Util (safeDecodeUtf8, whenM)
 import System.Directory (doesFileExist, renameFile)
 import System.IO
 
@@ -189,10 +192,10 @@ readWriteNtfStore f st = do
   pure s
 
 readNtfStore :: FilePath -> NtfStore -> IO ()
-readNtfStore f st = mapM_ addNtfLogRecord . B.lines =<< B.readFile f
+readNtfStore f st = mapM_ (addNtfLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f
   where
     addNtfLogRecord s = case strDecode s of
-      Left e -> B.putStrLn $ "Log parsing error (" <> B.pack e <> "): " <> B.take 100 s
+      Left e -> logError $ "Log parsing error (" <> T.pack e <> "): " <> safeDecodeUtf8 (B.take 100 s)
       Right lr -> atomically $ case lr of
         CreateToken r@NtfTknRec {ntfTknId} -> do
           tkn <- mkTknData r

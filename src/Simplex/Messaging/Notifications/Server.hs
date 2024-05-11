@@ -47,7 +47,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Stats
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..))
+import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..))
 import Simplex.Messaging.Transport.Server (runTransportServer, tlsServerCredentials)
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
@@ -81,7 +81,8 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
       serverSignKey <- either fail pure . fromTLSCredentials $ tlsServerCredentials serverParams
-      runTransportServer started tcpPort serverParams tCfg (runClient serverSignKey t)
+      env <- ask
+      liftIO $ runTransportServer started tcpPort serverParams tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
     fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
 
     runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
@@ -107,7 +108,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
     logServerStats :: Int64 -> Int64 -> FilePath -> M ()
     logServerStats startAt logInterval statsFilePath = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
-      liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
+      logInfo $ "server stats log enabled: " <> T.pack statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
       NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, activeTokens, activeSubs} <- asks serverStats
       let interval = 1000000 * logInterval
@@ -217,7 +218,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
-      ((_, srv, _), _, _, ntfId, msg) <- atomically $ readTBQueue msgQ
+      ((_, srv, _), _, _, _, ntfId, msg) <- atomically $ readTBQueue msgQ
       let smpQueue = SMPQueueNtf srv ntfId
       case msg of
         SMP.NMSG nmsgNonce encNMsgMeta -> do
@@ -338,7 +339,7 @@ updateTknStatus NtfTknData {ntfTknId, tknStatus} status = do
   old <- atomically $ stateTVar tknStatus (,status)
   when (old /= status) $ withNtfLog $ \sl -> logTokenStatus sl ntfTknId status
 
-runNtfClientTransport :: Transport c => THandleNTF c -> M ()
+runNtfClientTransport :: Transport c => THandleNTF c 'TServer -> M ()
 runNtfClientTransport th@THandle {params} = do
   qSize <- asks $ clientQSize . config
   ts <- liftIO getSystemTime
@@ -355,7 +356,7 @@ runNtfClientTransport th@THandle {params} = do
 clientDisconnected :: NtfServerClient -> IO ()
 clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connected False
 
-receive :: Transport c => THandleNTF c -> NtfServerClient -> M ()
+receive :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> M ()
 receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
   ts <- liftIO $ tGet th
   forM_ ts $ \t@(_, _, (corrId, entId, cmdOrError)) -> do
@@ -370,7 +371,7 @@ receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ
   where
     write q t = atomically $ writeTBQueue q t
 
-send :: Transport c => THandleNTF c -> NtfServerClient -> IO ()
+send :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> IO ()
 send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
   void . liftIO $ tPut h [Right (Nothing, encodeTransmission params t)]
@@ -381,7 +382,7 @@ send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
 
 data VerificationResult = VRVerified NtfRequest | VRFailed
 
-verifyNtfTransmission :: Maybe (THandleAuth, C.CbNonce) -> SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
+verifyNtfTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
 verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
   st <- asks store
   case cmd of
@@ -441,7 +442,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
   where
     processCommand :: NtfRequest -> M (Transmission NtfResponse)
     processCommand = \case
-      NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn _ _ dhPubKey)) -> do
+      NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> do
         logDebug "TNEW - new token"
         st <- asks store
         ks@(srvDhPubKey, srvDhPrivKey) <- atomically . C.generateKeyPair =<< asks random
@@ -452,9 +453,9 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         atomically $ addNtfToken st tknId tkn
         atomically $ writeTBQueue pushQ (tkn, PNVerification regCode)
         withNtfLog (`logCreateToken` tkn)
-        incNtfStat tknCreated
+        incNtfStatT token tknCreated
         pure (corrId, "", NRTknId tknId srvDhPubKey)
-      NtfReqCmd SToken (NtfTkn tkn@NtfTknData {ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey), tknCronInterval}) (corrId, tknId, cmd) -> do
+      NtfReqCmd SToken (NtfTkn tkn@NtfTknData {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey), tknCronInterval}) (corrId, tknId, cmd) -> do
         status <- readTVarIO tknStatus
         (corrId,tknId,) <$> case cmd of
           TNEW (NewNtfTkn _ _ dhPubKey) -> do
@@ -473,7 +474,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
                 updateTknStatus tkn NTActive
                 tIds <- atomically $ removeInactiveTokenRegistrations st tkn
                 forM_ tIds cancelInvervalNotifications
-                incNtfStat tknVerified
+                incNtfStatT token tknVerified
                 pure NROk
             | otherwise -> do
                 logDebug "TVFY - incorrect code or token status"
@@ -492,8 +493,8 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               addNtfToken st tknId tkn'
               writeTBQueue pushQ (tkn', PNVerification regCode)
             withNtfLog $ \s -> logUpdateToken s tknId token' regCode
-            incNtfStat tknDeleted
-            incNtfStat tknCreated
+            incNtfStatT token tknDeleted
+            incNtfStatT token tknCreated
             pure NROk
           TDEL -> do
             logDebug "TDEL"
@@ -503,7 +504,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
             cancelInvervalNotifications tknId
             withNtfLog (`logDeleteToken` tknId)
-            incNtfStat tknDeleted
+            incNtfStatT token tknDeleted
             pure NROk
           TCRN 0 -> do
             logDebug "TCRN 0"
@@ -581,6 +582,10 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
 
 withNtfLog :: (StoreLog 'WriteMode -> IO a) -> M ()
 withNtfLog action = liftIO . mapM_ action =<< asks storeLog
+
+incNtfStatT :: DeviceToken -> (NtfServerStats -> TVar Int) -> M ()
+incNtfStatT (DeviceToken PPApnsNull _) _ = pure ()
+incNtfStatT _ statSel = incNtfStat statSel
 
 incNtfStat :: (NtfServerStats -> TVar Int) -> M ()
 incNtfStat statSel = do

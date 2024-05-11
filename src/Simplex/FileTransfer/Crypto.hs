@@ -29,7 +29,7 @@ import UnliftIO.Directory (removeFile)
 encryptFile :: CryptoFile -> ByteString -> C.SbKey -> C.CbNonce -> Int64 -> Int64 -> FilePath -> ExceptT FTCryptoError IO ()
 encryptFile srcFile fileHdr key nonce fileSize' encSize encFile = do
   sb <- liftEitherWith FTCECryptoError $ LC.sbInit key nonce
-  CF.withFile srcFile ReadMode $ \r -> withFile encFile WriteMode $ \w -> do
+  CF.withFile srcFile ReadMode $ \r -> ExceptT . withFile encFile WriteMode $ \w -> runExceptT $ do
     let lenStr = smpEncode fileSize'
         (hdr, !sb') = LC.sbEncryptChunk sb $ lenStr <> fileHdr
         padLen = encSize - authTagSize - fileSize' - 8

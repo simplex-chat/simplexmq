@@ -44,7 +44,7 @@ module Simplex.Messaging.Agent.Protocol
     currentSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
-    e2eEncUserMsgLength,
+    e2eEncAgentMsgLength,
 
     -- * SMP agent protocol types
     ConnInfo,
@@ -163,6 +163,7 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -201,7 +202,6 @@ import Simplex.Messaging.Crypto.Ratchet
     SndE2ERatchetParams
   )
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.Base64 (base64P, encode)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
@@ -272,16 +272,11 @@ deliveryRcptsSMPAgentVersion = VersionSMPA 4
 pqdrSMPAgentVersion :: VersionSMPA
 pqdrSMPAgentVersion = VersionSMPA 5
 
--- TODO v5.7 increase to 5
 currentSMPAgentVersion :: VersionSMPA
-currentSMPAgentVersion = VersionSMPA 4
+currentSMPAgentVersion = VersionSMPA 5
 
--- TODO v5.7 remove dependency of version range on whether PQ support is needed
-supportedSMPAgentVRange :: PQSupport -> VersionRangeSMPA
-supportedSMPAgentVRange pq =
-  mkVersionRange duplexHandshakeSMPAgentVersion $ case pq of
-    PQSupportOn -> pqdrSMPAgentVersion
-    PQSupportOff -> currentSMPAgentVersion
+supportedSMPAgentVRange :: VersionRangeSMPA
+supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentSMPAgentVersion
 
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
@@ -292,8 +287,8 @@ e2eEncConnInfoLength v = \case
   PQSupportOn | v >= pqdrSMPAgentVersion -> 11122
   _ -> 14848
 
-e2eEncUserMsgLength :: VersionSMPA -> PQSupport -> Int
-e2eEncUserMsgLength v = \case
+e2eEncAgentMsgLength :: VersionSMPA -> PQSupport -> Int
+e2eEncAgentMsgLength v = \case
   -- reduced by 2222 (the increase of message ratchet header size)
   PQSupportOn | v >= pqdrSMPAgentVersion -> 13634
   _ -> 15856
@@ -405,6 +400,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   MSGNTF :: SMPMsgMeta -> ACommand Agent AEConn
   ACK :: AgentMsgId -> Maybe MsgReceiptInfo -> ACommand Client AEConn
   RCVD :: MsgMeta -> NonEmpty MsgReceipt -> ACommand Agent AEConn
+  QCONT :: ACommand Agent AEConn
   SWCH :: ACommand Client AEConn
   OFF :: ACommand Client AEConn
   DEL :: ACommand Client AEConn
@@ -467,6 +463,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   MSGNTF_ :: ACommandTag Agent AEConn
   ACK_ :: ACommandTag Client AEConn
   RCVD_ :: ACommandTag Agent AEConn
+  QCONT_ :: ACommandTag Agent AEConn
   SWCH_ :: ACommandTag Client AEConn
   OFF_ :: ACommandTag Client AEConn
   DEL_ :: ACommandTag Client AEConn
@@ -522,6 +519,7 @@ aCommandTag = \case
   MSGNTF {} -> MSGNTF_
   ACK {} -> ACK_
   RCVD {} -> RCVD_
+  QCONT -> QCONT_
   SWCH -> SWCH_
   OFF -> OFF_
   DEL -> DEL_
@@ -996,7 +994,7 @@ agentMessageType = \case
     HELLO -> AM_HELLO_
     A_MSG _ -> AM_A_MSG_
     A_RCVD {} -> AM_A_RCVD_
-    QCONT _ -> AM_QCONT_
+    A_QCONT _ -> AM_QCONT_
     QADD _ -> AM_QADD_
     QKEY _ -> AM_QKEY_
     QUSE _ -> AM_QUSE_
@@ -1020,7 +1018,7 @@ data AMsgType
   = HELLO_
   | A_MSG_
   | A_RCVD_
-  | QCONT_
+  | A_QCONT_
   | QADD_
   | QKEY_
   | QUSE_
@@ -1033,7 +1031,7 @@ instance Encoding AMsgType where
     HELLO_ -> "H"
     A_MSG_ -> "M"
     A_RCVD_ -> "V"
-    QCONT_ -> "QC"
+    A_QCONT_ -> "QC"
     QADD_ -> "QA"
     QKEY_ -> "QK"
     QUSE_ -> "QU"
@@ -1046,7 +1044,7 @@ instance Encoding AMsgType where
       'V' -> pure A_RCVD_
       'Q' ->
         A.anyChar >>= \case
-          'C' -> pure QCONT_
+          'C' -> pure A_QCONT_
           'A' -> pure QADD_
           'K' -> pure QKEY_
           'U' -> pure QUSE_
@@ -1066,7 +1064,7 @@ data AMessage
   | -- | agent envelope for delivery receipt
     A_RCVD (NonEmpty AMessageReceipt)
   | -- | the message instructing the client to continue sending messages (after ERR QUOTA)
-    QCONT SndQAddr
+    A_QCONT SndQAddr
   | -- add queue to connection (sent by recipient), with optional address of the replaced queue
     QADD (NonEmpty (SMPQueueUri, Maybe SndQAddr))
   | -- key to secure the added queues and agree e2e encryption key (sent by sender)
@@ -1124,7 +1122,7 @@ instance Encoding AMessage where
     HELLO -> smpEncode HELLO_
     A_MSG body -> smpEncode (A_MSG_, Tail body)
     A_RCVD mrs -> smpEncode (A_RCVD_, mrs)
-    QCONT addr -> smpEncode (QCONT_, addr)
+    A_QCONT addr -> smpEncode (A_QCONT_, addr)
     QADD qs -> smpEncode (QADD_, qs)
     QKEY qs -> smpEncode (QKEY_, qs)
     QUSE qs -> smpEncode (QUSE_, qs)
@@ -1136,7 +1134,7 @@ instance Encoding AMessage where
         HELLO_ -> pure HELLO
         A_MSG_ -> A_MSG . unTail <$> smpP
         A_RCVD_ -> A_RCVD <$> smpP
-        QCONT_ -> QCONT <$> smpP
+        A_QCONT_ -> A_QCONT <$> smpP
         QADD_ -> QADD <$> smpP
         QKEY_ -> QKEY <$> smpP
         QUSE_ -> QUSE <$> smpP
@@ -1668,6 +1666,7 @@ instance StrEncoding ACmdTag where
       "MSGNTF" -> ct MSGNTF_
       "ACK" -> t ACK_
       "RCVD" -> ct RCVD_
+      "QCONT" -> ct QCONT_
       "SWCH" -> t SWCH_
       "OFF" -> t OFF_
       "DEL" -> t DEL_
@@ -1725,6 +1724,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     MSGNTF_ -> "MSGNTF"
     ACK_ -> "ACK"
     RCVD_ -> "RCVD"
+    QCONT_ -> "QCONT"
     SWCH_ -> "SWCH"
     OFF_ -> "OFF"
     DEL_ -> "DEL"
@@ -1794,6 +1794,7 @@ commandP binaryP =
           MSG_ -> s (MSG <$> strP <* A.space <*> smpP <* A.space <*> binaryP)
           MSGNTF_ -> s (MSGNTF <$> strP)
           RCVD_ -> s (RCVD <$> strP <* A.space <*> strP)
+          QCONT_ -> pure QCONT
           DEL_RCVQ_ -> s (DEL_RCVQ <$> strP_ <*> strP_ <*> strP)
           DEL_CONN_ -> pure DEL_CONN
           DEL_USER_ -> s (DEL_USER <$> strP)
@@ -1857,6 +1858,7 @@ serializeCommand = \case
   MSGNTF smpMsgMeta -> s (MSGNTF_, smpMsgMeta)
   ACK mId rcptInfo_ -> s (ACK_, mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
   RCVD msgMeta rcpts -> s (RCVD_, msgMeta, rcpts)
+  QCONT -> s QCONT_
   SWCH -> s SWCH_
   OFF -> s OFF_
   DEL -> s DEL_
@@ -1897,15 +1899,15 @@ tGetRaw :: Transport c => c -> IO ARawTransmission
 tGetRaw h = (,,) <$> getLn h <*> getLn h <*> getLn h
 
 -- | Send SMP agent protocol command (or response) to TCP connection.
-tPut :: (Transport c, MonadIO m) => c -> ATransmission p -> m ()
+tPut :: Transport c => c -> ATransmission p -> IO ()
 tPut h (corrId, connId, APC _ cmd) =
-  liftIO $ tPutRaw h (corrId, connId, serializeCommand cmd)
+  tPutRaw h (corrId, connId, serializeCommand cmd)
 
 -- | Receive client and agent transmissions from TCP connection.
-tGet :: forall c m p. (Transport c, MonadIO m) => SAParty p -> c -> m (ATransmissionOrError p)
+tGet :: forall c p. Transport c => SAParty p -> c -> IO (ATransmissionOrError p)
 tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
   where
-    tParseLoadBody :: ARawTransmission -> m (ATransmissionOrError p)
+    tParseLoadBody :: ARawTransmission -> IO (ATransmissionOrError p)
     tParseLoadBody t@(corrId, entId, command) = do
       let cmd = parseCommand command >>= fromParty >>= tConnId t
       fullCmd <- either (return . Left) cmdWithMsgBody cmd
@@ -1935,7 +1937,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
           | B.null entId -> Left $ CMD NO_CONN
           | otherwise -> Right cmd
 
-    cmdWithMsgBody :: APartyCmd p -> m (Either AgentErrorType (APartyCmd p))
+    cmdWithMsgBody :: APartyCmd p -> IO (Either AgentErrorType (APartyCmd p))
     cmdWithMsgBody (APC e cmd) =
       APC e <$$> case cmd of
         SEND pqEnc msgFlags body -> SEND pqEnc msgFlags <$$> getBody body
@@ -1948,7 +1950,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
         INFO pqSup cInfo -> INFO pqSup <$$> getBody cInfo
         _ -> pure $ Right cmd
 
-    getBody :: ByteString -> m (Either AgentErrorType ByteString)
+    getBody :: ByteString -> IO (Either AgentErrorType ByteString)
     getBody binary =
       case B.unpack binary of
         ':' : body -> return . Right $ B.pack body

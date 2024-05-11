@@ -11,8 +11,8 @@
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Env.SQLite
-  ( AgentMonad,
-    AgentMonad',
+  ( AM',
+    AM,
     AgentConfig (..),
     InitialAgentServers (..),
     NetworkConfig (..),
@@ -21,6 +21,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     tryAgentError,
     tryAgentError',
     catchAgentError,
+    catchAgentError',
     agentFinally,
     Env (..),
     newSMPAgentEnv,
@@ -34,7 +35,6 @@ module Simplex.Messaging.Agent.Env.SQLite
   )
 where
 
-import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
@@ -56,7 +56,7 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (PQSupport, VersionRangeE2E, supportedE2EEncryptVRange)
+import Simplex.Messaging.Crypto.Ratchet (VersionRangeE2E, supportedE2EEncryptVRange)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
 import Simplex.Messaging.Notifications.Types
@@ -65,14 +65,14 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion, TLS, Transport (..))
 import Simplex.Messaging.Transport.Client (defaultSMPPort)
-import Simplex.Messaging.Util (allFinally, catchAllErrors, tryAllErrors)
+import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryAllErrors, tryAllErrors')
 import System.Random (StdGen, newStdGen)
 import UnliftIO (Async, SomeException)
 import UnliftIO.STM
 
-type AgentMonad' m = (MonadUnliftIO m, MonadReader Env m)
+type AM' a = ReaderT Env IO a
 
-type AgentMonad m = (AgentMonad' m, MonadError AgentErrorType m)
+type AM a = ExceptT AgentErrorType (ReaderT Env IO) a
 
 data InitialAgentServers = InitialAgentServers
   { smp :: Map UserId (NonEmpty SMPServerWithAuth),
@@ -82,7 +82,7 @@ data InitialAgentServers = InitialAgentServers
   }
 
 data AgentConfig = AgentConfig
-  { tcpPort :: ServiceName,
+  { tcpPort :: Maybe ServiceName,
     rcvAuthAlg :: C.AuthAlg,
     sndAuthAlg :: C.AuthAlg,
     connIdBytes :: Int,
@@ -92,6 +92,7 @@ data AgentConfig = AgentConfig
     xftpCfg :: XFTPClientConfig,
     reconnectInterval :: RetryInterval,
     messageRetryInterval :: RetryInterval2,
+    userNetworkInterval :: RetryInterval,
     messageTimeout :: NominalDiffTime,
     connDeleteDeliveryTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
@@ -116,8 +117,8 @@ data AgentConfig = AgentConfig
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
-    e2eEncryptVRange :: PQSupport -> VersionRangeE2E,
-    smpAgentVRange :: PQSupport -> VersionRangeSMPA,
+    e2eEncryptVRange :: VersionRangeE2E,
+    smpAgentVRange :: VersionRangeSMPA,
     smpClientVRange :: VersionRangeSMPC
   }
 
@@ -126,7 +127,7 @@ defaultReconnectInterval =
   RetryInterval
     { initialInterval = 2_000000,
       increaseAfter = 10_000000,
-      maxInterval = 180_000000
+      maxInterval = 60_000000
     }
 
 defaultMessageRetryInterval :: RetryInterval2
@@ -134,22 +135,30 @@ defaultMessageRetryInterval =
   RetryInterval2
     { riFast =
         RetryInterval
-          { initialInterval = 1_000000,
+          { initialInterval = 2_000000,
             increaseAfter = 10_000000,
             maxInterval = 60_000000
           },
       riSlow =
         RetryInterval
-          { initialInterval = 180_000000, -- 3 minutes
+          { initialInterval = 300_000000, -- 5 minutes
             increaseAfter = 60_000000,
-            maxInterval = 3 * 3600_000000 -- 3 hours
+            maxInterval = 6 * 3600_000000 -- 6 hours
           }
+    }
+
+defaultUserNetworkInterval :: RetryInterval
+defaultUserNetworkInterval =
+  RetryInterval
+    { initialInterval = 1200_000000, -- 20 minutes
+      increaseAfter = 0,
+      maxInterval = 7200_000000 -- 2 hours
     }
 
 defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
   AgentConfig
-    { tcpPort = "5224",
+    { tcpPort = Just "5224",
       -- while the current client version supports X25519, it can only be enabled once support for SMP v6 is dropped,
       -- and all servers are required to support v7 to be compatible.
       rcvAuthAlg = C.AuthAlg C.SEd25519, -- this will stay as Ed25519
@@ -161,6 +170,7 @@ defaultAgentConfig =
       xftpCfg = defaultXFTPClientConfig,
       reconnectInterval = defaultReconnectInterval,
       messageRetryInterval = defaultMessageRetryInterval,
+      userNetworkInterval = defaultUserNetworkInterval,
       messageTimeout = 2 * nominalDay,
       connDeleteDeliveryTimeout = 2 * nominalDay,
       helloTimeout = 2 * nominalDay,
@@ -171,7 +181,7 @@ defaultAgentConfig =
       maxWorkerRestartsPerMin = 5,
       -- 3 consecutive subscription timeouts will result in alert to the user
       -- this is a fallback, as the timeout set to 3x of expected timeout, to avoid potential locking.
-      maxSubscriptionTimeouts = 3,
+      maxSubscriptionTimeouts = 5,
       storedMsgDataTTL = 21 * nominalDay,
       rcvFilesTTL = 2 * nominalDay,
       sndFilesTTL = nominalDay,
@@ -250,20 +260,24 @@ newXFTPAgent = do
   xftpDelWorkers <- TM.empty
   pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}
 
-tryAgentError :: AgentMonad m => m a -> m (Either AgentErrorType a)
+tryAgentError :: AM a -> AM (Either AgentErrorType a)
 tryAgentError = tryAllErrors mkInternal
 {-# INLINE tryAgentError #-}
 
 -- unlike runExceptT, this ensures we catch IO exceptions as well
-tryAgentError' :: AgentMonad' m => ExceptT AgentErrorType m a -> m (Either AgentErrorType a)
-tryAgentError' = fmap join . runExceptT . tryAgentError
+tryAgentError' :: AM a -> AM' (Either AgentErrorType a)
+tryAgentError' = tryAllErrors' mkInternal
 {-# INLINE tryAgentError' #-}
 
-catchAgentError :: AgentMonad m => m a -> (AgentErrorType -> m a) -> m a
+catchAgentError :: AM a -> (AgentErrorType -> AM a) -> AM a
 catchAgentError = catchAllErrors mkInternal
 {-# INLINE catchAgentError #-}
 
-agentFinally :: AgentMonad m => m a -> m b -> m a
+catchAgentError' :: AM a -> (AgentErrorType -> AM' a) -> AM' a
+catchAgentError' = catchAllErrors' mkInternal
+{-# INLINE catchAgentError' #-}
+
+agentFinally :: AM a -> AM b -> AM a
 agentFinally = allFinally mkInternal
 {-# INLINE agentFinally #-}
 

@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
@@ -9,9 +10,17 @@
 
 module Simplex.FileTransfer.Transport
   ( supportedFileServerVRange,
-    xftpClientHandshake, -- stub
-    XFTPVersion,
+    authCmdsXFTPVersion,
+    xftpClientHandshakeStub,
+    XFTPClientHandshake (..),
+    -- xftpClientHandshake,
+    XFTPServerHandshake (..),
+    -- xftpServerHandshake,
+    THandleXFTP,
+    THandleParamsXFTP,
     VersionXFTP,
+    VersionRangeXFTP,
+    XFTPVersion,
     pattern VersionXFTP,
     XFTPErrorType (..),
     XFTPRcvChunkSpec (..),
@@ -30,20 +39,21 @@ import Control.Monad.Except
 import Control.Monad.IO.Class
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (first)
+import Data.Bifunctor (bimap, first)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Word (Word16, Word32)
+import qualified Data.X509 as X
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (CommandError)
-import Simplex.Messaging.Transport (HandshakeError (..), THandle, TransportError (..))
+import Simplex.Messaging.Transport (HandshakeError (..), SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Transport.HTTP2.File
 import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version
@@ -68,15 +78,58 @@ type VersionRangeXFTP = VersionRange XFTPVersion
 pattern VersionXFTP :: Word16 -> VersionXFTP
 pattern VersionXFTP v = Version v
 
+type THandleXFTP c p = THandle XFTPVersion c p
+type THandleParamsXFTP p = THandleParams XFTPVersion p
+
 initialXFTPVersion :: VersionXFTP
 initialXFTPVersion = VersionXFTP 1
 
-supportedFileServerVRange :: VersionRangeXFTP
-supportedFileServerVRange = mkVersionRange initialXFTPVersion initialXFTPVersion
+authCmdsXFTPVersion :: VersionXFTP
+authCmdsXFTPVersion = VersionXFTP 2
 
--- XFTP protocol does not support handshake
-xftpClientHandshake :: c -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> ExceptT TransportError IO (THandle XFTPVersion c)
-xftpClientHandshake _c _ks _keyHash _xftpVRange = throwError $ TEHandshake VERSION
+currentXFTPVersion :: VersionXFTP
+currentXFTPVersion = VersionXFTP 2
+
+supportedFileServerVRange :: VersionRangeXFTP
+supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion
+
+-- XFTP protocol does not use this handshake method
+xftpClientHandshakeStub :: c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
+xftpClientHandshakeStub _c _ks _keyHash _xftpVRange = throwError $ TEHandshake VERSION
+
+data XFTPServerHandshake = XFTPServerHandshake
+  { xftpVersionRange :: VersionRangeXFTP,
+    sessionId :: SessionId,
+    -- | pub key to agree shared secrets for command authorization and entity ID encryption.
+    authPubKey :: (X.CertificateChain, X.SignedExact X.PubKey)
+  }
+
+data XFTPClientHandshake = XFTPClientHandshake
+  { -- | agreed XFTP server protocol version
+    xftpVersion :: VersionXFTP,
+    -- | server identity - CA certificate fingerprint
+    keyHash :: C.KeyHash
+  }
+
+instance Encoding XFTPClientHandshake where
+  smpEncode XFTPClientHandshake {xftpVersion, keyHash} =
+    smpEncode (xftpVersion, keyHash)
+  smpP = do
+    (xftpVersion, keyHash) <- smpP
+    Tail _compat <- smpP
+    pure XFTPClientHandshake {xftpVersion, keyHash}
+
+instance Encoding XFTPServerHandshake where
+  smpEncode XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey} =
+    smpEncode (xftpVersionRange, sessionId, auth)
+    where
+      auth = bimap C.encodeCertChain C.SignedObject authPubKey
+  smpP = do
+    (xftpVersionRange, sessionId) <- smpP
+    cert <- C.certChainP
+    C.SignedObject key <- smpP
+    Tail _compat <- smpP
+    pure XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey = (cert, key)}
 
 sendEncFile :: Handle -> (Builder -> IO ()) -> LC.SbState -> Word32 -> IO ()
 sendEncFile h send = go
@@ -139,6 +192,8 @@ data XFTPErrorType
     BLOCK
   | -- | incorrect SMP session ID (TLS Finished message / tls-unique binding RFC5929)
     SESSION
+  | -- | incorrect handshake command
+    HANDSHAKE
   | -- | SMP command is unknown or has invalid syntax
     CMD {cmdErr :: CommandError}
   | -- | command authorization error - bad signature or non-existing SMP queue
@@ -181,6 +236,7 @@ instance Encoding XFTPErrorType where
   smpEncode = \case
     BLOCK -> "BLOCK"
     SESSION -> "SESSION"
+    HANDSHAKE -> "HANDSHAKE"
     CMD err -> "CMD " <> smpEncode err
     AUTH -> "AUTH"
     SIZE -> "SIZE"
@@ -199,6 +255,7 @@ instance Encoding XFTPErrorType where
     A.takeTill (== ' ') >>= \case
       "BLOCK" -> pure BLOCK
       "SESSION" -> pure SESSION
+      "HANDSHAKE" -> pure HANDSHAKE
       "CMD" -> CMD <$> _smpP
       "AUTH" -> pure AUTH
       "SIZE" -> pure SIZE
