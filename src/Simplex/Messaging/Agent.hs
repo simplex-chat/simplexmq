@@ -113,6 +113,7 @@ module Simplex.Messaging.Agent
     debugAgentLocks,
     getAgentStats,
     resetAgentStats,
+    getDuplicateMsgCounts,
     getAgentSubscriptions,
     logConnection,
   )
@@ -553,6 +554,9 @@ getAgentStats c = readTVarIO (agentStats c) >>= mapM (\(k, cnt) -> (k,) <$> read
 resetAgentStats :: AgentClient -> IO ()
 resetAgentStats = atomically . TM.clear . agentStats
 {-# INLINE resetAgentStats #-}
+
+getDuplicateMsgCounts :: AgentClient -> IO [(ConnId, Int)]
+getDuplicateMsgCounts c = readTVarIO (duplicateMsgCounts c) >>= mapM (\(connId, cnt) -> (connId,) <$> readTVarIO cnt) . M.assocs
 
 withAgentEnv' :: AgentClient -> AM' a -> IO a
 withAgentEnv' c = (`runReaderT` agentEnv c)
@@ -2168,6 +2172,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                                 | otherwise = pure conn'
                           Right _ -> prohibited >> ack
                           Left e@(AGENT A_DUPLICATE) -> do
+                            atomically updateDuplicateMsgCounts
                             withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
                               Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
                                 | userAck -> ackDel internalId
@@ -2198,6 +2203,11 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                           checkDuplicateHash e encryptedMsgHash =
                             unlessM (withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash) $
                               throwError e
+                          updateDuplicateMsgCounts :: STM ()
+                          updateDuplicateMsgCounts =
+                            TM.lookup connId (duplicateMsgCounts c) >>= \case
+                              Just count -> modifyTVar' count (+ 1)
+                              Nothing -> newTVar 0 >>= \count -> TM.insert connId count (duplicateMsgCounts c)
                           agentClientMsg :: TVar ChaChaDRG -> ByteString -> AM (Maybe (InternalId, MsgMeta, AMessage, CR.RatchetX448))
                           agentClientMsg g encryptedMsgHash = withStore c $ \db -> runExceptT $ do
                             rc <- ExceptT $ getRatchet db connId -- ratchet state pre-decryption - required for processing EREADY

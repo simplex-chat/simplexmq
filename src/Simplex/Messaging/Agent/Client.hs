@@ -297,6 +297,7 @@ data AgentClient = AgentClient
     -- smpSubWorkers for SMP servers sessions
     smpSubWorkers :: TMap SMPTransportSession (SessionVar (Async ())),
     agentStats :: TMap AgentStatsKey (TVar Int),
+    duplicateMsgCounts :: TMap ConnId (TVar Int),
     clientId :: Int,
     agentEnv :: Env
   }
@@ -458,6 +459,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   deleteLock <- createLock
   smpSubWorkers <- TM.empty
   agentStats <- TM.empty
+  duplicateMsgCounts <- TM.empty
   return
     AgentClient
       { acThread,
@@ -493,6 +495,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         deleteLock,
         smpSubWorkers,
         agentStats,
+        duplicateMsgCounts,
         clientId,
         agentEnv
       }
