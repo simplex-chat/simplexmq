@@ -193,13 +193,13 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
   ( InitialKeys (..),
     PQEncryption (..),
-    pattern PQEncOff,
     PQSupport,
-    pattern PQSupportOn,
-    pattern PQSupportOff,
     RcvE2ERatchetParams,
     RcvE2ERatchetParamsUri,
-    SndE2ERatchetParams
+    SndE2ERatchetParams,
+    pattern PQEncOff,
+    pattern PQSupportOff,
+    pattern PQSupportOn,
   )
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -213,14 +213,14 @@ import Simplex.Messaging.Protocol
     MsgId,
     NMsgMeta,
     ProtocolServer (..),
+    SMPClientVersion,
     SMPMsgMeta,
     SMPServer,
     SMPServerWithAuth,
     SndPublicAuthKey,
     SubscriptionMode,
-    SMPClientVersion,
-    VersionSMPC,
     VersionRangeSMPC,
+    VersionSMPC,
     initialSMPClientVersion,
     legacyEncodeServer,
     legacyServerP,
@@ -908,7 +908,7 @@ instance Encoding AgentMsgEnvelope where
 -- AgentRatchetInfo is not encrypted with double ratchet, but with per-queue E2E encryption
 data AgentMessage
   = -- used by the initiating party when confirming reply queue
-  AgentConnInfo ConnInfo
+    AgentConnInfo ConnInfo
   | -- AgentConnInfoReply is used by accepting party in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
     -- It made removed REPLY message unnecessary.
     AgentConnInfoReply (NonEmpty SMPQueueInfo) ConnInfo
@@ -1382,9 +1382,9 @@ deriving instance Show (ConnectionRequestUri m)
 data AConnectionRequestUri = forall m. ConnectionModeI m => ACR (SConnectionMode m) (ConnectionRequestUri m)
 
 instance Eq AConnectionRequestUri where
-   ACR m cr == ACR m' cr' = case testEquality m m' of
-     Just Refl -> cr == cr'
-     _ -> False
+  ACR m cr == ACR m' cr' = case testEquality m m' of
+    Just Refl -> cr == cr'
+    _ -> False
 
 deriving instance Show AConnectionRequestUri
 
@@ -1469,11 +1469,11 @@ data AgentErrorType
   | -- | connection errors
     CONN {connErr :: ConnectionErrorType}
   | -- | SMP protocol errors forwarded to agent clients
-    SMP {smpErr :: ErrorType}
+    SMP {serverAddress :: String, smpErr :: ErrorType}
   | -- | NTF protocol errors forwarded to agent clients
-    NTF {ntfErr :: ErrorType}
+    NTF {serverAddress :: String, ntfErr :: ErrorType}
   | -- | XFTP protocol errors forwarded to agent clients
-    XFTP {xftpErr :: XFTPErrorType}
+    XFTP {serverAddress :: String, xftpErr :: XFTPErrorType}
   | -- | XRCP protocol errors forwarded to agent clients
     RCP {rcpErr :: RCErrorType}
   | -- | SMP server errors
@@ -1584,9 +1584,9 @@ instance StrEncoding AgentErrorType where
   strP =
     "CMD " *> (CMD <$> parseRead1)
       <|> "CONN " *> (CONN <$> parseRead1)
-      <|> "SMP " *> (SMP <$> strP)
-      <|> "NTF " *> (NTF <$> strP)
-      <|> "XFTP " *> (XFTP <$> strP)
+      <|> "SMP " *> (SMP <$> textP <*> _strP)
+      <|> "NTF " *> (NTF <$> textP <*> _strP)
+      <|> "XFTP " *> (XFTP <$> textP <*> _strP)
       <|> "RCP " *> (RCP <$> strP)
       <|> "BROKER " *> (BROKER <$> textP <* " RESPONSE " <*> (RESPONSE <$> textP))
       <|> "BROKER " *> (BROKER <$> textP <* " TRANSPORT " <*> (TRANSPORT <$> transportErrorP))
@@ -1602,9 +1602,9 @@ instance StrEncoding AgentErrorType where
   strEncode = \case
     CMD e -> "CMD " <> bshow e
     CONN e -> "CONN " <> bshow e
-    SMP e -> "SMP " <> strEncode e
-    NTF e -> "NTF " <> strEncode e
-    XFTP e -> "XFTP " <> strEncode e
+    SMP srv e -> "SMP " <> text srv <> " " <> strEncode e
+    NTF srv e -> "NTF " <> text srv <> " " <> strEncode e
+    XFTP srv e -> "XFTP " <> text srv <> " " <> strEncode e
     RCP e -> "RCP " <> strEncode e
     BROKER srv (RESPONSE e) -> "BROKER " <> text srv <> " RESPONSE " <> text e
     BROKER srv (TRANSPORT e) -> "BROKER " <> text srv <> " TRANSPORT " <> serializeTransportError e
