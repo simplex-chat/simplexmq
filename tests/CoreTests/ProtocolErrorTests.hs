@@ -35,6 +35,9 @@ protocolErrorTests = modifyMaxSuccess (const 1000) $ do
     errHasSpaces = \case
       BROKER srv (RESPONSE e) -> hasSpaces srv || hasSpaces e
       BROKER srv _ -> hasSpaces srv
+      SMP srv _ -> hasSpaces srv
+      NTF srv _ -> hasSpaces srv
+      XFTP srv _ -> hasSpaces srv
       _ -> False
     hasSpaces s = ' ' `B.elem` encodeUtf8 (T.pack s)
 

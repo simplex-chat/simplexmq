@@ -422,7 +422,7 @@ functionalAPITests t = do
     describe "server with password" $ do
       let auth = Just "abcd"
           srv = ProtoServerWithAuth testSMPServer2
-          authErr = Just (ProtocolTestFailure TSCreateQueue $ SMP AUTH)
+          authErr = Just (ProtocolTestFailure TSCreateQueue $ SMP (B.unpack $ strEncode testSMPServer2) AUTH)
       it "should pass with correct password" $ testSMPServerConnectionTest t auth (srv auth) `shouldReturn` Nothing
       it "should fail without password" $ testSMPServerConnectionTest t auth (srv Nothing) `shouldReturn` authErr
       it "should fail with incorrect password" $ testSMPServerConnectionTest t auth (srv $ Just "wrong") `shouldReturn` authErr
@@ -537,7 +537,7 @@ runAgentClientTest pqSupport alice@AgentClient {} bob baseId =
     ackMessage alice bobId (baseId + 4) Nothing
     suspendConnection alice bobId
     5 <- msgId <$> A.sendMessage bob aliceId pqEnc SMP.noMsgFlags "message 2"
-    get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH))
+    get bob =##> \case ("", cId, MERR mId (SMP _ AUTH)) -> cId == aliceId && mId == (baseId + 5); _ -> False
     deleteConnection alice bobId
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   where
@@ -669,7 +669,7 @@ runAgentClientContactTest pqSupport alice bob baseId =
     ackMessage alice bobId (baseId + 4) Nothing
     suspendConnection alice bobId
     5 <- msgId <$> A.sendMessage bob aliceId pqEnc SMP.noMsgFlags "message 2"
-    get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH))
+    get bob =##> \case ("", cId, MERR mId (SMP _ AUTH)) -> cId == aliceId && mId == (baseId + 5); _ -> False
     deleteConnection alice bobId
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   where
@@ -1115,7 +1115,7 @@ testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testP
     5 <- sendMessage a bId SMP.noMsgFlags "2"
     liftIO $ threadDelay 1000000
     6 <- sendMessage a bId SMP.noMsgFlags "3" -- this won't expire
-    get a =##> \case ("", c, MERR 5 (SMP QUOTA)) -> bId == c; _ -> False
+    get a =##> \case ("", c, MERR 5 (SMP _ QUOTA)) -> bId == c; _ -> False
     pure (aId, bId)
   withAgent 3 agentCfg initAgentServers testDB2 $ \b' -> runRight_ $ do
     subscribeConnection b' aId
@@ -1143,15 +1143,15 @@ testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} 
     7 <- sendMessage a bId SMP.noMsgFlags "4"
     liftIO $ threadDelay 1000000
     8 <- sendMessage a bId SMP.noMsgFlags "5" -- this won't expire
-    get a =##> \case ("", c, MERR 5 (SMP QUOTA)) -> bId == c; _ -> False
+    get a =##> \case ("", c, MERR 5 (SMP _ QUOTA)) -> bId == c; _ -> False
     get a >>= \case
-      ("", c, MERR 6 (SMP QUOTA)) -> do
+      ("", c, MERR 6 (SMP _ QUOTA)) -> do
         liftIO $ bId `shouldBe` c
-        get a =##> \case ("", c', MERR 7 (SMP QUOTA)) -> bId == c'; ("", c', MERRS [7] (SMP QUOTA)) -> bId == c'; _ -> False
-      ("", c, MERRS [6] (SMP QUOTA)) -> do
+        get a =##> \case ("", c', MERR 7 (SMP _ QUOTA)) -> bId == c'; ("", c', MERRS [7] (SMP _ QUOTA)) -> bId == c'; _ -> False
+      ("", c, MERRS [6] (SMP _ QUOTA)) -> do
         liftIO $ bId `shouldBe` c
-        get a =##> \case ("", c', MERR 7 (SMP QUOTA)) -> bId == c'; _ -> False
-      ("", c, MERRS [6, 7] (SMP QUOTA)) -> liftIO $ bId `shouldBe` c
+        get a =##> \case ("", c', MERR 7 (SMP _ QUOTA)) -> bId == c'; _ -> False
+      ("", c, MERRS [6, 7] (SMP _ QUOTA)) -> liftIO $ bId `shouldBe` c
       r -> error $ show r
     pure (aId, bId)
   withAgent 3 agentCfg initAgentServers testDB2 $ \b' -> runRight_ $ do
@@ -1402,10 +1402,10 @@ makeConnection = makeConnection_ PQSupportOn
 makeConnection_ :: PQSupport -> AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection_ pqEnc alice bob = makeConnectionForUsers_ pqEnc alice 1 bob 1
 
-makeConnectionForUsers :: AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
+makeConnectionForUsers :: HasCallStack => AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnectionForUsers = makeConnectionForUsers_ PQSupportOn
 
-makeConnectionForUsers_ :: PQSupport -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
+makeConnectionForUsers_ :: HasCallStack => PQSupport -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnectionForUsers_ pqSupport alice aliceUserId bob bobUserId = do
   (bobId, qInfo) <- A.createConnection alice aliceUserId True SCMInvitation Nothing (CR.IKNoPQ pqSupport) SMSubscribe
   aliceId <- A.prepareConnectionToJoin bob bobUserId True qInfo pqSupport
@@ -1709,7 +1709,7 @@ testAcceptContactAsync =
     ackMessage alice bobId (baseId + 4) Nothing
     suspendConnection alice bobId
     5 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
-    get bob ##> ("", aliceId, MERR (baseId + 5) (SMP AUTH))
+    get bob =##> \case ("", cId, MERR mId (SMP _ AUTH)) -> cId == aliceId && mId == (baseId + 5); _ -> False
     deleteConnection alice bobId
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   where
@@ -1755,7 +1755,7 @@ testWaitDeliveryNoPending t = withAgentClients2 $ \alice bob ->
     get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
 
     3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
-    get bob ##> ("", aliceId, MERR (baseId + 3) (SMP AUTH))
+    get bob =##> \case ("", cId, MERR mId (SMP _ AUTH)) -> cId == aliceId && mId == (baseId + 3); _ -> False
 
     liftIO $ noMessages alice "nothing else should be delivered to alice"
     liftIO $ noMessages bob "nothing else should be delivered to bob"
@@ -1850,8 +1850,8 @@ testWaitDeliveryAUTHErr t =
         liftIO $ noMessages bob "nothing else should be delivered to bob"
 
       withSmpServerStoreLogOn t testPort $ \_ -> do
-        get alice ##> ("", bobId, MERR (baseId + 3) (SMP AUTH))
-        get alice ##> ("", bobId, MERR (baseId + 4) (SMP AUTH))
+        get alice =##> \case ("", cId, MERR mId (SMP _ AUTH)) -> cId == bobId && mId == (baseId + 3); _ -> False
+        get alice =##> \case ("", cId, MERR mId (SMP _ AUTH)) -> cId == bobId && mId == (baseId + 4); _ -> False
         get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
 
         liftIO $ noMessages alice "nothing else should be delivered to alice"
@@ -2422,11 +2422,11 @@ testCreateQueueAuth srvVersion clnt1 clnt2 = do
   b <- getClient 2 clnt2 testDB2
   r <- runRight $ do
     tryError (createConnection a 1 True SCMInvitation Nothing SMSubscribe) >>= \case
-      Left (SMP AUTH) -> pure 0
+      Left (SMP _ AUTH) -> pure 0
       Left e -> throwError e
       Right (bId, qInfo) ->
         tryError (joinConnection b 1 True qInfo "bob's connInfo" SMSubscribe) >>= \case
-          Left (SMP AUTH) -> pure 1
+          Left (SMP _ AUTH) -> pure 1
           Left e -> throwError e
           Right aId -> do
             ("", _, CONF confId _ "bob's connInfo") <- get a

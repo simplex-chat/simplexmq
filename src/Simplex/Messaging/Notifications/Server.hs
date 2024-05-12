@@ -218,10 +218,10 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
-      ((_, srv, _), _, _, _, ntfId, msg) <- atomically $ readTBQueue msgQ
+      ((_, srv, _), _, _, _tType, ntfId, msgOrErr) <- atomically $ readTBQueue msgQ
       let smpQueue = SMPQueueNtf srv ntfId
-      case msg of
-        SMP.NMSG nmsgNonce encNMsgMeta -> do
+      case msgOrErr of
+        Right (SMP.NMSG nmsgNonce encNMsgMeta) -> do
           ntfTs <- liftIO getSystemTime
           st <- asks store
           NtfPushServer {pushQ} <- asks pushServer
@@ -231,8 +231,10 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
             findNtfSubscriptionToken st smpQueue
               >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
           incNtfStat ntfReceived
-        SMP.END -> updateSubStatus smpQueue NSEnd
-        _ -> pure ()
+        Right SMP.END -> updateSubStatus smpQueue NSEnd
+        Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
+        Right _ -> logError $ "SMP server unexpected response"
+        Left e -> logError $ "SMP client error: " <> tshow e
 
     receiveAgent =
       forever $

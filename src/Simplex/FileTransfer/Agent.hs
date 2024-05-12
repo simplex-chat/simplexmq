@@ -262,9 +262,9 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
-      when (FileSize encSize /= size) $ throwError $ XFTP XFTP.SIZE
+      when (FileSize encSize /= size) $ throwError $ XFTP "" XFTP.SIZE
       encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
-      when (FileDigest encDigest /= digest) $ throwError $ XFTP XFTP.DIGEST
+      when (FileDigest encDigest /= digest) $ throwError $ XFTP "" XFTP.DIGEST
       let destFile = CryptoFile fsSavePath cfArgs
       void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure destFile
       case redirect of
@@ -281,10 +281,11 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
           -- proceed with redirect
           yaml <- liftError (INTERNAL . show) (CF.readFile $ CryptoFile fsSavePath cfArgs) `agentFinally` (lift $ toFSFilePath fsSavePath >>= removePath)
           next@FileDescription {chunks = nextChunks} <- case strDecode (LB.toStrict yaml) of
-            Left _ -> throwError . XFTP $ XFTP.REDIRECT "decode error"
+            -- TODO switch to another error constructor
+            Left _ -> throwError . XFTP "" $ XFTP.REDIRECT "decode error"
             Right (ValidFileDescription fd@FileDescription {size = dstSize, digest = dstDigest})
-              | dstSize /= redirectSize -> throwError . XFTP $ XFTP.REDIRECT "size mismatch"
-              | dstDigest /= redirectDigest -> throwError . XFTP $ XFTP.REDIRECT "digest mismatch"
+              | dstSize /= redirectSize -> throwError . XFTP "" $ XFTP.REDIRECT "size mismatch"
+              | dstDigest /= redirectDigest -> throwError . XFTP "" $ XFTP.REDIRECT "digest mismatch"
               | otherwise -> pure fd
           -- register and download chunks from the actual file
           withStore c $ \db -> updateRcvFileRedirect db redirectDbId next
