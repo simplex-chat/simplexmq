@@ -218,7 +218,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
-      ((_, srv, _), _, _, tType, ntfId, msgOrErr) <- atomically $ readTBQueue msgQ
+      ((_, srv, _), _, _, _tType, ntfId, msgOrErr) <- atomically $ readTBQueue msgQ
       let smpQueue = SMPQueueNtf srv ntfId
       case msgOrErr of
         Right (SMP.NMSG nmsgNonce encNMsgMeta) -> do
@@ -233,7 +233,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
           incNtfStat ntfReceived
         Right SMP.END -> updateSubStatus smpQueue NSEnd
         Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
-        Right _ -> logError $ "SMP server unexpected response: " <> tshow tType
+        Right _ -> logError $ "SMP server unexpected response"
         Left e -> logError $ "SMP client error: " <> tshow e
 
     receiveAgent =

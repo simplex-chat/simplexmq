@@ -1094,7 +1094,6 @@ class (ProtocolEncoding v err msg, ProtocolEncoding v err (ProtoCommand msg), Sh
   type ProtoType msg = (sch :: ProtocolType) | sch -> msg
   protocolClientHandshake :: forall c. Transport c => c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> ExceptT TransportError IO (THandle v c 'TClient)
   protocolPing :: ProtoCommand msg
-  protocolSub :: ProtoCommand msg -> Bool
   protocolError :: msg -> Maybe err
 
 type ProtoServer msg = ProtocolServer (ProtoType msg)
@@ -1104,10 +1103,6 @@ instance Protocol SMPVersion ErrorType BrokerMsg where
   type ProtoType BrokerMsg = 'PSMP
   protocolClientHandshake = smpClientHandshake
   protocolPing = Cmd SSender PING
-  protocolSub = \case
-    Cmd SRecipient SUB -> True
-    Cmd SNotifier NSUB -> True
-    _ -> False
   protocolError = \case
     ERR e -> Just e
     _ -> Nothing

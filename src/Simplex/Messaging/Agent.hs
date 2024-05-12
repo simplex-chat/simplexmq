@@ -2088,7 +2088,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
           Right (SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId}) ->
             void . handleNotifyAck $ do
               isGET <- atomically $ hasGetLock c rq
-              unless isGET checkSubscription
+              unless isGET checkExpiredResponse
               msg' <- decryptSMPMessage rq msg
               ack' <- handleNotifyAck $ case msg' of
                 SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} -> processClientMsg srvTs msgFlags msgBody
@@ -2250,7 +2250,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 _ -> ignored
               ignored = pure "END from disconnected client - ignored"
           Right (SMP.ERR e) -> notify $ ERR $ SMP (B.unpack $ strEncode srv) e
-          Right SMP.OK -> checkSubscription
+          Right SMP.OK -> checkExpiredResponse
           Right _ -> unexpected
           Left e -> notify $ ERR $ protocolClientError SMP (B.unpack $ strEncode srv) e
         where
@@ -2272,18 +2272,20 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
             -- TODO add extended information about transmission type once UNEXPECTED has string
             notify . ERR $ BROKER (B.unpack $ strEncode srv) UNEXPECTED
 
-          checkSubscription :: AM ()
-          checkSubscription = case tType of
+          checkExpiredResponse :: AM ()
+          checkExpiredResponse = case tType of
             TTEvent -> pure ()
             TTUncorrelatedResponse -> unexpected
-            TTExpiredSubResponse -> do
-              added <-
-                atomically $
-                  ifM
-                    ((&&) <$> hasPendingSubscription c connId <*> activeClientSession c tSess sessId)
-                    (True <$ addSubscription c rq)
-                    (pure False)
-              when added $ notify $ UP srv [connId]
+            TTExpiredResponse (SMP.Cmd _ cmd) -> case cmd of
+              SMP.SUB -> do
+                added <-
+                  atomically $
+                    ifM
+                      ((&&) <$> hasPendingSubscription c connId <*> activeClientSession c tSess sessId)
+                      (True <$ addSubscription c rq)
+                      (pure False)
+                when added $ notify $ UP srv [connId]
+              _ -> pure ()
 
           decryptClientMessage :: C.DhSecretX25519 -> SMP.ClientMsgEnvelope -> AM (SMP.PrivHeader, AgentMsgEnvelope)
           decryptClientMessage e2eDh SMP.ClientMsgEnvelope {cmNonce, cmEncBody} = do

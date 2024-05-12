@@ -115,7 +115,6 @@ import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, diffToMicroseconds, ifM, raceAny_, threadDelay', tshow, whenM)
 import Simplex.Messaging.Version
 import System.Timeout (timeout)
-import UnliftIO (pooledMapConcurrentlyN)
 
 -- | 'SMPClient' is a handle used to send commands to a specific SMP server.
 --
@@ -132,13 +131,12 @@ data PClient v err msg = PClient
     transportSession :: TransportSession msg,
     transportHost :: TransportHost,
     tcpTimeout :: Int,
-    rcvConcurrency :: Int,
     sendPings :: TVar Bool,
     lastReceived :: TVar UTCTime,
     timeoutErrorCount :: TVar Int,
     clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
-    sndQ :: TBQueue (Maybe (TVar Bool), ByteString),
+    sndQ :: TBQueue ByteString,
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmission v err msg))
   }
@@ -173,7 +171,6 @@ smpClientStub g sessionId thVersion thAuth = do
               transportSession = (1, "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001", Nothing),
               transportHost = "localhost",
               tcpTimeout = 15_000_000,
-              rcvConcurrency = 8,
               sendPings,
               lastReceived,
               timeoutErrorCount,
@@ -191,10 +188,9 @@ type SMPClient = ProtocolClient SMPVersion ErrorType BrokerMsg
 type ClientCommand msg = (Maybe C.APrivateAuthKey, EntityId, ProtoCommand msg)
 
 -- | Type synonym for transmission from some SPM server queue.
-type ServerTransmission v err msg = (TransportSession msg, Version v, SessionId, TransmissionType, EntityId, Either (ProtocolClientError err) msg)
+type ServerTransmission v err msg = (TransportSession msg, Version v, SessionId, TransmissionType msg, EntityId, Either (ProtocolClientError err) msg)
 
-data TransmissionType = TTEvent | TTUncorrelatedResponse | TTExpiredSubResponse
-  deriving (Show)
+data TransmissionType msg = TTEvent | TTUncorrelatedResponse | TTExpiredResponse (ProtoCommand msg)
 
 data HostMode
   = -- | prefer (or require) onion hosts when connecting via SOCKS proxy
@@ -293,7 +289,7 @@ defaultSMPClientConfig = defaultClientConfig (Just supportedSMPHandshakes) suppo
 data Request err msg = Request
   { corrId :: CorrId,
     entityId :: EntityId,
-    subscription :: Bool,
+    command :: ProtoCommand msg,
     pending :: TVar Bool,
     responseVar :: TMVar (Either (ProtocolClientError err) msg)
   }
@@ -349,7 +345,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
-    NetworkConfig {tcpConnectTimeout, tcpTimeout, rcvConcurrency, smpPingInterval} = networkConfig
+    NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
     mkProtocolClient :: TransportHost -> UTCTime -> STM (PClient v err msg)
     mkProtocolClient transportHost ts = do
       connected <- newTVar False
@@ -371,7 +367,6 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             timeoutErrorCount,
             clientCorrId,
             sentCommands,
-            rcvConcurrency,
             sndQ,
             rcvQ,
             msgQ
@@ -414,11 +409,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             `finally` disconnected c'
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
-    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= sendActive
-      where
-        sendActive (Nothing, s) = send_ s
-        sendActive (Just active, s) = whenM (readTVarIO active) $ send_ s
-        send_ = void . tPutLog h
+    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= void . tPutLog h
 
     receive :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     receive ProtocolClient {client_ = PClient {rcvQ, lastReceived, timeoutErrorCount}} h = forever $ do
@@ -454,7 +445,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
       | not $ B.null $ bs corrId =
           atomically (TM.lookup corrId sentCommands) >>= \case
             Nothing -> sendMsg TTUncorrelatedResponse
-            Just Request {entityId, subscription, pending, responseVar} -> do
+            Just Request {entityId, command, pending, responseVar} -> do
               wasPending <-
                 atomically $ do
                   TM.delete corrId sentCommands
@@ -462,15 +453,9 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
                     (readTVar pending)
                     (True <$ tryPutTMVar responseVar (response entityId))
                     (pure False)
-              unless wasPending $ mapM_ sendMsg $ transmissionType entityId subscription
+              unless wasPending $ sendMsg $ if entityId == entId then TTExpiredResponse command else TTUncorrelatedResponse
       | otherwise = sendMsg TTEvent
       where
-        -- we don't send expired events that are not subscription responses to avoid double error reporting,
-        -- as the expired command already reported them.
-        transmissionType entityId subscription
-          | entityId /= entId = Just TTUncorrelatedResponse
-          | subscription = Just TTExpiredSubResponse
-          | otherwise = Nothing
         response entityId
           | entityId == entId = clientResp
           | otherwise = Left . PCEUnexpectedResponse $ bshow respOrErr
@@ -479,12 +464,12 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
           Right r -> case protocolError r of
             Just e -> Left $ PCEProtocolError e
             _ -> Right r
-        sendMsg :: TransmissionType -> IO ()
+        sendMsg :: TransmissionType msg -> IO ()
         sendMsg tType = case msgQ of
           Just q -> atomically $ writeTBQueue q $ serverTransmission c tType entId clientResp
           Nothing -> case clientResp of
             Left e -> logError $ "SMP client error: " <> tshow e
-            Right _ -> logWarn $ "SMP client unprocessed event: " <> tshow tType
+            Right _ -> logWarn $ "SMP client unprocessed event"
 
 proxyUsername :: TransportSession msg -> ByteString
 proxyUsername (userId, _, entityId_) = C.sha256Hash $ bshow userId <> maybe "" (":" <>) entityId_
@@ -559,7 +544,7 @@ subscribeSMPQueue c@ProtocolClient {client_ = PClient {sendPings}} rpKey rId = d
   -- We are not expiring sending subscriptions even if it expires to increase chances of subscription
   -- succeeding without retries - the subscription is registered in the agent when uncorrelated MSG response
   -- is received via the active client for pending queue subscription - it also prevents unnecessary retries.
-  sendProtocolCommand' False c (Just rpKey) rId (Cmd SRecipient SUB) >>= \case
+  sendProtocolCommand c (Just rpKey) rId (Cmd SRecipient SUB) >>= \case
     OK -> pure ()
     cmd@MSG {} -> liftIO $ writeSMPMessage c rId cmd
     r -> throwE . PCEUnexpectedResponse $ bshow r
@@ -569,7 +554,7 @@ subscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> 
 subscribeSMPQueues c@ProtocolClient {client_ = PClient {sendPings}} qs = do
   atomically $ writeTVar sendPings True
   -- See comment in subscribeSMPQueue
-  sendProtocolCommands' False c cs >>= mapM (processSUBResponse c)
+  sendProtocolCommands c cs >>= mapM (processSUBResponse c)
   where
     cs = L.map (\(rpKey, rId) -> (Just rpKey, rId, Cmd SRecipient SUB)) qs
 
@@ -589,7 +574,7 @@ processSUBResponse c (Response rId r) = case r of
 writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> IO ()
 writeSMPMessage c rId msg = atomically $ mapM_ (`writeTBQueue` serverTransmission c TTEvent rId (Right msg)) (msgQ $ client_ c)
 
-serverTransmission :: ProtocolClient v err msg -> TransmissionType -> RecipientId -> Either (ProtocolClientError err) msg -> ServerTransmission v err msg
+serverTransmission :: ProtocolClient v err msg -> TransmissionType msg -> RecipientId -> Either (ProtocolClientError err) msg -> ServerTransmission v err msg
 serverTransmission ProtocolClient {thParams = THandleParams {thVersion, sessionId}, client_ = PClient {transportSession}} tType entityId msgOrErr =
   (transportSession, thVersion, sessionId, tType, entityId, msgOrErr)
 
@@ -717,13 +702,9 @@ type PCTransmission err msg = (Either TransportError SentRawTransmission, Reques
 
 -- | Send multiple commands with batching and collect responses
 sendProtocolCommands :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Response err msg))
-sendProtocolCommands = sendProtocolCommands' True
-{-# INLINE sendProtocolCommands #-}
-
-sendProtocolCommands' :: forall v err msg. Protocol v err msg => Bool -> ProtocolClient v err msg -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Response err msg))
-sendProtocolCommands' expire c@ProtocolClient {thParams = THandleParams {batch, blockSize}} cs = do
+sendProtocolCommands c@ProtocolClient {thParams = THandleParams {batch, blockSize}} cs = do
   bs <- batchTransmissions' batch blockSize <$> mapM (mkTransmission c) cs
-  validate . concat =<< mapM (sendBatch c expire) bs
+  validate . concat =<< mapM (sendBatch c) bs
   where
     validate :: [Response err msg] -> IO (NonEmpty (Response err msg))
     validate rs
@@ -740,36 +721,26 @@ sendProtocolCommands' expire c@ProtocolClient {thParams = THandleParams {batch, 
 streamProtocolCommands :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> NonEmpty (ClientCommand msg) -> ([Response err msg] -> IO ()) -> IO ()
 streamProtocolCommands c@ProtocolClient {thParams = THandleParams {batch, blockSize}} cs cb = do
   bs <- batchTransmissions' batch blockSize <$> mapM (mkTransmission c) cs
-  mapM_ (cb <=< sendBatch c True) bs
+  mapM_ (cb <=< sendBatch c) bs
 
-sendBatch :: ProtocolClient v err msg -> Bool -> TransportBatch (Request err msg) -> IO [Response err msg]
-sendBatch c@ProtocolClient {client_ = PClient {rcvConcurrency, sndQ}} expire b = do
+sendBatch :: ProtocolClient v err msg -> TransportBatch (Request err msg) -> IO [Response err msg]
+sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
   case b of
     TBError e Request {entityId} -> do
       putStrLn "send error: large message"
       pure [Response entityId $ Left $ PCETransportError e]
     TBTransmissions s n rs
       | n > 0 -> do
-          active <- mkActive_ expire
-          atomically $ writeTBQueue sndQ (active, s)
-          mapConcurrently (getResponse c active) rs
+          atomically $ writeTBQueue sndQ s
+          mapConcurrently (getResponse c) rs
       | otherwise -> pure []
     TBTransmission s r -> do
-      active <- mkActive_ expire
-      atomically $ writeTBQueue sndQ (active, s)
-      (: []) <$> getResponse c active r
-
-mkActive_ :: Bool -> IO (Maybe (TVar Bool))
-mkActive_ True = Just <$> newTVarIO True
-mkActive_ False = pure Nothing
+      atomically $ writeTBQueue sndQ s
+      (: []) <$> getResponse c r
 
 -- | Send Protocol command
 sendProtocolCommand :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand = sendProtocolCommand' True
-{-# INLINE sendProtocolCommand #-}
-
-sendProtocolCommand' :: forall v err msg. Protocol v err msg => Bool -> ProtocolClient v err msg -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand' expire c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize}} pKey entId cmd =
+sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize}} pKey entId cmd =
   ExceptT $ uncurry sendRecv =<< mkTransmission c (pKey, entId, cmd)
   where
     -- two separate "atomically" needed to avoid blocking
@@ -779,30 +750,29 @@ sendProtocolCommand' expire c@ProtocolClient {client_ = PClient {sndQ}, thParams
       Right t
         | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
         | otherwise -> do
-            active <- mkActive_ expire
-            atomically (writeTBQueue sndQ (active, s))
-            response <$> getResponse c active r
+            atomically $ writeTBQueue sndQ s
+            response <$> getResponse c r
         where
           s
             | batch = tEncodeBatch1 t
             | otherwise = tEncode t
 
 -- TODO switch to timeout or TimeManager that supports Int64
-getResponse :: ProtocolClient v err msg -> Maybe (TVar Bool) -> Request err msg -> IO (Response err msg)
-getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount}} active Request {corrId, entityId, pending, responseVar} = do
+getResponse :: ProtocolClient v err msg -> Request err msg -> IO (Response err msg)
+getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount}} Request {entityId, pending, responseVar} = do
   response <-
     timeout tcpTimeout (atomically (takeTMVar responseVar)) >>= \case
       Just r -> atomically (writeTVar timeoutErrorCount 0) $> r
       Nothing -> do
-        atomically (mapM_ (`writeTVar` False) active >> writeTVar pending False)
+        atomically $ writeTVar pending False
         atomically $ modifyTVar' timeoutErrorCount (+ 1)
         pure $ Left PCEResponseTimeout
   pure Response {entityId, response}
 
 mkTransmission :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> ClientCommand msg -> IO (PCTransmission err msg)
-mkTransmission ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} (pKey_, entityId, cmd) = do
+mkTransmission ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} (pKey_, entityId, command) = do
   corrId <- atomically getNextCorrId
-  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, entityId, cmd)
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, entityId, command)
       auth = authTransmission (thAuth thParams) pKey_ corrId tForAuth
   r <- atomically $ mkRequest corrId
   pure ((,tToSend) <$> auth, r)
@@ -817,7 +787,7 @@ mkTransmission ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCo
             Request
               { corrId,
                 entityId,
-                subscription = protocolSub cmd,
+                command,
                 pending,
                 responseVar
               }
