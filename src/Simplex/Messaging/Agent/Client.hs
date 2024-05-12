@@ -1188,7 +1188,7 @@ subscribeQueues c qs = do
         atomically $
           ifM
             (activeClientSession c tSess sessId)
-            (writeTVar session (Just sessId) >> mapM_ (uncurry $ processSubResult c) rs $> True)
+            (writeTVar session (Just sessId) >> processSubResults rs $> True)
             (pure False)
       if active
         then when (hasTempErrors rs) resubscribe $> rs
@@ -1199,6 +1199,8 @@ subscribeQueues c qs = do
         tSess = transportSession' smp
         sessId = sessionId $ thParams smp
         hasTempErrors = any (either temporaryClientError (const False) . snd)
+        processSubResults :: NonEmpty (RcvQueue, Either SMPClientError ()) -> STM ()
+        processSubResults = mapM_ $ uncurry $ processSubResult c
         resubscribe = resubscribeSMPSession c tSess `runReaderT` env
 
 activeClientSession :: AgentClient -> SMPTransportSession -> SessionId -> STM Bool
