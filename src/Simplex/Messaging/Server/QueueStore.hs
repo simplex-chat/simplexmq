@@ -8,6 +8,9 @@ module Simplex.Messaging.Server.QueueStore where
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 
+-- normalized/storage form
+-- can be split into per-party pieces
+-- id/public key form party index, dhsecrets can use dense storage or loaded on demand
 data QueueRec = QueueRec
   { recipientId :: !RecipientId,
     recipientKey :: !RcvPublicAuthKey,

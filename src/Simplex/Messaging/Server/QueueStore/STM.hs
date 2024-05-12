@@ -24,6 +24,8 @@ where
 
 import Control.Monad
 import Data.Functor (($>))
+import Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as HM
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.TMap (TMap)
@@ -32,24 +34,32 @@ import Simplex.Messaging.Util (ifM, ($>>=))
 import UnliftIO.STM
 
 data QueueStore = QueueStore
-  { queues :: TMap RecipientId (TVar QueueRec),
-    senders :: TMap SenderId RecipientId,
-    notifiers :: TMap NotifierId RecipientId
+  { recipientKeys :: TVar (HashMap RecipientId RcvPublicAuthKey), -- O(1) index for const-time auth checks
+    senderKeys :: TVar (HashMap SenderId SndPublicAuthKey), -- O(1) index for const-time auth checks
+    notifierKeys :: TVar (HashMap NotifierId NtfPublicAuthKey), -- O(1) index for const-time auth checks
+    queues :: TMap RecipientId (TVar QueueRec), -- can be stored cold; and indexed with ints (using annotated keys below)
+    senders :: TMap SenderId RecipientId, -- not needed with annotated keys
+    notifiers :: TMap NotifierId RecipientId -- not needed with annotated keys
   }
 
 newQueueStore :: STM QueueStore
 newQueueStore = do
+  recipientKeys <- newTVar mempty
+  senderKeys <- newTVar mempty
+  notifierKeys <- newTVar mempty
   queues <- TM.empty
   senders <- TM.empty
   notifiers <- TM.empty
-  pure QueueStore {queues, senders, notifiers}
+  pure QueueStore {recipientKeys, senderKeys, notifierKeys, queues, senders, notifiers}
 
 addQueue :: QueueStore -> QueueRec -> STM (Either ErrorType ())
-addQueue QueueStore {queues, senders} q@QueueRec {recipientId = rId, senderId = sId} = do
+addQueue QueueStore {recipientKeys, senderKeys, queues, senders} q@QueueRec {recipientId = rId, recipientKey, senderId = sId, senderKey} = do
   ifM hasId (pure $ Left DUPLICATE_) $ do
     qVar <- newTVar q
     TM.insert rId qVar queues
+    modifyTVar' recipientKeys $ HM.insert rId recipientKey
     TM.insert sId rId senders
+    forM_ senderKey $ modifyTVar' senderKeys . HM.insert rId -- XXX: should not exist here yet, unless testing?
     pure $ Right ()
   where
     hasId = (||) <$> TM.member rId queues <*> TM.member sId senders
@@ -64,13 +74,14 @@ getQueue QueueStore {queues, senders, notifiers} party qId =
       SNotifier -> TM.lookup qId notifiers $>>= (`TM.lookup` queues)
 
 secureQueue :: QueueStore -> RecipientId -> SndPublicAuthKey -> STM (Either ErrorType QueueRec)
-secureQueue QueueStore {queues} rId sKey =
+secureQueue QueueStore {senderKeys, queues} rId sKey =
   withQueue rId queues $ \qVar ->
     readTVar qVar >>= \q -> case senderKey q of
       Just k -> pure $ if sKey == k then Just q else Nothing
-      _ ->
+      _ -> do
         let q' = q {senderKey = Just sKey}
-         in writeTVar qVar q' $> Just q'
+        modifyTVar' senderKeys $ HM.insert rId sKey
+        writeTVar qVar q' $> Just q'
 
 addQueueNotifier :: QueueStore -> RecipientId -> NtfCreds -> STM (Either ErrorType QueueRec)
 addQueueNotifier QueueStore {queues, notifiers} rId ntfCreds@NtfCreds {notifierId = nId} = do

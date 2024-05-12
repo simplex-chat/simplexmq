@@ -51,6 +51,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
+import qualified Data.HashMap.Strict as HM
 import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM
 import Data.List (intercalate, mapAccumR)
@@ -541,7 +542,11 @@ verifyTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe Transmiss
 verifyTransmission auth_ tAuth authorized queueId cmd =
   case cmd of
     Cmd SRecipient (NEW k _ _ _) -> pure $ Nothing `verifiedWith` k
-    Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWith` recipientKey q) <$> get SRecipient
+    Cmd SRecipient _ -> do
+      QueueStore {recipientKeys} <- asks queueStore
+      (queueId `HM.lookup`) <$> readTVarIO recipientKeys >>= \case
+        Nothing -> pure $! dummyVerify
+        Just rKey -> if verify rKey then slowIO >> get SRecipient >>= either (\_notGonnaHappenUnlessDeletedWhileCheckingAuth -> pure VRFailed) (pure . VRVerified . Just) else pure VRFailed
     -- SEND will be accepted without authorization before the queue is secured with KEY command
     Cmd SSender SEND {} -> verifyQueue (\q -> Just q `verified` maybe (isNothing tAuth) verify (senderKey q)) <$> get SSender
     Cmd SSender PING -> pure $ VRVerified Nothing
@@ -554,6 +559,8 @@ verifyTransmission auth_ tAuth authorized queueId cmd =
     verifyQueue = either (\_ -> dummyVerify)
     verified q cond = if cond then VRVerified q else VRFailed
     verifiedWith q k = q `verified` verify k
+    slowIO :: M ()
+    slowIO = liftIO $ threadDelay 100000 -- XXX: Some thumb twiddling to prove that fetching queue data doesn't allow to distinguish bad key and non-existent queue.
     get :: SParty p -> M (Either ErrorType QueueRec)
     get party = do
       st <- asks queueStore

@@ -62,7 +62,7 @@ serverTests t@(ATransport t') = do
   describe "Store log" $ testWithStoreLog t
   describe "Restore messages" $ testRestoreMessages t
   describe "Restore messages (old / v2)" $ testRestoreExpireMessages t
-  describe "Timing of AUTH error" $ testTiming t
+  fdescribe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
   describe "Message expiration" $ do
     testMsgExpireOnSend t'
