@@ -593,6 +593,8 @@ type AsyncCmdId = Int64
 data StoreError
   = -- | IO exceptions in store actions.
     SEInternal ByteString
+  | -- | Database busy
+    SEDatabaseBusy ByteString
   | -- | Failed to generate unique random ID
     SEUniqueID
   | -- | User ID not found
