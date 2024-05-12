@@ -81,6 +81,7 @@ module Simplex.Messaging.Client
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
@@ -450,7 +451,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
                 atomically $ do
                   TM.delete corrId sentCommands
                   ifM
-                    (readTVar pending)
+                    (swapTVar pending False)
                     (True <$ tryPutTMVar responseVar (response entityId))
                     (pure False)
               unless wasPending $ sendMsg $ if entityId == entId then TTExpiredResponse command else TTUncorrelatedResponse
@@ -753,16 +754,17 @@ sendProtocolCommand c@ProtocolClient {client_ = PClient {sndQ}, thParams = THand
             | batch = tEncodeBatch1 t
             | otherwise = tEncode t
 
--- TODO switch to timeout or TimeManager that supports Int64
 getResponse :: ProtocolClient v err msg -> Request err msg -> IO (Response err msg)
 getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount}} Request {entityId, pending, responseVar} = do
-  response <-
-    timeout tcpTimeout (atomically (takeTMVar responseVar)) >>= \case
-      Just r -> atomically (writeTVar timeoutErrorCount 0) $> r
-      Nothing -> do
-        atomically $ writeTVar pending False
-        atomically $ modifyTVar' timeoutErrorCount (+ 1)
-        pure $ Left PCEResponseTimeout
+  r <- tcpTimeout `timeout` atomically (takeTMVar responseVar)
+  response <- atomically $ do
+    writeTVar pending False
+    -- Try to read response again in case it arrived after timeout expired
+    -- but before `pending` was set to False above.
+    -- See `processMsg`.
+    ((r <|>) <$> tryTakeTMVar responseVar) >>= \case
+      Just r' -> writeTVar timeoutErrorCount 0 $> r'
+      Nothing -> modifyTVar' timeoutErrorCount (+ 1) $> Left PCEResponseTimeout
   pure Response {entityId, response}
 
 mkTransmission :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> ClientCommand msg -> IO (PCTransmission err msg)
