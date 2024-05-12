@@ -2276,7 +2276,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
           checkExpiredResponse = case tType of
             TTEvent -> pure ()
             TTUncorrelatedResponse -> unexpected
-            TTExpiredResponse (SMP.Cmd _ cmd) -> case cmd of
+            TTExpiredResponse (SMP.Cmd _ cmd') -> case cmd' of
               SMP.SUB -> do
                 added <-
                   atomically $

@@ -541,10 +541,7 @@ createSMPQueue c (rKey, rpKey) dhKey auth subMode =
 subscribeSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO ()
 subscribeSMPQueue c@ProtocolClient {client_ = PClient {sendPings}} rpKey rId = do
   liftIO . atomically $ writeTVar sendPings True
-  -- We are not expiring sending subscriptions even if it expires to increase chances of subscription
-  -- succeeding without retries - the subscription is registered in the agent when uncorrelated MSG response
-  -- is received via the active client for pending queue subscription - it also prevents unnecessary retries.
-  sendProtocolCommand c (Just rpKey) rId (Cmd SRecipient SUB) >>= \case
+  sendSMPCommand c (Just rpKey) rId SUB >>= \case
     OK -> pure ()
     cmd@MSG {} -> liftIO $ writeSMPMessage c rId cmd
     r -> throwE . PCEUnexpectedResponse $ bshow r
@@ -553,7 +550,6 @@ subscribeSMPQueue c@ProtocolClient {client_ = PClient {sendPings}} rpKey rId = d
 subscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
 subscribeSMPQueues c@ProtocolClient {client_ = PClient {sendPings}} qs = do
   atomically $ writeTVar sendPings True
-  -- See comment in subscribeSMPQueue
   sendProtocolCommands c cs >>= mapM (processSUBResponse c)
   where
     cs = L.map (\(rpKey, rId) -> (Just rpKey, rId, Cmd SRecipient SUB)) qs
