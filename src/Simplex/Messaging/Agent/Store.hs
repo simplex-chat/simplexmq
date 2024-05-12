@@ -30,7 +30,7 @@ import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (RatchetX448, PQEncryption, PQSupport)
+import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport, RatchetX448)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( MsgBody,
