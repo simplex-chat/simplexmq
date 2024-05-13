@@ -2208,15 +2208,15 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                           updateTotalMsgCount =
                             TM.lookup connId (msgCounts c) >>= \case
                               Just v -> modifyTVar' v $ \counts -> counts {total = total counts + 1}
-                              Nothing -> addMsgCount
+                              Nothing -> addMsgCount 0
                           updateDupMsgCount :: STM ()
                           updateDupMsgCount =
                             TM.lookup connId (msgCounts c) >>= \case
                               Just v -> modifyTVar' v $ \counts -> counts {duplicate = duplicate counts + 1}
-                              Nothing -> addMsgCount
-                          addMsgCount :: STM ()
-                          addMsgCount = do
-                            counts <- newTVar $ MsgCounts 1 1
+                              Nothing -> addMsgCount 1
+                          addMsgCount :: Int -> STM ()
+                          addMsgCount duplicate = do
+                            counts <- newTVar $ MsgCounts {total = 1, duplicate}
                             TM.insert connId counts (msgCounts c)
                           agentClientMsg :: TVar ChaChaDRG -> ByteString -> AM (Maybe (InternalId, MsgMeta, AMessage, CR.RatchetX448))
                           agentClientMsg g encryptedMsgHash = withStore c $ \db -> runExceptT $ do
