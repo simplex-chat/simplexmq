@@ -1998,7 +1998,7 @@ subscriber :: AgentClient -> AM' ()
 subscriber c@AgentClient {subQ, msgQ} = forever $ do
   t <- atomically $ readTBQueue msgQ
   agentOperationBracket c AORcvNetwork waitUntilActive $
-    runExceptT (processSMPTransmission c t) >>= \case
+    tryAgentError' (processSMPTransmission c t) >>= \case
       Left e -> do
         logError $ tshow e
         atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR e)
