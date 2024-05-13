@@ -145,6 +145,8 @@ library
       Simplex.Messaging.Server.QueueStore
       Simplex.Messaging.Server.QueueStore.STM
       Simplex.Messaging.Server.Stats
+      Simplex.Messaging.Server.Stats.Client
+      Simplex.Messaging.Server.Stats.Timeline
       Simplex.Messaging.Server.StoreLog
       Simplex.Messaging.ServiceScheme
       Simplex.Messaging.Session

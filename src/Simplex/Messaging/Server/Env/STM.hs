@@ -17,7 +17,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import Data.Time.Clock.System (SystemTime)
+import Data.Time.Clock.System (SystemTime, systemToUTCTime)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
@@ -31,6 +31,8 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
+import Simplex.Messaging.Server.Stats.Client (ClientStats, newClientStats)
+import Simplex.Messaging.Server.Stats.Timeline (Timeline, newTimeline, perMinute)
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -177,7 +179,7 @@ newClient peerId nextClientId qSize thVersion sessionId createdAt = do
   connected <- newTVar True
   rcvActiveAt <- newTVar createdAt
   sndActiveAt <- newTVar createdAt
-  clientStats <- ClientStats <$> newTVar 0 <*> newTVar 0
+  clientStats <- newClientStats newTVar (systemToUTCTime createdAt)
   return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, peerId, clientStats}
 
 newSubscription :: SubscriptionThread -> STM Sub
