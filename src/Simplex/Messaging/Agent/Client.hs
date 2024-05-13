@@ -173,6 +173,7 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, diffUTCTime, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
+import qualified Database.SQLite.Simple as SQL
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -1628,10 +1629,16 @@ withStore :: AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> AM a
 withStore c action = do
   st <- asks store
   withExceptT storeError . ExceptT . liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
-    withTransaction st action `E.catch` handleInternal ""
+    withTransaction st action `E.catches` handleDBErrors
   where
-    handleInternal :: String -> E.SomeException -> IO (Either StoreError a)
-    handleInternal ctxStr e = pure . Left . SEInternal . B.pack $ show e <> ctxStr
+    handleDBErrors :: [E.Handler IO (Either StoreError a)]
+    handleDBErrors =
+      [ E.Handler $ \(e :: SQL.SQLError) ->
+          let se = SQL.sqlError e
+              busy = se == SQL.ErrorBusy || se == SQL.ErrorLocked
+           in pure . Left . (if busy then SEDatabaseBusy else SEInternal) $ bshow se,
+        E.Handler $ \(E.SomeException e) -> pure . Left $ SEInternal $ bshow e
+      ]
 
 withStoreBatch :: Traversable t => AgentClient -> (DB.Connection -> t (IO (Either AgentErrorType a))) -> AM' (t (Either AgentErrorType a))
 withStoreBatch c actions = do
@@ -1659,6 +1666,7 @@ storeError = \case
   -- it is used to wrap agent operations when "transaction-like" store access is needed
   -- NOTE: network IO should NOT be used inside AgentStoreMonad
   SEAgentError e -> e
+  SEDatabaseBusy e -> CRITICAL True $ B.unpack e
   e -> INTERNAL $ show e
 
 incStat :: AgentClient -> Int -> AgentStatsKey -> STM ()
