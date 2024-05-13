@@ -2207,12 +2207,12 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                           updateTotalMsgCount :: STM ()
                           updateTotalMsgCount =
                             TM.lookup connId (msgCounts c) >>= \case
-                              Just v -> modifyTVar' v $ \counts -> counts {totalMsgCount = totalMsgCount counts + 1}
+                              Just v -> modifyTVar' v $ \counts -> counts {total = total counts + 1}
                               Nothing -> addMsgCount
                           updateDupMsgCount :: STM ()
                           updateDupMsgCount =
                             TM.lookup connId (msgCounts c) >>= \case
-                              Just v -> modifyTVar' v $ \counts -> counts {dupMsgCount = dupMsgCount counts + 1}
+                              Just v -> modifyTVar' v $ \counts -> counts {duplicate = duplicate counts + 1}
                               Nothing -> addMsgCount
                           addMsgCount :: STM ()
                           addMsgCount = do

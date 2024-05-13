@@ -304,7 +304,8 @@ data AgentClient = AgentClient
     agentEnv :: Env
   }
 
-data MsgCounts = MsgCounts {totalMsgCount :: Int, dupMsgCount :: Int}
+data MsgCounts = MsgCounts {total :: Int, duplicate :: Int}
+  deriving (Show)
 
 getAgentWorker :: (Ord k, Show k) => String -> Bool -> AgentClient -> k -> TMap k Worker -> (Worker -> AM ()) -> AM' Worker
 getAgentWorker = getAgentWorker' id pure
