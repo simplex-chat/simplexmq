@@ -133,6 +133,7 @@ module Simplex.Messaging.Agent.Client
     getAgentWorkersDetails,
     AgentWorkersSummary (..),
     getAgentWorkersSummary,
+    MsgCounts (..),
     SMPTransportSession,
     NtfTransportSession,
     XFTPTransportSession,
@@ -298,10 +299,12 @@ data AgentClient = AgentClient
     -- smpSubWorkers for SMP servers sessions
     smpSubWorkers :: TMap SMPTransportSession (SessionVar (Async ())),
     agentStats :: TMap AgentStatsKey (TVar Int),
-    duplicateMsgCounts :: TMap ConnId (TVar Int),
+    msgCounts :: TMap ConnId (TVar MsgCounts),
     clientId :: Int,
     agentEnv :: Env
   }
+
+data MsgCounts = MsgCounts {totalMsgCount :: Int, dupMsgCount :: Int}
 
 getAgentWorker :: (Ord k, Show k) => String -> Bool -> AgentClient -> k -> TMap k Worker -> (Worker -> AM ()) -> AM' Worker
 getAgentWorker = getAgentWorker' id pure
@@ -460,7 +463,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   deleteLock <- createLock
   smpSubWorkers <- TM.empty
   agentStats <- TM.empty
-  duplicateMsgCounts <- TM.empty
+  msgCounts <- TM.empty
   return
     AgentClient
       { acThread,
@@ -496,7 +499,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         deleteLock,
         smpSubWorkers,
         agentStats,
-        duplicateMsgCounts,
+        msgCounts,
         clientId,
         agentEnv
       }
@@ -1874,6 +1877,8 @@ getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeli
             (atomically $ isJust <$> tryReadTMVar action)
             (pure WorkersSummary {numActive, numIdle = numIdle + 1, totalRestarts = totalRestarts + restartCount})
             (pure WorkersSummary {numActive = numActive + 1, numIdle, totalRestarts = totalRestarts + restartCount})
+
+$(J.deriveJSON defaultJSON ''MsgCounts)
 
 $(J.deriveJSON defaultJSON ''AgentLocks)
 
