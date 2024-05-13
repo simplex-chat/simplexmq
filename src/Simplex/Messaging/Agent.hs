@@ -555,7 +555,7 @@ resetAgentStats :: AgentClient -> IO ()
 resetAgentStats = atomically . TM.clear . agentStats
 {-# INLINE resetAgentStats #-}
 
-getMsgCounts :: AgentClient -> IO [(ConnId, MsgCounts)]
+getMsgCounts :: AgentClient -> IO [(ConnId, (Int, Int))] -- (total, duplicates)
 getMsgCounts c = readTVarIO (msgCounts c) >>= mapM (\(connId, cnt) -> (connId,) <$> readTVarIO cnt) . M.assocs
 
 withAgentEnv' :: AgentClient -> AM' a -> IO a
@@ -2207,16 +2207,16 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                           updateTotalMsgCount :: STM ()
                           updateTotalMsgCount =
                             TM.lookup connId (msgCounts c) >>= \case
-                              Just v -> modifyTVar' v $ \counts -> counts {total = total counts + 1}
+                              Just v -> modifyTVar' v $ first (+ 1)
                               Nothing -> addMsgCount 0
                           updateDupMsgCount :: STM ()
                           updateDupMsgCount =
                             TM.lookup connId (msgCounts c) >>= \case
-                              Just v -> modifyTVar' v $ \counts -> counts {duplicate = duplicate counts + 1}
+                              Just v -> modifyTVar' v $ second (+ 1)
                               Nothing -> addMsgCount 1
                           addMsgCount :: Int -> STM ()
                           addMsgCount duplicate = do
-                            counts <- newTVar $ MsgCounts {total = 1, duplicate}
+                            counts <- newTVar (1, duplicate)
                             TM.insert connId counts (msgCounts c)
                           agentClientMsg :: TVar ChaChaDRG -> ByteString -> AM (Maybe (InternalId, MsgMeta, AMessage, CR.RatchetX448))
                           agentClientMsg g encryptedMsgHash = withStore c $ \db -> runExceptT $ do
