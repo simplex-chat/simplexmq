@@ -5,7 +5,7 @@ cabal-version: 1.12
 -- see: https://github.com/sol/hpack
 
 name:           simplexmq
-version:        5.7.3.1
+version:        5.7.4.0
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -174,7 +174,7 @@ library
       src
   default-extensions:
       StrictData
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Werror=missing-methods -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2
   include-dirs:
       cbits
   c-sources:
@@ -255,7 +255,7 @@ executable ntf-server
       apps/ntf-server
   default-extensions:
       StrictData
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Werror=missing-methods -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -330,7 +330,7 @@ executable smp-agent
       apps/smp-agent
   default-extensions:
       StrictData
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Werror=missing-methods -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -405,7 +405,7 @@ executable smp-server
       apps/smp-server
   default-extensions:
       StrictData
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Werror=missing-methods -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -480,7 +480,7 @@ executable xftp
       apps/xftp
   default-extensions:
       StrictData
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Werror=missing-methods -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -555,7 +555,7 @@ executable xftp-server
       apps/xftp-server
   default-extensions:
       StrictData
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Werror=missing-methods -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -663,7 +663,7 @@ test-suite simplexmq-test
       tests
   default-extensions:
       StrictData
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts -with-rtsopts=-A64M -with-rtsopts=-N1
+  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Werror=missing-methods -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts -with-rtsopts=-A64M -with-rtsopts=-N1
   build-depends:
       HUnit ==1.6.*
     , QuickCheck ==2.14.*

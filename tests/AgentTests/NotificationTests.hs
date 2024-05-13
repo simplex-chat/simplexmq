@@ -245,7 +245,7 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} =
     -- now the second token registration is verified
     verifyNtfToken a' tkn nonce' verification'
     -- the first registration is removed
-    Left (NTF AUTH) <- tryE $ checkNtfToken a tkn
+    Left (NTF _ AUTH) <- tryE $ checkNtfToken a tkn
     -- and the second is active
     NTActive <- checkNtfToken a' tkn
     pure ()
@@ -268,7 +268,7 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
     withNtfServer t . runRight_ $ do
       verification <- ntfData .-> "verification"
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
-      Left (NTF AUTH) <- tryE $ verifyNtfToken a' tkn nonce verification
+      Left (NTF _ AUTH) <- tryE $ verifyNtfToken a' tkn nonce verification
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
         atomically $ readTBQueue apnsQ
       verification' <- ntfData' .-> "verification"

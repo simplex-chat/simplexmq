@@ -1475,11 +1475,11 @@ data AgentErrorType
   | -- | connection errors
     CONN {connErr :: ConnectionErrorType}
   | -- | SMP protocol errors forwarded to agent clients
-    SMP {smpErr :: ErrorType}
+    SMP {serverAddress :: String, smpErr :: ErrorType}
   | -- | NTF protocol errors forwarded to agent clients
-    NTF {ntfErr :: ErrorType}
+    NTF {serverAddress :: String, ntfErr :: ErrorType}
   | -- | XFTP protocol errors forwarded to agent clients
-    XFTP {xftpErr :: XFTPErrorType}
+    XFTP {serverAddress :: String, xftpErr :: XFTPErrorType}
   | -- | SMP proxy errors
     PROXY {proxyServer :: String, relayServer :: String, proxyErr :: ProxyClientError}
   | -- | XRCP protocol errors forwarded to agent clients
@@ -1580,9 +1580,9 @@ instance StrEncoding AgentErrorType where
       >>= \case
         "CMD" -> CMD <$> (A.space *> parseRead1)
         "CONN" -> CONN <$> (A.space *> parseRead1)
-        "SMP" -> SMP <$> _strP
-        "NTF" -> NTF <$> _strP
-        "XFTP" -> XFTP <$> _strP
+        "SMP" -> SMP <$> (A.space *> srvP) <*> _strP
+        "NTF" -> NTF <$> (A.space *> srvP) <*> _strP
+        "XFTP" -> XFTP <$> (A.space *> srvP) <*> _strP
         "PROXY" -> PROXY <$> (A.space *> srvP) <* A.space <*> srvP <*> _strP
         "RCP" -> RCP <$> _strP
         "BROKER" -> BROKER <$> (A.space *> srvP) <*> _strP
@@ -1597,9 +1597,9 @@ instance StrEncoding AgentErrorType where
   strEncode = \case
     CMD e -> "CMD " <> bshow e
     CONN e -> "CONN " <> bshow e
-    SMP e -> "SMP " <> strEncode e
-    NTF e -> "NTF " <> strEncode e
-    XFTP e -> "XFTP " <> strEncode e
+    SMP srv e -> "SMP " <> text srv <> " " <> strEncode e
+    NTF srv e -> "NTF " <> text srv <> " " <> strEncode e
+    XFTP srv e -> "XFTP " <> text srv <> " " <> strEncode e
     PROXY pxy srv e -> B.unwords ["PROXY", text pxy, text srv, strEncode e]
     RCP e -> "RCP " <> strEncode e
     BROKER srv e -> B.unwords ["BROKER", text srv, strEncode e]

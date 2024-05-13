@@ -36,8 +36,9 @@ protocolErrorTests = modifyMaxSuccess (const 1000) $ do
     possibleAgentErrorType =
       arbitrary >>= \case
         BROKER srv _ | hasSpaces srv -> discard
-        SMP e | skipErrorType e -> discard
-        NTF e | skipErrorType e -> discard
+        SMP srv e | hasSpaces srv || skipErrorType e -> discard
+        NTF srv e | hasSpaces srv || skipErrorType e -> discard
+        XFTP srv _ | hasSpaces srv -> discard
         Agent.PROXY pxy srv _ | hasSpaces pxy || hasSpaces srv -> discard
         Agent.PROXY _ _ (ProxyProtocolError e) | skipErrorType e -> discard
         Agent.PROXY _ _ (ProxyUnexpectedResponse e) | hasUnicode e -> discard

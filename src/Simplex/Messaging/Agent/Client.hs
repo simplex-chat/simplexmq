@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent.Client
     getQueueMessage,
     decryptSMPMessage,
     addSubscription,
+    addNewQueueSubscription,
     getSubscriptions,
     sendConfirmation,
     sendInvitation,
@@ -78,11 +79,14 @@ module Simplex.Messaging.Agent.Client
     logSecret,
     removeSubscription,
     hasActiveSubscription,
+    hasPendingSubscription,
     hasGetLock,
+    activeClientSession,
     agentClientStore,
     agentDRG,
     getAgentSubscriptions,
     slowNetworkConfig,
+    protocolClientError,
     Worker (..),
     SessionVar (..),
     SubscriptionsInfo (..),
@@ -156,7 +160,7 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (lefts, partitionEithers)
+import Data.Either (partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
@@ -172,6 +176,7 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, defaultTimeLocale, diffUTCTime, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
+import qualified Database.SQLite.Simple as SQL
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -233,7 +238,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPVersion, TransportError (..))
+import Simplex.Messaging.Transport (SMPVersion, SessionId, THandleParams (sessionId), TransportError (..))
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -264,7 +269,7 @@ data AgentClient = AgentClient
     active :: TVar Bool,
     rcvQ :: TBQueue (ATransmission 'Client),
     subQ :: TBQueue (ATransmission 'Agent),
-    msgQ :: TBQueue (ServerTransmission SMPVersion BrokerMsg),
+    msgQ :: TBQueue (ServerTransmission SMPVersion ErrorType BrokerMsg),
     smpServers :: TMap UserId (NonEmpty SMPServerWithAuth),
     smpClients :: TMap SMPTransportSession SMPClientVar,
     -- smpProxiedRelays:
@@ -530,7 +535,7 @@ class (Encoding err, Show err) => ProtocolServerClient v err msg | msg -> v, msg
   getProtocolServerClient :: AgentClient -> TransportSession msg -> AM (Client msg)
   type ProtoClient msg = c | c -> msg
   protocolClient :: Client msg -> ProtoClient msg
-  clientProtocolError :: err -> AgentErrorType
+  clientProtocolError :: HostName -> err -> AgentErrorType
   closeProtocolServerClient :: ProtoClient msg -> IO ()
   clientServer :: ProtoClient msg -> String
   clientTransportHost :: ProtoClient msg -> TransportHost
@@ -720,14 +725,14 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
         Nothing -> do
           tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
           maxTC <- asks $ maxSubscriptionTimeouts . config
-          let err = if tc' >= maxTC then CRITICAL True else INTERNAL
-              msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
-          atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
+          when (tc' >= maxTC) $ do
+            let msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
+            atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ INTERNAL msg)
   where
     resubscribe :: AM ()
     resubscribe = do
       cs <- readTVarIO $ RQ.getConnections $ activeSubs c
-      rs <- lift . subscribeQueues c $ L.toList qs
+      (rs, sessId_) <- lift . subscribeQueues c $ L.toList qs
       let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
       liftIO $ do
         let conns = filter (`M.notMember` cs) okConns
@@ -736,7 +741,10 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
       liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
       forM_ (listToMaybe tempErrs) $ \(_, err) -> do
         when (null okConns && M.null cs && null finalErrs) . liftIO $
-          closeClient c smpClients tSess
+          forM_ sessId_ $ \sessId -> do
+            -- We only close the client session that was used to subscribe.
+            v_ <- atomically $ ifM (activeClientSession c tSess sessId) (TM.lookupDelete tSess $ smpClients c) (pure Nothing)
+            mapM_ (closeClient_ c) v_
         throwError err
     notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
@@ -1087,13 +1095,13 @@ withXFTPClient c (userId, srv, entityId) cmdStr action = do
   tSess <- liftIO $ mkTransportSession c userId srv entityId
   withLogClient c tSess entityId cmdStr action
 
-liftClient :: (Show err, Encoding err) => (err -> AgentErrorType) -> HostName -> ExceptT (ProtocolClientError err) IO a -> AM a
+liftClient :: (Show err, Encoding err) => (HostName -> err -> AgentErrorType) -> HostName -> ExceptT (ProtocolClientError err) IO a -> AM a
 liftClient protocolError_ = liftError . protocolClientError protocolError_
 {-# INLINE liftClient #-}
 
-protocolClientError :: (Show err, Encoding err) => (err -> AgentErrorType) -> HostName -> ProtocolClientError err -> AgentErrorType
+protocolClientError :: (Show err, Encoding err) => (HostName -> err -> AgentErrorType) -> HostName -> ProtocolClientError err -> AgentErrorType
 protocolClientError protocolError_ host = \case
-  PCEProtocolError e -> protocolError_ e
+  PCEProtocolError e -> protocolError_ host e
   PCEResponseError e -> BROKER host $ RESPONSE $ B.unpack $ smpEncode e
   PCEUnexpectedResponse r -> BROKER host $ UNEXPECTED $ take 32 $ show r
   PCEResponseTimeout -> BROKER host TIMEOUT
@@ -1171,7 +1179,7 @@ runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
           liftError (testErr TSUploadFile) $ X.uploadXFTPChunk xftp spKey sId chunkSpec
           liftError (testErr TSDownloadFile) $ X.downloadXFTPChunk g xftp rpKey rId $ XFTPRcvChunkSpec rcvPath chSize digest
           rcvDigest <- liftIO $ C.sha256Hash <$> B.readFile rcvPath
-          unless (digest == rcvDigest) $ throwError $ ProtocolTestFailure TSCompareFile $ XFTP DIGEST
+          unless (digest == rcvDigest) $ throwError $ ProtocolTestFailure TSCompareFile $ XFTP (B.unpack $ strEncode srv) DIGEST
           liftError (testErr TSDeleteFile) $ X.deleteXFTPChunk xftp spKey sId
         ok <- tcpTimeout xftpNetworkConfig `timeout` X.closeXFTPClient xftp
         incClientStat c userId xftp "XFTP_TEST" "OK"
@@ -1246,7 +1254,7 @@ getSessionMode :: AgentClient -> IO TransportSessionMode
 getSessionMode = atomically . fmap sessionMode . getNetworkConfig
 {-# INLINE getSessionMode #-}
 
-newRcvQueue :: AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SubscriptionMode -> AM (NewRcvQueue, SMPQueueUri)
+newRcvQueue :: AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SubscriptionMode -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
 newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
   C.AuthAlg a <- asks (rcvAuthAlg . config)
   g <- asks random
@@ -1255,8 +1263,9 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
   (e2eDhKey, e2ePrivKey) <- atomically $ C.generateKeyPair g
   logServer "-->" c srv "" "NEW"
   tSess <- liftIO $ mkTransportSession c userId srv connId
-  QIK {rcvId, sndId, rcvPublicDhKey} <-
-    withClient c tSess "NEW" $ \smp -> createSMPQueue (connectedClient smp) rKeys dhKey auth subMode
+  (sessId, QIK {rcvId, sndId, rcvPublicDhKey}) <-
+    withClient c tSess "NEW" $ \(SMPConnectedClient smp _) ->
+      (sessionId $ thParams smp,) <$> createSMPQueue smp rKeys dhKey auth subMode
   liftIO . logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue
@@ -1278,22 +1287,23 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
             clientNtfCreds = Nothing,
             deleteErrors = 0
           }
-  pure (rq, SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey)
+      qUri = SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey
+  pure (rq, qUri, tSess, sessId)
 
-processSubResult :: AgentClient -> RcvQueue -> Either SMPClientError () -> IO (Either SMPClientError ())
-processSubResult c rq r = do
-  case r of
-    Left e ->
-      unless (temporaryClientError e) . atomically $ do
-        RQ.deleteQueue rq (pendingSubs c)
-        TM.insert (RQ.qKey rq) e (removedSubs c)
-    _ -> addSubscription c rq
-  pure r
+processSubResult :: AgentClient -> RcvQueue -> Either SMPClientError () -> STM ()
+processSubResult c rq@RcvQueue {connId} = \case
+  Left e ->
+    unless (temporaryClientError e) $ do
+      RQ.deleteQueue rq (pendingSubs c)
+      TM.insert (RQ.qKey rq) e (removedSubs c)
+  Right () ->
+    whenM (hasPendingSubscription c connId) $
+      addSubscription c rq
 
 temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
   BROKER _ e -> tempBrokerError e
-  SMP (SMP.PROXY (SMP.BROKER e)) -> tempBrokerError e
+  SMP _ (SMP.PROXY (SMP.BROKER e)) -> tempBrokerError e
   PROXY _ _ (ProxyProtocolError (SMP.PROXY (SMP.BROKER e))) -> tempBrokerError e
   INACTIVE -> True
   _ -> False
@@ -1310,7 +1320,7 @@ temporaryOrHostError e = temporaryAgentError e || serverHostError e
 serverHostError :: AgentErrorType -> Bool
 serverHostError = \case
   BROKER _ e -> brokerHostError e
-  SMP (SMP.PROXY (SMP.BROKER e)) -> brokerHostError e
+  SMP _ (SMP.PROXY (SMP.BROKER e)) -> brokerHostError e
   PROXY _ _ (ProxyProtocolError (SMP.PROXY (SMP.BROKER e))) -> brokerHostError e
   _ -> False
   where
@@ -1320,7 +1330,7 @@ serverHostError = \case
       _ -> False
 
 -- | Subscribe to queues. The list of results can have a different order.
-subscribeQueues :: AgentClient -> [RcvQueue] -> AM' [(RcvQueue, Either AgentErrorType ())]
+subscribeQueues :: AgentClient -> [RcvQueue] -> AM' ([(RcvQueue, Either AgentErrorType ())], Maybe SessionId)
 subscribeQueues c qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
   atomically $ do
@@ -1328,20 +1338,43 @@ subscribeQueues c qs = do
     RQ.batchAddQueues (pendingSubs c) qs'
   env <- ask
   -- only "checked" queues are subscribed
-  (errs <>) <$> sendTSessionBatches "SUB" 90 id (subscribeQueues_ env) c qs'
+  session <- newTVarIO Nothing
+  rs <- sendTSessionBatches "SUB" 90 id (subscribeQueues_ env session) c qs'
+  (errs <> rs,) <$> readTVarIO session
   where
     checkQueue rq = do
       prohibited <- atomically $ hasGetLock c rq
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED) else Right rq
-    subscribeQueues_ :: Env -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
-    subscribeQueues_ env smp qs' = do
+    subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
+    subscribeQueues_ env session smp qs' = do
       rs <- sendBatch subscribeSMPQueues smp qs'
-      mapM_ (uncurry $ processSubResult c) rs
-      when (any temporaryClientError . lefts . map snd $ L.toList rs) $
-        runReaderT (resubscribeSMPSession c $ transportSession' smp) env
-      pure rs
+      active <-
+        atomically $
+          ifM
+            (activeClientSession c tSess sessId)
+            (writeTVar session (Just sessId) >> processSubResults rs $> True)
+            (pure False)
+      if active
+        then when (hasTempErrors rs) resubscribe $> rs
+        else do
+          logWarn "subcription batch result for replaced SMP client, resubscribing"
+          resubscribe $> L.map (second $ \_ -> Left PCENetworkError) rs
+      where
+        tSess = transportSession' smp
+        sessId = sessionId $ thParams smp
+        hasTempErrors = any (either temporaryClientError (const False) . snd)
+        processSubResults :: NonEmpty (RcvQueue, Either SMPClientError ()) -> STM ()
+        processSubResults = mapM_ $ uncurry $ processSubResult c
+        resubscribe = resubscribeSMPSession c tSess `runReaderT` env
 
-type BatchResponses e r = (NonEmpty (RcvQueue, Either e r))
+activeClientSession :: AgentClient -> SMPTransportSession -> SessionId -> STM Bool
+activeClientSession c tSess sessId = sameSess <$> tryReadSessVar tSess (smpClients c)
+  where
+    sameSess = \case
+      Just (Right (SMPConnectedClient smp _)) -> sessId == sessionId (thParams smp)
+      _ -> False
+
+type BatchResponses e r = NonEmpty (RcvQueue, Either e r)
 
 -- statBatchSize is not used to batch the commands, only for traffic statistics
 sendTSessionBatches :: forall q r. ByteString -> Int -> (q -> RcvQueue) -> (SMPClient -> NonEmpty q -> IO (BatchResponses SMPClientError r)) -> AgentClient -> [q] -> AM' [(RcvQueue, Either AgentErrorType r)]
@@ -1376,15 +1409,34 @@ sendBatch smpCmdFunc smp qs = L.zip qs <$> smpCmdFunc smp (L.map queueCreds qs)
   where
     queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvPrivateKey, rcvId)
 
-addSubscription :: AgentClient -> RcvQueue -> IO ()
-addSubscription c rq@RcvQueue {connId} = atomically $ do
+addSubscription :: AgentClient -> RcvQueue -> STM ()
+addSubscription c rq@RcvQueue {connId} = do
   modifyTVar' (subscrConns c) $ S.insert connId
   RQ.addQueue rq $ activeSubs c
   RQ.deleteQueue rq $ pendingSubs c
 
+addPendingSubscription :: AgentClient -> RcvQueue -> STM ()
+addPendingSubscription c rq@RcvQueue {connId} = do
+  modifyTVar' (subscrConns c) $ S.insert connId
+  RQ.addQueue rq $ pendingSubs c
+
+addNewQueueSubscription :: AgentClient -> RcvQueue -> SMPTransportSession -> SessionId -> AM' ()
+addNewQueueSubscription c rq tSess sessId = do
+  same <-
+    atomically $
+      ifM
+        (activeClientSession c tSess sessId)
+        (True <$ addSubscription c rq)
+        (False <$ addPendingSubscription c rq)
+  unless same $ resubscribeSMPSession c tSess
+
 hasActiveSubscription :: AgentClient -> ConnId -> STM Bool
 hasActiveSubscription c connId = RQ.hasConn connId $ activeSubs c
 {-# INLINE hasActiveSubscription #-}
+
+hasPendingSubscription :: AgentClient -> ConnId -> STM Bool
+hasPendingSubscription c connId = RQ.hasConn connId $ pendingSubs c
+{-# INLINE hasPendingSubscription #-}
 
 removeSubscription :: AgentClient -> ConnId -> STM ()
 removeSubscription c connId = do
@@ -1729,10 +1781,16 @@ withStore :: AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> AM a
 withStore c action = do
   st <- asks store
   withExceptT storeError . ExceptT . liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
-    withTransaction st action `E.catch` handleInternal ""
+    withTransaction st action `E.catches` handleDBErrors
   where
-    handleInternal :: String -> E.SomeException -> IO (Either StoreError a)
-    handleInternal ctxStr e = pure . Left . SEInternal . B.pack $ show e <> ctxStr
+    handleDBErrors :: [E.Handler IO (Either StoreError a)]
+    handleDBErrors =
+      [ E.Handler $ \(e :: SQL.SQLError) ->
+          let se = SQL.sqlError e
+              busy = se == SQL.ErrorBusy || se == SQL.ErrorLocked
+           in pure . Left . (if busy then SEDatabaseBusy else SEInternal) $ bshow se,
+        E.Handler $ \(E.SomeException e) -> pure . Left $ SEInternal $ bshow e
+      ]
 
 withStoreBatch :: Traversable t => AgentClient -> (DB.Connection -> t (IO (Either AgentErrorType a))) -> AM' (t (Either AgentErrorType a))
 withStoreBatch c actions = do
@@ -1760,6 +1818,7 @@ storeError = \case
   -- it is used to wrap agent operations when "transaction-like" store access is needed
   -- NOTE: network IO should NOT be used inside AgentStoreMonad
   SEAgentError e -> e
+  SEDatabaseBusy e -> CRITICAL True $ B.unpack e
   e -> INTERNAL $ show e
 
 incStat :: AgentClient -> Int -> AgentStatsKey -> STM ()

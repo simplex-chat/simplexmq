@@ -1006,9 +1006,10 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                 Just msg ->
                   let encMsg = encryptMsg qr msg
                    in atomically (setDelivered s msg) $> (corrId, rId, MSG encMsg)
-                _ -> forkSub $> ok
-            _ -> pure ok
+                _ -> forkSub $> resp
+            _ -> pure resp
           where
+            resp = (corrId, rId, OK)
             forkSub :: M ()
             forkSub = do
               atomically . modifyTVar' sub $ \s -> s {subThread = SubPending}
