@@ -80,6 +80,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM as QS
 import Simplex.Messaging.Server.Stats
+import qualified Simplex.Messaging.Server.Stats.Client as CS
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -440,10 +441,14 @@ runClientTransport :: Transport c => THandleSMP c 'TServer -> M ()
 runClientTransport h@THandle {connection, params = THandleParams {thVersion, sessionId}} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
+  statsIds <- asks statsClients
   active <- asks clients
   nextClientId <- asks clientSeq
+  let peerId = getPeerId connection
+      skipStats = False -- TODO: check peerId
   c <- atomically $ do
-    new@Client {clientId} <- newClient (getPeerId connection) nextClientId q thVersion sessionId ts
+    new@Client {clientId} <- newClient peerId nextClientId q thVersion sessionId ts
+    unless skipStats $ modifyTVar' statsIds $ IM.insert clientId clientId -- until merged, its own fresh id is its stats id
     modifyTVar' active $ IM.insert clientId new
     pure new
   s <- asks server
@@ -631,7 +636,7 @@ dummyKeyX25519 :: C.PublicKey 'C.X25519
 dummyKeyX25519 = "MCowBQYDK2VuAyEA4JGSMYht18H4mas/jHeBwfcM7jLwNYJNOAhi2/g4RXg="
 
 client :: Client -> Server -> M ()
-client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
+client clnt@Client {clientId, peerId, subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
   forever $
     atomically (readTBQueue rcvQ)
@@ -887,11 +892,49 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
                         atomically $ modifyTVar' (msgSent stats) (+ 1)
                         atomically $ modifyTVar' (msgCount stats) (+ 1)
                         atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
-                        -- TODO: increment client S counter
+
+                        onwers' <- asks sendSignedClients -- TMap RecipientId (TVar ClientStatsId)
+                        statIds' <- asks statsClients -- TVar (IntMap ClientStatsId)
+                        stats' <- asks clientStats -- TVar (IntMap ClientStats)
+                        now <- liftIO getCurrentTime
+                        atomically $ case senderKey qr of
+                          Nothing -> do
+                            -- unsecured queue, no merging
+                            currentStatsId_ <- IM.lookup clientId <$> readTVar statIds'
+                            forM_ currentStatsId_ $ \statsId -> do
+                              cs <- getClientStats stats' statsId now
+                              -- XXX: perhaps only merging has to be atomic, with the var on hands, it could be a round of smaller transactions
+                              modifyTVar' (CS.msgSentUnsigned cs) (+ 1)
+                          Just _ -> do
+                            -- secured queue, merging is possible
+                            currentStatsId_ <- IM.lookup clientId <$> readTVar statIds'
+                            forM_  currentStatsId_ $ \currentStatsId -> do
+                              owners <- readTVar onwers'
+                              statsId <- forM (M.lookup (recipientId qr) owners) readTVar >>= \case
+                                Just ownerId | ownerId == currentStatsId -> pure ownerId -- keep going
+                                Just olderSessionId -> do
+                                  -- TODO: merge client stats
+                                  pure olderSessionId
+                                  -- olderSessionId <$ mergeClientStats owners olderSessionId currentStatsId
+                                Nothing -> do -- claim queue ownership (should've happened on NEW instead)
+                                  newOwner <- newTVar currentStatsId
+                                  writeTVar onwers' $ M.insert (recipientId qr) newOwner owners
+                                  pure currentStatsId
+                              cs <- getClientStats stats' statsId now
+                              modifyTVar' (CS.msgSentSigned cs) (+ 1)
                         -- TODO: increment current S counter in IP timeline
                         -- TODO: increment current S counter in server timeline
                         pure ok
           where
+            getClientStats stats' statsId now = do
+              stats <- readTVar stats'
+              case IM.lookup statsId stats of
+                Nothing -> do
+                  new <- CS.newClientStats newTVar peerId now
+                  writeTVar stats' $ IM.insert statsId new stats
+                  pure new
+                Just cs -> cs <$ writeTVar (CS.updatedAt cs) now
+
             mkMessage :: C.MaxLenBS MaxMessageLen -> M Message
             mkMessage body = do
               msgId <- randomId =<< asks (msgIdBytes . config)

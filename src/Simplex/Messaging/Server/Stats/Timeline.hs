@@ -26,12 +26,13 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (RecipientId)
 import UnliftIO.STM
 
-type Timeline = (TVar SparseSeries, Current)
+-- A time series of counters with an active head
+type Timeline a = (TVar SparseSeries, Current a)
 
-newTimeline :: QuantFun -> POSIXTime -> STM Timeline
+newTimeline :: forall a. QuantFun -> POSIXTime -> STM (Timeline a)
 newTimeline quantF now = (,current) <$> newTVar IP.empty
   where
-    current :: Current
+    current :: Current a
     current = (quantF, quantF now, mempty)
 
 -- Sparse timeseries with 1 second resolution (or more coarse):
@@ -47,7 +48,7 @@ type BucketId = Word32
 type QuantFun = POSIXTime -> BucketId
 
 -- Current bucket that gets filled
-type Current = (QuantFun, BucketId, IntMap (TVar Int))
+type Current a = (QuantFun, BucketId, IntMap (TVar a))
 
 perSecond :: POSIXTime -> BucketId
 perSecond = truncate
@@ -58,7 +59,7 @@ perMinute = (60 `secondsWidth`)
 secondsWidth :: NominalDiffTime -> POSIXTime -> BucketId
 secondsWidth w t = truncate $ t / w
 
-finishCurrent :: POSIXTime -> Timeline -> STM Timeline
+finishCurrent :: POSIXTime -> Timeline a -> STM (Timeline a)
 finishCurrent now (series, current) = error "TODO: read/reset current, push into series, evict minimal when it falls out of scope"
 
 type WindowData = IntMap Int -- PeerId -> counter

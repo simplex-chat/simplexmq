@@ -15,6 +15,8 @@ import Data.IntMap (IntMap)
 import qualified Data.IntMap.Strict as IM
 import Data.IntPSQ (IntPSQ)
 import qualified Data.IntPSQ as IP
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IS
 import Data.Monoid (getSum)
 import Data.Set (Set)
 import qualified Data.Set as S
@@ -28,13 +30,16 @@ import Simplex.Messaging.Protocol (RecipientId)
 import Simplex.Messaging.Transport (PeerId)
 import UnliftIO.STM
 
+-- | Ephemeral client ID across reconnects
+type ClientStatsId = Int
+
 data ClientStats = ClientStats
-  { peerAddresses :: TVar (Set PeerId),
+  { peerAddresses :: TVar IntSet, -- cumulative set of used PeerIds
     socketCount :: TVar Int,
     createdAt :: TVar UTCTime,
     updatedAt :: TVar UTCTime,
-    qCreated :: TVar (Set RecipientId),
-    qSentSigned :: TVar (Set RecipientId),
+    qCreated :: TVar (Set RecipientId), -- can be IntSet with QueueRecIDs
+    qSentSigned :: TVar (Set RecipientId), -- can be IntSet with QueueRecIDs
     msgSentSigned :: TVar Int,
     msgSentUnsigned :: TVar Int,
     msgSentViaProxy :: TVar Int,
@@ -43,7 +48,7 @@ data ClientStats = ClientStats
 
 -- may be combined with session duration to produce average rates (q/s, msg/s)
 data ClientStatsData = ClientStatsData
-  { _peerAddresses :: Set PeerId,
+  { _peerAddresses :: IntSet,
     _socketCount :: Int,
     _createdAt :: UTCTime,
     _updatedAt :: UTCTime,
@@ -55,9 +60,9 @@ data ClientStatsData = ClientStatsData
     _msgDeliveredSigned :: Int
   }
 
-newClientStats :: Monad m => (forall a. a -> m (TVar a)) -> UTCTime -> m ClientStats
-newClientStats newF ts = do
-  peerAddresses <- newF mempty
+newClientStats :: Monad m => (forall a. a -> m (TVar a)) -> PeerId -> UTCTime -> m ClientStats
+newClientStats newF peerId ts = do
+  peerAddresses <- newF $ IS.singleton peerId
   socketCount <- newF 0
   createdAt <- newF ts
   updatedAt <- newF ts

@@ -15,8 +15,10 @@ import qualified Data.IntMap.Strict as IM
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.IntPSQ (IntPSQ)
+import qualified Data.IntPSQ as IP
 import Data.Time.Clock (getCurrentTime)
-import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Data.Time.Clock.System (SystemTime, systemToUTCTime)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
@@ -31,7 +33,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
-import Simplex.Messaging.Server.Stats.Client (ClientStats, newClientStats)
+import Simplex.Messaging.Server.Stats.Client (ClientStats, ClientStatsId, newClientStats)
 import Simplex.Messaging.Server.Stats.Timeline (Timeline, newTimeline, perMinute)
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
@@ -116,8 +118,11 @@ data Env = Env
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerParams :: T.ServerParams,
     serverStats :: ServerStats,
-    qCreatedByIp :: Timeline,
-    msgSentByIp :: Timeline,
+    qCreatedByIp :: Timeline Int,
+    msgSentByIp :: Timeline Int,
+    clientStats :: TVar (IntMap ClientStats), -- transitive session stats
+    statsClients :: TVar (IntMap ClientStatsId), -- reverse index from active clients
+    sendSignedClients :: TMap RecipientId (TVar ClientStatsId), -- reverse index from queues to their owners
     sockets :: SocketState,
     clientSeq :: TVar Int,
     clients :: TVar (IntMap Client)
@@ -134,7 +139,7 @@ data Server = Server
 data Client = Client
   { clientId :: Int,
     peerId :: PeerId, -- send updates for this Id to time series
-    clientStats :: ClientStats, -- capture final values on disconnect
+    -- socketStats :: ClientStats, -- TODO: measure and export histogram on disconnect
     subscriptions :: TMap RecipientId (TVar Sub),
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
@@ -179,8 +184,7 @@ newClient peerId nextClientId qSize thVersion sessionId createdAt = do
   connected <- newTVar True
   rcvActiveAt <- newTVar createdAt
   sndActiveAt <- newTVar createdAt
-  clientStats <- newClientStats newTVar (systemToUTCTime createdAt)
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, peerId, clientStats}
+  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, peerId}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
@@ -204,7 +208,10 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   now <- getPOSIXTime
   qCreatedByIp <- atomically $ newTimeline perMinute now
   msgSentByIp <- atomically $ newTimeline perMinute now
-  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, qCreatedByIp, msgSentByIp, sockets, clientSeq, clients}
+  clientStats <- newTVarIO mempty
+  statsClients <- newTVarIO mempty
+  sendSignedClients <- newTVarIO mempty
+  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, qCreatedByIp, msgSentByIp, clientStats, statsClients, sendSignedClients, sockets, clientSeq, clients}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
