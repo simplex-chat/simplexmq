@@ -113,3 +113,31 @@ readClientStatsData readF cs = do
         _msgDeliveredSigned
       }
 {-# INLINE readClientStatsData #-}
+
+writeClientStatsData :: ClientStats -> ClientStatsData -> STM ()
+writeClientStatsData cs csd = do
+  writeTVar (peerAddresses cs) (_peerAddresses csd)
+  writeTVar (socketCount cs) (_socketCount csd)
+  writeTVar (createdAt cs) (_createdAt csd)
+  writeTVar (updatedAt cs) (_updatedAt csd)
+  writeTVar (qCreated cs) (_qCreated csd)
+  writeTVar (qSentSigned cs) (_qSentSigned csd)
+  writeTVar (msgSentSigned cs) (_msgSentSigned csd)
+  writeTVar (msgSentUnsigned cs) (_msgSentUnsigned csd)
+  writeTVar (msgSentViaProxy cs) (_msgSentViaProxy csd)
+  writeTVar (msgDeliveredSigned cs) (_msgDeliveredSigned csd)
+
+mergeClientStatsData :: ClientStatsData -> ClientStatsData -> ClientStatsData
+mergeClientStatsData a b =
+  ClientStatsData
+    { _peerAddresses = _peerAddresses a <> _peerAddresses b,
+      _socketCount = _socketCount a + _socketCount b,
+      _createdAt = min (_createdAt a) (_createdAt b),
+      _updatedAt = max (_updatedAt a) (_updatedAt b),
+      _qCreated = _qCreated a <> _qCreated b,
+      _qSentSigned = _qSentSigned a <> _qSentSigned b,
+      _msgSentSigned = _msgSentSigned a + _msgSentSigned b,
+      _msgSentUnsigned = _msgSentUnsigned a + _msgSentUnsigned b,
+      _msgSentViaProxy = _msgSentViaProxy a + _msgSentViaProxy b,
+      _msgDeliveredSigned = _msgDeliveredSigned a + _msgDeliveredSigned b
+    }
