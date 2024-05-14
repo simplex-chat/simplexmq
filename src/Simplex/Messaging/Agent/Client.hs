@@ -1750,11 +1750,16 @@ data SubInfo = SubInfo
   }
   deriving (Show)
 
-getAgentSubscriptions :: AgentClient -> Maybe UserId -> IO SubscriptionsInfo
-getAgentSubscriptions c userId_ = do
-  servers <- collect <$> atomically snapshot
-  pure SubscriptionsInfo {summary = foldl' mergeAPS (ActivePendingSubs (SubInfo 0 0 0) (SubInfo 0 0 0)) servers, servers}
+getAgentSubscriptions :: AgentClient -> Bool -> Maybe UserId -> IO SubscriptionsInfo
+getAgentSubscriptions c onlyDiff userId_ = do
+  allServers <- collect <$> atomically snapshot
+  let servers = if onlyDiff then M.filter hasDiff allServers else allServers
+  pure SubscriptionsInfo {summary = foldl' mergeAPS (ActivePendingSubs (SubInfo 0 0 0) (SubInfo 0 0 0)) allServers, servers}
   where
+    hasDiff :: ActivePendingSubs -> Bool
+    hasDiff ActivePendingSubs {active_, pending_} = clientsDiff active_ || clientsDiff pending_
+      where
+        clientsDiff SubInfo {clientsMissing, clientsExtra} = clientsMissing /= 0 || clientsExtra /= 0
     mergeAPS a b = ActivePendingSubs (active_ a `mergeSI` active_ b) (pending_ a `mergeSI` pending_ b)
     mergeSI a b = SubInfo (count a + count b) (clientsMissing a + clientsMissing b) (clientsExtra a + clientsExtra b)
     -- read out the current state in one go for the numbers to be consistent.
