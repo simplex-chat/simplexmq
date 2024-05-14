@@ -849,7 +849,7 @@ joinConnSrv c userId connId hasNewConn enableNtfs cReqUri@CRContactUri {} cInfo 
   lift (compatibleContactUri cReqUri) >>= \case
     Just (qInfo, vrsn) -> do
       (connId', cReq) <- newConnSrv c userId connId hasNewConn enableNtfs SCMInvitation Nothing (CR.IKNoPQ pqSup) subMode srv
-      sendInvitation c userId qInfo vrsn cReq cInfo
+      void $ sendInvitation c userId qInfo vrsn cReq cInfo
       pure connId'
     Nothing -> throwError $ AGENT A_VERSION
 
@@ -1358,13 +1358,17 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
                   | temporaryOrHostError e -> do
                       let msgTimeout = if msgType == AM_HELLO_ then helloTimeout else messageTimeout
                       expireTs <- addUTCTime (-msgTimeout) <$> liftIO getCurrentTime
-                      if internalTs < expireTs then notifyDelMsgs msgId e expireTs else retrySndMsg RIFast
+                      if internalTs < expireTs
+                        then notifyDelMsgs msgId e expireTs
+                        else do
+                          when (serverHostError e) $ notify $ MWARN (unId msgId) e
+                          retrySndMsg RIFast
                   | otherwise -> notifyDel msgId err
               where
                 retrySndMsg riMode = do
                   withStore' c $ \db -> updatePendingMsgRIState db connId msgId riState
                   retrySndOp c $ loop riMode
-            Right () -> do
+            Right proxySrv_ -> do
               case msgType of
                 AM_CONN_INFO -> setConfirmed
                 AM_CONN_INFO_REPLY -> setConfirmed
@@ -1386,7 +1390,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
                       when (status == Active) $ notify $ CON pqEncryption
                     -- this branch should never be reached as receive queue is created before the confirmation,
                     _ -> logError "HELLO sent without receive queue"
-                AM_A_MSG_ -> notify $ SENT mId
+                AM_A_MSG_ -> notify $ SENT mId proxySrv_
                 AM_A_RCVD_ -> pure ()
                 AM_QCONT_ -> pure ()
                 AM_QADD_ -> pure ()
@@ -2089,10 +2093,10 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
       conn
       cData@ConnData {userId, connId, connAgentVersion, ratchetSyncState = rss} =
         withConnLock c connId "processSMP" $ case cmd of
-          Right (SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId}) ->
+          Right r@(SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId}) ->
             void . handleNotifyAck $ do
               isGET <- atomically $ hasGetLock c rq
-              unless isGET checkExpiredResponse
+              unless isGET $ checkExpiredResponse r
               msg' <- decryptSMPMessage rq msg
               ack' <- handleNotifyAck $ case msg' of
                 SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} -> processClientMsg srvTs msgFlags msgBody
@@ -2262,7 +2266,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
             where
               processEND = \case
                 Just (Right clnt)
-                  | sessId == sessionId (thParams clnt) -> do
+                  | sessId == sessionId (thParams $ connectedClient clnt) -> do
                       removeSubscription c connId
                       notify' END
                       pure "END"
@@ -2270,8 +2274,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                 _ -> ignored
               ignored = pure "END from disconnected client - ignored"
           Right (SMP.ERR e) -> notify $ ERR $ SMP (B.unpack $ strEncode srv) e
-          Right SMP.OK -> checkExpiredResponse
-          Right _ -> unexpected
+          Right r@SMP.OK -> checkExpiredResponse r
+          Right r -> unexpected r
           Left e -> notify $ ERR $ protocolClientError SMP (B.unpack $ strEncode srv) e
         where
           notify :: forall e m. MonadIO m => AEntityI e => ACommand 'Agent e -> m ()
@@ -2286,16 +2290,16 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
           enqueueCmd :: InternalCommand -> AM ()
           enqueueCmd = enqueueCommand c "" connId (Just srv) . AInternalCommand
 
-          unexpected :: AM ()
-          unexpected = do
+          unexpected :: BrokerMsg -> AM ()
+          unexpected r = do
             logServer "<--" c srv rId $ "unexpected: " <> bshow cmd
             -- TODO add extended information about transmission type once UNEXPECTED has string
-            notify . ERR $ BROKER (B.unpack $ strEncode srv) UNEXPECTED
+            notify . ERR $ BROKER (B.unpack $ strEncode srv) $ UNEXPECTED (take 32 $ show r)
 
-          checkExpiredResponse :: AM ()
-          checkExpiredResponse = case tType of
+          checkExpiredResponse :: BrokerMsg -> AM ()
+          checkExpiredResponse r = case tType of
             TTEvent -> pure ()
-            TTUncorrelatedResponse -> unexpected
+            TTUncorrelatedResponse -> unexpected r
             TTExpiredResponse (SMP.Cmd _ cmd') -> case cmd' of
               SMP.SUB -> do
                 added <-
@@ -2643,7 +2647,7 @@ confirmQueueAsync c cData sq srv connInfo e2eEncryption_ subMode = do
 confirmQueue :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> SubscriptionMode -> AM ()
 confirmQueue c cData@ConnData {connId, connAgentVersion, pqSupport} sq srv connInfo e2eEncryption_ subMode = do
   msg <- mkConfirmation =<< mkAgentConfirmation c cData sq srv connInfo subMode
-  sendConfirmation c sq msg
+  void $ sendConfirmation c sq msg
   withStore' c $ \db -> setSndQueueStatus db sq Confirmed
   where
     mkConfirmation :: AgentMessage -> AM MsgBody
