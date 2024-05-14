@@ -1750,8 +1750,8 @@ data SubInfo = SubInfo
   }
   deriving (Show)
 
-getAgentSubscriptions :: AgentClient -> IO SubscriptionsInfo
-getAgentSubscriptions c = do
+getAgentSubscriptions :: AgentClient -> Maybe UserId -> IO SubscriptionsInfo
+getAgentSubscriptions c userId_ = do
   servers <- collect <$> atomically snapshot
   pure SubscriptionsInfo {summary = foldl' mergeAPS (ActivePendingSubs (SubInfo 0 0 0) (SubInfo 0 0 0)) servers, servers}
   where
@@ -1761,14 +1761,17 @@ getAgentSubscriptions c = do
     -- takes up to 3+2*smpClients TVars into the transaction.
     snapshot :: STM (RQ.Connections, RQ.Connections, Map SMPTransportSession (Map ConnId Bool))
     snapshot = do
-      as <- readTVar $ RQ.getConnections (activeSubs c)
-      ps <- readTVar $ RQ.getConnections (pendingSubs c)
-      clients <- readTVar (smpClients c)
+      as <- userConnections <$> readTVar (RQ.getConnections (activeSubs c))
+      ps <- userConnections <$> readTVar (RQ.getConnections (pendingSubs c))
+      clients <- userClients <$> readTVar (smpClients c)
       cs <- forM clients $ \SessionVar {sessionVar} ->
         tryReadTMVar sessionVar >>= \case
           Just (Right smp) -> readTVar (sentSubs smp)
           _ -> pure mempty
       pure (as, ps, cs)
+      where
+        userClients = maybe id (\userId -> M.filterWithKey (\(tsUserId, _, _) _ -> tsUserId == userId)) userId_
+        userConnections = maybe id (\userId -> M.mapMaybe (L.nonEmpty . L.filter (\(connUserId, _, _) -> connUserId == userId))) userId_
     collect :: (RQ.Connections, RQ.Connections, Map SMPTransportSession (Map ConnId Bool)) -> Map Text ActivePendingSubs
     collect (as, ps, cs) = M.fromListWith mergeAPS $ map byServer $ S.toList allServers
       where
