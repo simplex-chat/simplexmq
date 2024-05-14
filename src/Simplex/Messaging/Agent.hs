@@ -113,6 +113,7 @@ module Simplex.Messaging.Agent
     debugAgentLocks,
     getAgentStats,
     resetAgentStats,
+    getMsgCounts,
     getAgentSubscriptions,
     logConnection,
   )
@@ -553,6 +554,9 @@ getAgentStats c = readTVarIO (agentStats c) >>= mapM (\(k, cnt) -> (k,) <$> read
 resetAgentStats :: AgentClient -> IO ()
 resetAgentStats = atomically . TM.clear . agentStats
 {-# INLINE resetAgentStats #-}
+
+getMsgCounts :: AgentClient -> IO [(ConnId, (Int, Int))] -- (total, duplicates)
+getMsgCounts c = readTVarIO (msgCounts c) >>= mapM (\(connId, cnt) -> (connId,) <$> readTVarIO cnt) . M.assocs
 
 withAgentEnv' :: AgentClient -> AM' a -> IO a
 withAgentEnv' c = (`runReaderT` agentEnv c)
@@ -2139,6 +2143,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                           _ -> pure ()
                         let encryptedMsgHash = C.sha256Hash encAgentMessage
                         g <- asks random
+                        atomically updateTotalMsgCount
                         tryError (agentClientMsg g encryptedMsgHash) >>= \case
                           Right (Just (msgId, msgMeta, aMessage, rcPrev)) -> do
                             conn'' <- resetRatchetSync
@@ -2172,6 +2177,7 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                                 | otherwise = pure conn'
                           Right _ -> prohibited >> ack
                           Left e@(AGENT A_DUPLICATE) -> do
+                            atomically updateDupMsgCount
                             withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
                               Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
                                 | userAck -> ackDel internalId
@@ -2202,6 +2208,20 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
                           checkDuplicateHash e encryptedMsgHash =
                             unlessM (withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash) $
                               throwError e
+                          updateTotalMsgCount :: STM ()
+                          updateTotalMsgCount =
+                            TM.lookup connId (msgCounts c) >>= \case
+                              Just v -> modifyTVar' v $ first (+ 1)
+                              Nothing -> addMsgCount 0
+                          updateDupMsgCount :: STM ()
+                          updateDupMsgCount =
+                            TM.lookup connId (msgCounts c) >>= \case
+                              Just v -> modifyTVar' v $ second (+ 1)
+                              Nothing -> addMsgCount 1
+                          addMsgCount :: Int -> STM ()
+                          addMsgCount duplicate = do
+                            counts <- newTVar (1, duplicate)
+                            TM.insert connId counts (msgCounts c)
                           agentClientMsg :: TVar ChaChaDRG -> ByteString -> AM (Maybe (InternalId, MsgMeta, AMessage, CR.RatchetX448))
                           agentClientMsg g encryptedMsgHash = withStore c $ \db -> runExceptT $ do
                             rc <- ExceptT $ getRatchet db connId -- ratchet state pre-decryption - required for processing EREADY
