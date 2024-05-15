@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -143,3 +144,33 @@ mergeClientStatsData a b =
       _proxyRelaysConnected = _proxyRelaysConnected a + _proxyRelaysConnected b,
       _msgSentViaProxy = _msgSentViaProxy a + _msgSentViaProxy b
     }
+
+-- | A column-based collection of ClientStats-related data.
+data ClientStatsC a = ClientStatsC
+  { peerAddressesC :: a,
+    socketCountC :: a,
+    qCreatedC :: a,
+    qSentSignedC :: a,
+    msgSentSignedC :: a,
+    msgSentUnsignedC :: a,
+    msgDeliveredSignedC :: a,
+    proxyRelaysRequestedC :: a,
+    proxyRelaysConnectedC :: a,
+    msgSentViaProxyC :: a
+  }
+  deriving (Show, Functor)
+
+clientStatsC :: a -> ClientStatsC a
+clientStatsC x = ClientStatsC
+  { peerAddressesC = x,
+    socketCountC = x,
+    qCreatedC = x,
+    qSentSignedC = x,
+    msgSentSignedC = x,
+    msgSentUnsignedC = x,
+    msgDeliveredSignedC = x,
+    proxyRelaysRequestedC = x,
+    proxyRelaysConnectedC = x,
+    msgSentViaProxyC = x
+  }
+{-# INLINE clientStatsC #-}

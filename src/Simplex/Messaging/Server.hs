@@ -231,7 +231,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 
     rateStatsThread_ :: ServerConfig -> [M ()]
     rateStatsThread_ ServerConfig {rateStatsInterval = Just bucketWidth, logStatsInterval = Just logInterval, logStatsStartTime, rateStatsLogFile} =
-      [ monitorServerRates bucketWidth, -- roll windows, collect counters, runs at a faster rate so the measurements can be used for online anomaly detection
+      [ monitorServerRates (bucketWidth * 1000000), -- roll windows, collect counters, runs at a faster rate so the measurements can be used for online anomaly detection
         logServerRates logStatsStartTime logInterval rateStatsLogFile -- log distributions once in a while
       ]
     rateStatsThread_ _ = []
@@ -291,16 +291,41 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     monitorServerRates :: Int64 -> M ()
     monitorServerRates bucketWidth = do
       labelMyThread "monitorServerRates"
-      forever $ do
+      stats' <- asks clientStats
+      liftIO . forever $ do
+        -- now <- getCurrentTime
         -- TODO: calculate delay for the next bucket closing time
-        liftIO $ threadDelay' bucketWidth
+        threadDelay' bucketWidth
         -- TODO: collect and reset buckets
+        stats <- readTVarIO stats' >>= mapM (CS.readClientStatsData readTVarIO)
+        logNote . tshow $ fmap (distribution . histogram) $ collect stats
+      where
+        collect :: IntMap CS.ClientStatsData -> CS.ClientStatsC (IntMap Int)
+        collect stats = IM.foldlWithKey' toColumns (CS.clientStatsC IM.empty) stats
+          where
+            toColumns acc statsId csd =
+              CS.ClientStatsC
+                { peerAddressesC = IS.size _peerAddresses +> CS.peerAddressesC acc,
+                  socketCountC = _socketCount +> CS.socketCountC acc,
+                  -- created/updated skpped
+                  qCreatedC = S.size _qCreated +> CS.qCreatedC acc,
+                  qSentSignedC = S.size _qSentSigned +> CS.qSentSignedC acc,
+                  msgSentSignedC = _msgSentSigned +> CS.msgSentSignedC acc,
+                  msgSentUnsignedC = _msgSentUnsigned +> CS.msgSentUnsignedC acc,
+                  msgDeliveredSignedC = _msgDeliveredSigned +> CS.msgDeliveredSignedC acc,
+                  proxyRelaysRequestedC = _proxyRelaysRequested +> CS.proxyRelaysRequestedC acc,
+                  proxyRelaysConnectedC = _proxyRelaysConnected +> CS.proxyRelaysConnectedC acc,
+                  msgSentViaProxyC = _msgSentViaProxy +> CS.msgSentViaProxyC acc
+                }
+              where
+                (+>) = IM.insertWith (+) statsId
+                CS.ClientStatsData {_peerAddresses, _socketCount, _qCreated, _qSentSigned, _msgSentSigned, _msgSentUnsigned, _msgDeliveredSigned, _proxyRelaysRequested, _proxyRelaysConnected, _msgSentViaProxy} = csd
 
     logServerRates :: Int64 -> Int64 -> FilePath -> M ()
     logServerRates startAt logInterval statsFilePath = do
       labelMyThread "logServerStats"
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
-      liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
+      liftIO $ putStrLn $ "server rates log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
       let interval = 1000000 * logInterval
       forever $ do
