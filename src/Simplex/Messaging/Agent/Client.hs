@@ -1355,9 +1355,9 @@ subscribeQueues c qs = do
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED) else Right rq
     subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
     subscribeQueues_ env session smp qs' = do
-      atomically . modifyTVar (sentSubs smp) . M.union $ M.fromList [(connId, False) | RcvQueue {connId} <- L.toList qs']
+      atomically . modifyTVar' (sentSubs smp) . M.union $ M.fromList [(connId, False) | RcvQueue {connId} <- L.toList qs']
       rs <- sendBatch subscribeSMPQueues smp qs'
-      atomically . modifyTVar (sentSubs smp) . M.union $ M.fromList [(connId, True) | (RcvQueue {connId}, Right _) <- L.toList rs]
+      atomically . modifyTVar' (sentSubs smp) . M.union $ M.fromList [(connId, True) | (RcvQueue {connId}, Right _) <- L.toList rs]
       active <-
         atomically $
           ifM
