@@ -121,8 +121,8 @@ data Env = Env
     qCreatedByIp :: Timeline Int,
     msgSentByIp :: Timeline Int,
     clientStats :: TVar (IntMap ClientStats), -- transitive session stats
-    statsClients :: TVar (IntMap ClientStatsId), -- reverse index from active clients
-    sendSignedClients :: TMap RecipientId (TVar ClientStatsId), -- reverse index from queues to their owners
+    statsClients :: TVar (IntMap ClientStatsId), -- reverse index from sockets
+    sendSignedClients :: TMap RecipientId (TVar ClientStatsId), -- reverse index from queues to their senders
     sockets :: SocketState,
     clientSeq :: TVar Int,
     clients :: TVar (IntMap Client)

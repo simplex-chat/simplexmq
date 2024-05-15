@@ -8,24 +8,10 @@
 
 module Simplex.Messaging.Server.Stats.Client where
 
-import Control.Applicative (optional, (<|>))
-import qualified Data.Attoparsec.ByteString.Char8 as A
-import qualified Data.ByteString.Char8 as B
-import Data.IntMap (IntMap)
-import qualified Data.IntMap.Strict as IM
-import Data.IntPSQ (IntPSQ)
-import qualified Data.IntPSQ as IP
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
-import Data.Monoid (getSum)
 import Data.Set (Set)
-import qualified Data.Set as S
-import Data.Time.Calendar.Month (pattern MonthDay)
-import Data.Time.Calendar.OrdinalDate (mondayStartWeek)
-import Data.Time.Clock (NominalDiffTime, UTCTime (..))
-import Data.Time.Clock.POSIX (POSIXTime)
-import Data.Word (Word32)
-import Simplex.Messaging.Encoding.String
+import Data.Time.Clock (UTCTime (..))
 import Simplex.Messaging.Protocol (RecipientId)
 import Simplex.Messaging.Transport (PeerId)
 import UnliftIO.STM
@@ -38,11 +24,11 @@ data ClientStats = ClientStats
     socketCount :: TVar Int,
     createdAt :: TVar UTCTime,
     updatedAt :: TVar UTCTime,
-    qCreated :: TVar (Set RecipientId), -- can be IntSet with QueueRecIDs
+    qCreated :: TVar (Set RecipientId), -- can be IntSet with QueueRecIDs, for dumping into suspicous
     qSentSigned :: TVar (Set RecipientId), -- can be IntSet with QueueRecIDs
     msgSentSigned :: TVar Int,
     msgSentUnsigned :: TVar Int,
-    msgSentViaProxy :: TVar Int,
+    msgSentViaProxy :: TVar Int, -- TODO
     msgDeliveredSigned :: TVar Int
   }
 
