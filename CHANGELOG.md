@@ -1,3 +1,50 @@
+# 5.7.3
+
+SMP/NTF protocol:
+- add ALPN for handshake version negotiation, similar to XFTP (to preserve backwards compatibility with the old clients).
+- upgrade clients to versions v7/v2 of the protocols.
+
+SMP server:
+- faster responses to subscription requests.
+
+XFTP client:
+- fix network exception during file download treated as permanent file error.
+
+SMP agent:
+- do not report subscription timeouts while client is offline.
+
+# 5.7.2
+
+SMP agent:
+- fix connections failing when connecting via link due to race condition on slow network.
+- remove concurrency limit when waiting for connection subscription.
+- remove TLS timeout.
+
+# 5.7.1
+
+SMP agent:
+- increase timeout for TLS connection via SOCKS
+
+# 5.7.0
+
+Version 5.7.0.4
+
+_Please note_: the earliest SimpleX Chat clients supported by this version of the servers is 5.5.3 (released on February 11, 2024).
+
+SMP server:
+- increase max SMP protocol version to 7 (support for deniable authenticators).
+
+NTF server:
+- increase max NTF protocol version to 2 (support for deniable authenticators).
+
+XFTP server:
+- version handshake using ALPN.
+
+SMP agent:
+- increase timeouts for XFTP files.
+- don't send commands after timeout.
+- PQ encryption support.
+
 # 5.6.2
 
 Version 5.6.2.2.

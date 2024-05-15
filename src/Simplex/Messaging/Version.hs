@@ -23,6 +23,8 @@ module Simplex.Messaging.Version
     isCompatibleRange,
     proveCompatible,
     compatibleVersion,
+    compatibleVRange,
+    compatibleVRange',
   )
 where
 
@@ -98,6 +100,7 @@ class VersionScope v => VersionI v a | a -> v where
 class VersionScope v => VersionRangeI v a | a -> v where
   type VersionT v a
   versionRange :: a -> VersionRange v
+  toVersionRange :: a -> VersionRange v -> a
   toVersionT :: a -> Version v -> VersionT v a
 
 instance VersionScope v => VersionI v (Version v) where
@@ -108,6 +111,7 @@ instance VersionScope v => VersionI v (Version v) where
 instance VersionScope v => VersionRangeI v (VersionRange v) where
   type VersionT v (VersionRange v) = Version v
   versionRange = id
+  toVersionRange _ vr = vr
   toVersionT _ v = v
 
 newtype Compatible a = Compatible_ a
@@ -134,6 +138,25 @@ compatibleVersion x vr =
   where
     max1 = maxVersion $ versionRange x
     max2 = maxVersion vr
+
+-- | intersection of version ranges
+compatibleVRange :: VersionRangeI v a => a -> VersionRange v -> Maybe (Compatible a)
+compatibleVRange x vr =
+  compatibleVRange_ x (max min1 min2) (min max1 max2)
+  where
+    VRange min1 max1 = versionRange x
+    VRange min2 max2 = vr
+
+-- | version range capped by compatible version
+compatibleVRange' :: VersionRangeI v a => a -> Version v -> Maybe (Compatible a)
+compatibleVRange' x v
+  | v <= max1 = compatibleVRange_ x min1 v
+  | otherwise = Nothing
+  where
+    VRange min1 max1 = versionRange x
+
+compatibleVRange_ :: VersionRangeI v a => a -> Version v -> Version v -> Maybe (Compatible a)
+compatibleVRange_ x v1 v2 = Compatible_ . toVersionRange x <$> safeVersionRange v1 v2
 
 mkCompatibleIf :: a -> Bool -> Maybe (Compatible a)
 x `mkCompatibleIf` cond = if cond then Just $ Compatible_ x else Nothing

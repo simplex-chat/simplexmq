@@ -75,6 +75,8 @@ instance StrEncoding Str where
   strEncode = unStr
   strP = Str <$> A.takeTill (== ' ') <* optional A.space
 
+-- inherited from ByteString, the parser only allows non-empty strings
+-- only Char8 elements may round-trip as B.pack truncates unicode
 instance StrEncoding String where
   strEncode = strEncode . B.pack
   strP = B.unpack <$> strP

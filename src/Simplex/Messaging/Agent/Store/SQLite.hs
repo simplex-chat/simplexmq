@@ -221,6 +221,7 @@ module Simplex.Messaging.Agent.Store.SQLite
   )
 where
 
+import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
@@ -278,7 +279,7 @@ import Simplex.Messaging.Parsers (blobFieldParser, defaultJSON, dropPrefix, from
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, catchAllErrors, eitherToMaybe, ifM, safeDecodeUtf8, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, catchAllErrors, eitherToMaybe, ifM, safeDecodeUtf8, tshow, ($>>=), (<$$>))
 import Simplex.Messaging.Version.Internal
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.Exit (exitFailure)
@@ -286,6 +287,7 @@ import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
 import UnliftIO.Exception (bracketOnError, onException)
 import qualified UnliftIO.Exception as E
+import UnliftIO.MVar
 import UnliftIO.STM
 
 -- * SQLite Store implementation
@@ -381,8 +383,8 @@ connectSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> IO SQLiteStore
 connectSQLiteStore dbFilePath key keepKey = do
   dbNew <- not <$> doesFileExist dbFilePath
   dbConn <- dbBusyLoop (connectDB dbFilePath key)
+  dbConnection <- newMVar dbConn
   atomically $ do
-    dbConnection <- newTMVar dbConn
     dbKey <- newTVar $! storeKey key keepKey
     dbClosed <- newTVar False
     pure SQLiteStore {dbFilePath, dbKey, dbConnection, dbNew, dbClosed}
@@ -420,14 +422,14 @@ openSQLiteStore st@SQLiteStore {dbClosed} key keepKey =
 openSQLiteStore_ :: SQLiteStore -> ScrubbedBytes -> Bool -> IO ()
 openSQLiteStore_ SQLiteStore {dbConnection, dbFilePath, dbKey, dbClosed} key keepKey =
   bracketOnError
-    (atomically $ takeTMVar dbConnection)
-    (atomically . tryPutTMVar dbConnection)
+    (takeMVar dbConnection)
+    (tryPutMVar dbConnection)
     $ \DB.Connection {slow} -> do
       DB.Connection {conn} <- connectDB dbFilePath key
       atomically $ do
-        putTMVar dbConnection DB.Connection {conn, slow}
         writeTVar dbClosed False
         writeTVar dbKey $! storeKey key keepKey
+      putMVar dbConnection DB.Connection {conn, slow}
 
 reopenSQLiteStore :: SQLiteStore -> IO ()
 reopenSQLiteStore st@SQLiteStore {dbKey, dbClosed} =
@@ -1272,12 +1274,16 @@ createCommand :: DB.Connection -> ACorrId -> ConnId -> Maybe SMPServer -> AgentC
 createCommand db corrId connId srv_ cmd = runExceptT $ do
   (host_, port_, serverKeyHash_) <- serverFields
   createdAt <- liftIO getCurrentTime
-  liftIO $
+  liftIO . E.handle handleErr $
     DB.execute
       db
       "INSERT INTO commands (host, port, corr_id, conn_id, command_tag, command, server_key_hash, created_at) VALUES (?,?,?,?,?,?,?,?)"
-      (host_, port_, corrId, connId, agentCommandTag cmd, cmd, serverKeyHash_, createdAt)
+      (host_, port_, corrId, connId, cmdTag, cmd, serverKeyHash_, createdAt)
   where
+    cmdTag = agentCommandTag cmd
+    handleErr e
+      | SQL.sqlError e == SQL.ErrorConstraint = logError $ "tried to create command " <> tshow cmdTag <> " for deleted connection"
+      | otherwise = E.throwIO e
     serverFields :: ExceptT StoreError IO (Maybe (NonEmpty TransportHost), Maybe ServiceName, Maybe C.KeyHash)
     serverFields = case srv_ of
       Just srv@(SMPServer host port _) ->

@@ -51,7 +51,7 @@ data HTTP2Server = HTTP2Server
 -- This server is for testing only, it processes all requests in a single queue.
 getHTTP2Server :: HTTP2ServerConfig -> IO HTTP2Server
 getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, serverSupported, caCertificateFile, certificateFile, privateKeyFile, transportConfig} = do
-  tlsServerParams <- loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile privateKeyFile
+  tlsServerParams <- loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
   started <- newEmptyTMVarIO
   reqQ <- newTBQueueIO qSize
   action <- async $

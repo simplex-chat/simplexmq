@@ -5,8 +5,8 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -17,6 +17,7 @@ module AgentTests.SQLiteTests (storeTests) where
 
 import AgentTests.EqInstances ()
 import Control.Concurrent.Async (concurrently_)
+import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception (SomeException)
 import Control.Monad (replicateM_)
@@ -45,9 +46,9 @@ import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
-import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (SubscriptionMode (..), pattern VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -88,7 +89,7 @@ removeStore db = do
   removeFile $ dbFilePath db
   where
     close :: SQLiteStore -> IO ()
-    close st = mapM_ DB.close =<< atomically (tryTakeTMVar $ dbConnection st)
+    close st = mapM_ DB.close =<< tryTakeMVar (dbConnection st)
 
 storeTests :: Spec
 storeTests = do

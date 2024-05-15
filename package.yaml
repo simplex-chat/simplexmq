@@ -1,5 +1,5 @@
 name: simplexmq
-version: 5.7.0.3
+version: 5.8.0.0
 synopsis: SimpleXMQ message broker
 description: |
   This package includes <./docs/Simplex-Messaging-Server.html server>,
@@ -180,6 +180,7 @@ ghc-options:
   - -Wall
   - -Wcompat
   - -Werror=incomplete-patterns
+  - -Werror=missing-methods
   - -Wredundant-constraints
   - -Wincomplete-record-updates
   - -Wincomplete-uni-patterns

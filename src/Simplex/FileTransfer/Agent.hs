@@ -16,7 +16,6 @@ module Simplex.FileTransfer.Agent
     toFSFilePath,
     -- Receiving files
     xftpReceiveFile',
-    ipAddressProtected,
     xftpDeleteRcvFile',
     xftpDeleteRcvFiles',
     -- Sending files
@@ -44,7 +43,7 @@ import Data.List (foldl', partition, sortOn)
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (isJust, mapMaybe)
+import Data.Maybe (mapMaybe)
 import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
@@ -64,15 +63,13 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
-import Simplex.Messaging.Client (HostMode (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
-import Simplex.Messaging.Protocol (EntityId, ProtocolServer (..), XFTPServer)
-import Simplex.Messaging.Transport.Client (TransportHost (..))
+import Simplex.Messaging.Protocol (EntityId, XFTPServer)
 import Simplex.Messaging.Util (catchAll_, liftError, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
@@ -197,7 +194,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
             retryDone = rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath)
     downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> Bool -> AM ()
     downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica approvedRelays = do
-      unlessM ((approvedRelays ||) <$> ipAddressProtected') $ throwError $ XFTP XFTP.NOT_APPROVED
+      unlessM ((approvedRelays ||) <$> ipAddressProtected') $ throwError $ XFTP "" XFTP.NOT_APPROVED
       fsFileTmpPath <- lift $ toFSFilePath fileTmpPath
       chunkPath <- uniqueCombine fsFileTmpPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
@@ -228,12 +225,6 @@ runXFTPRcvWorker c srv Worker {doWork} = do
           | chunkReceived ch = fromIntegral (unFileSize s)
           | otherwise = 0
         chunkReceived RcvFileChunk {replicas} = any received replicas
-
-ipAddressProtected :: NetworkConfig -> XFTPServer -> Bool
-ipAddressProtected NetworkConfig {socksProxy, hostMode} (ProtocolServer _ hosts _ _) = do
-  isJust socksProxy || (hostMode == HMOnion && any isOnionHost hosts)
-  where
-    isOnionHost = \case THOnionHost _ -> True; _ -> False
 
 -- The first call of action has n == 0, maxN is max number of retries
 withRetryIntervalLimit :: forall m. MonadIO m => Int -> RetryInterval -> (Int64 -> m () -> m ()) -> m ()
@@ -276,9 +267,9 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
       withStore' c $ \db -> updateRcvFileStatus db rcvFileId RFSDecrypting
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
-      when (FileSize encSize /= size) $ throwError $ XFTP XFTP.SIZE
+      when (FileSize encSize /= size) $ throwError $ XFTP "" XFTP.SIZE
       encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
-      when (FileDigest encDigest /= digest) $ throwError $ XFTP XFTP.DIGEST
+      when (FileDigest encDigest /= digest) $ throwError $ XFTP "" XFTP.DIGEST
       let destFile = CryptoFile fsSavePath cfArgs
       void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure destFile
       case redirect of
@@ -295,10 +286,11 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
           -- proceed with redirect
           yaml <- liftError (INTERNAL . show) (CF.readFile $ CryptoFile fsSavePath cfArgs) `agentFinally` (lift $ toFSFilePath fsSavePath >>= removePath)
           next@FileDescription {chunks = nextChunks} <- case strDecode (LB.toStrict yaml) of
-            Left _ -> throwError . XFTP $ XFTP.REDIRECT "decode error"
+            -- TODO switch to another error constructor
+            Left _ -> throwError . XFTP "" $ XFTP.REDIRECT "decode error"
             Right (ValidFileDescription fd@FileDescription {size = dstSize, digest = dstDigest})
-              | dstSize /= redirectSize -> throwError . XFTP $ XFTP.REDIRECT "size mismatch"
-              | dstDigest /= redirectDigest -> throwError . XFTP $ XFTP.REDIRECT "digest mismatch"
+              | dstSize /= redirectSize -> throwError . XFTP "" $ XFTP.REDIRECT "size mismatch"
+              | dstDigest /= redirectDigest -> throwError . XFTP "" $ XFTP.REDIRECT "digest mismatch"
               | otherwise -> pure fd
           -- register and download chunks from the actual file
           withStore c $ \db -> updateRcvFileRedirect db redirectDbId next

@@ -28,10 +28,10 @@ import Control.Logger.Simple
 import Control.Monad
 import qualified Crypto.Store.X509 as SX
 import Data.Default (def)
-import Data.List (find)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
-import Data.Maybe (fromJust)
+import Data.List (find)
+import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
 import qualified Data.X509.Validation as XV
@@ -152,12 +152,13 @@ startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
       pure sock
     setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
-loadTLSServerParams :: FilePath -> FilePath -> FilePath -> IO T.ServerParams
+loadTLSServerParams :: FilePath -> FilePath -> FilePath -> Maybe [ALPN] -> IO T.ServerParams
 loadTLSServerParams = loadSupportedTLSServerParams supportedParameters
 
-loadSupportedTLSServerParams :: T.Supported -> FilePath -> FilePath -> FilePath -> IO T.ServerParams
-loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile privateKeyFile =
-  fromCredential <$> loadServerCredential
+loadSupportedTLSServerParams :: T.Supported -> FilePath -> FilePath -> FilePath -> Maybe [ALPN] -> IO T.ServerParams
+loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile privateKeyFile alpn_ = do
+  tlsServerParams <- fromCredential <$> loadServerCredential
+  pure tlsServerParams {T.serverHooks = maybe def alpnHooks alpn_}
   where
     loadServerCredential :: IO T.Credential
     loadServerCredential =
@@ -172,6 +173,7 @@ loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile p
           T.serverHooks = def,
           T.serverSupported = serverSupported
         }
+    alpnHooks supported = def {T.onALPNClientSuggest = Just $ pure . fromMaybe "" . find (`elem` supported)}
 
 loadFingerprint :: FilePath -> IO Fingerprint
 loadFingerprint certificateFile = do

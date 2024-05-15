@@ -6,8 +6,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeApplications #-}
-{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
+{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.NotificationTests where
 
@@ -17,10 +17,6 @@ import AgentTests.FunctionalAPITests
     createConnection,
     exchangeGreetingsMsgId,
     get,
-    withAgent,
-    withAgentClients2,
-    withAgentClientsCfgServers2,
-    withAgentClients3,
     joinConnection,
     makeConnection,
     nGet,
@@ -29,13 +25,18 @@ import AgentTests.FunctionalAPITests
     sendMessage,
     switchComplete,
     testServerMatrix2,
+    withAgent,
+    withAgentClients2,
+    withAgentClients3,
     withAgentClientsCfg2,
+    withAgentClientsCfgServers2,
     (##>),
     (=##>),
     pattern CON,
     pattern CONF,
     pattern INFO,
     pattern Msg,
+    pattern SENT,
   )
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Monad
@@ -55,12 +56,12 @@ import SMPClient (cfg, cfgV7, testPort, testPort2, testStoreLogFile2, withSmpSer
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
-import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO)
+import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, SENT)
 import Simplex.Messaging.Agent.Store.SQLite (getSavedNtfToken)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Types (NtfToken (..))
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), NtfServer, ProtocolServer (..), SMPMsgMeta (..), SubscriptionMode (..))
@@ -151,7 +152,8 @@ testNtfMatrix t runTest = do
     it "next servers: SMP v7, NTF v2; curr clients: v6/v1" $ runNtfTestCfg t cfgV7 ntfServerCfgV2 agentCfg agentCfg runTest
     it "curr servers: SMP v6, NTF v1; curr clients: v6/v1" $ runNtfTestCfg t cfg ntfServerCfg agentCfg agentCfg runTest
     skip "this case cannot be supported - see RFC" $
-      it "servers: SMP v6, NTF v1; clients: v7/v2 (not supported)" $ runNtfTestCfg t cfg ntfServerCfg agentCfgV7 agentCfgV7 runTest
+      it "servers: SMP v6, NTF v1; clients: v7/v2 (not supported)" $
+        runNtfTestCfg t cfg ntfServerCfg agentCfgV7 agentCfgV7 runTest
     -- servers can be migrated in any order
     it "servers: next SMP v7, curr NTF v1; curr clients: v6/v1" $ runNtfTestCfg t cfgV7 ntfServerCfg agentCfg agentCfg runTest
     it "servers: curr SMP v6, next NTF v2; curr clients: v6/v1" $ runNtfTestCfg t cfg ntfServerCfgV2 agentCfg agentCfg runTest
@@ -243,7 +245,7 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} =
     -- now the second token registration is verified
     verifyNtfToken a' tkn nonce' verification'
     -- the first registration is removed
-    Left (NTF AUTH) <- tryE $ checkNtfToken a tkn
+    Left (NTF _ AUTH) <- tryE $ checkNtfToken a tkn
     -- and the second is active
     NTActive <- checkNtfToken a' tkn
     pure ()
@@ -258,7 +260,7 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
         atomically $ readTBQueue apnsQ
       liftIO $ sendApnsResponse APNSRespOk
       pure ntfData
-    -- the new agent is created as otherwise when running the tests in CI the old agent was keeping the connection to the server
+  -- the new agent is created as otherwise when running the tests in CI the old agent was keeping the connection to the server
   threadDelay 1000000
   withAgent 2 agentCfg initAgentServers testDB $ \a' ->
     -- server stopped before token is verified, so now the attempt to verify it will return AUTH error but re-register token,
@@ -266,7 +268,7 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
     withNtfServer t . runRight_ $ do
       verification <- ntfData .-> "verification"
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
-      Left (NTF AUTH) <- tryE $ verifyNtfToken a' tkn nonce verification
+      Left (NTF _ AUTH) <- tryE $ verifyNtfToken a' tkn nonce verification
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
         atomically $ readTBQueue apnsQ
       verification' <- ntfData' .-> "verification"
