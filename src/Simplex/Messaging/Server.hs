@@ -680,8 +680,13 @@ client thParams' clnt@Client {clientId, peerId, subscriptions, ntfSubscriptions,
             ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
             pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
           getRelay = do
+            withClientStatsId $ \cs -> atomically $ modifyTVar' (CS.proxyRelaysRequested cs) (+ 1)
             ProxyAgent {smpAgent} <- asks proxyAgent
-            liftIO $ proxyResp <$> runExceptT (getSMPServerClient' smpAgent srv) `catch` (pure . Left . PCEIOError)
+            r <- liftIO $ proxyResp <$> runExceptT (getSMPServerClient' smpAgent srv) `catch` (pure . Left . PCEIOError)
+            case r of
+              PKEY {} -> withClientStatsId $ \cs -> atomically $ modifyTVar' (CS.proxyRelaysConnected cs) (+ 1)
+              _ -> pure ()
+            pure r
             where
               proxyResp = \case
                 Left err -> ERR $ smpProxyError err
@@ -698,9 +703,13 @@ client thParams' clnt@Client {clientId, peerId, subscriptions, ntfSubscriptions,
         ProxyAgent {smpAgent} <- asks proxyAgent
         atomically (lookupSMPServerClient smpAgent sessId) >>= \case
           Just smp
-            | v >= sendingProxySMPVersion ->
-                liftIO $ either (ERR . smpProxyError) PRES <$>
+            | v >= sendingProxySMPVersion -> do
+                r <- liftIO $ either (ERR . smpProxyError) PRES <$>
                    runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catchError` (pure . Left . PCEIOError)
+                case r of
+                  PRES {} -> withClientStatsId $ \cs -> atomically $ modifyTVar' (CS.msgSentViaProxy cs) (+ 1)
+                  _ -> pure ()
+                pure r
             | otherwise -> pure . ERR $ transportErr TEVersion
             where
               THandleParams {thVersion = v} = thParams smp
@@ -773,13 +782,7 @@ client thParams' clnt@Client {clientId, peerId, subscriptions, ntfSubscriptions,
                   stats <- asks serverStats
                   atomically $ modifyTVar' (qCreated stats) (+ 1)
                   atomically $ modifyTVar' (qCount stats) (+ 1)
-
-                  now <- liftIO getCurrentTime
-                  statsIds' <- asks statsClients -- TVar (IntMap ClientStatsId)
-                  stats' <- asks clientStats -- TVar (IntMap ClientStats)
-                  atomically $ withClientStatId statsIds' $ \statsId -> do
-                    cs <- getClientStats stats' statsId now
-                    modifyTVar' (CS.qCreated cs) $ S.insert rId
+                  withClientStatsId $ \cs -> atomically $ modifyTVar' (CS.qCreated cs) $ S.insert rId
                   -- TODO: increment current Q counter in IP timeline
                   -- TODO: increment current Q counter in server timeline
                   case subMode of
@@ -970,36 +973,12 @@ client thParams' clnt@Client {clientId, peerId, subscriptions, ntfSubscriptions,
                         atomically $ modifyTVar' (msgSent stats) (+ 1)
                         atomically $ modifyTVar' (msgCount stats) (+ 1)
                         atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
-
-                        logDebug $ "Senders gonna send..."
-                        senders' <- asks sendSignedClients -- TMap RecipientId (TVar ClientStatsId)
-                        statsIds' <- asks statsClients -- TVar (IntMap ClientStatsId)
-                        stats' <- asks clientStats -- TVar (IntMap ClientStats)
-                        now <- liftIO getCurrentTime
-                        atomically $ case senderKey qr of
-                          Nothing -> withClientStatId statsIds' $ \statsId -> do
-                            -- unsecured queue, no merging
-                            cs <- getClientStats stats' statsId now
-                            -- XXX: perhaps only merging has to be atomic, with the var on hands, it could be a round of smaller transactions
-                            modifyTVar' (CS.msgSentUnsigned cs) (+ 1)
-                          Just _secured -> withClientStatId statsIds' $ \currentStatsId -> do
-                            -- secured queue, merging is possible
-                            senders <- readTVar senders'
-                            statsId <- case M.lookup (recipientId qr) senders of
-                              Nothing -> do
-                                newOwner <- newTVar currentStatsId
-                                writeTVar senders' $ M.insert (recipientId qr) newOwner senders
-                                pure currentStatsId
-                              Just sender -> do
-                                prevStatsId <- readTVar sender
-                                unless (prevStatsId == currentStatsId) $ do
-                                  modifyTVar' statsIds' $ IM.insert clientId prevStatsId
-                                  qsToTransfer <- mergeClientStats stats' prevStatsId currentStatsId
-                                  unless (S.null qsToTransfer) $ writeTVar senders' $ S.foldl' (\os k -> M.insert k sender os) senders qsToTransfer
-                                pure prevStatsId
-                            cs <- getClientStats stats' statsId now
-                            modifyTVar' (CS.qSentSigned cs) $ S.insert (recipientId qr)
-                            modifyTVar' (CS.msgSentSigned cs) (+ 1)
+                        case senderKey qr of
+                          Nothing -> withClientStatsId $ \cs -> atomically $ modifyTVar' (CS.msgSentUnsigned cs) (+ 1)
+                          Just _secured -> do
+                            withMergedClientStatsId qr $ \cs -> do
+                              atomically $ modifyTVar' (CS.qSentSigned cs) $ S.insert (recipientId qr)
+                              atomically $ modifyTVar' (CS.msgSentSigned cs) (+ 1)
                         -- TODO: increment current S counter in IP timeline
                         -- TODO: increment current S counter in server timeline
                         pure ok
@@ -1158,32 +1137,61 @@ client thParams' clnt@Client {clientId, peerId, subscriptions, ntfSubscriptions,
         okResp :: Either ErrorType () -> Transmission BrokerMsg
         okResp = either err $ const ok
 
-        -- missing clientId entry means the client is exempt from stats
-        withClientStatId statsIds' action = readTVar statsIds' >>= mapM_ action . IM.lookup clientId
+    -- missing clientId entry means the client is exempt from stats
+    withClientStatsId_ statsIds' getCS = IM.lookup clientId <$> readTVar statsIds' >>= mapM getCS
 
-        getClientStats stats' statsId now = do
-          stats <- readTVar stats'
-          case IM.lookup statsId stats of
-            Nothing -> do
-              new <- CS.newClientStats newTVar peerId now
-              writeTVar stats' $ IM.insert statsId new stats
-              pure new
-            Just cs -> cs <$ writeTVar (CS.updatedAt cs) now
+    withClientStatsId updateCS = do
+      statsIds' <- asks statsClients
+      stats' <- asks clientStats
+      now <- liftIO getCurrentTime
+      atomically (withClientStatsId_ statsIds' $ getClientStats stats' now) >>= mapM_ updateCS
 
-        mergeClientStats :: TVar (IntMap CS.ClientStats) -> CS.ClientStatsId -> CS.ClientStatsId -> STM (Set RecipientId)
-        mergeClientStats stats' prevId curId = do
-          stats <- readTVar stats'
-          case (IM.lookup prevId stats, IM.lookup curId stats) of
-            (_, Nothing) -> pure mempty
-            (Nothing, Just cur@CS.ClientStats {qCreated}) -> do
-              writeTVar stats' $ IM.insert prevId cur (IM.delete curId stats)
-              readTVar qCreated
-            (Just prev, Just cur) -> do
-              curData@CS.ClientStatsData {_qCreated} <- CS.readClientStatsData readTVar cur
-              prevData <- CS.readClientStatsData readTVar prev
-              CS.writeClientStatsData prev $ CS.mergeClientStatsData prevData curData
-              writeTVar stats' $ IM.delete curId stats
-              pure _qCreated
+    getClientStats stats' now statsId = do
+      stats <- readTVar stats'
+      case IM.lookup statsId stats of
+        Nothing -> do
+          new <- CS.newClientStats newTVar peerId now
+          writeTVar stats' $ IM.insert statsId new stats
+          pure new
+        Just cs -> cs <$ writeTVar (CS.updatedAt cs) now
+
+    withMergedClientStatsId qr updateCS = do
+      senders' <- asks sendSignedClients
+      statsIds' <- asks statsClients
+      stats' <- asks clientStats
+      now <- liftIO getCurrentTime
+      atomically (withClientStatsId_ statsIds' $ getMergeClientStats senders' statsIds' stats' now qr) >>= mapM_ updateCS
+
+    getMergeClientStats senders' statsIds' stats' now qr currentStatsId = do
+      senders <- readTVar senders'
+      statsId <- case M.lookup (recipientId qr) senders of
+        Nothing -> do
+          newOwner <- newTVar currentStatsId
+          writeTVar senders' $ M.insert (recipientId qr) newOwner senders
+          pure currentStatsId
+        Just sender -> do
+          prevStatsId <- readTVar sender
+          unless (prevStatsId == currentStatsId) $ do
+            modifyTVar' statsIds' $ IM.insert clientId prevStatsId
+            qsToTransfer <- mergeClientStats stats' prevStatsId currentStatsId
+            unless (S.null qsToTransfer) $ writeTVar senders' $ S.foldl' (\os k -> M.insert k sender os) senders qsToTransfer
+          pure prevStatsId
+      getClientStats stats' now statsId
+
+    mergeClientStats :: TVar (IntMap CS.ClientStats) -> CS.ClientStatsId -> CS.ClientStatsId -> STM (Set RecipientId)
+    mergeClientStats stats' prevId curId = do
+      stats <- readTVar stats'
+      case (IM.lookup prevId stats, IM.lookup curId stats) of
+        (_, Nothing) -> pure mempty
+        (Nothing, Just cur@CS.ClientStats {qCreated}) -> do
+          writeTVar stats' $ IM.insert prevId cur (IM.delete curId stats)
+          readTVar qCreated
+        (Just prev, Just cur) -> do
+          curData@CS.ClientStatsData {_qCreated} <- CS.readClientStatsData readTVar cur
+          prevData <- CS.readClientStatsData readTVar prev
+          CS.writeClientStatsData prev $ CS.mergeClientStatsData prevData curData
+          writeTVar stats' $ IM.delete curId stats
+          pure _qCreated
 
 updateDeletedStats :: QueueRec -> M ()
 updateDeletedStats q = do

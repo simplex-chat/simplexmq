@@ -28,8 +28,10 @@ data ClientStats = ClientStats
     qSentSigned :: TVar (Set RecipientId), -- can be IntSet with QueueRecIDs
     msgSentSigned :: TVar Int,
     msgSentUnsigned :: TVar Int,
-    msgSentViaProxy :: TVar Int, -- TODO
-    msgDeliveredSigned :: TVar Int
+    msgDeliveredSigned :: TVar Int,
+    proxyRelaysRequested :: TVar Int,
+    proxyRelaysConnected :: TVar Int,
+    msgSentViaProxy :: TVar Int
   }
 
 -- may be combined with session duration to produce average rates (q/s, msg/s)
@@ -42,8 +44,10 @@ data ClientStatsData = ClientStatsData
     _qSentSigned :: Set RecipientId,
     _msgSentSigned :: Int,
     _msgSentUnsigned :: Int,
-    _msgSentViaProxy :: Int,
-    _msgDeliveredSigned :: Int
+    _msgDeliveredSigned :: Int,
+    _proxyRelaysRequested :: Int,
+    _proxyRelaysConnected :: Int,
+    _msgSentViaProxy :: Int
   }
 
 newClientStats :: Monad m => (forall a. a -> m (TVar a)) -> PeerId -> UTCTime -> m ClientStats
@@ -56,8 +60,10 @@ newClientStats newF peerId ts = do
   qSentSigned <- newF mempty
   msgSentSigned <- newF 0
   msgSentUnsigned <- newF 0
-  msgSentViaProxy <- newF 0
   msgDeliveredSigned <- newF 0
+  proxyRelaysRequested <- newF 0
+  proxyRelaysConnected <- newF 0
+  msgSentViaProxy <- newF 0
   pure
     ClientStats
       { peerAddresses,
@@ -68,8 +74,10 @@ newClientStats newF peerId ts = do
         qSentSigned,
         msgSentSigned,
         msgSentUnsigned,
-        msgSentViaProxy,
-        msgDeliveredSigned
+        msgDeliveredSigned,
+        proxyRelaysRequested,
+        proxyRelaysConnected,
+        msgSentViaProxy
       }
 {-# INLINE newClientStats #-}
 
@@ -83,8 +91,10 @@ readClientStatsData readF cs = do
   _qSentSigned <- readF $ qSentSigned cs
   _msgSentSigned <- readF $ msgSentSigned cs
   _msgSentUnsigned <- readF $ msgSentUnsigned cs
-  _msgSentViaProxy <- readF $ msgSentViaProxy cs
   _msgDeliveredSigned <- readF $ msgDeliveredSigned cs
+  _proxyRelaysRequested <- readF $ proxyRelaysRequested cs
+  _proxyRelaysConnected <- readF $ proxyRelaysConnected cs
+  _msgSentViaProxy <- readF $ msgSentViaProxy cs
   pure
     ClientStatsData
       { _peerAddresses,
@@ -95,8 +105,10 @@ readClientStatsData readF cs = do
         _qSentSigned,
         _msgSentSigned,
         _msgSentUnsigned,
-        _msgSentViaProxy,
-        _msgDeliveredSigned
+        _msgDeliveredSigned,
+        _proxyRelaysRequested,
+        _proxyRelaysConnected,
+        _msgSentViaProxy
       }
 {-# INLINE readClientStatsData #-}
 
@@ -110,8 +122,10 @@ writeClientStatsData cs csd = do
   writeTVar (qSentSigned cs) (_qSentSigned csd)
   writeTVar (msgSentSigned cs) (_msgSentSigned csd)
   writeTVar (msgSentUnsigned cs) (_msgSentUnsigned csd)
-  writeTVar (msgSentViaProxy cs) (_msgSentViaProxy csd)
   writeTVar (msgDeliveredSigned cs) (_msgDeliveredSigned csd)
+  writeTVar (proxyRelaysRequested cs) (_proxyRelaysRequested csd)
+  writeTVar (proxyRelaysConnected cs) (_proxyRelaysConnected csd)
+  writeTVar (msgSentViaProxy cs) (_msgSentViaProxy csd)
 
 mergeClientStatsData :: ClientStatsData -> ClientStatsData -> ClientStatsData
 mergeClientStatsData a b =
@@ -124,6 +138,8 @@ mergeClientStatsData a b =
       _qSentSigned = _qSentSigned a <> _qSentSigned b,
       _msgSentSigned = _msgSentSigned a + _msgSentSigned b,
       _msgSentUnsigned = _msgSentUnsigned a + _msgSentUnsigned b,
-      _msgSentViaProxy = _msgSentViaProxy a + _msgSentViaProxy b,
-      _msgDeliveredSigned = _msgDeliveredSigned a + _msgDeliveredSigned b
+      _msgDeliveredSigned = _msgDeliveredSigned a + _msgDeliveredSigned b,
+      _proxyRelaysRequested = _proxyRelaysRequested a + _proxyRelaysRequested b,
+      _proxyRelaysConnected = _proxyRelaysConnected a + _proxyRelaysConnected b,
+      _msgSentViaProxy = _msgSentViaProxy a + _msgSentViaProxy b
     }

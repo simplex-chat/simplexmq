@@ -15,11 +15,9 @@ import qualified Data.IntMap.Strict as IM
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.IntPSQ (IntPSQ)
-import qualified Data.IntPSQ as IP
 import Data.Time.Clock (getCurrentTime)
-import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
-import Data.Time.Clock.System (SystemTime, systemToUTCTime)
+import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
@@ -34,7 +32,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
-import Simplex.Messaging.Server.Stats.Client (ClientStats, ClientStatsId, newClientStats)
+import Simplex.Messaging.Server.Stats.Client (ClientStats, ClientStatsId)
 import Simplex.Messaging.Server.Stats.Timeline (Timeline, newTimeline, perMinute)
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
