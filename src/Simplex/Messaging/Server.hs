@@ -13,7 +13,6 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Simplex.Messaging.Server
@@ -43,6 +42,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
+import Control.Monad.Trans.Except
 import Crypto.Random
 import Data.Bifunctor (first)
 import Data.ByteString.Base64 (encode)
@@ -54,7 +54,7 @@ import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM
 import Data.List (intercalate, mapAccumR)
-import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing)
@@ -68,8 +68,10 @@ import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Simplex.Messaging.Agent.Lock
+import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), forwardSMPMessage, smpProxyError)
+import Simplex.Messaging.Client.Agent (SMPClientAgent (..), SMPClientAgentEvent (..), getSMPServerClient', lookupSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Encoding (Encoding (smpEncode))
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Control
@@ -87,10 +89,12 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
+import Simplex.Messaging.Version
 import System.Exit (exitFailure)
 import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (timeout)
+import UnliftIO.Async (mapConcurrently)
 import UnliftIO.Concurrent
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
@@ -123,11 +127,13 @@ type M a = ReaderT Env IO a
 smpServer :: TMVar Bool -> ServerConfig -> M ()
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   s <- asks server
+  pa <- asks proxyAgent
   expired <- restoreServerMessages
   restoreServerStats expired
   raceAny_
     ( serverThread s "server subscribedQ" subscribedQ subscribers subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ())
+        : receiveFromProxyAgent pa
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
     `finally` withLock' (savingLock s) "final" (saveServer False)
@@ -179,6 +185,19 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
             atomically $ modifyTVar' (endThreads c) $ IM.delete tId
           mkWeakThreadId t >>= atomically . modifyTVar' (endThreads c) . IM.insert tId
           atomically $ TM.lookupDelete qId (clientSubs c)
+
+    receiveFromProxyAgent :: ProxyAgent -> M ()
+    receiveFromProxyAgent ProxyAgent {smpAgent = SMPClientAgent {agentQ}} =
+      forever $
+        atomically (readTBQueue agentQ) >>= \case
+          CAConnected srv -> logInfo $ "SMP server connected " <> showServer' srv
+          CADisconnected srv [] -> logInfo $ "SMP server disconnected " <> showServer' srv
+          CADisconnected srv subs -> logError $ "SMP server disconnected " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
+          CAReconnected srv -> logInfo $ "SMP server reconnected " <> showServer' srv
+          CAResubscribed srv subs -> logError $ "SMP server resubscribed " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
+          CASubError srv errs -> logError $ "SMP server subscription errors " <> showServer' srv <> " / errors: " <> tshow (length errs)
+      where
+        showServer' = decodeLatin1 . strEncode . host
 
     expireMessagesThread_ :: ServerConfig -> [M ()]
     expireMessagesThread_ ServerConfig {messageExpiration = Just msgExp} = [expireMessages msgExp]
@@ -315,7 +334,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               CPResume -> withAdminRole $ hPutStrLn h "resume not implemented"
               CPClients -> withAdminRole $ do
                 active <- unliftIO u (asks clients) >>= readTVarIO
-                hPutStrLn h $ "clientId,sessionId,connected,createdAt,rcvActiveAt,sndActiveAt,age,subscriptions"
+                hPutStrLn h "clientId,sessionId,connected,createdAt,rcvActiveAt,sndActiveAt,age,subscriptions"
                 forM_ (IM.toList active) $ \(cid, Client {sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, subscriptions}) -> do
                   connected' <- bshow <$> readTVarIO connected
                   rcvActiveAt' <- strEncode <$> readTVarIO rcvActiveAt
@@ -411,7 +430,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                     hPutStrLn h "AUTH"
 
 runClientTransport :: Transport c => THandleSMP c 'TServer -> M ()
-runClientTransport h@THandle {params = THandleParams {thVersion, sessionId}} = do
+runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessionId}} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
   active <- asks clients
@@ -424,7 +443,7 @@ runClientTransport h@THandle {params = THandleParams {thVersion, sessionId}} = d
   expCfg <- asks $ inactiveClientExpiration . config
   th <- newMVar h -- put TH under a fair lock to interleave messages and command responses
   labelMyThread . B.unpack $ "client $" <> encode sessionId
-  raceAny_ ([liftIO $ send th c, liftIO $ sendMsg th c, client c s, receive h c] <> disconnectThread_ c expCfg)
+  raceAny_ ([liftIO $ send th c, liftIO $ sendMsg th c, client thParams c s, receive h c] <> disconnectThread_ c expCfg)
     `finally` clientDisconnected c
   where
     disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport h (rcvActiveAt c) (sndActiveAt c) expCfg (noSubscriptions c)]
@@ -465,19 +484,19 @@ receive h@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiv
   forever $ do
     ts <- L.toList <$> liftIO (tGet h)
     atomically . writeTVar rcvActiveAt =<< liftIO getSystemTime
-    as <- partitionEithers <$> mapM cmdAction ts
-    write sndQ $ fst as
-    write rcvQ $ snd as
+    (errs, cmds) <- partitionEithers <$> mapM cmdAction ts
+    write sndQ errs
+    write rcvQ cmds
   where
     cmdAction :: SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
-    cmdAction (tAuth, authorized, (corrId, queueId, cmdOrError)) =
+    cmdAction (tAuth, authorized, (corrId, entId, cmdOrError)) =
       case cmdOrError of
-        Left e -> pure $ Left (corrId, queueId, ERR e)
-        Right cmd -> verified <$> verifyTransmission ((,C.cbNonce (bs corrId)) <$> thAuth) tAuth authorized queueId cmd
+        Left e -> pure $ Left (corrId, entId, ERR e)
+        Right cmd -> verified <$> verifyTransmission ((,C.cbNonce (bs corrId)) <$> thAuth) tAuth authorized entId cmd
           where
             verified = \case
-              VRVerified qr -> Right (qr, (corrId, queueId, cmd))
-              VRFailed -> Left (corrId, queueId, ERR AUTH)
+              VRVerified qr -> Right (qr, (corrId, entId, cmd))
+              VRFailed -> Left (corrId, entId, ERR AUTH)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> IO ()
@@ -545,16 +564,18 @@ verifyTransmission auth_ tAuth authorized queueId cmd =
     -- SEND will be accepted without authorization before the queue is secured with KEY command
     Cmd SSender SEND {} -> verifyQueue (\q -> Just q `verified` maybe (isNothing tAuth) verify (senderKey q)) <$> get SSender
     Cmd SSender PING -> pure $ VRVerified Nothing
+    Cmd SSender RFWD {} -> pure $ VRVerified Nothing
     -- NSUB will not be accepted without authorization
-    Cmd SNotifier NSUB -> verifyQueue (\q -> maybe dummyVerify (Just q `verifiedWith`) (notifierKey <$> notifier q)) <$> get SNotifier
+    Cmd SNotifier NSUB -> verifyQueue (\q -> maybe dummyVerify (\n -> Just q `verifiedWith` notifierKey n) (notifier q)) <$> get SNotifier
+    Cmd SProxiedClient _ -> pure $ VRVerified Nothing
   where
     verify = verifyCmdAuthorization auth_ tAuth authorized
     dummyVerify = verify (dummyAuthKey tAuth) `seq` VRFailed
     verifyQueue :: (QueueRec -> VerificationResult) -> Either ErrorType QueueRec -> VerificationResult
-    verifyQueue = either (\_ -> dummyVerify)
+    verifyQueue = either (const dummyVerify)
     verified q cond = if cond then VRVerified q else VRFailed
     verifiedWith q k = q `verified` verify k
-    get :: SParty p -> M (Either ErrorType QueueRec)
+    get :: DirectParty p => SParty p -> M (Either ErrorType QueueRec)
     get party = do
       st <- asks queueStore
       atomically $ getQueue st party queueId
@@ -604,25 +625,65 @@ dummyKeyEd448 = "MEMwBQYDK2VxAzoA6ibQc9XpkSLtwrf7PLvp81qW/etiumckVFImCMRdftcG/Xo
 dummyKeyX25519 :: C.PublicKey 'C.X25519
 dummyKeyX25519 = "MCowBQYDK2VuAyEA4JGSMYht18H4mas/jHeBwfcM7jLwNYJNOAhi2/g4RXg="
 
-client :: Client -> Server -> M ()
-client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
+client :: THandleParams SMPVersion 'TServer -> Client -> Server -> M ()
+client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
-  forever $
-    atomically (readTBQueue rcvQ)
-      >>= mapM processCommand
-      >>= atomically . writeTBQueue sndQ
+  forever $ do
+    (proxied, rs) <- partitionEithers . L.toList <$> (mapM processCommand =<< atomically (readTBQueue rcvQ))
+    forM_ (L.nonEmpty rs) reply
+    -- TODO cancel this thread if the client gets disconnected
+    -- TODO limit client concurrency
+    forM_ (L.nonEmpty proxied) $ \cmds -> forkIO $ mapConcurrently processProxiedCmd cmds >>= reply
   where
-    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Transmission BrokerMsg)
+    reply :: MonadIO m => NonEmpty (Transmission BrokerMsg) -> m ()
+    reply = atomically . writeTBQueue sndQ
+    processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Transmission BrokerMsg)
+    processProxiedCmd (corrId, sessId, command) = (corrId, sessId,) <$> case command of
+      PRXY srv auth -> ifM allowProxy getRelay (pure $ ERR $ PROXY BASIC_AUTH)
+        where
+          allowProxy = do
+            ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
+            pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
+          getRelay = do
+            ProxyAgent {smpAgent} <- asks proxyAgent
+            liftIO $ proxyResp <$> runExceptT (getSMPServerClient' smpAgent srv) `catch` (pure . Left . PCEIOError)
+            where
+              proxyResp = \case
+                Left err -> ERR $ smpProxyError err
+                Right smp ->
+                  let THandleParams {sessionId = srvSessId, thVersion, thServerVRange, thAuth} = thParams smp
+                   in case compatibleVRange thServerVRange proxiedSMPRelayVRange of
+                        -- Cap the destination relay version range to prevent client version fingerprinting.
+                        -- See comment for proxiedSMPRelayVersion.
+                        Just (Compatible vr) | thVersion >= sendingProxySMPVersion -> case thAuth of
+                          Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
+                          Nothing -> ERR $ transportErr TENoServerAuth
+                        _ -> ERR $ transportErr TEVersion                    
+      PFWD fwdV pubKey encBlock -> do
+        ProxyAgent {smpAgent} <- asks proxyAgent
+        atomically (lookupSMPServerClient smpAgent sessId) >>= \case
+          Just smp
+            | v >= sendingProxySMPVersion ->
+                liftIO $ either (ERR . smpProxyError) PRES <$>
+                   runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catchError` (pure . Left . PCEIOError)
+            | otherwise -> pure . ERR $ transportErr TEVersion
+            where
+              THandleParams {thVersion = v} = thParams smp
+          Nothing -> pure $ ERR $ PROXY NO_SESSION
+    transportErr :: TransportError -> ErrorType
+    transportErr = PROXY . BROKER . TRANSPORT
+    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Either (Transmission (Command 'ProxiedClient)) (Transmission BrokerMsg))
     processCommand (qr_, (corrId, queueId, cmd)) = do
       st <- asks queueStore
       case cmd of
-        Cmd SSender command ->
-          case command of
-            SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
-            PING -> pure (corrId, "", PONG)
-        Cmd SNotifier NSUB -> subscribeNotifications
+        Cmd SProxiedClient command -> pure $ Left (corrId, queueId, command)
+        Cmd SSender command -> Right <$> case command of
+          SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
+          PING -> pure (corrId, "", PONG)
+          RFWD encBlock -> (corrId, "",) <$> processForwardedCommand encBlock
+        Cmd SNotifier NSUB -> Right <$> subscribeNotifications
         Cmd SRecipient command ->
-          case command of
+          Right <$> case command of
             NEW rKey dhKey auth subMode ->
               ifM
                 allowNew
@@ -828,7 +889,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> M (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
-          | B.length msgBody > maxMessageLength = pure $ err LARGE_MSG
+          | B.length msgBody > maxMessageLength thVersion = pure $ err LARGE_MSG
           | otherwise = case status qr of
               QueueOff -> return $ err AUTH
               QueueActive ->
@@ -852,6 +913,7 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
                         atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
                         pure ok
           where
+            THandleParams {thVersion} = thParams'
             mkMessage :: C.MaxLenBS MaxMessageLen -> M Message
             mkMessage body = do
               msgId <- randomId =<< asks (msgIdBytes . config)
@@ -885,6 +947,56 @@ client clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Serv
               let msgMeta = NMsgMeta {msgId, msgTs}
                   encNMsgMeta = C.cbEncrypt rcvNtfDhSecret cbNonce (smpEncode msgMeta) 128
               pure . (cbNonce,) $ fromRight "" encNMsgMeta
+
+        processForwardedCommand :: EncFwdTransmission -> M BrokerMsg
+        processForwardedCommand (EncFwdTransmission s) = fmap (either ERR id) . runExceptT $ do
+          THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE $ transportErr TENoServerAuth) pure (thAuth thParams')
+          sessSecret <- maybe (throwE $ transportErr TENoServerAuth) pure sessSecret'
+          let proxyNonce = C.cbNonce $ bs corrId
+          s' <- liftEitherWith (const CRYPTO) $ C.cbDecryptNoPad sessSecret proxyNonce s
+          FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'
+          let clientSecret = C.dh' fwdKey serverPrivKey
+              clientNonce = C.cbNonce $ bs fwdCorrId
+          b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret clientNonce et
+          let clntTHParams = smpTHParamsSetVersion fwdVersion thParams'
+          -- only allowing single forwarded transactions
+          t' <- case tParse clntTHParams b of
+            t :| [] -> pure $ tDecodeParseValidate clntTHParams t
+            _ -> throwE BLOCK
+          let clntThAuth = Just $ THAuthServer {serverPrivKey, sessSecret' = Just clientSecret}
+          -- process forwarded SEND
+          r <-
+            lift (rejectOrVerify clntThAuth t') >>= \case
+              Left r -> pure r
+              Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
+                Cmd SSender SEND {} ->
+                  -- Left will not be returned by processCommand, as only SEND command is allowed
+                  fromRight (corrId', entId', ERR INTERNAL) <$> lift (processCommand t'')
+                _ ->
+                  pure (corrId', entId', ERR $ CMD PROHIBITED)
+          -- encode response
+          r' <- case batchTransmissions (batch clntTHParams) (blockSize clntTHParams) [Right (Nothing, encodeTransmission clntTHParams r)] of
+            [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right
+            TBError _ _ : _ -> throwE BLOCK
+            TBTransmission b' _ : _ -> pure b'
+            TBTransmissions b' _ _ : _ -> pure b'
+          -- encrypt to client
+          r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedMsgLength
+          -- encrypt to proxy
+          let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
+              r3 = EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
+          pure $ RRES r3
+          where
+            rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
+            rejectOrVerify clntThAuth (tAuth, authorized, (corrId', entId', cmdOrError)) =
+              case cmdOrError of
+                Left e -> pure $ Left (corrId', entId', ERR e)
+                Right cmd'@(Cmd SSender SEND {}) -> verified <$> verifyTransmission ((,C.cbNonce (bs corrId')) <$> clntThAuth) tAuth authorized entId' cmd'
+                  where
+                    verified = \case
+                      VRVerified qr -> Right (qr, (corrId', entId', cmd'))
+                      VRFailed -> Left (corrId', entId', ERR AUTH)
+                Right _ -> pure $ Left (corrId', entId', ERR $ CMD PROHIBITED)
 
         deliverMessage :: T.Text -> QueueRec -> RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> M (Transmission BrokerMsg)
         deliverMessage name qr rId sub q msg_ = time (name <> " deliver") $ do

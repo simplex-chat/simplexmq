@@ -183,12 +183,12 @@ testCreateSecure (ATransport t) =
       Resp "dabc" _ err5 <- sendRecv s ("", "dabc", sId, _SEND "hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
-      let maxAllowedMessage = B.replicate maxMessageLength '-'
+      let maxAllowedMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion) '-'
       Resp "bcda" _ OK <- signSendRecv s sKey ("bcda", sId, _SEND maxAllowedMessage)
       Resp "" _ (Msg mId3 msg3) <- tGet1 r
       (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
 
-      let biggerMessage = B.replicate (maxMessageLength + 1) '-'
+      let biggerMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion + 1) '-'
       Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv s sKey ("bcda", sId, _SEND biggerMessage)
       pure ()
 
@@ -930,8 +930,6 @@ instance Eq C.ASignature where
   C.ASignature a s == C.ASignature a' s' = case testEquality a a' of
     Just Refl -> s == s'
     _ -> False
-
-deriving instance Eq (C.Signature a)
 
 syntaxTests :: ATransport -> Spec
 syntaxTests (ATransport t) = do

@@ -22,6 +22,7 @@ import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
 import Simplex.Messaging.Agent.Lock
+import Simplex.Messaging.Client.Agent (SMPClientAgent, SMPClientAgentConfig, newSMPClientAgent)
 import Simplex.Messaging.Crypto (KeyHash (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
@@ -79,7 +80,9 @@ data ServerConfig = ServerConfig
     -- | TCP transport config
     transportConfig :: TransportServerConfig,
     -- | run listener on control port
-    controlPort :: Maybe ServiceName
+    controlPort :: Maybe ServiceName,
+    smpAgentCfg :: SMPClientAgentConfig,
+    allowSMPProxy :: Bool -- auth is the same with `newQueueBasicAuth`
   }
 
 defMsgExpirationDays :: Int64
@@ -110,8 +113,9 @@ data Env = Env
     tlsServerParams :: T.ServerParams,
     serverStats :: ServerStats,
     sockets :: SocketState,
-    clientSeq :: TVar Int,
-    clients :: TVar (IntMap Client)
+    clientSeq :: TVar ClientId,
+    clients :: TVar (IntMap Client),
+    proxyAgent :: ProxyAgent -- senders served on this proxy
   }
 
 data Server = Server
@@ -122,8 +126,14 @@ data Server = Server
     savingLock :: Lock
   }
 
+data ProxyAgent = ProxyAgent
+  { smpAgent :: SMPClientAgent
+  }
+
+type ClientId = Int
+
 data Client = Client
-  { clientId :: Int,
+  { clientId :: ClientId,
     subscriptions :: TMap RecipientId (TVar Sub),
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
@@ -155,7 +165,7 @@ newServer = do
   savingLock <- createLock
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
 
-newClient :: TVar Int -> Natural -> VersionSMP -> ByteString -> SystemTime -> STM Client
+newClient :: TVar ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> STM Client
 newClient nextClientId qSize thVersion sessionId createdAt = do
   clientId <- stateTVar nextClientId $ \next -> (next, next + 1)
   subscriptions <- TM.empty
@@ -176,7 +186,7 @@ newSubscription subThread = do
   return Sub {subThread, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, transportConfig} = do
+newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, smpAgentCfg, transportConfig} = do
   server <- atomically newServer
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
@@ -189,7 +199,8 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
-  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
+  proxyAgent <- atomically $ newSMPProxyAgent smpAgentCfg random
+  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
@@ -205,3 +216,8 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
     addNotifier q = case notifier q of
       Nothing -> id
       Just NtfCreds {notifierId} -> M.insert notifierId (recipientId q)
+
+newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> STM ProxyAgent
+newSMPProxyAgent smpAgentCfg random = do
+  smpAgent <- newSMPClientAgent smpAgentCfg random
+  pure ProxyAgent {smpAgent}

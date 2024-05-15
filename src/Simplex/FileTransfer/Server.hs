@@ -63,7 +63,7 @@ import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Transport.Server (runTCPServer, tlsServerCredentials)
 import Simplex.Messaging.Util
-import Simplex.Messaging.Version (isCompatible)
+import Simplex.Messaging.Version
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
 import System.IO (hPrint, hPutStrLn, universalNewlineMode)
@@ -91,10 +91,10 @@ runXFTPServerBlocking started cfg = newXFTPServerEnv cfg >>= runReaderT (xftpSer
 
 data Handshake
   = HandshakeSent C.PrivateKeyX25519
-  | HandshakeAccepted (THandleAuth 'TServer) VersionXFTP
+  | HandshakeAccepted (THandleParams XFTPVersion 'TServer)
 
 xftpServer :: XFTPServerConfig -> TMVar Bool -> M ()
-xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration} started = do
+xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange} started = do
   mapM_ (expireServerFiles Nothing) fileExpiration
   restoreServerStats
   raceAny_ (runServer : expireFilesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg) `finally` stopServer
@@ -111,7 +111,9 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
       liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize serverParams transportConfig inactiveClientExpiration cleanup $ \sessionId sessionALPN r sendResponse -> do
         reqBody <- getHTTP2Body r xftpBlockSize
-        let thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = VersionXFTP 1, thAuth = Nothing, implySessId = False, batch = True}
+        let v = VersionXFTP 1
+            thServerVRange = versionToRange v
+            thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, batch = True}
             req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse}
         flip runReaderT env $ case sessionALPN of
           Nothing -> processRequest req0
@@ -121,12 +123,12 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               Just thParams -> processRequest req0 {thParams} -- proceed with new version (XXX: may as well switch the request handler here)
           _ -> liftIO . sendResponse $ H.responseNoBody N.ok200 [] -- shouldn't happen: means server picked handshake protocol it doesn't know about
     xftpServerHandshakeV1 :: X.CertificateChain -> C.APrivateSignKey -> TMap SessionId Handshake -> XFTPTransportRequest -> M (Maybe (THandleParams XFTPVersion 'TServer))
-    xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams@THandleParams {sessionId}, reqBody = HTTP2Body {bodyHead}, sendResponse} = do
+    xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams0@THandleParams {sessionId}, reqBody = HTTP2Body {bodyHead}, sendResponse} = do
       s <- atomically $ TM.lookup sessionId sessions
       r <- runExceptT $ case s of
         Nothing -> processHello
         Just (HandshakeSent pk) -> processClientHandshake pk
-        Just (HandshakeAccepted auth v) -> pure $ Just thParams {thAuth = Just auth, thVersion = v}
+        Just (HandshakeAccepted thParams) -> pure $ Just thParams
       either sendError pure r
       where
         processHello = do
@@ -134,21 +136,24 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           (k, pk) <- atomically . C.generateKeyPair =<< asks random
           atomically $ TM.insert sessionId (HandshakeSent pk) sessions
           let authPubKey = (chain, C.signX509 serverSignKey $ C.publicToX509 k)
-          let hs = XFTPServerHandshake {xftpVersionRange = supportedFileServerVRange, sessionId, authPubKey}
+          let hs = XFTPServerHandshake {xftpVersionRange = xftpServerVRange, sessionId, authPubKey}
           shs <- encodeXftp hs
           liftIO . sendResponse $ H.responseBuilder N.ok200 [] shs
           pure Nothing
         processClientHandshake pk = do
           unless (B.length bodyHead == xftpBlockSize) $ throwError HANDSHAKE
           body <- liftHS $ C.unPad bodyHead
-          XFTPClientHandshake {xftpVersion, keyHash} <- liftHS $ smpDecode body
+          XFTPClientHandshake {xftpVersion = v, keyHash} <- liftHS $ smpDecode body
           kh <- asks serverIdentity
           unless (keyHash == kh) $ throwError HANDSHAKE
-          unless (xftpVersion `isCompatible` supportedFileServerVRange) $ throwError HANDSHAKE
-          let auth = THAuthServer {serverPrivKey = pk, sessSecret' = Nothing}
-          atomically $ TM.insert sessionId (HandshakeAccepted auth xftpVersion) sessions
-          liftIO . sendResponse $ H.responseNoBody N.ok200 []
-          pure Nothing
+          case compatibleVRange' xftpServerVRange v of
+            Just (Compatible vr) -> do
+              let auth = THAuthServer {serverPrivKey = pk, sessSecret' = Nothing}
+                  thParams = thParams0 {thAuth = Just auth, thVersion = v, thServerVRange = vr}
+              atomically $ TM.insert sessionId (HandshakeAccepted thParams) sessions
+              liftIO . sendResponse $ H.responseNoBody N.ok200 []
+              pure Nothing
+            Nothing -> throwError HANDSHAKE
         sendError :: XFTPErrorType -> M (Maybe (THandleParams XFTPVersion 'TServer))
         sendError err = do
           runExceptT (encodeXftp err) >>= \case
