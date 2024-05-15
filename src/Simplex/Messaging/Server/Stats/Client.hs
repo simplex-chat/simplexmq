@@ -53,7 +53,7 @@ data ClientStatsData = ClientStatsData
 newClientStats :: Monad m => (forall a. a -> m (TVar a)) -> PeerId -> UTCTime -> m ClientStats
 newClientStats newF peerId ts = do
   peerAddresses <- newF $ IS.singleton peerId
-  socketCount <- newF 0
+  socketCount <- newF 1
   createdAt <- newF ts
   updatedAt <- newF ts
   qCreated <- newF mempty

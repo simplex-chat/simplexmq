@@ -54,6 +54,7 @@ import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
+import qualified Data.IntSet as IS
 import Data.List (intercalate, mapAccumR)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -390,6 +391,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 where
                   putStat :: Show a => String -> TVar a -> IO ()
                   putStat label var = readTVarIO var >>= \v -> hPutStrLn h $ label <> ": " <> show v
+              CPStatsClients -> withAdminRole $ do
+                stats' <- unliftIO u (asks clientStats) >>= readTVarIO
+                B.hPutStr h "peerAddresses,socketCount,createdAt,updatedAt,qCreated,qSentSigned,msgSentSigned,msgSentUnsigned,msgDeliveredSigned,proxyRelaysRequested,proxyRelaysConnected,msgSentViaProxy\n"
+                forM_ stats' $ \cs -> do
+                  csd <- CS.readClientStatsData readTVarIO cs
+                  let CS.ClientStatsData {_peerAddresses, _socketCount, _createdAt, _updatedAt, _qCreated, _qSentSigned, _msgSentSigned, _msgSentUnsigned, _msgDeliveredSigned, _proxyRelaysRequested, _proxyRelaysConnected, _msgSentViaProxy} = csd
+                  B.hPutStrLn h $ B.intercalate "," [bshow $ IS.size _peerAddresses, bshow _socketCount, strEncode _createdAt, strEncode _updatedAt, bshow $ S.size _qCreated, bshow $ S.size _qSentSigned, bshow _msgSentSigned, bshow _msgSentUnsigned, bshow _msgDeliveredSigned, bshow _proxyRelaysRequested, bshow _proxyRelaysConnected, bshow _msgSentViaProxy]
               CPStatsRTS -> getRTSStats >>= hPrint h
               CPThreads -> withAdminRole $ do
 #if MIN_VERSION_base(4,18,0)

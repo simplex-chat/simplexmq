@@ -16,6 +16,7 @@ data ControlProtocol
   | CPResume
   | CPClients
   | CPStats
+  | CPStatsClients
   | CPStatsRTS
   | CPThreads
   | CPSockets
@@ -33,6 +34,7 @@ instance StrEncoding ControlProtocol where
     CPResume -> "resume"
     CPClients -> "clients"
     CPStats -> "stats"
+    CPStatsClients -> "stats-clients"
     CPStatsRTS -> "stats-rts"
     CPThreads -> "threads"
     CPSockets -> "sockets"
@@ -49,6 +51,7 @@ instance StrEncoding ControlProtocol where
       "resume" -> pure CPResume
       "clients" -> pure CPClients
       "stats" -> pure CPStats
+      "stats-clients" -> pure CPStatsClients
       "stats-rts" -> pure CPStatsRTS
       "threads" -> pure CPThreads
       "sockets" -> pure CPSockets
