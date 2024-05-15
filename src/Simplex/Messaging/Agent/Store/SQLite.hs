@@ -287,6 +287,7 @@ import System.FilePath (takeDirectory)
 import System.IO (hFlush, stdout)
 import UnliftIO.Exception (bracketOnError, onException)
 import qualified UnliftIO.Exception as E
+import UnliftIO.MVar
 import UnliftIO.STM
 
 -- * SQLite Store implementation
@@ -382,8 +383,8 @@ connectSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> IO SQLiteStore
 connectSQLiteStore dbFilePath key keepKey = do
   dbNew <- not <$> doesFileExist dbFilePath
   dbConn <- dbBusyLoop (connectDB dbFilePath key)
+  dbConnection <- newMVar dbConn
   atomically $ do
-    dbConnection <- newTMVar dbConn
     dbKey <- newTVar $! storeKey key keepKey
     dbClosed <- newTVar False
     pure SQLiteStore {dbFilePath, dbKey, dbConnection, dbNew, dbClosed}
@@ -421,14 +422,14 @@ openSQLiteStore st@SQLiteStore {dbClosed} key keepKey =
 openSQLiteStore_ :: SQLiteStore -> ScrubbedBytes -> Bool -> IO ()
 openSQLiteStore_ SQLiteStore {dbConnection, dbFilePath, dbKey, dbClosed} key keepKey =
   bracketOnError
-    (atomically $ takeTMVar dbConnection)
-    (atomically . tryPutTMVar dbConnection)
+    (takeMVar dbConnection)
+    (tryPutMVar dbConnection)
     $ \DB.Connection {slow} -> do
       DB.Connection {conn} <- connectDB dbFilePath key
       atomically $ do
-        putTMVar dbConnection DB.Connection {conn, slow}
         writeTVar dbClosed False
         writeTVar dbKey $! storeKey key keepKey
+      putMVar dbConnection DB.Connection {conn, slow}
 
 reopenSQLiteStore :: SQLiteStore -> IO ()
 reopenSQLiteStore st@SQLiteStore {dbKey, dbClosed} =

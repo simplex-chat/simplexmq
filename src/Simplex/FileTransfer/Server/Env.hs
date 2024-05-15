@@ -25,6 +25,7 @@ import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), XFTPFileId)
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
+import Simplex.FileTransfer.Transport (VersionRangeXFTP)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
 import Simplex.Messaging.Server.Expiration
@@ -61,6 +62,8 @@ data XFTPServerConfig = XFTPServerConfig
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
+    -- | XFTP client-server protocol version range
+    xftpServerVRange :: VersionRangeXFTP,
     -- stats config - see SMP server config
     logStatsInterval :: Maybe Int64,
     logStatsStartTime :: Int64,

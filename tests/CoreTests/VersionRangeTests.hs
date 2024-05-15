@@ -6,6 +6,7 @@
 
 module CoreTests.VersionRangeTests where
 
+import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import Simplex.Messaging.Version
@@ -38,6 +39,28 @@ versionRangeTests = modifyMaxSuccess (const 1000) $ do
       (vr 1 3, vr 2 3) `compatible` Just (Version 3)
       (vr 1 3, vr 2 4) `compatible` Just (Version 3)
       (vr 1 2, vr 3 4) `compatible` Nothing
+    it "should choose mutually compatible version range (range intersection)" $ do
+      (vr 1 1, vr 1 1) `compatibleVR` Just (vr 1 1)
+      (vr 1 1, vr 1 2) `compatibleVR` Just (vr 1 1)
+      (vr 1 2, vr 1 2) `compatibleVR` Just (vr 1 2)
+      (vr 1 2, vr 2 3) `compatibleVR` Just (vr 2 2)
+      (vr 1 3, vr 2 3) `compatibleVR` Just (vr 2 3)
+      (vr 1 3, vr 2 4) `compatibleVR` Just (vr 2 3)
+      (vr 1 2, vr 3 4) `compatibleVR` Nothing
+    it "should choose compatible version range with changed max version (capped range)" $ do
+      (vr 1 1, 1) `compatibleVR'` Just (vr 1 1)
+      (vr 1 1, 2) `compatibleVR'` Nothing
+      (vr 1 2, 2) `compatibleVR'` Just (vr 1 2)
+      (vr 1 2, 3) `compatibleVR'` Nothing
+      (vr 1 3, 2) `compatibleVR'` Just (vr 1 2)
+      (vr 1 3, 3) `compatibleVR'` Just (vr 1 3)
+      (vr 1 3, 4) `compatibleVR'` Nothing
+      (vr 2 3, 1) `compatibleVR'` Nothing
+      (vr 2 3, 2) `compatibleVR'` Just (vr 2 2)
+      (vr 2 3, 3) `compatibleVR'` Just (vr 2 3)
+      (vr 2 4, 1) `compatibleVR'` Nothing
+      (vr 2 4, 3) `compatibleVR'` Just (vr 2 3)
+      (vr 2 4, 4) `compatibleVR'` Just (vr 2 4)
     it "should check if version is compatible" $ do
       isCompatible @T (Version 1) (vr 1 2) `shouldBe` True
       isCompatible @T (Version 2) (vr 1 2) `shouldBe` True
@@ -63,3 +86,16 @@ versionRangeTests = modifyMaxSuccess (const 1000) $ do
       case compatibleVersion vr1 vr2 of
         Just (Compatible v') -> Just v' `shouldBe` v
         Nothing -> Nothing `shouldBe` v
+    compatibleVR :: (VersionRange T, VersionRange T) -> Maybe (VersionRange T) -> Expectation
+    (vr1, vr2) `compatibleVR` vr' = do
+      (vr1, vr2) `checkCompatibleVR` vr'
+      (vr2, vr1) `checkCompatibleVR` vr'
+    (vr1, vr2) `checkCompatibleVR` vr' =
+      case compatibleVRange vr1 vr2 of
+        Just (Compatible vr'') -> Just vr'' `shouldBe` vr'
+        Nothing -> Nothing `shouldBe` vr'
+    compatibleVR' :: (VersionRange T, Word16) -> Maybe (VersionRange T) -> Expectation
+    (vr1, v2) `compatibleVR'` vr' =
+      case compatibleVRange' vr1 (Version v2) of
+        Just (Compatible vr'') -> Just vr'' `shouldBe` vr'
+        Nothing -> Nothing `shouldBe` vr'

@@ -189,6 +189,7 @@ import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
+import Simplex.Messaging.Client (ProxyClientError)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
   ( InitialKeys (..),
@@ -206,6 +207,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( AProtocolType,
+    BrokerErrorType (..),
     EntityId,
     ErrorType,
     MsgBody,
@@ -233,7 +235,7 @@ import Simplex.Messaging.Protocol
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme
-import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
+import Simplex.Messaging.Transport (Transport (..))
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts_ (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -393,7 +395,8 @@ data ACommand (p :: AParty) (e :: AEntity) where
   RSYNC :: RatchetSyncState -> Maybe AgentCryptoError -> ConnectionStats -> ACommand Agent AEConn
   SEND :: PQEncryption -> MsgFlags -> MsgBody -> ACommand Client AEConn
   MID :: AgentMsgId -> PQEncryption -> ACommand Agent AEConn
-  SENT :: AgentMsgId -> ACommand Agent AEConn
+  SENT :: AgentMsgId -> Maybe SMPServer -> ACommand Agent AEConn
+  MWARN :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MERRS :: NonEmpty AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent AEConn
@@ -457,6 +460,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   SEND_ :: ACommandTag Client AEConn
   MID_ :: ACommandTag Agent AEConn
   SENT_ :: ACommandTag Agent AEConn
+  MWARN_ :: ACommandTag Agent AEConn
   MERR_ :: ACommandTag Agent AEConn
   MERRS_ :: ACommandTag Agent AEConn
   MSG_ :: ACommandTag Agent AEConn
@@ -512,7 +516,8 @@ aCommandTag = \case
   RSYNC {} -> RSYNC_
   SEND {} -> SEND_
   MID {} -> MID_
-  SENT _ -> SENT_
+  SENT {} -> SENT_
+  MWARN {} -> MWARN_
   MERR {} -> MERR_
   MERRS {} -> MERRS_
   MSG {} -> MSG_
@@ -1300,6 +1305,7 @@ instance VersionRangeI SMPClientVersion SMPQueueUri where
   type VersionT SMPClientVersion SMPQueueUri = SMPQueueInfo
   versionRange = clientVRange
   toVersionT (SMPQueueUri _vr addr) v = SMPQueueInfo v addr
+  toVersionRange (SMPQueueUri _vr addr) vr = SMPQueueUri vr addr
 
 -- | SMP queue information sent out-of-band.
 --
@@ -1474,6 +1480,8 @@ data AgentErrorType
     NTF {serverAddress :: String, ntfErr :: ErrorType}
   | -- | XFTP protocol errors forwarded to agent clients
     XFTP {serverAddress :: String, xftpErr :: XFTPErrorType}
+  | -- | SMP proxy errors
+    PROXY {proxyServer :: String, relayServer :: String, proxyErr :: ProxyClientError}
   | -- | XRCP protocol errors forwarded to agent clients
     RCP {rcpErr :: RCErrorType}
   | -- | SMP server errors
@@ -1516,22 +1524,6 @@ data ConnectionErrorType
     NOT_AVAILABLE
   deriving (Eq, Read, Show, Exception)
 
--- | SMP server errors.
-data BrokerErrorType
-  = -- | invalid server response (failed to parse)
-    RESPONSE {smpErr :: String}
-  | -- | unexpected response
-    UNEXPECTED
-  | -- | network error
-    NETWORK
-  | -- | no compatible server host (e.g. onion when public is required, or vice versa)
-    HOST
-  | -- | handshake or other transport error
-    TRANSPORT {transportErr :: TransportError}
-  | -- | command response timeout
-    TIMEOUT
-  deriving (Eq, Read, Show, Exception)
-
 -- | Errors of another SMP agent.
 data SMPAgentError
   = -- | client or agent message that failed to parse
@@ -1566,12 +1558,14 @@ data AgentCryptoError
 
 instance StrEncoding AgentCryptoError where
   strP =
-    "DECRYPT_AES" $> DECRYPT_AES
-      <|> "DECRYPT_CB" $> DECRYPT_CB
-      <|> "RATCHET_HEADER" $> RATCHET_HEADER
-      <|> "RATCHET_EARLIER " *> (RATCHET_EARLIER <$> strP)
-      <|> "RATCHET_SKIPPED " *> (RATCHET_SKIPPED <$> strP)
-      <|> "RATCHET_SYNC" $> RATCHET_SYNC
+    A.takeTill (== ' ') >>= \case
+      "DECRYPT_AES" -> pure DECRYPT_AES
+      "DECRYPT_CB" -> pure DECRYPT_CB
+      "RATCHET_HEADER" -> pure RATCHET_HEADER
+      "RATCHET_EARLIER" -> RATCHET_EARLIER <$> _strP
+      "RATCHET_SKIPPED" -> RATCHET_SKIPPED <$> _strP
+      "RATCHET_SYNC" -> pure RATCHET_SYNC
+      _ -> fail "AgentCryptoError"
   strEncode = \case
     DECRYPT_AES -> "DECRYPT_AES"
     DECRYPT_CB -> "DECRYPT_CB"
@@ -1582,41 +1576,58 @@ instance StrEncoding AgentCryptoError where
 
 instance StrEncoding AgentErrorType where
   strP =
-    "CMD " *> (CMD <$> parseRead1)
-      <|> "CONN " *> (CONN <$> parseRead1)
-      <|> "SMP " *> (SMP <$> textP <*> _strP)
-      <|> "NTF " *> (NTF <$> textP <*> _strP)
-      <|> "XFTP " *> (XFTP <$> textP <*> _strP)
-      <|> "RCP " *> (RCP <$> strP)
-      <|> "BROKER " *> (BROKER <$> textP <* " RESPONSE " <*> (RESPONSE <$> textP))
-      <|> "BROKER " *> (BROKER <$> textP <* " TRANSPORT " <*> (TRANSPORT <$> transportErrorP))
-      <|> "BROKER " *> (BROKER <$> textP <* A.space <*> parseRead1)
-      <|> "AGENT CRYPTO " *> (AGENT . A_CRYPTO <$> parseRead A.takeByteString)
-      <|> "AGENT QUEUE " *> (AGENT . A_QUEUE <$> parseRead A.takeByteString)
-      <|> "AGENT " *> (AGENT <$> parseRead1)
-      <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
-      <|> "CRITICAL " *> (CRITICAL <$> parseRead1 <* A.space <*> parseRead A.takeByteString)
-      <|> "INACTIVE" $> INACTIVE
+    A.takeTill (== ' ')
+      >>= \case
+        "CMD" -> CMD <$> (A.space *> parseRead1)
+        "CONN" -> CONN <$> (A.space *> parseRead1)
+        "SMP" -> SMP <$> (A.space *> srvP) <*> _strP
+        "NTF" -> NTF <$> (A.space *> srvP) <*> _strP
+        "XFTP" -> XFTP <$> (A.space *> srvP) <*> _strP
+        "PROXY" -> PROXY <$> (A.space *> srvP) <* A.space <*> srvP <*> _strP
+        "RCP" -> RCP <$> _strP
+        "BROKER" -> BROKER <$> (A.space *> srvP) <*> _strP
+        "AGENT" -> AGENT <$> _strP
+        "INTERNAL" -> INTERNAL <$> (A.space *> textP)
+        "CRITICAL" -> CRITICAL <$> (A.space *> parseRead1) <*> (A.space *> textP)
+        "INACTIVE" -> pure INACTIVE
+        _ -> fail "bad AgentErrorType"
     where
-      textP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
+      srvP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
+      textP = T.unpack . safeDecodeUtf8 <$> A.takeByteString
   strEncode = \case
     CMD e -> "CMD " <> bshow e
     CONN e -> "CONN " <> bshow e
     SMP srv e -> "SMP " <> text srv <> " " <> strEncode e
     NTF srv e -> "NTF " <> text srv <> " " <> strEncode e
     XFTP srv e -> "XFTP " <> text srv <> " " <> strEncode e
+    PROXY pxy srv e -> B.unwords ["PROXY", text pxy, text srv, strEncode e]
     RCP e -> "RCP " <> strEncode e
-    BROKER srv (RESPONSE e) -> "BROKER " <> text srv <> " RESPONSE " <> text e
-    BROKER srv (TRANSPORT e) -> "BROKER " <> text srv <> " TRANSPORT " <> serializeTransportError e
-    BROKER srv e -> "BROKER " <> text srv <> " " <> bshow e
-    AGENT (A_CRYPTO e) -> "AGENT CRYPTO " <> bshow e
-    AGENT (A_QUEUE e) -> "AGENT QUEUE " <> bshow e
-    AGENT e -> "AGENT " <> bshow e
-    INTERNAL e -> "INTERNAL " <> bshow e
-    CRITICAL restart e -> "CRITICAL " <> bshow restart <> " " <> bshow e
+    BROKER srv e -> B.unwords ["BROKER", text srv, strEncode e]
+    AGENT e -> "AGENT " <> strEncode e
+    INTERNAL e -> "INTERNAL " <> encodeUtf8 (T.pack e)
+    CRITICAL restart e -> "CRITICAL " <> bshow restart <> " " <> encodeUtf8 (T.pack e)
     INACTIVE -> "INACTIVE"
     where
       text = encodeUtf8 . T.pack
+
+instance StrEncoding SMPAgentError where
+  strP =
+    A.takeTill (== ' ')
+      >>= \case
+        "MESSAGE" -> pure A_MESSAGE
+        "PROHIBITED" -> pure A_PROHIBITED
+        "VERSION" -> pure A_VERSION
+        "CRYPTO" -> A_CRYPTO <$> _strP
+        "DUPLICATE" -> pure A_DUPLICATE
+        "QUEUE" -> A_QUEUE . T.unpack . safeDecodeUtf8 <$> (A.space *> A.takeByteString)
+        _ -> fail "bad SMPAgentError"
+  strEncode = \case
+    A_MESSAGE -> "MESSAGE"
+    A_PROHIBITED -> "PROHIBITED"
+    A_VERSION -> "VERSION"
+    A_CRYPTO e -> "CRYPTO " <> strEncode e
+    A_DUPLICATE -> "DUPLICATE"
+    A_QUEUE e -> "QUEUE " <> encodeUtf8 (T.pack e)
 
 cryptoErrToSyncState :: AgentCryptoError -> RatchetSyncState
 cryptoErrToSyncState = \case
@@ -1660,6 +1671,7 @@ instance StrEncoding ACmdTag where
       "SEND" -> t SEND_
       "MID" -> ct MID_
       "SENT" -> ct SENT_
+      "MWARN" -> ct MWARN_
       "MERR" -> ct MERR_
       "MERRS" -> ct MERRS_
       "MSG" -> ct MSG_
@@ -1718,6 +1730,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     SEND_ -> "SEND"
     MID_ -> "MID"
     SENT_ -> "SENT"
+    MWARN_ -> "MWARN"
     MERR_ -> "MERR"
     MERRS_ -> "MERRS"
     MSG_ -> "MSG"
@@ -1788,7 +1801,8 @@ commandP binaryP =
           SWITCH_ -> s (SWITCH <$> strP_ <*> strP_ <*> strP)
           RSYNC_ -> s (RSYNC <$> strP_ <*> strP <*> strP)
           MID_ -> s (MID <$> A.decimal <*> _strP)
-          SENT_ -> s (SENT <$> A.decimal)
+          SENT_ -> s (SENT <$> A.decimal <*> _strP)
+          MWARN_ -> s (MWARN <$> A.decimal <* A.space <*> strP)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
           MERRS_ -> s (MERRS <$> strP_ <*> strP)
           MSG_ -> s (MSG <$> strP <* A.space <*> smpP <* A.space <*> binaryP)
@@ -1851,7 +1865,8 @@ serializeCommand = \case
   RSYNC rrState cryptoErr cstats -> s (RSYNC_, rrState, cryptoErr, cstats)
   SEND pqEnc msgFlags msgBody -> B.unwords [s SEND_, s pqEnc, smpEncode msgFlags, serializeBinary msgBody]
   MID mId pqEnc -> s (MID_, mId, pqEnc)
-  SENT mId -> s (SENT_, mId)
+  SENT mId proxySrv_ -> s (SENT_, mId, proxySrv_)
+  MWARN mId e -> s (MWARN_, mId, e)
   MERR mId e -> s (MERR_, mId, e)
   MERRS mIds e -> s (MERRS_, mIds, e)
   MSG msgMeta msgFlags msgBody -> B.unwords [s MSG_, s msgMeta, smpEncode msgFlags, serializeBinary msgBody]
@@ -1976,8 +1991,6 @@ $(J.deriveJSON (sumTypeJSON fstToLower) ''MsgIntegrity)
 $(J.deriveJSON (sumTypeJSON id) ''CommandErrorType)
 
 $(J.deriveJSON (sumTypeJSON id) ''ConnectionErrorType)
-
-$(J.deriveJSON (sumTypeJSON id) ''BrokerErrorType)
 
 $(J.deriveJSON (sumTypeJSON id) ''AgentCryptoError)
 
