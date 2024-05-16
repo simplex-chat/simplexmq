@@ -52,8 +52,9 @@ import Simplex.Messaging.Transport.Server (runTransportServer, tlsServerCredenti
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
 import System.IO (BufferMode (..), hPutStrLn, hSetBuffering)
+import System.Mem.Weak (deRefWeak)
 import UnliftIO (IOMode (..), async, uninterruptibleCancel, withFile)
-import UnliftIO.Concurrent (forkIO, mkWeakThreadId)
+import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.STM
@@ -97,7 +98,9 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
     stopServer = do
       withNtfLog closeStoreLog
       saveServerStats
-      asks (smpAgent . subscriber) >>= liftIO . closeSMPClientAgent
+      NtfSubscriber {smpSubscribers, smpAgent} <- asks subscriber
+      liftIO $ readTVarIO smpSubscribers >>= mapM_ (\SMPSubscriber {subThreadId} -> readTVarIO subThreadId >>= mapM_ (deRefWeak >=> mapM_ killThread))
+      liftIO $ closeSMPClientAgent smpAgent
 
     serverStatsThread_ :: NtfServerConfig -> [M ()]
     serverStatsThread_ NtfServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
