@@ -193,7 +193,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           CAConnected srv -> logInfo $ "SMP server connected " <> showServer' srv
           CADisconnected srv [] -> logInfo $ "SMP server disconnected " <> showServer' srv
           CADisconnected srv subs -> logError $ "SMP server disconnected " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
-          CAReconnected srv -> logInfo $ "SMP server reconnected " <> showServer' srv
           CAResubscribed srv subs -> logError $ "SMP server resubscribed " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
           CASubError srv errs -> logError $ "SMP server subscription errors " <> showServer' srv <> " / errors: " <> tshow (length errs)
       where
@@ -658,7 +657,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                         Just (Compatible vr) | thVersion >= sendingProxySMPVersion -> case thAuth of
                           Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
                           Nothing -> ERR $ transportErr TENoServerAuth
-                        _ -> ERR $ transportErr TEVersion                    
+                        _ -> ERR $ transportErr TEVersion
       PFWD fwdV pubKey encBlock -> do
         ProxyAgent {smpAgent} <- asks proxyAgent
         atomically (lookupSMPServerClient smpAgent sessId) >>= \case

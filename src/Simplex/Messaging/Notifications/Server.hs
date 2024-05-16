@@ -239,14 +239,14 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     receiveAgent =
       forever $
         atomically (readTBQueue agentQ) >>= \case
-          CAConnected _ -> pure ()
+          CAConnected srv ->
+            logInfo $ "SMP server reconnected " <> showServer' srv
           CADisconnected srv subs -> do
             logSubStatus srv "disconnected" $ length subs
             forM_ subs $ \(_, ntfId) -> do
               let smpQueue = SMPQueueNtf srv ntfId
               updateSubStatus smpQueue NSInactive
-          CAReconnected srv ->
-            logInfo $ "SMP server reconnected " <> showServer' srv
+
           CAResubscribed srv subs -> do
             forM_ subs $ \(_, ntfId) -> updateSubStatus (SMPQueueNtf srv ntfId) NSActive
             logSubStatus srv "resubscribed" $ length subs
