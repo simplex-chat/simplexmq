@@ -98,6 +98,7 @@ defaultSMPClientAgentConfig =
 
 data SMPClientAgent = SMPClientAgent
   { agentCfg :: SMPClientAgentConfig,
+    active :: TVar Bool,
     msgQ :: TBQueue (ServerTransmission SMPVersion ErrorType BrokerMsg),
     agentQ :: TBQueue SMPClientAgentEvent,
     randomDrg :: TVar ChaChaDRG,
@@ -136,6 +137,7 @@ instance Exception e => MonadUnliftIO (ExceptT e (ReaderT r IO)) where
 
 newSMPClientAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> STM SMPClientAgent
 newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg = do
+  active <- newTVar True
   msgQ <- newTBQueue msgQSize
   agentQ <- newTBQueue agentQSize
   smpClients <- TM.empty
@@ -147,6 +149,7 @@ newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg
   pure
     SMPClientAgent
       { agentCfg,
+        active,
         msgQ,
         agentQ,
         randomDrg,
@@ -235,8 +238,8 @@ connectClient ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, random
 
 -- | Spawn reconnect worker if needed
 reconnectClient :: SMPClientAgent -> SMPServer -> IO ()
-reconnectClient ca@SMPClientAgent {agentCfg, smpSubWorkers, workerSeq} srv =
-  atomically getWorkerVar >>= mapM_ (either newSubWorker (\_ -> pure ()))
+reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} srv =
+  whenM (readTVarIO active) $ atomically getWorkerVar >>= mapM_ (either newSubWorker (\_ -> pure ()))
   where
     getWorkerVar =
       ifM
@@ -250,7 +253,7 @@ reconnectClient ca@SMPClientAgent {agentCfg, smpSubWorkers, workerSeq} srv =
     runSubWorker =
       withRetryInterval (reconnectInterval agentCfg) $ \_ loop -> do
         pending <- atomically getPending
-        forM_ pending $ \cs -> do
+        forM_ pending $ \cs -> whenM (readTVarIO active) $ do
           void $ tcpConnectTimeout `timeout` runExceptT (reconnectSMPClient ca srv cs)
           loop
     ProtocolClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} = smpCfg agentCfg
@@ -300,6 +303,7 @@ lookupSMPServerClient SMPClientAgent {smpSessions} sessId = TM.lookup sessId smp
 
 closeSMPClientAgent :: SMPClientAgent -> IO ()
 closeSMPClientAgent c = do
+  atomically $ writeTVar (active c) False
   closeSMPServerClients c
   atomically (swapTVar (smpSubWorkers c) M.empty) >>= mapM_ cancelReconnect
   where
