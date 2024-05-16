@@ -137,7 +137,7 @@ where
 
 import Control.Applicative ((<|>))
 import Control.Concurrent (ThreadId, forkIO, threadDelay)
-import Control.Concurrent.Async (Async, uninterruptibleCancel)
+import Control.Concurrent.Async (Async, race, uninterruptibleCancel)
 import Control.Concurrent.STM (retry, throwSTM)
 import Control.Exception (AsyncException (..), BlockedIndefinitelyOnSTM (..))
 import Control.Logger.Simple
@@ -774,9 +774,13 @@ waitForUserNetwork AgentClient {userNetworkState} =
               let d'' = nextRetryDelay (diffToMicroseconds $ diffUTCTime ts' ts) (min d d') ni
                in ns {offline = Just UNSOffline {offlineDelay = d'', offlineFrom = ts}}
     waitOnline :: Int64 -> Bool -> IO Bool
+    waitOnline t True = pure True
     waitOnline t online'
       | t <= 0 = pure online'
       | otherwise =
+          -- race (threadDelay (fromIntegral maxWait)) (atomically $ unlessM (isNothing . offline <$> readTVar userNetworkState) retry) >>= \case
+          --   Left () -> waitOnline (t - maxWait) False
+          --   Right () ->  pure True
           registerDelay (fromIntegral maxWait)
             >>= atomically . onlineOrDelay
             >>= waitOnline (t - maxWait)
