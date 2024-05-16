@@ -15,6 +15,7 @@ module Simplex.Messaging.Client.Agent where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
+import Control.Concurrent.STM (retry)
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -46,7 +47,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_, ifM, toChunks, ($>>=))
+import Simplex.Messaging.Util (catchAll_, ifM, toChunks, tshow, whenM, ($>>=))
 import System.Timeout (timeout)
 import UnliftIO (async)
 import UnliftIO.Exception (Exception)
@@ -105,8 +106,7 @@ data SMPClientAgent = SMPClientAgent
     smpSessions :: TMap SessionId SMPClient,
     srvSubs :: TMap SMPServer (TMap SMPSub C.APrivateAuthKey),
     pendingSrvSubs :: TMap SMPServer (TMap SMPSub C.APrivateAuthKey),
-    reconnections :: TVar [Async ()],
-    asyncClients :: TVar [Async ()],
+    smpSubWorkers :: TMap SMPServer (SessionVar (Async ())),
     workerSeq :: TVar Int
   }
 
@@ -143,8 +143,7 @@ newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg
   smpSessions <- TM.empty
   srvSubs <- TM.empty
   pendingSrvSubs <- TM.empty
-  reconnections <- newTVar []
-  asyncClients <- newTVar []
+  smpSubWorkers <- TM.empty
   workerSeq <- newTVar 0
   pure
     SMPClientAgent
@@ -156,8 +155,7 @@ newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg
         smpSessions,
         srvSubs,
         pendingSrvSubs,
-        reconnections,
-        asyncClients,
+        smpSubWorkers,
         workerSeq
       }
 
@@ -183,112 +181,130 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, 
         Nothing -> throwE PCEResponseTimeout
 
     newSMPClient :: SMPClientVar -> ExceptT SMPClientError IO SMPClient
-    newSMPClient v = tryConnectClient pure (liftIO tryConnectAsync)
+    newSMPClient v = do
+      -- FIXME: catchE misses IO errors
+      tryConnectClient `catchE` \e -> reconnectClient ca srv >> throwE e
       where
-        tryConnectClient :: (SMPClient -> ExceptT SMPClientError IO a) -> ExceptT SMPClientError IO () -> ExceptT SMPClientError IO a
-        tryConnectClient successAction retryAction =
-          tryE (connectClient v) >>= \r -> case r of
+        -- tryConnectClient :: (SMPClient -> ExceptT SMPClientError IO a) -> ExceptT SMPClientError IO () -> ExceptT SMPClientError IO a
+        tryConnectClient =
+          tryE (ExceptT connectClient) >>= \r -> case r of
             Right smp -> do
               logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
               atomically $ do
                 putTMVar (sessionVar v) (Right smp)
                 TM.insert (sessionId $ thParams smp) smp smpSessions
-              successAction smp
+              pure smp
             Left e -> do
-              if
-                | e == PCENetworkError || e == PCEResponseTimeout -> retryAction
-                | persistErrorInterval agentCfg == 0 -> do
-                    atomically $ do
-                      putTMVar (sessionVar v) (Left (e, Nothing))
-                      removeSessVar v srv smpClients
-                | otherwise -> do
-                    ts <- addUTCTime (persistErrorInterval agentCfg) <$> liftIO getCurrentTime
-                    atomically $ putTMVar (sessionVar v) (Left (e, Just ts))
+              -- XXX: no retryAction anymore, reconnects handled by reconnectClient
+              if persistErrorInterval agentCfg == 0 || e == PCENetworkError || e == PCEResponseTimeout
+                then atomically $ do
+                  putTMVar (sessionVar v) (Left (e, Nothing))
+                  removeSessVar v srv smpClients
+                else do
+                  ts <- addUTCTime (persistErrorInterval agentCfg) <$> liftIO getCurrentTime
+                  atomically $ putTMVar (sessionVar v) (Left (e, Just ts))
               throwE e
-        tryConnectAsync :: IO ()
-        tryConnectAsync = do
-          a <- async $ void $ runExceptT connectAsync
-          atomically $ modifyTVar' (asyncClients ca) (a :)
-        connectAsync :: ExceptT SMPClientError IO ()
-        connectAsync =
-          withRetryInterval (reconnectInterval agentCfg) $ \_ loop ->
-            void $ tryConnectClient (const reconnectClient) loop
 
-    connectClient :: SMPClientVar -> ExceptT SMPClientError IO SMPClient
-    connectClient v = ExceptT $ getProtocolClient randomDrg (1, srv, Nothing) (smpCfg agentCfg) (Just msgQ) (clientDisconnected v)
-
-    clientDisconnected :: SMPClientVar -> SMPClient -> IO ()
-    clientDisconnected v smp = do
-      removeClientAndSubs v smp >>= (`forM_` serverDown)
-      logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
-
-    removeClientAndSubs :: SMPClientVar -> SMPClient -> IO (Maybe (Map SMPSub C.APrivateAuthKey))
-    removeClientAndSubs v smp = atomically $ do
-      removeSessVar v srv smpClients
-      TM.delete (sessionId $ thParams smp) smpSessions
-      TM.lookupDelete srv (srvSubs ca) >>= mapM updateSubs
-      where
-        updateSubs sVar = do
-          ss <- readTVar sVar
-          addPendingSubs sVar ss
-          pure ss
-
-        addPendingSubs sVar ss = do
-          let ps = pendingSrvSubs ca
-          TM.lookup srv ps >>= \case
-            Just ss' -> TM.union ss ss'
-            _ -> TM.insert srv sVar ps
-
-    serverDown :: Map SMPSub C.APrivateAuthKey -> IO ()
-    serverDown ss = unless (M.null ss) $ do
-      notify . CADisconnected srv $ M.keysSet ss
-      reconnectServer
-
-    reconnectServer :: IO ()
-    reconnectServer = do
-      a <- async $ void $ runExceptT tryReconnectClient
-      atomically $ modifyTVar' (reconnections ca) (a :)
-
-    tryReconnectClient :: ExceptT SMPClientError IO ()
-    tryReconnectClient = do
-      withRetryInterval (reconnectInterval agentCfg) $ \_ loop ->
-        reconnectClient `catchE` const loop
-
-    reconnectClient :: ExceptT SMPClientError IO ()
-    reconnectClient = do
-      withSMP ca srv $ \smp -> do
-        liftIO $ notify $ CAReconnected srv
-        cs_ <- atomically $ mapM readTVar =<< TM.lookup srv (pendingSrvSubs ca)
-        forM_ cs_ $ \cs -> do
-          subs' <- filterM (fmap not . atomically . hasSub (srvSubs ca) srv . fst) $ M.assocs cs
-          let (nSubs, rSubs) = partition (isNotifier . fst . fst) subs'
-          subscribe_ smp SPNotifier nSubs
-          subscribe_ smp SPRecipient rSubs
-      where
-        isNotifier = \case
-          SPNotifier -> True
-          SPRecipient -> False
-
-        subscribe_ :: SMPClient -> SMPSubParty -> [(SMPSub, C.APrivateAuthKey)] -> ExceptT SMPClientError IO ()
-        subscribe_ smp party = mapM_ subscribeBatch . toChunks (agentSubsBatchSize agentCfg)
+        connectClient :: IO (Either SMPClientError SMPClient)
+        connectClient = getProtocolClient randomDrg (1, srv, Nothing) (smpCfg agentCfg) (Just msgQ) clientDisconnected
           where
-            subscribeBatch subs' = do
-              let subs'' :: (NonEmpty (QueueId, C.APrivateAuthKey)) = L.map (first snd) subs'
-              rs <- liftIO $ smpSubscribeQueues party ca smp srv subs''
-              let rs' :: (NonEmpty ((SMPSub, C.APrivateAuthKey), Either SMPClientError ())) =
-                    L.zipWith (first . const) subs' rs
-                  rs'' :: [Either (SMPSub, SMPClientError) (SMPSub, C.APrivateAuthKey)] =
-                    map (\(sub, r) -> bimap (fst sub,) (const sub) r) $ L.toList rs'
-                  (errs, oks) = partitionEithers rs''
-                  (tempErrs, finalErrs) = partition (temporaryClientError . snd) errs
-              mapM_ (atomically . addSubscription ca srv) oks
-              mapM_ (liftIO . notify . CAResubscribed srv) $ L.nonEmpty $ map fst oks
-              mapM_ (atomically . removePendingSubscription ca srv . fst) finalErrs
-              mapM_ (liftIO . notify . CASubError srv) $ L.nonEmpty finalErrs
-              mapM_ (throwE . snd) $ listToMaybe tempErrs
+            clientDisconnected :: SMPClient -> IO ()
+            clientDisconnected smp = do
+              removeClientAndSubs smp >>= (`forM_` serverDown)
+              logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
-    notify :: SMPClientAgentEvent -> IO ()
-    notify evt = atomically $ writeTBQueue (agentQ ca) evt
+            removeClientAndSubs :: SMPClient -> IO (Maybe (Map SMPSub C.APrivateAuthKey))
+            removeClientAndSubs smp = atomically $ do
+              removeSessVar v srv smpClients
+              TM.delete (sessionId $ thParams smp) smpSessions
+              TM.lookupDelete srv (srvSubs ca) >>= mapM updateSubs
+              where
+                updateSubs sVar = do
+                  ss <- readTVar sVar
+                  addPendingSubs sVar ss
+                  pure ss
+
+                addPendingSubs sVar ss = do
+                  let ps = pendingSrvSubs ca
+                  TM.lookup srv ps >>= \case
+                    Just ss' -> TM.union ss ss'
+                    _ -> TM.insert srv sVar ps
+
+            serverDown :: Map SMPSub C.APrivateAuthKey -> IO ()
+            serverDown ss = unless (M.null ss) $ do
+              notify ca . CADisconnected srv $ M.keysSet ss
+              void . runExceptT $ reconnectClient ca srv
+
+reconnectClient :: SMPClientAgent -> SMPServer -> ExceptT SMPClientError IO ()
+reconnectClient ca@SMPClientAgent {agentCfg, smpSubWorkers, workerSeq} srv =
+  atomically getWorkerVar >>= mapM_ (either newSubWorker (\_ -> pure ()))
+  where
+    getWorkerVar =
+      ifM
+        (null <$> getPending)
+        (pure Nothing) -- prevent race with cleanup and adding pending queues in another call
+        (Just <$> getSessVar workerSeq srv smpSubWorkers)
+    newSubWorker v = liftIO $ do
+      a <- async $ void (E.tryAny runSubWorker) >> atomically (cleanup v)
+      atomically $ putTMVar (sessionVar v) a
+    runSubWorker = do
+      timeoutCounts <- newTVarIO 0
+      withRetryInterval (reconnectInterval agentCfg) $ \_ loop -> do
+        pending <- atomically getPending
+        forM_ pending $ \cs -> do
+          void . runExceptT $ reconnectSMPClient timeoutCounts ca srv cs
+          loop
+    getPending = mapM readTVar =<< TM.lookup srv (pendingSrvSubs ca)
+    cleanup :: SessionVar (Async ()) -> STM ()
+    cleanup v = do
+      -- Here we wait until TMVar is not empty to prevent worker cleanup happening before worker is added to TMVar.
+      -- Not waiting may result in terminated worker remaining in the map.
+      whenM (isEmptyTMVar $ sessionVar v) retry
+      removeSessVar v srv smpSubWorkers
+
+reconnectSMPClient :: TVar Int -> SMPClientAgent -> SMPServer -> Map SMPSub C.APrivateAuthKey -> ExceptT SMPClientError IO ()
+reconnectSMPClient tc ca@SMPClientAgent {agentCfg} srv cs =
+  ExceptT (sequence <$> (tcpConnectTimeout `timeout` runExceptT (getSMPServerClient' ca srv))) >>= \case
+    Nothing -> do
+      -- TODO: configure and make a proper error
+      tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
+      when (tc' >= maxSubscriptionTimeouts) $ do
+        logError $ tshow tc' <> " consecutive subscription timeouts for " <> tshow srv
+        notify ca . CADisconnected srv $ M.keysSet cs
+    Just smp -> do
+      atomically $ writeTVar tc 0
+      notify ca $ CAReconnected srv
+      subs' <- filterM (fmap not . atomically . hasSub (srvSubs ca) srv . fst) $ M.assocs cs
+      let (nSubs, rSubs) = partition (isNotifier . fst . fst) subs'
+      subscribe_ smp SPNotifier nSubs
+      subscribe_ smp SPRecipient rSubs
+  where
+    ProtocolClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} = smpCfg agentCfg
+    maxSubscriptionTimeouts = 5
+    isNotifier = \case
+      SPNotifier -> True
+      SPRecipient -> False
+    subscribe_ :: SMPClient -> SMPSubParty -> [(SMPSub, C.APrivateAuthKey)] -> ExceptT SMPClientError IO ()
+    subscribe_ smp party = mapM_ subscribeBatch . toChunks (agentSubsBatchSize agentCfg)
+      where
+        subscribeBatch subs' = do
+          let subs'' :: (NonEmpty (QueueId, C.APrivateAuthKey)) = L.map (first snd) subs'
+          rs <- liftIO $ smpSubscribeQueues party ca smp srv subs''
+          let rs' :: (NonEmpty ((SMPSub, C.APrivateAuthKey), Either SMPClientError ())) =
+                L.zipWith (first . const) subs' rs
+              rs'' :: [Either (SMPSub, SMPClientError) (SMPSub, C.APrivateAuthKey)] =
+                map (\(sub, r) -> bimap (fst sub,) (const sub) r) $ L.toList rs'
+              (errs, oks) = partitionEithers rs''
+              (tempErrs, finalErrs) = partition (temporaryClientError . snd) errs
+          mapM_ (atomically . addSubscription ca srv) oks
+          mapM_ (notify ca . CAResubscribed srv) $ L.nonEmpty $ map fst oks
+          mapM_ (atomically . removePendingSubscription ca srv . fst) finalErrs
+          mapM_ (notify ca . CASubError srv) $ L.nonEmpty finalErrs
+          mapM_ (throwE . snd) $ listToMaybe tempErrs
+
+notify :: MonadIO m => SMPClientAgent -> SMPClientAgentEvent -> m ()
+notify ca evt = atomically $ writeTBQueue (agentQ ca) evt
+{-# INLINE notify #-}
 
 lookupSMPServerClient :: SMPClientAgent -> SessionId -> STM (Maybe SMPClient)
 lookupSMPServerClient SMPClientAgent {smpSessions} sessId = TM.lookup sessId smpSessions
@@ -296,8 +312,10 @@ lookupSMPServerClient SMPClientAgent {smpSessions} sessId = TM.lookup sessId smp
 closeSMPClientAgent :: SMPClientAgent -> IO ()
 closeSMPClientAgent c = do
   closeSMPServerClients c
-  cancelActions $ reconnections c
-  cancelActions $ asyncClients c
+  atomically (swapTVar (smpSubWorkers c) M.empty) >>= mapM_ cancelReconnect
+  where
+    cancelReconnect :: SessionVar (Async ()) -> IO ()
+    cancelReconnect v = void . forkIO $ atomically (readTMVar $ sessionVar v) >>= uninterruptibleCancel
 
 closeSMPServerClients :: SMPClientAgent -> IO ()
 closeSMPServerClients c = atomically (smpClients c `swapTVar` M.empty) >>= mapM_ (forkIO . closeClient)
