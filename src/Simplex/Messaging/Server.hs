@@ -69,7 +69,7 @@ import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), forwardSMPMessage, smpProxyError)
-import Simplex.Messaging.Client.Agent (SMPClientAgent (..), SMPClientAgentEvent (..), getSMPServerClient', lookupSMPServerClient)
+import Simplex.Messaging.Client.Agent (SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient', lookupSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -136,7 +136,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         : receiveFromProxyAgent pa
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
-    `finally` withLock' (savingLock s) "final" (saveServer False)
+    `finally` withLock' (savingLock s) "final" (saveServer False >> closeServer)
   where
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
@@ -149,6 +149,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 
     saveServer :: Bool -> M ()
     saveServer keepMsgs = withLog closeStoreLog >> saveServerMessages keepMsgs >> saveServerStats
+
+    closeServer :: M ()
+    closeServer = asks (smpAgent . proxyAgent) >>= liftIO . closeSMPClientAgent
 
     serverThread ::
       forall s.
