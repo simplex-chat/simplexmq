@@ -158,8 +158,9 @@ newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg
         workerSeq
       }
 
+-- | Get or create SMP client for SMPServer
 getSMPServerClient' :: SMPClientAgent -> SMPServer -> ExceptT SMPClientError IO SMPClient
-getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, randomDrg, workerSeq} srv =
+getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, workerSeq} srv =
   atomically getClientVar >>= either (ExceptT . newSMPClient) waitForSMPClient
   where
     getClientVar :: STM (Either SMPClientVar SMPClientVar)
@@ -181,7 +182,7 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, 
 
     newSMPClient :: SMPClientVar -> IO (Either SMPClientError SMPClient)
     newSMPClient v = do
-      r <- connectClient `E.catch` (pure . Left . PCEIOError)
+      r <- connectClient ca srv v `E.catch` (pure . Left . PCEIOError)
       case r of
         Right smp -> do
           logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
@@ -199,36 +200,38 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, 
               atomically $ putTMVar (sessionVar v) (Left (e, Just ts))
           reconnectClient ca srv
       pure r
+
+-- | Run an SMP client for SMPClientVar
+connectClient :: SMPClientAgent -> SMPServer -> SMPClientVar -> IO (Either SMPClientError SMPClient)
+connectClient ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, randomDrg} srv v =
+  getProtocolClient randomDrg (1, srv, Nothing) (smpCfg agentCfg) (Just msgQ) clientDisconnected
+  where
+    clientDisconnected :: SMPClient -> IO ()
+    clientDisconnected smp = do
+      removeClientAndSubs smp >>= (`forM_` serverDown)
+      logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
+
+    removeClientAndSubs :: SMPClient -> IO (Maybe (Map SMPSub C.APrivateAuthKey))
+    removeClientAndSubs smp = atomically $ do
+      removeSessVar v srv smpClients
+      TM.delete (sessionId $ thParams smp) smpSessions
+      TM.lookupDelete srv (srvSubs ca) >>= mapM updateSubs
       where
-        connectClient :: IO (Either SMPClientError SMPClient)
-        connectClient = getProtocolClient randomDrg (1, srv, Nothing) (smpCfg agentCfg) (Just msgQ) clientDisconnected
-          where
-            clientDisconnected :: SMPClient -> IO ()
-            clientDisconnected smp = do
-              removeClientAndSubs smp >>= (`forM_` serverDown)
-              logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
+        updateSubs sVar = do
+          ss <- readTVar sVar
+          addPendingSubs sVar ss
+          pure ss
 
-            removeClientAndSubs :: SMPClient -> IO (Maybe (Map SMPSub C.APrivateAuthKey))
-            removeClientAndSubs smp = atomically $ do
-              removeSessVar v srv smpClients
-              TM.delete (sessionId $ thParams smp) smpSessions
-              TM.lookupDelete srv (srvSubs ca) >>= mapM updateSubs
-              where
-                updateSubs sVar = do
-                  ss <- readTVar sVar
-                  addPendingSubs sVar ss
-                  pure ss
+        addPendingSubs sVar ss = do
+          let ps = pendingSrvSubs ca
+          TM.lookup srv ps >>= \case
+            Just ss' -> TM.union ss ss'
+            _ -> TM.insert srv sVar ps
 
-                addPendingSubs sVar ss = do
-                  let ps = pendingSrvSubs ca
-                  TM.lookup srv ps >>= \case
-                    Just ss' -> TM.union ss ss'
-                    _ -> TM.insert srv sVar ps
-
-            serverDown :: Map SMPSub C.APrivateAuthKey -> IO ()
-            serverDown ss = unless (M.null ss) $ do
-              notify ca . CADisconnected srv $ M.keysSet ss
-              reconnectClient ca srv
+    serverDown :: Map SMPSub C.APrivateAuthKey -> IO ()
+    serverDown ss = unless (M.null ss) $ do
+      notify ca . CADisconnected srv $ M.keysSet ss
+      reconnectClient ca srv
 
 -- | Spawn reconnect worker if needed
 reconnectClient :: SMPClientAgent -> SMPServer -> IO ()
