@@ -113,6 +113,7 @@ cfg =
       serverStatsLogFile = "tests/smp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
       rateStatsInterval = Nothing,
+      rateStatsLength = 0,
       rateStatsLogFile = "",
       rateStatsBackupFile = Nothing,
       caCertificateFile = "tests/fixtures/ca.crt",

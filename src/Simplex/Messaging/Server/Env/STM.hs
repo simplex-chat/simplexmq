@@ -32,7 +32,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
-import Simplex.Messaging.Server.Stats.Client (ClientStats, ClientStatsId)
+import Simplex.Messaging.Server.Stats.Client (ClientStats, ClientStatsC, ClientStatsId)
 import Simplex.Messaging.Server.Stats.Timeline (Timeline, newTimeline, perMinute)
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
@@ -76,6 +76,8 @@ data ServerConfig = ServerConfig
     serverStatsBackupFile :: Maybe FilePath,
     -- | rate limit monitoring interval / bucket width, seconds
     rateStatsInterval :: Maybe Int64,
+    -- | number of rate limit samples to keep
+    rateStatsLength :: Int,
     rateStatsLogFile :: FilePath,
     rateStatsBackupFile :: Maybe FilePath,
     -- | CA certificate private key is not needed for initialization
@@ -124,6 +126,7 @@ data Env = Env
     clientStats :: TVar (IntMap ClientStats), -- transitive session stats
     statsClients :: TVar (IntMap ClientStatsId), -- reverse index from sockets
     sendSignedClients :: TMap RecipientId (TVar ClientStatsId), -- reverse index from queues to their senders
+    serverRates :: TVar [ClientStatsC (Distribution (Maybe Int))], -- current (head) + historical distributions extracted from clientStats for logging and assessing ClientStatsData deviations
     sockets :: SocketState,
     clientSeq :: TVar ClientId,
     clients :: TVar (IntMap Client),
@@ -219,7 +222,8 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   clientStats <- newTVarIO mempty
   statsClients <- newTVarIO mempty
   sendSignedClients <- newTVarIO mempty
-  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent, qCreatedByIp, msgSentByIp, clientStats, statsClients, sendSignedClients}
+  serverRates <- newTVarIO mempty
+  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent, qCreatedByIp, msgSentByIp, clientStats, statsClients, sendSignedClients, serverRates}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do

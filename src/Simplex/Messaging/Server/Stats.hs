@@ -1,5 +1,5 @@
-{-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -19,6 +19,7 @@ import Data.List (find)
 import Data.Maybe (listToMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
+import Data.String (IsString)
 import Data.Time.Calendar.Month (pattern MonthDay)
 import Data.Time.Calendar.OrdinalDate (mondayStartWeek)
 import Data.Time.Clock (UTCTime (..))
@@ -248,16 +249,17 @@ histogram = Histogram . IM.fromListWith (+) . map (,1) . toList
 {-# INLINE histogram #-}
 
 distribution :: Histogram -> Distribution (Maybe Int)
-distribution h = Distribution
-  { minimal = fst <$> listToMaybe cdf',
-    bottom50p = bot 0.5, -- std median
-    top50p = top 0.5,
-    top20p = top 0.2,
-    top10p = top 0.1,
-    top5p = top 0.05,
-    top1p = top 0.01,
-    maximal = fst <$> listToMaybe rcdf'
-  }
+distribution h =
+  Distribution
+    { minimal = fst <$> listToMaybe cdf',
+      bottom50p = bot 0.5, -- std median
+      top50p = top 0.5,
+      top20p = top 0.2,
+      top10p = top 0.1,
+      top5p = top 0.05,
+      top1p = top 0.01,
+      maximal = fst <$> listToMaybe rcdf'
+    }
   where
     bot p = fmap fst $ find (\(_, p') -> p' >= p) cdf'
     top p = fmap fst $ find (\(_, p') -> p' <= 1 - p) rcdf'
@@ -281,4 +283,17 @@ data Distribution a = Distribution
     top1p :: a,
     maximal :: a
   }
-  deriving (Show, Functor, Foldable)
+  deriving (Show, Functor, Foldable, Traversable)
+
+distributionLabels :: IsString a => Distribution a
+distributionLabels =
+  Distribution
+    { minimal = "minimal",
+      bottom50p = "bottom50p",
+      top50p = "top50p",
+      top20p = "top20p",
+      top10p = "top10p",
+      top5p = "top5p",
+      top1p = "top1p",
+      maximal = "maximal"
+    }

@@ -61,7 +61,7 @@ import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Set (Set)
 import qualified Data.Set as S
-import Data.Maybe (isNothing)
+import Data.Maybe (isNothing, listToMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
@@ -96,12 +96,13 @@ import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Exit (exitFailure)
+import System.FilePath (takeDirectory)
 import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (timeout)
 import UnliftIO.Async (mapConcurrently)
 import UnliftIO.Concurrent
-import UnliftIO.Directory (doesFileExist, renameFile)
+import UnliftIO.Directory (createDirectoryIfMissing, doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.IO
 import UnliftIO.STM
@@ -230,9 +231,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     serverStatsThread_ _ = []
 
     rateStatsThread_ :: ServerConfig -> [M ()]
-    rateStatsThread_ ServerConfig {rateStatsInterval = Just bucketWidth, logStatsInterval = Just logInterval, logStatsStartTime, rateStatsLogFile} =
-      [ monitorServerRates (bucketWidth * 1000000), -- roll windows, collect counters, runs at a faster rate so the measurements can be used for online anomaly detection
-        logServerRates logStatsStartTime logInterval rateStatsLogFile -- log distributions once in a while
+    rateStatsThread_ ServerConfig {rateStatsLength = nBuckets, rateStatsInterval = Just bucketWidth, logStatsInterval = Just logInterval, logStatsStartTime, rateStatsLogFile} =
+      [ monitorServerRates nBuckets (bucketWidth * 1000000), -- roll windows, collect counters, runs at a faster rate so the measurements can be used for online anomaly detection
+        logServerRates logStatsStartTime logInterval rateStatsLogFile -- log current distributions once in a while
       ]
     rateStatsThread_ _ = []
 
@@ -288,17 +289,19 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               ]
         liftIO $ threadDelay' interval
 
-    monitorServerRates :: Int64 -> M ()
-    monitorServerRates bucketWidth = do
+    monitorServerRates :: Int -> Int64 -> M ()
+    monitorServerRates nBuckets bucketWidth = do
       labelMyThread "monitorServerRates"
       stats' <- asks clientStats
+      rates' <- asks serverRates
       liftIO . forever $ do
         -- now <- getCurrentTime
         -- TODO: calculate delay for the next bucket closing time
         threadDelay' bucketWidth
         -- TODO: collect and reset buckets
         stats <- readTVarIO stats' >>= mapM (CS.readClientStatsData readTVarIO)
-        logNote . tshow $ fmap (distribution . histogram) $ collect stats
+        let !rates = distribution . histogram <$> collect stats
+        atomically . modifyTVar' rates' $ (rates :) . take nBuckets
       where
         collect :: IntMap CS.ClientStatsData -> CS.ClientStatsC (IntMap Int)
         collect stats = IM.foldlWithKey' toColumns (CS.clientStatsC IM.empty) stats
@@ -324,13 +327,26 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     logServerRates :: Int64 -> Int64 -> FilePath -> M ()
     logServerRates startAt logInterval statsFilePath = do
       labelMyThread "logServerStats"
+      liftIO . unlessM (doesFileExist statsFilePath) $ do
+        createDirectoryIfMissing True (takeDirectory statsFilePath)
+        B.writeFile statsFilePath $ B.intercalate "," csvLabels <> "\n"
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server rates log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
       let interval = 1000000 * logInterval
-      forever $ do
+      rates' <- asks serverRates
+      liftIO . forever $ do
         -- write the thing
-        liftIO $ threadDelay' interval
+        threadDelay' interval
+        rates <- readTVarIO rates'
+        forM_ (listToMaybe rates) $ \cs -> do
+          ts <- getCurrentTime
+          let values = concatMap (concatMap $ pure . maybe "0" bshow) cs
+          withFile statsFilePath AppendMode $ \h -> liftIO $ do
+            hSetBuffering h LineBuffering
+            B.hPut h $ B.intercalate "," (strEncode ts : values) <> "\n"
+      where
+        csvLabels = "ts" : concatMap (\s -> concatMap (\d -> [s <> "." <> d]) distributionLabels) CS.clientStatsLabels
 
     runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
     runClient signKey tp h = do

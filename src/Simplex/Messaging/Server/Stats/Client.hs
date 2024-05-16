@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -12,6 +13,7 @@ module Simplex.Messaging.Server.Stats.Client where
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
 import Data.Set (Set)
+import Data.String (IsString)
 import Data.Time.Clock (UTCTime (..))
 import Simplex.Messaging.Protocol (RecipientId)
 import Simplex.Messaging.Transport (PeerId)
@@ -158,19 +160,36 @@ data ClientStatsC a = ClientStatsC
     proxyRelaysConnectedC :: a,
     msgSentViaProxyC :: a
   }
-  deriving (Show, Functor)
+  deriving (Show, Functor, Foldable, Traversable)
 
 clientStatsC :: a -> ClientStatsC a
-clientStatsC x = ClientStatsC
-  { peerAddressesC = x,
-    socketCountC = x,
-    qCreatedC = x,
-    qSentSignedC = x,
-    msgSentSignedC = x,
-    msgSentUnsignedC = x,
-    msgDeliveredSignedC = x,
-    proxyRelaysRequestedC = x,
-    proxyRelaysConnectedC = x,
-    msgSentViaProxyC = x
-  }
+clientStatsC x =
+  ClientStatsC
+    { peerAddressesC = x,
+      socketCountC = x,
+      qCreatedC = x,
+      qSentSignedC = x,
+      msgSentSignedC = x,
+      msgSentUnsignedC = x,
+      msgDeliveredSignedC = x,
+      proxyRelaysRequestedC = x,
+      proxyRelaysConnectedC = x,
+      msgSentViaProxyC = x
+    }
 {-# INLINE clientStatsC #-}
+
+clientStatsLabels :: IsString a => ClientStatsC a
+clientStatsLabels =
+  ClientStatsC
+    { peerAddressesC = "peerAddresses",
+      socketCountC = "socketCount",
+      qCreatedC = "qCreated",
+      qSentSignedC = "qSentSigned",
+      msgSentSignedC = "msgSentSigned",
+      msgSentUnsignedC = "msgSentUnsigned",
+      msgDeliveredSignedC = "msgDeliveredSigned",
+      proxyRelaysRequestedC = "proxyRelaysRequested",
+      proxyRelaysConnectedC = "proxyRelaysConnected",
+      msgSentViaProxyC = "msgSentViaProxy"
+    }
+{-# INLINE clientStatsLabels #-}
