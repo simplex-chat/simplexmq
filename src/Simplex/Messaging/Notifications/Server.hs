@@ -98,7 +98,9 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
     stopServer = do
       withNtfLog closeStoreLog
       saveServerStats
-      asks (smpSubscribers . subscriber) >>= readTVarIO >>= mapM_ (\SMPSubscriber {subThreadId} -> readTVarIO subThreadId >>= mapM_ (liftIO . deRefWeak >=> mapM_ killThread))
+      NtfSubscriber {smpSubscribers, smpAgent} <- asks subscriber
+      liftIO $ readTVarIO smpSubscribers >>= mapM_ (\SMPSubscriber {subThreadId} -> readTVarIO subThreadId >>= mapM_ (deRefWeak >=> mapM_ killThread))
+      liftIO $ closeSMPClientAgent smpAgent
 
     serverStatsThread_ :: NtfServerConfig -> [M ()]
     serverStatsThread_ NtfServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -239,14 +241,14 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     receiveAgent =
       forever $
         atomically (readTBQueue agentQ) >>= \case
-          CAConnected _ -> pure ()
+          CAConnected srv ->
+            logInfo $ "SMP server reconnected " <> showServer' srv
           CADisconnected srv subs -> do
             logSubStatus srv "disconnected" $ length subs
             forM_ subs $ \(_, ntfId) -> do
               let smpQueue = SMPQueueNtf srv ntfId
               updateSubStatus smpQueue NSInactive
-          CAReconnected srv ->
-            logInfo $ "SMP server reconnected " <> showServer' srv
+
           CAResubscribed srv subs -> do
             forM_ subs $ \(_, ntfId) -> updateSubStatus (SMPQueueNtf srv ntfId) NSActive
             logSubStatus srv "resubscribed" $ length subs
