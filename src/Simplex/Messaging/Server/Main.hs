@@ -247,7 +247,8 @@ smpServerCLI cfgPath logPath =
                                 hostMode = either (const HMPublic) textToHostMode $ lookupValue "PROXY" "host_mode" ini,
                                 requiredHostMode = fromMaybe False $ iniOnOff "PROXY" "required_host_mode" ini
                               }
-                        }
+                        },
+                    persistErrorInterval = 30 -- seconds
                   },
               allowSMPProxy = True
             }
