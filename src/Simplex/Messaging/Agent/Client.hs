@@ -103,8 +103,6 @@ module Simplex.Messaging.Agent.Client
     waitUntilActive,
     UserNetworkInfo (..),
     UserNetworkType (..),
-    UserNetworkState (..),
-    UNSOffline (..),
     getUserNetworkBroadcast,
     waitForUserNetwork,
     isNetworkOnline,
@@ -140,7 +138,7 @@ where
 
 import Control.Applicative ((<|>))
 import Control.Concurrent (ThreadId, forkIO, threadDelay)
-import Control.Concurrent.Async (Async, race, uninterruptibleCancel)
+import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (retry, throwSTM)
 import Control.Exception (AsyncException (..), BlockedIndefinitelyOnSTM (..))
 import Control.Logger.Simple
@@ -157,7 +155,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (lefts, partitionEithers)
 import Data.Functor (($>))
-import Data.Int (Int64)
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
@@ -168,7 +165,7 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Text.Encoding
-import Data.Time (UTCTime, defaultTimeLocale, diffUTCTime, formatTime, getCurrentTime)
+import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
 import Network.Socket (HostName)
@@ -271,7 +268,6 @@ data AgentClient = AgentClient
     xftpServers :: TMap UserId (NonEmpty XFTPServerWithAuth),
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
     useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
-    -- userNetworkState :: TVar UserNetworkState,
     userNetworkInfo :: TVar UserNetworkInfo,
     userNetworkBroadcast :: TChan (),
     subscrConns :: TVar (Set ConnId),
@@ -419,15 +415,6 @@ isOnline UserNetworkInfo {networkType, online} = networkType /= UNNone && online
 data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
-data UserNetworkState = UserNetworkState
-  { networkType :: UserNetworkType,
-    offline :: Maybe UNSOffline
-  }
-  deriving (Show)
-
-data UNSOffline = UNSOffline {offlineDelay :: Int64, offlineFrom :: UTCTime}
-  deriving (Show)
-
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 newAgentClient :: Int -> InitialAgentServers -> Env -> STM AgentClient
 newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
@@ -444,7 +431,6 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   xftpServers <- newTVar xftp
   xftpClients <- TM.empty
   useNetworkConfig <- newTVar (slowNetworkConfig netCfg, netCfg)
-  -- userNetworkState <- newTVar $ UserNetworkState UNOther Nothing
   userNetworkInfo <- newTVar $ UserNetworkInfo UNOther True
   userNetworkBroadcast <- newBroadcastTChan
   subscrConns <- newTVar S.empty
@@ -481,7 +467,6 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         xftpServers,
         xftpClients,
         useNetworkConfig,
-        -- userNetworkState,
         userNetworkInfo,
         userNetworkBroadcast,
         subscrConns,
@@ -645,18 +630,17 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
   -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
   let t = (length qs `div` 90 + 1) * tcpTimeout * 3
   ExceptT (sequence <$> (t `timeout` runExceptT resubscribe)) >>= \case
-    Just _ -> atomically $ writeTVar tc 0
-    Nothing ->
-      atomically (isNetworkOnline c) >>= \case
-        -- reset and do not report consecutive timeouts while offline
-        False -> atomically $ writeTVar tc 0
-        True -> do
-          tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
-          maxTC <- asks $ maxSubscriptionTimeouts . config
-          when (tc' >= maxTC) $ do
-            let msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
-            atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ INTERNAL msg)
+    Just _ -> resetTimeouts
+    -- reset and do not report consecutive timeouts while offline
+    Nothing -> ifM (atomically $ isNetworkOnline c) notifyTimeout resetTimeouts
   where
+    resetTimeouts = atomically $ writeTVar tc 0
+    notifyTimeout = do
+      tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
+      maxTC <- asks $ maxSubscriptionTimeouts . config
+      when (tc' >= maxTC) $ do
+        let msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
+        atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ INTERNAL msg)
     resubscribe :: AM ()
     resubscribe = do
       cs <- readTVarIO $ RQ.getConnections $ activeSubs c
@@ -766,7 +750,7 @@ getClientConfig c cfgSel = do
 getNetworkConfig :: AgentClient -> STM NetworkConfig
 getNetworkConfig c = do
   (slowCfg, fastCfg) <- readTVar (useNetworkConfig c)
-  UserNetworkInfo {networkType} <- readTVar (userNetworkInfo c)
+  UserNetworkInfo {networkType} <- readTVar $ userNetworkInfo c
   pure $ case networkType of
     UNCellular -> slowCfg
     UNNone -> slowCfg

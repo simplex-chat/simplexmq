@@ -431,12 +431,11 @@ getNetworkConfig = fmap snd . readTVarIO . useNetworkConfig
 {-# INLINE getNetworkConfig #-}
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()
-setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkBroadcast} ni' = withAgentEnv' c $ do
-  let nowOnline = isOnline ni'
+setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkBroadcast} netInfo = withAgentEnv' c $ do
+  let nowOnline = isOnline netInfo
   wasOnline <-
     atomically $ do
-      ni <- swapTVar userNetworkInfo ni'
-      let wasOnline = isOnline ni
+      wasOnline <- isOnline <$> swapTVar userNetworkInfo netInfo
       when (nowOnline && not wasOnline) $ writeTChan userNetworkBroadcast ()
       pure wasOnline
   when (not nowOnline && wasOnline) $ do
@@ -456,10 +455,6 @@ setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkBroadcast} ni' = w
               unless (expired || online) retry
               writeTChan userNetworkBroadcast ()
               pure online
-          -- ifM
-          --   (readTVar delay)
-          --   (broadcast $> True)
-          --   (ifM (isNetworkOnline c) (broadcast $> False) retry)
           unless online $
             let elapsed' = elapsed + d
              in loop elapsed' $ nextRetryDelay elapsed' d ni
