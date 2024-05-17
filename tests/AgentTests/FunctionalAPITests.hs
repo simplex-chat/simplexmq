@@ -2752,12 +2752,16 @@ testResumeMultipleThreads = do
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNNone False
   print 1
+  block <- newTVarIO False
   vs <-
-    replicateM 30000 $ do
+    replicateM 70000 $ do
       v <- newEmptyTMVarIO
-      void . forkIO $ waitNetwork a >>= atomically . putTMVar v
+      void . forkIO $ do
+        atomically $ unlessM (readTVar block) retry
+        waitNetwork a >>= atomically . putTMVar v
       pure v
-  threadDelay 1000000
+  atomically $ writeTVar block True
+  threadDelay 1100000
   print 2
   setUserNetworkInfo a $ UserNetworkInfo UNCellular True
   print 3
