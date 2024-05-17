@@ -858,19 +858,19 @@ waitForUserNetwork :: AgentClient -> AM' ()
 waitForUserNetwork AgentClient {userNetworkState} =
   readTVarIO userNetworkState >>= mapM_ waitWhileOffline . offline
   where
-    waitWhileOffline UNSOffline {offlineDelay = d} = liftIO $ waitOnline d False
-      -- unlessM (liftIO $ waitOnline d False) $ do
-      --   -- network delay reached, increase delay
-      --   ts' <- liftIO getCurrentTime
-      --   ni <- asks $ userNetworkInterval . config
-      --   atomically $ do
-      --     ns@UserNetworkState {offline} <- readTVar userNetworkState
-      --     forM_ offline $ \UNSOffline {offlineDelay = d', offlineFrom = ts} ->
-      --       -- Using `min` to avoid multiple updates in a short period of time
-      --       -- and to reset `offlineDelay` if network went `on` and `off` again.
-      --       writeTVar userNetworkState $!
-      --         let d'' = nextRetryDelay (diffToMicroseconds $ diffUTCTime ts' ts) (min d d') ni
-      --          in ns {offline = Just UNSOffline {offlineDelay = d'', offlineFrom = ts}}
+    waitWhileOffline UNSOffline {offlineDelay = d} =
+      unlessM (liftIO $ waitOnline d False) $ do
+        -- network delay reached, increase delay
+        ts' <- liftIO getCurrentTime
+        ni <- asks $ userNetworkInterval . config
+        atomically $ do
+          ns@UserNetworkState {offline} <- readTVar userNetworkState
+          forM_ offline $ \UNSOffline {offlineDelay = d', offlineFrom = ts} ->
+            -- Using `min` to avoid multiple updates in a short period of time
+            -- and to reset `offlineDelay` if network went `on` and `off` again.
+            writeTVar userNetworkState $!
+              let d'' = nextRetryDelay (diffToMicroseconds $ diffUTCTime ts' ts) (min d d') ni
+               in ns {offline = Just UNSOffline {offlineDelay = d'', offlineFrom = ts}}
     waitOnline :: Int64 -> Bool -> IO Bool
     waitOnline _ True = pure True
     waitOnline t online'

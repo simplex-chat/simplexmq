@@ -441,9 +441,9 @@ functionalAPITests t = do
   describe "user network info" $ do
     it "should wait for user network" testWaitForUserNetwork
     it "should not reset offline interval while offline" testDoNotResetOfflineInterval
-    it "should resume multiple threads" testResumeMultipleThreads
+    fit "should resume multiple threads" testResumeMultipleThreads
     it "block threads on TVar retry" testBlockThreads
-    fit "block threads on TChan" testTChan
+    it "block threads on TChan" testTChan
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -2753,33 +2753,34 @@ testResumeMultipleThreads = do
   setUserNetworkInfo a $ UserNetworkInfo UNNone False
   print 1
   vs <-
-    replicateM 70000 $ do
+    replicateM 30000 $ do
       v <- newEmptyTMVarIO
       void . forkIO $ waitNetwork a >>= atomically . putTMVar v
       pure v
+  threadDelay 1000000
   print 2
   setUserNetworkInfo a $ UserNetworkInfo UNCellular True
   print 3
-  ts <- mapConcurrently (atomically . readTMVar) vs
+  ts <- mapM (atomically . readTMVar) vs
   print $ minimum ts
   print $ maximum ts
   print $ sum ts `div` fromIntegral (length ts)
   where
-    aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 3600_000_000, increaseAfter = 0, maxInterval = 3600_000_000}}
+    aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 1_000_000, increaseAfter = 0, maxInterval = 3600_000_000}}
 
 testBlockThreads :: IO ()
 testBlockThreads = do
   sharedFlag <- atomically $ newTVar False
   print 1
   vs <-
-    replicateM 250000 $ do
+    replicateM 100000 $ do
       v <- newEmptyTMVarIO
       void . forkIO $ blockThread sharedFlag 1000_000_000 >>= atomically . putTMVar v
       pure v
   print 2
   atomically $ writeTVar sharedFlag True
   print 3
-  ts <- mapConcurrently (atomically . readTMVar) vs
+  ts <- mapM (atomically . readTMVar) vs
   print $ minimum ts
   print $ maximum ts
   print $ sum ts `div` fromIntegral (length ts)
@@ -2812,7 +2813,7 @@ testTChan = do
   print 2
   atomically $ writeTChan chan ()
   print 3
-  ts <- mapConcurrently (atomically . readTMVar) vs
+  ts <- mapM (atomically . readTMVar) vs
   print $ minimum ts
   print $ maximum ts
   print $ sum ts `div` fromIntegral (length ts)
