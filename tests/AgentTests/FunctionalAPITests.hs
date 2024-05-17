@@ -93,7 +93,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ATransport (..), SMPVersion, VersionSMP, authCmdsSMPVersion, basicAuthSMPVersion, batchCmdsSMPVersion, currentServerSMPRelayVersion, supportedSMPHandshakes)
-import Simplex.Messaging.Util (diffToMicroseconds, whenM)
+import Simplex.Messaging.Util (diffToMicroseconds, ifM, unlessM, whenM)
 import Simplex.Messaging.Version (VersionRange (..))
 import qualified Simplex.Messaging.Version as V
 import Simplex.Messaging.Version.Internal (Version (..))
@@ -441,7 +441,9 @@ functionalAPITests t = do
   describe "user network info" $ do
     it "should wait for user network" testWaitForUserNetwork
     it "should not reset offline interval while offline" testDoNotResetOfflineInterval
-    fit "should resume multiple threads" testResumeMultipleThreads
+    it "should resume multiple threads" testResumeMultipleThreads
+    it "block threads on TVar retry" testBlockThreads
+    fit "block threads on TChan" testTChan
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -2759,13 +2761,69 @@ testResumeMultipleThreads = do
   setUserNetworkInfo a $ UserNetworkInfo UNCellular True
   print 3
   ts <- mapConcurrently (atomically . readTMVar) vs
-  print 4
-  print $ length ts
   print $ minimum ts
   print $ maximum ts
   print $ sum ts `div` fromIntegral (length ts)
   where
     aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 3600_000_000, increaseAfter = 0, maxInterval = 3600_000_000}}
+
+testBlockThreads :: IO ()
+testBlockThreads = do
+  sharedFlag <- atomically $ newTVar False
+  print 1
+  vs <-
+    replicateM 250000 $ do
+      v <- newEmptyTMVarIO
+      void . forkIO $ blockThread sharedFlag 1000_000_000 >>= atomically . putTMVar v
+      pure v
+  print 2
+  atomically $ writeTVar sharedFlag True
+  print 3
+  ts <- mapConcurrently (atomically . readTMVar) vs
+  print $ minimum ts
+  print $ maximum ts
+  print $ sum ts `div` fromIntegral (length ts)
+  where
+    blockThread :: TVar Bool -> Int -> IO Int64
+    blockThread sharedFlag delay = do
+      -- timer <- registerDelay delay
+      t <- getCurrentTime
+      atomically $ do
+        -- flag <- readTVar sharedFlag
+        -- expired <- readTVar timer
+        -- unless (flag || expired) retry
+        -- ifM
+        --   (readTVar timer)
+        --   (pure ())
+        --   (unlessM (readTVar sharedFlag) retry)
+        unlessM (readTVar sharedFlag) retry
+      t' <- getCurrentTime
+      pure $ diffToMicroseconds $ diffUTCTime t' t
+
+testTChan :: IO ()
+testTChan = do
+  chan :: TChan () <- atomically newBroadcastTChan
+  print 1
+  vs <-
+    replicateM 200000 $ do
+      v <- newEmptyTMVarIO
+      void . forkIO $ blockThread chan >>= atomically . putTMVar v
+      pure v
+  print 2
+  atomically $ writeTChan chan ()
+  print 3
+  ts <- mapConcurrently (atomically . readTMVar) vs
+  print $ minimum ts
+  print $ maximum ts
+  print $ sum ts `div` fromIntegral (length ts)
+  where
+    blockThread :: TChan () -> IO Int64
+    blockThread chan = do
+      t <- getCurrentTime
+      chan' <- atomically $ dupTChan chan
+      atomically $ readTChan chan'
+      t' <- getCurrentTime
+      pure $ diffToMicroseconds $ diffUTCTime t' t
 
 noNetworkDelay :: AgentClient -> IO ()
 noNetworkDelay a = (10000 >) <$> waitNetwork a `shouldReturn` True
