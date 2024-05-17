@@ -429,18 +429,24 @@ getNetworkConfig = fmap snd . readTVarIO . useNetworkConfig
 {-# INLINE getNetworkConfig #-}
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()
-setUserNetworkInfo c@AgentClient {userNetworkState} UserNetworkInfo {networkType = nt', online} = withAgentEnv' c $ do
-  d <- asks $ initialInterval . userNetworkInterval . config
-  ts <- liftIO getCurrentTime
-  atomically $ do
-    ns@UserNetworkState {networkType = nt, offline} <- readTVar userNetworkState
-    when (nt' /= nt || online /= isNothing offline) $
-      writeTVar userNetworkState $!
-        let offline'
-              | nt' /= UNNone && online = Nothing
-              | isJust offline = offline
-              | otherwise = Just UNSOffline {offlineDelay = d, offlineFrom = ts}
-         in ns {networkType = nt', offline = offline'}
+setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkDelay} netInfo = withAgentEnv' c $ do
+  ni <- asks $ userNetworkInterval . config
+  let d = initialInterval ni
+  off <- atomically $ do
+    wasOnline <- isOnline <$> swapTVar userNetworkInfo netInfo
+    let off = wasOnline && not (isOnline netInfo)
+    when off $ writeTVar userNetworkDelay d
+    pure off
+  liftIO . when off . void . forkIO $
+    growOfflineDelay 0 d ni
+  where
+    growOfflineDelay elapsed d ni = do
+      online <- waitOnlineOrDelay c d
+      unless online $ do
+        let elapsed' = elapsed + d
+            d' = nextRetryDelay elapsed' d ni
+        atomically $ writeTVar userNetworkDelay d'
+        growOfflineDelay elapsed' d' ni
 
 reconnectAllServers :: AgentClient -> IO ()
 reconnectAllServers c = do
@@ -1318,7 +1324,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
         let mId = unId msgId
             ri' = maybe id updateRetryInterval2 msgRetryState ri
         withRetryLock2 ri' qLock $ \riState loop -> do
-          lift $ waitForUserNetwork c
+          liftIO $ waitForUserNetwork c
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c sq msgBody
