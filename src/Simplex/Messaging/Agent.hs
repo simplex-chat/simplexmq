@@ -446,8 +446,7 @@ setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkBroadcast} netInfo
       where
         loop :: Int64 -> Int64 -> IO ()
         loop elapsed d = do
-          -- TODO use Int64
-          delay <- registerDelay $ fromIntegral d
+          delay <- registerDelay' d
           online <-
             atomically $ do
               expired <- readTVar delay
