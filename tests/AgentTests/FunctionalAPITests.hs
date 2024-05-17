@@ -433,10 +433,10 @@ functionalAPITests t = do
     it "should send and receive delivery receipt" $ withSmpServer t testDeliveryReceipts
     it "should send delivery receipt only in connection v3+" $ testDeliveryReceiptsVersion t
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent t
-  fdescribe "user network info" $ do
+  describe "user network info" $ do
     it "should wait for user network" testWaitForUserNetwork
     it "should not reset offline interval while offline" testDoNotResetOfflineInterval
-    fit "should resume multiple threads" testResumeMultipleThreads
+    it "should resume multiple threads" testResumeMultipleThreads
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do

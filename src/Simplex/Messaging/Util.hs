@@ -3,8 +3,6 @@
 
 module Simplex.Messaging.Util where
 
-import Control.Concurrent (forkIO)
-import Control.Concurrent.STM (retry)
 import qualified Control.Exception as E
 import Control.Monad
 import Control.Monad.Except
@@ -162,22 +160,6 @@ threadDelay' = loop
           let maxWait = min time $ fromIntegral (maxBound :: Int)
           threadDelay $ fromIntegral maxWait
           loop $ time - maxWait
-
-registerDelay' :: Int64 -> IO (TVar Bool)
-registerDelay' time
-  | time <= 0 = newTVarIO True
-  | otherwise = do
-      delay <- newTVarIO False
-      void . forkIO $ loop delay time
-      pure delay
-  where
-    loop delay d
-      | d <= 0 = atomically $ writeTVar delay True
-      | otherwise = do
-          let maxWait = min time $ fromIntegral (maxBound :: Int)
-          delay' <- registerDelay $ fromIntegral maxWait
-          atomically $ unlessM (readTVar delay') retry >> writeTVar delay True
-          loop delay $ time - maxWait
 
 diffToMicroseconds :: NominalDiffTime -> Int64
 diffToMicroseconds diff = fromIntegral ((truncate $ diff * 1000000) :: Integer)
