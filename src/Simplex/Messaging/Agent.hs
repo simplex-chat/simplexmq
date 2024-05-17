@@ -118,6 +118,7 @@ module Simplex.Messaging.Agent
   )
 where
 
+import Control.Concurrent.STM (retry)
 import Control.Logger.Simple (logError, logInfo, showText)
 import Control.Monad
 import Control.Monad.Except
@@ -132,6 +133,7 @@ import Data.Either (isRight, rights)
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
 import Data.Functor.Identity
+import Data.Int (Int64)
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -429,18 +431,38 @@ getNetworkConfig = fmap snd . readTVarIO . useNetworkConfig
 {-# INLINE getNetworkConfig #-}
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()
-setUserNetworkInfo c@AgentClient {userNetworkState} UserNetworkInfo {networkType = nt', online} = withAgentEnv' c $ do
-  d <- asks $ initialInterval . userNetworkInterval . config
-  ts <- liftIO getCurrentTime
-  atomically $ do
-    ns@UserNetworkState {networkType = nt, offline} <- readTVar userNetworkState
-    when (nt' /= nt || online /= isNothing offline) $
-      writeTVar userNetworkState $!
-        let offline'
-              | nt' /= UNNone && online = Nothing
-              | isJust offline = offline
-              | otherwise = Just UNSOffline {offlineDelay = d, offlineFrom = ts}
-         in ns {networkType = nt', offline = offline'}
+setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkBroadcast} ni' = withAgentEnv' c $ do
+  let nowOnline = isOnline ni'
+  wasOnline <-
+    atomically $ do
+      ni <- swapTVar userNetworkInfo ni'
+      let wasOnline = isOnline ni
+      when (nowOnline && not wasOnline) $ writeTChan userNetworkBroadcast ()
+      pure wasOnline
+  when (not nowOnline && wasOnline) $ do
+    ni <- asks $ userNetworkInterval . config
+    liftIO $ retryWhileOffline ni $ initialInterval ni
+  where
+    retryWhileOffline ni = void . forkIO . loop 0
+      where
+        loop :: Int64 -> Int64 -> IO ()
+        loop elapsed d = do
+          -- TODO use Int64
+          delay <- registerDelay $ fromIntegral d
+          online <-
+            atomically $ do
+              expired <- readTVar delay
+              online <- isNetworkOnline c
+              unless (expired || online) retry
+              writeTChan userNetworkBroadcast ()
+              pure online
+          -- ifM
+          --   (readTVar delay)
+          --   (broadcast $> True)
+          --   (ifM (isNetworkOnline c) (broadcast $> False) retry)
+          unless online $
+            let elapsed' = elapsed + d
+             in loop elapsed' $ nextRetryDelay elapsed' d ni
 
 reconnectAllServers :: AgentClient -> IO ()
 reconnectAllServers c = do
@@ -1305,6 +1327,7 @@ submitPendingMsg c cData sq = do
 runSmpQueueMsgDelivery :: AgentClient -> ConnData -> SndQueue -> (Worker, TMVar ()) -> AM ()
 runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork}, qLock) = do
   AgentConfig {messageRetryInterval = ri, messageTimeout, helloTimeout, quotaExceededTimeout} <- asks config
+  bcast <- atomically $ getUserNetworkBroadcast c
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
     lift $ waitForWork doWork
@@ -1317,7 +1340,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
         let mId = unId msgId
             ri' = maybe id updateRetryInterval2 msgRetryState ri
         withRetryLock2 ri' qLock $ \riState loop -> do
-          lift $ waitForUserNetwork c
+          atomically $ waitForUserNetwork c bcast
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c sq msgBody

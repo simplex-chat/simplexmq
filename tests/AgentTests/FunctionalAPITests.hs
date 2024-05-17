@@ -51,7 +51,6 @@ where
 
 import AgentTests.ConnectionRequestTests (connReqData, queueAddr, testE2ERatchetParams12)
 import Control.Concurrent (forkIO, killThread, threadDelay)
-import Control.Concurrent.STM (retry)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
@@ -74,7 +73,7 @@ import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, withSmpServerV7)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import qualified Simplex.Messaging.Agent as A
-import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), UserNetworkInfo (..), UserNetworkType (..), waitForUserNetwork)
+import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), UserNetworkInfo (..), UserNetworkType (..), getUserNetworkBroadcast, waitForUserNetwork)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ)
 import qualified Simplex.Messaging.Agent.Protocol as A
@@ -92,7 +91,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ATransport (..), SMPVersion, VersionSMP, authCmdsSMPVersion, basicAuthSMPVersion, batchCmdsSMPVersion, currentServerSMPRelayVersion, supportedSMPHandshakes)
-import Simplex.Messaging.Util (diffToMicroseconds, whenM)
+import Simplex.Messaging.Util (diffToMicroseconds)
 import Simplex.Messaging.Version (VersionRange (..))
 import qualified Simplex.Messaging.Version as V
 import Simplex.Messaging.Version.Internal (Version (..))
@@ -437,7 +436,7 @@ functionalAPITests t = do
   describe "user network info" $ do
     it "should wait for user network" testWaitForUserNetwork
     it "should not reset offline interval while offline" testDoNotResetOfflineInterval
-    fit "should resume multiple threads" testResumeMultipleThreads
+    it "should resume multiple threads" testResumeMultipleThreads
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -2737,34 +2736,37 @@ testResumeMultipleThreads = do
   a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNNone False
-  print 1
   vs <-
-    replicateM 70000 $ do
+    replicateM 50000 $ do
       v <- newEmptyTMVarIO
       void . forkIO $ waitNetwork a >>= atomically . putTMVar v
       pure v
-  print 2
   setUserNetworkInfo a $ UserNetworkInfo UNCellular True
-  print 3
   ts <- mapConcurrently (atomically . readTMVar) vs
-  print 4
-  print $ length ts
-  print $ minimum ts
-  print $ maximum ts
-  print $ sum ts `div` fromIntegral (length ts)
+  -- print $ minimum ts
+  -- print $ maximum ts
+  -- print $ sum ts `div` fromIntegral (length ts)
+  let average = sum ts `div` fromIntegral (length ts)
+  average < 1000000 `shouldBe` True
+  maximum ts < 2000000 `shouldBe` True
   where
-    aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 3600_000_000, increaseAfter = 0, maxInterval = 3600_000_000}}
+    aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 1000_000_000, increaseAfter = 0, maxInterval = 1000_000_000}}
 
 noNetworkDelay :: AgentClient -> IO ()
-noNetworkDelay a = (10000 >) <$> waitNetwork a `shouldReturn` True
+noNetworkDelay a = do
+  d <- waitNetwork a
+  unless (d < 10000) $ expectationFailure $ "expected no delay, d = " <> show d
 
 networkDelay :: AgentClient -> Int64 -> IO ()
-networkDelay a d' = (\d -> d' < d && d < d' + 15000) <$> waitNetwork a `shouldReturn` True
+networkDelay a d' = do
+  d <- waitNetwork a
+  unless (d' < d && d < d' + 15000) $ expectationFailure $ "expected delay " <> show d' <> ", d = " <> show d
 
 waitNetwork :: AgentClient -> IO Int64
 waitNetwork a = do
+  bcast <- atomically $ getUserNetworkBroadcast a
   t <- getCurrentTime
-  waitForUserNetwork a `runReaderT` agentEnv a
+  atomically (waitForUserNetwork a bcast) `runReaderT` agentEnv a
   t' <- getCurrentTime
   pure $ diffToMicroseconds $ diffUTCTime t' t
 

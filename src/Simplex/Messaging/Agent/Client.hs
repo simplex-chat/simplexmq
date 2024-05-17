@@ -105,7 +105,10 @@ module Simplex.Messaging.Agent.Client
     UserNetworkType (..),
     UserNetworkState (..),
     UNSOffline (..),
+    getUserNetworkBroadcast,
     waitForUserNetwork,
+    isNetworkOnline,
+    isOnline,
     throwWhenInactive,
     throwWhenNoDelivery,
     beginAgentOperation,
@@ -268,7 +271,9 @@ data AgentClient = AgentClient
     xftpServers :: TMap UserId (NonEmpty XFTPServerWithAuth),
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
     useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
-    userNetworkState :: TVar UserNetworkState,
+    -- userNetworkState :: TVar UserNetworkState,
+    userNetworkInfo :: TVar UserNetworkInfo,
+    userNetworkBroadcast :: TChan (),
     subscrConns :: TVar (Set ConnId),
     activeSubs :: TRcvQueues,
     pendingSubs :: TRcvQueues,
@@ -405,6 +410,12 @@ data UserNetworkInfo = UserNetworkInfo
   }
   deriving (Show)
 
+isNetworkOnline :: AgentClient -> STM Bool
+isNetworkOnline c = isOnline <$> readTVar (userNetworkInfo c)
+
+isOnline :: UserNetworkInfo -> Bool
+isOnline UserNetworkInfo {networkType, online} = networkType /= UNNone && online
+
 data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
@@ -433,7 +444,9 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   xftpServers <- newTVar xftp
   xftpClients <- TM.empty
   useNetworkConfig <- newTVar (slowNetworkConfig netCfg, netCfg)
-  userNetworkState <- newTVar $ UserNetworkState UNOther Nothing
+  -- userNetworkState <- newTVar $ UserNetworkState UNOther Nothing
+  userNetworkInfo <- newTVar $ UserNetworkInfo UNOther True
+  userNetworkBroadcast <- newBroadcastTChan
   subscrConns <- newTVar S.empty
   activeSubs <- RQ.empty
   pendingSubs <- RQ.empty
@@ -468,7 +481,9 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         xftpServers,
         xftpClients,
         useNetworkConfig,
-        userNetworkState,
+        -- userNetworkState,
+        userNetworkInfo,
+        userNetworkBroadcast,
         subscrConns,
         activeSubs,
         pendingSubs,
@@ -609,10 +624,11 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess =
     runSubWorker = do
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
+      bcast <- atomically $ getUserNetworkBroadcast c
       withRetryInterval ri $ \_ loop -> do
         pending <- atomically getPending
         forM_ (L.nonEmpty pending) $ \qs -> do
-          waitForUserNetwork c
+          atomically $ waitForUserNetwork c bcast
           void . tryAgentError' $ reconnectSMPClient timeoutCounts c tSess qs
           loop
     getPending = RQ.getSessQueues tSess $ pendingSubs c
@@ -631,10 +647,10 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
   ExceptT (sequence <$> (t `timeout` runExceptT resubscribe)) >>= \case
     Just _ -> atomically $ writeTVar tc 0
     Nothing ->
-      (offline <$> readTVarIO (userNetworkState c)) >>= \case
-        -- reset and do not report consequitive timeouts while offline
-        Just _ -> atomically $ writeTVar tc 0
-        Nothing -> do
+      atomically (isNetworkOnline c) >>= \case
+        -- reset and do not report consecutive timeouts while offline
+        False -> atomically $ writeTVar tc 0
+        True -> do
           tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
           maxTC <- asks $ maxSubscriptionTimeouts . config
           when (tc' >= maxTC) $ do
@@ -750,47 +766,17 @@ getClientConfig c cfgSel = do
 getNetworkConfig :: AgentClient -> STM NetworkConfig
 getNetworkConfig c = do
   (slowCfg, fastCfg) <- readTVar (useNetworkConfig c)
-  UserNetworkState {networkType} <- readTVar (userNetworkState c)
+  UserNetworkInfo {networkType} <- readTVar (userNetworkInfo c)
   pure $ case networkType of
     UNCellular -> slowCfg
     UNNone -> slowCfg
     _ -> fastCfg
 
-waitForUserNetwork :: AgentClient -> AM' ()
-waitForUserNetwork AgentClient {userNetworkState} =
-  readTVarIO userNetworkState >>= mapM_ waitWhileOffline . offline
-  where
-    waitWhileOffline UNSOffline {offlineDelay = d} =
-      unlessM (liftIO $ waitOnline d False) $ do
-        -- network delay reached, increase delay
-        ts' <- liftIO getCurrentTime
-        ni <- asks $ userNetworkInterval . config
-        atomically $ do
-          ns@UserNetworkState {offline} <- readTVar userNetworkState
-          forM_ offline $ \UNSOffline {offlineDelay = d', offlineFrom = ts} ->
-            -- Using `min` to avoid multiple updates in a short period of time
-            -- and to reset `offlineDelay` if network went `on` and `off` again.
-            writeTVar userNetworkState $!
-              let d'' = nextRetryDelay (diffToMicroseconds $ diffUTCTime ts' ts) (min d d') ni
-               in ns {offline = Just UNSOffline {offlineDelay = d'', offlineFrom = ts}}
-    waitOnline :: Int64 -> Bool -> IO Bool
-    waitOnline t True = pure True
-    waitOnline t online'
-      | t <= 0 = pure online'
-      | otherwise =
-          -- race (threadDelay (fromIntegral maxWait)) (atomically $ unlessM (isNothing . offline <$> readTVar userNetworkState) retry) >>= \case
-          --   Left () -> waitOnline (t - maxWait) False
-          --   Right () ->  pure True
-          registerDelay (fromIntegral maxWait)
-            >>= atomically . onlineOrDelay
-            >>= waitOnline (t - maxWait)
-      where
-        maxWait = min t $ fromIntegral (maxBound :: Int)
-        onlineOrDelay delay = do
-          online <- isNothing . offline <$> readTVar userNetworkState
-          expired <- readTVar delay
-          unless (online || expired) retry
-          pure online
+getUserNetworkBroadcast :: AgentClient -> STM (TChan ())
+getUserNetworkBroadcast c = dupTChan $ userNetworkBroadcast c
+
+waitForUserNetwork :: AgentClient -> TChan () -> STM ()
+waitForUserNetwork c = unlessM (isNetworkOnline c) . readTChan
 
 closeAgentClient :: AgentClient -> IO ()
 closeAgentClient c = do
