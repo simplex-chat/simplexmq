@@ -445,6 +445,7 @@ setUserNetworkInfo c@AgentClient {userNetworkState} UserNetworkInfo {networkType
 reconnectAllServers :: AgentClient -> IO ()
 reconnectAllServers c = do
   reconnectServerClients c smpClients
+  reconnectServerClients c xftpClients
   reconnectServerClients c ntfClients
 
 -- | Register device notifications token
