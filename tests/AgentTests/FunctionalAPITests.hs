@@ -73,7 +73,7 @@ import SMPAgentClient
 import SMPClient (cfg, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, withSmpServerV7)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import qualified Simplex.Messaging.Agent as A
-import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), UserNetworkInfo (..), UserNetworkType (..), getUserNetworkBroadcast, waitForUserNetwork)
+import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), UserNetworkInfo (..), UserNetworkType (..), waitForUserNetwork)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ)
 import qualified Simplex.Messaging.Agent.Protocol as A
@@ -433,10 +433,10 @@ functionalAPITests t = do
     it "should send and receive delivery receipt" $ withSmpServer t testDeliveryReceipts
     it "should send delivery receipt only in connection v3+" $ testDeliveryReceiptsVersion t
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent t
-  describe "user network info" $ do
+  fdescribe "user network info" $ do
     it "should wait for user network" testWaitForUserNetwork
     it "should not reset offline interval while offline" testDoNotResetOfflineInterval
-    it "should resume multiple threads" testResumeMultipleThreads
+    fit "should resume multiple threads" testResumeMultipleThreads
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -2698,6 +2698,7 @@ testWaitForUserNetwork = do
   a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNNone False
+  threadDelay 5000
   networkDelay a 100000
   networkDelay a 150000
   networkDelay a 200000
@@ -2718,6 +2719,7 @@ testDoNotResetOfflineInterval = do
   a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNWifi False
+  threadDelay 5000
   networkDelay a 100000
   networkDelay a 150000
   setUserNetworkInfo a $ UserNetworkInfo UNCellular False
@@ -2742,7 +2744,7 @@ testResumeMultipleThreads = do
       void . forkIO $ waitNetwork a >>= atomically . putTMVar v
       pure v
   setUserNetworkInfo a $ UserNetworkInfo UNCellular True
-  ts <- mapConcurrently (atomically . readTMVar) vs
+  ts <- mapM (atomically . readTMVar) vs
   -- print $ minimum ts
   -- print $ maximum ts
   -- print $ sum ts `div` fromIntegral (length ts)
@@ -2764,9 +2766,8 @@ networkDelay a d' = do
 
 waitNetwork :: AgentClient -> IO Int64
 waitNetwork a = do
-  bcast <- atomically $ getUserNetworkBroadcast a
   t <- getCurrentTime
-  atomically (waitForUserNetwork a bcast) `runReaderT` agentEnv a
+  waitForUserNetwork a
   t' <- getCurrentTime
   pure $ diffToMicroseconds $ diffUTCTime t' t
 

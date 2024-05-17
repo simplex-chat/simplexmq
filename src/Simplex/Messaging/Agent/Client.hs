@@ -103,8 +103,8 @@ module Simplex.Messaging.Agent.Client
     waitUntilActive,
     UserNetworkInfo (..),
     UserNetworkType (..),
-    getUserNetworkBroadcast,
     waitForUserNetwork,
+    waitOnlineOrDelay,
     isNetworkOnline,
     isOnline,
     throwWhenInactive,
@@ -155,6 +155,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (lefts, partitionEithers)
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
@@ -269,7 +270,7 @@ data AgentClient = AgentClient
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
     useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
     userNetworkInfo :: TVar UserNetworkInfo,
-    userNetworkBroadcast :: TChan (),
+    userNetworkDelay :: TVar (Maybe Int64),
     subscrConns :: TVar (Set ConnId),
     activeSubs :: TRcvQueues,
     pendingSubs :: TRcvQueues,
@@ -432,7 +433,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   xftpClients <- TM.empty
   useNetworkConfig <- newTVar (slowNetworkConfig netCfg, netCfg)
   userNetworkInfo <- newTVar $ UserNetworkInfo UNOther True
-  userNetworkBroadcast <- newBroadcastTChan
+  userNetworkDelay <- newTVar Nothing
   subscrConns <- newTVar S.empty
   activeSubs <- RQ.empty
   pendingSubs <- RQ.empty
@@ -468,7 +469,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         xftpClients,
         useNetworkConfig,
         userNetworkInfo,
-        userNetworkBroadcast,
+        userNetworkDelay,
         subscrConns,
         activeSubs,
         pendingSubs,
@@ -609,11 +610,10 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess =
     runSubWorker = do
       ri <- asks $ reconnectInterval . config
       timeoutCounts <- newTVarIO 0
-      bcast <- atomically $ getUserNetworkBroadcast c
       withRetryInterval ri $ \_ loop -> do
         pending <- atomically getPending
         forM_ (L.nonEmpty pending) $ \qs -> do
-          atomically $ waitForUserNetwork c bcast
+          lift $ waitForUserNetwork c
           void . tryAgentError' $ reconnectSMPClient timeoutCounts c tSess qs
           loop
     getPending = RQ.getSessQueues tSess $ pendingSubs c
@@ -756,11 +756,24 @@ getNetworkConfig c = do
     UNNone -> slowCfg
     _ -> fastCfg
 
-getUserNetworkBroadcast :: AgentClient -> STM (TChan ())
-getUserNetworkBroadcast c = dupTChan $ userNetworkBroadcast c
+waitForUserNetwork :: AgentClient -> IO ()
+waitForUserNetwork c =
+  unlessM (atomically $ isNetworkOnline c) $
+    readTVarIO (userNetworkDelay c) >>= mapM_ (waitOnlineOrDelay c)
 
-waitForUserNetwork :: AgentClient -> TChan () -> STM ()
-waitForUserNetwork c = unlessM (isNetworkOnline c) . readTChan
+waitOnlineOrDelay :: AgentClient -> Int64 -> IO Bool
+waitOnlineOrDelay c t = do
+  let maxWait = min t $ fromIntegral (maxBound :: Int)
+  delay <- registerDelay $ fromIntegral maxWait
+  online <-
+    atomically $ do
+      expired <- readTVar delay
+      online <- isNetworkOnline c
+      unless (expired || online) retry
+      pure online
+  if online || t <= 0
+    then pure online
+    else waitOnlineOrDelay c (t - maxWait)
 
 closeAgentClient :: AgentClient -> IO ()
 closeAgentClient c = do

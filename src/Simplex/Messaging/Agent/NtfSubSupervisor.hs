@@ -149,20 +149,19 @@ withTokenServer action = lift getNtfToken >>= mapM_ (\NtfToken {ntfServer} -> ac
 runNtfWorker :: AgentClient -> NtfServer -> Worker -> AM ()
 runNtfWorker c srv Worker {doWork} = do
   delay <- asks $ ntfWorkerDelay . config
-  bcast <- atomically $ getUserNetworkBroadcast c
   forever $ do
     waitForWork doWork
-    ExceptT $ agentOperationBracket c AONtfNetwork throwWhenInactive $ runExceptT $ runNtfOperation bcast
+    ExceptT $ agentOperationBracket c AONtfNetwork throwWhenInactive $ runExceptT runNtfOperation
     threadDelay delay
   where
-    runNtfOperation :: TChan () -> AM ()
-    runNtfOperation bcast =
+    runNtfOperation :: AM ()
+    runNtfOperation =
       withWork c doWork (`getNextNtfSubNTFAction` srv) $
         \nextSub@(NtfSubscription {connId}, _, _) -> do
           logInfo $ "runNtfWorker, nextSub " <> tshow nextSub
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop -> do
-            atomically $ waitForUserNetwork c bcast
+            liftIO $ waitForUserNetwork c
             processSub nextSub
               `catchAgentError` retryOnError c "NtfWorker" loop (workerInternalError c connId . show)
     processSub :: (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> AM ()
@@ -233,21 +232,20 @@ runNtfWorker c srv Worker {doWork} = do
 runNtfSMPWorker :: AgentClient -> SMPServer -> Worker -> AM ()
 runNtfSMPWorker c srv Worker {doWork} = do
   env <- ask
-  bcast <- atomically $ getUserNetworkBroadcast c
   delay <- asks $ ntfSMPWorkerDelay . config
   forever $ do
     waitForWork doWork
     ExceptT . liftIO . agentOperationBracket c AONtfNetwork throwWhenInactive $
-      runReaderT (runExceptT $ runNtfSMPOperation bcast) env
+      runReaderT (runExceptT runNtfSMPOperation) env
     threadDelay delay
   where
-    runNtfSMPOperation bcast =
+    runNtfSMPOperation =
       withWork c doWork (`getNextNtfSubSMPAction` srv) $
         \nextSub@(NtfSubscription {connId}, _, _) -> do
           logInfo $ "runNtfSMPWorker, nextSub " <> tshow nextSub
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop -> do
-            atomically $ waitForUserNetwork c bcast
+            liftIO $ waitForUserNetwork c
             processSub nextSub
               `catchAgentError` retryOnError c "NtfSMPWorker" loop (workerInternalError c connId . show)
     processSub :: (NtfSubscription, NtfSubSMPAction, NtfActionTs) -> AM ()
