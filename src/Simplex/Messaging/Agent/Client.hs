@@ -270,7 +270,7 @@ data AgentClient = AgentClient
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
     useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
     userNetworkInfo :: TVar UserNetworkInfo,
-    userNetworkDelay :: TVar (Maybe Int64),
+    userNetworkDelay :: TVar Int64,
     subscrConns :: TVar (Set ConnId),
     activeSubs :: TRcvQueues,
     pendingSubs :: TRcvQueues,
@@ -419,7 +419,8 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 newAgentClient :: Int -> InitialAgentServers -> Env -> STM AgentClient
 newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
-  let qSize = tbqSize $ config agentEnv
+  let cfg = config agentEnv
+      qSize = tbqSize cfg
   acThread <- newTVar Nothing
   active <- newTVar True
   rcvQ <- newTBQueue qSize
@@ -433,7 +434,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   xftpClients <- TM.empty
   useNetworkConfig <- newTVar (slowNetworkConfig netCfg, netCfg)
   userNetworkInfo <- newTVar $ UserNetworkInfo UNOther True
-  userNetworkDelay <- newTVar Nothing
+  userNetworkDelay <- newTVar $ initialInterval $ userNetworkInterval cfg
   subscrConns <- newTVar S.empty
   activeSubs <- RQ.empty
   pendingSubs <- RQ.empty
@@ -759,7 +760,7 @@ getNetworkConfig c = do
 waitForUserNetwork :: AgentClient -> IO ()
 waitForUserNetwork c =
   unlessM (atomically $ isNetworkOnline c) $
-    readTVarIO (userNetworkDelay c) >>= mapM_ (waitOnlineOrDelay c)
+    readTVarIO (userNetworkDelay c) >>= void . waitOnlineOrDelay c
 
 waitOnlineOrDelay :: AgentClient -> Int64 -> IO Bool
 waitOnlineOrDelay c t = do

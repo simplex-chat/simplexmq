@@ -436,7 +436,7 @@ functionalAPITests t = do
   describe "user network info" $ do
     it "should wait for user network" testWaitForUserNetwork
     it "should not reset offline interval while offline" testDoNotResetOfflineInterval
-    it "should resume multiple threads" testResumeMultipleThreads
+    fit "should resume multiple threads" testResumeMultipleThreads
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -2739,20 +2739,21 @@ testResumeMultipleThreads = do
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNNone False
   vs <-
-    replicateM 50000 $ do
+    replicateM 500000 $ do
       v <- newEmptyTMVarIO
       void . forkIO $ waitNetwork a >>= atomically . putTMVar v
       pure v
+  threadDelay 1000000
   setUserNetworkInfo a $ UserNetworkInfo UNCellular True
   ts <- mapM (atomically . readTMVar) vs
-  -- print $ minimum ts
-  -- print $ maximum ts
-  -- print $ sum ts `div` fromIntegral (length ts)
+  print $ minimum ts
+  print $ maximum ts
+  print $ sum ts `div` fromIntegral (length ts)
   let average = sum ts `div` fromIntegral (length ts)
-  average < 1000000 `shouldBe` True
-  maximum ts < 2000000 `shouldBe` True
+  average < 3000000 `shouldBe` True
+  maximum ts < 4000000 `shouldBe` True
   where
-    aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 1000_000_000, increaseAfter = 0, maxInterval = 1000_000_000}}
+    aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 1000000, increaseAfter = 0, maxInterval = 3600_000_000}}
 
 noNetworkDelay :: AgentClient -> IO ()
 noNetworkDelay a = do

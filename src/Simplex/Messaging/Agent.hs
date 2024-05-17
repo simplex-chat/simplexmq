@@ -430,26 +430,25 @@ getNetworkConfig = fmap snd . readTVarIO . useNetworkConfig
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()
 setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkDelay} netInfo = withAgentEnv' c $ do
-  let nowOnline = isOnline netInfo
-  wasOnline <-
-    atomically $ do
-      when nowOnline $ writeTVar userNetworkDelay Nothing
-      isOnline <$> swapTVar userNetworkInfo netInfo
-  when (wasOnline && not nowOnline) $ do
-    ni <- asks $ userNetworkInterval . config
-    let d = initialInterval ni
-    atomically $ writeTVar userNetworkDelay $ Just d
-    liftIO . void . forkIO $ updateOfflineDelay 0 d ni
+  ni <- asks $ userNetworkInterval . config
+  let d = initialInterval ni
+  off <- atomically $ do
+    wasOnline <- isOnline <$> swapTVar userNetworkInfo netInfo
+    let off = wasOnline && not (isOnline netInfo)
+    when off $ writeTVar userNetworkDelay d
+    pure off
+  liftIO . when off . void . forkIO $
+    growOfflineDelay 0 d ni
   where
-    updateOfflineDelay elapsed d ni = do
+    growOfflineDelay elapsed d ni = do
+      putStrLn $ "growOfflineDelay " <> show elapsed <> " " <> show d
       online <- waitOnlineOrDelay c d
-      if online
-        then atomically $ writeTVar userNetworkDelay Nothing
-        else do
-          let elapsed' = elapsed + d
-              d' = nextRetryDelay elapsed' d ni
-          atomically $ writeTVar userNetworkDelay $ Just d'
-          updateOfflineDelay elapsed' d' ni
+      unless online $ do
+        let elapsed' = elapsed + d
+            d' = nextRetryDelay elapsed' d ni
+        atomically $ writeTVar userNetworkDelay d'
+        growOfflineDelay elapsed' d' ni
+      putStrLn "exiting"
 
 reconnectAllServers :: AgentClient -> IO ()
 reconnectAllServers c = do
