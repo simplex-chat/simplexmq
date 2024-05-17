@@ -51,7 +51,7 @@ module AgentTests.FunctionalAPITests
 where
 
 import AgentTests.ConnectionRequestTests (connReqData, queueAddr, testE2ERatchetParams12)
-import Control.Concurrent (killThread, threadDelay)
+import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
@@ -440,6 +440,7 @@ functionalAPITests t = do
   describe "user network info" $ do
     it "should wait for user network" testWaitForUserNetwork
     it "should not reset offline interval while offline" testDoNotResetOfflineInterval
+    it "should resume multiple threads" testResumeMultipleThreads
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -2709,6 +2710,7 @@ testWaitForUserNetwork = do
   a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNNone False
+  threadDelay 5000
   networkDelay a 100000
   networkDelay a 150000
   networkDelay a 200000
@@ -2729,6 +2731,7 @@ testDoNotResetOfflineInterval = do
   a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNWifi False
+  threadDelay 5000
   networkDelay a 100000
   networkDelay a 150000
   setUserNetworkInfo a $ UserNetworkInfo UNCellular False
@@ -2742,16 +2745,42 @@ testDoNotResetOfflineInterval = do
   where
     aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 100000, increaseAfter = 0, maxInterval = 200000}}
 
+testResumeMultipleThreads :: IO ()
+testResumeMultipleThreads = do
+  a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
+  noNetworkDelay a
+  setUserNetworkInfo a $ UserNetworkInfo UNNone False
+  vs <-
+    replicateM 50000 $ do
+      v <- newEmptyTMVarIO
+      void . forkIO $ waitNetwork a >>= atomically . putTMVar v
+      pure v
+  threadDelay 1000000
+  setUserNetworkInfo a $ UserNetworkInfo UNCellular True
+  ts <- mapM (atomically . readTMVar) vs
+  print $ minimum ts
+  print $ maximum ts
+  print $ sum ts `div` fromIntegral (length ts)
+  let average = sum ts `div` fromIntegral (length ts)
+  average < 3000000 `shouldBe` True
+  maximum ts < 4000000 `shouldBe` True
+  where
+    aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 1000000, increaseAfter = 0, maxInterval = 3600_000_000}}
+
 noNetworkDelay :: AgentClient -> IO ()
-noNetworkDelay a = (10000 >) <$> waitNetwork a `shouldReturn` True
+noNetworkDelay a = do
+  d <- waitNetwork a
+  unless (d < 10000) $ expectationFailure $ "expected no delay, d = " <> show d
 
 networkDelay :: AgentClient -> Int64 -> IO ()
-networkDelay a d' = (\d -> d' < d && d < d' + 15000) <$> waitNetwork a `shouldReturn` True
+networkDelay a d' = do
+  d <- waitNetwork a
+  unless (d' < d && d < d' + 15000) $ expectationFailure $ "expected delay " <> show d' <> ", d = " <> show d
 
 waitNetwork :: AgentClient -> IO Int64
 waitNetwork a = do
   t <- getCurrentTime
-  waitForUserNetwork a `runReaderT` agentEnv a
+  waitForUserNetwork a
   t' <- getCurrentTime
   pure $ diffToMicroseconds $ diffUTCTime t' t
 
