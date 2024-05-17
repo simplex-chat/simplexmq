@@ -37,6 +37,7 @@ data ServerStats = ServerStats
     msgCount :: TVar Int,
     proxyRelaysRequested :: TVar Int,
     proxyRelaysConnected :: TVar Int,
+    msgProxiedToSimplexIm :: TVar Int,
     msgSentViaProxy :: TVar Int,
     msgDeliveredViaProxy :: TVar Int,
     msgDeliveredFromProxy :: TVar Int
@@ -60,6 +61,7 @@ data ServerStatsData = ServerStatsData
     _msgCount :: Int,
     _proxyRelaysRequested :: Int,
     _proxyRelaysConnected :: Int,
+    _msgProxiedToSimplexIm :: Int,
     _msgSentViaProxy :: Int,
     _msgDeliveredViaProxy :: Int,
     _msgDeliveredFromProxy :: Int
@@ -85,10 +87,11 @@ newServerStats ts = do
   msgCount <- newTVar 0
   proxyRelaysRequested <- newTVar 0
   proxyRelaysConnected <- newTVar 0
+  msgProxiedToSimplexIm <- newTVar 0
   msgSentViaProxy <- newTVar 0
   msgDeliveredViaProxy <- newTVar 0
   msgDeliveredFromProxy <- newTVar 0
-  pure ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, proxyRelaysRequested, proxyRelaysConnected, msgSentViaProxy, msgDeliveredViaProxy, msgDeliveredFromProxy}
+  pure ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, proxyRelaysRequested, proxyRelaysConnected, msgProxiedToSimplexIm, msgSentViaProxy, msgDeliveredViaProxy, msgDeliveredFromProxy}
 
 getServerStatsData :: ServerStats -> STM ServerStatsData
 getServerStatsData s = do
@@ -109,10 +112,11 @@ getServerStatsData s = do
   _msgCount <- readTVar $ msgCount s
   _proxyRelaysRequested <- readTVar $ proxyRelaysRequested s
   _proxyRelaysConnected <- readTVar $ proxyRelaysConnected s
+  _msgProxiedToSimplexIm <- readTVar $ msgProxiedToSimplexIm s
   _msgSentViaProxy <- readTVar $ msgSentViaProxy s
   _msgDeliveredViaProxy <- readTVar $ msgDeliveredViaProxy s
   _msgDeliveredFromProxy <- readTVar $ msgDeliveredFromProxy s
-  pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeletedAll, _qDeletedNew, _qDeletedSecured, _msgSent, _msgRecv, _msgExpired, _activeQueues, _msgSentNtf, _msgRecvNtf, _proxyRelaysRequested, _proxyRelaysConnected, _msgSentViaProxy, _msgDeliveredViaProxy, _msgDeliveredFromProxy, _activeQueuesNtf, _qCount, _msgCount}
+  pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeletedAll, _qDeletedNew, _qDeletedSecured, _msgSent, _msgRecv, _msgExpired, _activeQueues, _msgSentNtf, _msgRecvNtf, _proxyRelaysRequested, _proxyRelaysConnected, _msgProxiedToSimplexIm, _msgSentViaProxy, _msgDeliveredViaProxy, _msgDeliveredFromProxy, _activeQueuesNtf, _qCount, _msgCount}
 
 setServerStats :: ServerStats -> ServerStatsData -> STM ()
 setServerStats s d = do
@@ -133,12 +137,13 @@ setServerStats s d = do
   writeTVar (msgCount s) $! _msgCount d
   writeTVar (proxyRelaysRequested s) $! _proxyRelaysRequested d
   writeTVar (proxyRelaysConnected s) $! _proxyRelaysConnected d
+  writeTVar (msgProxiedToSimplexIm s) $! _msgProxiedToSimplexIm d
   writeTVar (msgSentViaProxy s) $! _msgSentViaProxy d
   writeTVar (msgDeliveredViaProxy s) $! _msgDeliveredViaProxy d
   writeTVar (msgDeliveredFromProxy s) $! _msgDeliveredFromProxy d
 
 instance StrEncoding ServerStatsData where
-  strEncode ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeletedAll, _qDeletedNew, _qDeletedSecured, _msgSent, _msgRecv, _msgExpired, _msgSentNtf, _msgRecvNtf, _proxyRelaysRequested, _proxyRelaysConnected, _msgSentViaProxy, _msgDeliveredViaProxy, _msgDeliveredFromProxy, _activeQueues, _activeQueuesNtf, _qCount, _msgCount} =
+  strEncode ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeletedAll, _qDeletedNew, _qDeletedSecured, _msgSent, _msgRecv, _msgExpired, _msgSentNtf, _msgRecvNtf, _proxyRelaysRequested, _proxyRelaysConnected, _msgProxiedToSimplexIm, _msgSentViaProxy, _msgDeliveredViaProxy, _msgDeliveredFromProxy, _activeQueues, _activeQueuesNtf, _qCount, _msgCount} =
     B.unlines
       [ "fromTime=" <> strEncode _fromTime,
         "qCreated=" <> strEncode _qCreated,
@@ -154,6 +159,7 @@ instance StrEncoding ServerStatsData where
         "msgRecvNtf=" <> strEncode _msgRecvNtf,
         "proxyRelaysRequested=" <> strEncode _proxyRelaysRequested,
         "proxyRelaysConnected=" <> strEncode _proxyRelaysConnected,
+        "msgProxiedToSimplexIm=" <> strEncode _msgProxiedToSimplexIm,
         "msgSentViaProxy=" <> strEncode _msgSentViaProxy,
         "msgDeliveredViaProxy=" <> strEncode _msgDeliveredViaProxy,
         "msgDeliveredFromProxy=" <> strEncode _msgDeliveredFromProxy,
@@ -177,6 +183,7 @@ instance StrEncoding ServerStatsData where
     _msgRecvNtf <- "msgRecvNtf=" *> strP <* A.endOfLine <|> pure 0
     _proxyRelaysRequested <- "proxyRelaysRequested=" *> strP <* A.endOfLine <|> pure 0
     _proxyRelaysConnected <- "proxyRelaysConnected=" *> strP <* A.endOfLine <|> pure 0
+    _msgProxiedToSimplexIm <- "msgProxiedToSimplexIm=" *> strP <* A.endOfLine <|> pure 0
     _msgSentViaProxy <- "msgSentViaProxy=" *> strP <* A.endOfLine <|> pure 0
     _msgDeliveredViaProxy <- "msgDeliveredViaProxy=" *> strP <* A.endOfLine <|> pure 0
     _msgDeliveredFromProxy <- "msgDeliveredFromProxy=" *> strP <* A.endOfLine <|> pure 0
@@ -192,7 +199,7 @@ instance StrEncoding ServerStatsData where
       optional ("activeQueuesNtf:" <* A.endOfLine) >>= \case
         Just _ -> strP <* optional A.endOfLine
         _ -> pure newPeriodStatsData
-    pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeletedAll, _qDeletedNew, _qDeletedSecured, _msgSent, _msgRecv, _msgExpired, _msgSentNtf, _msgRecvNtf, _proxyRelaysRequested, _proxyRelaysConnected, _msgSentViaProxy, _msgDeliveredViaProxy, _msgDeliveredFromProxy, _activeQueues, _activeQueuesNtf, _qCount, _msgCount = 0}
+    pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeletedAll, _qDeletedNew, _qDeletedSecured, _msgSent, _msgRecv, _msgExpired, _msgSentNtf, _msgRecvNtf, _proxyRelaysRequested, _proxyRelaysConnected, _msgProxiedToSimplexIm, _msgSentViaProxy, _msgDeliveredViaProxy, _msgDeliveredFromProxy, _activeQueues, _activeQueuesNtf, _qCount, _msgCount = 0}
 
 data PeriodStats a = PeriodStats
   { day :: TVar (Set a),

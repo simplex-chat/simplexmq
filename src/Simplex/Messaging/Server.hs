@@ -68,7 +68,7 @@ import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), forwardSMPMessage, smpProxyError)
+import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), forwardSMPMessage, smpProxyError, transportSession')
 import Simplex.Messaging.Client.Agent (SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient', lookupSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -232,7 +232,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, proxyRelaysRequested, proxyRelaysConnected, msgSentViaProxy, msgDeliveredViaProxy, msgDeliveredFromProxy} <- asks serverStats
+      ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, proxyRelaysRequested, proxyRelaysConnected, msgProxiedToSimplexIm, msgSentViaProxy, msgDeliveredViaProxy, msgDeliveredFromProxy} <- asks serverStats
       let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -252,6 +252,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           msgRecvNtf' <- atomically $ swapTVar msgRecvNtf 0
           proxyRelaysRequested' <- atomically $ swapTVar proxyRelaysRequested 0
           proxyRelaysConnected' <- atomically $ swapTVar proxyRelaysConnected 0
+          msgProxiedToSimplexIm' <- atomically $ swapTVar msgProxiedToSimplexIm 0
           msgSentViaProxy' <- atomically $ swapTVar msgSentViaProxy 0
           msgDeliveredViaProxy' <- atomically $ swapTVar msgDeliveredViaProxy 0
           msgDeliveredFromProxy' <- atomically $ swapTVar msgDeliveredFromProxy 0
@@ -282,6 +283,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 show qDeletedSecured',
                 show proxyRelaysRequested',
                 show proxyRelaysConnected',
+                show msgProxiedToSimplexIm',
                 show msgSentViaProxy',
                 show msgDeliveredViaProxy',
                 show msgDeliveredFromProxy'
@@ -373,6 +375,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 putStat "msgCount" msgCount
                 putStat "proxyRelaysRequested" proxyRelaysRequested
                 putStat "proxyRelaysConnected" proxyRelaysConnected
+                putStat "msgProxiedToSimplexIm" msgProxiedToSimplexIm
                 putStat "msgSentViaProxy" msgSentViaProxy
                 putStat "msgDeliveredViaProxy" msgDeliveredViaProxy
                 putStat "msgDeliveredFromProxy" msgDeliveredFromProxy
@@ -687,6 +690,9 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             | v >= sendingProxySMPVersion -> do
                 stats <- asks serverStats
                 atomically $ modifyTVar' (msgSentViaProxy stats) (+ 1)
+                case transportSession' smp of
+                  (_, ProtocolServer {host}, _) | ".simplex.im" `B.isSuffixOf` strEncode (L.head host) -> atomically $ modifyTVar' (msgProxiedToSimplexIm stats) (+ 1)
+                  _ -> pure ()
                 r <- liftIO $ either (ERR . smpProxyError) PRES <$>
                    runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catchError` (pure . Left . PCEIOError)
                 r <$ case r of
