@@ -764,6 +764,7 @@ waitForUserNetwork c =
 waitOnlineOrDelay :: AgentClient -> Int64 -> IO Bool
 waitOnlineOrDelay c t = do
   let maxWait = min t $ fromIntegral (maxBound :: Int)
+      t' = t - maxWait
   delay <- registerDelay $ fromIntegral maxWait
   online <-
     atomically $ do
@@ -771,9 +772,9 @@ waitOnlineOrDelay c t = do
       online <- isNetworkOnline c
       unless (expired || online) retry
       pure online
-  if online || t <= 0
+  if online || t' <= 0
     then pure online
-    else waitOnlineOrDelay c (t - maxWait)
+    else waitOnlineOrDelay c t'
 
 closeAgentClient :: AgentClient -> IO ()
 closeAgentClient c = do
