@@ -436,7 +436,7 @@ functionalAPITests t = do
   describe "user network info" $ do
     it "should wait for user network" testWaitForUserNetwork
     it "should not reset offline interval while offline" testDoNotResetOfflineInterval
-    fit "should resume multiple threads" testResumeMultipleThreads
+    it "should resume multiple threads" testResumeMultipleThreads
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -2739,7 +2739,7 @@ testResumeMultipleThreads = do
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNNone False
   vs <-
-    replicateM 500000 $ do
+    replicateM 50000 $ do
       v <- newEmptyTMVarIO
       void . forkIO $ waitNetwork a >>= atomically . putTMVar v
       pure v

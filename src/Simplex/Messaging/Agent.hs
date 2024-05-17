@@ -441,14 +441,12 @@ setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkDelay} netInfo = w
     growOfflineDelay 0 d ni
   where
     growOfflineDelay elapsed d ni = do
-      putStrLn $ "growOfflineDelay " <> show elapsed <> " " <> show d
       online <- waitOnlineOrDelay c d
       unless online $ do
         let elapsed' = elapsed + d
             d' = nextRetryDelay elapsed' d ni
         atomically $ writeTVar userNetworkDelay d'
         growOfflineDelay elapsed' d' ni
-      putStrLn "exiting"
 
 reconnectAllServers :: AgentClient -> IO ()
 reconnectAllServers c = do
