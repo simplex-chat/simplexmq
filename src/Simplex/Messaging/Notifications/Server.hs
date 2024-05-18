@@ -31,7 +31,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Network.Socket (ServiceName)
-import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError)
+import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, TransmissionType)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -220,7 +220,11 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
-      ((_, srv, _), _, _, _tType, ntfId, msgOrErr) <- atomically $ readTBQueue msgQ
+      ((_, srv, _), _, _, ts) <- atomically $ readTBQueue msgQ
+      mapM (processSMP srv) ts
+
+    processSMP :: SMPServer -> (TransmissionType SMP.BrokerMsg, SMP.NotifierId, Either (ProtocolClientError ErrorType) SMP.BrokerMsg) -> M ()
+    processSMP srv (_tType, ntfId, msgOrErr) = do
       let smpQueue = SMPQueueNtf srv ntfId
       case msgOrErr of
         Right (SMP.NMSG nmsgNonce encNMsgMeta) -> do
@@ -248,7 +252,6 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
             forM_ subs $ \(_, ntfId) -> do
               let smpQueue = SMPQueueNtf srv ntfId
               updateSubStatus smpQueue NSInactive
-
           CAResubscribed srv subs -> do
             forM_ subs $ \(_, ntfId) -> updateSubStatus (SMPQueueNtf srv ntfId) NSActive
             logSubStatus srv "resubscribed" $ length subs

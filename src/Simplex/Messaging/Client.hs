@@ -111,7 +111,7 @@ import Data.Int (Int64)
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
@@ -207,7 +207,7 @@ type SMPClient = ProtocolClient SMPVersion ErrorType BrokerMsg
 type ClientCommand msg = (Maybe C.APrivateAuthKey, EntityId, ProtoCommand msg)
 
 -- | Type synonym for transmission from some SPM server queue.
-type ServerTransmission v err msg = (TransportSession msg, Version v, SessionId, TransmissionType msg, EntityId, Either (ProtocolClientError err) msg)
+type ServerTransmission v err msg = (TransportSession msg, Version v, SessionId, NonEmpty (TransmissionType msg, EntityId, Either (ProtocolClientError err) msg))
 
 data TransmissionType msg = TTEvent | TTUncorrelatedResponse | TTExpiredResponse (ProtoCommand msg)
 
@@ -498,9 +498,15 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         maxCnt = smpPingCount networkConfig
 
     process :: ProtocolClient v err msg -> IO ()
-    process c = forever $ atomically (readTBQueue $ rcvQ $ client_ c) >>= mapM_ (processMsg c)
+    process c = forever $ atomically (readTBQueue $ rcvQ $ client_ c) >>= processMsgs c
 
-    processMsg :: ProtocolClient v err msg -> SignedTransmission err msg -> IO ()
+    processMsgs :: ProtocolClient v err msg -> NonEmpty (SignedTransmission err msg) -> IO ()
+    processMsgs c@ProtocolClient {client_ = PClient {sentCommands}} ts = do
+      ts' <- catMaybes . L.toList <$> mapM (processMsg c) ts
+      forM_ msgQ $ \q ->
+        mapM_ (atomically . writeTBQueue q . serverTransmission c) (L.nonEmpty ts')
+
+    processMsg :: ProtocolClient v err msg -> SignedTransmission err msg -> IO (Maybe (TransmissionType msg, EntityId, Either (ProtocolClientError err) msg))
     processMsg c@ProtocolClient {client_ = PClient {sentCommands}} (_, _, (corrId, entId, respOrErr))
       | not $ B.null $ bs corrId =
           atomically (TM.lookup corrId sentCommands) >>= \case
@@ -513,7 +519,9 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
                     (swapTVar pending False)
                     (True <$ tryPutTMVar responseVar (response entityId))
                     (pure False)
-              unless wasPending $ sendMsg $ if entityId == entId then TTExpiredResponse command else TTUncorrelatedResponse
+              if wasPending
+                then pure Nothing
+                else sendMsg $ if entityId == entId then TTExpiredResponse command else TTUncorrelatedResponse
       | otherwise = sendMsg TTEvent
       where
         response entityId
@@ -524,12 +532,12 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
           Right r -> case protocolError r of
             Just e -> Left $ PCEProtocolError e
             _ -> Right r
-        sendMsg :: TransmissionType msg -> IO ()
+        sendMsg :: TransmissionType msg -> IO (Maybe (TransmissionType msg, EntityId, Either (ProtocolClientError err) msg))
         sendMsg tType = case msgQ of
-          Just q -> atomically $ writeTBQueue q $ serverTransmission c tType entId clientResp
+          Just q -> pure $ Just (tType, entId, clientResp)
           Nothing -> case clientResp of
-            Left e -> logError $ "SMP client error: " <> tshow e
-            Right _ -> logWarn $ "SMP client unprocessed event"
+            Left e -> logError ("SMP client error: " <> tshow e) $> Nothing
+            Right _ -> logWarn ("SMP client unprocessed event") $> Nothing
 
 proxyUsername :: TransportSession msg -> ByteString
 proxyUsername (userId, _, entityId_) = C.sha256Hash $ bshow userId <> maybe "" (":" <>) entityId_
@@ -641,11 +649,11 @@ processSUBResponse c (Response rId r) = case r of
   Left e -> pure $ Left e
 
 writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> IO ()
-writeSMPMessage c rId msg = atomically $ mapM_ (`writeTBQueue` serverTransmission c TTEvent rId (Right msg)) (msgQ $ client_ c)
+writeSMPMessage c rId msg = atomically $ mapM_ (`writeTBQueue` serverTransmission c [(TTEvent, rId, Right msg)]) (msgQ $ client_ c)
 
-serverTransmission :: ProtocolClient v err msg -> TransmissionType msg -> RecipientId -> Either (ProtocolClientError err) msg -> ServerTransmission v err msg
-serverTransmission ProtocolClient {thParams = THandleParams {thVersion, sessionId}, client_ = PClient {transportSession}} tType entityId msgOrErr =
-  (transportSession, thVersion, sessionId, tType, entityId, msgOrErr)
+serverTransmission :: ProtocolClient v err msg -> NonEmpty (TransmissionType msg, RecipientId, Either (ProtocolClientError err) msg) -> ServerTransmission v err msg
+serverTransmission ProtocolClient {thParams = THandleParams {thVersion, sessionId}, client_ = PClient {transportSession}} ts =
+  (transportSession, thVersion, sessionId, ts)
 
 -- | Get message from SMP queue. The server returns ERR PROHIBITED if a client uses SUB and GET via the same transport connection for the same queue
 --

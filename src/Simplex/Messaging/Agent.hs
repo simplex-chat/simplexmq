@@ -159,7 +159,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
-import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission, TransmissionType (..))
+import Simplex.Messaging.Client (ProtocolClient (..), SMPClientError, ServerTransmission, TransmissionType (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
@@ -174,7 +174,7 @@ import Simplex.Messaging.Protocol (BrokerMsg, EntityId, ErrorType (AUTH), MsgBod
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPVersion, THandleParams (sessionId))
+import Simplex.Messaging.Transport (SMPVersion, SessionId, THandleParams (sessionId))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import Simplex.RemoteControl.Client
@@ -2006,14 +2006,10 @@ getSMPServer c userId = withUserServers c userId pickServer
 {-# INLINE getSMPServer #-}
 
 subscriber :: AgentClient -> AM' ()
-subscriber c@AgentClient {subQ, msgQ} = forever $ do
+subscriber c@AgentClient {msgQ} = forever $ do
   t <- atomically $ readTBQueue msgQ
   agentOperationBracket c AORcvNetwork waitUntilActive $
-    tryAgentError' (processSMPTransmission c t) >>= \case
-      Left e -> do
-        logError $ tshow e
-        atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR e)
-      Right _ -> return ()
+    processSMPTransmissions c t
 
 cleanupManager :: AgentClient -> AM' ()
 cleanupManager c@AgentClient {subQ} = do
@@ -2089,8 +2085,22 @@ data ACKd = ACKd | ACKPending
 
 -- | make sure to ACK or throw in each message processing branch
 -- it cannot be finally, unfortunately, as sometimes it needs to be ACK+DEL
-processSMPTransmission :: AgentClient -> ServerTransmission SMPVersion ErrorType BrokerMsg -> AM ()
-processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, sessId, tType, rId, cmd) = do
+processSMPTransmissions :: AgentClient -> ServerTransmission SMPVersion ErrorType BrokerMsg -> AM' ()
+processSMPTransmissions c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, sessId, ts) = do
+  upConnIds <- newTVarIO []
+  rs <- mapM (tryAgentError' . processSMPTransmission c upConnIds tSess sessId) ts
+  connIds <- readTVarIO upConnIds
+  unless (null connIds) $ notify $ APC SAENone (UP srv connIds)
+  forM_ rs $ \case
+    Left e -> do
+      logError $ tshow e
+      notify $ APC SAEConn (ERR e)
+    Right () -> pure ()
+  where
+    notify cmd = atomically $ writeTBQueue subQ ("", "", cmd)
+
+processSMPTransmission :: AgentClient -> TVar [ConnId] -> SMPTransportSession -> SessionId -> (TransmissionType BrokerMsg, EntityId, Either SMPClientError BrokerMsg) -> AM ()
+processSMPTransmission c@AgentClient {smpClients, subQ} upConnIds tSess@(_, srv, _) sessId (tType, rId, cmd) = do
   (rq, SomeConn _ conn) <- withStore c (\db -> getRcvConn db srv rId)
   processSMP rq conn $ toConnData conn
   where
@@ -2308,14 +2318,11 @@ processSMPTransmission c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, 
             TTEvent -> pure ()
             TTUncorrelatedResponse -> unexpected r
             TTExpiredResponse (SMP.Cmd _ cmd') -> case cmd' of
-              SMP.SUB -> do
-                added <-
-                  atomically $
-                    ifM
-                      ((&&) <$> hasPendingSubscription c connId <*> activeClientSession c tSess sessId)
-                      (True <$ addSubscription c rq)
-                      (pure False)
-                when added $ notify $ UP srv [connId]
+              SMP.SUB ->
+                atomically $
+                  whenM ((&&) <$> hasPendingSubscription c connId <*> activeClientSession c tSess sessId) $ do
+                    addSubscription c rq
+                    modifyTVar' upConnIds (connId :)
               _ -> pure ()
 
           decryptClientMessage :: C.DhSecretX25519 -> SMP.ClientMsgEnvelope -> AM (SMP.PrivHeader, AgentMsgEnvelope)
