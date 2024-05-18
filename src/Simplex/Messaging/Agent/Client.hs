@@ -856,9 +856,9 @@ getNetworkConfig c = do
     _ -> fastCfg
 
 waitForUserNetwork :: AgentClient -> IO ()
-waitForUserNetwork c =
-  unlessM (atomically $ isNetworkOnline c) $
-    readTVarIO (userNetworkDelay c) >>= void . waitOnlineOrDelay c
+waitForUserNetwork c = pure ()
+  -- unlessM (atomically $ isNetworkOnline c) $
+  --   readTVarIO (userNetworkDelay c) >>= void . waitOnlineOrDelay c
 
 waitOnlineOrDelay :: AgentClient -> Int64 -> IO Bool
 waitOnlineOrDelay c t = do

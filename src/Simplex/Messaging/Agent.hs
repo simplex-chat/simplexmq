@@ -438,8 +438,9 @@ setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkDelay} netInfo = w
     let off = wasOnline && not (isOnline netInfo)
     when off $ writeTVar userNetworkDelay d
     pure off
-  liftIO . when off . void . forkIO $
-    growOfflineDelay 0 d ni
+  -- liftIO . when off . void . forkIO $
+  --   growOfflineDelay 0 d ni
+  pure ()
   where
     growOfflineDelay elapsed d ni = do
       online <- waitOnlineOrDelay c d
