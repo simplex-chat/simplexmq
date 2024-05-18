@@ -140,6 +140,14 @@ module Simplex.Messaging.Agent.Client
     XFTPTransportSession,
     ProxiedRelay (..),
     SMPConnectedClient (..),
+    setAgentLogLevel,
+    logTrace,
+    logDebug,
+    logInfo,
+    logNote,
+    logWarn,
+    logError,
+    logFail,
   )
 where
 
@@ -148,7 +156,8 @@ import Control.Concurrent (ThreadId, forkIO, threadDelay)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
 import Control.Concurrent.STM (retry, throwSTM)
 import Control.Exception (AsyncException (..), BlockedIndefinitelyOnSTM (..))
-import Control.Logger.Simple
+import Control.Logger.Simple (LogLevel (..))
+import qualified Control.Logger.Simple as Logger
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -307,6 +316,7 @@ data AgentClient = AgentClient
     deleteLock :: Lock,
     -- smpSubWorkers for SMP servers sessions
     smpSubWorkers :: TMap SMPTransportSession (SessionVar (Async ())),
+    agentLogLevel :: TVar LogLevel,
     agentStats :: TMap AgentStatsKey (TVar Int),
     msgCounts :: TMap ConnId (TVar (Int, Int)), -- (total, duplicates)
     clientId :: Int,
@@ -476,6 +486,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   invLocks <- TM.empty
   deleteLock <- createLock
   smpSubWorkers <- TM.empty
+  agentLogLevel <- newTVar LogError
   agentStats <- TM.empty
   msgCounts <- TM.empty
   return
@@ -514,6 +525,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         invLocks,
         deleteLock,
         smpSubWorkers,
+        agentLogLevel,
         agentStats,
         msgCounts,
         clientId,
@@ -658,7 +670,7 @@ smpConnectClient c@AgentClient {smpClients, msgQ} tSess@(_, srv, _) prs v =
 smpClientDisconnected :: AgentClient -> SMPTransportSession -> Env -> SMPClientVar -> TMap SMPServer ProxiedRelayVar -> SMPClient -> IO ()
 smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess@(userId, srv, qId) env v prs client = do
   removeClientAndSubs >>= serverDown
-  logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
+  logInfo c . decodeUtf8 $ "Agent disconnected from " <> showServer srv
   where
     -- we make active subscriptions pending only if the client for tSess was current (in the map) and active,
     -- because we can have a race condition when a new current client could have already
@@ -774,7 +786,7 @@ getNtfServerClient c@AgentClient {active, ntfClients, workerSeq} tSess@(userId, 
       atomically $ removeSessVar v tSess ntfClients
       incClientStat c userId client "DISCONNECT" ""
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
-      logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
+      logInfo c . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
 getXFTPServerClient :: AgentClient -> XFTPTransportSession -> AM XFTPClient
 getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq} tSess@(userId, srv, _) = do
@@ -797,7 +809,7 @@ getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq} tSess@(userId
       atomically $ removeSessVar v tSess xftpClients
       incClientStat c userId client "DISCONNECT" ""
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
-      logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
+      logInfo c . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
 waitForProtocolClient :: ProtocolTypeI (ProtoType msg) => AgentClient -> TransportSession msg -> ClientVar msg -> AM (Client msg)
 waitForProtocolClient c (_, srv, _) v = do
@@ -821,7 +833,7 @@ newProtocolClient ::
 newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient v =
   tryAgentError (connectClient v) >>= \case
     Right client -> do
-      logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
+      logInfo c . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
       atomically $ putTMVar (sessionVar v) (Right client)
       liftIO $ incClientStat c userId client "CLIENT" "OK"
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent CONNECT client)
@@ -1349,7 +1361,7 @@ subscribeQueues c qs = do
       if active
         then when (hasTempErrors rs) resubscribe $> rs
         else do
-          logWarn "subcription batch result for replaced SMP client, resubscribing"
+          logWarn c "subcription batch result for replaced SMP client, resubscribing"
           resubscribe $> L.map (second $ \_ -> Left PCENetworkError) rs
       where
         tSess = transportSession' smp
@@ -1441,8 +1453,8 @@ getSubscriptions = readTVar . subscrConns
 {-# INLINE getSubscriptions #-}
 
 logServer :: MonadIO m => ByteString -> AgentClient -> ProtocolServer s -> QueueId -> ByteString -> m ()
-logServer dir AgentClient {clientId} srv qId cmdStr =
-  logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
+logServer dir c@AgentClient {clientId} srv qId cmdStr =
+  logInfo c . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
 {-# INLINE logServer #-}
 
 showServer :: ProtocolServer s -> ByteString
@@ -1875,6 +1887,36 @@ withNextSrv c userId usedSrvs initUsed action = do
         used' = if null unused then initUsed else srv : used
     writeTVar usedSrvs $! used'
   action srvAuth
+
+setAgentLogLevel :: AgentClient -> LogLevel -> IO ()
+setAgentLogLevel AgentClient {agentLogLevel} = atomically . writeTVar agentLogLevel
+
+logTrace :: MonadIO m => AgentClient -> Text -> m ()
+logTrace c s = sendLogEvent c LogTrace s >> Logger.logTrace s
+
+logDebug :: MonadIO m => AgentClient -> Text -> m ()
+logDebug c s = sendLogEvent c LogDebug s >> Logger.logDebug s
+
+logInfo :: MonadIO m => AgentClient -> Text -> m ()
+logInfo c s = sendLogEvent c LogInfo s >> Logger.logInfo s
+
+logNote :: MonadIO m => AgentClient -> Text -> m ()
+logNote c s = sendLogEvent c LogNote s >> Logger.logNote s
+
+logWarn :: MonadIO m => AgentClient -> Text -> m ()
+logWarn c s = sendLogEvent c LogWarn s >> Logger.logWarn s
+
+logError :: MonadIO m => AgentClient -> Text -> m ()
+logError c s = sendLogEvent c LogError s >> Logger.logError s
+
+logFail :: (MonadFail m, MonadIO m) => AgentClient -> Text -> m a
+logFail c s = sendLogEvent c LogError s >> Logger.logFail s
+
+sendLogEvent :: MonadIO m => AgentClient -> Logger.LogLevel -> Text -> m ()
+sendLogEvent AgentClient {subQ, agentLogLevel} ll' s = do
+  ll <- readTVarIO agentLogLevel
+  when (ll' >= ll) . atomically $
+    writeTBQueue subQ ("", "", APC SAENone $ LOG (AgentLogLevel ll') s)
 
 data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text, subError :: Maybe String}
   deriving (Show)

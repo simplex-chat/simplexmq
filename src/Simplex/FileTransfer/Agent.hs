@@ -28,7 +28,6 @@ module Simplex.FileTransfer.Agent
   )
 where
 
-import Control.Logger.Simple (logError)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
@@ -182,7 +181,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
           withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
             liftIO $ waitForUserNetwork c
             downloadFileChunk fc replica
-              `catchAgentError` \e -> retryOnError "XFTP rcv worker" (retryLoop loop e delay') (retryDone e) e
+              `catchAgentError` \e -> retryOnError c "XFTP rcv worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do
@@ -227,12 +226,10 @@ withRetryIntervalLimit maxN ri action =
   withRetryIntervalCount ri $ \n delay loop ->
     when (n < maxN) $ action delay loop
 
-retryOnError :: Text -> AM a -> AM a -> AgentErrorType -> AM a
-retryOnError name loop done e = do
-  logError $ name <> " error: " <> tshow e
-  if temporaryAgentError e
-    then loop
-    else done
+retryOnError :: AgentClient -> Text -> AM a -> AM a -> AgentErrorType -> AM a
+retryOnError c name loop done e = do
+  logWarn c $ name <> " error: " <> tshow e
+  if temporaryAgentError e then loop else done
 
 rcvWorkerInternalError :: AgentClient -> DBRcvFileId -> RcvFileId -> Maybe FilePath -> String -> AM ()
 rcvWorkerInternalError c rcvFileId rcvFileEntityId tmpPath internalErrStr = do
@@ -427,7 +424,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
               withRetryInterval (riFast ri) $ \_ loop -> do
                 liftIO $ waitForUserNetwork c
                 createWithNextSrv usedSrvs
-                  `catchAgentError` \e -> retryOnError "XFTP prepare worker" (retryLoop loop) (throwError e) e
+                  `catchAgentError` \e -> retryOnError c "XFTP prepare worker" (retryLoop loop) (throwError e) e
               where
                 retryLoop loop = atomically (assertAgentForeground c) >> loop
             createWithNextSrv usedSrvs = do
@@ -460,7 +457,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
           withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
             liftIO $ waitForUserNetwork c
             uploadFileChunk cfg fc replica
-              `catchAgentError` \e -> retryOnError "XFTP snd worker" (retryLoop loop e delay') (retryDone e) e
+              `catchAgentError` \e -> retryOnError c "XFTP snd worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do
@@ -627,7 +624,7 @@ runXFTPDelWorker c srv Worker {doWork} = do
           withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
             liftIO $ waitForUserNetwork c
             deleteChunkReplica
-              `catchAgentError` \e -> retryOnError "XFTP del worker" (retryLoop loop e delay') (retryDone e) e
+              `catchAgentError` \e -> retryOnError c "XFTP del worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do

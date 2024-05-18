@@ -114,12 +114,12 @@ module Simplex.Messaging.Agent
     getAgentStats,
     resetAgentStats,
     getMsgCounts,
+    setAgentLogLevel,
     getAgentSubscriptions,
     logConnection,
   )
 where
 
-import Control.Logger.Simple (logError, logInfo, showText)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
@@ -212,9 +212,9 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
               run c "runNtfSupervisor" $ runNtfSupervisor c,
               run c "cleanupManager" $ cleanupManager c
             ]
-    run AgentClient {subQ, acThread} name a =
+    run c@AgentClient {subQ, acThread} name a =
       a `E.catchAny` \e -> whenM (isJust <$> readTVarIO acThread) $ do
-        logError $ "Agent thread " <> name <> " crashed: " <> tshow e
+        logError c $ "Agent thread " <> name <> " crashed: " <> tshow e
         atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR $ CRITICAL True $ show e)
 
 disconnectAgentClient :: AgentClient -> IO ()
@@ -576,7 +576,7 @@ withAgentEnv c a = ExceptT $ runExceptT a `runReaderT` agentEnv c
 logConnection :: AgentClient -> Bool -> IO ()
 logConnection c connected =
   let event = if connected then "connected to" else "disconnected from"
-   in logInfo $ T.unwords ["client", showText (clientId c), event, "Agent"]
+   in logInfo c $ T.unwords ["client", tshow (clientId c), event, "Agent"]
 
 -- | Runs an SMP agent instance that receives commands and sends responses via 'TBQueue's.
 runAgentClient :: AgentClient -> AM' ()
@@ -915,12 +915,12 @@ rejectContact' c contactConnId invId =
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad
 subscribeConnection' :: AgentClient -> ConnId -> AM ()
-subscribeConnection' c connId = toConnResult connId =<< subscribeConnections' c [connId]
+subscribeConnection' c connId = toConnResult c connId =<< subscribeConnections' c [connId]
 {-# INLINE subscribeConnection' #-}
 
-toConnResult :: ConnId -> Map ConnId (Either AgentErrorType ()) -> AM ()
-toConnResult connId rs = case M.lookup connId rs of
-  Just (Right ()) -> when (M.size rs > 1) $ logError $ T.pack $ "too many results " <> show (M.size rs)
+toConnResult :: AgentClient -> ConnId -> Map ConnId (Either AgentErrorType ()) -> AM ()
+toConnResult c connId rs = case M.lookup connId rs of
+  Just (Right ()) -> when (M.size rs > 1) $ logError c $ T.pack $ "too many results " <> show (M.size rs)
   Just (Left e) -> throwError e
   _ -> throwError $ INTERNAL $ "no result for connection " <> B.unpack connId
 
@@ -992,7 +992,7 @@ subscribeConnections' c connIds = do
         writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ INTERNAL $ "subscribeConnections result size: " <> show actual <> ", expected " <> show expected)
 
 resubscribeConnection' :: AgentClient -> ConnId -> AM ()
-resubscribeConnection' c connId = toConnResult connId =<< resubscribeConnections' c [connId]
+resubscribeConnection' c connId = toConnResult c connId =<< resubscribeConnections' c [connId]
 {-# INLINE resubscribeConnection' #-}
 
 resubscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType ()))
@@ -1396,7 +1396,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
                       -- With `status == Active` condition, CON is sent here only by the accepting party, that previously received HELLO
                       when (status == Active) $ notify $ CON pqEncryption
                     -- this branch should never be reached as receive queue is created before the confirmation,
-                    _ -> logError "HELLO sent without receive queue"
+                    _ -> logError c "HELLO sent without receive queue"
                 AM_A_MSG_ -> notify $ SENT mId proxySrv_
                 AM_A_RCVD_ -> pure ()
                 AM_QCONT_ -> pure ()
@@ -1594,7 +1594,7 @@ suspendConnection' c connId = withConnLock c connId "suspendConnection" $ do
 -- unlike deleteConnectionAsync, this function does not mark connection as deleted in case of deletion failure
 -- currently it is used only in tests
 deleteConnection' :: AgentClient -> ConnId -> AM ()
-deleteConnection' c connId = toConnResult connId =<< deleteConnections' c [connId]
+deleteConnection' c connId = toConnResult c connId =<< deleteConnections' c [connId]
 {-# INLINE deleteConnection' #-}
 
 connRcvQueues :: Connection d -> [RcvQueue]
@@ -2011,7 +2011,7 @@ subscriber c@AgentClient {subQ, msgQ} = forever $ do
   agentOperationBracket c AORcvNetwork waitUntilActive $
     tryAgentError' (processSMPTransmission c t) >>= \case
       Left e -> do
-        logError $ tshow e
+        logError c $ tshow e
         atomically $ writeTBQueue subQ ("", "", APC SAEConn $ ERR e)
       Right _ -> return ()
 
