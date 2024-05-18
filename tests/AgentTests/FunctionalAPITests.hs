@@ -2716,6 +2716,7 @@ testDoNotResetOnlineToOffline = do
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNWifi False
   networkDelay a 100000
+  setUserNetworkInfo a $ UserNetworkInfo UNWifi False
   setUserNetworkInfo a $ UserNetworkInfo UNWifi True
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNWifi False -- ingnored
