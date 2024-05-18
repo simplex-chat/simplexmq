@@ -2086,7 +2086,7 @@ data ACKd = ACKd | ACKPending
 -- | make sure to ACK or throw in each message processing branch
 -- it cannot be finally, unfortunately, as sometimes it needs to be ACK+DEL
 processSMPTransmissions :: AgentClient -> ServerTransmission SMPVersion ErrorType BrokerMsg -> AM' ()
-processSMPTransmissions c@AgentClient {smpClients, subQ} (tSess@(_, srv, _), _v, sessId, ts) = do
+processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts) = do
   upConnIds <- newTVarIO []
   rs <- mapM (tryAgentError' . processSMPTransmission c upConnIds tSess sessId) ts
   connIds <- readTVarIO upConnIds

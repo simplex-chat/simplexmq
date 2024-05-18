@@ -501,13 +501,13 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     process c = forever $ atomically (readTBQueue $ rcvQ $ client_ c) >>= processMsgs c
 
     processMsgs :: ProtocolClient v err msg -> NonEmpty (SignedTransmission err msg) -> IO ()
-    processMsgs c@ProtocolClient {client_ = PClient {sentCommands}} ts = do
+    processMsgs c ts = do
       ts' <- catMaybes . L.toList <$> mapM (processMsg c) ts
       forM_ msgQ $ \q ->
         mapM_ (atomically . writeTBQueue q . serverTransmission c) (L.nonEmpty ts')
 
     processMsg :: ProtocolClient v err msg -> SignedTransmission err msg -> IO (Maybe (TransmissionType msg, EntityId, Either (ProtocolClientError err) msg))
-    processMsg c@ProtocolClient {client_ = PClient {sentCommands}} (_, _, (corrId, entId, respOrErr))
+    processMsg ProtocolClient {client_ = PClient {sentCommands}} (_, _, (corrId, entId, respOrErr))
       | not $ B.null $ bs corrId =
           atomically (TM.lookup corrId sentCommands) >>= \case
             Nothing -> sendMsg TTUncorrelatedResponse
@@ -534,10 +534,11 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             _ -> Right r
         sendMsg :: TransmissionType msg -> IO (Maybe (TransmissionType msg, EntityId, Either (ProtocolClientError err) msg))
         sendMsg tType = case msgQ of
-          Just q -> pure $ Just (tType, entId, clientResp)
-          Nothing -> case clientResp of
-            Left e -> logError ("SMP client error: " <> tshow e) $> Nothing
-            Right _ -> logWarn ("SMP client unprocessed event") $> Nothing
+          Just _ -> pure $ Just (tType, entId, clientResp)
+          Nothing ->
+            Nothing <$ case clientResp of
+              Left e -> logError ("SMP client error: " <> tshow e)
+              Right _ -> logWarn ("SMP client unprocessed event")
 
 proxyUsername :: TransportSession msg -> ByteString
 proxyUsername (userId, _, entityId_) = C.sha256Hash $ bshow userId <> maybe "" (":" <>) entityId_
