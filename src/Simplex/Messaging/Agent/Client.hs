@@ -104,7 +104,6 @@ module Simplex.Messaging.Agent.Client
     UserNetworkInfo (..),
     UserNetworkType (..),
     waitForUserNetwork,
-    waitOnlineOrDelay,
     isNetworkOnline,
     isOnline,
     throwWhenInactive,
@@ -155,7 +154,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (lefts, partitionEithers)
 import Data.Functor (($>))
-import Data.Int (Int64)
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
@@ -270,7 +268,7 @@ data AgentClient = AgentClient
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
     useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
     userNetworkInfo :: TVar UserNetworkInfo,
-    userNetworkDelay :: TVar Int64,
+    userNetworkUpdated :: TVar (Maybe UTCTime),
     subscrConns :: TVar (Set ConnId),
     activeSubs :: TRcvQueues,
     pendingSubs :: TRcvQueues,
@@ -434,7 +432,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   xftpClients <- TM.empty
   useNetworkConfig <- newTVar (slowNetworkConfig netCfg, netCfg)
   userNetworkInfo <- newTVar $ UserNetworkInfo UNOther True
-  userNetworkDelay <- newTVar $ initialInterval $ userNetworkInterval cfg
+  userNetworkUpdated <- newTVar Nothing
   subscrConns <- newTVar S.empty
   activeSubs <- RQ.empty
   pendingSubs <- RQ.empty
@@ -470,7 +468,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         xftpClients,
         useNetworkConfig,
         userNetworkInfo,
-        userNetworkDelay,
+        userNetworkUpdated,
         subscrConns,
         activeSubs,
         pendingSubs,
@@ -759,23 +757,9 @@ getNetworkConfig c = do
 
 waitForUserNetwork :: AgentClient -> IO ()
 waitForUserNetwork c =
-  unlessM (atomically $ isNetworkOnline c) $
-    readTVarIO (userNetworkDelay c) >>= void . waitOnlineOrDelay c
-
-waitOnlineOrDelay :: AgentClient -> Int64 -> IO Bool
-waitOnlineOrDelay c t = do
-  let maxWait = min t $ fromIntegral (maxBound :: Int)
-      t' = t - maxWait
-  delay <- registerDelay $ fromIntegral maxWait
-  online <-
-    atomically $ do
-      expired <- readTVar delay
-      online <- isNetworkOnline c
-      unless (expired || online) retry
-      pure online
-  if online || t' <= 0
-    then pure online
-    else waitOnlineOrDelay c t'
+  unlessM (atomically $ isNetworkOnline c) $ do
+    delay <- registerDelay $ userNetworkInterval $ config $ agentEnv c
+    atomically $ unlessM (isNetworkOnline c) $ unlessM (readTVar delay) retry
 
 closeAgentClient :: AgentClient -> IO ()
 closeAgentClient c = do
