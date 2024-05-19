@@ -430,24 +430,16 @@ getNetworkConfig = fmap snd . readTVarIO . useNetworkConfig
 {-# INLINE getNetworkConfig #-}
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()
-setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkDelay} netInfo = withAgentEnv' c $ do
-  ni <- asks $ userNetworkInterval . config
-  let d = initialInterval ni
-  off <- atomically $ do
-    wasOnline <- isOnline <$> swapTVar userNetworkInfo netInfo
-    let off = wasOnline && not (isOnline netInfo)
-    when off $ writeTVar userNetworkDelay d
-    pure off
-  liftIO . when off . void . forkIO $
-    growOfflineDelay 0 d ni
+setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkUpdated} ni = withAgentEnv' c $ do
+  ts' <- liftIO getCurrentTime
+  i <- asks $ userOfflineDelay . config
+  -- if network offline event happens in less than `userOfflineDelay` after the previous event, it is ignored
+  atomically . whenM ((isOnline ni ||) <$> notRecentlyChanged ts' i) $ do
+    writeTVar userNetworkInfo ni
+    writeTVar userNetworkUpdated $ Just ts'
   where
-    growOfflineDelay elapsed d ni = do
-      online <- waitOnlineOrDelay c d
-      unless online $ do
-        let elapsed' = elapsed + d
-            d' = nextRetryDelay elapsed' d ni
-        atomically $ writeTVar userNetworkDelay d'
-        growOfflineDelay elapsed' d' ni
+    notRecentlyChanged ts' i =
+      maybe True (\ts -> diffUTCTime ts' ts > i) <$> readTVar userNetworkUpdated
 
 reconnectAllServers :: AgentClient -> IO ()
 reconnectAllServers c = do
