@@ -2135,12 +2135,12 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
         withConnLock c connId "processSMP" $ case smpMsg of
           SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
             void . handleNotifyAck $ do
-              isGET <- atomically $ hasGetLock c rq
               msg' <- decryptSMPMessage rq msg
               ack' <- handleNotifyAck $ case msg' of
                 SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} -> processClientMsg srvTs msgFlags msgBody
                 SMP.ClientRcvMsgQuota {} -> queueDrained >> ack
-              when isGET $ notify (MSGNTF $ SMP.rcvMessageMeta srvMsgId msg')
+              whenM (atomically $ hasGetLock c rq) $
+                notify (MSGNTF $ SMP.rcvMessageMeta srvMsgId msg')
               pure ack'
             where
               queueDrained = case conn of
