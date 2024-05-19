@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent.Client
     getQueueMessage,
     decryptSMPMessage,
     addSubscription,
+    failSubscription,
     addNewQueueSubscription,
     getSubscriptions,
     sendConfirmation,
@@ -1269,9 +1270,8 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
 processSubResult :: AgentClient -> RcvQueue -> Either SMPClientError () -> STM ()
 processSubResult c rq@RcvQueue {connId} = \case
   Left e ->
-    unless (temporaryClientError e) $ do
-      RQ.deleteQueue rq (pendingSubs c)
-      TM.insert (RQ.qKey rq) e (removedSubs c)
+    unless (temporaryClientError e) $
+      failSubscription c rq e
   Right () ->
     whenM (hasPendingSubscription c connId) $
       addSubscription c rq
@@ -1390,6 +1390,11 @@ addSubscription c rq@RcvQueue {connId} = do
   modifyTVar' (subscrConns c) $ S.insert connId
   RQ.addQueue rq $ activeSubs c
   RQ.deleteQueue rq $ pendingSubs c
+
+failSubscription :: AgentClient -> RcvQueue -> SMPClientError -> STM ()
+failSubscription c rq e = do
+  RQ.deleteQueue rq (pendingSubs c)
+  TM.insert (RQ.qKey rq) e (removedSubs c)
 
 addPendingSubscription :: AgentClient -> RcvQueue -> STM ()
 addPendingSubscription c rq@RcvQueue {connId} = do
