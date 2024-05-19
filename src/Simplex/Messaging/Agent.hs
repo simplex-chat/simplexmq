@@ -159,7 +159,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
-import Simplex.Messaging.Client (ProtocolClient (..), SMPClientError, ServerTransmission, TransmissionType (..))
+import Simplex.Messaging.Client (ProtocolClient (..), ServerTransmission (..), ServerTransmissionBatch)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
@@ -2075,37 +2075,73 @@ cleanupManager c@AgentClient {subQ} = do
 
 data ACKd = ACKd | ACKPending
 
--- | make sure to ACK or throw in each message processing branch
--- it cannot be finally, unfortunately, as sometimes it needs to be ACK+DEL
-processSMPTransmissions :: AgentClient -> ServerTransmission SMPVersion ErrorType BrokerMsg -> AM' ()
+-- | Make sure to ACK or throw in each message processing branch
+-- It cannot be finally, as sometimes it needs to be ACK+DEL,
+-- and sometimes ACK has to be sent from the consumer.
+processSMPTransmissions :: AgentClient -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> AM' ()
 processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts) = do
   upConnIds <- newTVarIO []
-  rs <- mapM (tryAgentError' . processSMPTransmission c upConnIds tSess sessId) ts
-  connIds <- readTVarIO upConnIds
-  unless (null connIds) $ notify $ APC SAENone (UP srv connIds)
-  forM_ rs $ \case
-    Left e -> do
-      logError $ tshow e
-      notify $ APC SAEConn (ERR e)
-    Right () -> pure ()
-  where
-    notify cmd = atomically $ writeTBQueue subQ ("", "", cmd)
+  forM_ ts $ \(entId, t) -> case t of
+    STEvent msgOrErr ->
+      withRcvConn' entId $ \rq@RcvQueue {connId} conn -> case msgOrErr of
+        Right msg -> processSMP rq conn (toConnData conn) msg
+        Left e -> lift $ notify connId $ ERR $ protocolClientError SMP (B.unpack $ strEncode srv) e
+    STResponse (SMP.Cmd SMP.SRecipient cmd) respOrErr ->
+      withRcvConn' entId $ \rq conn -> case (cmd, respOrErr) of
+        (SMP.SUB, Right SMP.OK) -> lift $ processSubOk rq upConnIds
+        (SMP.SUB, Right msg@SMP.MSG {}) -> do
+          lift $ processSubOk rq upConnIds
+          processSMP rq conn (toConnData conn) msg
+        -- TODO process errors and unexpected responses to SUB
+        -- TODO process expired responses to DEL
+        _ -> pure ()
+    STResponse {} -> pure () -- TODO process expired responses to sent messages
+    STUnexpectedError e -> do
+      logServer "<--" c srv entId $ "error: " <> bshow e
+      notify "" $ ERR $ protocolClientError SMP (B.unpack $ strEncode srv) e
 
-processSMPTransmission :: AgentClient -> TVar [ConnId] -> SMPTransportSession -> SessionId -> (TransmissionType BrokerMsg, EntityId, Either SMPClientError BrokerMsg) -> AM ()
-processSMPTransmission c@AgentClient {smpClients, subQ} upConnIds tSess@(_, srv, _) sessId (tType, rId, cmd) = do
-  (rq, SomeConn _ conn) <- withStore c (\db -> getRcvConn db srv rId)
-  processSMP rq conn $ toConnData conn
+  -- rs <- mapM (tryAgentError' . processSMPTransmission c upConnIds tSess sessId) ts
+  connIds <- readTVarIO upConnIds
+  unless (null connIds) $ notify "" $ UP srv connIds
   where
-    processSMP :: forall c. RcvQueue -> Connection c -> ConnData -> AM ()
+    -- forM_ rs $ \case
+    --   Left e -> do
+    --     logError $ tshow e
+    --     notify $ APC SAEConn (ERR e)
+    --   Right () -> pure ()
+
+    withRcvConn' :: SMP.RecipientId -> (forall c. RcvQueue -> Connection c -> AM ()) -> AM' ()
+    withRcvConn' rId a = do
+      tryAgentError' (withStore c $ \db -> getRcvConn db srv rId) >>= \case
+        Left e -> notify "" (ERR e)
+        Right (rq@RcvQueue {connId}, SomeConn _ conn) ->
+          tryAgentError' (a rq conn) >>= \case
+            Left e -> notify connId (ERR e)
+            Right () -> pure ()
+    processSubOk :: RcvQueue -> TVar [ConnId] -> AM' ()
+    processSubOk rq@RcvQueue {connId} upConnIds =
+      atomically $
+        whenM ((&&) <$> hasPendingSubscription c connId <*> activeClientSession c tSess sessId) $ do
+          addSubscription c rq
+          modifyTVar' upConnIds (connId :)
+    notify :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> AM' ()
+    notify connId msg = atomically $ writeTBQueue subQ ("", connId, APC (sAEntity @e) msg)
+
+    -- processSMPTransmission :: AgentClient -> SMPTransportSession -> SessionId -> RecipientId -> Either SMPClientError BrokerMsg -> AM ()
+    -- processSMPTransmission c@AgentClient {smpClients, subQ} tSess@(_, srv, _) sessId rId cmd = do
+    --   (rq, SomeConn _ conn) <- withStore c (\db -> getRcvConn db srv rId)
+    --   processSMP rq conn $ toConnData conn
+    --   where
+    processSMP :: forall c. RcvQueue -> Connection c -> ConnData -> BrokerMsg -> AM ()
     processSMP
-      rq@RcvQueue {e2ePrivKey, e2eDhSecret, status}
+      rq@RcvQueue {rcvId = rId, e2ePrivKey, e2eDhSecret, status}
       conn
-      cData@ConnData {userId, connId, connAgentVersion, ratchetSyncState = rss} =
+      cData@ConnData {userId, connId, connAgentVersion, ratchetSyncState = rss}
+      cmd =
         withConnLock c connId "processSMP" $ case cmd of
-          Right r@(SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId}) ->
+          SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
             void . handleNotifyAck $ do
               isGET <- atomically $ hasGetLock c rq
-              unless isGET $ checkExpiredResponse r
               msg' <- decryptSMPMessage rq msg
               ack' <- handleNotifyAck $ case msg' of
                 SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} -> processClientMsg srvTs msgFlags msgBody
@@ -2269,8 +2305,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} upConnIds tSess@(_, srv,
               ackDel aId = enqueueCmd (ICAckDel rId srvMsgId aId) $> ACKd
               handleNotifyAck :: AM ACKd -> AM ACKd
               handleNotifyAck m = m `catchAgentError` \e -> notify (ERR e) >> ack
-          Right SMP.END ->
-            atomically (TM.lookup tSess smpClients $>>= (tryReadTMVar . sessionVar) >>= processEND)
+          SMP.END ->
+            atomically (TM.lookup tSess (smpClients c) $>>= (tryReadTMVar . sessionVar) >>= processEND)
               >>= logServer "<--" c srv rId
             where
               processEND = \case
@@ -2282,10 +2318,8 @@ processSMPTransmission c@AgentClient {smpClients, subQ} upConnIds tSess@(_, srv,
                   | otherwise -> ignored
                 _ -> ignored
               ignored = pure "END from disconnected client - ignored"
-          Right (SMP.ERR e) -> notify $ ERR $ SMP (B.unpack $ strEncode srv) e
-          Right r@SMP.OK -> checkExpiredResponse r
-          Right r -> unexpected r
-          Left e -> notify $ ERR $ protocolClientError SMP (B.unpack $ strEncode srv) e
+          SMP.ERR e -> notify $ ERR $ SMP (B.unpack $ strEncode srv) e
+          r -> unexpected r
         where
           notify :: forall e m. MonadIO m => AEntityI e => ACommand 'Agent e -> m ()
           notify = atomically . notify'
@@ -2301,21 +2335,9 @@ processSMPTransmission c@AgentClient {smpClients, subQ} upConnIds tSess@(_, srv,
 
           unexpected :: BrokerMsg -> AM ()
           unexpected r = do
-            logServer "<--" c srv rId $ "unexpected: " <> bshow cmd
+            logServer "<--" c srv rId $ "unexpected: " <> bshow r
             -- TODO add extended information about transmission type once UNEXPECTED has string
             notify . ERR $ BROKER (B.unpack $ strEncode srv) $ UNEXPECTED (take 32 $ show r)
-
-          checkExpiredResponse :: BrokerMsg -> AM ()
-          checkExpiredResponse r = case tType of
-            TTEvent -> pure ()
-            TTUncorrelatedResponse -> unexpected r
-            TTExpiredResponse (SMP.Cmd _ cmd') -> case cmd' of
-              SMP.SUB ->
-                atomically $
-                  whenM ((&&) <$> hasPendingSubscription c connId <*> activeClientSession c tSess sessId) $ do
-                    addSubscription c rq
-                    modifyTVar' upConnIds (connId :)
-              _ -> pure ()
 
           decryptClientMessage :: C.DhSecretX25519 -> SMP.ClientMsgEnvelope -> AM (SMP.PrivHeader, AgentMsgEnvelope)
           decryptClientMessage e2eDh SMP.ClientMsgEnvelope {cmNonce, cmEncBody} = do
