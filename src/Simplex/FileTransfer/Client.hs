@@ -14,6 +14,7 @@ module Simplex.FileTransfer.Client where
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
+import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
 import Data.ByteString.Builder (Builder, byteString)
@@ -38,6 +39,7 @@ import Simplex.Messaging.Client
     defaultNetworkConfig,
     proxyUsername,
     transportClientConfig,
+    unexpectedResponse,
   )
 import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
@@ -56,7 +58,7 @@ import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost,
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Transport.HTTP2.File
-import Simplex.Messaging.Util (bshow, liftEitherWith, liftError', tshow, whenM)
+import Simplex.Messaging.Util (liftEitherWith, liftError', tshow, whenM)
 import Simplex.Messaging.Version
 import UnliftIO
 import UnliftIO.Directory
@@ -228,13 +230,13 @@ createXFTPChunk ::
 createXFTPChunk c spKey file rcps auth_ =
   sendXFTPCommand c spKey "" (FNEW file rcps auth_) Nothing >>= \case
     (FRSndIds sId rIds, body) -> noFile body (sId, rIds)
-    (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+    (r, _) -> throwE $ unexpectedResponse r
 
 addXFTPRecipients :: XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> NonEmpty C.APublicAuthKey -> ExceptT XFTPClientError IO (NonEmpty RecipientId)
 addXFTPRecipients c spKey fId rcps =
   sendXFTPCommand c spKey fId (FADD rcps) Nothing >>= \case
     (FRRcvIds rIds, body) -> noFile body rIds
-    (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+    (r, _) -> throwE $ unexpectedResponse r
 
 uploadXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> XFTPChunkSpec -> ExceptT XFTPClientError IO ()
 uploadXFTPChunk c spKey fId chunkSpec =
@@ -262,7 +264,7 @@ downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {
               receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->
                 whenM (doesFileExist filePath) (removeFile filePath) >> throwError e
       _ -> throwError $ PCEResponseError NO_FILE
-    (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+    (r, _) -> throwE $ unexpectedResponse r
 
 xftpReqTimeout :: XFTPClientConfig -> Maybe Word32 -> Int
 xftpReqTimeout cfg@XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpTimeout}} chunkSize_ =
@@ -286,12 +288,12 @@ pingXFTP c@XFTPClient {thParams} = do
   (r, _) <- sendXFTPTransmission c t Nothing
   case r of
     FRPong -> pure ()
-    _ -> throwError $ PCEUnexpectedResponse $ bshow r
+    _ -> throwE $ unexpectedResponse r
 
 okResponse :: (FileResponse, HTTP2Body) -> ExceptT XFTPClientError IO ()
 okResponse = \case
   (FROk, body) -> noFile body ()
-  (r, _) -> throwError . PCEUnexpectedResponse $ bshow r
+  (r, _) -> throwE $ unexpectedResponse r
 
 -- TODO this currently does not check anything because response size is not set and bodyPart is always Just
 noFile :: HTTP2Body -> a -> ExceptT XFTPClientError IO a

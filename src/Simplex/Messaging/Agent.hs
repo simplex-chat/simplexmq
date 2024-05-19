@@ -159,7 +159,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
-import Simplex.Messaging.Client (ProtocolClient (..), ProtocolClientError (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, temporaryClientError)
+import Simplex.Messaging.Client (ProtocolClient (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
@@ -2094,7 +2094,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
           Right msg@SMP.MSG {} -> do
             processSubOk rq upConnIds
             processSMP rq conn (toConnData conn) msg
-          Right r -> processSubErr rq $ PCEUnexpectedResponse $ B.pack $ take 32 $ show r
+          Right r -> processSubErr rq $ unexpectedResponse r
           Left e -> unless (temporaryClientError e) $ processSubErr rq e -- timeout/network was already reported
         _ -> pure ()
     STResponse {} -> pure () -- TODO process expired responses to sent messages

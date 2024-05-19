@@ -1080,7 +1080,7 @@ protocolClientError :: (Show err, Encoding err) => (HostName -> err -> AgentErro
 protocolClientError protocolError_ host = \case
   PCEProtocolError e -> protocolError_ host e
   PCEResponseError e -> BROKER host $ RESPONSE $ B.unpack $ smpEncode e
-  PCEUnexpectedResponse r -> BROKER host $ UNEXPECTED $ take 32 $ show r
+  PCEUnexpectedResponse e -> BROKER host $ UNEXPECTED $ B.unpack e
   PCEResponseTimeout -> BROKER host TIMEOUT
   PCENetworkError -> BROKER host NETWORK
   PCEIncompatibleHost -> BROKER host HOST
