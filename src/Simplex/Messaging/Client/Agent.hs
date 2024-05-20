@@ -99,7 +99,7 @@ defaultSMPClientAgentConfig =
 data SMPClientAgent = SMPClientAgent
   { agentCfg :: SMPClientAgentConfig,
     active :: TVar Bool,
-    msgQ :: TBQueue (ServerTransmission SMPVersion ErrorType BrokerMsg),
+    msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
     agentQ :: TBQueue SMPClientAgentEvent,
     randomDrg :: TVar ChaChaDRG,
     smpClients :: TMap SMPServer SMPClientVar,
