@@ -83,6 +83,7 @@ module Simplex.Messaging.Agent
     setNtfServers,
     setNetworkConfig,
     getNetworkConfig,
+    getNetworkConfig',
     setUserNetworkInfo,
     reconnectAllServers,
     registerNtfToken,
@@ -426,7 +427,7 @@ setNetworkConfig c@AgentClient {useNetworkConfig} cfg' = do
 
 -- returns fast network config
 getNetworkConfig :: AgentClient -> IO NetworkConfig
-getNetworkConfig = fmap snd . readTVarIO . useNetworkConfig
+getNetworkConfig = getNetworkConfig'
 {-# INLINE getNetworkConfig #-}
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()
@@ -483,8 +484,8 @@ xftpStartWorkers c = withAgentEnv c . startXFTPWorkers c
 {-# INLINE xftpStartWorkers #-}
 
 -- | Receive XFTP file
-xftpReceiveFile :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> AE RcvFileId
-xftpReceiveFile c = withAgentEnv c .:. xftpReceiveFile' c
+xftpReceiveFile :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> Bool -> AE RcvFileId
+xftpReceiveFile c = withAgentEnv c .:: xftpReceiveFile' c
 {-# INLINE xftpReceiveFile #-}
 
 -- | Delete XFTP rcv file (deletes work files from file system and db records)
