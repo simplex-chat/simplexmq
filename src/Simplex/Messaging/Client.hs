@@ -84,7 +84,6 @@ module Simplex.Messaging.Client
     ServerTransmissionBatch,
     ServerTransmission (..),
     ClientCommand,
-    HostMode (..),
 
     -- * For testing
     PCTransmission,
