@@ -6,6 +6,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
@@ -72,8 +73,8 @@ import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), forwardSMPMessage, smpProxyError)
-import Simplex.Messaging.Client.Agent (SMPClientAgent (..), SMPClientAgentEvent (..), getSMPServerClient', lookupSMPServerClient)
+import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), forwardSMPMessage, smpProxyError, temporaryClientError)
+import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -142,7 +143,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         : receiveFromProxyAgent pa
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> rateStatsThread_ cfg <> controlPortThread_ cfg
     )
-    `finally` withLock' (savingLock s) "final" (saveServer False)
+    `finally` withLock' (savingLock s) "final" (saveServer False >> closeServer)
   where
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
@@ -155,6 +156,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 
     saveServer :: Bool -> M ()
     saveServer keepMsgs = withLog closeStoreLog >> saveServerMessages keepMsgs >> saveServerStats
+
+    closeServer :: M ()
+    closeServer = asks (smpAgent . proxyAgent) >>= liftIO . closeSMPClientAgent
 
     serverThread ::
       forall s.
@@ -199,7 +203,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           CAConnected srv -> logInfo $ "SMP server connected " <> showServer' srv
           CADisconnected srv [] -> logInfo $ "SMP server disconnected " <> showServer' srv
           CADisconnected srv subs -> logError $ "SMP server disconnected " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
-          CAReconnected srv -> logInfo $ "SMP server reconnected " <> showServer' srv
           CAResubscribed srv subs -> logError $ "SMP server resubscribed " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
           CASubError srv errs -> logError $ "SMP server subscription errors " <> showServer' srv <> " / errors: " <> tshow (length errs)
       where
@@ -243,7 +246,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount} <- asks serverStats
+      ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv} <- asks serverStats
       let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -262,32 +265,46 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           msgSentNtf' <- atomically $ swapTVar msgSentNtf 0
           msgRecvNtf' <- atomically $ swapTVar msgRecvNtf 0
           psNtf <- atomically $ periodStatCounts activeQueuesNtf ts
+          pRelays' <- atomically $ getResetProxyStatsData pRelays
+          pRelaysOwn' <- atomically $ getResetProxyStatsData pRelaysOwn
+          pMsgFwds' <- atomically $ getResetProxyStatsData pMsgFwds
+          pMsgFwdsOwn' <- atomically $ getResetProxyStatsData pMsgFwdsOwn
+          pMsgFwdsRecv' <- atomically $ swapTVar pMsgFwdsRecv 0
           qCount' <- readTVarIO qCount
           msgCount' <- readTVarIO msgCount
           hPutStrLn h $
             intercalate
               ","
-              [ iso8601Show $ utctDay fromTime',
-                show qCreated',
-                show qSecured',
-                show qDeletedAll',
-                show msgSent',
-                show msgRecv',
-                dayCount ps,
-                weekCount ps,
-                monthCount ps,
-                show msgSentNtf',
-                show msgRecvNtf',
-                dayCount psNtf,
-                weekCount psNtf,
-                monthCount psNtf,
-                show qCount',
-                show msgCount',
-                show msgExpired',
-                show qDeletedNew',
-                show qDeletedSecured'
-              ]
+              ( [ iso8601Show $ utctDay fromTime',
+                  show qCreated',
+                  show qSecured',
+                  show qDeletedAll',
+                  show msgSent',
+                  show msgRecv',
+                  dayCount ps,
+                  weekCount ps,
+                  monthCount ps,
+                  show msgSentNtf',
+                  show msgRecvNtf',
+                  dayCount psNtf,
+                  weekCount psNtf,
+                  monthCount psNtf,
+                  show qCount',
+                  show msgCount',
+                  show msgExpired',
+                  show qDeletedNew',
+                  show qDeletedSecured'
+                ]
+                  <> showProxyStats pRelays'
+                  <> showProxyStats pRelaysOwn'
+                  <> showProxyStats pMsgFwds'
+                  <> showProxyStats pMsgFwdsOwn'
+                  <> [show pMsgFwdsRecv']
+              )
         liftIO $ threadDelay' interval
+      where
+        showProxyStats ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther} =
+          [show _pRequests, show _pSuccesses, show _pErrorsConnect, show _pErrorsCompat, show _pErrorsOther]
 
     monitorServerRates :: Int -> Int64 -> M ()
     monitorServerRates nBuckets bucketWidth = do
@@ -416,7 +433,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   subscriptions' <- bshow . M.size <$> readTVarIO subscriptions
                   hPutStrLn h . B.unpack $ B.intercalate "," [bshow cid, encode sessionId, connected', strEncode createdAt, rcvActiveAt', sndActiveAt', bshow age, subscriptions']
               CPStats -> withAdminRole $ do
-                ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgSentNtf, msgRecvNtf, qCount, msgCount} <- unliftIO u $ asks serverStats
+                ss <- unliftIO u $ asks serverStats
+                let putStat :: Show a => ByteString -> (ServerStats -> TVar a) -> IO ()
+                    putStat label var = readTVarIO (var ss) >>= \v -> B.hPutStr h $ label <> ": " <> bshow v <> "\n"
+                    putProxyStat :: ByteString -> (ServerStats -> ProxyStats) -> IO ()
+                    putProxyStat label var = do
+                      ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther} <- atomically $ getProxyStatsData $ var ss
+                      B.hPutStr h $ label <> ": requests=" <> bshow _pRequests <> ", successes=" <> bshow _pSuccesses <> ", errorsConnect=" <> bshow _pErrorsConnect <> ", errorsCompat=" <> bshow _pErrorsCompat <> ", errorsOther=" <> bshow _pErrorsOther <> "\n"
                 putStat "fromTime" fromTime
                 putStat "qCreated" qCreated
                 putStat "qSecured" qSecured
@@ -429,9 +452,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 putStat "msgRecvNtf" msgRecvNtf
                 putStat "qCount" qCount
                 putStat "msgCount" msgCount
-                where
-                  putStat :: Show a => String -> TVar a -> IO ()
-                  putStat label var = readTVarIO var >>= \v -> hPutStrLn h $ label <> ": " <> show v
+                putProxyStat "pRelays" pRelays
+                putProxyStat "pRelaysOwn" pRelaysOwn
+                putProxyStat "pMsgFwds" pMsgFwds
+                putProxyStat "pMsgFwdsOwn" pMsgFwdsOwn
+                putStat "pMsgFwdsRecv" pMsgFwdsRecv
               CPStatsClients -> withAdminRole $ do
                 stats' <- unliftIO u (asks clientStats) >>= readTVarIO
                 B.hPutStr h "peerAddresses,socketCount,createdAt,updatedAt,qCreated,qSentSigned,msgSentSigned,msgSentUnsigned,msgDeliveredSigned,proxyRelaysRequested,proxyRelaysConnected,msgSentViaProxy\n"
@@ -729,42 +754,60 @@ client thParams' clnt@Client {clientId, peerId, subscriptions, ntfSubscriptions,
             ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
             pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
           getRelay = do
-            withClientStatsId $ \cs -> atomically $ modifyTVar' (CS.proxyRelaysRequested cs) (+ 1)
-            ProxyAgent {smpAgent} <- asks proxyAgent
-            r <- liftIO $ proxyResp <$> runExceptT (getSMPServerClient' smpAgent srv) `catch` (pure . Left . PCEIOError)
-            case r of
-              PKEY {} -> withClientStatsId $ \cs -> atomically $ modifyTVar' (CS.proxyRelaysConnected cs) (+ 1)
-              _ -> pure ()
-            pure r
+            ServerStats {pRelays, pRelaysOwn} <- asks serverStats
+            let inc = mkIncProxyStats pRelays pRelaysOwn
+            ProxyAgent {smpAgent = a} <- asks proxyAgent
+            liftIO (runExceptT (getSMPServerClient'' a srv) `catch` (pure . Left . PCEIOError)) >>= \case
+              Right (own, smp) -> do
+                inc own pRequests
+                case proxyResp smp of
+                  r@PKEY {} -> do
+                    withClientStatsId $ \cs -> atomically $ modifyTVar' (CS.proxyRelaysConnected cs) (+ 1)
+                    r <$ inc own pSuccesses
+                  r -> r <$ inc own pErrorsCompat
+              Left e -> do
+                let own = isOwnServer a srv
+                inc own pRequests
+                inc own $ if temporaryClientError e then pErrorsConnect else pErrorsOther
+                pure . ERR $ smpProxyError e
             where
-              proxyResp = \case
-                Left err -> ERR $ smpProxyError err
-                Right smp ->
-                  let THandleParams {sessionId = srvSessId, thVersion, thServerVRange, thAuth} = thParams smp
-                   in case compatibleVRange thServerVRange proxiedSMPRelayVRange of
-                        -- Cap the destination relay version range to prevent client version fingerprinting.
-                        -- See comment for proxiedSMPRelayVersion.
-                        Just (Compatible vr) | thVersion >= sendingProxySMPVersion -> case thAuth of
-                          Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
-                          Nothing -> ERR $ transportErr TENoServerAuth
-                        _ -> ERR $ transportErr TEVersion
+              proxyResp smp =
+                let THandleParams {sessionId = srvSessId, thVersion, thServerVRange, thAuth} = thParams smp
+                 in case compatibleVRange thServerVRange proxiedSMPRelayVRange of
+                      -- Cap the destination relay version range to prevent client version fingerprinting.
+                      -- See comment for proxiedSMPRelayVersion.
+                      Just (Compatible vr) | thVersion >= sendingProxySMPVersion -> case thAuth of
+                        Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
+                        Nothing -> ERR $ transportErr TENoServerAuth
+                      _ -> ERR $ transportErr TEVersion
       PFWD fwdV pubKey encBlock -> do
-        ProxyAgent {smpAgent} <- asks proxyAgent
-        atomically (lookupSMPServerClient smpAgent sessId) >>= \case
-          Just smp
-            | v >= sendingProxySMPVersion -> do
-                r <- liftIO $ either (ERR . smpProxyError) PRES <$>
-                   runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catchError` (pure . Left . PCEIOError)
-                case r of
-                  PRES {} -> withClientStatsId $ \cs -> atomically $ modifyTVar' (CS.msgSentViaProxy cs) (+ 1)
-                  _ -> pure ()
-                pure r
-            | otherwise -> pure . ERR $ transportErr TEVersion
+        ProxyAgent {smpAgent = a} <- asks proxyAgent
+        ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
+        let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
+        atomically (lookupSMPServerClient a sessId) >>= \case
+          Just (own, smp) -> do
+            inc own pRequests
+            if
+              | v >= sendingProxySMPVersion ->
+                  liftIO (runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catch` (pure . Left . PCEIOError))  >>= \case
+                    Right r -> do
+                      withClientStatsId $ \cs -> atomically $ modifyTVar' (CS.msgSentViaProxy cs) (+ 1)
+                      PRES r <$ inc own pSuccesses
+                    Left e -> case e of
+                      PCEProtocolError {} -> ERR err <$ inc own pSuccesses
+                      _ -> ERR err <$ inc own pErrorsOther
+                      where
+                        err = smpProxyError e
+              | otherwise -> ERR (transportErr TEVersion) <$ inc own pErrorsCompat
             where
               THandleParams {thVersion = v} = thParams smp
-          Nothing -> pure $ ERR $ PROXY NO_SESSION
+          Nothing -> inc False pRequests >> inc False pErrorsConnect $> ERR (PROXY NO_SESSION)
     transportErr :: TransportError -> ErrorType
     transportErr = PROXY . BROKER . TRANSPORT
+    mkIncProxyStats :: MonadIO m => ProxyStats -> ProxyStats -> OwnServer -> (ProxyStats -> TVar Int) -> m ()
+    mkIncProxyStats ps psOwn = \own sel -> do
+      atomically $ modifyTVar' (sel ps) (+ 1)
+      when own $ atomically $ modifyTVar' (sel psOwn) (+ 1)
     processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Either (Transmission (Command 'ProxiedClient)) (Transmission BrokerMsg))
     processCommand (qr_, (corrId, queueId, cmd)) = do
       st <- asks queueStore
@@ -1104,6 +1147,8 @@ client thParams' clnt@Client {clientId, peerId, subscriptions, ntfSubscriptions,
           -- encrypt to proxy
           let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
               r3 = EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
+          stats <- asks serverStats
+          atomically $ modifyTVar' (pMsgFwdsRecv stats) (+ 1)
           pure $ RRES r3
           where
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))

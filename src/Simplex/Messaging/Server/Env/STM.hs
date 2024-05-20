@@ -141,7 +141,7 @@ data Server = Server
     savingLock :: Lock
   }
 
-data ProxyAgent = ProxyAgent
+newtype ProxyAgent = ProxyAgent
   { smpAgent :: SMPClientAgent
   }
 
