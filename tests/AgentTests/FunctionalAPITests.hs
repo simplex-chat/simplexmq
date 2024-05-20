@@ -51,7 +51,7 @@ module AgentTests.FunctionalAPITests
 where
 
 import AgentTests.ConnectionRequestTests (connReqData, queueAddr, testE2ERatchetParams12)
-import Control.Concurrent (killThread, threadDelay)
+import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
@@ -78,7 +78,6 @@ import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestSte
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
-import Simplex.Messaging.Agent.RetryInterval (RetryInterval (..))
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), SMPProxyFallback (..), SMPProxyMode (..), TransportSessionMode (TSMEntity, TSMUser), defaultClientConfig)
@@ -439,7 +438,8 @@ functionalAPITests t = do
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent t
   describe "user network info" $ do
     it "should wait for user network" testWaitForUserNetwork
-    it "should not reset offline interval while offline" testDoNotResetOfflineInterval
+    it "should not reset online to offline if happens too quickly" testDoNotResetOnlineToOffline
+    it "should resume multiple threads" testResumeMultipleThreads
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -2710,9 +2710,7 @@ testWaitForUserNetwork = do
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNNone False
   networkDelay a 100000
-  networkDelay a 150000
-  networkDelay a 200000
-  networkDelay a 200000
+  networkDelay a 100000
   setUserNetworkInfo a $ UserNetworkInfo UNCellular True
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNCellular False
@@ -2722,36 +2720,66 @@ testWaitForUserNetwork = do
     (networkDelay a 50000)
   noNetworkDelay a
   where
-    aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 100000, increaseAfter = 0, maxInterval = 200000}}
+    aCfg = agentCfg {userNetworkInterval = 100000, userOfflineDelay = 0}
 
-testDoNotResetOfflineInterval :: IO ()
-testDoNotResetOfflineInterval = do
+testDoNotResetOnlineToOffline :: IO ()
+testDoNotResetOnlineToOffline = do
   a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNWifi False
   networkDelay a 100000
-  networkDelay a 150000
-  setUserNetworkInfo a $ UserNetworkInfo UNCellular False
-  networkDelay a 200000
-  setUserNetworkInfo a $ UserNetworkInfo UNNone False
-  networkDelay a 200000
-  setUserNetworkInfo a $ UserNetworkInfo UNCellular True
+  setUserNetworkInfo a $ UserNetworkInfo UNWifi False
+  setUserNetworkInfo a $ UserNetworkInfo UNWifi True
   noNetworkDelay a
-  setUserNetworkInfo a $ UserNetworkInfo UNCellular False
+  setUserNetworkInfo a $ UserNetworkInfo UNWifi False -- ingnored
+  noNetworkDelay a
+  threadDelay 100000
+  setUserNetworkInfo a $ UserNetworkInfo UNWifi False
   networkDelay a 100000
+  setUserNetworkInfo a $ UserNetworkInfo UNNone False
+  networkDelay a 100000
+  setUserNetworkInfo a $ UserNetworkInfo UNWifi True
+  setUserNetworkInfo a $ UserNetworkInfo UNNone False -- ingnored
+  noNetworkDelay a
   where
-    aCfg = agentCfg {userNetworkInterval = RetryInterval {initialInterval = 100000, increaseAfter = 0, maxInterval = 200000}}
+    aCfg = agentCfg {userNetworkInterval = 100000, userOfflineDelay = 0.1}
+
+testResumeMultipleThreads :: IO ()
+testResumeMultipleThreads = do
+  a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
+  noNetworkDelay a
+  setUserNetworkInfo a $ UserNetworkInfo UNNone False
+  vs <-
+    replicateM 50000 $ do
+      v <- newEmptyTMVarIO
+      void . forkIO $ waitNetwork a >>= atomically . putTMVar v
+      pure v
+  threadDelay 1000000
+  setUserNetworkInfo a $ UserNetworkInfo UNCellular True
+  ts <- mapM (atomically . readTMVar) vs
+  -- print $ minimum ts
+  -- print $ maximum ts
+  -- print $ sum ts `div` fromIntegral (length ts)
+  let average = sum ts `div` fromIntegral (length ts)
+  average < 3000000 `shouldBe` True
+  maximum ts < 4000000 `shouldBe` True
+  where
+    aCfg = agentCfg {userOfflineDelay = 0}
 
 noNetworkDelay :: AgentClient -> IO ()
-noNetworkDelay a = (10000 >) <$> waitNetwork a `shouldReturn` True
+noNetworkDelay a = do
+  d <- waitNetwork a
+  unless (d < 10000) $ expectationFailure $ "expected no delay, d = " <> show d
 
 networkDelay :: AgentClient -> Int64 -> IO ()
-networkDelay a d' = (\d -> d' < d && d < d' + 15000) <$> waitNetwork a `shouldReturn` True
+networkDelay a d' = do
+  d <- waitNetwork a
+  unless (d' < d && d < d' + 15000) $ expectationFailure $ "expected delay " <> show d' <> ", d = " <> show d
 
 waitNetwork :: AgentClient -> IO Int64
 waitNetwork a = do
   t <- getCurrentTime
-  waitForUserNetwork a `runReaderT` agentEnv a
+  waitForUserNetwork a
   t' <- getCurrentTime
   pure $ diffToMicroseconds $ diffUTCTime t' t
 

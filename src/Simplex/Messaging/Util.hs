@@ -152,12 +152,14 @@ timeoutThrow :: MonadUnliftIO m => e -> Int -> ExceptT e m a -> ExceptT e m a
 timeoutThrow e ms action = ExceptT (sequence <$> (ms `timeout` runExceptT action)) >>= maybe (throwError e) pure
 
 threadDelay' :: Int64 -> IO ()
-threadDelay' time
-  | time <= 0 = pure ()
-threadDelay' time = do
-  let maxWait = min time $ fromIntegral (maxBound :: Int)
-  threadDelay $ fromIntegral maxWait
-  when (maxWait /= time) $ threadDelay' (time - maxWait)
+threadDelay' = loop
+  where
+    loop time
+      | time <= 0 = pure ()
+      | otherwise = do
+          let maxWait = min time $ fromIntegral (maxBound :: Int)
+          threadDelay $ fromIntegral maxWait
+          loop $ time - maxWait
 
 diffToMicroseconds :: NominalDiffTime -> Int64
 diffToMicroseconds diff = fromIntegral ((truncate $ diff * 1000000) :: Integer)

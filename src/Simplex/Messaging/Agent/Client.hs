@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent.Client
     getQueueMessage,
     decryptSMPMessage,
     addSubscription,
+    failSubscription,
     addNewQueueSubscription,
     getSubscriptions,
     sendConfirmation,
@@ -109,9 +110,9 @@ module Simplex.Messaging.Agent.Client
     waitUntilActive,
     UserNetworkInfo (..),
     UserNetworkType (..),
-    UserNetworkState (..),
-    UNSOffline (..),
     waitForUserNetwork,
+    isNetworkOnline,
+    isOnline,
     throwWhenInactive,
     throwWhenNoDelivery,
     beginAgentOperation,
@@ -163,7 +164,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (partitionEithers)
 import Data.Functor (($>))
-import Data.Int (Int64)
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
@@ -174,7 +174,7 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Text.Encoding
-import Data.Time (UTCTime, defaultTimeLocale, diffUTCTime, formatTime, getCurrentTime)
+import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as SQL
@@ -270,7 +270,7 @@ data AgentClient = AgentClient
     active :: TVar Bool,
     rcvQ :: TBQueue (ATransmission 'Client),
     subQ :: TBQueue (ATransmission 'Agent),
-    msgQ :: TBQueue (ServerTransmission SMPVersion ErrorType BrokerMsg),
+    msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
     smpServers :: TMap UserId (NonEmpty SMPServerWithAuth),
     smpClients :: TMap SMPTransportSession SMPClientVar,
     -- smpProxiedRelays:
@@ -282,7 +282,8 @@ data AgentClient = AgentClient
     xftpServers :: TMap UserId (NonEmpty XFTPServerWithAuth),
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
     useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
-    userNetworkState :: TVar UserNetworkState,
+    userNetworkInfo :: TVar UserNetworkInfo,
+    userNetworkUpdated :: TVar (Maybe UTCTime),
     subscrConns :: TVar (Set ConnId),
     activeSubs :: TRcvQueues,
     pendingSubs :: TRcvQueues,
@@ -427,22 +428,20 @@ data UserNetworkInfo = UserNetworkInfo
   }
   deriving (Show)
 
+isNetworkOnline :: AgentClient -> STM Bool
+isNetworkOnline c = isOnline <$> readTVar (userNetworkInfo c)
+
+isOnline :: UserNetworkInfo -> Bool
+isOnline UserNetworkInfo {networkType, online} = networkType /= UNNone && online
+
 data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
-
-data UserNetworkState = UserNetworkState
-  { networkType :: UserNetworkType,
-    offline :: Maybe UNSOffline
-  }
-  deriving (Show)
-
-data UNSOffline = UNSOffline {offlineDelay :: Int64, offlineFrom :: UTCTime}
-  deriving (Show)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 newAgentClient :: Int -> InitialAgentServers -> Env -> STM AgentClient
 newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
-  let qSize = tbqSize $ config agentEnv
+  let cfg = config agentEnv
+      qSize = tbqSize cfg
   acThread <- newTVar Nothing
   active <- newTVar True
   rcvQ <- newTBQueue qSize
@@ -456,7 +455,8 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   xftpServers <- newTVar xftp
   xftpClients <- TM.empty
   useNetworkConfig <- newTVar (slowNetworkConfig netCfg, netCfg)
-  userNetworkState <- newTVar $ UserNetworkState UNOther Nothing
+  userNetworkInfo <- newTVar $ UserNetworkInfo UNOther True
+  userNetworkUpdated <- newTVar Nothing
   subscrConns <- newTVar S.empty
   activeSubs <- RQ.empty
   pendingSubs <- RQ.empty
@@ -493,7 +493,8 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         xftpServers,
         xftpClients,
         useNetworkConfig,
-        userNetworkState,
+        userNetworkInfo,
+        userNetworkUpdated,
         subscrConns,
         activeSubs,
         pendingSubs,
@@ -704,7 +705,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess =
       withRetryInterval ri $ \_ loop -> do
         pending <- atomically getPending
         forM_ (L.nonEmpty pending) $ \qs -> do
-          waitForUserNetwork c
+          lift $ waitForUserNetwork c
           void . tryAgentError' $ reconnectSMPClient timeoutCounts c tSess qs
           loop
     getPending = RQ.getSessQueues tSess $ pendingSubs c
@@ -721,18 +722,17 @@ reconnectSMPClient tc c tSess@(_, srv, _) qs = do
   -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
   let t = (length qs `div` 90 + 1) * tcpTimeout * 3
   ExceptT (sequence <$> (t `timeout` runExceptT resubscribe)) >>= \case
-    Just _ -> atomically $ writeTVar tc 0
-    Nothing ->
-      (offline <$> readTVarIO (userNetworkState c)) >>= \case
-        -- reset and do not report consequitive timeouts while offline
-        Just _ -> atomically $ writeTVar tc 0
-        Nothing -> do
-          tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
-          maxTC <- asks $ maxSubscriptionTimeouts . config
-          when (tc' >= maxTC) $ do
-            let msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
-            atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ INTERNAL msg)
+    Just _ -> resetTimeouts
+    -- reset and do not report consecutive timeouts while offline
+    Nothing -> ifM (atomically $ isNetworkOnline c) notifyTimeout resetTimeouts
   where
+    resetTimeouts = atomically $ writeTVar tc 0
+    notifyTimeout = do
+      tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
+      maxTC <- asks $ maxSubscriptionTimeouts . config
+      when (tc' >= maxTC) $ do
+        let msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
+        atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ INTERNAL msg)
     resubscribe :: AM ()
     resubscribe = do
       cs <- readTVarIO $ RQ.getConnections $ activeSubs c
@@ -849,43 +849,17 @@ getClientConfig c cfgSel = do
 getNetworkConfig :: AgentClient -> STM NetworkConfig
 getNetworkConfig c = do
   (slowCfg, fastCfg) <- readTVar (useNetworkConfig c)
-  UserNetworkState {networkType} <- readTVar (userNetworkState c)
+  UserNetworkInfo {networkType} <- readTVar $ userNetworkInfo c
   pure $ case networkType of
     UNCellular -> slowCfg
     UNNone -> slowCfg
     _ -> fastCfg
 
-waitForUserNetwork :: AgentClient -> AM' ()
-waitForUserNetwork AgentClient {userNetworkState} =
-  readTVarIO userNetworkState >>= mapM_ waitWhileOffline . offline
-  where
-    waitWhileOffline UNSOffline {offlineDelay = d} =
-      unlessM (liftIO $ waitOnline d False) $ do
-        -- network delay reached, increase delay
-        ts' <- liftIO getCurrentTime
-        ni <- asks $ userNetworkInterval . config
-        atomically $ do
-          ns@UserNetworkState {offline} <- readTVar userNetworkState
-          forM_ offline $ \UNSOffline {offlineDelay = d', offlineFrom = ts} ->
-            -- Using `min` to avoid multiple updates in a short period of time
-            -- and to reset `offlineDelay` if network went `on` and `off` again.
-            writeTVar userNetworkState $!
-              let d'' = nextRetryDelay (diffToMicroseconds $ diffUTCTime ts' ts) (min d d') ni
-               in ns {offline = Just UNSOffline {offlineDelay = d'', offlineFrom = ts}}
-    waitOnline :: Int64 -> Bool -> IO Bool
-    waitOnline t online'
-      | t <= 0 = pure online'
-      | otherwise =
-          registerDelay (fromIntegral maxWait)
-            >>= atomically . onlineOrDelay
-            >>= waitOnline (t - maxWait)
-      where
-        maxWait = min t $ fromIntegral (maxBound :: Int)
-        onlineOrDelay delay = do
-          online <- isNothing . offline <$> readTVar userNetworkState
-          expired <- readTVar delay
-          unless (online || expired) retry
-          pure online
+waitForUserNetwork :: AgentClient -> IO ()
+waitForUserNetwork c =
+  unlessM (atomically $ isNetworkOnline c) $ do
+    delay <- registerDelay $ userNetworkInterval $ config $ agentEnv c
+    atomically $ unlessM (isNetworkOnline c) $ unlessM (readTVar delay) retry
 
 closeAgentClient :: AgentClient -> IO ()
 closeAgentClient c = do
@@ -1107,7 +1081,7 @@ protocolClientError :: (Show err, Encoding err) => (HostName -> err -> AgentErro
 protocolClientError protocolError_ host = \case
   PCEProtocolError e -> protocolError_ host e
   PCEResponseError e -> BROKER host $ RESPONSE $ B.unpack $ smpEncode e
-  PCEUnexpectedResponse r -> BROKER host $ UNEXPECTED $ take 32 $ show r
+  PCEUnexpectedResponse e -> BROKER host $ UNEXPECTED $ B.unpack e
   PCEResponseTimeout -> BROKER host TIMEOUT
   PCENetworkError -> BROKER host NETWORK
   PCEIncompatibleHost -> BROKER host HOST
@@ -1301,9 +1275,8 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
 processSubResult :: AgentClient -> RcvQueue -> Either SMPClientError () -> STM ()
 processSubResult c rq@RcvQueue {connId} = \case
   Left e ->
-    unless (temporaryClientError e) $ do
-      RQ.deleteQueue rq (pendingSubs c)
-      TM.insert (RQ.qKey rq) e (removedSubs c)
+    unless (temporaryClientError e) $
+      failSubscription c rq e
   Right () ->
     whenM (hasPendingSubscription c connId) $
       addSubscription c rq
@@ -1424,6 +1397,11 @@ addSubscription c rq@RcvQueue {connId} = do
   modifyTVar' (subscrConns c) $ S.insert connId
   RQ.addQueue rq $ activeSubs c
   RQ.deleteQueue rq $ pendingSubs c
+
+failSubscription :: AgentClient -> RcvQueue -> SMPClientError -> STM ()
+failSubscription c rq e = do
+  RQ.deleteQueue rq (pendingSubs c)
+  TM.insert (RQ.qKey rq) e (removedSubs c)
 
 addPendingSubscription :: AgentClient -> RcvQueue -> STM ()
 addPendingSubscription c rq@RcvQueue {connId} = do
