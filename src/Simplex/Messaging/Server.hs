@@ -680,7 +680,9 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                   r@PKEY {} -> r <$ inc own pSuccesses
                   r -> r <$ inc own pErrorsCompat
               Left e -> do
-                inc (isOwnServer a srv) $ if temporaryClientError e then pErrorsConnect else pErrorsOther
+                let own = isOwnServer a srv
+                inc own pRequests
+                inc own $ if temporaryClientError e then pErrorsConnect else pErrorsOther
                 pure . ERR $ smpProxyError e
             where
               proxyResp smp =
