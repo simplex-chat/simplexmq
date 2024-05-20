@@ -2093,7 +2093,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
         SMP.SUB -> case respOrErr of
           Right SMP.OK -> processSubOk rq upConnIds
           Right msg@SMP.MSG {} -> do
-            processSubOk rq upConnIds
+            processSubOk rq upConnIds -- the connection is UP even when processing this particular message fails
             processSMP rq conn (toConnData conn) msg
           Right r -> processSubErr rq $ unexpectedResponse r
           Left e -> unless (temporaryClientError e) $ processSubErr rq e -- timeout/network was already reported
