@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent.Client
     getQueueMessage,
     decryptSMPMessage,
     addSubscription,
+    failSubscription,
     addNewQueueSubscription,
     getSubscriptions,
     sendConfirmation,
@@ -268,7 +269,7 @@ data AgentClient = AgentClient
     active :: TVar Bool,
     rcvQ :: TBQueue (ATransmission 'Client),
     subQ :: TBQueue (ATransmission 'Agent),
-    msgQ :: TBQueue (ServerTransmission SMPVersion ErrorType BrokerMsg),
+    msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
     smpServers :: TMap UserId (NonEmpty SMPServerWithAuth),
     smpClients :: TMap SMPTransportSession SMPClientVar,
     -- smpProxiedRelays:
@@ -1079,7 +1080,7 @@ protocolClientError :: (Show err, Encoding err) => (HostName -> err -> AgentErro
 protocolClientError protocolError_ host = \case
   PCEProtocolError e -> protocolError_ host e
   PCEResponseError e -> BROKER host $ RESPONSE $ B.unpack $ smpEncode e
-  PCEUnexpectedResponse r -> BROKER host $ UNEXPECTED $ take 32 $ show r
+  PCEUnexpectedResponse e -> BROKER host $ UNEXPECTED $ B.unpack e
   PCEResponseTimeout -> BROKER host TIMEOUT
   PCENetworkError -> BROKER host NETWORK
   PCEIncompatibleHost -> BROKER host HOST
@@ -1269,9 +1270,8 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
 processSubResult :: AgentClient -> RcvQueue -> Either SMPClientError () -> STM ()
 processSubResult c rq@RcvQueue {connId} = \case
   Left e ->
-    unless (temporaryClientError e) $ do
-      RQ.deleteQueue rq (pendingSubs c)
-      TM.insert (RQ.qKey rq) e (removedSubs c)
+    unless (temporaryClientError e) $
+      failSubscription c rq e
   Right () ->
     whenM (hasPendingSubscription c connId) $
       addSubscription c rq
@@ -1390,6 +1390,11 @@ addSubscription c rq@RcvQueue {connId} = do
   modifyTVar' (subscrConns c) $ S.insert connId
   RQ.addQueue rq $ activeSubs c
   RQ.deleteQueue rq $ pendingSubs c
+
+failSubscription :: AgentClient -> RcvQueue -> SMPClientError -> STM ()
+failSubscription c rq e = do
+  RQ.deleteQueue rq (pendingSubs c)
+  TM.insert (RQ.qKey rq) e (removedSubs c)
 
 addPendingSubscription :: AgentClient -> RcvQueue -> STM ()
 addPendingSubscription c rq@RcvQueue {connId} = do

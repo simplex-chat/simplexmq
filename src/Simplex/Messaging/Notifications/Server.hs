@@ -31,7 +31,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Network.Socket (ServiceName)
-import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError)
+import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmission (..))
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -220,23 +220,27 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
-      ((_, srv, _), _, _, _tType, ntfId, msgOrErr) <- atomically $ readTBQueue msgQ
-      let smpQueue = SMPQueueNtf srv ntfId
-      case msgOrErr of
-        Right (SMP.NMSG nmsgNonce encNMsgMeta) -> do
-          ntfTs <- liftIO getSystemTime
-          st <- asks store
-          NtfPushServer {pushQ} <- asks pushServer
-          stats <- asks serverStats
-          atomically $ updatePeriodStats (activeSubs stats) ntfId
-          atomically $
-            findNtfSubscriptionToken st smpQueue
-              >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
-          incNtfStat ntfReceived
-        Right SMP.END -> updateSubStatus smpQueue NSEnd
-        Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
-        Right _ -> logError $ "SMP server unexpected response"
-        Left e -> logError $ "SMP client error: " <> tshow e
+      ((_, srv, _), _, _, ts) <- atomically $ readTBQueue msgQ
+      forM ts $ \(ntfId, t) -> case t of
+        STUnexpectedError e -> logError $ "SMP client unexpected error: " <> tshow e -- uncorrelated response, should not happen
+        STResponse {} -> pure () -- it was already reported as timeout error
+        STEvent msgOrErr -> do
+          let smpQueue = SMPQueueNtf srv ntfId
+          case msgOrErr of
+            Right (SMP.NMSG nmsgNonce encNMsgMeta) -> do
+              ntfTs <- liftIO getSystemTime
+              st <- asks store
+              NtfPushServer {pushQ} <- asks pushServer
+              stats <- asks serverStats
+              atomically $ updatePeriodStats (activeSubs stats) ntfId
+              atomically $
+                findNtfSubscriptionToken st smpQueue
+                  >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
+              incNtfStat ntfReceived
+            Right SMP.END -> updateSubStatus smpQueue NSEnd
+            Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
+            Right _ -> logError $ "SMP server unexpected response"
+            Left e -> logError $ "SMP client error: " <> tshow e
 
     receiveAgent =
       forever $
@@ -248,7 +252,6 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
             forM_ subs $ \(_, ntfId) -> do
               let smpQueue = SMPQueueNtf srv ntfId
               updateSubStatus smpQueue NSInactive
-
           CAResubscribed srv subs -> do
             forM_ subs $ \(_, ntfId) -> updateSubStatus (SMPQueueNtf srv ntfId) NSActive
             logSubStatus srv "resubscribed" $ length subs
