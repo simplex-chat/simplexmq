@@ -133,7 +133,11 @@ proxyCfg =
   cfgV7
     { allowSMPProxy = True,
       smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion,
-      smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = proxyVRange, agreeSecret = True}}
+      smpAgentCfg =
+        defaultSMPClientAgentConfig
+          { smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = proxyVRange, agreeSecret = True},
+            persistErrorInterval = 3 -- seconds
+          }
     }
 
 proxyVRange :: VersionRangeSMP

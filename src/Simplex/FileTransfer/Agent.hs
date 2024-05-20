@@ -180,7 +180,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
         (fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, digest, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _}, approvedRelays) -> do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
-            lift $ waitForUserNetwork c
+            liftIO $ waitForUserNetwork c
             downloadFileChunk fc replica approvedRelays
               `catchAgentError` \e -> retryOnError "XFTP rcv worker" (retryLoop loop e delay') (retryDone e) e
           where
@@ -430,7 +430,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
             tryCreate = do
               usedSrvs <- newTVarIO ([] :: [XFTPServer])
               withRetryInterval (riFast ri) $ \_ loop -> do
-                lift $ waitForUserNetwork c
+                liftIO $ waitForUserNetwork c
                 createWithNextSrv usedSrvs
                   `catchAgentError` \e -> retryOnError "XFTP prepare worker" (retryLoop loop) (throwError e) e
               where
@@ -463,7 +463,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
         fc@SndFileChunk {userId, sndFileId, sndFileEntityId, filePrefixPath, digest, replicas = replica@SndFileChunkReplica {sndChunkReplicaId, server, delay} : _} -> do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
-            lift $ waitForUserNetwork c
+            liftIO $ waitForUserNetwork c
             uploadFileChunk cfg fc replica
               `catchAgentError` \e -> retryOnError "XFTP snd worker" (retryLoop loop e delay') (retryDone e) e
           where
@@ -630,7 +630,7 @@ runXFTPDelWorker c srv Worker {doWork} = do
         processDeletedReplica replica@DeletedSndChunkReplica {deletedSndChunkReplicaId, userId, server, chunkDigest, delay} = do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
-            lift $ waitForUserNetwork c
+            liftIO $ waitForUserNetwork c
             deleteChunkReplica
               `catchAgentError` \e -> retryOnError "XFTP del worker" (retryLoop loop e delay') (retryDone e) e
           where
