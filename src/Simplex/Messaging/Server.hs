@@ -644,10 +644,10 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
     forkProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (TMVar (Transmission BrokerMsg))
     forkProxiedCmd cmd = do
       res <- newEmptyTMVarIO
-      ServerConfig {maxProcThreads} <- asks config
+      ServerConfig {proxyClientConcurrency} <- asks config
       let enter = atomically $ do
             used <- readTVar procThreads
-            when (used >= maxProcThreads) retry
+            when (used >= proxyClientConcurrency) retry
             writeTVar procThreads $! used + 1
           exit = atomically $ modifyTVar' procThreads (\t -> t - 1)
       bracket_ enter exit . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $
@@ -663,7 +663,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
           getRelay = do
             ProxyAgent {smpAgent} <- asks proxyAgent
-            liftIO $ proxyResp <$> runExceptT (getSMPServerClient' smpAgent srv) `catch` (pure . Left . PCEIOError) -- both new client and waiting is under tcpConnectTimeout
+            liftIO $ proxyResp <$> runExceptT (getSMPServerClient' smpAgent srv) `catch` (pure . Left . PCEIOError)
             where
               proxyResp = \case
                 Left err -> ERR $ smpProxyError err
@@ -682,7 +682,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           Just smp
             | v >= sendingProxySMPVersion ->
                 liftIO $ either (ERR . smpProxyError) PRES <$>
-                   runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catchError` (pure . Left . PCEIOError) -- sendProtocolCommand_ is under tcpTimeout
+                   runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catchError` (pure . Left . PCEIOError)
             | otherwise -> pure . ERR $ transportErr TEVersion
             where
               THandleParams {thVersion = v} = thParams smp
