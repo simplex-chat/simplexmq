@@ -667,10 +667,10 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
     forkProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (TMVar (Transmission BrokerMsg))
     forkProxiedCmd cmd = do
       res <- newEmptyTMVarIO
-      ServerConfig {proxyClientConcurrency} <- asks config
+      ServerConfig {serverClientConcurrency} <- asks config
       let enter = atomically $ do
             used <- readTVar procThreads
-            when (used > proxyClientConcurrency) retry
+            when (used > serverClientConcurrency) retry
             writeTVar procThreads $! used + 1
           exit = atomically $ modifyTVar' procThreads (\t -> t - 1)
       bracket_ enter exit . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $

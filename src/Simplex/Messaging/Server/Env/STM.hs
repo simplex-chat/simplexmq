@@ -83,7 +83,7 @@ data ServerConfig = ServerConfig
     controlPort :: Maybe ServiceName,
     smpAgentCfg :: SMPClientAgentConfig,
     allowSMPProxy :: Bool, -- auth is the same with `newQueueBasicAuth`
-    proxyClientConcurrency :: Int
+    serverClientConcurrency :: Int
   }
 
 defMsgExpirationDays :: Int64

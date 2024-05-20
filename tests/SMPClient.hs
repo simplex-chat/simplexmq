@@ -120,7 +120,7 @@ cfg =
       controlPort = Nothing,
       smpAgentCfg = defaultSMPClientAgentConfig,
       allowSMPProxy = False,
-      proxyClientConcurrency = 2
+      serverClientConcurrency = 2
     }
 
 cfgV7 :: ServerConfig

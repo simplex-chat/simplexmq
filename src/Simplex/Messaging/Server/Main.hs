@@ -254,7 +254,7 @@ smpServerCLI cfgPath logPath =
                     persistErrorInterval = 30 -- seconds
                   },
               allowSMPProxy = True,
-              proxyClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini
+              serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini
             }
         textToSocksMode :: Text -> SocksMode
         textToSocksMode = \case
