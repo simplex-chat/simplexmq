@@ -667,16 +667,18 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
     forkProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (TMVar (Transmission BrokerMsg))
     forkProxiedCmd cmd = do
       res <- newEmptyTMVarIO
-      ServerConfig {serverClientConcurrency} <- asks config
-      let enter = atomically $ do
-            used <- readTVar procThreads
-            when (used > serverClientConcurrency) retry
-            writeTVar procThreads $! used + 1
-          exit = atomically $ modifyTVar' procThreads (\t -> t - 1)
-      bracket_ enter exit . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $
+      bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $
         -- commands MUST be processed under a reasonable timeout or the client would halt
         processProxiedCmd cmd >>= atomically . putTMVar res
       pure res
+      where
+        wait = do
+          ServerConfig {serverClientConcurrency} <- asks config
+          atomically $ do
+            used <- readTVar procThreads
+            when (used >= serverClientConcurrency) retry
+            writeTVar procThreads $! used + 1
+        signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
     processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Transmission BrokerMsg)
     processProxiedCmd (corrId, sessId, command) = (corrId, sessId,) <$> case command of
       PRXY srv auth -> ifM allowProxy getRelay (pure $ ERR $ PROXY BASIC_AUTH)
