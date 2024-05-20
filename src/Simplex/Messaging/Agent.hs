@@ -2080,45 +2080,43 @@ data ACKd = ACKd | ACKPending
 -- and sometimes ACK has to be sent from the consumer.
 processSMPTransmissions :: AgentClient -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> AM' ()
 processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts) = do
-  connIds <- fmap catMaybes . forM (L.toList ts) $ \(entId, t) -> case t of
+  upConnIds <- newTVarIO []
+  forM_ ts $ \(entId, t) -> case t of
     STEvent msgOrErr ->
-      withRcvConn entId $ \rq@RcvQueue {connId} conn ->
-        Nothing <$ case msgOrErr of
-          Right msg -> processSMP rq conn (toConnData conn) msg
-          Left e -> lift $ notifyErr connId e
+      withRcvConn entId $ \rq@RcvQueue {connId} conn -> case msgOrErr of
+        Right msg -> processSMP rq conn (toConnData conn) msg
+        Left e -> lift $ notifyErr connId e
     STResponse (Cmd SRecipient cmd) respOrErr ->
       withRcvConn entId $ \rq conn -> case cmd of
         -- TODO process expired responses to ACK and DEL
         SMP.SUB -> case respOrErr of
-          Right SMP.OK -> processSubOk rq
+          Right SMP.OK -> processSubOk rq upConnIds
           Right msg@SMP.MSG {} -> do
-            cId_ <- processSubOk rq
-            cId_ <$ processSMP rq conn (toConnData conn) msg
-          Right r -> Nothing <$ processSubErr rq (unexpectedResponse r)
-          Left e -> Nothing <$ unless (temporaryClientError e) (processSubErr rq e) -- timeout/network was already reported
-        _ -> pure Nothing
-    STResponse {} -> pure Nothing -- TODO process expired responses to sent messages
+            processSubOk rq upConnIds -- the connection is UP even when processing this particular message fails
+            processSMP rq conn (toConnData conn) msg
+          Right r -> processSubErr rq $ unexpectedResponse r
+          Left e -> unless (temporaryClientError e) $ processSubErr rq e -- timeout/network was already reported
+        _ -> pure ()
+    STResponse {} -> pure () -- TODO process expired responses to sent messages
     STUnexpectedError e -> do
       logServer "<--" c srv entId $ "error: " <> bshow e
       notifyErr "" e
-      pure Nothing
+  connIds <- readTVarIO upConnIds
   unless (null connIds) $ notify' "" $ UP srv connIds
   where
-    withRcvConn :: SMP.RecipientId -> (forall c. RcvQueue -> Connection c -> AM (Maybe ConnId)) -> AM' (Maybe ConnId)
+    withRcvConn :: SMP.RecipientId -> (forall c. RcvQueue -> Connection c -> AM ()) -> AM' ()
     withRcvConn rId a = do
       tryAgentError' (withStore c $ \db -> getRcvConn db srv rId) >>= \case
-        Left e -> Nothing <$ notify' "" (ERR e)
+        Left e -> notify' "" (ERR e)
         Right (rq@RcvQueue {connId}, SomeConn _ conn) ->
           tryAgentError' (a rq conn) >>= \case
-            Left e -> Nothing <$ notify' connId (ERR e)
-            Right r -> pure r
-    processSubOk :: RcvQueue -> AM (Maybe ConnId)
-    processSubOk rq@RcvQueue {connId} =
-      atomically $
-        ifM
-          (isPendingSub connId)
-          (Just connId <$ addSubscription c rq)
-          (pure Nothing)
+            Left e -> notify' connId (ERR e)
+            Right () -> pure ()
+    processSubOk :: RcvQueue -> TVar [ConnId] -> AM ()
+    processSubOk rq@RcvQueue {connId} upConnIds =
+      atomically . whenM (isPendingSub connId) $ do
+        addSubscription c rq
+        modifyTVar' upConnIds (connId :)
     processSubErr :: RcvQueue -> SMPClientError -> AM ()
     processSubErr rq@RcvQueue {connId} e = do
       atomically . whenM (isPendingSub connId) $ failSubscription c rq e
