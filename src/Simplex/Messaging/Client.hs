@@ -84,6 +84,7 @@ module Simplex.Messaging.Client
     ServerTransmissionBatch,
     ServerTransmission (..),
     ClientCommand,
+    HostMode (..),
 
     -- * For testing
     PCTransmission,
@@ -112,7 +113,7 @@ import Data.Int (Int64)
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
@@ -507,14 +508,12 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
 
     processMsgs :: ProtocolClient v err msg -> NonEmpty (SignedTransmission err msg) -> IO ()
     processMsgs c ts = do
-      tsVar <- newTVarIO []
-      mapM_ (processMsg c tsVar) ts
-      ts' <- readTVarIO tsVar
+      ts' <- catMaybes <$> mapM (processMsg c) (L.toList ts)
       forM_ msgQ $ \q ->
         mapM_ (atomically . writeTBQueue q . serverTransmission c) (L.nonEmpty ts')
 
-    processMsg :: ProtocolClient v err msg -> TVar [(EntityId, ServerTransmission err msg)] -> SignedTransmission err msg -> IO ()
-    processMsg ProtocolClient {client_ = PClient {sentCommands}} tsVar (_, _, (corrId, entId, respOrErr))
+    processMsg :: ProtocolClient v err msg -> SignedTransmission err msg -> IO (Maybe (EntityId, ServerTransmission err msg))
+    processMsg ProtocolClient {client_ = PClient {sentCommands}} (_, _, (corrId, entId, respOrErr))
       | B.null $ bs corrId = sendMsg $ STEvent clientResp
       | otherwise =
           atomically (TM.lookup corrId sentCommands) >>= \case
@@ -527,7 +526,9 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
                     (swapTVar pending False)
                     (True <$ tryPutTMVar responseVar (if entityId == entId then clientResp else Left unexpected))
                     (pure False)
-              unless wasPending $ sendMsg $ if entityId == entId then STResponse command clientResp else STUnexpectedError unexpected
+              if wasPending
+                then pure Nothing
+                else sendMsg $ if entityId == entId then STResponse command clientResp else STUnexpectedError unexpected
       where
         unexpected = unexpectedResponse respOrErr
         clientResp = case respOrErr of
@@ -535,12 +536,13 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
           Right r -> case protocolError r of
             Just e -> Left $ PCEProtocolError e
             _ -> Right r
-        sendMsg :: ServerTransmission err msg -> IO ()
+        sendMsg :: ServerTransmission err msg -> IO (Maybe (EntityId, ServerTransmission err msg))
         sendMsg t = case msgQ of
-          Just _ -> atomically $ modifyTVar' tsVar ((entId, t) :)
-          Nothing -> case clientResp of
-            Left e -> logError ("SMP client error: " <> tshow e)
-            Right _ -> logWarn ("SMP client unprocessed event")
+          Just _ -> pure $ Just (entId, t)
+          Nothing ->
+            Nothing <$ case clientResp of
+              Left e -> logError $ "SMP client error: " <> tshow e
+              Right _ -> logWarn "SMP client unprocessed event"
 
 unexpectedResponse :: Show r => r -> ProtocolClientError err
 unexpectedResponse = PCEUnexpectedResponse . B.pack . take 32 . show
