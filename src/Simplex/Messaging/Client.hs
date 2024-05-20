@@ -525,7 +525,9 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
                     (swapTVar pending False)
                     (True <$ tryPutTMVar responseVar (if entityId == entId then clientResp else Left unexpected))
                     (pure False)
-              if wasPending then pure Nothing else sendMsg $ if entityId == entId then STResponse command clientResp else STUnexpectedError unexpected
+              if wasPending
+                then pure Nothing
+                else sendMsg $ if entityId == entId then STResponse command clientResp else STUnexpectedError unexpected
       where
         unexpected = unexpectedResponse respOrErr
         clientResp = case respOrErr of
@@ -536,9 +538,10 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         sendMsg :: ServerTransmission err msg -> IO (Maybe (EntityId, ServerTransmission err msg))
         sendMsg t = case msgQ of
           Just _ -> pure $ Just (entId, t)
-          Nothing -> case clientResp of
-            Left e -> Nothing <$ logError ("SMP client error: " <> tshow e)
-            Right _ -> Nothing <$ logWarn "SMP client unprocessed event"
+          Nothing ->
+            Nothing <$ case clientResp of
+              Left e -> logError $ "SMP client error: " <> tshow e
+              Right _ -> logWarn "SMP client unprocessed event"
 
 unexpectedResponse :: Show r => r -> ProtocolClientError err
 unexpectedResponse = PCEUnexpectedResponse . B.pack . take 32 . show

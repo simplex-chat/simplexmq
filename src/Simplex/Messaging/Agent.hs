@@ -2113,7 +2113,12 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
             Left e -> Nothing <$ notify' connId (ERR e)
             Right r -> pure r
     processSubOk :: RcvQueue -> AM (Maybe ConnId)
-    processSubOk rq@RcvQueue {connId} = atomically $ ifM (isPendingSub connId) (Just connId <$ addSubscription c rq) (pure Nothing)
+    processSubOk rq@RcvQueue {connId} =
+      atomically $
+        ifM
+          (isPendingSub connId)
+          (Just connId <$ addSubscription c rq)
+          (pure Nothing)
     processSubErr :: RcvQueue -> SMPClientError -> AM ()
     processSubErr rq@RcvQueue {connId} e = do
       atomically . whenM (isPendingSub connId) $ failSubscription c rq e
