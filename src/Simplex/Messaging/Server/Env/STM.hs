@@ -103,6 +103,9 @@ defaultInactiveClientExpiration =
       checkInterval = 3600 -- seconds, 1 hours
     }
 
+defaultProxyClientConcurrency :: Int
+defaultProxyClientConcurrency = 16
+
 data Env = Env
   { config :: ServerConfig,
     server :: Server,
