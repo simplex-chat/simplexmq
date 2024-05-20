@@ -360,10 +360,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 ss <- unliftIO u $ asks serverStats
                 let putStat :: Show a => ByteString -> (ServerStats -> TVar a) -> IO ()
                     putStat label var = readTVarIO (var ss) >>= \v -> B.hPutStr h $ label <> ": " <> bshow v <> "\n"
-                    putProxyStat :: ByteString -> (ServerStats -> ProxyStats) -> IO () 
+                    putProxyStat :: ByteString -> (ServerStats -> ProxyStats) -> IO ()
                     putProxyStat label var = do
                       ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther} <- atomically $ getProxyStatsData $ var ss
-                      B.hPutStr h $ label <> ": requests=" <> bshow _pRequests <> ", successes=" <> bshow _pSuccesses <> ", errorsConnect=" <> bshow _pErrorsConnect <> ", errorsCompat=" <> bshow _pErrorsCompat <> ", errorsOther=" <> bshow _pErrorsOther <> "\n" 
+                      B.hPutStr h $ label <> ": requests=" <> bshow _pRequests <> ", successes=" <> bshow _pSuccesses <> ", errorsConnect=" <> bshow _pErrorsConnect <> ", errorsCompat=" <> bshow _pErrorsCompat <> ", errorsOther=" <> bshow _pErrorsOther <> "\n"
                 putStat "fromTime" fromTime
                 putStat "qCreated" qCreated
                 putStat "qSecured" qSecured
@@ -670,7 +670,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
       ServerConfig {proxyClientConcurrency} <- asks config
       let enter = atomically $ do
             used <- readTVar procThreads
-            when (used >= proxyClientConcurrency) retry
+            when (used > proxyClientConcurrency) retry
             writeTVar procThreads $! used + 1
           exit = atomically $ modifyTVar' procThreads (\t -> t - 1)
       bracket_ enter exit . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $
