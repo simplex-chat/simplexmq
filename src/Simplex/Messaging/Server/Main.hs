@@ -153,6 +153,9 @@ smpServerCLI cfgPath logPath =
                    \# `socks_mode` can be 'onion' for SOCKS proxy to be used for .onion destination hosts only (default)\n\
                    \# or 'always' to be used for all destination hosts (can be used if it is an .onion server).\n\
                    \# socks_mode: onion\n\n\
+                   \[LIMITS]\n\
+                   \# Limit number of threads a client can spawn to process commands in parrallel.\n\
+                   \max_proc_threads = 8\n\n\
                    \[INACTIVE_CLIENTS]\n\
                    \# TTL and interval to check inactive clients\n\
                    \disconnect: off\n"
@@ -247,7 +250,8 @@ smpServerCLI cfgPath logPath =
                         },
                     persistErrorInterval = 30 -- seconds
                   },
-              allowSMPProxy = True
+              allowSMPProxy = True,
+              maxProcThreads = readIniDefault 8  "LIMITS" "max_proc_threads" ini
             }
         textToSocksMode :: Text -> SocksMode
         textToSocksMode = \case

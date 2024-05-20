@@ -82,7 +82,8 @@ data ServerConfig = ServerConfig
     -- | run listener on control port
     controlPort :: Maybe ServiceName,
     smpAgentCfg :: SMPClientAgentConfig,
-    allowSMPProxy :: Bool -- auth is the same with `newQueueBasicAuth`
+    allowSMPProxy :: Bool, -- auth is the same with `newQueueBasicAuth`
+    maxProcThreads :: Int
   }
 
 defMsgExpirationDays :: Int64

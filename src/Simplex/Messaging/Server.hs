@@ -623,16 +623,6 @@ dummyKeyEd448 = "MEMwBQYDK2VxAzoA6ibQc9XpkSLtwrf7PLvp81qW/etiumckVFImCMRdftcG/Xo
 dummyKeyX25519 :: C.PublicKey 'C.X25519
 dummyKeyX25519 = "MCowBQYDK2VuAyEA4JGSMYht18H4mas/jHeBwfcM7jLwNYJNOAhi2/g4RXg="
 
-withClientThread :: Client -> M a -> M a
-withClientThread Client {procThreads} = bracket_ enter exit
-  where
-    maxProcThreads = 8 -- TODO: configure
-    enter = atomically $ do
-      used <- readTVar procThreads
-      when (used >= maxProcThreads) retry
-      writeTVar procThreads $! used + 1
-    exit = atomically $ modifyTVar' procThreads (\t -> t - 1)
-
 forkClient :: Client -> String -> M () -> M ()
 forkClient Client {endThreads, endThreadSeq} label action = do
   tId <- atomically $ stateTVar endThreadSeq $ \next -> (next, next + 1)
@@ -642,7 +632,7 @@ forkClient Client {endThreads, endThreadSeq} label action = do
   mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
 
 client :: THandleParams SMPVersion 'TServer -> Client -> Server -> M ()
-client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
+client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
   forever $ do
     (proxied, rs) <- partitionEithers . L.toList <$> (mapM processCommand =<< atomically (readTBQueue rcvQ))
@@ -654,7 +644,13 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
     forkProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (TMVar (Transmission BrokerMsg))
     forkProxiedCmd cmd = do
       res <- newEmptyTMVarIO
-      withClientThread clnt . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $
+      ServerConfig {maxProcThreads} <- asks config
+      let enter = atomically $ do
+            used <- readTVar procThreads
+            when (used >= maxProcThreads) retry
+            writeTVar procThreads $! used + 1
+          exit = atomically $ modifyTVar' procThreads (\t -> t - 1)
+      bracket_ enter exit . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $
         -- commands MUST be processed under a reasonable timeout or the client would halt
         processProxiedCmd cmd >>= atomically . putTMVar res
       pure res
