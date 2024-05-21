@@ -28,6 +28,7 @@ module Simplex.Messaging.Agent.Client
     withConnLocks,
     withInvLock,
     withLockMap,
+    ipAddressProtected,
     closeAgentClient,
     closeProtocolServerClients,
     reconnectServerClients,
@@ -110,6 +111,7 @@ module Simplex.Messaging.Agent.Client
     waitUntilActive,
     UserNetworkInfo (..),
     UserNetworkType (..),
+    getNetworkConfig',
     waitForUserNetwork,
     isNetworkOnline,
     isOnline,
@@ -854,6 +856,11 @@ getNetworkConfig c = do
     UNCellular -> slowCfg
     UNNone -> slowCfg
     _ -> fastCfg
+
+-- returns fast network config
+getNetworkConfig' :: AgentClient -> IO NetworkConfig
+getNetworkConfig' = fmap snd . readTVarIO . useNetworkConfig
+{-# INLINE getNetworkConfig' #-}
 
 waitForUserNetwork :: AgentClient -> IO ()
 waitForUserNetwork c =

@@ -10,6 +10,7 @@ module Simplex.Messaging.Server.Main where
 
 import Control.Concurrent.STM
 import Control.Monad (void)
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
@@ -147,6 +148,8 @@ smpServerCLI cfgPath logPath =
                    \# It defines prefferred hostname for destination servers with multiple hostnames.\n\
                    \# host_mode: public\n\
                    \# required_host_mode: off\n\n\
+                   \# The domain suffixes of the relays you operate (space-separated) to count as separate proxy statistics.\n\
+                   \# own_server_domains: \n\n\
                    \# SOCKS proxy port for forwarding messages to destination servers.\n\
                    \# You may need a separate instance of SOCKS proxy for incoming single-hop requests.\n\
                    \# socks_proxy: localhost:9050\n\n\
@@ -245,6 +248,7 @@ smpServerCLI cfgPath logPath =
                                 requiredHostMode = fromMaybe False $ iniOnOff "PROXY" "required_host_mode" ini
                               }
                         },
+                    ownServerDomains = either (const []) textToOwnServers $ lookupValue "PROXY" "own_server_domains" ini,
                     persistErrorInterval = 30 -- seconds
                   },
               allowSMPProxy = True
@@ -259,6 +263,8 @@ smpServerCLI cfgPath logPath =
           "public" -> HMPublic
           "onion" -> HMOnionViaSocks
           s -> error . T.unpack $ "Invalid host_mode: " <> s
+        textToOwnServers :: Text -> [ByteString]
+        textToOwnServers = map encodeUtf8 . T.words
 
 data CliCommand
   = Init InitOptions
