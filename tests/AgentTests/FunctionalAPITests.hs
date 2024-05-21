@@ -145,6 +145,7 @@ pGet c = do
   case cmd of
     CONNECT {} -> pGet c
     DISCONNECT {} -> pGet c
+    ERR (BROKER _ NETWORK) -> pGet c
     _ -> pure t
 
 pattern CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand 'Agent e

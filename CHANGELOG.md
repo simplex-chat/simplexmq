@@ -1,3 +1,10 @@
+# 5.7.4
+
+SMP agent:
+- remove re-subscription timeouts (as they are tracked per operation, and could cause failed subscriptions).
+- reconnect XFTP clients when network settings changes.
+- fix lock contention resulting in stuck subscriptions on network change.
+
 # 5.7.3
 
 SMP/NTF protocol:
