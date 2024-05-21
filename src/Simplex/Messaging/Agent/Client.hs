@@ -611,7 +611,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess =
       withRetryInterval ri $ \_ loop -> do
         pending <- atomically getPending
         forM_ (L.nonEmpty pending) $ \qs -> do
-          lift $ waitForUserNetwork c
+          liftIO $ waitForUserNetwork c
           reconnectSMPClient c tSess qs
           loop
     getPending = RQ.getSessQueues tSess $ pendingSubs c
