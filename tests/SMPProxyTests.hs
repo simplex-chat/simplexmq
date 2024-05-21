@@ -13,6 +13,7 @@
 module SMPProxyTests where
 
 import AgentTests.FunctionalAPITests
+import Control.Logger.Simple
 import Control.Monad (forM, forM_, forever)
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Data.ByteString.Char8 (ByteString)
@@ -33,7 +34,7 @@ import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (bshow)
+import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.FilePath (splitExtensions)
 import Test.Hspec
@@ -212,12 +213,13 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
 agentDeliverMessagesViaProxyConc :: [NonEmpty SMPServer] -> [MsgBody] -> IO ()
 agentDeliverMessagesViaProxyConc agentServers msgs =
   withAgents $ \agents -> do
-    putStrLn "Pairing..."
-    pairs <- forM (combinations 2 agents) $ \case
+    let pairs = combinations 2 agents
+    logNote $ "Pairing " <> tshow (length agents) <> " into " <> tshow (length pairs) <> " connections"
+    connections <- forM pairs $ \case
       [a, b] -> prePair a b
       _ -> error "agents must be paired"
-    putStrLn "Running..."
-    mapConcurrently_ run pairs
+    logNote "Running..."
+    mapConcurrently_ run connections
   where
     withAgents :: ([AgentClient] -> IO ()) -> IO ()
     withAgents action = go [] (zip [1 :: Int ..] agentServers)
