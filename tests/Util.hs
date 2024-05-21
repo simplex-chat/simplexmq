@@ -2,6 +2,7 @@ module Util where
 
 import Control.Monad (replicateM)
 import Data.Either (partitionEithers)
+import Data.List (tails)
 import GHC.Conc (getNumCapabilities, getNumProcessors, setNumCapabilities)
 import Test.Hspec
 import UnliftIO
@@ -21,3 +22,7 @@ inParrallel n action = do
   (es, rs) <- partitionEithers <$> mapM waitCatch streams
   map show es `shouldBe` []
   length rs `shouldBe` n
+
+combinations :: Int -> [a] -> [[a]]
+combinations 0 _ = [[]]
+combinations k xs = [y : ys | y : xs' <- tails xs, ys <- combinations (k - 1) xs']

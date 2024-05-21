@@ -13,8 +13,8 @@
 module SMPProxyTests where
 
 import AgentTests.FunctionalAPITests
-import Control.Monad (forM_)
-import Control.Monad.Trans.Except (runExceptT)
+import Control.Monad (forM, forM_, forever)
+import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -35,6 +35,7 @@ import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version (mkVersionRange)
+import System.FilePath (splitExtensions)
 import Test.Hspec
 import UnliftIO
 import Util
@@ -110,6 +111,14 @@ smpProxyTests = do
           agentDeliverMessageViaProxy ([srv1], SPMUnknown, False) ([srv2], SPMUnknown, False) C.SEd448 "hello 1" "hello 2"
         it "fails when fallback is prohibited" . twoServers_ proxyCfg cfgV7 $
           agentViaProxyVersionError
+      describe "stress test 1k" $ do
+        let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
+        it "2 agents, 250 messages" . oneServer $ deliver 2 250
+        it "5 agents, 10 pairs, 50 messages, N1" . oneServer . withNumCapabilities 1 $ deliver 5 50
+        it "5 agents, 10 pairs, 50 messages. N4" . oneServer . withNumCapabilities 4 $ deliver 5 50
+      xdescribe "stress test 10k" $ do
+        let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
+        it "25 agents, 300 pairs, 17 messages" . oneServer . withNumCapabilities 4 $ deliver 25 17
   where
     oneServer = withSmpServerConfigOn (transport @TLS) proxyCfg testPort . const
     twoServers = twoServers_ proxyCfg proxyCfg
@@ -134,47 +143,33 @@ deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   msgQ <- newTBQueueIO 1024
   rc' <- getProtocolClient g (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion} (Just msgQ) (\_ -> pure ())
   rc <- either (fail . show) pure rc'
-  r <- runExceptT $ do
-    -- prepare receiving queue
-    (rPub, rPriv) <- atomically $ C.generateAuthKeyPair alg g
-    (rdhPub, rdhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-    QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- createSMPQueue rc (rPub, rPriv) rdhPub (Just "correct") SMSubscribe
-    let dec = decryptMsgV3 $ C.dh' srvDh rdhPriv
-    -- get proxy session
-    sess <- connectSMPProxiedRelay pc relayServ (Just "correct")
-    -- send via proxy to unsecured queue
-    forM_ unsecuredMsgs $ \msg -> do
-      Right () <- proxySMPMessage pc sess Nothing sndId noMsgFlags msg
-      -- receive 1
-      (_tSess, _v, _sid, [(_entId, STEvent (Right (SMP.MSG RcvMessage {msgId, msgBody = EncRcvMsgBody encBody})))]) <- atomically $ readTBQueue msgQ
-      liftIO $ dec msgId encBody `shouldBe` Right msg
-      ackSMPMessage rc rPriv rcvId msgId
-    -- secure queue
-    (sPub, sPriv) <- atomically $ C.generateAuthKeyPair alg g
-    secureSMPQueue rc rPriv rcvId sPub
-    -- send via proxy to secured queue
-    sender <- liftIO . async $
-      forM_ securedMsgs $ \msg' -> do
-        r <- runExceptT $ proxySMPMessage pc sess (Just sPriv) sndId noMsgFlags msg'
-        r `shouldBe` Right (Right ())
-    recipient <- liftIO . async $
-      forM_ securedMsgs $ \msg' -> do
-        -- receive 2
+  -- prepare receiving queue
+  (rPub, rPriv) <- atomically $ C.generateAuthKeyPair alg g
+  (rdhPub, rdhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+  QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- runExceptT' $ createSMPQueue rc (rPub, rPriv) rdhPub (Just "correct") SMSubscribe
+  let dec = decryptMsgV3 $ C.dh' srvDh rdhPriv
+  -- get proxy session
+  sess <- runExceptT' $ connectSMPProxiedRelay pc relayServ (Just "correct")
+  -- send via proxy to unsecured queue
+  forM_ unsecuredMsgs $ \msg -> do
+    runExceptT' (proxySMPMessage pc sess Nothing sndId noMsgFlags msg) `shouldReturn` Right ()
+    -- receive 1
+    (_tSess, _v, _sid, [(_entId, STEvent (Right (SMP.MSG RcvMessage {msgId, msgBody = EncRcvMsgBody encBody})))]) <- atomically $ readTBQueue msgQ
+    dec msgId encBody `shouldBe` Right msg
+    runExceptT' $ ackSMPMessage rc rPriv rcvId msgId
+  -- secure queue
+  (sPub, sPriv) <- atomically $ C.generateAuthKeyPair alg g
+  runExceptT' $ secureSMPQueue rc rPriv rcvId sPub
+  -- send via proxy to secured queue
+  waitSendRecv
+    ( forM_ securedMsgs $ \msg' ->
+        runExceptT' (proxySMPMessage pc sess (Just sPriv) sndId noMsgFlags msg') `shouldReturn` Right ()
+    )
+    ( forM_ securedMsgs $ \msg' -> do
         (_tSess, _v, _sid, [(_entId, STEvent (Right (SMP.MSG RcvMessage {msgId = msgId', msgBody = EncRcvMsgBody encBody'})))]) <- atomically $ readTBQueue msgQ
-        liftIO $ dec msgId' encBody' `shouldBe` Right msg'
-        r <- runExceptT $ ackSMPMessage rc rPriv rcvId msgId'
-        r `shouldBe` Right ()
-    liftIO $
-      waitCatch sender >>= \case
-        Left e -> cancel recipient >> fail (show e)
-        Right () -> pure ()
-    liftIO $
-      waitCatch recipient >>= \case
-        Left e -> fail $ show e
-        Right () -> pure ()
-  case r of
-    Right () -> pure ()
-    Left e -> fail (show e)
+        dec msgId' encBody' `shouldBe` Right msg'
+        runExceptT' $ ackSMPMessage rc rPriv rcvId msgId'
+    )
 
 agentDeliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => (NonEmpty SMPServer, SMPProxyMode, Bool) -> (NonEmpty SMPServer, SMPProxyMode, Bool) -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
 agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, bViaProxy) alg msg1 msg2 =
@@ -214,6 +209,64 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
     aCfg = agentProxyCfg {sndAuthAlg = C.AuthAlg alg, rcvAuthAlg = C.AuthAlg alg}
     servers (srvs, smpProxyMode, _) = (initAgentServersProxy smpProxyMode SPFAllow) {smp = userServers $ L.map noAuthSrv srvs}
 
+agentDeliverMessagesViaProxyConc :: [NonEmpty SMPServer] -> [MsgBody] -> IO ()
+agentDeliverMessagesViaProxyConc agentServers msgs =
+  withAgents $ \agents -> do
+    putStrLn "Pairing..."
+    pairs <- forM (combinations 2 agents) $ \case
+      [a, b] -> prePair a b
+      _ -> error "agents must be paired"
+    putStrLn "Running..."
+    mapConcurrently_ run pairs
+  where
+    withAgents :: ([AgentClient] -> IO ()) -> IO ()
+    withAgents action = go [] (zip [1 :: Int ..] agentServers)
+      where
+        go agents = \case
+          [] -> action agents
+          (aId, aSrvs) : next -> withAgent aId aCfg (servers aSrvs) (dbPrefix <> show aId <> dbSuffix) $ \a -> (a : agents) `go` next
+        (dbPrefix, dbSuffix) = splitExtensions testDB
+    -- agent connections have to be set up in advance
+    -- otherwise the CONF messages would get mixed with MSG
+    prePair alice bob = do
+      (bobId, qInfo) <- runExceptT' $ A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
+      aliceId <- runExceptT' $ A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      confId <-
+        get alice >>= \case
+          ("", _, A.CONF confId pqSup' _ "bob's connInfo") -> do
+            pqSup' `shouldBe` PQSupportOn
+            pure confId
+          huh -> fail $ show huh
+      runExceptT' $ allowConnection alice bobId confId "alice's connInfo"
+      get alice ##> ("", bobId, A.CON pqEnc)
+      get bob ##> ("", aliceId, A.INFO PQSupportOn "alice's connInfo")
+      get bob ##> ("", aliceId, A.CON pqEnc)
+      pure (alice, bobId, bob, aliceId)
+    -- stream messages in opposite directions, while getting deliveries and sending ACKs
+    run (alice, bobId, bob, aliceId) = do
+      aSender <- async $ forM_ msgs $ runExceptT' . A.sendMessage alice bobId pqEnc noMsgFlags
+      bRecipient <-
+        async $
+          forever $
+            get bob >>= \case
+              ("", _, A.SENT _ _) -> pure ()
+              ("", _, Msg' mId' _ _) -> runExceptT' $ ackMessage alice bobId mId' Nothing
+              huh -> fail (show huh)
+      bSender <- async $ forM_ msgs $ runExceptT' . A.sendMessage bob aliceId pqEnc noMsgFlags
+      aRecipient <-
+        async $
+          forever $
+            get alice >>= \case
+              ("", _, A.SENT _ _) -> pure ()
+              ("", _, Msg' mId' _ _) -> runExceptT' $ ackMessage alice bobId mId' Nothing
+              huh -> fail (show huh)
+      concurrently_
+        ((waitCatch aSender >>= either (fail . show) pure) `finally` cancel bRecipient) -- stopped sender cancels paired recipient loop
+        ((waitCatch bSender >>= either (fail . show) pure) `finally` cancel aRecipient)
+    pqEnc = CR.PQEncOn
+    aCfg = agentProxyCfg {sndAuthAlg = C.AuthAlg C.SEd448, rcvAuthAlg = C.AuthAlg C.SEd448}
+    servers srvs = (initAgentServersProxy SPMAlways SPFAllow) {smp = userServers $ L.map noAuthSrv srvs}
+
 agentViaProxyVersionError :: IO ()
 agentViaProxyVersionError =
   withAgent 1 agentProxyCfg (servers [SMPServer testHost testPort testKeyHash]) testDB $ \alice -> do
@@ -244,3 +297,13 @@ testProxyAuth = do
 todo :: IO ()
 todo = do
   fail "TODO"
+
+runExceptT' :: Show e => ExceptT e IO a -> IO a
+runExceptT' a = runExceptT a >>= either (fail . show) pure
+
+waitSendRecv :: IO () -> IO () -> IO ()
+waitSendRecv s r = do
+  s' <- async s
+  r' <- async r
+  waitCatch s' >>= either (\e -> cancel r' >> fail (show e)) pure
+  waitCatch r' >>= either (\e -> cancel s' >> fail (show e)) pure
