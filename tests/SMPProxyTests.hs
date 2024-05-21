@@ -14,8 +14,10 @@
 module SMPProxyTests where
 
 import AgentTests.FunctionalAPITests
+import Control.Monad (forM_, replicateM)
 import Control.Monad.Trans.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
+import Data.Either (partitionEithers)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import SMPAgentClient
@@ -33,6 +35,7 @@ import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import Test.Hspec
 import UnliftIO
@@ -71,6 +74,12 @@ smpProxyTests = do
           deliverMessageViaProxy proxyServ relayServ C.SEd25519 msg1 msg2
         it "max message size, X25519 keys" . twoServersFirstProxy $
           deliverMessageViaProxy proxyServ relayServ C.SX25519 msg1 msg2
+      describe "stress test" $ do
+        it "proxy lots of messages (1x1000)" . twoServersFirstProxy $ deliverMessagesViaProxyParallel 1 1000 srv1 srv2
+        it "proxy lots of messages (3x1000)" . twoServersFirstProxy $ deliverMessagesViaProxyParallel 3 1000 srv1 srv2
+        it "proxy lots of messages (10x500)" . twoServersFirstProxy $ deliverMessagesViaProxyParallel 10 500 srv1 srv2
+        it "proxy lots of messages (100x100)" . twoServersFirstProxy $ deliverMessagesViaProxyParallel 100 100 srv1 srv2
+        it "proxy lots of messages (500x10)" . twoServersFirstProxy $ deliverMessagesViaProxyParallel 500 10 srv1 srv2
     describe "agent API" $ do
       describe "one server" $ do
         it "always via proxy" . oneServer $
@@ -101,15 +110,20 @@ smpProxyTests = do
         withSmpServerConfigOn (transport @TLS) cfg2 testPort2 $ const runTest
 
 deliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => SMPServer -> SMPServer -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
-deliverMessageViaProxy proxyServ relayServ alg msg msg' = do
+deliverMessageViaProxy proxyServ relayServ alg msg msg' = deliverMessagesViaProxy proxyServ relayServ alg [msg] [msg']
+
+deliverMessagesViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => SMPServer -> SMPServer -> C.SAlgorithm a -> [ByteString] -> [ByteString] -> IO ()
+deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   g <- C.newRandom
   -- set up proxy
-  Right pc <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} Nothing (\_ -> pure ())
+  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} Nothing (\_ -> pure ())
+  pc <- either (fail . show) pure pc'
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- set up relay
-  msgQ <- newTBQueueIO 4
-  Right rc <- getProtocolClient g (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion} (Just msgQ) (\_ -> pure ())
-  runRight_ $ do
+  msgQ <- newTBQueueIO 1024
+  rc' <- getProtocolClient g (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion} (Just msgQ) (\_ -> pure ())
+  rc <- either (fail . show) pure rc'
+  r <- runExceptT $ do
     -- prepare receiving queue
     (rPub, rPriv) <- atomically $ C.generateAuthKeyPair alg g
     (rdhPub, rdhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
@@ -118,20 +132,45 @@ deliverMessageViaProxy proxyServ relayServ alg msg msg' = do
     -- get proxy session
     sess <- connectSMPProxiedRelay pc relayServ (Just "correct")
     -- send via proxy to unsecured queue
-    Right () <- proxySMPMessage pc sess Nothing sndId noMsgFlags msg
-    -- receive 1
-    (_tSess, _v, _sid, [(_entId, STEvent (Right (SMP.MSG RcvMessage {msgId, msgBody = EncRcvMsgBody encBody})))]) <- atomically $ readTBQueue msgQ
-    liftIO $ dec msgId encBody `shouldBe` Right msg
-    ackSMPMessage rc rPriv rcvId msgId
+    forM_ unsecuredMsgs $ \msg -> do
+      Right () <- proxySMPMessage pc sess Nothing sndId noMsgFlags msg
+      -- receive 1
+      (_tSess, _v, _sid, [(_entId, STEvent (Right (SMP.MSG RcvMessage {msgId, msgBody = EncRcvMsgBody encBody})))]) <- atomically $ readTBQueue msgQ
+      liftIO $ dec msgId encBody `shouldBe` Right msg
+      ackSMPMessage rc rPriv rcvId msgId
     -- secure queue
     (sPub, sPriv) <- atomically $ C.generateAuthKeyPair alg g
     secureSMPQueue rc rPriv rcvId sPub
     -- send via proxy to secured queue
-    Right () <- proxySMPMessage pc sess (Just sPriv) sndId noMsgFlags msg'
-    -- receive 2
-    (_tSess, _v, _sid, [(_entId, STEvent (Right (SMP.MSG RcvMessage {msgId = msgId', msgBody = EncRcvMsgBody encBody'})))]) <- atomically $ readTBQueue msgQ
-    liftIO $ dec msgId' encBody' `shouldBe` Right msg'
-    ackSMPMessage rc rPriv rcvId msgId'
+    sender <- liftIO . async $
+      forM_ securedMsgs $ \msg' -> do
+        r <- runExceptT $ proxySMPMessage pc sess (Just sPriv) sndId noMsgFlags msg'
+        r `shouldBe` Right (Right ())
+    recipient <- liftIO . async $
+      forM_ securedMsgs $ \msg' -> do
+        -- receive 2
+        (_tSess, _v, _sid, [(_entId, STEvent (Right (SMP.MSG RcvMessage {msgId = msgId', msgBody = EncRcvMsgBody encBody'})))]) <- atomically $ readTBQueue msgQ
+        liftIO $ dec msgId' encBody' `shouldBe` Right msg'
+        r <- runExceptT $ ackSMPMessage rc rPriv rcvId msgId'
+        r `shouldBe` Right ()
+    liftIO $
+      waitCatch sender >>= \case
+        Left e -> cancel recipient >> fail (show e)
+        Right () -> pure ()
+    liftIO $
+      waitCatch recipient >>= \case
+        Left e -> fail $ show e
+        Right () -> pure ()
+  case r of
+    Right () -> pure ()
+    Left e -> fail (show e)
+
+deliverMessagesViaProxyParallel :: Int -> Int -> SMPServer -> SMPServer -> IO ()
+deliverMessagesViaProxyParallel nStreams nMessages proxyServ relayServ = do
+  streams <- replicateM nStreams . async $ deliverMessagesViaProxy proxyServ relayServ C.SEd448 ["hello"] (map bshow [1 :: Int .. nMessages])
+  (es, rs) <- partitionEithers <$> mapM waitCatch streams
+  map show es `shouldBe` []
+  rs `shouldBe` replicate nStreams ()
 
 agentDeliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => (NonEmpty SMPServer, SMPProxyMode, Bool) -> (NonEmpty SMPServer, SMPProxyMode, Bool) -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
 agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, bViaProxy) alg msg1 msg2 =
