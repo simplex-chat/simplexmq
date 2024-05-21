@@ -608,12 +608,11 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess =
       atomically $ putTMVar (sessionVar v) a
     runSubWorker = do
       ri <- asks $ reconnectInterval . config
-      timeoutCounts <- newTVarIO 0
       withRetryInterval ri $ \_ loop -> do
         pending <- atomically getPending
         forM_ (L.nonEmpty pending) $ \qs -> do
-          lift $ waitForUserNetwork c
-          void . tryAgentError' $ reconnectSMPClient timeoutCounts c tSess qs
+          liftIO $ waitForUserNetwork c
+          reconnectSMPClient c tSess qs
           loop
     getPending = RQ.getSessQueues tSess $ pendingSubs c
     cleanup :: SessionVar (Async ()) -> STM ()
@@ -623,38 +622,23 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess =
       whenM (isEmptyTMVar $ sessionVar v) retry
       removeSessVar v tSess smpSubWorkers
 
-reconnectSMPClient :: TVar Int -> AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> AM ()
-reconnectSMPClient tc c tSess@(_, srv, _) qs = do
-  NetworkConfig {tcpTimeout} <- atomically $ getNetworkConfig c
-  -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
-  let t = (length qs `div` 90 + 1) * tcpTimeout * 3
-  ExceptT (sequence <$> (t `timeout` runExceptT resubscribe)) >>= \case
-    Just _ -> resetTimeouts
-    -- reset and do not report consecutive timeouts while offline
-    Nothing -> ifM (atomically $ isNetworkOnline c) notifyTimeout resetTimeouts
+reconnectSMPClient :: AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> AM' ()
+reconnectSMPClient c tSess@(_, srv, _) qs = handleNotify $ do
+  cs <- readTVarIO $ RQ.getConnections $ activeSubs c
+  rs <- subscribeQueues c $ L.toList qs
+  let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
+      conns = filter (`M.notMember` cs) okConns
+  unless (null conns) $ notifySub "" $ UP srv conns
+  let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
+  mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
+  forM_ (listToMaybe tempErrs) $ \(connId, e) -> do
+    when (null okConns && M.null cs && null finalErrs) . liftIO $
+      closeClient c smpClients tSess
+    notifySub connId $ ERR e
   where
-    resetTimeouts = atomically $ writeTVar tc 0
-    notifyTimeout = do
-      tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
-      maxTC <- asks $ maxSubscriptionTimeouts . config
-      when (tc' >= maxTC) $ do
-        let msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
-        atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ INTERNAL msg)
-    resubscribe :: AM ()
-    resubscribe = do
-      cs <- readTVarIO $ RQ.getConnections $ activeSubs c
-      rs <- lift . subscribeQueues c $ L.toList qs
-      let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
-      liftIO $ do
-        let conns = filter (`M.notMember` cs) okConns
-        unless (null conns) $ notifySub "" $ UP srv conns
-      let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
-      liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
-      forM_ (listToMaybe tempErrs) $ \(_, err) -> do
-        when (null okConns && M.null cs && null finalErrs) . liftIO $
-          closeClient c smpClients tSess
-        throwError err
-    notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
+    handleNotify :: AM' () -> AM' ()
+    handleNotify = E.handleAny $ notifySub "" . ERR . INTERNAL . show
+    notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> AM' ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
 getNtfServerClient :: AgentClient -> NtfTransportSession -> AM NtfClient
