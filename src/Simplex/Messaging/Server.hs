@@ -45,6 +45,7 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Crypto.Random
+import Control.Monad.STM (retry)
 import Data.Bifunctor (first)
 import Data.ByteString.Base64 (encode)
 import Data.ByteString.Char8 (ByteString)
@@ -95,7 +96,6 @@ import System.Exit (exitFailure)
 import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (timeout)
-import UnliftIO.Async (mapConcurrently)
 import UnliftIO.Concurrent
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
@@ -182,12 +182,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           TM.lookupInsert qId clnt (subs s) $>>= clientToBeNotified
         endPreviousSubscriptions :: (QueueId, Client) -> M (Maybe s)
         endPreviousSubscriptions (qId, c) = do
-          tId <- atomically $ stateTVar (endThreadSeq c) $ \next -> (next, next + 1)
-          t <- forkIO $ do
-            labelMyThread $ label <> ".endPreviousSubscriptions"
+          forkClient c (label <> ".endPreviousSubscriptions") $
             atomically $ writeTBQueue (sndQ c) [(CorrId "", qId, END)]
-            atomically $ modifyTVar' (endThreads c) $ IM.delete tId
-          mkWeakThreadId t >>= atomically . modifyTVar' (endThreads c) . IM.insert tId
           atomically $ TM.lookupDelete qId (clientSubs c)
 
     receiveFromProxyAgent :: ProxyAgent -> M ()
@@ -364,10 +360,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 ss <- unliftIO u $ asks serverStats
                 let putStat :: Show a => ByteString -> (ServerStats -> TVar a) -> IO ()
                     putStat label var = readTVarIO (var ss) >>= \v -> B.hPutStr h $ label <> ": " <> bshow v <> "\n"
-                    putProxyStat :: ByteString -> (ServerStats -> ProxyStats) -> IO () 
+                    putProxyStat :: ByteString -> (ServerStats -> ProxyStats) -> IO ()
                     putProxyStat label var = do
                       ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther} <- atomically $ getProxyStatsData $ var ss
-                      B.hPutStr h $ label <> ": requests=" <> bshow _pRequests <> ", successes=" <> bshow _pSuccesses <> ", errorsConnect=" <> bshow _pErrorsConnect <> ", errorsCompat=" <> bshow _pErrorsCompat <> ", errorsOther=" <> bshow _pErrorsOther <> "\n" 
+                      B.hPutStr h $ label <> ": requests=" <> bshow _pRequests <> ", successes=" <> bshow _pSuccesses <> ", errorsConnect=" <> bshow _pErrorsConnect <> ", errorsCompat=" <> bshow _pErrorsCompat <> ", errorsOther=" <> bshow _pErrorsOther <> "\n"
                 putStat "fromTime" fromTime
                 putStat "qCreated" qCreated
                 putStat "qSecured" qSecured
@@ -650,18 +646,39 @@ dummyKeyEd448 = "MEMwBQYDK2VxAzoA6ibQc9XpkSLtwrf7PLvp81qW/etiumckVFImCMRdftcG/Xo
 dummyKeyX25519 :: C.PublicKey 'C.X25519
 dummyKeyX25519 = "MCowBQYDK2VuAyEA4JGSMYht18H4mas/jHeBwfcM7jLwNYJNOAhi2/g4RXg="
 
+forkClient :: Client -> String -> M () -> M ()
+forkClient Client {endThreads, endThreadSeq} label action = do
+  tId <- atomically $ stateTVar endThreadSeq $ \next -> (next, next + 1)
+  t <- forkIO $ do
+    labelMyThread label
+    action `finally` atomically (modifyTVar' endThreads $ IM.delete tId)
+  mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
+
 client :: THandleParams SMPVersion 'TServer -> Client -> Server -> M ()
-client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
+client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
   forever $ do
     (proxied, rs) <- partitionEithers . L.toList <$> (mapM processCommand =<< atomically (readTBQueue rcvQ))
     forM_ (L.nonEmpty rs) reply
-    -- TODO cancel this thread if the client gets disconnected
-    -- TODO limit client concurrency
-    forM_ (L.nonEmpty proxied) $ \cmds -> forkIO $ mapConcurrently processProxiedCmd cmds >>= reply
+    forM_ (L.nonEmpty proxied) $ \cmds -> mapM forkProxiedCmd cmds >>= mapM (atomically . takeTMVar) >>= reply
   where
     reply :: MonadIO m => NonEmpty (Transmission BrokerMsg) -> m ()
     reply = atomically . writeTBQueue sndQ
+    forkProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (TMVar (Transmission BrokerMsg))
+    forkProxiedCmd cmd = do
+      res <- newEmptyTMVarIO
+      bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $
+        -- commands MUST be processed under a reasonable timeout or the client would halt
+        processProxiedCmd cmd >>= atomically . putTMVar res
+      pure res
+      where
+        wait = do
+          ServerConfig {serverClientConcurrency} <- asks config
+          atomically $ do
+            used <- readTVar procThreads
+            when (used >= serverClientConcurrency) retry
+            writeTVar procThreads $! used + 1
+        signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
     processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Transmission BrokerMsg)
     processProxiedCmd (corrId, sessId, command) = (corrId, sessId,) <$> case command of
       PRXY srv auth -> ifM allowProxy getRelay (pure $ ERR $ PROXY BASIC_AUTH)
