@@ -18,7 +18,6 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
   )
 where
 
-import Control.Logger.Simple (logError, logInfo)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
@@ -56,20 +55,20 @@ runNtfSupervisor c = do
   where
     handleErr :: ConnId -> AM' () -> AM' ()
     handleErr connId = E.handle $ \(e :: E.SomeException) -> do
-      logError $ "runNtfSupervisor error " <> tshow e
+      logError c $ "runNtfSupervisor error " <> tshow e
       notifyErr connId e
     notifyErr connId e = notifyInternalError c connId $ "runNtfSupervisor error " <> show e
 
 processNtfSub :: AgentClient -> (ConnId, NtfSupervisorCommand) -> AM ()
 processNtfSub c (connId, cmd) = do
-  logInfo $ "processNtfSub - connId = " <> tshow connId <> " - cmd = " <> tshow cmd
+  logInfo c $ "processNtfSub - connId = " <> tshow connId <> " - cmd = " <> tshow cmd
   case cmd of
     NSCCreate -> do
       (a, RcvQueue {server = smpServer, clientNtfCreds}) <- withStore c $ \db -> runExceptT $ do
         a <- liftIO $ getNtfSubscription db connId
         q <- ExceptT $ getPrimaryRcvQueue db connId
         pure (a, q)
-      logInfo $ "processNtfSub, NSCCreate - a = " <> tshow a
+      logInfo c $ "processNtfSub, NSCCreate - a = " <> tshow a
       case a of
         Nothing -> do
           withTokenServer $ \ntfServer -> do
@@ -119,14 +118,14 @@ processNtfSub c (connId, cmd) = do
       sub_ <- withStore' c $ \db -> do
         supervisorUpdateNtfAction db connId (NtfSubNTFAction NSADelete)
         getNtfSubscription db connId
-      logInfo $ "processNtfSub, NSCDelete - sub_ = " <> tshow sub_
+      logInfo c $ "processNtfSub, NSCDelete - sub_ = " <> tshow sub_
       case sub_ of
         (Just (NtfSubscription {ntfServer}, _)) -> lift . void $ getNtfNTFWorker True c ntfServer
         _ -> pure () -- err "NSCDelete - no subscription"
     NSCSmpDelete -> do
       withStore' c (`getPrimaryRcvQueue` connId) >>= \case
         Right rq@RcvQueue {server = smpServer} -> do
-          logInfo $ "processNtfSub, NSCSmpDelete - rq = " <> tshow rq
+          logInfo c $ "processNtfSub, NSCSmpDelete - rq = " <> tshow rq
           withStore' c $ \db -> supervisorUpdateNtfAction db connId (NtfSubSMPAction NSASmpDelete)
           lift . void $ getNtfSMPWorker True c smpServer
         _ -> notifyInternalError c connId "NSCSmpDelete - no rcv queue"
@@ -158,7 +157,7 @@ runNtfWorker c srv Worker {doWork} = do
     runNtfOperation =
       withWork c doWork (`getNextNtfSubNTFAction` srv) $
         \nextSub@(NtfSubscription {connId}, _, _) -> do
-          logInfo $ "runNtfWorker, nextSub " <> tshow nextSub
+          logInfo c $ "runNtfWorker, nextSub " <> tshow nextSub
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop -> do
             liftIO $ waitForUserNetwork c
@@ -242,7 +241,7 @@ runNtfSMPWorker c srv Worker {doWork} = do
     runNtfSMPOperation =
       withWork c doWork (`getNextNtfSubSMPAction` srv) $
         \nextSub@(NtfSubscription {connId}, _, _) -> do
-          logInfo $ "runNtfSMPWorker, nextSub " <> tshow nextSub
+          logInfo c $ "runNtfSMPWorker, nextSub " <> tshow nextSub
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop -> do
             liftIO $ waitForUserNetwork c
@@ -288,7 +287,7 @@ rescheduleAction doWork ts actionTs
 
 retryOnError :: AgentClient -> Text -> AM () -> (AgentErrorType -> AM ()) -> AgentErrorType -> AM ()
 retryOnError c name loop done e = do
-  logError $ name <> " error: " <> tshow e
+  logWarn c $ name <> " error: " <> tshow e
   case e of
     BROKER _ NETWORK -> retryLoop
     BROKER _ TIMEOUT -> retryLoop

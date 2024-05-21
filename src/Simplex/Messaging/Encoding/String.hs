@@ -39,7 +39,7 @@ import Data.Time.Format.ISO8601
 import Data.Word (Word16, Word32)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Util (safeDecodeUtf8, (<$?>))
 
 class TextEncoding a where
   textEncode :: a -> Text
@@ -80,6 +80,10 @@ instance StrEncoding Str where
 instance StrEncoding String where
   strEncode = strEncode . B.pack
   strP = B.unpack <$> strP
+
+instance StrEncoding Text where
+  strEncode = strEncode . encodeUtf8
+  strP = safeDecodeUtf8 <$> A.takeByteString
 
 instance ToJSON Str where
   toJSON (Str s) = strToJSON s

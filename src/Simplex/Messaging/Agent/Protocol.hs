@@ -114,6 +114,7 @@ module Simplex.Messaging.Agent.Protocol
     BrokerErrorType (..),
     SMPAgentError (..),
     AgentCryptoError (..),
+    AgentLogLevel (..),
     cryptoErrToSyncState,
     ATransmission,
     ATransmissionOrError,
@@ -156,6 +157,7 @@ module Simplex.Messaging.Agent.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
+import Control.Logger.Simple (LogLevel (..))
 import Control.Monad (unless)
 import Control.Monad.Except (runExceptT, throwError)
 import Control.Monad.IO.Class
@@ -391,6 +393,7 @@ data ACommand (p :: AParty) (e :: AEntity) where
   DISCONNECT :: AProtocolType -> TransportHost -> ACommand Agent AENone
   DOWN :: SMPServer -> [ConnId] -> ACommand Agent AENone
   UP :: SMPServer -> [ConnId] -> ACommand Agent AENone
+  LOG :: AgentLogLevel -> Text -> ACommand Agent AENone
   SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> ACommand Agent AEConn
   RSYNC :: RatchetSyncState -> Maybe AgentCryptoError -> ConnectionStats -> ACommand Agent AEConn
   SEND :: PQEncryption -> MsgFlags -> MsgBody -> ACommand Client AEConn
@@ -455,6 +458,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   DISCONNECT_ :: ACommandTag Agent AENone
   DOWN_ :: ACommandTag Agent AENone
   UP_ :: ACommandTag Agent AENone
+  LOG_ :: ACommandTag Agent AENone
   SWITCH_ :: ACommandTag Agent AEConn
   RSYNC_ :: ACommandTag Agent AEConn
   SEND_ :: ACommandTag Client AEConn
@@ -512,6 +516,7 @@ aCommandTag = \case
   DISCONNECT {} -> DISCONNECT_
   DOWN {} -> DOWN_
   UP {} -> UP_
+  LOG {} -> LOG_
   SWITCH {} -> SWITCH_
   RSYNC {} -> RSYNC_
   SEND {} -> SEND_
@@ -1629,6 +1634,35 @@ instance StrEncoding SMPAgentError where
     A_DUPLICATE -> "DUPLICATE"
     A_QUEUE e -> "QUEUE " <> encodeUtf8 (T.pack e)
 
+newtype AgentLogLevel = AgentLogLevel LogLevel
+  deriving (Eq, Show)
+
+instance StrEncoding AgentLogLevel where
+  strEncode (AgentLogLevel ll) = case ll of
+    LogTrace -> "TRACE"
+    LogDebug -> "DEBUG"
+    LogInfo -> "INFO"
+    LogNote -> "NOTE"
+    LogWarn -> "WARN"
+    LogError -> "ERROR"
+  strP = do
+    s <- A.takeTill (== ' ')
+    AgentLogLevel <$> case s of
+      "TRACE" -> pure LogTrace
+      "DEBUG" -> pure LogDebug
+      "INFO" -> pure LogInfo
+      "NOTE" -> pure LogNote
+      "WARN" -> pure LogWarn
+      "ERROR" -> pure LogError
+      _ -> fail "bad AgentLogLevel"
+
+instance ToJSON AgentLogLevel where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON AgentLogLevel where
+  parseJSON = strParseJSON "AgentLogLevel"
+
 cryptoErrToSyncState :: AgentCryptoError -> RatchetSyncState
 cryptoErrToSyncState = \case
   DECRYPT_AES -> RSAllowed
@@ -1666,6 +1700,7 @@ instance StrEncoding ACmdTag where
       "DISCONNECT" -> nt DISCONNECT_
       "DOWN" -> nt DOWN_
       "UP" -> nt UP_
+      "LOG" -> nt LOG_
       "SWITCH" -> ct SWITCH_
       "RSYNC" -> ct RSYNC_
       "SEND" -> t SEND_
@@ -1725,6 +1760,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     DISCONNECT_ -> "DISCONNECT"
     DOWN_ -> "DOWN"
     UP_ -> "UP"
+    LOG_ -> "LOG"
     SWITCH_ -> "SWITCH"
     RSYNC_ -> "RSYNC"
     SEND_ -> "SEND"
@@ -1798,6 +1834,7 @@ commandP binaryP =
           DISCONNECT_ -> s (DISCONNECT <$> strP_ <*> strP)
           DOWN_ -> s (DOWN <$> strP_ <*> connections)
           UP_ -> s (UP <$> strP_ <*> connections)
+          LOG_ -> s (LOG <$> strP_ <*> strP)
           SWITCH_ -> s (SWITCH <$> strP_ <*> strP_ <*> strP)
           RSYNC_ -> s (RSYNC <$> strP_ <*> strP <*> strP)
           MID_ -> s (MID <$> A.decimal <*> _strP)
@@ -1861,6 +1898,7 @@ serializeCommand = \case
   DISCONNECT p h -> s (DISCONNECT_, p, h)
   DOWN srv conns -> B.unwords [s DOWN_, s srv, connections conns]
   UP srv conns -> B.unwords [s UP_, s srv, connections conns]
+  LOG ll txt -> s (LOG_, ll, txt)
   SWITCH dir phase srvs -> s (SWITCH_, dir, phase, srvs)
   RSYNC rrState cryptoErr cstats -> s (RSYNC_, rrState, cryptoErr, cstats)
   SEND pqEnc msgFlags msgBody -> B.unwords [s SEND_, s pqEnc, smpEncode msgFlags, serializeBinary msgBody]
