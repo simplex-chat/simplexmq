@@ -92,7 +92,8 @@ data AgentConfig = AgentConfig
     xftpCfg :: XFTPClientConfig,
     reconnectInterval :: RetryInterval,
     messageRetryInterval :: RetryInterval2,
-    userNetworkInterval :: RetryInterval,
+    userNetworkInterval :: Int,
+    userOfflineDelay :: NominalDiffTime,
     messageTimeout :: NominalDiffTime,
     connDeleteDeliveryTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
@@ -147,14 +148,6 @@ defaultMessageRetryInterval =
           }
     }
 
-defaultUserNetworkInterval :: RetryInterval
-defaultUserNetworkInterval =
-  RetryInterval
-    { initialInterval = 1200_000000, -- 20 minutes
-      increaseAfter = 0,
-      maxInterval = 7200_000000 -- 2 hours
-    }
-
 defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
   AgentConfig
@@ -170,7 +163,8 @@ defaultAgentConfig =
       xftpCfg = defaultXFTPClientConfig,
       reconnectInterval = defaultReconnectInterval,
       messageRetryInterval = defaultMessageRetryInterval,
-      userNetworkInterval = defaultUserNetworkInterval,
+      userNetworkInterval = 1800_000000, -- 30 minutes, should be less than Int32 max value
+      userOfflineDelay = 2, -- if network offline event happens in less than 2 seconds after it was set online, it is ignored
       messageTimeout = 2 * nominalDay,
       connDeleteDeliveryTimeout = 2 * nominalDay,
       helloTimeout = 2 * nominalDay,
@@ -179,7 +173,7 @@ defaultAgentConfig =
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
       cleanupStepInterval = 200000, -- 200ms
       maxWorkerRestartsPerMin = 5,
-      -- 3 consecutive subscription timeouts will result in alert to the user
+      -- 5 consecutive subscription timeouts will result in alert to the user
       -- this is a fallback, as the timeout set to 3x of expected timeout, to avoid potential locking.
       maxSubscriptionTimeouts = 5,
       storedMsgDataTTL = 21 * nominalDay,

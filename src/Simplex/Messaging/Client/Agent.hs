@@ -54,7 +54,7 @@ import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
-type SMPClientVar = SessionVar (Either (SMPClientError, Maybe UTCTime) SMPClient)
+type SMPClientVar = SessionVar (Either (SMPClientError, Maybe UTCTime) (OwnServer, SMPClient))
 
 data SMPClientAgentEvent
   = CAConnected SMPServer
@@ -75,7 +75,8 @@ data SMPClientAgentConfig = SMPClientAgentConfig
     persistErrorInterval :: NominalDiffTime,
     msgQSize :: Natural,
     agentQSize :: Natural,
-    agentSubsBatchSize :: Int
+    agentSubsBatchSize :: Int,
+    ownServerDomains :: [ByteString]
   }
 
 defaultSMPClientAgentConfig :: SMPClientAgentConfig
@@ -91,7 +92,8 @@ defaultSMPClientAgentConfig =
       persistErrorInterval = 0,
       msgQSize = 256,
       agentQSize = 256,
-      agentSubsBatchSize = 900
+      agentSubsBatchSize = 900,
+      ownServerDomains = []
     }
   where
     second = 1000000
@@ -99,16 +101,18 @@ defaultSMPClientAgentConfig =
 data SMPClientAgent = SMPClientAgent
   { agentCfg :: SMPClientAgentConfig,
     active :: TVar Bool,
-    msgQ :: TBQueue (ServerTransmission SMPVersion ErrorType BrokerMsg),
+    msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
     agentQ :: TBQueue SMPClientAgentEvent,
     randomDrg :: TVar ChaChaDRG,
     smpClients :: TMap SMPServer SMPClientVar,
-    smpSessions :: TMap SessionId SMPClient,
+    smpSessions :: TMap SessionId (OwnServer, SMPClient),
     srvSubs :: TMap SMPServer (TMap SMPSub C.APrivateAuthKey),
     pendingSrvSubs :: TMap SMPServer (TMap SMPSub C.APrivateAuthKey),
     smpSubWorkers :: TMap SMPServer (SessionVar (Async ())),
     workerSeq :: TVar Int
   }
+
+type OwnServer = Bool
 
 newtype InternalException e = InternalException {unInternalException :: e}
   deriving (Eq, Show)
@@ -163,13 +167,17 @@ newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg
 
 -- | Get or create SMP client for SMPServer
 getSMPServerClient' :: SMPClientAgent -> SMPServer -> ExceptT SMPClientError IO SMPClient
-getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, workerSeq} srv =
+getSMPServerClient' ca srv = snd <$> getSMPServerClient'' ca srv
+{-# INLINE getSMPServerClient' #-}
+
+getSMPServerClient'' :: SMPClientAgent -> SMPServer -> ExceptT SMPClientError IO (OwnServer, SMPClient)
+getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, workerSeq} srv =
   atomically getClientVar >>= either (ExceptT . newSMPClient) waitForSMPClient
   where
     getClientVar :: STM (Either SMPClientVar SMPClientVar)
     getClientVar = getSessVar workerSeq srv smpClients
 
-    waitForSMPClient :: SMPClientVar -> ExceptT SMPClientError IO SMPClient
+    waitForSMPClient :: SMPClientVar -> ExceptT SMPClientError IO (OwnServer, SMPClient)
     waitForSMPClient v = do
       let ProtocolClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} = smpCfg agentCfg
       smpClient_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v)
@@ -179,20 +187,22 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worker
         Just (Left (e, Just ts)) ->
           ifM
             ((ts <) <$> liftIO getCurrentTime)
-            (atomically (removeSessVar v srv smpClients) >> getSMPServerClient' ca srv)
+            (atomically (removeSessVar v srv smpClients) >> getSMPServerClient'' ca srv)
             (throwE e)
         Nothing -> throwE PCEResponseTimeout
 
-    newSMPClient :: SMPClientVar -> IO (Either SMPClientError SMPClient)
+    newSMPClient :: SMPClientVar -> IO (Either SMPClientError (OwnServer, SMPClient))
     newSMPClient v = do
       r <- connectClient ca srv v `E.catch` (pure . Left . PCEIOError)
       case r of
         Right smp -> do
           logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
+          let c = (isOwnServer ca srv, smp)
           atomically $ do
-            putTMVar (sessionVar v) (Right smp)
-            TM.insert (sessionId $ thParams smp) smp smpSessions
+            putTMVar (sessionVar v) (Right c)
+            TM.insert (sessionId $ thParams smp) c smpSessions
           notify ca $ CAConnected srv
+          pure $ Right c
         Left e -> do
           if persistErrorInterval agentCfg == 0 || e == PCENetworkError || e == PCEResponseTimeout
             then atomically $ do
@@ -202,7 +212,12 @@ getSMPServerClient' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worker
               ts <- addUTCTime (persistErrorInterval agentCfg) <$> liftIO getCurrentTime
               atomically $ putTMVar (sessionVar v) (Left (e, Just ts))
           reconnectClient ca srv
-      pure r
+          pure $ Left e
+
+isOwnServer :: SMPClientAgent -> SMPServer -> OwnServer
+isOwnServer SMPClientAgent {agentCfg} ProtocolServer {host} =
+  let srv = strEncode $ L.head host
+   in any (\s -> s == srv || (B.cons '.' s) `B.isSuffixOf` srv) (ownServerDomains agentCfg)
 
 -- | Run an SMP client for SMPClientVar
 connectClient :: SMPClientAgent -> SMPServer -> SMPClientVar -> IO (Either SMPClientError SMPClient)
@@ -298,7 +313,7 @@ notify :: MonadIO m => SMPClientAgent -> SMPClientAgentEvent -> m ()
 notify ca evt = atomically $ writeTBQueue (agentQ ca) evt
 {-# INLINE notify #-}
 
-lookupSMPServerClient :: SMPClientAgent -> SessionId -> STM (Maybe SMPClient)
+lookupSMPServerClient :: SMPClientAgent -> SessionId -> STM (Maybe (OwnServer, SMPClient))
 lookupSMPServerClient SMPClientAgent {smpSessions} sessId = TM.lookup sessId smpSessions
 
 closeSMPClientAgent :: SMPClientAgent -> IO ()
@@ -315,7 +330,7 @@ closeSMPServerClients c = atomically (smpClients c `swapTVar` M.empty) >>= mapM_
   where
     closeClient v =
       atomically (readTMVar $ sessionVar v) >>= \case
-        Right smp -> closeProtocolClient smp `catchAll_` pure ()
+        Right (_, smp) -> closeProtocolClient smp `catchAll_` pure ()
         _ -> pure ()
 
 cancelActions :: Foldable f => TVar (f (Async ())) -> IO ()

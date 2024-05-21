@@ -28,6 +28,7 @@ module Simplex.Messaging.Agent.Client
     withConnLocks,
     withInvLock,
     withLockMap,
+    ipAddressProtected,
     closeAgentClient,
     closeProtocolServerClients,
     reconnectServerClients,
@@ -41,6 +42,7 @@ module Simplex.Messaging.Agent.Client
     getQueueMessage,
     decryptSMPMessage,
     addSubscription,
+    failSubscription,
     addNewQueueSubscription,
     getSubscriptions,
     sendConfirmation,
@@ -108,8 +110,8 @@ module Simplex.Messaging.Agent.Client
     waitUntilActive,
     UserNetworkInfo (..),
     UserNetworkType (..),
+    getNetworkConfig',
     waitForUserNetwork,
-    waitOnlineOrDelay,
     isNetworkOnline,
     isOnline,
     throwWhenInactive,
@@ -172,7 +174,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (partitionEithers)
 import Data.Functor (($>))
-import Data.Int (Int64)
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
@@ -279,7 +280,7 @@ data AgentClient = AgentClient
     active :: TVar Bool,
     rcvQ :: TBQueue (ATransmission 'Client),
     subQ :: TBQueue (ATransmission 'Agent),
-    msgQ :: TBQueue (ServerTransmission SMPVersion ErrorType BrokerMsg),
+    msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
     smpServers :: TMap UserId (NonEmpty SMPServerWithAuth),
     smpClients :: TMap SMPTransportSession SMPClientVar,
     -- smpProxiedRelays:
@@ -292,7 +293,7 @@ data AgentClient = AgentClient
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
     useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
     userNetworkInfo :: TVar UserNetworkInfo,
-    userNetworkDelay :: TVar Int64,
+    userNetworkUpdated :: TVar (Maybe UTCTime),
     subscrConns :: TVar (Set ConnId),
     activeSubs :: TRcvQueues,
     pendingSubs :: TRcvQueues,
@@ -466,7 +467,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   xftpClients <- TM.empty
   useNetworkConfig <- newTVar (slowNetworkConfig netCfg, netCfg)
   userNetworkInfo <- newTVar $ UserNetworkInfo UNOther True
-  userNetworkDelay <- newTVar $ initialInterval $ userNetworkInterval cfg
+  userNetworkUpdated <- newTVar Nothing
   subscrConns <- newTVar S.empty
   activeSubs <- RQ.empty
   pendingSubs <- RQ.empty
@@ -505,7 +506,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         xftpClients,
         useNetworkConfig,
         userNetworkInfo,
-        userNetworkDelay,
+        userNetworkUpdated,
         subscrConns,
         activeSubs,
         pendingSubs,
@@ -867,25 +868,16 @@ getNetworkConfig c = do
     UNNone -> slowCfg
     _ -> fastCfg
 
+-- returns fast network config
+getNetworkConfig' :: AgentClient -> IO NetworkConfig
+getNetworkConfig' = fmap snd . readTVarIO . useNetworkConfig
+{-# INLINE getNetworkConfig' #-}
+
 waitForUserNetwork :: AgentClient -> IO ()
 waitForUserNetwork c =
-  unlessM (atomically $ isNetworkOnline c) $
-    readTVarIO (userNetworkDelay c) >>= void . waitOnlineOrDelay c
-
-waitOnlineOrDelay :: AgentClient -> Int64 -> IO Bool
-waitOnlineOrDelay c t = do
-  let maxWait = min t $ fromIntegral (maxBound :: Int)
-      t' = t - maxWait
-  delay <- registerDelay $ fromIntegral maxWait
-  online <-
-    atomically $ do
-      expired <- readTVar delay
-      online <- isNetworkOnline c
-      unless (expired || online) retry
-      pure online
-  if online || t' <= 0
-    then pure online
-    else waitOnlineOrDelay c t'
+  unlessM (atomically $ isNetworkOnline c) $ do
+    delay <- registerDelay $ userNetworkInterval $ config $ agentEnv c
+    atomically $ unlessM (isNetworkOnline c) $ unlessM (readTVar delay) retry
 
 closeAgentClient :: AgentClient -> IO ()
 closeAgentClient c = do
@@ -1107,7 +1099,7 @@ protocolClientError :: (Show err, Encoding err) => (HostName -> err -> AgentErro
 protocolClientError protocolError_ host = \case
   PCEProtocolError e -> protocolError_ host e
   PCEResponseError e -> BROKER host $ RESPONSE $ B.unpack $ smpEncode e
-  PCEUnexpectedResponse r -> BROKER host $ UNEXPECTED $ take 32 $ show r
+  PCEUnexpectedResponse e -> BROKER host $ UNEXPECTED $ B.unpack e
   PCEResponseTimeout -> BROKER host TIMEOUT
   PCENetworkError -> BROKER host NETWORK
   PCEIncompatibleHost -> BROKER host HOST
@@ -1297,9 +1289,8 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
 processSubResult :: AgentClient -> RcvQueue -> Either SMPClientError () -> STM ()
 processSubResult c rq@RcvQueue {connId} = \case
   Left e ->
-    unless (temporaryClientError e) $ do
-      RQ.deleteQueue rq (pendingSubs c)
-      TM.insert (RQ.qKey rq) e (removedSubs c)
+    unless (temporaryClientError e) $
+      failSubscription c rq e
   Right () ->
     whenM (hasPendingSubscription c connId) $
       addSubscription c rq
@@ -1418,6 +1409,11 @@ addSubscription c rq@RcvQueue {connId} = do
   modifyTVar' (subscrConns c) $ S.insert connId
   RQ.addQueue rq $ activeSubs c
   RQ.deleteQueue rq $ pendingSubs c
+
+failSubscription :: AgentClient -> RcvQueue -> SMPClientError -> STM ()
+failSubscription c rq e = do
+  RQ.deleteQueue rq (pendingSubs c)
+  TM.insert (RQ.qKey rq) e (removedSubs c)
 
 addPendingSubscription :: AgentClient -> RcvQueue -> STM ()
 addPendingSubscription c rq@RcvQueue {connId} = do
