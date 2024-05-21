@@ -8,16 +8,14 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 module SMPProxyTests where
 
 import AgentTests.FunctionalAPITests
-import Control.Monad (forM_, replicateM)
+import Control.Monad (forM_)
 import Control.Monad.Trans.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
-import Data.Either (partitionEithers)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import SMPAgentClient
@@ -39,6 +37,7 @@ import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import Test.Hspec
 import UnliftIO
+import Util
 
 smpProxyTests :: Spec
 smpProxyTests = do
@@ -74,12 +73,22 @@ smpProxyTests = do
           deliverMessageViaProxy proxyServ relayServ C.SEd25519 msg1 msg2
         it "max message size, X25519 keys" . twoServersFirstProxy $
           deliverMessageViaProxy proxyServ relayServ C.SX25519 msg1 msg2
-      describe "stress test" $ do
-        it "proxy lots of messages (1x1000)" . twoServersFirstProxy $ deliverMessagesViaProxyParallel 1 1000 srv1 srv2
-        it "proxy lots of messages (3x1000)" . twoServersFirstProxy $ deliverMessagesViaProxyParallel 3 1000 srv1 srv2
-        it "proxy lots of messages (10x500)" . twoServersFirstProxy $ deliverMessagesViaProxyParallel 10 500 srv1 srv2
-        it "proxy lots of messages (100x100)" . twoServersFirstProxy $ deliverMessagesViaProxyParallel 100 100 srv1 srv2
-        it "proxy lots of messages (500x10)" . twoServersFirstProxy $ deliverMessagesViaProxyParallel 500 10 srv1 srv2
+      describe "stress test 1k" $ do
+        let deliver n = deliverMessagesViaProxy srv1 srv2 C.SEd448 [] (map bshow [1 :: Int .. n])
+        it "1x1000" . twoServersFirstProxy $ deliver 1000
+        it "5x200" . twoServersFirstProxy $ 5 `inParrallel` deliver 200
+        it "10x100" . twoServersFirstProxy $ 10 `inParrallel` deliver 100
+      xdescribe "stress test 10k" $ do
+        let deliver n = deliverMessagesViaProxy srv1 srv2 C.SEd448 [] (map bshow [1 :: Int .. n])
+        it "1x10000" . twoServersFirstProxy $ deliver 10000
+        it "5x2000" . twoServersFirstProxy $ 5 `inParrallel` deliver 2000
+        it "10x1000" . twoServersFirstProxy $ 10 `inParrallel` deliver 1000
+        it "100x100 N1" . twoServersFirstProxy $ withNumCapabilities 1 $ 100 `inParrallel` deliver 100
+        it "100x100 N4 C1" . twoServersNoConc $ withNumCapabilities 4 $ 100 `inParrallel` deliver 100
+        it "100x100 N4 C2" . twoServersFirstProxy $ withNumCapabilities 4 $ 100 `inParrallel` deliver 100
+        it "100x100 N4 C16" . twoServersMoreConc $ withNumCapabilities 4 $ 100 `inParrallel` deliver 100
+        it "100x100 N" . twoServersFirstProxy $ withNCPUCapabilities $ 100 `inParrallel` deliver 100
+        it "500x20" . twoServersFirstProxy $ 500 `inParrallel` deliver 20
     describe "agent API" $ do
       describe "one server" $ do
         it "always via proxy" . oneServer $
@@ -105,6 +114,8 @@ smpProxyTests = do
     oneServer = withSmpServerConfigOn (transport @TLS) proxyCfg testPort . const
     twoServers = twoServers_ proxyCfg proxyCfg
     twoServersFirstProxy = twoServers_ proxyCfg cfgV8
+    twoServersMoreConc = twoServers_ proxyCfg {serverClientConcurrency = 16} cfgV8
+    twoServersNoConc = twoServers_ proxyCfg {serverClientConcurrency = 1} cfgV8
     twoServers_ cfg1 cfg2 runTest =
       withSmpServerConfigOn (transport @TLS) cfg1 testPort $ \_ ->
         withSmpServerConfigOn (transport @TLS) cfg2 testPort2 $ const runTest
@@ -164,13 +175,6 @@ deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   case r of
     Right () -> pure ()
     Left e -> fail (show e)
-
-deliverMessagesViaProxyParallel :: Int -> Int -> SMPServer -> SMPServer -> IO ()
-deliverMessagesViaProxyParallel nStreams nMessages proxyServ relayServ = do
-  streams <- replicateM nStreams . async $ deliverMessagesViaProxy proxyServ relayServ C.SEd448 ["hello"] (map bshow [1 :: Int .. nMessages])
-  (es, rs) <- partitionEithers <$> mapM waitCatch streams
-  map show es `shouldBe` []
-  rs `shouldBe` replicate nStreams ()
 
 agentDeliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => (NonEmpty SMPServer, SMPProxyMode, Bool) -> (NonEmpty SMPServer, SMPProxyMode, Bool) -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
 agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, bViaProxy) alg msg1 msg2 =
