@@ -95,23 +95,24 @@ type AEntityTransmission p e = (ACorrId, ConnId, ACommand p e)
 type AEntityTransmissionOrError p e = (ACorrId, ConnId, Either AgentErrorType (ACommand p e))
 
 tGetAgent :: Transport c => c -> IO (AEntityTransmissionOrError 'Agent 'AEConn)
-tGetAgent = tGetAgent'
+tGetAgent = tGetAgent' True
 
-tGetAgent' :: forall c e. (Transport c, AEntityI e) => c -> IO (AEntityTransmissionOrError 'Agent e)
-tGetAgent' h = do
-  (corrId, connId, cmdOrErr) <- pGetAgent h
+tGetAgent' :: forall c e. (Transport c, AEntityI e) => Bool -> c -> IO (AEntityTransmissionOrError 'Agent e)
+tGetAgent' skipErr h = do
+  (corrId, connId, cmdOrErr) <- pGetAgent skipErr h
   case cmdOrErr of
     Right (APC e cmd) -> case testEquality e (sAEntity @e) of
       Just Refl -> pure (corrId, connId, Right cmd)
       _ -> error $ "unexpected command " <> show cmd
     Left err -> pure (corrId, connId, Left err)
 
-pGetAgent :: forall c. Transport c => c -> IO (ATransmissionOrError 'Agent)
-pGetAgent h = do
+pGetAgent :: forall c. Transport c => Bool -> c -> IO (ATransmissionOrError 'Agent)
+pGetAgent skipErr h = do
   (corrId, connId, cmdOrErr) <- tGet SAgent h
   case cmdOrErr of
-    Right (APC _ CONNECT {}) -> pGetAgent h
-    Right (APC _ DISCONNECT {}) -> pGetAgent h
+    Right (APC _ CONNECT {}) -> pGetAgent skipErr h
+    Right (APC _ DISCONNECT {}) -> pGetAgent skipErr h
+    Right (APC _ (ERR (BROKER _ NETWORK))) | skipErr -> pGetAgent skipErr h
     cmd -> pure (corrId, connId, cmd)
 
 -- | receive message to handle `h`
@@ -119,14 +120,17 @@ pGetAgent h = do
 (<#:) = tGetAgent
 
 (<#:?) :: Transport c => c -> IO (ATransmissionOrError 'Agent)
-(<#:?) = pGetAgent
+(<#:?) = pGetAgent True
 
 (<#:.) :: Transport c => c -> IO (AEntityTransmissionOrError 'Agent 'AENone)
-(<#:.) = tGetAgent'
+(<#:.) = tGetAgent' True
 
 -- | send transmission `t` to handle `h` and get response
 (#:) :: Transport c => c -> (ByteString, ByteString, ByteString) -> IO (AEntityTransmissionOrError 'Agent 'AEConn)
 h #: t = tPutRaw h t >> (<#:) h
+
+(#:!) :: Transport c => c -> (ByteString, ByteString, ByteString) -> IO (AEntityTransmissionOrError 'Agent 'AEConn)
+h #:! t = tPutRaw h t >> tGetAgent' False h
 
 -- | action and expected response
 -- `h #:t #> r` is the test that sends `t` to `h` and validates that the response is `r`
@@ -426,8 +430,8 @@ testServerConnectionAfterError t _ = do
 
   withAgent1 $ \bob -> do
     withAgent2 $ \alice -> do
-      bob #: ("1", "alice", "SUB") =#> \("1", "alice", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT
-      alice #: ("1", "bob", "SUB") =#> \("1", "bob", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT
+      bob #:! ("1", "alice", "SUB") =#> \("1", "alice", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT
+      alice #:! ("1", "bob", "SUB") =#> \("1", "bob", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT
       withServer $ do
         alice <#=? \case ("", "bob", APC _ (SENT 4)) -> True; ("", "", APC _ (UP s ["bob"])) -> s == server; _ -> False
         alice <#=? \case ("", "bob", APC _ (SENT 4)) -> True; ("", "", APC _ (UP s ["bob"])) -> s == server; _ -> False
