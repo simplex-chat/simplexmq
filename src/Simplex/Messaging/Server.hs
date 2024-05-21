@@ -321,7 +321,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         atomically . modifyTVar' rates' $ (rates :) . take nBuckets
       where
         collect :: IntMap CS.ClientStatsData -> CS.ClientStatsC (IntMap Int)
-        collect stats = IM.foldlWithKey' toColumns (CS.clientStatsC IM.empty) stats
+        collect = IM.foldlWithKey' toColumns (CS.clientStatsC IM.empty)
           where
             toColumns acc statsId csd =
               CS.ClientStatsC

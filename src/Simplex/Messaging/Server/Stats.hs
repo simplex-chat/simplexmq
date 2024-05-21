@@ -380,8 +380,8 @@ distribution h =
       maximal = fst <$> listToMaybe rcdf'
     }
   where
-    bot p = fmap fst $ find (\(_, p') -> p' >= p) cdf'
-    top p = fmap fst $ find (\(_, p') -> p' <= 1 - p) rcdf'
+    bot p = fst <$> find (\(_, p') -> p' >= p) cdf'
+    top p = fst <$> find (\(_, p') -> p' <= 1 - p) rcdf'
     cdf' = cdf h
     rcdf' = reverse cdf' -- allow find to work from the smaller end
 
