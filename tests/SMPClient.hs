@@ -119,7 +119,8 @@ cfg =
       transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedSMPHandshakes},
       controlPort = Nothing,
       smpAgentCfg = defaultSMPClientAgentConfig,
-      allowSMPProxy = False
+      allowSMPProxy = False,
+      serverClientConcurrency = 2
     }
 
 cfgV7 :: ServerConfig

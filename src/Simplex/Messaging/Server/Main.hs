@@ -27,7 +27,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI
-import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defMsgExpirationDays, defaultInactiveClientExpiration, defaultMessageExpiration)
+import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defMsgExpirationDays, defaultInactiveClientExpiration, defaultMessageExpiration, defaultProxyClientConcurrency)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (batchCmdsSMPVersion, sendingProxySMPVersion, simplexMQVersion, supportedSMPHandshakes, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
@@ -156,7 +156,9 @@ smpServerCLI cfgPath logPath =
                    \# `socks_mode` can be 'onion' for SOCKS proxy to be used for .onion destination hosts only (default)\n\
                    \# or 'always' to be used for all destination hosts (can be used if it is an .onion server).\n\
                    \# socks_mode: onion\n\n\
-                   \[INACTIVE_CLIENTS]\n\
+                   \# Limit number of threads a client can spawn to process proxy commands in parrallel.\n"
+                <> ("# client_concurrency: " <> show defaultProxyClientConcurrency <> "\n\n")
+                <> "[INACTIVE_CLIENTS]\n\
                    \# TTL and interval to check inactive clients\n\
                    \disconnect: off\n"
                 <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
@@ -251,7 +253,8 @@ smpServerCLI cfgPath logPath =
                     ownServerDomains = either (const []) textToOwnServers $ lookupValue "PROXY" "own_server_domains" ini,
                     persistErrorInterval = 30 -- seconds
                   },
-              allowSMPProxy = True
+              allowSMPProxy = True,
+              serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini
             }
         textToSocksMode :: Text -> SocksMode
         textToSocksMode = \case

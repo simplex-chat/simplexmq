@@ -82,7 +82,8 @@ data ServerConfig = ServerConfig
     -- | run listener on control port
     controlPort :: Maybe ServiceName,
     smpAgentCfg :: SMPClientAgentConfig,
-    allowSMPProxy :: Bool -- auth is the same with `newQueueBasicAuth`
+    allowSMPProxy :: Bool, -- auth is the same with `newQueueBasicAuth`
+    serverClientConcurrency :: Int
   }
 
 defMsgExpirationDays :: Int64
@@ -101,6 +102,9 @@ defaultInactiveClientExpiration =
     { ttl = 43200, -- seconds, 12 hours
       checkInterval = 3600 -- seconds, 1 hours
     }
+
+defaultProxyClientConcurrency :: Int
+defaultProxyClientConcurrency = 16
 
 data Env = Env
   { config :: ServerConfig,
@@ -139,6 +143,7 @@ data Client = Client
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
+    procThreads :: TVar Int,
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
     thVersion :: VersionSMP,
@@ -173,12 +178,13 @@ newClient nextClientId qSize thVersion sessionId createdAt = do
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
   msgQ <- newTBQueue qSize
+  procThreads <- newTVar 0
   endThreads <- newTVar IM.empty
   endThreadSeq <- newTVar 0
   connected <- newTVar True
   rcvActiveAt <- newTVar createdAt
   sndActiveAt <- newTVar createdAt
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
+  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, procThreads, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
