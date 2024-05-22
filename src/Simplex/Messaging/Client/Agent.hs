@@ -205,12 +205,13 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
           notify ca $ CAConnected srv
           pure $ Right c
         Left e -> do
-          if persistErrorInterval agentCfg == 0
+          let ei = persistErrorInterval agentCfg
+          if ei == 0
             then atomically $ do
               putTMVar (sessionVar v) (Left (e, Nothing))
               removeSessVar v srv smpClients
             else do
-              ts <- addUTCTime (persistErrorInterval agentCfg) <$> liftIO getCurrentTime
+              ts <- addUTCTime ei <$> liftIO getCurrentTime
               atomically $ putTMVar (sessionVar v) (Left (e, Just ts))
           reconnectClient ca srv
           pure $ Left e

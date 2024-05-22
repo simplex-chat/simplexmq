@@ -250,7 +250,8 @@ smpServerCLI cfgPath logPath =
                                 requiredHostMode = fromMaybe False $ iniOnOff "PROXY" "required_host_mode" ini
                               }
                         },
-                    ownServerDomains = either (const []) textToOwnServers $ lookupValue "PROXY" "own_server_domains" ini
+                    ownServerDomains = either (const []) textToOwnServers $ lookupValue "PROXY" "own_server_domains" ini,
+                    persistErrorInterval = 30 -- seconds
                   },
               allowSMPProxy = True,
               serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini

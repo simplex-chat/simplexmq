@@ -89,7 +89,7 @@ ntfServerCfg =
       clientQSize = 1,
       subQSize = 1,
       pushQSize = 1,
-      smpAgentCfg = defaultSMPClientAgentConfig,
+      smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1},
       apnsConfig =
         defaultAPNSPushClientConfig
           { apnsPort = apnsTestPort,
@@ -115,9 +115,11 @@ ntfServerCfgV2 :: NtfServerConfig
 ntfServerCfgV2 =
   ntfServerCfg
     { ntfServerVRange = mkVersionRange initialNTFVersion authBatchCmdsNTFVersion,
-      smpAgentCfg = defaultSMPClientAgentConfig {smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}},
+      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}},
       Env.transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedNTFHandshakes}
     }
+  where
+    smpAgentCfg' = smpAgentCfg ntfServerCfg
 
 withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a
 withNtfServerStoreLog t = withNtfServerCfg ntfServerCfg {storeLogFile = Just ntfTestStoreLogFile, transports = [(ntfTestPort, t)]}
