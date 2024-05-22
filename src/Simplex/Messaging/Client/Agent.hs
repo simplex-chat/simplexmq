@@ -183,12 +183,13 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
       smpClient_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v)
       case smpClient_ of
         Just (Right smpClient) -> pure smpClient
-        Just (Left (e, Nothing)) -> throwE e
-        Just (Left (e, Just ts)) ->
-          ifM
-            ((ts <) <$> liftIO getCurrentTime)
-            (atomically (removeSessVar v srv smpClients) >> getSMPServerClient'' ca srv)
-            (throwE e)
+        Just (Left (e, ts_)) -> case ts_ of
+          Nothing -> throwE e
+          Just ts ->
+            ifM
+              ((ts <) <$> liftIO getCurrentTime)
+              (atomically (removeSessVar v srv smpClients) >> getSMPServerClient'' ca srv)
+              (throwE e)
         Nothing -> throwE PCEResponseTimeout
 
     newSMPClient :: SMPClientVar -> IO (Either SMPClientError (OwnServer, SMPClient))

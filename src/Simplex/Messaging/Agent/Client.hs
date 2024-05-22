@@ -796,12 +796,13 @@ waitForProtocolClient c tSess@(_, srv, _) clients v = do
   client_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v)
   case client_ of
     Just (Right smpClient) -> pure smpClient
-    Just (Left (e, Nothing)) -> throwE e
-    Just (Left (e, Just ts)) -> do
-      ifM
-        ((ts <) <$> liftIO getCurrentTime)
-        (atomically (removeSessVar v tSess clients) >> getProtocolServerClient c tSess)
-        (throwE e)
+    Just (Left (e, ts_)) -> case ts_ of
+      Nothing -> throwE e
+      Just ts ->
+        ifM
+          ((ts <) <$> liftIO getCurrentTime)
+          (atomically (removeSessVar v tSess clients) >> getProtocolServerClient c tSess)
+          (throwE e)
     Nothing -> throwE $ BROKER (B.unpack $ strEncode srv) TIMEOUT
 
 -- clientConnected arg is only passed for SMP server

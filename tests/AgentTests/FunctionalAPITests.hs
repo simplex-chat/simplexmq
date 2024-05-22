@@ -1356,14 +1356,6 @@ testRatchetSyncSimultaneous t = do
         concurrently_
           (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
           (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
-      -- liftIO . getInAnyOrder alice $
-      --   [ ratchetSyncP' bobId RSAgreed,
-      --     serverUpP
-      --   ]
-      -- liftIO . getInAnyOrder bob2 $
-      --   [ ratchetSyncP' aliceId RSAgreed,
-      --     serverUpP
-      --   ]
       get alice =##> ratchetSyncP bobId RSOk
       get bob2 =##> ratchetSyncP aliceId RSOk
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
