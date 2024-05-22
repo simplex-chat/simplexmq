@@ -175,7 +175,7 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Text.Encoding
-import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
+import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as SQL
@@ -252,7 +252,7 @@ import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
-type ClientVar msg = SessionVar (Either AgentErrorType (Client msg))
+type ClientVar msg = SessionVar (Either (AgentErrorType, Maybe UTCTime) (Client msg))
 
 type SMPClientVar = ClientVar SMP.BrokerMsg
 
@@ -584,7 +584,7 @@ getSMPServerClient :: AgentClient -> SMPTransportSession -> AM SMPConnectedClien
 getSMPServerClient c@AgentClient {active, smpClients, workerSeq} tSess = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
   atomically (getSessVar workerSeq tSess smpClients)
-    >>= either newClient (waitForProtocolClient c tSess)
+    >>= either newClient (waitForProtocolClient c tSess smpClients)
   where
     newClient v = do
       prs <- atomically TM.empty
@@ -613,7 +613,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
       (clnt,) <$> newProxiedRelay clnt auth rv
     waitForProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> SMPClientVar -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
     waitForProxyClient tSess auth v = do
-      clnt@(SMPConnectedClient _ prs) <- waitForProtocolClient c tSess v
+      clnt@(SMPConnectedClient _ prs) <- waitForProtocolClient c tSess smpClients v
       sess <-
         atomically (getSessVar workerSeq destSrv prs)
           >>= either (newProxiedRelay clnt auth) (waitForProxiedRelay tSess)
@@ -702,12 +702,11 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess =
       atomically $ putTMVar (sessionVar v) a
     runSubWorker = do
       ri <- asks $ reconnectInterval . config
-      timeoutCounts <- newTVarIO 0
       withRetryInterval ri $ \_ loop -> do
         pending <- atomically getPending
         forM_ (L.nonEmpty pending) $ \qs -> do
-          lift $ waitForUserNetwork c
-          void . tryAgentError' $ reconnectSMPClient timeoutCounts c tSess qs
+          liftIO $ waitForUserNetwork c
+          reconnectSMPClient c tSess qs
           loop
     getPending = RQ.getSessQueues tSess $ pendingSubs c
     cleanup :: SessionVar (Async ()) -> STM ()
@@ -717,41 +716,26 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess =
       whenM (isEmptyTMVar $ sessionVar v) retry
       removeSessVar v tSess smpSubWorkers
 
-reconnectSMPClient :: TVar Int -> AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> AM ()
-reconnectSMPClient tc c tSess@(_, srv, _) qs = do
-  NetworkConfig {tcpTimeout} <- atomically $ getNetworkConfig c
-  -- this allows 3x of timeout per batch of subscription (90 queues per batch empirically)
-  let t = (length qs `div` 90 + 1) * tcpTimeout * 3
-  ExceptT (sequence <$> (t `timeout` runExceptT resubscribe)) >>= \case
-    Just _ -> resetTimeouts
-    -- reset and do not report consecutive timeouts while offline
-    Nothing -> ifM (atomically $ isNetworkOnline c) notifyTimeout resetTimeouts
+reconnectSMPClient :: AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> AM' ()
+reconnectSMPClient c tSess@(_, srv, _) qs = handleNotify $ do
+  cs <- readTVarIO $ RQ.getConnections $ activeSubs c
+  (rs, sessId_) <- subscribeQueues c $ L.toList qs
+  let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
+      conns = filter (`M.notMember` cs) okConns
+  unless (null conns) $ notifySub "" $ UP srv conns
+  let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
+  mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
+  forM_ (listToMaybe tempErrs) $ \(connId, e) -> do
+    when (null okConns && M.null cs && null finalErrs) . liftIO $
+      forM_ sessId_ $ \sessId -> do
+        -- We only close the client session that was used to subscribe.
+        v_ <- atomically $ ifM (activeClientSession c tSess sessId) (TM.lookupDelete tSess $ smpClients c) (pure Nothing)
+        mapM_ (closeClient_ c) v_
+    notifySub connId $ ERR e
   where
-    resetTimeouts = atomically $ writeTVar tc 0
-    notifyTimeout = do
-      tc' <- atomically $ stateTVar tc $ \i -> (i + 1, i + 1)
-      maxTC <- asks $ maxSubscriptionTimeouts . config
-      when (tc' >= maxTC) $ do
-        let msg = show tc' <> " consecutive subscription timeouts: " <> show (length qs) <> " queues, transport session: " <> show tSess
-        atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ INTERNAL msg)
-    resubscribe :: AM ()
-    resubscribe = do
-      cs <- readTVarIO $ RQ.getConnections $ activeSubs c
-      (rs, sessId_) <- lift . subscribeQueues c $ L.toList qs
-      let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
-      liftIO $ do
-        let conns = filter (`M.notMember` cs) okConns
-        unless (null conns) $ notifySub "" $ UP srv conns
-      let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
-      liftIO $ mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
-      forM_ (listToMaybe tempErrs) $ \(_, err) -> do
-        when (null okConns && M.null cs && null finalErrs) . liftIO $
-          forM_ sessId_ $ \sessId -> do
-            -- We only close the client session that was used to subscribe.
-            v_ <- atomically $ ifM (activeClientSession c tSess sessId) (TM.lookupDelete tSess $ smpClients c) (pure Nothing)
-            mapM_ (closeClient_ c) v_
-        throwError err
-    notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
+    handleNotify :: AM' () -> AM' ()
+    handleNotify = E.handleAny $ notifySub "" . ERR . INTERNAL . show
+    notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> AM' ()
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
 getNtfServerClient :: AgentClient -> NtfTransportSession -> AM NtfClient
@@ -760,7 +744,7 @@ getNtfServerClient c@AgentClient {active, ntfClients, workerSeq} tSess@(userId, 
   atomically (getSessVar workerSeq tSess ntfClients)
     >>= either
       (newProtocolClient c tSess ntfClients connectClient)
-      (waitForProtocolClient c tSess)
+      (waitForProtocolClient c tSess ntfClients)
   where
     connectClient :: NtfClientVar -> AM NtfClient
     connectClient v = do
@@ -783,7 +767,7 @@ getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq} tSess@(userId
   atomically (getSessVar workerSeq tSess xftpClients)
     >>= either
       (newProtocolClient c tSess xftpClients connectClient)
-      (waitForProtocolClient c tSess)
+      (waitForProtocolClient c tSess xftpClients)
   where
     connectClient :: XFTPClientVar -> AM XFTPClient
     connectClient v = do
@@ -800,14 +784,26 @@ getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq} tSess@(userId
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
-waitForProtocolClient :: ProtocolTypeI (ProtoType msg) => AgentClient -> TransportSession msg -> ClientVar msg -> AM (Client msg)
-waitForProtocolClient c (_, srv, _) v = do
+waitForProtocolClient ::
+  (ProtocolTypeI (ProtoType msg), ProtocolServerClient v err msg) =>
+  AgentClient ->
+  TransportSession msg ->
+  TMap (TransportSession msg) (ClientVar msg) ->
+  ClientVar msg ->
+  AM (Client msg)
+waitForProtocolClient c tSess@(_, srv, _) clients v = do
   NetworkConfig {tcpConnectTimeout} <- atomically $ getNetworkConfig c
   client_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v)
-  liftEither $ case client_ of
-    Just (Right smpClient) -> Right smpClient
-    Just (Left e) -> Left e
-    Nothing -> Left $ BROKER (B.unpack $ strEncode srv) TIMEOUT
+  case client_ of
+    Just (Right smpClient) -> pure smpClient
+    Just (Left (e, ts_)) -> case ts_ of
+      Nothing -> throwE e
+      Just ts ->
+        ifM
+          ((ts <) <$> liftIO getCurrentTime)
+          (atomically (removeSessVar v tSess clients) >> getProtocolServerClient c tSess)
+          (throwE e)
+    Nothing -> throwE $ BROKER (B.unpack $ strEncode srv) TIMEOUT
 
 -- clientConnected arg is only passed for SMP server
 newProtocolClient ::
@@ -829,10 +825,15 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient v =
       pure client
     Left e -> do
       liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
-      atomically $ do
-        removeSessVar v tSess clients
-        putTMVar (sessionVar v) (Left e)
-      throwError e -- signal error to caller
+      ei <- asks $ persistErrorInterval . config
+      if ei == 0
+        then atomically $ do
+          removeSessVar v tSess clients
+          putTMVar (sessionVar v) (Left (e, Nothing))
+        else do
+          ts <- addUTCTime ei <$> liftIO getCurrentTime
+          atomically $ putTMVar (sessionVar v) (Left (e, Just ts))
+      throwE e -- signal error to caller
 
 hostEvent :: forall v err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient v err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> Client msg -> ACommand 'Agent 'AENone
 hostEvent event = hostEvent' event . protocolClient

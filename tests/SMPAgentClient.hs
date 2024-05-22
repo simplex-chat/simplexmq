@@ -212,6 +212,7 @@ agentCfg =
       smpCfg = defaultSMPClientConfig {qSize = 1, defaultTransport = (testPort, transport @TLS), networkConfig},
       ntfCfg = defaultNTFClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS), networkConfig},
       reconnectInterval = fastRetryInterval,
+      persistErrorInterval = 1,
       xftpNotifyErrsOnRetry = False,
       ntfWorkerDelay = 100,
       ntfSMPWorkerDelay = 100,

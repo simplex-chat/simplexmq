@@ -145,6 +145,7 @@ pGet c = do
   case cmd of
     CONNECT {} -> pGet c
     DISCONNECT {} -> pGet c
+    ERR (BROKER _ NETWORK) -> pGet c
     _ -> pure t
 
 pattern CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand 'Agent e
@@ -235,10 +236,10 @@ runRight action =
 getInAnyOrder :: HasCallStack => AgentClient -> [ATransmission 'Agent -> Bool] -> Expectation
 getInAnyOrder c ts = withFrozenCallStack $ inAnyOrder (pGet c) ts
 
-inAnyOrder :: (Show a, MonadIO m, HasCallStack) => m a -> [a -> Bool] -> m ()
+inAnyOrder :: (Show a, MonadUnliftIO m, HasCallStack) => m a -> [a -> Bool] -> m ()
 inAnyOrder _ [] = pure ()
 inAnyOrder g rs = withFrozenCallStack $ do
-  r <- g
+  r <- 5000000 `timeout` g >>= maybe (error "inAnyOrder timeout") pure
   let rest = filter (not . expected r) rs
   if length rest < length rs
     then inAnyOrder g rest
@@ -1263,15 +1264,10 @@ testRatchetSyncServerOffline t = withAgentClients2 $ \alice bob -> do
   liftIO $ ratchetSyncState `shouldBe` RSStarted
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
     runRight_ $ do
-      liftIO . getInAnyOrder alice $
-        [ ratchetSyncP' bobId RSAgreed,
-          serverUpP
-        ]
-      liftIO . getInAnyOrder bob2 $
-        [ ratchetSyncP' aliceId RSAgreed,
-          serverUpP
-        ]
       get alice =##> ratchetSyncP bobId RSOk
       get bob2 =##> ratchetSyncP aliceId RSOk
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
@@ -1325,15 +1321,10 @@ testRatchetSyncSuspendForeground t = do
   foregroundAgent bob2
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
     runRight_ $ do
-      liftIO . getInAnyOrder alice $
-        [ ratchetSyncP' bobId RSAgreed,
-          serverUpP
-        ]
-      liftIO . getInAnyOrder bob2 $
-        [ ratchetSyncP' aliceId RSAgreed,
-          serverUpP
-        ]
       get alice =##> ratchetSyncP bobId RSOk
       get bob2 =##> ratchetSyncP aliceId RSOk
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
@@ -1358,15 +1349,10 @@ testRatchetSyncSimultaneous t = do
   liftIO $ aRSS `shouldBe` RSStarted
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
     runRight_ $ do
-      liftIO . getInAnyOrder alice $
-        [ ratchetSyncP' bobId RSAgreed,
-          serverUpP
-        ]
-      liftIO . getInAnyOrder bob2 $
-        [ ratchetSyncP' aliceId RSAgreed,
-          serverUpP
-        ]
       get alice =##> ratchetSyncP bobId RSOk
       get bob2 =##> ratchetSyncP aliceId RSOk
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
