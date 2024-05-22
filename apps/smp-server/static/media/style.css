@@ -936,19 +936,6 @@ p a{
   padding-bottom: 2rem;
 }
 
-@media screen and (max-height: 760px) and (min-width: 1280px), screen and (max-height: 860px) and (min-width: 1280px) and (max-width: 1399px) {
-  .hero-section-1{
-    height: 100%;
-  }
-
-  h1{
-    font-size: 48px !important;
-  }
-  h2{
-    font-size: 36px !important;
-  }
-}
-
 @media screen and (max-height: 780px) {
   .hero-phone-background{
     height: 100%;

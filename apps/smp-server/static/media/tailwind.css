@@ -784,6 +784,10 @@ video {
   margin-bottom: 30px;
 }
 
+.mb-\[32px\] {
+  margin-bottom: 32px;
+}
+
 .mb-\[36px\] {
   margin-bottom: 36px;
 }
@@ -1688,6 +1692,11 @@ video {
   padding-bottom: 50px;
 }
 
+.py-\[70px\] {
+  padding-top: 70px;
+  padding-bottom: 70px;
+}
+
 .py-\[75px\] {
   padding-top: 75px;
   padding-bottom: 75px;
@@ -1797,12 +1806,20 @@ video {
   font-size: 28px;
 }
 
+.text-\[30px\] {
+  font-size: 30px;
+}
+
 .text-\[35px\] {
   font-size: 35px;
 }
 
 .text-\[38px\] {
   font-size: 38px;
+}
+
+.text-\[42px\] {
+  font-size: 42px;
 }
 
 .text-base {
@@ -3009,6 +3026,11 @@ video {
     font-size: 16px;
   }
 
+  .xl\:bg-secondary-bg-light {
+    --tw-bg-opacity: 1;
+    background-color: rgb(243 246 247 / var(--tw-bg-opacity));
+  }
+
   :is([dir="ltr"] .ltr\:xl\:ml-10) {
     margin-left: 2.5rem;
   }
@@ -3027,5 +3049,10 @@ video {
 
   :is([dir="rtl"] .xl\:rtl\:text-right) {
     text-align: right;
+  }
+
+  :is(.dark .dark\:xl\:bg-secondary-bg-dark) {
+    --tw-bg-opacity: 1;
+    background-color: rgb(17 24 47 / var(--tw-bg-opacity));
   }
 }
