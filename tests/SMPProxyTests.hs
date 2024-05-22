@@ -121,11 +121,11 @@ smpProxyTests = do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "25 agents, 300 pairs, 17 messages" . oneServer . withNumCapabilities 4 $ deliver 25 17
   where
-    oneServer = withSmpServerConfigOn (transport @TLS) proxyCfg testPort . const
+    oneServer = withSmpServerConfigOn (transport @TLS) proxyCfg {msgQueueQuota = 128} testPort . const
     twoServers = twoServers_ proxyCfg proxyCfg
-    twoServersFirstProxy = twoServers_ proxyCfg cfgV8
-    twoServersMoreConc = twoServers_ proxyCfg {serverClientConcurrency = 16} cfgV8
-    twoServersNoConc = twoServers_ proxyCfg {serverClientConcurrency = 1} cfgV8
+    twoServersFirstProxy = twoServers_ proxyCfg cfgV8 {msgQueueQuota = 128}
+    twoServersMoreConc = twoServers_ proxyCfg {serverClientConcurrency = 128} cfgV8 {msgQueueQuota = 128}
+    twoServersNoConc = twoServers_ proxyCfg {serverClientConcurrency = 1} cfgV8 {msgQueueQuota = 128}
     twoServers_ cfg1 cfg2 runTest =
       withSmpServerConfigOn (transport @TLS) cfg1 testPort $ \_ ->
         withSmpServerConfigOn (transport @TLS) cfg2 testPort2 $ const runTest
@@ -214,7 +214,7 @@ agentDeliverMessagesViaProxyConc :: [NonEmpty SMPServer] -> [MsgBody] -> IO ()
 agentDeliverMessagesViaProxyConc agentServers msgs =
   withAgents $ \agents -> do
     let pairs = combinations 2 agents
-    logNote $ "Pairing " <> tshow (length agents) <> " into " <> tshow (length pairs) <> " connections"
+    logNote $ "Pairing " <> tshow (length agents) <> " agents into " <> tshow (length pairs) <> " connections"
     connections <- forM pairs $ \case
       [a, b] -> prePair a b
       _ -> error "agents must be paired"
@@ -262,9 +262,15 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
               ("", _, A.SENT _ _) -> pure ()
               ("", _, Msg' mId' _ _) -> runExceptT' $ ackMessage alice bobId mId' Nothing
               huh -> fail (show huh)
-      concurrently_
-        ((waitCatch aSender >>= either (fail . show) pure) `finally` cancel bRecipient) -- stopped sender cancels paired recipient loop
-        ((waitCatch bSender >>= either (fail . show) pure) `finally` cancel aRecipient)
+      logDebug "run waiting..."
+      a2b <- async $ (waitCatch aSender >>= either throwIO pure) `finally` cancel bRecipient -- stopped sender cancels paired recipient loop
+      b2a <- async $ (waitCatch bSender >>= either throwIO pure) `finally` cancel aRecipient
+      waitEitherCatch a2b b2a >>= \case
+        Right (Right ()) -> wait b2a
+        Right (Left e) -> cancel bSender >> throwIO e
+        Left (Right ()) -> wait a2b
+        Left (Left e) -> cancel aSender >> throwIO e
+      logDebug "run finished"
     pqEnc = CR.PQEncOn
     aCfg = agentProxyCfg {sndAuthAlg = C.AuthAlg C.SEd448, rcvAuthAlg = C.AuthAlg C.SEd448}
     servers srvs = (initAgentServersProxy SPMAlways SPFAllow) {smp = userServers $ L.map noAuthSrv srvs}
@@ -300,8 +306,8 @@ todo :: IO ()
 todo = do
   fail "TODO"
 
-runExceptT' :: Show e => ExceptT e IO a -> IO a
-runExceptT' a = runExceptT a >>= either (fail . show) pure
+runExceptT' :: Exception e => ExceptT e IO a -> IO a
+runExceptT' a = runExceptT a >>= either throwIO pure
 
 waitSendRecv :: IO () -> IO () -> IO ()
 waitSendRecv s r = do
