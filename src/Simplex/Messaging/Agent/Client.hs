@@ -175,7 +175,7 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Text.Encoding
-import Data.Time (UTCTime, defaultTimeLocale, formatTime, getCurrentTime)
+import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as SQL
@@ -252,7 +252,7 @@ import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
-type ClientVar msg = SessionVar (Either AgentErrorType (Client msg))
+type ClientVar msg = SessionVar (Either (AgentErrorType, Maybe UTCTime) (Client msg))
 
 type SMPClientVar = ClientVar SMP.BrokerMsg
 
@@ -584,7 +584,7 @@ getSMPServerClient :: AgentClient -> SMPTransportSession -> AM SMPConnectedClien
 getSMPServerClient c@AgentClient {active, smpClients, workerSeq} tSess = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
   atomically (getSessVar workerSeq tSess smpClients)
-    >>= either newClient (waitForProtocolClient c tSess)
+    >>= either newClient (waitForProtocolClient c tSess smpClients)
   where
     newClient v = do
       prs <- atomically TM.empty
@@ -613,7 +613,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
       (clnt,) <$> newProxiedRelay clnt auth rv
     waitForProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> SMPClientVar -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
     waitForProxyClient tSess auth v = do
-      clnt@(SMPConnectedClient _ prs) <- waitForProtocolClient c tSess v
+      clnt@(SMPConnectedClient _ prs) <- waitForProtocolClient c tSess smpClients v
       sess <-
         atomically (getSessVar workerSeq destSrv prs)
           >>= either (newProxiedRelay clnt auth) (waitForProxiedRelay tSess)
@@ -744,7 +744,7 @@ getNtfServerClient c@AgentClient {active, ntfClients, workerSeq} tSess@(userId, 
   atomically (getSessVar workerSeq tSess ntfClients)
     >>= either
       (newProtocolClient c tSess ntfClients connectClient)
-      (waitForProtocolClient c tSess)
+      (waitForProtocolClient c tSess ntfClients)
   where
     connectClient :: NtfClientVar -> AM NtfClient
     connectClient v = do
@@ -767,7 +767,7 @@ getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq} tSess@(userId
   atomically (getSessVar workerSeq tSess xftpClients)
     >>= either
       (newProtocolClient c tSess xftpClients connectClient)
-      (waitForProtocolClient c tSess)
+      (waitForProtocolClient c tSess xftpClients)
   where
     connectClient :: XFTPClientVar -> AM XFTPClient
     connectClient v = do
@@ -784,14 +784,25 @@ getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq} tSess@(userId
       atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
-waitForProtocolClient :: ProtocolTypeI (ProtoType msg) => AgentClient -> TransportSession msg -> ClientVar msg -> AM (Client msg)
-waitForProtocolClient c (_, srv, _) v = do
+waitForProtocolClient ::
+  (ProtocolTypeI (ProtoType msg), ProtocolServerClient v err msg) =>
+  AgentClient ->
+  TransportSession msg ->
+  TMap (TransportSession msg) (ClientVar msg) ->
+  ClientVar msg ->
+  AM (Client msg)
+waitForProtocolClient c tSess@(_, srv, _) clients v = do
   NetworkConfig {tcpConnectTimeout} <- atomically $ getNetworkConfig c
   client_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v)
-  liftEither $ case client_ of
-    Just (Right smpClient) -> Right smpClient
-    Just (Left e) -> Left e
-    Nothing -> Left $ BROKER (B.unpack $ strEncode srv) TIMEOUT
+  case client_ of
+    Just (Right smpClient) -> pure smpClient
+    Just (Left (e, Nothing)) -> throwE e
+    Just (Left (e, Just ts)) -> do
+      ifM
+        ((ts <) <$> liftIO getCurrentTime)
+        (atomically (removeSessVar v tSess clients) >> getProtocolServerClient c tSess)
+        (throwE e)
+    Nothing -> throwE $ BROKER (B.unpack $ strEncode srv) TIMEOUT
 
 -- clientConnected arg is only passed for SMP server
 newProtocolClient ::
@@ -813,10 +824,15 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient v =
       pure client
     Left e -> do
       liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
-      atomically $ do
-        removeSessVar v tSess clients
-        putTMVar (sessionVar v) (Left e)
-      throwError e -- signal error to caller
+      ei <- asks $ persistErrorInterval . config
+      if ei == 0
+        then atomically $ do
+          removeSessVar v tSess clients
+          putTMVar (sessionVar v) (Left (e, Nothing))
+        else do
+          ts <- addUTCTime ei <$> liftIO getCurrentTime
+          atomically $ putTMVar (sessionVar v) (Left (e, Just ts))
+      throwE e -- signal error to caller
 
 hostEvent :: forall v err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient v err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> Client msg -> ACommand 'Agent 'AENone
 hostEvent event = hostEvent' event . protocolClient

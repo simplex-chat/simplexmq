@@ -89,7 +89,7 @@ defaultSMPClientAgentConfig =
             increaseAfter = 10 * second,
             maxInterval = 10 * second
           },
-      persistErrorInterval = 0,
+      persistErrorInterval = 30, -- seconds
       msgQSize = 256,
       agentQSize = 256,
       agentSubsBatchSize = 900,
@@ -204,7 +204,7 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
           notify ca $ CAConnected srv
           pure $ Right c
         Left e -> do
-          if persistErrorInterval agentCfg == 0 || e == PCENetworkError || e == PCEResponseTimeout
+          if persistErrorInterval agentCfg == 0
             then atomically $ do
               putTMVar (sessionVar v) (Left (e, Nothing))
               removeSessVar v srv smpClients
