@@ -335,6 +335,7 @@ testNtfTokenChangeServers t APNSMockServer {apnsQ} =
         getTestNtfTokenPort a >>= \port2 -> liftIO $ port2 `shouldBe` ntfTestPort2 -- but the token got updated
       killThread ntf
       withNtfServerOn t ntfTestPort2 $ runRight_ $ do
+        liftIO $ threadDelay 1000000 -- for notification server to reconnect
         tkn <- registerTestToken a "qwer" NMInstant apnsQ
         checkNtfToken a tkn >>= \r -> liftIO $ r `shouldBe` NTActive
 
