@@ -1264,11 +1264,10 @@ testRatchetSyncServerOffline t = withAgentClients2 $ \alice bob -> do
   liftIO $ ratchetSyncState `shouldBe` RSStarted
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
     runRight_ $ do
-      liftIO $
-        concurrently_
-          (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
-          (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
       get alice =##> ratchetSyncP bobId RSOk
       get bob2 =##> ratchetSyncP aliceId RSOk
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
@@ -1322,11 +1321,10 @@ testRatchetSyncSuspendForeground t = do
   foregroundAgent bob2
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
     runRight_ $ do
-      liftIO $
-        concurrently_
-          (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
-          (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
       get alice =##> ratchetSyncP bobId RSOk
       get bob2 =##> ratchetSyncP aliceId RSOk
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
@@ -1351,11 +1349,10 @@ testRatchetSyncSimultaneous t = do
   liftIO $ aRSS `shouldBe` RSStarted
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
     runRight_ $ do
-      liftIO $
-        concurrently_
-          (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
-          (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
       get alice =##> ratchetSyncP bobId RSOk
       get bob2 =##> ratchetSyncP aliceId RSOk
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
