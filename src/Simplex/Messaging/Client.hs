@@ -403,6 +403,7 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe EntityId)
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
 getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret} msgQ disconnected = do
+  logDebug $ "getProtocolClient newTBQueue size " <> tshow qSize
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= atomically . mkProtocolClient useHost >>= runClient useTransport useHost)

@@ -120,7 +120,7 @@ module Simplex.Messaging.Agent
   )
 where
 
-import Control.Logger.Simple (logError, logInfo, showText)
+import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
@@ -202,7 +202,9 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
   liftIO $ newSMPAgentEnv cfg store >>= runReaderT runAgent
   where
     runAgent = do
-      c@AgentClient {acThread} <- atomically . newAgentClient clientId initServers =<< ask
+      env <- ask
+      logDebug $ "runAgent newTBQueue size " <> tshow (tbqSize $ config $ env)
+      c@AgentClient {acThread} <- atomically $ newAgentClient clientId initServers env
       t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
       atomically . writeTVar acThread . Just =<< mkWeakThreadId t
       pure c
@@ -570,7 +572,7 @@ withAgentEnv c a = ExceptT $ runExceptT a `runReaderT` agentEnv c
 logConnection :: AgentClient -> Bool -> IO ()
 logConnection c connected =
   let event = if connected then "connected to" else "disconnected from"
-   in logInfo $ T.unwords ["client", showText (clientId c), event, "Agent"]
+   in logInfo $ T.unwords ["client", tshow (clientId c), event, "Agent"]
 
 -- | Runs an SMP agent instance that receives commands and sends responses via 'TBQueue's.
 runAgentClient :: AgentClient -> AM' ()

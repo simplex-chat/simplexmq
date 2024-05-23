@@ -10,10 +10,12 @@ module Simplex.Messaging.Transport.HTTP2.Client where
 import Control.Concurrent.Async
 import Control.Exception (IOException, try)
 import qualified Control.Exception as E
+import Control.Logger.Simple
 import Control.Monad
 import Data.ByteString.Char8 (ByteString)
 import Data.Functor (($>))
 import Data.Time (UTCTime, getCurrentTime)
+import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
 import Network.HPACK (BufferSize)
 import Network.HTTP2.Client (ClientConfig (..), Request, Response)
@@ -26,10 +28,9 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Transport (ALPN, SessionId, TLS (tlsALPN), getServerCerts, getServerVerifyKey, tlsUniq)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2
-import Simplex.Messaging.Util (eitherToMaybe)
+import Simplex.Messaging.Util (eitherToMaybe, tshow)
 import UnliftIO.STM
 import UnliftIO.Timeout
-import qualified Data.X509 as X
 
 data HTTP2Client = HTTP2Client
   { action :: Maybe (Async HTTP2Response),
@@ -103,7 +104,8 @@ attachHTTP2Client config host port disconnected bufferSize tls = getVerifiedHTTP
     setup = runHTTP2ClientWith bufferSize host ($ tls)
 
 getVerifiedHTTP2ClientWith :: HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> ((TLS -> H.Client HTTP2Response) -> IO HTTP2Response) -> IO (Either HTTP2ClientError HTTP2Client)
-getVerifiedHTTP2ClientWith config host port disconnected setup =
+getVerifiedHTTP2ClientWith config host port disconnected setup = do
+  logDebug $ "mkHTTPS2Client newTBQueue size " <> tshow (qSize config)
   (atomically mkHTTPS2Client >>= runClient)
     `E.catch` \(e :: IOException) -> pure . Left $ HCIOError e
   where

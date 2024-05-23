@@ -332,7 +332,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
           (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
           rKeys <- atomically $ L.fromList <$> replicateM numRecipients (C.generateAuthKeyPair C.SEd25519 g)
           digest <- liftIO $ getChunkDigest chunkSpec
-          let ch = FileInfo {sndKey, size = fromIntegral chunkSize, digest}
+          let ch = FileInfo {sndKey, size = chunkSize, digest}
           c <- withRetry retryCount $ getXFTPServerClient a xftpServer
           (sndId, rIds) <- withRetry retryCount $ createXFTPChunk c spKey ch (L.map fst rKeys) auth
           withReconnect a xftpServer retryCount $ \c' -> uploadXFTPChunk c' spKey sndId chunkSpec
@@ -344,7 +344,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
             when verbose $ putStrLn ""
           let recipients = L.toList $ L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
               replicas = [SentFileChunkReplica {server = xftpServer, recipients}]
-          pure (chunkNo, SentFileChunk {chunkNo, sndId, sndPrivateKey = spKey, chunkSize = FileSize $ fromIntegral chunkSize, digest = FileDigest digest, replicas})
+          pure (chunkNo, SentFileChunk {chunkNo, sndId, sndPrivateKey = spKey, chunkSize = FileSize chunkSize, digest = FileDigest digest, replicas})
         getXFTPServer :: TVar StdGen -> NonEmpty XFTPServerWithAuth -> IO XFTPServerWithAuth
         getXFTPServer gen = \case
           srv :| [] -> pure srv
@@ -563,7 +563,7 @@ prepareChunkSpecs filePath chunkSizes = reverse . snd $ foldl' addSpec (0, []) c
   where
     addSpec :: (Int64, [XFTPChunkSpec]) -> Word32 -> (Int64, [XFTPChunkSpec])
     addSpec (chunkOffset, specs) sz =
-      let spec = XFTPChunkSpec {filePath, chunkOffset, chunkSize = fromIntegral sz}
+      let spec = XFTPChunkSpec {filePath, chunkOffset, chunkSize = sz}
        in (chunkOffset + fromIntegral sz, spec : specs)
 
 getEncPath :: MonadIO m => Maybe FilePath -> String -> m FilePath
