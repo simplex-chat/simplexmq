@@ -1471,7 +1471,7 @@ instance StrEncoding MsgErrorType where
 -- | Error type used in errors sent to agent clients.
 data AgentErrorType
   = -- | command or response error
-    CMD {cmdErr :: CommandErrorType, errContext :: Text}
+    CMD {cmdErr :: CommandErrorType, errContext :: String}
   | -- | connection errors
     CONN {connErr :: ConnectionErrorType}
   | -- | SMP protocol errors forwarded to agent clients
@@ -1578,7 +1578,7 @@ instance StrEncoding AgentErrorType where
   strP =
     A.takeTill (== ' ')
       >>= \case
-        "CMD" -> CMD <$> (A.space *> parseRead1) <*> (safeDecodeUtf8 <$> (A.space *> A.takeByteString))
+        "CMD" -> CMD <$> (A.space *> parseRead1) <*> (A.space *> textP)
         "CONN" -> CONN <$> (A.space *> parseRead1)
         "SMP" -> SMP <$> (A.space *> srvP) <*> _strP
         "NTF" -> NTF <$> (A.space *> srvP) <*> _strP
@@ -1595,7 +1595,7 @@ instance StrEncoding AgentErrorType where
       srvP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
       textP = T.unpack . safeDecodeUtf8 <$> (A.space *> A.takeByteString)
   strEncode = \case
-    CMD e cxt -> "CMD " <> bshow e <> " " <> encodeUtf8 cxt
+    CMD e cxt -> "CMD " <> bshow e <> " " <> text cxt
     CONN e -> "CONN " <> bshow e
     SMP srv e -> "SMP " <> text srv <> " " <> strEncode e
     NTF srv e -> "NTF " <> text srv <> " " <> strEncode e

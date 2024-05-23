@@ -182,7 +182,7 @@ testNotificationToken APNSMockServer {apnsQ} = do
     NTActive <- checkNtfToken a tkn
     deleteNtfToken a tkn
     -- agent deleted this token
-    Left (CMD PROHIBITED) <- tryE $ checkNtfToken a tkn
+    Left (CMD PROHIBITED _) <- tryE $ checkNtfToken a tkn
     pure ()
 
 (.->) :: J.Value -> J.Key -> ExceptT AgentErrorType IO ByteString
@@ -375,7 +375,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice@Agen
     pure (bobId, aliceId, nonce, message)
 
   -- alice client already has subscription for the connection
-  Left (CMD PROHIBITED) <- runExceptT $ getNotificationMessage alice nonce message
+  Left (CMD PROHIBITED _) <- runExceptT $ getNotificationMessage alice nonce message
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
   withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> runRight_ $ do

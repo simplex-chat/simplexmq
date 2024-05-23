@@ -23,7 +23,7 @@ hReceiveFile getBody h size = get $ fromIntegral size
       if
         | chSize > sz -> pure (chSize - sz)
         | chSize > 0 -> B.hPut h ch >> get (sz - chSize)
-        | otherwise -> pure (-fromIntegral sz)
+        | otherwise -> pure (-sz)
 
 hSendFile :: Handle -> (Builder -> IO ()) -> Word32 -> IO ()
 hSendFile h send = go

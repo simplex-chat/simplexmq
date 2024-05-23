@@ -166,9 +166,9 @@ instance TestEquality SRatchetKEMState where
 
 class RatchetKEMStateI (s :: RatchetKEMState) where sRatchetKEMState :: SRatchetKEMState s
 
-instance RatchetKEMStateI RKSProposed where sRatchetKEMState = SRKSProposed
+instance RatchetKEMStateI 'RKSProposed where sRatchetKEMState = SRKSProposed
 
-instance RatchetKEMStateI RKSAccepted where sRatchetKEMState = SRKSAccepted
+instance RatchetKEMStateI 'RKSAccepted where sRatchetKEMState = SRKSAccepted
 
 checkRatchetKEMState :: forall t s s' a. (RatchetKEMStateI s, RatchetKEMStateI s') => t s' a -> Either String (t s a)
 checkRatchetKEMState x = case testEquality (sRatchetKEMState @s) (sRatchetKEMState @s') of
