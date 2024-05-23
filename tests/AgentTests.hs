@@ -612,12 +612,12 @@ sampleDhKey = "MCowBQYDK2VuAyEAjiswwI3O_NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
 
 syntaxTests :: forall c. Transport c => TProxy c -> Spec
 syntaxTests t = do
-  it "unknown command" $ ("1", "5678", "HELLO") >#> ("1", "5678", "ERR CMD SYNTAX parseComand")
+  it "unknown command" $ ("1", "5678", "HELLO") >#> ("1", "5678", "ERR CMD SYNTAX parseCommand")
   describe "NEW" $ do
     describe "valid" $ do
       it "with correct parameter" $ ("211", "", "NEW T INV subscribe") >#>= \case ("211", _, "INV" : _) -> True; _ -> False
     describe "invalid" $ do
-      it "with incorrect parameter" $ ("222", "", "NEW T hi subscribe") >#> ("222", "", "ERR CMD SYNTAX parseComand")
+      it "with incorrect parameter" $ ("222", "", "NEW T hi subscribe") >#> ("222", "", "ERR CMD SYNTAX parseCommand")
 
   describe "JOIN" $ do
     describe "valid" $ do
@@ -635,7 +635,7 @@ syntaxTests t = do
         )
           >#> ("311", "a", "ERR SMP smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001 AUTH")
     describe "invalid" $ do
-      it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX parseComand")
+      it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX parseCommand")
   where
     -- simple test for one command with the expected response
     (>#>) :: ARawTransmission -> ARawTransmission -> Expectation
