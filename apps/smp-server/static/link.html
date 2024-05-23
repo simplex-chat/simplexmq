@@ -140,8 +140,8 @@
   </section>
 
   <section
-    class="pt-[106px] py-[90px] hidden xl:block bg-white dark:bg-gradient-radial-mobile dark:lg:bg-gradient-radial">
-    <div class="container m-auto flex items-center justify-between px-5">
+    class="hidden xl:block h-screen pt-[66px] bg-white dark:bg-gradient-radial-mobile dark:lg:bg-gradient-radial">
+    <div class="container m-auto h-full flex items-center justify-between px-5">
       <div class="flex flex-col items-start justify-center w-full">
         <h1 class="text-[38px] leading-[43px] font-bold max-w-[500px] mb-[30px] primary-header-contact">You received a
           1-time link to connect on SimpleX Chat</h1>
@@ -180,6 +180,7 @@
       </div>
     </div>
   </section>
+  
   <section
     class="block xl:hidden pt-[106px] py-[90px] bg-white dark:bg-gradient-radial-mobile dark:lg:bg-gradient-radial">
     <div class="container m-auto px-5">
@@ -229,7 +230,8 @@
       </div>
     </div>
   </section>
-  <section id="join-simplex" class="bg-primary-bg-light dark:bg-primary-bg-dark py-[90px] px-5">
+  
+  <section class="hidden md:block bg-secondary-bg-light dark:bg-secondary-bg-dark py-[20px]">
     <div class="container px-5">
       <div class="text-grey-black dark:text-white">
         <div class="hidden md:block xl:hidden for-tablet">
@@ -307,6 +309,7 @@
       </div>
     </div>
   </section>
+  
   <section id="join-simplex" class="bg-primary-bg-light dark:bg-primary-bg-dark py-[90px] px-5">
     <div class="container flex flex-col items-center">
       <h2
@@ -501,6 +504,20 @@
         2020-2024 SimpleX | Open-Source Project</a>
     </div>
   </section>
+  <script>
+    const url = window.location.href
+    const messageElements = document.getElementsByClassName('primary-header-contact')
+
+    if (url.includes('/invitation')) {
+      for (let element of messageElements) {
+        element.textContent = 'You received a 1-time link to connect on SimpleX Chat'
+      }
+    } else {
+      for (let element of messageElements) {
+        element.textContent = 'You received an address to connect on SimpleX Chat'
+      }
+    }
+  </script>
 
   <script src="/media/flag-anchor.js"></script>
   <script src="/media/qrcode.js"></script>
