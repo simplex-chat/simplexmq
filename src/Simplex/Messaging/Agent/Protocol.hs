@@ -1593,7 +1593,7 @@ instance StrEncoding AgentErrorType where
         _ -> fail "bad AgentErrorType"
     where
       srvP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
-      textP = T.unpack . safeDecodeUtf8 <$> (A.space *> A.takeByteString)
+      textP = T.unpack . safeDecodeUtf8 <$> A.takeByteString
   strEncode = \case
     CMD e cxt -> "CMD " <> bshow e <> " " <> text cxt
     CONN e -> "CONN " <> bshow e

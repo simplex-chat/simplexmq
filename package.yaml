@@ -197,11 +197,11 @@ ghc-options:
   - -Wcompat
   - -Werror=incomplete-record-updates
   - -Werror=incomplete-patterns
+  - -Werror=incomplete-uni-patterns
   - -Werror=missing-methods
   - -Werror=tabs
   - -Wredundant-constraints
   - -Wincomplete-record-updates
-  - -Wincomplete-uni-patterns
   - -Wunused-type-patterns
   - -O2
 

@@ -35,6 +35,7 @@ protocolErrorTests = modifyMaxSuccess (const 1000) $ do
     possibleAgentErrorType :: Gen AgentErrorType
     possibleAgentErrorType =
       arbitrary >>= \case
+        Agent.CMD _ cxt | hasSpaces cxt -> discard
         BROKER srv _ | hasSpaces srv -> discard
         SMP srv e | hasSpaces srv || skipErrorType e -> discard
         NTF srv e | hasSpaces srv || skipErrorType e -> discard
