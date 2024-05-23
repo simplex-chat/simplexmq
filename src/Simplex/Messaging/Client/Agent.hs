@@ -8,7 +8,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Client.Agent where
 
@@ -19,7 +18,6 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except
-import Control.Monad.Trans.Reader
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
@@ -47,8 +45,6 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (catchAll_, toChunks, ($>>=))
 import System.Timeout (timeout)
 import UnliftIO (async)
-import UnliftIO.Exception (Exception)
-import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
 type SMPClientVar = SessionVar (Either SMPClientError SMPClient)
@@ -104,31 +100,6 @@ data SMPClientAgent = SMPClientAgent
     asyncClients :: TVar [Async ()],
     workerSeq :: TVar Int
   }
-
-newtype InternalException e = InternalException {unInternalException :: e}
-  deriving (Eq, Show)
-
-instance Exception e => Exception (InternalException e)
-
-instance Exception e => MonadUnliftIO (ExceptT e IO) where
-  {-# INLINE withRunInIO #-}
-  withRunInIO :: ((forall a. ExceptT e IO a -> IO a) -> IO b) -> ExceptT e IO b
-  withRunInIO inner =
-    ExceptT . fmap (first unInternalException) . E.try $
-      withRunInIO $ \run ->
-        inner $ run . (either (E.throwIO . InternalException) pure <=< runExceptT)
-
--- as MonadUnliftIO instance for IO is `withRunInIO inner = inner id`,
--- the last two lines could be replaced with:
--- inner $ either (E.throwIO . InternalException) pure <=< runExceptT
-
-instance Exception e => MonadUnliftIO (ExceptT e (ReaderT r IO)) where
-  {-# INLINE withRunInIO #-}
-  withRunInIO :: ((forall a. ExceptT e (ReaderT r IO) a -> IO a) -> IO b) -> ExceptT e (ReaderT r IO) b
-  withRunInIO inner =
-    withExceptT unInternalException . ExceptT . E.try $
-      withRunInIO $ \run ->
-        inner $ run . (either (E.throwIO . InternalException) pure <=< runExceptT)
 
 newSMPClientAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> STM SMPClientAgent
 newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg = do

@@ -39,7 +39,6 @@ import Simplex.Messaging.Client
     proxyUsername,
     transportClientConfig,
   )
-import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)

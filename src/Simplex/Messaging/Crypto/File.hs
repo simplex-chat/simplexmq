@@ -31,7 +31,6 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (isJust)
-import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Lazy (LazyByteString)
 import qualified Simplex.Messaging.Crypto.Lazy as LC
