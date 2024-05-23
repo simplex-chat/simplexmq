@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Simplex.Messaging.Agent.Lock
   ( Lock,
     createLock,
@@ -8,10 +10,13 @@ module Simplex.Messaging.Agent.Lock
   )
 where
 
+import Control.Logger.Simple
 import Control.Monad (void)
 import Control.Monad.Except (ExceptT (..), runExceptT)
 import Control.Monad.IO.Unlift
 import Data.Functor (($>))
+import qualified Data.Text as T
+import Simplex.Messaging.Util (tshow)
 import UnliftIO.Async (forConcurrently)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -35,17 +40,24 @@ withLock' lock name =
 withGetLock :: MonadUnliftIO m => (k -> STM Lock) -> k -> String -> m a -> m a
 withGetLock getLock key name a =
   E.bracket
-    (atomically $ getPutLock getLock key name)
-    (atomically . takeTMVar)
-    (const a)
+    (logDebug ("withGetLock needs lock " <> T.pack name) >> atomically (getPutLock getLock key name))
+    (\l -> atomically (takeTMVar l) >> logDebug ("withGetLock released lock " <> T.pack name))
+    (\_ -> logDebug ("withGetLock has lock " <> T.pack name) >> a)
 
 withGetLocks :: MonadUnliftIO m => (k -> STM Lock) -> [k] -> String -> m a -> m a
-withGetLocks getLock keys name = E.bracket holdLocks releaseLocks . const
+withGetLocks getLock keys name action =
+  E.bracket holdLocks releaseLocks $ \_ -> do
+    logDebug $ "withGetLocks has locks " <> tshow (length keys) <> " " <> T.pack name
+    action
   where
-    holdLocks = forConcurrently keys $ \key -> atomically $ getPutLock getLock key name
+    holdLocks = do
+      logDebug $ "withGetLocks needs locks " <> tshow (length keys) <> " " <> T.pack name
+      forConcurrently keys $ \key -> atomically $ getPutLock getLock key name
     -- only this withGetLocks would be holding the locks,
     -- so it's safe to combine all lock releases into one transaction
-    releaseLocks = atomically . mapM_ takeTMVar
+    releaseLocks ls = do
+      atomically $ mapM_ takeTMVar ls
+      logDebug $ "withGetLocks released locks " <> tshow (length keys) <> " " <> T.pack name
 
 -- getLock and putTMVar can be in one transaction on the assumption that getLock doesn't write in case the lock already exists,
 -- and in case it is created and added to some shared resource (we use TMap) it also helps avoid contention for the newly created lock.
