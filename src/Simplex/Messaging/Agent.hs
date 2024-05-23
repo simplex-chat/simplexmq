@@ -135,7 +135,7 @@ import Data.Either (isRight, rights)
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
 import Data.Functor.Identity
-import Data.List (find)
+import Data.List (find, nub)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -1046,11 +1046,13 @@ sendMessages' c = sendMessagesB' c . map Right
 {-# INLINE sendMessages' #-}
 
 sendMessagesB' :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> AM' (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
-sendMessagesB' c reqs = withConnLocks c connIds "sendMessages" $ do
-  reqs' <- withStoreBatch c (\db -> fmap (bindRight $ \req@(connId, _, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
-  let (toEnable, reqs'') = mapAccumL prepareConn [] reqs'
-  void $ withStoreBatch' c $ \db -> map (\connId -> setConnPQSupport db connId PQSupportOn) toEnable
-  enqueueMessagesB c reqs''
+sendMessagesB' c reqs = do
+  logDebug $ "sendMessagesB " <> tshow (length connIds) <> " " <> tshow (nub $ toList connIds)
+  withConnLocks c connIds "sendMessages" $ do
+    reqs' <- withStoreBatch c (\db -> fmap (bindRight $ \req@(connId, _, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
+    let (toEnable, reqs'') = mapAccumL prepareConn [] reqs'
+    void $ withStoreBatch' c $ \db -> map (\connId -> setConnPQSupport db connId PQSupportOn) toEnable
+    enqueueMessagesB c reqs''
   where
     prepareConn :: [ConnId] -> Either AgentErrorType (MsgReq, SomeConn) -> ([ConnId], Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage))
     prepareConn acc (Left e) = (acc, Left e)
