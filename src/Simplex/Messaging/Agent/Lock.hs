@@ -49,15 +49,16 @@ withGetLock getLock key name a =
 withGetLocks :: MonadUnliftIO m => (k -> STM Lock) -> Set k -> String -> m a -> m a
 withGetLocks getLock keys name action =
   E.bracket holdLocks releaseLocks $ \_ -> do
-    logDebug $ "withGetLocks has locks " <> tshow (length keys) <> " " <> T.pack name
+    logDebug $ "withGetLocks has locks " <> locksInfo
     action
   where
     holdLocks = do
-      logDebug $ "withGetLocks needs locks " <> tshow (length keys) <> " " <> T.pack name
+      logDebug $ "withGetLocks needs locks " <> locksInfo
       forConcurrently (S.toList keys) $ \key -> atomically $ getPutLock getLock key name
     releaseLocks ls = do
       mapM_ (atomically . takeTMVar) ls
-      logDebug $ "withGetLocks released locks " <> tshow (length keys) <> " " <> T.pack name
+      logDebug $ "withGetLocks released locks " <> locksInfo
+    locksInfo = tshow (length keys) <> " " <> T.pack name
 
 -- getLock and putTMVar can be in one transaction on the assumption that getLock doesn't write in case the lock already exists,
 -- and in case it is created and added to some shared resource (we use TMap) it also helps avoid contention for the newly created lock.
