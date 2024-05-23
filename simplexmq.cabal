@@ -51,6 +51,12 @@ extra-source-files:
     apps/smp-server/static/media/swiper-bundle.min.js
     apps/smp-server/static/media/tailwind.css
     apps/smp-server/static/media/testflight.png
+    apps/smp-server/static/media/GilroyRegular.woff2
+    apps/smp-server/static/media/GilroyLight.woff2
+    apps/smp-server/static/media/GilroyMedium.woff2
+    apps/smp-server/static/media/GilroyBold.woff2
+    apps/smp-server/static/media/GilroyRegularItalic.woff2
+    apps/smp-server/static/media/favicon.ico
 
 flag swift
   description: Enable swift JSON format

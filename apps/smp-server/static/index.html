@@ -203,62 +203,74 @@
                   <td>Source code:</td>
                   <td><a href="${sourceCode}" target="_blank">${sourceCode}</a></td>
               </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Web site:</td>
-                <td><a href="${website}" target="_blank"><x-website>${website}</x-website></a></td>
-              </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Usage conditions:</td>
-                <td><a href="${usageConditions}" target="_blank"><x-usageConditions>${usageConditions}</x-usageConditions></a></td>
-              </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Amendments:</td>
-                <td><a href="${usageAmendments}" target="_blank"><x-usageAmendments>${usageAmendments}</x-usageAmendments></a></td>
-              </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Operator:</td>
-                <td><x-operator>$${operatorEntity} (${operatorCountry})</x-operator></td>
-              </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Administrator contacts:</td>
-                <td><ul class="text-grey-black dark:text-white text-base mb-[16px]">
-                  <x-admin>
-                    <x-adminSimplex>
-                      <li>SimpleX: <a href="${adminSimplex}">Open in the app</a></li>
-                    </x-adminSimplex>
-                    <x-adminEmail>
-                      <li>Email: <a href="mailto:${adminEmail}">${adminEmail}</a></li>
-                    </x-adminEmail>
-                    <x-adminPGP>
-                      <li>PGP: <a href="${adminPGP}">${adminPGPFingerprint}</a></li>
-                    </x-adminPGP>
-                  </x-admin>
-                </ul></td>
-              </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Complaints and feedback:</td>
-                <td><ul class="text-grey-black dark:text-white text-base mb-[16px]">
-                  <x-complaints>
-                    <x-complaintsSimplex>
-                      <li>SimpleX: <a href="${complaintsSimplex}">Open in the app</a></li>
-                    </x-complaintsSimplex>
-                    <x-complaintsEmail>
-                      <li>Email: <a href="mailto:${complaintsEmail}">${complaintsEmail}</a></li>
-                    </x-complaintsEmail>
-                    <x-complaintsPGP>
-                      <li>PGP: <a href="${complaintsPGP}">${complaintsPGPFingerprint}</a></li>
-                    </x-complaintsPGP>
-                  </x-complaints>
-                </ul></td>
-              </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Hosting:</td>
-                <td><x-hosting>${hostingEntity} (${hostingCountry})</x-hosting></td>
-              </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Server country:</td>
-                <td><x-serverCountry>${serverCountry}</x-serverCountry></td>
-              </tr>
+              <x-website>
+                <tr class="text-grey-black dark:text-white text-base">
+                  <td>Web site:</td>
+                  <td><a href="${website}" target="_blank">${website}</a></td>
+                </tr>
+              </x-website>
+              <x-usageConditions>
+                <tr class="text-grey-black dark:text-white text-base">
+                  <td>Usage conditions:</td>
+                  <td><a href="${usageConditions}" target="_blank">${usageConditions}</a></td>
+                </tr>
+              </x-usageConditions>
+              <x-usageAmendments>
+                <tr class="text-grey-black dark:text-white text-base">
+                  <td>Amendments:</td>
+                  <td><a href="${usageAmendments}" target="_blank">${usageAmendments}</a></td>
+                </tr>
+              </x-usageAmendments>
+              <x-operator>
+                <tr class="text-grey-black dark:text-white text-base">
+                  <td>Operator:</td>
+                  <td>$${operatorEntity} (${operatorCountry})</td>
+                </tr>
+              </x-operator>
+              <x-admin>
+                <tr class="text-grey-black dark:text-white text-base">
+                  <td>Administrator contacts:</td>
+                  <td><ul class="text-grey-black dark:text-white text-base mb-[16px]">
+                      <x-adminSimplex>
+                        <li>SimpleX: <a href="${adminSimplex}">Open in the app</a></li>
+                      </x-adminSimplex>
+                      <x-adminEmail>
+                        <li>Email: <a href="mailto:${adminEmail}">${adminEmail}</a></li>
+                      </x-adminEmail>
+                      <x-adminPGP>
+                        <li>PGP: <a href="${adminPGP}">${adminPGPFingerprint}</a></li>
+                      </x-adminPGP>
+                  </ul></td>
+                </tr>
+              </x-admin>
+              <x-complaints>
+                <tr class="text-grey-black dark:text-white text-base">
+                  <td>Complaints and feedback:</td>
+                  <td><ul class="text-grey-black dark:text-white text-base mb-[16px]">
+                      <x-complaintsSimplex>
+                        <li>SimpleX: <a href="${complaintsSimplex}">Open in the app</a></li>
+                      </x-complaintsSimplex>
+                      <x-complaintsEmail>
+                        <li>Email: <a href="mailto:${complaintsEmail}">${complaintsEmail}</a></li>
+                      </x-complaintsEmail>
+                      <x-complaintsPGP>
+                        <li>PGP: <a href="${complaintsPGP}">${complaintsPGPFingerprint}</a></li>
+                      </x-complaintsPGP>
+                  </ul></td>
+                </tr>
+              </x-complaints>
+              <x-hosting>
+                <tr class="text-grey-black dark:text-white text-base">
+                  <td>Hosting:</td>
+                  <td>${hostingEntity} (${hostingCountry})</td>
+                </tr>
+              </x-hosting>
+              <x-serverCountry>
+                <tr class="text-grey-black dark:text-white text-base">
+                  <td>Server country:</td>
+                  <td>${serverCountry}</td>
+                </tr>
+              </x-serverCountry>
             </table>
           </div>
           
