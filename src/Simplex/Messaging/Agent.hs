@@ -1047,7 +1047,7 @@ sendMessages' c = sendMessagesB' c . map Right
 
 sendMessagesB' :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> AM' (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
 sendMessagesB' c reqs = do
-  logDebug $ "sendMessagesB " <> tshow (length connIds) <> " " <> tshow (nub $ toList connIds)
+  logDebug $ "sendMessagesB " <> tshow (length connIds) <> " " <> tshow (length $ nub $ toList connIds)
   withConnLocks c connIds "sendMessages" $ do
     reqs' <- withStoreBatch c (\db -> fmap (bindRight $ \req@(connId, _, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
     let (toEnable, reqs'') = mapAccumL prepareConn [] reqs'
