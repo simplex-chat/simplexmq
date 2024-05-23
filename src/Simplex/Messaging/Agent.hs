@@ -2136,25 +2136,32 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
       conn
       cData@ConnData {userId, connId, connAgentVersion, ratchetSyncState = rss}
       smpMsg =
-        withConnLock c connId "processSMP" $ case smpMsg of
-          SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
+        case smpMsg of
+          SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} -> withConnLock c connId "processSMP" $
             void . handleNotifyAck $ do
+              logDebug $ "processSMP 1"
               msg' <- decryptSMPMessage rq msg
+              logDebug $ "processSMP 2"
               ack' <- handleNotifyAck $ case msg' of
                 SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} -> processClientMsg srvTs msgFlags msgBody
                 SMP.ClientRcvMsgQuota {} -> queueDrained >> ack
+              logDebug $ "processSMP 3"
               whenM (atomically $ hasGetLock c rq) $
                 notify (MSGNTF $ SMP.rcvMessageMeta srvMsgId msg')
+              logDebug $ "processSMP 4"
               pure ack'
             where
               queueDrained = case conn of
                 DuplexConnection _ _ sqs -> void $ enqueueMessages c cData sqs SMP.noMsgFlags $ A_QCONT (sndAddress rq)
                 _ -> pure ()
               processClientMsg srvTs msgFlags msgBody = do
+                logDebug $ "processSMP processClientMsg 1"
                 clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader phVer e2ePubKey_} <-
                   parseMessage msgBody
+                logDebug $ "processSMP processClientMsg 2"
                 clientVRange <- asks $ smpClientVRange . config
                 unless (phVer `isCompatible` clientVRange) . throwError $ AGENT A_VERSION
+                logDebug $ "processSMP processClientMsg 3"
                 case (e2eDhSecret, e2ePubKey_) of
                   (Nothing, Just e2ePubKey) -> do
                     let e2eDh = C.dh' e2ePubKey e2ePrivKey
@@ -2165,37 +2172,51 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                         smpInvitation srvMsgId conn connReq connInfo >> ack
                       _ -> prohibited >> ack
                   (Just e2eDh, Nothing) -> do
+                    logDebug $ "processSMP processClientMsg 4"
                     decryptClientMessage e2eDh clientMsg >>= \case
                       (SMP.PHEmpty, AgentRatchetKey {agentVersion, e2eEncryption}) -> do
                         conn' <- updateConnVersion conn cData agentVersion
                         qDuplex conn' "AgentRatchetKey" $ \a -> newRatchetKey e2eEncryption a >> ack
                       (SMP.PHEmpty, AgentMsgEnvelope {agentVersion, encAgentMessage}) -> do
+                        logDebug $ "processSMP processClientMsg 5"
                         conn' <- updateConnVersion conn cData agentVersion
                         -- primary queue is set as Active in helloMsg, below is to set additional queues Active
                         let RcvQueue {primary, dbReplaceQueueId} = rq
+                        logDebug $ "processSMP processClientMsg 6"
                         unless (status == Active) . withStore' c $ \db -> setRcvQueueStatus db rq Active
+                        logDebug $ "processSMP processClientMsg 7"
                         case (conn', dbReplaceQueueId) of
                           (DuplexConnection _ rqs _, Just replacedId) -> do
+                            logDebug $ "processSMP processClientMsg 8"
                             when primary . withStore' c $ \db -> setRcvQueuePrimary db connId rq
+                            logDebug $ "processSMP processClientMsg 9"
                             case find ((replacedId ==) . dbQId) rqs of
                               Just rq'@RcvQueue {server, rcvId} -> do
                                 checkRQSwchStatus rq' RSSendingQUSE
                                 void $ withStore' c $ \db -> setRcvSwitchStatus db rq' $ Just RSReceivedMessage
                                 enqueueCommand c "" connId (Just server) $ AInternalCommand $ ICQDelete rcvId
                               _ -> notify . ERR . AGENT $ A_QUEUE "replaced RcvQueue not found in connection"
+                            logDebug $ "processSMP processClientMsg 10"
                           _ -> pure ()
                         let encryptedMsgHash = C.sha256Hash encAgentMessage
                         g <- asks random
+                        logDebug $ "processSMP processClientMsg 11"
                         atomically updateTotalMsgCount
-                        tryError (agentClientMsg g encryptedMsgHash) >>= \case
+                        logDebug $ "processSMP processClientMsg 12"
+                        tryAgentError (agentClientMsg g encryptedMsgHash) >>= \case
                           Right (Just (msgId, msgMeta, aMessage, rcPrev)) -> do
+                            logDebug $ "processSMP processClientMsg 13"
                             conn'' <- resetRatchetSync
-                            case aMessage of
+                            logDebug $ "processSMP processClientMsg 14"
+                            r <- case aMessage of
                               HELLO -> helloMsg srvMsgId msgMeta conn'' >> ackDel msgId
                               -- note that there is no ACK sent for A_MSG, it is sent with agent's user ACK command
                               A_MSG body -> do
+                                logDebug $ "processSMP processClientMsg 15"
                                 logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret srvMsgId
+                                logDebug $ "processSMP processClientMsg 16"
                                 notify $ MSG msgMeta msgFlags body
+                                logDebug $ "processSMP processClientMsg 17"
                                 pure ACKPending
                               A_RCVD rcpts -> qDuplex conn'' "RCVD" $ messagesRcvd rcpts msgMeta
                               A_QCONT addr -> qDuplexAckDel conn'' "QCONT" $ continueSending srvMsgId addr
@@ -2206,6 +2227,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                               -- any message in the new queue will mark it active and trigger deletion of the old queue
                               QTEST _ -> logServer "<--" c srv rId ("MSG <QTEST>:" <> logSecret srvMsgId) >> ackDel msgId
                               EREADY _ -> qDuplexAckDel conn'' "EREADY" $ ereadyMsg rcPrev
+                            logDebug $ "processSMP processClientMsg 17"
+                            pure r
                             where
                               qDuplexAckDel :: Connection c -> String -> (Connection 'CDuplex -> AM ()) -> AM ACKd
                               qDuplexAckDel conn'' name a = qDuplex conn'' name a >> ackDel msgId
@@ -2218,22 +2241,28 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                                     withStore' c $ \db -> setConnRatchetSync db connId RSOk
                                     pure conn''
                                 | otherwise = pure conn'
-                          Right _ -> prohibited >> ack
+                          Right Nothing -> logDebug ("processSMP processClientMsg: no private header") >> prohibited >> ack
                           Left e@(AGENT A_DUPLICATE) -> do
+                            logDebug ("processSMP processClientMsg: A_DUPLICATE 1")
                             atomically updateDupMsgCount
+                            logDebug ("processSMP processClientMsg: A_DUPLICATE 2")
                             withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
                               Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
                                 | userAck -> ackDel internalId
                                 | otherwise -> do
+                                    logDebug ("processSMP processClientMsg: A_DUPLICATE 3")
                                     liftEither (parse smpP (AGENT A_MESSAGE) agentMsgBody) >>= \case
                                       AgentMessage _ (A_MSG body) -> do
                                         logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret srvMsgId
+                                        logDebug ("processSMP processClientMsg: A_DUPLICATE 4")
                                         notify $ MSG msgMeta msgFlags body
+                                        logDebug ("processSMP processClientMsg: A_DUPLICATE 5")
                                         pure ACKPending
                                       _ -> ack
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
                           Left (AGENT (A_CRYPTO e)) -> do
                             exists <- withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash
+                            logDebug ("processSMP processClientMsg: A_CRYPTO")
                             unless exists notifySync
                             ack
                             where
@@ -2245,7 +2274,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                                       conn'' = updateConnection cData'' connDuplex
                                   notify . RSYNC rss' (Just e) $ connectionStats conn''
                                   withStore' c $ \db -> setConnRatchetSync db connId rss'
-                          Left e -> checkDuplicateHash e encryptedMsgHash >> ack
+                          Left e -> logDebug ("processSMP processClientMsg: error " <> tshow e) >> checkDuplicateHash e encryptedMsgHash >> ack
                         where
                           checkDuplicateHash :: AgentErrorType -> ByteString -> AM ()
                           checkDuplicateHash e encryptedMsgHash =
@@ -2302,7 +2331,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
               ackDel :: InternalId -> AM ACKd
               ackDel aId = enqueueCmd (ICAckDel rId srvMsgId aId) $> ACKd
               handleNotifyAck :: AM ACKd -> AM ACKd
-              handleNotifyAck m = m `catchAgentError` \e -> notify (ERR e) >> ack
+              handleNotifyAck m = m `catchAgentError` \e -> logError ("handleNotifyAck error: " <> tshow e) >> notify (ERR e) >> ack
           SMP.END ->
             atomically (TM.lookup tSess (smpClients c) $>>= (tryReadTMVar . sessionVar) >>= processEND)
               >>= notifyEnd

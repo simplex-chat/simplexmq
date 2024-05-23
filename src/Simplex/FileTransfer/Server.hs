@@ -326,7 +326,7 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
               send $ byteString t
               -- timeout sending file in the same way as receiving
               forM_ serverFile_ $ \ServerFile {filePath, fileSize, sbState} -> do
-                withFile filePath ReadMode $ \h -> sendEncFile h send sbState (fromIntegral fileSize)
+                withFile filePath ReadMode $ \h -> sendEncFile h send sbState fileSize
           done
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed
