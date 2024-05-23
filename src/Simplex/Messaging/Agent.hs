@@ -141,6 +141,8 @@ import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
+import Data.Set (Set)
+import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
@@ -359,12 +361,12 @@ sendMessage c = withAgentEnv c .:: sendMessage' c
 type MsgReq = (ConnId, PQEncryption, MsgFlags, MsgBody)
 
 -- | Send multiple messages to different connections (SEND command)
-sendMessages :: AgentClient -> [MsgReq] -> IO [Either AgentErrorType (AgentMsgId, PQEncryption)]
-sendMessages c = withAgentEnv' c . sendMessages' c
+sendMessages :: AgentClient -> [MsgReq] -> AE [Either AgentErrorType (AgentMsgId, PQEncryption)]
+sendMessages c = withAgentEnv c . sendMessages' c
 {-# INLINE sendMessages #-}
 
-sendMessagesB :: Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> IO (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
-sendMessagesB c = withAgentEnv' c . sendMessagesB' c
+sendMessagesB :: Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> AE (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
+sendMessagesB c = withAgentEnv c . sendMessagesB' c
 {-# INLINE sendMessagesB #-}
 
 ackMessage :: AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AE ()
@@ -1037,22 +1039,31 @@ getNotificationMessage' c nonce encNtfInfo = do
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: AgentClient -> ConnId -> PQEncryption -> MsgFlags -> MsgBody -> AM (AgentMsgId, PQEncryption)
-sendMessage' c connId pqEnc msgFlags msg = ExceptT $ runIdentity <$> sendMessagesB' c (Identity (Right (connId, pqEnc, msgFlags, msg)))
+sendMessage' c connId pqEnc msgFlags msg = ExceptT $ runIdentity <$> sendMessagesB_ c (Identity (Right (connId, pqEnc, msgFlags, msg))) (S.singleton connId)
 {-# INLINE sendMessage' #-}
 
 -- | Send multiple messages to different connections (SEND command) in Reader monad
-sendMessages' :: AgentClient -> [MsgReq] -> AM' [Either AgentErrorType (AgentMsgId, PQEncryption)]
+sendMessages' :: AgentClient -> [MsgReq] -> AM [Either AgentErrorType (AgentMsgId, PQEncryption)]
 sendMessages' c = sendMessagesB' c . map Right
 {-# INLINE sendMessages' #-}
 
-sendMessagesB' :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> AM' (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
+sendMessagesB' :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> AM (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
 sendMessagesB' c reqs = do
-  logDebug $ "sendMessagesB " <> tshow (length connIds) <> " " <> tshow (length $ nub $ toList connIds)
-  withConnLocks c connIds "sendMessages" $ do
-    reqs' <- withStoreBatch c (\db -> fmap (bindRight $ \req@(connId, _, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
-    let (toEnable, reqs'') = mapAccumL prepareConn [] reqs'
-    void $ withStoreBatch' c $ \db -> map (\connId -> setConnPQSupport db connId PQSupportOn) toEnable
-    enqueueMessagesB c reqs''
+  connIds <- liftEither $ foldl' addConnId (Right S.empty) reqs
+  lift $ sendMessagesB_ c reqs connIds
+  where
+    addConnId s@(Right s') (Right (connId, _, _, _))
+      | B.null connId = s
+      | connId `S.notMember` s' = Right $ S.insert connId s'
+      | otherwise = Left $ INTERNAL "sendMessages: duplicate connection ID"
+    addConnId s _ = s
+
+sendMessagesB_ :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> Set ConnId -> AM' (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
+sendMessagesB_ c reqs connIds = withConnLocks c connIds "sendMessages" $ do
+  reqs' <- withStoreBatch c (\db -> fmap (bindRight $ \req@(connId, _, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
+  let (toEnable, reqs'') = mapAccumL prepareConn [] reqs'
+  void $ withStoreBatch' c $ \db -> map (\connId -> setConnPQSupport db connId PQSupportOn) toEnable
+  enqueueMessagesB c reqs''
   where
     prepareConn :: [ConnId] -> Either AgentErrorType (MsgReq, SomeConn) -> ([ConnId], Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage))
     prepareConn acc (Left e) = (acc, Left e)
@@ -1070,7 +1081,6 @@ sendMessagesB' c reqs = do
               let cData' = cData {pqSupport = PQSupportOn} :: ConnData
                in (connId : acc, Right (cData', sqs, Just pqEnc, msgFlags, A_MSG msg))
           | otherwise = (acc, Right (cData, sqs, Just pqEnc, msgFlags, A_MSG msg))
-    connIds = map (\(connId, _, _, _) -> connId) $ rights $ toList reqs
 
 -- / async command processing v v v
 

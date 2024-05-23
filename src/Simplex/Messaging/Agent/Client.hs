@@ -197,7 +197,6 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues (getRcvQueues))
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import Simplex.Messaging.Client
-import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -951,15 +950,15 @@ withInvLock' :: AgentClient -> ByteString -> String -> AM' a -> AM' a
 withInvLock' AgentClient {invLocks} = withLockMap invLocks
 {-# INLINE withInvLock' #-}
 
-withConnLocks :: AgentClient -> [ConnId] -> String -> AM' a -> AM' a
-withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks . filter (not . B.null)
+withConnLocks :: AgentClient -> Set ConnId -> String -> AM' a -> AM' a
+withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks
 {-# INLINE withConnLocks #-}
 
 withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
 withLockMap = withGetLock . getMapLock
 {-# INLINE withLockMap #-}
 
-withLocksMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> [k] -> String -> m a -> m a
+withLocksMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> Set k -> String -> m a -> m a
 withLocksMap_ = withGetLocks . getMapLock
 {-# INLINE withLocksMap_ #-}
 

@@ -15,6 +15,8 @@ import Control.Monad (void)
 import Control.Monad.Except (ExceptT (..), runExceptT)
 import Control.Monad.IO.Unlift
 import Data.Functor (($>))
+import Data.Set (Set)
+import qualified Data.Set as S
 import qualified Data.Text as T
 import Simplex.Messaging.Util (tshow)
 import UnliftIO.Async (forConcurrently)
@@ -44,7 +46,7 @@ withGetLock getLock key name a =
     (\l -> atomically (takeTMVar l) >> logDebug ("withGetLock released lock " <> T.pack name))
     (\_ -> logDebug ("withGetLock has lock " <> T.pack name) >> a)
 
-withGetLocks :: MonadUnliftIO m => (k -> STM Lock) -> [k] -> String -> m a -> m a
+withGetLocks :: MonadUnliftIO m => (k -> STM Lock) -> Set k -> String -> m a -> m a
 withGetLocks getLock keys name action =
   E.bracket holdLocks releaseLocks $ \_ -> do
     logDebug $ "withGetLocks has locks " <> tshow (length keys) <> " " <> T.pack name
@@ -52,11 +54,9 @@ withGetLocks getLock keys name action =
   where
     holdLocks = do
       logDebug $ "withGetLocks needs locks " <> tshow (length keys) <> " " <> T.pack name
-      forConcurrently keys $ \key -> atomically $ getPutLock getLock key name
-    -- only this withGetLocks would be holding the locks,
-    -- so it's safe to combine all lock releases into one transaction
+      forConcurrently (S.toList keys) $ \key -> atomically $ getPutLock getLock key name
     releaseLocks ls = do
-      atomically $ mapM_ takeTMVar ls
+      mapM_ (atomically . takeTMVar) ls
       logDebug $ "withGetLocks released locks " <> tshow (length keys) <> " " <> T.pack name
 
 -- getLock and putTMVar can be in one transaction on the assumption that getLock doesn't write in case the lock already exists,
