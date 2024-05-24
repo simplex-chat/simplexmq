@@ -1327,7 +1327,7 @@ subscribeQueues c qs = do
   where
     checkQueue rq = do
       prohibited <- atomically $ hasGetLock c rq
-      pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED) else Right rq
+      pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED "subscribeQueues") else Right rq
     subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
     subscribeQueues_ env session smp qs' = do
       rs <- sendBatch subscribeSMPQueues smp qs'
@@ -1595,7 +1595,7 @@ agentXFTPNewChunk :: AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth ->
 agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest chunkDigest} n (ProtoServerWithAuth srv auth) = do
   rKeys <- xftpRcvKeys n
   (sndKey, replicaKey) <- atomically . C.generateAuthKeyPair C.SEd25519 =<< asks random
-  let fileInfo = FileInfo {sndKey, size = fromIntegral chunkSize, digest = chunkDigest}
+  let fileInfo = FileInfo {sndKey, size = chunkSize, digest = chunkDigest}
   logServer "-->" c srv "" "FNEW"
   tSess <- liftIO $ mkTransportSession c userId srv chunkDigest
   (sndId, rIds) <- withClient c tSess "FNEW" $ \xftp -> X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth
@@ -1658,7 +1658,7 @@ agentCbDecrypt dhSecret nonce msg =
 
 cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case
-  C.CryptoLargeMsgError -> CMD LARGE
+  C.CryptoLargeMsgError -> CMD LARGE "CryptoLargeMsgError"
   C.CryptoHeaderError _ -> AGENT A_MESSAGE -- parsing error
   C.CERatchetDuplicateMessage -> AGENT A_DUPLICATE
   C.AESDecryptError -> c DECRYPT_AES
@@ -1801,7 +1801,7 @@ storeError = \case
   SEConnDuplicate -> CONN DUPLICATE
   SEBadConnType CRcv -> CONN SIMPLEX
   SEBadConnType CSnd -> CONN SIMPLEX
-  SEInvitationNotFound -> CMD PROHIBITED
+  SEInvitationNotFound -> CMD PROHIBITED "SEInvitationNotFound"
   -- this error is never reported as store error,
   -- it is used to wrap agent operations when "transaction-like" store access is needed
   -- NOTE: network IO should NOT be used inside AgentStoreMonad

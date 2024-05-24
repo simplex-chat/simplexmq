@@ -14,7 +14,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
-{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.FunctionalAPITests
   ( functionalAPITests,
@@ -575,13 +574,13 @@ testEnablePQEncryption =
     -- switched to smaller envelopes (before reporting PQ encryption enabled)
     sml <- largeMsg g PQSupportOn
     -- fail because of message size
-    Left (A.CMD LARGE) <- tryError $ A.sendMessage ca bId PQEncOn SMP.noMsgFlags lrg
+    Left (A.CMD LARGE _) <- tryError $ A.sendMessage ca bId PQEncOn SMP.noMsgFlags lrg
     (9, PQEncOff) <- A.sendMessage ca bId PQEncOn SMP.noMsgFlags sml
     get ca =##> \case ("", connId, SENT 9) -> connId == bId; _ -> False
     get cb =##> \case ("", connId, MsgErr' 8 MsgSkipped {} PQEncOff msg') -> connId == aId && msg' == sml; _ -> False
     ackMessage cb aId 8 Nothing
     -- -- fail in reply to sync IDss
-    Left (A.CMD LARGE) <- tryError $ A.sendMessage cb aId PQEncOn SMP.noMsgFlags lrg
+    Left (A.CMD LARGE _) <- tryError $ A.sendMessage cb aId PQEncOn SMP.noMsgFlags lrg
     (10, PQEncOff) <- A.sendMessage cb aId PQEncOn SMP.noMsgFlags sml
     get cb =##> \case ("", connId, SENT 10) -> connId == aId; _ -> False
     get ca =##> \case ("", connId, MsgErr' 10 MsgSkipped {} PQEncOff msg') -> connId == bId && msg' == sml; _ -> False
@@ -608,8 +607,8 @@ testEnablePQEncryption =
     (b, 26, sml) \#>\ a
     (a, 27, sml) \#>\ b
     -- PQ encryption is now disabled, but support remained enabled, so we still cannot send larger messages
-    Left (A.CMD LARGE) <- tryError $ A.sendMessage ca bId PQEncOff SMP.noMsgFlags (sml <> "123456")
-    Left (A.CMD LARGE) <- tryError $ A.sendMessage cb aId PQEncOff SMP.noMsgFlags (sml <> "123456")
+    Left (A.CMD LARGE _) <- tryError $ A.sendMessage ca bId PQEncOff SMP.noMsgFlags (sml <> "123456")
+    Left (A.CMD LARGE _) <- tryError $ A.sendMessage cb aId PQEncOff SMP.noMsgFlags (sml <> "123456")
     pure ()
   where
     (\#>\) = PQEncOff `sndRcv` PQEncOff
@@ -2480,7 +2479,7 @@ testDeliveryReceipts =
     get a =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
     ackMessage a bId 6 $ Just ""
     get b =##> \case ("", c, Rcvd 6) -> c == aId; _ -> False
-    ackMessage b aId 7 (Just "") `catchError` \e -> liftIO $ e `shouldBe` A.CMD PROHIBITED
+    ackMessage b aId 7 (Just "") `catchError` \case (A.CMD PROHIBITED _) -> pure (); e -> liftIO $ expectationFailure ("unexpected error " <> show e)
     ackMessage b aId 7 Nothing
 
 testDeliveryReceiptsVersion :: HasCallStack => ATransport -> IO ()

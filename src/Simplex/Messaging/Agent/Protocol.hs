@@ -157,8 +157,8 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Monad (unless)
-import Control.Monad.Except (runExceptT, throwError)
 import Control.Monad.IO.Class
+import Control.Monad.Trans.Except
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
@@ -1471,7 +1471,7 @@ instance StrEncoding MsgErrorType where
 -- | Error type used in errors sent to agent clients.
 data AgentErrorType
   = -- | command or response error
-    CMD {cmdErr :: CommandErrorType}
+    CMD {cmdErr :: CommandErrorType, errContext :: String}
   | -- | connection errors
     CONN {connErr :: ConnectionErrorType}
   | -- | SMP protocol errors forwarded to agent clients
@@ -1529,7 +1529,7 @@ data SMPAgentError
   = -- | client or agent message that failed to parse
     A_MESSAGE
   | -- | prohibited SMP/agent message
-    A_PROHIBITED
+    A_PROHIBITED {prohibitedErr :: String}
   | -- | incompatible version of SMP client, agent or encryption protocols
     A_VERSION
   | -- | cannot decrypt message
@@ -1578,7 +1578,7 @@ instance StrEncoding AgentErrorType where
   strP =
     A.takeTill (== ' ')
       >>= \case
-        "CMD" -> CMD <$> (A.space *> parseRead1)
+        "CMD" -> CMD <$> (A.space *> parseRead1) <*> (A.space *> textP)
         "CONN" -> CONN <$> (A.space *> parseRead1)
         "SMP" -> SMP <$> (A.space *> srvP) <*> _strP
         "NTF" -> NTF <$> (A.space *> srvP) <*> _strP
@@ -1593,9 +1593,8 @@ instance StrEncoding AgentErrorType where
         _ -> fail "bad AgentErrorType"
     where
       srvP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
-      textP = T.unpack . safeDecodeUtf8 <$> A.takeByteString
   strEncode = \case
-    CMD e -> "CMD " <> bshow e
+    CMD e cxt -> "CMD " <> bshow e <> " " <> text cxt
     CONN e -> "CONN " <> bshow e
     SMP srv e -> "SMP " <> text srv <> " " <> strEncode e
     NTF srv e -> "NTF " <> text srv <> " " <> strEncode e
@@ -1615,19 +1614,22 @@ instance StrEncoding SMPAgentError where
     A.takeTill (== ' ')
       >>= \case
         "MESSAGE" -> pure A_MESSAGE
-        "PROHIBITED" -> pure A_PROHIBITED
+        "PROHIBITED" -> A_PROHIBITED <$> (A.space *> textP)
         "VERSION" -> pure A_VERSION
         "CRYPTO" -> A_CRYPTO <$> _strP
         "DUPLICATE" -> pure A_DUPLICATE
-        "QUEUE" -> A_QUEUE . T.unpack . safeDecodeUtf8 <$> (A.space *> A.takeByteString)
+        "QUEUE" -> A_QUEUE <$> (A.space *> textP)
         _ -> fail "bad SMPAgentError"
   strEncode = \case
     A_MESSAGE -> "MESSAGE"
-    A_PROHIBITED -> "PROHIBITED"
+    A_PROHIBITED e -> "PROHIBITED " <> encodeUtf8 (T.pack e)
     A_VERSION -> "VERSION"
     A_CRYPTO e -> "CRYPTO " <> strEncode e
     A_DUPLICATE -> "DUPLICATE"
     A_QUEUE e -> "QUEUE " <> encodeUtf8 (T.pack e)
+
+textP :: Parser String
+textP = T.unpack . safeDecodeUtf8 <$> A.takeByteString
 
 cryptoErrToSyncState :: AgentCryptoError -> RatchetSyncState
 cryptoErrToSyncState = \case
@@ -1841,7 +1843,7 @@ commandP binaryP =
             sd : rds -> SFDONE <$> strDecode (encodeUtf8 sd) <*> mapM (strDecode . encodeUtf8) rds
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
-parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
+parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX "parseCommand"
 
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand p e -> ByteString
@@ -1931,7 +1933,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     fromParty :: ACmd -> Either AgentErrorType (APartyCmd p)
     fromParty (ACmd (p :: p1) e cmd) = case testEquality party p of
       Just Refl -> Right $ APC e cmd
-      _ -> Left $ CMD PROHIBITED
+      _ -> Left $ CMD PROHIBITED "fromParty"
 
     tConnId :: ARawTransmission -> APartyCmd p -> Either AgentErrorType (APartyCmd p)
     tConnId (_, entId, _) (APC e cmd) =
@@ -1949,7 +1951,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
         SUSPENDED {} -> Right cmd
         -- other responses must have connection ID
         _
-          | B.null entId -> Left $ CMD NO_CONN
+          | B.null entId -> Left $ CMD NO_CONN "tConnId"
           | otherwise -> Right cmd
 
     cmdWithMsgBody :: APartyCmd p -> IO (Either AgentErrorType (APartyCmd p))
@@ -1972,11 +1974,11 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
         str -> case readMaybe str :: Maybe Int of
           Just size -> runExceptT $ do
             body <- liftIO $ cGet h size
-            unless (B.length body == size) $ throwError $ CMD SIZE
+            unless (B.length body == size) $ throwE $ CMD SIZE "getBody"
             s <- liftIO $ getLn h
-            unless (B.null s) $ throwError $ CMD SIZE
+            unless (B.null s) $ throwE $ CMD SIZE "getBody"
             pure body
-          Nothing -> return . Left $ CMD SYNTAX
+          Nothing -> pure . Left $ CMD SYNTAX "getBody"
 
 $(J.deriveJSON defaultJSON ''RcvQueueInfo)
 

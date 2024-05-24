@@ -7,7 +7,6 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
-{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests (agentTests) where
 
@@ -358,7 +357,7 @@ testRejectContactRequest _ alice bob = do
   -- RJCT must use correct contact connection
   alice #: ("2a", "bob", "RJCT " <> aInvId) #> ("2a", "bob", ERR $ CONN NOT_FOUND)
   alice #: ("2b", "a_contact", "RJCT " <> aInvId) #> ("2b", "a_contact", OK)
-  alice #: ("3", "bob", "ACPT " <> aInvId <> " 12\nalice's info") #> ("3", "bob", ERR $ A.CMD PROHIBITED)
+  alice #: ("3", "bob", "ACPT " <> aInvId <> " 12\nalice's info") =#> \case ("3", "bob", ERR (A.CMD PROHIBITED _)) -> True; _ -> False
   bob #:# "nothing should be delivered to bob"
 
 testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
@@ -430,8 +429,8 @@ testServerConnectionAfterError t _ = do
 
   withAgent1 $ \bob -> do
     withAgent2 $ \alice -> do
-      bob #:! ("1", "alice", "SUB") =#> \("1", "alice", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT
-      alice #:! ("1", "bob", "SUB") =#> \("1", "bob", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT
+      bob #:! ("1", "alice", "SUB") =#> \case ("1", "alice", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT; _ -> False
+      alice #:! ("1", "bob", "SUB") =#> \case ("1", "bob", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT; _ -> False
       withServer $ do
         alice <#=? \case ("", "bob", APC SAEConn (SENT 4)) -> True; ("", "", APC _ (UP s ["bob"])) -> s == server; _ -> False
         alice <#=? \case ("", "bob", APC SAEConn (SENT 4)) -> True; ("", "", APC _ (UP s ["bob"])) -> s == server; _ -> False
@@ -613,12 +612,12 @@ sampleDhKey = "MCowBQYDK2VuAyEAjiswwI3O_NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
 
 syntaxTests :: forall c. Transport c => TProxy c -> Spec
 syntaxTests t = do
-  it "unknown command" $ ("1", "5678", "HELLO") >#> ("1", "5678", "ERR CMD SYNTAX")
+  it "unknown command" $ ("1", "5678", "HELLO") >#> ("1", "5678", "ERR CMD SYNTAX parseCommand")
   describe "NEW" $ do
     describe "valid" $ do
       it "with correct parameter" $ ("211", "", "NEW T INV subscribe") >#>= \case ("211", _, "INV" : _) -> True; _ -> False
     describe "invalid" $ do
-      it "with incorrect parameter" $ ("222", "", "NEW T hi subscribe") >#> ("222", "", "ERR CMD SYNTAX")
+      it "with incorrect parameter" $ ("222", "", "NEW T hi subscribe") >#> ("222", "", "ERR CMD SYNTAX parseCommand")
 
   describe "JOIN" $ do
     describe "valid" $ do
@@ -636,7 +635,7 @@ syntaxTests t = do
         )
           >#> ("311", "a", "ERR SMP smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001 AUTH")
     describe "invalid" $ do
-      it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")
+      it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX parseCommand")
   where
     -- simple test for one command with the expected response
     (>#>) :: ARawTransmission -> ARawTransmission -> Expectation
