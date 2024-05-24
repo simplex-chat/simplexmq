@@ -10,15 +10,12 @@ module Simplex.Messaging.Agent.Lock
   )
 where
 
-import Control.Logger.Simple
 import Control.Monad (void)
 import Control.Monad.Except (ExceptT (..), runExceptT)
 import Control.Monad.IO.Unlift
 import Data.Functor (($>))
 import Data.Set (Set)
 import qualified Data.Set as S
-import qualified Data.Text as T
-import Simplex.Messaging.Util (tshow)
 import UnliftIO.Async (forConcurrently)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -42,23 +39,15 @@ withLock' lock name =
 withGetLock :: MonadUnliftIO m => (k -> STM Lock) -> k -> String -> m a -> m a
 withGetLock getLock key name a =
   E.bracket
-    (logDebug ("withGetLock needs lock " <> T.pack name) >> atomically (getPutLock getLock key name))
-    (\l -> atomically (takeTMVar l) >> logDebug ("withGetLock released lock " <> T.pack name))
-    (\_ -> logDebug ("withGetLock has lock " <> T.pack name) >> a)
+    (atomically $ getPutLock getLock key name)
+    (atomically . takeTMVar)
+    (const a)
 
 withGetLocks :: MonadUnliftIO m => (k -> STM Lock) -> Set k -> String -> m a -> m a
-withGetLocks getLock keys name action =
-  E.bracket holdLocks releaseLocks $ \_ -> do
-    logDebug $ "withGetLocks has locks " <> locksInfo
-    action
+withGetLocks getLock keys name = E.bracket holdLocks releaseLocks . const
   where
-    holdLocks = do
-      logDebug $ "withGetLocks needs locks " <> locksInfo
-      forConcurrently (S.toList keys) $ \key -> atomically $ getPutLock getLock key name
-    releaseLocks ls = do
-      mapM_ (atomically . takeTMVar) ls
-      logDebug $ "withGetLocks released locks " <> locksInfo
-    locksInfo = tshow (length keys) <> " " <> T.pack name
+    holdLocks = forConcurrently (S.toList keys) $ \key -> atomically $ getPutLock getLock key name
+    releaseLocks = mapM_ (atomically . takeTMVar)
 
 -- getLock and putTMVar can be in one transaction on the assumption that getLock doesn't write in case the lock already exists,
 -- and in case it is created and added to some shared resource (we use TMap) it also helps avoid contention for the newly created lock.
