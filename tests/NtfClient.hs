@@ -89,7 +89,7 @@ ntfServerCfg =
       clientQSize = 1,
       subQSize = 1,
       pushQSize = 1,
-      smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1},
+      smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 0},
       apnsConfig =
         defaultAPNSPushClientConfig
           { apnsPort = apnsTestPort,

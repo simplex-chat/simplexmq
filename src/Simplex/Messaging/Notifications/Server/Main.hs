@@ -113,7 +113,7 @@ ntfServerCLI cfgPath logPath =
               clientQSize = 64,
               subQSize = 512,
               pushQSize = 1048,
-              smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 15},
+              smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 0},
               apnsConfig = defaultAPNSPushClientConfig,
               subsBatchSize = 900,
               inactiveClientExpiration =
