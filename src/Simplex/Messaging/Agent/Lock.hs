@@ -1,5 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
-
 module Simplex.Messaging.Agent.Lock
   ( Lock,
     createLock,
