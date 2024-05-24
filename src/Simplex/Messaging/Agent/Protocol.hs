@@ -1529,7 +1529,7 @@ data SMPAgentError
   = -- | client or agent message that failed to parse
     A_MESSAGE
   | -- | prohibited SMP/agent message
-    A_PROHIBITED
+    A_PROHIBITED {prohibitedErr :: String}
   | -- | incompatible version of SMP client, agent or encryption protocols
     A_VERSION
   | -- | cannot decrypt message
@@ -1593,7 +1593,6 @@ instance StrEncoding AgentErrorType where
         _ -> fail "bad AgentErrorType"
     where
       srvP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
-      textP = T.unpack . safeDecodeUtf8 <$> A.takeByteString
   strEncode = \case
     CMD e cxt -> "CMD " <> bshow e <> " " <> text cxt
     CONN e -> "CONN " <> bshow e
@@ -1615,19 +1614,22 @@ instance StrEncoding SMPAgentError where
     A.takeTill (== ' ')
       >>= \case
         "MESSAGE" -> pure A_MESSAGE
-        "PROHIBITED" -> pure A_PROHIBITED
+        "PROHIBITED" -> A_PROHIBITED <$> (A.space *> textP)
         "VERSION" -> pure A_VERSION
         "CRYPTO" -> A_CRYPTO <$> _strP
         "DUPLICATE" -> pure A_DUPLICATE
-        "QUEUE" -> A_QUEUE . T.unpack . safeDecodeUtf8 <$> (A.space *> A.takeByteString)
+        "QUEUE" -> A_QUEUE <$> (A.space *> textP)
         _ -> fail "bad SMPAgentError"
   strEncode = \case
     A_MESSAGE -> "MESSAGE"
-    A_PROHIBITED -> "PROHIBITED"
+    A_PROHIBITED e -> "PROHIBITED " <> encodeUtf8 (T.pack e)
     A_VERSION -> "VERSION"
     A_CRYPTO e -> "CRYPTO " <> strEncode e
     A_DUPLICATE -> "DUPLICATE"
     A_QUEUE e -> "QUEUE " <> encodeUtf8 (T.pack e)
+
+textP :: Parser String
+textP = T.unpack . safeDecodeUtf8 <$> A.takeByteString
 
 cryptoErrToSyncState :: AgentCryptoError -> RatchetSyncState
 cryptoErrToSyncState = \case

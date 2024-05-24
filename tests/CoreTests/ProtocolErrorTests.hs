@@ -36,6 +36,8 @@ protocolErrorTests = modifyMaxSuccess (const 1000) $ do
     possibleAgentErrorType =
       arbitrary >>= \case
         Agent.CMD _ cxt | hasSpaces cxt -> discard
+        AGENT (A_PROHIBITED e) | hasSpaces e -> discard
+        AGENT (A_QUEUE e) | hasSpaces e -> discard
         BROKER srv _ | hasSpaces srv -> discard
         SMP srv e | hasSpaces srv || skipErrorType e -> discard
         NTF srv e | hasSpaces srv || skipErrorType e -> discard
