@@ -2146,8 +2146,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
       conn
       cData@ConnData {userId, connId, connAgentVersion, ratchetSyncState = rss}
       smpMsg =
-        case smpMsg of
-          SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} -> withConnLock c connId "processSMP" $
+        withConnLock c connId "processSMP" $ case smpMsg of
+          SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
             void . handleNotifyAck $ do
               msg' <- decryptSMPMessage rq msg
               ack' <- handleNotifyAck $ case msg' of
