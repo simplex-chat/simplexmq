@@ -1,3 +1,8 @@
+# 5.7.5
+
+SMP agent:
+- fail if non-unique connection IDs are passed to sendMessages (to prevent client errors and deadlocks).
+
 # 5.7.4
 
 SMP agent:
