@@ -18,14 +18,17 @@
 
   <style>
     table#config {
-        border-collapse: collapse;
-        margin-bottom: 4px;
+      border-collapse: collapse;
+      margin-bottom: 4px;
     }
-    th, td {
-        padding: 7px 0;
-        text-align: left;
-        vertical-align: top;
+
+    th,
+    td {
+      padding: 7px 0;
+      text-align: left;
+      vertical-align: top;
     }
+
     tr td:not(:last-child) {
       width: 250px;
       font-size: 17px;
@@ -34,28 +37,32 @@
       color: #606C71;
       padding-right: 20px;
     }
+
     @media screen and (max-width: 767px) {
       tr td:not(:last-child) {
         font-size: 16px;
       }
     }
-    .dark tr td:not(:last-child){
+
+    .dark tr td:not(:last-child) {
       color: #fff;
     }
+
     tr td:last-child {
       font-size: 17px;
       font-family: Gilroy;
       font-weight: 300;
     }
-    tr{
+
+    tr {
       text-align: top;
     }
 
-    tr a{
+    tr a {
       color: #0053D0;
     }
 
-    .dark tr a{
+    .dark tr a {
       color: #70F0F9;
     }
   </style>
@@ -187,8 +194,7 @@
       window.addEventListener('scroll', changeHeaderBg);</script>
   </section>
 
-  <section
-    class="py-[90px] block bg-primary-bg-light dark:bg-primary-bg-dark xl:bg-secondary-bg-light dark:xl:bg-secondary-bg-dark">
+  <section class="py-[90px] block bg-secondary-bg-light dark:bg-secondary-bg-dark">
     <div class="container m-auto flex items-center justify-between px-5">
       <div class="flex flex-col items-start justify-center w-full">
         <h1 class="text-[42px] mb-[32px] leading-[43px] font-bold max-w-[500px] primary-header-contact">Server
@@ -196,12 +202,13 @@
 
         <div class="flex flex-col lg:flex-row gap-10 justify-between w-full">
           <div>
-            <h2 class="text-[30px] mb-[20px] leading-[28px] text-[#606C71] dark:text-white font-bold max-w-[475px]">Public information
+            <h2 class="text-[30px] mb-[20px] leading-[28px] text-[#606C71] dark:text-white font-bold max-w-[475px]">
+              Public information
             </h2>
             <table id="public-info">
               <tr class="text-grey-black dark:text-white text-base">
-                  <td>Source code:</td>
-                  <td><a href="${sourceCode}" target="_blank">${sourceCode}</a></td>
+                <td>Source code:</td>
+                <td><a href="${sourceCode}" target="_blank">${sourceCode}</a></td>
               </tr>
               <x-website>
                 <tr class="text-grey-black dark:text-white text-base">
@@ -224,15 +231,16 @@
               <x-operator>
                 <tr class="text-grey-black dark:text-white text-base">
                   <td>Operator:</td>
-                  <td>$${operatorEntity} (${operatorCountry})</td>
+                  <td>${operatorEntity} (${operatorCountry})</td>
                 </tr>
               </x-operator>
               <x-admin>
                 <tr class="text-grey-black dark:text-white text-base">
                   <td>Administrator contacts:</td>
-                  <td><ul class="text-grey-black dark:text-white text-base mb-[16px]">
+                  <td>
+                    <ul class="text-grey-black dark:text-white text-base mb-[16px]">
                       <x-adminSimplex>
-                        <li>SimpleX: <a href="${adminSimplex}">Open in the app</a></li>
+                        <li>SimpleX: <a href="${adminSimplex}">Open address</a></li>
                       </x-adminSimplex>
                       <x-adminEmail>
                         <li>Email: <a href="mailto:${adminEmail}">${adminEmail}</a></li>
@@ -240,15 +248,17 @@
                       <x-adminPGP>
                         <li>PGP: <a href="${adminPGP}">${adminPGPFingerprint}</a></li>
                       </x-adminPGP>
-                  </ul></td>
+                    </ul>
+                  </td>
                 </tr>
               </x-admin>
               <x-complaints>
                 <tr class="text-grey-black dark:text-white text-base">
                   <td>Complaints and feedback:</td>
-                  <td><ul class="text-grey-black dark:text-white text-base mb-[16px]">
+                  <td>
+                    <ul class="text-grey-black dark:text-white text-base mb-[16px]">
                       <x-complaintsSimplex>
-                        <li>SimpleX: <a href="${complaintsSimplex}">Open in the app</a></li>
+                        <li>SimpleX: <a href="${complaintsSimplex}">Open address</a></li>
                       </x-complaintsSimplex>
                       <x-complaintsEmail>
                         <li>Email: <a href="mailto:${complaintsEmail}">${complaintsEmail}</a></li>
@@ -256,12 +266,13 @@
                       <x-complaintsPGP>
                         <li>PGP: <a href="${complaintsPGP}">${complaintsPGPFingerprint}</a></li>
                       </x-complaintsPGP>
-                  </ul></td>
+                    </ul>
+                  </td>
                 </tr>
               </x-complaints>
               <x-hosting>
                 <tr class="text-grey-black dark:text-white text-base">
-                  <td>Hosting:</td>
+                  <td>Hosting provider:</td>
                   <td>${hostingEntity} (${hostingCountry})</td>
                 </tr>
               </x-hosting>
@@ -273,13 +284,14 @@
               </x-serverCountry>
             </table>
           </div>
-          
+
           <div>
-            <h2 class="text-[30px] mb-[20px] leading-[28px] text-[#606C71] dark:text-white font-bold max-w-[475px]">Configuration</h2>
+            <h2 class="text-[30px] mb-[20px] leading-[28px] text-[#606C71] dark:text-white font-bold max-w-[475px]">
+              Configuration</h2>
             <table id="config">
               <tr class="text-grey-black dark:text-white text-base">
-                  <td>Persistence:</td>
-                  <td>${persistence}</td>
+                <td>Persistence:</td>
+                <td>${persistence}</td>
               </tr>
               <tr class="text-grey-black dark:text-white text-base">
                 <td>Message expiration:</td>
@@ -299,64 +311,8 @@
               </tr>
             </table>
           </div>
-          
-          
-        
-        </div>
-      <!-- <div class="h-full pt-[30px] w-[630px] relative">
-        <div class="relative h-full w-[inherit] flex items-center justify-center">right</div>
-      </div> -->
-    </div>
-  </section>
-
-  <section
-    class="block bg-secondary-bg-light dark:bg-secondary-bg-dark xl:hidden py-[90px]">
-    <div class="container m-auto px-5">
-      <div class="flex flex-col items-center">
-        <h1 class="text-[28px] font-bold text-center max-w-[602px] mb-[40px] primary-header-contact">You received a
-          1-time link to connect on SimpleX Chat</h1>
-        <p class="text-[20px] leading-[28px] text-grey-black dark:text-white font-medium mb-[30px]">To make a
-          connection:</p>
-        <div
-          class="flex flex-col justify-center items-center p-4 w-full max-w-[468px] min-h-[131px] rounded-[30px] border-[1px] border-[#A8B0B4] dark:border-white border-opacity-60 mb-6 relative">
-          <p class="text-xl font-medium text-grey-black dark:text-white mb-4">Install SimpleX app</p>
-          <div class="flex flex-wrap items-center justify-center gap-2"><a class="apple-store-btn" target="_blank"
-              href="https://apps.apple.com/us/app/simplex-chat/id1605771084"><img class="h-[40px] w-auto"
-                src="/media/apple_store.svg"></a><a class="google-play-btn" target="_blank"
-              href="https://play.google.com/store/apps/details?id=chat.simplex.app"
-              title="Public iOS preview on TestFlight"><img class="h-[40px] w-auto" src="/media/google_play.svg"></a><a
-              class="f-droid-btn" target="_blank" href="https://simplex.chat/fdroid"
-              title="SimpleX F-Droid Repository"><img class="h-[40px] w-auto" src="/media/f_droid.svg"></a></div>
-          <div
-            class="absolute bg-[#0197FF] h-[44px] w-[44px] rounded-full flex items-center justify-center top-0 left-0 translate-x-[-30%] translate-y-[-30%]">
-            <p class="text-base text-white font-bold leading-[36px]">1</p>
-          </div>
-        </div>
-        <div
-          class="flex flex-col justify-center items-center w-full max-w-[468px] h-[131px] rounded-[30px] border-[1px] border-[#A8B0B4] dark:border-white border-opacity-60 mb-6 relative">
-          <p class="text-xl font-medium text-grey-black dark:text-white mb-4">Connect in app</p><noscript>
-            <p class="text-xl font-medium text-grey-black dark:text-white mb-4">Please use the link in the mobile app
-            </p>
-          </noscript><a id="mobile_conn_req_uri"
-            class="bg-[#0053D0] text-white py-3 px-8 rounded-[34px] h-[44px] text-[16px] leading-[19px] tracking-[0.02em]"
-            href="simplex:/contact#/?v=2-5&amp;smp=smp%3A%2F%2FZKe4uxF4Z_aLJJOEsC-Y6hSkXgQS5-oc442JQGkyP8M%3D%40smp17.simplex.im%2FuE3hiE1Ex5DLGHyvuTqiXAQGtJGrnpcE%23%2F%3Fv%3D1-2%26dh%3DMCowBQYDK2VuAyEA9YqJUulogIHt4vEmml8acX42WLUYPgOH0_N9t6KtAgo%253D%26srv%3Dogtwfxyi3h2h5weftjjpjmxclhb5ugufa5rcyrmg7j4xlch7qsr5nuqd.onion&amp;e2e=v%3D2-3%26x3dh%3DMEIwBQYDK2VvAzkAVJr_Jp39wBBBifJXD74dvRvWFMksQpie-RIC-L6L4HpuheCISAm4KSPmqT1HyF-nBzx-dLhW8pE%3D%2CMEIwBQYDK2VvAzkA9uAuzN1AbDfEgklmm4Fyi1QwKz5hD_EW-BDuhBJEX5EyBvOLAT0PkhVPQsympocXVWi1PNcu0wI%3D">Open
-            Simplex app</a>
-          <div
-            class="absolute bg-[#0197FF] h-[44px] w-[44px] rounded-full flex items-center justify-center top-0 left-0 translate-x-[-30%] translate-y-[-30%]">
-            <p class="text-base text-white font-bold leading-[36px]">2</p>
-          </div>
-        </div>
-        <div
-          class="flex flex-col justify-center items-center w-full max-w-[468px] h-[131px] rounded-[30px] border-[1px] border-[#A8B0B4] dark:border-white border-opacity-60 relative">
-          <p class="text-xl font-medium text-grey-black dark:text-white max-w-[230px] text-center">Tap the<span
-              class="text-active-blue">‘connect’</span>button in the app</p>
-          <div
-            class="absolute bg-[#0197FF] h-[44px] w-[44px] rounded-full flex items-center justify-center top-0 left-0 translate-x-[-30%] translate-y-[-30%]">
-            <p class="text-base text-white font-bold leading-[36px]">3</p>
-          </div>
         </div>
       </div>
-    </div>
   </section>
 
   <section id="join-simplex" class="bg-primary-bg-light dark:bg-primary-bg-dark py-[90px] px-5">
