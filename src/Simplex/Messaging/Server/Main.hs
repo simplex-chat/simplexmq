@@ -28,10 +28,12 @@ import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.IO as T
 import Network.Socket (HostName)
 import Options.Applicative
+import Simplex.Messaging.Agent.Protocol (connReqUriP')
 import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI
@@ -80,7 +82,7 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
     httpsCertFile = combine cfgPath "web.cert"
     httpsKeyFile = combine cfgPath "web.key"
     defaultStaticPath = combine logPath "www"
-    initializeServer opts@InitOptions {ip, fqdn, sourceCode = src', staticPath = sp', disableWebServer = noWeb', scripted}
+    initializeServer opts@InitOptions {ip, fqdn, sourceCode = src', webStaticPath = sp', disableWeb = noWeb', scripted}
       | scripted = initialize opts
       | otherwise = do
           putStrLn "Use `smp-server init -h` for available options."
@@ -101,8 +103,8 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                 fqdn = if null host' then fqdn else Just host',
                 password,
                 sourceCode = (T.pack <$> sourceCode') <|> src',
-                staticPath = if null staticPath' then sp' else Just staticPath',
-                disableWebServer = not enableWeb
+                webStaticPath = if null staticPath' then sp' else Just staticPath',
+                disableWeb = not enableWeb
               }
       where
         serverPassword =
@@ -114,7 +116,7 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               case strDecode $ encodeUtf8 $ T.pack s of
                 Right auth -> pure . Just $ ServerPassword auth
                 _ -> putStrLn "Invalid password. Only latin letters, digits and symbols other than '@' and ':' are allowed" >> serverPassword
-        initialize InitOptions {enableStoreLog, logStats, signAlgorithm, password, sourceCode, staticPath, disableWebServer} = do
+        initialize InitOptions {enableStoreLog, logStats, signAlgorithm, password, sourceCode, webStaticPath, disableWeb} = do
           clearDirIfExists cfgPath
           clearDirIfExists logPath
           createDirectoryIfMissing True cfgPath
@@ -196,13 +198,13 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                 <> "\n\n\
                    \[WEB]\n\
                    \# Set path to generate static mini-site for server information and qr codes/links\n"
-                <> ("static_path: " <> T.pack (fromMaybe defaultStaticPath staticPath) <> "\n\n")
+                <> ("static_path: " <> T.pack (fromMaybe defaultStaticPath webStaticPath) <> "\n\n")
                 <> "# Run an embedded server on this port\n\
                    \# Onion sites can use any port and register it in the hidden service config.\n\
                    \# Running on a port 80 may require setting process capabilities.\n"
-                <> ((if disableWebServer then "# " else "") <> "http: 8000\n\n")
+                <> ((if disableWeb then "# " else "") <> "http: 8000\n\n")
                 <> "# You can run an embedded TLS web server too if you provide port and cert and key files.\n\
-                   \# Not required for running TOR-only relay.\n\
+                   \# Not required for running relay on onion address.\n\
                    \# https: 443\n"
                 <> ("# cert: " <> T.pack httpsCertFile <> "\n")
                 <> ("# key: " <> T.pack httpsKeyFile <> "\n")
@@ -270,9 +272,9 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                       _ -> enableStoreLog $> messagesPath,
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
-              newQueueBasicAuth = either error id <$> strDecodeIni "AUTH" "create_password" ini,
-              controlPortAdminAuth = either error id <$> strDecodeIni "AUTH" "control_port_admin_password" ini,
-              controlPortUserAuth = either error id <$> strDecodeIni "AUTH" "control_port_user_password" ini,
+              newQueueBasicAuth = either error id <$!> strDecodeIni "AUTH" "create_password" ini,
+              controlPortAdminAuth = either error id <$!> strDecodeIni "AUTH" "control_port_admin_password" ini,
+              controlPortUserAuth = either error id <$!> strDecodeIni "AUTH" "control_port_user_password" ini,
               messageExpiration =
                 Just
                   defaultMessageExpiration
@@ -303,7 +305,7 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                           agreeSecret = True,
                           networkConfig =
                             defaultNetworkConfig
-                              { socksProxy = either error id <$> strDecodeIni "PROXY" "socks_proxy" ini,
+                              { socksProxy = either error id <$!> strDecodeIni "PROXY" "socks_proxy" ini,
                                 socksMode = either (const SMOnion) textToSocksMode $ lookupValue "PROXY" "socks_mode" ini,
                                 hostMode = either (const HMPublic) textToHostMode $ lookupValue "PROXY" "host_mode" ini,
                                 requiredHostMode = fromMaybe False $ iniOnOff "PROXY" "required_host_mode" ini
@@ -332,26 +334,33 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
     runWebServer ini si =
       case eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini of
         Nothing -> logWarn "No server static path set"
-        Just staticPath -> do
+        Just webStaticPath -> do
           let onionHost =
                 either (const Nothing) (find isOnion) $
                   strDecode @(L.NonEmpty TransportHost) . encodeUtf8 =<< lookupValue "TRANSPORT" "host" ini
-              http = eitherToMaybe $ read . T.unpack <$> lookupValue "WEB" "http" ini
-              https =
-                eitherToMaybe $
-                  (,,)
-                    <$> (T.unpack <$> lookupValue "WEB" "cert" ini)
-                    <*> (T.unpack <$> lookupValue "WEB" "key" ini)
-                    <*> (read . T.unpack <$> lookupValue "WEB" "https" ini)
-          generateSite si onionHost staticPath
-          when (isJust http || isJust https) $ serveStaticFiles EmbeddedWebParams {staticPath, http, https}
+              webHttpPort = eitherToMaybe $ read . T.unpack <$> lookupValue "WEB" "http" ini
+              webHttpsParams =
+                eitherToMaybe $ do
+                  port <- read . T.unpack <$> lookupValue "WEB" "https" ini
+                  cert <- T.unpack <$> lookupValue "WEB" "cert" ini
+                  key <- T.unpack <$> lookupValue "WEB" "key" ini
+                  pure WebHttpsParams {port, cert, key}
+          generateSite si onionHost webStaticPath
+          when (isJust webHttpPort || isJust webHttpsParams) $
+            serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams}
           where
             isOnion = \case THOnionHost _ -> True; _ -> False
 
 data EmbeddedWebParams = EmbeddedWebParams
-  { staticPath :: FilePath,
-    http :: Maybe Int,
-    https :: Maybe (FilePath, FilePath, Int)
+  { webStaticPath :: FilePath,
+    webHttpPort :: Maybe Int,
+    webHttpsParams :: Maybe WebHttpsParams
+  }
+
+data WebHttpsParams = WebHttpsParams
+  { port :: Int,
+    cert :: FilePath,
+    key :: FilePath
   }
 
 getServerSourceCode :: IO (Maybe String)
@@ -426,7 +435,7 @@ serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
       (\cs -> if T.length cs == 2 && T.all (\c -> isAscii c && isAlpha c) cs then T.map toUpper cs else error $ "Use ISO3166 2-letter code for " <> T.unpack field)
         <$!> infoValue field
     iniContacts simplexField emailField pgpKeyUriField pgpKeyFingerprintField =
-      let simplex = either error id <$!> strDecodeIni "INFORMATION" simplexField ini
+      let simplex = either error id . parseAll (connReqUriP' Nothing) . encodeUtf8 <$!> eitherToMaybe (lookupValue "INFORMATION" simplexField ini)
           email = infoValue emailField
           pkURI_ = infoValue pgpKeyUriField
           pkFingerprint_ = infoValue pgpKeyFingerprintField
@@ -456,8 +465,8 @@ data InitOptions = InitOptions
     fqdn :: Maybe HostName,
     password :: Maybe ServerPassword,
     sourceCode :: Maybe Text,
-    staticPath :: Maybe FilePath,
-    disableWebServer :: Bool,
+    webStaticPath :: Maybe FilePath,
+    disableWeb :: Bool,
     scripted :: Bool
   }
   deriving (Show)
@@ -530,16 +539,16 @@ cliCommandP cfgPath logPath iniFile =
               <> help "Server source code will be communicated to the users"
               <> metavar "URI"
           )
-      staticPath <-
+      webStaticPath <-
         (optional . strOption)
           ( long "web-path"
               <> help "Directory to store generated static site with server information"
               <> metavar "PATH"
           )
-      disableWebServer <-
+      disableWeb <-
         switch
-          ( long "disable-web-server"
-              <> help "Disable starting embedded web server for static files"
+          ( long "disable-web"
+              <> help "Disable starting static web server with server information"
           )
       scripted <-
         switch
@@ -556,8 +565,8 @@ cliCommandP cfgPath logPath iniFile =
             fqdn,
             password,
             sourceCode,
-            staticPath,
-            disableWebServer,
+            webStaticPath,
+            disableWeb,
             scripted
           }
     parseBasicAuth :: ReadM ServerPassword

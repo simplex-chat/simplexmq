@@ -16,7 +16,7 @@ import Network.Wai.Handler.Warp as W
 import qualified Network.Wai.Handler.WarpTLS as W
 import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.Main (EmbeddedWebParams (..))
+import Simplex.Messaging.Server.Main (EmbeddedWebParams (..), WebHttpsParams (..))
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Util (tshow)
 import Static.Embedded as E
@@ -25,13 +25,13 @@ import System.FilePath
 import UnliftIO.Concurrent (forkFinally)
 
 serveStaticFiles :: EmbeddedWebParams -> IO ()
-serveStaticFiles EmbeddedWebParams {staticPath, http, https} = do
-  forM_ http $ \port -> flip forkFinally (\e -> logError $ "HTTP server crashed: " <> tshow e) $ do
+serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} = do
+  forM_ webHttpPort $ \port -> flip forkFinally (\e -> logError $ "HTTP server crashed: " <> tshow e) $ do
     logInfo $ "Serving static site on port " <> tshow port
-    W.runSettings (mkSettings port) (S.staticApp $ S.defaultFileServerSettings staticPath)
-  forM_ https $ \(cert, key, port) -> flip forkFinally (\e -> logError $ "HTTPS server crashed: " <> tshow e) $ do
+    W.runSettings (mkSettings port) (S.staticApp $ S.defaultFileServerSettings webStaticPath)
+  forM_ webHttpsParams $ \WebHttpsParams {port, cert, key} -> flip forkFinally (\e -> logError $ "HTTPS server crashed: " <> tshow e) $ do
     logInfo $ "Serving static site on port " <> tshow port <> " (TLS)"
-    W.runTLS (W.tlsSettings cert key) (mkSettings port) (S.staticApp $ S.defaultFileServerSettings staticPath)
+    W.runTLS (W.tlsSettings cert key) (mkSettings port) (S.staticApp $ S.defaultFileServerSettings webStaticPath)
   where
     mkSettings port = setPort port defaultSettings
 
