@@ -35,6 +35,12 @@ extra-source-files:
     apps/smp-server/static/media/contact.js
     apps/smp-server/static/media/contact_page_mobile.png
     apps/smp-server/static/media/f_droid.svg
+    apps/smp-server/static/media/favicon.ico
+    apps/smp-server/static/media/GilroyBold.woff2
+    apps/smp-server/static/media/GilroyLight.woff2
+    apps/smp-server/static/media/GilroyMedium.woff2
+    apps/smp-server/static/media/GilroyRegular.woff2
+    apps/smp-server/static/media/GilroyRegularItalic.woff2
     apps/smp-server/static/media/google_play.svg
     apps/smp-server/static/media/logo-dark.png
     apps/smp-server/static/media/logo-light.png
@@ -42,16 +48,13 @@ extra-source-files:
     apps/smp-server/static/media/logo-symbol-light.svg
     apps/smp-server/static/media/moon.svg
     apps/smp-server/static/media/qrcode.js
+    apps/smp-server/static/media/script.js
     apps/smp-server/static/media/style.css
     apps/smp-server/static/media/sun.svg
+    apps/smp-server/static/media/swiper-bundle.min.css
+    apps/smp-server/static/media/swiper-bundle.min.js
     apps/smp-server/static/media/tailwind.css
     apps/smp-server/static/media/testflight.png
-    apps/smp-server/static/media/GilroyRegular.woff2
-    apps/smp-server/static/media/GilroyLight.woff2
-    apps/smp-server/static/media/GilroyMedium.woff2
-    apps/smp-server/static/media/GilroyBold.woff2
-    apps/smp-server/static/media/GilroyRegularItalic.woff2
-    apps/smp-server/static/media/favicon.ico
 
 flag swift
   description: Enable swift JSON format
