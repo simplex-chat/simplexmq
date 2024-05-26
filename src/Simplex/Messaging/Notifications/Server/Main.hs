@@ -14,7 +14,7 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Network.Socket (HostName)
 import Options.Applicative
-import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
+import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server (runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..), defaultInactiveClientExpiration)
@@ -115,7 +115,7 @@ ntfServerCLI cfgPath logPath =
               clientQSize = 64,
               subQSize = 512,
               pushQSize = 1048,
-              smpAgentCfg = defaultSMPClientAgentConfig,
+              smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 0},
               apnsConfig = defaultAPNSPushClientConfig,
               subsBatchSize = 900,
               inactiveClientExpiration =

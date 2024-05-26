@@ -118,7 +118,7 @@ runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket serve
       let closeConn _ = do
             atomically $ modifyTVar' clients $ IM.delete cId
             gracefulClose conn 5000 `catchAll_` pure () -- catchAll_ is needed here in case the connection was closed earlier
-            atomically $ modifyTVar' gracefullyClosed (+1)
+            atomically $ modifyTVar' gracefullyClosed (+ 1)
       tId <- mkWeakThreadId =<< server conn `forkFinally` closeConn
       atomically $ modifyTVar' clients $ IM.insert cId tId
 

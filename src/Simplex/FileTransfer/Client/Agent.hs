@@ -18,7 +18,6 @@ import Data.Text.Encoding (decodeUtf8)
 import Simplex.FileTransfer.Client
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientError (..), temporaryClientError)
-import Simplex.Messaging.Client.Agent ()
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtocolServer (..), XFTPServer)
 import Simplex.Messaging.TMap (TMap)

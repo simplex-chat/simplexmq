@@ -37,6 +37,7 @@ import qualified Control.Exception as E
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
+import Control.Monad.Trans.Except
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
@@ -53,7 +54,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (CommandError)
-import Simplex.Messaging.Transport (HandshakeError (..), SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
+import Simplex.Messaging.Transport (SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Transport.HTTP2.File
 import Simplex.Messaging.Util (bshow)
 import Simplex.Messaging.Version
@@ -95,7 +96,7 @@ supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion
 
 -- XFTP protocol does not use this handshake method
 xftpClientHandshakeStub :: c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
-xftpClientHandshakeStub _c _ks _keyHash _xftpVRange = throwError $ TEHandshake VERSION
+xftpClientHandshakeStub _c _ks _keyHash _xftpVRange = throwE TEVersion
 
 data XFTPServerHandshake = XFTPServerHandshake
   { xftpVersionRange :: VersionRangeXFTP,
@@ -216,6 +217,8 @@ data XFTPErrorType
     TIMEOUT
   | -- | bad redirect data
     REDIRECT {redirectError :: String}
+  | -- | cannot proceed with download from not approved relays without proxy
+    NOT_APPROVED
   | -- | internal server error
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
@@ -248,6 +251,7 @@ instance Encoding XFTPErrorType where
     FILE_IO -> "FILE_IO"
     TIMEOUT -> "TIMEOUT"
     REDIRECT err -> "REDIRECT " <> smpEncode err
+    NOT_APPROVED -> "NOT_APPROVED"
     INTERNAL -> "INTERNAL"
     DUPLICATE_ -> "DUPLICATE_"
 
@@ -267,6 +271,7 @@ instance Encoding XFTPErrorType where
       "FILE_IO" -> pure FILE_IO
       "TIMEOUT" -> pure TIMEOUT
       "REDIRECT" -> REDIRECT <$> _smpP
+      "NOT_APPROVED" -> pure NOT_APPROVED
       "INTERNAL" -> pure INTERNAL
       "DUPLICATE_" -> pure DUPLICATE_
       _ -> fail "bad error type"

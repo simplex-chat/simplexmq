@@ -14,6 +14,7 @@ import Control.Monad
 import Data.ByteString.Char8 (ByteString)
 import Data.Functor (($>))
 import Data.Time (UTCTime, getCurrentTime)
+import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
 import Network.HPACK (BufferSize)
 import Network.HTTP2.Client (ClientConfig (..), Request, Response)
@@ -29,7 +30,6 @@ import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Util (eitherToMaybe)
 import UnliftIO.STM
 import UnliftIO.Timeout
-import qualified Data.X509 as X
 
 data HTTP2Client = HTTP2Client
   { action :: Maybe (Async HTTP2Response),

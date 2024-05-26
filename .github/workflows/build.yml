@@ -49,7 +49,7 @@ jobs:
         run: cabal build --enable-tests
 
       - name: Test
-        timeout-minutes: 30
+        timeout-minutes: 40
         shell: bash
         run: cabal test --test-show-details=direct
 
@@ -63,7 +63,7 @@ jobs:
           mv $(cabal list-bin xftp) xftp-ubuntu-${{ matrix.platform_name}}
 
       - name: Build changelog
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-20.04'
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-22.04'
         id: build_changelog
         uses: mikepenz/release-changelog-builder-action@v1
         with:
@@ -75,7 +75,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create release
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-20.04' && matrix.ghc == '9.6.3'
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.ghc != '8.10.7'
         uses: softprops/action-gh-release@v1
         with:
           body: |
