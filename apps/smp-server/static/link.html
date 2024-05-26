@@ -5,11 +5,10 @@
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>SimpleX Chat - Invitation</title>
-  <meta name="description" content="">
   <meta name="Content-Type" content="text/html;charset=utf-8">
   <link rel="icon" type="image/png" sizes="96x96" href="/media/favicon.ico">
   <link rel="stylesheet" href="/media/swiper-bundle.min.css">
-  <link href="/media/tailwind.css" rel="stylesheet">
+  <link rel="stylesheet" href="/media/tailwind.css">
   <link rel="stylesheet" href="/media/style.css">
 </head>
 
@@ -140,8 +139,8 @@
   </section>
 
   <section
-    class="pt-[106px] py-[90px] hidden xl:block bg-white dark:bg-gradient-radial-mobile dark:lg:bg-gradient-radial">
-    <div class="container m-auto flex items-center justify-between px-5">
+    class="hidden xl:block h-screen pt-[66px] bg-white dark:bg-gradient-radial-mobile dark:lg:bg-gradient-radial">
+    <div class="container m-auto h-full flex items-center justify-between px-5">
       <div class="flex flex-col items-start justify-center w-full">
         <h1 class="text-[38px] leading-[43px] font-bold max-w-[500px] mb-[30px] primary-header-contact">You received a
           1-time link to connect on SimpleX Chat</h1>
@@ -180,6 +179,7 @@
       </div>
     </div>
   </section>
+
   <section
     class="block xl:hidden pt-[106px] py-[90px] bg-white dark:bg-gradient-radial-mobile dark:lg:bg-gradient-radial">
     <div class="container m-auto px-5">
@@ -229,7 +229,8 @@
       </div>
     </div>
   </section>
-  <section id="join-simplex" class="bg-primary-bg-light dark:bg-primary-bg-dark py-[90px] px-5">
+
+  <section class="hidden md:block bg-secondary-bg-light dark:bg-secondary-bg-dark py-[20px]">
     <div class="container px-5">
       <div class="text-grey-black dark:text-white">
         <div class="hidden md:block xl:hidden for-tablet">
@@ -307,6 +308,7 @@
       </div>
     </div>
   </section>
+
   <section id="join-simplex" class="bg-primary-bg-light dark:bg-primary-bg-dark py-[90px] px-5">
     <div class="container flex flex-col items-center">
       <h2
@@ -338,7 +340,6 @@
             class="h-[40px] w-auto" src="/media/apk_icon.png"></a></div>
     </div>
   </section>
-  <script>document.querySelectorAll('.d-none-if-js-disabled').forEach(el => el.classList.remove('d-none-if-js-disabled'));</script>
   <section class="bg-[#D9E7ED] dark:bg-[#0E2B57] py-[50px]">
     <div class="container">
       <div class="flex flex-col lg:flex-row justify-between">
@@ -501,15 +502,26 @@
         2020-2024 SimpleX | Open-Source Project</a>
     </div>
   </section>
+  <script>
+    const url = window.location.href
+    const messageElements = document.getElementsByClassName('primary-header-contact')
 
-  <script src="/media/flag-anchor.js"></script>
+    if (url.includes('/invitation')) {
+      for (let element of messageElements) {
+        element.textContent = 'You received a 1-time link to connect on SimpleX Chat'
+      }
+    } else {
+      for (let element of messageElements) {
+        element.textContent = 'You received an address to connect on SimpleX Chat'
+      }
+    }
+  </script>
+
   <script src="/media/qrcode.js"></script>
   <script async="" defer="" src="/media/contact.js"></script>
   <script>document.querySelectorAll('.d-none-if-js-disabled').forEach(el => el.classList.remove('d-none-if-js-disabled'));</script>
-  <script src="/media/animation.js"></script>
   <script src="/media/swiper-bundle.min.js"></script>
   <script src="/media/script.js"></script>
-
 </body>
 
 </html>

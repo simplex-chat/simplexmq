@@ -30,13 +30,17 @@ extra-source-files:
     cbits/sntrup761.h
     apps/smp-server/static/index.html
     apps/smp-server/static/link.html
-    apps/smp-server/static/media/animation.js
     apps/smp-server/static/media/apk_icon.png
     apps/smp-server/static/media/apple_store.svg
     apps/smp-server/static/media/contact.js
     apps/smp-server/static/media/contact_page_mobile.png
     apps/smp-server/static/media/f_droid.svg
-    apps/smp-server/static/media/flag-anchor.js
+    apps/smp-server/static/media/favicon.ico
+    apps/smp-server/static/media/GilroyBold.woff2
+    apps/smp-server/static/media/GilroyLight.woff2
+    apps/smp-server/static/media/GilroyMedium.woff2
+    apps/smp-server/static/media/GilroyRegular.woff2
+    apps/smp-server/static/media/GilroyRegularItalic.woff2
     apps/smp-server/static/media/google_play.svg
     apps/smp-server/static/media/logo-dark.png
     apps/smp-server/static/media/logo-light.png
