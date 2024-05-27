@@ -677,6 +677,64 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             when (used >= serverClientConcurrency) retry
             writeTVar procThreads $! used + 1
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
+    processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Either (M (Transmission BrokerMsg)) (Transmission BrokerMsg))
+    processProxiedCmd (corrId, sessId, command) = (corrId,sessId,) <$$> case command of
+      PRXY srv auth -> ifM allowProxy getConnectedRelay (pure $ Right $ ERR $ PROXY BASIC_AUTH)
+        where
+          allowProxy = do
+            ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
+            pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
+          getConnectedRelay = do
+            ProxyAgent {smpAgent = a} <- asks proxyAgent
+            liftIO (getConnectedSMPServerClient a srv) >>= \case
+              Just r -> Right <$> proxyServerResponse a r
+              Nothing ->
+                pure . Left $
+                  liftIO (runExceptT (getSMPServerClient'' a srv) `catch` (pure . Left . PCEIOError))
+                    >>= fmap (corrId,sessId,) . proxyServerResponse a
+          proxyServerResponse :: SMPClientAgent -> Either SMPClientError (OwnServer, SMPClient) -> M BrokerMsg
+          proxyServerResponse a smp_ = do
+            ServerStats {pRelays, pRelaysOwn} <- asks serverStats
+            let inc = mkIncProxyStats pRelays pRelaysOwn
+            case smp_ of
+              Right (own, smp) -> do
+                inc own pRequests
+                case proxyResp smp of
+                  r@PKEY {} -> r <$ inc own pSuccesses
+                  r -> r <$ inc own pErrorsCompat
+              Left e -> do
+                let own = isOwnServer a srv
+                inc own pRequests
+                inc own $ if temporaryClientError e then pErrorsConnect else pErrorsOther
+                pure . ERR $ smpProxyError e
+            where
+              proxyResp smp =
+                let THandleParams {sessionId = srvSessId, thVersion, thServerVRange, thAuth} = thParams smp
+                  in case compatibleVRange thServerVRange proxiedSMPRelayVRange of
+                      -- Cap the destination relay version range to prevent client version fingerprinting.
+                      -- See comment for proxiedSMPRelayVersion.
+                      Just (Compatible vr) | thVersion >= sendingProxySMPVersion -> case thAuth of
+                        Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
+                        Nothing -> ERR $ transportErr TENoServerAuth
+                      _ -> ERR $ transportErr TEVersion
+      PFWD fwdV pubKey encBlock -> do
+        ProxyAgent {smpAgent = a} <- asks proxyAgent
+        ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
+        let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
+        atomically (lookupSMPServerClient a sessId) >>= \case
+          Just (own, smp) -> do
+            inc own pRequests
+            if v >= sendingProxySMPVersion
+              then pure . Left $ (corrId,sessId,) <$> do
+                liftIO (runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catch` (pure . Left . PCEIOError))  >>= \case
+                  Right r -> PRES r <$ inc own pSuccesses
+                  Left e -> ERR (smpProxyError e) <$ case e of
+                    PCEProtocolError {} -> inc own pSuccesses
+                    _ -> inc own pErrorsOther
+              else Right (ERR $ transportErr TEVersion) <$ inc own pErrorsCompat
+            where
+              THandleParams {thVersion = v} = thParams smp
+          Nothing -> inc False pRequests >> inc False pErrorsConnect $> Right (ERR $ PROXY NO_SESSION)
     transportErr :: TransportError -> ErrorType
     transportErr = PROXY . BROKER . TRANSPORT
     mkIncProxyStats :: MonadIO m => ProxyStats -> ProxyStats -> OwnServer -> (ProxyStats -> TVar Int) -> m ()
@@ -685,65 +743,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
       when own $ atomically $ modifyTVar' (sel psOwn) (+ 1)
     processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Either (M (Transmission BrokerMsg)) (Transmission BrokerMsg))
     processCommand (qr_, (corrId, queueId, cmd)) = case cmd of
-      Cmd SProxiedClient command -> do
-        let sessId = queueId
-        (corrId,sessId,) <$$> case command of
-          PRXY srv auth -> ifM allowProxy getConnectedRelay (pure $ Right $ ERR $ PROXY BASIC_AUTH)
-            where
-              allowProxy = do
-                ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
-                pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
-              getConnectedRelay = do
-                ProxyAgent {smpAgent = a} <- asks proxyAgent
-                liftIO (getConnectedSMPServerClient a srv) >>= \case
-                  Just r -> Right <$> proxyServerResponse a r
-                  Nothing ->
-                    pure . Left $
-                      liftIO (runExceptT (getSMPServerClient'' a srv) `catch` (pure . Left . PCEIOError))
-                        >>= fmap (corrId,sessId,) . proxyServerResponse a
-              proxyServerResponse :: SMPClientAgent -> Either SMPClientError (OwnServer, SMPClient) -> M BrokerMsg
-              proxyServerResponse a smp_ = do
-                ServerStats {pRelays, pRelaysOwn} <- asks serverStats
-                let inc = mkIncProxyStats pRelays pRelaysOwn
-                case smp_ of
-                  Right (own, smp) -> do
-                    inc own pRequests
-                    case proxyResp smp of
-                      r@PKEY {} -> r <$ inc own pSuccesses
-                      r -> r <$ inc own pErrorsCompat
-                  Left e -> do
-                    let own = isOwnServer a srv
-                    inc own pRequests
-                    inc own $ if temporaryClientError e then pErrorsConnect else pErrorsOther
-                    pure . ERR $ smpProxyError e
-                where
-                  proxyResp smp =
-                    let THandleParams {sessionId = srvSessId, thVersion, thServerVRange, thAuth} = thParams smp
-                      in case compatibleVRange thServerVRange proxiedSMPRelayVRange of
-                          -- Cap the destination relay version range to prevent client version fingerprinting.
-                          -- See comment for proxiedSMPRelayVersion.
-                          Just (Compatible vr) | thVersion >= sendingProxySMPVersion -> case thAuth of
-                            Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
-                            Nothing -> ERR $ transportErr TENoServerAuth
-                          _ -> ERR $ transportErr TEVersion
-          PFWD fwdV pubKey encBlock -> do
-            ProxyAgent {smpAgent = a} <- asks proxyAgent
-            ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
-            let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
-            atomically (lookupSMPServerClient a sessId) >>= \case
-              Just (own, smp) -> do
-                inc own pRequests
-                if v >= sendingProxySMPVersion
-                  then pure . Left $ (corrId,sessId,) <$> do
-                    liftIO (runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catch` (pure . Left . PCEIOError))  >>= \case
-                      Right r -> PRES r <$ inc own pSuccesses
-                      Left e -> ERR (smpProxyError e) <$ case e of
-                        PCEProtocolError {} -> inc own pSuccesses
-                        _ -> inc own pErrorsOther
-                  else Right (ERR $ transportErr TEVersion) <$ inc own pErrorsCompat
-                where
-                  THandleParams {thVersion = v} = thParams smp
-              Nothing -> inc False pRequests >> inc False pErrorsConnect $> Right (ERR $ PROXY NO_SESSION)        
+      Cmd SProxiedClient command -> processProxiedCmd (corrId, queueId, command)
       Cmd SSender command -> Right <$> case command of
         SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
         PING -> pure (corrId, "", PONG)
