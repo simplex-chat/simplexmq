@@ -12,6 +12,7 @@
 
 module SMPProxyTests where
 
+import AgentTests.EqInstances ()
 import AgentTests.FunctionalAPITests
 import Control.Logger.Simple
 import Control.Monad (forM, forM_, forever)
@@ -150,10 +151,13 @@ deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- runExceptT' $ createSMPQueue rc (rPub, rPriv) rdhPub (Just "correct") SMSubscribe
   let dec = decryptMsgV3 $ C.dh' srvDh rdhPriv
   -- get proxy session
+  sess0 <- runExceptT' $ connectSMPProxiedRelay pc relayServ (Just "correct")
   sess <- runExceptT' $ connectSMPProxiedRelay pc relayServ (Just "correct")
+  sess0 `shouldBe` sess
   -- send via proxy to unsecured queue
   forM_ unsecuredMsgs $ \msg -> do
     runExceptT' (proxySMPMessage pc sess Nothing sndId noMsgFlags msg) `shouldReturn` Right ()
+    runExceptT' (proxySMPMessage pc sess {prSessionId = "bad session"} Nothing sndId noMsgFlags msg) `shouldReturn` Left (ProxyProtocolError $ SMP.PROXY SMP.NO_SESSION)
     -- receive 1
     (_tSess, _v, _sid, [(_entId, STEvent (Right (SMP.MSG RcvMessage {msgId, msgBody = EncRcvMsgBody encBody})))]) <- atomically $ readTBQueue msgQ
     dec msgId encBody `shouldBe` Right msg
