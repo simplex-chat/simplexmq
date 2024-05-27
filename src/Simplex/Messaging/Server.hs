@@ -46,7 +46,7 @@ import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Crypto.Random
 import Control.Monad.STM (retry)
-import Data.Bifunctor (bimap, first)
+import Data.Bifunctor (first)
 import Data.ByteString.Base64 (encode)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -653,10 +653,6 @@ forkClient Client {endThreads, endThreadSeq} label action = do
     labelMyThread label
     action `finally` atomically (modifyTVar' endThreads $ IM.delete tId)
   mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
-
-data PreparedProxiedCmd
-  = PPC_PRXY SMPServer
-  | PPC_PFWD (OwnServer, SMPClient) VersionSMP C.PublicKeyX25519 EncTransmission
   
 client :: THandleParams SMPVersion 'TServer -> Client -> Server -> M ()
 client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
@@ -668,11 +664,11 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
   where
     reply :: MonadIO m => NonEmpty (Transmission BrokerMsg) -> m ()
     reply = atomically . writeTBQueue sndQ
-    forkProxiedCmd :: Transmission PreparedProxiedCmd -> M ()
-    forkProxiedCmd cmd =
-      bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $
+    forkProxiedCmd :: M (Transmission BrokerMsg) -> M ()
+    forkProxiedCmd cmdAction =
+      bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $ do
         -- commands MUST be processed under a reasonable timeout or the client would halt
-        sendProxiedCmd cmd >>= \t -> reply [t]
+        cmdAction >>= \t -> reply [t]
       where
         wait = do
           ServerConfig {serverClientConcurrency} <- asks config
@@ -681,58 +677,17 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             when (used >= serverClientConcurrency) retry
             writeTVar procThreads $! used + 1
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
-    proxyServerResponse :: SMPClientAgent -> SMPServer -> Either SMPClientError (OwnServer, SMPClient) -> M BrokerMsg
-    proxyServerResponse a srv smp_ = do
-      ServerStats {pRelays, pRelaysOwn} <- asks serverStats
-      let inc = mkIncProxyStats pRelays pRelaysOwn
-      case smp_ of
-        Right (own, smp) -> do
-          inc own pRequests
-          case proxyResp smp of
-            r@PKEY {} -> r <$ inc own pSuccesses
-            r -> r <$ inc own pErrorsCompat
-        Left e -> do
-          let own = isOwnServer a srv
-          inc own pRequests
-          inc own $ if temporaryClientError e then pErrorsConnect else pErrorsOther
-          pure . ERR $ smpProxyError e
-      where
-        proxyResp smp =
-          let THandleParams {sessionId = srvSessId, thVersion, thServerVRange, thAuth} = thParams smp
-            in case compatibleVRange thServerVRange proxiedSMPRelayVRange of
-                -- Cap the destination relay version range to prevent client version fingerprinting.
-                -- See comment for proxiedSMPRelayVersion.
-                Just (Compatible vr) | thVersion >= sendingProxySMPVersion -> case thAuth of
-                  Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
-                  Nothing -> ERR $ transportErr TENoServerAuth
-                _ -> ERR $ transportErr TEVersion
-    sendProxiedCmd :: Transmission PreparedProxiedCmd -> M (Transmission BrokerMsg)
-    sendProxiedCmd (corrId, sessId, command) = (corrId, sessId,) <$> case command of
-      PPC_PRXY srv -> do
-        ProxyAgent {smpAgent = a} <- asks proxyAgent
-        liftIO (runExceptT (getSMPServerClient'' a srv) `catch` (pure . Left . PCEIOError))
-          >>= proxyServerResponse a srv
-      PPC_PFWD (own, smp) fwdV pubKey encBlock -> do
-        ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
-        let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
-        liftIO (runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catch` (pure . Left . PCEIOError))  >>= \case
-          Right r -> PRES r <$ inc own pSuccesses
-          Left e -> case e of
-            PCEProtocolError {} -> ERR err <$ inc own pSuccesses
-            _ -> ERR err <$ inc own pErrorsOther
-            where
-              err = smpProxyError e
     transportErr :: TransportError -> ErrorType
     transportErr = PROXY . BROKER . TRANSPORT
     mkIncProxyStats :: MonadIO m => ProxyStats -> ProxyStats -> OwnServer -> (ProxyStats -> TVar Int) -> m ()
     mkIncProxyStats ps psOwn = \own sel -> do
       atomically $ modifyTVar' (sel ps) (+ 1)
       when own $ atomically $ modifyTVar' (sel psOwn) (+ 1)
-    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Either (Transmission PreparedProxiedCmd) (Transmission BrokerMsg))
+    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Either (M (Transmission BrokerMsg)) (Transmission BrokerMsg))
     processCommand (qr_, (corrId, queueId, cmd)) = case cmd of
       Cmd SProxiedClient command -> do
         let sessId = queueId
-        bimap (corrId,sessId,) (corrId,sessId,) <$> case command of
+        (corrId,sessId,) <$$> case command of
           PRXY srv auth -> ifM allowProxy getConnectedRelay (pure $ Right $ ERR $ PROXY BASIC_AUTH)
             where
               allowProxy = do
@@ -741,17 +696,50 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               getConnectedRelay = do
                 ProxyAgent {smpAgent = a} <- asks proxyAgent
                 liftIO (getConnectedSMPServerClient a srv) >>= \case
-                  Just r -> Right <$> proxyServerResponse a srv r
-                  Nothing -> pure $ Left $ PPC_PRXY srv
+                  Just r -> Right <$> proxyServerResponse a r
+                  Nothing ->
+                    pure . Left $
+                      liftIO (runExceptT (getSMPServerClient'' a srv) `catch` (pure . Left . PCEIOError))
+                        >>= fmap (corrId,sessId,) . proxyServerResponse a
+              proxyServerResponse :: SMPClientAgent -> Either SMPClientError (OwnServer, SMPClient) -> M BrokerMsg
+              proxyServerResponse a smp_ = do
+                ServerStats {pRelays, pRelaysOwn} <- asks serverStats
+                let inc = mkIncProxyStats pRelays pRelaysOwn
+                case smp_ of
+                  Right (own, smp) -> do
+                    inc own pRequests
+                    case proxyResp smp of
+                      r@PKEY {} -> r <$ inc own pSuccesses
+                      r -> r <$ inc own pErrorsCompat
+                  Left e -> do
+                    let own = isOwnServer a srv
+                    inc own pRequests
+                    inc own $ if temporaryClientError e then pErrorsConnect else pErrorsOther
+                    pure . ERR $ smpProxyError e
+                where
+                  proxyResp smp =
+                    let THandleParams {sessionId = srvSessId, thVersion, thServerVRange, thAuth} = thParams smp
+                      in case compatibleVRange thServerVRange proxiedSMPRelayVRange of
+                          -- Cap the destination relay version range to prevent client version fingerprinting.
+                          -- See comment for proxiedSMPRelayVersion.
+                          Just (Compatible vr) | thVersion >= sendingProxySMPVersion -> case thAuth of
+                            Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
+                            Nothing -> ERR $ transportErr TENoServerAuth
+                          _ -> ERR $ transportErr TEVersion
           PFWD fwdV pubKey encBlock -> do
             ProxyAgent {smpAgent = a} <- asks proxyAgent
             ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
             let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
             atomically (lookupSMPServerClient a sessId) >>= \case
-              Just smp'@(own, smp) -> do
+              Just (own, smp) -> do
                 inc own pRequests
                 if v >= sendingProxySMPVersion
-                  then pure $ Left $ PPC_PFWD smp' fwdV pubKey encBlock
+                  then pure . Left $ (corrId,sessId,) <$> do
+                    liftIO (runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catch` (pure . Left . PCEIOError))  >>= \case
+                      Right r -> PRES r <$ inc own pSuccesses
+                      Left e -> ERR (smpProxyError e) <$ case e of
+                        PCEProtocolError {} -> inc own pSuccesses
+                        _ -> inc own pErrorsOther
                   else Right (ERR $ transportErr TEVersion) <$ inc own pErrorsCompat
                 where
                   THandleParams {thVersion = v} = thParams smp
