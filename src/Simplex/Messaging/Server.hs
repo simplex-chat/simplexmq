@@ -664,16 +664,15 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
   forever $ do
     (proxied, rs) <- partitionEithers . L.toList <$> (mapM processCommand =<< atomically (readTBQueue rcvQ))
     forM_ (L.nonEmpty rs) reply
-    forM_ (L.nonEmpty proxied) . mapM_ $ prepareProxiedCmd >=> either forkProxiedCmd reply'
+    forM_ (L.nonEmpty proxied) $ mapM_ forkProxiedCmd
   where
     reply :: MonadIO m => NonEmpty (Transmission BrokerMsg) -> m ()
     reply = atomically . writeTBQueue sndQ
-    reply' = reply . (:| [])
     forkProxiedCmd :: Transmission PreparedProxiedCmd -> M ()
     forkProxiedCmd cmd =
       bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $
         -- commands MUST be processed under a reasonable timeout or the client would halt
-        sendProxiedCmd cmd >>= reply'
+        sendProxiedCmd cmd >>= \t -> reply [t]
       where
         wait = do
           ServerConfig {serverClientConcurrency} <- asks config
@@ -682,31 +681,6 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             when (used >= serverClientConcurrency) retry
             writeTVar procThreads $! used + 1
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
-    prepareProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Either (Transmission PreparedProxiedCmd) (Transmission BrokerMsg))
-    prepareProxiedCmd (corrId, sessId, command) = bimap (corrId,sessId,) (corrId,sessId,) <$> case command of
-      PRXY srv auth -> ifM allowProxy getConnectedRelay (pure $ Right $ ERR $ PROXY BASIC_AUTH)
-        where
-          allowProxy = do
-            ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
-            pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
-          getConnectedRelay = do
-            ProxyAgent {smpAgent = a} <- asks proxyAgent
-            liftIO (getConnectedSMPServerClient a srv) >>= \case
-              Just r -> Right <$> proxyServerResponse a srv r
-              Nothing -> pure $ Left $ PPC_PRXY srv
-      PFWD fwdV pubKey encBlock -> do
-        ProxyAgent {smpAgent = a} <- asks proxyAgent
-        ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
-        let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
-        atomically (lookupSMPServerClient a sessId) >>= \case
-          Just smp'@(own, smp) -> do
-            inc own pRequests
-            if v >= sendingProxySMPVersion
-              then pure $ Left $ PPC_PFWD smp' fwdV pubKey encBlock
-              else Right (ERR $ transportErr TEVersion) <$ inc own pErrorsCompat
-            where
-              THandleParams {thVersion = v} = thParams smp
-          Nothing -> inc False pRequests >> inc False pErrorsConnect $> Right (ERR $ PROXY NO_SESSION)        
     proxyServerResponse :: SMPClientAgent -> SMPServer -> Either SMPClientError (OwnServer, SMPClient) -> M BrokerMsg
     proxyServerResponse a srv smp_ = do
       ServerStats {pRelays, pRelaysOwn} <- asks serverStats
@@ -754,35 +728,59 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
     mkIncProxyStats ps psOwn = \own sel -> do
       atomically $ modifyTVar' (sel ps) (+ 1)
       when own $ atomically $ modifyTVar' (sel psOwn) (+ 1)
-    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Either (Transmission (Command 'ProxiedClient)) (Transmission BrokerMsg))
-    processCommand (qr_, (corrId, queueId, cmd)) = do
-      st <- asks queueStore
-      case cmd of
-        Cmd SProxiedClient command -> pure $ Left (corrId, queueId, command)
-        Cmd SSender command -> Right <$> case command of
-          SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
-          PING -> pure (corrId, "", PONG)
-          RFWD encBlock -> (corrId, "",) <$> processForwardedCommand encBlock
-        Cmd SNotifier NSUB -> Right <$> subscribeNotifications
-        Cmd SRecipient command ->
-          Right <$> case command of
-            NEW rKey dhKey auth subMode ->
-              ifM
-                allowNew
-                (createQueue st rKey dhKey subMode)
-                (pure (corrId, queueId, ERR AUTH))
-              where
-                allowNew = do
-                  ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
-                  pure $ allowNewQueues && maybe True ((== auth) . Just) newQueueBasicAuth
-            SUB -> withQueue (`subscribeQueue` queueId)
-            GET -> withQueue getMessage
-            ACK msgId -> withQueue (`acknowledgeMsg` msgId)
-            KEY sKey -> secureQueue_ st sKey
-            NKEY nKey dhKey -> addQueueNotifier_ st nKey dhKey
-            NDEL -> deleteQueueNotifier_ st
-            OFF -> suspendQueue_ st
-            DEL -> delQueueAndMsgs st
+    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Either (Transmission PreparedProxiedCmd) (Transmission BrokerMsg))
+    processCommand (qr_, (corrId, queueId, cmd)) = case cmd of
+      Cmd SProxiedClient command -> do
+        let sessId = queueId
+        bimap (corrId,sessId,) (corrId,sessId,) <$> case command of
+          PRXY srv auth -> ifM allowProxy getConnectedRelay (pure $ Right $ ERR $ PROXY BASIC_AUTH)
+            where
+              allowProxy = do
+                ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
+                pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
+              getConnectedRelay = do
+                ProxyAgent {smpAgent = a} <- asks proxyAgent
+                liftIO (getConnectedSMPServerClient a srv) >>= \case
+                  Just r -> Right <$> proxyServerResponse a srv r
+                  Nothing -> pure $ Left $ PPC_PRXY srv
+          PFWD fwdV pubKey encBlock -> do
+            ProxyAgent {smpAgent = a} <- asks proxyAgent
+            ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
+            let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
+            atomically (lookupSMPServerClient a sessId) >>= \case
+              Just smp'@(own, smp) -> do
+                inc own pRequests
+                if v >= sendingProxySMPVersion
+                  then pure $ Left $ PPC_PFWD smp' fwdV pubKey encBlock
+                  else Right (ERR $ transportErr TEVersion) <$ inc own pErrorsCompat
+                where
+                  THandleParams {thVersion = v} = thParams smp
+              Nothing -> inc False pRequests >> inc False pErrorsConnect $> Right (ERR $ PROXY NO_SESSION)        
+      Cmd SSender command -> Right <$> case command of
+        SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
+        PING -> pure (corrId, "", PONG)
+        RFWD encBlock -> (corrId, "",) <$> processForwardedCommand encBlock
+      Cmd SNotifier NSUB -> Right <$> subscribeNotifications
+      Cmd SRecipient command -> do
+        st <- asks queueStore
+        Right <$> case command of
+          NEW rKey dhKey auth subMode ->
+            ifM
+              allowNew
+              (createQueue st rKey dhKey subMode)
+              (pure (corrId, queueId, ERR AUTH))
+            where
+              allowNew = do
+                ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
+                pure $ allowNewQueues && maybe True ((== auth) . Just) newQueueBasicAuth
+          SUB -> withQueue (`subscribeQueue` queueId)
+          GET -> withQueue getMessage
+          ACK msgId -> withQueue (`acknowledgeMsg` msgId)
+          KEY sKey -> secureQueue_ st sKey
+          NKEY nKey dhKey -> addQueueNotifier_ st nKey dhKey
+          NDEL -> deleteQueueNotifier_ st
+          OFF -> suspendQueue_ st
+          DEL -> delQueueAndMsgs st
       where
         createQueue :: QueueStore -> RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> M (Transmission BrokerMsg)
         createQueue st recipientKey dhKey subMode = time "NEW" $ do
