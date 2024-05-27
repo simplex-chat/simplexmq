@@ -679,12 +679,12 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
     processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Either (M (Transmission BrokerMsg)) (Transmission BrokerMsg))
     processProxiedCmd (corrId, sessId, command) = (corrId,sessId,) <$$> case command of
-      PRXY srv auth -> ifM allowProxy getConnectedRelay (pure $ Right $ ERR $ PROXY BASIC_AUTH)
+      PRXY srv auth -> ifM allowProxy getRelay (pure $ Right $ ERR $ PROXY BASIC_AUTH)
         where
           allowProxy = do
             ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
             pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
-          getConnectedRelay = do
+          getRelay = do
             ProxyAgent {smpAgent = a} <- asks proxyAgent
             liftIO (getConnectedSMPServerClient a srv) >>= \case
               Just r -> Right <$> proxyServerResponse a r
