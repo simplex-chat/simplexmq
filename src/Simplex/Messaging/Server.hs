@@ -46,7 +46,7 @@ import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Crypto.Random
 import Control.Monad.STM (retry)
-import Data.Bifunctor (first)
+import Data.Bifunctor (bimap, first)
 import Data.ByteString.Base64 (encode)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -654,23 +654,26 @@ forkClient Client {endThreads, endThreadSeq} label action = do
     action `finally` atomically (modifyTVar' endThreads $ IM.delete tId)
   mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
 
+data PreparedProxiedCmd
+  = PPC_PRXY SMPServer
+  | PPC_PFWD VersionSMP C.PublicKeyX25519 EncTransmission
+  
 client :: THandleParams SMPVersion 'TServer -> Client -> Server -> M ()
 client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
   forever $ do
     (proxied, rs) <- partitionEithers . L.toList <$> (mapM processCommand =<< atomically (readTBQueue rcvQ))
     forM_ (L.nonEmpty rs) reply
-    forM_ (L.nonEmpty proxied) $ \cmds -> mapM forkProxiedCmd cmds >>= mapM (atomically . takeTMVar) >>= reply
+    forM_ (L.nonEmpty proxied) . mapM_ $ prepareProxiedCmd >=> either forkProxiedCmd replyOne
   where
     reply :: MonadIO m => NonEmpty (Transmission BrokerMsg) -> m ()
     reply = atomically . writeTBQueue sndQ
-    forkProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (TMVar (Transmission BrokerMsg))
-    forkProxiedCmd cmd = do
-      res <- newEmptyTMVarIO
+    replyOne = reply . (:| [])
+    forkProxiedCmd :: Transmission PreparedProxiedCmd -> M ()
+    forkProxiedCmd cmd =
       bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $
         -- commands MUST be processed under a reasonable timeout or the client would halt
-        processProxiedCmd cmd >>= atomically . putTMVar res
-      pure res
+        sendProxiedCmd cmd >>= replyOne
       where
         wait = do
           ServerConfig {serverClientConcurrency} <- asks config
@@ -679,13 +682,19 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             when (used >= serverClientConcurrency) retry
             writeTVar procThreads $! used + 1
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
-    processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Transmission BrokerMsg)
-    processProxiedCmd (corrId, sessId, command) = (corrId, sessId,) <$> case command of
-      PRXY srv auth -> ifM allowProxy getRelay (pure $ ERR $ PROXY BASIC_AUTH)
+    prepareProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Either (Transmission PreparedProxiedCmd) (Transmission BrokerMsg))
+    prepareProxiedCmd (corrId, sessId, command) = bimap (corrId,sessId,) (corrId,sessId,) <$> case command of
+      PRXY srv auth -> ifM allowProxy getConnectedRelay (pure $ Right $ ERR $ PROXY BASIC_AUTH)
         where
           allowProxy = do
             ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
             pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
+          getConnectedRelay = pure $ Left $ PPC_PRXY srv
+      PFWD fwdV pubKey encBlock -> pure $ Left $ PPC_PFWD fwdV pubKey encBlock
+    sendProxiedCmd :: Transmission PreparedProxiedCmd -> M (Transmission BrokerMsg)
+    sendProxiedCmd (corrId, sessId, command) = (corrId, sessId,) <$> case command of
+      PPC_PRXY srv -> getRelay
+        where
           getRelay = do
             ServerStats {pRelays, pRelaysOwn} <- asks serverStats
             let inc = mkIncProxyStats pRelays pRelaysOwn
@@ -711,7 +720,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                         Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
                         Nothing -> ERR $ transportErr TENoServerAuth
                       _ -> ERR $ transportErr TEVersion
-      PFWD fwdV pubKey encBlock -> do
+      PPC_PFWD fwdV pubKey encBlock -> do
         ProxyAgent {smpAgent = a} <- asks proxyAgent
         ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
         let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
