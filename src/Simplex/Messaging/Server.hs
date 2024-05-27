@@ -59,7 +59,7 @@ import Data.List (intercalate, mapAccumR)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (isNothing)
+import Data.Maybe (catMaybes, isNothing)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
@@ -653,33 +653,20 @@ forkClient Client {endThreads, endThreadSeq} label action = do
     labelMyThread label
     action `finally` atomically (modifyTVar' endThreads $ IM.delete tId)
   mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
-  
+
 client :: THandleParams SMPVersion 'TServer -> Client -> Server -> M ()
 client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
-  forever $ do
-    (proxied, rs) <- partitionEithers . L.toList <$> (mapM processCommand =<< atomically (readTBQueue rcvQ))
-    forM_ (L.nonEmpty rs) reply
-    forM_ (L.nonEmpty proxied) $ mapM_ forkProxiedCmd
+  forever $
+    atomically (readTBQueue rcvQ)
+      >>= mapM processCommand
+      >>= mapM_ reply . L.nonEmpty . catMaybes . L.toList
   where
     reply :: MonadIO m => NonEmpty (Transmission BrokerMsg) -> m ()
     reply = atomically . writeTBQueue sndQ
-    forkProxiedCmd :: M (Transmission BrokerMsg) -> M ()
-    forkProxiedCmd cmdAction =
-      bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $ do
-        -- commands MUST be processed under a reasonable timeout or the client would halt
-        cmdAction >>= \t -> reply [t]
-      where
-        wait = do
-          ServerConfig {serverClientConcurrency} <- asks config
-          atomically $ do
-            used <- readTVar procThreads
-            when (used >= serverClientConcurrency) retry
-            writeTVar procThreads $! used + 1
-        signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
-    processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Either (M (Transmission BrokerMsg)) (Transmission BrokerMsg))
+    processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Maybe (Transmission BrokerMsg))
     processProxiedCmd (corrId, sessId, command) = (corrId,sessId,) <$$> case command of
-      PRXY srv auth -> ifM allowProxy getRelay (pure $ Right $ ERR $ PROXY BASIC_AUTH)
+      PRXY srv auth -> ifM allowProxy getRelay (pure $ Just $ ERR $ PROXY BASIC_AUTH)
         where
           allowProxy = do
             ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
@@ -687,11 +674,11 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           getRelay = do
             ProxyAgent {smpAgent = a} <- asks proxyAgent
             liftIO (getConnectedSMPServerClient a srv) >>= \case
-              Just r -> Right <$> proxyServerResponse a r
+              Just r -> Just <$> proxyServerResponse a r
               Nothing ->
-                pure . Left $
+                forkProxiedCmd $
                   liftIO (runExceptT (getSMPServerClient'' a srv) `catch` (pure . Left . PCEIOError))
-                    >>= fmap (corrId,sessId,) . proxyServerResponse a
+                    >>= proxyServerResponse a
           proxyServerResponse :: SMPClientAgent -> Either SMPClientError (OwnServer, SMPClient) -> M BrokerMsg
           proxyServerResponse a smp_ = do
             ServerStats {pRelays, pRelaysOwn} <- asks serverStats
@@ -725,33 +712,48 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           Just (own, smp) -> do
             inc own pRequests
             if v >= sendingProxySMPVersion
-              then pure . Left $ (corrId,sessId,) <$> do
+              then forkProxiedCmd $ do
                 liftIO (runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catch` (pure . Left . PCEIOError))  >>= \case
                   Right r -> PRES r <$ inc own pSuccesses
                   Left e -> ERR (smpProxyError e) <$ case e of
                     PCEProtocolError {} -> inc own pSuccesses
                     _ -> inc own pErrorsOther
-              else Right (ERR $ transportErr TEVersion) <$ inc own pErrorsCompat
+              else Just (ERR $ transportErr TEVersion) <$ inc own pErrorsCompat
             where
               THandleParams {thVersion = v} = thParams smp
-          Nothing -> inc False pRequests >> inc False pErrorsConnect $> Right (ERR $ PROXY NO_SESSION)
+          Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
+      where
+        forkProxiedCmd :: M BrokerMsg -> M (Maybe BrokerMsg)
+        forkProxiedCmd cmdAction = do
+          bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $ do
+            -- commands MUST be processed under a reasonable timeout or the client would halt
+            cmdAction >>= \t -> reply [(corrId, sessId, t)]
+          pure Nothing
+          where
+            wait = do
+              ServerConfig {serverClientConcurrency} <- asks config
+              atomically $ do
+                used <- readTVar procThreads
+                when (used >= serverClientConcurrency) retry
+                writeTVar procThreads $! used + 1
+            signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
     transportErr :: TransportError -> ErrorType
     transportErr = PROXY . BROKER . TRANSPORT
     mkIncProxyStats :: MonadIO m => ProxyStats -> ProxyStats -> OwnServer -> (ProxyStats -> TVar Int) -> m ()
     mkIncProxyStats ps psOwn = \own sel -> do
       atomically $ modifyTVar' (sel ps) (+ 1)
       when own $ atomically $ modifyTVar' (sel psOwn) (+ 1)
-    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Either (M (Transmission BrokerMsg)) (Transmission BrokerMsg))
+    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Maybe (Transmission BrokerMsg))
     processCommand (qr_, (corrId, queueId, cmd)) = case cmd of
       Cmd SProxiedClient command -> processProxiedCmd (corrId, queueId, command)
-      Cmd SSender command -> Right <$> case command of
+      Cmd SSender command -> Just <$> case command of
         SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
         PING -> pure (corrId, "", PONG)
         RFWD encBlock -> (corrId, "",) <$> processForwardedCommand encBlock
-      Cmd SNotifier NSUB -> Right <$> subscribeNotifications
+      Cmd SNotifier NSUB -> Just <$> subscribeNotifications
       Cmd SRecipient command -> do
         st <- asks queueStore
-        Right <$> case command of
+        Just <$> case command of
           NEW rKey dhKey auth subMode ->
             ifM
               allowNew
@@ -1039,7 +1041,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
                 Cmd SSender SEND {} ->
                   -- Left will not be returned by processCommand, as only SEND command is allowed
-                  fromRight (corrId', entId', ERR INTERNAL) <$> lift (processCommand t'')
+                  fromMaybe (corrId', entId', ERR INTERNAL) <$> lift (processCommand t'')
                 _ ->
                   pure (corrId', entId', ERR $ CMD PROHIBITED)
           -- encode response
