@@ -7,7 +7,6 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
-{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.NotificationTests where
 
@@ -182,7 +181,7 @@ testNotificationToken APNSMockServer {apnsQ} = do
     NTActive <- checkNtfToken a tkn
     deleteNtfToken a tkn
     -- agent deleted this token
-    Left (CMD PROHIBITED) <- tryE $ checkNtfToken a tkn
+    Left (CMD PROHIBITED _) <- tryE $ checkNtfToken a tkn
     pure ()
 
 (.->) :: J.Value -> J.Key -> ExceptT AgentErrorType IO ByteString
@@ -335,6 +334,7 @@ testNtfTokenChangeServers t APNSMockServer {apnsQ} =
         getTestNtfTokenPort a >>= \port2 -> liftIO $ port2 `shouldBe` ntfTestPort2 -- but the token got updated
       killThread ntf
       withNtfServerOn t ntfTestPort2 $ runRight_ $ do
+        liftIO $ threadDelay 1000000 -- for notification server to reconnect
         tkn <- registerTestToken a "qwer" NMInstant apnsQ
         checkNtfToken a tkn >>= \r -> liftIO $ r `shouldBe` NTActive
 
@@ -374,7 +374,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice@Agen
     pure (bobId, aliceId, nonce, message)
 
   -- alice client already has subscription for the connection
-  Left (CMD PROHIBITED) <- runExceptT $ getNotificationMessage alice nonce message
+  Left (CMD PROHIBITED _) <- runExceptT $ getNotificationMessage alice nonce message
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
   withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> runRight_ $ do

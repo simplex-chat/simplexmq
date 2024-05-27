@@ -54,7 +54,6 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
-import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (VersionRangeE2E, supportedE2EEncryptVRange)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
@@ -98,11 +97,11 @@ data AgentConfig = AgentConfig
     connDeleteDeliveryTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
     quotaExceededTimeout :: NominalDiffTime,
+    persistErrorInterval :: NominalDiffTime,
     initialCleanupDelay :: Int64,
     cleanupInterval :: Int64,
     cleanupStepInterval :: Int,
     maxWorkerRestartsPerMin :: Int,
-    maxSubscriptionTimeouts :: Int,
     storedMsgDataTTL :: NominalDiffTime,
     rcvFilesTTL :: NominalDiffTime,
     sndFilesTTL :: NominalDiffTime,
@@ -169,13 +168,11 @@ defaultAgentConfig =
       connDeleteDeliveryTimeout = 2 * nominalDay,
       helloTimeout = 2 * nominalDay,
       quotaExceededTimeout = 7 * nominalDay,
+      persistErrorInterval = 3, -- seconds
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
       cleanupStepInterval = 200000, -- 200ms
       maxWorkerRestartsPerMin = 5,
-      -- 5 consecutive subscription timeouts will result in alert to the user
-      -- this is a fallback, as the timeout set to 3x of expected timeout, to avoid potential locking.
-      maxSubscriptionTimeouts = 5,
       storedMsgDataTTL = 21 * nominalDay,
       rcvFilesTTL = 2 * nominalDay,
       sndFilesTTL = nominalDay,

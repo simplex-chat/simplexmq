@@ -33,7 +33,6 @@ import Simplex.Messaging.Agent.Protocol (ACommand (..), APartyCmd (..), AgentErr
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..), SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Types

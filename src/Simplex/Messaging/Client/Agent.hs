@@ -9,7 +9,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Client.Agent where
 
@@ -21,7 +20,6 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except
-import Control.Monad.Trans.Reader
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
@@ -50,7 +48,6 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (catchAll_, ifM, toChunks, whenM, ($>>=))
 import System.Timeout (timeout)
 import UnliftIO (async)
-import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -89,7 +86,7 @@ defaultSMPClientAgentConfig =
             increaseAfter = 10 * second,
             maxInterval = 10 * second
           },
-      persistErrorInterval = 0,
+      persistErrorInterval = 30, -- seconds
       msgQSize = 256,
       agentQSize = 256,
       agentSubsBatchSize = 900,
@@ -113,31 +110,6 @@ data SMPClientAgent = SMPClientAgent
   }
 
 type OwnServer = Bool
-
-newtype InternalException e = InternalException {unInternalException :: e}
-  deriving (Eq, Show)
-
-instance Exception e => Exception (InternalException e)
-
-instance Exception e => MonadUnliftIO (ExceptT e IO) where
-  {-# INLINE withRunInIO #-}
-  withRunInIO :: ((forall a. ExceptT e IO a -> IO a) -> IO b) -> ExceptT e IO b
-  withRunInIO inner =
-    ExceptT . fmap (first unInternalException) . E.try $
-      withRunInIO $ \run ->
-        inner $ run . (either (E.throwIO . InternalException) pure <=< runExceptT)
-
--- as MonadUnliftIO instance for IO is `withRunInIO inner = inner id`,
--- the last two lines could be replaced with:
--- inner $ either (E.throwIO . InternalException) pure <=< runExceptT
-
-instance Exception e => MonadUnliftIO (ExceptT e (ReaderT r IO)) where
-  {-# INLINE withRunInIO #-}
-  withRunInIO :: ((forall a. ExceptT e (ReaderT r IO) a -> IO a) -> IO b) -> ExceptT e (ReaderT r IO) b
-  withRunInIO inner =
-    withExceptT unInternalException . ExceptT . E.try $
-      withRunInIO $ \run ->
-        inner $ run . (either (E.throwIO . InternalException) pure <=< runExceptT)
 
 newSMPClientAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> STM SMPClientAgent
 newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg = do
@@ -183,12 +155,13 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
       smpClient_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v)
       case smpClient_ of
         Just (Right smpClient) -> pure smpClient
-        Just (Left (e, Nothing)) -> throwE e
-        Just (Left (e, Just ts)) ->
-          ifM
-            ((ts <) <$> liftIO getCurrentTime)
-            (atomically (removeSessVar v srv smpClients) >> getSMPServerClient'' ca srv)
-            (throwE e)
+        Just (Left (e, ts_)) -> case ts_ of
+          Nothing -> throwE e
+          Just ts ->
+            ifM
+              ((ts <) <$> liftIO getCurrentTime)
+              (atomically (removeSessVar v srv smpClients) >> getSMPServerClient'' ca srv)
+              (throwE e)
         Nothing -> throwE PCEResponseTimeout
 
     newSMPClient :: SMPClientVar -> IO (Either SMPClientError (OwnServer, SMPClient))
@@ -204,12 +177,13 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
           notify ca $ CAConnected srv
           pure $ Right c
         Left e -> do
-          if persistErrorInterval agentCfg == 0 || e == PCENetworkError || e == PCEResponseTimeout
+          let ei = persistErrorInterval agentCfg
+          if ei == 0
             then atomically $ do
               putTMVar (sessionVar v) (Left (e, Nothing))
               removeSessVar v srv smpClients
             else do
-              ts <- addUTCTime (persistErrorInterval agentCfg) <$> liftIO getCurrentTime
+              ts <- addUTCTime ei <$> liftIO getCurrentTime
               atomically $ putTMVar (sessionVar v) (Left (e, Just ts))
           reconnectClient ca srv
           pure $ Left e

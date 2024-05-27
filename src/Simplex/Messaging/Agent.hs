@@ -120,10 +120,11 @@ module Simplex.Messaging.Agent
   )
 where
 
-import Control.Logger.Simple (logError, logInfo, showText)
+import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
+import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import Data.Bifunctor (bimap, first, second)
@@ -140,6 +141,8 @@ import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
+import Data.Set (Set)
+import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
@@ -356,12 +359,12 @@ sendMessage c = withAgentEnv c .:: sendMessage' c
 type MsgReq = (ConnId, PQEncryption, MsgFlags, MsgBody)
 
 -- | Send multiple messages to different connections (SEND command)
-sendMessages :: AgentClient -> [MsgReq] -> IO [Either AgentErrorType (AgentMsgId, PQEncryption)]
-sendMessages c = withAgentEnv' c . sendMessages' c
+sendMessages :: AgentClient -> [MsgReq] -> AE [Either AgentErrorType (AgentMsgId, PQEncryption)]
+sendMessages c = withAgentEnv c . sendMessages' c
 {-# INLINE sendMessages #-}
 
-sendMessagesB :: Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> IO (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
-sendMessagesB c = withAgentEnv' c . sendMessagesB' c
+sendMessagesB :: Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> AE (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
+sendMessagesB c = withAgentEnv c . sendMessagesB' c
 {-# INLINE sendMessagesB #-}
 
 ackMessage :: AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AE ()
@@ -569,7 +572,7 @@ withAgentEnv c a = ExceptT $ runExceptT a `runReaderT` agentEnv c
 logConnection :: AgentClient -> Bool -> IO ()
 logConnection c connected =
   let event = if connected then "connected to" else "disconnected from"
-   in logInfo $ T.unwords ["client", showText (clientId c), event, "Agent"]
+   in logInfo $ T.unwords ["client", tshow (clientId c), event, "Agent"]
 
 -- | Runs an SMP agent instance that receives commands and sends responses via 'TBQueue's.
 runAgentClient :: AgentClient -> AM' ()
@@ -649,14 +652,14 @@ joinConnAsync c userId corrId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup 
         pure connId
       Nothing -> throwError $ AGENT A_VERSION
 joinConnAsync _c _userId _corrId _enableNtfs (CRContactUri _) _subMode _cInfo _pqEncryption =
-  throwError $ CMD PROHIBITED
+  throwE $ CMD PROHIBITED "joinConnAsync"
 
 allowConnectionAsync' :: AgentClient -> ACorrId -> ConnId -> ConfirmationId -> ConnInfo -> AM ()
 allowConnectionAsync' c corrId connId confId ownConnInfo =
   withStore c (`getConn` connId) >>= \case
     SomeConn _ (RcvConnection _ RcvQueue {server}) ->
       enqueueCommand c corrId connId (Just server) $ AClientCommand $ APC SAEConn $ LET confId ownConnInfo
-    _ -> throwError $ CMD PROHIBITED
+    _ -> throwE $ CMD PROHIBITED "allowConnectionAsync"
 
 acceptContactAsync' :: AgentClient -> ACorrId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
 acceptContactAsync' c corrId enableNtfs invId ownConnInfo pqSupport subMode = do
@@ -667,7 +670,7 @@ acceptContactAsync' c corrId enableNtfs invId ownConnInfo pqSupport subMode = do
       joinConnAsync c userId corrId enableNtfs connReq ownConnInfo pqSupport subMode `catchAgentError` \err -> do
         withStore' c (`unacceptInvitation` invId)
         throwError err
-    _ -> throwError $ CMD PROHIBITED
+    _ -> throwE $ CMD PROHIBITED "acceptContactAsync"
 
 ackMessageAsync' :: AgentClient -> ACorrId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
 ackMessageAsync' c corrId connId msgId rcptInfo_ = do
@@ -676,14 +679,14 @@ ackMessageAsync' c corrId connId msgId rcptInfo_ = do
     SCDuplex -> enqueueAck
     SCRcv -> enqueueAck
     SCSnd -> throwError $ CONN SIMPLEX
-    SCContact -> throwError $ CMD PROHIBITED
-    SCNew -> throwError $ CMD PROHIBITED
+    SCContact -> throwE $ CMD PROHIBITED "ackMessageAsync: SCContact"
+    SCNew -> throwE $ CMD PROHIBITED "ackMessageAsync: SCNew"
   where
     enqueueAck :: AM ()
     enqueueAck = do
       let mId = InternalId msgId
       RcvMsg {msgType} <- withStore c $ \db -> getRcvMsg db connId mId
-      when (isJust rcptInfo_ && msgType /= AM_A_MSG_) $ throwError $ CMD PROHIBITED
+      when (isJust rcptInfo_ && msgType /= AM_A_MSG_) $ throwE $ CMD PROHIBITED "ackMessageAsync: receipt not allowed"
       (RcvQueue {server}, _) <- withStore c $ \db -> setMsgUserAck db connId mId
       enqueueCommand c corrId connId (Just server) . AClientCommand $ APC SAEConn $ ACK msgId rcptInfo_
 
@@ -711,14 +714,14 @@ switchConnectionAsync' c corrId connId =
   withConnLock c connId "switchConnectionAsync" $
     withStore c (`getConn` connId) >>= \case
       SomeConn _ (DuplexConnection cData rqs@(rq :| _rqs) sqs)
-        | isJust (switchingRQ rqs) -> throwError $ CMD PROHIBITED
+        | isJust (switchingRQ rqs) -> throwE $ CMD PROHIBITED "switchConnectionAsync: already switching"
         | otherwise -> do
-            when (ratchetSyncSendProhibited cData) $ throwError $ CMD PROHIBITED
+            when (ratchetSyncSendProhibited cData) $ throwE $ CMD PROHIBITED "switchConnectionAsync: send prohibited"
             rq1 <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSwitchStarted
             enqueueCommand c corrId connId Nothing $ AClientCommand $ APC SAEConn SWCH
             let rqs' = updatedQs rq1 rqs
             pure . connectionStats $ DuplexConnection cData rqs' sqs
-      _ -> throwError $ CMD PROHIBITED
+      _ -> throwE $ CMD PROHIBITED "switchConnectionAsync: not duplex"
 
 newConn :: AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AM (ConnId, ConnectionRequestUri c)
 newConn c userId connId enableNtfs cMode clientData pqInitKeys subMode =
@@ -735,7 +738,7 @@ newConnSrv c userId connId hasNewConn enableNtfs cMode clientData pqInitKeys sub
 newRcvConnSrv :: AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> SMPServerWithAuth -> AM (ConnId, ConnectionRequestUri c)
 newRcvConnSrv c userId connId enableNtfs cMode clientData pqInitKeys subMode srv = do
   case (cMode, pqInitKeys) of
-    (SCMContact, CR.IKUsePQ) -> throwError $ CMD PROHIBITED
+    (SCMContact, CR.IKUsePQ) -> throwE $ CMD PROHIBITED "newRcvConnSrv"
     _ -> pure ()
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
   (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srv smpClientVRange subMode `catchAgentError` \e -> liftIO (print e) >> throwError e
@@ -861,7 +864,7 @@ joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSuppo
     ExceptT $ updateNewConnSnd db connId q
   confirmQueueAsync c cData q' srv cInfo (Just e2eSndParams) subMode
 joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode _pqSupport _srv = do
-  throwError $ CMD PROHIBITED
+  throwE $ CMD PROHIBITED "joinConnSrvAsync"
 
 createReplyQueue :: AgentClient -> ConnData -> SndQueue -> SubscriptionMode -> SMPServerWithAuth -> AM SMPQueueInfo
 createReplyQueue c ConnData {userId, connId, enableNtfs} SndQueue {smpClientVersion} subMode srv = do
@@ -886,7 +889,7 @@ allowConnection' c connId confId ownConnInfo = withConnLock c connId "allowConne
         liftIO $ setRcvQueueConfirmedE2E db rq dhSecret $ min v v'
         pure senderKey
       enqueueCommand c "" connId (Just server) . AInternalCommand $ ICAllowSecure rcvId senderKey
-    _ -> throwError $ CMD PROHIBITED
+    _ -> throwE $ CMD PROHIBITED "allowConnection"
 
 -- | Accept contact (ACPT command) in Reader monad
 acceptContact' :: AgentClient -> ConnId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
@@ -898,7 +901,7 @@ acceptContact' c connId enableNtfs invId ownConnInfo pqSupport subMode = withCon
       joinConn c userId connId False enableNtfs connReq ownConnInfo pqSupport subMode `catchAgentError` \err -> do
         withStore' c (`unacceptInvitation` invId)
         throwError err
-    _ -> throwError $ CMD PROHIBITED
+    _ -> throwE $ CMD PROHIBITED "acceptContact"
 
 -- | Reject contact (RJCT command) in Reader monad
 rejectContact' :: AgentClient -> ConnId -> InvitationId -> AM ()
@@ -998,14 +1001,14 @@ resubscribeConnections' c connIds = do
 
 getConnectionMessage' :: AgentClient -> ConnId -> AM (Maybe SMPMsgMeta)
 getConnectionMessage' c connId = do
-  whenM (atomically $ hasActiveSubscription c connId) . throwError $ CMD PROHIBITED
+  whenM (atomically $ hasActiveSubscription c connId) . throwE $ CMD PROHIBITED "getConnectionMessage: subscribed"
   SomeConn _ conn <- withStore c (`getConn` connId)
   case conn of
     DuplexConnection _ (rq :| _) _ -> getQueueMessage c rq
     RcvConnection _ rq -> getQueueMessage c rq
     ContactConnection _ rq -> getQueueMessage c rq
     SndConnection _ _ -> throwError $ CONN SIMPLEX
-    NewConnection _ -> throwError $ CMD PROHIBITED
+    NewConnection _ -> throwE $ CMD PROHIBITED "getConnectionMessage: NewConnection"
 
 getNotificationMessage' :: AgentClient -> C.CbNonce -> ByteString -> AM (NotificationInfo, [SMPMsgMeta])
 getNotificationMessage' c nonce encNtfInfo = do
@@ -1017,7 +1020,7 @@ getNotificationMessage' c nonce encNtfInfo = do
       ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
       maxMsgs <- asks $ ntfMaxMessages . config
       (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta},) <$> getNtfMessages ntfConnId ntfMsgMeta maxMsgs
-    _ -> throwError $ CMD PROHIBITED
+    _ -> throwE $ CMD PROHIBITED "getNotificationMessage"
   where
     getNtfMessages ntfConnId nMeta = getMsg
       where
@@ -1034,16 +1037,27 @@ getNotificationMessage' c nonce encNtfInfo = do
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: AgentClient -> ConnId -> PQEncryption -> MsgFlags -> MsgBody -> AM (AgentMsgId, PQEncryption)
-sendMessage' c connId pqEnc msgFlags msg = ExceptT $ runIdentity <$> sendMessagesB' c (Identity (Right (connId, pqEnc, msgFlags, msg)))
+sendMessage' c connId pqEnc msgFlags msg = ExceptT $ runIdentity <$> sendMessagesB_ c (Identity (Right (connId, pqEnc, msgFlags, msg))) (S.singleton connId)
 {-# INLINE sendMessage' #-}
 
 -- | Send multiple messages to different connections (SEND command) in Reader monad
-sendMessages' :: AgentClient -> [MsgReq] -> AM' [Either AgentErrorType (AgentMsgId, PQEncryption)]
+sendMessages' :: AgentClient -> [MsgReq] -> AM [Either AgentErrorType (AgentMsgId, PQEncryption)]
 sendMessages' c = sendMessagesB' c . map Right
 {-# INLINE sendMessages' #-}
 
-sendMessagesB' :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> AM' (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
-sendMessagesB' c reqs = withConnLocks c connIds "sendMessages" $ do
+sendMessagesB' :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> AM (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
+sendMessagesB' c reqs = do
+  connIds <- liftEither $ foldl' addConnId (Right S.empty) reqs
+  lift $ sendMessagesB_ c reqs connIds
+  where
+    addConnId s@(Right s') (Right (connId, _, _, _))
+      | B.null connId = s
+      | connId `S.notMember` s' = Right $ S.insert connId s'
+      | otherwise = Left $ INTERNAL "sendMessages: duplicate connection ID"
+    addConnId s _ = s
+
+sendMessagesB_ :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> Set ConnId -> AM' (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
+sendMessagesB_ c reqs connIds = withConnLocks c connIds "sendMessages" $ do
   reqs' <- withStoreBatch c (\db -> fmap (bindRight $ \req@(connId, _, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
   let (toEnable, reqs'') = mapAccumL prepareConn [] reqs'
   void $ withStoreBatch' c $ \db -> map (\connId -> setConnPQSupport db connId PQSupportOn) toEnable
@@ -1058,14 +1072,13 @@ sendMessagesB' c reqs = withConnLocks c connIds "sendMessages" $ do
       where
         prepareMsg :: ConnData -> NonEmpty SndQueue -> ([ConnId], Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage))
         prepareMsg cData@ConnData {connId, pqSupport} sqs
-          | ratchetSyncSendProhibited cData = (acc, Left $ CMD PROHIBITED)
+          | ratchetSyncSendProhibited cData = (acc, Left $ CMD PROHIBITED "sendMessagesB: send prohibited")
           -- connection is only updated if PQ encryption was disabled, and now it has to be enabled.
           -- support for PQ encryption (small message envelopes) will not be disabled when message is sent.
           | pqEnc == PQEncOn && pqSupport == PQSupportOff =
               let cData' = cData {pqSupport = PQSupportOn} :: ConnData
                in (connId : acc, Right (cData', sqs, Just pqEnc, msgFlags, A_MSG msg))
           | otherwise = (acc, Right (cData, sqs, Just pqEnc, msgFlags, A_MSG msg))
-    connIds = map (\(connId, _, _, _) -> connId) $ rights $ toList reqs
 
 -- / async command processing v v v
 
@@ -1121,7 +1134,7 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
             withStore c (`getConn` connId) >>= \case
               SomeConn _ conn@(DuplexConnection _ (replaced :| _rqs) _) ->
                 switchDuplexConnection c conn replaced >>= notify . SWITCH QDRcv SPStarted
-              _ -> throwError $ CMD PROHIBITED
+              _ -> throwE $ CMD PROHIBITED "SWCH: not duplex"
         DEL -> withServer' . tryCommand $ deleteConnection' c connId >> notify OK
         _ -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
       AInternalCommand cmd -> case cmd of
@@ -1467,8 +1480,8 @@ ackMessage' c connId msgId rcptInfo_ = withConnLock c connId "ackMessage" $ do
     DuplexConnection {} -> ack >> sendRcpt conn >> del
     RcvConnection {} -> ack >> del
     SndConnection {} -> throwError $ CONN SIMPLEX
-    ContactConnection {} -> throwError $ CMD PROHIBITED
-    NewConnection _ -> throwError $ CMD PROHIBITED
+    ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
+    NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
   where
     ack :: AM ()
     ack = do
@@ -1482,7 +1495,7 @@ ackMessage' c connId msgId rcptInfo_ = withConnLock c connId "ackMessage" $ do
       msg@RcvMsg {msgType, msgReceipt} <- withStore c $ \db -> getRcvMsg db connId $ InternalId msgId
       case rcptInfo_ of
         Just rcptInfo -> do
-          unless (msgType == AM_A_MSG_) $ throwError (CMD PROHIBITED)
+          unless (msgType == AM_A_MSG_) . throwE $ CMD PROHIBITED "ackMessage: receipt not allowed"
           when (connAgentVersion >= deliveryRcptsSMPAgentVersion) $ do
             let RcvMsg {msgMeta = MsgMeta {sndMsgId}, internalHash} = msg
                 rcpt = A_RCVD [AMessageReceipt {agentMsgId = sndMsgId, msgHash = internalHash, rcptInfo}]
@@ -1498,12 +1511,12 @@ switchConnection' c connId =
   withConnLock c connId "switchConnection" $
     withStore c (`getConn` connId) >>= \case
       SomeConn _ conn@(DuplexConnection cData rqs@(rq :| _rqs) _)
-        | isJust (switchingRQ rqs) -> throwError $ CMD PROHIBITED
+        | isJust (switchingRQ rqs) -> throwE $ CMD PROHIBITED "switchConnection: already switching"
         | otherwise -> do
-            when (ratchetSyncSendProhibited cData) $ throwError $ CMD PROHIBITED
+            when (ratchetSyncSendProhibited cData) $ throwE $ CMD PROHIBITED "switchConnection: send prohibited"
             rq' <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSwitchStarted
             switchDuplexConnection c conn rq'
-      _ -> throwError $ CMD PROHIBITED
+      _ -> throwE $ CMD PROHIBITED "switchConnection: not duplex"
 
 switchDuplexConnection :: AgentClient -> Connection 'CDuplex -> RcvQueue -> AM ConnectionStats
 switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs sqs) rq@RcvQueue {server, dbQueueId = DBQueueId dbQueueId, sndId} = do
@@ -1528,7 +1541,7 @@ abortConnectionSwitch' c connId =
       SomeConn _ (DuplexConnection cData rqs sqs) -> case switchingRQ rqs of
         Just rq
           | canAbortRcvSwitch rq -> do
-              when (ratchetSyncSendProhibited cData) $ throwError $ CMD PROHIBITED
+              when (ratchetSyncSendProhibited cData) $ throwE $ CMD PROHIBITED "abortConnectionSwitch: send prohibited"
               -- multiple queues to which the connections switches were possible when repeating switch was allowed
               let (delRqs, keepRqs) = L.partition ((Just (dbQId rq) ==) . dbReplaceQId) rqs
               case L.nonEmpty keepRqs of
@@ -1541,9 +1554,9 @@ abortConnectionSwitch' c connId =
                       conn' = DuplexConnection cData rqs'' sqs
                   pure $ connectionStats conn'
                 _ -> throwError $ INTERNAL "won't delete all rcv queues in connection"
-          | otherwise -> throwError $ CMD PROHIBITED
-        _ -> throwError $ CMD PROHIBITED
-      _ -> throwError $ CMD PROHIBITED
+          | otherwise -> throwE $ CMD PROHIBITED "abortConnectionSwitch: no rcv queues left"
+        _ -> throwE $ CMD PROHIBITED "abortConnectionSwitch: not allowed"
+      _ -> throwE $ CMD PROHIBITED "abortConnectionSwitch: not duplex"
 
 synchronizeRatchet' :: AgentClient -> ConnId -> PQSupport -> Bool -> AM ConnectionStats
 synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchronizeRatchet" $ do
@@ -1563,8 +1576,8 @@ synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchroni
           let cData'' = cData' {ratchetSyncState = RSStarted} :: ConnData
               conn' = DuplexConnection cData'' rqs sqs
           pure $ connectionStats conn'
-      | otherwise -> throwError $ CMD PROHIBITED
-    _ -> throwError $ CMD PROHIBITED
+      | otherwise -> throwE $ CMD PROHIBITED "synchronizeRatchet: not allowed"
+    _ -> throwE $ CMD PROHIBITED "synchronizeRatchet: not duplex"
 
 ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM ()
 ackQueueMessage c rq srvMsgId =
@@ -1581,7 +1594,7 @@ suspendConnection' c connId = withConnLock c connId "suspendConnection" $ do
     RcvConnection _ rq -> suspendQueue c rq
     ContactConnection _ rq -> suspendQueue c rq
     SndConnection _ _ -> throwError $ CONN SIMPLEX
-    NewConnection _ -> throwError $ CMD PROHIBITED
+    NewConnection _ -> throwE $ CMD PROHIBITED "suspendConnection"
 
 -- | Delete SMP agent connection (DEL command) in Reader monad
 -- unlike deleteConnectionAsync, this function does not mark connection as deleted in case of deletion failure
@@ -1825,7 +1838,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
               withStore' c (`createNtfToken` tkn)
               registerToken tkn
               pure NTRegistered
-        _ -> throwError $ CMD PROHIBITED
+        _ -> throwE $ CMD PROHIBITED "createToken"
     registerToken :: NtfToken -> AM ()
     registerToken tkn@NtfToken {ntfPubKey, ntfDhKeys = (pubDhKey, privDhKey)} = do
       (tknId, srvPubDhKey) <- agentNtfRegisterToken c tkn ntfPubKey pubDhKey
@@ -1838,7 +1851,7 @@ verifyNtfToken' :: AgentClient -> DeviceToken -> C.CbNonce -> ByteString -> AM (
 verifyNtfToken' c deviceToken nonce code =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret, ntfMode} -> do
-      when (deviceToken /= savedDeviceToken) . throwError $ CMD PROHIBITED
+      when (deviceToken /= savedDeviceToken) . throwE $ CMD PROHIBITED "verifyNtfToken: different token"
       code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
       toStatus <-
         withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
@@ -1847,36 +1860,36 @@ verifyNtfToken' c deviceToken nonce code =
         cron <- asks $ ntfCron . config
         agentNtfEnableCron c tknId tkn cron
         when (ntfMode == NMInstant) $ initializeNtfSubs c
-    _ -> throwError $ CMD PROHIBITED
+    _ -> throwE $ CMD PROHIBITED "verifyNtfToken: no token"
 
 checkNtfToken' :: AgentClient -> DeviceToken -> AM NtfTknStatus
 checkNtfToken' c deviceToken =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId} -> do
-      when (deviceToken /= savedDeviceToken) . throwError $ CMD PROHIBITED
+      when (deviceToken /= savedDeviceToken) . throwE $ CMD PROHIBITED "checkNtfToken: different token"
       agentNtfCheckToken c tknId tkn
-    _ -> throwError $ CMD PROHIBITED
+    _ -> throwE $ CMD PROHIBITED "checkNtfToken: no token"
 
 deleteNtfToken' :: AgentClient -> DeviceToken -> AM ()
 deleteNtfToken' c deviceToken =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken} -> do
-      when (deviceToken /= savedDeviceToken) . throwError $ CMD PROHIBITED
+      when (deviceToken /= savedDeviceToken) . throwE $ CMD PROHIBITED "deleteNtfToken: different token"
       deleteToken_ c tkn
       deleteNtfSubs c NSCSmpDelete
-    _ -> throwError $ CMD PROHIBITED
+    _ -> throwE $ CMD PROHIBITED "deleteNtfToken: no token"
 
 getNtfToken' :: AgentClient -> AM (DeviceToken, NtfTknStatus, NotificationsMode, NtfServer)
 getNtfToken' c =
   withStore' c getSavedNtfToken >>= \case
     Just NtfToken {deviceToken, ntfTknStatus, ntfMode, ntfServer} -> pure (deviceToken, ntfTknStatus, ntfMode, ntfServer)
-    _ -> throwError $ CMD PROHIBITED
+    _ -> throwE $ CMD PROHIBITED "getNtfToken"
 
 getNtfTokenData' :: AgentClient -> AM NtfToken
 getNtfTokenData' c =
   withStore' c getSavedNtfToken >>= \case
     Just tkn -> pure tkn
-    _ -> throwError $ CMD PROHIBITED
+    _ -> throwE $ CMD PROHIBITED "getNtfTokenData"
 
 -- | Set connection notifications, in Reader monad
 toggleConnectionNtfs' :: AgentClient -> ConnId -> Bool -> AM ()
@@ -2166,7 +2179,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                         smpConfirmation srvMsgId conn senderKey e2ePubKey e2eEncryption_ encConnInfo phVer agentVersion >> ack
                       (SMP.PHEmpty, AgentInvitation {connReq, connInfo}) ->
                         smpInvitation srvMsgId conn connReq connInfo >> ack
-                      _ -> prohibited >> ack
+                      _ -> prohibited "handshake: incorrect state" >> ack
                   (Just e2eDh, Nothing) -> do
                     decryptClientMessage e2eDh clientMsg >>= \case
                       (SMP.PHEmpty, AgentRatchetKey {agentVersion, e2eEncryption}) -> do
@@ -2190,7 +2203,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                         let encryptedMsgHash = C.sha256Hash encAgentMessage
                         g <- asks random
                         atomically updateTotalMsgCount
-                        tryError (agentClientMsg g encryptedMsgHash) >>= \case
+                        tryAgentError (agentClientMsg g encryptedMsgHash) >>= \case
                           Right (Just (msgId, msgMeta, aMessage, rcPrev)) -> do
                             conn'' <- resetRatchetSync
                             case aMessage of
@@ -2221,13 +2234,13 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                                     withStore' c $ \db -> setConnRatchetSync db connId RSOk
                                     pure conn''
                                 | otherwise = pure conn'
-                          Right _ -> prohibited >> ack
+                          Right Nothing -> prohibited "msg: bad agent msg" >> ack
                           Left e@(AGENT A_DUPLICATE) -> do
                             atomically updateDupMsgCount
                             withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
                               Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
                                 | userAck -> ackDel internalId
-                                | otherwise -> do
+                                | otherwise ->
                                     liftEither (parse smpP (AGENT A_MESSAGE) agentMsgBody) >>= \case
                                       AgentMessage _ (A_MSG body) -> do
                                         logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret srvMsgId
@@ -2286,8 +2299,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                                 liftIO $ createRcvMsg db connId rq rcvMsg
                                 pure $ Just (internalId, msgMeta, aMessage, rc)
                               _ -> pure Nothing
-                      _ -> prohibited >> ack
-                  _ -> prohibited >> ack
+                      _ -> prohibited "msg: bad client msg" >> ack
+                  _ -> prohibited "msg: no keys" >> ack
               updateConnVersion :: Connection c -> ConnData -> VersionSMPA -> AM (Connection c)
               updateConnVersion conn' cData' msgAgentVersion = do
                 aVRange <- asks $ smpAgentVRange . config
@@ -2325,8 +2338,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
           notify :: forall e m. (AEntityI e, MonadIO m) => ACommand 'Agent e -> m ()
           notify = notify' connId
 
-          prohibited :: AM ()
-          prohibited = notify . ERR $ AGENT A_PROHIBITED
+          prohibited :: String -> AM ()
+          prohibited = notify . ERR . AGENT . A_PROHIBITED
 
           enqueueCmd :: InternalCommand -> AM ()
           enqueueCmd = enqueueCommand c "" connId (Just srv) . AInternalCommand
@@ -2378,7 +2391,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                       parseMessage agentMsgBody >>= \case
                         AgentConnInfoReply smpQueues connInfo ->
                           processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion}
-                        _ -> prohibited -- including AgentConnInfo, that is prohibited here in v2
+                        _ -> prohibited "conf: not AgentConnInfoReply" -- including AgentConnInfo, that is prohibited here in v2
                       where
                         processConf connInfo senderConf = do
                           let newConfirmation = NewConfirmation {connId, senderConf, ratchetState = rc'}
@@ -2388,7 +2401,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                             createConfirmation db g newConfirmation
                           let srvs = map qServer $ smpReplyQueues senderConf
                           notify $ CONF confId pqSupport' srvs connInfo
-                    _ -> prohibited
+                    _ -> prohibited "conf: decrypt error or skipped"
                 -- party accepting connection
                 (DuplexConnection _ (RcvQueue {smpClientVersion = v'} :| _) _, Nothing) -> do
                   g <- asks random
@@ -2398,15 +2411,15 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                       let dhSecret = C.dh' e2ePubKey e2ePrivKey
                       withStore' c $ \db -> setRcvQueueConfirmedE2E db rq dhSecret $ min v' smpClientVersion
                       enqueueCmd $ ICDuplexSecure rId senderKey
-                    _ -> prohibited
-                _ -> prohibited
-              _ -> prohibited
+                    _ -> prohibited "conf: not AgentConnInfo"
+                _ -> prohibited "conf: incorrect state"
+              _ -> prohibited "conf: status /= new"
 
           helloMsg :: SMP.MsgId -> MsgMeta -> Connection c -> AM ()
           helloMsg srvMsgId MsgMeta {pqEncryption} conn' = do
             logServer "<--" c srv rId $ "MSG <HELLO>:" <> logSecret srvMsgId
             case status of
-              Active -> prohibited
+              Active -> prohibited "hello: active"
               _ ->
                 case conn' of
                   DuplexConnection _ _ (sq@SndQueue {status = sndStatus} :| _)
@@ -2448,7 +2461,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                 let sndMsgId = InternalSndId agentMsgId
                 SndMsg {internalId = InternalId msgId, msgType, internalHash, msgReceipt} <- withStore c $ \db -> getSndMsgViaRcpt db connId sndMsgId
                 if msgType /= AM_A_MSG_
-                  then notify (ERR $ AGENT A_PROHIBITED) $> Nothing -- unexpected message type for receipt
+                  then prohibited "receipt: not a msg" $> Nothing
                   else case msgReceipt of
                     Just MsgReceipt {msgRcptStatus = MROk} -> pure Nothing -- already notified with MROk status
                     _ -> do
@@ -2556,7 +2569,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                 invId <- withStore c $ \db -> createInvitation db g newInv
                 let srvs = L.map qServer $ crSmpQueues crData
                 notify $ REQ invId pqSupport srvs cInfo
-              _ -> prohibited
+              _ -> prohibited "inv: sent to message conn"
             where
               pqSupported (_, Compatible (CR.E2ERatchetParams v _ _ _), Compatible agentVersion) =
                 PQSupportOn `CR.pqSupportAnd` versionPQSupport_ agentVersion (Just v)

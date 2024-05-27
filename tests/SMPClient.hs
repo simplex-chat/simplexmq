@@ -118,8 +118,9 @@ cfg =
       smpServerVRange = supportedServerSMPRelayVRange,
       transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedSMPHandshakes},
       controlPort = Nothing,
-      smpAgentCfg = defaultSMPClientAgentConfig,
-      allowSMPProxy = False
+      smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1}, -- seconds
+      allowSMPProxy = False,
+      serverClientConcurrency = 2
     }
 
 cfgV7 :: ServerConfig
@@ -133,12 +134,10 @@ proxyCfg =
   cfgV7
     { allowSMPProxy = True,
       smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion,
-      smpAgentCfg =
-        defaultSMPClientAgentConfig
-          { smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = proxyVRange, agreeSecret = True},
-            persistErrorInterval = 3 -- seconds
-          }
+      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {serverVRange = proxyVRange, agreeSecret = True}}
     }
+  where
+    smpAgentCfg' = smpAgentCfg cfgV7
 
 proxyVRange :: VersionRangeSMP
 proxyVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion

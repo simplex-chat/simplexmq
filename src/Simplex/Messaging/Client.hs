@@ -155,7 +155,7 @@ data PClient v err msg = PClient
     timeoutErrorCount :: TVar Int,
     clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
-    sndQ :: TBQueue ByteString,
+    sndQ :: TBQueue (Maybe (TVar Bool), ByteString),
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmissionBatch v err msg))
   }
@@ -478,7 +478,11 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             `finally` disconnected c'
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
-    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= void . tPutLog h
+    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= sendPending
+      where
+        sendPending (Nothing, s) = send_ s
+        sendPending (Just pending, s) = whenM (readTVarIO pending) $ send_ s
+        send_ = void . tPutLog h
 
     receive :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     receive ProtocolClient {client_ = PClient {rcvQ, lastReceived, timeoutErrorCount}} h = forever $ do
@@ -969,29 +973,33 @@ sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
       pure [Response entityId $ Left $ PCETransportError e]
     TBTransmissions s n rs
       | n > 0 -> do
-          atomically $ writeTBQueue sndQ s
+          atomically $ writeTBQueue sndQ (Nothing, s) -- do not expire batched responses
           mapConcurrently (getResponse c Nothing) rs
       | otherwise -> pure []
     TBTransmission s r -> do
-      atomically $ writeTBQueue sndQ s
+      atomically $ writeTBQueue sndQ (Nothing, s)
       (: []) <$> getResponse c Nothing r
 
 -- | Send Protocol command
 sendProtocolCommand :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
 sendProtocolCommand c = sendProtocolCommand_ c Nothing Nothing
 
+-- Currently there is coupling - batch commands do not expire, and individually sent commands do.
+-- This is to reflect the fact that we send subscriptions only as batches, and also because we do not track a separate timeout for the whole batch, so it is not obvious when should we expire it.
+-- We could expire a batch of deletes, for example, either when the first response expires or when the last one does.
+-- But a better solution is to process delayed delete responses.
 sendProtocolCommand_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.CbNonce -> Maybe Int -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
 sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize}} nonce_ tOut pKey entId cmd =
   ExceptT $ uncurry sendRecv =<< mkTransmission_ c nonce_ (pKey, entId, cmd)
   where
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: Either TransportError SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
-    sendRecv t_ r = case t_ of
+    sendRecv t_ r@Request {pending} = case t_ of
       Left e -> pure . Left $ PCETransportError e
       Right t
         | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
         | otherwise -> do
-            atomically $ writeTBQueue sndQ s
+            atomically $ writeTBQueue sndQ (Just pending, s)
             response <$> getResponse c tOut r
         where
           s

@@ -41,7 +41,6 @@ import Simplex.Messaging.Client
     transportClientConfig,
     unexpectedResponse,
   )
-import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
@@ -217,7 +216,7 @@ sendXFTPTransmission XFTPClient {config, thParams, http2Client} t chunkSpec_ = d
       forM_ chunkSpec_ $ \XFTPChunkSpec {filePath, chunkOffset, chunkSize} ->
         withFile filePath ReadMode $ \h -> do
           hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-          hSendFile h send $ fromIntegral chunkSize
+          hSendFile h send chunkSize
       done
 
 createXFTPChunk ::

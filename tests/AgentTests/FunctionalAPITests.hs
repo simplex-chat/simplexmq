@@ -1,7 +1,9 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
@@ -12,7 +14,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
-{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.FunctionalAPITests
   ( functionalAPITests,
@@ -55,6 +56,7 @@ import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
+import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
@@ -66,7 +68,7 @@ import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as S
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
-import Data.Type.Equality
+import Data.Type.Equality (testEquality, (:~:) (Refl))
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as SQL
 import GHC.Stack (withFrozenCallStack)
@@ -145,6 +147,7 @@ pGet c = do
   case cmd of
     CONNECT {} -> pGet c
     DISCONNECT {} -> pGet c
+    ERR (BROKER _ NETWORK) -> pGet c
     _ -> pure t
 
 pattern CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand 'Agent e
@@ -235,10 +238,10 @@ runRight action =
 getInAnyOrder :: HasCallStack => AgentClient -> [ATransmission 'Agent -> Bool] -> Expectation
 getInAnyOrder c ts = withFrozenCallStack $ inAnyOrder (pGet c) ts
 
-inAnyOrder :: (Show a, MonadIO m, HasCallStack) => m a -> [a -> Bool] -> m ()
+inAnyOrder :: (Show a, MonadUnliftIO m, HasCallStack) => m a -> [a -> Bool] -> m ()
 inAnyOrder _ [] = pure ()
 inAnyOrder g rs = withFrozenCallStack $ do
-  r <- g
+  r <- 5000000 `timeout` g >>= maybe (error "inAnyOrder timeout") pure
   let rest = filter (not . expected r) rs
   if length rest < length rs
     then inAnyOrder g rest
@@ -571,13 +574,13 @@ testEnablePQEncryption =
     -- switched to smaller envelopes (before reporting PQ encryption enabled)
     sml <- largeMsg g PQSupportOn
     -- fail because of message size
-    Left (A.CMD LARGE) <- tryError $ A.sendMessage ca bId PQEncOn SMP.noMsgFlags lrg
+    Left (A.CMD LARGE _) <- tryError $ A.sendMessage ca bId PQEncOn SMP.noMsgFlags lrg
     (9, PQEncOff) <- A.sendMessage ca bId PQEncOn SMP.noMsgFlags sml
     get ca =##> \case ("", connId, SENT 9) -> connId == bId; _ -> False
     get cb =##> \case ("", connId, MsgErr' 8 MsgSkipped {} PQEncOff msg') -> connId == aId && msg' == sml; _ -> False
     ackMessage cb aId 8 Nothing
     -- -- fail in reply to sync IDss
-    Left (A.CMD LARGE) <- tryError $ A.sendMessage cb aId PQEncOn SMP.noMsgFlags lrg
+    Left (A.CMD LARGE _) <- tryError $ A.sendMessage cb aId PQEncOn SMP.noMsgFlags lrg
     (10, PQEncOff) <- A.sendMessage cb aId PQEncOn SMP.noMsgFlags sml
     get cb =##> \case ("", connId, SENT 10) -> connId == aId; _ -> False
     get ca =##> \case ("", connId, MsgErr' 10 MsgSkipped {} PQEncOff msg') -> connId == bId && msg' == sml; _ -> False
@@ -604,8 +607,8 @@ testEnablePQEncryption =
     (b, 26, sml) \#>\ a
     (a, 27, sml) \#>\ b
     -- PQ encryption is now disabled, but support remained enabled, so we still cannot send larger messages
-    Left (A.CMD LARGE) <- tryError $ A.sendMessage ca bId PQEncOff SMP.noMsgFlags (sml <> "123456")
-    Left (A.CMD LARGE) <- tryError $ A.sendMessage cb aId PQEncOff SMP.noMsgFlags (sml <> "123456")
+    Left (A.CMD LARGE _) <- tryError $ A.sendMessage ca bId PQEncOff SMP.noMsgFlags (sml <> "123456")
+    Left (A.CMD LARGE _) <- tryError $ A.sendMessage cb aId PQEncOff SMP.noMsgFlags (sml <> "123456")
     pure ()
   where
     (\#>\) = PQEncOff `sndRcv` PQEncOff
@@ -1263,15 +1266,10 @@ testRatchetSyncServerOffline t = withAgentClients2 $ \alice bob -> do
   liftIO $ ratchetSyncState `shouldBe` RSStarted
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
     runRight_ $ do
-      liftIO . getInAnyOrder alice $
-        [ ratchetSyncP' bobId RSAgreed,
-          serverUpP
-        ]
-      liftIO . getInAnyOrder bob2 $
-        [ ratchetSyncP' aliceId RSAgreed,
-          serverUpP
-        ]
       get alice =##> ratchetSyncP bobId RSOk
       get bob2 =##> ratchetSyncP aliceId RSOk
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
@@ -1325,15 +1323,10 @@ testRatchetSyncSuspendForeground t = do
   foregroundAgent bob2
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
     runRight_ $ do
-      liftIO . getInAnyOrder alice $
-        [ ratchetSyncP' bobId RSAgreed,
-          serverUpP
-        ]
-      liftIO . getInAnyOrder bob2 $
-        [ ratchetSyncP' aliceId RSAgreed,
-          serverUpP
-        ]
       get alice =##> ratchetSyncP bobId RSOk
       get bob2 =##> ratchetSyncP aliceId RSOk
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
@@ -1358,15 +1351,10 @@ testRatchetSyncSimultaneous t = do
   liftIO $ aRSS `shouldBe` RSStarted
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
     runRight_ $ do
-      liftIO . getInAnyOrder alice $
-        [ ratchetSyncP' bobId RSAgreed,
-          serverUpP
-        ]
-      liftIO . getInAnyOrder bob2 $
-        [ ratchetSyncP' aliceId RSAgreed,
-          serverUpP
-        ]
       get alice =##> ratchetSyncP bobId RSOk
       get bob2 =##> ratchetSyncP aliceId RSOk
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
@@ -2491,7 +2479,7 @@ testDeliveryReceipts =
     get a =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
     ackMessage a bId 6 $ Just ""
     get b =##> \case ("", c, Rcvd 6) -> c == aId; _ -> False
-    ackMessage b aId 7 (Just "") `catchError` \e -> liftIO $ e `shouldBe` A.CMD PROHIBITED
+    ackMessage b aId 7 (Just "") `catchError` \case (A.CMD PROHIBITED _) -> pure (); e -> liftIO $ expectationFailure ("unexpected error " <> show e)
     ackMessage b aId 7 Nothing
 
 testDeliveryReceiptsVersion :: HasCallStack => ATransport -> IO ()
@@ -2820,3 +2808,16 @@ exchangeGreetingsMsgIds alice bobId aliceMsgId bob aliceId bobMsgId = do
   get bob ##> ("", aliceId, SENT bobMsgId')
   get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
   ackMessage alice bobId aliceMsgId' Nothing
+
+newtype InternalException e = InternalException {unInternalException :: e}
+  deriving (Eq, Show)
+
+instance Exception e => Exception (InternalException e)
+
+instance Exception e => MonadUnliftIO (ExceptT e IO) where
+  {-# INLINE withRunInIO #-}
+  withRunInIO :: ((forall a. ExceptT e IO a -> IO a) -> IO b) -> ExceptT e IO b
+  withRunInIO inner =
+    ExceptT . fmap (first unInternalException) . try $
+      withRunInIO $ \run ->
+        inner $ run . (either (throwIO . InternalException) pure <=< runExceptT)

@@ -12,6 +12,8 @@ import Control.Monad (void)
 import Control.Monad.Except (ExceptT (..), runExceptT)
 import Control.Monad.IO.Unlift
 import Data.Functor (($>))
+import Data.Set (Set)
+import qualified Data.Set as S
 import UnliftIO.Async (forConcurrently)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -39,13 +41,11 @@ withGetLock getLock key name a =
     (atomically . takeTMVar)
     (const a)
 
-withGetLocks :: MonadUnliftIO m => (k -> STM Lock) -> [k] -> String -> m a -> m a
+withGetLocks :: MonadUnliftIO m => (k -> STM Lock) -> Set k -> String -> m a -> m a
 withGetLocks getLock keys name = E.bracket holdLocks releaseLocks . const
   where
-    holdLocks = forConcurrently keys $ \key -> atomically $ getPutLock getLock key name
-    -- only this withGetLocks would be holding the locks,
-    -- so it's safe to combine all lock releases into one transaction
-    releaseLocks = atomically . mapM_ takeTMVar
+    holdLocks = forConcurrently (S.toList keys) $ \key -> atomically $ getPutLock getLock key name
+    releaseLocks = mapM_ (atomically . takeTMVar)
 
 -- getLock and putTMVar can be in one transaction on the assumption that getLock doesn't write in case the lock already exists,
 -- and in case it is created and added to some shared resource (we use TMap) it also helps avoid contention for the newly created lock.
