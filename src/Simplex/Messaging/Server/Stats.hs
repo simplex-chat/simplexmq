@@ -26,7 +26,14 @@ data ServerStats = ServerStats
     qDeletedAll :: TVar Int,
     qDeletedNew :: TVar Int,
     qDeletedSecured :: TVar Int,
+    qSub :: TVar Int,
+    qSubAuth :: TVar Int,
+    qSubDuplicate :: TVar Int,
+    qSubProhibited :: TVar Int,
     msgSent :: TVar Int,
+    msgSentAuth :: TVar Int,
+    msgSentQuota :: TVar Int,
+    msgSentLarge :: TVar Int,
     msgRecv :: TVar Int,
     msgExpired :: TVar Int,
     activeQueues :: PeriodStats RecipientId,
@@ -49,7 +56,14 @@ data ServerStatsData = ServerStatsData
     _qDeletedAll :: Int,
     _qDeletedNew :: Int,
     _qDeletedSecured :: Int,
+    _qSub :: Int,
+    _qSubAuth :: Int,
+    _qSubDuplicate :: Int,
+    _qSubProhibited :: Int,
     _msgSent :: Int,
+    _msgSentAuth :: Int,
+    _msgSentQuota :: Int,
+    _msgSentLarge :: Int,
     _msgRecv :: Int,
     _msgExpired :: Int,
     _activeQueues :: PeriodStatsData RecipientId,
@@ -74,7 +88,14 @@ newServerStats ts = do
   qDeletedAll <- newTVar 0
   qDeletedNew <- newTVar 0
   qDeletedSecured <- newTVar 0
+  qSub <- newTVar 0
+  qSubAuth <- newTVar 0
+  qSubDuplicate <- newTVar 0
+  qSubProhibited <- newTVar 0
   msgSent <- newTVar 0
+  msgSentAuth <- newTVar 0
+  msgSentQuota <- newTVar 0
+  msgSentLarge <- newTVar 0
   msgRecv <- newTVar 0
   msgExpired <- newTVar 0
   activeQueues <- newPeriodStats
@@ -88,7 +109,7 @@ newServerStats ts = do
   pMsgFwdsRecv <- newTVar 0
   qCount <- newTVar 0
   msgCount <- newTVar 0
-  pure ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, qCount, msgCount}
+  pure ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, qSub, qSubAuth, qSubDuplicate, qSubProhibited, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, qCount, msgCount}
 
 getServerStatsData :: ServerStats -> STM ServerStatsData
 getServerStatsData s = do
@@ -98,7 +119,14 @@ getServerStatsData s = do
   _qDeletedAll <- readTVar $ qDeletedAll s
   _qDeletedNew <- readTVar $ qDeletedNew s
   _qDeletedSecured <- readTVar $ qDeletedSecured s
+  _qSub <- readTVar $ qSub s
+  _qSubAuth <- readTVar $ qSubAuth s
+  _qSubDuplicate <- readTVar $ qSubDuplicate s  
+  _qSubProhibited <- readTVar $ qSubProhibited s
   _msgSent <- readTVar $ msgSent s
+  _msgSentAuth <- readTVar $ msgSentAuth s
+  _msgSentQuota <- readTVar $ msgSentQuota s
+  _msgSentLarge <- readTVar $ msgSentLarge s
   _msgRecv <- readTVar $ msgRecv s
   _msgExpired <- readTVar $ msgExpired s
   _activeQueues <- getPeriodStatsData $ activeQueues s
@@ -112,7 +140,7 @@ getServerStatsData s = do
   _pMsgFwdsRecv <- readTVar $ pMsgFwdsRecv s
   _qCount <- readTVar $ qCount s
   _msgCount <- readTVar $ msgCount s
-  pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeletedAll, _qDeletedNew, _qDeletedSecured, _msgSent, _msgRecv, _msgExpired, _activeQueues, _msgSentNtf, _msgRecvNtf, _activeQueuesNtf, _pRelays, _pRelaysOwn, _pMsgFwds, _pMsgFwdsOwn, _pMsgFwdsRecv, _qCount, _msgCount}
+  pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeletedAll, _qDeletedNew, _qDeletedSecured, _qSub, _qSubAuth, _qSubDuplicate, _qSubProhibited, _msgSent, _msgSentAuth, _msgSentQuota, _msgSentLarge, _msgRecv, _msgExpired, _activeQueues, _msgSentNtf, _msgRecvNtf, _activeQueuesNtf, _pRelays, _pRelaysOwn, _pMsgFwds, _pMsgFwdsOwn, _pMsgFwdsRecv, _qCount, _msgCount}
 
 setServerStats :: ServerStats -> ServerStatsData -> STM ()
 setServerStats s d = do
@@ -122,7 +150,14 @@ setServerStats s d = do
   writeTVar (qDeletedAll s) $! _qDeletedAll d
   writeTVar (qDeletedNew s) $! _qDeletedNew d
   writeTVar (qDeletedSecured s) $! _qDeletedSecured d
+  writeTVar (qSub s) $! _qSub d
+  writeTVar (qSubAuth s) $! _qSubAuth d  
+  writeTVar (qSubDuplicate s) $! _qSubDuplicate d
+  writeTVar (qSubProhibited s) $! _qSubProhibited d
   writeTVar (msgSent s) $! _msgSent d
+  writeTVar (msgSentAuth s) $! _msgSentAuth d
+  writeTVar (msgSentQuota s) $! _msgSentQuota d
+  writeTVar (msgSentLarge s) $! _msgSentLarge d
   writeTVar (msgRecv s) $! _msgRecv d
   writeTVar (msgExpired s) $! _msgExpired d
   setPeriodStats (activeQueues s) (_activeQueues d)
@@ -147,7 +182,14 @@ instance StrEncoding ServerStatsData where
         "qDeletedNew=" <> strEncode (_qDeletedNew d),
         "qDeletedSecured=" <> strEncode (_qDeletedSecured d),
         "qCount=" <> strEncode (_qCount d),
+        "qSub=" <> strEncode (_qSub d),
+        "qSubAuth=" <> strEncode (_qSubAuth d),
+        "qSubDuplicate=" <> strEncode (_qSubDuplicate d),
+        "qSubProhibited=" <> strEncode (_qSubProhibited d),
         "msgSent=" <> strEncode (_msgSent d),
+        "msgSentAuth=" <> strEncode (_msgSentAuth d),
+        "msgSentQuota=" <> strEncode (_msgSentQuota d),
+        "msgSentLarge=" <> strEncode (_msgSentLarge d),
         "msgRecv=" <> strEncode (_msgRecv d),
         "msgExpired=" <> strEncode (_msgExpired d),
         "msgSentNtf=" <> strEncode (_msgSentNtf d),
@@ -173,12 +215,19 @@ instance StrEncoding ServerStatsData where
     (_qDeletedAll, _qDeletedNew, _qDeletedSecured) <-
       (,0,0) <$> ("qDeleted=" *> strP <* A.endOfLine)
         <|> ((,,) <$> ("qDeletedAll=" *> strP <* A.endOfLine) <*> ("qDeletedNew=" *> strP <* A.endOfLine) <*> ("qDeletedSecured=" *> strP <* A.endOfLine))
-    _qCount <- "qCount=" *> strP <* A.endOfLine <|> pure 0
+    _qCount <- opt "qCount="
+    _qSub <- opt "qSub="
+    _qSubAuth <- opt "qSubAuth="
+    _qSubDuplicate <- opt "qSubDuplicate="
+    _qSubProhibited <- opt "qSubProhibited="
     _msgSent <- "msgSent=" *> strP <* A.endOfLine
+    _msgSentAuth <- opt "msgSentAuth="
+    _msgSentQuota <- opt "msgSentQuota="
+    _msgSentLarge <- opt "msgSentLarge="
     _msgRecv <- "msgRecv=" *> strP <* A.endOfLine
-    _msgExpired <- "msgExpired=" *> strP <* A.endOfLine <|> pure 0
-    _msgSentNtf <- "msgSentNtf=" *> strP <* A.endOfLine <|> pure 0
-    _msgRecvNtf <- "msgRecvNtf=" *> strP <* A.endOfLine <|> pure 0
+    _msgExpired <- opt "msgExpired="
+    _msgSentNtf <- opt "msgSentNtf="
+    _msgRecvNtf <- opt "msgRecvNtf="
     _activeQueues <-
       optional ("activeQueues:" <* A.endOfLine) >>= \case
         Just _ -> strP <* optional A.endOfLine
@@ -195,9 +244,10 @@ instance StrEncoding ServerStatsData where
     _pRelaysOwn <- proxyStatsP "pRelaysOwn:"
     _pMsgFwds <- proxyStatsP "pMsgFwds:"
     _pMsgFwdsOwn <- proxyStatsP "pMsgFwdsOwn:"
-    _pMsgFwdsRecv <- "pMsgFwdsRecv=" *> strP <* A.endOfLine <|> pure 0
-    pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeletedAll, _qDeletedNew, _qDeletedSecured, _msgSent, _msgRecv, _msgExpired, _msgSentNtf, _msgRecvNtf, _activeQueues, _activeQueuesNtf, _pRelays, _pRelaysOwn, _pMsgFwds, _pMsgFwdsOwn, _pMsgFwdsRecv, _qCount, _msgCount = 0}
+    _pMsgFwdsRecv <- opt "pMsgFwdsRecv="
+    pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeletedAll, _qDeletedNew, _qDeletedSecured, _qSub, _qSubAuth, _qSubDuplicate, _qSubProhibited, _msgSent, _msgSentAuth, _msgSentQuota, _msgSentLarge, _msgRecv, _msgExpired, _msgSentNtf, _msgRecvNtf, _activeQueues, _activeQueuesNtf, _pRelays, _pRelaysOwn, _pMsgFwds, _pMsgFwdsOwn, _pMsgFwdsRecv, _qCount, _msgCount = 0}
     where
+      opt s = A.string s *> strP <* A.endOfLine <|> pure 0
       proxyStatsP key =
         optional (A.string key >> A.endOfLine) >>= \case
           Just _ -> strP <* optional A.endOfLine
