@@ -523,6 +523,7 @@ testMsgDeliveryQuotaExceeded _ alice bob = do
     (_, "bob", Right (MID mId)) <- alice #: (corrId, "bob", "SEND F :" <> msg)
     alice <#= \case ("", "bob", SENT m) -> m == mId; _ -> False
   (_, "bob", Right (MID _)) <- alice #: ("5", "bob", "SEND F :over quota")
+  alice <#= \case ("", "bob", MWARN _ (SMP _ QUOTA)) -> True; _ -> False
 
   alice #: ("1", "bob2", "SEND F :hello") #> ("1", "bob2", MID 4)
   -- if delivery is blocked it won't go further
@@ -537,6 +538,7 @@ testResumeDeliveryQuotaExceeded _ alice bob = do
     (_, "bob", Right (MID mId)) <- alice #: (corrId, "bob", "SEND F :" <> msg)
     alice <#= \case ("", "bob", SENT m) -> m == mId; _ -> False
   ("5", "bob", Right (MID 8)) <- alice #: ("5", "bob", "SEND F :over quota")
+  alice <#= \case ("", "bob", MWARN 8 (SMP _ QUOTA)) -> True; _ -> False
   alice #:# "the last message not sent yet"
   bob <#= \case ("", "alice", Msg "message 1") -> True; _ -> False
   bob #: ("1", "alice", "ACK 4") #> ("1", "alice", OK)
