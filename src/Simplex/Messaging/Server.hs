@@ -59,7 +59,7 @@ import Data.List (intercalate, mapAccumR)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, isNothing)
+import Data.Maybe (catMaybes, fromMaybe, isNothing)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
@@ -103,7 +103,6 @@ import UnliftIO.IO
 import UnliftIO.STM
 #if MIN_VERSION_base(4,18,0)
 import Data.List (sort)
-import Data.Maybe (fromMaybe)
 import GHC.Conc (listThreads, threadStatus)
 import GHC.Conc.Sync (threadLabel)
 #endif
