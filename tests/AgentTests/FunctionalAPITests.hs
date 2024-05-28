@@ -148,6 +148,7 @@ pGet c = do
     CONNECT {} -> pGet c
     DISCONNECT {} -> pGet c
     ERR (BROKER _ NETWORK) -> pGet c
+    MWARN {} -> pGet c
     _ -> pure t
 
 pattern CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand 'Agent e
