@@ -104,7 +104,7 @@ defaultInactiveClientExpiration =
     }
 
 defaultProxyClientConcurrency :: Int
-defaultProxyClientConcurrency = 16
+defaultProxyClientConcurrency = 32
 
 data Env = Env
   { config :: ServerConfig,
