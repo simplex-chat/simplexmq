@@ -1344,7 +1344,11 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
                   _ -> do
                     expireTs <- addUTCTime (-quotaExceededTimeout) <$> liftIO getCurrentTime
-                    if internalTs < expireTs then notifyDelMsgs msgId e expireTs else retrySndMsg RISlow
+                    if internalTs < expireTs
+                      then notifyDelMsgs msgId e expireTs
+                      else do
+                        notify $ MWARN (unId msgId) e
+                        retrySndMsg RISlow
                 SMP _ SMP.AUTH -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
@@ -2102,7 +2106,6 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
         Left e -> lift $ notifyErr connId e
     STResponse (Cmd SRecipient cmd) respOrErr ->
       withRcvConn entId $ \rq conn -> case cmd of
-        -- TODO process expired responses to ACK and DEL
         SMP.SUB -> case respOrErr of
           Right SMP.OK -> processSubOk rq upConnIds
           Right msg@SMP.MSG {} -> do
@@ -2110,7 +2113,10 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
             processSMP rq conn (toConnData conn) msg
           Right r -> processSubErr rq $ unexpectedResponse r
           Left e -> unless (temporaryClientError e) $ processSubErr rq e -- timeout/network was already reported
-        _ -> pure ()
+        SMP.ACK _ -> case respOrErr of
+          Right msg@SMP.MSG {} -> processSMP rq conn (toConnData conn) msg
+          _ -> pure () -- TODO process OK response to ACK
+        _ -> pure () -- TODO process expired response to DEL
     STResponse {} -> pure () -- TODO process expired responses to sent messages
     STUnexpectedError e -> do
       logServer "<--" c srv entId $ "error: " <> bshow e

@@ -59,7 +59,7 @@ import Data.List (intercalate, mapAccumR)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (isNothing)
+import Data.Maybe (catMaybes, fromMaybe, isNothing)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
@@ -70,8 +70,8 @@ import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), forwardSMPMessage, smpProxyError, temporaryClientError)
-import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient)
+import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, forwardSMPMessage, smpProxyError, temporaryClientError)
+import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -103,7 +103,6 @@ import UnliftIO.IO
 import UnliftIO.STM
 #if MIN_VERSION_base(4,18,0)
 import Data.List (sort)
-import Data.Maybe (fromMaybe)
 import GHC.Conc (listThreads, threadStatus)
 import GHC.Conc.Sync (threadLabel)
 #endif
@@ -229,7 +228,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv} <- asks serverStats
+      ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, qSub, qSubAuth, qSubDuplicate, qSubProhibited, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv} <- asks serverStats
       let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -241,7 +240,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           qDeletedAll' <- atomically $ swapTVar qDeletedAll 0
           qDeletedNew' <- atomically $ swapTVar qDeletedNew 0
           qDeletedSecured' <- atomically $ swapTVar qDeletedSecured 0
+          qSub' <- atomically $ swapTVar qSub 0
+          qSubAuth' <- atomically $ swapTVar qSubAuth 0
+          qSubDuplicate' <- atomically $ swapTVar qSubDuplicate 0
+          qSubProhibited' <- atomically $ swapTVar qSubProhibited 0
           msgSent' <- atomically $ swapTVar msgSent 0
+          msgSentAuth' <- atomically $ swapTVar msgSentAuth 0
+          msgSentQuota' <- atomically $ swapTVar msgSentQuota 0
+          msgSentLarge' <- atomically $ swapTVar msgSentLarge 0
           msgRecv' <- atomically $ swapTVar msgRecv 0
           msgExpired' <- atomically $ swapTVar msgExpired 0
           ps <- atomically $ periodStatCounts activeQueues ts
@@ -282,7 +288,15 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   <> showProxyStats pRelaysOwn'
                   <> showProxyStats pMsgFwds'
                   <> showProxyStats pMsgFwdsOwn'
-                  <> [show pMsgFwdsRecv']
+                  <> [ show pMsgFwdsRecv',
+                       show qSub',
+                       show qSubAuth',
+                       show qSubDuplicate',
+                       show qSubProhibited',
+                       show msgSentAuth',
+                       show msgSentQuota',
+                       show msgSentLarge'
+                     ]
               )
         liftIO $ threadDelay' interval
       where
@@ -505,19 +519,25 @@ receive h@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiv
   forever $ do
     ts <- L.toList <$> liftIO (tGet h)
     atomically . writeTVar rcvActiveAt =<< liftIO getSystemTime
-    (errs, cmds) <- partitionEithers <$> mapM cmdAction ts
+    stats <- asks serverStats
+    (errs, cmds) <- partitionEithers <$> mapM (cmdAction stats) ts
     write sndQ errs
     write rcvQ cmds
   where
-    cmdAction :: SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
-    cmdAction (tAuth, authorized, (corrId, entId, cmdOrError)) =
+    cmdAction :: ServerStats -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
+    cmdAction stats (tAuth, authorized, (corrId, entId, cmdOrError)) =
       case cmdOrError of
         Left e -> pure $ Left (corrId, entId, ERR e)
-        Right cmd -> verified <$> verifyTransmission ((,C.cbNonce (bs corrId)) <$> thAuth) tAuth authorized entId cmd
+        Right cmd -> verified =<< verifyTransmission ((,C.cbNonce (bs corrId)) <$> thAuth) tAuth authorized entId cmd
           where
             verified = \case
-              VRVerified qr -> Right (qr, (corrId, entId, cmd))
-              VRFailed -> Left (corrId, entId, ERR AUTH)
+              VRVerified qr -> pure $ Right (qr, (corrId, entId, cmd))
+              VRFailed -> do
+                case cmd of
+                  Cmd _ SEND {} -> atomically $ modifyTVar' (msgSentAuth stats) (+ 1)
+                  Cmd _ SUB -> atomically $ modifyTVar' (qSubAuth stats) (+ 1)
+                  _ -> pure ()
+                pure $ Left (corrId, entId, ERR AUTH)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> IO ()
@@ -657,40 +677,33 @@ forkClient Client {endThreads, endThreadSeq} label action = do
 client :: THandleParams SMPVersion 'TServer -> Client -> Server -> M ()
 client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
-  forever $ do
-    (proxied, rs) <- partitionEithers . L.toList <$> (mapM processCommand =<< atomically (readTBQueue rcvQ))
-    forM_ (L.nonEmpty rs) reply
-    forM_ (L.nonEmpty proxied) $ \cmds -> mapM forkProxiedCmd cmds >>= mapM (atomically . takeTMVar) >>= reply
+  forever $
+    atomically (readTBQueue rcvQ)
+      >>= mapM processCommand
+      >>= mapM_ reply . L.nonEmpty . catMaybes . L.toList
   where
     reply :: MonadIO m => NonEmpty (Transmission BrokerMsg) -> m ()
     reply = atomically . writeTBQueue sndQ
-    forkProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (TMVar (Transmission BrokerMsg))
-    forkProxiedCmd cmd = do
-      res <- newEmptyTMVarIO
-      bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $
-        -- commands MUST be processed under a reasonable timeout or the client would halt
-        processProxiedCmd cmd >>= atomically . putTMVar res
-      pure res
-      where
-        wait = do
-          ServerConfig {serverClientConcurrency} <- asks config
-          atomically $ do
-            used <- readTVar procThreads
-            when (used >= serverClientConcurrency) retry
-            writeTVar procThreads $! used + 1
-        signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
-    processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Transmission BrokerMsg)
-    processProxiedCmd (corrId, sessId, command) = (corrId, sessId,) <$> case command of
-      PRXY srv auth -> ifM allowProxy getRelay (pure $ ERR $ PROXY BASIC_AUTH)
+    processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Maybe (Transmission BrokerMsg))
+    processProxiedCmd (corrId, sessId, command) = (corrId,sessId,) <$$> case command of
+      PRXY srv auth -> ifM allowProxy getRelay (pure $ Just $ ERR $ PROXY BASIC_AUTH)
         where
           allowProxy = do
             ServerConfig {allowSMPProxy, newQueueBasicAuth} <- asks config
             pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
           getRelay = do
+            ProxyAgent {smpAgent = a} <- asks proxyAgent
+            liftIO (getConnectedSMPServerClient a srv) >>= \case
+              Just r -> Just <$> proxyServerResponse a r
+              Nothing ->
+                forkProxiedCmd $
+                  liftIO (runExceptT (getSMPServerClient'' a srv) `catch` (pure . Left . PCEIOError))
+                    >>= proxyServerResponse a
+          proxyServerResponse :: SMPClientAgent -> Either SMPClientError (OwnServer, SMPClient) -> M BrokerMsg
+          proxyServerResponse a smp_ = do
             ServerStats {pRelays, pRelaysOwn} <- asks serverStats
             let inc = mkIncProxyStats pRelays pRelaysOwn
-            ProxyAgent {smpAgent = a} <- asks proxyAgent
-            liftIO (runExceptT (getSMPServerClient'' a srv) `catch` (pure . Left . PCEIOError)) >>= \case
+            case smp_ of
               Right (own, smp) -> do
                 inc own pRequests
                 case proxyResp smp of
@@ -704,7 +717,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             where
               proxyResp smp =
                 let THandleParams {sessionId = srvSessId, thVersion, thServerVRange, thAuth} = thParams smp
-                 in case compatibleVRange thServerVRange proxiedSMPRelayVRange of
+                  in case compatibleVRange thServerVRange proxiedSMPRelayVRange of
                       -- Cap the destination relay version range to prevent client version fingerprinting.
                       -- See comment for proxiedSMPRelayVersion.
                       Just (Compatible vr) | thVersion >= sendingProxySMPVersion -> case thAuth of
@@ -718,54 +731,66 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
         atomically (lookupSMPServerClient a sessId) >>= \case
           Just (own, smp) -> do
             inc own pRequests
-            if
-              | v >= sendingProxySMPVersion ->
-                  liftIO (runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catch` (pure . Left . PCEIOError))  >>= \case
-                    Right r -> PRES r <$ inc own pSuccesses
-                    Left e -> case e of
-                      PCEProtocolError {} -> ERR err <$ inc own pSuccesses
-                      _ -> ERR err <$ inc own pErrorsOther
-                      where
-                        err = smpProxyError e
-              | otherwise -> ERR (transportErr TEVersion) <$ inc own pErrorsCompat
+            if v >= sendingProxySMPVersion
+              then forkProxiedCmd $ do
+                liftIO (runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catch` (pure . Left . PCEIOError))  >>= \case
+                  Right r -> PRES r <$ inc own pSuccesses
+                  Left e -> ERR (smpProxyError e) <$ case e of
+                    PCEProtocolError {} -> inc own pSuccesses
+                    _ -> inc own pErrorsOther
+              else Just (ERR $ transportErr TEVersion) <$ inc own pErrorsCompat
             where
               THandleParams {thVersion = v} = thParams smp
-          Nothing -> inc False pRequests >> inc False pErrorsConnect $> ERR (PROXY NO_SESSION)
+          Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
+      where
+        forkProxiedCmd :: M BrokerMsg -> M (Maybe BrokerMsg)
+        forkProxiedCmd cmdAction = do
+          bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $ do
+            -- commands MUST be processed under a reasonable timeout or the client would halt
+            cmdAction >>= \t -> reply [(corrId, sessId, t)]
+          pure Nothing
+          where
+            wait = do
+              ServerConfig {serverClientConcurrency} <- asks config
+              atomically $ do
+                used <- readTVar procThreads
+                when (used >= serverClientConcurrency) retry
+                writeTVar procThreads $! used + 1
+            signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
     transportErr :: TransportError -> ErrorType
     transportErr = PROXY . BROKER . TRANSPORT
     mkIncProxyStats :: MonadIO m => ProxyStats -> ProxyStats -> OwnServer -> (ProxyStats -> TVar Int) -> m ()
     mkIncProxyStats ps psOwn = \own sel -> do
       atomically $ modifyTVar' (sel ps) (+ 1)
       when own $ atomically $ modifyTVar' (sel psOwn) (+ 1)
-    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Either (Transmission (Command 'ProxiedClient)) (Transmission BrokerMsg))
-    processCommand (qr_, (corrId, queueId, cmd)) = do
-      st <- asks queueStore
-      case cmd of
-        Cmd SProxiedClient command -> pure $ Left (corrId, queueId, command)
-        Cmd SSender command -> Right <$> case command of
-          SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
-          PING -> pure (corrId, "", PONG)
-          RFWD encBlock -> (corrId, "",) <$> processForwardedCommand encBlock
-        Cmd SNotifier NSUB -> Right <$> subscribeNotifications
-        Cmd SRecipient command ->
-          Right <$> case command of
-            NEW rKey dhKey auth subMode ->
-              ifM
-                allowNew
-                (createQueue st rKey dhKey subMode)
-                (pure (corrId, queueId, ERR AUTH))
-              where
-                allowNew = do
-                  ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
-                  pure $ allowNewQueues && maybe True ((== auth) . Just) newQueueBasicAuth
-            SUB -> withQueue (`subscribeQueue` queueId)
-            GET -> withQueue getMessage
-            ACK msgId -> withQueue (`acknowledgeMsg` msgId)
-            KEY sKey -> secureQueue_ st sKey
-            NKEY nKey dhKey -> addQueueNotifier_ st nKey dhKey
-            NDEL -> deleteQueueNotifier_ st
-            OFF -> suspendQueue_ st
-            DEL -> delQueueAndMsgs st
+    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Maybe (Transmission BrokerMsg))
+    processCommand (qr_, (corrId, queueId, cmd)) = case cmd of
+      Cmd SProxiedClient command -> processProxiedCmd (corrId, queueId, command)
+      Cmd SSender command -> Just <$> case command of
+        SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
+        PING -> pure (corrId, "", PONG)
+        RFWD encBlock -> (corrId, "",) <$> processForwardedCommand encBlock
+      Cmd SNotifier NSUB -> Just <$> subscribeNotifications
+      Cmd SRecipient command -> do
+        st <- asks queueStore
+        Just <$> case command of
+          NEW rKey dhKey auth subMode ->
+            ifM
+              allowNew
+              (createQueue st rKey dhKey subMode)
+              (pure (corrId, queueId, ERR AUTH))
+            where
+              allowNew = do
+                ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
+                pure $ allowNewQueues && maybe True ((== auth) . Just) newQueueBasicAuth
+          SUB -> withQueue (`subscribeQueue` queueId)
+          GET -> withQueue getMessage
+          ACK msgId -> withQueue (`acknowledgeMsg` msgId)
+          KEY sKey -> secureQueue_ st sKey
+          NKEY nKey dhKey -> addQueueNotifier_ st nKey dhKey
+          NDEL -> deleteQueueNotifier_ st
+          OFF -> suspendQueue_ st
+          DEL -> delQueueAndMsgs st
       where
         createQueue :: QueueStore -> RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> M (Transmission BrokerMsg)
         createQueue st recipientKey dhKey subMode = time "NEW" $ do
@@ -852,15 +877,19 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
 
         subscribeQueue :: QueueRec -> RecipientId -> M (Transmission BrokerMsg)
         subscribeQueue qr rId = do
+          stats <- asks serverStats
           atomically (TM.lookup rId subscriptions) >>= \case
-            Nothing ->
+            Nothing -> do
+              atomically $ modifyTVar' (qSub stats) (+ 1)
               newSub >>= deliver
             Just sub ->
               readTVarIO sub >>= \case
-                Sub {subThread = ProhibitSub} ->
+                Sub {subThread = ProhibitSub} -> do
                   -- cannot use SUB in the same connection where GET was used
+                  atomically $ modifyTVar' (qSubProhibited stats) (+ 1)
                   pure (corrId, rId, ERR $ CMD PROHIBITED)
-                s ->
+                s -> do
+                  atomically $ modifyTVar' (qSubDuplicate stats) (+ 1)
                   atomically (tryTakeTMVar $ delivered s) >> deliver sub
           where
             newSub :: M (TVar Sub)
@@ -954,29 +983,37 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> M (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
-          | B.length msgBody > maxMessageLength thVersion = pure $ err LARGE_MSG
-          | otherwise = case status qr of
-              QueueOff -> return $ err AUTH
-              QueueActive ->
-                case C.maxLenBS msgBody of
-                  Left _ -> pure $ err LARGE_MSG
-                  Right body -> do
-                    msg_ <- time "SEND" $ do
-                      q <- getStoreMsgQueue "SEND" $ recipientId qr
-                      expireMessages q
-                      atomically . writeMsg q =<< mkMessage body
-                    case msg_ of
-                      Nothing -> pure $ err QUOTA
-                      Just msg -> time "SEND ok" $ do
-                        stats <- asks serverStats
-                        when (notification msgFlags) $ do
-                          atomically . trySendNotification msg =<< asks random
-                          atomically $ modifyTVar' (msgSentNtf stats) (+ 1)
-                          atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
-                        atomically $ modifyTVar' (msgSent stats) (+ 1)
-                        atomically $ modifyTVar' (msgCount stats) (+ 1)
-                        atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
-                        pure ok
+          | B.length msgBody > maxMessageLength thVersion = do
+              stats <- asks serverStats
+              atomically $ modifyTVar' (msgSentLarge stats) (+ 1)
+              pure $ err LARGE_MSG
+          | otherwise = do
+              stats <- asks serverStats
+              case status qr of
+                QueueOff -> do
+                  atomically $ modifyTVar' (msgSentAuth stats) (+ 1)
+                  pure $ err AUTH
+                QueueActive ->
+                  case C.maxLenBS msgBody of
+                    Left _ -> pure $ err LARGE_MSG
+                    Right body -> do
+                      msg_ <- time "SEND" $ do
+                        q <- getStoreMsgQueue "SEND" $ recipientId qr
+                        expireMessages q
+                        atomically . writeMsg q =<< mkMessage body
+                      case msg_ of
+                        Nothing -> do
+                          atomically $ modifyTVar' (msgSentQuota stats) (+ 1)
+                          pure $ err QUOTA
+                        Just msg -> time "SEND ok" $ do
+                          when (notification msgFlags) $ do
+                            atomically . trySendNotification msg =<< asks random
+                            atomically $ modifyTVar' (msgSentNtf stats) (+ 1)
+                            atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
+                          atomically $ modifyTVar' (msgSent stats) (+ 1)
+                          atomically $ modifyTVar' (msgCount stats) (+ 1)
+                          atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
+                          pure ok
           where
             THandleParams {thVersion} = thParams'
             mkMessage :: C.MaxLenBS MaxMessageLen -> M Message
@@ -1036,7 +1073,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
                 Cmd SSender SEND {} ->
                   -- Left will not be returned by processCommand, as only SEND command is allowed
-                  fromRight (corrId', entId', ERR INTERNAL) <$> lift (processCommand t'')
+                  fromMaybe (corrId', entId', ERR INTERNAL) <$> lift (processCommand t'')
                 _ ->
                   pure (corrId', entId', ERR $ CMD PROHIBITED)
           -- encode response
