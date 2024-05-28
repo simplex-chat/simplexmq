@@ -293,7 +293,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                        show qSubAuth',
                        show qSubDuplicate',
                        show qSubProhibited',
-                       show msgSent',
                        show msgSentAuth',
                        show msgSentQuota',
                        show msgSentLarge'
