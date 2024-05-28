@@ -27,6 +27,7 @@ data ServerStats = ServerStats
     qDeletedNew :: TVar Int,
     qDeletedSecured :: TVar Int,
     msgSent :: TVar Int,
+    msgSentQuota :: TVar Int,
     msgRecv :: TVar Int,
     msgExpired :: TVar Int,
     activeQueues :: PeriodStats RecipientId,
@@ -50,6 +51,7 @@ data ServerStatsData = ServerStatsData
     _qDeletedNew :: Int,
     _qDeletedSecured :: Int,
     _msgSent :: Int,
+    _msgSentQuota :: Int,
     _msgRecv :: Int,
     _msgExpired :: Int,
     _activeQueues :: PeriodStatsData RecipientId,
@@ -75,6 +77,7 @@ newServerStats ts = do
   qDeletedNew <- newTVar 0
   qDeletedSecured <- newTVar 0
   msgSent <- newTVar 0
+  msgSentQuota <- newTVar 0
   msgRecv <- newTVar 0
   msgExpired <- newTVar 0
   activeQueues <- newPeriodStats
@@ -88,7 +91,7 @@ newServerStats ts = do
   pMsgFwdsRecv <- newTVar 0
   qCount <- newTVar 0
   msgCount <- newTVar 0
-  pure ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, qCount, msgCount}
+  pure ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, msgSent, msgSentQuota, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, qCount, msgCount}
 
 getServerStatsData :: ServerStats -> STM ServerStatsData
 getServerStatsData s = do
@@ -99,6 +102,7 @@ getServerStatsData s = do
   _qDeletedNew <- readTVar $ qDeletedNew s
   _qDeletedSecured <- readTVar $ qDeletedSecured s
   _msgSent <- readTVar $ msgSent s
+  _msgSentQuota <- readTVar $ msgSentQuota s
   _msgRecv <- readTVar $ msgRecv s
   _msgExpired <- readTVar $ msgExpired s
   _activeQueues <- getPeriodStatsData $ activeQueues s
@@ -112,7 +116,7 @@ getServerStatsData s = do
   _pMsgFwdsRecv <- readTVar $ pMsgFwdsRecv s
   _qCount <- readTVar $ qCount s
   _msgCount <- readTVar $ msgCount s
-  pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeletedAll, _qDeletedNew, _qDeletedSecured, _msgSent, _msgRecv, _msgExpired, _activeQueues, _msgSentNtf, _msgRecvNtf, _activeQueuesNtf, _pRelays, _pRelaysOwn, _pMsgFwds, _pMsgFwdsOwn, _pMsgFwdsRecv, _qCount, _msgCount}
+  pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeletedAll, _qDeletedNew, _qDeletedSecured, _msgSent, _msgSentQuota, _msgRecv, _msgExpired, _activeQueues, _msgSentNtf, _msgRecvNtf, _activeQueuesNtf, _pRelays, _pRelaysOwn, _pMsgFwds, _pMsgFwdsOwn, _pMsgFwdsRecv, _qCount, _msgCount}
 
 setServerStats :: ServerStats -> ServerStatsData -> STM ()
 setServerStats s d = do
@@ -123,6 +127,7 @@ setServerStats s d = do
   writeTVar (qDeletedNew s) $! _qDeletedNew d
   writeTVar (qDeletedSecured s) $! _qDeletedSecured d
   writeTVar (msgSent s) $! _msgSent d
+  writeTVar (msgSentQuota s) $! _msgSentQuota d
   writeTVar (msgRecv s) $! _msgRecv d
   writeTVar (msgExpired s) $! _msgExpired d
   setPeriodStats (activeQueues s) (_activeQueues d)
@@ -148,6 +153,7 @@ instance StrEncoding ServerStatsData where
         "qDeletedSecured=" <> strEncode (_qDeletedSecured d),
         "qCount=" <> strEncode (_qCount d),
         "msgSent=" <> strEncode (_msgSent d),
+        "msgSentQuota=" <> strEncode (_msgSentQuota d),
         "msgRecv=" <> strEncode (_msgRecv d),
         "msgExpired=" <> strEncode (_msgExpired d),
         "msgSentNtf=" <> strEncode (_msgSentNtf d),
@@ -175,6 +181,7 @@ instance StrEncoding ServerStatsData where
         <|> ((,,) <$> ("qDeletedAll=" *> strP <* A.endOfLine) <*> ("qDeletedNew=" *> strP <* A.endOfLine) <*> ("qDeletedSecured=" *> strP <* A.endOfLine))
     _qCount <- "qCount=" *> strP <* A.endOfLine <|> pure 0
     _msgSent <- "msgSent=" *> strP <* A.endOfLine
+    _msgSentQuota <- "msgSentQuota=" *> strP <* A.endOfLine <|> pure 0
     _msgRecv <- "msgRecv=" *> strP <* A.endOfLine
     _msgExpired <- "msgExpired=" *> strP <* A.endOfLine <|> pure 0
     _msgSentNtf <- "msgSentNtf=" *> strP <* A.endOfLine <|> pure 0
@@ -196,7 +203,7 @@ instance StrEncoding ServerStatsData where
     _pMsgFwds <- proxyStatsP "pMsgFwds:"
     _pMsgFwdsOwn <- proxyStatsP "pMsgFwdsOwn:"
     _pMsgFwdsRecv <- "pMsgFwdsRecv=" *> strP <* A.endOfLine <|> pure 0
-    pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeletedAll, _qDeletedNew, _qDeletedSecured, _msgSent, _msgRecv, _msgExpired, _msgSentNtf, _msgRecvNtf, _activeQueues, _activeQueuesNtf, _pRelays, _pRelaysOwn, _pMsgFwds, _pMsgFwdsOwn, _pMsgFwdsRecv, _qCount, _msgCount = 0}
+    pure ServerStatsData {_fromTime, _qCreated, _qSecured, _qDeletedAll, _qDeletedNew, _qDeletedSecured, _msgSent, _msgSentQuota, _msgRecv, _msgExpired, _msgSentNtf, _msgRecvNtf, _activeQueues, _activeQueuesNtf, _pRelays, _pRelaysOwn, _pMsgFwds, _pMsgFwdsOwn, _pMsgFwdsRecv, _qCount, _msgCount = 0}
     where
       proxyStatsP key =
         optional (A.string key >> A.endOfLine) >>= \case
