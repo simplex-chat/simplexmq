@@ -1344,7 +1344,11 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
                   _ -> do
                     expireTs <- addUTCTime (-quotaExceededTimeout) <$> liftIO getCurrentTime
-                    if internalTs < expireTs then notifyDelMsgs msgId e expireTs else retrySndMsg RISlow
+                    if internalTs < expireTs
+                      then notifyDelMsgs msgId e expireTs
+                      else do
+                        notify $ MWARN (unId msgId) e
+                        retrySndMsg RISlow
                 SMP _ SMP.AUTH -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
