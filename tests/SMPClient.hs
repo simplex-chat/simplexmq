@@ -59,6 +59,9 @@ testStoreLogFile2 = "tests/tmp/smp-server-store.log.2"
 testStoreMsgsFile :: FilePath
 testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
 
+testStoreMsgsFile2 :: FilePath
+testStoreMsgsFile2 = "tests/tmp/smp-server-messages.log.2"
+
 testServerStatsBackupFile :: FilePath
 testServerStatsBackupFile = "tests/tmp/smp-server-stats.log"
 
