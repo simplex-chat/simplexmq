@@ -2049,16 +2049,19 @@ data AgentQueuesInfo = AgentQueuesInfo
     subQInfo :: TBQueueInfo,
     smpClientsQueues :: Map String (Either (AgentErrorType, Maybe UTCTime) ClientQueuesInfo)
   }
+  deriving (Show)
 
 data ClientQueuesInfo = ClientQueuesInfo
   { sndQInfo :: TBQueueInfo,
     rcvQInfo :: TBQueueInfo
   }
+  deriving (Show)
 
 data TBQueueInfo = TBQueueInfo
   { qLength :: Int,
     qFull :: Bool
   }
+  deriving (Show)
 
 getAgentQueuesInfo :: AgentClient -> IO AgentQueuesInfo
 getAgentQueuesInfo AgentClient {msgQ, subQ, smpClients} = do
