@@ -59,6 +59,7 @@ module Simplex.Messaging.Client
     connectSMPProxiedRelay,
     proxySMPMessage,
     forwardSMPMessage,
+    getSMPQueueInfo,
     sendProtocolCommand,
 
     -- * Supporting types and client configuration
@@ -123,6 +124,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -913,6 +915,12 @@ forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = 
       r' <- liftEitherWith PCECryptoError $ C.cbDecryptNoPad sessSecret (C.reverseNonce nonce) efr
       FwdResponse {fwdCorrId = _, fwdResponse} <- liftEitherWith (const $ PCEResponseError BLOCK) $ smpDecode r'
       pure fwdResponse
+    r -> throwE $ unexpectedResponse r
+
+getSMPQueueInfo :: SMPClient -> C.APrivateAuthKey -> QueueId -> ExceptT SMPClientError IO QueueInfo
+getSMPQueueInfo c pKey qId =
+  sendSMPCommand c (Just pKey) qId QUE >>= \case
+    INFO info -> pure info
     r -> throwE $ unexpectedResponse r
 
 okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateAuthKey -> QueueId -> ExceptT SMPClientError IO ()
