@@ -14,7 +14,6 @@ module Simplex.Messaging.Transport.Server
     runTransportServerSocket,
     runTCPServer,
     runTCPServerSocket,
-    acceptSafe,
     startTCPServer,
     loadSupportedTLSServerParams,
     loadTLSServerParams,
@@ -117,7 +116,7 @@ runTCPServer started port server = do
 runTCPServerSocket :: SocketState -> TMVar Bool -> IO Socket -> (Socket -> IO ()) -> IO ()
 runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket server =
   E.bracket getSocket (closeServer started clients) $ \sock ->
-    forever . E.bracketOnError (acceptSafe sock) (close . fst) $ \(conn, _peer) -> do
+    forever . E.bracketOnError (safeAccept sock) (close . fst) $ \(conn, _peer) -> do
       cId <- atomically $ stateTVar accepted $ \cId -> let cId' = cId + 1 in cId `seq` (cId', cId')
       let closeConn _ = do
             atomically $ modifyTVar' clients $ IM.delete cId
@@ -134,15 +133,20 @@ runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket serve
 -- For  reliable  operation the application should detect the network errors defined for the protocol after accept() and treat them like EAGAIN by retrying.
 -- In  the  case  of  TCP/IP, these are ENETDOWN, EPROTO, ENOPROTOOPT, EHOSTDOWN, ENONET, EHOSTUNREACH, EOPNOTSUPP, and ENETUNREACH.
 -- @
-acceptSafe :: Socket -> IO (Socket, SockAddr)
-acceptSafe sock =
+safeAccept :: Socket -> IO (Socket, SockAddr)
+safeAccept sock =
   tryIOError (accept sock) >>= \case
     Right r -> pure r
-    Left e | maybe False ((`elem` again) . Errno) (ioe_errno e) -> acceptSafe sock
-    Left e -> E.throwIO e
+    Left e
+      | maybe False ((`elem` again) . Errno) errno -> safeAccept sock
+      | otherwise -> do
+          logError ("socket accept error: " <> tshow e <> maybe "" ((", errno=" <>) . tshow) errno)
+          E.throwIO e
+      where
+        errno = ioe_errno e
   where
     again :: [Errno]
-    again = [eNETDOWN, ePROTO, eNOPROTOOPT, eHOSTDOWN, eNONET, eHOSTUNREACH, eOPNOTSUPP, eNETUNREACH]
+    again = [eAGAIN, eNETDOWN, ePROTO, eNOPROTOOPT, eHOSTDOWN, eNONET, eHOSTUNREACH, eOPNOTSUPP, eNETUNREACH]
 
 type SocketState = (TVar Int, TVar Int, TVar (IntMap (Weak ThreadId)))
 
