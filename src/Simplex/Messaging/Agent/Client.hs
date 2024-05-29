@@ -1040,17 +1040,34 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
         SPFAllowProtected -> ipAddressProtected cfg destSrv
         SPFProhibit -> False
     unknownServer = maybe True (all ((destSrv /=) . protoServer)) <$> TM.lookup userId (userServers c)
-    sendViaProxy destSess = do
+    sendViaProxy destSess@(_, _, qId) = do
       r <- tryAgentError . withProxySession c destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess) -> do
         liftClient SMP (clientServer smp) (proxySMPMessage smp proxySess spKey_ senderId msgFlags msg) >>= \case
           Right () -> pure . Just $ protocolClientServer' smp
-          Left proxyErr ->
+          Left proxyErr -> do
+            case proxyErr of
+              (ProxyProtocolError (SMP.PROXY SMP.NO_SESSION)) -> atomically deleteRelaySession
+              _ -> pure ()
             throwE
               PROXY
                 { proxyServer = protocolClientServer smp,
                   relayServer = B.unpack $ strEncode destSrv,
                   proxyErr
                 }
+            where
+              -- checks that the current proxied relay session is the same one that was used to send the message and removes it
+              deleteRelaySession =
+                ( TM.lookup destSess (smpProxiedRelays c)
+                    $>>= \(ProtoServerWithAuth srv _) -> tryReadSessVar (userId, srv, qId) (smpClients c)
+                )
+                  >>= \case
+                    Just (Right (SMPConnectedClient smp' prs)) | sameClient smp' ->
+                      tryReadSessVar destSrv prs >>= \case
+                        Just (Right proxySess') | sameProxiedRelay proxySess' -> TM.delete destSrv prs
+                        _ -> pure ()
+                    _ -> pure ()
+              sameClient smp' = sessionId (thParams smp) == sessionId (thParams smp')
+              sameProxiedRelay proxySess' = prSessionId proxySess == prSessionId proxySess'
       case r of
         Right r' -> pure r'
         Left e
@@ -1293,6 +1310,7 @@ temporaryAgentError = \case
   BROKER _ e -> tempBrokerError e
   SMP _ (SMP.PROXY (SMP.BROKER e)) -> tempBrokerError e
   PROXY _ _ (ProxyProtocolError (SMP.PROXY (SMP.BROKER e))) -> tempBrokerError e
+  PROXY _ _ (ProxyProtocolError (SMP.PROXY SMP.NO_SESSION)) -> True
   INACTIVE -> True
   _ -> False
   where

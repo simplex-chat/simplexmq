@@ -45,7 +45,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_, ifM, toChunks, whenM, ($>>=))
+import Simplex.Messaging.Util (catchAll_, ifM, toChunks, whenM, ($>>=), (<$$>))
 import System.Timeout (timeout)
 import UnliftIO (async)
 import qualified UnliftIO.Exception as E
@@ -286,6 +286,20 @@ reconnectSMPClient ca@SMPClientAgent {agentCfg} srv cs =
 notify :: MonadIO m => SMPClientAgent -> SMPClientAgentEvent -> m ()
 notify ca evt = atomically $ writeTBQueue (agentQ ca) evt
 {-# INLINE notify #-}
+
+-- Returns already connected client for proxying messages or Nothing if client is absent, not connected yet or stores expired error.
+-- If Nothing is return proxy will spawn a new thread to wait or to create another client connection to destination relay.
+getConnectedSMPServerClient :: SMPClientAgent -> SMPServer -> IO (Maybe (Either SMPClientError (OwnServer, SMPClient)))
+getConnectedSMPServerClient SMPClientAgent {smpClients} srv =
+  atomically (TM.lookup srv smpClients $>>= \v -> (v,) <$$> tryReadTMVar (sessionVar v)) -- Nothing: client is absent or not connected yet
+    $>>= \case
+      (_, Right r) -> pure $ Just $ Right r
+      (v, Left (e, ts_)) ->
+        pure ts_ $>>= \ts ->  -- proxy will create a new connection if ts_ is Nothing
+          ifM
+            ((ts <) <$> liftIO getCurrentTime) -- error persistence interval period expired?
+            (Nothing <$ atomically (removeSessVar v srv smpClients)) -- proxy will create a new connection
+            (pure $ Just $ Left e) -- not expired, returning error
 
 lookupSMPServerClient :: SMPClientAgent -> SessionId -> STM (Maybe (OwnServer, SMPClient))
 lookupSMPServerClient SMPClientAgent {smpSessions} sessId = TM.lookup sessId smpSessions
