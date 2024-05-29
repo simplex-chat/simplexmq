@@ -19,7 +19,7 @@ module Simplex.Messaging.Transport.Server
     loadTLSServerParams,
     loadFingerprint,
     smpServerHandshake,
-    tlsServerCredentials
+    tlsServerCredentials,
   )
 where
 
@@ -35,11 +35,14 @@ import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
 import qualified Data.X509.Validation as XV
+import Foreign.C.Error
+import GHC.IO.Exception (ioe_errno)
 import Network.Socket
 import qualified Network.TLS as T
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (catchAll_, labelMyThread, tshow)
 import System.Exit (exitFailure)
+import System.IO.Error (tryIOError)
 import System.Mem.Weak (Weak, deRefWeak)
 import UnliftIO (timeout)
 import UnliftIO.Concurrent
@@ -113,7 +116,7 @@ runTCPServer started port server = do
 runTCPServerSocket :: SocketState -> TMVar Bool -> IO Socket -> (Socket -> IO ()) -> IO ()
 runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket server =
   E.bracket getSocket (closeServer started clients) $ \sock ->
-    forever . E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) -> do
+    forever . E.bracketOnError (safeAccept sock) (close . fst) $ \(conn, _peer) -> do
       cId <- atomically $ stateTVar accepted $ \cId -> let cId' = cId + 1 in cId `seq` (cId', cId')
       let closeConn _ = do
             atomically $ modifyTVar' clients $ IM.delete cId
@@ -121,6 +124,27 @@ runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket serve
             atomically $ modifyTVar' gracefullyClosed (+ 1)
       tId <- mkWeakThreadId =<< server conn `forkFinally` closeConn
       atomically $ modifyTVar' clients $ IM.insert cId tId
+
+-- | Recover from errors in `accept` whenever it is safe.
+-- Some errors are safe to ignore, while blindly restaring `accept` may trigger a busy loop.
+--
+-- man accept says:
+-- @
+-- For  reliable  operation the application should detect the network errors defined for the protocol after accept() and treat them like EAGAIN by retrying.
+-- In  the  case  of  TCP/IP, these are ENETDOWN, EPROTO, ENOPROTOOPT, EHOSTDOWN, ENONET, EHOSTUNREACH, EOPNOTSUPP, and ENETUNREACH.
+-- @
+safeAccept :: Socket -> IO (Socket, SockAddr)
+safeAccept sock =
+  tryIOError (accept sock) >>= \case
+    Right r -> pure r
+    Left e
+      | retryAccept -> logWarn err >> safeAccept sock
+      | otherwise -> logError err >> E.throwIO e
+      where
+        retryAccept = maybe False ((`elem` again) . Errno) errno
+        again = [eAGAIN, eNETDOWN, ePROTO, eNOPROTOOPT, eHOSTDOWN, eNONET, eHOSTUNREACH, eOPNOTSUPP, eNETUNREACH]
+        err = "socket accept error: " <> tshow e <> maybe "" ((", errno=" <>) . tshow) errno
+        errno = ioe_errno e
 
 type SocketState = (TVar Int, TVar Int, TVar (IntMap (Weak ThreadId)))
 
