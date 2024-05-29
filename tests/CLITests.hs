@@ -57,7 +57,7 @@ smpServerTest :: Bool -> Bool -> IO ()
 smpServerTest storeLog basicAuth = do
   -- init
   capture_ (withArgs (["init", "-y"] <> ["-l" | storeLog] <> ["--no-password" | not basicAuth]) $ smpServerCLI cfgPath logPath)
-    >>= (`shouldSatisfy` (("Server initialized, you can modify configuration in " <> cfgPath <> "/smp-server.ini") `isPrefixOf`))
+    >>= (`shouldSatisfy` (("Server initialized, please provide additional server information in " <> cfgPath <> "/smp-server.ini") `isPrefixOf`))
   Right ini <- readIniFile $ cfgPath <> "/smp-server.ini"
   lookupValue "STORE_LOG" "enable" ini `shouldBe` Right (if storeLog then "on" else "off")
   lookupValue "STORE_LOG" "log_stats" ini `shouldBe` Right "off"

@@ -123,7 +123,8 @@ cfg =
       controlPort = Nothing,
       smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1}, -- seconds
       allowSMPProxy = False,
-      serverClientConcurrency = 2
+      serverClientConcurrency = 2,
+      information = Nothing
     }
 
 cfgV7 :: ServerConfig

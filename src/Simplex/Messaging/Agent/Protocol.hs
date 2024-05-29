@@ -108,6 +108,7 @@ module Simplex.Messaging.Agent.Protocol
     CRClientData,
     ServiceScheme,
     simplexChat,
+    connReqUriP',
     AgentErrorType (..),
     CommandErrorType (..),
     ConnectionErrorType (..),
@@ -1161,7 +1162,7 @@ instance StrEncoding MsgReceipt where
     msgRcptStatus <- strP
     pure MsgReceipt {agentMsgId, msgRcptStatus}
 
-instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
+instance ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
     CRInvitationUri crData e2eParams -> crEncode "invitation" crData (Just e2eParams)
     CRContactUri crData -> crEncode "contact" crData Nothing
@@ -1175,34 +1176,40 @@ instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) whe
               [("v", strEncode crAgentVRange), ("smp", strEncode crSmpQueues)]
                 <> maybe [] (\e2e -> [("e2e", strEncode e2e)]) e2eParams
                 <> maybe [] (\cd -> [("data", encodeUtf8 cd)]) crClientData
-  strP = do
-    ACR m cr <- strP
-    case testEquality m $ sConnectionMode @m of
-      Just Refl -> pure cr
-      _ -> fail "bad connection request mode"
+  strP = connReqUriP' (Just SSSimplex)
+
+connReqUriP' :: forall m. ConnectionModeI m => Maybe ServiceScheme -> Parser (ConnectionRequestUri m)
+connReqUriP' overrideScheme = do
+  ACR m cr <- connReqUriP overrideScheme
+  case testEquality m $ sConnectionMode @m of
+    Just Refl -> pure cr
+    _ -> fail "bad connection request mode"
 
 instance StrEncoding AConnectionRequestUri where
   strEncode (ACR _ cr) = strEncode cr
-  strP = do
-    _crScheme :: ServiceScheme <- strP
-    crMode <- A.char '/' *> crModeP <* optional (A.char '/') <* "#/?"
-    query <- strP
-    aVRange <- queryParam "v" query
-    crSmpQueues <- queryParam "smp" query
-    let crClientData = safeDecodeUtf8 <$> queryParamStr "data" query
-    let crData = ConnReqUriData {crScheme = SSSimplex, crAgentVRange = aVRange, crSmpQueues, crClientData}
-    case crMode of
-      CMInvitation -> do
-        crE2eParams <- queryParam "e2e" query
-        pure . ACR SCMInvitation $ CRInvitationUri crData crE2eParams
-      -- contact links are adjusted to the minimum version supported by the agent
-      -- to preserve compatibility with the old links published online
-      CMContact -> pure . ACR SCMContact $ CRContactUri crData {crAgentVRange = adjustAgentVRange aVRange}
-    where
-      crModeP = "invitation" $> CMInvitation <|> "contact" $> CMContact
-      adjustAgentVRange vr =
-        let v = max duplexHandshakeSMPAgentVersion $ minVersion vr
-         in fromMaybe vr $ safeVersionRange v (max v $ maxVersion vr)
+  strP = connReqUriP (Just SSSimplex)
+
+connReqUriP :: Maybe ServiceScheme -> Parser AConnectionRequestUri
+connReqUriP overrideScheme = do
+  crScheme <- (`fromMaybe` overrideScheme) <$> strP
+  crMode <- A.char '/' *> crModeP <* optional (A.char '/') <* "#/?"
+  query <- strP
+  aVRange <- queryParam "v" query
+  crSmpQueues <- queryParam "smp" query
+  let crClientData = safeDecodeUtf8 <$> queryParamStr "data" query
+      crData = ConnReqUriData {crScheme, crAgentVRange = aVRange, crSmpQueues, crClientData}
+  case crMode of
+    CMInvitation -> do
+      crE2eParams <- queryParam "e2e" query
+      pure . ACR SCMInvitation $ CRInvitationUri crData crE2eParams
+    -- contact links are adjusted to the minimum version supported by the agent
+    -- to preserve compatibility with the old links published online
+    CMContact -> pure . ACR SCMContact $ CRContactUri crData {crAgentVRange = adjustAgentVRange aVRange}
+  where
+    crModeP = "invitation" $> CMInvitation <|> "contact" $> CMContact
+    adjustAgentVRange vr =
+      let v = max duplexHandshakeSMPAgentVersion $ minVersion vr
+        in fromMaybe vr $ safeVersionRange v (max v $ maxVersion vr)
 
 instance ConnectionModeI m => FromJSON (ConnectionRequestUri m) where
   parseJSON = strParseJSON "ConnectionRequestUri"

@@ -2,6 +2,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StrictData #-}
 
 module Simplex.Messaging.Server.Env.STM where
 
@@ -15,6 +16,7 @@ import qualified Data.IntMap.Strict as IM
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.Maybe (isJust, isNothing)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
@@ -27,6 +29,7 @@ import Simplex.Messaging.Crypto (KeyHash (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
@@ -81,9 +84,12 @@ data ServerConfig = ServerConfig
     transportConfig :: TransportServerConfig,
     -- | run listener on control port
     controlPort :: Maybe ServiceName,
+    -- | SMP proxy config
     smpAgentCfg :: SMPClientAgentConfig,
     allowSMPProxy :: Bool, -- auth is the same with `newQueueBasicAuth`
-    serverClientConcurrency :: Int
+    serverClientConcurrency :: Int,
+    -- | server public information
+    information :: Maybe ServerPublicInfo
   }
 
 defMsgExpirationDays :: Int64
@@ -108,6 +114,7 @@ defaultProxyClientConcurrency = 32
 
 data Env = Env
   { config :: ServerConfig,
+    serverInfo :: ServerInformation,
     server :: Server,
     serverIdentity :: KeyHash,
     queueStore :: QueueStore,
@@ -192,7 +199,7 @@ newSubscription subThread = do
   return Sub {subThread, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, smpAgentCfg, transportConfig} = do
+newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, smpAgentCfg, transportConfig, information, messageExpiration} = do
   server <- atomically newServer
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
@@ -206,7 +213,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   proxyAgent <- atomically $ newSMPProxyAgent smpAgentCfg random
-  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
+  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
@@ -222,6 +229,23 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
     addNotifier q = case notifier q of
       Nothing -> id
       Just NtfCreds {notifierId} -> M.insert notifierId (recipientId q)
+    serverInfo =
+      ServerInformation
+        { information,
+          config =
+            ServerPublicConfig
+              { persistence,
+                messageExpiration = ttl <$> messageExpiration,
+                statsEnabled = isJust $ logStatsInterval config,
+                newQueuesAllowed = allowNewQueues config,
+                basicAuthEnabled = isJust $ newQueueBasicAuth config
+              }
+        }
+      where
+        persistence
+          | isNothing storeLogFile = SPMMemoryOnly
+          | isJust (storeMsgsFile config) = SPMMessages
+          | otherwise = SPMQueues
 
 newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> STM ProxyAgent
 newSMPProxyAgent smpAgentCfg random = do

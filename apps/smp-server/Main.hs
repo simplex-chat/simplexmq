@@ -1,10 +1,9 @@
-{-# LANGUAGE LambdaCase #-}
-
 module Main where
 
 import Control.Logger.Simple
 import Simplex.Messaging.Server.CLI (getEnvPath)
 import Simplex.Messaging.Server.Main
+import qualified Static
 
 defaultCfgPath :: FilePath
 defaultCfgPath = "/etc/opt/simplex"
@@ -20,4 +19,4 @@ main = do
   setLogLevel LogDebug
   cfgPath <- getEnvPath "SMP_SERVER_CFG_PATH" defaultCfgPath
   logPath <- getEnvPath "SMP_SERVER_LOG_PATH" defaultLogPath
-  withGlobalLogging logCfg $ smpServerCLI cfgPath logPath
+  withGlobalLogging logCfg $ smpServerCLI_ Static.generateSite Static.serveStaticFiles cfgPath logPath
