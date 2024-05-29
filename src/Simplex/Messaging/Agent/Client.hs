@@ -137,6 +137,8 @@ module Simplex.Messaging.Agent.Client
     getAgentWorkersDetails,
     AgentWorkersSummary (..),
     getAgentWorkersSummary,
+    AgentQueuesInfo (..),
+    getAgentQueuesInfo,
     SMPTransportSession,
     NtfTransportSession,
     XFTPTransportSession,
@@ -1060,10 +1062,11 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
                     $>>= \(ProtoServerWithAuth srv _) -> tryReadSessVar (userId, srv, qId) (smpClients c)
                 )
                   >>= \case
-                    Just (Right (SMPConnectedClient smp' prs)) | sameClient smp' ->
-                      tryReadSessVar destSrv prs >>= \case
-                        Just (Right proxySess') | sameProxiedRelay proxySess' -> TM.delete destSrv prs
-                        _ -> pure ()
+                    Just (Right (SMPConnectedClient smp' prs))
+                      | sameClient smp' ->
+                          tryReadSessVar destSrv prs >>= \case
+                            Just (Right proxySess') | sameProxiedRelay proxySess' -> TM.delete destSrv prs
+                            _ -> pure ()
                     _ -> pure ()
               sameClient smp' = sessionId (thParams smp) == sessionId (thParams smp')
               sameProxiedRelay proxySess' = prSessionId proxySess == prSessionId proxySess'
@@ -2040,6 +2043,47 @@ getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeli
             (atomically $ isJust <$> tryReadTMVar action)
             (pure WorkersSummary {numActive, numIdle = numIdle + 1, totalRestarts = totalRestarts + restartCount})
             (pure WorkersSummary {numActive = numActive + 1, numIdle, totalRestarts = totalRestarts + restartCount})
+
+data AgentQueuesInfo = AgentQueuesInfo
+  { msgQInfo :: TBQueueInfo,
+    subQInfo :: TBQueueInfo,
+    smpClientsQueues :: Map SMPTransportSession (Either (AgentErrorType, Maybe UTCTime) ClientQueuesInfo)
+  }
+
+data ClientQueuesInfo = ClientQueuesInfo
+  { sndQInfo :: TBQueueInfo,
+    rcvQInfo :: TBQueueInfo
+  }
+
+data TBQueueInfo = TBQueueInfo
+  { qLength :: Int,
+    qFull :: Bool
+    -- qPeek :: Maybe String
+  }
+
+getAgentQueuesInfo :: AgentClient -> IO AgentQueuesInfo
+getAgentQueuesInfo AgentClient {msgQ, subQ, smpClients} = do
+  msgQInfo <- atomically $ getTBQueueInfo msgQ
+  subQInfo <- atomically $ getTBQueueInfo subQ
+  smpClientsMap <- readTVarIO smpClients
+  smpClientsQueues <- mapM getClientQueuesInfo smpClientsMap
+  pure AgentQueuesInfo {msgQInfo, subQInfo, smpClientsQueues}
+  where
+    getClientQueuesInfo :: SMPClientVar -> IO (Either (AgentErrorType, Maybe UTCTime) ClientQueuesInfo)
+    getClientQueuesInfo v =
+      atomically (readTMVar $ sessionVar v) >>= \case
+        Right c -> do
+          let ProtocolClient {client_ = PClient {sndQ, rcvQ}} = protocolClient c
+          sndQInfo <- atomically $ getTBQueueInfo sndQ
+          rcvQInfo <- atomically $ getTBQueueInfo rcvQ
+          pure $ Right ClientQueuesInfo {sndQInfo, rcvQInfo}
+        Left e -> pure $ Left e
+    getTBQueueInfo :: TBQueue a -> STM TBQueueInfo
+    getTBQueueInfo q = do
+      qLength <- fromIntegral <$> lengthTBQueue q
+      qFull <- isFullTBQueue q
+      -- qPeek <- fmap (take 20 . show) <$> tryPeekTBQueue q
+      pure TBQueueInfo {qLength, qFull}
 
 $(J.deriveJSON defaultJSON ''AgentLocks)
 

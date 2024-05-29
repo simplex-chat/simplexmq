@@ -28,7 +28,8 @@
 module Simplex.Messaging.Client
   ( -- * Connect (disconnect) client to (from) SMP server
     TransportSession,
-    ProtocolClient (thParams, sessionTs),
+    ProtocolClient (ProtocolClient, client_, thParams, sessionTs),
+    PClient (PClient, sndQ, rcvQ),
     SMPClient,
     ProxiedRelay (..),
     getProtocolClient,
