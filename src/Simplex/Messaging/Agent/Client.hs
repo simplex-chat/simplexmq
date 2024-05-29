@@ -2058,7 +2058,6 @@ data ClientQueuesInfo = ClientQueuesInfo
 data TBQueueInfo = TBQueueInfo
   { qLength :: Int,
     qFull :: Bool
-    -- qPeek :: Maybe String
   }
 
 getAgentQueuesInfo :: AgentClient -> IO AgentQueuesInfo
@@ -2082,7 +2081,6 @@ getAgentQueuesInfo AgentClient {msgQ, subQ, smpClients} = do
     getTBQueueInfo q = do
       qLength <- fromIntegral <$> lengthTBQueue q
       qFull <- isFullTBQueue q
-      -- qPeek <- fmap (take 20 . show) <$> tryPeekTBQueue q
       pure TBQueueInfo {qLength, qFull}
 
 $(J.deriveJSON defaultJSON ''AgentLocks)
