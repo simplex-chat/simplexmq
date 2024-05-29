@@ -2047,7 +2047,7 @@ getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeli
 data AgentQueuesInfo = AgentQueuesInfo
   { msgQInfo :: TBQueueInfo,
     subQInfo :: TBQueueInfo,
-    smpClientsQueues :: Map SMPTransportSession (Either (AgentErrorType, Maybe UTCTime) ClientQueuesInfo)
+    smpClientsQueues :: Map String (Either (AgentErrorType, Maybe UTCTime) ClientQueuesInfo)
   }
 
 data ClientQueuesInfo = ClientQueuesInfo
@@ -2065,7 +2065,8 @@ getAgentQueuesInfo AgentClient {msgQ, subQ, smpClients} = do
   msgQInfo <- atomically $ getTBQueueInfo msgQ
   subQInfo <- atomically $ getTBQueueInfo subQ
   smpClientsMap <- readTVarIO smpClients
-  smpClientsQueues <- mapM getClientQueuesInfo smpClientsMap
+  let smpClientsMap' = M.fromList . map (first show) . M.toList $ smpClientsMap
+  smpClientsQueues <- mapM getClientQueuesInfo smpClientsMap'
   pure AgentQueuesInfo {msgQInfo, subQInfo, smpClientsQueues}
   where
     getClientQueuesInfo :: SMPClientVar -> IO (Either (AgentErrorType, Maybe UTCTime) ClientQueuesInfo)
@@ -2100,6 +2101,12 @@ $(J.deriveJSON defaultJSON ''WorkersSummary)
 $(J.deriveJSON defaultJSON {J.fieldLabelModifier = takeWhile (/= '_')} ''AgentWorkersDetails)
 
 $(J.deriveJSON defaultJSON ''AgentWorkersSummary)
+
+$(J.deriveJSON defaultJSON ''TBQueueInfo)
+
+$(J.deriveJSON defaultJSON ''ClientQueuesInfo)
+
+$(J.deriveJSON defaultJSON ''AgentQueuesInfo)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "UN") ''UserNetworkType)
 
