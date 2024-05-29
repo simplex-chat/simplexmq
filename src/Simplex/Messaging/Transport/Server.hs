@@ -138,9 +138,10 @@ safeAccept sock =
   tryIOError (accept sock) >>= \case
     Right r -> pure r
     Left e
-      | maybe False ((`elem` again) . Errno) errno -> logWarn err >> safeAccept sock
+      | retryAccept -> logWarn err >> safeAccept sock
       | otherwise -> logError err >> E.throwIO e
       where
+        retryAccept = maybe False ((`elem` again) . Errno) errno
         again = [eAGAIN, eNETDOWN, ePROTO, eNOPROTOOPT, eHOSTDOWN, eNONET, eHOSTUNREACH, eOPNOTSUPP, eNETUNREACH]
         err = "socket accept error: " <> tshow e <> maybe "" ((", errno=" <>) . tshow) errno
         errno = ioe_errno e
