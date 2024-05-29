@@ -141,11 +141,9 @@ safeAccept sock =
       | maybe False ((`elem` again) . Errno) errno -> logWarn err >> safeAccept sock
       | otherwise -> logError err >> E.throwIO e
       where
+        again = [eAGAIN, eNETDOWN, ePROTO, eNOPROTOOPT, eHOSTDOWN, eNONET, eHOSTUNREACH, eOPNOTSUPP, eNETUNREACH]
         err = "socket accept error: " <> tshow e <> maybe "" ((", errno=" <>) . tshow) errno
         errno = ioe_errno e
-  where
-    again :: [Errno]
-    again = [eAGAIN, eNETDOWN, ePROTO, eNOPROTOOPT, eHOSTDOWN, eNONET, eHOSTUNREACH, eOPNOTSUPP, eNETUNREACH]
 
 type SocketState = (TVar Int, TVar Int, TVar (IntMap (Weak ThreadId)))
 
