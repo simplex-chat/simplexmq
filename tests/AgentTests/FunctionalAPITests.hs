@@ -1565,7 +1565,7 @@ testBatchedSubscriptions nCreate nDel t =
       deleteFail b aIds'
   where
     agentCfgN :: AgentConfig
-    agentCfgN = agentCfg {tbqSize = fromIntegral nCreate} -- without reader thread sub notifications would be flushed until all batches finish, blocking on `notifySub`
+    agentCfgN = agentCfg {tbqSize = fromIntegral nCreate} -- without a reader thread subscriber would block on notifySub when the subQ gets full
     subscribe :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
     subscribe c cs = do
       r <- subscribeConnections c cs
