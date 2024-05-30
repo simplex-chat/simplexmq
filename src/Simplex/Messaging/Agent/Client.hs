@@ -684,6 +684,9 @@ smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess
         atomically $ mapM_ (releaseGetLock c) qs
         runReaderT (resubscribeSMPSession c tSess) env
 
+notifySub :: forall e m. (AEntityI e, MonadIO m) => AgentClient -> ConnId -> ACommand 'Agent e -> m ()
+notifySub c connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
+
 resubscribeSMPSession :: AgentClient -> SMPTransportSession -> AM' ()
 resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess =
   atomically getWorkerVar >>= mapM_ (either newSubWorker (\_ -> pure ()))
@@ -729,9 +732,6 @@ reconnectSMPClient c tSess qs = handleNotify $ do
   where
     handleNotify :: AM' () -> AM' ()
     handleNotify = E.handleAny $ notifySub c "" . ERR . INTERNAL . show
-
-notifySub :: forall e m. (AEntityI e, MonadIO m) => AgentClient -> ConnId -> ACommand 'Agent e -> m ()
-notifySub c connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
 getNtfServerClient :: AgentClient -> NtfTransportSession -> AM NtfClient
 getNtfServerClient c@AgentClient {active, ntfClients, workerSeq} tSess@(userId, srv, _) = do
