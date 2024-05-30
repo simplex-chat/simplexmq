@@ -2047,7 +2047,7 @@ getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeli
 data AgentQueuesInfo = AgentQueuesInfo
   { msgQInfo :: TBQueueInfo,
     subQInfo :: TBQueueInfo,
-    smpClientsQueues :: Map String ClientInfo
+    smpClientsQueues :: Map Text ClientInfo
   }
   deriving (Show)
 
@@ -2068,7 +2068,7 @@ getAgentQueuesInfo AgentClient {msgQ, subQ, smpClients} = do
   msgQInfo <- atomically $ getTBQueueInfo msgQ
   subQInfo <- atomically $ getTBQueueInfo subQ
   smpClientsMap <- readTVarIO smpClients
-  let smpClientsMap' = M.mapKeys show $ smpClientsMap
+  let smpClientsMap' = M.mapKeys (decodeLatin1 . strEncode) smpClientsMap
   smpClientsQueues <- mapM getClientQueuesInfo smpClientsMap'
   pure AgentQueuesInfo {msgQInfo, subQInfo, smpClientsQueues}
   where
