@@ -142,8 +142,6 @@ xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {session
       HTTP2Response {respBody = HTTP2Body {bodyHead = shsBody}} <-
         liftError' http2XFTPClientError $ sendRequest c helloReq Nothing
       liftTransportErr (TEHandshake PARSE) . smpDecode =<< liftTransportErr TEBadBlock (C.unPad shsBody)
-    --   liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequest c helloReq Nothing
-    -- liftHS . smpDecode =<< liftHS (C.unPad shsBody)
     processServerHandshake :: XFTPServerHandshake -> ExceptT XFTPClientError IO (VersionRangeXFTP, C.PublicKeyX25519)
     processServerHandshake XFTPServerHandshake {xftpVersionRange, sessionId = serverSessId, authPubKey = serverAuth} = do
       unless (sessionId == serverSessId) $ throwError $ PCETransportError TEBadSession
@@ -164,10 +162,6 @@ xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {session
       HTTP2Response {respBody = HTTP2Body {bodyHead}} <- liftError' http2XFTPClientError $ sendRequest c chsReq Nothing
       unless (B.null bodyHead) $ throwError $ PCETransportError TEBadBlock
     liftTransportErr e = liftEitherWith (const $ PCETransportError e)
-
---   HTTP2Response {respBody = HTTP2Body {bodyHead}} <- liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequest c chsReq Nothing
---   unless (B.null bodyHead) $ throwError $ PCEResponseError HANDSHAKE
--- liftHS = liftEitherWith (const $ PCEResponseError HANDSHAKE)
 
 closeXFTPClient :: XFTPClient -> IO ()
 closeXFTPClient XFTPClient {http2Client} = closeHTTP2Client http2Client
