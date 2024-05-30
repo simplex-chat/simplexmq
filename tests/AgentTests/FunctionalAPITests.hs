@@ -1322,8 +1322,9 @@ testRatchetSyncSuspendForeground t = do
   foregroundAgent bob2
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
-    get alice =##> ratchetSyncP bobId RSAgreed
-    get bob2 =##> ratchetSyncP aliceId RSAgreed
+    concurrently_
+      (get alice =##> ratchetSyncP bobId RSAgreed)
+      (get bob2 =##> ratchetSyncP aliceId RSAgreed)
     get alice =##> ratchetSyncP bobId RSOk
     get bob2 =##> ratchetSyncP aliceId RSOk
     runRight_ $ exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
@@ -1348,8 +1349,9 @@ testRatchetSyncSimultaneous t = do
   liftIO $ aRSS `shouldBe` RSStarted
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
-    get alice =##> ratchetSyncP bobId RSAgreed
-    get bob2 =##> ratchetSyncP aliceId RSAgreed
+    concurrently_
+      (get alice =##> ratchetSyncP bobId RSAgreed)
+      (get bob2 =##> ratchetSyncP aliceId RSAgreed)
     get alice =##> ratchetSyncP bobId RSOk
     get bob2 =##> ratchetSyncP aliceId RSOk
     runRight_ $ exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
