@@ -93,10 +93,10 @@ type AEntityTransmission p e = (ACorrId, ConnId, ACommand p e)
 
 type AEntityTransmissionOrError p e = (ACorrId, ConnId, Either AgentErrorType (ACommand p e))
 
-tGetAgent :: Transport c => c -> IO (AEntityTransmissionOrError 'Agent 'AEConn)
+tGetAgent :: (Transport c, HasCallStack) => c -> IO (AEntityTransmissionOrError 'Agent 'AEConn)
 tGetAgent = tGetAgent' True
 
-tGetAgent' :: forall c e. (Transport c, AEntityI e) => Bool -> c -> IO (AEntityTransmissionOrError 'Agent e)
+tGetAgent' :: forall c e. (Transport c, AEntityI e, HasCallStack) => Bool -> c -> IO (AEntityTransmissionOrError 'Agent e)
 tGetAgent' skipErr h = do
   (corrId, connId, cmdOrErr) <- pGetAgent skipErr h
   case cmdOrErr of
@@ -111,6 +111,7 @@ pGetAgent skipErr h = do
   case cmdOrErr of
     Right (APC _ CONNECT {}) -> pGetAgent skipErr h
     Right (APC _ DISCONNECT {}) -> pGetAgent skipErr h
+    Right (APC _ UP {}) -> pGetAgent skipErr h
     Right (APC _ (ERR (BROKER _ NETWORK))) | skipErr -> pGetAgent skipErr h
     cmd -> pure (corrId, connId, cmd)
 
@@ -477,8 +478,7 @@ testMsgDeliveryAgentRestart t bob = do
           (corrId == "3" && cmd == OK)
             || (corrId == "" && cmd == SENT 5)
         _ -> False
-      bob <#=? \case ("", "alice", APC _ (Msg "hello again")) -> True; ("", "", APC _ (UP s ["alice"])) -> s == server; _ -> False
-      bob <#=? \case ("", "alice", APC _ (Msg "hello again")) -> True; ("", "", APC _ (UP s ["alice"])) -> s == server; _ -> False
+      bob <#=? \case ("", "alice", APC _ (Msg "hello again")) -> True; _ -> False
       bob #: ("12", "alice", "ACK 5") #> ("12", "alice", OK)
 
   removeFile testStoreLogFile
