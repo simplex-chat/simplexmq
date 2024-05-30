@@ -1524,7 +1524,7 @@ getConnectionQueueInfo' c connId = do
     RcvConnection _ rq -> getQueueInfo c rq
     ContactConnection _ rq -> getQueueInfo c rq
     SndConnection {} -> throwE $ CONN SIMPLEX
-    NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
+    NewConnection _ -> throwE $ CMD PROHIBITED "getConnectionQueueInfo': NewConnection"
 
 switchConnection' :: AgentClient -> ConnId -> AM ConnectionStats
 switchConnection' c connId =

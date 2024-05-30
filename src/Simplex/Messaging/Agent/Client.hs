@@ -1572,7 +1572,7 @@ sendAgentMessage c sq@SndQueue {userId, server, sndId, sndPrivateKey} msgFlags a
 
 getQueueInfo :: AgentClient -> RcvQueue -> AM QueueInfo
 getQueueInfo c rq@RcvQueue {rcvId, rcvPrivateKey} =
-  withSMPClient c rq "DEL" $ \smp ->
+  withSMPClient c rq "QUE" $ \smp ->
     getSMPQueueInfo smp rcvPrivateKey rcvId
 
 agentNtfRegisterToken :: AgentClient -> NtfToken -> NtfPublicAuthKey -> C.PublicKeyX25519 -> AM (NtfTokenId, C.PublicKeyX25519)
