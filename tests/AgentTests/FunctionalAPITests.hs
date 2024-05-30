@@ -39,6 +39,7 @@ module AgentTests.FunctionalAPITests
     rfGet,
     sfGet,
     nGet,
+    nGetUP,
     (##>),
     (=##>),
     pattern CON,
