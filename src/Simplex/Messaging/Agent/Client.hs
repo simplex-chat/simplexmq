@@ -206,7 +206,7 @@ import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, parse)
+import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, parse, sumTypeJSON)
 import Simplex.Messaging.Protocol
   ( AProtocolType (..),
     BrokerMsg,
@@ -2047,14 +2047,14 @@ getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeli
 data AgentQueuesInfo = AgentQueuesInfo
   { msgQInfo :: TBQueueInfo,
     subQInfo :: TBQueueInfo,
-    smpClientsQueues :: Map String (Either (AgentErrorType, Maybe UTCTime) ClientQueuesInfo)
+    smpClientsQueues :: Map String ClientInfo
   }
   deriving (Show)
 
-data ClientQueuesInfo = ClientQueuesInfo
-  { sndQInfo :: TBQueueInfo,
-    rcvQInfo :: TBQueueInfo
-  }
+data ClientInfo
+  = ClientInfoQueues {sndQInfo :: TBQueueInfo, rcvQInfo :: TBQueueInfo}
+  | ClientInfoError {clientError :: (AgentErrorType, Maybe UTCTime)}
+  | ClientInfoConnecting
   deriving (Show)
 
 data TBQueueInfo = TBQueueInfo
@@ -2068,19 +2068,20 @@ getAgentQueuesInfo AgentClient {msgQ, subQ, smpClients} = do
   msgQInfo <- atomically $ getTBQueueInfo msgQ
   subQInfo <- atomically $ getTBQueueInfo subQ
   smpClientsMap <- readTVarIO smpClients
-  let smpClientsMap' = M.fromList . map (first show) . M.toList $ smpClientsMap
+  let smpClientsMap' = M.mapKeys show $ smpClientsMap
   smpClientsQueues <- mapM getClientQueuesInfo smpClientsMap'
   pure AgentQueuesInfo {msgQInfo, subQInfo, smpClientsQueues}
   where
-    getClientQueuesInfo :: SMPClientVar -> IO (Either (AgentErrorType, Maybe UTCTime) ClientQueuesInfo)
+    getClientQueuesInfo :: SMPClientVar -> IO ClientInfo
     getClientQueuesInfo v =
-      atomically (readTMVar $ sessionVar v) >>= \case
-        Right c -> do
+      atomically (tryReadTMVar $ sessionVar v) >>= \case
+        Just (Right c) -> do
           let ProtocolClient {client_ = PClient {sndQ, rcvQ}} = protocolClient c
           sndQInfo <- atomically $ getTBQueueInfo sndQ
           rcvQInfo <- atomically $ getTBQueueInfo rcvQ
-          pure $ Right ClientQueuesInfo {sndQInfo, rcvQInfo}
-        Left e -> pure $ Left e
+          pure ClientInfoQueues {sndQInfo, rcvQInfo}
+        Just (Left e) -> pure $ ClientInfoError e
+        Nothing -> pure ClientInfoConnecting
     getTBQueueInfo :: TBQueue a -> STM TBQueueInfo
     getTBQueueInfo q = do
       qLength <- fromIntegral <$> lengthTBQueue q
@@ -2107,7 +2108,7 @@ $(J.deriveJSON defaultJSON ''AgentWorkersSummary)
 
 $(J.deriveJSON defaultJSON ''TBQueueInfo)
 
-$(J.deriveJSON defaultJSON ''ClientQueuesInfo)
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "ClientInfo") ''ClientInfo)
 
 $(J.deriveJSON defaultJSON ''AgentQueuesInfo)
 
