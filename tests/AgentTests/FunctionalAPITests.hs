@@ -451,7 +451,7 @@ functionalAPITests t = do
     it "should not reset online to offline if happens too quickly" testDoNotResetOnlineToOffline
     it "should resume multiple threads" testResumeMultipleThreads
   describe "SMP queue info" $ do
-    fit "server should respond with queue and subscription information" $
+    it "server should respond with queue and subscription information" $
       withSmpServer t testServerQueueInfo
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
