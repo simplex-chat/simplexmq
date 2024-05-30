@@ -59,7 +59,7 @@ import Data.List (intercalate, mapAccumR)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, fromMaybe, isNothing)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
@@ -82,6 +82,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.QueueStore.STM as QS
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
@@ -791,6 +792,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           NDEL -> deleteQueueNotifier_ st
           OFF -> suspendQueue_ st
           DEL -> delQueueAndMsgs st
+          QUE -> withQueue getQueueInfo
       where
         createQueue :: QueueStore -> RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> M (Transmission BrokerMsg)
         createQueue st recipientKey dhKey subMode = time "NEW" $ do
@@ -1162,6 +1164,26 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             Right q -> updateDeletedStats q $> ok
             Left e -> pure $ err e
 
+        getQueueInfo :: QueueRec -> M (Transmission BrokerMsg)
+        getQueueInfo QueueRec {senderKey, notifier} = do
+          q@MsgQueue {size} <- getStoreMsgQueue "getQueueInfo" queueId
+          info <- atomically $ do
+            qiSub <- TM.lookup queueId subscriptions >>= mapM mkQSub
+            qiSize <- readTVar size
+            qiMsg <- toMsgInfo <$$> tryPeekMsg q
+            pure QueueInfo {qiSnd = isJust senderKey, qiNtf = isJust notifier, qiSub, qiSize, qiMsg}
+          pure (corrId, queueId, INFO info)
+          where
+            mkQSub sub = do
+              Sub {subThread, delivered} <- readTVar sub
+              let qSubThread = case subThread of
+                    NoSub -> QNoSub
+                    SubPending -> QSubPending
+                    SubThread _ -> QSubThread
+                    ProhibitSub -> QProhibitSub
+              qDelivered <- decodeLatin1 . encode <$$> tryReadTMVar delivered
+              pure QSub {qSubThread, qDelivered}
+          
         ok :: Transmission BrokerMsg
         ok = (corrId, queueId, OK)
 

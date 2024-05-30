@@ -57,6 +57,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
 import Data.Bifunctor (first)
+import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
@@ -66,6 +67,7 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as S
+import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality (testEquality, (:~:) (Refl))
@@ -92,6 +94,7 @@ import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolS
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Transport (ATransport (..), SMPVersion, VersionSMP, authCmdsSMPVersion, basicAuthSMPVersion, batchCmdsSMPVersion, currentServerSMPRelayVersion, supportedSMPHandshakes)
 import Simplex.Messaging.Util (diffToMicroseconds)
 import Simplex.Messaging.Version (VersionRange (..))
@@ -107,8 +110,11 @@ type AEntityTransmission e = (ACorrId, ConnId, ACommand 'Agent e)
 
 -- deriving instance Eq (ValidFileDescription p)
 
+shouldRespond :: (HasCallStack, MonadUnliftIO m, Eq a, Show a) => m a -> a -> m ()
+a `shouldRespond` r = withFrozenCallStack $ withTimeout a (`shouldBe` r)
+
 (##>) :: (HasCallStack, MonadUnliftIO m) => m (AEntityTransmission e) -> AEntityTransmission e -> m ()
-a ##> t = withTimeout a (`shouldBe` t)
+a ##> t = a `shouldRespond` t
 
 (=##>) :: (Show a, HasCallStack, MonadUnliftIO m) => m a -> (HasCallStack => a -> Bool) -> m ()
 a =##> p =
@@ -228,7 +234,7 @@ mkVersionRange :: Word16 -> Word16 -> VersionRange v
 mkVersionRange v1 v2 = V.mkVersionRange (Version v1) (Version v2)
 
 runRight_ :: (Eq e, Show e, HasCallStack) => ExceptT e IO () -> Expectation
-runRight_ action = runExceptT action `shouldReturn` Right ()
+runRight_ action = withFrozenCallStack $ runExceptT action `shouldReturn` Right ()
 
 runRight :: (Show e, HasCallStack) => ExceptT e IO a -> IO a
 runRight action =
@@ -444,6 +450,9 @@ functionalAPITests t = do
     it "should wait for user network" testWaitForUserNetwork
     it "should not reset online to offline if happens too quickly" testDoNotResetOnlineToOffline
     it "should resume multiple threads" testResumeMultipleThreads
+  describe "SMP queue info" $ do
+    it "server should respond with queue and subscription information" $
+      withSmpServer t testServerQueueInfo
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -2754,6 +2763,91 @@ testResumeMultipleThreads = do
   maximum ts < 4000000 `shouldBe` True
   where
     aCfg = agentCfg {userOfflineDelay = 0}
+
+testServerQueueInfo :: IO ()
+testServerQueueInfo = do
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    (bobId, cReq) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+    liftIO $ threadDelay 200000
+    checkEmptyQ alice bobId False
+    aliceId <- joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
+    liftIO $ threadDelay 200000
+    checkEmptyQ alice bobId False
+    allowConnection alice bobId confId "alice's connInfo"
+    get alice ##> ("", bobId, CON)
+    get bob ##> ("", aliceId, INFO "alice's connInfo")
+    get bob ##> ("", aliceId, CON)
+    liftIO $ threadDelay 200000
+    checkEmptyQ alice bobId True
+    checkEmptyQ bob aliceId True
+    let msgId = 4
+    (msgId', PQEncOn) <- A.sendMessage alice bobId PQEncOn SMP.noMsgFlags "hello"
+    liftIO $ msgId' `shouldBe` msgId
+    get alice ##> ("", bobId, SENT msgId)
+    liftIO $ threadDelay 200000
+    Just srvMsgId <- checkMsgQ bob aliceId 1
+    get bob =##> \case
+      ("", c, MSG MsgMeta {integrity = MsgOk, broker = (smId, _), recipient = (mId, _), pqEncryption = PQEncOn} _ "hello") ->
+        c == aliceId && decodeLatin1 (B64.encode smId) == srvMsgId && mId == msgId
+      _ -> False
+    ackMessage bob aliceId msgId Nothing
+    liftIO $ threadDelay 200000
+    checkEmptyQ bob aliceId True
+    (msgId1, PQEncOn) <- A.sendMessage alice bobId PQEncOn SMP.noMsgFlags "hello 1"
+    get alice ##> ("", bobId, SENT msgId1)
+    Just _ <- checkMsgQ bob aliceId 1
+    (msgId2, PQEncOn) <- A.sendMessage alice bobId PQEncOn SMP.noMsgFlags "hello 2"
+    get alice ##> ("", bobId, SENT msgId2)
+    (msgId3, PQEncOn) <- A.sendMessage alice bobId PQEncOn SMP.noMsgFlags "hello 3"
+    get alice ##> ("", bobId, SENT msgId3)
+    (msgId4, PQEncOn) <- A.sendMessage alice bobId PQEncOn SMP.noMsgFlags "hello 4"
+    get alice ##> ("", bobId, SENT msgId4)
+    Just _ <- checkMsgQ bob aliceId 4
+    (msgId5, PQEncOn) <- A.sendMessage alice bobId PQEncOn SMP.noMsgFlags "hello: quota exceeded"
+    liftIO $ threadDelay 200000
+    Just _ <- checkMsgQ bob aliceId 5
+    get bob =##> \case ("", c, Msg' mId PQEncOn "hello 1") -> c == aliceId && mId == msgId1; _ -> False
+    ackMessage bob aliceId msgId1 Nothing
+    liftIO $ threadDelay 200000
+    Just _ <- checkMsgQ bob aliceId 4
+    get bob =##> \case ("", c, Msg' mId PQEncOn "hello 2") -> c == aliceId && mId == msgId2; _ -> False
+    ackMessage bob aliceId msgId2 Nothing
+    get bob =##> \case ("", c, Msg' mId PQEncOn "hello 3") -> c == aliceId && mId == msgId3; _ -> False
+    ackMessage bob aliceId msgId3 Nothing
+    liftIO $ threadDelay 200000
+    Just _ <- checkMsgQ bob aliceId 2
+    get bob =##> \case ("", c, Msg' mId PQEncOn "hello 4") -> c == aliceId && mId == msgId4; _ -> False
+    ackMessage bob aliceId msgId4 Nothing
+    liftIO $ threadDelay 200000
+    Just _ <- checkMsgQ bob aliceId 1 -- the one that did not fit now accepted
+    get alice ##> ("", bobId, QCONT)
+    get alice ##> ("", bobId, SENT msgId5)
+    liftIO $ threadDelay 200000
+    Just _srvMsgId <- checkQ bob aliceId True (Just QNoSub) 1 (Just MTMessage)
+    get bob =##> \case ("", c, Msg' mId PQEncOn "hello: quota exceeded") -> c == aliceId && mId == msgId5 + 1; _ -> False
+    ackMessage bob aliceId (msgId5 + 1) Nothing
+    liftIO $ threadDelay 200000
+    checkEmptyQ bob aliceId True
+    pure ()
+  where
+    checkEmptyQ c cId qiSnd' = do
+      r <- checkQ c cId qiSnd' (Just QSubThread) 0 Nothing
+      liftIO $ r `shouldBe` Nothing
+    checkMsgQ c cId qiSize' = do
+      r <- checkQ c cId True (Just QNoSub) qiSize' (Just MTMessage)
+      liftIO $ isJust r `shouldBe` True
+      pure r
+    checkQ c cId qiSnd' qiSubThread_ qiSize' msgType_ = do
+      QueueInfo {qiSnd, qiNtf, qiSub, qiSize, qiMsg} <- getConnectionQueueInfo c cId
+      liftIO $ do
+        qiSnd `shouldBe` qiSnd'
+        qiNtf `shouldBe` False
+        qSubThread <$> qiSub `shouldBe` qiSubThread_
+        qiSize `shouldBe` qiSize'
+        msgId_ <- forM qiMsg $ \MsgInfo {msgId, msgType} -> msgId <$ (Just msgType `shouldBe` msgType_)
+        qDelivered <$> qiSub `shouldBe` Just msgId_
+        pure msgId_
 
 noNetworkDelay :: AgentClient -> IO ()
 noNetworkDelay a = do

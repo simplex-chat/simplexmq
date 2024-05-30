@@ -77,13 +77,13 @@ smpServerTest storeLog basicAuth = do
   let certPath = cfgPath </> "server.crt"
   oldCrt@X.Certificate {} <-
     XF.readSignedObject certPath >>= \case
-      [cert] -> pure . X.signedObject $ X.getSigned cert
+      [cert'] -> pure . X.signedObject $ X.getSigned cert'
       _ -> error "bad crt format"
   r' <- lines <$> capture_ (withArgs ["cert"] $ (100000 `timeout` smpServerCLI cfgPath logPath) `catchAll_` pure (Just ()))
   r' `shouldContain` ["Generated new server credentials"]
   newCrt <-
     XF.readSignedObject certPath >>= \case
-      [cert] -> pure . X.signedObject $ X.getSigned cert
+      [cert'] -> pure . X.signedObject $ X.getSigned cert'
       _ -> error "bad crt format after cert"
   X.certSignatureAlg oldCrt `shouldBe` X.certSignatureAlg newCrt
   X.certSubjectDN oldCrt `shouldBe` X.certSubjectDN newCrt
