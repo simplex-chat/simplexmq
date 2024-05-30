@@ -1351,12 +1351,13 @@ subscribeQueues c qs = do
         then do
           when (any isNothing subResults) resubscribe
           let up = catMaybes $ L.toList subResults
-          unless (null up) $ notifySub c "" $ UP srv up
+          unless (null up) $ notifyUP up
           pure rs
         else do
           logWarn "subcription batch result for replaced SMP client, resubscribing"
           resubscribe $> L.map (second $ \_ -> Left PCENetworkError) rs
       where
+        notifyUP up = maybe (logError "sndQ full" >> notifyUP up) pure =<< timeout 30000000 (notifySub c "" $ UP srv up)
         tSess@(_, srv, _) = transportSession' smp
         sessId = sessionId $ thParams smp
         processSubResults :: NonEmpty (RcvQueue, Either SMPClientError ()) -> STM (NonEmpty (Maybe ConnId))
