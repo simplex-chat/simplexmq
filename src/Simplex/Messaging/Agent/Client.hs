@@ -2053,7 +2053,7 @@ getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeli
 data AgentQueuesInfo = AgentQueuesInfo
   { msgQInfo :: TBQueueInfo,
     subQInfo :: TBQueueInfo,
-    smpClientsQueues :: Map Text ClientInfo
+    smpClientsQueues :: Map Text (Int, UTCTime, ClientInfo)
   }
   deriving (Show)
 
@@ -2072,14 +2072,15 @@ getAgentQueuesInfo AgentClient {msgQ, subQ, smpClients} = do
   smpClientsQueues <- mapM getClientQueuesInfo smpClientsMap'
   pure AgentQueuesInfo {msgQInfo, subQInfo, smpClientsQueues}
   where
-    getClientQueuesInfo :: SMPClientVar -> IO ClientInfo
-    getClientQueuesInfo v =
-      atomically (tryReadTMVar $ sessionVar v) >>= \case
+    getClientQueuesInfo :: SMPClientVar -> IO (Int, UTCTime, ClientInfo)
+    getClientQueuesInfo SessionVar {sessionVar, sessionVarId, sessionVarTs} = do
+      clientInfo <- atomically (tryReadTMVar sessionVar) >>= \case
         Just (Right c) -> do
           (sndQInfo, rcvQInfo) <- getProtocolClientQueuesInfo $ protocolClient c
           pure ClientInfoQueues {sndQInfo, rcvQInfo}
         Just (Left e) -> pure $ ClientInfoError e
         Nothing -> pure ClientInfoConnecting
+      pure (sessionVarId, sessionVarTs, clientInfo)
 
 $(J.deriveJSON defaultJSON ''AgentLocks)
 
