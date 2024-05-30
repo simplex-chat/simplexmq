@@ -9,7 +9,7 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Parsers (defaultJSON, enumJSON, dropPrefix)
+import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
 import Simplex.Messaging.Util ((<$?>))
 
 data QueueInfo = QueueInfo

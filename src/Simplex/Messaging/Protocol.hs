@@ -1387,7 +1387,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     RRES (EncFwdResponse encBlock) -> e (RRES_, ' ', Tail encBlock)
     PRES (EncResponse encBlock) -> e (PRES_, ' ', Tail encBlock)
     END -> e END_
-    INFO info -> e (INFO_, info)
+    INFO info -> e (INFO_, ' ', info)
     OK -> e OK_
     ERR err -> e (ERR_, ' ', err)
     PONG -> e PONG_
