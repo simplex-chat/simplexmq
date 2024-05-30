@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -67,6 +68,9 @@ import Simplex.Messaging.Version
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
 import System.IO (hPrint, hPutStrLn, universalNewlineMode)
+#ifdef slow_servers
+import System.Random (getStdRandom, randomR)
+#endif
 import UnliftIO
 import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Directory (doesFileExist, removeFile, renameFile)
@@ -138,6 +142,9 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           let authPubKey = (chain, C.signX509 serverSignKey $ C.publicToX509 k)
           let hs = XFTPServerHandshake {xftpVersionRange = xftpServerVRange, sessionId, authPubKey}
           shs <- encodeXftp hs
+#ifdef slow_servers
+          lift randomDelay
+#endif
           liftIO . sendResponse $ H.responseBuilder N.ok200 [] shs
           pure Nothing
         processClientHandshake pk = do
@@ -151,6 +158,9 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               let auth = THAuthServer {serverPrivKey = pk, sessSecret' = Nothing}
                   thParams = thParams0 {thAuth = Just auth, thVersion = v, thServerVRange = vr}
               atomically $ TM.insert sessionId (HandshakeAccepted thParams) sessions
+#ifdef slow_servers
+              lift randomDelay
+#endif
               liftIO . sendResponse $ H.responseNoBody N.ok200 []
               pure Nothing
             Nothing -> throwError HANDSHAKE
@@ -315,6 +325,9 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
   where
     sendXFTPResponse (corrId, fId, resp) serverFile_ = do
       let t_ = xftpEncodeTransmission thParams (corrId, fId, resp)
+#ifdef slow_servers
+      randomDelay
+#endif
       liftIO $ sendResponse $ H.responseStreaming N.ok200 [] $ streamBody t_
       where
         streamBody t_ send done = do
@@ -328,6 +341,15 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
               forM_ serverFile_ $ \ServerFile {filePath, fileSize, sbState} -> do
                 withFile filePath ReadMode $ \h -> sendEncFile h send sbState fileSize
           done
+
+#ifdef slow_servers
+randomDelay :: M ()
+randomDelay = do
+  d <- asks $ responseDelay . config
+  when (d > 0) $ do
+    pc <- getStdRandom (randomR (-200, 200))
+    threadDelay $ (d * (1000 + pc)) `div` 1000
+#endif
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed
 

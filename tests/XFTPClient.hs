@@ -124,7 +124,8 @@ testXFTPServerConfig_ alpn =
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/tmp/xftp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
-      transportConfig = defaultTransportServerConfig {alpn}
+      transportConfig = defaultTransportServerConfig {alpn},
+      responseDelay = 0
     }
 
 testXFTPClientConfig :: XFTPClientConfig
