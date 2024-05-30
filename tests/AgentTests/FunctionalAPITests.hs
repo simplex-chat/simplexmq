@@ -2768,6 +2768,7 @@ testServerQueueInfo :: IO ()
 testServerQueueInfo = do
   withAgentClients2 $ \alice bob -> runRight_ $ do
     (bobId, cReq) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+    liftIO $ threadDelay 500000
     checkEmptyQ alice bobId False
     aliceId <- joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
     ("", _, CONF confId _ "bob's connInfo") <- get alice
@@ -2777,6 +2778,7 @@ testServerQueueInfo = do
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
+    liftIO $ threadDelay 500000
     checkEmptyQ alice bobId True
     checkEmptyQ bob aliceId True
     let msgId = 4
@@ -2790,6 +2792,7 @@ testServerQueueInfo = do
         c == aliceId && decodeLatin1 (B64.encode smId) == srvMsgId && mId == msgId
       _ -> False
     ackMessage bob aliceId msgId Nothing
+    liftIO $ threadDelay 500000
     checkEmptyQ bob aliceId True
     (msgId1, PQEncOn) <- A.sendMessage alice bobId PQEncOn SMP.noMsgFlags "hello 1"
     get alice ##> ("", bobId, SENT msgId1)
