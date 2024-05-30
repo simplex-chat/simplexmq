@@ -143,10 +143,11 @@ getSMPServerClient' ca srv = snd <$> getSMPServerClient'' ca srv
 {-# INLINE getSMPServerClient' #-}
 
 getSMPServerClient'' :: SMPClientAgent -> SMPServer -> ExceptT SMPClientError IO (OwnServer, SMPClient)
-getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, workerSeq} srv =
-  atomically getClientVar >>= either (ExceptT . newSMPClient) waitForSMPClient
+getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, workerSeq} srv = do
+  ts <- liftIO getCurrentTime
+  atomically (getClientVar ts) >>= either (ExceptT . newSMPClient) waitForSMPClient
   where
-    getClientVar :: STM (Either SMPClientVar SMPClientVar)
+    getClientVar :: UTCTime -> STM (Either SMPClientVar SMPClientVar)
     getClientVar = getSessVar workerSeq srv smpClients
 
     waitForSMPClient :: SMPClientVar -> ExceptT SMPClientError IO (OwnServer, SMPClient)
@@ -227,14 +228,15 @@ connectClient ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, random
 
 -- | Spawn reconnect worker if needed
 reconnectClient :: SMPClientAgent -> SMPServer -> IO ()
-reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} srv =
-  whenM (readTVarIO active) $ atomically getWorkerVar >>= mapM_ (either newSubWorker (\_ -> pure ()))
+reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} srv = do
+  ts <- getCurrentTime
+  whenM (readTVarIO active) $ atomically (getWorkerVar ts) >>= mapM_ (either newSubWorker (\_ -> pure ()))
   where
-    getWorkerVar =
+    getWorkerVar ts =
       ifM
         (null <$> getPending)
         (pure Nothing) -- prevent race with cleanup and adding pending queues in another call
-        (Just <$> getSessVar workerSeq srv smpSubWorkers)
+        (Just <$> getSessVar workerSeq srv smpSubWorkers ts)
     newSubWorker :: SessionVar (Async ()) -> IO ()
     newSubWorker v = do
       a <- async $ void (E.tryAny runSubWorker) >> atomically (cleanup v)

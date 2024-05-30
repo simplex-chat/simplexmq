@@ -91,6 +91,11 @@ module Simplex.Messaging.Client
     mkTransmission,
     authTransmission,
     smpClientStub,
+
+    -- * For debugging
+    TBQueueInfo (..),
+    getTBQueueInfo,
+    getProtocolClientQueuesInfo,
   )
 where
 
@@ -1062,6 +1067,24 @@ authTransmission thAuth pKey_ nonce t = traverse authenticate pKey_
     sign :: forall a. (C.AlgorithmI a, C.SignatureAlgorithm a) => C.PrivateKey a -> Either TransportError TransmissionAuth
     sign pk = Right $ TASignature $ C.ASignature (C.sAlgorithm @a) (C.sign' pk t)
 
+data TBQueueInfo = TBQueueInfo
+  { qLength :: Int,
+    qFull :: Bool
+  }
+  deriving (Show)
+
+getTBQueueInfo :: TBQueue a -> STM TBQueueInfo
+getTBQueueInfo q = do
+  qLength <- fromIntegral <$> lengthTBQueue q
+  qFull <- isFullTBQueue q
+  pure TBQueueInfo {qLength, qFull}
+
+getProtocolClientQueuesInfo :: ProtocolClient v err msg -> IO (TBQueueInfo, TBQueueInfo)
+getProtocolClientQueuesInfo ProtocolClient {client_ = PClient {sndQ, rcvQ}} = do
+  sndQInfo <- atomically $ getTBQueueInfo sndQ
+  rcvQInfo <- atomically $ getTBQueueInfo rcvQ
+  pure (sndQInfo, rcvQInfo)
+
 $(J.deriveJSON (enumJSON $ dropPrefix "HM") ''HostMode)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "SM") ''SocksMode)
@@ -1075,3 +1098,5 @@ $(J.deriveJSON (enumJSON $ dropPrefix "SPF") ''SMPProxyFallback)
 $(J.deriveJSON defaultJSON ''NetworkConfig)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "Proxy") ''ProxyClientError)
+
+$(J.deriveJSON defaultJSON ''TBQueueInfo)

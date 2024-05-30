@@ -138,6 +138,8 @@ module Simplex.Messaging.Agent.Client
     getAgentWorkersDetails,
     AgentWorkersSummary (..),
     getAgentWorkersSummary,
+    AgentQueuesInfo (..),
+    getAgentQueuesInfo,
     SMPTransportSession,
     NtfTransportSession,
     XFTPTransportSession,
@@ -205,7 +207,7 @@ import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, parse)
+import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, parse, sumTypeJSON)
 import Simplex.Messaging.Protocol
   ( AProtocolType (..),
     BrokerMsg,
@@ -584,7 +586,8 @@ instance ProtocolServerClient XFTPVersion XFTPErrorType FileResponse where
 getSMPServerClient :: AgentClient -> SMPTransportSession -> AM SMPConnectedClient
 getSMPServerClient c@AgentClient {active, smpClients, workerSeq} tSess = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
-  atomically (getSessVar workerSeq tSess smpClients)
+  ts <- liftIO getCurrentTime
+  atomically (getSessVar workerSeq tSess smpClients ts)
     >>= either newClient (waitForProtocolClient c tSess smpClients)
   where
     newClient v = do
@@ -595,28 +598,30 @@ getSMPProxyClient :: AgentClient -> SMPTransportSession -> AM (SMPConnectedClien
 getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq} destSess@(userId, destSrv, qId) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
   proxySrv <- getNextServer c userId [destSrv]
-  atomically (getClientVar proxySrv) >>= \(tSess, auth, v) ->
-    either (newProxyClient tSess auth) (waitForProxyClient tSess auth) v
+  ts <- liftIO getCurrentTime
+  atomically (getClientVar proxySrv ts) >>= \(tSess, auth, v) ->
+    either (newProxyClient tSess auth ts) (waitForProxyClient tSess auth) v
   where
-    getClientVar :: SMPServerWithAuth -> STM (SMPTransportSession, Maybe SMP.BasicAuth, Either SMPClientVar SMPClientVar)
-    getClientVar proxySrv = do
+    getClientVar :: SMPServerWithAuth -> UTCTime -> STM (SMPTransportSession, Maybe SMP.BasicAuth, Either SMPClientVar SMPClientVar)
+    getClientVar proxySrv ts = do
       ProtoServerWithAuth srv auth <- TM.lookup destSess smpProxiedRelays >>= maybe (TM.insert destSess proxySrv smpProxiedRelays $> proxySrv) pure
       let tSess = (userId, srv, qId)
-      (tSess,auth,) <$> getSessVar workerSeq tSess smpClients
-    newProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> SMPClientVar -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
-    newProxyClient tSess auth v = do
+      (tSess,auth,) <$> getSessVar workerSeq tSess smpClients ts
+    newProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> UTCTime -> SMPClientVar -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
+    newProxyClient tSess auth ts v = do
       (prs, rv) <- atomically $ do
         prs <- TM.empty
         -- we do not need to check if it is a new proxied relay session,
         -- as the client is just created and there are no sessions yet
-        (prs,) . either id id <$> getSessVar workerSeq destSrv prs
+        (prs,) . either id id <$> getSessVar workerSeq destSrv prs ts
       clnt <- smpConnectClient c tSess prs v
       (clnt,) <$> newProxiedRelay clnt auth rv
     waitForProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> SMPClientVar -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
     waitForProxyClient tSess auth v = do
       clnt@(SMPConnectedClient _ prs) <- waitForProtocolClient c tSess smpClients v
+      ts <- liftIO getCurrentTime
       sess <-
-        atomically (getSessVar workerSeq destSrv prs)
+        atomically (getSessVar workerSeq destSrv prs ts)
           >>= either (newProxiedRelay clnt auth) (waitForProxiedRelay tSess)
       pure (clnt, sess)
     newProxiedRelay :: SMPConnectedClient -> Maybe SMP.BasicAuth -> ProxiedRelayVar -> AM (Either AgentErrorType ProxiedRelay)
@@ -690,14 +695,15 @@ smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
 
 resubscribeSMPSession :: AgentClient -> SMPTransportSession -> AM' ()
-resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess =
-  atomically getWorkerVar >>= mapM_ (either newSubWorker (\_ -> pure ()))
+resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
+  ts <- liftIO getCurrentTime
+  atomically (getWorkerVar ts) >>= mapM_ (either newSubWorker (\_ -> pure ()))
   where
-    getWorkerVar =
+    getWorkerVar ts =
       ifM
         (null <$> getPending)
         (pure Nothing) -- prevent race with cleanup and adding pending queues in another call
-        (Just <$> getSessVar workerSeq tSess smpSubWorkers)
+        (Just <$> getSessVar workerSeq tSess smpSubWorkers ts)
     newSubWorker v = do
       a <- async $ void (E.tryAny runSubWorker) >> atomically (cleanup v)
       atomically $ putTMVar (sessionVar v) a
@@ -742,7 +748,8 @@ reconnectSMPClient c tSess@(_, srv, _) qs = handleNotify $ do
 getNtfServerClient :: AgentClient -> NtfTransportSession -> AM NtfClient
 getNtfServerClient c@AgentClient {active, ntfClients, workerSeq} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
-  atomically (getSessVar workerSeq tSess ntfClients)
+  ts <- liftIO getCurrentTime
+  atomically (getSessVar workerSeq tSess ntfClients ts)
     >>= either
       (newProtocolClient c tSess ntfClients connectClient)
       (waitForProtocolClient c tSess ntfClients)
@@ -765,7 +772,8 @@ getNtfServerClient c@AgentClient {active, ntfClients, workerSeq} tSess@(userId, 
 getXFTPServerClient :: AgentClient -> XFTPTransportSession -> AM XFTPClient
 getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) . throwError $ INACTIVE
-  atomically (getSessVar workerSeq tSess xftpClients)
+  ts <- liftIO getCurrentTime
+  atomically (getSessVar workerSeq tSess xftpClients ts)
     >>= either
       (newProtocolClient c tSess xftpClients connectClient)
       (waitForProtocolClient c tSess xftpClients)
@@ -1062,10 +1070,11 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
                     $>>= \(ProtoServerWithAuth srv _) -> tryReadSessVar (userId, srv, qId) (smpClients c)
                 )
                   >>= \case
-                    Just (Right (SMPConnectedClient smp' prs)) | sameClient smp' ->
-                      tryReadSessVar destSrv prs >>= \case
-                        Just (Right proxySess') | sameProxiedRelay proxySess' -> TM.delete destSrv prs
-                        _ -> pure ()
+                    Just (Right (SMPConnectedClient smp' prs))
+                      | sameClient smp' ->
+                          tryReadSessVar destSrv prs >>= \case
+                            Just (Right proxySess') | sameProxiedRelay proxySess' -> TM.delete destSrv prs
+                            _ -> pure ()
                     _ -> pure ()
               sameClient smp' = sessionId (thParams smp) == sessionId (thParams smp')
               sameProxiedRelay proxySess' = prSessionId proxySess == prSessionId proxySess'
@@ -2048,6 +2057,38 @@ getAgentWorkersSummary AgentClient {smpClients, ntfClients, xftpClients, smpDeli
             (pure WorkersSummary {numActive, numIdle = numIdle + 1, totalRestarts = totalRestarts + restartCount})
             (pure WorkersSummary {numActive = numActive + 1, numIdle, totalRestarts = totalRestarts + restartCount})
 
+data AgentQueuesInfo = AgentQueuesInfo
+  { msgQInfo :: TBQueueInfo,
+    subQInfo :: TBQueueInfo,
+    smpClientsQueues :: Map Text (Int, UTCTime, ClientInfo)
+  }
+  deriving (Show)
+
+data ClientInfo
+  = ClientInfoQueues {sndQInfo :: TBQueueInfo, rcvQInfo :: TBQueueInfo}
+  | ClientInfoError {clientError :: (AgentErrorType, Maybe UTCTime)}
+  | ClientInfoConnecting
+  deriving (Show)
+
+getAgentQueuesInfo :: AgentClient -> IO AgentQueuesInfo
+getAgentQueuesInfo AgentClient {msgQ, subQ, smpClients} = do
+  msgQInfo <- atomically $ getTBQueueInfo msgQ
+  subQInfo <- atomically $ getTBQueueInfo subQ
+  smpClientsMap <- readTVarIO smpClients
+  let smpClientsMap' = M.mapKeys (decodeLatin1 . strEncode) smpClientsMap
+  smpClientsQueues <- mapM getClientQueuesInfo smpClientsMap'
+  pure AgentQueuesInfo {msgQInfo, subQInfo, smpClientsQueues}
+  where
+    getClientQueuesInfo :: SMPClientVar -> IO (Int, UTCTime, ClientInfo)
+    getClientQueuesInfo SessionVar {sessionVar, sessionVarId, sessionVarTs} = do
+      clientInfo <- atomically (tryReadTMVar sessionVar) >>= \case
+        Just (Right c) -> do
+          (sndQInfo, rcvQInfo) <- getProtocolClientQueuesInfo $ protocolClient c
+          pure ClientInfoQueues {sndQInfo, rcvQInfo}
+        Just (Left e) -> pure $ ClientInfoError e
+        Nothing -> pure ClientInfoConnecting
+      pure (sessionVarId, sessionVarTs, clientInfo)
+
 $(J.deriveJSON defaultJSON ''AgentLocks)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "TS") ''ProtocolTestStep)
@@ -2065,6 +2106,10 @@ $(J.deriveJSON defaultJSON ''WorkersSummary)
 $(J.deriveJSON defaultJSON {J.fieldLabelModifier = takeWhile (/= '_')} ''AgentWorkersDetails)
 
 $(J.deriveJSON defaultJSON ''AgentWorkersSummary)
+
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "ClientInfo") ''ClientInfo)
+
+$(J.deriveJSON defaultJSON ''AgentQueuesInfo)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "UN") ''UserNetworkType)
 
