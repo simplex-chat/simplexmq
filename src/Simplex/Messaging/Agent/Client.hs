@@ -2057,12 +2057,6 @@ data ClientInfo
   | ClientInfoConnecting
   deriving (Show)
 
-data TBQueueInfo = TBQueueInfo
-  { qLength :: Int,
-    qFull :: Bool
-  }
-  deriving (Show)
-
 getAgentQueuesInfo :: AgentClient -> IO AgentQueuesInfo
 getAgentQueuesInfo AgentClient {msgQ, subQ, smpClients} = do
   msgQInfo <- atomically $ getTBQueueInfo msgQ
@@ -2076,17 +2070,10 @@ getAgentQueuesInfo AgentClient {msgQ, subQ, smpClients} = do
     getClientQueuesInfo v =
       atomically (tryReadTMVar $ sessionVar v) >>= \case
         Just (Right c) -> do
-          let ProtocolClient {client_ = PClient {sndQ, rcvQ}} = protocolClient c
-          sndQInfo <- atomically $ getTBQueueInfo sndQ
-          rcvQInfo <- atomically $ getTBQueueInfo rcvQ
+          (sndQInfo, rcvQInfo) <- getProtocolClientQueuesInfo $ protocolClient c
           pure ClientInfoQueues {sndQInfo, rcvQInfo}
         Just (Left e) -> pure $ ClientInfoError e
         Nothing -> pure ClientInfoConnecting
-    getTBQueueInfo :: TBQueue a -> STM TBQueueInfo
-    getTBQueueInfo q = do
-      qLength <- fromIntegral <$> lengthTBQueue q
-      qFull <- isFullTBQueue q
-      pure TBQueueInfo {qLength, qFull}
 
 $(J.deriveJSON defaultJSON ''AgentLocks)
 
