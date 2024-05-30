@@ -2771,7 +2771,7 @@ testServerQueueInfo = do
     checkEmptyQ alice bobId False
     aliceId <- joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
     ("", _, CONF confId _ "bob's connInfo") <- get alice
-    liftIO $ threadDelay 100000
+    liftIO $ threadDelay 200000
     checkEmptyQ alice bobId False
     allowConnection alice bobId confId "alice's connInfo"
     get alice ##> ("", bobId, CON)
@@ -2783,7 +2783,7 @@ testServerQueueInfo = do
     (msgId', PQEncOn) <- A.sendMessage alice bobId PQEncOn SMP.noMsgFlags "hello"
     liftIO $ msgId' `shouldBe` msgId
     get alice ##> ("", bobId, SENT msgId)
-    liftIO $ threadDelay 100000
+    liftIO $ threadDelay 200000
     Just srvMsgId <- checkMsgQ bob aliceId 1
     get bob =##> \case
       ("", c, MSG MsgMeta {integrity = MsgOk, broker = (smId, _), recipient = (mId, _), pqEncryption = PQEncOn} _ "hello") ->
@@ -2802,29 +2802,29 @@ testServerQueueInfo = do
     get alice ##> ("", bobId, SENT msgId4)
     Just _ <- checkMsgQ bob aliceId 4
     (msgId5, PQEncOn) <- A.sendMessage alice bobId PQEncOn SMP.noMsgFlags "hello: quota exceeded"
-    liftIO $ threadDelay 100000
+    liftIO $ threadDelay 200000
     Just _ <- checkMsgQ bob aliceId 5
     get bob =##> \case ("", c, Msg' mId PQEncOn "hello 1") -> c == aliceId && mId == msgId1; _ -> False
     ackMessage bob aliceId msgId1 Nothing
-    liftIO $ threadDelay 100000
+    liftIO $ threadDelay 200000
     Just _ <- checkMsgQ bob aliceId 4
     get bob =##> \case ("", c, Msg' mId PQEncOn "hello 2") -> c == aliceId && mId == msgId2; _ -> False
     ackMessage bob aliceId msgId2 Nothing
     get bob =##> \case ("", c, Msg' mId PQEncOn "hello 3") -> c == aliceId && mId == msgId3; _ -> False
     ackMessage bob aliceId msgId3 Nothing
-    liftIO $ threadDelay 100000
+    liftIO $ threadDelay 200000
     Just _ <- checkMsgQ bob aliceId 2
     get bob =##> \case ("", c, Msg' mId PQEncOn "hello 4") -> c == aliceId && mId == msgId4; _ -> False
     ackMessage bob aliceId msgId4 Nothing
-    liftIO $ threadDelay 100000
+    liftIO $ threadDelay 200000
     Just _ <- checkMsgQ bob aliceId 1 -- the one that did not fit now accepted
     get alice ##> ("", bobId, QCONT)
     get alice ##> ("", bobId, SENT msgId5)
-    liftIO $ threadDelay 100000
+    liftIO $ threadDelay 200000
     Just _srvMsgId <- checkQ bob aliceId True (Just QNoSub) 1 (Just MTMessage)
     get bob =##> \case ("", c, Msg' mId PQEncOn "hello: quota exceeded") -> c == aliceId && mId == msgId5 + 1; _ -> False
     ackMessage bob aliceId (msgId5 + 1) Nothing
-    liftIO $ threadDelay 100000
+    liftIO $ threadDelay 200000
     checkEmptyQ bob aliceId True
     pure ()
   where
