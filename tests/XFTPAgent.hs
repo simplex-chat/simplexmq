@@ -48,7 +48,7 @@ xftpAgentTests :: Spec
 xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
   it "should send and receive file" $ withXFTPServer testXFTPAgentSendReceive
   -- uncomment CPP option slow_servers and run hpack to run this test
-  fit "should send and receive file with slow server responses" $
+  xit "should send and receive file with slow server responses" $
     withXFTPServerCfg testXFTPServerConfig {responseDelay = 500000} $
       \_ -> testXFTPAgentSendReceive
   it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
