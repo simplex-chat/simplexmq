@@ -1090,3 +1090,5 @@ $(J.deriveJSON (enumJSON $ dropPrefix "SPF") ''SMPProxyFallback)
 $(J.deriveJSON defaultJSON ''NetworkConfig)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "Proxy") ''ProxyClientError)
+
+$(J.deriveJSON defaultJSON ''TBQueueInfo)
