@@ -713,12 +713,10 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess =
       removeSessVar v tSess smpSubWorkers
 
 reconnectSMPClient :: AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> AM' ()
-reconnectSMPClient c tSess@(_, srv, _) qs = handleNotify $ do
+reconnectSMPClient c tSess qs = handleNotify $ do
   cs <- readTVarIO $ RQ.getConnections $ activeSubs c
   (rs, sessId_) <- subscribeQueues c $ L.toList qs
   let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
-      conns = filter (`M.notMember` cs) okConns
-  unless (null conns) $ notifySub c "" $ UP srv conns
   let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
   mapM_ (\(connId, e) -> notifySub c connId $ ERR e) finalErrs
   forM_ (listToMaybe tempErrs) $ \(connId, e) -> do
