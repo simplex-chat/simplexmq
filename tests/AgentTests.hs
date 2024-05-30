@@ -408,7 +408,6 @@ testMsgDeliveryServerRestart (alice, aPQ) (bob, bPQ) = do
 
   withServer $ do
     bob <# ("", "alice", SENT 5)
-    alice <#. ("", "", UP server ["bob"])
     alice <#= \case ("", "bob", Msg' _ pq' "hello again") -> pq == pq'; _ -> False
     alice #: ("12", "bob", "ACK 5") #> ("12", "bob", OK)
 
@@ -433,10 +432,8 @@ testServerConnectionAfterError t _ = do
       bob #:! ("1", "alice", "SUB") =#> \case ("1", "alice", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT; _ -> False
       alice #:! ("1", "bob", "SUB") =#> \case ("1", "bob", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT; _ -> False
       withServer $ do
-        alice <#=? \case ("", "bob", APC SAEConn (SENT 4)) -> True; ("", "", APC _ (UP s ["bob"])) -> s == server; _ -> False
-        alice <#=? \case ("", "bob", APC SAEConn (SENT 4)) -> True; ("", "", APC _ (UP s ["bob"])) -> s == server; _ -> False
-        bob <#=? \case ("", "alice", APC _ (Msg "hello")) -> True; ("", "", APC _ (UP s ["alice"])) -> s == server; _ -> False
-        bob <#=? \case ("", "alice", APC _ (Msg "hello")) -> True; ("", "", APC _ (UP s ["alice"])) -> s == server; _ -> False
+        alice <#=? \case ("", "bob", APC SAEConn (SENT 4)) -> True; _ -> False
+        bob <#=? \case ("", "alice", APC _ (Msg "hello")) -> True; _ -> False
         bob #: ("2", "alice", "ACK 4") #> ("2", "alice", OK)
         alice #: ("1", "bob", "SEND F 11\nhello again") #> ("1", "bob", MID 5)
         alice <# ("", "bob", SENT 5)
