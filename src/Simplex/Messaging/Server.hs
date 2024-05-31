@@ -714,6 +714,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                 let own = isOwnServer a srv
                 inc own pRequests
                 inc own $ if temporaryClientError e then pErrorsConnect else pErrorsOther
+                logError $ "Error connecting: " <> decodeLatin1 (strEncode $ host srv) <> " " <> tshow e
                 pure . ERR $ smpProxyError e
             where
               proxyResp smp =
