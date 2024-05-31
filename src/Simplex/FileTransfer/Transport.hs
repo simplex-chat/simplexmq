@@ -34,6 +34,7 @@ where
 
 import Control.Applicative ((<|>))
 import qualified Control.Exception as E
+import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
@@ -46,8 +47,10 @@ import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.Functor (($>))
 import Data.Word (Word16, Word32)
 import qualified Data.X509 as X
+import Network.HTTP2.Client (HTTP2Error)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
@@ -56,7 +59,7 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (CommandError)
 import Simplex.Messaging.Transport (SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Transport.HTTP2.File
-import Simplex.Messaging.Util (bshow)
+import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.IO (Handle, IOMode (..), withFile)
@@ -145,9 +148,14 @@ sendEncFile h send = go
         go sbState' $ sz - fromIntegral (B.length ch)
 
 receiveFile :: (Int -> IO ByteString) -> XFTPRcvChunkSpec -> ExceptT XFTPErrorType IO ()
-receiveFile getBody = receiveFile_ receive
+receiveFile getBody chunk = ExceptT $ runExceptT (receiveFile_ receive chunk) `E.catches` handlers
   where
     receive h sz = hReceiveFile getBody h sz >>= \sz' -> pure $ if sz' == 0 then Right () else Left SIZE
+    handlers =
+      [ E.Handler $ \(e :: HTTP2Error) -> logErr e $> Left TIMEOUT,
+        E.Handler $ \(e :: E.SomeException) -> logErr e $> Left FILE_IO
+      ]
+    logErr e = logError $ "receiveFile error: " <> tshow e
 
 receiveEncFile :: (Int -> IO ByteString) -> LC.SbState -> XFTPRcvChunkSpec -> ExceptT XFTPErrorType IO ()
 receiveEncFile getBody = receiveFile_ . receive
@@ -213,7 +221,7 @@ data XFTPErrorType
     HAS_FILE
   | -- | file IO error
     FILE_IO
-  | -- | file sending timeout
+  | -- | file sending or receiving timeout
     TIMEOUT
   | -- | bad redirect data
     REDIRECT {redirectError :: String}
