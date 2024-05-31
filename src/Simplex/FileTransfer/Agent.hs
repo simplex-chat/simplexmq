@@ -142,7 +142,7 @@ xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redi
 downloadChunk :: AgentClient -> FileChunk -> AM ()
 downloadChunk c FileChunk {replicas = (FileChunkReplica {server} : _)} = do
   lift . void $ getXFTPRcvWorker True c (Just server)
-downloadChunk _ _ = throwError $ FILE $ FT.INTERNAL "no replicas"
+downloadChunk _ _ = throwError $ INTERNAL "no replicas"
 
 getPrefixPath :: String -> AM' FilePath
 getPrefixPath suffix = do
@@ -177,7 +177,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
     runXFTPOperation :: AgentConfig -> AM ()
     runXFTPOperation AgentConfig {rcvFilesTTL, reconnectInterval = ri, xftpNotifyErrsOnRetry = notifyOnRetry, xftpConsecutiveRetries} =
       withWork c doWork (\db -> getNextRcvChunkToDownload db srv rcvFilesTTL) $ \case
-        (RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []}, _) -> rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) (FILE $ FT.INTERNAL "chunk has no replicas")
+        (RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []}, _) -> rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) (INTERNAL "chunk has no replicas")
         (fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, digest, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _}, approvedRelays) -> do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
@@ -272,7 +272,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
       encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
       when (FileDigest encDigest /= digest) $ throwError $ XFTP "" XFTP.DIGEST
       let destFile = CryptoFile fsSavePath cfArgs
-      void $ liftError (FILE . FT.INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure destFile
+      void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure destFile
       case redirect of
         Nothing -> do
           notify c rcvFileEntityId $ RFDONE fsSavePath
@@ -285,7 +285,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
           atomically $ waitUntilForeground c
           withStore' c (`updateRcvFileComplete` rcvFileId)
           -- proceed with redirect
-          yaml <- liftError (FILE . FT.INTERNAL . show) (CF.readFile $ CryptoFile fsSavePath cfArgs) `agentFinally` (lift $ toFSFilePath fsSavePath >>= removePath)
+          yaml <- liftError (INTERNAL . show) (CF.readFile $ CryptoFile fsSavePath cfArgs) `agentFinally` (lift $ toFSFilePath fsSavePath >>= removePath)
           next@FileDescription {chunks = nextChunks} <- case strDecode (LB.toStrict yaml) of
             -- TODO switch to another error constructor
             Left _ -> throwError . FILE $ REDIRECT "decode error"
@@ -304,7 +304,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
           fsPath <- lift $ toFSFilePath path
           pure $ fsPath : ps
         getChunkPaths (RcvFileChunk {chunkTmpPath = Nothing} : _cs) =
-          throwError $ FILE $ FT.INTERNAL "no chunk path"
+          throwError $ INTERNAL "no chunk path"
 
 xftpDeleteRcvFile' :: AgentClient -> RcvFileId -> AM' ()
 xftpDeleteRcvFile' c rcvFileEntityId = xftpDeleteRcvFiles' c [rcvFileEntityId]
@@ -349,7 +349,7 @@ xftpSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {si
   let directYaml = prefixPath </> "direct.yaml"
   cfArgs <- atomically $ CF.randomArgs g
   let file = CryptoFile directYaml (Just cfArgs)
-  liftError (FILE . FT.INTERNAL . show) $ CF.writeFile file (LB.fromStrict $ strEncode fdDirect)
+  liftError (INTERNAL . show) $ CF.writeFile file (LB.fromStrict $ strEncode fdDirect)
   key <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
   fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce $ Just RedirectFileInfo {size, digest}
@@ -380,7 +380,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           prepareFile cfg f `catchAgentError` sndWorkerInternalError c sndFileId sndFileEntityId prefixPath
     prepareFile :: AgentConfig -> SndFile -> AM ()
     prepareFile _ SndFile {prefixPath = Nothing} =
-      throwError $ FILE $ FT.INTERNAL "no prefix path"
+      throwError $ INTERNAL "no prefix path"
     prepareFile cfg sndFile@SndFile {sndFileId, userId, prefixPath = Just ppath, status} = do
       SndFile {numRecipients, chunks} <-
         if status /= SFSEncrypted -- status is SFSNew or SFSEncrypting
@@ -416,7 +416,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
               Nothing -> throwError $ FILE FT.SIZE
               Just chunkSize -> pure [chunkSize]
           let encSize = sum $ map fromIntegral chunkSizes
-          void $ liftError (FILE . FT.INTERNAL . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize fsEncPath
+          void $ liftError (INTERNAL . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize fsEncPath
           digest <- liftIO $ LC.sha512Hash <$> LB.readFile fsEncPath
           let chunkSpecs = prepareChunkSpecs fsEncPath chunkSizes
           chunkDigests <- liftIO $ mapM getChunkDigest chunkSpecs
@@ -438,7 +438,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
                 retryLoop loop = atomically (assertAgentForeground c) >> loop
             createWithNextSrv usedSrvs = do
               deleted <- withStore' c $ \db -> getSndFileDeleted db sndFileId
-              when deleted $ throwError $ FILE $ FT.INTERNAL "file deleted, aborting chunk creation"
+              when deleted $ throwError $ INTERNAL "file deleted, aborting chunk creation"
               withNextSrv c userId usedSrvs [] $ \srvAuth -> do
                 replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
                 pure (replica, srvAuth)
@@ -460,7 +460,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
     runXFTPOperation :: AgentConfig -> AM ()
     runXFTPOperation cfg@AgentConfig {sndFilesTTL, reconnectInterval = ri, xftpNotifyErrsOnRetry = notifyOnRetry, xftpConsecutiveRetries} = do
       withWork c doWork (\db -> getNextSndChunkToUpload db srv sndFilesTTL) $ \case
-        SndFileChunk {sndFileId, sndFileEntityId, filePrefixPath, replicas = []} -> sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) (FILE $ FT.INTERNAL "chunk has no replicas")
+        SndFileChunk {sndFileId, sndFileEntityId, filePrefixPath, replicas = []} -> sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) (INTERNAL "chunk has no replicas")
         fc@SndFileChunk {userId, sndFileId, sndFileEntityId, filePrefixPath, digest, replicas = replica@SndFileChunkReplica {sndChunkReplicaId, server, delay} : _} -> do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
@@ -480,7 +480,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
     uploadFileChunk AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients} sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}, digest = chunkDigest} replica = do
       replica'@SndFileChunkReplica {sndChunkReplicaId} <- addRecipients sndFileChunk replica
       fsFilePath <- lift $ toFSFilePath filePath
-      unlessM (doesFileExist fsFilePath) $ throwError $ FILE $ FT.INTERNAL "encrypted file doesn't exist on upload"
+      unlessM (doesFileExist fsFilePath) $ throwError $ INTERNAL "encrypted file doesn't exist on upload"
       let chunkSpec' = chunkSpec {filePath = fsFilePath} :: XFTPChunkSpec
       atomically $ assertAgentForeground c
       agentXFTPUploadChunk c userId chunkDigest replica' chunkSpec'
@@ -500,7 +500,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
       where
         addRecipients :: SndFileChunk -> SndFileChunkReplica -> AM SndFileChunkReplica
         addRecipients ch@SndFileChunk {numRecipients} cr@SndFileChunkReplica {rcvIdsKeys}
-          | length rcvIdsKeys > numRecipients = throwError $ FILE $ FT.INTERNAL "too many recipients"
+          | length rcvIdsKeys > numRecipients = throwError $ INTERNAL "too many recipients"
           | length rcvIdsKeys == numRecipients = pure cr
           | otherwise = do
               let numRecipients' = min (numRecipients - length rcvIdsKeys) maxRecipients
@@ -508,22 +508,22 @@ runXFTPSndWorker c srv Worker {doWork} = do
               cr' <- withStore' c $ \db -> addSndChunkReplicaRecipients db cr $ L.toList rcvIdsKeys'
               addRecipients ch cr'
         sndFileToDescrs :: SndFile -> AM (ValidFileDescription 'FSender, [ValidFileDescription 'FRecipient])
-        sndFileToDescrs SndFile {digest = Nothing} = throwError $ FILE $ FT.INTERNAL "snd file has no digest"
-        sndFileToDescrs SndFile {chunks = []} = throwError $ FILE $ FT.INTERNAL "snd file has no chunks"
+        sndFileToDescrs SndFile {digest = Nothing} = throwError $ INTERNAL "snd file has no digest"
+        sndFileToDescrs SndFile {chunks = []} = throwError $ INTERNAL "snd file has no chunks"
         sndFileToDescrs SndFile {digest = Just digest, key, nonce, chunks = chunks@(fstChunk : _), redirect} = do
           let chunkSize = FileSize $ sndChunkSize fstChunk
               size = FileSize $ sum $ map (fromIntegral . sndChunkSize) chunks
           -- snd description
           sndDescrChunks <- mapM toSndDescrChunk chunks
           let fdSnd = FileDescription {party = SFSender, size, digest, key, nonce, chunkSize, chunks = sndDescrChunks, redirect = Nothing}
-          validFdSnd <- either (throwError . FILE . FT.INTERNAL) pure $ validateFileDescription fdSnd
+          validFdSnd <- either (throwError . INTERNAL) pure $ validateFileDescription fdSnd
           -- rcv descriptions
           let fdRcv = FileDescription {party = SFRecipient, size, digest, key, nonce, chunkSize, chunks = [], redirect}
               fdRcvs = createRcvFileDescriptions fdRcv chunks
-          validFdRcvs <- either (throwError . FILE . FT.INTERNAL) pure $ mapM validateFileDescription fdRcvs
+          validFdRcvs <- either (throwError . INTERNAL) pure $ mapM validateFileDescription fdRcvs
           pure (validFdSnd, validFdRcvs)
         toSndDescrChunk :: SndFileChunk -> AM FileChunk
-        toSndDescrChunk SndFileChunk {replicas = []} = throwError $ FILE $ FT.INTERNAL "snd file chunk has no replicas"
+        toSndDescrChunk SndFileChunk {replicas = []} = throwError $ INTERNAL "snd file chunk has no replicas"
         toSndDescrChunk ch@SndFileChunk {chunkNo, digest = chDigest, replicas = (SndFileChunkReplica {server, replicaId, replicaKey} : _)} = do
           let chunkSize = FileSize $ sndChunkSize ch
               replicas = [FileChunkReplica {server, replicaId, replicaKey}]
@@ -595,7 +595,7 @@ deleteSndFileRemote c userId sndFileEntityId sfd = deleteSndFilesRemote c userId
 
 deleteSndFilesRemote :: AgentClient -> UserId -> [(SndFileId, ValidFileDescription 'FSender)] -> AM' ()
 deleteSndFilesRemote c userId sndFileIdsDescrs = do
-  deleteSndFilesInternal c (map fst sndFileIdsDescrs) `E.catchAny` (notify c "" . SFERR . FILE . FT.INTERNAL . show)
+  deleteSndFilesInternal c (map fst sndFileIdsDescrs) `E.catchAny` (notify c "" . SFERR . INTERNAL . show)
   let rs = concatMap (mapMaybe chunkReplica . fdChunks . snd) sndFileIdsDescrs
   void $ withStoreBatch' c (\db -> map (uncurry $ createDeletedSndChunkReplica db userId) rs)
   let servers = S.fromList $ map (\(FileChunkReplica {server}, _) -> server) rs

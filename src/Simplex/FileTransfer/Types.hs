@@ -11,8 +11,6 @@ import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
-import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word32)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
@@ -255,18 +253,14 @@ data FileErrorType
     SIZE
   | -- | bad redirect data
     REDIRECT {redirectError :: String}
-  | -- | internal file processing errors
-    INTERNAL {internalErr :: String}
   deriving (Eq, Read, Show)
 
 instance StrEncoding FileErrorType where
   strEncode = \case
     REDIRECT e -> "REDIRECT " <> bshow e
-    INTERNAL e -> "INTERNAL " <> encodeUtf8 (T.pack e)
     e -> bshow e
   strP =
     "REDIRECT " *> (REDIRECT <$> parseRead A.takeByteString)
-      <|> "INTERNAL" *> (INTERNAL <$> (A.space *> textP))
       <|> parseRead1
 
 $(J.deriveJSON (sumTypeJSON id) ''FileErrorType)
