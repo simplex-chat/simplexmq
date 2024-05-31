@@ -1,3 +1,13 @@
+# 5.7.6
+
+XFTP agent:
+- treat XFTP handshake timeouts and network errors as temporary, to retry file operations.
+
+# 5.7.5
+
+SMP agent:
+- fail if non-unique connection IDs are passed to sendMessages (to prevent client errors and deadlocks).
+
 # 5.7.4
 
 SMP agent:
