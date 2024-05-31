@@ -152,10 +152,10 @@ receiveFile getBody chunk = ExceptT $ runExceptT (receiveFile_ receive chunk) `E
   where
     receive h sz = hReceiveFile getBody h sz >>= \sz' -> pure $ if sz' == 0 then Right () else Left SIZE
     handlers =
-      [ E.Handler $ \(e :: HTTP2Error) -> logErr e $> Left TIMEOUT,
-        E.Handler $ \(e :: E.SomeException) -> logErr e $> Left FILE_IO
+      [ E.Handler $ \(e :: HTTP2Error) -> logWarn (err e) $> Left TIMEOUT,
+        E.Handler $ \(e :: E.SomeException) -> logError (err e) $> Left FILE_IO
       ]
-    logErr e = logError $ "receiveFile error: " <> tshow e
+    err e = "receiveFile error: " <> tshow e
 
 receiveEncFile :: (Int -> IO ByteString) -> LC.SbState -> XFTPRcvChunkSpec -> ExceptT XFTPErrorType IO ()
 receiveEncFile getBody = receiveFile_ . receive
