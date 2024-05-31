@@ -23,6 +23,7 @@ import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
@@ -479,7 +480,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
                 pure $ FRErr e
           receiveChunk spec = do
             t <- asks $ fileTimeout . config
-            liftIO $ fromMaybe (Left TIMEOUT) <$> timeout t (runExceptT (receiveFile getBody spec) `catchAll_` pure (Left FILE_IO))
+            liftIO $ fromMaybe (Left TIMEOUT) <$> timeout t (runExceptT (receiveFile getBody spec) `catchAll` \e -> logError ("receiveFile error: " <> tshow e) $> Left FILE_IO)
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
     sendServerFile FileRec {senderId, filePath, fileInfo = FileInfo {size}} rDhKey = do
       readTVarIO filePath >>= \case
