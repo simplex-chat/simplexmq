@@ -6,11 +6,12 @@
 
 module Simplex.FileTransfer.Types where
 
-import Control.Applicative ((<|>))
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
+import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word32)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
@@ -22,7 +23,6 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (XFTPServer)
-import Simplex.Messaging.Util
 import System.FilePath ((</>))
 
 type RcvFileId = ByteString
@@ -254,23 +254,26 @@ data FileErrorType
   | -- | bad redirect data
     REDIRECT {redirectError :: String}
   | -- | file crypto error
-    CRYPTO {cryptoError :: String}
-  | -- | file IO error
-    IO_ERROR {ioError :: String}
+    FILE_IO {fileIOError :: String}
   | -- | file not found or was deleted
     NO_FILE
-  deriving (Eq, Read, Show)
+  deriving (Eq, Show)
 
 instance StrEncoding FileErrorType where
-  strEncode = \case
-    REDIRECT e -> "REDIRECT " <> bshow e
-    CRYPTO e -> "CRYPTO " <> bshow e
-    IO_ERROR e -> "IO_ERROR " <> bshow e
-    e -> bshow e
   strP =
-    "REDIRECT " *> (REDIRECT <$> parseRead A.takeByteString)
-      <|> "CRYPTO " *> (CRYPTO <$> parseRead A.takeByteString)
-      <|> "IO_ERROR " *> (IO_ERROR <$> parseRead A.takeByteString)
-      <|> parseRead1
+    A.takeTill (== ' ')
+      >>= \case
+        "NOT_APPROVED" -> pure NOT_APPROVED
+        "SIZE" -> pure SIZE
+        "REDIRECT" -> REDIRECT <$> (A.space *> textP)
+        "FILE_IO" -> FILE_IO <$> (A.space *> textP)
+        "NO_FILE" -> pure NO_FILE
+        _ -> fail "bad FileErrorType"
+  strEncode = \case
+    NOT_APPROVED -> "NOT_APPROVED"
+    SIZE -> "SIZE"
+    REDIRECT e -> "REDIRECT " <> encodeUtf8 (T.pack e)
+    FILE_IO e -> "FILE_IO " <> encodeUtf8 (T.pack e)
+    NO_FILE -> "NO_FILE"
 
 $(J.deriveJSON (sumTypeJSON id) ''FileErrorType)
