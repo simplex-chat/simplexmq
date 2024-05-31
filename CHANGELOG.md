@@ -1,3 +1,8 @@
+# 5.7.6
+
+XFTP agent:
+- treat XFTP handshake timeouts and network errors as temporary, to retry file operations.
+
 # 5.7.5
 
 SMP agent:
