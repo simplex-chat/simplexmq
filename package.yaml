@@ -87,6 +87,9 @@ flags:
     manual: True
     default: True
 
+# cpp-options:
+#   - -Dslow_servers
+
 when:
   - condition: flag(swift)
     cpp-options:

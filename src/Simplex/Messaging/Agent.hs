@@ -83,8 +83,6 @@ module Simplex.Messaging.Agent
     testProtocolServer,
     setNtfServers,
     setNetworkConfig,
-    getNetworkConfig,
-    getNetworkConfig',
     setUserNetworkInfo,
     reconnectAllServers,
     registerNtfToken,
@@ -433,11 +431,6 @@ setNetworkConfig c@AgentClient {useNetworkConfig} cfg' = do
       then pure False
       else True <$ (writeTVar useNetworkConfig $! (slowNetworkConfig cfg', cfg'))
   when changed $ reconnectAllServers c
-
--- returns fast network config
-getNetworkConfig :: AgentClient -> IO NetworkConfig
-getNetworkConfig = getNetworkConfig'
-{-# INLINE getNetworkConfig #-}
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()
 setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkUpdated} ni = withAgentEnv' c $ do

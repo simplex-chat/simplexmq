@@ -52,7 +52,7 @@ import Simplex.Messaging.Protocol
     RecipientId,
     SenderId,
   )
-import Simplex.Messaging.Transport (ALPN, THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), supportedParameters)
+import Simplex.Messaging.Transport (ALPN, HandshakeError (..), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), supportedParameters)
 import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost, alpn)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
@@ -98,6 +98,12 @@ defaultXFTPClientConfig =
       clientALPN = Just supportedXFTPhandshakes
     }
 
+http2XFTPClientError :: HTTP2ClientError -> XFTPClientError
+http2XFTPClientError = \case
+  HCResponseTimeout -> PCEResponseTimeout
+  HCNetworkError -> PCENetworkError
+  HCIOError e -> PCEIOError e
+
 getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
 getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} disconnected = runExceptT $ do
   let username = proxyUsername transportSession
@@ -116,8 +122,7 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
   logDebug $ "Client negotiated handshake protocol: " <> tshow sessionALPN
   thParams@THandleParams {thVersion} <- case sessionALPN of
     Just "xftp/1" -> xftpClientHandshakeV1 serverVRange keyHash http2Client thParams0
-    Nothing -> pure thParams0
-    _ -> throwError $ PCETransportError TEVersion
+    _ -> pure thParams0
   logDebug $ "Client negotiated protocol: " <> tshow thVersion
   let c = XFTPClient {http2Client, thParams, transportSession, config}
   atomically $ writeTVar clientVar $ Just c
@@ -135,15 +140,15 @@ xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {session
     getServerHandshake = do
       let helloReq = H.requestNoBody "POST" "/" []
       HTTP2Response {respBody = HTTP2Body {bodyHead = shsBody}} <-
-        liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequest c helloReq Nothing
-      liftHS . smpDecode =<< liftHS (C.unPad shsBody)
+        liftError' http2XFTPClientError $ sendRequest c helloReq Nothing
+      liftTransportErr (TEHandshake PARSE) . smpDecode =<< liftTransportErr TEBadBlock (C.unPad shsBody)
     processServerHandshake :: XFTPServerHandshake -> ExceptT XFTPClientError IO (VersionRangeXFTP, C.PublicKeyX25519)
     processServerHandshake XFTPServerHandshake {xftpVersionRange, sessionId = serverSessId, authPubKey = serverAuth} = do
-      unless (sessionId == serverSessId) $ throwError $ PCEResponseError SESSION
+      unless (sessionId == serverSessId) $ throwError $ PCETransportError TEBadSession
       case xftpVersionRange `compatibleVRange` serverVRange of
         Nothing -> throwError $ PCETransportError TEVersion
         Just (Compatible vr) ->
-          fmap (vr,) . liftHS $ do
+          fmap (vr,) . liftTransportErr (TEHandshake BAD_AUTH) $ do
             let (X.CertificateChain cert, exact) = serverAuth
             case cert of
               [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
@@ -152,11 +157,11 @@ xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {session
             C.x509ToPublic (pubKey, []) >>= C.pubKey
     sendClientHandshake :: XFTPClientHandshake -> ExceptT XFTPClientError IO ()
     sendClientHandshake chs = do
-      chs' <- liftHS $ C.pad (smpEncode chs) xftpBlockSize
+      chs' <- liftTransportErr TELargeMsg $ C.pad (smpEncode chs) xftpBlockSize
       let chsReq = H.requestBuilder "POST" "/" [] $ byteString chs'
-      HTTP2Response {respBody = HTTP2Body {bodyHead}} <- liftError' (const $ PCEResponseError HANDSHAKE) $ sendRequest c chsReq Nothing
-      unless (B.null bodyHead) $ throwError $ PCEResponseError HANDSHAKE
-    liftHS = liftEitherWith (const $ PCEResponseError HANDSHAKE)
+      HTTP2Response {respBody = HTTP2Body {bodyHead}} <- liftError' http2XFTPClientError $ sendRequest c chsReq Nothing
+      unless (B.null bodyHead) $ throwError $ PCETransportError TEBadBlock
+    liftTransportErr e = liftEitherWith (const $ PCETransportError e)
 
 closeXFTPClient :: XFTPClient -> IO ()
 closeXFTPClient XFTPClient {http2Client} = closeHTTP2Client http2Client
