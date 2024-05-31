@@ -98,12 +98,6 @@ defaultXFTPClientConfig =
       clientALPN = Just supportedXFTPhandshakes
     }
 
-http2XFTPClientError :: HTTP2ClientError -> XFTPClientError
-http2XFTPClientError = \case
-  HCResponseTimeout -> PCEResponseTimeout
-  HCNetworkError -> PCENetworkError
-  HCIOError e -> PCEIOError e
-
 getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
 getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} disconnected = runExceptT $ do
   let username = proxyUsername transportSession
@@ -140,7 +134,7 @@ xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {session
     getServerHandshake = do
       let helloReq = H.requestNoBody "POST" "/" []
       HTTP2Response {respBody = HTTP2Body {bodyHead = shsBody}} <-
-        liftError' http2XFTPClientError $ sendRequest c helloReq Nothing
+        liftError' xftpClientError $ sendRequest c helloReq Nothing
       liftTransportErr (TEHandshake PARSE) . smpDecode =<< liftTransportErr TEBadBlock (C.unPad shsBody)
     processServerHandshake :: XFTPServerHandshake -> ExceptT XFTPClientError IO (VersionRangeXFTP, C.PublicKeyX25519)
     processServerHandshake XFTPServerHandshake {xftpVersionRange, sessionId = serverSessId, authPubKey = serverAuth} = do
@@ -159,7 +153,7 @@ xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {session
     sendClientHandshake chs = do
       chs' <- liftTransportErr TELargeMsg $ C.pad (smpEncode chs) xftpBlockSize
       let chsReq = H.requestBuilder "POST" "/" [] $ byteString chs'
-      HTTP2Response {respBody = HTTP2Body {bodyHead}} <- liftError' http2XFTPClientError $ sendRequest c chsReq Nothing
+      HTTP2Response {respBody = HTTP2Body {bodyHead}} <- liftError' xftpClientError $ sendRequest c chsReq Nothing
       unless (B.null bodyHead) $ throwError $ PCETransportError TEBadBlock
     liftTransportErr e = liftEitherWith (const $ PCETransportError e)
 
