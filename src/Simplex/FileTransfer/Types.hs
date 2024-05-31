@@ -253,14 +253,24 @@ data FileErrorType
     SIZE
   | -- | bad redirect data
     REDIRECT {redirectError :: String}
+  | -- | file crypto error
+    CRYPTO {cryptoError :: String}
+  | -- | file IO error
+    IO_ERROR {ioError :: String}
+  | -- | file not found or was deleted
+    NO_FILE
   deriving (Eq, Read, Show)
 
 instance StrEncoding FileErrorType where
   strEncode = \case
     REDIRECT e -> "REDIRECT " <> bshow e
+    CRYPTO e -> "CRYPTO " <> bshow e
+    IO_ERROR e -> "IO_ERROR " <> bshow e
     e -> bshow e
   strP =
     "REDIRECT " *> (REDIRECT <$> parseRead A.takeByteString)
+      <|> "CRYPTO " *> (CRYPTO <$> parseRead A.takeByteString)
+      <|> "IO_ERROR " *> (IO_ERROR <$> parseRead A.takeByteString)
       <|> parseRead1
 
 $(J.deriveJSON (sumTypeJSON id) ''FileErrorType)

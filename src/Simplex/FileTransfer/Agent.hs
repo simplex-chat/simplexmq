@@ -272,7 +272,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
       encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
       when (FileDigest encDigest /= digest) $ throwError $ XFTP "" XFTP.DIGEST
       let destFile = CryptoFile fsSavePath cfArgs
-      void $ liftError (INTERNAL . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure destFile
+      void $ liftError (FILE . CRYPTO . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure destFile
       case redirect of
         Nothing -> do
           notify c rcvFileEntityId $ RFDONE fsSavePath
@@ -285,7 +285,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
           atomically $ waitUntilForeground c
           withStore' c (`updateRcvFileComplete` rcvFileId)
           -- proceed with redirect
-          yaml <- liftError (INTERNAL . show) (CF.readFile $ CryptoFile fsSavePath cfArgs) `agentFinally` (lift $ toFSFilePath fsSavePath >>= removePath)
+          yaml <- liftError (FILE . IO_ERROR . show) (CF.readFile $ CryptoFile fsSavePath cfArgs) `agentFinally` (lift $ toFSFilePath fsSavePath >>= removePath)
           next@FileDescription {chunks = nextChunks} <- case strDecode (LB.toStrict yaml) of
             -- TODO switch to another error constructor
             Left _ -> throwError . FILE $ REDIRECT "decode error"
@@ -349,7 +349,7 @@ xftpSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {si
   let directYaml = prefixPath </> "direct.yaml"
   cfArgs <- atomically $ CF.randomArgs g
   let file = CryptoFile directYaml (Just cfArgs)
-  liftError (INTERNAL . show) $ CF.writeFile file (LB.fromStrict $ strEncode fdDirect)
+  liftError (FILE . IO_ERROR . show) $ CF.writeFile file (LB.fromStrict $ strEncode fdDirect)
   key <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
   fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce $ Just RedirectFileInfo {size, digest}
@@ -416,7 +416,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
               Nothing -> throwError $ FILE FT.SIZE
               Just chunkSize -> pure [chunkSize]
           let encSize = sum $ map fromIntegral chunkSizes
-          void $ liftError (INTERNAL . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize fsEncPath
+          void $ liftError (FILE . CRYPTO . show) $ encryptFile srcFile fileHdr key nonce fileSize' encSize fsEncPath
           digest <- liftIO $ LC.sha512Hash <$> LB.readFile fsEncPath
           let chunkSpecs = prepareChunkSpecs fsEncPath chunkSizes
           chunkDigests <- liftIO $ mapM getChunkDigest chunkSpecs
@@ -438,7 +438,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
                 retryLoop loop = atomically (assertAgentForeground c) >> loop
             createWithNextSrv usedSrvs = do
               deleted <- withStore' c $ \db -> getSndFileDeleted db sndFileId
-              when deleted $ throwError $ INTERNAL "file deleted, aborting chunk creation"
+              when deleted $ throwError $ FILE NO_FILE
               withNextSrv c userId usedSrvs [] $ \srvAuth -> do
                 replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
                 pure (replica, srvAuth)
@@ -480,7 +480,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
     uploadFileChunk AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients} sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}, digest = chunkDigest} replica = do
       replica'@SndFileChunkReplica {sndChunkReplicaId} <- addRecipients sndFileChunk replica
       fsFilePath <- lift $ toFSFilePath filePath
-      unlessM (doesFileExist fsFilePath) $ throwError $ INTERNAL "encrypted file doesn't exist on upload"
+      unlessM (doesFileExist fsFilePath) $ throwError $ FILE NO_FILE
       let chunkSpec' = chunkSpec {filePath = fsFilePath} :: XFTPChunkSpec
       atomically $ assertAgentForeground c
       agentXFTPUploadChunk c userId chunkDigest replica' chunkSpec'
