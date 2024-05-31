@@ -185,7 +185,8 @@ xftpServerCLI cfgPath logPath = do
                 defaultTransportServerConfig
                   { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini,
                     alpn = Just supportedXFTPhandshakes
-                  }
+                  },
+              responseDelay = 0
             }
 
 data CliCommand
