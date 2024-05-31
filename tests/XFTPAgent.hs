@@ -46,7 +46,11 @@ import XFTPClient
 
 xftpAgentTests :: Spec
 xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
-  it "should send and receive file" testXFTPAgentSendReceive
+  it "should send and receive file" $ withXFTPServer testXFTPAgentSendReceive
+  -- uncomment CPP option slow_servers and run hpack to run this test
+  xit "should send and receive file with slow server responses" $
+    withXFTPServerCfg testXFTPServerConfig {responseDelay = 500000} $
+      \_ -> testXFTPAgentSendReceive
   it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
   it "should send and receive large file with a redirect" testXFTPAgentSendReceiveRedirect
   it "should send and receive small file without a redirect" testXFTPAgentSendReceiveNoRedirect
@@ -100,7 +104,7 @@ checkProgress (prev, expected) (progress, total) loop
   | otherwise = pure ()
 
 testXFTPAgentSendReceive :: HasCallStack => IO ()
-testXFTPAgentSendReceive = withXFTPServer $ do
+testXFTPAgentSendReceive = do
   filePath <- createRandomFile
   -- send file, delete snd file internally
   (rfd1, rfd2) <- withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight $ do
