@@ -70,6 +70,7 @@ module Simplex.Messaging.Agent
     sendMessages,
     sendMessagesB,
     ackMessage,
+    getConnectionQueueInfo,
     switchConnection,
     abortConnectionSwitch,
     synchronizeRatchet,
@@ -82,8 +83,6 @@ module Simplex.Messaging.Agent
     testProtocolServer,
     setNtfServers,
     setNetworkConfig,
-    getNetworkConfig,
-    getNetworkConfig',
     setUserNetworkInfo,
     reconnectAllServers,
     registerNtfToken,
@@ -176,6 +175,7 @@ import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC, XFTPServerWithAuth)
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion, THandleParams (sessionId))
@@ -371,6 +371,10 @@ ackMessage :: AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AE 
 ackMessage c = withAgentEnv c .:. ackMessage' c
 {-# INLINE ackMessage #-}
 
+getConnectionQueueInfo :: AgentClient -> ConnId -> AE QueueInfo
+getConnectionQueueInfo c = withAgentEnv c . getConnectionQueueInfo' c
+{-# INLINE getConnectionQueueInfo #-}
+
 -- | Switch connection to the new receive queue
 switchConnection :: AgentClient -> ConnId -> AE ConnectionStats
 switchConnection c = withAgentEnv c . switchConnection' c
@@ -427,11 +431,6 @@ setNetworkConfig c@AgentClient {useNetworkConfig} cfg' = do
       then pure False
       else True <$ (writeTVar useNetworkConfig $! (slowNetworkConfig cfg', cfg'))
   when changed $ reconnectAllServers c
-
--- returns fast network config
-getNetworkConfig :: AgentClient -> IO NetworkConfig
-getNetworkConfig = getNetworkConfig'
-{-# INLINE getNetworkConfig #-}
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()
 setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkUpdated} ni = withAgentEnv' c $ do
@@ -1509,6 +1508,16 @@ ackMessage' c connId msgId rcptInfo_ = withConnLock c connId "ackMessage" $ do
           (AM_A_RCVD_, Just MsgReceipt {agentMsgId = sndMsgId, msgRcptStatus = MROk}) ->
             withStore' c $ \db -> deleteDeliveredSndMsg db connId $ InternalId sndMsgId
           _ -> pure ()
+
+getConnectionQueueInfo' :: AgentClient -> ConnId -> AM QueueInfo
+getConnectionQueueInfo' c connId = do
+  SomeConn _ conn <- withStore c (`getConn` connId)
+  case conn of
+    DuplexConnection _ (rq :| _) _ -> getQueueInfo c rq
+    RcvConnection _ rq -> getQueueInfo c rq
+    ContactConnection _ rq -> getQueueInfo c rq
+    SndConnection {} -> throwE $ CONN SIMPLEX
+    NewConnection _ -> throwE $ CMD PROHIBITED "getConnectionQueueInfo': NewConnection"
 
 switchConnection' :: AgentClient -> ConnId -> AM ConnectionStats
 switchConnection' c connId =

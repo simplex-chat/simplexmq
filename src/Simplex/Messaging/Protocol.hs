@@ -156,6 +156,7 @@ module Simplex.Messaging.Protocol
     sameSrvAddr,
     sameSrvAddr',
     noAuthSrv,
+    toMsgInfo,
 
     -- * TCP transport functions
     TransportBatch (..),
@@ -197,8 +198,8 @@ import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust, isNothing)
 import Data.String
 import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
-import Data.Time.Clock.System (SystemTime (..))
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Data.Time.Clock.System (SystemTime (..), systemToUTCTime)
 import Data.Type.Equality
 import Data.Word (Word16)
 import qualified Data.X509 as X
@@ -210,6 +211,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
+import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
@@ -386,6 +388,7 @@ data Command (p :: Party) where
   ACK :: MsgId -> Command Recipient
   OFF :: Command Recipient
   DEL :: Command Recipient
+  QUE :: Command Recipient
   -- SMP sender commands
   -- SEND v1 has to be supported for encoding/decoding
   -- SEND :: MsgBody -> Command Sender
@@ -463,6 +466,7 @@ data BrokerMsg where
   RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
   PRES :: EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
+  INFO :: QueueInfo -> BrokerMsg
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
@@ -504,6 +508,13 @@ data Message
       { msgId :: MsgId,
         msgTs :: SystemTime
       }
+
+toMsgInfo :: Message -> MsgInfo
+toMsgInfo = \case
+  Message {msgId, msgTs} -> msgInfo msgId msgTs MTMessage
+  MessageQuota {msgId, msgTs} -> msgInfo msgId msgTs MTQuota
+  where
+    msgInfo msgId msgTs msgType = MsgInfo {msgId = decodeLatin1 $ B64.encode msgId, msgTs = systemToUTCTime msgTs, msgType}
 
 messageId :: Message -> MsgId
 messageId = \case
@@ -652,6 +663,7 @@ data CommandTag (p :: Party) where
   ACK_ :: CommandTag Recipient
   OFF_ :: CommandTag Recipient
   DEL_ :: CommandTag Recipient
+  QUE_ :: CommandTag Recipient
   SEND_ :: CommandTag Sender
   PING_ :: CommandTag Sender
   PRXY_ :: CommandTag ProxiedClient
@@ -674,6 +686,7 @@ data BrokerMsgTag
   | RRES_
   | PRES_
   | END_
+  | INFO_
   | OK_
   | ERR_
   | PONG_
@@ -698,6 +711,7 @@ instance PartyI p => Encoding (CommandTag p) where
     ACK_ -> "ACK"
     OFF_ -> "OFF"
     DEL_ -> "DEL"
+    QUE_ -> "QUE"
     SEND_ -> "SEND"
     PING_ -> "PING"
     PRXY_ -> "PRXY"
@@ -717,6 +731,7 @@ instance ProtocolMsgTag CmdTag where
     "ACK" -> Just $ CT SRecipient ACK_
     "OFF" -> Just $ CT SRecipient OFF_
     "DEL" -> Just $ CT SRecipient DEL_
+    "QUE" -> Just $ CT SRecipient QUE_
     "SEND" -> Just $ CT SSender SEND_
     "PING" -> Just $ CT SSender PING_
     "PRXY" -> Just $ CT SProxiedClient PRXY_
@@ -742,6 +757,7 @@ instance Encoding BrokerMsgTag where
     RRES_ -> "RRES"
     PRES_ -> "PRES"
     END_ -> "END"
+    INFO_ -> "INFO"
     OK_ -> "OK"
     ERR_ -> "ERR"
     PONG_ -> "PONG"
@@ -757,6 +773,7 @@ instance ProtocolMsgTag BrokerMsgTag where
     "RRES" -> Just RRES_
     "PRES" -> Just PRES_
     "END" -> Just END_
+    "INFO" -> Just INFO_
     "OK" -> Just OK_
     "ERR" -> Just ERR_
     "PONG" -> Just PONG_
@@ -1275,6 +1292,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     ACK msgId -> e (ACK_, ' ', msgId)
     OFF -> e OFF_
     DEL -> e DEL_
+    QUE -> e QUE_
     SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
@@ -1340,6 +1358,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
         ACK_ -> ACK <$> _smpP
         OFF_ -> pure OFF
         DEL_ -> pure DEL
+        QUE_ -> pure QUE
     CT SSender tag ->
       Cmd SSender <$> case tag of
         SEND_ -> SEND <$> _smpP <*> (unTail <$> _smpP)
@@ -1368,6 +1387,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     RRES (EncFwdResponse encBlock) -> e (RRES_, ' ', Tail encBlock)
     PRES (EncResponse encBlock) -> e (PRES_, ' ', Tail encBlock)
     END -> e END_
+    INFO info -> e (INFO_, ' ', info)
     OK -> e OK_
     ERR err -> e (ERR_, ' ', err)
     PONG -> e PONG_
@@ -1388,6 +1408,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     RRES_ -> RRES <$> (EncFwdResponse . unTail <$> _smpP)
     PRES_ -> PRES <$> (EncResponse . unTail <$> _smpP)
     END_ -> pure END
+    INFO_ -> INFO <$> _smpP
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG

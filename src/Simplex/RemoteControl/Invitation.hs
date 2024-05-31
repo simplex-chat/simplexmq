@@ -123,7 +123,7 @@ instance StrEncoding RCSignedInvitation where
     idsig <- requiredP sigs "idsig" $ parseAll strP
     pure RCSignedInvitation {invitation, ssig, idsig}
 
-signInvitation :: C.PrivateKey C.Ed25519 -> C.PrivateKey C.Ed25519 -> RCInvitation -> RCSignedInvitation
+signInvitation :: C.PrivateKey 'C.Ed25519 -> C.PrivateKey 'C.Ed25519 -> RCInvitation -> RCSignedInvitation
 signInvitation sKey idKey invitation = RCSignedInvitation {invitation, ssig, idsig}
   where
     uri = strEncode invitation

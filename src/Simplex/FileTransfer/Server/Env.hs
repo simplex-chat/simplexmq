@@ -69,7 +69,8 @@ data XFTPServerConfig = XFTPServerConfig
     logStatsStartTime :: Int64,
     serverStatsLogFile :: FilePath,
     serverStatsBackupFile :: Maybe FilePath,
-    transportConfig :: TransportServerConfig
+    transportConfig :: TransportServerConfig,
+    responseDelay :: Int
   }
 
 defaultInactiveClientExpiration :: ExpirationConfig

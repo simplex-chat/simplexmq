@@ -56,6 +56,7 @@ module Simplex.Messaging.Agent.Client
     disableQueueNotifications,
     disableQueuesNtfs,
     sendAgentMessage,
+    getQueueInfo,
     agentNtfRegisterToken,
     agentNtfVerifyToken,
     agentNtfCheckToken,
@@ -238,6 +239,7 @@ import Simplex.Messaging.Protocol
     sameSrvAddr',
   )
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -1572,6 +1574,11 @@ sendAgentMessage c sq@SndQueue {userId, server, sndId, sndPrivateKey} msgFlags a
   let clientMsg = SMP.ClientMessage SMP.PHEmpty agentMsg
   msg <- agentCbEncrypt sq Nothing $ smpEncode clientMsg
   sendOrProxySMPMessage c userId server "<MSG>" (Just sndPrivateKey) sndId msgFlags msg
+
+getQueueInfo :: AgentClient -> RcvQueue -> AM QueueInfo
+getQueueInfo c rq@RcvQueue {rcvId, rcvPrivateKey} =
+  withSMPClient c rq "QUE" $ \smp ->
+    getSMPQueueInfo smp rcvPrivateKey rcvId
 
 agentNtfRegisterToken :: AgentClient -> NtfToken -> NtfPublicAuthKey -> C.PublicKeyX25519 -> AM (NtfTokenId, C.PublicKeyX25519)
 agentNtfRegisterToken c NtfToken {deviceToken, ntfServer, ntfPrivKey} ntfPubKey pubDhKey =
