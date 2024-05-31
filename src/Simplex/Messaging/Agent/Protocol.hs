@@ -120,8 +120,6 @@ module Simplex.Messaging.Agent.Protocol
     ATransmissionOrError,
     ARawTransmission,
     ConnId,
-    RcvFileId,
-    SndFileId,
     ConfirmationId,
     InvitationId,
     MsgIntegrity (..),
@@ -189,6 +187,7 @@ import Database.SQLite.Simple.ToField
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType)
+import Simplex.FileTransfer.Types (FileErrorType)
 import Simplex.Messaging.Agent.QueryString
 import Simplex.Messaging.Client (ProxyClientError)
 import qualified Simplex.Messaging.Crypto as C
@@ -1248,10 +1247,6 @@ connModeT = \case
 -- | SMP agent connection ID.
 type ConnId = ByteString
 
-type RcvFileId = ByteString
-
-type SndFileId = ByteString
-
 type ConfirmationId = ByteString
 
 type InvitationId = ByteString
@@ -1487,6 +1482,8 @@ data AgentErrorType
     NTF {serverAddress :: String, ntfErr :: ErrorType}
   | -- | XFTP protocol errors forwarded to agent clients
     XFTP {serverAddress :: String, xftpErr :: XFTPErrorType}
+  | -- | XFTP agent errors
+    FILE {fileErr :: FileErrorType}
   | -- | SMP proxy errors
     PROXY {proxyServer :: String, relayServer :: String, proxyErr :: ProxyClientError}
   | -- | XRCP protocol errors forwarded to agent clients
@@ -1590,6 +1587,7 @@ instance StrEncoding AgentErrorType where
         "SMP" -> SMP <$> (A.space *> srvP) <*> _strP
         "NTF" -> NTF <$> (A.space *> srvP) <*> _strP
         "XFTP" -> XFTP <$> (A.space *> srvP) <*> _strP
+        "FILE" -> FILE <$> _strP
         "PROXY" -> PROXY <$> (A.space *> srvP) <* A.space <*> srvP <*> _strP
         "RCP" -> RCP <$> _strP
         "BROKER" -> BROKER <$> (A.space *> srvP) <*> _strP
@@ -1606,6 +1604,7 @@ instance StrEncoding AgentErrorType where
     SMP srv e -> "SMP " <> text srv <> " " <> strEncode e
     NTF srv e -> "NTF " <> text srv <> " " <> strEncode e
     XFTP srv e -> "XFTP " <> text srv <> " " <> strEncode e
+    FILE e -> "FILE " <> strEncode e
     PROXY pxy srv e -> B.unwords ["PROXY", text pxy, text srv, strEncode e]
     RCP e -> "RCP " <> strEncode e
     BROKER srv e -> B.unwords ["BROKER", text srv, strEncode e]
@@ -1634,9 +1633,6 @@ instance StrEncoding SMPAgentError where
     A_CRYPTO e -> "CRYPTO " <> strEncode e
     A_DUPLICATE -> "DUPLICATE"
     A_QUEUE e -> "QUEUE " <> encodeUtf8 (T.pack e)
-
-textP :: Parser String
-textP = T.unpack . safeDecodeUtf8 <$> A.takeByteString
 
 cryptoErrToSyncState :: AgentCryptoError -> RatchetSyncState
 cryptoErrToSyncState = \case

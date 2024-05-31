@@ -2,23 +2,34 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.FileTransfer.Types where
 
+import Control.Applicative ((<|>))
+import qualified Data.Aeson.TH as J
+import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
+import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word32)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
-import Simplex.Messaging.Agent.Protocol (RcvFileId, SndFileId)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (fromTextField_)
-import Simplex.Messaging.Protocol
+import Simplex.Messaging.Parsers
+import Simplex.Messaging.Protocol (XFTPServer)
+import Simplex.Messaging.Util
 import System.FilePath ((</>))
+
+type RcvFileId = ByteString
+
+type SndFileId = ByteString
 
 authTagSize :: Int64
 authTagSize = fromIntegral C.authTagSize
@@ -236,3 +247,26 @@ data DeletedSndChunkReplica = DeletedSndChunkReplica
     retries :: Int
   }
   deriving (Show)
+
+data FileErrorType
+  = -- | cannot proceed with download from not approved relays without proxy
+    NOT_APPROVED
+  | -- | max file size exceeded
+    SIZE
+  | -- | bad redirect data
+    REDIRECT {redirectError :: String}
+  | -- | internal file processing errors
+    INTERNAL {internalErr :: String}
+  deriving (Eq, Read, Show)
+
+instance StrEncoding FileErrorType where
+  strEncode = \case
+    REDIRECT e -> "REDIRECT " <> bshow e
+    INTERNAL e -> "INTERNAL " <> encodeUtf8 (T.pack e)
+    e -> bshow e
+  strP =
+    "REDIRECT " *> (REDIRECT <$> parseRead A.takeByteString)
+      <|> "INTERNAL" *> (INTERNAL <$> (A.space *> textP))
+      <|> parseRead1
+
+$(J.deriveJSON (sumTypeJSON id) ''FileErrorType)

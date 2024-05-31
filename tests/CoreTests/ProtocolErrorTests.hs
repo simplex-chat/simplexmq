@@ -9,6 +9,7 @@ module CoreTests.ProtocolErrorTests where
 import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
+import Simplex.FileTransfer.Types (FileErrorType (..))
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Agent.Protocol as Agent
 import Simplex.Messaging.Client (ProxyClientError (..))
@@ -82,6 +83,8 @@ deriving instance Generic XFTPErrorType
 
 deriving instance Generic RCErrorType
 
+deriving instance Generic FileErrorType
+
 instance Arbitrary AgentErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary CommandErrorType where arbitrary = genericArbitraryU
@@ -109,3 +112,5 @@ instance Arbitrary HandshakeError where arbitrary = genericArbitraryU
 instance Arbitrary XFTPErrorType where arbitrary = genericArbitraryU
 
 instance Arbitrary RCErrorType where arbitrary = genericArbitraryU
+
+instance Arbitrary FileErrorType where arbitrary = genericArbitraryU
