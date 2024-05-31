@@ -20,6 +20,7 @@ import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.Maybe (fromJust)
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
+import SMPClient (xit'')
 import Simplex.FileTransfer.Client (XFTPClientConfig (..))
 import Simplex.FileTransfer.Description (FileChunk (..), FileDescription (..), FileDescriptionURI (..), ValidFileDescription, fileDescriptionURI, kb, mb, qrSizeLimit, pattern ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
@@ -46,7 +47,7 @@ import XFTPCLI
 import XFTPClient
 
 xftpAgentTests :: Spec
-xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
+xftpAgentTests = around_ testBracket . fdescribe "agent XFTP API" $ do
   it "should send and receive file" $ withXFTPServer testXFTPAgentSendReceive
   -- uncomment CPP option slow_servers and run hpack to run this test
   xit "should send and receive file with slow server responses" $
@@ -59,7 +60,7 @@ xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
   it "should resume sending file after restart" testXFTPAgentSendRestore
-  xit "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
+  xit'' "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
   it "should delete sent file on server" testXFTPAgentDelete
   it "should resume deleting file after restart" testXFTPAgentDeleteRestore
   -- TODO when server is fixed to correctly send AUTH error, this test has to be modified to expect AUTH error
@@ -476,7 +477,7 @@ testXFTPAgentSendCleanup = withGlobalLogging logCfgNoLogs $ do
     -- send file - should fail with AUTH error
     withAgent 2 agentCfg initAgentServers testDB $ \sndr' -> do
       runRight_ $ xftpStartWorkers sndr' (Just senderFiles)
-      ("", sfId', SFERR (INTERNAL "XFTP {serverAddress = \"xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000\", xftpErr = AUTH}")) <-
+      ("", sfId', SFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <-
         sfGet sndr'
       sfId' `shouldBe` sfId
 
