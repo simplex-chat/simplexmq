@@ -187,7 +187,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
           where
             retryLoop loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do
-                notify c rcvFileEntityId $ RFWARN e
+                when (serverHostError e) $ notify c rcvFileEntityId $ RFWARN e
                 liftIO $ closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
@@ -236,7 +236,7 @@ withRetryIntervalLimit maxN ri action =
 retryOnError :: Text -> AM a -> AM a -> AgentErrorType -> AM a
 retryOnError name loop done e = do
   logError $ name <> " error: " <> tshow e
-  if temporaryAgentError e
+  if temporaryOrHostError e
     then loop
     else done
 
@@ -470,7 +470,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
           where
             retryLoop loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do
-                notify c sndFileEntityId $ SFWARN e
+                when (serverHostError e) $ notify c sndFileEntityId $ SFWARN e
                 liftIO $ closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateSndChunkReplicaDelay db sndChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
@@ -637,7 +637,7 @@ runXFTPDelWorker c srv Worker {doWork} = do
           where
             retryLoop loop e replicaDelay = do
               flip catchAgentError (\_ -> pure ()) $ do
-                notify c "" $ SFWARN e
+                when (serverHostError e) $ notify c "" $ SFWARN e
                 liftIO $ closeXFTPServerClient c userId server chunkDigest
                 withStore' c $ \db -> updateDeletedSndChunkReplicaDelay db deletedSndChunkReplicaId replicaDelay
               atomically $ assertAgentForeground c
