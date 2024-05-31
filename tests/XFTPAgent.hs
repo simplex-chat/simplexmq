@@ -47,7 +47,7 @@ import XFTPCLI
 import XFTPClient
 
 xftpAgentTests :: Spec
-xftpAgentTests = around_ testBracket . fdescribe "agent XFTP API" $ do
+xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
   it "should send and receive file" $ withXFTPServer testXFTPAgentSendReceive
   -- uncomment CPP option slow_servers and run hpack to run this test
   xit "should send and receive file with slow server responses" $

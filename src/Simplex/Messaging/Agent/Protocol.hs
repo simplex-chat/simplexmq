@@ -419,9 +419,11 @@ data ACommand (p :: AParty) (e :: AEntity) where
   RFPROG :: Int64 -> Int64 -> ACommand Agent AERcvFile
   RFDONE :: FilePath -> ACommand Agent AERcvFile
   RFERR :: AgentErrorType -> ACommand Agent AERcvFile
+  RFWARN :: AgentErrorType -> ACommand Agent AERcvFile
   SFPROG :: Int64 -> Int64 -> ACommand Agent AESndFile
   SFDONE :: ValidFileDescription 'FSender -> [ValidFileDescription 'FRecipient] -> ACommand Agent AESndFile
   SFERR :: AgentErrorType -> ACommand Agent AESndFile
+  SFWARN :: AgentErrorType -> ACommand Agent AESndFile
 
 deriving instance Eq (ACommand p e)
 
@@ -483,9 +485,11 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   RFDONE_ :: ACommandTag Agent AERcvFile
   RFPROG_ :: ACommandTag Agent AERcvFile
   RFERR_ :: ACommandTag Agent AERcvFile
+  RFWARN_ :: ACommandTag Agent AERcvFile
   SFPROG_ :: ACommandTag Agent AESndFile
   SFDONE_ :: ACommandTag Agent AESndFile
   SFERR_ :: ACommandTag Agent AESndFile
+  SFWARN_ :: ACommandTag Agent AESndFile
 
 deriving instance Eq (ACommandTag p e)
 
@@ -539,9 +543,11 @@ aCommandTag = \case
   RFPROG {} -> RFPROG_
   RFDONE {} -> RFDONE_
   RFERR {} -> RFERR_
+  RFWARN {} -> RFWARN_
   SFPROG {} -> SFPROG_
   SFDONE {} -> SFDONE_
   SFERR {} -> SFERR_
+  SFWARN {} -> SFWARN_
 
 data QueueDirection = QDRcv | QDSnd
   deriving (Eq, Show)
@@ -1208,7 +1214,7 @@ connReqUriP overrideScheme = do
     crModeP = "invitation" $> CMInvitation <|> "contact" $> CMContact
     adjustAgentVRange vr =
       let v = max duplexHandshakeSMPAgentVersion $ minVersion vr
-        in fromMaybe vr $ safeVersionRange v (max v $ maxVersion vr)
+       in fromMaybe vr $ safeVersionRange v (max v $ maxVersion vr)
 
 instance ConnectionModeI m => FromJSON (ConnectionRequestUri m) where
   parseJSON = strParseJSON "ConnectionRequestUri"
@@ -1698,9 +1704,11 @@ instance StrEncoding ACmdTag where
       "RFPROG" -> at SAERcvFile RFPROG_
       "RFDONE" -> at SAERcvFile RFDONE_
       "RFERR" -> at SAERcvFile RFERR_
+      "RFWARN" -> at SAERcvFile RFWARN_
       "SFPROG" -> at SAESndFile SFPROG_
       "SFDONE" -> at SAESndFile SFDONE_
       "SFERR" -> at SAESndFile SFERR_
+      "SFWARN" -> at SAESndFile SFWARN_
       _ -> fail "bad ACmdTag"
     where
       t = pure . ACmdTag SClient SAEConn
@@ -1757,9 +1765,11 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     RFPROG_ -> "RFPROG"
     RFDONE_ -> "RFDONE"
     RFERR_ -> "RFERR"
+    RFWARN_ -> "RFWARN"
     SFPROG_ -> "SFPROG"
     SFDONE_ -> "SFDONE"
     SFERR_ -> "SFERR"
+    SFWARN_ -> "SFWARN"
   strP = (\(APCT _ t) -> checkEntity t) <$?> strP
 
 checkParty :: forall t p p'. (APartyI p, APartyI p') => t p' -> Either String (t p)
@@ -1824,9 +1834,11 @@ commandP binaryP =
           RFPROG_ -> s (RFPROG <$> A.decimal <* A.space <*> A.decimal)
           RFDONE_ -> s (RFDONE <$> strP)
           RFERR_ -> s (RFERR <$> strP)
+          RFWARN_ -> s (RFWARN <$> strP)
           SFPROG_ -> s (SFPROG <$> A.decimal <* A.space <*> A.decimal)
           SFDONE_ -> s (sfDone . safeDecodeUtf8 <$?> binaryP)
           SFERR_ -> s (SFERR <$> strP)
+          SFWARN_ -> s (SFWARN <$> strP)
   where
     s :: Parser a -> Parser a
     s p = A.space *> p
@@ -1894,9 +1906,11 @@ serializeCommand = \case
   RFPROG rcvd total -> s (RFPROG_, rcvd, total)
   RFDONE fPath -> s (RFDONE_, fPath)
   RFERR e -> s (RFERR_, e)
+  RFWARN e -> s (RFWARN_, e)
   SFPROG sent total -> s (SFPROG_, sent, total)
   SFDONE sd rds -> B.unwords [s SFDONE_, serializeBinary (sfDone sd rds)]
   SFERR e -> s (SFERR_, e)
+  SFWARN e -> s (SFWARN_, e)
   where
     s :: StrEncoding a => a -> ByteString
     s = strEncode
