@@ -291,6 +291,32 @@ data SMPProxyFallback
   | SPFProhibit -- prohibit direct connection to destination relay.
   deriving (Eq, Show)
 
+instance StrEncoding SMPProxyMode where
+  strEncode = \case
+    SPMAlways -> "always"
+    SPMUnknown -> "unknown"
+    SPMUnprotected -> "unprotected"
+    SPMNever -> "never"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "always" -> pure SPMAlways
+      "unknown" -> pure SPMUnknown
+      "unprotected" -> pure SPMUnprotected
+      "never" -> pure SPMNever
+      _ -> fail "Invalid SMP proxy mode"
+
+instance StrEncoding SMPProxyFallback where
+  strEncode = \case
+    SPFAllow -> "yes"
+    SPFAllowProtected -> "protected"
+    SPFProhibit -> "no"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "yes" -> pure SPFAllow
+      "protected" -> pure SPFAllowProtected
+      "no" -> pure SPFProhibit
+      _ -> fail "Invalid SMP proxy fallback mode"
+
 defaultNetworkConfig :: NetworkConfig
 defaultNetworkConfig =
   NetworkConfig
