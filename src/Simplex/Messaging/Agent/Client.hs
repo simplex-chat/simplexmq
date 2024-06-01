@@ -188,6 +188,7 @@ import qualified Simplex.FileTransfer.Client as X
 import Simplex.FileTransfer.Description (ChunkReplicaId (..), FileDigest (..), kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..), FileResponse)
 import Simplex.FileTransfer.Transport (XFTPErrorType (DIGEST), XFTPRcvChunkSpec (..), XFTPVersion)
+import qualified Simplex.FileTransfer.Transport as XFTP
 import Simplex.FileTransfer.Types (DeletedSndChunkReplica (..), NewSndChunkReplica (..), RcvFileChunkReplica (..), SndFileChunk (..), SndFileChunkReplica (..))
 import Simplex.FileTransfer.Util (uniqueCombine)
 import Simplex.Messaging.Agent.Env.SQLite
@@ -1307,6 +1308,7 @@ temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
   BROKER _ e -> tempBrokerError e
   SMP _ (SMP.PROXY (SMP.BROKER e)) -> tempBrokerError e
+  XFTP _ XFTP.TIMEOUT -> True
   PROXY _ _ (ProxyProtocolError (SMP.PROXY (SMP.BROKER e))) -> tempBrokerError e
   PROXY _ _ (ProxyProtocolError (SMP.PROXY SMP.NO_SESSION)) -> True
   INACTIVE -> True
@@ -2077,12 +2079,13 @@ getAgentQueuesInfo AgentClient {msgQ, subQ, smpClients} = do
   where
     getClientQueuesInfo :: SMPClientVar -> IO (Int, UTCTime, ClientInfo)
     getClientQueuesInfo SessionVar {sessionVar, sessionVarId, sessionVarTs} = do
-      clientInfo <- atomically (tryReadTMVar sessionVar) >>= \case
-        Just (Right c) -> do
-          (sndQInfo, rcvQInfo) <- getProtocolClientQueuesInfo $ protocolClient c
-          pure ClientInfoQueues {sndQInfo, rcvQInfo}
-        Just (Left e) -> pure $ ClientInfoError e
-        Nothing -> pure ClientInfoConnecting
+      clientInfo <-
+        atomically (tryReadTMVar sessionVar) >>= \case
+          Just (Right c) -> do
+            (sndQInfo, rcvQInfo) <- getProtocolClientQueuesInfo $ protocolClient c
+            pure ClientInfoQueues {sndQInfo, rcvQInfo}
+          Just (Left e) -> pure $ ClientInfoError e
+          Nothing -> pure ClientInfoConnecting
       pure (sessionVarId, sessionVarTs, clientInfo)
 
 $(J.deriveJSON defaultJSON ''AgentLocks)
