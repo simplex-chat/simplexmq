@@ -23,6 +23,7 @@ where
 import Control.Exception
 import Control.Monad
 import Control.Monad.Except
+import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import qualified Data.ByteArray as BA
@@ -56,10 +57,10 @@ readFile (CryptoFile path cfArgs) = do
   case cfArgs of
     Just (CFArgs (C.SbKey key) (C.CbNonce nonce)) -> do
       let len = LB.length s - fromIntegral C.authTagSize
-      when (len < 0) $ throwError FTCEInvalidFileSize
+      when (len < 0) $ throwE FTCEInvalidFileSize
       let (s', tag') = LB.splitAt len s
       (tag :| cs) <- liftEitherWith FTCECryptoError $ LC.secretBox LC.sbDecryptChunk key nonce s'
-      unless (BA.constEq (LB.toStrict tag') tag) $ throwError FTCEInvalidAuthTag
+      unless (BA.constEq (LB.toStrict tag') tag) $ throwE FTCEInvalidAuthTag
       pure $ LB.fromChunks cs
     Nothing -> pure s
 
@@ -96,7 +97,7 @@ hGetTag :: CryptoFileHandle -> ExceptT FTCryptoError IO ()
 hGetTag (CFHandle h sb_) = forM_ sb_ $ \sb -> do
   tag <- liftIO $ B.hGet h C.authTagSize
   tag' <- LC.sbAuth <$> readTVarIO sb
-  unless (BA.constEq tag tag') $ throwError FTCEInvalidAuthTag
+  unless (BA.constEq tag tag') $ throwE FTCEInvalidAuthTag
 
 data FTCryptoError
   = FTCECryptoError C.CryptoError
