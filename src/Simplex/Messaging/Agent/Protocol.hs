@@ -129,11 +129,10 @@ module Simplex.Messaging.Agent.Protocol
     NotificationInfo (..),
 
     -- * Encode/decode
-    serializeCommand',
+    serializeCommand,
     connMode,
     connMode',
     dbCommandP,
-    commandP',
     connModeT,
     serializeQueueStatus,
     queueStatusT,
@@ -320,19 +319,7 @@ deriving instance Show AEvt
 
 type ConnInfo = ByteString
 
-data ACommand where
-  NEW :: Bool -> AConnectionMode -> InitialKeys -> SubscriptionMode -> ACommand -- response INV
-  JOIN :: Bool -> AConnectionRequestUri -> PQSupport -> SubscriptionMode -> ConnInfo -> ACommand
-  LET :: ConfirmationId -> ConnInfo -> ACommand -- ConnInfo is from client
-  ACK :: AgentMsgId -> Maybe MsgReceiptInfo -> ACommand
-  SWCH :: ACommand
-  DEL :: ACommand
-
-deriving instance Eq ACommand
-
-deriving instance Show ACommand
-
--- | Parameterized type for SMP agent protocol commands and responses from all participants.
+-- | Parameterized type for SMP agent events
 data AEvent (e :: AEntity) where
   INV :: AConnectionRequestUri -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
@@ -381,6 +368,15 @@ instance Eq AEvtTag where
     Nothing -> False
 
 deriving instance Show AEvtTag
+
+data ACommand
+  = NEW Bool AConnectionMode InitialKeys SubscriptionMode -- response INV
+  | JOIN Bool AConnectionRequestUri PQSupport SubscriptionMode ConnInfo
+  | LET ConfirmationId ConnInfo -- ConnInfo is from client
+  | ACK AgentMsgId (Maybe MsgReceiptInfo)
+  | SWCH
+  | DEL
+  deriving (Eq, Show)
 
 data ACommandTag
   = NEW_
@@ -1436,7 +1432,7 @@ cryptoErrToSyncState = \case
 
 -- | SMP agent command and response parser for commands stored in db (fully parses binary bodies)
 dbCommandP :: Parser ACommand
-dbCommandP = commandP' $ A.take =<< (A.decimal <* "\n")
+dbCommandP = commandP $ A.take =<< (A.decimal <* "\n")
 
 instance StrEncoding ACommandTag where
   strP =
@@ -1456,8 +1452,8 @@ instance StrEncoding ACommandTag where
     SWCH_ -> "SWCH"
     DEL_ -> "DEL"
 
-commandP' :: Parser ByteString -> Parser ACommand
-commandP' binaryP =
+commandP :: Parser ByteString -> Parser ACommand
+commandP binaryP =
   strP
     >>= \case
       NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqIKP <*> (strP <|> pure SMP.SMSubscribe))
@@ -1475,8 +1471,8 @@ commandP' binaryP =
     pqSupP = strP_ <|> pure PQSupportOff
 
 -- | Serialize SMP agent command.
-serializeCommand' :: ACommand -> ByteString
-serializeCommand' = \case
+serializeCommand :: ACommand -> ByteString
+serializeCommand = \case
   NEW ntfs cMode pqIK subMode -> s (NEW_, ntfs, cMode, pqIK, subMode)
   JOIN ntfs cReq pqSup subMode cInfo -> s (JOIN_, ntfs, cReq, pqSup, subMode, Str $ serializeBinary cInfo)
   LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]

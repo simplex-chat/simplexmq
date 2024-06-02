@@ -348,7 +348,7 @@ data AgentCommand
 
 instance StrEncoding AgentCommand where
   strEncode = \case
-    AClientCommand cmd -> strEncode (ACClient, Str $ serializeCommand' cmd)
+    AClientCommand cmd -> strEncode (ACClient, Str $ serializeCommand cmd)
     AInternalCommand cmd -> strEncode (ACInternal, cmd)
   strP =
     strP_ >>= \case

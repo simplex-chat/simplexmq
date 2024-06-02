@@ -29,11 +29,7 @@
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/agent-protocol.md
 module Simplex.Messaging.Agent
-  ( -- * queue-based SMP agent
-
-    -- runAgentClient,
-
-    -- * SMP agent functional API
+  ( -- * SMP agent functional API
     AgentClient (..),
     AE,
     SubscriptionsInfo (..),

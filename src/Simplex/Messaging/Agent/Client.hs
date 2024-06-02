@@ -273,7 +273,6 @@ type XFTPTransportSession = TransportSession FileResponse
 data AgentClient = AgentClient
   { acThread :: TVar (Maybe (Weak ThreadId)),
     active :: TVar Bool,
-    -- rcvQ :: TBQueue (ATransmission 'Client),
     subQ :: TBQueue ATransmission,
     msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
     smpServers :: TMap UserId (NonEmpty SMPServerWithAuth),
@@ -449,7 +448,6 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
       qSize = tbqSize cfg
   acThread <- newTVar Nothing
   active <- newTVar True
-  -- rcvQ <- newTBQueue qSize
   subQ <- newTBQueue qSize
   msgQ <- newTBQueue qSize
   smpServers <- newTVar smp
@@ -487,7 +485,6 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
     AgentClient
       { acThread,
         active,
-        -- rcvQ,
         subQ,
         msgQ,
         smpServers,
