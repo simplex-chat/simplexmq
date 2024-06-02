@@ -681,27 +681,6 @@ data MsgMeta = MsgMeta
   }
   deriving (Eq, Show)
 
--- instance StrEncoding MsgMeta where
---   strEncode MsgMeta {integrity, recipient = (rmId, rTs), broker = (bmId, bTs), sndMsgId, pqEncryption} =
---     B.unwords
---       [ strEncode integrity,
---         "R=" <> bshow rmId <> "," <> showTs rTs,
---         "B=" <> encode bmId <> "," <> showTs bTs,
---         "S=" <> bshow sndMsgId,
---         "PQ=" <> strEncode pqEncryption
---       ]
---     where
---       showTs = B.pack . formatISO8601Millis
---   strP = do
---     integrity <- strP
---     recipient <- " R=" *> partyMeta A.decimal
---     broker <- " B=" *> partyMeta base64P
---     sndMsgId <- " S=" *> A.decimal
---     pqEncryption <- " PQ=" *> strP
---     pure MsgMeta {integrity, recipient, broker, sndMsgId, pqEncryption}
---     where
---       partyMeta idParser = (,) <$> idParser <* A.char ',' <*> tsISO8601P
-
 data SMPConfirmation = SMPConfirmation
   { -- | sender's public key to use for authentication of sender's commands at the recepient's server
     senderKey :: SndPublicAuthKey,
@@ -1011,14 +990,6 @@ instance Encoding AMessageReceipt where
   smpP = do
     (agentMsgId, msgHash, Large rcptInfo) <- smpP
     pure AMessageReceipt {agentMsgId, msgHash, rcptInfo}
-
--- instance StrEncoding MsgReceipt where
---   strEncode MsgReceipt {agentMsgId, msgRcptStatus} =
---     strEncode agentMsgId <> ":" <> strEncode msgRcptStatus
---   strP = do
---     agentMsgId <- strP <* A.char ':'
---     msgRcptStatus <- strP
---     pure MsgReceipt {agentMsgId, msgRcptStatus}
 
 instance ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
