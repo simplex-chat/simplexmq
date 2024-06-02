@@ -47,7 +47,6 @@ import Simplex.Messaging.Protocol
     VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util ((<$?>))
 
 -- * Queue types
 
@@ -344,20 +343,20 @@ instance StrEncoding AgentCmdType where
       _ -> fail "bad AgentCmdType"
 
 data AgentCommand
-  = AClientCommand (APartyCmd 'Client)
+  = AClientCommand ACommand
   | AInternalCommand InternalCommand
 
 instance StrEncoding AgentCommand where
   strEncode = \case
-    AClientCommand (APC _ cmd) -> strEncode (ACClient, Str $ serializeCommand cmd)
+    AClientCommand cmd -> strEncode (ACClient, Str $ serializeCommand' cmd)
     AInternalCommand cmd -> strEncode (ACInternal, cmd)
   strP =
     strP_ >>= \case
-      ACClient -> AClientCommand <$> ((\(ACmd _ e cmd) -> checkParty $ APC e cmd) <$?> dbCommandP)
+      ACClient -> AClientCommand <$> dbCommandP
       ACInternal -> AInternalCommand <$> strP
 
 data AgentCommandTag
-  = AClientCommandTag (APartyCmdTag 'Client)
+  = AClientCommandTag ACommandTag
   | AInternalCommandTag InternalCommandTag
   deriving (Show)
 
@@ -436,7 +435,7 @@ instance StrEncoding InternalCommandTag where
 
 agentCommandTag :: AgentCommand -> AgentCommandTag
 agentCommandTag = \case
-  AClientCommand cmd -> AClientCommandTag $ aPartyCmdTag cmd
+  AClientCommand cmd -> AClientCommandTag $ aCommandTag cmd
   AInternalCommand cmd -> AInternalCommandTag $ internalCmdTag cmd
 
 internalCmdTag :: InternalCommand -> InternalCommandTag

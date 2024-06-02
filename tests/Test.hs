@@ -11,7 +11,8 @@ import CoreTests.BatchingTests
 import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
-import CoreTests.ProtocolErrorTests
+
+-- import CoreTests.ProtocolErrorTests
 import CoreTests.RetryIntervalTests
 import CoreTests.TRcvQueuesTests
 import CoreTests.UtilTests
@@ -49,7 +50,7 @@ main = do
         describe "Core tests" $ do
           describe "Batching tests" batchingTests
           describe "Encoding tests" encodingTests
-          describe "Protocol error tests" protocolErrorTests
+          -- describe "Protocol error tests" protocolErrorTests
           describe "Version range" versionRangeTests
           describe "Encryption tests" cryptoTests
           describe "Encrypted files tests" cryptoFileTests

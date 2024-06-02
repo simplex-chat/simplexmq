@@ -273,8 +273,8 @@ type XFTPTransportSession = TransportSession FileResponse
 data AgentClient = AgentClient
   { acThread :: TVar (Maybe (Weak ThreadId)),
     active :: TVar Bool,
-    rcvQ :: TBQueue (ATransmission 'Client),
-    subQ :: TBQueue (ATransmission 'Agent),
+    -- rcvQ :: TBQueue (ATransmission 'Client),
+    subQ :: TBQueue ATransmission,
     msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
     smpServers :: TMap UserId (NonEmpty SMPServerWithAuth),
     smpClients :: TMap SMPTransportSession SMPClientVar,
@@ -373,7 +373,7 @@ getAgentWorker' toW fromW name hasWork c key ws work = do
                 notifyErr err = do
                   let e = either ((", error: " <>) . show) (\_ -> ", no error") e_
                       msg = "Worker " <> name <> " for " <> show key <> " terminated " <> show (restartCount rc) <> " times" <> e
-                  writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err msg)
+                  writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err msg)
 
 newWorker :: AgentClient -> STM Worker
 newWorker c = do
@@ -449,7 +449,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
       qSize = tbqSize cfg
   acThread <- newTVar Nothing
   active <- newTVar True
-  rcvQ <- newTBQueue qSize
+  -- rcvQ <- newTBQueue qSize
   subQ <- newTBQueue qSize
   msgQ <- newTBQueue qSize
   smpServers <- newTVar smp
@@ -487,7 +487,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
     AgentClient
       { acThread,
         active,
-        rcvQ,
+        -- rcvQ,
         subQ,
         msgQ,
         smpServers,
@@ -633,7 +633,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
           liftIO $ incClientStat c userId clnt "PROXY" "OK"
           pure $ Right sess
         Left e -> do
-          liftIO $ incClientStat c userId clnt "PROXY" $ strEncode e
+          liftIO $ incClientStat c userId clnt "PROXY" $ bshow e
           atomically $ do
             unless (serverHostError e) $ do
               removeSessVar rv destSrv prs
@@ -692,8 +692,8 @@ smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess
         atomically $ mapM_ (releaseGetLock c) qs
         runReaderT (resubscribeSMPSession c tSess) env
 
-    notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> IO ()
-    notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
+    notifySub :: forall e. AEntityI e => ConnId -> AEvent e -> IO ()
+    notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, AEvt (sAEntity @e) cmd)
 
 resubscribeSMPSession :: AgentClient -> SMPTransportSession -> AM' ()
 resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
@@ -743,8 +743,8 @@ reconnectSMPClient c tSess@(_, srv, _) qs = handleNotify $ do
   where
     handleNotify :: AM' () -> AM' ()
     handleNotify = E.handleAny $ notifySub "" . ERR . INTERNAL . show
-    notifySub :: forall e. AEntityI e => ConnId -> ACommand 'Agent e -> AM' ()
-    notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, APC (sAEntity @e) cmd)
+    notifySub :: forall e. AEntityI e => ConnId -> AEvent e -> AM' ()
+    notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, AEvt (sAEntity @e) cmd)
 
 getNtfServerClient :: AgentClient -> NtfTransportSession -> AM NtfClient
 getNtfServerClient c@AgentClient {active, ntfClients, workerSeq} tSess@(userId, srv, _) = do
@@ -767,7 +767,7 @@ getNtfServerClient c@AgentClient {active, ntfClients, workerSeq} tSess@(userId, 
     clientDisconnected v client = do
       atomically $ removeSessVar v tSess ntfClients
       incClientStat c userId client "DISCONNECT" ""
-      atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
+      atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
 getXFTPServerClient :: AgentClient -> XFTPTransportSession -> AM XFTPClient
@@ -791,7 +791,7 @@ getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq} tSess@(userId
     clientDisconnected v client = do
       atomically $ removeSessVar v tSess xftpClients
       incClientStat c userId client "DISCONNECT" ""
-      atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent DISCONNECT client)
+      atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
 waitForProtocolClient ::
@@ -831,10 +831,10 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient v =
       logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
       atomically $ putTMVar (sessionVar v) (Right client)
       liftIO $ incClientStat c userId client "CLIENT" "OK"
-      atomically $ writeTBQueue (subQ c) ("", "", APC SAENone $ hostEvent CONNECT client)
+      atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone $ hostEvent CONNECT client)
       pure client
     Left e -> do
-      liftIO $ incServerStat c userId srv "CLIENT" $ strEncode e
+      liftIO $ incServerStat c userId srv "CLIENT" $ bshow e
       ei <- asks $ persistErrorInterval . config
       if ei == 0
         then atomically $ do
@@ -845,11 +845,11 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient v =
           atomically $ putTMVar (sessionVar v) (Left (e, Just ts))
       throwE e -- signal error to caller
 
-hostEvent :: forall v err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient v err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> Client msg -> ACommand 'Agent 'AENone
+hostEvent :: forall v err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient v err msg) => (AProtocolType -> TransportHost -> AEvent 'AENone) -> Client msg -> AEvent 'AENone
 hostEvent event = hostEvent' event . protocolClient
 {-# INLINE hostEvent #-}
 
-hostEvent' :: forall v err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient v err msg) => (AProtocolType -> TransportHost -> ACommand 'Agent 'AENone) -> ProtoClient msg -> ACommand 'Agent 'AENone
+hostEvent' :: forall v err msg. (ProtocolTypeI (ProtoType msg), ProtocolServerClient v err msg) => (AProtocolType -> TransportHost -> AEvent 'AENone) -> ProtoClient msg -> AEvent 'AENone
 hostEvent' event = event (AProtocolType $ protocolTypeI @(ProtoType msg)) . clientTransportHost
 
 getClientConfig :: AgentClient -> (AgentConfig -> ProtocolClientConfig v) -> AM' (ProtocolClientConfig v)
@@ -986,8 +986,8 @@ withClient_ c tSess@(userId, srv, _) statCmd action = do
     stat cl = liftIO . incClientStat c userId cl statCmd
     logServerError :: Client msg -> AgentErrorType -> AM a
     logServerError cl e = do
-      logServer "<--" c srv "" $ strEncode e
-      stat cl $ strEncode e
+      logServer "<--" c srv "" $ bshow e
+      stat cl $ bshow e
       throwError e
 
 withProxySession :: AgentClient -> SMPTransportSession -> SMP.SenderId -> ByteString -> ((SMPConnectedClient, ProxiedRelay) -> AM a) -> AM a
@@ -1005,8 +1005,8 @@ withProxySession c destSess@(userId, destSrv, _) entId cmdStr action = do
     proxySrv = showServer . protocolClientServer' . protocolClient
     logServerError :: SMPConnectedClient -> AgentErrorType -> AM a
     logServerError cl e = do
-      logServer ("<-- " <> proxySrv cl <> " <") c destSrv "" $ strEncode e
-      stat cl $ strEncode e
+      logServer ("<-- " <> proxySrv cl <> " <") c destSrv "" $ bshow e
+      stat cl $ bshow e
       throwError e
 
 withLogClient_ :: ProtocolServerClient v err msg => AgentClient -> TransportSession msg -> EntityId -> ByteString -> (Client msg -> AM a) -> AM a
@@ -1719,7 +1719,7 @@ withWork c doWork getWork action =
     Left e -> notifyErr INTERNAL e
   where
     noWork = liftIO $ noWorkToDo doWork
-    notifyErr err e = atomically $ writeTBQueue (subQ c) ("", "", APC SAEConn $ ERR $ err $ show e)
+    notifyErr err e = atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err $ show e)
 
 noWorkToDo :: TMVar () -> IO ()
 noWorkToDo = void . atomically . tryTakeTMVar
@@ -1762,7 +1762,7 @@ suspendOperation c op endedAction = do
 notifySuspended :: AgentClient -> STM ()
 notifySuspended c = do
   -- unsafeIOToSTM $ putStrLn "notifySuspended"
-  writeTBQueue (subQ c) ("", "", APC SAENone SUSPENDED)
+  writeTBQueue (subQ c) ("", "", AEvt SAENone SUSPENDED)
   writeTVar (agentState c) ASSuspended
 
 endOperation :: AgentClient -> AgentOperation -> STM () -> STM ()
