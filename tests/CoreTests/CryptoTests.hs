@@ -7,6 +7,7 @@ module CoreTests.CryptoTests (cryptoTests) where
 
 import Control.Concurrent.STM
 import Control.Monad.Except
+import qualified Data.ByteArray as BA
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isRight)
@@ -285,6 +286,10 @@ testNaCl = do
 
   naclShared <- either (fail . show) pure $ NaCl.dh aPub bPriv
   naclShared `shouldBe` abShared
+
+  naclBeforeNm <- either (fail . show) pure $ NaCl.cryptoBoxBeforenm aPub bPriv
+  abSharedH <- either (fail . show) pure $ NaCl.hsalsa20 abShared
+  naclBeforeNm `shouldBe` BA.convert abSharedH
 
   let msg = "hello long-enough world"
   nonce <- atomically $ C.randomCbNonce drg
