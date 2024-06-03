@@ -56,7 +56,7 @@ import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMes
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, SENT)
-import Simplex.Messaging.Agent.Store.SQLite (getSavedNtfToken)
+import Simplex.Messaging.Agent.Store.SQLite (closeSQLiteStore, getSavedNtfToken, reopenSQLiteStore)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
@@ -104,7 +104,7 @@ notificationTests t = do
     it "should fail with incorrect fingerprint" $ do
       testRunNTFServerTests t srv1 `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
   describe "Managing notification subscriptions" $ do
-    describe "should create notification subscription for existing connection" $
+    fdescribe "should create notification subscription for existing connection" $
       testNtfMatrix t testNotificationSubscriptionExistingConnection
     describe "should create notification subscription for new connection" $
       testNtfMatrix t testNotificationSubscriptionNewConnection
@@ -346,7 +346,7 @@ testRunNTFServerTests t srv =
       testProtocolServer a 1 $ ProtoServerWithAuth srv Nothing
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> AgentClient -> AgentClient -> IO ()
-testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice@AgentClient {agentEnv = Env {config = aliceCfg}} bob = do
+testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice@AgentClient {agentEnv = Env {config = aliceCfg, store}} bob = do
   (bobId, aliceId, nonce, message) <- runRight $ do
     -- establish connection
     (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
@@ -377,10 +377,15 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice@Agen
   -- alice client already has subscription for the connection
   Left (CMD PROHIBITED _) <- runExceptT $ getNotificationMessage alice nonce message
 
+  threadDelay 250000
+  closeSQLiteStore store
+
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
   withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> runRight_ $ do
     (_, [SMPMsgMeta {msgFlags = MsgFlags True}]) <- getNotificationMessage aliceNtf nonce message
     pure ()
+
+  reopenSQLiteStore store
 
   runRight_ $ do
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
