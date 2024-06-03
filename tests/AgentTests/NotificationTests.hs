@@ -161,11 +161,12 @@ testNtfMatrix t runTest = do
     it "servers: next SMP v7, curr NTF v2; clients: curr/new" $ runNtfTestCfg t cfgV7 ntfServerCfgV2 agentCfg agentCfgV7 runTest
 
 runNtfTestCfg :: ATransport -> ServerConfig -> NtfServerConfig -> AgentConfig -> AgentConfig -> (APNSMockServer -> AgentClient -> AgentClient -> IO ()) -> IO ()
-runNtfTestCfg t smpCfg ntfCfg aCfg bCfg runTest =
+runNtfTestCfg t smpCfg ntfCfg aCfg bCfg runTest = do
   withSmpServerConfigOn t smpCfg testPort $ \_ ->
     withAPNSMockServer $ \apns ->
       withNtfServerCfg ntfCfg {transports = [(ntfTestPort, t)]} $ \_ ->
         withAgentClientsCfg2 aCfg bCfg $ runTest apns
+  threadDelay 100000
 
 testNotificationToken :: APNSMockServer -> IO ()
 testNotificationToken APNSMockServer {apnsQ} = do
