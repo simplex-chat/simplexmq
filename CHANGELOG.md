@@ -1,3 +1,22 @@
+# 5.8.0
+
+Version 5.8.0.10
+
+SMP server and client:
+- protocol extension to forward messages to the destination servers, to protect sending client IP address and transport session.
+
+Agent:
+- process timed out subscription responses to reduce the number of resubscriptions.
+- avoid sending messages and commands when waiting for response timed out (except batched SUB and DEL commands).
+- fix issue with stuck message reception on slow connection (when response to ACK timed out, and the new message was not processed until resubscribed).
+- fix issue when temporary file sending or receiving error was treated as permanent.
+
+SMP server:
+- include OK responses to all batched SUB requests to reduce subscription timeouts.
+
+XFTP server:
+- report file upload timeout as TIMEOUT, to avoid delivery failure.
+
 # 5.7.6
 
 XFTP agent:
