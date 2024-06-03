@@ -71,6 +71,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Protocol (EntityId, XFTPServer)
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (catchAll_, liftError, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
@@ -381,7 +382,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
     prepareFile :: AgentConfig -> SndFile -> AM ()
     prepareFile _ SndFile {prefixPath = Nothing} =
       throwError $ INTERNAL "no prefix path"
-    prepareFile cfg sndFile@SndFile {sndFileId, userId, prefixPath = Just ppath, status} = do
+    prepareFile cfg sndFile@SndFile {sndFileId, sndFileEntityId, userId, prefixPath = Just ppath, status} = do
       SndFile {numRecipients, chunks} <-
         if status /= SFSEncrypted -- status is SFSNew or SFSEncrypting
           then do
@@ -422,7 +423,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           chunkDigests <- liftIO $ mapM getChunkDigest chunkSpecs
           pure (FileDigest digest, zip chunkSpecs $ coerce chunkDigests)
         createChunk :: Int -> SndFileChunk -> AM ()
-        createChunk numRecipients' ch = do
+        createChunk numRecipients' ch@SndFileChunk {digest} = do
           atomically $ assertAgentForeground c
           (replica, ProtoServerWithAuth srv _) <- tryCreate
           withStore' c $ \db -> createSndFileReplica db ch replica
@@ -430,18 +431,26 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           where
             tryCreate = do
               usedSrvs <- newTVarIO ([] :: [XFTPServer])
-              withRetryInterval (riFast ri) $ \_ loop -> do
+              let AgentClient {xftpServers} = c
+              userSrvCount <- length <$> atomically (TM.lookup userId xftpServers)
+              withRetryIntervalCount (riFast ri) $ \n _ loop -> do
+                deleted <- withStore' c $ \db -> getSndFileDeleted db sndFileId
+                when deleted $ throwError $ FILE NO_FILE
                 liftIO $ waitForUserNetwork c
-                createWithNextSrv usedSrvs
-                  `catchAgentError` \e -> retryOnError "XFTP prepare worker" (retryLoop loop) (throwError e) e
+                let triedAllSrvs = n > userSrvCount
+                withNextSrv c userId usedSrvs [] $ \srvAuth ->
+                  ( do
+                      replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
+                      pure (replica, srvAuth)
+                  )
+                    `catchAgentError` \e -> retryOnError "XFTP prepare worker" (retryLoop srvAuth loop triedAllSrvs e) (throwError e) e
               where
-                retryLoop loop = atomically (assertAgentForeground c) >> loop
-            createWithNextSrv usedSrvs = do
-              deleted <- withStore' c $ \db -> getSndFileDeleted db sndFileId
-              when deleted $ throwError $ FILE NO_FILE
-              withNextSrv c userId usedSrvs [] $ \srvAuth -> do
-                replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
-                pure (replica, srvAuth)
+                retryLoop (ProtoServerWithAuth server _) loop triedAllSrvs e = do
+                  flip catchAgentError (\_ -> pure ()) $ do
+                    when (triedAllSrvs && serverHostError e) $ notify c sndFileEntityId $ SFWARN e
+                    liftIO $ closeXFTPServerClient c userId server digest
+                  atomically $ assertAgentForeground c
+                  loop
 
 sndWorkerInternalError :: AgentClient -> DBSndFileId -> SndFileId -> Maybe FilePath -> AgentErrorType -> AM ()
 sndWorkerInternalError c sndFileId sndFileEntityId prefixPath err = do
