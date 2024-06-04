@@ -296,6 +296,8 @@ testNaCl = do
   naclCiphertext <- either (fail . mappend "cryptoBox: " . show) pure $ NaCl.cryptoBox aPub bPriv nonce msg
   let ourCiphertext = C.cbEncryptNoPad abShared nonce msg
   (B.length naclCiphertext, naclCiphertext) `shouldBe` (B.length ourCiphertext, ourCiphertext)
+  naclCiphertextAfternm <- either (fail . mappend "cryptoBox: " . show) pure $ NaCl.cryptoBoxAfternm abSharedH nonce msg
+  (B.length naclCiphertext, naclCiphertext) `shouldBe` (B.length naclCiphertextAfternm, naclCiphertextAfternm)
 
   ourMsg <- either (fail . show) pure $ C.cbDecryptNoPad baShared nonce naclCiphertext
   ourMsg `shouldBe` msg
