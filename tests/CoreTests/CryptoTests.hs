@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -7,11 +8,16 @@ module CoreTests.CryptoTests (cryptoTests) where
 
 import Control.Concurrent.STM
 import Control.Monad.Except
+import qualified Crypto.Error as CE
+import qualified Crypto.PubKey.Curve25519 as X25519
+import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
+import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isRight)
 import Data.Int (Int64)
+import Data.Memory.PtrMethods (memSet)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.Lazy as LT
@@ -20,12 +26,14 @@ import Data.Type.Equality
 import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
 import qualified Data.X509.Validation as XV
+import Foreign.C.ConstPtr (ConstPtr (..))
 import qualified SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import qualified Simplex.Messaging.Crypto.NaCl.Bindings as NaCl
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Transport.Client
+import System.IO.Unsafe (unsafePerformIO)
 import Test.Hspec
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck
@@ -102,7 +110,7 @@ cryptoTests = do
     it "should validate certificates" testValidateX509
   describe "sntrup761" $
     it "should enc/dec key" testSNTRUP761
-  fdescribe "NaCl" $
+  describe "NaCl" $
     it "cryptobox is compatible" testNaCl
 
 instance Eq C.APublicKey where
@@ -280,27 +288,87 @@ testNaCl = do
   drg <- C.newRandom
   (aPub :: C.PublicKeyX25519, aPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair drg
   (bPub :: C.PublicKeyX25519, bPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair drg
-  let abShared = C.dh' aPub bPriv
+  let abShared@(C.DhSecretX25519 abShared') = C.dh' aPub bPriv
   let baShared = C.dh' bPub aPriv
   abShared `shouldBe` baShared
 
-  naclShared <- either (fail . show) pure $ NaCl.dh aPub bPriv
+  naclShared <- either (fail . show) pure $ dhNacl aPub bPriv
   naclShared `shouldBe` abShared
 
-  naclBeforeNm <- either (fail . show) pure $ NaCl.cryptoBoxBeforenm aPub bPriv
-  abSharedH <- either (fail . show) pure $ NaCl.hsalsa20 abShared
+  naclBeforeNm <- either (fail . show) pure $ cryptoBoxBeforenm aPub bPriv
+  abSharedH <- either (fail . show) pure $ C.hsalsa20 abShared'
   naclBeforeNm `shouldBe` BA.convert abSharedH
 
   let msg = "hello long-enough world"
-  nonce <- atomically $ C.randomCbNonce drg
-  naclCiphertext <- either (fail . mappend "cryptoBox: " . show) pure $ NaCl.cryptoBox aPub bPriv nonce msg
+  nonce@(C.CbNonce nonce') <- atomically $ C.randomCbNonce drg
+  naclCiphertext <- either (fail . mappend "cryptoBox: " . show) pure $ cryptoBoxNaCl aPub bPriv nonce msg
   let ourCiphertext = C.cbEncryptNoPad abShared nonce msg
   (B.length naclCiphertext, naclCiphertext) `shouldBe` (B.length ourCiphertext, ourCiphertext)
-  naclCiphertextAfternm <- either (fail . mappend "cryptoBox: " . show) pure $ NaCl.cryptoBoxAfternm abSharedH nonce msg
+  naclCiphertextAfternm <- either (fail . mappend "cryptoBox: " . show) pure $ C.cryptoBoxAfternm abSharedH nonce' msg
   (B.length naclCiphertext, naclCiphertext) `shouldBe` (B.length naclCiphertextAfternm, naclCiphertextAfternm)
 
   ourMsg <- either (fail . show) pure $ C.cbDecryptNoPad baShared nonce naclCiphertext
   ourMsg `shouldBe` msg
 
-  naclMsg <- either (fail . mappend "cryptoBoxOpen: " . show) pure $ NaCl.cryptoBoxOpen bPub aPriv nonce ourCiphertext
+  naclMsg <- either (fail . mappend "cryptoBoxOpen: " . show) pure $ cryptoBoxOpenNaCl bPub aPriv nonce ourCiphertext
   naclMsg `shouldBe` msg
+
+-- | A replica of C.dh' using NaCl (sans hsalsa20 step)
+dhNacl :: C.PublicKeyX25519 -> C.PrivateKeyX25519 -> Either CE.CryptoError (C.DhSecret 'C.X25519)
+dhNacl (C.PublicKeyX25519 pub) (C.PrivateKeyX25519 priv _) = unsafePerformIO $ do
+  (r, ba :: ScrubbedBytes) <- BA.withByteArray pub $ \pubPtr ->
+    BA.withByteArray priv $ \privPtr ->
+      BA.allocRet 32 $ \sharedPtr -> do
+        memSet sharedPtr 0 32
+        NaCl.crypto_scalarmult sharedPtr (ConstPtr privPtr) (ConstPtr pubPtr)
+  pure $
+    if r /= 0
+      then Left (toEnum $ fromIntegral r)
+      else C.DhSecretX25519 <$> CE.eitherCryptoError (X25519.dhSecret ba)
+
+cryptoBoxBeforenm :: C.PublicKeyX25519 -> C.PrivateKeyX25519 -> Either CE.CryptoError ScrubbedBytes
+cryptoBoxBeforenm (C.PublicKeyX25519 pub) (C.PrivateKeyX25519 priv _) = unsafePerformIO $ do
+  (r, ba :: ScrubbedBytes) <- BA.withByteArray pub $ \pubPtr ->
+    BA.withByteArray priv $ \privPtr ->
+      BA.allocRet 32 $ \kPtr -> do
+        memSet kPtr 0 32
+        NaCl.c_crypto_box_beforenm kPtr (ConstPtr pubPtr) (ConstPtr privPtr)
+  pure $
+    if r /= 0
+      then Left (toEnum $ fromIntegral r)
+      else Right ba
+
+cryptoBoxNaCl :: BA.ByteArrayAccess msg => C.PublicKeyX25519 -> C.PrivateKeyX25519 -> C.CbNonce -> msg -> Either Int ByteString
+cryptoBoxNaCl (C.PublicKeyX25519 pk) (C.PrivateKeyX25519 sk _) (C.CbNonce n) msg = unsafePerformIO $ do
+  (r, c) <-
+    BA.withByteArray msg0 $ \mPtr ->
+      BA.withByteArray n $ \nPtr ->
+        BA.withByteArray pk $ \pkPtr ->
+          BA.withByteArray sk $ \skPtr ->
+            BA.allocRet (B.length msg0) $ \cPtr ->
+              NaCl.c_crypto_box cPtr (ConstPtr mPtr) (fromIntegral $ B.length msg0) (ConstPtr nPtr) (ConstPtr pkPtr) (ConstPtr skPtr)
+  pure $
+    if r /= 0
+      then Left (toEnum $ fromIntegral r)
+      else Right (B.drop NaCl.crypto_box_BOXZEROBYTES c)
+  where
+    msg0 = zeroBytes <> BA.convert msg
+    zeroBytes = B.replicate NaCl.crypto_box_ZEROBYTES '\0'
+
+cryptoBoxOpenNaCl :: C.PublicKeyX25519 -> C.PrivateKeyX25519 -> C.CbNonce -> ByteString -> Either CE.CryptoError ByteString
+cryptoBoxOpenNaCl (C.PublicKeyX25519 pk) (C.PrivateKeyX25519 sk _) (C.CbNonce n) ciphertext = unsafePerformIO $ do
+  (r, msg) <-
+    BA.withByteArray ciphertext0 $ \cPtr ->
+      BA.withByteArray n $ \nPtr ->
+        BA.withByteArray pk $ \pkPtr ->
+          BA.withByteArray sk $ \skPtr ->
+            BA.allocRet cLen $ \mPtr ->
+              NaCl.c_crypto_box_open mPtr (ConstPtr cPtr) (fromIntegral cLen) (ConstPtr nPtr) (ConstPtr pkPtr) (ConstPtr skPtr)
+  pure $
+    if r /= 0
+      then Left (toEnum $ fromIntegral r)
+      else Right (B.drop NaCl.crypto_box_ZEROBYTES msg)
+  where
+    ciphertext0 = boxZeroBytes <> ciphertext
+    boxZeroBytes = B.replicate NaCl.crypto_box_BOXZEROBYTES '\0'
+    cLen = B.length ciphertext0

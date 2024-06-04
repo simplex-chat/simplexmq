@@ -185,6 +185,8 @@ module Simplex.Messaging.Crypto
     maxLenBS,
     unsafeMaxLenBS,
     appendMaxLenBS,
+    hsalsa20,
+    cryptoBoxAfternm,
   )
 where
 
@@ -228,12 +230,15 @@ import Data.X509
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
+import Foreign.C.ConstPtr (ConstPtr (..))
 import GHC.TypeLits (ErrorMessage (..), KnownNat, Nat, TypeError, natVal, type (+))
 import Network.Transport.Internal (decodeWord16, encodeWord16)
+import qualified Simplex.Messaging.Crypto.NaCl.Bindings as NaCl
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
 import Simplex.Messaging.Util ((<$?>))
+import System.IO.Unsafe (unsafePerformIO)
 
 -- | Cryptographic algorithms.
 data Algorithm = Ed25519 | Ed448 | X25519 | X448
@@ -1210,10 +1215,7 @@ cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> B
 cbEncryptMaxLenBS (DhSecretX25519 secret) (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
 
 cryptoBox :: ByteArrayAccess key => key -> ByteString -> ByteString -> ByteString
-cryptoBox secret nonce s = BA.convert tag <> c
-  where
-    (rs, c) = xSalsa20 secret nonce s
-    tag = Poly1305.auth rs c
+cryptoBox secret nonce msg = either (error . show) id $ hsalsa20 secret >>= \sk -> cryptoBoxAfternm sk nonce msg
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 cbDecrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
@@ -1392,3 +1394,44 @@ keyError :: (a, [ASN1]) -> Either String b
 keyError = \case
   (_, []) -> Left "unknown key algorithm"
   _ -> Left "more than one key"
+
+type NaclDhSecret = BA.ScrubbedBytes
+
+-- type NaclDhSecret = C.DhSecret 'C.X25519h -- hashed DH used by NaCl "afternm" functions.
+
+-- Run salsa20 in a hash mode to make our DH keys match 'c_crypto_box_beforenm' output.
+hsalsa20 :: ByteArrayAccess key => key -> Either CE.CryptoError NaclDhSecret
+hsalsa20 key = unsafePerformIO $ do
+  (r, ba :: NaclDhSecret) <- BA.withByteArray c_0 $ \inpPtr ->
+    BA.withByteArray key $ \keyPtr ->
+      BA.withByteArray sigma $ \sigmaPtr ->
+        BA.allocRet 32 $ \outPtr ->
+          NaCl.c_crypto_core_hsalsa20 outPtr (ConstPtr inpPtr) (ConstPtr keyPtr) (ConstPtr sigmaPtr)
+  pure $
+    if r /= 0
+      then Left (toEnum $ fromIntegral r)
+      else Right ba
+  where
+    -- sigma[16] = "expand 32-byte k";
+    sigma :: ByteString
+    sigma = "expand 32-byte k"
+    c_0 :: ByteString
+    c_0 = B.replicate 16 '\0'
+{-# NOINLINE hsalsa20 #-}
+
+cryptoBoxAfternm :: NaclDhSecret -> ByteString -> ByteString -> Either CE.CryptoError ByteString
+cryptoBoxAfternm sk nonce msg = unsafePerformIO $ do
+  (r, c) <-
+    BA.withByteArray msg0 $ \mPtr ->
+      BA.withByteArray nonce $ \noncePtr ->
+        BA.withByteArray sk $ \skPtr ->
+          BA.allocRet (B.length msg0) $ \cPtr ->
+            NaCl.c_crypto_box_afternm cPtr (ConstPtr mPtr) (fromIntegral $ B.length msg0) (ConstPtr noncePtr) (ConstPtr skPtr)
+  pure $
+    if r /= 0
+      then Left (toEnum $ fromIntegral r)
+      else Right (B.drop NaCl.crypto_box_BOXZEROBYTES c)
+  where
+    zeroBytes = B.replicate NaCl.crypto_box_ZEROBYTES '\0'
+    msg0 = zeroBytes <> BA.convert msg
+{-# NOINLINE cryptoBoxAfternm #-}
