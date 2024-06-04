@@ -69,6 +69,12 @@ foreign import capi "tweetnacl.h crypto_box_beforenm"
 foreign import capi "tweetnacl.h crypto_core_hsalsa20"
   c_crypto_core_hsalsa20 :: Ptr Word8 -> ConstPtr Word8 -> ConstPtr Word8 -> ConstPtr Word8 -> IO CInt
 
+foreign import capi "tweetnacl.h crypto_secretbox"
+  c_crypto_secretbox :: Ptr Word8 -> ConstPtr Word8 -> Word64 -> ConstPtr Word8 -> ConstPtr Word8 -> IO CInt
+
+foreign import capi "tweetnacl.h crypto_secretbox_open"
+  c_crypto_secretbox_open :: Ptr Word8 -> ConstPtr Word8 -> Word64 -> ConstPtr Word8 -> ConstPtr Word8 -> IO CInt
+
 -- type NaclDhSecret = C.DhSecret 'C.X25519
 type NaclDhSecret = ScrubbedBytes
 

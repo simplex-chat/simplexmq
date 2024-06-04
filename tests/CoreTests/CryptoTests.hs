@@ -8,7 +8,9 @@ module CoreTests.CryptoTests (cryptoTests) where
 
 import Control.Concurrent.STM
 import Control.Monad.Except
+import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
+import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
 import Data.Bifunctor (bimap)
 import Data.ByteArray (ScrubbedBytes)
@@ -290,29 +292,32 @@ testNaCl = do
   (aPub :: C.PublicKeyX25519, aPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair drg
   (bPub :: C.PublicKeyX25519, bPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair drg
   let abShared@(C.DhSecretX25519 abShared') = C.dh' aPub bPriv
-  let baShared = C.dh' bPub aPriv
+  let baShared@(C.DhSecretX25519 baShared') = C.dh' bPub aPriv
   abShared `shouldBe` baShared
 
-  naclShared <- either fail pure $ dhNacl aPub bPriv
+  naclShared <- either error pure $ dhNacl aPub bPriv
   naclShared `shouldBe` abShared
 
-  naclBeforeNm <- either fail pure $ cryptoBoxBeforenm aPub bPriv
-  abSharedH <- either fail pure $ C.hsalsa20 abShared'
+  naclBeforeNm <- either error pure $ cryptoBoxBeforenm aPub bPriv
+  abSharedH <- either error pure $ C.hsalsa20 abShared'
   naclBeforeNm `shouldBe` BA.convert abSharedH
 
   let msg = "hello long-enough world"
   nonce@(C.CbNonce nonce') <- atomically $ C.randomCbNonce drg
-  naclCiphertext <- either (fail . mappend "cryptoBox: " . show) pure $ cryptoBoxNaCl aPub bPriv nonce msg
-  let ourCiphertext = C.cbEncryptNoPad abShared nonce msg
-  (B.length naclCiphertext, naclCiphertext) `shouldBe` (B.length ourCiphertext, ourCiphertext)
-  naclCiphertextAfternm <- either (fail . mappend "cryptoBox: " . show) pure $ C.cryptoBoxAfternm abSharedH nonce' msg
+  naclCiphertext <- either (error . mappend "cryptoBox: " . show) pure $ cryptoBoxNaCl aPub bPriv nonce msg
+  let refCiphertext = ref_cryptoBox abShared' nonce' msg
+  (B.length naclCiphertext, naclCiphertext) `shouldBe` (B.length refCiphertext, refCiphertext)
+  naclCiphertextAfternm <- either error pure $ C.secretBox abSharedH nonce' msg
   (B.length naclCiphertext, naclCiphertext) `shouldBe` (B.length naclCiphertextAfternm, naclCiphertextAfternm)
 
-  ourMsg <- either (fail . show) pure $ C.cbDecryptNoPad baShared nonce naclCiphertext
-  ourMsg `shouldBe` msg
+  refMsg <- either (error . show) pure $ ref_sbDecryptNoPad_ baShared' nonce naclCiphertext
+  refMsg `shouldBe` msg
 
-  naclMsg <- either (fail . mappend "cryptoBoxOpen: ") pure $ cryptoBoxOpenNaCl bPub aPriv nonce ourCiphertext
+  naclMsg <- either error pure $ cryptoBoxOpenNaCl bPub aPriv nonce refCiphertext
   naclMsg `shouldBe` msg
+
+  naclMsgAfternm <- either error pure $ C.secretBoxOpen abSharedH nonce' naclCiphertext
+  naclMsgAfternm `shouldBe` msg
 
 -- | A replica of C.dh' using NaCl (sans hsalsa20 step)
 dhNacl :: C.PublicKeyX25519 -> C.PrivateKeyX25519 -> Either String (C.DhSecret 'C.X25519)
@@ -348,16 +353,43 @@ cryptoBoxNaCl (C.PublicKeyX25519 pk) (C.PrivateKeyX25519 sk _) (C.CbNonce n) msg
     zeroBytes = B.replicate NaCl.crypto_box_ZEROBYTES '\0'
 
 cryptoBoxOpenNaCl :: C.PublicKeyX25519 -> C.PrivateKeyX25519 -> C.CbNonce -> ByteString -> Either String ByteString
-cryptoBoxOpenNaCl (C.PublicKeyX25519 pk) (C.PrivateKeyX25519 sk _) (C.CbNonce n) ciphertext = unsafePerformIO $ do
+cryptoBoxOpenNaCl (C.PublicKeyX25519 pub) (C.PrivateKeyX25519 priv _) (C.CbNonce n) ciphertext = unsafePerformIO $ do
   (r, msg) <-
     BA.withByteArray ciphertext0 $ \cPtr ->
       BA.withByteArray n $ \nPtr ->
-        BA.withByteArray pk $ \pkPtr ->
-          BA.withByteArray sk $ \skPtr ->
+        BA.withByteArray pub $ \pubPtr ->
+          BA.withByteArray priv $ \privPtr ->
             BA.allocRet cLen $ \mPtr ->
-              NaCl.c_crypto_box_open mPtr (ConstPtr cPtr) (fromIntegral cLen) (ConstPtr nPtr) (ConstPtr pkPtr) (ConstPtr skPtr)
+              NaCl.c_crypto_box_open mPtr (ConstPtr cPtr) (fromIntegral cLen) (ConstPtr nPtr) (ConstPtr pubPtr) (ConstPtr privPtr)
   pure $! if r /= 0 then Left "crypto_box_open" else Right (B.drop NaCl.crypto_box_ZEROBYTES msg)
   where
     ciphertext0 = boxZeroBytes <> ciphertext
     boxZeroBytes = B.replicate NaCl.crypto_box_BOXZEROBYTES '\0'
     cLen = B.length ciphertext0
+
+ref_cryptoBox :: BA.ByteArrayAccess key => key -> ByteString -> ByteString -> ByteString
+ref_cryptoBox secret nonce s = BA.convert tag <> c
+  where
+    (rs, c) = ref_xSalsa20 secret nonce s
+    tag = Poly1305.auth rs c
+
+-- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce (without unpadding).
+ref_sbDecryptNoPad_ :: BA.ByteArrayAccess key => key -> C.CbNonce -> ByteString -> Either C.CryptoError ByteString
+ref_sbDecryptNoPad_ secret (C.CbNonce nonce) packet
+  | B.length packet < 16 = Left C.CBDecryptError
+  | BA.constEq tag' tag = Right msg
+  | otherwise = Left C.CBDecryptError
+  where
+    (tag', c) = B.splitAt 16 packet
+    (rs, msg) = ref_xSalsa20 secret nonce c
+    tag = Poly1305.auth rs c
+
+ref_xSalsa20 :: BA.ByteArrayAccess key => key -> ByteString -> ByteString -> (ByteString, ByteString)
+ref_xSalsa20 secret nonce msg = (rs, msg')
+  where
+    zero = B.replicate 16 $ toEnum 0
+    (iv0, iv1) = B.splitAt 8 nonce
+    state0 = XSalsa.initialize 20 secret (zero `B.append` iv0)
+    state1 = XSalsa.derive state0 iv1
+    (rs, state2) = XSalsa.generate state1 32
+    (msg', _) = XSalsa.combine state2 msg
