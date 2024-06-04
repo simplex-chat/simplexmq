@@ -10,6 +10,7 @@ import Control.Concurrent.STM
 import Control.Monad.Except
 import qualified Crypto.Error as CE
 import qualified Crypto.PubKey.Curve25519 as X25519
+import Data.Bifunctor (bimap)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
@@ -292,11 +293,11 @@ testNaCl = do
   let baShared = C.dh' bPub aPriv
   abShared `shouldBe` baShared
 
-  naclShared <- either (fail . show) pure $ dhNacl aPub bPriv
+  naclShared <- either fail pure $ dhNacl aPub bPriv
   naclShared `shouldBe` abShared
 
-  naclBeforeNm <- either (fail . show) pure $ cryptoBoxBeforenm aPub bPriv
-  abSharedH <- either (fail . show) pure $ C.hsalsa20 abShared'
+  naclBeforeNm <- either fail pure $ cryptoBoxBeforenm aPub bPriv
+  abSharedH <- either fail pure $ C.hsalsa20 abShared'
   naclBeforeNm `shouldBe` BA.convert abSharedH
 
   let msg = "hello long-enough world"
@@ -310,35 +311,29 @@ testNaCl = do
   ourMsg <- either (fail . show) pure $ C.cbDecryptNoPad baShared nonce naclCiphertext
   ourMsg `shouldBe` msg
 
-  naclMsg <- either (fail . mappend "cryptoBoxOpen: " . show) pure $ cryptoBoxOpenNaCl bPub aPriv nonce ourCiphertext
+  naclMsg <- either (fail . mappend "cryptoBoxOpen: ") pure $ cryptoBoxOpenNaCl bPub aPriv nonce ourCiphertext
   naclMsg `shouldBe` msg
 
 -- | A replica of C.dh' using NaCl (sans hsalsa20 step)
-dhNacl :: C.PublicKeyX25519 -> C.PrivateKeyX25519 -> Either CE.CryptoError (C.DhSecret 'C.X25519)
+dhNacl :: C.PublicKeyX25519 -> C.PrivateKeyX25519 -> Either String (C.DhSecret 'C.X25519)
 dhNacl (C.PublicKeyX25519 pub) (C.PrivateKeyX25519 priv _) = unsafePerformIO $ do
   (r, ba :: ScrubbedBytes) <- BA.withByteArray pub $ \pubPtr ->
     BA.withByteArray priv $ \privPtr ->
       BA.allocRet 32 $ \sharedPtr -> do
         memSet sharedPtr 0 32
         NaCl.crypto_scalarmult sharedPtr (ConstPtr privPtr) (ConstPtr pubPtr)
-  pure $
-    if r /= 0
-      then Left (toEnum $ fromIntegral r)
-      else C.DhSecretX25519 <$> CE.eitherCryptoError (X25519.dhSecret ba)
+  pure $! if r /= 0 then Left "crypto_scalarmult" else bimap show C.DhSecretX25519 $ CE.eitherCryptoError (X25519.dhSecret ba)
 
-cryptoBoxBeforenm :: C.PublicKeyX25519 -> C.PrivateKeyX25519 -> Either CE.CryptoError ScrubbedBytes
+cryptoBoxBeforenm :: C.PublicKeyX25519 -> C.PrivateKeyX25519 -> Either String ScrubbedBytes
 cryptoBoxBeforenm (C.PublicKeyX25519 pub) (C.PrivateKeyX25519 priv _) = unsafePerformIO $ do
   (r, ba :: ScrubbedBytes) <- BA.withByteArray pub $ \pubPtr ->
     BA.withByteArray priv $ \privPtr ->
       BA.allocRet 32 $ \kPtr -> do
         memSet kPtr 0 32
         NaCl.c_crypto_box_beforenm kPtr (ConstPtr pubPtr) (ConstPtr privPtr)
-  pure $
-    if r /= 0
-      then Left (toEnum $ fromIntegral r)
-      else Right ba
+  pure $! if r /= 0 then Left "crypto_box_beforenm" else Right ba
 
-cryptoBoxNaCl :: BA.ByteArrayAccess msg => C.PublicKeyX25519 -> C.PrivateKeyX25519 -> C.CbNonce -> msg -> Either Int ByteString
+cryptoBoxNaCl :: BA.ByteArrayAccess msg => C.PublicKeyX25519 -> C.PrivateKeyX25519 -> C.CbNonce -> msg -> Either String ByteString
 cryptoBoxNaCl (C.PublicKeyX25519 pk) (C.PrivateKeyX25519 sk _) (C.CbNonce n) msg = unsafePerformIO $ do
   (r, c) <-
     BA.withByteArray msg0 $ \mPtr ->
@@ -347,15 +342,12 @@ cryptoBoxNaCl (C.PublicKeyX25519 pk) (C.PrivateKeyX25519 sk _) (C.CbNonce n) msg
           BA.withByteArray sk $ \skPtr ->
             BA.allocRet (B.length msg0) $ \cPtr ->
               NaCl.c_crypto_box cPtr (ConstPtr mPtr) (fromIntegral $ B.length msg0) (ConstPtr nPtr) (ConstPtr pkPtr) (ConstPtr skPtr)
-  pure $
-    if r /= 0
-      then Left (toEnum $ fromIntegral r)
-      else Right (B.drop NaCl.crypto_box_BOXZEROBYTES c)
+  pure $! if r /= 0 then Left "crypto_box" else Right (B.drop NaCl.crypto_box_BOXZEROBYTES c)
   where
     msg0 = zeroBytes <> BA.convert msg
     zeroBytes = B.replicate NaCl.crypto_box_ZEROBYTES '\0'
 
-cryptoBoxOpenNaCl :: C.PublicKeyX25519 -> C.PrivateKeyX25519 -> C.CbNonce -> ByteString -> Either CE.CryptoError ByteString
+cryptoBoxOpenNaCl :: C.PublicKeyX25519 -> C.PrivateKeyX25519 -> C.CbNonce -> ByteString -> Either String ByteString
 cryptoBoxOpenNaCl (C.PublicKeyX25519 pk) (C.PrivateKeyX25519 sk _) (C.CbNonce n) ciphertext = unsafePerformIO $ do
   (r, msg) <-
     BA.withByteArray ciphertext0 $ \cPtr ->
@@ -364,10 +356,7 @@ cryptoBoxOpenNaCl (C.PublicKeyX25519 pk) (C.PrivateKeyX25519 sk _) (C.CbNonce n)
           BA.withByteArray sk $ \skPtr ->
             BA.allocRet cLen $ \mPtr ->
               NaCl.c_crypto_box_open mPtr (ConstPtr cPtr) (fromIntegral cLen) (ConstPtr nPtr) (ConstPtr pkPtr) (ConstPtr skPtr)
-  pure $
-    if r /= 0
-      then Left (toEnum $ fromIntegral r)
-      else Right (B.drop NaCl.crypto_box_ZEROBYTES msg)
+  pure $! if r /= 0 then Left "crypto_box_open" else Right (B.drop NaCl.crypto_box_ZEROBYTES msg)
   where
     ciphertext0 = boxZeroBytes <> ciphertext
     boxZeroBytes = B.replicate NaCl.crypto_box_BOXZEROBYTES '\0'

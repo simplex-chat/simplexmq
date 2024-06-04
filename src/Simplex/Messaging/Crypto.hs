@@ -1400,17 +1400,14 @@ type NaclDhSecret = BA.ScrubbedBytes
 -- type NaclDhSecret = C.DhSecret 'C.X25519h -- hashed DH used by NaCl "afternm" functions.
 
 -- Run salsa20 in a hash mode to make our DH keys match 'c_crypto_box_beforenm' output.
-hsalsa20 :: ByteArrayAccess key => key -> Either CE.CryptoError NaclDhSecret
+hsalsa20 :: ByteArrayAccess key => key -> Either String NaclDhSecret
 hsalsa20 key = unsafePerformIO $ do
   (r, ba :: NaclDhSecret) <- BA.withByteArray c_0 $ \inpPtr ->
     BA.withByteArray key $ \keyPtr ->
       BA.withByteArray sigma $ \sigmaPtr ->
         BA.allocRet 32 $ \outPtr ->
           NaCl.c_crypto_core_hsalsa20 outPtr (ConstPtr inpPtr) (ConstPtr keyPtr) (ConstPtr sigmaPtr)
-  pure $
-    if r /= 0
-      then Left (toEnum $ fromIntegral r)
-      else Right ba
+  pure $! if r /= 0 then Left "crypto_core_hsalsa20" else Right ba
   where
     -- sigma[16] = "expand 32-byte k";
     sigma :: ByteString
@@ -1419,7 +1416,7 @@ hsalsa20 key = unsafePerformIO $ do
     c_0 = B.replicate 16 '\0'
 {-# NOINLINE hsalsa20 #-}
 
-cryptoBoxAfternm :: NaclDhSecret -> ByteString -> ByteString -> Either CE.CryptoError ByteString
+cryptoBoxAfternm :: NaclDhSecret -> ByteString -> ByteString -> Either String ByteString
 cryptoBoxAfternm sk nonce msg = unsafePerformIO $ do
   (r, c) <-
     BA.withByteArray msg0 $ \mPtr ->
@@ -1427,10 +1424,7 @@ cryptoBoxAfternm sk nonce msg = unsafePerformIO $ do
         BA.withByteArray sk $ \skPtr ->
           BA.allocRet (B.length msg0) $ \cPtr ->
             NaCl.c_crypto_box_afternm cPtr (ConstPtr mPtr) (fromIntegral $ B.length msg0) (ConstPtr noncePtr) (ConstPtr skPtr)
-  pure $
-    if r /= 0
-      then Left (toEnum $ fromIntegral r)
-      else Right (B.drop NaCl.crypto_box_BOXZEROBYTES c)
+  pure $! if r /= 0 then Left "crypto_box_afternm" else Right (B.drop NaCl.crypto_box_BOXZEROBYTES c)
   where
     zeroBytes = B.replicate NaCl.crypto_box_ZEROBYTES '\0'
     msg0 = zeroBytes <> BA.convert msg
