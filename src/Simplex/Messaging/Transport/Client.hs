@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -10,6 +11,7 @@ module Simplex.Messaging.Transport.Client
     runTLSTransportClient,
     smpClientHandshake,
     defaultSMPPort,
+    defaultTcpConnectTimeout,
     defaultTransportClientConfig,
     defaultSocksProxy,
     TransportClientConfig (..),
@@ -17,7 +19,7 @@ module Simplex.Messaging.Transport.Client
     TransportHost (..),
     TransportHosts (..),
     TransportHosts_ (..),
-    validateCertificateChain
+    validateCertificateChain,
   )
 where
 
@@ -50,7 +52,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.KeepAlive
-import Simplex.Messaging.Util (bshow, (<$?>), catchAll, tshow)
+import Simplex.Messaging.Util (bshow, catchAll, tshow, (<$?>))
 import System.IO.Error
 import Text.Read (readMaybe)
 import UnliftIO.Exception (IOException)
@@ -112,6 +114,7 @@ instance IsString (NonEmpty TransportHost) where fromString = parseString strDec
 
 data TransportClientConfig = TransportClientConfig
   { socksProxy :: Maybe SocksProxy,
+    tcpConnectTimeout :: Int,
     tcpKeepAlive :: Maybe KeepAliveOpts,
     logTLSErrors :: Bool,
     clientCredentials :: Maybe (X.CertificateChain, T.PrivKey),
@@ -119,8 +122,12 @@ data TransportClientConfig = TransportClientConfig
   }
   deriving (Eq, Show)
 
+-- time to resolve host, connect socket, set up TLS
+defaultTcpConnectTimeout :: Int
+defaultTcpConnectTimeout = 25_000_000
+
 defaultTransportClientConfig :: TransportClientConfig
-defaultTransportClientConfig = TransportClientConfig Nothing (Just defaultKeepAliveOpts) True Nothing Nothing
+defaultTransportClientConfig = TransportClientConfig Nothing defaultTcpConnectTimeout (Just defaultKeepAliveOpts) True Nothing Nothing
 
 clientTransportConfig :: TransportClientConfig -> TransportConfig
 clientTransportConfig TransportClientConfig {logTLSErrors} =
@@ -136,19 +143,21 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
   let hostName = B.unpack $ strEncode host
       clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials alpn serverCert
       connectTCP = case socksProxy of
-        Just proxy -> connectSocksClient proxy proxyUsername $ hostAddr host
+        Just proxy -> connectSocksClient proxy proxyUsername (hostAddr host)
         _ -> connectTCPClient hostName
   c <- do
     sock <- connectTCP port
     mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive" <> tshow e)
     let tCfg = clientTransportConfig cfg
-    connectTLS (Just hostName) tCfg clientParams sock >>= \tls -> do
-      chain <- atomically (tryTakeTMVar serverCert) >>= \case
+    -- No TLS timeout to avoid failing connections via SOCKS
+    tls <- connectTLS (Just hostName) tCfg clientParams sock
+    chain <-
+      atomically (tryTakeTMVar serverCert) >>= \case
         Nothing -> do
           logError "onServerCertificate didn't fire or failed to get cert chain"
           closeTLS tls >> error "onServerCertificate failed"
         Just c -> pure c
-      getClientConnection tCfg chain tls
+    getClientConnection tCfg chain tls
   client c `E.finally` closeConnection c
   where
     hostAddr = \case

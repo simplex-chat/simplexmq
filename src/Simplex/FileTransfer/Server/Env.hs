@@ -13,12 +13,9 @@ import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
-import Data.Default (def)
 import Data.Int (Int64)
-import Data.List (find)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe)
 import Data.Time.Clock (getCurrentTime)
 import Data.Word (Word32)
 import Data.X509.Validation (Fingerprint (..))
@@ -28,11 +25,12 @@ import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), XFTPFileId)
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
+import Simplex.FileTransfer.Transport (VersionRangeXFTP)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ALPN)
-import Simplex.Messaging.Transport.Server (TransportServerConfig, loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFingerprint, loadTLSServerParams)
 import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
 import UnliftIO.STM
@@ -64,12 +62,15 @@ data XFTPServerConfig = XFTPServerConfig
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
+    -- | XFTP client-server protocol version range
+    xftpServerVRange :: VersionRangeXFTP,
     -- stats config - see SMP server config
     logStatsInterval :: Maybe Int64,
     logStatsStartTime :: Int64,
     serverStatsLogFile :: FilePath,
     serverStatsBackupFile :: Maybe FilePath,
-    transportConfig :: TransportServerConfig
+    transportConfig :: TransportServerConfig,
+    responseDelay :: Int
   }
 
 defaultInactiveClientExpiration :: ExpirationConfig
@@ -103,7 +104,7 @@ supportedXFTPhandshakes :: [ALPN]
 supportedXFTPhandshakes = ["xftp/1"]
 
 newXFTPServerEnv :: XFTPServerConfig -> IO XFTPEnv
-newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertificateFile, certificateFile, privateKeyFile} = do
+newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertificateFile, certificateFile, privateKeyFile, transportConfig} = do
   random <- liftIO C.newRandom
   store <- atomically newFileStore
   storeLog <- liftIO $ mapM (`readWriteFileStore` store) storeLogFile
@@ -112,14 +113,7 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertifi
   forM_ fileSizeQuota $ \quota -> do
     logInfo $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
     when (quota < used) $ logInfo "WARNING: storage quota is less than used storage, no files can be uploaded!"
-  tlsServerParams' <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile
-  let tlsServerParams =
-        tlsServerParams'
-          { T.serverHooks =
-              def
-                { T.onALPNClientSuggest = Just $ pure . fromMaybe "" . find (`elem` supportedXFTPhandshakes)
-                }
-          }
+  tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
   Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
   serverStats <- atomically . newFileServerStats =<< liftIO getCurrentTime
   pure XFTPEnv {config, store, storeLog, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}

@@ -1,3 +1,105 @@
+# 5.8.0
+
+Version 5.8.0.10
+
+SMP server and client:
+- protocol extension to forward messages to the destination servers, to protect sending client IP address and transport session.
+
+Agent:
+- process timed out subscription responses to reduce the number of resubscriptions.
+- avoid sending messages and commands when waiting for response timed out (except batched SUB and DEL commands).
+- fix issue with stuck message reception on slow connection (when response to ACK timed out, and the new message was not processed until resubscribed).
+- fix issue when temporary file sending or receiving error was treated as permanent.
+
+SMP server:
+- include OK responses to all batched SUB requests to reduce subscription timeouts.
+
+XFTP server:
+- report file upload timeout as TIMEOUT, to avoid delivery failure.
+
+# 5.7.6
+
+XFTP agent:
+- treat XFTP handshake timeouts and network errors as temporary, to retry file operations.
+
+# 5.7.5
+
+SMP agent:
+- fail if non-unique connection IDs are passed to sendMessages (to prevent client errors and deadlocks).
+
+# 5.7.4
+
+SMP agent:
+- remove re-subscription timeouts (as they are tracked per operation, and could cause failed subscriptions).
+- reconnect XFTP clients when network settings changes.
+- fix lock contention resulting in stuck subscriptions on network change.
+
+# 5.7.3
+
+SMP/NTF protocol:
+- add ALPN for handshake version negotiation, similar to XFTP (to preserve backwards compatibility with the old clients).
+- upgrade clients to versions v7/v2 of the protocols.
+
+SMP server:
+- faster responses to subscription requests.
+
+XFTP client:
+- fix network exception during file download treated as permanent file error.
+
+SMP agent:
+- do not report subscription timeouts while client is offline.
+
+# 5.7.2
+
+SMP agent:
+- fix connections failing when connecting via link due to race condition on slow network.
+- remove concurrency limit when waiting for connection subscription.
+- remove TLS timeout.
+
+# 5.7.1
+
+SMP agent:
+- increase timeout for TLS connection via SOCKS
+
+# 5.7.0
+
+Version 5.7.0.4
+
+_Please note_: the earliest SimpleX Chat clients supported by this version of the servers is 5.5.3 (released on February 11, 2024).
+
+SMP server:
+- increase max SMP protocol version to 7 (support for deniable authenticators).
+
+NTF server:
+- increase max NTF protocol version to 2 (support for deniable authenticators).
+
+XFTP server:
+- version handshake using ALPN.
+
+SMP agent:
+- increase timeouts for XFTP files.
+- don't send commands after timeout.
+- PQ encryption support.
+
+# 5.6.2
+
+Version 5.6.2.2.
+
+SMP agent:
+- Lower memory consumption (~20-25%).
+- More stable XFTP file uploads and downloads.
+- API to receive network connectivity changes from the apps.
+- to reduce battery consumption: connection attempts interval growing to every 2 hours when app reports as offline.
+- to reduce retries and traffic: 50% increased timeouts when on mobile network.
+
+XFTP server:
+- expire files on start.
+- version negotiation based on TLS ALPN and handshake.
+
+NTF server:
+- reduced downtime by ~100x faster start time.
+- exclude test tokens from statistics.
+
 # 5.6.1
 
 Version 5.6.1.0.

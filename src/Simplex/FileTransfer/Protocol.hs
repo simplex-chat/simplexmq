@@ -25,7 +25,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
-import Simplex.FileTransfer.Transport (VersionXFTP, XFTPErrorType (..), XFTPVersion, xftpClientHandshakeStub, pattern VersionXFTP)
+import Simplex.FileTransfer.Transport (XFTPErrorType (..), XFTPVersion, xftpClientHandshakeStub)
 import Simplex.Messaging.Client (authTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -39,8 +39,8 @@ import Simplex.Messaging.Protocol
     ProtocolErrorType (..),
     ProtocolMsgTag (..),
     ProtocolType (..),
-    RcvPublicDhKey,
     RcvPublicAuthKey,
+    RcvPublicDhKey,
     RecipientId,
     SenderId,
     SentRawTransmission,
@@ -48,18 +48,16 @@ import Simplex.Messaging.Protocol
     SndPublicAuthKey,
     Transmission,
     TransmissionForAuth (..),
-    encodeTransmissionForAuth,
+    CorrId (..),
     encodeTransmission,
+    encodeTransmissionForAuth,
     messageTagP,
     tDecodeParseValidate,
     tEncodeBatch1,
     tParse,
   )
-import Simplex.Messaging.Transport (THandleParams (..), TransportError (..))
+import Simplex.Messaging.Transport (THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Util ((<$?>))
-
-currentXFTPVersion :: VersionXFTP
-currentXFTPVersion = VersionXFTP 1
 
 xftpBlockSize :: Int
 xftpBlockSize = 16384
@@ -328,12 +326,12 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
   Just Refl -> Just c
   _ -> Nothing
 
-xftpEncodeAuthTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion -> C.APrivateAuthKey -> Transmission c -> Either TransportError ByteString
+xftpEncodeAuthTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion 'TClient -> C.APrivateAuthKey -> Transmission c -> Either TransportError ByteString
 xftpEncodeAuthTransmission thParams@THandleParams {thAuth} pKey (corrId, fId, msg) = do
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, fId, msg)
-  xftpEncodeBatch1 . (,tToSend) =<< authTransmission thAuth (Just pKey) corrId tForAuth
+  xftpEncodeBatch1 . (,tToSend) =<< authTransmission thAuth (Just pKey) (C.cbNonce $ bs corrId) tForAuth
 
-xftpEncodeTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion -> Transmission c -> Either TransportError ByteString
+xftpEncodeTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion p -> Transmission c -> Either TransportError ByteString
 xftpEncodeTransmission thParams (corrId, fId, msg) = do
   let t = encodeTransmission thParams (corrId, fId, msg)
   xftpEncodeBatch1 (Nothing, t)
@@ -342,7 +340,7 @@ xftpEncodeTransmission thParams (corrId, fId, msg) = do
 xftpEncodeBatch1 :: SentRawTransmission -> Either TransportError ByteString
 xftpEncodeBatch1 t = first (const TELargeMsg) $ C.pad (tEncodeBatch1 t) xftpBlockSize
 
-xftpDecodeTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion -> ByteString -> Either XFTPErrorType (SignedTransmission e c)
+xftpDecodeTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion p -> ByteString -> Either XFTPErrorType (SignedTransmission e c)
 xftpDecodeTransmission thParams t = do
   t' <- first (const BLOCK) $ C.unPad t
   case tParse thParams t' of

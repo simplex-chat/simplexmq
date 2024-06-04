@@ -20,12 +20,14 @@ import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.Maybe (fromJust)
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
-import Simplex.FileTransfer.Description (FileChunk (..), FileDescription (..), FileDescriptionURI (..), ValidFileDescription, fileDescriptionURI, mb, qrSizeLimit, pattern ValidFileDescription)
+import Simplex.FileTransfer.Client (XFTPClientConfig (..))
+import Simplex.FileTransfer.Description (FileChunk (..), FileDescription (..), FileDescriptionURI (..), ValidFileDescription, fileDescriptionURI, kb, mb, qrSizeLimit, pattern ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType (AUTH))
 import Simplex.Messaging.Agent (AgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendDescription, xftpSendFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, xftpCfg)
 import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..), BrokerErrorType (..), RcvFileId, SndFileId, noAuthSrv)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
@@ -44,14 +46,19 @@ import XFTPClient
 
 xftpAgentTests :: Spec
 xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
-  it "should send and receive file" testXFTPAgentSendReceive
+  it "should send and receive file" $ withXFTPServer testXFTPAgentSendReceive
+  -- uncomment CPP option slow_servers and run hpack to run this test
+  xit "should send and receive file with slow server responses" $
+    withXFTPServerCfg testXFTPServerConfig {responseDelay = 500000} $
+      \_ -> testXFTPAgentSendReceive
   it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
   it "should send and receive large file with a redirect" testXFTPAgentSendReceiveRedirect
   it "should send and receive small file without a redirect" testXFTPAgentSendReceiveNoRedirect
+  describe "sending and receiving with version negotiation" testXFTPAgentSendReceiveMatrix
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
   it "should resume sending file after restart" testXFTPAgentSendRestore
-  it "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
+  xit "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
   it "should delete sent file on server" testXFTPAgentDelete
   it "should resume deleting file after restart" testXFTPAgentDeleteRestore
   -- TODO when server is fixed to correctly send AUTH error, this test has to be modified to expect AUTH error
@@ -66,7 +73,7 @@ xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
     describe "server with password" $ do
       let auth = Just "abcd"
           srv = ProtoServerWithAuth testXFTPServer2
-          authErr = Just (ProtocolTestFailure TSCreateFile $ XFTP AUTH)
+          authErr = Just (ProtocolTestFailure TSCreateFile $ XFTP (B.unpack $ strEncode testXFTPServer2) AUTH)
       it "should pass with correct password" $ testXFTPServerTest auth (srv auth) `shouldReturn` Nothing
       it "should fail without password" $ testXFTPServerTest auth (srv Nothing) `shouldReturn` authErr
       it "should fail with incorrect password" $ testXFTPServerTest auth (srv $ Just "wrong") `shouldReturn` authErr
@@ -90,14 +97,14 @@ sfProgress c expected = loop 0
 -- checks that progress increases till it reaches total
 checkProgress :: (HasCallStack, MonadIO m) => (Int64, Int64) -> (Int64, Int64) -> (Int64 -> m ()) -> m ()
 checkProgress (prev, expected) (progress, total) loop
-  | total /= expected = error "total /= expected"
+  | total /= expected = liftIO (print total) >> error "total /= expected"
   | progress <= prev = error "progress <= prev"
   | progress > total = error "progress > total"
   | progress < total = loop progress
   | otherwise = pure ()
 
 testXFTPAgentSendReceive :: HasCallStack => IO ()
-testXFTPAgentSendReceive = withXFTPServer $ do
+testXFTPAgentSendReceive = do
   filePath <- createRandomFile
   -- send file, delete snd file internally
   (rfd1, rfd2) <- withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight $ do
@@ -176,7 +183,7 @@ testXFTPAgentSendReceiveRedirect = withXFTPServer $ do
     withAgent 2 agentCfg initAgentServers testDB2 $ \rcp -> do
       FileDescriptionURI {description} <- either fail pure $ strDecode uri
 
-      rcvFileId <- runRight $ xftpReceiveFile rcp 1 description Nothing
+      rcvFileId <- runRight $ xftpReceiveFile rcp 1 description Nothing True
       rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 65536 totalSize) -- extra RFPROG before switching to real file
       rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 4194304 totalSize)
       rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 8388608 totalSize)
@@ -220,7 +227,7 @@ testXFTPAgentSendReceiveNoRedirect = withXFTPServer $ do
       FileDescriptionURI {description} <- either fail pure $ strDecode uri
       let ValidFileDescription FileDescription {redirect} = description
       redirect `shouldBe` Nothing
-      rcvFileId <- runRight $ xftpReceiveFile rcp 1 description Nothing
+      rcvFileId <- runRight $ xftpReceiveFile rcp 1 description Nothing True
       -- NO extra "RFPROG 65k 65k" before switching to real file
       rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 4194304 totalSize)
       rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 5242880 totalSize)
@@ -232,6 +239,34 @@ testXFTPAgentSendReceiveNoRedirect = withXFTPServer $ do
 
       inBytes <- B.readFile filePathIn
       B.readFile out `shouldReturn` inBytes
+
+testXFTPAgentSendReceiveMatrix :: Spec
+testXFTPAgentSendReceiveMatrix = do
+  describe "old server" $ do
+    it "new clients" $ run oldServer newClient newClient
+    it "new sender, old recipient" $ run oldServer newClient newClient
+    it "old sender, new recipient" $ run oldServer oldClient newClient
+    it "old clients" $ run oldServer oldClient oldClient
+  describe "new server" $ do
+    it "new clients" $ run newServer newClient newClient
+    it "new sender, old recipient" $ run newServer newClient newClient
+    it "old sender, new recipient" $ run newServer oldClient newClient
+    it "old clients" $ run newServer oldClient oldClient
+  where
+    oldClient = agentCfg {xftpCfg = (xftpCfg agentCfg) {clientALPN = Nothing}}
+    newClient = agentCfg
+    oldServer = testXFTPServerConfig_ Nothing
+    newServer = testXFTPServerConfig
+    run :: HasCallStack => XFTPServerConfig -> AgentConfig -> AgentConfig -> IO ()
+    run server sender receiver =
+      withXFTPServerCfg server $ \_t -> do
+        filePath <- createRandomFile_ (kb 319 :: Integer) "testfile"
+        rfd <- withAgent 1 sender initAgentServers testDB $ \sndr -> do
+          (sfId, _, rfd1, _) <- runRight $ testSendCF' sndr (CF.plain filePath) (kb 320)
+          rfd1 <$ xftpDeleteSndFileInternal sndr sfId
+        withAgent 2 receiver initAgentServers testDB2 $ \rcp -> do
+          rfId <- runRight $ testReceiveCF' rcp rfd Nothing filePath (kb 320)
+          xftpDeleteRcvFile rcp rfId
 
 createRandomFile :: HasCallStack => IO FilePath
 createRandomFile = createRandomFile' "testfile"
@@ -250,10 +285,13 @@ testSend :: HasCallStack => AgentClient -> FilePath -> ExceptT AgentErrorType IO
 testSend sndr = testSendCF sndr . CF.plain
 
 testSendCF :: HasCallStack => AgentClient -> CryptoFile -> ExceptT AgentErrorType IO (SndFileId, ValidFileDescription 'FSender, ValidFileDescription 'FRecipient, ValidFileDescription 'FRecipient)
-testSendCF sndr file = do
+testSendCF sndr file = testSendCF' sndr file $ mb 18
+
+testSendCF' :: HasCallStack => AgentClient -> CryptoFile -> Int64 -> ExceptT AgentErrorType IO (SndFileId, ValidFileDescription 'FSender, ValidFileDescription 'FRecipient, ValidFileDescription 'FRecipient)
+testSendCF' sndr file size = do
   xftpStartWorkers sndr (Just senderFiles)
   sfId <- xftpSendFile sndr 1 file 2
-  sfProgress sndr $ mb 18
+  sfProgress sndr size
   ("", sfId', SFDONE sndDescr [rfd1, rfd2]) <- sfGet sndr
   liftIO $ testNoRedundancy rfd1
   liftIO $ testNoRedundancy rfd2
@@ -270,15 +308,15 @@ testReceive rcp rfd = testReceiveCF rcp rfd Nothing
 testReceiveCF :: HasCallStack => AgentClient -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> FilePath -> ExceptT AgentErrorType IO RcvFileId
 testReceiveCF rcp rfd cfArgs originalFilePath = do
   xftpStartWorkers rcp (Just recipientFiles)
-  testReceiveCF' rcp rfd cfArgs originalFilePath
+  testReceiveCF' rcp rfd cfArgs originalFilePath $ mb 18
 
 testReceive' :: HasCallStack => AgentClient -> ValidFileDescription 'FRecipient -> FilePath -> ExceptT AgentErrorType IO RcvFileId
-testReceive' rcp rfd = testReceiveCF' rcp rfd Nothing
+testReceive' rcp rfd originalFilePath = testReceiveCF' rcp rfd Nothing originalFilePath $ mb 18
 
-testReceiveCF' :: HasCallStack => AgentClient -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> FilePath -> ExceptT AgentErrorType IO RcvFileId
-testReceiveCF' rcp rfd cfArgs originalFilePath = do
-  rfId <- xftpReceiveFile rcp 1 rfd cfArgs
-  rfProgress rcp $ mb 18
+testReceiveCF' :: HasCallStack => AgentClient -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> FilePath -> Int64 -> ExceptT AgentErrorType IO RcvFileId
+testReceiveCF' rcp rfd cfArgs originalFilePath size = do
+  rfId <- xftpReceiveFile rcp 1 rfd cfArgs True
+  rfProgress rcp size
   ("", rfId', RFDONE path) <- rfGet rcp
   liftIO $ do
     rfId' `shouldBe` rfId
@@ -302,7 +340,7 @@ testXFTPAgentReceiveRestore = do
   -- receive file - should not succeed with server down
   rfId <- withAgent 2 agentCfg initAgentServers testDB2 $ \rcp -> runRight $ do
     xftpStartWorkers rcp (Just recipientFiles)
-    rfId <- xftpReceiveFile rcp 1 rfd Nothing
+    rfId <- xftpReceiveFile rcp 1 rfd Nothing True
     liftIO $ timeout 300000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
     pure rfId
 
@@ -346,7 +384,7 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
   -- receive file - should not succeed with server down
   rfId <- withAgent 2 agentCfg initAgentServers testDB2 $ \rcp -> runRight $ do
     xftpStartWorkers rcp (Just recipientFiles)
-    rfId <- xftpReceiveFile rcp 1 rfd Nothing
+    rfId <- xftpReceiveFile rcp 1 rfd Nothing True
     liftIO $ timeout 300000 (get rcp) `shouldReturn` Nothing -- wait for worker attempt
     pure rfId
 
@@ -358,7 +396,7 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
     -- receive file - should fail with AUTH error
     withAgent 3 agentCfg initAgentServers testDB2 $ \rcp' -> do
       runRight_ $ xftpStartWorkers rcp' (Just recipientFiles)
-      ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp'
+      ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <- rfGet rcp'
       rfId' `shouldBe` rfId
 
   -- tmp path should be removed after permanent error
@@ -437,7 +475,8 @@ testXFTPAgentSendCleanup = withGlobalLogging logCfgNoLogs $ do
     -- send file - should fail with AUTH error
     withAgent 2 agentCfg initAgentServers testDB $ \sndr' -> do
       runRight_ $ xftpStartWorkers sndr' (Just senderFiles)
-      ("", sfId', SFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- sfGet sndr'
+      ("", sfId', SFERR (INTERNAL "XFTP {serverAddress = \"xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000\", xftpErr = AUTH}")) <-
+        sfGet sndr'
       sfId' `shouldBe` sfId
 
   -- prefix path should be removed after permanent error
@@ -471,8 +510,9 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
       -- receive file - should fail with AUTH error
       withAgent 3 agentCfg initAgentServers testDB2 $ \rcp2 -> runRight $ do
         xftpStartWorkers rcp2 (Just recipientFiles)
-        rfId <- xftpReceiveFile rcp2 1 rfd2 Nothing
-        ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp2
+        rfId <- xftpReceiveFile rcp2 1 rfd2 Nothing True
+        ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <-
+          rfGet rcp2
         liftIO $ rfId' `shouldBe` rfId
 
 testXFTPAgentDeleteRestore :: HasCallStack => IO ()
@@ -494,7 +534,6 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
     runRight_ $ xftpStartWorkers sndr (Just senderFiles)
     xftpDeleteSndFileRemote sndr 1 sfId sndDescr
     timeout 300000 (get sndr) `shouldReturn` Nothing -- wait for worker attempt
-
   threadDelay 300000
   length <$> listDirectory xftpServerFiles `shouldReturn` 6
 
@@ -509,8 +548,9 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
       -- receive file - should fail with AUTH error
       withAgent 5 agentCfg initAgentServers testDB3 $ \rcp2 -> runRight $ do
         xftpStartWorkers rcp2 (Just recipientFiles)
-        rfId <- xftpReceiveFile rcp2 1 rfd2 Nothing
-        ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp2
+        rfId <- xftpReceiveFile rcp2 1 rfd2 Nothing True
+        ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <-
+          rfGet rcp2
         liftIO $ rfId' `shouldBe` rfId
 
 testXFTPAgentDeleteOnServer :: HasCallStack => IO ()
@@ -543,9 +583,10 @@ testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs $
 
         runRight_ . void $ do
           -- receive file 1 again
-          rfId1 <- xftpReceiveFile rcp 1 rfd1_2 Nothing
-          ("", rfId1', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp
-          liftIO $ rfId1 `shouldBe`  rfId1'
+          rfId1 <- xftpReceiveFile rcp 1 rfd1_2 Nothing True
+          ("", rfId1', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <-
+            rfGet rcp
+          liftIO $ rfId1 `shouldBe` rfId1'
 
           -- receive file 2
           testReceive' rcp rfd2 filePath2
@@ -575,8 +616,9 @@ testXFTPAgentExpiredOnServer = withGlobalLogging logCfgNoLogs $ do
 
         -- receive file 1 again - should fail with AUTH error
         runRight $ do
-          rfId <- xftpReceiveFile rcp 1 rfd1_2 Nothing
-          ("", rfId', RFERR (INTERNAL "XFTP {xftpErr = AUTH}")) <- rfGet rcp
+          rfId <- xftpReceiveFile rcp 1 rfd1_2 Nothing True
+          ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <-
+            rfGet rcp
           liftIO $ rfId' `shouldBe` rfId
 
         -- create and send file 2

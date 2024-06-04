@@ -44,7 +44,7 @@ module Simplex.Messaging.Agent.Protocol
     currentSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
-    e2eEncUserMsgLength,
+    e2eEncAgentMsgLength,
 
     -- * SMP agent protocol types
     ConnInfo,
@@ -108,6 +108,7 @@ module Simplex.Messaging.Agent.Protocol
     CRClientData,
     ServiceScheme,
     simplexChat,
+    connReqUriP',
     AgentErrorType (..),
     CommandErrorType (..),
     ConnectionErrorType (..),
@@ -157,8 +158,8 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Monad (unless)
-import Control.Monad.Except (runExceptT, throwError)
 import Control.Monad.IO.Class
+import Control.Monad.Trans.Except
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
@@ -189,23 +190,25 @@ import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType)
 import Simplex.Messaging.Agent.QueryString
+import Simplex.Messaging.Client (ProxyClientError)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
   ( InitialKeys (..),
     PQEncryption (..),
-    pattern PQEncOff,
     PQSupport,
-    pattern PQSupportOn,
-    pattern PQSupportOff,
     RcvE2ERatchetParams,
     RcvE2ERatchetParamsUri,
-    SndE2ERatchetParams
+    SndE2ERatchetParams,
+    pattern PQEncOff,
+    pattern PQSupportOff,
+    pattern PQSupportOn,
   )
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( AProtocolType,
+    BrokerErrorType (..),
     EntityId,
     ErrorType,
     MsgBody,
@@ -213,14 +216,14 @@ import Simplex.Messaging.Protocol
     MsgId,
     NMsgMeta,
     ProtocolServer (..),
+    SMPClientVersion,
     SMPMsgMeta,
     SMPServer,
     SMPServerWithAuth,
     SndPublicAuthKey,
     SubscriptionMode,
-    SMPClientVersion,
-    VersionSMPC,
     VersionRangeSMPC,
+    VersionSMPC,
     initialSMPClientVersion,
     legacyEncodeServer,
     legacyServerP,
@@ -233,7 +236,7 @@ import Simplex.Messaging.Protocol
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme
-import Simplex.Messaging.Transport (Transport (..), TransportError, serializeTransportError, transportErrorP)
+import Simplex.Messaging.Transport (Transport (..))
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts_ (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -272,16 +275,11 @@ deliveryRcptsSMPAgentVersion = VersionSMPA 4
 pqdrSMPAgentVersion :: VersionSMPA
 pqdrSMPAgentVersion = VersionSMPA 5
 
--- TODO v5.7 increase to 5
 currentSMPAgentVersion :: VersionSMPA
-currentSMPAgentVersion = VersionSMPA 4
+currentSMPAgentVersion = VersionSMPA 5
 
--- TODO v5.7 remove dependency of version range on whether PQ support is needed
-supportedSMPAgentVRange :: PQSupport -> VersionRangeSMPA
-supportedSMPAgentVRange pq =
-  mkVersionRange duplexHandshakeSMPAgentVersion $ case pq of
-    PQSupportOn -> pqdrSMPAgentVersion
-    PQSupportOff -> currentSMPAgentVersion
+supportedSMPAgentVRange :: VersionRangeSMPA
+supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentSMPAgentVersion
 
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
@@ -292,8 +290,8 @@ e2eEncConnInfoLength v = \case
   PQSupportOn | v >= pqdrSMPAgentVersion -> 11122
   _ -> 14848
 
-e2eEncUserMsgLength :: VersionSMPA -> PQSupport -> Int
-e2eEncUserMsgLength v = \case
+e2eEncAgentMsgLength :: VersionSMPA -> PQSupport -> Int
+e2eEncAgentMsgLength v = \case
   -- reduced by 2222 (the increase of message ratchet header size)
   PQSupportOn | v >= pqdrSMPAgentVersion -> 13634
   _ -> 15856
@@ -398,7 +396,8 @@ data ACommand (p :: AParty) (e :: AEntity) where
   RSYNC :: RatchetSyncState -> Maybe AgentCryptoError -> ConnectionStats -> ACommand Agent AEConn
   SEND :: PQEncryption -> MsgFlags -> MsgBody -> ACommand Client AEConn
   MID :: AgentMsgId -> PQEncryption -> ACommand Agent AEConn
-  SENT :: AgentMsgId -> ACommand Agent AEConn
+  SENT :: AgentMsgId -> Maybe SMPServer -> ACommand Agent AEConn
+  MWARN :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MERR :: AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MERRS :: NonEmpty AgentMsgId -> AgentErrorType -> ACommand Agent AEConn
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> ACommand Agent AEConn
@@ -462,6 +461,7 @@ data ACommandTag (p :: AParty) (e :: AEntity) where
   SEND_ :: ACommandTag Client AEConn
   MID_ :: ACommandTag Agent AEConn
   SENT_ :: ACommandTag Agent AEConn
+  MWARN_ :: ACommandTag Agent AEConn
   MERR_ :: ACommandTag Agent AEConn
   MERRS_ :: ACommandTag Agent AEConn
   MSG_ :: ACommandTag Agent AEConn
@@ -517,7 +517,8 @@ aCommandTag = \case
   RSYNC {} -> RSYNC_
   SEND {} -> SEND_
   MID {} -> MID_
-  SENT _ -> SENT_
+  SENT {} -> SENT_
+  MWARN {} -> MWARN_
   MERR {} -> MERR_
   MERRS {} -> MERRS_
   MSG {} -> MSG_
@@ -913,7 +914,7 @@ instance Encoding AgentMsgEnvelope where
 -- AgentRatchetInfo is not encrypted with double ratchet, but with per-queue E2E encryption
 data AgentMessage
   = -- used by the initiating party when confirming reply queue
-  AgentConnInfo ConnInfo
+    AgentConnInfo ConnInfo
   | -- AgentConnInfoReply is used by accepting party in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
     -- It made removed REPLY message unnecessary.
     AgentConnInfoReply (NonEmpty SMPQueueInfo) ConnInfo
@@ -1161,7 +1162,7 @@ instance StrEncoding MsgReceipt where
     msgRcptStatus <- strP
     pure MsgReceipt {agentMsgId, msgRcptStatus}
 
-instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
+instance ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
     CRInvitationUri crData e2eParams -> crEncode "invitation" crData (Just e2eParams)
     CRContactUri crData -> crEncode "contact" crData Nothing
@@ -1175,34 +1176,40 @@ instance forall m. ConnectionModeI m => StrEncoding (ConnectionRequestUri m) whe
               [("v", strEncode crAgentVRange), ("smp", strEncode crSmpQueues)]
                 <> maybe [] (\e2e -> [("e2e", strEncode e2e)]) e2eParams
                 <> maybe [] (\cd -> [("data", encodeUtf8 cd)]) crClientData
-  strP = do
-    ACR m cr <- strP
-    case testEquality m $ sConnectionMode @m of
-      Just Refl -> pure cr
-      _ -> fail "bad connection request mode"
+  strP = connReqUriP' (Just SSSimplex)
+
+connReqUriP' :: forall m. ConnectionModeI m => Maybe ServiceScheme -> Parser (ConnectionRequestUri m)
+connReqUriP' overrideScheme = do
+  ACR m cr <- connReqUriP overrideScheme
+  case testEquality m $ sConnectionMode @m of
+    Just Refl -> pure cr
+    _ -> fail "bad connection request mode"
 
 instance StrEncoding AConnectionRequestUri where
   strEncode (ACR _ cr) = strEncode cr
-  strP = do
-    _crScheme :: ServiceScheme <- strP
-    crMode <- A.char '/' *> crModeP <* optional (A.char '/') <* "#/?"
-    query <- strP
-    aVRange <- queryParam "v" query
-    crSmpQueues <- queryParam "smp" query
-    let crClientData = safeDecodeUtf8 <$> queryParamStr "data" query
-    let crData = ConnReqUriData {crScheme = SSSimplex, crAgentVRange = aVRange, crSmpQueues, crClientData}
-    case crMode of
-      CMInvitation -> do
-        crE2eParams <- queryParam "e2e" query
-        pure . ACR SCMInvitation $ CRInvitationUri crData crE2eParams
-      -- contact links are adjusted to the minimum version supported by the agent
-      -- to preserve compatibility with the old links published online
-      CMContact -> pure . ACR SCMContact $ CRContactUri crData {crAgentVRange = adjustAgentVRange aVRange}
-    where
-      crModeP = "invitation" $> CMInvitation <|> "contact" $> CMContact
-      adjustAgentVRange vr =
-        let v = max duplexHandshakeSMPAgentVersion $ minVersion vr
-         in fromMaybe vr $ safeVersionRange v (max v $ maxVersion vr)
+  strP = connReqUriP (Just SSSimplex)
+
+connReqUriP :: Maybe ServiceScheme -> Parser AConnectionRequestUri
+connReqUriP overrideScheme = do
+  crScheme <- (`fromMaybe` overrideScheme) <$> strP
+  crMode <- A.char '/' *> crModeP <* optional (A.char '/') <* "#/?"
+  query <- strP
+  aVRange <- queryParam "v" query
+  crSmpQueues <- queryParam "smp" query
+  let crClientData = safeDecodeUtf8 <$> queryParamStr "data" query
+      crData = ConnReqUriData {crScheme, crAgentVRange = aVRange, crSmpQueues, crClientData}
+  case crMode of
+    CMInvitation -> do
+      crE2eParams <- queryParam "e2e" query
+      pure . ACR SCMInvitation $ CRInvitationUri crData crE2eParams
+    -- contact links are adjusted to the minimum version supported by the agent
+    -- to preserve compatibility with the old links published online
+    CMContact -> pure . ACR SCMContact $ CRContactUri crData {crAgentVRange = adjustAgentVRange aVRange}
+  where
+    crModeP = "invitation" $> CMInvitation <|> "contact" $> CMContact
+    adjustAgentVRange vr =
+      let v = max duplexHandshakeSMPAgentVersion $ minVersion vr
+        in fromMaybe vr $ safeVersionRange v (max v $ maxVersion vr)
 
 instance ConnectionModeI m => FromJSON (ConnectionRequestUri m) where
   parseJSON = strParseJSON "ConnectionRequestUri"
@@ -1305,6 +1312,7 @@ instance VersionRangeI SMPClientVersion SMPQueueUri where
   type VersionT SMPClientVersion SMPQueueUri = SMPQueueInfo
   versionRange = clientVRange
   toVersionT (SMPQueueUri _vr addr) v = SMPQueueInfo v addr
+  toVersionRange (SMPQueueUri _vr addr) vr = SMPQueueUri vr addr
 
 -- | SMP queue information sent out-of-band.
 --
@@ -1387,9 +1395,9 @@ deriving instance Show (ConnectionRequestUri m)
 data AConnectionRequestUri = forall m. ConnectionModeI m => ACR (SConnectionMode m) (ConnectionRequestUri m)
 
 instance Eq AConnectionRequestUri where
-   ACR m cr == ACR m' cr' = case testEquality m m' of
-     Just Refl -> cr == cr'
-     _ -> False
+  ACR m cr == ACR m' cr' = case testEquality m m' of
+    Just Refl -> cr == cr'
+    _ -> False
 
 deriving instance Show AConnectionRequestUri
 
@@ -1470,15 +1478,17 @@ instance StrEncoding MsgErrorType where
 -- | Error type used in errors sent to agent clients.
 data AgentErrorType
   = -- | command or response error
-    CMD {cmdErr :: CommandErrorType}
+    CMD {cmdErr :: CommandErrorType, errContext :: String}
   | -- | connection errors
     CONN {connErr :: ConnectionErrorType}
   | -- | SMP protocol errors forwarded to agent clients
-    SMP {smpErr :: ErrorType}
+    SMP {serverAddress :: String, smpErr :: ErrorType}
   | -- | NTF protocol errors forwarded to agent clients
-    NTF {ntfErr :: ErrorType}
+    NTF {serverAddress :: String, ntfErr :: ErrorType}
   | -- | XFTP protocol errors forwarded to agent clients
-    XFTP {xftpErr :: XFTPErrorType}
+    XFTP {serverAddress :: String, xftpErr :: XFTPErrorType}
+  | -- | SMP proxy errors
+    PROXY {proxyServer :: String, relayServer :: String, proxyErr :: ProxyClientError}
   | -- | XRCP protocol errors forwarded to agent clients
     RCP {rcpErr :: RCErrorType}
   | -- | SMP server errors
@@ -1521,28 +1531,12 @@ data ConnectionErrorType
     NOT_AVAILABLE
   deriving (Eq, Read, Show, Exception)
 
--- | SMP server errors.
-data BrokerErrorType
-  = -- | invalid server response (failed to parse)
-    RESPONSE {smpErr :: String}
-  | -- | unexpected response
-    UNEXPECTED
-  | -- | network error
-    NETWORK
-  | -- | no compatible server host (e.g. onion when public is required, or vice versa)
-    HOST
-  | -- | handshake or other transport error
-    TRANSPORT {transportErr :: TransportError}
-  | -- | command response timeout
-    TIMEOUT
-  deriving (Eq, Read, Show, Exception)
-
 -- | Errors of another SMP agent.
 data SMPAgentError
   = -- | client or agent message that failed to parse
     A_MESSAGE
   | -- | prohibited SMP/agent message
-    A_PROHIBITED
+    A_PROHIBITED {prohibitedErr :: String}
   | -- | incompatible version of SMP client, agent or encryption protocols
     A_VERSION
   | -- | cannot decrypt message
@@ -1571,12 +1565,14 @@ data AgentCryptoError
 
 instance StrEncoding AgentCryptoError where
   strP =
-    "DECRYPT_AES" $> DECRYPT_AES
-      <|> "DECRYPT_CB" $> DECRYPT_CB
-      <|> "RATCHET_HEADER" $> RATCHET_HEADER
-      <|> "RATCHET_EARLIER " *> (RATCHET_EARLIER <$> strP)
-      <|> "RATCHET_SKIPPED " *> (RATCHET_SKIPPED <$> strP)
-      <|> "RATCHET_SYNC" $> RATCHET_SYNC
+    A.takeTill (== ' ') >>= \case
+      "DECRYPT_AES" -> pure DECRYPT_AES
+      "DECRYPT_CB" -> pure DECRYPT_CB
+      "RATCHET_HEADER" -> pure RATCHET_HEADER
+      "RATCHET_EARLIER" -> RATCHET_EARLIER <$> _strP
+      "RATCHET_SKIPPED" -> RATCHET_SKIPPED <$> _strP
+      "RATCHET_SYNC" -> pure RATCHET_SYNC
+      _ -> fail "AgentCryptoError"
   strEncode = \case
     DECRYPT_AES -> "DECRYPT_AES"
     DECRYPT_CB -> "DECRYPT_CB"
@@ -1587,41 +1583,60 @@ instance StrEncoding AgentCryptoError where
 
 instance StrEncoding AgentErrorType where
   strP =
-    "CMD " *> (CMD <$> parseRead1)
-      <|> "CONN " *> (CONN <$> parseRead1)
-      <|> "SMP " *> (SMP <$> strP)
-      <|> "NTF " *> (NTF <$> strP)
-      <|> "XFTP " *> (XFTP <$> strP)
-      <|> "RCP " *> (RCP <$> strP)
-      <|> "BROKER " *> (BROKER <$> textP <* " RESPONSE " <*> (RESPONSE <$> textP))
-      <|> "BROKER " *> (BROKER <$> textP <* " TRANSPORT " <*> (TRANSPORT <$> transportErrorP))
-      <|> "BROKER " *> (BROKER <$> textP <* A.space <*> parseRead1)
-      <|> "AGENT CRYPTO " *> (AGENT . A_CRYPTO <$> parseRead A.takeByteString)
-      <|> "AGENT QUEUE " *> (AGENT . A_QUEUE <$> parseRead A.takeByteString)
-      <|> "AGENT " *> (AGENT <$> parseRead1)
-      <|> "INTERNAL " *> (INTERNAL <$> parseRead A.takeByteString)
-      <|> "CRITICAL " *> (CRITICAL <$> parseRead1 <* A.space <*> parseRead A.takeByteString)
-      <|> "INACTIVE" $> INACTIVE
+    A.takeTill (== ' ')
+      >>= \case
+        "CMD" -> CMD <$> (A.space *> parseRead1) <*> (A.space *> textP)
+        "CONN" -> CONN <$> (A.space *> parseRead1)
+        "SMP" -> SMP <$> (A.space *> srvP) <*> _strP
+        "NTF" -> NTF <$> (A.space *> srvP) <*> _strP
+        "XFTP" -> XFTP <$> (A.space *> srvP) <*> _strP
+        "PROXY" -> PROXY <$> (A.space *> srvP) <* A.space <*> srvP <*> _strP
+        "RCP" -> RCP <$> _strP
+        "BROKER" -> BROKER <$> (A.space *> srvP) <*> _strP
+        "AGENT" -> AGENT <$> _strP
+        "INTERNAL" -> INTERNAL <$> (A.space *> textP)
+        "CRITICAL" -> CRITICAL <$> (A.space *> parseRead1) <*> (A.space *> textP)
+        "INACTIVE" -> pure INACTIVE
+        _ -> fail "bad AgentErrorType"
     where
-      textP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
+      srvP = T.unpack . safeDecodeUtf8 <$> A.takeTill (== ' ')
   strEncode = \case
-    CMD e -> "CMD " <> bshow e
+    CMD e cxt -> "CMD " <> bshow e <> " " <> text cxt
     CONN e -> "CONN " <> bshow e
-    SMP e -> "SMP " <> strEncode e
-    NTF e -> "NTF " <> strEncode e
-    XFTP e -> "XFTP " <> strEncode e
+    SMP srv e -> "SMP " <> text srv <> " " <> strEncode e
+    NTF srv e -> "NTF " <> text srv <> " " <> strEncode e
+    XFTP srv e -> "XFTP " <> text srv <> " " <> strEncode e
+    PROXY pxy srv e -> B.unwords ["PROXY", text pxy, text srv, strEncode e]
     RCP e -> "RCP " <> strEncode e
-    BROKER srv (RESPONSE e) -> "BROKER " <> text srv <> " RESPONSE " <> text e
-    BROKER srv (TRANSPORT e) -> "BROKER " <> text srv <> " TRANSPORT " <> serializeTransportError e
-    BROKER srv e -> "BROKER " <> text srv <> " " <> bshow e
-    AGENT (A_CRYPTO e) -> "AGENT CRYPTO " <> bshow e
-    AGENT (A_QUEUE e) -> "AGENT QUEUE " <> bshow e
-    AGENT e -> "AGENT " <> bshow e
-    INTERNAL e -> "INTERNAL " <> bshow e
-    CRITICAL restart e -> "CRITICAL " <> bshow restart <> " " <> bshow e
+    BROKER srv e -> B.unwords ["BROKER", text srv, strEncode e]
+    AGENT e -> "AGENT " <> strEncode e
+    INTERNAL e -> "INTERNAL " <> encodeUtf8 (T.pack e)
+    CRITICAL restart e -> "CRITICAL " <> bshow restart <> " " <> encodeUtf8 (T.pack e)
     INACTIVE -> "INACTIVE"
     where
       text = encodeUtf8 . T.pack
+
+instance StrEncoding SMPAgentError where
+  strP =
+    A.takeTill (== ' ')
+      >>= \case
+        "MESSAGE" -> pure A_MESSAGE
+        "PROHIBITED" -> A_PROHIBITED <$> (A.space *> textP)
+        "VERSION" -> pure A_VERSION
+        "CRYPTO" -> A_CRYPTO <$> _strP
+        "DUPLICATE" -> pure A_DUPLICATE
+        "QUEUE" -> A_QUEUE <$> (A.space *> textP)
+        _ -> fail "bad SMPAgentError"
+  strEncode = \case
+    A_MESSAGE -> "MESSAGE"
+    A_PROHIBITED e -> "PROHIBITED " <> encodeUtf8 (T.pack e)
+    A_VERSION -> "VERSION"
+    A_CRYPTO e -> "CRYPTO " <> strEncode e
+    A_DUPLICATE -> "DUPLICATE"
+    A_QUEUE e -> "QUEUE " <> encodeUtf8 (T.pack e)
+
+textP :: Parser String
+textP = T.unpack . safeDecodeUtf8 <$> A.takeByteString
 
 cryptoErrToSyncState :: AgentCryptoError -> RatchetSyncState
 cryptoErrToSyncState = \case
@@ -1665,6 +1680,7 @@ instance StrEncoding ACmdTag where
       "SEND" -> t SEND_
       "MID" -> ct MID_
       "SENT" -> ct SENT_
+      "MWARN" -> ct MWARN_
       "MERR" -> ct MERR_
       "MERRS" -> ct MERRS_
       "MSG" -> ct MSG_
@@ -1723,6 +1739,7 @@ instance (APartyI p, AEntityI e) => StrEncoding (ACommandTag p e) where
     SEND_ -> "SEND"
     MID_ -> "MID"
     SENT_ -> "SENT"
+    MWARN_ -> "MWARN"
     MERR_ -> "MERR"
     MERRS_ -> "MERRS"
     MSG_ -> "MSG"
@@ -1793,7 +1810,8 @@ commandP binaryP =
           SWITCH_ -> s (SWITCH <$> strP_ <*> strP_ <*> strP)
           RSYNC_ -> s (RSYNC <$> strP_ <*> strP <*> strP)
           MID_ -> s (MID <$> A.decimal <*> _strP)
-          SENT_ -> s (SENT <$> A.decimal)
+          SENT_ -> s (SENT <$> A.decimal <*> _strP)
+          MWARN_ -> s (MWARN <$> A.decimal <* A.space <*> strP)
           MERR_ -> s (MERR <$> A.decimal <* A.space <*> strP)
           MERRS_ -> s (MERRS <$> strP_ <*> strP)
           MSG_ -> s (MSG <$> strP <* A.space <*> smpP <* A.space <*> binaryP)
@@ -1832,7 +1850,7 @@ commandP binaryP =
             sd : rds -> SFDONE <$> strDecode (encodeUtf8 sd) <*> mapM (strDecode . encodeUtf8) rds
 
 parseCommand :: ByteString -> Either AgentErrorType ACmd
-parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX
+parseCommand = parse (commandP A.takeByteString) $ CMD SYNTAX "parseCommand"
 
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand p e -> ByteString
@@ -1856,7 +1874,8 @@ serializeCommand = \case
   RSYNC rrState cryptoErr cstats -> s (RSYNC_, rrState, cryptoErr, cstats)
   SEND pqEnc msgFlags msgBody -> B.unwords [s SEND_, s pqEnc, smpEncode msgFlags, serializeBinary msgBody]
   MID mId pqEnc -> s (MID_, mId, pqEnc)
-  SENT mId -> s (SENT_, mId)
+  SENT mId proxySrv_ -> s (SENT_, mId, proxySrv_)
+  MWARN mId e -> s (MWARN_, mId, e)
   MERR mId e -> s (MERR_, mId, e)
   MERRS mIds e -> s (MERRS_, mIds, e)
   MSG msgMeta msgFlags msgBody -> B.unwords [s MSG_, s msgMeta, smpEncode msgFlags, serializeBinary msgBody]
@@ -1921,7 +1940,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
     fromParty :: ACmd -> Either AgentErrorType (APartyCmd p)
     fromParty (ACmd (p :: p1) e cmd) = case testEquality party p of
       Just Refl -> Right $ APC e cmd
-      _ -> Left $ CMD PROHIBITED
+      _ -> Left $ CMD PROHIBITED "fromParty"
 
     tConnId :: ARawTransmission -> APartyCmd p -> Either AgentErrorType (APartyCmd p)
     tConnId (_, entId, _) (APC e cmd) =
@@ -1939,7 +1958,7 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
         SUSPENDED {} -> Right cmd
         -- other responses must have connection ID
         _
-          | B.null entId -> Left $ CMD NO_CONN
+          | B.null entId -> Left $ CMD NO_CONN "tConnId"
           | otherwise -> Right cmd
 
     cmdWithMsgBody :: APartyCmd p -> IO (Either AgentErrorType (APartyCmd p))
@@ -1962,11 +1981,11 @@ tGet party h = liftIO (tGetRaw h) >>= tParseLoadBody
         str -> case readMaybe str :: Maybe Int of
           Just size -> runExceptT $ do
             body <- liftIO $ cGet h size
-            unless (B.length body == size) $ throwError $ CMD SIZE
+            unless (B.length body == size) $ throwE $ CMD SIZE "getBody"
             s <- liftIO $ getLn h
-            unless (B.null s) $ throwError $ CMD SIZE
+            unless (B.null s) $ throwE $ CMD SIZE "getBody"
             pure body
-          Nothing -> return . Left $ CMD SYNTAX
+          Nothing -> pure . Left $ CMD SYNTAX "getBody"
 
 $(J.deriveJSON defaultJSON ''RcvQueueInfo)
 
@@ -1981,8 +2000,6 @@ $(J.deriveJSON (sumTypeJSON fstToLower) ''MsgIntegrity)
 $(J.deriveJSON (sumTypeJSON id) ''CommandErrorType)
 
 $(J.deriveJSON (sumTypeJSON id) ''ConnectionErrorType)
-
-$(J.deriveJSON (sumTypeJSON id) ''BrokerErrorType)
 
 $(J.deriveJSON (sumTypeJSON id) ''AgentCryptoError)
 

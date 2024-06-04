@@ -11,7 +11,6 @@ import Control.Logger.Simple (logInfo)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Trans (lift)
-import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Char8 as B
 import Data.Text (Text)
@@ -19,7 +18,6 @@ import Data.Text.Encoding (decodeUtf8)
 import Simplex.FileTransfer.Client
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientError (..), temporaryClientError)
-import Simplex.Messaging.Client.Agent ()
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtocolServer (..), XFTPServer)
 import Simplex.Messaging.TMap (TMap)
@@ -61,15 +59,15 @@ newXFTPAgent config = do
 
 type ME a = ExceptT XFTPClientAgentError IO a
 
-getXFTPServerClient :: TVar ChaChaDRG -> XFTPClientAgent -> XFTPServer -> ME XFTPClient
-getXFTPServerClient g XFTPClientAgent {xftpClients, config} srv = do
+getXFTPServerClient :: XFTPClientAgent -> XFTPServer -> ME XFTPClient
+getXFTPServerClient XFTPClientAgent {xftpClients, config} srv = do
   atomically getClientVar >>= either newXFTPClient waitForXFTPClient
   where
     connectClient :: ME XFTPClient
     connectClient =
       ExceptT $
         first (XFTPClientAgentError srv)
-          <$> getXFTPClient g (1, srv, Nothing) (xftpConfig config) clientDisconnected
+          <$> getXFTPClient (1, srv, Nothing) (xftpConfig config) clientDisconnected
 
     clientDisconnected :: XFTPClient -> IO ()
     clientDisconnected _ = do

@@ -33,7 +33,6 @@ import Simplex.Messaging.Agent.Protocol (ACommand (..), APartyCmd (..), AgentErr
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..), SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Types
@@ -161,7 +160,7 @@ runNtfWorker c srv Worker {doWork} = do
           logInfo $ "runNtfWorker, nextSub " <> tshow nextSub
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop -> do
-            lift $ waitForUserNetwork c
+            liftIO $ waitForUserNetwork c
             processSub nextSub
               `catchAgentError` retryOnError c "NtfWorker" loop (workerInternalError c connId . show)
     processSub :: (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> AM ()
@@ -245,7 +244,7 @@ runNtfSMPWorker c srv Worker {doWork} = do
           logInfo $ "runNtfSMPWorker, nextSub " <> tshow nextSub
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop -> do
-            lift $ waitForUserNetwork c
+            liftIO $ waitForUserNetwork c
             processSub nextSub
               `catchAgentError` retryOnError c "NtfSMPWorker" loop (workerInternalError c connId . show)
     processSub :: (NtfSubscription, NtfSubSMPAction, NtfActionTs) -> AM ()

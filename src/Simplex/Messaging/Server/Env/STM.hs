@@ -2,6 +2,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StrictData #-}
 
 module Simplex.Messaging.Server.Env.STM where
 
@@ -15,6 +16,7 @@ import qualified Data.IntMap.Strict as IM
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.Maybe (isJust, isNothing)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
@@ -22,10 +24,12 @@ import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
 import Simplex.Messaging.Agent.Lock
+import Simplex.Messaging.Client.Agent (SMPClientAgent, SMPClientAgentConfig, newSMPClientAgent)
 import Simplex.Messaging.Crypto (KeyHash (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
@@ -33,8 +37,8 @@ import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport, VersionSMP, VersionRangeSMP)
-import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, loadFingerprint, loadTLSServerParams, newSocketState)
+import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
+import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, alpn, loadFingerprint, loadTLSServerParams, newSocketState)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -79,7 +83,13 @@ data ServerConfig = ServerConfig
     -- | TCP transport config
     transportConfig :: TransportServerConfig,
     -- | run listener on control port
-    controlPort :: Maybe ServiceName
+    controlPort :: Maybe ServiceName,
+    -- | SMP proxy config
+    smpAgentCfg :: SMPClientAgentConfig,
+    allowSMPProxy :: Bool, -- auth is the same with `newQueueBasicAuth`
+    serverClientConcurrency :: Int,
+    -- | server public information
+    information :: Maybe ServerPublicInfo
   }
 
 defMsgExpirationDays :: Int64
@@ -99,8 +109,12 @@ defaultInactiveClientExpiration =
       checkInterval = 3600 -- seconds, 1 hours
     }
 
+defaultProxyClientConcurrency :: Int
+defaultProxyClientConcurrency = 32
+
 data Env = Env
   { config :: ServerConfig,
+    serverInfo :: ServerInformation,
     server :: Server,
     serverIdentity :: KeyHash,
     queueStore :: QueueStore,
@@ -110,8 +124,9 @@ data Env = Env
     tlsServerParams :: T.ServerParams,
     serverStats :: ServerStats,
     sockets :: SocketState,
-    clientSeq :: TVar Int,
-    clients :: TVar (IntMap Client)
+    clientSeq :: TVar ClientId,
+    clients :: TVar (IntMap Client),
+    proxyAgent :: ProxyAgent -- senders served on this proxy
   }
 
 data Server = Server
@@ -122,12 +137,20 @@ data Server = Server
     savingLock :: Lock
   }
 
+newtype ProxyAgent = ProxyAgent
+  { smpAgent :: SMPClientAgent
+  }
+
+type ClientId = Int
+
 data Client = Client
-  { clientId :: Int,
+  { clientId :: ClientId,
     subscriptions :: TMap RecipientId (TVar Sub),
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
+    msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
+    procThreads :: TVar Int,
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
     thVersion :: VersionSMP,
@@ -154,19 +177,21 @@ newServer = do
   savingLock <- createLock
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
 
-newClient :: TVar Int -> Natural -> VersionSMP -> ByteString -> SystemTime -> STM Client
+newClient :: TVar ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> STM Client
 newClient nextClientId qSize thVersion sessionId createdAt = do
   clientId <- stateTVar nextClientId $ \next -> (next, next + 1)
   subscriptions <- TM.empty
   ntfSubscriptions <- TM.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
+  msgQ <- newTBQueue qSize
+  procThreads <- newTVar 0
   endThreads <- newTVar IM.empty
   endThreadSeq <- newTVar 0
   connected <- newTVar True
   rcvActiveAt <- newTVar createdAt
   sndActiveAt <- newTVar createdAt
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
+  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, procThreads, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
@@ -174,20 +199,21 @@ newSubscription subThread = do
   return Sub {subThread, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile} = do
+newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, smpAgentCfg, transportConfig, information, messageExpiration} = do
   server <- atomically newServer
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   random <- liftIO C.newRandom
   storeLog <- restoreQueues queueStore `mapM` storeLogFile
-  tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile
+  tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
   Fingerprint fp <- loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
   serverStats <- atomically . newServerStats =<< getCurrentTime
   sockets <- atomically newSocketState
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
-  return Env {config, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients}
+  proxyAgent <- atomically $ newSMPProxyAgent smpAgentCfg random
+  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
@@ -203,3 +229,25 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
     addNotifier q = case notifier q of
       Nothing -> id
       Just NtfCreds {notifierId} -> M.insert notifierId (recipientId q)
+    serverInfo =
+      ServerInformation
+        { information,
+          config =
+            ServerPublicConfig
+              { persistence,
+                messageExpiration = ttl <$> messageExpiration,
+                statsEnabled = isJust $ logStatsInterval config,
+                newQueuesAllowed = allowNewQueues config,
+                basicAuthEnabled = isJust $ newQueueBasicAuth config
+              }
+        }
+      where
+        persistence
+          | isNothing storeLogFile = SPMMemoryOnly
+          | isJust (storeMsgsFile config) = SPMMessages
+          | otherwise = SPMQueues
+
+newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> STM ProxyAgent
+newSMPProxyAgent smpAgentCfg random = do
+  smpAgent <- newSMPClientAgent smpAgentCfg random
+  pure ProxyAgent {smpAgent}

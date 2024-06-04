@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -12,9 +13,10 @@ import SMPClient (serverBracket)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Server (runXFTPServerBlocking)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration, defaultInactiveClientExpiration)
-import qualified Simplex.Messaging.Crypto as C
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration, defaultInactiveClientExpiration, supportedXFTPhandshakes)
+import Simplex.FileTransfer.Transport (supportedFileServerVRange)
 import Simplex.Messaging.Protocol (XFTPServer)
+import Simplex.Messaging.Transport (ALPN)
 import Simplex.Messaging.Transport.Server
 import Test.Hspec
 
@@ -95,7 +97,10 @@ testXFTPStatsBackupFile :: FilePath
 testXFTPStatsBackupFile = "tests/tmp/xftp-server-stats.log"
 
 testXFTPServerConfig :: XFTPServerConfig
-testXFTPServerConfig =
+testXFTPServerConfig = testXFTPServerConfig_ (Just supportedXFTPhandshakes)
+
+testXFTPServerConfig_ :: Maybe [ALPN] -> XFTPServerConfig
+testXFTPServerConfig_ alpn =
   XFTPServerConfig
     { xftpPort = xftpTestPort,
       controlPort = Nothing,
@@ -114,19 +119,23 @@ testXFTPServerConfig =
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
+      xftpServerVRange = supportedFileServerVRange,
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/tmp/xftp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
-      transportConfig = defaultTransportServerConfig
+      transportConfig = defaultTransportServerConfig {alpn},
+      responseDelay = 0
     }
 
 testXFTPClientConfig :: XFTPClientConfig
 testXFTPClientConfig = defaultXFTPClientConfig
 
 testXFTPClient :: HasCallStack => (HasCallStack => XFTPClient -> IO a) -> IO a
-testXFTPClient client = do
-  g <- C.newRandom
-  getXFTPClient g (1, testXFTPServer, Nothing) testXFTPClientConfig (\_ -> pure ()) >>= \case
+testXFTPClient = testXFTPClientWith testXFTPClientConfig
+
+testXFTPClientWith :: HasCallStack => XFTPClientConfig -> (HasCallStack => XFTPClient -> IO a) -> IO a
+testXFTPClientWith cfg client =
+  getXFTPClient (1, testXFTPServer, Nothing) cfg (\_ -> pure ()) >>= \case
     Right c -> client c
     Left e -> error $ show e

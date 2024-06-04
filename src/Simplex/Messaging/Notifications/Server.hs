@@ -31,7 +31,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Network.Socket (ServiceName)
-import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError)
+import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmission (..))
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -47,7 +47,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Stats
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..))
+import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..))
 import Simplex.Messaging.Transport.Server (runTransportServer, tlsServerCredentials)
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
@@ -98,7 +98,9 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
     stopServer = do
       withNtfLog closeStoreLog
       saveServerStats
-      asks (smpSubscribers . subscriber) >>= readTVarIO >>= mapM_ (\SMPSubscriber {subThreadId} -> readTVarIO subThreadId >>= mapM_ (liftIO . deRefWeak >=> mapM_ killThread))
+      NtfSubscriber {smpSubscribers, smpAgent} <- asks subscriber
+      liftIO $ readTVarIO smpSubscribers >>= mapM_ (\SMPSubscriber {subThreadId} -> readTVarIO subThreadId >>= mapM_ (deRefWeak >=> mapM_ killThread))
+      liftIO $ closeSMPClientAgent smpAgent
 
     serverStatsThread_ :: NtfServerConfig -> [M ()]
     serverStatsThread_ NtfServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -218,33 +220,38 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
-      ((_, srv, _), _, _, ntfId, msg) <- atomically $ readTBQueue msgQ
-      let smpQueue = SMPQueueNtf srv ntfId
-      case msg of
-        SMP.NMSG nmsgNonce encNMsgMeta -> do
-          ntfTs <- liftIO getSystemTime
-          st <- asks store
-          NtfPushServer {pushQ} <- asks pushServer
-          stats <- asks serverStats
-          atomically $ updatePeriodStats (activeSubs stats) ntfId
-          atomically $
-            findNtfSubscriptionToken st smpQueue
-              >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
-          incNtfStat ntfReceived
-        SMP.END -> updateSubStatus smpQueue NSEnd
-        _ -> pure ()
+      ((_, srv, _), _, _, ts) <- atomically $ readTBQueue msgQ
+      forM ts $ \(ntfId, t) -> case t of
+        STUnexpectedError e -> logError $ "SMP client unexpected error: " <> tshow e -- uncorrelated response, should not happen
+        STResponse {} -> pure () -- it was already reported as timeout error
+        STEvent msgOrErr -> do
+          let smpQueue = SMPQueueNtf srv ntfId
+          case msgOrErr of
+            Right (SMP.NMSG nmsgNonce encNMsgMeta) -> do
+              ntfTs <- liftIO getSystemTime
+              st <- asks store
+              NtfPushServer {pushQ} <- asks pushServer
+              stats <- asks serverStats
+              atomically $ updatePeriodStats (activeSubs stats) ntfId
+              atomically $
+                findNtfSubscriptionToken st smpQueue
+                  >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
+              incNtfStat ntfReceived
+            Right SMP.END -> updateSubStatus smpQueue NSEnd
+            Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
+            Right _ -> logError $ "SMP server unexpected response"
+            Left e -> logError $ "SMP client error: " <> tshow e
 
     receiveAgent =
       forever $
         atomically (readTBQueue agentQ) >>= \case
-          CAConnected _ -> pure ()
+          CAConnected srv ->
+            logInfo $ "SMP server reconnected " <> showServer' srv
           CADisconnected srv subs -> do
             logSubStatus srv "disconnected" $ length subs
             forM_ subs $ \(_, ntfId) -> do
               let smpQueue = SMPQueueNtf srv ntfId
               updateSubStatus smpQueue NSInactive
-          CAReconnected srv ->
-            logInfo $ "SMP server reconnected " <> showServer' srv
           CAResubscribed srv subs -> do
             forM_ subs $ \(_, ntfId) -> updateSubStatus (SMPQueueNtf srv ntfId) NSActive
             logSubStatus srv "resubscribed" $ length subs
@@ -339,7 +346,7 @@ updateTknStatus NtfTknData {ntfTknId, tknStatus} status = do
   old <- atomically $ stateTVar tknStatus (,status)
   when (old /= status) $ withNtfLog $ \sl -> logTokenStatus sl ntfTknId status
 
-runNtfClientTransport :: Transport c => THandleNTF c -> M ()
+runNtfClientTransport :: Transport c => THandleNTF c 'TServer -> M ()
 runNtfClientTransport th@THandle {params} = do
   qSize <- asks $ clientQSize . config
   ts <- liftIO getSystemTime
@@ -356,7 +363,7 @@ runNtfClientTransport th@THandle {params} = do
 clientDisconnected :: NtfServerClient -> IO ()
 clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connected False
 
-receive :: Transport c => THandleNTF c -> NtfServerClient -> M ()
+receive :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> M ()
 receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
   ts <- liftIO $ tGet th
   forM_ ts $ \t@(_, _, (corrId, entId, cmdOrError)) -> do
@@ -371,7 +378,7 @@ receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ
   where
     write q t = atomically $ writeTBQueue q t
 
-send :: Transport c => THandleNTF c -> NtfServerClient -> IO ()
+send :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> IO ()
 send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
   void . liftIO $ tPut h [Right (Nothing, encodeTransmission params t)]
@@ -382,7 +389,7 @@ send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
 
 data VerificationResult = VRVerified NtfRequest | VRFailed
 
-verifyNtfTransmission :: Maybe (THandleAuth, C.CbNonce) -> SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
+verifyNtfTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
 verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
   st <- asks store
   case cmd of

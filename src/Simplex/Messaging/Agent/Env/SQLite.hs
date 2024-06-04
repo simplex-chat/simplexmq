@@ -54,9 +54,8 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Client
-import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (PQSupport, VersionRangeE2E, supportedE2EEncryptVRange)
+import Simplex.Messaging.Crypto.Ratchet (VersionRangeE2E, supportedE2EEncryptVRange)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
 import Simplex.Messaging.Notifications.Types
@@ -92,16 +91,17 @@ data AgentConfig = AgentConfig
     xftpCfg :: XFTPClientConfig,
     reconnectInterval :: RetryInterval,
     messageRetryInterval :: RetryInterval2,
-    userNetworkInterval :: RetryInterval,
+    userNetworkInterval :: Int,
+    userOfflineDelay :: NominalDiffTime,
     messageTimeout :: NominalDiffTime,
     connDeleteDeliveryTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
     quotaExceededTimeout :: NominalDiffTime,
+    persistErrorInterval :: NominalDiffTime,
     initialCleanupDelay :: Int64,
     cleanupInterval :: Int64,
     cleanupStepInterval :: Int,
     maxWorkerRestartsPerMin :: Int,
-    maxSubscriptionTimeouts :: Int,
     storedMsgDataTTL :: NominalDiffTime,
     rcvFilesTTL :: NominalDiffTime,
     sndFilesTTL :: NominalDiffTime,
@@ -117,8 +117,8 @@ data AgentConfig = AgentConfig
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
-    e2eEncryptVRange :: PQSupport -> VersionRangeE2E,
-    smpAgentVRange :: PQSupport -> VersionRangeSMPA,
+    e2eEncryptVRange :: VersionRangeE2E,
+    smpAgentVRange :: VersionRangeSMPA,
     smpClientVRange :: VersionRangeSMPC
   }
 
@@ -147,14 +147,6 @@ defaultMessageRetryInterval =
           }
     }
 
-defaultUserNetworkInterval :: RetryInterval
-defaultUserNetworkInterval =
-  RetryInterval
-    { initialInterval = 1200_000000, -- 20 minutes
-      increaseAfter = 0,
-      maxInterval = 7200_000000 -- 2 hours
-    }
-
 defaultAgentConfig :: AgentConfig
 defaultAgentConfig =
   AgentConfig
@@ -170,18 +162,17 @@ defaultAgentConfig =
       xftpCfg = defaultXFTPClientConfig,
       reconnectInterval = defaultReconnectInterval,
       messageRetryInterval = defaultMessageRetryInterval,
-      userNetworkInterval = defaultUserNetworkInterval,
+      userNetworkInterval = 1800_000000, -- 30 minutes, should be less than Int32 max value
+      userOfflineDelay = 2, -- if network offline event happens in less than 2 seconds after it was set online, it is ignored
       messageTimeout = 2 * nominalDay,
       connDeleteDeliveryTimeout = 2 * nominalDay,
       helloTimeout = 2 * nominalDay,
       quotaExceededTimeout = 7 * nominalDay,
+      persistErrorInterval = 3, -- seconds
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
       cleanupStepInterval = 200000, -- 200ms
       maxWorkerRestartsPerMin = 5,
-      -- 3 consecutive subscription timeouts will result in alert to the user
-      -- this is a fallback, as the timeout set to 3x of expected timeout, to avoid potential locking.
-      maxSubscriptionTimeouts = 3,
       storedMsgDataTTL = 21 * nominalDay,
       rcvFilesTTL = 2 * nominalDay,
       sndFilesTTL = nominalDay,
