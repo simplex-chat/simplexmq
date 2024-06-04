@@ -186,6 +186,7 @@ module Simplex.Messaging.Crypto
     unsafeMaxLenBS,
     appendMaxLenBS,
     hsalsa20,
+    cryptoBox,
     secretBox,
     secretBoxOpen,
   )
