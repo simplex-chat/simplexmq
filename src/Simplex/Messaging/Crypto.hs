@@ -1379,7 +1379,7 @@ keyError = \case
 
 type NaclDhSecret = BA.ScrubbedBytes
 
--- type NaclDhSecret = C.DhSecret 'C.X25519h -- hashed DH used by NaCl "afternm" functions.
+-- type NaclDhSecret = C.DhSecret 'C.X25519h -- hashed DH produced by NaCl "crypto_box_beforenm" and used by secretBox/Open
 
 -- Run salsa20 in a hash mode to make our DH keys match 'c_crypto_box_beforenm' output.
 hsalsa20 :: ByteArrayAccess key => key -> Either String NaclDhSecret
@@ -1398,7 +1398,7 @@ hsalsa20 key = unsafePerformIO $ do
     c_0 = B.replicate 16 '\0'
 {-# NOINLINE hsalsa20 #-}
 
-secretBox :: NaclDhSecret -> ByteString -> ByteString -> Either String ByteString  -- TODO: tag?
+secretBox :: NaclDhSecret -> ByteString -> ByteString -> Either String ByteString
 secretBox sk nonce msg = unsafePerformIO $ do
   (r, c) <-
     BA.withByteArray msg0 $ \mPtr ->
