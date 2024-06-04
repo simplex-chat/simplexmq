@@ -1,6 +1,8 @@
 {-# LANGUAGE CApiFFI #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
@@ -10,8 +12,15 @@ module Simplex.Messaging.Crypto.NaCl.Bindings where
 
 import Data.ByteArray (ScrubbedBytes)
 import Foreign
-import Foreign.C.ConstPtr
 import Foreign.C.Types
+
+#if MIN_VERSION_base(4,18,0)
+import Foreign.C.ConstPtr
+#else
+type ConstPtr = Ptr
+pattern ConstPtr :: p -> p
+pattern ConstPtr p = p
+#endif
 
 crypto_box_PUBLICKEYBYTES :: Num a => a
 crypto_box_PUBLICKEYBYTES = 32
