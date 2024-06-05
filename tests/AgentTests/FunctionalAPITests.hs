@@ -2293,7 +2293,7 @@ testSwitchAsync servers = do
     withB = withAgent 2 agentCfg servers testDB2
 
 withAgent :: HasCallStack => Int -> AgentConfig -> InitialAgentServers -> FilePath -> (HasCallStack => AgentClient -> IO a) -> IO a
-withAgent clientId cfg' servers dbPath = bracket (getSMPAgentClient' clientId cfg' servers dbPath) disposeAgentClient
+withAgent clientId cfg' servers dbPath = bracket (getSMPAgentClient' clientId cfg' servers dbPath) (\a -> disposeAgentClient a >> threadDelay 100000)
 
 sessionSubscribe :: (forall a. (AgentClient -> IO a) -> IO a) -> [ConnId] -> (AgentClient -> ExceptT AgentErrorType IO ()) -> IO ()
 sessionSubscribe withC connIds a =
