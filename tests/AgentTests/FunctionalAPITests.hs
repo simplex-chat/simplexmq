@@ -158,6 +158,8 @@ pGet' c skipWarn = do
     DISCONNECT {} -> pGet c
     ERR (BROKER _ NETWORK) -> pGet c
     MWARN {} | skipWarn -> pGet c
+    RFWARN {} | skipWarn -> pGet c
+    SFWARN {} | skipWarn -> pGet c
     _ -> pure t
 
 pattern CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> AEvent e

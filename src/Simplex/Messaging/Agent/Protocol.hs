@@ -115,8 +115,6 @@ module Simplex.Messaging.Agent.Protocol
     cryptoErrToSyncState,
     ATransmission,
     ConnId,
-    RcvFileId,
-    SndFileId,
     ConfirmationId,
     InvitationId,
     MsgIntegrity (..),
@@ -169,6 +167,7 @@ import Database.SQLite.Simple.ToField
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType)
+import Simplex.FileTransfer.Types (FileErrorType)
 import Simplex.Messaging.Agent.QueryString
 import Simplex.Messaging.Client (ProxyClientError)
 import qualified Simplex.Messaging.Crypto as C
@@ -352,9 +351,11 @@ data AEvent (e :: AEntity) where
   RFPROG :: Int64 -> Int64 -> AEvent AERcvFile
   RFDONE :: FilePath -> AEvent AERcvFile
   RFERR :: AgentErrorType -> AEvent AERcvFile
+  RFWARN :: AgentErrorType -> AEvent AERcvFile
   SFPROG :: Int64 -> Int64 -> AEvent AESndFile
   SFDONE :: ValidFileDescription 'FSender -> [ValidFileDescription 'FRecipient] -> AEvent AESndFile
   SFERR :: AgentErrorType -> AEvent AESndFile
+  SFWARN :: AgentErrorType -> AEvent AESndFile
 
 deriving instance Eq (AEvent e)
 
@@ -420,9 +421,11 @@ data AEventTag (e :: AEntity) where
   RFDONE_ :: AEventTag AERcvFile
   RFPROG_ :: AEventTag AERcvFile
   RFERR_ :: AEventTag AERcvFile
+  RFWARN_ :: AEventTag AERcvFile
   SFPROG_ :: AEventTag AESndFile
   SFDONE_ :: AEventTag AESndFile
   SFERR_ :: AEventTag AESndFile
+  SFWARN_ :: AEventTag AESndFile
 
 deriving instance Eq (AEventTag e)
 
@@ -470,9 +473,11 @@ aEventTag = \case
   RFPROG {} -> RFPROG_
   RFDONE {} -> RFDONE_
   RFERR {} -> RFERR_
+  RFWARN {} -> RFWARN_
   SFPROG {} -> SFPROG_
   SFDONE {} -> SFDONE_
   SFERR {} -> SFERR_
+  SFWARN {} -> SFWARN_
 
 data QueueDirection = QDRcv | QDSnd
   deriving (Eq, Show)
@@ -1077,10 +1082,6 @@ connModeT = \case
 -- | SMP agent connection ID.
 type ConnId = ByteString
 
-type RcvFileId = ByteString
-
-type SndFileId = ByteString
-
 type ConfirmationId = ByteString
 
 type InvitationId = ByteString
@@ -1316,6 +1317,8 @@ data AgentErrorType
     NTF {serverAddress :: String, ntfErr :: ErrorType}
   | -- | XFTP protocol errors forwarded to agent clients
     XFTP {serverAddress :: String, xftpErr :: XFTPErrorType}
+  | -- | XFTP agent errors
+    FILE {fileErr :: FileErrorType}
   | -- | SMP proxy errors
     PROXY {proxyServer :: String, relayServer :: String, proxyErr :: ProxyClientError}
   | -- | XRCP protocol errors forwarded to agent clients
