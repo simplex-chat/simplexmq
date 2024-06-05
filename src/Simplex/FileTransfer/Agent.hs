@@ -445,12 +445,12 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
                     when (triedAllSrvs && serverHostError e) $ notify c sndFileEntityId $ SFWARN e
                   atomically $ assertAgentForeground c
                   loop
-                createWithNextSrv usedSrvs = do
-                  deleted <- withStore' c $ \db -> getSndFileDeleted db sndFileId
-                  when deleted $ throwError $ FILE NO_FILE
-                  withNextSrv c userId usedSrvs [] $ \srvAuth -> do
-                    replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
-                    pure (replica, srvAuth)
+            createWithNextSrv usedSrvs = do
+              deleted <- withStore' c $ \db -> getSndFileDeleted db sndFileId
+              when deleted $ throwError $ FILE NO_FILE
+              withNextSrv c userId usedSrvs [] $ \srvAuth -> do
+                replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
+                pure (replica, srvAuth)
 
 sndWorkerInternalError :: AgentClient -> DBSndFileId -> SndFileId -> Maybe FilePath -> AgentErrorType -> AM ()
 sndWorkerInternalError c sndFileId sndFileEntityId prefixPath err = do
