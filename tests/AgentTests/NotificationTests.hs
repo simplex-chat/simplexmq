@@ -377,20 +377,19 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice@Agen
   -- alice client already has subscription for the connection
   Left (CMD PROHIBITED _) <- runExceptT $ getNotificationMessage alice nonce message
 
-  threadDelay 250000
+  threadDelay 100000
   suspendAgent alice 0
   closeSQLiteStore store
-  threadDelay 250000
+  threadDelay 100000
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
   withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> runRight_ $ do
     (_, [SMPMsgMeta {msgFlags = MsgFlags True}]) <- getNotificationMessage aliceNtf nonce message
     pure ()
 
-  threadDelay 250000
+  threadDelay 100000
   reopenSQLiteStore store
   foregroundAgent alice
-  threadDelay 250000
 
   runRight_ $ do
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
