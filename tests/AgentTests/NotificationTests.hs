@@ -7,7 +7,6 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
-{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.NotificationTests where
 
@@ -36,6 +35,7 @@ import AgentTests.FunctionalAPITests
     pattern CONF,
     pattern INFO,
     pattern Msg,
+    pattern SENT,
   )
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Monad
@@ -55,7 +55,7 @@ import SMPClient (cfg, cfgV7, testPort, testPort2, testStoreLogFile2, withSmpSer
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
-import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO)
+import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, SENT)
 import Simplex.Messaging.Agent.Store.SQLite (getSavedNtfToken)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -181,7 +181,7 @@ testNotificationToken APNSMockServer {apnsQ} = do
     NTActive <- checkNtfToken a tkn
     deleteNtfToken a tkn
     -- agent deleted this token
-    Left (CMD PROHIBITED) <- tryE $ checkNtfToken a tkn
+    Left (CMD PROHIBITED _) <- tryE $ checkNtfToken a tkn
     pure ()
 
 (.->) :: J.Value -> J.Key -> ExceptT AgentErrorType IO ByteString
@@ -244,7 +244,7 @@ testNtfTokenSecondRegistration APNSMockServer {apnsQ} =
     -- now the second token registration is verified
     verifyNtfToken a' tkn nonce' verification'
     -- the first registration is removed
-    Left (NTF AUTH) <- tryE $ checkNtfToken a tkn
+    Left (NTF _ AUTH) <- tryE $ checkNtfToken a tkn
     -- and the second is active
     NTActive <- checkNtfToken a' tkn
     pure ()
@@ -267,7 +267,7 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
     withNtfServer t . runRight_ $ do
       verification <- ntfData .-> "verification"
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
-      Left (NTF AUTH) <- tryE $ verifyNtfToken a' tkn nonce verification
+      Left (NTF _ AUTH) <- tryE $ verifyNtfToken a' tkn nonce verification
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
         atomically $ readTBQueue apnsQ
       verification' <- ntfData' .-> "verification"
@@ -334,6 +334,7 @@ testNtfTokenChangeServers t APNSMockServer {apnsQ} =
         getTestNtfTokenPort a >>= \port2 -> liftIO $ port2 `shouldBe` ntfTestPort2 -- but the token got updated
       killThread ntf
       withNtfServerOn t ntfTestPort2 $ runRight_ $ do
+        liftIO $ threadDelay 1000000 -- for notification server to reconnect
         tkn <- registerTestToken a "qwer" NMInstant apnsQ
         checkNtfToken a tkn >>= \r -> liftIO $ r `shouldBe` NTActive
 
@@ -373,7 +374,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} alice@Agen
     pure (bobId, aliceId, nonce, message)
 
   -- alice client already has subscription for the connection
-  Left (CMD PROHIBITED) <- runExceptT $ getNotificationMessage alice nonce message
+  Left (CMD PROHIBITED _) <- runExceptT $ getNotificationMessage alice nonce message
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
   withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> runRight_ $ do

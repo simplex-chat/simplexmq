@@ -7,13 +7,12 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
-{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests (agentTests) where
 
 import AgentTests.ConnectionRequestTests
 import AgentTests.DoubleRatchetTests (doubleRatchetTests)
-import AgentTests.FunctionalAPITests (functionalAPITests, inAnyOrder, pattern Msg, pattern Msg')
+import AgentTests.FunctionalAPITests (functionalAPITests, inAnyOrder, pattern Msg, pattern Msg', pattern SENT)
 import AgentTests.MigrationTests (migrationTests)
 import AgentTests.NotificationTests (notificationTests)
 import AgentTests.SQLiteTests (storeTests)
@@ -27,7 +26,7 @@ import GHC.Stack (withFrozenCallStack)
 import Network.HTTP.Types (urlEncode)
 import SMPAgentClient
 import SMPClient (testKeyHash, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerStoreLogOn)
-import Simplex.Messaging.Agent.Protocol hiding (CONF, INFO, MID, REQ)
+import Simplex.Messaging.Agent.Protocol hiding (CONF, INFO, MID, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
@@ -246,7 +245,7 @@ testDuplexConnection' (alice, aPQ) (bob, bPQ) = do
   alice #: ("4a", "bob", "ACK 7") #> ("4a", "bob", OK)
   alice #: ("5", "bob", "OFF") #> ("5", "bob", OK)
   bob #: ("17", "alice", "SEND F 9\nmessage 3") #> ("17", "alice", A.MID 8 pq)
-  bob <# ("", "alice", MERR 8 (SMP AUTH))
+  bob <#= \case ("", "alice", MERR 8 (SMP _ AUTH)) -> True; _ -> False
   alice #: ("6", "bob", "DEL") #> ("6", "bob", OK)
   alice #:# "nothing else should be delivered to alice"
 
@@ -284,7 +283,7 @@ testDuplexConnRandomIds' (alice, aPQ) (bob, bPQ) = do
   alice #: ("4a", bobConn, "ACK 7") #> ("4a", bobConn, OK)
   alice #: ("5", bobConn, "OFF") #> ("5", bobConn, OK)
   bob #: ("17", aliceConn, "SEND F 9\nmessage 3") #> ("17", aliceConn, A.MID 8 pq)
-  bob <# ("", aliceConn, MERR 8 (SMP AUTH))
+  bob <#= \case ("", cId, MERR 8 (SMP _ AUTH)) -> cId == aliceConn; _ -> False
   alice #: ("6", bobConn, "DEL") #> ("6", bobConn, OK)
   alice #:# "nothing else should be delivered to alice"
 
@@ -358,7 +357,7 @@ testRejectContactRequest _ alice bob = do
   -- RJCT must use correct contact connection
   alice #: ("2a", "bob", "RJCT " <> aInvId) #> ("2a", "bob", ERR $ CONN NOT_FOUND)
   alice #: ("2b", "a_contact", "RJCT " <> aInvId) #> ("2b", "a_contact", OK)
-  alice #: ("3", "bob", "ACPT " <> aInvId <> " 12\nalice's info") #> ("3", "bob", ERR $ A.CMD PROHIBITED)
+  alice #: ("3", "bob", "ACPT " <> aInvId <> " 12\nalice's info") =#> \case ("3", "bob", ERR (A.CMD PROHIBITED _)) -> True; _ -> False
   bob #:# "nothing should be delivered to bob"
 
 testSubscription :: Transport c => TProxy c -> c -> c -> c -> IO ()
@@ -387,7 +386,7 @@ testSubscrNotification t (server, _) client = do
   killThread server
   client <#. ("", "", DOWN testSMPServer ["conn1"])
   withSmpServer (ATransport t) $
-    client <# ("", "conn1", ERR (SMP AUTH)) -- this new server does not have the queue
+    client <#= \case ("", "conn1", ERR (SMP _ AUTH)) -> True; _ -> False -- this new server does not have the queue
 
 testMsgDeliveryServerRestart :: forall c. Transport c => (c, InitialKeys) -> (c, PQSupport) -> IO ()
 testMsgDeliveryServerRestart (alice, aPQ) (bob, bPQ) = do
@@ -430,11 +429,11 @@ testServerConnectionAfterError t _ = do
 
   withAgent1 $ \bob -> do
     withAgent2 $ \alice -> do
-      bob #:! ("1", "alice", "SUB") =#> \("1", "alice", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT
-      alice #:! ("1", "bob", "SUB") =#> \("1", "bob", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT
+      bob #:! ("1", "alice", "SUB") =#> \case ("1", "alice", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT; _ -> False
+      alice #:! ("1", "bob", "SUB") =#> \case ("1", "bob", ERR (BROKER _ e)) -> e == NETWORK || e == TIMEOUT; _ -> False
       withServer $ do
-        alice <#=? \case ("", "bob", APC _ (SENT 4)) -> True; ("", "", APC _ (UP s ["bob"])) -> s == server; _ -> False
-        alice <#=? \case ("", "bob", APC _ (SENT 4)) -> True; ("", "", APC _ (UP s ["bob"])) -> s == server; _ -> False
+        alice <#=? \case ("", "bob", APC SAEConn (SENT 4)) -> True; ("", "", APC _ (UP s ["bob"])) -> s == server; _ -> False
+        alice <#=? \case ("", "bob", APC SAEConn (SENT 4)) -> True; ("", "", APC _ (UP s ["bob"])) -> s == server; _ -> False
         bob <#=? \case ("", "alice", APC _ (Msg "hello")) -> True; ("", "", APC _ (UP s ["alice"])) -> s == server; _ -> False
         bob <#=? \case ("", "alice", APC _ (Msg "hello")) -> True; ("", "", APC _ (UP s ["alice"])) -> s == server; _ -> False
         bob #: ("2", "alice", "ACK 4") #> ("2", "alice", OK)
@@ -524,6 +523,7 @@ testMsgDeliveryQuotaExceeded _ alice bob = do
     (_, "bob", Right (MID mId)) <- alice #: (corrId, "bob", "SEND F :" <> msg)
     alice <#= \case ("", "bob", SENT m) -> m == mId; _ -> False
   (_, "bob", Right (MID _)) <- alice #: ("5", "bob", "SEND F :over quota")
+  alice <#= \case ("", "bob", MWARN _ (SMP _ QUOTA)) -> True; _ -> False
 
   alice #: ("1", "bob2", "SEND F :hello") #> ("1", "bob2", MID 4)
   -- if delivery is blocked it won't go further
@@ -538,6 +538,7 @@ testResumeDeliveryQuotaExceeded _ alice bob = do
     (_, "bob", Right (MID mId)) <- alice #: (corrId, "bob", "SEND F :" <> msg)
     alice <#= \case ("", "bob", SENT m) -> m == mId; _ -> False
   ("5", "bob", Right (MID 8)) <- alice #: ("5", "bob", "SEND F :over quota")
+  alice <#= \case ("", "bob", MWARN 8 (SMP _ QUOTA)) -> True; _ -> False
   alice #:# "the last message not sent yet"
   bob <#= \case ("", "alice", Msg "message 1") -> True; _ -> False
   bob #: ("1", "alice", "ACK 4") #> ("1", "alice", OK)
@@ -613,12 +614,12 @@ sampleDhKey = "MCowBQYDK2VuAyEAjiswwI3O_NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
 
 syntaxTests :: forall c. Transport c => TProxy c -> Spec
 syntaxTests t = do
-  it "unknown command" $ ("1", "5678", "HELLO") >#> ("1", "5678", "ERR CMD SYNTAX")
+  it "unknown command" $ ("1", "5678", "HELLO") >#> ("1", "5678", "ERR CMD SYNTAX parseCommand")
   describe "NEW" $ do
     describe "valid" $ do
       it "with correct parameter" $ ("211", "", "NEW T INV subscribe") >#>= \case ("211", _, "INV" : _) -> True; _ -> False
     describe "invalid" $ do
-      it "with incorrect parameter" $ ("222", "", "NEW T hi subscribe") >#> ("222", "", "ERR CMD SYNTAX")
+      it "with incorrect parameter" $ ("222", "", "NEW T hi subscribe") >#> ("222", "", "ERR CMD SYNTAX parseCommand")
 
   describe "JOIN" $ do
     describe "valid" $ do
@@ -634,9 +635,9 @@ syntaxTests t = do
             <> " subscribe "
             <> "14\nbob's connInfo"
         )
-          >#> ("311", "a", "ERR SMP AUTH")
+          >#> ("311", "a", "ERR SMP smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001 AUTH")
     describe "invalid" $ do
-      it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX")
+      it "no parameters" $ ("321", "", "JOIN") >#> ("321", "", "ERR CMD SYNTAX parseCommand")
   where
     -- simple test for one command with the expected response
     (>#>) :: ARawTransmission -> ARawTransmission -> Expectation

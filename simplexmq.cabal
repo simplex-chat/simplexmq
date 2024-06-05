@@ -5,7 +5,7 @@ cabal-version: 1.12
 -- see: https://github.com/sol/hpack
 
 name:           simplexmq
-version:        5.7.5.0
+version:        5.8.0.10
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -28,6 +28,33 @@ extra-source-files:
     CHANGELOG.md
     cbits/sha512.h
     cbits/sntrup761.h
+    apps/smp-server/static/index.html
+    apps/smp-server/static/link.html
+    apps/smp-server/static/media/apk_icon.png
+    apps/smp-server/static/media/apple_store.svg
+    apps/smp-server/static/media/contact.js
+    apps/smp-server/static/media/contact_page_mobile.png
+    apps/smp-server/static/media/f_droid.svg
+    apps/smp-server/static/media/favicon.ico
+    apps/smp-server/static/media/GilroyBold.woff2
+    apps/smp-server/static/media/GilroyLight.woff2
+    apps/smp-server/static/media/GilroyMedium.woff2
+    apps/smp-server/static/media/GilroyRegular.woff2
+    apps/smp-server/static/media/GilroyRegularItalic.woff2
+    apps/smp-server/static/media/google_play.svg
+    apps/smp-server/static/media/logo-dark.png
+    apps/smp-server/static/media/logo-light.png
+    apps/smp-server/static/media/logo-symbol-dark.svg
+    apps/smp-server/static/media/logo-symbol-light.svg
+    apps/smp-server/static/media/moon.svg
+    apps/smp-server/static/media/qrcode.js
+    apps/smp-server/static/media/script.js
+    apps/smp-server/static/media/style.css
+    apps/smp-server/static/media/sun.svg
+    apps/smp-server/static/media/swiper-bundle.min.css
+    apps/smp-server/static/media/swiper-bundle.min.js
+    apps/smp-server/static/media/tailwind.css
+    apps/smp-server/static/media/testflight.png
 
 flag swift
   description: Enable swift JSON format
@@ -105,6 +132,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240124_file_redirect
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240223_connections_wait_delivery
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240225_ratchet_kem
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240417_rcv_files_approved_relays
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
@@ -139,10 +167,12 @@ library
       Simplex.Messaging.Server.Control
       Simplex.Messaging.Server.Env.STM
       Simplex.Messaging.Server.Expiration
+      Simplex.Messaging.Server.Information
       Simplex.Messaging.Server.Main
       Simplex.Messaging.Server.MsgStore
       Simplex.Messaging.Server.MsgStore.STM
       Simplex.Messaging.Server.QueueStore
+      Simplex.Messaging.Server.QueueStore.QueueInfo
       Simplex.Messaging.Server.QueueStore.STM
       Simplex.Messaging.Server.Stats
       Simplex.Messaging.Server.StoreLog
@@ -174,7 +204,7 @@ library
       src
   default-extensions:
       StrictData
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2
+  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2
   include-dirs:
       cbits
   c-sources:
@@ -255,7 +285,7 @@ executable ntf-server
       apps/ntf-server
   default-extensions:
       StrictData
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
+  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -330,7 +360,7 @@ executable smp-agent
       apps/smp-agent
   default-extensions:
       StrictData
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
+  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -400,12 +430,15 @@ executable smp-agent
 executable smp-server
   main-is: Main.hs
   other-modules:
+      Static
+      Static.Embedded
       Paths_simplexmq
   hs-source-dirs:
       apps/smp-server
+      apps/smp-server/web
   default-extensions:
       StrictData
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
+  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -427,6 +460,7 @@ executable smp-server
     , data-default ==0.7.*
     , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
+    , file-embed
     , filepath ==1.4.*
     , hourglass ==0.2.*
     , http-types ==0.12.*
@@ -455,6 +489,9 @@ executable smp-server
     , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
+    , wai-app-static
+    , warp
+    , warp-tls
     , websockets ==0.12.*
     , yaml ==0.11.*
     , zstd ==0.1.3.*
@@ -480,7 +517,7 @@ executable xftp
       apps/xftp
   default-extensions:
       StrictData
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
+  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -555,7 +592,7 @@ executable xftp-server
       apps/xftp-server
   default-extensions:
       StrictData
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts
+  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       aeson ==2.2.*
     , ansi-terminal >=0.10 && <0.12
@@ -652,6 +689,7 @@ test-suite simplexmq-test
       ServerTests
       SMPAgentClient
       SMPClient
+      SMPProxyTests
       Util
       XFTPAgent
       XFTPCLI
@@ -662,7 +700,7 @@ test-suite simplexmq-test
       tests
   default-extensions:
       StrictData
-  ghc-options: -Wall -Wcompat -Werror=incomplete-patterns -Wredundant-constraints -Wincomplete-record-updates -Wincomplete-uni-patterns -Wunused-type-patterns -O2 -threaded -rtsopts -with-rtsopts=-A64M -with-rtsopts=-N1
+  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts -with-rtsopts=-A64M -with-rtsopts=-N1
   build-depends:
       HUnit ==1.6.*
     , QuickCheck ==2.14.*

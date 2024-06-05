@@ -254,7 +254,7 @@ onOffPrompt prompt def =
       "N" -> pure False
       _ -> putStrLn "Invalid input, please enter 'y' or 'n'" >> onOffPrompt prompt def
 
-onOff :: Bool -> String
+onOff :: Bool -> Text
 onOff True = "on"
 onOff _ = "off"
 

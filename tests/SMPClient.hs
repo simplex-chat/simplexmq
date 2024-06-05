@@ -16,7 +16,8 @@ import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import Network.Socket
-import Simplex.Messaging.Client (chooseTransportHost, defaultNetworkConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
+import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
@@ -58,6 +59,9 @@ testStoreLogFile2 = "tests/tmp/smp-server-store.log.2"
 testStoreMsgsFile :: FilePath
 testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
 
+testStoreMsgsFile2 :: FilePath
+testStoreMsgsFile2 = "tests/tmp/smp-server-messages.log.2"
+
 testServerStatsBackupFile :: FilePath
 testServerStatsBackupFile = "tests/tmp/smp-server-stats.log"
 
@@ -75,8 +79,12 @@ testSMPClient = testSMPClientVR supportedClientSMPRelayVRange
 testSMPClientVR :: Transport c => VersionRangeSMP -> (THandleSMP c 'TClient -> IO a) -> IO a
 testSMPClientVR vr client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
+  testSMPClient_ useHost testPort vr client
+
+testSMPClient_ :: Transport c => TransportHost -> ServiceName -> VersionRangeSMP -> (THandleSMP c 'TClient -> IO a) -> IO a
+testSMPClient_ host port vr client = do
   let tcConfig = defaultTransportClientConfig {Client.alpn = clientALPN}
-  runTransportClient tcConfig Nothing useHost testPort (Just testKeyHash) $ \h ->
+  runTransportClient tcConfig Nothing host port (Just testKeyHash) $ \h ->
     runExceptT (smpClientHandshake h Nothing testKeyHash vr) >>= \case
       Right th -> client th
       Left e -> error $ show e
@@ -112,11 +120,31 @@ cfg =
       certificateFile = "tests/fixtures/server.crt",
       smpServerVRange = supportedServerSMPRelayVRange,
       transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedSMPHandshakes},
-      controlPort = Nothing
+      controlPort = Nothing,
+      smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1}, -- seconds
+      allowSMPProxy = False,
+      serverClientConcurrency = 2,
+      information = Nothing
     }
 
 cfgV7 :: ServerConfig
 cfgV7 = cfg {smpServerVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}
+
+cfgV8 :: ServerConfig
+cfgV8 = cfg {smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion}
+
+proxyCfg :: ServerConfig
+proxyCfg =
+  cfgV7
+    { allowSMPProxy = True,
+      smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion,
+      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {serverVRange = proxyVRange, agreeSecret = True}}
+    }
+  where
+    smpAgentCfg' = smpAgentCfg cfgV7
+
+proxyVRange :: VersionRangeSMP
+proxyVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
@@ -154,6 +182,9 @@ withSmpServer t = withSmpServerOn t testPort
 
 withSmpServerV7 :: HasCallStack => ATransport -> IO a -> IO a
 withSmpServerV7 t = withSmpServerConfigOn t cfgV7 testPort . const
+
+withSmpServerProxy :: HasCallStack => ATransport -> IO a -> IO a
+withSmpServerProxy t = withSmpServerConfigOn t proxyCfg testPort . const
 
 runSmpTest :: forall c a. (HasCallStack, Transport c) => (HasCallStack => THandleSMP c 'TClient -> IO a) -> IO a
 runSmpTest test = withSmpServer (transport @c) $ testSMPClient test

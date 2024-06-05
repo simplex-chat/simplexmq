@@ -97,6 +97,7 @@ data AgentConfig = AgentConfig
     connDeleteDeliveryTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
     quotaExceededTimeout :: NominalDiffTime,
+    persistErrorInterval :: NominalDiffTime,
     initialCleanupDelay :: Int64,
     cleanupInterval :: Int64,
     cleanupStepInterval :: Int,
@@ -167,6 +168,7 @@ defaultAgentConfig =
       connDeleteDeliveryTimeout = 2 * nominalDay,
       helloTimeout = 2 * nominalDay,
       quotaExceededTimeout = 7 * nominalDay,
+      persistErrorInterval = 3, -- seconds
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
       cleanupStepInterval = 200000, -- 200ms

@@ -5,8 +5,8 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -17,6 +17,7 @@ module AgentTests.SQLiteTests (storeTests) where
 
 import AgentTests.EqInstances ()
 import Control.Concurrent.Async (concurrently_)
+import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception (SomeException)
 import Control.Monad (replicateM_)
@@ -45,9 +46,9 @@ import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
-import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (SubscriptionMode (..), pattern VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -88,7 +89,7 @@ removeStore db = do
   removeFile $ dbFilePath db
   where
     close :: SQLiteStore -> IO ()
-    close st = mapM_ DB.close =<< atomically (tryTakeTMVar $ dbConnection st)
+    close st = mapM_ DB.close =<< tryTakeMVar (dbConnection st)
 
 storeTests :: Spec
 storeTests = do
@@ -708,15 +709,15 @@ testGetNextRcvChunkToDownload st = do
   withTransaction st $ \db -> do
     Right Nothing <- getNextRcvChunkToDownload db xftpServer1 86400
 
-    Right _ <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+    Right _ <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing) True
     DB.execute_ db "UPDATE rcv_file_chunk_replicas SET replica_key = cast('bad' as blob) WHERE rcv_file_chunk_replica_id = 1"
-    Right fId2 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+    Right fId2 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing) True
 
     Left e <- getNextRcvChunkToDownload db xftpServer1 86400
     show e `shouldContain` "ConversionFailed"
     DB.query_ db "SELECT rcv_file_id FROM rcv_files WHERE failed = 1" `shouldReturn` [Only (1 :: Int)]
 
-    Right (Just RcvFileChunk {rcvFileEntityId}) <- getNextRcvChunkToDownload db xftpServer1 86400
+    Right (Just (RcvFileChunk {rcvFileEntityId}, _)) <- getNextRcvChunkToDownload db xftpServer1 86400
     rcvFileEntityId `shouldBe` fId2
 
 testGetNextRcvFileToDecrypt :: SQLiteStore -> Expectation
@@ -725,10 +726,10 @@ testGetNextRcvFileToDecrypt st = do
   withTransaction st $ \db -> do
     Right Nothing <- getNextRcvFileToDecrypt db 86400
 
-    Right _ <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+    Right _ <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing) True
     DB.execute_ db "UPDATE rcv_files SET status = 'received' WHERE rcv_file_id = 1"
     DB.execute_ db "UPDATE rcv_file_chunk_replicas SET replica_key = cast('bad' as blob) WHERE rcv_file_chunk_replica_id = 1"
-    Right fId2 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+    Right fId2 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing) True
     DB.execute_ db "UPDATE rcv_files SET status = 'received' WHERE rcv_file_id = 2"
 
     Left e <- getNextRcvFileToDecrypt db 86400

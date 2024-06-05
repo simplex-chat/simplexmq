@@ -7,19 +7,20 @@
 
 module Simplex.FileTransfer.Server.Main where
 
-import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Int (Int64)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import Network.Socket (HostName)
 import Options.Applicative
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration, supportedXFTPhandshakes)
+import Simplex.FileTransfer.Transport (supportedFileServerVRange)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern XFTPServer)
@@ -28,6 +29,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
+import Simplex.Messaging.Util (safeDecodeUtf8, tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
@@ -68,7 +70,7 @@ xftpServerCLI cfgPath logPath = do
       fp <- createServerX509 cfgPath x509cfg
       let host = fromMaybe (if ip == "127.0.0.1" then "<hostnames>" else ip) fqdn
           srv = ProtoServerWithAuth (XFTPServer [THDomainName host] "" (C.KeyHash fp)) Nothing
-      writeFile iniFile $ iniFileContent host
+      T.writeFile iniFile $ iniFileContent host
       putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `" <> executableName <> " start` to start server."
       warnCAPrivateKeyFile cfgPath x509cfg
       printServiceInfo serverVersion srv
@@ -82,7 +84,7 @@ xftpServerCLI cfgPath logPath = do
           \# Log is compacted on start (deleted objects are removed).\n"
             <> ("enable: " <> onOff enableStoreLog <> "\n\n")
             <> "# Expire files after the specified number of hours.\n"
-            <> ("expire_files_hours: " <> show defFileExpirationHours <> "\n\n")
+            <> ("expire_files_hours: " <> tshow defFileExpirationHours <> "\n\n")
             <> "log_stats: off\n\
                \\n\
                \[AUTH]\n\
@@ -101,20 +103,20 @@ xftpServerCLI cfgPath logPath = do
                \# control_port_user_password:\n\
                \[TRANSPORT]\n\
                \# host is only used to print server address on start\n"
-            <> ("host: " <> host <> "\n")
-            <> ("port: " <> defaultServerPort <> "\n")
+            <> ("host: " <> T.pack host <> "\n")
+            <> ("port: " <> T.pack defaultServerPort <> "\n")
             <> "log_tls_errors: off\n\
                \# control_port: 5226\n\
                \\n\
                \[FILES]\n"
-            <> ("path: " <> filesPath <> "\n")
-            <> ("storage_quota: " <> B.unpack (strEncode fileSizeQuota) <> "\n")
+            <> ("path: " <> T.pack filesPath <> "\n")
+            <> ("storage_quota: " <> safeDecodeUtf8 (strEncode fileSizeQuota) <> "\n")
             <> "\n\
                \[INACTIVE_CLIENTS]\n\
                \# TTL and interval to check inactive clients\n\
                \disconnect: off\n"
-            <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
-            <> ("# check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n")
+            <> ("# ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
+            <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -164,7 +166,7 @@ xftpServerCLI cfgPath logPath = do
                   defaultFileExpiration
                     { ttl = 3600 * readIniDefault defFileExpirationHours "STORE_LOG" "expire_files_hours" ini
                     },
-              fileTimeout = 10 * 60 * 1000000, -- 10 mins to send 4mb chunk
+              fileTimeout = 5 * 60 * 1000000, -- 5 mins to send 4mb chunk
               inactiveClientExpiration =
                 settingIsOn "INACTIVE_CLIENTS" "disconnect" ini
                   $> ExpirationConfig
@@ -174,6 +176,7 @@ xftpServerCLI cfgPath logPath = do
               caCertificateFile = c caCrtFile,
               privateKeyFile = c serverKeyFile,
               certificateFile = c serverCrtFile,
+              xftpServerVRange = supportedFileServerVRange,
               logStatsInterval = logStats $> 86400, -- seconds
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "file-server-stats.daily.log",
@@ -182,7 +185,8 @@ xftpServerCLI cfgPath logPath = do
                 defaultTransportServerConfig
                   { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini,
                     alpn = Just supportedXFTPhandshakes
-                  }
+                  },
+              responseDelay = 0
             }
 
 data CliCommand
