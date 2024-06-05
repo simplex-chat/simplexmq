@@ -423,7 +423,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           chunkDigests <- liftIO $ mapM getChunkDigest chunkSpecs
           pure (FileDigest digest, zip chunkSpecs $ coerce chunkDigests)
         createChunk :: Int -> SndFileChunk -> AM ()
-        createChunk numRecipients' ch@SndFileChunk {digest} = do
+        createChunk numRecipients' ch = do
           atomically $ assertAgentForeground c
           (replica, ProtoServerWithAuth srv _) <- tryCreate
           withStore' c $ \db -> createSndFileReplica db ch replica
@@ -434,23 +434,23 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
               let AgentClient {xftpServers} = c
               userSrvCount <- length <$> atomically (TM.lookup userId xftpServers)
               withRetryIntervalCount (riFast ri) $ \n _ loop -> do
-                deleted <- withStore' c $ \db -> getSndFileDeleted db sndFileId
-                when deleted $ throwError $ FILE NO_FILE
                 liftIO $ waitForUserNetwork c
                 let triedAllSrvs = n > userSrvCount
-                withNextSrv c userId usedSrvs [] $ \srvAuth ->
-                  ( do
-                      replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
-                      pure (replica, srvAuth)
-                  )
-                    `catchAgentError` \e -> retryOnError "XFTP prepare worker" (retryLoop srvAuth loop triedAllSrvs e) (throwError e) e
+                createWithNextSrv usedSrvs
+                  `catchAgentError` \e -> retryOnError "XFTP prepare worker" (retryLoop loop triedAllSrvs e) (throwError e) e
               where
-                retryLoop (ProtoServerWithAuth server _) loop triedAllSrvs e = do
+                -- we don't do closeXFTPServerClient here to not risk closing connection for concurrent chunk upload
+                retryLoop loop triedAllSrvs e = do
                   flip catchAgentError (\_ -> pure ()) $ do
                     when (triedAllSrvs && serverHostError e) $ notify c sndFileEntityId $ SFWARN e
-                    liftIO $ closeXFTPServerClient c userId server digest
                   atomically $ assertAgentForeground c
                   loop
+                createWithNextSrv usedSrvs = do
+                  deleted <- withStore' c $ \db -> getSndFileDeleted db sndFileId
+                  when deleted $ throwError $ FILE NO_FILE
+                  withNextSrv c userId usedSrvs [] $ \srvAuth -> do
+                    replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
+                    pure (replica, srvAuth)
 
 sndWorkerInternalError :: AgentClient -> DBSndFileId -> SndFileId -> Maybe FilePath -> AgentErrorType -> AM ()
 sndWorkerInternalError c sndFileId sndFileEntityId prefixPath err = do
