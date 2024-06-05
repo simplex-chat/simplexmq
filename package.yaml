@@ -147,15 +147,6 @@ executables:
       - -threaded
       - -rtsopts
 
-  smp-agent:
-    source-dirs: apps/smp-agent
-    main: Main.hs
-    dependencies:
-      - simplexmq
-    ghc-options:
-      - -threaded
-      - -rtsopts
-
   xftp:
     source-dirs: apps/xftp
     main: Main.hs

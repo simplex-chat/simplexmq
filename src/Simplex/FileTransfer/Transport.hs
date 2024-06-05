@@ -194,7 +194,7 @@ receiveFile_ :: (Handle -> Word32 -> IO (Either XFTPErrorType ())) -> XFTPRcvChu
 receiveFile_ receive XFTPRcvChunkSpec {filePath, chunkSize, chunkDigest} = do
   ExceptT $ withFile filePath WriteMode (`receive` chunkSize)
   digest' <- liftIO $ LC.sha256Hash <$> LB.readFile filePath
-  when (digest' /= chunkDigest) $ throwError DIGEST
+  when (digest' /= chunkDigest) $ throwE DIGEST
 
 data XFTPErrorType
   = -- | incorrect block format, encoding or signature size
