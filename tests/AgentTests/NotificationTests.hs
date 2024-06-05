@@ -104,7 +104,7 @@ notificationTests t = do
     it "should fail with incorrect fingerprint" $ do
       testRunNTFServerTests t srv1 `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
   describe "Managing notification subscriptions" $ do
-    fdescribe "should create notification subscription for existing connection" $
+    describe "should create notification subscription for existing connection" $
       testNtfMatrix t testNotificationSubscriptionExistingConnection
     describe "should create notification subscription for new connection" $
       testNtfMatrix t testNotificationSubscriptionNewConnection
