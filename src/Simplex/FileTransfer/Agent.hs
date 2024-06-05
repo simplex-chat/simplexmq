@@ -324,8 +324,8 @@ xftpDeleteRcvFiles' c rcvFileEntityIds = do
     batchFiles :: (DB.Connection -> DBRcvFileId -> IO a) -> [RcvFile] -> AM' [Either AgentErrorType a]
     batchFiles f rcvFiles = withStoreBatch' c $ \db -> map (\RcvFile {rcvFileId} -> f db rcvFileId) rcvFiles
 
-notify :: forall m e. (MonadIO m, AEntityI e) => AgentClient -> EntityId -> ACommand 'Agent e -> m ()
-notify c entId cmd = atomically $ writeTBQueue (subQ c) ("", entId, APC (sAEntity @e) cmd)
+notify :: forall m e. (MonadIO m, AEntityI e) => AgentClient -> EntityId -> AEvent e -> m ()
+notify c entId cmd = atomically $ writeTBQueue (subQ c) ("", entId, AEvt (sAEntity @e) cmd)
 
 xftpSendFile' :: AgentClient -> UserId -> CryptoFile -> Int -> AM SndFileId
 xftpSendFile' c userId file numRecipients = do
