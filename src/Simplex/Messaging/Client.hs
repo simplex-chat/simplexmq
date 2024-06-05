@@ -933,8 +933,8 @@ forwardSMPMessage :: SMPClient -> CorrId -> VersionSMP -> C.PublicKeyX25519 -> E
 forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdVersion fwdKey fwdTransmission = do
   -- prepare params
   sessSecret <- case thAuth thParams of
-    Nothing -> throwError $ PCETransportError TENoServerAuth
-    Just THAuthClient {sessSecret} -> maybe (throwError $ PCETransportError TENoServerAuth) pure sessSecret
+    Nothing -> throwE $ PCETransportError TENoServerAuth
+    Just THAuthClient {sessSecret} -> maybe (throwE $ PCETransportError TENoServerAuth) pure sessSecret
   nonce <- liftIO . atomically $ C.randomCbNonce g
   -- wrap
   let fwdT = FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission}

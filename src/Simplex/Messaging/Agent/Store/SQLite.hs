@@ -225,6 +225,7 @@ import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
+import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -1045,7 +1046,7 @@ getWorkItem :: Show i => ByteString -> IO (Maybe i) -> (i -> IO (Either StoreErr
 getWorkItem itemName getId getItem markFailed =
   runExceptT $ handleErr "getId" getId >>= mapM tryGetItem
   where
-    tryGetItem itemId = ExceptT (getItem itemId) `catchStoreErrors` \e -> mark itemId >> throwError e
+    tryGetItem itemId = ExceptT (getItem itemId) `catchStoreErrors` \e -> mark itemId >> throwE e
     mark itemId = handleErr ("markFailed ID " <> bshow itemId) $ markFailed itemId
     catchStoreErrors = catchAllErrors (SEInternal . bshow)
     -- Errors caught by this function will suspend worker as if there is no more work,
