@@ -583,7 +583,7 @@ instance ProtocolServerClient XFTPVersion XFTPErrorType FileResponse where
 
 getSMPServerClient :: AgentClient -> SMPTransportSession -> AM SMPConnectedClient
 getSMPServerClient c@AgentClient {active, smpClients, workerSeq} tSess = do
-  unlessM (readTVarIO active) . throwE $ INACTIVE
+  unlessM (readTVarIO active) $ throwE INACTIVE
   ts <- liftIO getCurrentTime
   atomically (getSessVar workerSeq tSess smpClients ts)
     >>= either newClient (waitForProtocolClient c tSess smpClients)
@@ -594,7 +594,7 @@ getSMPServerClient c@AgentClient {active, smpClients, workerSeq} tSess = do
 
 getSMPProxyClient :: AgentClient -> SMPTransportSession -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
 getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq} destSess@(userId, destSrv, qId) = do
-  unlessM (readTVarIO active) . throwE $ INACTIVE
+  unlessM (readTVarIO active) $ throwE INACTIVE
   proxySrv <- getNextServer c userId [destSrv]
   ts <- liftIO getCurrentTime
   atomically (getClientVar proxySrv ts) >>= \(tSess, auth, v) ->
@@ -745,7 +745,7 @@ reconnectSMPClient c tSess@(_, srv, _) qs = handleNotify $ do
 
 getNtfServerClient :: AgentClient -> NtfTransportSession -> AM NtfClient
 getNtfServerClient c@AgentClient {active, ntfClients, workerSeq} tSess@(userId, srv, _) = do
-  unlessM (readTVarIO active) . throwE $ INACTIVE
+  unlessM (readTVarIO active) $ throwE INACTIVE
   ts <- liftIO getCurrentTime
   atomically (getSessVar workerSeq tSess ntfClients ts)
     >>= either
@@ -769,7 +769,7 @@ getNtfServerClient c@AgentClient {active, ntfClients, workerSeq} tSess@(userId, 
 
 getXFTPServerClient :: AgentClient -> XFTPTransportSession -> AM XFTPClient
 getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq} tSess@(userId, srv, _) = do
-  unlessM (readTVarIO active) . throwE $ INACTIVE
+  unlessM (readTVarIO active) $ throwE INACTIVE
   ts <- liftIO getCurrentTime
   atomically (getSessVar workerSeq tSess xftpClients ts)
     >>= either
