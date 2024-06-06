@@ -399,7 +399,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
       let numRecipients' = min numRecipients maxRecipients
       -- in case chunk preparation previously failed mid-way, some chunks may already be created -
       -- here we split previously prepared chunks from the pending ones to then build full list of servers
-      let (pendingChunks, preparedSrvs) = partitionEithers $ map mapPreparedChunk chunks
+      let (pendingChunks, preparedSrvs) = partitionEithers $ map srvOrPendingChunk chunks
       -- concurrently?
       -- separate worker to create chunks? record retries and delay on snd_file_chunks?
       srvs <- forM pendingChunks $ createChunk numRecipients'
@@ -428,8 +428,8 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           let chunkSpecs = prepareChunkSpecs fsEncPath chunkSizes
           chunkDigests <- liftIO $ mapM getChunkDigest chunkSpecs
           pure (FileDigest digest, zip chunkSpecs $ coerce chunkDigests)
-        mapPreparedChunk :: SndFileChunk -> Either SndFileChunk (ProtocolServer 'PXFTP)
-        mapPreparedChunk ch@SndFileChunk {replicas} = case replicas of
+        srvOrPendingChunk :: SndFileChunk -> Either SndFileChunk (ProtocolServer 'PXFTP)
+        srvOrPendingChunk ch@SndFileChunk {replicas} = case replicas of
           [] -> Left ch
           SndFileChunkReplica {server} : _ -> Right server
         createChunk :: Int -> SndFileChunk -> AM (ProtocolServer 'PXFTP)
