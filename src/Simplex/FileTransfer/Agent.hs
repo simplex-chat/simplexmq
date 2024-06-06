@@ -38,7 +38,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Coerce (coerce)
 import Data.Composition ((.:))
-import Data.Either (rights)
+import Data.Either (partitionEithers, rights)
 import Data.Int (Int64)
 import Data.List (foldl', partition, sortOn)
 import qualified Data.List.NonEmpty as L
@@ -397,10 +397,14 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
               getSndFile db sndFileId
           else pure sndFile
       let numRecipients' = min numRecipients maxRecipients
+      -- in case chunk preparation fails mid-way, some chunks may be already created -
+      -- here we split previously prepared chunks from the pending ones to then build full list of servers
+      let (pendingChunks, preparedSrvs) = partitionEithers $ map mapPreparedChunk chunks
       -- concurrently?
       -- separate worker to create chunks? record retries and delay on snd_file_chunks?
-      srvs <- forM (filter (\SndFileChunk {replicas} -> null replicas) chunks) $ createChunk numRecipients'
-      lift $ forM_ (S.fromList srvs) $ \srv -> getXFTPSndWorker True c (Just srv)
+      srvs <- forM pendingChunks $ createChunk numRecipients'
+      let allSrvs = S.fromList $ preparedSrvs <> srvs
+      lift $ forM_ allSrvs $ \srv -> getXFTPSndWorker True c (Just srv)
       withStore' c $ \db -> updateSndFileStatus db sndFileId SFSUploading
       where
         AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients, messageRetryInterval = ri} = cfg
@@ -424,6 +428,10 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           let chunkSpecs = prepareChunkSpecs fsEncPath chunkSizes
           chunkDigests <- liftIO $ mapM getChunkDigest chunkSpecs
           pure (FileDigest digest, zip chunkSpecs $ coerce chunkDigests)
+        mapPreparedChunk :: SndFileChunk -> Either SndFileChunk (ProtocolServer 'PXFTP)
+        mapPreparedChunk ch@SndFileChunk {replicas} = case replicas of
+          [] -> Left ch
+          SndFileChunkReplica {server} : _ -> Right server
         createChunk :: Int -> SndFileChunk -> AM (ProtocolServer 'PXFTP)
         createChunk numRecipients' ch = do
           atomically $ assertAgentForeground c
