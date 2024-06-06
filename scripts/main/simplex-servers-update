@@ -3,8 +3,6 @@ set -eu
 
 # Links to scripts/configs
 bin="https://github.com/simplex-chat/simplexmq/releases/latest/download"
-bin_smp="$bin/smp-server-ubuntu-20_04-x86-64"
-bin_xftp="$bin/xftp-server-ubuntu-20_04-x86-64"
 
 scripts="https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/scripts/main"
 scripts_systemd_smp="$scripts/smp-server.service"
@@ -33,6 +31,9 @@ path_tmp_bin_stopscript="$path_tmp_bin/simplex-servers-stopscript"
 path_tmp_systemd_smp="$path_tmp_bin/smp-server.service"
 path_tmp_systemd_xftp="$path_tmp_bin/xftp-server.service"
 
+path_conf_etc='/etc/opt'
+path_conf_info='/etc/opt/simplex-info'
+
 GRN='\033[0;32m'
 BLU='\033[1;36m'
 YLW='\033[1;33m'
@@ -40,8 +41,40 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 # Currently, XFTP default to v0.1.0, so it doesn't make sense to check its version
-local_version="$($path_bin_smp -v | awk '{print $3}')"
-remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest | grep -i "tag_name" | awk -F \" '{print $4}')"
+
+os_test() {
+ . /etc/os-release
+
+ case "$VERSION_ID" in
+  20.04) : ;;
+  22.04) : ;;
+  *) printf "${RED}Unsupported Ubuntu version!${NC}\nPlease file Github issue with request to support Ubuntu %s: https://github.com/simplex-chat/simplexmq/issues/new" "$VERSION_ID" && exit 1 ;;
+ esac
+
+ version="$(printf '%s' "$VERSION_ID" | tr '.' '_')"
+ arch="$(uname -p)"
+
+ case "$arch" in
+  x86_64) arch="$(printf '%s' "$arch" | tr '_' '-')" ;;
+  *)  printf "${RED}Unsupported architecture!${NC}\nPlease file Github issue with request to support %s architecture: https://github.com/simplex-chat/simplexmq/issues/new" "$arch" && exit 1 ;;
+ esac
+
+ bin_smp="$bin/smp-server-ubuntu-${version}-${arch}"
+ bin_xftp="$bin/xftp-server-ubuntu-${version}-${arch}"
+}
+
+installed_test() {
+  set +u
+  for i in $path_conf_etc/*; do
+    if [ -d "$i" ]; then
+      case "$i" in
+        *simplex) apps="smp $apps" ;;
+        *simplex-xftp) apps="xftp $apps" ;;
+      esac
+    fi
+  done
+  set -u
+}
 
 update_scripts() {
   curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_update" -o "$path_tmp_bin_update" && chmod +x "$path_tmp_bin_update"
@@ -56,6 +89,7 @@ update_scripts() {
     mv "$path_tmp_bin_uninstall" "$path_bin_uninstall"
     printf "${GRN}Done!${NC}\n"
   fi
+
   if diff -q "$path_bin_stopscript" "$path_tmp_bin_stopscript" > /dev/null 2>&1; then
     printf -- "- ${YLW}Stopscript script is up-to-date${NC}.\n"
     rm "$path_tmp_bin_stopscript"
@@ -64,6 +98,7 @@ update_scripts() {
     mv "$path_tmp_bin_stopscript" "$path_bin_stopscript"
     printf "${GRN}Done!${NC}\n"
   fi
+
   if diff -q "$path_bin_update" "$path_tmp_bin_update" > /dev/null 2>&1; then
     printf -- "- ${YLW}Update script is up-to-date${NC}.\n"
     rm "$path_tmp_bin_update"
@@ -71,75 +106,84 @@ update_scripts() {
     printf -- "- Updating update script..."
     mv "$path_tmp_bin_update" "$path_bin_update"
     printf "${GRN}Done!${NC}\n"
-    printf "Re-executing Update script with latest updates..."
+    printf -- "- Re-executing Update script with latest updates..."
     exec sh "$path_bin_update" "continue"
   fi
 }
 
 update_systemd() {
-  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_systemd_smp" -o "$path_tmp_systemd_smp"
-  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_systemd_xftp" -o "$path_tmp_systemd_xftp"
+  service="${1}-server"
+  eval "scripts_systemd=\$scripts_systemd_${1}"
+  eval "path_systemd=\$path_systemd_${1}"
+  eval "path_tmp_systemd=\$path_tmp_systemd_${1}"
+   
+  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_systemd" -o "$path_tmp_systemd"
 
-  if diff -q "$path_systemd_smp" "$path_tmp_systemd_smp" > /dev/null 2>&1; then
-    printf -- "- ${YLW}smp-server service is up-to-date${NC}.\n"
-    rm "$path_tmp_systemd_smp"
+  if diff -q "$path_systemd" "$path_tmp_systemd" > /dev/null 2>&1; then
+    printf -- "- ${YLW}%s service is up-to-date${NC}.\n" "$service"
+    rm "$path_tmp_systemd"
   else
-    printf -- "- Updating smp-server service..."
-    mv "$path_tmp_systemd_smp" "$path_systemd_smp"
+    printf -- "- Updating %s service..." "$service"
+    mv "$path_tmp_systemd" "$path_systemd"
     systemctl daemon-reload
     printf "${GRN}Done!${NC}\n"
   fi
-  if diff -q "$path_systemd_xftp" "$path_tmp_systemd_xftp" > /dev/null 2>&1; then
-    printf -- "- ${YLW}xftp-server service is up-to-date${NC}.\n"
-    rm "$path_tmp_systemd_xftp"
-  else
-    printf -- "- Updating xftp-server service..."
-    mv "$path_tmp_systemd_xftp" "$path_systemd_xftp"
-    systemctl daemon-reload
-    printf "${GRN}Done!${NC}\n"
-  fi
+
+  unset service scripts_systemd path_systemd path_tmp_systemd
 }
 
 update_bins() {
-  if [ "$local_version" != "$remote_version" ]; then
-    if systemctl is-active --quiet smp-server; then
-      printf -- "- Stopping smp-server service..."
-      systemctl stop smp-server
-      printf "${GRN}Done!${NC}\n"
+  service="${1}-server"
+  eval "bin=\$bin_${1}"
+  eval "path_bin=\$path_bin_${1}"
 
-      printf -- "- Updating smp-server bin to %s..." "$remote_version"
-      curl --proto '=https' --tlsv1.2 -sSf -L "$bin_smp" -o "$path_bin_smp" && chmod +x "$path_bin_smp"
-      printf "${GRN}Done!${NC}\n"
-      
-      printf -- "- Starting smp-server service..."
-      systemctl start smp-server
-      printf "${GRN}Done!${NC}\n"
-    else
-      printf -- "- Updating smp-server bin..."
-      curl --proto '=https' --tlsv1.2 -sSf -L "$bin_smp" -o "$path_bin_smp" && chmod +x "$path_bin_smp"
-      printf "${GRN}Done!${NC}\n"
+  remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest | grep -i "tag_name" | awk -F \" '{print $4}')"
+
+  set_ver() {
+    local_version='unset'
+    sed -i -- "s/local_version_${1}=.*/local_version_${1}='${remote_version}'/" "$path_conf_info/release"
+  }
+
+  if [ -f "$path_conf_info/release" ]; then
+    . "$path_conf_info/release" 2>/dev/null
+
+    set +u
+    eval "local_version=\$local_version_${1}"
+    set -u
+
+    if [ -z "${local_version}" ]; then
+            set_ver "$1"
     fi
+  else
+    printf 'local_version_xftp=\nlocal_version_smp=\n' > "$path_conf_info/release"
+    set_ver "$1"
+  fi
 
-    if systemctl is-active --quiet xftp-server; then
-      printf -- "- Stopping xftp-server service..."
-      systemctl stop xftp-server
+  if [ "$local_version" != "$remote_version" ]; then
+    if systemctl is-active --quiet "$service"; then
+      printf -- "- Stopping %s service..." "$service"
+      systemctl stop "$service"
       printf "${GRN}Done!${NC}\n"
 
-      printf -- "- Updating xftp-server bin to %s..." "$remote_version"
-      curl --proto '=https' --tlsv1.2 -sSf -L "$bin_xftp" -o "$path_bin_xftp" && chmod +x "$path_bin_xftp"
+      printf -- "- Updating %s to %s..." "$service" "$remote_version"
+      curl --proto '=https' --tlsv1.2 -sSf -L "$bin" -o "$path_bin" && chmod +x "$path_bin"
       printf "${GRN}Done!${NC}\n"
       
-      printf -- "- Starting xftp-server service..."
-      systemctl start xftp-server
+      printf -- "- Starting %s service..." "$service"
+      systemctl start "$service"
       printf "${GRN}Done!${NC}\n"
     else
-      printf -- "- Updating xftp-server bin..."
-      curl --proto '=https' --tlsv1.2 -sSf -L "$bin_smp" -o "$path_bin_xftp" && chmod +x "$path_bin_xftp"
+      printf -- "- Updating %s to %s..." "$service" "$remote_version"
+      curl --proto '=https' --tlsv1.2 -sSf -L "$bin" -o "$path_bin" && chmod +x "$path_bin"
       printf "${GRN}Done!${NC}\n"
     fi
   else
-    printf -- "- ${YLW}smp-server and xftp-server binaries is up-to-date${NC}.\n"
+    printf -- "- ${YLW}%s is up-to-date${NC}.\n" "$service"
   fi
+
+  set_ver "$1"
+
+  unset service bin path_bin local_version
 }
 
 checks() {
@@ -147,6 +191,11 @@ checks() {
     printf "This script is intended to be run with root privileges. Please re-run script using sudo.\n"
     exit 1
   fi
+
+  os_test
+  installed_test
+
+  mkdir -p $path_conf_info
 }
 
 main() {
@@ -163,10 +212,14 @@ main() {
   fi
 
   printf "Updating systemd services...\n"
-  update_systemd
+  for i in $apps; do
+    update_systemd "$i"
+  done
   
-  printf "Updating simplex server binaries...\n"
-  update_bins
+  printf "Updating simplex servers...\n"
+  for i in $apps; do
+    update_bins "$i"
+  done
 
   rm -rf "$path_tmp_bin"
 }
