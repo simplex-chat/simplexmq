@@ -1,8 +1,7 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -171,7 +170,8 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
       case r of
         Right smp -> do
           logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
-          let c = (isOwnServer ca srv, smp)
+          let !owned = isOwnServer ca srv
+          let !c = (owned, smp)
           atomically $ do
             putTMVar (sessionVar v) (Right c)
             TM.insert (sessionId $ thParams smp) c smpSessions

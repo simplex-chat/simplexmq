@@ -552,7 +552,18 @@ smpTHandle_ :: forall c p. THandleSMP c p -> VersionSMP -> VersionRangeSMP -> Ma
 smpTHandle_ th@THandle {params} v vr thAuth =
   -- TODO drop SMP v6: make thAuth non-optional
   let params' = params {thVersion = v, thServerVRange = vr, thAuth, implySessId = v >= authCmdsSMPVersion}
-   in (th :: THandleSMP c p) {params = params'}
+   in (th :: THandleSMP c p) {params = forceTHAuth thAuth `seq` params'}
+
+{-# INLINE forceTHAuth #-}
+forceTHAuth :: Maybe (THandleAuth p) -> ()
+forceTHAuth = \case
+  Nothing -> ()
+  Just THAuthClient {serverPeerPubKey, serverCertKey, sessSecret} -> serverPeerPubKey `seq` maybe () (`seq` ()) sessSecret `seq` forceCertChain serverCertKey `seq` ()
+  Just THAuthServer {serverPrivKey, sessSecret'} -> serverPrivKey `seq` maybe () (`seq` ()) sessSecret' `seq` ()
+
+{-# INLINE forceCertChain #-}
+forceCertChain :: (X.CertificateChain, X.SignedExact T.PubKey) -> ()
+forceCertChain (X.CertificateChain cc, signedKey) = length (show cc) `seq` show signedKey `seq` ()
 
 -- This function is only used with v >= 8, so currently it's a simple record update.
 -- It may require some parameters update in the future, to be consistent with smpTHandle_.
