@@ -71,7 +71,7 @@ import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
-import Simplex.Messaging.Protocol (EntityId, XFTPServer)
+import Simplex.Messaging.Protocol (EntityId, ProtocolServer, ProtocolType (..), XFTPServer)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (catchAll_, liftError, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
@@ -399,7 +399,8 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
       let numRecipients' = min numRecipients maxRecipients
       -- concurrently?
       -- separate worker to create chunks? record retries and delay on snd_file_chunks?
-      forM_ (filter (\SndFileChunk {replicas} -> null replicas) chunks) $ createChunk numRecipients'
+      srvs <- forM (filter (\SndFileChunk {replicas} -> null replicas) chunks) $ createChunk numRecipients'
+      lift $ forM_ (S.fromList srvs) $ \srv -> getXFTPSndWorker True c (Just srv)
       withStore' c $ \db -> updateSndFileStatus db sndFileId SFSUploading
       where
         AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients, messageRetryInterval = ri} = cfg
@@ -423,12 +424,12 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           let chunkSpecs = prepareChunkSpecs fsEncPath chunkSizes
           chunkDigests <- liftIO $ mapM getChunkDigest chunkSpecs
           pure (FileDigest digest, zip chunkSpecs $ coerce chunkDigests)
-        createChunk :: Int -> SndFileChunk -> AM ()
+        createChunk :: Int -> SndFileChunk -> AM (ProtocolServer 'PXFTP)
         createChunk numRecipients' ch = do
           atomically $ assertAgentForeground c
           (replica, ProtoServerWithAuth srv _) <- tryCreate
           withStore' c $ \db -> createSndFileReplica db ch replica
-          lift . void $ getXFTPSndWorker True c (Just srv)
+          pure srv
           where
             tryCreate = do
               usedSrvs <- newTVarIO ([] :: [XFTPServer])
