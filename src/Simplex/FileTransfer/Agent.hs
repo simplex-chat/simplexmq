@@ -397,7 +397,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
               getSndFile db sndFileId
           else pure sndFile
       let numRecipients' = min numRecipients maxRecipients
-      -- in case chunk preparation fails mid-way, some chunks may be already created -
+      -- in case chunk preparation previously failed mid-way, some chunks may already be created -
       -- here we split previously prepared chunks from the pending ones to then build full list of servers
       let (pendingChunks, preparedSrvs) = partitionEithers $ map mapPreparedChunk chunks
       -- concurrently?
