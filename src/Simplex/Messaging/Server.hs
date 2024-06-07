@@ -1023,15 +1023,15 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             mkMessage body = do
               msgId <- randomId =<< asks (msgIdBytes . config)
               msgTs <- liftIO getSystemTime
-              pure $ Message msgId msgTs msgFlags body
+              pure $! Message msgId msgTs msgFlags body
 
             expireMessages :: MsgQueue -> M ()
             expireMessages q = do
               msgExp <- asks $ messageExpiration . config
-              old <- liftIO $ mapM expireBeforeEpoch msgExp
-              stats <- asks serverStats
-              deleted <- atomically $ sum <$> mapM (deleteExpiredMsgs q) old
-              atomically $ modifyTVar' (msgExpired stats) (+ deleted)
+              deleted <- liftIO $ mapM expireBeforeEpoch msgExp >>= atomically . fmap sum . mapM (deleteExpiredMsgs q)
+              when (deleted > 0) $ do
+                stats <- asks serverStats
+                atomically $ modifyTVar' (msgExpired stats) (+ deleted)
 
             trySendNotification :: Message -> TVar ChaChaDRG -> STM ()
             trySendNotification msg ntfNonceDrg =

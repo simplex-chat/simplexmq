@@ -84,8 +84,8 @@ writeMsg MsgQueue {msgQueue = q, quota, canWrite, size} msg = do
       writeTVar canWrite $! canWrt'
       modifyTVar' size (+ 1)
       if canWrt'
-        then writeTQueue q msg $> Just msg
-        else writeTQueue q msgQuota $> Nothing
+        then msg `seq` (writeTQueue q msg $> Just msg)
+        else msgQuota `seq` (writeTQueue q msgQuota $> Nothing)
     else pure Nothing
   where
     msgQuota = MessageQuota {msgId = msgId msg, msgTs = msgTs msg}
