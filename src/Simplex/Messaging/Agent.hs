@@ -429,7 +429,9 @@ setNetworkConfig c@AgentClient {useNetworkConfig} cfg' = do
     (_, cfg) <- readTVar useNetworkConfig
     if cfg == cfg'
       then pure False
-      else True <$ (writeTVar useNetworkConfig $! (slowNetworkConfig cfg', cfg'))
+      else
+        let cfgSlow = slowNetworkConfig cfg'
+        in True <$ (cfgSlow `seq` writeTVar useNetworkConfig (cfgSlow, cfg'))
   when changed $ reconnectAllServers c
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()

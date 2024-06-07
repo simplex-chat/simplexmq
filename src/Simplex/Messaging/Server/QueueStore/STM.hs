@@ -70,7 +70,7 @@ secureQueue QueueStore {queues} rId sKey =
       Just k -> pure $ if sKey == k then Just q else Nothing
       _ ->
         let q' = q {senderKey = Just sKey}
-         in writeTVar qVar q' $> Just q'
+         in q' `seq` writeTVar qVar q' $> Just q'
 
 addQueueNotifier :: QueueStore -> RecipientId -> NtfCreds -> STM (Either ErrorType QueueRec)
 addQueueNotifier QueueStore {queues, notifiers} rId ntfCreds@NtfCreds {notifierId = nId} = do

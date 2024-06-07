@@ -519,7 +519,7 @@ receive h@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiv
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   forever $ do
     ts <- L.toList <$> liftIO (tGet h)
-    atomically . writeTVar rcvActiveAt =<< liftIO getSystemTime
+    liftIO getSystemTime >>= \now -> now `seq` atomically (writeTVar rcvActiveAt now)
     stats <- asks serverStats
     (errs, cmds) <- partitionEithers <$> mapM (cmdAction stats) ts
     write sndQ errs
@@ -575,7 +575,7 @@ tSend :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> NonEmpty (Tran
 tSend th Client {sndActiveAt} ts = do
   withMVar th $ \h@THandle {params} ->
     void . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
-  atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
+  liftIO getSystemTime >>= \now -> now `seq` atomically (writeTVar sndActiveAt now)
 
 disconnectTransport :: Transport c => THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
 disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
@@ -1149,7 +1149,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             msgTs' = messageTs msg
 
         setDelivered :: Sub -> Message -> STM Bool
-        setDelivered s msg = tryPutTMVar (delivered s) (messageId msg)
+        setDelivered s msg = tryPutTMVar (delivered s) $! messageId msg
 
         getStoreMsgQueue :: T.Text -> RecipientId -> M MsgQueue
         getStoreMsgQueue name rId = time (name <> " getMsgQueue") $ do
@@ -1184,7 +1184,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                     ProhibitSub -> QProhibitSub
               qDelivered <- decodeLatin1 . encode <$$> tryReadTMVar delivered
               pure QSub {qSubThread, qDelivered}
-          
+
         ok :: Transmission BrokerMsg
         ok = (corrId, queueId, OK)
 
