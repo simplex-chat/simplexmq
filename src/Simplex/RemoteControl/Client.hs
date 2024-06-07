@@ -266,11 +266,11 @@ connectRCCtrl_ :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> 
 connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, host, port} hostAppInfo = do
   r <- newEmptyTMVarIO
   c <- liftIO mkClient
-  action <- liftIO . async . void . runExceptT $ runClient c r `putConnectRCCtrl` r
+  action <- liftIO . async . void . runExceptT $ runClient c r `putConnectRCCtrlErr` r
   pure (RCCtrlClient {action, client_ = c}, r)
   where
-    putConnectRCCtrl :: ExceptT RCErrorType IO a -> TMVar (Either RCErrorType b) -> ExceptT RCErrorType IO a
-    a `putConnectRCCtrl` r =
+    putConnectRCCtrlErr :: ExceptT RCErrorType IO a -> TMVar (Either RCErrorType b) -> ExceptT RCErrorType IO a
+    a `putConnectRCCtrlErr` r =
       a `catchConnectRCCtrlErr` \e -> do
         void $ atomically (tryPutTMVar r $ Left e)
         throwE e
