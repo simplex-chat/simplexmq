@@ -15,9 +15,14 @@
   <link rel="stylesheet" href="/media/style.css">
 
   <style>
+    body, html {
+      width: 100%;
+      overflow-x: hidden;
+    }
+
     table#config {
-      border-collapse: collapse;
-      margin-bottom: 4px;
+        border-collapse: collapse;
+        margin-bottom: 4px;
     }
 
     th,
@@ -39,6 +44,16 @@
     @media screen and (max-width: 767px) {
       tr td:not(:last-child) {
         font-size: 16px;
+      }
+    }
+
+    @media screen and (max-width: 440px) {
+      table {
+        width: 100%;
+        table-layout: fixed;
+      }
+      tr td:not(:last-child) {
+        width: 40%;
       }
     }
 
@@ -191,7 +206,7 @@
 
       window.addEventListener('scroll', changeHeaderBg);</script>
   </section>
-
+  
   <section class="py-[90px] block bg-secondary-bg-light dark:bg-secondary-bg-dark">
     <div class="container m-auto flex items-center justify-between px-5">
       <div class="flex flex-col items-start justify-center w-full">
