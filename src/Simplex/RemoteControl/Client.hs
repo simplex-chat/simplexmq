@@ -266,9 +266,20 @@ connectRCCtrl_ :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> 
 connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, host, port} hostAppInfo = do
   r <- newEmptyTMVarIO
   c <- liftIO mkClient
-  action <- liftIO . async . void . runExceptT $ runClient c r `putRCError` r
+  action <- liftIO . async . void . runExceptT $ runClient c r `putConnectRCCtrl` r
   pure (RCCtrlClient {action, client_ = c}, r)
   where
+    putConnectRCCtrl :: ExceptT RCErrorType IO a -> TMVar (Either RCErrorType b) -> ExceptT RCErrorType IO a
+    a `putConnectRCCtrl` r =
+      a `catchConnectRCCtrlErr` \e -> do
+        void $ atomically (tryPutTMVar r $ Left e)
+        throwE e
+      where
+        catchConnectRCCtrlErr = catchAllErrors mapException
+        mapException :: SomeException -> RCErrorType
+        mapException e = case fromException e of
+          Just (TLS.Terminated _ _ (TLS.Error_Protocol (_, _, TLS.UnknownCa))) -> RCEIdentity
+          _ -> RCEException $ show e
     mkClient :: IO RCCClient_
     mkClient = do
       confirmSession <- newEmptyTMVarIO
