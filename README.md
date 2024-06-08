@@ -150,7 +150,7 @@ You can install and setup servers automatically using our script:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/install.sh -o simplex-server-install.sh \
-&& if echo 'b8cf2be103f21f9461d9a500bcd3db06ab7d01d68871b07f4bd245195cbead1d simplex-server-install.sh' | sha256sum -c; then chmod +x ./simplex-server-install.sh && ./simplex-server-install.sh; rm ./simplex-server-install.sh; else echo "SHA-256 checksum is incorrect!" && rm ./simplex-server-install.sh; fi
+&& if echo '03d8dbc38736a9e58283b88c5f09599fbcab1673eefe803f305e80eaf9539873 simplex-server-install.sh' | sha256sum -c; then chmod +x ./simplex-server-install.sh && ./simplex-server-install.sh; rm ./simplex-server-install.sh; else echo "SHA-256 checksum is incorrect!" && rm ./simplex-server-install.sh; fi
 ```
 
 ### Build from source
