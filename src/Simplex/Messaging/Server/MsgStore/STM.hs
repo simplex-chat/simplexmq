@@ -89,7 +89,7 @@ writeMsg MsgQueue {msgQueue = q, quota, canWrite, size} !msg = do
         else writeTQueue q msgQuota $> Nothing
     else pure Nothing
   where
-    !msgQuota = MessageQuota {msgId = msgId msg, msgTs = msgTs msg}
+    msgQuota = MessageQuota {msgId = msgId msg, msgTs = msgTs msg}
 
 tryPeekMsg :: MsgQueue -> STM (Maybe Message)
 tryPeekMsg = tryPeekTQueue . msgQueue
