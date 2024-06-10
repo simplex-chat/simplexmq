@@ -8,6 +8,7 @@ module Simplex.FileTransfer.Crypto where
 
 import Control.Monad
 import Control.Monad.Except
+import Control.Monad.Trans.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import qualified Data.ByteArray as BA
@@ -48,17 +49,17 @@ encryptFile srcFile fileHdr key nonce fileSize' encSize encFile = do
       | otherwise = do
           let chSize = min len 65536
           ch <- liftIO $ get chSize
-          when (B.length ch /= fromIntegral chSize) $ throwError $ FTCEFileIOError "encrypting file: unexpected EOF"
+          when (B.length ch /= fromIntegral chSize) $ throwE $ FTCEFileIOError "encrypting file: unexpected EOF"
           let (ch', sb') = LC.sbEncryptChunk sb ch
           liftIO $ B.hPut w ch'
           encryptChunks_ get w (sb', len - chSize)
 
 decryptChunks :: Int64 -> [FilePath] -> C.SbKey -> C.CbNonce -> (String -> ExceptT String IO CryptoFile) -> ExceptT FTCryptoError IO CryptoFile
-decryptChunks _ [] _ _ _ = throwError $ FTCEInvalidHeader "empty"
+decryptChunks _ [] _ _ _ = throwE $ FTCEInvalidHeader "empty"
 decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse chPaths of
   [] -> do
     (!authOk, !f) <- liftEither . first FTCECryptoError . LC.sbDecryptTailTag key nonce (encSize - authTagSize) =<< liftIO (LB.readFile chPath)
-    unless authOk $ throwError FTCEInvalidAuthTag
+    unless authOk $ throwE FTCEInvalidAuthTag
     (FileHeader {fileName}, !f') <- parseFileHeader f
     destFile <- withExceptT FTCEFileIOError $ getDestFile fileName
     CF.writeFile destFile f'
@@ -73,7 +74,7 @@ decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse ch
       decryptLastChunk h state' expectedLen
     unless authOk $ do
       removeFile path
-      throwError FTCEInvalidAuthTag
+      throwE FTCEInvalidAuthTag
     pure destFile
     where
       decryptFirstChunk = do
@@ -105,8 +106,8 @@ decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse ch
     parseFileHeader s = do
       let (hdrStr, s') = LB.splitAt 1024 s
       case A.parse smpP $ LB.toStrict hdrStr of
-        A.Fail _ _ e -> throwError $ FTCEInvalidHeader e
-        A.Partial _ -> throwError $ FTCEInvalidHeader "incomplete"
+        A.Fail _ _ e -> throwE $ FTCEInvalidHeader e
+        A.Partial _ -> throwE $ FTCEInvalidHeader "incomplete"
         A.Done rest hdr -> pure (hdr, LB.fromStrict rest <> s')
 
 readChunks :: [FilePath] -> IO LB.ByteString
