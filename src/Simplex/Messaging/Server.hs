@@ -1010,7 +1010,11 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                           pure $ err QUOTA
                         Just msg -> time "SEND ok" $ do
                           when (notification msgFlags) $ do
-                            atomically . trySendNotification msg =<< asks random
+                            forM_ (notifier qr) $ \ntf -> do
+                              asks random >>= atomically . trySendNotification ntf msg >>= \case
+                                Nothing -> logWarn "No notification subscription"
+                                Just False -> logWarn "Dropped message notification"
+                                Just True -> pure ()
                             atomically $ modifyTVar' (msgSentNtf stats) (+ 1)
                             atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
                           atomically $ modifyTVar' (msgSent stats) (+ 1)
@@ -1033,18 +1037,19 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               deleted <- atomically $ sum <$> mapM (deleteExpiredMsgs q) old
               atomically $ modifyTVar' (msgExpired stats) (+ deleted)
 
-            trySendNotification :: Message -> TVar ChaChaDRG -> STM ()
-            trySendNotification msg ntfNonceDrg =
-              forM_ (notifier qr) $ \NtfCreds {notifierId, rcvNtfDhSecret} ->
-                mapM_ (writeNtf notifierId msg rcvNtfDhSecret ntfNonceDrg) =<< TM.lookup notifierId notifiers
+            trySendNotification :: NtfCreds -> Message -> TVar ChaChaDRG -> STM (Maybe Bool)
+            trySendNotification NtfCreds {notifierId, rcvNtfDhSecret} msg ntfNonceDrg =
+              mapM (writeNtf notifierId msg rcvNtfDhSecret ntfNonceDrg) =<< TM.lookup notifierId notifiers
 
-            writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> Client -> STM ()
+            writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> Client -> STM Bool
             writeNtf nId msg rcvNtfDhSecret ntfNonceDrg Client {sndQ = q} =
-              unlessM (isFullTBQueue q) $ case msg of
-                Message {msgId, msgTs} -> do
-                  (nmsgNonce, encNMsgMeta) <- mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg
-                  writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)]
-                _ -> pure ()
+              ifM (isFullTBQueue q) (pure False) (sendNtf $> True)
+              where
+                sendNtf = case msg of
+                  Message {msgId, msgTs} -> do
+                    (nmsgNonce, encNMsgMeta) <- mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg
+                    writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)]
+                  _ -> pure ()
 
             mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> TVar ChaChaDRG -> STM (C.CbNonce, EncNMsgMeta)
             mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg = do
