@@ -382,7 +382,7 @@ send :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> IO ()
 send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
   t <- atomically $ readTBQueue sndQ
   void . liftIO $ tPut h [Right (Nothing, encodeTransmission params t)]
-  liftIO getSystemTime >>= \now -> now `seq` atomically (writeTVar sndActiveAt now)
+  atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
 
 -- instance Show a => Show (TVar a) where
 --   show x = unsafePerformIO $ show <$> readTVarIO x

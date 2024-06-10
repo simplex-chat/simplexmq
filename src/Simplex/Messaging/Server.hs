@@ -519,7 +519,7 @@ receive h@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiv
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   forever $ do
     ts <- L.toList <$> liftIO (tGet h)
-    liftIO getSystemTime >>= \now -> now `seq` atomically (writeTVar rcvActiveAt now)
+    atomically . (writeTVar rcvActiveAt $!) =<< liftIO getSystemTime
     stats <- asks serverStats
     (errs, cmds) <- partitionEithers <$> mapM (cmdAction stats) ts
     write sndQ errs
@@ -575,7 +575,7 @@ tSend :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> NonEmpty (Tran
 tSend th Client {sndActiveAt} ts = do
   withMVar th $ \h@THandle {params} ->
     void . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
-  liftIO getSystemTime >>= \now -> now `seq` atomically (writeTVar sndActiveAt now)
+  atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
 
 disconnectTransport :: Transport c => THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
 disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
@@ -1028,7 +1028,8 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             expireMessages :: MsgQueue -> M ()
             expireMessages q = do
               msgExp <- asks $ messageExpiration . config
-              deleted <- liftIO $ mapM expireBeforeEpoch msgExp >>= atomically . fmap sum . mapM (deleteExpiredMsgs q)
+              old <- liftIO $ mapM expireBeforeEpoch msgExp
+              deleted <- atomically $ sum <$> mapM (deleteExpiredMsgs q) old
               when (deleted > 0) $ do
                 stats <- asks serverStats
                 atomically $ modifyTVar' (msgExpired stats) (+ deleted)

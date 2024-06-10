@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
@@ -69,8 +70,8 @@ secureQueue QueueStore {queues} rId sKey =
     readTVar qVar >>= \q -> case senderKey q of
       Just k -> pure $ if sKey == k then Just q else Nothing
       _ ->
-        let q' = q {senderKey = Just sKey}
-         in q' `seq` writeTVar qVar q' $> Just q'
+        let !q' = q {senderKey = Just sKey}
+         in writeTVar qVar q' $> Just q'
 
 addQueueNotifier :: QueueStore -> RecipientId -> NtfCreds -> STM (Either ErrorType QueueRec)
 addQueueNotifier QueueStore {queues, notifiers} rId ntfCreds@NtfCreds {notifierId = nId} = do
