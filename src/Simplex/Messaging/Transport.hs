@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -83,7 +84,7 @@ module Simplex.Messaging.Transport
 where
 
 import Control.Applicative (optional)
-import Control.Monad (forM)
+import Control.Monad (forM, (<$!>))
 import Control.Monad.Except
 import Control.Monad.Trans.Except (throwE)
 import qualified Data.Aeson.TH as J
@@ -539,31 +540,24 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) smpVRange = do
       Nothing -> throwE TEVersion
 
 smpTHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> VersionRangeSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandleSMP c 'TServer
-smpTHandleServer th v vr pk k_ =
-  let thAuth = THAuthServer {serverPrivKey = pk, sessSecret' = (`C.dh'` pk) <$> k_}
+smpTHandleServer th v vr !pk !k_ =
+  let thAuth = THAuthServer {serverPrivKey = pk, sessSecret' = (`C.dh'` pk) <$!> k_}
    in smpTHandle_ th v vr (Just thAuth)
 
 smpTHandleClient :: forall c. THandleSMP c 'TClient -> VersionSMP -> VersionRangeSMP -> Maybe C.PrivateKeyX25519 -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> THandleSMP c 'TClient
-smpTHandleClient th v vr pk_ ck_ =
-  let thAuth = (\(k, ck) -> THAuthClient {serverPeerPubKey = k, serverCertKey = ck, sessSecret = C.dh' k <$> pk_}) <$> ck_
+smpTHandleClient th v vr !pk_ !ck_ =
+  let thAuth = (\(!k, !ck) -> THAuthClient {serverPeerPubKey = k, serverCertKey = forceCertChain ck, sessSecret = C.dh' k <$!> pk_}) <$> ck_
    in smpTHandle_ th v vr thAuth
 
 smpTHandle_ :: forall c p. THandleSMP c p -> VersionSMP -> VersionRangeSMP -> Maybe (THandleAuth p) -> THandleSMP c p
-smpTHandle_ th@THandle {params} v vr thAuth =
+smpTHandle_ th@THandle {params} v vr !thAuth =
   -- TODO drop SMP v6: make thAuth non-optional
   let params' = params {thVersion = v, thServerVRange = vr, thAuth, implySessId = v >= authCmdsSMPVersion}
-   in (th :: THandleSMP c p) {params = forceTHAuth thAuth `seq` params'}
-
-{-# INLINE forceTHAuth #-}
-forceTHAuth :: Maybe (THandleAuth p) -> ()
-forceTHAuth = \case
-  Nothing -> ()
-  Just THAuthClient {serverPeerPubKey, serverCertKey, sessSecret} -> serverPeerPubKey `seq` maybe () (`seq` ()) sessSecret `seq` forceCertChain serverCertKey `seq` ()
-  Just THAuthServer {serverPrivKey, sessSecret'} -> serverPrivKey `seq` maybe () (`seq` ()) sessSecret' `seq` ()
+   in (th :: THandleSMP c p) {params = params'}
 
 {-# INLINE forceCertChain #-}
-forceCertChain :: (X.CertificateChain, X.SignedExact T.PubKey) -> ()
-forceCertChain (X.CertificateChain cc, signedKey) = length (show cc) `seq` show signedKey `seq` ()
+forceCertChain :: (X.CertificateChain, X.SignedExact T.PubKey) -> (X.CertificateChain, X.SignedExact T.PubKey)
+forceCertChain cert@(X.CertificateChain cc, signedKey) = length (show cc) `seq` show signedKey `seq` cert
 
 -- This function is only used with v >= 8, so currently it's a simple record update.
 -- It may require some parameters update in the future, to be consistent with smpTHandle_.
