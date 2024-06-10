@@ -266,20 +266,9 @@ connectRCCtrl_ :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> 
 connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, host, port} hostAppInfo = do
   r <- newEmptyTMVarIO
   c <- liftIO mkClient
-  action <- liftIO . async . void . runExceptT $ runClient c r `putConnectRCCtrlErr` r
+  action <- liftIO . async . void . runExceptT $ runClient c r `putRCError` r
   pure (RCCtrlClient {action, client_ = c}, r)
   where
-    putConnectRCCtrlErr :: ExceptT RCErrorType IO a -> TMVar (Either RCErrorType b) -> ExceptT RCErrorType IO a
-    a `putConnectRCCtrlErr` r =
-      a `catchConnectRCCtrlErr` \e -> do
-        void $ atomically (tryPutTMVar r $ Left e)
-        throwE e
-      where
-        catchConnectRCCtrlErr = catchAllErrors mapException
-        mapException :: SomeException -> RCErrorType
-        mapException e = case fromException e of
-          Just (TLS.Terminated _ _ (TLS.Error_Protocol (_, _, TLS.UnknownCa))) -> RCEIdentity
-          _ -> RCEException $ show e
     mkClient :: IO RCCClient_
     mkClient = do
       confirmSession <- newEmptyTMVarIO
@@ -315,7 +304,9 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
             logDebug "Session ended"
 
 catchRCError :: ExceptT RCErrorType IO a -> (RCErrorType -> ExceptT RCErrorType IO a) -> ExceptT RCErrorType IO a
-catchRCError = catchAllErrors (RCEException . show)
+catchRCError = catchAllErrors $ \e -> case fromException e of
+  Just (TLS.Terminated _ _ (TLS.Error_Protocol (_, _, TLS.UnknownCa))) -> RCEIdentity
+  _ -> RCEException $ show e
 {-# INLINE catchRCError #-}
 
 putRCError :: ExceptT RCErrorType IO a -> TMVar (Either RCErrorType b) -> ExceptT RCErrorType IO a
