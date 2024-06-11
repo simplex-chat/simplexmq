@@ -32,6 +32,7 @@ module Simplex.Messaging.Agent.Client
     closeAgentClient,
     closeProtocolServerClients,
     reconnectServerClients,
+    closeClient_,
     closeXFTPServerClient,
     runSMPServerTest,
     runXFTPServerTest,

@@ -82,6 +82,7 @@ module Simplex.Messaging.Agent
     setNetworkConfig,
     setUserNetworkInfo,
     reconnectAllServers,
+    reconnectSMPServer,
     registerNtfToken,
     verifyNtfToken,
     checkNtfToken,
@@ -446,6 +447,15 @@ reconnectAllServers c = do
   reconnectServerClients c smpClients
   reconnectServerClients c xftpClients
   reconnectServerClients c ntfClients
+
+reconnectSMPServer :: AgentClient -> UserId -> SMPServer -> IO ()
+reconnectSMPServer c userId srv = do
+  smpClients' <- readTVarIO (smpClients c)
+  let clientVars = [v | (k, v) <- M.toList smpClients', srvSess k]
+  mapM_ (forkIO . closeClient_ c) clientVars
+  where
+    srvSess :: SMPTransportSession -> Bool
+    srvSess (userId', srv', _) = userId == userId' && srv == srv'
 
 -- | Register device notifications token
 registerNtfToken :: AgentClient -> DeviceToken -> NotificationsMode -> AE NtfTknStatus
