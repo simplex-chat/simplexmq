@@ -229,7 +229,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, qSub, qSubAuth, qSubDuplicate, qSubProhibited, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv} <- asks serverStats
+      ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, qSub, qSubAuth, qSubDuplicate, qSubProhibited, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, msgNtfSent, msgNtfNoSub, msgNtfLost} <- asks serverStats
       let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -260,6 +260,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           pMsgFwds' <- atomically $ getResetProxyStatsData pMsgFwds
           pMsgFwdsOwn' <- atomically $ getResetProxyStatsData pMsgFwdsOwn
           pMsgFwdsRecv' <- atomically $ swapTVar pMsgFwdsRecv 0
+          msgNtfSent' <- atomically $ swapTVar msgNtfSent 0
+          msgNtfNoSub' <- atomically $ swapTVar msgNtfNoSub 0
+          msgNtfLost' <- atomically $ swapTVar msgNtfLost 0
           qCount' <- readTVarIO qCount
           msgCount' <- readTVarIO msgCount
           hPutStrLn h $
@@ -296,7 +299,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                        show qSubProhibited',
                        show msgSentAuth',
                        show msgSentQuota',
-                       show msgSentLarge'
+                       show msgSentLarge',
+                       show msgNtfSent',
+                       show msgNtfNoSub',
+                       show msgNtfLost'
                      ]
               )
         liftIO $ threadDelay' interval
@@ -1012,9 +1018,9 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                           when (notification msgFlags) $ do
                             forM_ (notifier qr) $ \ntf -> do
                               asks random >>= atomically . trySendNotification ntf msg >>= \case
-                                Nothing -> logWarn "No notification subscription"
-                                Just False -> logWarn "Dropped message notification"
-                                Just True -> pure ()
+                                Nothing -> logWarn "No notification subscription" >> atomically (modifyTVar' (msgNtfNoSub stats) (+ 1))
+                                Just False -> logWarn "Dropped message notification" >> atomically (modifyTVar' (msgNtfLost stats) (+ 1))
+                                Just True -> atomically (modifyTVar' (msgNtfSent stats) (+ 1))
                             atomically $ modifyTVar' (msgSentNtf stats) (+ 1)
                             atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
                           atomically $ modifyTVar' (msgSent stats) (+ 1)
@@ -1189,7 +1195,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                     ProhibitSub -> QProhibitSub
               qDelivered <- decodeLatin1 . encode <$$> tryReadTMVar delivered
               pure QSub {qSubThread, qDelivered}
-          
+
         ok :: Transmission BrokerMsg
         ok = (corrId, queueId, OK)
 
