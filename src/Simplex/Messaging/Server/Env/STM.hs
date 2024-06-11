@@ -10,6 +10,8 @@ import Control.Concurrent (ThreadId)
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
+import Data.HashPSQ (HashPSQ)
+import qualified Data.HashPSQ as HashPSQ
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -145,7 +147,9 @@ type ClientId = Int
 
 data Client = Client
   { clientId :: ClientId,
-    subscriptions :: TMap RecipientId (TVar Sub),
+    subscriptions :: TMap RecipientId (TVar Sub), -- all client subscriptions
+    deliveries :: TVar Deliveries, -- subscriptions with a pending message
+    subscriber :: TMVar (Maybe (Weak ThreadId)), -- a singleton thread waiting for deliveries
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
@@ -160,6 +164,8 @@ data Client = Client
     rcvActiveAt :: TVar SystemTime,
     sndActiveAt :: TVar SystemTime
   }
+
+type Deliveries = HashPSQ RecipientId SystemTime (QueueRec, TVar Sub, Message)
 
 data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId) | ProhibitSub
 
@@ -181,6 +187,8 @@ newClient :: TVar ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime 
 newClient nextClientId qSize thVersion sessionId createdAt = do
   clientId <- stateTVar nextClientId $ \next -> (next, next + 1)
   subscriptions <- TM.empty
+  subscriber <- newEmptyTMVar
+  deliveries <- newTVar HashPSQ.empty
   ntfSubscriptions <- TM.empty
   rcvQ <- newTBQueue qSize
   sndQ <- newTBQueue qSize
@@ -191,7 +199,7 @@ newClient nextClientId qSize thVersion sessionId createdAt = do
   connected <- newTVar True
   rcvActiveAt <- newTVar createdAt
   sndActiveAt <- newTVar createdAt
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, procThreads, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
+  return Client {clientId, subscriptions, deliveries, subscriber, ntfSubscriptions, rcvQ, sndQ, msgQ, procThreads, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
