@@ -281,9 +281,7 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
           TLS.Credentials (creds : _) -> pure $ Just creds
           _ -> throwE $ RCEInternal "genTLSCredentials must generate credentials"
       let clientConfig = defaultTransportClientConfig {clientCredentials}
-      ExceptT . runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls@TLS {tlsBuffer, tlsContext} -> runExceptT $ do
-        -- pump socket to detect connection problems
-        liftIO $ peekBuffered tlsBuffer 100000 (TLS.recvData tlsContext) >>= logDebug . tshow -- should normally be ("", Nothing) here
+      ExceptT . runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls -> runExceptT $ do
         logDebug "Got TLS connection"
         r' <- newEmptyTMVarIO
         whenM (atomically $ tryPutTMVar r $ Right (tlsUniq tls, tls, r')) $ do
@@ -305,7 +303,7 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
 
 catchRCError :: ExceptT RCErrorType IO a -> (RCErrorType -> ExceptT RCErrorType IO a) -> ExceptT RCErrorType IO a
 catchRCError = catchAllErrors $ \e -> case fromException e of
-  Just (TLS.Terminated _ _ (TLS.Error_Protocol (_, _, TLS.UnknownCa))) -> RCEIdentity
+  Just (TLS.Terminated _ _ (TLS.Error_Protocol _ TLS.UnknownCa)) -> RCEIdentity
   _ -> RCEException $ show e
 {-# INLINE catchRCError #-}
 

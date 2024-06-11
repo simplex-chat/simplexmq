@@ -255,7 +255,7 @@ library
     , temporary ==1.3.*
     , time ==1.12.*
     , time-manager ==0.0.*
-    , tls >=1.7.0 && <1.8
+    , tls >=2.0.6 && <2.1
     , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
@@ -330,7 +330,7 @@ executable ntf-server
     , temporary ==1.3.*
     , time ==1.12.*
     , time-manager ==0.0.*
-    , tls >=1.7.0 && <1.8
+    , tls >=2.0.6 && <2.1
     , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
@@ -409,7 +409,7 @@ executable smp-server
     , temporary ==1.3.*
     , time ==1.12.*
     , time-manager ==0.0.*
-    , tls >=1.7.0 && <1.8
+    , tls >=2.0.6 && <2.1
     , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
@@ -487,7 +487,7 @@ executable xftp
     , temporary ==1.3.*
     , time ==1.12.*
     , time-manager ==0.0.*
-    , tls >=1.7.0 && <1.8
+    , tls >=2.0.6 && <2.1
     , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
@@ -562,7 +562,7 @@ executable xftp-server
     , temporary ==1.3.*
     , time ==1.12.*
     , time-manager ==0.0.*
-    , tls >=1.7.0 && <1.8
+    , tls >=2.0.6 && <2.1
     , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
@@ -678,7 +678,7 @@ test-suite simplexmq-test
     , time ==1.12.*
     , time-manager ==0.0.*
     , timeit ==2.0.*
-    , tls >=1.7.0 && <1.8
+    , tls >=2.0.6 && <2.1
     , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
