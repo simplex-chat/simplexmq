@@ -1972,7 +1972,7 @@ data SMPServerDeliveryInfo = SMPServerDeliveryInfo
   { host :: Text,
     viaOnionHost :: Bool, -- to not differentiate based on string in UI
     viaSOCKSproxy :: Bool,
-    proxy :: Maybe SMPServer
+    smpProxy :: Maybe SMPServer
     -- numProxiedMsgs :: Int -- per server / per proxy? not sure this is valuable
   }
   deriving (Show)
