@@ -2,6 +2,9 @@
 
 module Simplex.Messaging.Agent.TRcvQueues
   ( TRcvQueues (getRcvQueues, getConnections),
+    RcvQueues,
+    Connections,
+    QKey,
     empty,
     clear,
     deleteConn,
@@ -19,19 +22,23 @@ import Control.Concurrent.STM
 import Data.Foldable (foldl')
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
+import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Simplex.Messaging.Agent.Protocol (ConnId, UserId)
 import Simplex.Messaging.Agent.Store (RcvQueue, StoredRcvQueue (..))
 import Simplex.Messaging.Protocol (RecipientId, SMPServer)
-import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 
 -- the fields in this record have the same data with swapped keys for lookup efficiency,
 -- and all methods must maintain this invariant.
 data TRcvQueues = TRcvQueues
-  { getRcvQueues :: TMap (UserId, SMPServer, RecipientId) RcvQueue,
-    getConnections :: TMap ConnId (NonEmpty (UserId, SMPServer, RecipientId))
+  { getRcvQueues :: TVar RcvQueues,
+    getConnections :: TVar Connections
   }
+
+type RcvQueues = Map QKey RcvQueue
+type Connections = Map ConnId (NonEmpty QKey)
+type QKey = (UserId, SMPServer, RecipientId)
 
 empty :: STM TRcvQueues
 empty = TRcvQueues <$> TM.empty <*> TM.empty
@@ -100,5 +107,5 @@ isSession :: RcvQueue -> (UserId, SMPServer, Maybe ConnId) -> Bool
 isSession rq (uId, srv, connId_) =
   userId rq == uId && server rq == srv && maybe True (connId rq ==) connId_
 
-qKey :: RcvQueue -> (UserId, SMPServer, ConnId)
+qKey :: RcvQueue -> QKey
 qKey rq = (userId rq, server rq, connId rq)
