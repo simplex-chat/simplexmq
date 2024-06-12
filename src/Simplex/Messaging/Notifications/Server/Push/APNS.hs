@@ -15,6 +15,7 @@ import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
+import Control.Monad.Trans.Except
 import Crypto.Hash.Algorithms (SHA256 (..))
 import qualified Crypto.PubKey.ECC.ECDSA as EC
 import qualified Crypto.PubKey.ECC.Types as ECT
@@ -353,18 +354,18 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {toke
       | status == Just N.ok200 = pure ()
       | status == Just N.badRequest400 =
           case reason' of
-            "BadDeviceToken" -> throwError PPTokenInvalid
-            "DeviceTokenNotForTopic" -> throwError PPTokenInvalid
-            "TopicDisallowed" -> throwError PPPermanentError
+            "BadDeviceToken" -> throwE PPTokenInvalid
+            "DeviceTokenNotForTopic" -> throwE PPTokenInvalid
+            "TopicDisallowed" -> throwE PPPermanentError
             _ -> err status reason'
       | status == Just N.forbidden403 = case reason' of
-          "ExpiredProviderToken" -> throwError PPPermanentError -- there should be no point retrying it as the token was refreshed
-          "InvalidProviderToken" -> throwError PPPermanentError
+          "ExpiredProviderToken" -> throwE PPPermanentError -- there should be no point retrying it as the token was refreshed
+          "InvalidProviderToken" -> throwE PPPermanentError
           _ -> err status reason'
-      | status == Just N.gone410 = throwError PPTokenInvalid
-      | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwError PPRetryLater
+      | status == Just N.gone410 = throwE PPTokenInvalid
+      | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwE PPRetryLater
       -- Just tooManyRequests429 -> TooManyRequests - too many requests for the same token
       | otherwise = err status reason'
     err :: Maybe Status -> Text -> ExceptT PushProviderError IO ()
-    err s r = throwError $ PPResponseError s r
+    err s r = throwE $ PPResponseError s r
     liftHTTPS2 a = ExceptT $ first PPConnection <$> a

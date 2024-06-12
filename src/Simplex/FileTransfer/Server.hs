@@ -18,6 +18,7 @@ import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
+import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (Builder, byteString)
@@ -136,7 +137,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       either sendError pure r
       where
         processHello = do
-          unless (B.null bodyHead) $ throwError HANDSHAKE
+          unless (B.null bodyHead) $ throwE HANDSHAKE
           (k, pk) <- atomically . C.generateKeyPair =<< asks random
           atomically $ TM.insert sessionId (HandshakeSent pk) sessions
           let authPubKey = (chain, C.signX509 serverSignKey $ C.publicToX509 k)
@@ -148,11 +149,11 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           liftIO . sendResponse $ H.responseBuilder N.ok200 [] shs
           pure Nothing
         processClientHandshake pk = do
-          unless (B.length bodyHead == xftpBlockSize) $ throwError HANDSHAKE
+          unless (B.length bodyHead == xftpBlockSize) $ throwE HANDSHAKE
           body <- liftHS $ C.unPad bodyHead
           XFTPClientHandshake {xftpVersion = v, keyHash} <- liftHS $ smpDecode body
           kh <- asks serverIdentity
-          unless (keyHash == kh) $ throwError HANDSHAKE
+          unless (keyHash == kh) $ throwE HANDSHAKE
           case compatibleVRange' xftpServerVRange v of
             Just (Compatible vr) -> do
               let auth = THAuthServer {serverPrivKey = pk, sessSecret' = Nothing}
@@ -163,7 +164,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
 #endif
               liftIO . sendResponse $ H.responseNoBody N.ok200 []
               pure Nothing
-            Nothing -> throwError HANDSHAKE
+            Nothing -> throwE HANDSHAKE
         sendError :: XFTPErrorType -> M (Maybe (THandleParams XFTPVersion 'TServer))
         sendError err = do
           runExceptT (encodeXftp err) >>= \case
@@ -395,7 +396,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       st <- asks store
       r <- runExceptT $ do
         sizes <- asks $ allowedChunkSizes . config
-        unless (size file `elem` sizes) $ throwError SIZE
+        unless (size file `elem` sizes) $ throwE SIZE
         ts <- liftIO getSystemTime
         -- TODO validate body empty
         sId <- ExceptT $ addFileRetry st file 3 ts

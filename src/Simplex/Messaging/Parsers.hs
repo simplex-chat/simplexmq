@@ -24,7 +24,7 @@ import Database.SQLite.Simple (ResultError (..), SQLData (..))
 import Database.SQLite.Simple.FromField (FieldParser, returnError)
 import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
-import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Util (safeDecodeUtf8, (<$?>))
 import Text.Read (readMaybe)
 
 base64P :: Parser ByteString
@@ -154,3 +154,6 @@ singleFieldJSON_ objectTag tagModifier =
 
 defaultJSON :: J.Options
 defaultJSON = J.defaultOptions {J.omitNothingFields = True}
+
+textP :: Parser String
+textP = T.unpack . safeDecodeUtf8 <$> A.takeByteString
