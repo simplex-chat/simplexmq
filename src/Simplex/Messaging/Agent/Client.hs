@@ -1909,7 +1909,9 @@ withNextSrv c userId usedSrvs initUsed action = do
 
 data AgentServersSummary = AgentServersSummary
   { usersServersSummary :: Map UserId ServersSummary -- UserId to be mapped to User in chat core
-    -- totalServersSummary :: ServersSummary -- compute in backend to not repeat logic in UI?
+    -- compute in backend to not repeat logic in UI?
+    -- requires separate type / changing summary type to accomodate many servers (e.g. lists of workers, etc.)
+    -- totalServersSummary :: ServersSummary
   }
   deriving (Show)
 
