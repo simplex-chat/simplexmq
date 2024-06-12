@@ -87,6 +87,8 @@ module Simplex.Messaging.Agent.Client
     activeClientSession,
     agentClientStore,
     agentDRG,
+    AgentServersSummary (..),
+    getAgentServersSummary,
     getAgentSubscriptions,
     slowNetworkConfig,
     protocolClientError,
@@ -1904,6 +1906,94 @@ withNextSrv c userId usedSrvs initUsed action = do
         used' = if null unused then initUsed else srv : used
     writeTVar usedSrvs $! used'
   action srvAuth
+
+data AgentServersSummary = AgentServersSummary
+  { usersServersSummary :: Map UserId UserServersSummary -- UserId to be mapped to User in chat core
+  }
+  deriving (Show)
+
+data UserServersSummary = UserServersSummary
+  { smpServersSummary :: [SMPServerSummary],
+    xftpServersSummary :: [XFTPServerSummary]
+  }
+  deriving (Show)
+
+data SMPServerSummary = SMPServerSummary
+  { smpServer :: SMPServer,
+    usedForNewConnections :: Bool,
+    subscriptionsSummary :: Maybe SMPServerSubsSummary,
+    workersSummary :: SMPServerWorkersSummary,
+    commandsStats :: [CommandStat],
+    rcvMsgCounts :: [SMPServerRcvMsgCounts],
+    deliveryInfo :: Maybe SMPServerDeliveryInfo -- Nothing if server is only used for receiving?
+  }
+  deriving (Show)
+
+data SMPServerSubsSummary = SMPServerSubsSummary
+  { activeSubscriptions :: [SMPServerSubInfo],
+    pendingSubscriptions :: [SMPServerSubInfo],
+    removedSubscriptions :: [SMPServerSubInfo]
+  }
+  deriving (Show)
+
+data SMPServerSubInfo = SMPServerSubInfo
+  { rcvId :: Text,
+    subError :: Maybe String
+  }
+  deriving (Show)
+
+data SMPServerWorkersSummary = SMPServerWorkersSummary
+  { smpDeliveryWorkers_ :: Map Text WorkersDetails, -- key in AgentClient is SndQAddr
+    asyncCmdWorker_ :: WorkersDetails, -- key in AgentClient is Maybe SMPServer
+    smpSubWorkers_ :: [Text] -- key in AgentClient is SMPTransportSession
+  }
+  deriving (Show)
+
+data CommandStat = CommandStat
+  { host :: ByteString,
+    clientTs :: ByteString,
+    cmd :: ByteString,
+    res :: ByteString,
+    count :: Int
+  }
+  deriving (Show)
+
+data SMPServerRcvMsgCounts = SMPServerRcvMsgCounts
+  { connId :: ConnId,
+    total :: Int,
+    duplicate :: Int
+  }
+  deriving (Show)
+
+data SMPServerDeliveryInfo = SMPServerDeliveryInfo
+  { host :: ByteString,
+    viaOnionHost :: Bool, -- to not differentiate based on string in UI
+    viaSOCKSproxy :: Bool,
+    proxy :: Maybe SMPServer
+    -- numProxiedMsgs :: Int -- per server / per proxy? not sure this is valuable
+  }
+  deriving (Show)
+
+data XFTPServerSummary = XFTPServerSummary
+  { xftpServer :: XFTPServer,
+    usedForNewFiles :: Bool,
+    workersSummary :: XFTPServerWorkersSummary,
+    commandsStats :: [CommandStat]
+  }
+  deriving (Show)
+
+-- Env {xftpAgent} = agentEnv
+-- XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers} = xftpAgent
+data XFTPServerWorkersSummary = XFTPServerWorkersSummary
+  { rcvWorker :: Maybe WorkersDetails, -- key in XFTPAgent is Maybe XFTPServer
+    sndWorker :: Maybe WorkersDetails, -- key in XFTPAgent is Maybe XFTPServer
+    delWorker :: Maybe WorkersDetails -- key in XFTPAgent is XFTPServer
+  }
+  deriving (Show)
+
+getAgentServersSummary :: AgentClient -> IO AgentServersSummary
+getAgentServersSummary _c = do
+  pure AgentServersSummary {usersServersSummary = M.empty}
 
 data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text, subError :: Maybe String}
   deriving (Show)
