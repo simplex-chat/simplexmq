@@ -170,6 +170,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (partitionEithers)
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
@@ -1908,10 +1909,8 @@ withNextSrv c userId usedSrvs initUsed action = do
   action srvAuth
 
 data AgentServersSummary = AgentServersSummary
-  { usersServersSummary :: Map UserId ServersSummary -- UserId to be mapped to User in chat core
-    -- compute in backend to not repeat logic in UI?
-    -- requires separate type / changing summary type to accomodate many servers (e.g. lists of workers, etc.)
-    -- totalServersSummary :: ServersSummary
+  { usersServersSummary :: Map UserId ServersSummary
+  -- totalServersSummary :: ServersSummary -- compute in backend to not repeat logic in UI?
   }
   deriving (Show)
 
@@ -1924,73 +1923,25 @@ data ServersSummary = ServersSummary
 data SMPServerSummary = SMPServerSummary
   { smpServer :: SMPServer,
     usedForNewConnections :: Bool,
-    subscriptionsSummary :: Maybe SMPServerSubsSummary,
-    workersSummary :: SMPServerWorkersSummary,
-    commandsStats :: [CommandStat],
-    rcvMsgCounts :: [SMPServerRcvMsgCounts],
-    deliveryInfo :: Maybe SMPServerDeliveryInfo -- Nothing if server is only used for receiving?
+    activeSubscriptions :: [SMPServerSubRcvId],
+    pendingSubscriptions :: [SMPServerSubRcvId],
+    rcvMsgs :: Int64,
+    -- duplicateRcvMsgs :: Int64, -- tracking it per server allows to easier detect it before checking detailed info
+    sndMsgs :: Int64
   }
   deriving (Show)
 
-data SMPServerSubsSummary = SMPServerSubsSummary
-  { activeSubscriptions :: [SMPServerSubInfo],
-    pendingSubscriptions :: [SMPServerSubInfo],
-    removedSubscriptions :: [SMPServerSubInfo]
-  }
-  deriving (Show)
-
-data SMPServerSubInfo = SMPServerSubInfo
-  { rcvId :: Text,
-    subError :: Maybe String
-  }
-  deriving (Show)
-
-data SMPServerWorkersSummary = SMPServerWorkersSummary
-  { smpDeliveryWorkers_ :: Map Text WorkersDetails, -- key in AgentClient is SndQAddr
-    asyncCmdWorker_ :: WorkersDetails, -- key in AgentClient is Maybe SMPServer
-    smpSubWorkers_ :: [Text] -- key in AgentClient is SMPTransportSession
-  }
-  deriving (Show)
-
-data CommandStat = CommandStat
-  { host :: Text,
-    clientTs :: Text,
-    cmd :: Text,
-    res :: Text,
-    count :: Int
-  }
-  deriving (Show)
-
-data SMPServerRcvMsgCounts = SMPServerRcvMsgCounts
-  { connId :: Text,
-    total :: Int,
-    duplicate :: Int
-  }
-  deriving (Show)
-
-data SMPServerDeliveryInfo = SMPServerDeliveryInfo
-  { host :: Text,
-    viaOnionHost :: Bool, -- to not differentiate based on string in UI
-    viaSOCKSproxy :: Bool,
-    smpProxy :: Maybe SMPServer
-    -- numProxiedMsgs :: Int -- per server / per proxy? not sure this is valuable
-  }
-  deriving (Show)
+type SMPServerSubRcvId = Text
 
 data XFTPServerSummary = XFTPServerSummary
   { xftpServer :: XFTPServer,
     usedForNewFiles :: Bool,
-    workersSummary :: XFTPServerWorkersSummary,
-    commandsStats :: [CommandStat]
-  }
-  deriving (Show)
-
--- Env {xftpAgent} = agentEnv
--- XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers} = xftpAgent
-data XFTPServerWorkersSummary = XFTPServerWorkersSummary
-  { rcvWorker :: Maybe WorkersDetails, -- key in XFTPAgent is Maybe XFTPServer
-    sndWorker :: Maybe WorkersDetails, -- key in XFTPAgent is Maybe XFTPServer
-    delWorker :: Maybe WorkersDetails -- key in XFTPAgent is XFTPServer
+    rcvFilesCount :: Int64,
+    rcvInProgress :: Bool,
+    sndFilesCount :: Int64,
+    sndInProgress :: Bool,
+    delFilesCount :: Int64,
+    delInProgress :: Bool
   }
   deriving (Show)
 
@@ -2188,23 +2139,7 @@ $(J.deriveJSON (enumJSON $ dropPrefix "TS") ''ProtocolTestStep)
 
 $(J.deriveJSON defaultJSON ''ProtocolTestFailure)
 
-$(J.deriveJSON defaultJSON ''WorkersDetails)
-
-$(J.deriveJSON defaultJSON ''CommandStat)
-
-$(J.deriveJSON defaultJSON ''XFTPServerWorkersSummary)
-
 $(J.deriveJSON defaultJSON ''XFTPServerSummary)
-
-$(J.deriveJSON defaultJSON ''SMPServerDeliveryInfo)
-
-$(J.deriveJSON defaultJSON ''SMPServerRcvMsgCounts)
-
-$(J.deriveJSON defaultJSON ''SMPServerWorkersSummary)
-
-$(J.deriveJSON defaultJSON ''SMPServerSubInfo)
-
-$(J.deriveJSON defaultJSON ''SMPServerSubsSummary)
 
 $(J.deriveJSON defaultJSON ''SMPServerSummary)
 
@@ -2215,6 +2150,8 @@ $(J.deriveJSON defaultJSON ''AgentServersSummary)
 $(J.deriveJSON defaultJSON ''SubInfo)
 
 $(J.deriveJSON defaultJSON ''SubscriptionsInfo)
+
+$(J.deriveJSON defaultJSON ''WorkersDetails)
 
 $(J.deriveJSON defaultJSON ''WorkersSummary)
 
