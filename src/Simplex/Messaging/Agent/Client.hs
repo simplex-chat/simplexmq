@@ -1926,7 +1926,7 @@ data SMPServerSummary = SMPServerSummary
     activeSubscriptions :: [SMPServerSubRcvId],
     pendingSubscriptions :: [SMPServerSubRcvId],
     rcvMsgs :: Int64,
-    -- duplicateRcvMsgs :: Int64, -- tracking it per server allows to easier detect it before checking detailed info
+    duplicateRcvMsgs :: Int64, -- tracking it per server allows to easier detect it before checking detailed info
     sndMsgs :: Int64
   }
   deriving (Show)
