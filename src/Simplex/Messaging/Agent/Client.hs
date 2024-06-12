@@ -1923,7 +1923,7 @@ data ServersSummary = ServersSummary
 data SMPServerSummary = SMPServerSummary
   { smpServer :: SMPServer,
     usedForNewConnections :: Bool,
-    activeSubscriptions :: [SMPServerSubRcvId],
+    activeSubscriptions :: [SMPServerSubRcvId], -- or even simply count?
     pendingSubscriptions :: [SMPServerSubRcvId],
     rcvMsgs :: Int64,
     duplicateRcvMsgs :: Int64, -- tracking it per server allows to easier detect it before checking detailed info
