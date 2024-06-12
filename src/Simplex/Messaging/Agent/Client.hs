@@ -88,7 +88,6 @@ module Simplex.Messaging.Agent.Client
     agentClientStore,
     agentDRG,
     AgentServersSummary (..),
-    ServersSummary (..),
     getAgentServersSummary,
     getAgentSubscriptions,
     slowNetworkConfig,
