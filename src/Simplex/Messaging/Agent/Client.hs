@@ -1908,11 +1908,12 @@ withNextSrv c userId usedSrvs initUsed action = do
   action srvAuth
 
 data AgentServersSummary = AgentServersSummary
-  { usersServersSummary :: Map UserId UserServersSummary -- UserId to be mapped to User in chat core
+  { usersServersSummary :: Map UserId ServersSummary -- UserId to be mapped to User in chat core
+    -- totalServersSummary :: ServersSummary -- compute in backend to not repeat logic in UI?
   }
   deriving (Show)
 
-data UserServersSummary = UserServersSummary
+data ServersSummary = ServersSummary
   { smpServersSummary :: [SMPServerSummary],
     xftpServersSummary :: [XFTPServerSummary]
   }
@@ -1950,23 +1951,23 @@ data SMPServerWorkersSummary = SMPServerWorkersSummary
   deriving (Show)
 
 data CommandStat = CommandStat
-  { host :: ByteString,
-    clientTs :: ByteString,
-    cmd :: ByteString,
-    res :: ByteString,
+  { host :: Text,
+    clientTs :: Text,
+    cmd :: Text,
+    res :: Text,
     count :: Int
   }
   deriving (Show)
 
 data SMPServerRcvMsgCounts = SMPServerRcvMsgCounts
-  { connId :: ConnId,
+  { connId :: Text,
     total :: Int,
     duplicate :: Int
   }
   deriving (Show)
 
 data SMPServerDeliveryInfo = SMPServerDeliveryInfo
-  { host :: ByteString,
+  { host :: Text,
     viaOnionHost :: Bool, -- to not differentiate based on string in UI
     viaSOCKSproxy :: Bool,
     proxy :: Maybe SMPServer
@@ -2185,11 +2186,33 @@ $(J.deriveJSON (enumJSON $ dropPrefix "TS") ''ProtocolTestStep)
 
 $(J.deriveJSON defaultJSON ''ProtocolTestFailure)
 
+$(J.deriveJSON defaultJSON ''WorkersDetails)
+
+$(J.deriveJSON defaultJSON ''CommandStat)
+
+$(J.deriveJSON defaultJSON ''XFTPServerWorkersSummary)
+
+$(J.deriveJSON defaultJSON ''XFTPServerSummary)
+
+$(J.deriveJSON defaultJSON ''SMPServerDeliveryInfo)
+
+$(J.deriveJSON defaultJSON ''SMPServerRcvMsgCounts)
+
+$(J.deriveJSON defaultJSON ''SMPServerWorkersSummary)
+
+$(J.deriveJSON defaultJSON ''SMPServerSubInfo)
+
+$(J.deriveJSON defaultJSON ''SMPServerSubsSummary)
+
+$(J.deriveJSON defaultJSON ''SMPServerSummary)
+
+$(J.deriveJSON defaultJSON ''ServersSummary)
+
+$(J.deriveJSON defaultJSON ''AgentServersSummary)
+
 $(J.deriveJSON defaultJSON ''SubInfo)
 
 $(J.deriveJSON defaultJSON ''SubscriptionsInfo)
-
-$(J.deriveJSON defaultJSON ''WorkersDetails)
 
 $(J.deriveJSON defaultJSON ''WorkersSummary)
 
