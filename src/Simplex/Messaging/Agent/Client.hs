@@ -88,6 +88,8 @@ module Simplex.Messaging.Agent.Client
     agentClientStore,
     agentDRG,
     AgentServersSummary (..),
+    SMPServerState (..),
+    XFTPServerState (..),
     getAgentServersSummary,
     getAgentSubscriptions,
     slowNetworkConfig,

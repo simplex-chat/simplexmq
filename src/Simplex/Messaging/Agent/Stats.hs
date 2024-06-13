@@ -9,6 +9,13 @@ import Data.Time.Clock (UTCTime (..))
 import Simplex.Messaging.Parsers (defaultJSON)
 import UnliftIO.STM
 
+-- Add single type for gathering both smp and xftp stats across all users and servers?
+-- Idea is to provide agent with a single path to save/restore stats, instead of managing it in UI
+-- and providing agent with "initial stats". Agent would use this unifying type to write/read
+-- json representation of all stats and populating AgentClient maps:
+-- smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
+-- xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats
+
 data AgentSMPServerStats = AgentSMPServerStats
   { fromTime :: TVar UTCTime,
     msgSent :: TVar Int, -- total messages sent to server directly
