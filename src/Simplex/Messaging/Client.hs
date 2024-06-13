@@ -59,6 +59,7 @@ module Simplex.Messaging.Client
     connectSMPProxiedRelay,
     proxySMPMessage,
     forwardSMPMessage,
+    getSMPQueueInfo,
     sendProtocolCommand,
 
     -- * Supporting types and client configuration
@@ -90,6 +91,11 @@ module Simplex.Messaging.Client
     mkTransmission,
     authTransmission,
     smpClientStub,
+
+    -- * For debugging
+    TBQueueInfo (..),
+    getTBQueueInfo,
+    getProtocolClientQueuesInfo,
   )
 where
 
@@ -123,6 +129,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -154,7 +161,7 @@ data PClient v err msg = PClient
     timeoutErrorCount :: TVar Int,
     clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
-    sndQ :: TBQueue ByteString,
+    sndQ :: TBQueue (Maybe (TVar Bool), ByteString),
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmissionBatch v err msg))
   }
@@ -283,6 +290,32 @@ data SMPProxyFallback
   | SPFAllowProtected -- connect directly only when IP address is protected (SOCKS proxy or .onion address is used).
   | SPFProhibit -- prohibit direct connection to destination relay.
   deriving (Eq, Show)
+
+instance StrEncoding SMPProxyMode where
+  strEncode = \case
+    SPMAlways -> "always"
+    SPMUnknown -> "unknown"
+    SPMUnprotected -> "unprotected"
+    SPMNever -> "never"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "always" -> pure SPMAlways
+      "unknown" -> pure SPMUnknown
+      "unprotected" -> pure SPMUnprotected
+      "never" -> pure SPMNever
+      _ -> fail "Invalid SMP proxy mode"
+
+instance StrEncoding SMPProxyFallback where
+  strEncode = \case
+    SPFAllow -> "yes"
+    SPFAllowProtected -> "protected"
+    SPFProhibit -> "no"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "yes" -> pure SPFAllow
+      "protected" -> pure SPFAllowProtected
+      "no" -> pure SPFProhibit
+      _ -> fail "Invalid SMP proxy fallback mode"
 
 defaultNetworkConfig :: NetworkConfig
 defaultNetworkConfig =
@@ -474,7 +507,11 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             `finally` disconnected c'
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
-    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= void . tPutLog h
+    send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= sendPending
+      where
+        sendPending (Nothing, s) = send_ s
+        sendPending (Just pending, s) = whenM (readTVarIO pending) $ send_ s
+        send_ = void . tPutLog h
 
     receive :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     receive ProtocolClient {client_ = PClient {rcvQ, lastReceived, timeoutErrorCount}} h = forever $ do
@@ -896,8 +933,8 @@ forwardSMPMessage :: SMPClient -> CorrId -> VersionSMP -> C.PublicKeyX25519 -> E
 forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdVersion fwdKey fwdTransmission = do
   -- prepare params
   sessSecret <- case thAuth thParams of
-    Nothing -> throwError $ PCETransportError TENoServerAuth
-    Just THAuthClient {sessSecret} -> maybe (throwError $ PCETransportError TENoServerAuth) pure sessSecret
+    Nothing -> throwE $ PCETransportError TENoServerAuth
+    Just THAuthClient {sessSecret} -> maybe (throwE $ PCETransportError TENoServerAuth) pure sessSecret
   nonce <- liftIO . atomically $ C.randomCbNonce g
   -- wrap
   let fwdT = FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission}
@@ -909,6 +946,12 @@ forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = 
       r' <- liftEitherWith PCECryptoError $ C.cbDecryptNoPad sessSecret (C.reverseNonce nonce) efr
       FwdResponse {fwdCorrId = _, fwdResponse} <- liftEitherWith (const $ PCEResponseError BLOCK) $ smpDecode r'
       pure fwdResponse
+    r -> throwE $ unexpectedResponse r
+
+getSMPQueueInfo :: SMPClient -> C.APrivateAuthKey -> QueueId -> ExceptT SMPClientError IO QueueInfo
+getSMPQueueInfo c pKey qId =
+  sendSMPCommand c (Just pKey) qId QUE >>= \case
+    INFO info -> pure info
     r -> throwE $ unexpectedResponse r
 
 okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateAuthKey -> QueueId -> ExceptT SMPClientError IO ()
@@ -965,29 +1008,33 @@ sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
       pure [Response entityId $ Left $ PCETransportError e]
     TBTransmissions s n rs
       | n > 0 -> do
-          atomically $ writeTBQueue sndQ s
+          atomically $ writeTBQueue sndQ (Nothing, s) -- do not expire batched responses
           mapConcurrently (getResponse c Nothing) rs
       | otherwise -> pure []
     TBTransmission s r -> do
-      atomically $ writeTBQueue sndQ s
+      atomically $ writeTBQueue sndQ (Nothing, s)
       (: []) <$> getResponse c Nothing r
 
 -- | Send Protocol command
 sendProtocolCommand :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
 sendProtocolCommand c = sendProtocolCommand_ c Nothing Nothing
 
+-- Currently there is coupling - batch commands do not expire, and individually sent commands do.
+-- This is to reflect the fact that we send subscriptions only as batches, and also because we do not track a separate timeout for the whole batch, so it is not obvious when should we expire it.
+-- We could expire a batch of deletes, for example, either when the first response expires or when the last one does.
+-- But a better solution is to process delayed delete responses.
 sendProtocolCommand_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.CbNonce -> Maybe Int -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
 sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize}} nonce_ tOut pKey entId cmd =
   ExceptT $ uncurry sendRecv =<< mkTransmission_ c nonce_ (pKey, entId, cmd)
   where
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: Either TransportError SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
-    sendRecv t_ r = case t_ of
+    sendRecv t_ r@Request {pending} = case t_ of
       Left e -> pure . Left $ PCETransportError e
       Right t
         | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
         | otherwise -> do
-            atomically $ writeTBQueue sndQ s
+            atomically $ writeTBQueue sndQ (Just pending, s)
             response <$> getResponse c tOut r
         where
           s
@@ -1046,6 +1093,24 @@ authTransmission thAuth pKey_ nonce t = traverse authenticate pKey_
     sign :: forall a. (C.AlgorithmI a, C.SignatureAlgorithm a) => C.PrivateKey a -> Either TransportError TransmissionAuth
     sign pk = Right $ TASignature $ C.ASignature (C.sAlgorithm @a) (C.sign' pk t)
 
+data TBQueueInfo = TBQueueInfo
+  { qLength :: Int,
+    qFull :: Bool
+  }
+  deriving (Show)
+
+getTBQueueInfo :: TBQueue a -> STM TBQueueInfo
+getTBQueueInfo q = do
+  qLength <- fromIntegral <$> lengthTBQueue q
+  qFull <- isFullTBQueue q
+  pure TBQueueInfo {qLength, qFull}
+
+getProtocolClientQueuesInfo :: ProtocolClient v err msg -> IO (TBQueueInfo, TBQueueInfo)
+getProtocolClientQueuesInfo ProtocolClient {client_ = PClient {sndQ, rcvQ}} = do
+  sndQInfo <- atomically $ getTBQueueInfo sndQ
+  rcvQInfo <- atomically $ getTBQueueInfo rcvQ
+  pure (sndQInfo, rcvQInfo)
+
 $(J.deriveJSON (enumJSON $ dropPrefix "HM") ''HostMode)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "SM") ''SocksMode)
@@ -1059,3 +1124,5 @@ $(J.deriveJSON (enumJSON $ dropPrefix "SPF") ''SMPProxyFallback)
 $(J.deriveJSON defaultJSON ''NetworkConfig)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "Proxy") ''ProxyClientError)
+
+$(J.deriveJSON defaultJSON ''TBQueueInfo)

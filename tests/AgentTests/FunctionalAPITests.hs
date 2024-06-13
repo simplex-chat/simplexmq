@@ -1,7 +1,9 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
@@ -12,7 +14,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
-{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 module AgentTests.FunctionalAPITests
   ( functionalAPITests,
@@ -55,6 +56,8 @@ import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
+import Data.Bifunctor (first)
+import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
@@ -64,9 +67,10 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as S
+import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
-import Data.Type.Equality
+import Data.Type.Equality (testEquality, (:~:) (Refl))
 import Data.Word (Word16)
 import qualified Database.SQLite.Simple as SQL
 import GHC.Stack (withFrozenCallStack)
@@ -82,7 +86,7 @@ import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteS
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), SMPProxyFallback (..), SMPProxyMode (..), TransportSessionMode (TSMEntity, TSMUser), defaultClientConfig)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
+import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (NTFVersion, authBatchCmdsNTFVersion, pattern VersionNTF)
@@ -90,8 +94,9 @@ import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolS
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Transport (ATransport (..), SMPVersion, VersionSMP, authCmdsSMPVersion, basicAuthSMPVersion, batchCmdsSMPVersion, currentServerSMPRelayVersion, supportedSMPHandshakes)
-import Simplex.Messaging.Util (diffToMicroseconds)
+import Simplex.Messaging.Util (bshow, diffToMicroseconds)
 import Simplex.Messaging.Version (VersionRange (..))
 import qualified Simplex.Messaging.Version as V
 import Simplex.Messaging.Version.Internal (Version (..))
@@ -101,12 +106,15 @@ import UnliftIO
 import Util
 import XFTPClient (testXFTPServer)
 
-type AEntityTransmission e = (ACorrId, ConnId, ACommand 'Agent e)
+type AEntityTransmission e = (ACorrId, ConnId, AEvent e)
 
 -- deriving instance Eq (ValidFileDescription p)
 
+shouldRespond :: (HasCallStack, MonadUnliftIO m, Eq a, Show a) => m a -> a -> m ()
+a `shouldRespond` r = withFrozenCallStack $ withTimeout a (`shouldBe` r)
+
 (##>) :: (HasCallStack, MonadUnliftIO m) => m (AEntityTransmission e) -> AEntityTransmission e -> m ()
-a ##> t = withTimeout a (`shouldBe` t)
+a ##> t = a `shouldRespond` t
 
 (=##>) :: (Show a, HasCallStack, MonadUnliftIO m) => m a -> (HasCallStack => a -> Bool) -> m ()
 a =##> p =
@@ -134,47 +142,54 @@ nGet c = withFrozenCallStack $ get' @'AENone c
 
 get' :: forall e m. (MonadIO m, AEntityI e, HasCallStack) => AgentClient -> m (AEntityTransmission e)
 get' c = withFrozenCallStack $ do
-  (corrId, connId, APC e cmd) <- pGet c
+  (corrId, connId, AEvt e cmd) <- pGet c
   case testEquality e (sAEntity @e) of
     Just Refl -> pure (corrId, connId, cmd)
     _ -> error $ "unexpected command " <> show cmd
 
-pGet :: forall m. MonadIO m => AgentClient -> m (ATransmission 'Agent)
-pGet c = do
-  t@(_, _, APC _ cmd) <- atomically (readTBQueue $ subQ c)
+pGet :: forall m. MonadIO m => AgentClient -> m ATransmission
+pGet c = pGet' c True
+
+pGet' :: forall m. MonadIO m => AgentClient -> Bool -> m ATransmission
+pGet' c skipWarn = do
+  t@(_, _, AEvt _ cmd) <- atomically (readTBQueue $ subQ c)
   case cmd of
     CONNECT {} -> pGet c
     DISCONNECT {} -> pGet c
+    ERR (BROKER _ NETWORK) -> pGet c
+    MWARN {} | skipWarn -> pGet c
+    RFWARN {} | skipWarn -> pGet c
+    SFWARN {} | skipWarn -> pGet c
     _ -> pure t
 
-pattern CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> ACommand 'Agent e
+pattern CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> AEvent e
 pattern CONF conId srvs connInfo <- A.CONF conId PQSupportOn srvs connInfo
 
-pattern INFO :: ConnInfo -> ACommand 'Agent 'AEConn
+pattern INFO :: ConnInfo -> AEvent 'AEConn
 pattern INFO connInfo = A.INFO PQSupportOn connInfo
 
-pattern REQ :: InvitationId -> NonEmpty SMPServer -> ConnInfo -> ACommand 'Agent e
+pattern REQ :: InvitationId -> NonEmpty SMPServer -> ConnInfo -> AEvent e
 pattern REQ invId srvs connInfo <- A.REQ invId PQSupportOn srvs connInfo
 
-pattern CON :: ACommand 'Agent 'AEConn
+pattern CON :: AEvent 'AEConn
 pattern CON = A.CON PQEncOn
 
-pattern Msg :: MsgBody -> ACommand 'Agent e
+pattern Msg :: MsgBody -> AEvent e
 pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk, pqEncryption = PQEncOn} _ msgBody
 
-pattern Msg' :: AgentMsgId -> PQEncryption -> MsgBody -> ACommand 'Agent e
+pattern Msg' :: AgentMsgId -> PQEncryption -> MsgBody -> AEvent e
 pattern Msg' aMsgId pq msgBody <- MSG MsgMeta {integrity = MsgOk, recipient = (aMsgId, _), pqEncryption = pq} _ msgBody
 
-pattern MsgErr :: AgentMsgId -> MsgErrorType -> MsgBody -> ACommand 'Agent 'AEConn
+pattern MsgErr :: AgentMsgId -> MsgErrorType -> MsgBody -> AEvent 'AEConn
 pattern MsgErr msgId err msgBody <- MSG MsgMeta {recipient = (msgId, _), integrity = MsgError err} _ msgBody
 
-pattern MsgErr' :: AgentMsgId -> MsgErrorType -> PQEncryption -> MsgBody -> ACommand 'Agent 'AEConn
+pattern MsgErr' :: AgentMsgId -> MsgErrorType -> PQEncryption -> MsgBody -> AEvent 'AEConn
 pattern MsgErr' msgId err pq msgBody <- MSG MsgMeta {recipient = (msgId, _), integrity = MsgError err, pqEncryption = pq} _ msgBody
 
-pattern SENT :: AgentMsgId -> ACommand 'Agent 'AEConn
+pattern SENT :: AgentMsgId -> AEvent 'AEConn
 pattern SENT msgId = A.SENT msgId Nothing
 
-pattern Rcvd :: AgentMsgId -> ACommand 'Agent 'AEConn
+pattern Rcvd :: AgentMsgId -> AEvent 'AEConn
 pattern Rcvd agentMsgId <- RCVD MsgMeta {integrity = MsgOk} [MsgReceipt {agentMsgId, msgRcptStatus = MROk}]
 
 smpCfgVPrev :: ProtocolClientConfig SMPVersion
@@ -224,7 +239,7 @@ mkVersionRange :: Word16 -> Word16 -> VersionRange v
 mkVersionRange v1 v2 = V.mkVersionRange (Version v1) (Version v2)
 
 runRight_ :: (Eq e, Show e, HasCallStack) => ExceptT e IO () -> Expectation
-runRight_ action = runExceptT action `shouldReturn` Right ()
+runRight_ action = withFrozenCallStack $ runExceptT action `shouldReturn` Right ()
 
 runRight :: (Show e, HasCallStack) => ExceptT e IO a -> IO a
 runRight action =
@@ -232,13 +247,13 @@ runRight action =
     Right x -> pure x
     Left e -> error $ "Unexpected error: " <> show e
 
-getInAnyOrder :: HasCallStack => AgentClient -> [ATransmission 'Agent -> Bool] -> Expectation
+getInAnyOrder :: HasCallStack => AgentClient -> [ATransmission -> Bool] -> Expectation
 getInAnyOrder c ts = withFrozenCallStack $ inAnyOrder (pGet c) ts
 
-inAnyOrder :: (Show a, MonadIO m, HasCallStack) => m a -> [a -> Bool] -> m ()
+inAnyOrder :: (Show a, MonadUnliftIO m, HasCallStack) => m a -> [a -> Bool] -> m ()
 inAnyOrder _ [] = pure ()
 inAnyOrder g rs = withFrozenCallStack $ do
-  r <- g
+  r <- 5000000 `timeout` g >>= maybe (error "inAnyOrder timeout") pure
   let rest = filter (not . expected r) rs
   if length rest < length rs
     then inAnyOrder g rest
@@ -269,12 +284,20 @@ functionalAPITests t = do
       withSmpServer t testAgentClient3
     it "should establish connection without PQ encryption and enable it" $
       withSmpServer t testEnablePQEncryption
+  describe "Establishing duplex connection, different PQ settings" $ do
+    testPQMatrix2 t $ runAgentClientTestPQ True
   describe "Establishing duplex connection v2, different Ratchet versions" $
     testRatchetMatrix2 t runAgentClientTest
   describe "Establish duplex connection via contact address" $
     testMatrix2 t runAgentClientContactTest
+  describe "Establish duplex connection via contact address, different PQ settings" $ do
+    testPQMatrix2NoInv t $ runAgentClientContactTestPQ True PQSupportOn
   describe "Establish duplex connection via contact address v2, different Ratchet versions" $
     testRatchetMatrix2 t runAgentClientContactTest
+  describe "Establish duplex connection via contact address, different PQ settings" $ do
+    testPQMatrix3 t $ runAgentClientContactTestPQ3 True
+  it "should support rejecting contact request" $
+    withSmpServer t testRejectContactRequest
   describe "Establishing connection asynchronously" $ do
     it "should connect with initiating client going offline" $
       withSmpServer t testAsyncInitiatingOffline
@@ -301,6 +324,10 @@ functionalAPITests t = do
       testDuplicateMessage t
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages t
+    it "should connect to the server when server goes up if it initially was down" $
+      testDeliveryAfterSubscriptionError t
+    it "should deliver messages if one of connections has quota exceeded" $
+      testMsgDeliveryQuotaExceeded t
     describe "message expiration" $ do
       it "should expire one message" $ testExpireMessage t
       it "should expire multiple messages" $ testExpireManyMessages t
@@ -440,6 +467,9 @@ functionalAPITests t = do
     it "should wait for user network" testWaitForUserNetwork
     it "should not reset online to offline if happens too quickly" testDoNotResetOnlineToOffline
     it "should resume multiple threads" testResumeMultipleThreads
+  describe "SMP queue info" $ do
+    it "server should respond with queue and subscription information" $
+      withSmpServer t testServerQueueInfo
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 = do
@@ -459,7 +489,7 @@ canCreateQueue allowNew (srvAuth, srvVersion) (clntAuth, clntVersion) =
   let v = basicAuthSMPVersion
    in allowNew && (isNothing srvAuth || (srvVersion >= v && clntVersion >= v && srvAuth == clntAuth))
 
-testMatrix2 :: ATransport -> (PQSupport -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testMatrix2 :: HasCallStack => ATransport -> (PQSupport -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
   it "v8, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentProxyCfg agentProxyCfg (initAgentServersProxy SPMAlways SPFProhibit) 3 $ runTest PQSupportOn True
   it "v7" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfgV7 3 $ runTest PQSupportOn False
@@ -471,7 +501,7 @@ testMatrix2 t runTest = do
   it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 $ runTest PQSupportOff False
   it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 $ runTest PQSupportOff False
 
-testRatchetMatrix2 :: ATransport -> (PQSupport -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testRatchetMatrix2 :: HasCallStack => ATransport -> (PQSupport -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 t runTest = do
   it "v8, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentProxyCfg agentProxyCfg (initAgentServersProxy SPMAlways SPFProhibit) 3 $ runTest PQSupportOn True
   it "ratchet next" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfgV7 3 $ runTest PQSupportOn False
@@ -482,10 +512,49 @@ testRatchetMatrix2 t runTest = do
   it "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 3 $ runTest PQSupportOff False
   it "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 3 $ runTest PQSupportOff False
 
-testServerMatrix2 :: ATransport -> (InitialAgentServers -> IO ()) -> Spec
+testServerMatrix2 :: HasCallStack => ATransport -> (InitialAgentServers -> IO ()) -> Spec
 testServerMatrix2 t runTest = do
   it "1 server" $ withSmpServer t $ runTest initAgentServers
   it "2 servers" $ withSmpServer t . withSmpServerOn t testPort2 $ runTest initAgentServers2
+
+testPQMatrix2 :: HasCallStack => ATransport -> (HasCallStack => (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()) -> Spec
+testPQMatrix2 = pqMatrix2_ True
+
+testPQMatrix2NoInv :: HasCallStack => ATransport -> (HasCallStack => (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()) -> Spec
+testPQMatrix2NoInv = pqMatrix2_ False
+
+pqMatrix2_ :: HasCallStack => Bool -> ATransport -> (HasCallStack => (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()) -> Spec
+pqMatrix2_ pqInv t test = do
+  it "dh/dh handshake" $ runTest $ \a b -> test (a, IKPQOff) (b, PQSupportOff)
+  it "dh/pq handshake" $ runTest $ \a b -> test (a, IKPQOff) (b, PQSupportOn)
+  it "pq/dh handshake" $ runTest $ \a b -> test (a, IKPQOn) (b, PQSupportOff)
+  it "pq/pq handshake" $ runTest $ \a b -> test (a, IKPQOn) (b, PQSupportOn)
+  when pqInv $ do
+    it "pq-inv/dh handshake" $ runTest $ \a b -> test (a, IKUsePQ) (b, PQSupportOff)
+    it "pq-inv/pq handshake" $ runTest $ \a b -> test (a, IKUsePQ) (b, PQSupportOn)
+  where
+    runTest = withSmpServerProxy t . runTestCfgServers2 agentProxyCfg agentProxyCfg (initAgentServersProxy SPMAlways SPFProhibit) 3
+
+testPQMatrix3 ::
+  HasCallStack =>
+  ATransport ->
+  (HasCallStack => (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()) ->
+  Spec
+testPQMatrix3 t test = do
+  it "dh" $ runTest $ \a b c -> test (a, IKPQOff) (b, PQSupportOff) (c, PQSupportOff)
+  it "dh/dh/pq" $ runTest $ \a b c -> test (a, IKPQOff) (b, PQSupportOff) (c, PQSupportOn)
+  it "dh/pq/dh" $ runTest $ \a b c -> test (a, IKPQOff) (b, PQSupportOn) (c, PQSupportOff)
+  it "dh/pq/pq" $ runTest $ \a b c -> test (a, IKPQOff) (b, PQSupportOn) (c, PQSupportOn)
+  it "pq/dh/dh" $ runTest $ \a b c -> test (a, IKPQOn) (b, PQSupportOff) (c, PQSupportOff)
+  it "pq/dh/pq" $ runTest $ \a b c -> test (a, IKPQOn) (b, PQSupportOff) (c, PQSupportOn)
+  it "pq/pq/dh" $ runTest $ \a b c -> test (a, IKPQOn) (b, PQSupportOn) (c, PQSupportOff)
+  it "pq" $ runTest $ \a b c -> test (a, IKPQOn) (b, PQSupportOn) (c, PQSupportOn)
+  where
+    runTest test' =
+      withSmpServerProxy t $
+        runTestCfgServers2 agentProxyCfg agentProxyCfg servers 3 $ \a b baseMsgId ->
+          withAgent 3 agentProxyCfg servers testDB3 $ \c -> test' a b c baseMsgId
+    servers = initAgentServersProxy SPMAlways SPFProhibit
 
 runTestCfg2 :: HasCallStack => AgentConfig -> AgentConfig -> AgentMsgId -> (HasCallStack => AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> IO ()
 runTestCfg2 aCfg bCfg = runTestCfgServers2 aCfg bCfg initAgentServers
@@ -496,17 +565,17 @@ runTestCfgServers2 aCfg bCfg servers baseMsgId runTest =
   withAgentClientsCfgServers2 aCfg bCfg servers $ \a b -> runTest a b baseMsgId
 {-# INLINE runTestCfgServers2 #-}
 
-withAgentClientsCfgServers2 :: HasCallStack => AgentConfig -> AgentConfig -> InitialAgentServers -> (HasCallStack => AgentClient -> AgentClient -> IO ()) -> IO ()
+withAgentClientsCfgServers2 :: HasCallStack => AgentConfig -> AgentConfig -> InitialAgentServers -> (HasCallStack => AgentClient -> AgentClient -> IO a) -> IO a
 withAgentClientsCfgServers2 aCfg bCfg servers runTest =
   withAgent 1 aCfg servers testDB $ \a ->
     withAgent 2 bCfg servers testDB2 $ \b ->
       runTest a b
 
-withAgentClientsCfg2 :: HasCallStack => AgentConfig -> AgentConfig -> (HasCallStack => AgentClient -> AgentClient -> IO ()) -> IO ()
+withAgentClientsCfg2 :: HasCallStack => AgentConfig -> AgentConfig -> (HasCallStack => AgentClient -> AgentClient -> IO a) -> IO a
 withAgentClientsCfg2 aCfg bCfg = withAgentClientsCfgServers2 aCfg bCfg initAgentServers
 {-# INLINE withAgentClientsCfg2 #-}
 
-withAgentClients2 :: HasCallStack => (HasCallStack => AgentClient -> AgentClient -> IO ()) -> IO ()
+withAgentClients2 :: HasCallStack => (HasCallStack => AgentClient -> AgentClient -> IO a) -> IO a
 withAgentClients2 = withAgentClientsCfg2 agentCfg agentCfg
 {-# INLINE withAgentClients2 #-}
 
@@ -517,16 +586,20 @@ withAgentClients3 runTest =
       runTest a b c
 
 runAgentClientTest :: HasCallStack => PQSupport -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
-runAgentClientTest pqSupport viaProxy alice@AgentClient {} bob baseId =
+runAgentClientTest pqSupport viaProxy alice bob baseId =
+  runAgentClientTestPQ viaProxy (alice, IKNoPQ pqSupport) (bob, pqSupport) baseId
+
+runAgentClientTestPQ :: HasCallStack => Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
+runAgentClientTestPQ viaProxy (alice, aPQ) (bob, bPQ) baseId =
   runRight_ $ do
-    (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (IKNoPQ pqSupport) SMSubscribe
-    aliceId <- A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" pqSupport SMSubscribe
+    (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing aPQ SMSubscribe
+    aliceId <- A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" bPQ SMSubscribe
     ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
-    liftIO $ pqSup' `shouldBe` pqSupport
+    liftIO $ pqSup' `shouldBe` CR.connPQEncryption aPQ
     allowConnection alice bobId confId "alice's connInfo"
-    let pqEnc = CR.pqSupportToEnc pqSupport
+    let pqEnc = PQEncryption $ pqConnectionMode aPQ bPQ
     get alice ##> ("", bobId, A.CON pqEnc)
-    get bob ##> ("", aliceId, A.INFO pqSupport "alice's connInfo")
+    get bob ##> ("", aliceId, A.INFO bPQ "alice's connInfo")
     get bob ##> ("", aliceId, A.CON pqEnc)
     -- message IDs 1 to 3 (or 1 to 4 in v1) get assigned to control messages, so first MSG is assigned ID 4
     let proxySrv = if viaProxy then Just testSMPServer else Nothing
@@ -554,6 +627,9 @@ runAgentClientTest pqSupport viaProxy alice@AgentClient {} bob baseId =
   where
     msgId = subtract baseId . fst
 
+pqConnectionMode :: InitialKeys -> PQSupport -> Bool
+pqConnectionMode pqMode1 pqMode2 = supportPQ (CR.connPQEncryption pqMode1) && supportPQ pqMode2
+
 testEnablePQEncryption :: HasCallStack => IO ()
 testEnablePQEncryption =
   withAgentClients2 $ \ca cb -> runRight_ $ do
@@ -571,13 +647,13 @@ testEnablePQEncryption =
     -- switched to smaller envelopes (before reporting PQ encryption enabled)
     sml <- largeMsg g PQSupportOn
     -- fail because of message size
-    Left (A.CMD LARGE) <- tryError $ A.sendMessage ca bId PQEncOn SMP.noMsgFlags lrg
+    Left (A.CMD LARGE _) <- tryError $ A.sendMessage ca bId PQEncOn SMP.noMsgFlags lrg
     (9, PQEncOff) <- A.sendMessage ca bId PQEncOn SMP.noMsgFlags sml
     get ca =##> \case ("", connId, SENT 9) -> connId == bId; _ -> False
     get cb =##> \case ("", connId, MsgErr' 8 MsgSkipped {} PQEncOff msg') -> connId == aId && msg' == sml; _ -> False
     ackMessage cb aId 8 Nothing
     -- -- fail in reply to sync IDss
-    Left (A.CMD LARGE) <- tryError $ A.sendMessage cb aId PQEncOn SMP.noMsgFlags lrg
+    Left (A.CMD LARGE _) <- tryError $ A.sendMessage cb aId PQEncOn SMP.noMsgFlags lrg
     (10, PQEncOff) <- A.sendMessage cb aId PQEncOn SMP.noMsgFlags sml
     get cb =##> \case ("", connId, SENT 10) -> connId == aId; _ -> False
     get ca =##> \case ("", connId, MsgErr' 10 MsgSkipped {} PQEncOff msg') -> connId == bId && msg' == sml; _ -> False
@@ -604,8 +680,8 @@ testEnablePQEncryption =
     (b, 26, sml) \#>\ a
     (a, 27, sml) \#>\ b
     -- PQ encryption is now disabled, but support remained enabled, so we still cannot send larger messages
-    Left (A.CMD LARGE) <- tryError $ A.sendMessage ca bId PQEncOff SMP.noMsgFlags (sml <> "123456")
-    Left (A.CMD LARGE) <- tryError $ A.sendMessage cb aId PQEncOff SMP.noMsgFlags (sml <> "123456")
+    Left (A.CMD LARGE _) <- tryError $ A.sendMessage ca bId PQEncOff SMP.noMsgFlags (sml <> "123456")
+    Left (A.CMD LARGE _) <- tryError $ A.sendMessage cb aId PQEncOff SMP.noMsgFlags (sml <> "123456")
     pure ()
   where
     (\#>\) = PQEncOff `sndRcv` PQEncOff
@@ -646,19 +722,23 @@ testAgentClient3 =
 
 runAgentClientContactTest :: HasCallStack => PQSupport -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
 runAgentClientContactTest pqSupport viaProxy alice bob baseId =
+  runAgentClientContactTestPQ viaProxy pqSupport (alice, IKNoPQ pqSupport) (bob, pqSupport) baseId
+
+runAgentClientContactTestPQ :: HasCallStack => Bool -> PQSupport -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
+runAgentClientContactTestPQ viaProxy reqPQSupport (alice, aPQ) (bob, bPQ) baseId =
   runRight_ $ do
-    (_, qInfo) <- A.createConnection alice 1 True SCMContact Nothing (IKNoPQ pqSupport) SMSubscribe
-    aliceId <- A.prepareConnectionToJoin bob 1 True qInfo pqSupport
-    aliceId' <- A.joinConnection bob 1 (Just aliceId) True qInfo "bob's connInfo" pqSupport SMSubscribe
+    (_, qInfo) <- A.createConnection alice 1 True SCMContact Nothing aPQ SMSubscribe
+    aliceId <- A.prepareConnectionToJoin bob 1 True qInfo bPQ
+    aliceId' <- A.joinConnection bob 1 (Just aliceId) True qInfo "bob's connInfo" bPQ SMSubscribe
     liftIO $ aliceId' `shouldBe` aliceId
     ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
-    liftIO $ pqSup' `shouldBe` pqSupport
-    bobId <- acceptContact alice True invId "alice's connInfo" PQSupportOn SMSubscribe
+    liftIO $ pqSup' `shouldBe` reqPQSupport
+    bobId <- acceptContact alice True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
     ("", _, A.CONF confId pqSup'' _ "alice's connInfo") <- get bob
-    liftIO $ pqSup'' `shouldBe` pqSupport
+    liftIO $ pqSup'' `shouldBe` bPQ
     allowConnection bob aliceId confId "bob's connInfo"
-    let pqEnc = CR.pqSupportToEnc pqSupport
-    get alice ##> ("", bobId, A.INFO pqSupport "bob's connInfo")
+    let pqEnc = PQEncryption $ pqConnectionMode aPQ bPQ
+    get alice ##> ("", bobId, A.INFO (CR.connPQEncryption aPQ) "bob's connInfo")
     get alice ##> ("", bobId, A.CON pqEnc)
     get bob ##> ("", aliceId, A.CON pqEnc)
     -- message IDs 1 to 3 (or 1 to 4 in v1) get assigned to control messages, so first MSG is assigned ID 4
@@ -687,6 +767,41 @@ runAgentClientContactTest pqSupport viaProxy alice bob baseId =
   where
     msgId = subtract baseId . fst
 
+runAgentClientContactTestPQ3 :: HasCallStack => Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
+runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId = runRight_ $ do
+  (_, qInfo) <- A.createConnection alice 1 True SCMContact Nothing aPQ SMSubscribe
+  (bAliceId, bobId, abPQEnc) <- connectViaContact bob bPQ qInfo
+  sentMessages abPQEnc alice bobId bob bAliceId
+  (tAliceId, tomId, atPQEnc) <- connectViaContact tom tPQ qInfo
+  sentMessages atPQEnc alice tomId tom tAliceId
+  where
+    msgId = subtract baseId . fst
+    connectViaContact b pq qInfo = do
+      aId <- A.prepareConnectionToJoin b 1 True qInfo pq
+      aId' <- A.joinConnection b 1 (Just aId) True qInfo "bob's connInfo" pq SMSubscribe
+      liftIO $ aId' `shouldBe` aId
+      ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
+      liftIO $ pqSup' `shouldBe` PQSupportOn
+      bId <- acceptContact alice True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
+      ("", _, A.CONF confId pqSup'' _ "alice's connInfo") <- get b
+      liftIO $ pqSup'' `shouldBe` pq
+      allowConnection b aId confId "bob's connInfo"
+      let pqEnc = PQEncryption $ pqConnectionMode aPQ pq
+      get alice ##> ("", bId, A.INFO (CR.connPQEncryption aPQ) "bob's connInfo")
+      get alice ##> ("", bId, A.CON pqEnc)
+      get b ##> ("", aId, A.CON pqEnc)
+      pure (aId, bId, pqEnc)
+    sentMessages pqEnc a bId b aId = do
+      let proxySrv = if viaProxy then Just testSMPServer else Nothing
+      1 <- msgId <$> A.sendMessage a bId pqEnc SMP.noMsgFlags "hello"
+      get a ##> ("", bId, A.SENT (baseId + 1) proxySrv)
+      get b =##> \case ("", c, Msg' _ pq "hello") -> c == aId && pq == pqEnc; _ -> False
+      ackMessage b aId (baseId + 1) Nothing
+      2 <- msgId <$> A.sendMessage b aId pqEnc SMP.noMsgFlags "hello too"
+      get b ##> ("", aId, A.SENT (baseId + 2) proxySrv)
+      get a =##> \case ("", c, Msg' _ pq "hello too") -> c == bId && pq == pqEnc; _ -> False
+      ackMessage a bId (baseId + 2) Nothing
+
 noMessages :: HasCallStack => AgentClient -> String -> Expectation
 noMessages c err = tryGet `shouldReturn` ()
   where
@@ -694,6 +809,18 @@ noMessages c err = tryGet `shouldReturn` ()
       10000 `timeout` get c >>= \case
         Just msg -> error $ err <> ": " <> show msg
         _ -> return ()
+
+testRejectContactRequest :: HasCallStack => IO ()
+testRejectContactRequest =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    (addrConnId, qInfo) <- A.createConnection alice 1 True SCMContact Nothing IKPQOn SMSubscribe
+    aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+    aliceId' <- A.joinConnection bob 1 (Just aliceId) True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    liftIO $ aliceId' `shouldBe` aliceId
+    ("", _, A.REQ invId PQSupportOn _ "bob's connInfo") <- get alice
+    liftIO $ runExceptT (rejectContact alice "abcd" invId) `shouldReturn` Left (CONN NOT_FOUND)
+    rejectContact alice addrConnId invId
+    liftIO $ noMessages bob "nothing delivered to bob"
 
 testAsyncInitiatingOffline :: HasCallStack => IO ()
 testAsyncInitiatingOffline =
@@ -1059,6 +1186,53 @@ testSkippedMessages t = do
   disposeAgentClient alice2
   disposeAgentClient bob2
 
+testDeliveryAfterSubscriptionError :: HasCallStack => ATransport -> IO ()
+testDeliveryAfterSubscriptionError t = do
+  (aId, bId) <- withAgentClients2 $ \a b -> do
+    (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ makeConnection a b
+    nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
+    nGet b =##> \case ("", "", DOWN _ [c]) -> c == aId; _ -> False
+    4 <- runRight $ sendMessage a bId SMP.noMsgFlags "hello"
+    liftIO $ noMessages b "not delivered"
+    pure (aId, bId)
+
+  withAgentClients2 $ \a b -> do
+    Left (BROKER _ NETWORK) <- runExceptT $ subscribeConnection a bId
+    Left (BROKER _ NETWORK) <- runExceptT $ subscribeConnection b aId
+    pure ()
+    withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
+      withUP a bId $ \case ("", c, SENT 4) -> c == bId; _ -> False
+      withUP b aId $ \case ("", c, Msg "hello") -> c == aId; _ -> False
+      ackMessage b aId 4 Nothing
+
+testMsgDeliveryQuotaExceeded :: HasCallStack => ATransport -> IO ()
+testMsgDeliveryQuotaExceeded t =
+  withAgentClients2 $ \a b -> withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    (aId', bId') <- makeConnection a b
+    forM_ ([1 .. 4] :: [Int]) $ \i -> do
+      mId <- sendMessage a bId SMP.noMsgFlags $ "message " <> bshow i
+      get a =##> \case ("", c, SENT mId') -> bId == c && mId == mId'; _ -> False
+    8 <- sendMessage a bId SMP.noMsgFlags "over quota"
+    pGet' a False =##> \case ("", c, AEvt _ (MWARN 8 (SMP _ QUOTA))) -> bId == c; _ -> False
+    4 <- sendMessage a bId' SMP.noMsgFlags "hello"
+    get a =##> \case ("", c, SENT 4) -> bId' == c; _ -> False
+    get b =##> \case ("", c, Msg "message 1") -> aId == c; _ -> False
+    get b =##> \case ("", c, Msg "hello") -> aId' == c; _ -> False
+    ackMessage b aId' 4 Nothing
+    ackMessage b aId 4 Nothing
+    get b =##> \case ("", c, Msg "message 2") -> aId == c; _ -> False
+    ackMessage b aId 5 Nothing
+    get b =##> \case ("", c, Msg "message 3") -> aId == c; _ -> False
+    ackMessage b aId 6 Nothing
+    get b =##> \case ("", c, Msg "message 4") -> aId == c; _ -> False
+    ackMessage b aId 7 Nothing
+    get a =##> \case ("", c, QCONT) -> bId == c; _ -> False
+    get b =##> \case ("", c, Msg "over quota") -> aId == c; _ -> False
+    ackMessage b aId 9 Nothing -- msg 8 was QCONT
+    get a =##> \case ("", c, SENT 8) -> bId == c; _ -> False
+    liftIO $ concurrently_ (noMessages a "no more events") (noMessages b "no more events")
+
 testExpireMessage :: HasCallStack => ATransport -> IO ()
 testExpireMessage t =
   withAgent 1 agentCfg {messageTimeout = 1, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB $ \a ->
@@ -1111,8 +1285,8 @@ withUP a bId p =
   liftIO $
     getInAnyOrder
       a
-      [ \case ("", "", APC SAENone (UP _ [c])) -> c == bId; _ -> False,
-        \case (corrId, c, APC SAEConn cmd) -> c == bId && p (corrId, c, cmd); _ -> False
+      [ \case ("", "", AEvt SAENone (UP _ [c])) -> c == bId; _ -> False,
+        \case (corrId, c, AEvt SAEConn cmd) -> c == bId && p (corrId, c, cmd); _ -> False
       ]
 
 testExpireMessageQuota :: HasCallStack => ATransport -> IO ()
@@ -1134,8 +1308,8 @@ testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testP
     get b' =##> \case ("", c, Msg "1") -> c == aId; _ -> False
     ackMessage b' aId 4 Nothing
     liftIO . getInAnyOrder a $
-      [ \case ("", c, APC SAEConn (SENT 6)) -> c == bId; _ -> False,
-        \case ("", c, APC SAEConn QCONT) -> c == bId; _ -> False
+      [ \case ("", c, AEvt SAEConn (SENT 6)) -> c == bId; _ -> False,
+        \case ("", c, AEvt SAEConn QCONT) -> c == bId; _ -> False
       ]
     get b' =##> \case ("", c, MsgErr 6 (MsgSkipped 4 4) "3") -> c == aId; _ -> False
     ackMessage b' aId 6 Nothing
@@ -1171,8 +1345,8 @@ testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} 
     get b' =##> \case ("", c, Msg "1") -> c == aId; _ -> False
     ackMessage b' aId 4 Nothing
     liftIO . getInAnyOrder a $
-      [ \case ("", c, APC SAEConn (SENT 8)) -> c == bId; _ -> False,
-        \case ("", c, APC SAEConn QCONT) -> c == bId; _ -> False
+      [ \case ("", c, AEvt SAEConn (SENT 8)) -> c == bId; _ -> False,
+        \case ("", c, AEvt SAEConn QCONT) -> c == bId; _ -> False
       ]
     get b' =##> \case ("", c, MsgErr 6 (MsgSkipped 4 6) "5") -> c == aId; _ -> False
     ackMessage b' aId 6 Nothing
@@ -1245,9 +1419,9 @@ ratchetSyncP cId rss = \case
     cId' == cId && rss' == rss && ratchetSyncState == rss
   _ -> False
 
-ratchetSyncP' :: ConnId -> RatchetSyncState -> ATransmission 'Agent -> Bool
+ratchetSyncP' :: ConnId -> RatchetSyncState -> ATransmission -> Bool
 ratchetSyncP' cId rss = \case
-  (_, cId', APC SAEConn (RSYNC rss' _ ConnectionStats {ratchetSyncState})) ->
+  (_, cId', AEvt SAEConn (RSYNC rss' _ ConnectionStats {ratchetSyncState})) ->
     cId' == cId && rss' == rss && ratchetSyncState == rss
   _ -> False
 
@@ -1263,23 +1437,18 @@ testRatchetSyncServerOffline t = withAgentClients2 $ \alice bob -> do
   liftIO $ ratchetSyncState `shouldBe` RSStarted
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
     runRight_ $ do
-      liftIO . getInAnyOrder alice $
-        [ ratchetSyncP' bobId RSAgreed,
-          serverUpP
-        ]
-      liftIO . getInAnyOrder bob2 $
-        [ ratchetSyncP' aliceId RSAgreed,
-          serverUpP
-        ]
       get alice =##> ratchetSyncP bobId RSOk
       get bob2 =##> ratchetSyncP aliceId RSOk
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
   disposeAgentClient bob2
 
-serverUpP :: ATransmission 'Agent -> Bool
+serverUpP :: ATransmission -> Bool
 serverUpP = \case
-  ("", "", APC SAENone (UP _ _)) -> True
+  ("", "", AEvt SAENone (UP _ _)) -> True
   _ -> False
 
 testRatchetSyncClientRestart :: HasCallStack => ATransport -> IO ()
@@ -1325,15 +1494,10 @@ testRatchetSyncSuspendForeground t = do
   foregroundAgent bob2
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
     runRight_ $ do
-      liftIO . getInAnyOrder alice $
-        [ ratchetSyncP' bobId RSAgreed,
-          serverUpP
-        ]
-      liftIO . getInAnyOrder bob2 $
-        [ ratchetSyncP' aliceId RSAgreed,
-          serverUpP
-        ]
       get alice =##> ratchetSyncP bobId RSOk
       get bob2 =##> ratchetSyncP aliceId RSOk
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
@@ -1358,15 +1522,10 @@ testRatchetSyncSimultaneous t = do
   liftIO $ aRSS `shouldBe` RSStarted
 
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
     runRight_ $ do
-      liftIO . getInAnyOrder alice $
-        [ ratchetSyncP' bobId RSAgreed,
-          serverUpP
-        ]
-      liftIO . getInAnyOrder bob2 $
-        [ ratchetSyncP' aliceId RSAgreed,
-          serverUpP
-        ]
       get alice =##> ratchetSyncP bobId RSOk
       get bob2 =##> ratchetSyncP aliceId RSOk
       exchangeGreetingsMsgIds alice bobId 12 bob2 aliceId 9
@@ -1438,8 +1597,8 @@ testInactiveNoSubs t = do
   withSmpServerConfigOn t cfg' testPort $ \_ ->
     withAgent 1 agentCfg initAgentServers testDB $ \alice -> do
       runRight_ . void $ createConnection alice 1 True SCMInvitation Nothing SMOnlyCreate -- do not subscribe to pass noSubscriptions check
-      Just (_, _, APC SAENone (CONNECT _ _)) <- timeout 2000000 $ atomically (readTBQueue $ subQ alice)
-      Just (_, _, APC SAENone (DISCONNECT _ _)) <- timeout 5000000 $ atomically (readTBQueue $ subQ alice)
+      Just (_, _, AEvt SAENone (CONNECT _ _)) <- timeout 2000000 $ atomically (readTBQueue $ subQ alice)
+      Just (_, _, AEvt SAENone (DISCONNECT _ _)) <- timeout 5000000 $ atomically (readTBQueue $ subQ alice)
       pure ()
 
 testInactiveWithSubs :: ATransport -> IO ()
@@ -1515,13 +1674,13 @@ testSuspendingAgentCompleteSending t = withAgentClients2 $ \a b -> do
     liftIO $ suspendAgent b 5000000
 
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ @AgentErrorType $ do
-    pGet b =##> \case ("", c, APC SAEConn (SENT 5)) -> c == aId; ("", "", APC _ UP {}) -> True; _ -> False
-    pGet b =##> \case ("", c, APC SAEConn (SENT 5)) -> c == aId; ("", "", APC _ UP {}) -> True; _ -> False
-    pGet b =##> \case ("", c, APC SAEConn (SENT 6)) -> c == aId; ("", "", APC _ UP {}) -> True; _ -> False
+    pGet b =##> \case ("", c, AEvt SAEConn (SENT 5)) -> c == aId; ("", "", AEvt _ UP {}) -> True; _ -> False
+    pGet b =##> \case ("", c, AEvt SAEConn (SENT 5)) -> c == aId; ("", "", AEvt _ UP {}) -> True; _ -> False
+    pGet b =##> \case ("", c, AEvt SAEConn (SENT 6)) -> c == aId; ("", "", AEvt _ UP {}) -> True; _ -> False
     ("", "", SUSPENDED) <- nGet b
 
-    pGet a =##> \case ("", c, APC _ (Msg "hello too")) -> c == bId; ("", "", APC _ UP {}) -> True; _ -> False
-    pGet a =##> \case ("", c, APC _ (Msg "hello too")) -> c == bId; ("", "", APC _ UP {}) -> True; _ -> False
+    pGet a =##> \case ("", c, AEvt _ (Msg "hello too")) -> c == bId; ("", "", AEvt _ UP {}) -> True; _ -> False
+    pGet a =##> \case ("", c, AEvt _ (Msg "hello too")) -> c == bId; ("", "", AEvt _ UP {}) -> True; _ -> False
     ackMessage a bId 5 Nothing
     get a =##> \case ("", c, Msg "how are you?") -> c == bId; _ -> False
     ackMessage a bId 6 Nothing
@@ -1812,8 +1971,8 @@ testWaitDelivery t =
         liftIO $
           getInAnyOrder
             bob
-            [ \case ("", "", APC SAENone (UP _ [cId])) -> cId == aliceId; _ -> False,
-              \case ("", cId, APC SAEConn (Msg "how are you?")) -> cId == aliceId; _ -> False
+            [ \case ("", "", AEvt SAENone (UP _ [cId])) -> cId == aliceId; _ -> False,
+              \case ("", cId, AEvt SAEConn (Msg "how are you?")) -> cId == aliceId; _ -> False
             ]
         ackMessage bob aliceId (baseId + 3) Nothing
         get bob =##> \case ("", c, Msg "message 1") -> c == aliceId; _ -> False
@@ -1949,8 +2108,8 @@ testWaitDeliveryTimeout2 t =
         liftIO $
           getInAnyOrder
             bob
-            [ \case ("", "", APC SAENone (UP _ [cId])) -> cId == aliceId; _ -> False,
-              \case ("", cId, APC SAEConn (Msg "how are you?")) -> cId == aliceId; _ -> False
+            [ \case ("", "", AEvt SAENone (UP _ [cId])) -> cId == aliceId; _ -> False,
+              \case ("", cId, AEvt SAEConn (Msg "how are you?")) -> cId == aliceId; _ -> False
             ]
         liftIO $ noMessages alice "nothing else should be delivered to alice"
         liftIO $ noMessages bob "nothing else should be delivered to bob"
@@ -1976,10 +2135,10 @@ testJoinConnectionAsyncReplyError t = do
         get b =##> \case ("2", c, OK) -> c == aId; _ -> False
         confId <- withSmpServerStoreLogOn t testPort $ \_ -> do
           pGet a >>= \case
-            ("", "", APC _ (UP _ [_])) -> do
+            ("", "", AEvt _ (UP _ [_])) -> do
               ("", _, CONF confId _ "bob's connInfo") <- get a
               pure confId
-            ("", _, APC _ (CONF confId _ "bob's connInfo")) -> do
+            ("", _, AEvt _ (CONF confId _ "bob's connInfo")) -> do
               ("", "", UP _ [_]) <- nGet a
               pure confId
             r -> error $ "unexpected response " <> show r
@@ -1990,8 +2149,8 @@ testJoinConnectionAsyncReplyError t = do
           ConnectionStats {rcvQueuesInfo = [RcvQueueInfo {}], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
           pure ()
         withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
-          pGet a =##> \case ("3", c, APC _ OK) -> c == bId; ("", "", APC _ (UP _ [c])) -> c == bId; _ -> False
-          pGet a =##> \case ("3", c, APC _ OK) -> c == bId; ("", "", APC _ (UP _ [c])) -> c == bId; _ -> False
+          pGet a =##> \case ("3", c, AEvt _ OK) -> c == bId; ("", "", AEvt _ (UP _ [c])) -> c == bId; _ -> False
+          pGet a =##> \case ("3", c, AEvt _ OK) -> c == bId; ("", "", AEvt _ (UP _ [c])) -> c == bId; _ -> False
           get a ##> ("", bId, CON)
           get b ##> ("", aId, INFO "alice's connInfo")
           get b ##> ("", aId, CON)
@@ -2136,7 +2295,7 @@ testSwitchAsync servers = do
     withB = withAgent 2 agentCfg servers testDB2
 
 withAgent :: HasCallStack => Int -> AgentConfig -> InitialAgentServers -> FilePath -> (HasCallStack => AgentClient -> IO a) -> IO a
-withAgent clientId cfg' servers dbPath = bracket (getSMPAgentClient' clientId cfg' servers dbPath) disposeAgentClient
+withAgent clientId cfg' servers dbPath = bracket (getSMPAgentClient' clientId cfg' servers dbPath) (\a -> disposeAgentClient a >> threadDelay 100000)
 
 sessionSubscribe :: (forall a. (AgentClient -> IO a) -> IO a) -> [ConnId] -> (AgentClient -> ExceptT AgentErrorType IO ()) -> IO ()
 sessionSubscribe withC connIds a =
@@ -2263,20 +2422,20 @@ testAbortSwitchStartedReinitiate servers = do
     withB :: (AgentClient -> IO a) -> IO a
     withB = withAgent 2 agentCfg servers testDB2
 
-switchPhaseRcvP :: ConnId -> SwitchPhase -> [Maybe RcvSwitchStatus] -> ATransmission 'Agent -> Bool
+switchPhaseRcvP :: ConnId -> SwitchPhase -> [Maybe RcvSwitchStatus] -> ATransmission -> Bool
 switchPhaseRcvP cId sphase swchStatuses = switchPhaseP cId QDRcv sphase (\stats -> rcvSwchStatuses' stats == swchStatuses)
 
-switchPhaseSndP :: ConnId -> SwitchPhase -> [Maybe SndSwitchStatus] -> ATransmission 'Agent -> Bool
+switchPhaseSndP :: ConnId -> SwitchPhase -> [Maybe SndSwitchStatus] -> ATransmission -> Bool
 switchPhaseSndP cId sphase swchStatuses = switchPhaseP cId QDSnd sphase (\stats -> sndSwchStatuses' stats == swchStatuses)
 
-switchPhaseP :: ConnId -> QueueDirection -> SwitchPhase -> (ConnectionStats -> Bool) -> ATransmission 'Agent -> Bool
+switchPhaseP :: ConnId -> QueueDirection -> SwitchPhase -> (ConnectionStats -> Bool) -> ATransmission -> Bool
 switchPhaseP cId qd sphase statsP = \case
-  (_, cId', APC SAEConn (SWITCH qd' sphase' stats)) -> cId' == cId && qd' == qd && sphase' == sphase && statsP stats
+  (_, cId', AEvt SAEConn (SWITCH qd' sphase' stats)) -> cId' == cId && qd' == qd && sphase' == sphase && statsP stats
   _ -> False
 
-errQueueNotFoundP :: ConnId -> ATransmission 'Agent -> Bool
+errQueueNotFoundP :: ConnId -> ATransmission -> Bool
 errQueueNotFoundP cId = \case
-  (_, cId', APC SAEConn (ERR AGENT {agentErr = A_QUEUE {queueErr = "QKEY: queue address not found in connection"}})) -> cId' == cId
+  (_, cId', AEvt SAEConn (ERR AGENT {agentErr = A_QUEUE {queueErr = "QKEY: queue address not found in connection"}})) -> cId' == cId
   _ -> False
 
 testCannotAbortSwitchSecured :: HasCallStack => InitialAgentServers -> IO ()
@@ -2491,7 +2650,7 @@ testDeliveryReceipts =
     get a =##> \case ("", c, Msg "hello too") -> c == bId; _ -> False
     ackMessage a bId 6 $ Just ""
     get b =##> \case ("", c, Rcvd 6) -> c == aId; _ -> False
-    ackMessage b aId 7 (Just "") `catchError` \e -> liftIO $ e `shouldBe` A.CMD PROHIBITED
+    ackMessage b aId 7 (Just "") `catchError` \case (A.CMD PROHIBITED _) -> pure (); e -> liftIO $ expectationFailure ("unexpected error " <> show e)
     ackMessage b aId 7 Nothing
 
 testDeliveryReceiptsVersion :: HasCallStack => ATransport -> IO ()
@@ -2766,6 +2925,91 @@ testResumeMultipleThreads = do
   where
     aCfg = agentCfg {userOfflineDelay = 0}
 
+testServerQueueInfo :: IO ()
+testServerQueueInfo = do
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    (bobId, cReq) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+    liftIO $ threadDelay 200000
+    checkEmptyQ alice bobId False
+    aliceId <- joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
+    liftIO $ threadDelay 200000
+    checkEmptyQ alice bobId False
+    allowConnection alice bobId confId "alice's connInfo"
+    get alice ##> ("", bobId, CON)
+    get bob ##> ("", aliceId, INFO "alice's connInfo")
+    get bob ##> ("", aliceId, CON)
+    liftIO $ threadDelay 200000
+    checkEmptyQ alice bobId True
+    checkEmptyQ bob aliceId True
+    let msgId = 4
+    (msgId', PQEncOn) <- A.sendMessage alice bobId PQEncOn SMP.noMsgFlags "hello"
+    liftIO $ msgId' `shouldBe` msgId
+    get alice ##> ("", bobId, SENT msgId)
+    liftIO $ threadDelay 200000
+    Just srvMsgId <- checkMsgQ bob aliceId 1
+    get bob =##> \case
+      ("", c, MSG MsgMeta {integrity = MsgOk, broker = (smId, _), recipient = (mId, _), pqEncryption = PQEncOn} _ "hello") ->
+        c == aliceId && decodeLatin1 (B64.encode smId) == srvMsgId && mId == msgId
+      _ -> False
+    ackMessage bob aliceId msgId Nothing
+    liftIO $ threadDelay 200000
+    checkEmptyQ bob aliceId True
+    (msgId1, PQEncOn) <- A.sendMessage alice bobId PQEncOn SMP.noMsgFlags "hello 1"
+    get alice ##> ("", bobId, SENT msgId1)
+    Just _ <- checkMsgQ bob aliceId 1
+    (msgId2, PQEncOn) <- A.sendMessage alice bobId PQEncOn SMP.noMsgFlags "hello 2"
+    get alice ##> ("", bobId, SENT msgId2)
+    (msgId3, PQEncOn) <- A.sendMessage alice bobId PQEncOn SMP.noMsgFlags "hello 3"
+    get alice ##> ("", bobId, SENT msgId3)
+    (msgId4, PQEncOn) <- A.sendMessage alice bobId PQEncOn SMP.noMsgFlags "hello 4"
+    get alice ##> ("", bobId, SENT msgId4)
+    Just _ <- checkMsgQ bob aliceId 4
+    (msgId5, PQEncOn) <- A.sendMessage alice bobId PQEncOn SMP.noMsgFlags "hello: quota exceeded"
+    liftIO $ threadDelay 200000
+    Just _ <- checkMsgQ bob aliceId 5
+    get bob =##> \case ("", c, Msg' mId PQEncOn "hello 1") -> c == aliceId && mId == msgId1; _ -> False
+    ackMessage bob aliceId msgId1 Nothing
+    liftIO $ threadDelay 200000
+    Just _ <- checkMsgQ bob aliceId 4
+    get bob =##> \case ("", c, Msg' mId PQEncOn "hello 2") -> c == aliceId && mId == msgId2; _ -> False
+    ackMessage bob aliceId msgId2 Nothing
+    get bob =##> \case ("", c, Msg' mId PQEncOn "hello 3") -> c == aliceId && mId == msgId3; _ -> False
+    ackMessage bob aliceId msgId3 Nothing
+    liftIO $ threadDelay 200000
+    Just _ <- checkMsgQ bob aliceId 2
+    get bob =##> \case ("", c, Msg' mId PQEncOn "hello 4") -> c == aliceId && mId == msgId4; _ -> False
+    ackMessage bob aliceId msgId4 Nothing
+    liftIO $ threadDelay 200000
+    Just _ <- checkMsgQ bob aliceId 1 -- the one that did not fit now accepted
+    get alice ##> ("", bobId, QCONT)
+    get alice ##> ("", bobId, SENT msgId5)
+    liftIO $ threadDelay 200000
+    Just _srvMsgId <- checkQ bob aliceId True (Just QNoSub) 1 (Just MTMessage)
+    get bob =##> \case ("", c, Msg' mId PQEncOn "hello: quota exceeded") -> c == aliceId && mId == msgId5 + 1; _ -> False
+    ackMessage bob aliceId (msgId5 + 1) Nothing
+    liftIO $ threadDelay 200000
+    checkEmptyQ bob aliceId True
+    pure ()
+  where
+    checkEmptyQ c cId qiSnd' = do
+      r <- checkQ c cId qiSnd' (Just QSubThread) 0 Nothing
+      liftIO $ r `shouldBe` Nothing
+    checkMsgQ c cId qiSize' = do
+      r <- checkQ c cId True (Just QNoSub) qiSize' (Just MTMessage)
+      liftIO $ isJust r `shouldBe` True
+      pure r
+    checkQ c cId qiSnd' qiSubThread_ qiSize' msgType_ = do
+      QueueInfo {qiSnd, qiNtf, qiSub, qiSize, qiMsg} <- getConnectionQueueInfo c cId
+      liftIO $ do
+        qiSnd `shouldBe` qiSnd'
+        qiNtf `shouldBe` False
+        qSubThread <$> qiSub `shouldBe` qiSubThread_
+        qiSize `shouldBe` qiSize'
+        msgId_ <- forM qiMsg $ \MsgInfo {msgId, msgType} -> msgId <$ (Just msgType `shouldBe` msgType_)
+        qDelivered <$> qiSub `shouldBe` Just msgId_
+        pure msgId_
+
 noNetworkDelay :: AgentClient -> IO ()
 noNetworkDelay a = do
   d <- waitNetwork a
@@ -2820,3 +3064,16 @@ exchangeGreetingsMsgIds alice bobId aliceMsgId bob aliceId bobMsgId = do
   get bob ##> ("", aliceId, SENT bobMsgId')
   get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
   ackMessage alice bobId aliceMsgId' Nothing
+
+newtype InternalException e = InternalException {unInternalException :: e}
+  deriving (Eq, Show)
+
+instance Exception e => Exception (InternalException e)
+
+instance Exception e => MonadUnliftIO (ExceptT e IO) where
+  {-# INLINE withRunInIO #-}
+  withRunInIO :: ((forall a. ExceptT e IO a -> IO a) -> IO b) -> ExceptT e IO b
+  withRunInIO inner =
+    ExceptT . fmap (first unInternalException) . try $
+      withRunInIO $ \run ->
+        inner $ run . (either (throwIO . InternalException) pure <=< runExceptT)

@@ -9,7 +9,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Client.Agent where
 
@@ -21,7 +20,6 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except
-import Control.Monad.Trans.Reader
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
@@ -47,10 +45,9 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_, ifM, toChunks, whenM, ($>>=))
+import Simplex.Messaging.Util (catchAll_, ifM, toChunks, whenM, ($>>=), (<$$>))
 import System.Timeout (timeout)
 import UnliftIO (async)
-import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -89,7 +86,7 @@ defaultSMPClientAgentConfig =
             increaseAfter = 10 * second,
             maxInterval = 10 * second
           },
-      persistErrorInterval = 0,
+      persistErrorInterval = 30, -- seconds
       msgQSize = 256,
       agentQSize = 256,
       agentSubsBatchSize = 900,
@@ -113,31 +110,6 @@ data SMPClientAgent = SMPClientAgent
   }
 
 type OwnServer = Bool
-
-newtype InternalException e = InternalException {unInternalException :: e}
-  deriving (Eq, Show)
-
-instance Exception e => Exception (InternalException e)
-
-instance Exception e => MonadUnliftIO (ExceptT e IO) where
-  {-# INLINE withRunInIO #-}
-  withRunInIO :: ((forall a. ExceptT e IO a -> IO a) -> IO b) -> ExceptT e IO b
-  withRunInIO inner =
-    ExceptT . fmap (first unInternalException) . E.try $
-      withRunInIO $ \run ->
-        inner $ run . (either (E.throwIO . InternalException) pure <=< runExceptT)
-
--- as MonadUnliftIO instance for IO is `withRunInIO inner = inner id`,
--- the last two lines could be replaced with:
--- inner $ either (E.throwIO . InternalException) pure <=< runExceptT
-
-instance Exception e => MonadUnliftIO (ExceptT e (ReaderT r IO)) where
-  {-# INLINE withRunInIO #-}
-  withRunInIO :: ((forall a. ExceptT e (ReaderT r IO) a -> IO a) -> IO b) -> ExceptT e (ReaderT r IO) b
-  withRunInIO inner =
-    withExceptT unInternalException . ExceptT . E.try $
-      withRunInIO $ \run ->
-        inner $ run . (either (E.throwIO . InternalException) pure <=< runExceptT)
 
 newSMPClientAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> STM SMPClientAgent
 newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg = do
@@ -171,10 +143,11 @@ getSMPServerClient' ca srv = snd <$> getSMPServerClient'' ca srv
 {-# INLINE getSMPServerClient' #-}
 
 getSMPServerClient'' :: SMPClientAgent -> SMPServer -> ExceptT SMPClientError IO (OwnServer, SMPClient)
-getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, workerSeq} srv =
-  atomically getClientVar >>= either (ExceptT . newSMPClient) waitForSMPClient
+getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, workerSeq} srv = do
+  ts <- liftIO getCurrentTime
+  atomically (getClientVar ts) >>= either (ExceptT . newSMPClient) waitForSMPClient
   where
-    getClientVar :: STM (Either SMPClientVar SMPClientVar)
+    getClientVar :: UTCTime -> STM (Either SMPClientVar SMPClientVar)
     getClientVar = getSessVar workerSeq srv smpClients
 
     waitForSMPClient :: SMPClientVar -> ExceptT SMPClientError IO (OwnServer, SMPClient)
@@ -183,12 +156,13 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
       smpClient_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v)
       case smpClient_ of
         Just (Right smpClient) -> pure smpClient
-        Just (Left (e, Nothing)) -> throwE e
-        Just (Left (e, Just ts)) ->
-          ifM
-            ((ts <) <$> liftIO getCurrentTime)
-            (atomically (removeSessVar v srv smpClients) >> getSMPServerClient'' ca srv)
-            (throwE e)
+        Just (Left (e, ts_)) -> case ts_ of
+          Nothing -> throwE e
+          Just ts ->
+            ifM
+              ((ts <) <$> liftIO getCurrentTime)
+              (atomically (removeSessVar v srv smpClients) >> getSMPServerClient'' ca srv)
+              (throwE e)
         Nothing -> throwE PCEResponseTimeout
 
     newSMPClient :: SMPClientVar -> IO (Either SMPClientError (OwnServer, SMPClient))
@@ -204,12 +178,13 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
           notify ca $ CAConnected srv
           pure $ Right c
         Left e -> do
-          if persistErrorInterval agentCfg == 0 || e == PCENetworkError || e == PCEResponseTimeout
+          let ei = persistErrorInterval agentCfg
+          if ei == 0
             then atomically $ do
               putTMVar (sessionVar v) (Left (e, Nothing))
               removeSessVar v srv smpClients
             else do
-              ts <- addUTCTime (persistErrorInterval agentCfg) <$> liftIO getCurrentTime
+              ts <- addUTCTime ei <$> liftIO getCurrentTime
               atomically $ putTMVar (sessionVar v) (Left (e, Just ts))
           reconnectClient ca srv
           pure $ Left e
@@ -253,14 +228,15 @@ connectClient ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, random
 
 -- | Spawn reconnect worker if needed
 reconnectClient :: SMPClientAgent -> SMPServer -> IO ()
-reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} srv =
-  whenM (readTVarIO active) $ atomically getWorkerVar >>= mapM_ (either newSubWorker (\_ -> pure ()))
+reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} srv = do
+  ts <- getCurrentTime
+  whenM (readTVarIO active) $ atomically (getWorkerVar ts) >>= mapM_ (either newSubWorker (\_ -> pure ()))
   where
-    getWorkerVar =
+    getWorkerVar ts =
       ifM
         (null <$> getPending)
         (pure Nothing) -- prevent race with cleanup and adding pending queues in another call
-        (Just <$> getSessVar workerSeq srv smpSubWorkers)
+        (Just <$> getSessVar workerSeq srv smpSubWorkers ts)
     newSubWorker :: SessionVar (Async ()) -> IO ()
     newSubWorker v = do
       a <- async $ void (E.tryAny runSubWorker) >> atomically (cleanup v)
@@ -312,6 +288,20 @@ reconnectSMPClient ca@SMPClientAgent {agentCfg} srv cs =
 notify :: MonadIO m => SMPClientAgent -> SMPClientAgentEvent -> m ()
 notify ca evt = atomically $ writeTBQueue (agentQ ca) evt
 {-# INLINE notify #-}
+
+-- Returns already connected client for proxying messages or Nothing if client is absent, not connected yet or stores expired error.
+-- If Nothing is return proxy will spawn a new thread to wait or to create another client connection to destination relay.
+getConnectedSMPServerClient :: SMPClientAgent -> SMPServer -> IO (Maybe (Either SMPClientError (OwnServer, SMPClient)))
+getConnectedSMPServerClient SMPClientAgent {smpClients} srv =
+  atomically (TM.lookup srv smpClients $>>= \v -> (v,) <$$> tryReadTMVar (sessionVar v)) -- Nothing: client is absent or not connected yet
+    $>>= \case
+      (_, Right r) -> pure $ Just $ Right r
+      (v, Left (e, ts_)) ->
+        pure ts_ $>>= \ts ->  -- proxy will create a new connection if ts_ is Nothing
+          ifM
+            ((ts <) <$> liftIO getCurrentTime) -- error persistence interval period expired?
+            (Nothing <$ atomically (removeSessVar v srv smpClients)) -- proxy will create a new connection
+            (pure $ Just $ Left e) -- not expired, returning error
 
 lookupSMPServerClient :: SMPClientAgent -> SessionId -> STM (Maybe (OwnServer, SMPClient))
 lookupSMPServerClient SMPClientAgent {smpSessions} sessId = TM.lookup sessId smpSessions

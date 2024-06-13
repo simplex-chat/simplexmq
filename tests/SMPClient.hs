@@ -59,6 +59,9 @@ testStoreLogFile2 = "tests/tmp/smp-server-store.log.2"
 testStoreMsgsFile :: FilePath
 testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
 
+testStoreMsgsFile2 :: FilePath
+testStoreMsgsFile2 = "tests/tmp/smp-server-messages.log.2"
+
 testServerStatsBackupFile :: FilePath
 testServerStatsBackupFile = "tests/tmp/smp-server-stats.log"
 
@@ -122,8 +125,10 @@ cfg =
       smpServerVRange = supportedServerSMPRelayVRange,
       transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedSMPHandshakes},
       controlPort = Nothing,
-      smpAgentCfg = defaultSMPClientAgentConfig,
-      allowSMPProxy = False
+      smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1}, -- seconds
+      allowSMPProxy = False,
+      serverClientConcurrency = 2,
+      information = Nothing
     }
 
 cfgV7 :: ServerConfig
@@ -137,12 +142,10 @@ proxyCfg =
   cfgV7
     { allowSMPProxy = True,
       smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion,
-      smpAgentCfg =
-        defaultSMPClientAgentConfig
-          { smpCfg = (smpCfg defaultSMPClientAgentConfig) {serverVRange = proxyVRange, agreeSecret = True},
-            persistErrorInterval = 3 -- seconds
-          }
+      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {serverVRange = proxyVRange, agreeSecret = True}}
     }
+  where
+    smpAgentCfg' = smpAgentCfg cfgV7
 
 proxyVRange :: VersionRangeSMP
 proxyVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion

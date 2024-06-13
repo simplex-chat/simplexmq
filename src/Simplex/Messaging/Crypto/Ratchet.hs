@@ -166,9 +166,9 @@ instance TestEquality SRatchetKEMState where
 
 class RatchetKEMStateI (s :: RatchetKEMState) where sRatchetKEMState :: SRatchetKEMState s
 
-instance RatchetKEMStateI RKSProposed where sRatchetKEMState = SRKSProposed
+instance RatchetKEMStateI 'RKSProposed where sRatchetKEMState = SRKSProposed
 
-instance RatchetKEMStateI RKSAccepted where sRatchetKEMState = SRKSAccepted
+instance RatchetKEMStateI 'RKSAccepted where sRatchetKEMState = SRKSAccepted
 
 checkRatchetKEMState :: forall t s s' a. (RatchetKEMStateI s, RatchetKEMStateI s') => t s' a -> Either String (t s a)
 checkRatchetKEMState x = case testEquality (sRatchetKEMState @s) (sRatchetKEMState @s') of
@@ -447,7 +447,7 @@ pqX3dhRcv rpk1 rpk2 rpKem_ (E2ERatchetParams v sk1 sk2 sKem_) = do
         Just (PrivateRKParamsProposed ks@(_, pk)) -> do
           shared <- liftIO $ sntrup761Dec ct pk
           pure $ Just (ks, RatchetKEMAccepted k' shared ct)
-        Nothing -> throwError CERatchetKEMState
+        Nothing -> throwE CERatchetKEMState
       _ -> pure Nothing -- both parties can send "proposal" in case of ratchet renegotiation
 
 pqX3dh :: DhAlgorithm a => (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> Maybe RatchetKEMAccepted -> RatchetInitParams

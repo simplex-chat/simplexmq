@@ -7,6 +7,7 @@ import qualified Control.Exception as E
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
+import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -97,15 +98,15 @@ catchAll_ :: IO a -> IO a -> IO a
 catchAll_ a = catchAll a . const
 {-# INLINE catchAll_ #-}
 
-tryAllErrors :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> m (Either e a)
-tryAllErrors err action = tryError action `UE.catch` (pure . Left . err)
+tryAllErrors :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a -> ExceptT e m (Either e a)
+tryAllErrors err action = ExceptT $ Right <$> runExceptT action `UE.catch` (pure . Left . err)
 {-# INLINE tryAllErrors #-}
 
 tryAllErrors' :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a -> m (Either e a)
 tryAllErrors' err action = runExceptT action `UE.catch` (pure . Left . err)
 {-# INLINE tryAllErrors' #-}
 
-catchAllErrors :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> (e -> m a) -> m a
+catchAllErrors :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a -> (e -> ExceptT e m a) -> ExceptT e m a
 catchAllErrors err action handler = tryAllErrors err action >>= either handler pure
 {-# INLINE catchAllErrors #-}
 
@@ -113,12 +114,12 @@ catchAllErrors' :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a ->
 catchAllErrors' err action handler = tryAllErrors' err action >>= either handler pure
 {-# INLINE catchAllErrors' #-}
 
-catchThrow :: (MonadUnliftIO m, MonadError e m) => m a -> (E.SomeException -> e) -> m a
-catchThrow action err = catchAllErrors err action throwError
+catchThrow :: MonadUnliftIO m => ExceptT e m a -> (E.SomeException -> e) -> ExceptT e m a
+catchThrow action err = catchAllErrors err action throwE
 {-# INLINE catchThrow #-}
 
-allFinally :: (MonadUnliftIO m, MonadError e m) => (E.SomeException -> e) -> m a -> m b -> m a
-allFinally err action final = tryAllErrors err action >>= \r -> final >> either throwError pure r
+allFinally :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a -> ExceptT e m b -> ExceptT e m a
+allFinally err action final = tryAllErrors err action >>= \r -> final >> either throwE pure r
 {-# INLINE allFinally #-}
 
 eitherToMaybe :: Either a b -> Maybe b
@@ -149,7 +150,7 @@ safeDecodeUtf8 = decodeUtf8With onError
     onError _ _ = Just '?'
 
 timeoutThrow :: MonadUnliftIO m => e -> Int -> ExceptT e m a -> ExceptT e m a
-timeoutThrow e ms action = ExceptT (sequence <$> (ms `timeout` runExceptT action)) >>= maybe (throwError e) pure
+timeoutThrow e ms action = ExceptT (sequence <$> (ms `timeout` runExceptT action)) >>= maybe (throwE e) pure
 
 threadDelay' :: Int64 -> IO ()
 threadDelay' = loop

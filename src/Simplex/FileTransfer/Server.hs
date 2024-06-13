@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -17,6 +18,7 @@ import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
+import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (Builder, byteString)
@@ -67,6 +69,9 @@ import Simplex.Messaging.Version
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
 import System.IO (hPrint, hPutStrLn, universalNewlineMode)
+#ifdef slow_servers
+import System.Random (getStdRandom, randomR)
+#endif
 import UnliftIO
 import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Directory (doesFileExist, removeFile, renameFile)
@@ -132,28 +137,34 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       either sendError pure r
       where
         processHello = do
-          unless (B.null bodyHead) $ throwError HANDSHAKE
+          unless (B.null bodyHead) $ throwE HANDSHAKE
           (k, pk) <- atomically . C.generateKeyPair =<< asks random
           atomically $ TM.insert sessionId (HandshakeSent pk) sessions
           let authPubKey = (chain, C.signX509 serverSignKey $ C.publicToX509 k)
           let hs = XFTPServerHandshake {xftpVersionRange = xftpServerVRange, sessionId, authPubKey}
           shs <- encodeXftp hs
+#ifdef slow_servers
+          lift randomDelay
+#endif
           liftIO . sendResponse $ H.responseBuilder N.ok200 [] shs
           pure Nothing
         processClientHandshake pk = do
-          unless (B.length bodyHead == xftpBlockSize) $ throwError HANDSHAKE
+          unless (B.length bodyHead == xftpBlockSize) $ throwE HANDSHAKE
           body <- liftHS $ C.unPad bodyHead
           XFTPClientHandshake {xftpVersion = v, keyHash} <- liftHS $ smpDecode body
           kh <- asks serverIdentity
-          unless (keyHash == kh) $ throwError HANDSHAKE
+          unless (keyHash == kh) $ throwE HANDSHAKE
           case compatibleVRange' xftpServerVRange v of
             Just (Compatible vr) -> do
               let auth = THAuthServer {serverPrivKey = pk, sessSecret' = Nothing}
                   thParams = thParams0 {thAuth = Just auth, thVersion = v, thServerVRange = vr}
               atomically $ TM.insert sessionId (HandshakeAccepted thParams) sessions
+#ifdef slow_servers
+              lift randomDelay
+#endif
               liftIO . sendResponse $ H.responseNoBody N.ok200 []
               pure Nothing
-            Nothing -> throwError HANDSHAKE
+            Nothing -> throwE HANDSHAKE
         sendError :: XFTPErrorType -> M (Maybe (THandleParams XFTPVersion 'TServer))
         sendError err = do
           runExceptT (encodeXftp err) >>= \case
@@ -315,6 +326,9 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
   where
     sendXFTPResponse (corrId, fId, resp) serverFile_ = do
       let t_ = xftpEncodeTransmission thParams (corrId, fId, resp)
+#ifdef slow_servers
+      randomDelay
+#endif
       liftIO $ sendResponse $ H.responseStreaming N.ok200 [] $ streamBody t_
       where
         streamBody t_ send done = do
@@ -326,8 +340,17 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
               send $ byteString t
               -- timeout sending file in the same way as receiving
               forM_ serverFile_ $ \ServerFile {filePath, fileSize, sbState} -> do
-                withFile filePath ReadMode $ \h -> sendEncFile h send sbState (fromIntegral fileSize)
+                withFile filePath ReadMode $ \h -> sendEncFile h send sbState fileSize
           done
+
+#ifdef slow_servers
+randomDelay :: M ()
+randomDelay = do
+  d <- asks $ responseDelay . config
+  when (d > 0) $ do
+    pc <- getStdRandom (randomR (-200, 200))
+    threadDelay $ (d * (1000 + pc)) `div` 1000
+#endif
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed
 
@@ -373,7 +396,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       st <- asks store
       r <- runExceptT $ do
         sizes <- asks $ allowedChunkSizes . config
-        unless (size file `elem` sizes) $ throwError SIZE
+        unless (size file `elem` sizes) $ throwE SIZE
         ts <- liftIO getSystemTime
         -- TODO validate body empty
         sId <- ExceptT $ addFileRetry st file 3 ts
@@ -457,7 +480,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
                 pure $ FRErr e
           receiveChunk spec = do
             t <- asks $ fileTimeout . config
-            liftIO $ fromMaybe (Left TIMEOUT) <$> timeout t (runExceptT (receiveFile getBody spec) `catchAll_` pure (Left FILE_IO))
+            liftIO $ fromMaybe (Left TIMEOUT) <$> timeout t (runExceptT $ receiveFile getBody spec)
     sendServerFile :: FileRec -> RcvPublicDhKey -> M (FileResponse, Maybe ServerFile)
     sendServerFile FileRec {senderId, filePath, fileInfo = FileInfo {size}} rDhKey = do
       readTVarIO filePath >>= \case

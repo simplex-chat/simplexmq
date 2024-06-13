@@ -1,5 +1,5 @@
 name: simplexmq
-version: 5.8.0.2
+version: 5.8.0.10
 synopsis: SimpleXMQ message broker
 description: |
   This package includes <./docs/Simplex-Messaging-Server.html server>,
@@ -22,6 +22,8 @@ extra-source-files:
   - CHANGELOG.md
   - cbits/sha512.h
   - cbits/sntrup761.h
+  - apps/smp-server/static/*.html
+  - apps/smp-server/static/media/*
 
 dependencies:
   - aeson == 2.2.*
@@ -87,6 +89,9 @@ flags:
     manual: True
     default: True
 
+# cpp-options:
+#   - -Dslow_servers
+
 when:
   - condition: flag(swift)
     cpp-options:
@@ -112,10 +117,16 @@ library:
 
 executables:
   smp-server:
-    source-dirs: apps/smp-server
+    source-dirs:
+    - apps/smp-server
+    - apps/smp-server/web
     main: Main.hs
     dependencies:
+      - file-embed
       - simplexmq
+      - wai-app-static
+      - warp
+      - warp-tls
     ghc-options:
       - -threaded
       - -rtsopts
@@ -131,15 +142,6 @@ executables:
 
   xftp-server:
     source-dirs: apps/xftp-server
-    main: Main.hs
-    dependencies:
-      - simplexmq
-    ghc-options:
-      - -threaded
-      - -rtsopts
-
-  smp-agent:
-    source-dirs: apps/smp-agent
     main: Main.hs
     dependencies:
       - simplexmq
@@ -179,13 +181,31 @@ tests:
 
 ghc-options:
   # - -haddock
-  - -Wall
+  - -Weverything
+  - -Wno-missing-exported-signatures
+  - -Wno-missing-import-lists
+  - -Wno-missed-specialisations
+  - -Wno-all-missed-specialisations
+  - -Wno-unsafe
+  - -Wno-safe
+  - -Wno-missing-local-signatures
+  - -Wno-missing-kind-signatures
+  - -Wno-missing-deriving-strategies
+  - -Wno-monomorphism-restriction
+  - -Wno-prepositive-qualified-module
+  - -Wno-unused-packages
+  - -Wno-implicit-prelude
+  - -Wno-missing-safe-haskell-mode
+  - -Wno-missing-export-lists
+  - -Wno-partial-fields
   - -Wcompat
+  - -Werror=incomplete-record-updates
   - -Werror=incomplete-patterns
+  - -Werror=incomplete-uni-patterns
   - -Werror=missing-methods
+  - -Werror=tabs
   - -Wredundant-constraints
   - -Wincomplete-record-updates
-  - -Wincomplete-uni-patterns
   - -Wunused-type-patterns
   - -O2
 
