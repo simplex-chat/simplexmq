@@ -95,6 +95,7 @@ library
       Simplex.Messaging.Agent.Protocol
       Simplex.Messaging.Agent.QueryString
       Simplex.Messaging.Agent.RetryInterval
+      Simplex.Messaging.Agent.Stats
       Simplex.Messaging.Agent.Store
       Simplex.Messaging.Agent.Store.SQLite
       Simplex.Messaging.Agent.Store.SQLite.Common

@@ -170,7 +170,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (partitionEithers)
 import Data.Functor (($>))
-import Data.Int (Int64)
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
@@ -198,6 +197,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
+import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..), withTransaction)
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
@@ -317,7 +317,9 @@ data AgentClient = AgentClient
     agentStats :: TMap AgentStatsKey (TVar Int),
     msgCounts :: TMap ConnId (TVar (Int, Int)), -- (total, duplicates)
     clientId :: Int,
-    agentEnv :: Env
+    agentEnv :: Env,
+    smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
+    xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats
   }
 
 data SMPConnectedClient = SMPConnectedClient
@@ -484,6 +486,8 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   smpSubWorkers <- TM.empty
   agentStats <- TM.empty
   msgCounts <- TM.empty
+  smpServersStats <- TM.empty
+  xftpServersStats <- TM.empty
   return
     AgentClient
       { acThread,
@@ -522,7 +526,9 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         agentStats,
         msgCounts,
         clientId,
-        agentEnv
+        agentEnv,
+        smpServersStats,
+        xftpServersStats
       }
 
 slowNetworkConfig :: NetworkConfig -> NetworkConfig
@@ -1908,46 +1914,53 @@ withNextSrv c userId usedSrvs initUsed action = do
     writeTVar usedSrvs $! used'
   action srvAuth
 
+-- - currently used servers - those that have state
+-- - previously used servers - have stats but no state - they could be used earlier in session,
+--   or in previous sessions and stats for them were restored
+-- - proxied destination servers (onlyProxiedSMPServers) - based on smpProxiedRelays (key) minus smpClients;
+--   don't have state and stats? since: state is based on smpClients and activeSubs/pendingSubs,
+--   and stats are used to track real network activity (probably also via smpClients),
+--   so they [stats] would be accounted for proxy (unless we want double counting messages as sent and proxied)
 data AgentServersSummary = AgentServersSummary
-  { usersServersSummary :: Map UserId ServersSummary
-  -- totalServersSummary :: ServersSummary -- compute in backend to not repeat logic in UI?
+  { smpServersState :: Map (UserId, SMPServer) SMPServerState,
+    smpServersStatsData :: Map (UserId, SMPServer) AgentSMPServerStatsData,
+    onlyProxiedSMPServers :: [SMPServer],
+    xftpServersState :: Map (UserId, XFTPServer) XFTPServerState,
+    xftpServersStatsData :: Map (UserId, XFTPServer) AgentXFTPServerStatsData
   }
   deriving (Show)
 
-data ServersSummary = ServersSummary
-  { smpServersSummary :: [SMPServerSummary],
-    xftpServersSummary :: [XFTPServerSummary]
+data SMPServerState = SMPServerState
+  { sessions :: Int, -- number of active sessions, based on smpClients - SMPClientVar has client
+    sessionErrs :: Int, -- number of sessions with errors, based on smpClients - SMPClientVar has error
+    activeSubscriptions :: Int, -- based on activeSubs
+    pendingSubscriptions :: Int -- based on pendingSubs
   }
   deriving (Show)
 
-data SMPServerSummary = SMPServerSummary
-  { smpServer :: SMPServer,
-    usedForNewConnections :: Bool,
-    activeSubscriptions :: [SMPServerSubRcvId], -- or even simply count?
-    pendingSubscriptions :: [SMPServerSubRcvId],
-    rcvMsgs :: Int64,
-    duplicateRcvMsgs :: Int64, -- tracking it per server allows to easier detect it before checking detailed info
-    sndMsgs :: Int64
-  }
-  deriving (Show)
-
-type SMPServerSubRcvId = Text
-
-data XFTPServerSummary = XFTPServerSummary
-  { xftpServer :: XFTPServer,
-    usedForNewFiles :: Bool,
-    rcvFilesCount :: Int64,
-    rcvInProgress :: Bool,
-    sndFilesCount :: Int64,
-    sndInProgress :: Bool,
-    delFilesCount :: Int64,
-    delInProgress :: Bool
+data XFTPServerState = XFTPServerState
+  { sessions :: Int, -- number of active sessions, based on xftpClients - XFTPClientVar has client
+    sessionErrs :: Int, -- number of sessions with errors, based on xftpClients - XFTPClientVar has error
+    rcvInProgress :: Bool, -- based on xftpRcvWorkers, hasWork
+    sndInProgress :: Bool, -- based on xftpSndWorkers, hasWork
+    delInProgress :: Bool -- based on xftpDelWorkers, hasWork
   }
   deriving (Show)
 
 getAgentServersSummary :: AgentClient -> IO AgentServersSummary
-getAgentServersSummary _c = do
-  pure AgentServersSummary {usersServersSummary = M.empty}
+getAgentServersSummary AgentClient {smpServersStats, xftpServersStats} = do
+  sss <- readTVarIO smpServersStats
+  smpServersStatsData <- mapM (atomically . getAgentSMPServerStats) sss
+  xss <- readTVarIO xftpServersStats
+  xftpServersStatsData <- mapM (atomically . getAgentXFTPServerStats) xss
+  pure
+    AgentServersSummary
+      { smpServersState = M.empty, -- collect, see SMPServerState
+        smpServersStatsData,
+        onlyProxiedSMPServers = [], -- collect, smpProxiedRelays (key) minus smpClients
+        xftpServersState = M.empty, -- collect, see XFTPServerState
+        xftpServersStatsData
+      }
 
 data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text, subError :: Maybe String}
   deriving (Show)
@@ -2139,11 +2152,9 @@ $(J.deriveJSON (enumJSON $ dropPrefix "TS") ''ProtocolTestStep)
 
 $(J.deriveJSON defaultJSON ''ProtocolTestFailure)
 
-$(J.deriveJSON defaultJSON ''XFTPServerSummary)
+$(J.deriveJSON defaultJSON ''XFTPServerState)
 
-$(J.deriveJSON defaultJSON ''SMPServerSummary)
-
-$(J.deriveJSON defaultJSON ''ServersSummary)
+$(J.deriveJSON defaultJSON ''SMPServerState)
 
 $(J.deriveJSON defaultJSON ''AgentServersSummary)
 
