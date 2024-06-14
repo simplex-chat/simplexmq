@@ -126,6 +126,7 @@ import qualified Data.Aeson as J
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.Composition ((.:), (.:.), (.::), (.::.))
 import Data.Either (isRight, rights)
 import Data.Foldable (foldl', toList)
@@ -156,6 +157,7 @@ import Simplex.Messaging.Agent.Lock (withLock, withLock')
 import Simplex.Messaging.Agent.NtfSubSupervisor
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
+import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
@@ -182,6 +184,7 @@ import Simplex.Messaging.Version
 import Simplex.RemoteControl.Client
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
+import System.Directory
 import System.Mem.Weak (deRefWeak)
 import UnliftIO.Concurrent (forkFinally, forkIO, killThread, mkWeakThreadId, threadDelay)
 import qualified UnliftIO.Exception as E
@@ -207,16 +210,50 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
       pure c
     runAgentThreads c
       | backgroundMode = run c "subscriber" $ subscriber c
-      | otherwise =
+      | otherwise = do
+          restoreAgentStats c
           raceAny_
             [ run c "subscriber" $ subscriber c,
               run c "runNtfSupervisor" $ runNtfSupervisor c,
               run c "cleanupManager" $ cleanupManager c
             ]
+            `E.finally` saveAgentStats c
     run AgentClient {subQ, acThread} name a =
       a `E.catchAny` \e -> whenM (isJust <$> readTVarIO acThread) $ do
         logError $ "Agent thread " <> name <> " crashed: " <> tshow e
         atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ CRITICAL True $ show e)
+
+saveAgentStats :: AgentClient -> AM' ()
+saveAgentStats AgentClient {smpServersStats, xftpServersStats} =
+  asks (agentStatsBackupFile . config) >>= mapM_ (liftIO . saveStats)
+  where
+    saveStats f = do
+      sss <- readTVarIO smpServersStats
+      smpServersStatsData <- mapM (atomically . getAgentSMPServerStats) sss
+      xss <- readTVarIO xftpServersStats
+      xftpServersStatsData <- mapM (atomically . getAgentXFTPServerStats) xss
+      let stats = AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData}
+      logInfo $ "saving agent stats to file " <> T.pack f
+      B.writeFile f $ LB.toStrict $ J.encode stats
+      logInfo "agent stats saved"
+
+restoreAgentStats :: AgentClient -> AM' ()
+restoreAgentStats AgentClient {smpServersStats, xftpServersStats} =
+  asks (agentStatsBackupFile . config) >>= mapM_ (liftIO . restoreStats)
+  where
+    restoreStats f = whenM (doesFileExist f) $ do
+      logInfo $ "restoring agent stats from file " <> T.pack f
+      liftIO (J.decode . LB.fromStrict <$> B.readFile f) >>= \case
+        Just AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData} -> do
+          sss <- mapM (atomically . newAgentSMPServerStats') smpServersStatsData
+          atomically $ writeTVar smpServersStats sss
+          xss <- mapM (atomically . newAgentXFTPServerStats') xftpServersStatsData
+          atomically $ writeTVar xftpServersStats xss
+          renameFile f $ f <> ".bak"
+          logInfo "server stats restored"
+        Nothing -> do
+          logInfo $ "error restoring server stats"
+          renameFile f $ f <> ".bak"
 
 disconnectAgentClient :: AgentClient -> IO ()
 disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAgent = xa}} = do

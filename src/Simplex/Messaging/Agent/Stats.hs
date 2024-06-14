@@ -5,16 +5,12 @@
 module Simplex.Messaging.Agent.Stats where
 
 import qualified Data.Aeson.TH as J
+import Data.Map (Map)
 import Data.Time.Clock (UTCTime (..))
+import Simplex.Messaging.Agent.Protocol (UserId)
 import Simplex.Messaging.Parsers (defaultJSON)
+import Simplex.Messaging.Protocol (SMPServer, XFTPServer)
 import UnliftIO.STM
-
--- Add single type for gathering both smp and xftp stats across all users and servers?
--- Idea is to provide agent with a single path to save/restore stats, instead of managing it in UI
--- and providing agent with "initial stats". Agent would use this unifying type to write/read
--- json representation of all stats and populating AgentClient maps:
--- smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
--- xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats
 
 data AgentSMPServerStats = AgentSMPServerStats
   { fromTime :: TVar UTCTime,
@@ -88,6 +84,54 @@ newAgentSMPServerStats ts = do
   sub <- newTVar 0
   subRetries <- newTVar 0
   subErr <- newTVar 0
+  pure
+    AgentSMPServerStats
+      { fromTime,
+        msgSent,
+        msgSentRetries,
+        msgSentSuccesses,
+        msgSentAuth,
+        msgSentQuota,
+        msgSentExpired,
+        msgSentErr,
+        msgProx,
+        msgProxRetries,
+        msgProxSuccesses,
+        msgProxExpired,
+        msgProxAuth,
+        msgProxQuota,
+        msgProxErr,
+        msgRecv,
+        msgRecvDuplicate,
+        msgRecvErr,
+        sub,
+        subRetries,
+        subErr
+      }
+
+newAgentSMPServerStats' :: AgentSMPServerStatsData -> STM AgentSMPServerStats
+newAgentSMPServerStats' s@AgentSMPServerStatsData {_fromTime} = do
+  fromTime <- newTVar _fromTime
+  msgSent <- newTVar $ _msgSent s
+  msgSentRetries <- newTVar $ _msgSentRetries s
+  msgSentSuccesses <- newTVar $ _msgSentSuccesses s
+  msgSentAuth <- newTVar $ _msgSentAuth s
+  msgSentQuota <- newTVar $ _msgSentQuota s
+  msgSentExpired <- newTVar $ _msgSentExpired s
+  msgSentErr <- newTVar $ _msgSentErr s
+  msgProx <- newTVar $ _msgProx s
+  msgProxRetries <- newTVar $ _msgProxRetries s
+  msgProxSuccesses <- newTVar $ _msgProxSuccesses s
+  msgProxExpired <- newTVar $ _msgProxExpired s
+  msgProxAuth <- newTVar $ _msgProxAuth s
+  msgProxQuota <- newTVar $ _msgProxQuota s
+  msgProxErr <- newTVar $ _msgProxErr s
+  msgRecv <- newTVar $ _msgRecv s
+  msgRecvDuplicate <- newTVar $ _msgRecvDuplicate s
+  msgRecvErr <- newTVar $ _msgRecvErr s
+  sub <- newTVar $ _sub s
+  subRetries <- newTVar $ _subRetries s
+  subErr <- newTVar $ _subErr s
   pure
     AgentSMPServerStats
       { fromTime,
@@ -251,6 +295,40 @@ newAgentXFTPServerStats ts = do
         replDeleteErr
       }
 
+newAgentXFTPServerStats' :: AgentXFTPServerStatsData -> STM AgentXFTPServerStats
+newAgentXFTPServerStats' s@AgentXFTPServerStatsData {_fromTime} = do
+  fromTime <- newTVar _fromTime
+  replUpload <- newTVar $ _replUpload s
+  replUploadRetries <- newTVar $ _replUploadRetries s
+  replUploadSuccesses <- newTVar $ _replUploadSuccesses s
+  replUploadErr <- newTVar $ _replUploadErr s
+  replDownload <- newTVar $ _replDownload s
+  replDownloadRetries <- newTVar $ _replDownloadRetries s
+  replDownloadSuccesses <- newTVar $ _replDownloadSuccesses s
+  replDownloadAuth <- newTVar $ _replDownloadAuth s
+  replDownloadErr <- newTVar $ _replDownloadErr s
+  replDelete <- newTVar $ _replDelete s
+  replDeleteRetries <- newTVar $ _replDeleteRetries s
+  replDeleteSuccesses <- newTVar $ _replDeleteSuccesses s
+  replDeleteErr <- newTVar $ _replDeleteErr s
+  pure
+    AgentXFTPServerStats
+      { fromTime,
+        replUpload,
+        replUploadRetries,
+        replUploadSuccesses,
+        replUploadErr,
+        replDownload,
+        replDownloadRetries,
+        replDownloadSuccesses,
+        replDownloadAuth,
+        replDownloadErr,
+        replDelete,
+        replDeleteRetries,
+        replDeleteSuccesses,
+        replDeleteErr
+      }
+
 getAgentXFTPServerStats :: AgentXFTPServerStats -> STM AgentXFTPServerStatsData
 getAgentXFTPServerStats s@AgentXFTPServerStats {fromTime} = do
   _fromTime <- readTVar fromTime
@@ -302,6 +380,23 @@ setAgentXFTPServerStats s@AgentXFTPServerStats {fromTime} d@AgentXFTPServerStats
   writeTVar (replDeleteSuccesses s) $! _replDeleteSuccesses d
   writeTVar (replDeleteErr s) $! _replDeleteErr d
 
+-- Type for gathering both smp and xftp stats across all users and servers.
+--
+-- Idea is to provide agent with a single path to save/restore stats, instead of managing it in UI
+-- and providing agent with "initial stats".
+--
+-- Agent would use this unifying type to write/read json representation of all stats
+-- and populating AgentClient maps:
+-- smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
+-- xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats
+data AgentPersistedServerStats = AgentPersistedServerStats
+  { smpServersStatsData :: Map (UserId, SMPServer) AgentSMPServerStatsData,
+    xftpServersStatsData :: Map (UserId, XFTPServer) AgentXFTPServerStatsData
+  }
+  deriving (Show)
+
 $(J.deriveJSON defaultJSON ''AgentSMPServerStatsData)
 
 $(J.deriveJSON defaultJSON ''AgentXFTPServerStatsData)
+
+$(J.deriveJSON defaultJSON ''AgentPersistedServerStats)
