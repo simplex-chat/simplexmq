@@ -1094,7 +1094,9 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
           | otherwise -> throwE e
     sendDirectly tSess =
       withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) ->
-        liftClient SMP (clientServer smp) $ sendSMPMessage smp spKey_ senderId msgFlags msg
+        liftClient SMP (clientServer smp) $ do
+          sendSMPMessage smp spKey_ senderId msgFlags msg
+          atomically $ incSMPServerStat c userId destSrv msgSent 1
 
 ipAddressProtected :: NetworkConfig -> ProtocolServer p -> Bool
 ipAddressProtected NetworkConfig {socksProxy, hostMode} (ProtocolServer _ hosts _ _) = do
@@ -1915,6 +1917,15 @@ withNextSrv c userId usedSrvs initUsed action = do
         used' = if null unused then initUsed else srv : used
     writeTVar usedSrvs $! used'
   action srvAuth
+
+incSMPServerStat :: AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int) -> Int -> STM ()
+incSMPServerStat AgentClient {smpServersStats} userId srv sel n = do
+  TM.lookup (userId, srv) smpServersStats >>= \case
+    Just v -> modifyTVar' (sel v) (+ n)
+    Nothing -> do
+      newStats <- newAgentSMPServerStats
+      modifyTVar' (sel newStats) (+ n)
+      TM.insert (userId, srv) newStats smpServersStats
 
 -- - currently used servers - those that have state
 -- - previously used servers - have stats but no state - they could be used earlier in session,

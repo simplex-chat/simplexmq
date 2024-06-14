@@ -13,7 +13,7 @@ import Simplex.Messaging.Protocol (SMPServer, XFTPServer)
 import UnliftIO.STM
 
 data AgentSMPServerStats = AgentSMPServerStats
-  { fromTime :: TVar UTCTime,
+  { -- fromTime :: TVar UTCTime, -- TODO fromTime to be measured in agent across all stats?
     msgSent :: TVar Int, -- total messages sent to server directly
     msgSentRetries :: TVar Int, -- sending retries
     msgSentSuccesses :: TVar Int, -- successful sends
@@ -35,7 +35,7 @@ data AgentSMPServerStats = AgentSMPServerStats
   }
 
 data AgentSMPServerStatsData = AgentSMPServerStatsData
-  { _fromTime :: UTCTime,
+  { -- _fromTime :: UTCTime,
     _msgSent :: Int,
     _msgSentRetries :: Int,
     _msgSentSuccesses :: Int,
@@ -57,9 +57,11 @@ data AgentSMPServerStatsData = AgentSMPServerStatsData
   }
   deriving (Show)
 
-newAgentSMPServerStats :: UTCTime -> STM AgentSMPServerStats
-newAgentSMPServerStats ts = do
-  fromTime <- newTVar ts
+-- newAgentSMPServerStats :: UTCTime -> STM AgentSMPServerStats
+-- newAgentSMPServerStats ts = do
+newAgentSMPServerStats :: STM AgentSMPServerStats
+newAgentSMPServerStats = do
+  -- fromTime <- newTVar ts
   msgSent <- newTVar 0
   msgSentRetries <- newTVar 0
   msgSentSuccesses <- newTVar 0
@@ -80,7 +82,7 @@ newAgentSMPServerStats ts = do
   subErr <- newTVar 0
   pure
     AgentSMPServerStats
-      { fromTime,
+      { -- fromTime,
         msgSent,
         msgSentRetries,
         msgSentSuccesses,
@@ -102,8 +104,8 @@ newAgentSMPServerStats ts = do
       }
 
 newAgentSMPServerStats' :: AgentSMPServerStatsData -> STM AgentSMPServerStats
-newAgentSMPServerStats' s@AgentSMPServerStatsData {_fromTime} = do
-  fromTime <- newTVar _fromTime
+newAgentSMPServerStats' s = do -- s@AgentSMPServerStatsData {_fromTime} = do
+  -- fromTime <- newTVar _fromTime
   msgSent <- newTVar $ _msgSent s
   msgSentRetries <- newTVar $ _msgSentRetries s
   msgSentSuccesses <- newTVar $ _msgSentSuccesses s
@@ -124,7 +126,7 @@ newAgentSMPServerStats' s@AgentSMPServerStatsData {_fromTime} = do
   subErr <- newTVar $ _subErr s
   pure
     AgentSMPServerStats
-      { fromTime,
+      { -- fromTime,
         msgSent,
         msgSentRetries,
         msgSentSuccesses,
@@ -146,8 +148,8 @@ newAgentSMPServerStats' s@AgentSMPServerStatsData {_fromTime} = do
       }
 
 getAgentSMPServerStats :: AgentSMPServerStats -> STM AgentSMPServerStatsData
-getAgentSMPServerStats s@AgentSMPServerStats {fromTime} = do
-  _fromTime <- readTVar fromTime
+getAgentSMPServerStats s = do -- s@AgentSMPServerStats {fromTime} = do
+  -- _fromTime <- readTVar fromTime
   _msgSent <- readTVar $ msgSent s
   _msgSentRetries <- readTVar $ msgSentRetries s
   _msgSentSuccesses <- readTVar $ msgSentSuccesses s
@@ -168,7 +170,7 @@ getAgentSMPServerStats s@AgentSMPServerStats {fromTime} = do
   _subErr <- readTVar $ subErr s
   pure
     AgentSMPServerStatsData
-      { _fromTime,
+      { -- _fromTime,
         _msgSent,
         _msgSentRetries,
         _msgSentSuccesses,
@@ -190,8 +192,8 @@ getAgentSMPServerStats s@AgentSMPServerStats {fromTime} = do
       }
 
 setAgentSMPServerStats :: AgentSMPServerStats -> AgentSMPServerStatsData -> STM ()
-setAgentSMPServerStats s@AgentSMPServerStats {fromTime} d@AgentSMPServerStatsData {_fromTime} = do
-  writeTVar fromTime $! _fromTime
+setAgentSMPServerStats s d = do -- s@AgentSMPServerStats {fromTime} d@AgentSMPServerStatsData {_fromTime} = do
+  -- writeTVar fromTime $! _fromTime
   writeTVar (msgSent s) $! _msgSent d
   writeTVar (msgSentRetries s) $! _msgSentRetries d
   writeTVar (msgSentSuccesses s) $! _msgSentSuccesses d
@@ -211,7 +213,7 @@ setAgentSMPServerStats s@AgentSMPServerStats {fromTime} d@AgentSMPServerStatsDat
   writeTVar (subErr s) $! _subErr d
 
 data AgentXFTPServerStats = AgentXFTPServerStats
-  { fromTime :: TVar UTCTime,
+  { -- fromTime :: TVar UTCTime,
     replUpload :: TVar Int, -- total replicas uploaded to server
     replUploadRetries :: TVar Int, -- upload retries
     replUploadSuccesses :: TVar Int, -- successful uploads
@@ -228,7 +230,7 @@ data AgentXFTPServerStats = AgentXFTPServerStats
   }
 
 data AgentXFTPServerStatsData = AgentXFTPServerStatsData
-  { _fromTime :: UTCTime,
+  { -- _fromTime :: UTCTime,
     _replUpload :: Int,
     _replUploadRetries :: Int,
     _replUploadSuccesses :: Int,
@@ -245,9 +247,11 @@ data AgentXFTPServerStatsData = AgentXFTPServerStatsData
   }
   deriving (Show)
 
-newAgentXFTPServerStats :: UTCTime -> STM AgentXFTPServerStats
-newAgentXFTPServerStats ts = do
-  fromTime <- newTVar ts
+-- newAgentXFTPServerStats :: UTCTime -> STM AgentXFTPServerStats
+-- newAgentXFTPServerStats ts = do
+newAgentXFTPServerStats :: STM AgentXFTPServerStats
+newAgentXFTPServerStats = do
+  -- fromTime <- newTVar ts
   replUpload <- newTVar 0
   replUploadRetries <- newTVar 0
   replUploadSuccesses <- newTVar 0
@@ -263,7 +267,7 @@ newAgentXFTPServerStats ts = do
   replDeleteErr <- newTVar 0
   pure
     AgentXFTPServerStats
-      { fromTime,
+      { -- fromTime,
         replUpload,
         replUploadRetries,
         replUploadSuccesses,
@@ -280,8 +284,8 @@ newAgentXFTPServerStats ts = do
       }
 
 newAgentXFTPServerStats' :: AgentXFTPServerStatsData -> STM AgentXFTPServerStats
-newAgentXFTPServerStats' s@AgentXFTPServerStatsData {_fromTime} = do
-  fromTime <- newTVar _fromTime
+newAgentXFTPServerStats' s = do -- s@AgentXFTPServerStatsData {_fromTime} = do
+  -- fromTime <- newTVar _fromTime
   replUpload <- newTVar $ _replUpload s
   replUploadRetries <- newTVar $ _replUploadRetries s
   replUploadSuccesses <- newTVar $ _replUploadSuccesses s
@@ -297,7 +301,7 @@ newAgentXFTPServerStats' s@AgentXFTPServerStatsData {_fromTime} = do
   replDeleteErr <- newTVar $ _replDeleteErr s
   pure
     AgentXFTPServerStats
-      { fromTime,
+      { -- fromTime,
         replUpload,
         replUploadRetries,
         replUploadSuccesses,
@@ -314,8 +318,8 @@ newAgentXFTPServerStats' s@AgentXFTPServerStatsData {_fromTime} = do
       }
 
 getAgentXFTPServerStats :: AgentXFTPServerStats -> STM AgentXFTPServerStatsData
-getAgentXFTPServerStats s@AgentXFTPServerStats {fromTime} = do
-  _fromTime <- readTVar fromTime
+getAgentXFTPServerStats s = do -- s@AgentXFTPServerStats {fromTime} = do
+  -- _fromTime <- readTVar fromTime
   _replUpload <- readTVar $ replUpload s
   _replUploadRetries <- readTVar $ replUpload s
   _replUploadSuccesses <- readTVar $ replUpload s
@@ -331,7 +335,7 @@ getAgentXFTPServerStats s@AgentXFTPServerStats {fromTime} = do
   _replDeleteErr <- readTVar $ replUpload s
   pure
     AgentXFTPServerStatsData
-      { _fromTime,
+      { -- _fromTime,
         _replUpload,
         _replUploadRetries,
         _replUploadSuccesses,
@@ -348,8 +352,8 @@ getAgentXFTPServerStats s@AgentXFTPServerStats {fromTime} = do
       }
 
 setAgentXFTPServerStats :: AgentXFTPServerStats -> AgentXFTPServerStatsData -> STM ()
-setAgentXFTPServerStats s@AgentXFTPServerStats {fromTime} d@AgentXFTPServerStatsData {_fromTime} = do
-  writeTVar fromTime $! _fromTime
+setAgentXFTPServerStats s d = do -- s@AgentXFTPServerStats {fromTime} d@AgentXFTPServerStatsData {_fromTime} = do
+  -- writeTVar fromTime $! _fromTime
   writeTVar (replUpload s) $! _replUpload d
   writeTVar (replUploadRetries s) $! _replUploadRetries d
   writeTVar (replUploadSuccesses s) $! _replUploadSuccesses d

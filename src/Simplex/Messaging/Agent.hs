@@ -256,14 +256,16 @@ saveAgentStats AgentClient {smpServersStats, xftpServersStats} =
       -- logInfo $ "saving agent stats to file " <> T.pack f
       liftIO $ print $ "saving agent stats to file " <> T.pack f
       B.writeFile f $ LB.toStrict $ J.encode stats
-      logInfo "agent stats saved"
+      -- logInfo "agent stats saved"
+      liftIO $ print "agent stats saved"
 
 restoreAgentStats :: AgentClient -> AM' ()
 restoreAgentStats AgentClient {smpServersStats, xftpServersStats} =
   asks (agentStatsLogFile . config) >>= mapM_ (liftIO . restoreStats)
   where
     restoreStats f = whenM (doesFileExist f) $ do
-      logInfo $ "restoring agent stats from file " <> T.pack f
+      -- logInfo $ "restoring agent stats from file " <> T.pack f
+      liftIO $ print $ "restoring agent stats from file " <> T.pack f
       liftIO (J.decode . LB.fromStrict <$> B.readFile f) >>= \case
         Just AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData} -> do
           sss <- mapM (atomically . newAgentSMPServerStats') smpServersStatsData
@@ -271,9 +273,11 @@ restoreAgentStats AgentClient {smpServersStats, xftpServersStats} =
           xss <- mapM (atomically . newAgentXFTPServerStats') xftpServersStatsData
           atomically $ writeTVar xftpServersStats xss
           renameFile f $ f <> ".bak"
-          logInfo "server stats restored"
+          -- logInfo "server stats restored"
+          liftIO $ print "server stats restored"
         Nothing -> do
-          logInfo "error restoring server stats"
+          -- logInfo "error restoring server stats"
+          liftIO $ print "error restoring server stats"
           renameFile f $ f <> ".bak"
 
 disconnectAgentClient :: AgentClient -> IO ()
