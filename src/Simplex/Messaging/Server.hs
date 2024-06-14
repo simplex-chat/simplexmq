@@ -232,7 +232,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 
     rateStatsThread_ :: ServerConfig -> [M ()]
     rateStatsThread_ ServerConfig {rateStatsLength = nBuckets, rateStatsInterval = Just bucketWidth, logStatsInterval = Just logInterval, logStatsStartTime, rateStatsLogFile} =
-      [ monitorServerRates nBuckets (bucketWidth * 1000000), -- roll windows, collect counters, runs at a faster rate so the measurements can be used for online anomaly detection
+      [ monitorServerRates nBuckets bucketWidth, -- roll windows, collect counters, runs at a faster rate so the measurements can be used for online anomaly detection
         logServerRates logStatsStartTime logInterval rateStatsLogFile -- log current distributions once in a while
       ]
     rateStatsThread_ _ = []
@@ -326,8 +326,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       liftIO . forever $ do
         -- now <- getCurrentTime
         -- TODO: calculate delay for the next bucket closing time
-        threadDelay' bucketWidth
-        -- TODO: collect and reset buckets
+        threadDelay' $ bucketWidth * 1000000
         stats <- readTVarIO stats' >>= mapM (CS.readClientStatsData readTVarIO)
         let !rates = distribution . histogram <$> collect stats
         atomically . modifyTVar' rates' $ (rates :) . take nBuckets
@@ -366,7 +365,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       rates' <- asks serverRates
       liftIO . forever $ do
         -- write the thing
-        threadDelay' interval
         rates <- readTVarIO rates'
         forM_ (listToMaybe rates) $ \cs -> do
           ts <- getCurrentTime
@@ -374,6 +372,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           withFile statsFilePath AppendMode $ \h -> liftIO $ do
             hSetBuffering h LineBuffering
             B.hPut h $ B.intercalate "," (strEncode ts : values) <> "\n"
+        threadDelay' interval
       where
         csvLabels = "ts" : concatMap (\s -> concatMap (\d -> [s <> "." <> d]) distributionLabels) CS.clientStatsLabels
 
