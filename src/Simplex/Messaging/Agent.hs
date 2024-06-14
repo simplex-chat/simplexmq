@@ -252,7 +252,7 @@ restoreAgentStats AgentClient {smpServersStats, xftpServersStats} =
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
         Nothing -> do
-          logInfo $ "error restoring server stats"
+          logInfo "error restoring server stats"
           renameFile f $ f <> ".bak"
 
 disconnectAgentClient :: AgentClient -> IO ()
