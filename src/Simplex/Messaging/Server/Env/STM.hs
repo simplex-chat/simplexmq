@@ -137,7 +137,7 @@ data Env = Env
     clientStats :: TVar (IntMap ClientStats), -- transitive session stats
     statsClients :: TVar (IntMap ClientStatsId), -- reverse index from sockets
     sendSignedClients :: TMap RecipientId (TVar ClientStatsId), -- reverse index from queues to their senders
-    serverRates :: TVar [ClientStatsC (Distribution (Maybe Int))], -- current (head) + historical distributions extracted from clientStats for logging and assessing ClientStatsData deviations
+    serverRates :: TVar [ClientStatsC (Distribution Int)], -- current (head) + historical distributions extracted from clientStats for logging and assessing ClientStatsData deviations
     sockets :: SocketState,
     clientSeq :: TVar ClientId,
     clients :: TVar (IntMap Client),

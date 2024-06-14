@@ -52,6 +52,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (fromRight, partitionEithers)
+import Data.Foldable (toList)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
@@ -369,7 +370,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         rates <- readTVarIO rates'
         forM_ (listToMaybe rates) $ \cs -> do
           ts <- getCurrentTime
-          let values = concatMap (concatMap $ pure . maybe "0" bshow) cs
+          let values = concatMap (map bshow . toList) cs
           withFile statsFilePath AppendMode $ \h -> liftIO $ do
             hSetBuffering h LineBuffering
             B.hPut h $ B.intercalate "," (strEncode ts : values) <> "\n"

@@ -129,7 +129,7 @@ getServerStatsData s = do
   _qDeletedSecured <- readTVar $ qDeletedSecured s
   _qSub <- readTVar $ qSub s
   _qSubAuth <- readTVar $ qSubAuth s
-  _qSubDuplicate <- readTVar $ qSubDuplicate s  
+  _qSubDuplicate <- readTVar $ qSubDuplicate s
   _qSubProhibited <- readTVar $ qSubProhibited s
   _msgSent <- readTVar $ msgSent s
   _msgSentAuth <- readTVar $ msgSentAuth s
@@ -159,7 +159,7 @@ setServerStats s d = do
   writeTVar (qDeletedNew s) $! _qDeletedNew d
   writeTVar (qDeletedSecured s) $! _qDeletedSecured d
   writeTVar (qSub s) $! _qSub d
-  writeTVar (qSubAuth s) $! _qSubAuth d  
+  writeTVar (qSubAuth s) $! _qSubAuth d
   writeTVar (qSubDuplicate s) $! _qSubDuplicate d
   writeTVar (qSubProhibited s) $! _qSubProhibited d
   writeTVar (msgSent s) $! _msgSent d
@@ -417,21 +417,21 @@ histogram :: Foldable t => t Int -> Histogram
 histogram = Histogram . IM.fromListWith (+) . map (,1) . toList
 {-# INLINE histogram #-}
 
-distribution :: Histogram -> Distribution (Maybe Int)
+distribution :: Histogram -> Distribution Int
 distribution h =
   Distribution
-    { minimal = fst <$> listToMaybe cdf',
+    { minimal = maybe 0 fst $ listToMaybe cdf',
       bottom50p = bot 0.5, -- std median
       top50p = top 0.5,
       top20p = top 0.2,
       top10p = top 0.1,
       top5p = top 0.05,
       top1p = top 0.01,
-      maximal = fst <$> listToMaybe rcdf'
+      maximal = maybe 0 fst $ listToMaybe rcdf'
     }
   where
-    bot p = fst <$> find (\(_, p') -> p' >= p) cdf'
-    top p = fst <$> find (\(_, p') -> p' <= 1 - p) rcdf'
+    bot p = maybe 0 fst $ find (\(_, p') -> p' >= p) cdf'
+    top p = maybe 0 fst $ find (\(_, p') -> p' <= 1 - p) rcdf'
     cdf' = cdf h
     rcdf' = reverse cdf' -- allow find to work from the smaller end
 
