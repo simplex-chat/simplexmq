@@ -225,7 +225,7 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
 
 saveAgentStats :: AgentClient -> AM' ()
 saveAgentStats AgentClient {smpServersStats, xftpServersStats} =
-  asks (agentStatsBackupFile . config) >>= mapM_ (liftIO . saveStats)
+  asks (agentStatsLogFile . config) >>= mapM_ (liftIO . saveStats)
   where
     saveStats f = do
       sss <- readTVarIO smpServersStats
@@ -239,7 +239,7 @@ saveAgentStats AgentClient {smpServersStats, xftpServersStats} =
 
 restoreAgentStats :: AgentClient -> AM' ()
 restoreAgentStats AgentClient {smpServersStats, xftpServersStats} =
-  asks (agentStatsBackupFile . config) >>= mapM_ (liftIO . restoreStats)
+  asks (agentStatsLogFile . config) >>= mapM_ (liftIO . restoreStats)
   where
     restoreStats f = whenM (doesFileExist f) $ do
       logInfo $ "restoring agent stats from file " <> T.pack f

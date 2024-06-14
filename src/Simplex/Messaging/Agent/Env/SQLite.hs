@@ -119,7 +119,7 @@ data AgentConfig = AgentConfig
     e2eEncryptVRange :: VersionRangeE2E,
     smpAgentVRange :: VersionRangeSMPA,
     smpClientVRange :: VersionRangeSMPC,
-    agentStatsBackupFile :: Maybe FilePath
+    agentStatsLogFile :: Maybe FilePath
   }
 
 defaultReconnectInterval :: RetryInterval
@@ -192,7 +192,7 @@ defaultAgentConfig =
       e2eEncryptVRange = supportedE2EEncryptVRange,
       smpAgentVRange = supportedSMPAgentVRange,
       smpClientVRange = supportedSMPClientVRange,
-      agentStatsBackupFile = Nothing
+      agentStatsLogFile = Nothing
     }
 
 data Env = Env
