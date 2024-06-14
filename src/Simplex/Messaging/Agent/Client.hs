@@ -88,8 +88,8 @@ module Simplex.Messaging.Agent.Client
     agentClientStore,
     agentDRG,
     AgentServersSummary (..),
-    SMPServerState (..),
-    XFTPServerState (..),
+    SMPServerSessions (..),
+    XFTPServerSessions (..),
     getAgentServersSummary,
     getAgentSubscriptions,
     slowNetworkConfig,
@@ -1924,25 +1924,23 @@ withNextSrv c userId usedSrvs initUsed action = do
 --   and stats are used to track real network activity (probably also via smpClients),
 --   so they [stats] would be accounted for proxy (unless we want double counting messages as sent and proxied)
 data AgentServersSummary = AgentServersSummary
-  { smpServersState :: Map (UserId, SMPServer) SMPServerState,
-    smpServersStatsData :: Map (UserId, SMPServer) AgentSMPServerStatsData,
+  { smpServersSessions :: Map (UserId, SMPServer) SMPServerSessions,
+    smpServersStats :: Map (UserId, SMPServer) AgentSMPServerStatsData,
     onlyProxiedSMPServers :: [SMPServer],
-    xftpServersState :: Map (UserId, XFTPServer) XFTPServerState,
-    xftpServersStatsData :: Map (UserId, XFTPServer) AgentXFTPServerStatsData
+    xftpServersSessions :: Map (UserId, XFTPServer) XFTPServerSessions,
+    xftpServersStats :: Map (UserId, XFTPServer) AgentXFTPServerStatsData
   }
   deriving (Show)
 
-data SMPServerState = SMPServerState
+data SMPServerSessions = SMPServerSessions
   { sessions :: Int, -- number of active sessions, based on smpClients - SMPClientVar has client
-    sessionErrs :: Int, -- number of sessions with errors, based on smpClients - SMPClientVar has error
     activeSubscriptions :: Int, -- based on activeSubs
     pendingSubscriptions :: Int -- based on pendingSubs
   }
   deriving (Show)
 
-data XFTPServerState = XFTPServerState
+data XFTPServerSessions = XFTPServerSessions
   { sessions :: Int, -- number of active sessions, based on xftpClients - XFTPClientVar has client
-    sessionErrs :: Int, -- number of sessions with errors, based on xftpClients - XFTPClientVar has error
     rcvInProgress :: Bool, -- based on xftpRcvWorkers, hasWork
     sndInProgress :: Bool, -- based on xftpSndWorkers, hasWork
     delInProgress :: Bool -- based on xftpDelWorkers, hasWork
@@ -1952,16 +1950,16 @@ data XFTPServerState = XFTPServerState
 getAgentServersSummary :: AgentClient -> IO AgentServersSummary
 getAgentServersSummary AgentClient {smpServersStats, xftpServersStats} = do
   sss <- readTVarIO smpServersStats
-  smpServersStatsData <- mapM (atomically . getAgentSMPServerStats) sss
+  sss' <- mapM (atomically . getAgentSMPServerStats) sss
   xss <- readTVarIO xftpServersStats
-  xftpServersStatsData <- mapM (atomically . getAgentXFTPServerStats) xss
+  xss' <- mapM (atomically . getAgentXFTPServerStats) xss
   pure
     AgentServersSummary
-      { smpServersState = M.empty, -- collect, see SMPServerState
-        smpServersStatsData,
+      { smpServersSessions = M.empty, -- collect, see SMPServerSessions
+        smpServersStats = sss',
         onlyProxiedSMPServers = [], -- collect, smpProxiedRelays (key) minus smpClients
-        xftpServersState = M.empty, -- collect, see XFTPServerState
-        xftpServersStatsData
+        xftpServersSessions = M.empty, -- collect, see XFTPServerSessions
+        xftpServersStats = xss'
       }
 
 data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text, subError :: Maybe String}
@@ -2154,9 +2152,9 @@ $(J.deriveJSON (enumJSON $ dropPrefix "TS") ''ProtocolTestStep)
 
 $(J.deriveJSON defaultJSON ''ProtocolTestFailure)
 
-$(J.deriveJSON defaultJSON ''XFTPServerState)
+$(J.deriveJSON defaultJSON ''XFTPServerSessions)
 
-$(J.deriveJSON defaultJSON ''SMPServerState)
+$(J.deriveJSON defaultJSON ''SMPServerSessions)
 
 $(J.deriveJSON defaultJSON ''AgentServersSummary)
 
