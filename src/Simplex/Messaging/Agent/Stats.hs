@@ -25,8 +25,6 @@ data AgentSMPServerStats = AgentSMPServerStats
     msgProxRetries :: TVar Int, -- proxy sending retries
     msgProxSuccesses :: TVar Int, -- successful proxy sends
     msgProxExpired :: TVar Int, -- proxy send expired errors
-    msgProxAuth :: TVar Int, -- proxy send AUTH errors (AUTH error at destination relay)
-    msgProxQuota :: TVar Int, -- proxy send QUOTA errors (QUOTA error at destination relay)
     msgProxErr :: TVar Int, -- other proxy send errors (excluding above)
     msgRecv :: TVar Int, -- total messages received
     msgRecvDuplicate :: TVar Int, -- duplicate messages received
@@ -49,8 +47,6 @@ data AgentSMPServerStatsData = AgentSMPServerStatsData
     _msgProxRetries :: Int,
     _msgProxSuccesses :: Int,
     _msgProxExpired :: Int,
-    _msgProxAuth :: Int,
-    _msgProxQuota :: Int,
     _msgProxErr :: Int,
     _msgRecv :: Int,
     _msgRecvDuplicate :: Int,
@@ -75,8 +71,6 @@ newAgentSMPServerStats ts = do
   msgProxRetries <- newTVar 0
   msgProxSuccesses <- newTVar 0
   msgProxExpired <- newTVar 0
-  msgProxAuth <- newTVar 0
-  msgProxQuota <- newTVar 0
   msgProxErr <- newTVar 0
   msgRecv <- newTVar 0
   msgRecvDuplicate <- newTVar 0
@@ -98,8 +92,6 @@ newAgentSMPServerStats ts = do
         msgProxRetries,
         msgProxSuccesses,
         msgProxExpired,
-        msgProxAuth,
-        msgProxQuota,
         msgProxErr,
         msgRecv,
         msgRecvDuplicate,
@@ -123,8 +115,6 @@ newAgentSMPServerStats' s@AgentSMPServerStatsData {_fromTime} = do
   msgProxRetries <- newTVar $ _msgProxRetries s
   msgProxSuccesses <- newTVar $ _msgProxSuccesses s
   msgProxExpired <- newTVar $ _msgProxExpired s
-  msgProxAuth <- newTVar $ _msgProxAuth s
-  msgProxQuota <- newTVar $ _msgProxQuota s
   msgProxErr <- newTVar $ _msgProxErr s
   msgRecv <- newTVar $ _msgRecv s
   msgRecvDuplicate <- newTVar $ _msgRecvDuplicate s
@@ -146,8 +136,6 @@ newAgentSMPServerStats' s@AgentSMPServerStatsData {_fromTime} = do
         msgProxRetries,
         msgProxSuccesses,
         msgProxExpired,
-        msgProxAuth,
-        msgProxQuota,
         msgProxErr,
         msgRecv,
         msgRecvDuplicate,
@@ -171,8 +159,6 @@ getAgentSMPServerStats s@AgentSMPServerStats {fromTime} = do
   _msgProxRetries <- readTVar $ msgProxRetries s
   _msgProxSuccesses <- readTVar $ msgProxSuccesses s
   _msgProxExpired <- readTVar $ msgProxExpired s
-  _msgProxAuth <- readTVar $ msgProxAuth s
-  _msgProxQuota <- readTVar $ msgProxQuota s
   _msgProxErr <- readTVar $ msgProxErr s
   _msgRecv <- readTVar $ msgRecv s
   _msgRecvDuplicate <- readTVar $ msgRecvDuplicate s
@@ -194,8 +180,6 @@ getAgentSMPServerStats s@AgentSMPServerStats {fromTime} = do
         _msgProxRetries,
         _msgProxSuccesses,
         _msgProxExpired,
-        _msgProxAuth,
-        _msgProxQuota,
         _msgProxErr,
         _msgRecv,
         _msgRecvDuplicate,
