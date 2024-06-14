@@ -212,16 +212,27 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
       | backgroundMode = run c "subscriber" $ subscriber c
       | otherwise = do
           restoreAgentStats c
-          raceAny_
-            [ run c "subscriber" $ subscriber c,
-              run c "runNtfSupervisor" $ runNtfSupervisor c,
-              run c "cleanupManager" $ cleanupManager c
-            ]
-            `E.finally` saveAgentStats c
+          let threads =
+                [ run c "subscriber" $ subscriber c,
+                  run c "runNtfSupervisor" $ runNtfSupervisor c,
+                  run c "cleanupManager" $ cleanupManager c
+                ]
+          f_ <- asks (agentStatsLogFile . config)
+          let threads' = case f_ of
+                Just _ -> run c "logAgentStats" (logAgentStats c) : threads
+                Nothing -> threads
+          raceAny_ threads' `E.finally` saveAgentStats c
     run AgentClient {subQ, acThread} name a =
       a `E.catchAny` \e -> whenM (isJust <$> readTVarIO acThread) $ do
         logError $ "Agent thread " <> name <> " crashed: " <> tshow e
         atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ CRITICAL True $ show e)
+
+logAgentStats :: AgentClient -> AM' ()
+logAgentStats c = do
+  let interval = 1000000 * 30 -- 30 seconds -- TODO config
+  forever $ do
+    saveAgentStats c
+    liftIO $ threadDelay' interval
 
 saveAgentStats :: AgentClient -> AM' ()
 saveAgentStats AgentClient {smpServersStats, xftpServersStats} =
