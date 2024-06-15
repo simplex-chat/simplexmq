@@ -229,7 +229,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, qSub, qSubAuth, qSubDuplicate, qSubProhibited, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, msgNtfSent, msgNtfNoSub, msgNtfLost} <- asks serverStats
+      ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, qSub, qSubAuth, qSubDuplicate, qSubProhibited, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, msgNtfs, msgNtfNoSub, msgNtfLost, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv} <- asks serverStats
       let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -255,14 +255,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           msgSentNtf' <- atomically $ swapTVar msgSentNtf 0
           msgRecvNtf' <- atomically $ swapTVar msgRecvNtf 0
           psNtf <- atomically $ periodStatCounts activeQueuesNtf ts
+          msgNtfs' <- atomically $ swapTVar msgNtfs 0
+          msgNtfNoSub' <- atomically $ swapTVar msgNtfNoSub 0
+          msgNtfLost' <- atomically $ swapTVar msgNtfLost 0
           pRelays' <- atomically $ getResetProxyStatsData pRelays
           pRelaysOwn' <- atomically $ getResetProxyStatsData pRelaysOwn
           pMsgFwds' <- atomically $ getResetProxyStatsData pMsgFwds
           pMsgFwdsOwn' <- atomically $ getResetProxyStatsData pMsgFwdsOwn
           pMsgFwdsRecv' <- atomically $ swapTVar pMsgFwdsRecv 0
-          msgNtfSent' <- atomically $ swapTVar msgNtfSent 0
-          msgNtfNoSub' <- atomically $ swapTVar msgNtfNoSub 0
-          msgNtfLost' <- atomically $ swapTVar msgNtfLost 0
           qCount' <- readTVarIO qCount
           msgCount' <- readTVarIO msgCount
           hPutStrLn h $
@@ -300,7 +300,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                        show msgSentAuth',
                        show msgSentQuota',
                        show msgSentLarge',
-                       show msgNtfSent',
+                       show msgNtfs',
                        show msgNtfNoSub',
                        show msgNtfLost'
                      ]
@@ -1020,7 +1020,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                               asks random >>= atomically . trySendNotification ntf msg >>= \case
                                 Nothing -> logWarn "No notification subscription" >> atomically (modifyTVar' (msgNtfNoSub stats) (+ 1))
                                 Just False -> logWarn "Dropped message notification" >> atomically (modifyTVar' (msgNtfLost stats) (+ 1))
-                                Just True -> atomically (modifyTVar' (msgNtfSent stats) (+ 1))
+                                Just True -> atomically (modifyTVar' (msgNtfs stats) (+ 1))
                             atomically $ modifyTVar' (msgSentNtf stats) (+ 1)
                             atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
                           atomically $ modifyTVar' (msgSent stats) (+ 1)
