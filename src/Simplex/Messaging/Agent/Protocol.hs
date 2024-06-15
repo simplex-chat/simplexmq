@@ -1031,7 +1031,7 @@ connReqUriP overrideScheme = do
   aVRange <- queryParam "v" query
   crSmpQueues <- queryParam "smp" query
   let crClientData = safeDecodeUtf8 <$> queryParamStr "data" query
-      crData = ConnReqUriData {crScheme, crAgentVRange = aVRange, crSmpQueues, crClientData}
+      crData = ConnReqUriData {crScheme, crAgentVRange = aVRange, crSmpQueues, crClientData, crSndKey = Nothing}
   case crMode of
     CMInvitation -> do
       crE2eParams <- queryParam "e2e" query
@@ -1235,7 +1235,8 @@ data ConnReqUriData = ConnReqUriData
   { crScheme :: ServiceScheme,
     crAgentVRange :: VersionRangeSMPA,
     crSmpQueues :: NonEmpty SMPQueueUri,
-    crClientData :: Maybe CRClientData
+    crClientData :: Maybe CRClientData,
+    crSndKey :: Maybe SndPublicAuthKey
   }
   deriving (Eq, Show)
 

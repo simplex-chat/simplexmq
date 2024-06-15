@@ -58,7 +58,8 @@ connReqData =
     { crScheme = SSSimplex,
       crAgentVRange = mkVersionRange (VersionSMPA 2) (VersionSMPA 2),
       crSmpQueues = [queueV1],
-      crClientData = Nothing
+      crClientData = Nothing,
+      crSndKey = Nothing
     }
 
 testDhPubKey :: C.PublicKeyX448

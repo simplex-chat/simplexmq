@@ -709,7 +709,7 @@ newRcvConnSrv c userId connId enableNtfs cMode clientData pqInitKeys subMode srv
   when enableNtfs $ do
     ns <- asks ntfSupervisor
     atomically $ sendNtfSubCommand ns (connId, NSCCreate)
-  let crData = ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
+  let crData = ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData Nothing
   case cMode of
     SCMContact -> pure (connId, CRContactUri crData)
     SCMInvitation -> do
