@@ -304,7 +304,9 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
             logDebug "Session ended"
 
 catchRCError :: ExceptT RCErrorType IO a -> (RCErrorType -> ExceptT RCErrorType IO a) -> ExceptT RCErrorType IO a
-catchRCError = catchAllErrors (RCEException . show)
+catchRCError = catchAllErrors $ \e -> case fromException e of
+  Just (TLS.Terminated _ _ (TLS.Error_Protocol (_, _, TLS.UnknownCa))) -> RCEIdentity
+  _ -> RCEException $ show e
 {-# INLINE catchRCError #-}
 
 putRCError :: ExceptT RCErrorType IO a -> TMVar (Either RCErrorType b) -> ExceptT RCErrorType IO a
