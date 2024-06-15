@@ -16,6 +16,8 @@ This RFC proposes modifications to SMP and SMP Agent protocols to reduce the num
 
 ## Solution
 
-1. Initiating client will add to the invitation link the public key that the receiving client will use to secure the queue.
-2. Accepting client will create the queue as secured straight away (NEW command is modified as otherwise the client would have to wait for IDS response before being able to secure the queue) or with the old server will secure it before sending to the confirmation with "secured" flag to the initiating client.
+1. Initiating client will add to the invitation link and to the contact address the public key that the receiving client will use to secure the reply queue.
+2. Accepting client will create the queue as secured (NEW command is modified as otherwise the client would have to wait for IDS response before being able to secure the queue with KEY). With the old servers we have two options: 1) secure it with a separate command before sending the confirmation with "secured" flag to the initiating client; 2) do not support faster handshake with the old servers.
 3. Initiating client secures its queue and sends HELLO with its profile. At this point it can already send messages without waiting for the reply.
+
+See [this sequence diagram](../protocol/diagrams/duplex-messaging/duplex-creating-v6.mmd) for the updated handshake protocol.

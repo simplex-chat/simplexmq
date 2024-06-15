@@ -652,12 +652,12 @@ createSMPQueue ::
   SMPClient ->
   C.AAuthKeyPair -> -- SMP v6 - signature key pair, SMP v7 - DH key pair
   RcvPublicDhKey ->
+  Maybe SndPublicAuthKey ->
   Maybe BasicAuth ->
   SubscriptionMode ->
-  Maybe SndPublicAuthKey ->
   ExceptT SMPClientError IO QueueIdsKeys
-createSMPQueue c (rKey, rpKey) dhKey auth subMode sndKey =
-  sendSMPCommand c (Just rpKey) "" (NEW rKey dhKey auth subMode sndKey) >>= \case
+createSMPQueue c (rKey, rpKey) dhKey sndKey auth subMode =
+  sendSMPCommand c (Just rpKey) "" (NEW rKey dhKey sndKey auth subMode) >>= \case
     IDS qik -> pure qik
     r -> throwE $ unexpectedResponse r
 

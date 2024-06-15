@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent.Protocol
     ratchetSyncSMPAgentVersion,
     deliveryRcptsSMPAgentVersion,
     pqdrSMPAgentVersion,
+    sndAuthKeySMPAgentVersion,
     currentSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
@@ -227,6 +228,7 @@ import UnliftIO.Exception (Exception)
 -- 3 - support ratchet renegotiation (6/30/2023)
 -- 4 - delivery receipts (7/13/2023)
 -- 5 - post-quantum double ratchet (3/14/2024)
+-- 6 - secure reply queues with provided keys (6/14/2024)
 
 data SMPAgentVersion
 
@@ -251,8 +253,11 @@ deliveryRcptsSMPAgentVersion = VersionSMPA 4
 pqdrSMPAgentVersion :: VersionSMPA
 pqdrSMPAgentVersion = VersionSMPA 5
 
+sndAuthKeySMPAgentVersion :: VersionSMPA
+sndAuthKeySMPAgentVersion = VersionSMPA 6
+
 currentSMPAgentVersion :: VersionSMPA
-currentSMPAgentVersion = VersionSMPA 5
+currentSMPAgentVersion = VersionSMPA 6
 
 supportedSMPAgentVRange :: VersionRangeSMPA
 supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentSMPAgentVersion
@@ -695,6 +700,8 @@ data SMPConfirmation = SMPConfirmation
     connInfo :: ConnInfo,
     -- | optional reply queues included in confirmation (added in agent protocol v2)
     smpReplyQueues :: [SMPQueueInfo],
+    -- | confirmation that the reply queues were secured (added in agent protocol v6)
+    queuesSecured :: Bool,
     -- | SMP client version
     smpClientVersion :: VersionSMPC
   }
@@ -760,6 +767,7 @@ data AgentMessage
   | -- AgentConnInfoReply is used by accepting party in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
     -- It made removed REPLY message unnecessary.
     AgentConnInfoReply (NonEmpty SMPQueueInfo) ConnInfo
+  | AgentConnInfoSecured (NonEmpty SMPQueueInfo) ConnInfo -- v6
   | AgentRatchetInfo ByteString
   | AgentMessage APrivHeader AMessage
   deriving (Show)
@@ -768,22 +776,25 @@ instance Encoding AgentMessage where
   smpEncode = \case
     AgentConnInfo cInfo -> smpEncode ('I', Tail cInfo)
     AgentConnInfoReply smpQueues cInfo -> smpEncode ('D', smpQueues, Tail cInfo) -- 'D' stands for "duplex"
+    AgentConnInfoSecured smpQueues cInfo -> smpEncode ('S', smpQueues, Tail cInfo) -- 'S' for "secured"
     AgentRatchetInfo info -> smpEncode ('R', Tail info)
     AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
   smpP =
     smpP >>= \case
       'I' -> AgentConnInfo . unTail <$> smpP
       'D' -> AgentConnInfoReply <$> smpP <*> (unTail <$> smpP)
+      'S' -> AgentConnInfoSecured <$> smpP <*> (unTail <$> smpP)
       'R' -> AgentRatchetInfo . unTail <$> smpP
       'M' -> AgentMessage <$> smpP <*> smpP
       _ -> fail "bad AgentMessage"
 
+-- internal type for storing message type in the database
 data AgentMessageType
   = AM_CONN_INFO
   | AM_CONN_INFO_REPLY
+  | AM_CONN_INFO_SECURED
   | AM_RATCHET_INFO
   | AM_HELLO_
-  | AM_REPLY_
   | AM_A_MSG_
   | AM_A_RCVD_
   | AM_QCONT_
@@ -798,9 +809,9 @@ instance Encoding AgentMessageType where
   smpEncode = \case
     AM_CONN_INFO -> "C"
     AM_CONN_INFO_REPLY -> "D"
+    AM_CONN_INFO_SECURED -> "U"
     AM_RATCHET_INFO -> "S"
     AM_HELLO_ -> "H"
-    AM_REPLY_ -> "R"
     AM_A_MSG_ -> "M"
     AM_A_RCVD_ -> "V"
     AM_QCONT_ -> "QC"
@@ -813,9 +824,9 @@ instance Encoding AgentMessageType where
     A.anyChar >>= \case
       'C' -> pure AM_CONN_INFO
       'D' -> pure AM_CONN_INFO_REPLY
+      'U' -> pure AM_CONN_INFO_SECURED
       'S' -> pure AM_RATCHET_INFO
       'H' -> pure AM_HELLO_
-      'R' -> pure AM_REPLY_
       'M' -> pure AM_A_MSG_
       'V' -> pure AM_A_RCVD_
       'Q' ->
@@ -833,6 +844,7 @@ agentMessageType :: AgentMessage -> AgentMessageType
 agentMessageType = \case
   AgentConnInfo _ -> AM_CONN_INFO
   AgentConnInfoReply {} -> AM_CONN_INFO_REPLY
+  AgentConnInfoSecured {} -> AM_CONN_INFO_SECURED
   AgentRatchetInfo _ -> AM_RATCHET_INFO
   AgentMessage _ aMsg -> case aMsg of
     -- HELLO is used both in v1 and in v2, but differently.
@@ -1031,7 +1043,7 @@ connReqUriP overrideScheme = do
   aVRange <- queryParam "v" query
   crSmpQueues <- queryParam "smp" query
   let crClientData = safeDecodeUtf8 <$> queryParamStr "data" query
-      crData = ConnReqUriData {crScheme, crAgentVRange = aVRange, crSmpQueues, crClientData, crSndKey = Nothing}
+      crData = ConnReqUriData {crScheme, crAgentVRange = aVRange, crSmpQueues, crClientData, crSndKey = []}
   case crMode of
     CMInvitation -> do
       crE2eParams <- queryParam "e2e" query
@@ -1236,7 +1248,8 @@ data ConnReqUriData = ConnReqUriData
     crAgentVRange :: VersionRangeSMPA,
     crSmpQueues :: NonEmpty SMPQueueUri,
     crClientData :: Maybe CRClientData,
-    crSndKey :: Maybe SndPublicAuthKey
+    -- optional public keys to secure reply queues
+    crSndKey :: [SndPublicAuthKey]
   }
   deriving (Eq, Show)
 

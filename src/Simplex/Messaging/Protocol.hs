@@ -377,7 +377,7 @@ data Command (p :: Party) where
   -- v6 of SMP servers only support signature algorithm for command authorization.
   -- v7 of SMP servers additionally support additional layer of authenticated encryption.
   -- RcvPublicAuthKey is defined as C.APublicKey - it can be either signature or DH public keys.
-  NEW :: RcvPublicAuthKey -> RcvPublicDhKey -> Maybe BasicAuth -> SubscriptionMode -> Maybe SndPublicAuthKey -> Command Recipient
+  NEW :: RcvPublicAuthKey -> RcvPublicDhKey -> Maybe SndPublicAuthKey -> Maybe BasicAuth -> SubscriptionMode -> Command Recipient
   SUB :: Command Recipient
   KEY :: SndPublicAuthKey -> Command Recipient
   NKEY :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> Command Recipient
@@ -1278,8 +1278,8 @@ class ProtocolMsgTag (Tag msg) => ProtocolEncoding v err msg | msg -> err, msg -
 instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol v = \case
-    NEW rKey dhKey auth_ subMode sndKey_
-      | v >= sndAuthKeySMPVersion -> new <> auth <> e subMode <> e sndKey_
+    NEW rKey dhKey sndKey_ auth_ subMode 
+      | v >= sndAuthKeySMPVersion -> new <> e sndKey_ <> auth <> e subMode
       | v >= subModeSMPVersion -> new <> auth <> e subMode
       | v == basicAuthSMPVersion -> new <> auth
       | otherwise -> new
@@ -1346,12 +1346,13 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
         NEW_
-          | v >= sndAuthKeySMPVersion -> new <*> auth <*> smpP <*> smpP
-          | v >= subModeSMPVersion -> new <*> auth <*> smpP <*> pure Nothing
-          | v == basicAuthSMPVersion -> new <*> auth <*> pure SMSubscribe <*> pure Nothing
-          | otherwise -> new <*> pure Nothing <*> pure SMSubscribe <*> pure Nothing
+          | v >= sndAuthKeySMPVersion -> new_ <*> smpP <*> auth <*> smpP
+          | v >= subModeSMPVersion -> new <*> auth <*> smpP
+          | v == basicAuthSMPVersion -> new <*> auth <*> pure SMSubscribe
+          | otherwise -> new <*> pure Nothing <*> pure SMSubscribe
           where
-            new = NEW <$> _smpP <*> smpP
+            new_ = NEW <$> _smpP <*> smpP
+            new = new_ <*> pure Nothing
             auth = optional (A.char 'A' *> smpP)
         SUB_ -> pure SUB
         KEY_ -> KEY <$> _smpP

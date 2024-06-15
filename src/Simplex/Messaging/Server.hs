@@ -776,7 +776,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
       Cmd SRecipient command -> do
         st <- asks queueStore
         Just <$> case command of
-          NEW rKey dhKey auth subMode _sndKey ->
+          NEW rKey dhKey _sndKey auth subMode ->
             ifM
               allowNew
               (createQueue st rKey dhKey subMode)
