@@ -229,7 +229,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, qSub, qSubAuth, qSubDuplicate, qSubProhibited, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, msgNtfs, msgNtfNoSub, msgNtfLost, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv} <- asks serverStats
+      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, qSub, qSubAuth, qSubDuplicate, qSubProhibited, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv} <- asks serverStats
       let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -255,9 +255,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           msgSentNtf' <- atomically $ swapTVar msgSentNtf 0
           msgRecvNtf' <- atomically $ swapTVar msgRecvNtf 0
           psNtf <- atomically $ periodStatCounts activeQueuesNtf ts
-          msgNtfs' <- atomically $ swapTVar msgNtfs 0
-          msgNtfNoSub' <- atomically $ swapTVar msgNtfNoSub 0
-          msgNtfLost' <- atomically $ swapTVar msgNtfLost 0
+          msgNtfs' <- atomically $ swapTVar (msgNtfs ss) 0
+          msgNtfNoSub' <- atomically $ swapTVar (msgNtfNoSub ss) 0
+          msgNtfLost' <- atomically $ swapTVar (msgNtfLost ss) 0
           pRelays' <- atomically $ getResetProxyStatsData pRelays
           pRelaysOwn' <- atomically $ getResetProxyStatsData pRelaysOwn
           pMsgFwds' <- atomically $ getResetProxyStatsData pMsgFwds
