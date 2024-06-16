@@ -229,7 +229,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, qSub, qSubAuth, qSubDuplicate, qSubProhibited, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv} <- asks serverStats
+      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, qSub, qSubAuth, qSubDuplicate, qSubProhibited, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv} <- asks serverStats
       let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -255,6 +255,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           msgSentNtf' <- atomically $ swapTVar msgSentNtf 0
           msgRecvNtf' <- atomically $ swapTVar msgRecvNtf 0
           psNtf <- atomically $ periodStatCounts activeQueuesNtf ts
+          msgNtfs' <- atomically $ swapTVar (msgNtfs ss) 0
+          msgNtfNoSub' <- atomically $ swapTVar (msgNtfNoSub ss) 0
+          msgNtfLost' <- atomically $ swapTVar (msgNtfLost ss) 0
           pRelays' <- atomically $ getResetProxyStatsData pRelays
           pRelaysOwn' <- atomically $ getResetProxyStatsData pRelaysOwn
           pMsgFwds' <- atomically $ getResetProxyStatsData pMsgFwds
@@ -296,7 +299,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                        show qSubProhibited',
                        show msgSentAuth',
                        show msgSentQuota',
-                       show msgSentLarge'
+                       show msgSentLarge',
+                       show msgNtfs',
+                       show msgNtfNoSub',
+                       show msgNtfLost'
                      ]
               )
         liftIO $ threadDelay' interval
@@ -714,7 +720,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                 let own = isOwnServer a srv
                 inc own pRequests
                 inc own $ if temporaryClientError e then pErrorsConnect else pErrorsOther
-                logError $ "Error connecting: " <> decodeLatin1 (strEncode $ host srv) <> " " <> tshow e
+                logWarn $ "Error connecting: " <> decodeLatin1 (strEncode $ host srv) <> " " <> tshow e
                 pure . ERR $ smpProxyError e
             where
               proxyResp smp =
@@ -1010,7 +1016,15 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                           pure $ err QUOTA
                         Just msg -> time "SEND ok" $ do
                           when (notification msgFlags) $ do
-                            atomically . trySendNotification msg =<< asks random
+                            forM_ (notifier qr) $ \ntf -> do
+                              asks random >>= atomically . trySendNotification ntf msg >>= \case
+                                Nothing -> do
+                                  atomically $ modifyTVar' (msgNtfNoSub stats) (+ 1)
+                                  logWarn "No notification subscription"
+                                Just False -> do
+                                  atomically $ modifyTVar' (msgNtfLost stats) (+ 1)
+                                  logWarn "Dropped message notification"
+                                Just True -> atomically $ modifyTVar' (msgNtfs stats) (+ 1)
                             atomically $ modifyTVar' (msgSentNtf stats) (+ 1)
                             atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
                           atomically $ modifyTVar' (msgSent stats) (+ 1)
@@ -1033,18 +1047,19 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               deleted <- atomically $ sum <$> mapM (deleteExpiredMsgs q) old
               atomically $ modifyTVar' (msgExpired stats) (+ deleted)
 
-            trySendNotification :: Message -> TVar ChaChaDRG -> STM ()
-            trySendNotification msg ntfNonceDrg =
-              forM_ (notifier qr) $ \NtfCreds {notifierId, rcvNtfDhSecret} ->
-                mapM_ (writeNtf notifierId msg rcvNtfDhSecret ntfNonceDrg) =<< TM.lookup notifierId notifiers
+            trySendNotification :: NtfCreds -> Message -> TVar ChaChaDRG -> STM (Maybe Bool)
+            trySendNotification NtfCreds {notifierId, rcvNtfDhSecret} msg ntfNonceDrg =
+              mapM (writeNtf notifierId msg rcvNtfDhSecret ntfNonceDrg) =<< TM.lookup notifierId notifiers
 
-            writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> Client -> STM ()
+            writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> Client -> STM Bool
             writeNtf nId msg rcvNtfDhSecret ntfNonceDrg Client {sndQ = q} =
-              unlessM (isFullTBQueue q) $ case msg of
-                Message {msgId, msgTs} -> do
-                  (nmsgNonce, encNMsgMeta) <- mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg
-                  writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)]
-                _ -> pure ()
+              ifM (isFullTBQueue q) (pure False) (sendNtf $> True)
+              where
+                sendNtf = case msg of
+                  Message {msgId, msgTs} -> do
+                    (nmsgNonce, encNMsgMeta) <- mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg
+                    writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)]
+                  _ -> pure ()
 
             mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> TVar ChaChaDRG -> STM (C.CbNonce, EncNMsgMeta)
             mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg = do
@@ -1184,7 +1199,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                     ProhibitSub -> QProhibitSub
               qDelivered <- decodeLatin1 . encode <$$> tryReadTMVar delivered
               pure QSub {qSubThread, qDelivered}
-          
+
         ok :: Transmission BrokerMsg
         ok = (corrId, queueId, OK)
 

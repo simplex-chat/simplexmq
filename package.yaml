@@ -1,5 +1,5 @@
 name: simplexmq
-version: 5.8.0.10
+version: 5.8.1.0
 synopsis: SimpleXMQ message broker
 description: |
   This package includes <./docs/Simplex-Messaging-Server.html server>,
@@ -140,15 +140,6 @@ executables:
 
   xftp-server:
     source-dirs: apps/xftp-server
-    main: Main.hs
-    dependencies:
-      - simplexmq
-    ghc-options:
-      - -threaded
-      - -rtsopts
-
-  smp-agent:
-    source-dirs: apps/smp-agent
     main: Main.hs
     dependencies:
       - simplexmq

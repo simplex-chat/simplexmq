@@ -663,7 +663,7 @@ testGetPendingServerCommand st = do
     Right (Just PendingCommand {corrId = corrId'}) <- getPendingServerCommand db (Just smpServer1)
     corrId' `shouldBe` "4"
   where
-    command = AClientCommand $ APC SAEConn $ NEW True (ACM SCMInvitation) (IKNoPQ PQSupportOn) SMSubscribe
+    command = AClientCommand $ NEW True (ACM SCMInvitation) (IKNoPQ PQSupportOn) SMSubscribe
     corruptCmd :: DB.Connection -> ByteString -> ConnId -> IO ()
     corruptCmd db corrId connId = DB.execute db "UPDATE commands SET command = cast('bad' as blob) WHERE conn_id = ? AND corr_id = ?" (connId, corrId)
 

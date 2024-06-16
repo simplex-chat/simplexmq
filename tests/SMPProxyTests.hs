@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
@@ -14,9 +15,9 @@ module SMPProxyTests where
 
 import AgentTests.EqInstances ()
 import AgentTests.FunctionalAPITests
-import Control.Concurrent (ThreadId)
+import Control.Concurrent (ThreadId, threadDelay)
 import Control.Logger.Simple
-import Control.Monad (forM, forM_, forever)
+import Control.Monad (forM, forM_, forever, replicateM_)
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
@@ -39,6 +40,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.FilePath (splitExtensions)
+import System.Random (randomRIO)
 import Test.Hspec
 import UnliftIO
 import Util
@@ -82,6 +84,10 @@ smpProxyTests = do
         it "1x1000" . twoServersFirstProxy $ deliver 1000
         it "5x200" . twoServersFirstProxy $ 5 `inParrallel` deliver 200
         it "10x100" . twoServersFirstProxy $ 10 `inParrallel` deliver 100
+      describe "stress test - no host" $ do
+        it "1x1000, no delay" . oneServer $ proxyConnectDeadRelay 1000 0 srv1
+        xit "1x1000, 100ms" . oneServer $ proxyConnectDeadRelay 1000 100000 srv1
+        xit "100x1000, 100ms" . oneServer $ 100 `inParrallel` (randomRIO (0, 1000000) >>= threadDelay >> proxyConnectDeadRelay 1000 100000 srv1)
       xdescribe "stress test 10k" $ do
         let deliver n = deliverMessagesViaProxy srv1 srv2 C.SEd448 [] (map bshow [1 :: Int .. n])
         it "1x10000" . twoServersFirstProxy $ deliver 10000
@@ -178,6 +184,20 @@ deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
         dec msgId' encBody' `shouldBe` Right msg'
         runExceptT' $ ackSMPMessage rc rPriv rcvId msgId'
     )
+
+proxyConnectDeadRelay :: Int -> Int -> SMPServer -> IO ()
+proxyConnectDeadRelay n d proxyServ = do
+  g <- C.newRandom
+  -- set up proxy
+  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} Nothing (\_ -> pure ())
+  pc <- either (fail . show) pure pc'
+  THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
+  -- get proxy session
+  replicateM_ n $ do
+    sess0 <- runExceptT $ connectSMPProxiedRelay pc (SMPServer testHost "45678" testKeyHash) (Just "correct")
+    case sess0 of
+      Right !_noWay -> error "got unexpected client"
+      Left !_err -> threadDelay d
 
 agentDeliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => (NonEmpty SMPServer, SMPProxyMode, Bool) -> (NonEmpty SMPServer, SMPProxyMode, Bool) -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
 agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, bViaProxy) alg msg1 msg2 =
