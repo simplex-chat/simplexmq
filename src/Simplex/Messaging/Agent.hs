@@ -82,6 +82,7 @@ module Simplex.Messaging.Agent
     setNetworkConfig,
     setUserNetworkInfo,
     reconnectAllServers,
+    reconnectSMPServer,
     registerNtfToken,
     verifyNtfToken,
     checkNtfToken,
