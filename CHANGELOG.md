@@ -1,3 +1,14 @@
+# 5.8.1
+
+Agent:
+- API to reconnect one server.
+- Better error handling of file errors and remote control connection errors.
+- Only start uploading file once all chunks were registered on the servers.
+
+SMP server:
+- additional stats for sent message notifications.
+- fix server page layout.
+
 # 5.8.0
 
 Version 5.8.0.10
