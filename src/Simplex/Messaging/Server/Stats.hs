@@ -435,7 +435,7 @@ periodStatCounts ps ts = do
     periodCount 1 pVar = show . S.size <$> swapTVar pVar S.empty
     periodCount _ _ = pure ""
 
-updatePeriodStats :: (Ord a) => PeriodStats a -> a -> STM ()
+updatePeriodStats :: Ord a => PeriodStats a -> a -> STM ()
 updatePeriodStats stats pId = do
   updatePeriod day
   updatePeriod week
