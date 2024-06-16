@@ -1018,9 +1018,13 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                           when (notification msgFlags) $ do
                             forM_ (notifier qr) $ \ntf -> do
                               asks random >>= atomically . trySendNotification ntf msg >>= \case
-                                Nothing -> logWarn "No notification subscription" >> atomically (modifyTVar' (msgNtfNoSub stats) (+ 1))
-                                Just False -> logWarn "Dropped message notification" >> atomically (modifyTVar' (msgNtfLost stats) (+ 1))
-                                Just True -> atomically (modifyTVar' (msgNtfs stats) (+ 1))
+                                Nothing -> do
+                                  atomically $ modifyTVar' (msgNtfNoSub stats) (+ 1)
+                                  logWarn "No notification subscription"
+                                Just False -> do
+                                  atomically $ modifyTVar' (msgNtfLost stats) (+ 1)
+                                  logWarn "Dropped message notification"
+                                Just True -> atomically $ modifyTVar' (msgNtfs stats) (+ 1)
                             atomically $ modifyTVar' (msgSentNtf stats) (+ 1)
                             atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
                           atomically $ modifyTVar' (msgSent stats) (+ 1)
