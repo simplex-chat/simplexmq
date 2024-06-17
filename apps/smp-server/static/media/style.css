@@ -50,6 +50,10 @@ img {
   /* For Internet Explorer and Edge */
 }
 
+a{
+  word-wrap: break-word;
+}
+
 /* NEW SITE */
 .container,
 .container-fluid,

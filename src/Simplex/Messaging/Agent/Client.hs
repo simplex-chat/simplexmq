@@ -32,6 +32,7 @@ module Simplex.Messaging.Agent.Client
     closeAgentClient,
     closeProtocolServerClients,
     reconnectServerClients,
+    reconnectSMPServer,
     closeXFTPServerClient,
     runSMPServerTest,
     runXFTPServerTest,
@@ -935,6 +936,16 @@ closeProtocolServerClients c clientsSel =
 reconnectServerClients :: ProtocolServerClient v err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
 reconnectServerClients c clientsSel =
   readTVarIO (clientsSel c) >>= mapM_ (forkIO . closeClient_ c)
+
+reconnectSMPServer :: AgentClient -> UserId -> SMPServer -> IO ()
+reconnectSMPServer c userId srv = do
+  cs <- readTVarIO $ smpClients c
+  let vs = M.foldrWithKey srvClient [] cs
+  mapM_ (forkIO . closeClient_ c) vs
+  where
+    srvClient (userId', srv', _) v
+      | userId == userId' && srv == srv' = (v :)
+      | otherwise = id
 
 closeClient :: ProtocolServerClient v err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> TransportSession msg -> IO ()
 closeClient c clientSel tSess =
