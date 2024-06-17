@@ -30,27 +30,27 @@ sequenceDiagram
   BS ->> BA: IDS: SMP queue IDs
   note over BA: status: SECURED/NEW
 
-  note over BA, AA: 6. establish Alice's SMP queue
+  note over BA, AA: 6. confirm Alice's SMP queue
   BA ->> AS: SEND: Bob's info and sender server key (SMP confirmation with reply queues)
   note over BA: status: SECURED/CONFIRMED
 
   AS ->> AA: MSG: Bob's info and<br>sender server key
-  note over AA: status: CONFIRMED/NONE
+  note over AA: status: CONFIRMED/SECURED
   AA ->> AS: ACK: confirm message
   AA ->> A: CONF: connection request ID<br>and Bob's info
   A ->> AA: LET: accept connection request,<br>send Alice's info
   AA ->> AS: KEY: secure queue
-  note over AA: status: SECURED/NONE
+  note over AA: status: SECURED/SECURED
 
   AA ->> BS: SEND: Alice's info (SMP confirmation without reply queues)
   note over A, AA: 7a. notify Alice<br>about connection success
   AA ->> A: CON: connected
-  note over AA: status: SECURED/ACTIVE
+  note over AA: status: ACTIVE/ACTIVE
 
   BS ->> BA: MSG: Alice's info<br>(without sender's server key)
   note over BA: status: SECURED/CONFIRMED
   BA ->> B: INFO: Alice's info
   BA ->> BS: ACK: confirm message
-  note over BA: status: SECURED/ACTIVE
+  note over BA: status: ACTIVE/ACTIVE
   note over BA, B: 7a. notify Bob<br>about connection success<br>(no HELLO needed in v6)
   BA ->> B: CON: connected
