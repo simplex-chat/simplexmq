@@ -329,7 +329,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         threadDelay' $ bucketWidth * 1000000
         stats <- readTVarIO stats' >>= mapM (CS.readClientStatsData readTVarIO)
         let !rates = distribution . histogram <$> collect stats
-        atomically . modifyTVar' rates' $ (rates :) . take nBuckets
+        atomically . modifyTVar' rates' $ \old ->
+          let timeline = take nBuckets old
+          in length timeline `seq` rates : timeline
       where
         collect :: IntMap CS.ClientStatsData -> CS.ClientStatsC (IntMap Int)
         collect = IM.foldlWithKey' toColumns (CS.clientStatsC IM.empty)
