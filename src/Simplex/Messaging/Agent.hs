@@ -186,9 +186,7 @@ import Simplex.RemoteControl.Client
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
 import System.Directory
-import System.Exit (exitSuccess)
 import System.Mem.Weak (deRefWeak)
-import System.Posix.Signals (Handler (Catch), installHandler, sigINT, sigTERM)
 import UnliftIO.Concurrent (forkFinally, forkIO, killThread, mkWeakThreadId, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -214,8 +212,6 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
     runAgentThreads c
       | backgroundMode = run c "subscriber" $ subscriber c
       | otherwise = do
-          -- _ <- liftIO $ installHandler sigINT (Catch $ withAgentEnv' c $ handleSignal c) Nothing
-          -- _ <- liftIO $ installHandler sigTERM (Catch $ withAgentEnv' c $ handleSignal c) Nothing
           restoreAgentStats c
           let threads =
                 [ run c "subscriber" $ subscriber c,
@@ -231,11 +227,6 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
       a `E.catchAny` \e -> whenM (isJust <$> readTVarIO acThread) $ do
         logError $ "Agent thread " <> name <> " crashed: " <> tshow e
         atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ CRITICAL True $ show e)
-
-handleSignal :: AgentClient -> AM' ()
-handleSignal c = do
-  saveAgentStats c `E.catchAny` \e -> liftIO $ print  $ "error saving agent stats: " <> tshow e
-  liftIO exitSuccess
 
 logAgentStats :: AgentClient -> AM' ()
 logAgentStats c = do
@@ -254,8 +245,7 @@ saveAgentStats AgentClient {smpServersStats, xftpServersStats} =
       xss <- readTVarIO xftpServersStats
       xftpServersStatsData <- mapM (atomically . getAgentXFTPServerStats) xss
       let stats = AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData}
-      -- logInfo $ "saving agent stats to file " <> T.pack f
-      liftIO $ print $ "saving agent stats to file " <> T.pack f
+      logInfo $ "saving agent stats to file " <> T.pack f
       B.writeFile f $ LB.toStrict $ J.encode stats
       -- logInfo "agent stats saved"
       liftIO $ print "agent stats saved"
