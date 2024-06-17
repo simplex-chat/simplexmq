@@ -127,7 +127,6 @@ import qualified Data.Aeson as J
 import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy as LB
 import Data.Composition ((.:), (.:.), (.::), (.::.))
 import Data.Either (isRight, rights)
 import Data.Foldable (foldl', toList)
@@ -185,7 +184,6 @@ import Simplex.Messaging.Version
 import Simplex.RemoteControl.Client
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
-import System.Directory
 import System.Mem.Weak (deRefWeak)
 import UnliftIO.Concurrent (forkFinally, forkIO, killThread, mkWeakThreadId, threadDelay)
 import qualified UnliftIO.Exception as E
