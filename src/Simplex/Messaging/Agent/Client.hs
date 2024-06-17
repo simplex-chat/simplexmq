@@ -1397,7 +1397,9 @@ subscribeQueues c qs = do
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED "subscribeQueues") else Right rq
     subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
     subscribeQueues_ env session smp qs' = do
-      -- atomically $ incSMPServerStat c userId server connSubAttempts 1 -- ? use userId and server from the first queue?
+      -- ? use userId and server from the first queue?
+      -- ? count number of queues?
+      -- atomically $ incSMPServerStat c userId server connSubAttempts 1
       rs <- sendBatch subscribeSMPQueues smp qs'
       active <-
         atomically $
