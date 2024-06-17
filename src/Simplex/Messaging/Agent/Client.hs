@@ -140,6 +140,7 @@ module Simplex.Messaging.Agent.Client
     withUserServers,
     withNextSrv,
     incSMPServerStat,
+    incXFTPServerStat,
     AgentWorkersDetails (..),
     getAgentWorkersDetails,
     AgentWorkersSummary (..),
@@ -1951,6 +1952,15 @@ incSMPServerStat AgentClient {smpServersStats} userId srv sel n = do
       newStats <- newAgentSMPServerStats
       modifyTVar' (sel newStats) (+ n)
       TM.insert (userId, srv) newStats smpServersStats
+
+incXFTPServerStat :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int) -> Int -> STM ()
+incXFTPServerStat AgentClient {xftpServersStats} userId srv sel n = do
+  TM.lookup (userId, srv) xftpServersStats >>= \case
+    Just v -> modifyTVar' (sel v) (+ n)
+    Nothing -> do
+      newStats <- newAgentXFTPServerStats
+      modifyTVar' (sel newStats) (+ n)
+      TM.insert (userId, srv) newStats xftpServersStats
 
 -- - currently used servers - those that have state
 -- - previously used servers - have stats but no state - they could be used earlier in session,
