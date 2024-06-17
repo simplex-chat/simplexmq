@@ -220,161 +220,147 @@ setAgentSMPServerStats s d = do
   writeTVar (connSubErrs s) $! _connSubErrs d
 
 data AgentXFTPServerStats = AgentXFTPServerStats
-  { -- fromTime :: TVar UTCTime,
-    replUpload :: TVar Int, -- total replicas uploaded to server
-    replUploadRetries :: TVar Int, -- upload retries
+  { replUpload :: TVar Int, -- total replicas uploaded to server
+    replUploadAttempts :: TVar Int, -- upload attempts
     replUploadSuccesses :: TVar Int, -- successful uploads
     replUploadErr :: TVar Int, -- upload errors
     replDownload :: TVar Int, -- total replicas downloaded from server
-    replDownloadRetries :: TVar Int, -- download retries
+    replDownloadAttempts :: TVar Int, -- download attempts
     replDownloadSuccesses :: TVar Int, -- successful downloads
     replDownloadAuth :: TVar Int, -- download AUTH errors
     replDownloadErr :: TVar Int, -- other download errors (excluding above)
     replDelete :: TVar Int, -- total replicas deleted from server
-    replDeleteRetries :: TVar Int, -- delete retries
+    replDeleteAttempts :: TVar Int, -- delete attempts
     replDeleteSuccesses :: TVar Int, -- successful deletes
     replDeleteErr :: TVar Int -- delete errors
   }
 
 data AgentXFTPServerStatsData = AgentXFTPServerStatsData
-  { -- _fromTime :: UTCTime,
-    _replUpload :: Int,
-    _replUploadRetries :: Int,
+  { _replUpload :: Int,
+    _replUploadAttempts :: Int,
     _replUploadSuccesses :: Int,
     _replUploadErr :: Int,
     _replDownload :: Int,
-    _replDownloadRetries :: Int,
+    _replDownloadAttempts :: Int,
     _replDownloadSuccesses :: Int,
     _replDownloadAuth :: Int,
     _replDownloadErr :: Int,
     _replDelete :: Int,
-    _replDeleteRetries :: Int,
+    _replDeleteAttempts :: Int,
     _replDeleteSuccesses :: Int,
     _replDeleteErr :: Int
   }
   deriving (Show)
 
--- newAgentXFTPServerStats :: UTCTime -> STM AgentXFTPServerStats
--- newAgentXFTPServerStats ts = do
 newAgentXFTPServerStats :: STM AgentXFTPServerStats
 newAgentXFTPServerStats = do
-  -- fromTime <- newTVar ts
   replUpload <- newTVar 0
-  replUploadRetries <- newTVar 0
+  replUploadAttempts <- newTVar 0
   replUploadSuccesses <- newTVar 0
   replUploadErr <- newTVar 0
   replDownload <- newTVar 0
-  replDownloadRetries <- newTVar 0
+  replDownloadAttempts <- newTVar 0
   replDownloadSuccesses <- newTVar 0
   replDownloadAuth <- newTVar 0
   replDownloadErr <- newTVar 0
   replDelete <- newTVar 0
-  replDeleteRetries <- newTVar 0
+  replDeleteAttempts <- newTVar 0
   replDeleteSuccesses <- newTVar 0
   replDeleteErr <- newTVar 0
   pure
     AgentXFTPServerStats
-      { -- fromTime,
-        replUpload,
-        replUploadRetries,
+      { replUpload,
+        replUploadAttempts,
         replUploadSuccesses,
         replUploadErr,
         replDownload,
-        replDownloadRetries,
+        replDownloadAttempts,
         replDownloadSuccesses,
         replDownloadAuth,
         replDownloadErr,
         replDelete,
-        replDeleteRetries,
+        replDeleteAttempts,
         replDeleteSuccesses,
         replDeleteErr
       }
 
 newAgentXFTPServerStats' :: AgentXFTPServerStatsData -> STM AgentXFTPServerStats
 newAgentXFTPServerStats' s = do
-  -- s@AgentXFTPServerStatsData {_fromTime} = do
-  -- fromTime <- newTVar _fromTime
   replUpload <- newTVar $ _replUpload s
-  replUploadRetries <- newTVar $ _replUploadRetries s
+  replUploadAttempts <- newTVar $ _replUploadAttempts s
   replUploadSuccesses <- newTVar $ _replUploadSuccesses s
   replUploadErr <- newTVar $ _replUploadErr s
   replDownload <- newTVar $ _replDownload s
-  replDownloadRetries <- newTVar $ _replDownloadRetries s
+  replDownloadAttempts <- newTVar $ _replDownloadAttempts s
   replDownloadSuccesses <- newTVar $ _replDownloadSuccesses s
   replDownloadAuth <- newTVar $ _replDownloadAuth s
   replDownloadErr <- newTVar $ _replDownloadErr s
   replDelete <- newTVar $ _replDelete s
-  replDeleteRetries <- newTVar $ _replDeleteRetries s
+  replDeleteAttempts <- newTVar $ _replDeleteAttempts s
   replDeleteSuccesses <- newTVar $ _replDeleteSuccesses s
   replDeleteErr <- newTVar $ _replDeleteErr s
   pure
     AgentXFTPServerStats
-      { -- fromTime,
-        replUpload,
-        replUploadRetries,
+      { replUpload,
+        replUploadAttempts,
         replUploadSuccesses,
         replUploadErr,
         replDownload,
-        replDownloadRetries,
+        replDownloadAttempts,
         replDownloadSuccesses,
         replDownloadAuth,
         replDownloadErr,
         replDelete,
-        replDeleteRetries,
+        replDeleteAttempts,
         replDeleteSuccesses,
         replDeleteErr
       }
 
 getAgentXFTPServerStats :: AgentXFTPServerStats -> STM AgentXFTPServerStatsData
 getAgentXFTPServerStats s = do
-  -- s@AgentXFTPServerStats {fromTime} = do
-  -- _fromTime <- readTVar fromTime
   _replUpload <- readTVar $ replUpload s
-  _replUploadRetries <- readTVar $ replUpload s
+  _replUploadAttempts <- readTVar $ replUpload s
   _replUploadSuccesses <- readTVar $ replUpload s
   _replUploadErr <- readTVar $ replUpload s
   _replDownload <- readTVar $ replUpload s
-  _replDownloadRetries <- readTVar $ replUpload s
+  _replDownloadAttempts <- readTVar $ replUpload s
   _replDownloadSuccesses <- readTVar $ replUpload s
   _replDownloadAuth <- readTVar $ replUpload s
   _replDownloadErr <- readTVar $ replUpload s
   _replDelete <- readTVar $ replUpload s
-  _replDeleteRetries <- readTVar $ replUpload s
+  _replDeleteAttempts <- readTVar $ replUpload s
   _replDeleteSuccesses <- readTVar $ replUpload s
   _replDeleteErr <- readTVar $ replUpload s
   pure
     AgentXFTPServerStatsData
-      { -- _fromTime,
-        _replUpload,
-        _replUploadRetries,
+      { _replUpload,
+        _replUploadAttempts,
         _replUploadSuccesses,
         _replUploadErr,
         _replDownload,
-        _replDownloadRetries,
+        _replDownloadAttempts,
         _replDownloadSuccesses,
         _replDownloadAuth,
         _replDownloadErr,
         _replDelete,
-        _replDeleteRetries,
+        _replDeleteAttempts,
         _replDeleteSuccesses,
         _replDeleteErr
       }
 
 setAgentXFTPServerStats :: AgentXFTPServerStats -> AgentXFTPServerStatsData -> STM ()
 setAgentXFTPServerStats s d = do
-  -- s@AgentXFTPServerStats {fromTime} d@AgentXFTPServerStatsData {_fromTime} = do
-  -- writeTVar fromTime $! _fromTime
   writeTVar (replUpload s) $! _replUpload d
-  writeTVar (replUploadRetries s) $! _replUploadRetries d
+  writeTVar (replUploadAttempts s) $! _replUploadAttempts d
   writeTVar (replUploadSuccesses s) $! _replUploadSuccesses d
   writeTVar (replUploadErr s) $! _replUploadErr d
   writeTVar (replDownload s) $! _replDownload d
-  writeTVar (replDownloadRetries s) $! _replDownloadRetries d
+  writeTVar (replDownloadAttempts s) $! _replDownloadAttempts d
   writeTVar (replDownloadSuccesses s) $! _replDownloadSuccesses d
   writeTVar (replDownloadAuth s) $! _replDownloadAuth d
   writeTVar (replDownloadErr s) $! _replDownloadErr d
   writeTVar (replDelete s) $! _replDelete d
-  writeTVar (replDeleteRetries s) $! _replDeleteRetries d
+  writeTVar (replDeleteAttempts s) $! _replDeleteAttempts d
   writeTVar (replDeleteSuccesses s) $! _replDeleteSuccesses d
   writeTVar (replDeleteErr s) $! _replDeleteErr d
 
