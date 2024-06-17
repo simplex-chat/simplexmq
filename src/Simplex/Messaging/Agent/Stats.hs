@@ -19,8 +19,9 @@ data AgentSMPServerStats = AgentSMPServerStats
     sentAuthErrs :: TVar Int, -- send AUTH errors
     sentQuotaErrs :: TVar Int, -- send QUOTA permanent errors (message expired)
     sentExpiredErrs :: TVar Int, -- send expired errors
-    sentDirectErrs :: TVar Int, -- other direct send permanent errors (excluding above)
-    sentProxyErrs :: TVar Int, -- other proxy send permanent errors (excluding above)
+    sentOtherErrs :: TVar Int, -- other send permanent errors (excluding above)
+    -- sentDirectErrs :: TVar Int, -- other direct send permanent errors (excluding above)
+    -- sentProxyErrs :: TVar Int, -- other proxy send permanent errors (excluding above)
     recvMsgs :: TVar Int, -- total messages received
     recvDuplicates :: TVar Int, -- duplicate messages received
     recvCryptoErrs :: TVar Int, -- message decryption errors
@@ -42,8 +43,9 @@ data AgentSMPServerStatsData = AgentSMPServerStatsData
     _sentAuthErrs :: Int,
     _sentQuotaErrs :: Int,
     _sentExpiredErrs :: Int,
-    _sentDirectErrs :: Int,
-    _sentProxyErrs :: Int,
+    _sentOtherErrs :: Int,
+    -- _sentDirectErrs :: Int,
+    -- _sentProxyErrs :: Int,
     _recvMsgs :: Int,
     _recvDuplicates :: Int,
     _recvCryptoErrs :: Int,
@@ -67,8 +69,9 @@ newAgentSMPServerStats = do
   sentAuthErrs <- newTVar 0
   sentQuotaErrs <- newTVar 0
   sentExpiredErrs <- newTVar 0
-  sentDirectErrs <- newTVar 0
-  sentProxyErrs <- newTVar 0
+  sentOtherErrs <- newTVar 0
+  -- sentDirectErrs <- newTVar 0
+  -- sentProxyErrs <- newTVar 0
   recvMsgs <- newTVar 0
   recvDuplicates <- newTVar 0
   recvCryptoErrs <- newTVar 0
@@ -89,8 +92,9 @@ newAgentSMPServerStats = do
         sentAuthErrs,
         sentQuotaErrs,
         sentExpiredErrs,
-        sentDirectErrs,
-        sentProxyErrs,
+        sentOtherErrs,
+        -- sentDirectErrs,
+        -- sentProxyErrs,
         recvMsgs,
         recvDuplicates,
         recvCryptoErrs,
@@ -113,8 +117,9 @@ newAgentSMPServerStats' s = do
   sentAuthErrs <- newTVar $ _sentDirect s
   sentQuotaErrs <- newTVar $ _sentDirect s
   sentExpiredErrs <- newTVar $ _sentDirect s
-  sentDirectErrs <- newTVar $ _sentDirect s
-  sentProxyErrs <- newTVar $ _sentDirect s
+  sentOtherErrs <- newTVar $ _sentDirect s
+  -- sentDirectErrs <- newTVar $ _sentDirect s
+  -- sentProxyErrs <- newTVar $ _sentDirect s
   recvMsgs <- newTVar $ _sentDirect s
   recvDuplicates <- newTVar $ _sentDirect s
   recvCryptoErrs <- newTVar $ _sentDirect s
@@ -135,8 +140,9 @@ newAgentSMPServerStats' s = do
         sentAuthErrs,
         sentQuotaErrs,
         sentExpiredErrs,
-        sentDirectErrs,
-        sentProxyErrs,
+        sentOtherErrs,
+        -- sentDirectErrs,
+        -- sentProxyErrs,
         recvMsgs,
         recvDuplicates,
         recvCryptoErrs,
@@ -159,8 +165,9 @@ getAgentSMPServerStats s = do
   _sentAuthErrs <- readTVar $ sentDirect s
   _sentQuotaErrs <- readTVar $ sentDirect s
   _sentExpiredErrs <- readTVar $ sentDirect s
-  _sentDirectErrs <- readTVar $ sentDirect s
-  _sentProxyErrs <- readTVar $ sentDirect s
+  _sentOtherErrs <- readTVar $ sentDirect s
+  -- _sentDirectErrs <- readTVar $ sentDirect s
+  -- _sentProxyErrs <- readTVar $ sentDirect s
   _recvMsgs <- readTVar $ sentDirect s
   _recvDuplicates <- readTVar $ sentDirect s
   _recvCryptoErrs <- readTVar $ sentDirect s
@@ -181,8 +188,9 @@ getAgentSMPServerStats s = do
         _sentAuthErrs,
         _sentQuotaErrs,
         _sentExpiredErrs,
-        _sentDirectErrs,
-        _sentProxyErrs,
+        _sentOtherErrs,
+        -- _sentDirectErrs,
+        -- _sentProxyErrs,
         _recvMsgs,
         _recvDuplicates,
         _recvCryptoErrs,
@@ -205,8 +213,9 @@ setAgentSMPServerStats s d = do
   writeTVar (sentAuthErrs s) $! _sentAuthErrs d
   writeTVar (sentQuotaErrs s) $! _sentQuotaErrs d
   writeTVar (sentExpiredErrs s) $! _sentExpiredErrs d
-  writeTVar (sentDirectErrs s) $! _sentDirectErrs d
-  writeTVar (sentProxyErrs s) $! _sentProxyErrs d
+  writeTVar (sentOtherErrs s) $! _sentOtherErrs d
+  -- writeTVar (sentDirectErrs s) $! _sentDirectErrs d
+  -- writeTVar (sentProxyErrs s) $! _sentProxyErrs d
   writeTVar (recvMsgs s) $! _recvMsgs d
   writeTVar (recvDuplicates s) $! _recvDuplicates d
   writeTVar (recvCryptoErrs s) $! _recvCryptoErrs d

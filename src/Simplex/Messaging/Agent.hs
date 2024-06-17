@@ -1331,7 +1331,7 @@ submitPendingMsg c cData sq = do
   void $ getDeliveryWorker True c cData sq
 
 runSmpQueueMsgDelivery :: AgentClient -> ConnData -> SndQueue -> (Worker, TMVar ()) -> AM ()
-runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork}, qLock) = do
+runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userId, server} (Worker {doWork}, qLock) = do
   AgentConfig {messageRetryInterval = ri, messageTimeout, helloTimeout, quotaExceededTimeout} <- asks config
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
@@ -1354,36 +1354,40 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
             Left e -> do
               let err = if msgType == AM_A_MSG_ then MERR mId e else ERR e
               case e of
-                SMP _ SMP.QUOTA -> case msgType of
-                  AM_CONN_INFO -> connError msgId NOT_AVAILABLE
-                  AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
-                  _ -> do
-                    expireTs <- addUTCTime (-quotaExceededTimeout) <$> liftIO getCurrentTime
-                    if internalTs < expireTs
-                      then notifyDelMsgs msgId e expireTs
-                      else do
-                        notify $ MWARN (unId msgId) e
-                        retrySndMsg RISlow
-                SMP _ SMP.AUTH -> case msgType of
-                  AM_CONN_INFO -> connError msgId NOT_AVAILABLE
-                  AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
-                  AM_RATCHET_INFO -> connError msgId NOT_AVAILABLE
-                  -- in duplexHandshake mode (v2) HELLO is only sent once, without retrying,
-                  -- because the queue must be secured by the time the confirmation or the first HELLO is received
-                  AM_HELLO_ -> case rq_ of
-                    -- party initiating connection
-                    Just _ -> connError msgId NOT_AVAILABLE
-                    -- party joining connection
-                    _ -> connError msgId NOT_ACCEPTED
-                  AM_REPLY_ -> notifyDel msgId err
-                  AM_A_MSG_ -> notifyDel msgId err
-                  AM_A_RCVD_ -> notifyDel msgId err
-                  AM_QCONT_ -> notifyDel msgId err
-                  AM_QADD_ -> qError msgId "QADD: AUTH"
-                  AM_QKEY_ -> qError msgId "QKEY: AUTH"
-                  AM_QUSE_ -> qError msgId "QUSE: AUTH"
-                  AM_QTEST_ -> qError msgId "QTEST: AUTH"
-                  AM_EREADY_ -> notifyDel msgId err
+                SMP _ SMP.QUOTA -> do
+                  atomically $ incSMPServerStat c userId server sentQuotaErrs 1
+                  case msgType of
+                    AM_CONN_INFO -> connError msgId NOT_AVAILABLE
+                    AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
+                    _ -> do
+                      expireTs <- addUTCTime (-quotaExceededTimeout) <$> liftIO getCurrentTime
+                      if internalTs < expireTs
+                        then notifyDelMsgs msgId e expireTs
+                        else do
+                          notify $ MWARN (unId msgId) e
+                          retrySndMsg RISlow
+                SMP _ SMP.AUTH -> do
+                  atomically $ incSMPServerStat c userId server sentAuthErrs 1
+                  case msgType of
+                    AM_CONN_INFO -> connError msgId NOT_AVAILABLE
+                    AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
+                    AM_RATCHET_INFO -> connError msgId NOT_AVAILABLE
+                    -- in duplexHandshake mode (v2) HELLO is only sent once, without retrying,
+                    -- because the queue must be secured by the time the confirmation or the first HELLO is received
+                    AM_HELLO_ -> case rq_ of
+                      -- party initiating connection
+                      Just _ -> connError msgId NOT_AVAILABLE
+                      -- party joining connection
+                      _ -> connError msgId NOT_ACCEPTED
+                    AM_REPLY_ -> notifyDel msgId err
+                    AM_A_MSG_ -> notifyDel msgId err
+                    AM_A_RCVD_ -> notifyDel msgId err
+                    AM_QCONT_ -> notifyDel msgId err
+                    AM_QADD_ -> qError msgId "QADD: AUTH"
+                    AM_QKEY_ -> qError msgId "QKEY: AUTH"
+                    AM_QUSE_ -> qError msgId "QUSE: AUTH"
+                    AM_QTEST_ -> qError msgId "QTEST: AUTH"
+                    AM_EREADY_ -> notifyDel msgId err
                 _
                   -- for other operations BROKER HOST is treated as a permanent error (e.g., when connecting to the server),
                   -- the message sending would be retried
@@ -1395,7 +1399,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
                         else do
                           when (serverHostError e) $ notify $ MWARN (unId msgId) e
                           retrySndMsg RIFast
-                  | otherwise -> notifyDel msgId err
+                  | otherwise -> do
+                    notifyDel msgId err
               where
                 retrySndMsg riMode = do
                   withStore' c $ \db -> updatePendingMsgRIState db connId msgId riState
@@ -1472,6 +1477,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
       forM_ (L.nonEmpty msgIds_) $ \msgIds -> do
         notify $ MERRS (L.map unId msgIds) err
         withStore' c $ \db -> forM_ msgIds $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False `catchAll_` pure ()
+      atomically $ incSMPServerStat c userId server sentExpiredErrs (length msgIds_ + 1)
     delMsg :: InternalId -> AM ()
     delMsg = delMsgKeep False
     delMsgKeep :: Bool -> InternalId -> AM ()

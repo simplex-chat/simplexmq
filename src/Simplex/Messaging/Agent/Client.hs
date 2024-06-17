@@ -139,6 +139,7 @@ module Simplex.Messaging.Agent.Client
     getNextServer,
     withUserServers,
     withNextSrv,
+    incSMPServerStat,
     AgentWorkersDetails (..),
     getAgentWorkersDetails,
     AgentWorkersSummary (..),
