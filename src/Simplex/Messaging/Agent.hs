@@ -217,47 +217,10 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
               run c "runNtfSupervisor" $ runNtfSupervisor c,
               run c "cleanupManager" $ cleanupManager c
             ]
-            `E.finally` saveAgentStats c
     run AgentClient {subQ, acThread} name a =
       a `E.catchAny` \e -> whenM (isJust <$> readTVarIO acThread) $ do
         logError $ "Agent thread " <> name <> " crashed: " <> tshow e
         atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ CRITICAL True $ show e)
-
-saveAgentStats :: AgentClient -> AM' ()
-saveAgentStats AgentClient {smpServersStats, xftpServersStats} =
-  asks (agentStatsLogFile . config) >>= mapM_ (liftIO . saveStats)
-  where
-    saveStats f = do
-      sss <- readTVarIO smpServersStats
-      smpServersStatsData <- mapM (atomically . getAgentSMPServerStats) sss
-      xss <- readTVarIO xftpServersStats
-      xftpServersStatsData <- mapM (atomically . getAgentXFTPServerStats) xss
-      let stats = AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData}
-      logInfo $ "saving agent stats to file " <> T.pack f
-      B.writeFile f $ LB.toStrict $ J.encode stats
-      -- logInfo "agent stats saved"
-      liftIO $ print "agent stats saved"
-
-restoreAgentStats :: AgentClient -> AM' ()
-restoreAgentStats AgentClient {smpServersStats, xftpServersStats} =
-  asks (agentStatsLogFile . config) >>= mapM_ (liftIO . restoreStats)
-  where
-    restoreStats f = whenM (doesFileExist f) $ do
-      -- logInfo $ "restoring agent stats from file " <> T.pack f
-      liftIO $ print $ "restoring agent stats from file " <> T.pack f
-      liftIO (J.decode . LB.fromStrict <$> B.readFile f) >>= \case
-        Just AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData} -> do
-          sss <- mapM (atomically . newAgentSMPServerStats') smpServersStatsData
-          atomically $ writeTVar smpServersStats sss
-          xss <- mapM (atomically . newAgentXFTPServerStats') xftpServersStatsData
-          atomically $ writeTVar xftpServersStats xss
-          renameFile f $ f <> ".bak"
-          -- logInfo "server stats restored"
-          liftIO $ print "server stats restored"
-        Nothing -> do
-          -- logInfo "error restoring server stats"
-          liftIO $ print "error restoring server stats"
-          renameFile f $ f <> ".bak"
 
 disconnectAgentClient :: AgentClient -> IO ()
 disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAgent = xa}} = do
