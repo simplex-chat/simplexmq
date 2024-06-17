@@ -1400,6 +1400,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                           when (serverHostError e) $ notify $ MWARN (unId msgId) e
                           retrySndMsg RIFast
                   | otherwise -> do
+                    atomically $ incSMPServerStat c userId server sentOtherErrs 1
                     notifyDel msgId err
               where
                 retrySndMsg riMode = do
