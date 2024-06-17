@@ -36,184 +36,189 @@ data AgentSMPServerStats = AgentSMPServerStats
   }
 
 data AgentSMPServerStatsData = AgentSMPServerStatsData
-  { _msgSent :: Int,
-    _msgSentRetries :: Int,
-    _msgSentSuccesses :: Int,
-    _msgSentAuth :: Int,
-    _msgSentQuota :: Int,
-    _msgSentExpired :: Int,
-    _msgSentErr :: Int,
-    _msgProx :: Int,
-    _msgProxRetries :: Int,
-    _msgProxSuccesses :: Int,
-    _msgProxExpired :: Int,
-    _msgProxErr :: Int,
-    _msgRecv :: Int,
-    _msgRecvDuplicate :: Int,
-    _msgRecvErr :: Int,
-    _sub :: Int,
-    _subRetries :: Int,
-    _subErr :: Int
+  { _sentDirect :: Int,
+    _sentViaProxy :: Int,
+    _sentDirectAttempts :: Int,
+    _sentViaProxyAttempts :: Int,
+    _sentAuthErrs :: Int,
+    _sentQuotaErrs :: Int,
+    _sentExpiredErrs :: Int,
+    _sentDirectErrs :: Int,
+    _sentProxyErrs :: Int,
+    _recvMsgs :: Int,
+    _recvDuplicates :: Int,
+    _recvCryptoErrs :: Int,
+    _recvErrs :: Int,
+    _connCreated :: Int,
+    _connSecured :: Int,
+    _connCompleted :: Int,
+    _connDeleted :: Int,
+    _connSubscribed :: Int,
+    _connSubAttempts :: Int,
+    _connSubErrs :: Int
   }
   deriving (Show)
 
--- newAgentSMPServerStats :: UTCTime -> STM AgentSMPServerStats
--- newAgentSMPServerStats ts = do
 newAgentSMPServerStats :: STM AgentSMPServerStats
 newAgentSMPServerStats = do
-  -- fromTime <- newTVar ts
-  msgSent <- newTVar 0
-  msgSentRetries <- newTVar 0
-  msgSentSuccesses <- newTVar 0
-  msgSentAuth <- newTVar 0
-  msgSentQuota <- newTVar 0
-  msgSentExpired <- newTVar 0
-  msgSentErr <- newTVar 0
-  msgProx <- newTVar 0
-  msgProxRetries <- newTVar 0
-  msgProxSuccesses <- newTVar 0
-  msgProxExpired <- newTVar 0
-  msgProxErr <- newTVar 0
-  msgRecv <- newTVar 0
-  msgRecvDuplicate <- newTVar 0
-  msgRecvErr <- newTVar 0
-  sub <- newTVar 0
-  subRetries <- newTVar 0
-  subErr <- newTVar 0
+  sentDirect <- newTVar 0
+  sentViaProxy <- newTVar 0
+  sentDirectAttempts <- newTVar 0
+  sentViaProxyAttempts <- newTVar 0
+  sentAuthErrs <- newTVar 0
+  sentQuotaErrs <- newTVar 0
+  sentExpiredErrs <- newTVar 0
+  sentDirectErrs <- newTVar 0
+  sentProxyErrs <- newTVar 0
+  recvMsgs <- newTVar 0
+  recvDuplicates <- newTVar 0
+  recvCryptoErrs <- newTVar 0
+  recvErrs <- newTVar 0
+  connCreated <- newTVar 0
+  connSecured <- newTVar 0
+  connCompleted <- newTVar 0
+  connDeleted <- newTVar 0
+  connSubscribed <- newTVar 0
+  connSubAttempts <- newTVar 0
+  connSubErrs <- newTVar 0
   pure
     AgentSMPServerStats
-      { -- fromTime,
-        msgSent,
-        msgSentRetries,
-        msgSentSuccesses,
-        msgSentAuth,
-        msgSentQuota,
-        msgSentExpired,
-        msgSentErr,
-        msgProx,
-        msgProxRetries,
-        msgProxSuccesses,
-        msgProxExpired,
-        msgProxErr,
-        msgRecv,
-        msgRecvDuplicate,
-        msgRecvErr,
-        sub,
-        subRetries,
-        subErr
+      { sentDirect,
+        sentViaProxy,
+        sentDirectAttempts,
+        sentViaProxyAttempts,
+        sentAuthErrs,
+        sentQuotaErrs,
+        sentExpiredErrs,
+        sentDirectErrs,
+        sentProxyErrs,
+        recvMsgs,
+        recvDuplicates,
+        recvCryptoErrs,
+        recvErrs,
+        connCreated,
+        connSecured,
+        connCompleted,
+        connDeleted,
+        connSubscribed,
+        connSubAttempts,
+        connSubErrs
       }
 
 newAgentSMPServerStats' :: AgentSMPServerStatsData -> STM AgentSMPServerStats
 newAgentSMPServerStats' s = do
-  -- s@AgentSMPServerStatsData {_fromTime} = do
-  -- fromTime <- newTVar _fromTime
-  msgSent <- newTVar $ _msgSent s
-  msgSentRetries <- newTVar $ _msgSentRetries s
-  msgSentSuccesses <- newTVar $ _msgSentSuccesses s
-  msgSentAuth <- newTVar $ _msgSentAuth s
-  msgSentQuota <- newTVar $ _msgSentQuota s
-  msgSentExpired <- newTVar $ _msgSentExpired s
-  msgSentErr <- newTVar $ _msgSentErr s
-  msgProx <- newTVar $ _msgProx s
-  msgProxRetries <- newTVar $ _msgProxRetries s
-  msgProxSuccesses <- newTVar $ _msgProxSuccesses s
-  msgProxExpired <- newTVar $ _msgProxExpired s
-  msgProxErr <- newTVar $ _msgProxErr s
-  msgRecv <- newTVar $ _msgRecv s
-  msgRecvDuplicate <- newTVar $ _msgRecvDuplicate s
-  msgRecvErr <- newTVar $ _msgRecvErr s
-  sub <- newTVar $ _sub s
-  subRetries <- newTVar $ _subRetries s
-  subErr <- newTVar $ _subErr s
+  sentDirect <- newTVar $ _sentDirect s
+  sentViaProxy <- newTVar $ _sentDirect s
+  sentDirectAttempts <- newTVar $ _sentDirect s
+  sentViaProxyAttempts <- newTVar $ _sentDirect s
+  sentAuthErrs <- newTVar $ _sentDirect s
+  sentQuotaErrs <- newTVar $ _sentDirect s
+  sentExpiredErrs <- newTVar $ _sentDirect s
+  sentDirectErrs <- newTVar $ _sentDirect s
+  sentProxyErrs <- newTVar $ _sentDirect s
+  recvMsgs <- newTVar $ _sentDirect s
+  recvDuplicates <- newTVar $ _sentDirect s
+  recvCryptoErrs <- newTVar $ _sentDirect s
+  recvErrs <- newTVar $ _sentDirect s
+  connCreated <- newTVar $ _sentDirect s
+  connSecured <- newTVar $ _sentDirect s
+  connCompleted <- newTVar $ _sentDirect s
+  connDeleted <- newTVar $ _sentDirect s
+  connSubscribed <- newTVar $ _sentDirect s
+  connSubAttempts <- newTVar $ _sentDirect s
+  connSubErrs <- newTVar $ _sentDirect s
   pure
     AgentSMPServerStats
-      { -- fromTime,
-        msgSent,
-        msgSentRetries,
-        msgSentSuccesses,
-        msgSentAuth,
-        msgSentQuota,
-        msgSentExpired,
-        msgSentErr,
-        msgProx,
-        msgProxRetries,
-        msgProxSuccesses,
-        msgProxExpired,
-        msgProxErr,
-        msgRecv,
-        msgRecvDuplicate,
-        msgRecvErr,
-        sub,
-        subRetries,
-        subErr
+      { sentDirect,
+        sentViaProxy,
+        sentDirectAttempts,
+        sentViaProxyAttempts,
+        sentAuthErrs,
+        sentQuotaErrs,
+        sentExpiredErrs,
+        sentDirectErrs,
+        sentProxyErrs,
+        recvMsgs,
+        recvDuplicates,
+        recvCryptoErrs,
+        recvErrs,
+        connCreated,
+        connSecured,
+        connCompleted,
+        connDeleted,
+        connSubscribed,
+        connSubAttempts,
+        connSubErrs
       }
 
 getAgentSMPServerStats :: AgentSMPServerStats -> STM AgentSMPServerStatsData
 getAgentSMPServerStats s = do
-  -- s@AgentSMPServerStats {fromTime} = do
-  -- _fromTime <- readTVar fromTime
-  _msgSent <- readTVar $ msgSent s
-  _msgSentRetries <- readTVar $ msgSentRetries s
-  _msgSentSuccesses <- readTVar $ msgSentSuccesses s
-  _msgSentAuth <- readTVar $ msgSentAuth s
-  _msgSentQuota <- readTVar $ msgSentQuota s
-  _msgSentExpired <- readTVar $ msgSentExpired s
-  _msgSentErr <- readTVar $ msgSentErr s
-  _msgProx <- readTVar $ msgProx s
-  _msgProxRetries <- readTVar $ msgProxRetries s
-  _msgProxSuccesses <- readTVar $ msgProxSuccesses s
-  _msgProxExpired <- readTVar $ msgProxExpired s
-  _msgProxErr <- readTVar $ msgProxErr s
-  _msgRecv <- readTVar $ msgRecv s
-  _msgRecvDuplicate <- readTVar $ msgRecvDuplicate s
-  _msgRecvErr <- readTVar $ msgRecvErr s
-  _sub <- readTVar $ sub s
-  _subRetries <- readTVar $ subRetries s
-  _subErr <- readTVar $ subErr s
+  _sentDirect <- readTVar $ sentDirect s
+  _sentViaProxy <- readTVar $ sentDirect s
+  _sentDirectAttempts <- readTVar $ sentDirect s
+  _sentViaProxyAttempts <- readTVar $ sentDirect s
+  _sentAuthErrs <- readTVar $ sentDirect s
+  _sentQuotaErrs <- readTVar $ sentDirect s
+  _sentExpiredErrs <- readTVar $ sentDirect s
+  _sentDirectErrs <- readTVar $ sentDirect s
+  _sentProxyErrs <- readTVar $ sentDirect s
+  _recvMsgs <- readTVar $ sentDirect s
+  _recvDuplicates <- readTVar $ sentDirect s
+  _recvCryptoErrs <- readTVar $ sentDirect s
+  _recvErrs <- readTVar $ sentDirect s
+  _connCreated <- readTVar $ sentDirect s
+  _connSecured <- readTVar $ sentDirect s
+  _connCompleted <- readTVar $ sentDirect s
+  _connDeleted <- readTVar $ sentDirect s
+  _connSubscribed <- readTVar $ sentDirect s
+  _connSubAttempts <- readTVar $ sentDirect s
+  _connSubErrs <- readTVar $ sentDirect s
   pure
     AgentSMPServerStatsData
-      { -- _fromTime,
-        _msgSent,
-        _msgSentRetries,
-        _msgSentSuccesses,
-        _msgSentAuth,
-        _msgSentQuota,
-        _msgSentExpired,
-        _msgSentErr,
-        _msgProx,
-        _msgProxRetries,
-        _msgProxSuccesses,
-        _msgProxExpired,
-        _msgProxErr,
-        _msgRecv,
-        _msgRecvDuplicate,
-        _msgRecvErr,
-        _sub,
-        _subRetries,
-        _subErr
+      { _sentDirect,
+        _sentViaProxy,
+        _sentDirectAttempts,
+        _sentViaProxyAttempts,
+        _sentAuthErrs,
+        _sentQuotaErrs,
+        _sentExpiredErrs,
+        _sentDirectErrs,
+        _sentProxyErrs,
+        _recvMsgs,
+        _recvDuplicates,
+        _recvCryptoErrs,
+        _recvErrs,
+        _connCreated,
+        _connSecured,
+        _connCompleted,
+        _connDeleted,
+        _connSubscribed,
+        _connSubAttempts,
+        _connSubErrs
       }
 
 setAgentSMPServerStats :: AgentSMPServerStats -> AgentSMPServerStatsData -> STM ()
 setAgentSMPServerStats s d = do
-  -- s@AgentSMPServerStats {fromTime} d@AgentSMPServerStatsData {_fromTime} = do
-  -- writeTVar fromTime $! _fromTime
-  writeTVar (msgSent s) $! _msgSent d
-  writeTVar (msgSentRetries s) $! _msgSentRetries d
-  writeTVar (msgSentSuccesses s) $! _msgSentSuccesses d
-  writeTVar (msgSentAuth s) $! _msgSentAuth d
-  writeTVar (msgSentQuota s) $! _msgSentQuota d
-  writeTVar (msgSentExpired s) $! _msgSentExpired d
-  writeTVar (msgSentErr s) $! _msgSentErr d
-  writeTVar (msgProx s) $! _msgProx d
-  writeTVar (msgProxRetries s) $! _msgProxRetries d
-  writeTVar (msgProxSuccesses s) $! _msgProxSuccesses d
-  writeTVar (msgProxErr s) $! _msgProxErr d
-  writeTVar (msgRecv s) $! _msgRecv d
-  writeTVar (msgRecvDuplicate s) $! _msgRecvDuplicate d
-  writeTVar (msgRecvErr s) $! _msgRecvErr d
-  writeTVar (sub s) $! _sub d
-  writeTVar (subRetries s) $! _subRetries d
-  writeTVar (subErr s) $! _subErr d
+  writeTVar (sentDirect s) $! _sentDirect d
+  writeTVar (sentViaProxy s) $! _sentViaProxy d
+  writeTVar (sentDirectAttempts s) $! _sentDirectAttempts d
+  writeTVar (sentViaProxyAttempts s) $! _sentViaProxyAttempts d
+  writeTVar (sentAuthErrs s) $! _sentAuthErrs d
+  writeTVar (sentQuotaErrs s) $! _sentQuotaErrs d
+  writeTVar (sentExpiredErrs s) $! _sentExpiredErrs d
+  writeTVar (sentDirectErrs s) $! _sentDirectErrs d
+  writeTVar (sentProxyErrs s) $! _sentProxyErrs d
+  writeTVar (recvMsgs s) $! _recvMsgs d
+  writeTVar (recvDuplicates s) $! _recvDuplicates d
+  writeTVar (recvCryptoErrs s) $! _recvCryptoErrs d
+  writeTVar (recvErrs s) $! _recvErrs d
+  writeTVar (connCreated s) $! _connCreated d
+  writeTVar (connSecured s) $! _connSecured d
+  writeTVar (connCompleted s) $! _connCompleted d
+  writeTVar (connDeleted s) $! _connDeleted d
+  writeTVar (connSubscribed s) $! _connSubscribed d
+  writeTVar (connSubAttempts s) $! _connSubAttempts d
+  writeTVar (connSubErrs s) $! _connSubErrs d
 
 data AgentXFTPServerStats = AgentXFTPServerStats
   { -- fromTime :: TVar UTCTime,

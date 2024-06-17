@@ -1107,7 +1107,7 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
       withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) ->
         liftClient SMP (clientServer smp) $ do
           sendSMPMessage smp spKey_ senderId msgFlags msg
-          atomically $ incSMPServerStat c userId destSrv msgSent 1
+          atomically $ incSMPServerStat c userId destSrv sentDirect 1
 
 ipAddressProtected :: NetworkConfig -> ProtocolServer p -> Bool
 ipAddressProtected NetworkConfig {socksProxy, hostMode} (ProtocolServer _ hosts _ _) = do
