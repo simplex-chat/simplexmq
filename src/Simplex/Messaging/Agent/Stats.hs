@@ -231,32 +231,26 @@ setAgentSMPServerStats s d = do
 data AgentXFTPServerStats = AgentXFTPServerStats
   { replUpload :: TVar Int, -- total replicas uploaded to server
     replUploadAttempts :: TVar Int, -- upload attempts
-    replUploadSuccesses :: TVar Int, -- successful uploads
     replUploadErr :: TVar Int, -- upload errors
     replDownload :: TVar Int, -- total replicas downloaded from server
     replDownloadAttempts :: TVar Int, -- download attempts
-    replDownloadSuccesses :: TVar Int, -- successful downloads
     replDownloadAuth :: TVar Int, -- download AUTH errors
     replDownloadErr :: TVar Int, -- other download errors (excluding above)
     replDelete :: TVar Int, -- total replicas deleted from server
     replDeleteAttempts :: TVar Int, -- delete attempts
-    replDeleteSuccesses :: TVar Int, -- successful deletes
     replDeleteErr :: TVar Int -- delete errors
   }
 
 data AgentXFTPServerStatsData = AgentXFTPServerStatsData
   { _replUpload :: Int,
     _replUploadAttempts :: Int,
-    _replUploadSuccesses :: Int,
     _replUploadErr :: Int,
     _replDownload :: Int,
     _replDownloadAttempts :: Int,
-    _replDownloadSuccesses :: Int,
     _replDownloadAuth :: Int,
     _replDownloadErr :: Int,
     _replDelete :: Int,
     _replDeleteAttempts :: Int,
-    _replDeleteSuccesses :: Int,
     _replDeleteErr :: Int
   }
   deriving (Show)
@@ -265,31 +259,25 @@ newAgentXFTPServerStats :: STM AgentXFTPServerStats
 newAgentXFTPServerStats = do
   replUpload <- newTVar 0
   replUploadAttempts <- newTVar 0
-  replUploadSuccesses <- newTVar 0
   replUploadErr <- newTVar 0
   replDownload <- newTVar 0
   replDownloadAttempts <- newTVar 0
-  replDownloadSuccesses <- newTVar 0
   replDownloadAuth <- newTVar 0
   replDownloadErr <- newTVar 0
   replDelete <- newTVar 0
   replDeleteAttempts <- newTVar 0
-  replDeleteSuccesses <- newTVar 0
   replDeleteErr <- newTVar 0
   pure
     AgentXFTPServerStats
       { replUpload,
         replUploadAttempts,
-        replUploadSuccesses,
         replUploadErr,
         replDownload,
         replDownloadAttempts,
-        replDownloadSuccesses,
         replDownloadAuth,
         replDownloadErr,
         replDelete,
         replDeleteAttempts,
-        replDeleteSuccesses,
         replDeleteErr
       }
 
@@ -297,31 +285,25 @@ newAgentXFTPServerStats' :: AgentXFTPServerStatsData -> STM AgentXFTPServerStats
 newAgentXFTPServerStats' s = do
   replUpload <- newTVar $ _replUpload s
   replUploadAttempts <- newTVar $ _replUploadAttempts s
-  replUploadSuccesses <- newTVar $ _replUploadSuccesses s
   replUploadErr <- newTVar $ _replUploadErr s
   replDownload <- newTVar $ _replDownload s
   replDownloadAttempts <- newTVar $ _replDownloadAttempts s
-  replDownloadSuccesses <- newTVar $ _replDownloadSuccesses s
   replDownloadAuth <- newTVar $ _replDownloadAuth s
   replDownloadErr <- newTVar $ _replDownloadErr s
   replDelete <- newTVar $ _replDelete s
   replDeleteAttempts <- newTVar $ _replDeleteAttempts s
-  replDeleteSuccesses <- newTVar $ _replDeleteSuccesses s
   replDeleteErr <- newTVar $ _replDeleteErr s
   pure
     AgentXFTPServerStats
       { replUpload,
         replUploadAttempts,
-        replUploadSuccesses,
         replUploadErr,
         replDownload,
         replDownloadAttempts,
-        replDownloadSuccesses,
         replDownloadAuth,
         replDownloadErr,
         replDelete,
         replDeleteAttempts,
-        replDeleteSuccesses,
         replDeleteErr
       }
 
@@ -329,31 +311,25 @@ getAgentXFTPServerStats :: AgentXFTPServerStats -> STM AgentXFTPServerStatsData
 getAgentXFTPServerStats s = do
   _replUpload <- readTVar $ replUpload s
   _replUploadAttempts <- readTVar $ replUploadAttempts s
-  _replUploadSuccesses <- readTVar $ replUploadSuccesses s
   _replUploadErr <- readTVar $ replUploadErr s
   _replDownload <- readTVar $ replDownload s
   _replDownloadAttempts <- readTVar $ replDownloadAttempts s
-  _replDownloadSuccesses <- readTVar $ replDownloadSuccesses s
   _replDownloadAuth <- readTVar $ replDownloadAuth s
   _replDownloadErr <- readTVar $ replDownloadErr s
   _replDelete <- readTVar $ replDelete s
   _replDeleteAttempts <- readTVar $ replDeleteAttempts s
-  _replDeleteSuccesses <- readTVar $ replDeleteSuccesses s
   _replDeleteErr <- readTVar $ replDeleteErr s
   pure
     AgentXFTPServerStatsData
       { _replUpload,
         _replUploadAttempts,
-        _replUploadSuccesses,
         _replUploadErr,
         _replDownload,
         _replDownloadAttempts,
-        _replDownloadSuccesses,
         _replDownloadAuth,
         _replDownloadErr,
         _replDelete,
         _replDeleteAttempts,
-        _replDeleteSuccesses,
         _replDeleteErr
       }
 
@@ -361,16 +337,13 @@ setAgentXFTPServerStats :: AgentXFTPServerStats -> AgentXFTPServerStatsData -> S
 setAgentXFTPServerStats s d = do
   writeTVar (replUpload s) $! _replUpload d
   writeTVar (replUploadAttempts s) $! _replUploadAttempts d
-  writeTVar (replUploadSuccesses s) $! _replUploadSuccesses d
   writeTVar (replUploadErr s) $! _replUploadErr d
   writeTVar (replDownload s) $! _replDownload d
   writeTVar (replDownloadAttempts s) $! _replDownloadAttempts d
-  writeTVar (replDownloadSuccesses s) $! _replDownloadSuccesses d
   writeTVar (replDownloadAuth s) $! _replDownloadAuth d
   writeTVar (replDownloadErr s) $! _replDownloadErr d
   writeTVar (replDelete s) $! _replDelete d
   writeTVar (replDeleteAttempts s) $! _replDeleteAttempts d
-  writeTVar (replDeleteSuccesses s) $! _replDeleteSuccesses d
   writeTVar (replDeleteErr s) $! _replDeleteErr d
 
 -- Type for gathering both smp and xftp stats across all users and servers.
