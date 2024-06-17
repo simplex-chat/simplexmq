@@ -111,26 +111,26 @@ newAgentSMPServerStats = do
 newAgentSMPServerStats' :: AgentSMPServerStatsData -> STM AgentSMPServerStats
 newAgentSMPServerStats' s = do
   sentDirect <- newTVar $ _sentDirect s
-  sentViaProxy <- newTVar $ _sentDirect s
-  sentDirectAttempts <- newTVar $ _sentDirect s
-  sentViaProxyAttempts <- newTVar $ _sentDirect s
-  sentAuthErrs <- newTVar $ _sentDirect s
-  sentQuotaErrs <- newTVar $ _sentDirect s
-  sentExpiredErrs <- newTVar $ _sentDirect s
-  sentOtherErrs <- newTVar $ _sentDirect s
-  -- sentDirectErrs <- newTVar $ _sentDirect s
-  -- sentProxyErrs <- newTVar $ _sentDirect s
-  recvMsgs <- newTVar $ _sentDirect s
-  recvDuplicates <- newTVar $ _sentDirect s
-  recvCryptoErrs <- newTVar $ _sentDirect s
-  recvErrs <- newTVar $ _sentDirect s
-  connCreated <- newTVar $ _sentDirect s
-  connSecured <- newTVar $ _sentDirect s
-  connCompleted <- newTVar $ _sentDirect s
-  connDeleted <- newTVar $ _sentDirect s
-  connSubscribed <- newTVar $ _sentDirect s
-  connSubAttempts <- newTVar $ _sentDirect s
-  connSubErrs <- newTVar $ _sentDirect s
+  sentViaProxy <- newTVar $ _sentViaProxy s
+  sentDirectAttempts <- newTVar $ _sentDirectAttempts s
+  sentViaProxyAttempts <- newTVar $ _sentViaProxyAttempts s
+  sentAuthErrs <- newTVar $ _sentAuthErrs s
+  sentQuotaErrs <- newTVar $ _sentQuotaErrs s
+  sentExpiredErrs <- newTVar $ _sentExpiredErrs s
+  sentOtherErrs <- newTVar $ _sentOtherErrs s
+  -- sentDirectErrs <- newTVar $ _sentDirectErrs s
+  -- sentProxyErrs <- newTVar $ _sentProxyErrs s
+  recvMsgs <- newTVar $ _recvMsgs s
+  recvDuplicates <- newTVar $ _recvDuplicates s
+  recvCryptoErrs <- newTVar $ _recvCryptoErrs s
+  recvErrs <- newTVar $ _recvErrs s
+  connCreated <- newTVar $ _connCreated s
+  connSecured <- newTVar $ _connSecured s
+  connCompleted <- newTVar $ _connCompleted s
+  connDeleted <- newTVar $ _connDeleted s
+  connSubscribed <- newTVar $ _connSubscribed s
+  connSubAttempts <- newTVar $ _connSubAttempts s
+  connSubErrs <- newTVar $ _connSubErrs s
   pure
     AgentSMPServerStats
       { sentDirect,
@@ -159,26 +159,26 @@ newAgentSMPServerStats' s = do
 getAgentSMPServerStats :: AgentSMPServerStats -> STM AgentSMPServerStatsData
 getAgentSMPServerStats s = do
   _sentDirect <- readTVar $ sentDirect s
-  _sentViaProxy <- readTVar $ sentDirect s
-  _sentDirectAttempts <- readTVar $ sentDirect s
-  _sentViaProxyAttempts <- readTVar $ sentDirect s
-  _sentAuthErrs <- readTVar $ sentDirect s
-  _sentQuotaErrs <- readTVar $ sentDirect s
-  _sentExpiredErrs <- readTVar $ sentDirect s
-  _sentOtherErrs <- readTVar $ sentDirect s
-  -- _sentDirectErrs <- readTVar $ sentDirect s
-  -- _sentProxyErrs <- readTVar $ sentDirect s
-  _recvMsgs <- readTVar $ sentDirect s
-  _recvDuplicates <- readTVar $ sentDirect s
-  _recvCryptoErrs <- readTVar $ sentDirect s
-  _recvErrs <- readTVar $ sentDirect s
-  _connCreated <- readTVar $ sentDirect s
-  _connSecured <- readTVar $ sentDirect s
-  _connCompleted <- readTVar $ sentDirect s
-  _connDeleted <- readTVar $ sentDirect s
-  _connSubscribed <- readTVar $ sentDirect s
-  _connSubAttempts <- readTVar $ sentDirect s
-  _connSubErrs <- readTVar $ sentDirect s
+  _sentViaProxy <- readTVar $ sentViaProxy s
+  _sentDirectAttempts <- readTVar $ sentDirectAttempts s
+  _sentViaProxyAttempts <- readTVar $ sentViaProxyAttempts s
+  _sentAuthErrs <- readTVar $ sentAuthErrs s
+  _sentQuotaErrs <- readTVar $ sentQuotaErrs s
+  _sentExpiredErrs <- readTVar $ sentExpiredErrs s
+  _sentOtherErrs <- readTVar $ sentOtherErrs s
+  -- _sentDirectErrs <- readTVar $ sentDirectErrs s
+  -- _sentProxyErrs <- readTVar $ sentProxyErrs s
+  _recvMsgs <- readTVar $ recvMsgs s
+  _recvDuplicates <- readTVar $ recvDuplicates s
+  _recvCryptoErrs <- readTVar $ recvCryptoErrs s
+  _recvErrs <- readTVar $ recvErrs s
+  _connCreated <- readTVar $ connCreated s
+  _connSecured <- readTVar $ connSecured s
+  _connCompleted <- readTVar $ connCompleted s
+  _connDeleted <- readTVar $ connDeleted s
+  _connSubscribed <- readTVar $ connSubscribed s
+  _connSubAttempts <- readTVar $ connSubAttempts s
+  _connSubErrs <- readTVar $ connSubErrs s
   pure
     AgentSMPServerStatsData
       { _sentDirect,
@@ -328,18 +328,18 @@ newAgentXFTPServerStats' s = do
 getAgentXFTPServerStats :: AgentXFTPServerStats -> STM AgentXFTPServerStatsData
 getAgentXFTPServerStats s = do
   _replUpload <- readTVar $ replUpload s
-  _replUploadAttempts <- readTVar $ replUpload s
-  _replUploadSuccesses <- readTVar $ replUpload s
-  _replUploadErr <- readTVar $ replUpload s
-  _replDownload <- readTVar $ replUpload s
-  _replDownloadAttempts <- readTVar $ replUpload s
-  _replDownloadSuccesses <- readTVar $ replUpload s
-  _replDownloadAuth <- readTVar $ replUpload s
-  _replDownloadErr <- readTVar $ replUpload s
-  _replDelete <- readTVar $ replUpload s
-  _replDeleteAttempts <- readTVar $ replUpload s
-  _replDeleteSuccesses <- readTVar $ replUpload s
-  _replDeleteErr <- readTVar $ replUpload s
+  _replUploadAttempts <- readTVar $ replUploadAttempts s
+  _replUploadSuccesses <- readTVar $ replUploadSuccesses s
+  _replUploadErr <- readTVar $ replUploadErr s
+  _replDownload <- readTVar $ replDownload s
+  _replDownloadAttempts <- readTVar $ replDownloadAttempts s
+  _replDownloadSuccesses <- readTVar $ replDownloadSuccesses s
+  _replDownloadAuth <- readTVar $ replDownloadAuth s
+  _replDownloadErr <- readTVar $ replDownloadErr s
+  _replDelete <- readTVar $ replDelete s
+  _replDeleteAttempts <- readTVar $ replDeleteAttempts s
+  _replDeleteSuccesses <- readTVar $ replDeleteSuccesses s
+  _replDeleteErr <- readTVar $ replDeleteErr s
   pure
     AgentXFTPServerStatsData
       { _replUpload,
