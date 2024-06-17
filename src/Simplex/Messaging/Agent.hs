@@ -751,12 +751,13 @@ newConnSrv c userId connId hasNewConn enableNtfs cMode clientData pqInitKeys sub
   newRcvConnSrv c userId connId' enableNtfs cMode clientData pqInitKeys subMode srv
 
 newRcvConnSrv :: AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> SMPServerWithAuth -> AM (ConnId, ConnectionRequestUri c)
-newRcvConnSrv c userId connId enableNtfs cMode clientData pqInitKeys subMode srv = do
+newRcvConnSrv c userId connId enableNtfs cMode clientData pqInitKeys subMode srvWithAuth@(ProtoServerWithAuth srv _) = do
   case (cMode, pqInitKeys) of
     (SCMContact, CR.IKUsePQ) -> throwE $ CMD PROHIBITED "newRcvConnSrv"
     _ -> pure ()
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
-  (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srv smpClientVRange subMode `catchAgentError` \e -> liftIO (print e) >> throwE e
+  (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srvWithAuth smpClientVRange subMode `catchAgentError` \e -> liftIO (print e) >> throwE e
+  atomically $ incSMPServerStat c userId srv connCreated 1
   rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
   lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
   when enableNtfs $ do
@@ -1171,6 +1172,7 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
         ICDeleteRcvQueue rId -> withServer $ \srv -> tryWithLock "ICDeleteRcvQueue" $ do
           rq <- withStore c (\db -> getDeletedRcvQueue db connId srv rId)
           deleteQueue c rq
+          atomically $ incSMPServerStat c userId srv connDeleted 1
           withStore' c (`deleteConnRcvQueue` rq)
         ICQSecure rId senderKey ->
           withServer $ \srv -> tryWithLock "ICQSecure" . withDuplexConn $ \(DuplexConnection cData rqs sqs) ->
@@ -1179,6 +1181,7 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
                 case find ((replaceQId ==) . dbQId) rqs of
                   Just rq1 -> when (status == Confirmed) $ do
                     secureQueue c rq' senderKey
+                    atomically $ incSMPServerStat c userId server connSecured 1
                     withStore' c $ \db -> setRcvQueueStatus db rq' Secured
                     void . enqueueMessages c cData sqs SMP.noMsgFlags $ QUSE [((server, sndId), True)]
                     rq1' <- withStore' c $ \db -> setRcvSwitchStatus db rq1 $ Just RSSendingQUSE
@@ -1196,7 +1199,9 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
                 | otherwise -> do
                     checkRQSwchStatus rq' RSReceivedMessage
                     tryError (deleteQueue c rq') >>= \case
-                      Right () -> finalizeSwitch
+                      Right () -> do
+                        -- atomically $ incSMPServerStat c userId srv connDeleted 1 -- ? queue deleted?
+                        finalizeSwitch
                       Left e
                         | temporaryOrHostError e -> throwE e
                         | otherwise -> finalizeSwitch >> throwE e
@@ -1214,8 +1219,9 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
             rq <- withStore c $ \db -> getRcvQueue db connId srv rId
             ackQueueMessage c rq srvMsgId
           secure :: RcvQueue -> SMP.SndPublicAuthKey -> AM ()
-          secure rq senderKey = do
+          secure rq@RcvQueue {server} senderKey = do
             secureQueue c rq senderKey
+            atomically $ incSMPServerStat c userId server connSecured 1
             withStore' c $ \db -> setRcvQueueStatus db rq Secured
       where
         withServer a = case server_ of
@@ -1425,7 +1431,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                       -- it would lead to the non-deterministic internal ID of the first sent message, at to some other race conditions,
                       -- because it can be sent before HELLO is received
                       -- With `status == Active` condition, CON is sent here only by the accepting party, that previously received HELLO
-                      when (status == Active) $ notify $ CON pqEncryption
+                      when (status == Active) $ do
+                        atomically $ incSMPServerStat c userId server connCompleted 1
+                        notify $ CON pqEncryption
                     -- this branch should never be reached as receive queue is created before the confirmation,
                     _ -> logError "HELLO sent without receive queue"
                 AM_A_MSG_ -> notify $ SENT mId proxySrv_
@@ -2185,7 +2193,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
       cData@ConnData {userId, connId, connAgentVersion, ratchetSyncState = rss}
       smpMsg =
         withConnLock c connId "processSMP" $ case smpMsg of
-          SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} ->
+          SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} -> do
+            atomically $ incSMPServerStat c userId srv recvMsgs 1
             void . handleNotifyAck $ do
               msg' <- decryptSMPMessage rq msg
               ack' <- handleNotifyAck $ case msg' of
@@ -2269,6 +2278,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                           Right Nothing -> prohibited "msg: bad agent msg" >> ack
                           Left e@(AGENT A_DUPLICATE) -> do
                             atomically updateDupMsgCount
+                            atomically $ incSMPServerStat c userId srv recvDuplicates 1
                             withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
                               Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
                                 | userAck -> ackDel internalId
@@ -2281,6 +2291,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                                       _ -> ack
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
                           Left (AGENT (A_CRYPTO e)) -> do
+                            atomically $ incSMPServerStat c userId srv recvCryptoErrs 1
                             exists <- withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash
                             unless exists notifySync
                             ack
@@ -2293,7 +2304,9 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                                       conn'' = updateConnection cData'' connDuplex
                                   notify . RSYNC rss' (Just e) $ connectionStats conn''
                                   withStore' c $ \db -> setConnRatchetSync db connId rss'
-                          Left e -> checkDuplicateHash e encryptedMsgHash >> ack
+                          Left e -> do
+                            atomically $ incSMPServerStat c userId srv recvErrs 1
+                            checkDuplicateHash e encryptedMsgHash >> ack
                         where
                           checkDuplicateHash :: AgentErrorType -> ByteString -> AM ()
                           checkDuplicateHash e encryptedMsgHash =
@@ -2457,7 +2470,9 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                     -- `sndStatus == Active` when HELLO was previously sent, and this is the reply HELLO
                     -- this branch is executed by the accepting party in duplexHandshake mode (v2)
                     -- (was executed by initiating party in v1 that is no longer supported)
-                    | sndStatus == Active -> notify $ CON pqEncryption
+                    | sndStatus == Active -> do
+                      atomically $ incSMPServerStat c userId srv connCompleted 1
+                      notify $ CON pqEncryption
                     | otherwise -> enqueueDuplexHello sq
                   _ -> pure ()
             where

@@ -28,8 +28,8 @@ data AgentSMPServerStats = AgentSMPServerStats
     recvErrs :: TVar Int, -- receive errors
     connCreated :: TVar Int,
     connSecured :: TVar Int,
-    connCompleted :: TVar Int,
-    connDeleted :: TVar Int,
+    connCompleted :: TVar Int, -- ? unclear what this means in context of server (rcv/snd)
+    connDeleted :: TVar Int, -- ? queue deleted?
     connSubscribed :: TVar Int, -- total successful subscription
     connSubAttempts :: TVar Int, -- subscription attempts
     connSubErrs :: TVar Int -- permanent subscription errors (temporary accounted for in attempts)
