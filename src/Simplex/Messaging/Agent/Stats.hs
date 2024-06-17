@@ -13,30 +13,30 @@ import Simplex.Messaging.Protocol (SMPServer, XFTPServer)
 import UnliftIO.STM
 
 data AgentSMPServerStats = AgentSMPServerStats
-  { -- fromTime :: TVar UTCTime, -- TODO fromTime to be measured in agent across all stats?
-    msgSent :: TVar Int, -- total messages sent to server directly
-    msgSentRetries :: TVar Int, -- sending retries
-    msgSentSuccesses :: TVar Int, -- successful sends
-    msgSentAuth :: TVar Int, -- send AUTH errors
-    msgSentQuota :: TVar Int, -- send QUOTA errors
-    msgSentExpired :: TVar Int, -- send expired errors
-    msgSentErr :: TVar Int, -- other send errors (excluding above)
-    msgProx :: TVar Int, -- total messages sent to proxy server for forwarding
-    msgProxRetries :: TVar Int, -- proxy sending retries
-    msgProxSuccesses :: TVar Int, -- successful proxy sends
-    msgProxExpired :: TVar Int, -- proxy send expired errors
-    msgProxErr :: TVar Int, -- other proxy send errors (excluding above)
-    msgRecv :: TVar Int, -- total messages received
-    msgRecvDuplicate :: TVar Int, -- duplicate messages received
-    msgRecvErr :: TVar Int, -- receive errors
-    sub :: TVar Int, -- total subscriptions
-    subRetries :: TVar Int, -- subscription retries
-    subErr :: TVar Int -- subscription errors
+  { sentDirect :: TVar Int, -- successfully sent messages
+    sentViaProxy :: TVar Int, -- successfully sent messages via proxy
+    sentDirectAttempts :: TVar Int, -- direct sending attempts (min 1 for each sent message)
+    sentViaProxyAttempts :: TVar Int, -- proxy sending retries
+    sentAuthErrs :: TVar Int, -- send AUTH errors
+    sentQuotaErrs :: TVar Int, -- send QUOTA permanent errors (message expired)
+    sentExpiredErrs :: TVar Int, -- send expired errors
+    sentDirectErrs :: TVar Int, -- other direct send permanent errors (excluding above)
+    sentProxyErrs :: TVar Int, -- other proxy send permanent errors (excluding above)
+    recvMsgs :: TVar Int, -- total messages received
+    recvDuplicates :: TVar Int, -- duplicate messages received
+    recvCryptoErrs :: TVar Int, -- message decryption errors
+    recvErrs :: TVar Int, -- receive errors
+    connCreated :: TVar Int,
+    connSecured :: TVar Int,
+    connCompleted :: TVar Int,
+    connDeleted :: TVar Int,
+    connSubscribed :: TVar Int, -- total successful subscription
+    connSubAttempts :: TVar Int, -- subscription retries
+    connSubErrs :: TVar Int -- permanent subscription errors (temporary accounted for in retries)
   }
 
 data AgentSMPServerStatsData = AgentSMPServerStatsData
-  { -- _fromTime :: UTCTime,
-    _msgSent :: Int,
+  { _msgSent :: Int,
     _msgSentRetries :: Int,
     _msgSentSuccesses :: Int,
     _msgSentAuth :: Int,
@@ -104,7 +104,8 @@ newAgentSMPServerStats = do
       }
 
 newAgentSMPServerStats' :: AgentSMPServerStatsData -> STM AgentSMPServerStats
-newAgentSMPServerStats' s = do -- s@AgentSMPServerStatsData {_fromTime} = do
+newAgentSMPServerStats' s = do
+  -- s@AgentSMPServerStatsData {_fromTime} = do
   -- fromTime <- newTVar _fromTime
   msgSent <- newTVar $ _msgSent s
   msgSentRetries <- newTVar $ _msgSentRetries s
@@ -148,7 +149,8 @@ newAgentSMPServerStats' s = do -- s@AgentSMPServerStatsData {_fromTime} = do
       }
 
 getAgentSMPServerStats :: AgentSMPServerStats -> STM AgentSMPServerStatsData
-getAgentSMPServerStats s = do -- s@AgentSMPServerStats {fromTime} = do
+getAgentSMPServerStats s = do
+  -- s@AgentSMPServerStats {fromTime} = do
   -- _fromTime <- readTVar fromTime
   _msgSent <- readTVar $ msgSent s
   _msgSentRetries <- readTVar $ msgSentRetries s
@@ -192,7 +194,8 @@ getAgentSMPServerStats s = do -- s@AgentSMPServerStats {fromTime} = do
       }
 
 setAgentSMPServerStats :: AgentSMPServerStats -> AgentSMPServerStatsData -> STM ()
-setAgentSMPServerStats s d = do -- s@AgentSMPServerStats {fromTime} d@AgentSMPServerStatsData {_fromTime} = do
+setAgentSMPServerStats s d = do
+  -- s@AgentSMPServerStats {fromTime} d@AgentSMPServerStatsData {_fromTime} = do
   -- writeTVar fromTime $! _fromTime
   writeTVar (msgSent s) $! _msgSent d
   writeTVar (msgSentRetries s) $! _msgSentRetries d
@@ -284,7 +287,8 @@ newAgentXFTPServerStats = do
       }
 
 newAgentXFTPServerStats' :: AgentXFTPServerStatsData -> STM AgentXFTPServerStats
-newAgentXFTPServerStats' s = do -- s@AgentXFTPServerStatsData {_fromTime} = do
+newAgentXFTPServerStats' s = do
+  -- s@AgentXFTPServerStatsData {_fromTime} = do
   -- fromTime <- newTVar _fromTime
   replUpload <- newTVar $ _replUpload s
   replUploadRetries <- newTVar $ _replUploadRetries s
@@ -318,7 +322,8 @@ newAgentXFTPServerStats' s = do -- s@AgentXFTPServerStatsData {_fromTime} = do
       }
 
 getAgentXFTPServerStats :: AgentXFTPServerStats -> STM AgentXFTPServerStatsData
-getAgentXFTPServerStats s = do -- s@AgentXFTPServerStats {fromTime} = do
+getAgentXFTPServerStats s = do
+  -- s@AgentXFTPServerStats {fromTime} = do
   -- _fromTime <- readTVar fromTime
   _replUpload <- readTVar $ replUpload s
   _replUploadRetries <- readTVar $ replUpload s
@@ -352,7 +357,8 @@ getAgentXFTPServerStats s = do -- s@AgentXFTPServerStats {fromTime} = do
       }
 
 setAgentXFTPServerStats :: AgentXFTPServerStats -> AgentXFTPServerStatsData -> STM ()
-setAgentXFTPServerStats s d = do -- s@AgentXFTPServerStats {fromTime} d@AgentXFTPServerStatsData {_fromTime} = do
+setAgentXFTPServerStats s d = do
+  -- s@AgentXFTPServerStats {fromTime} d@AgentXFTPServerStatsData {_fromTime} = do
   -- writeTVar fromTime $! _fromTime
   writeTVar (replUpload s) $! _replUpload d
   writeTVar (replUploadRetries s) $! _replUploadRetries d
