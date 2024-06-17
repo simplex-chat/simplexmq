@@ -211,29 +211,17 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
       pure c
     runAgentThreads c
       | backgroundMode = run c "subscriber" $ subscriber c
-      | otherwise = do
-          restoreAgentStats c
-          let threads =
-                [ run c "subscriber" $ subscriber c,
-                  run c "runNtfSupervisor" $ runNtfSupervisor c,
-                  run c "cleanupManager" $ cleanupManager c
-                ]
-          f_ <- asks (agentStatsLogFile . config)
-          let threads' = case f_ of
-                Just _ -> run c "logAgentStats" (logAgentStats c) : threads
-                Nothing -> threads
-          raceAny_ threads' `E.finally` saveAgentStats c
+      | otherwise =
+          raceAny_
+            [ run c "subscriber" $ subscriber c,
+              run c "runNtfSupervisor" $ runNtfSupervisor c,
+              run c "cleanupManager" $ cleanupManager c
+            ]
+            `E.finally` saveAgentStats c
     run AgentClient {subQ, acThread} name a =
       a `E.catchAny` \e -> whenM (isJust <$> readTVarIO acThread) $ do
         logError $ "Agent thread " <> name <> " crashed: " <> tshow e
         atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ CRITICAL True $ show e)
-
-logAgentStats :: AgentClient -> AM' ()
-logAgentStats c = do
-  let interval = 1000000 * 30 -- 30 seconds -- TODO config
-  forever $ do
-    saveAgentStats c
-    liftIO $ threadDelay' interval
 
 saveAgentStats :: AgentClient -> AM' ()
 saveAgentStats AgentClient {smpServersStats, xftpServersStats} =
@@ -1406,8 +1394,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                           when (serverHostError e) $ notify $ MWARN (unId msgId) e
                           retrySndMsg RIFast
                   | otherwise -> do
-                    atomically $ incSMPServerStat c userId server sentOtherErrs 1
-                    notifyDel msgId err
+                      atomically $ incSMPServerStat c userId server sentOtherErrs 1
+                      notifyDel msgId err
               where
                 retrySndMsg riMode = do
                   withStore' c $ \db -> updatePendingMsgRIState db connId msgId riState
@@ -2473,8 +2461,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                     -- this branch is executed by the accepting party in duplexHandshake mode (v2)
                     -- (was executed by initiating party in v1 that is no longer supported)
                     | sndStatus == Active -> do
-                      atomically $ incSMPServerStat c userId srv connCompleted 1
-                      notify $ CON pqEncryption
+                        atomically $ incSMPServerStat c userId srv connCompleted 1
+                        notify $ CON pqEncryption
                     | otherwise -> enqueueDuplexHello sq
                   _ -> pure ()
             where
