@@ -1071,7 +1071,10 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
     unknownServer = maybe True (all ((destSrv /=) . protoServer)) <$> TM.lookup userId (userServers c)
     sendViaProxy destSess@(_, _, qId) = do
       r <- tryAgentError . withProxySession c destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess) -> do
-        liftClient SMP (clientServer smp) (proxySMPMessage smp proxySess spKey_ senderId msgFlags msg) >>= \case
+        r' <- liftClient SMP (clientServer smp) $ do
+          atomically $ incSMPServerStat c userId destSrv sentViaProxyAttempts 1
+          proxySMPMessage smp proxySess spKey_ senderId msgFlags msg
+        case r' of
           Right () -> pure . Just $ protocolClientServer' smp
           Left proxyErr -> do
             case proxyErr of
@@ -1099,15 +1102,24 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
               sameClient smp' = sessionId (thParams smp) == sessionId (thParams smp')
               sameProxiedRelay proxySess' = prSessionId proxySess == prSessionId proxySess'
       case r of
-        Right r' -> pure r'
+        Right r' -> do
+          atomically $ incSMPServerStat c userId destSrv sentViaProxy 1
+          pure r'
         Left e
           | serverHostError e -> ifM (atomically directAllowed) (sendDirectly destSess $> Nothing) (throwE e)
           | otherwise -> throwE e
     sendDirectly tSess =
-      withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) ->
-        liftClient SMP (clientServer smp) $ do
-          sendSMPMessage smp spKey_ senderId msgFlags msg
-          atomically $ incSMPServerStat c userId destSrv sentDirect 1
+      withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) -> do
+        r <-
+          tryAgentError $
+            liftClient SMP (clientServer smp) $ do
+              atomically $ incSMPServerStat c userId destSrv sentDirectAttempts 1
+              sendSMPMessage smp spKey_ senderId msgFlags msg
+        case r of
+          Right () -> do
+            atomically $ incSMPServerStat c userId destSrv sentDirect 1
+            pure ()
+          Left e -> throwE e
 
 ipAddressProtected :: NetworkConfig -> ProtocolServer p -> Bool
 ipAddressProtected NetworkConfig {socksProxy, hostMode} (ProtocolServer _ hosts _ _) = do

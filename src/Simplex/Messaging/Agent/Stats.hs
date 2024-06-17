@@ -6,7 +6,6 @@ module Simplex.Messaging.Agent.Stats where
 
 import qualified Data.Aeson.TH as J
 import Data.Map (Map)
-import Data.Time.Clock (UTCTime (..))
 import Simplex.Messaging.Agent.Protocol (UserId)
 import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Protocol (SMPServer, XFTPServer)
@@ -16,7 +15,7 @@ data AgentSMPServerStats = AgentSMPServerStats
   { sentDirect :: TVar Int, -- successfully sent messages
     sentViaProxy :: TVar Int, -- successfully sent messages via proxy
     sentDirectAttempts :: TVar Int, -- direct sending attempts (min 1 for each sent message)
-    sentViaProxyAttempts :: TVar Int, -- proxy sending retries
+    sentViaProxyAttempts :: TVar Int, -- proxy sending attempts
     sentAuthErrs :: TVar Int, -- send AUTH errors
     sentQuotaErrs :: TVar Int, -- send QUOTA permanent errors (message expired)
     sentExpiredErrs :: TVar Int, -- send expired errors
@@ -31,8 +30,8 @@ data AgentSMPServerStats = AgentSMPServerStats
     connCompleted :: TVar Int,
     connDeleted :: TVar Int,
     connSubscribed :: TVar Int, -- total successful subscription
-    connSubAttempts :: TVar Int, -- subscription retries
-    connSubErrs :: TVar Int -- permanent subscription errors (temporary accounted for in retries)
+    connSubAttempts :: TVar Int, -- subscription attempts
+    connSubErrs :: TVar Int -- permanent subscription errors (temporary accounted for in attempts)
   }
 
 data AgentSMPServerStatsData = AgentSMPServerStatsData
