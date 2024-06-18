@@ -601,7 +601,7 @@ data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
 verifyTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> QueueId -> Cmd -> M VerificationResult
 verifyTransmission auth_ tAuth authorized queueId cmd =
   case cmd of
-    Cmd SRecipient (NEW k _ _ _ _) -> pure $ Nothing `verifiedWith` k
+    Cmd SRecipient (NEW k _ _ _) -> pure $ Nothing `verifiedWith` k
     Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWith` recipientKey q) <$> get SRecipient
     -- SEND will be accepted without authorization before the queue is secured with KEY or SKEY command
     Cmd SSender (SKEY k) -> verifyQueue (\q -> Just q `verifiedWith` k) <$> get SSender
@@ -778,7 +778,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
       Cmd SRecipient command -> do
         st <- asks queueStore
         Just <$> case command of
-          NEW rKey dhKey _sndKey auth subMode ->
+          NEW rKey dhKey auth subMode ->
             ifM
               allowNew
               (createQueue st rKey dhKey subMode)
@@ -801,7 +801,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
         createQueue st recipientKey dhKey subMode = time "NEW" $ do
           (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
           let rcvDhSecret = C.dh' dhKey privDhKey
-              qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey, secured = False}
+              qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey}
               qRec (recipientId, senderId) =
                 QueueRec
                   { recipientId,

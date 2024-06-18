@@ -709,7 +709,7 @@ newRcvConnSrv c userId connId enableNtfs cMode clientData pqInitKeys subMode srv
   when enableNtfs $ do
     ns <- asks ntfSupervisor
     atomically $ sendNtfSubCommand ns (connId, NSCCreate)
-  let crData = ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData []
+  let crData = ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
   case cMode of
     SCMContact -> pure (connId, CRContactUri crData)
     SCMInvitation -> do
@@ -1296,7 +1296,6 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c sq msgBody
-            AM_CONN_INFO_SECURED -> sendConfirmation c sq msgBody -- TODO agent v6
             _ -> sendAgentMessage c sq msgFlags msgBody
           case resp of
             Left e -> do
@@ -1315,7 +1314,6 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
                 SMP _ SMP.AUTH -> case msgType of
                   AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                   AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
-                  AM_CONN_INFO_SECURED -> connError msgId NOT_AVAILABLE
                   AM_RATCHET_INFO -> connError msgId NOT_AVAILABLE
                   -- in duplexHandshake mode (v2) HELLO is only sent once, without retrying,
                   -- because the queue must be secured by the time the confirmation or the first HELLO is received
@@ -1352,7 +1350,6 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq (Worker {doWork
               case msgType of
                 AM_CONN_INFO -> setConfirmed
                 AM_CONN_INFO_REPLY -> setConfirmed
-                AM_CONN_INFO_SECURED -> setConfirmed
                 AM_RATCHET_INFO -> pure ()
                 AM_HELLO_ -> do
                   withStore' c $ \db -> setSndQueueStatus db sq Active
@@ -2362,7 +2359,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                     (Right agentMsgBody, CR.SMDNoChange) ->
                       parseMessage agentMsgBody >>= \case
                         AgentConnInfoReply smpQueues connInfo ->
-                          processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, queuesSecured = False, smpClientVersion}
+                          processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion}
                         _ -> prohibited "conf: not AgentConnInfoReply" -- including AgentConnInfo, that is prohibited here in v2
                       where
                         processConf connInfo senderConf = do

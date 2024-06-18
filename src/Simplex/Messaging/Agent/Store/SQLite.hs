@@ -815,7 +815,6 @@ smpConfirmation (senderKey, e2ePubKey, connInfo, smpReplyQueues_, smpClientVersi
       e2ePubKey,
       connInfo,
       smpReplyQueues = fromMaybe [] smpReplyQueues_,
-      queuesSecured = False,
       smpClientVersion = fromMaybe initialSMPClientVersion smpClientVersion_
     }
 

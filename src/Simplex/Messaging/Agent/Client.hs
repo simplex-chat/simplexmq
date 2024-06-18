@@ -1156,7 +1156,7 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
         (sKey, _) <- atomically $ C.generateAuthKeyPair sa g
         (dhKey, _) <- atomically $ C.generateKeyPair g
         r <- runExceptT $ do
-          SMP.QIK {rcvId} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey Nothing auth SMSubscribe
+          SMP.QIK {rcvId} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey auth SMSubscribe
           liftError (testErr TSSecureQueue) $ secureSMPQueue smp rpKey rcvId sKey
           liftError (testErr TSDeleteQueue) $ deleteSMPQueue smp rpKey rcvId
         ok <- tcpTimeout (networkConfig cfg) `timeout` closeProtocolClient smp
@@ -1275,7 +1275,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
   tSess <- liftIO $ mkTransportSession c userId srv connId
   (sessId, QIK {rcvId, sndId, rcvPublicDhKey}) <-
     withClient c tSess "NEW" $ \(SMPConnectedClient smp _) ->
-      (sessionId $ thParams smp,) <$> createSMPQueue smp rKeys dhKey Nothing auth subMode
+      (sessionId $ thParams smp,) <$> createSMPQueue smp rKeys dhKey auth subMode
   liftIO . logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue

@@ -15,7 +15,7 @@ import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (ProtocolServer (..), pattern VersionSMPC, supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (ProtocolServer (..), supportedSMPClientVRange, pattern VersionSMPC)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Version
 import Test.Hspec
@@ -58,8 +58,7 @@ connReqData =
     { crScheme = SSSimplex,
       crAgentVRange = mkVersionRange (VersionSMPA 2) (VersionSMPA 2),
       crSmpQueues = [queueV1],
-      crClientData = Nothing,
-      crSndKey = []
+      crClientData = Nothing
     }
 
 testDhPubKey :: C.PublicKeyX448

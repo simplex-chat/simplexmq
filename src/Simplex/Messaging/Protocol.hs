@@ -377,7 +377,7 @@ data Command (p :: Party) where
   -- v6 of SMP servers only support signature algorithm for command authorization.
   -- v7 of SMP servers additionally support additional layer of authenticated encryption.
   -- RcvPublicAuthKey is defined as C.APublicKey - it can be either signature or DH public keys.
-  NEW :: RcvPublicAuthKey -> RcvPublicDhKey -> Maybe SndPublicAuthKey -> Maybe BasicAuth -> SubscriptionMode -> Command Recipient
+  NEW :: RcvPublicAuthKey -> RcvPublicDhKey -> Maybe BasicAuth -> SubscriptionMode -> Command Recipient
   SUB :: Command Recipient
   KEY :: SndPublicAuthKey -> Command Recipient
   NKEY :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> Command Recipient
@@ -1110,8 +1110,7 @@ instance FromJSON CorrId where
 data QueueIdsKeys = QIK
   { rcvId :: RecipientId,
     sndId :: SenderId,
-    rcvPublicDhKey :: RcvPublicDhKey,
-    secured :: Bool
+    rcvPublicDhKey :: RcvPublicDhKey
   }
   deriving (Eq, Show)
 
@@ -1282,8 +1281,7 @@ class ProtocolMsgTag (Tag msg) => ProtocolEncoding v err msg | msg -> err, msg -
 instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol v = \case
-    NEW rKey dhKey sndKey_ auth_ subMode
-      | v >= sndAuthKeySMPVersion -> new <> e sndKey_ <> auth <> e subMode
+    NEW rKey dhKey auth_ subMode
       | v >= subModeSMPVersion -> new <> auth <> e subMode
       | v == basicAuthSMPVersion -> new <> auth
       | otherwise -> new
@@ -1354,13 +1352,11 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
         NEW_
-          | v >= sndAuthKeySMPVersion -> new_ <*> smpP <*> auth <*> smpP
           | v >= subModeSMPVersion -> new <*> auth <*> smpP
           | v == basicAuthSMPVersion -> new <*> auth <*> pure SMSubscribe
           | otherwise -> new <*> pure Nothing <*> pure SMSubscribe
           where
-            new_ = NEW <$> _smpP <*> smpP
-            new = new_ <*> pure Nothing
+            new = NEW <$> _smpP <*> smpP
             auth = optional (A.char 'A' *> smpP)
         SUB_ -> pure SUB
         KEY_ -> KEY <$> _smpP
@@ -1390,12 +1386,8 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
 
 instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
-  encodeProtocol v = \case
-    IDS (QIK rcvId sndId srvDh secured)
-      | v >= sndAuthKeySMPVersion -> ids <> e secured
-      | otherwise -> ids
-      where
-        ids = e (IDS_, ' ', rcvId, sndId, srvDh)
+  encodeProtocol _v = \case
+    IDS (QIK rcvId sndId srvDh) -> e (IDS_, ' ', rcvId, sndId, srvDh)
     MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body} ->
       e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
@@ -1412,17 +1404,13 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       e :: Encoding a => a -> ByteString
       e = smpEncode
 
-  protocolP v = \case
+  protocolP _v = \case
     MSG_ -> do
       msgId <- _smpP
       MSG . RcvMessage msgId <$> bodyP
       where
         bodyP = EncRcvMsgBody . unTail <$> smpP
-    IDS_
-      | v >= sndAuthKeySMPVersion -> IDS <$> (qik <*> smpP)
-      | otherwise -> IDS <$> (qik <*> pure False)
-      where
-        qik = QIK <$> _smpP <*> smpP <*> smpP
+    IDS_ -> IDS <$> (QIK <$> _smpP <*> smpP <*> smpP)
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> ((,) <$> C.certChainP <*> (C.getSignedExact <$> smpP))
