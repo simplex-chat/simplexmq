@@ -118,8 +118,7 @@ data AgentConfig = AgentConfig
     certificateFile :: FilePath,
     e2eEncryptVRange :: VersionRangeE2E,
     smpAgentVRange :: VersionRangeSMPA,
-    smpClientVRange :: VersionRangeSMPC,
-    agentStatsLogFile :: Maybe FilePath
+    smpClientVRange :: VersionRangeSMPC
   }
 
 defaultReconnectInterval :: RetryInterval
@@ -191,8 +190,7 @@ defaultAgentConfig =
       certificateFile = "/etc/opt/simplex-agent/agent.crt",
       e2eEncryptVRange = supportedE2EEncryptVRange,
       smpAgentVRange = supportedSMPAgentVRange,
-      smpClientVRange = supportedSMPClientVRange,
-      agentStatsLogFile = Nothing
+      smpClientVRange = supportedSMPClientVRange
     }
 
 data Env = Env

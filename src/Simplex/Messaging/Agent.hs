@@ -211,16 +211,13 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
       | backgroundMode = run c "subscriber" $ subscriber c
       | otherwise = do
           restoreAgentStats c
-          let threads =
-                [ run c "subscriber" $ subscriber c,
-                  run c "runNtfSupervisor" $ runNtfSupervisor c,
-                  run c "cleanupManager" $ cleanupManager c
-                ]
-          f_ <- asks (agentStatsLogFile . config)
-          let threads' = case f_ of
-                Just _ -> run c "logAgentStats" (logAgentStats c) : threads
-                Nothing -> threads
-          raceAny_ threads' `E.finally` saveAgentStats c
+          raceAny_
+            [ run c "subscriber" $ subscriber c,
+              run c "runNtfSupervisor" $ runNtfSupervisor c,
+              run c "cleanupManager" $ cleanupManager c,
+              run c "logAgentStats" $ logAgentStats c
+            ]
+            `E.finally` saveAgentStats c
     run AgentClient {subQ, acThread} name a =
       a `E.catchAny` \e -> whenM (isJust <$> readTVarIO acThread) $ do
         logError $ "Agent thread " <> name <> " crashed: " <> tshow e
@@ -233,41 +230,47 @@ logAgentStats c = do
     saveAgentStats c
     liftIO $ threadDelay' interval
 
+-- TODO save to db
 saveAgentStats :: AgentClient -> AM' ()
 saveAgentStats AgentClient {smpServersStats, xftpServersStats} =
-  asks (agentStatsLogFile . config) >>= mapM_ (liftIO . saveStats)
-  where
-    saveStats f = do
-      sss <- readTVarIO smpServersStats
-      smpServersStatsData <- mapM (atomically . getAgentSMPServerStats) sss
-      xss <- readTVarIO xftpServersStats
-      xftpServersStatsData <- mapM (atomically . getAgentXFTPServerStats) xss
-      let stats = AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData}
-      logInfo $ "saving agent stats to file " <> T.pack f
-      B.writeFile f $ LB.toStrict $ J.encode stats
-      -- logInfo "agent stats saved"
-      liftIO $ print "agent stats saved"
+  -- asks (agentStatsLogFile . config) >>= mapM_ (liftIO . saveStats)
+  -- where
+  --   saveStats f = do
+  --     sss <- readTVarIO smpServersStats
+  --     smpServersStatsData <- mapM (atomically . getAgentSMPServerStats) sss
+  --     xss <- readTVarIO xftpServersStats
+  --     xftpServersStatsData <- mapM (atomically . getAgentXFTPServerStats) xss
+  --     let stats = AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData}
+  --     logInfo $ "saving agent stats to file " <> T.pack f
+  --     B.writeFile f $ LB.toStrict $ J.encode stats
+  --     -- logInfo "agent stats saved"
+  --     liftIO $ print "agent stats saved"
+  pure ()
 
+-- TODO restore to db
 restoreAgentStats :: AgentClient -> AM' ()
 restoreAgentStats AgentClient {smpServersStats, xftpServersStats} =
-  asks (agentStatsLogFile . config) >>= mapM_ (liftIO . restoreStats)
-  where
-    restoreStats f = whenM (doesFileExist f) $ do
-      -- logInfo $ "restoring agent stats from file " <> T.pack f
-      liftIO $ print $ "restoring agent stats from file " <> T.pack f
-      liftIO (J.decode . LB.fromStrict <$> B.readFile f) >>= \case
-        Just AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData} -> do
-          sss <- mapM (atomically . newAgentSMPServerStats') smpServersStatsData
-          atomically $ writeTVar smpServersStats sss
-          xss <- mapM (atomically . newAgentXFTPServerStats') xftpServersStatsData
-          atomically $ writeTVar xftpServersStats xss
-          renameFile f $ f <> ".bak"
-          -- logInfo "server stats restored"
-          liftIO $ print "server stats restored"
-        Nothing -> do
-          -- logInfo "error restoring server stats"
-          liftIO $ print "error restoring server stats"
-          renameFile f $ f <> ".bak"
+  -- asks (agentStatsLogFile . config) >>= mapM_ (liftIO . restoreStats)
+  -- where
+  --   restoreStats f = whenM (doesFileExist f) $ do
+  --     -- logInfo $ "restoring agent stats from file " <> T.pack f
+  --     liftIO $ print $ "restoring agent stats from file " <> T.pack f
+  --     liftIO (J.decode . LB.fromStrict <$> B.readFile f) >>= \case
+  --       Just AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData} -> do
+  --         sss <- mapM (atomically . newAgentSMPServerStats') smpServersStatsData
+  --         atomically $ writeTVar smpServersStats sss
+  --         xss <- mapM (atomically . newAgentXFTPServerStats') xftpServersStatsData
+  --         atomically $ writeTVar xftpServersStats xss
+  --         -- TODO restore from db
+  --         -- renameFile f $ f <> ".bak"
+  --         -- logInfo "server stats restored"
+  --         liftIO $ print "server stats restored"
+  --       Nothing -> do
+  --         -- logInfo "error restoring server stats"
+  --         liftIO $ print "error restoring server stats"
+  pure ()
+
+-- renameFile f $ f <> ".bak"
 
 disconnectAgentClient :: AgentClient -> IO ()
 disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAgent = xa}} = do
@@ -1404,8 +1407,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                           when (serverHostError e) $ notify $ MWARN (unId msgId) e
                           retrySndMsg RIFast
                   | otherwise -> do
-                    atomically $ incSMPServerStat c userId server sentOtherErrs 1
-                    notifyDel msgId err
+                      atomically $ incSMPServerStat c userId server sentOtherErrs 1
+                      notifyDel msgId err
               where
                 retrySndMsg riMode = do
                   withStore' c $ \db -> updatePendingMsgRIState db connId msgId riState
@@ -2471,8 +2474,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                     -- this branch is executed by the accepting party in duplexHandshake mode (v2)
                     -- (was executed by initiating party in v1 that is no longer supported)
                     | sndStatus == Active -> do
-                      atomically $ incSMPServerStat c userId srv connCompleted 1
-                      notify $ CON pqEncryption
+                        atomically $ incSMPServerStat c userId srv connCompleted 1
+                        notify $ CON pqEncryption
                     | otherwise -> enqueueDuplexHello sq
                   _ -> pure ()
             where

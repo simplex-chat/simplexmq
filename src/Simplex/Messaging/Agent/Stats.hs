@@ -346,15 +346,8 @@ setAgentXFTPServerStats s d = do
   writeTVar (replDeleteAttempts s) $! _replDeleteAttempts d
   writeTVar (replDeleteErr s) $! _replDeleteErr d
 
--- Type for gathering both smp and xftp stats across all users and servers.
---
--- Idea is to provide agent with a single path to save/restore stats, instead of managing it in UI
--- and providing agent with "initial stats".
---
--- Agent would use this unifying type to write/read json representation of all stats
--- and populating AgentClient maps:
--- smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
--- xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats
+-- Type for gathering both smp and xftp stats across all users and servers,
+-- to then be persisted to db as a single json.
 data AgentPersistedServerStats = AgentPersistedServerStats
   { smpServersStatsData :: Map (UserId, SMPServer) AgentSMPServerStatsData,
     xftpServersStatsData :: Map (UserId, XFTPServer) AgentXFTPServerStatsData
