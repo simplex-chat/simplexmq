@@ -100,6 +100,8 @@ data AgentConfig = AgentConfig
     persistErrorInterval :: NominalDiffTime,
     initialCleanupDelay :: Int64,
     cleanupInterval :: Int64,
+    initialLogStatsDelay :: Int64,
+    logStatsInterval :: Int64,
     cleanupStepInterval :: Int,
     maxWorkerRestartsPerMin :: Int,
     storedMsgDataTTL :: NominalDiffTime,
@@ -170,6 +172,8 @@ defaultAgentConfig =
       persistErrorInterval = 3, -- seconds
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
       cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
+      initialLogStatsDelay = 5 * 1000000, -- 30 seconds
+      logStatsInterval = 30 * 1000000, -- 30 minutes
       cleanupStepInterval = 200000, -- 200ms
       maxWorkerRestartsPerMin = 5,
       storedMsgDataTTL = 21 * nominalDay,

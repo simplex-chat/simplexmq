@@ -210,28 +210,30 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
     runAgentThreads c
       | backgroundMode = run c "subscriber" $ subscriber c
       | otherwise = do
-          restoreAgentStats c
+          restoreServersStats c
           raceAny_
             [ run c "subscriber" $ subscriber c,
               run c "runNtfSupervisor" $ runNtfSupervisor c,
               run c "cleanupManager" $ cleanupManager c,
-              run c "logAgentStats" $ logAgentStats c
+              run c "logServersStats" $ logServersStats c
             ]
-            `E.finally` saveAgentStats c
+            `E.finally` saveServersStats c
     run AgentClient {subQ, acThread} name a =
       a `E.catchAny` \e -> whenM (isJust <$> readTVarIO acThread) $ do
         logError $ "Agent thread " <> name <> " crashed: " <> tshow e
         atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ CRITICAL True $ show e)
 
-logAgentStats :: AgentClient -> AM' ()
-logAgentStats c = do
-  let interval = 1000000 * 30 -- 30 seconds -- TODO config
+logServersStats :: AgentClient -> AM' ()
+logServersStats c = do
+  delay <- asks (initialLogStatsDelay . config)
+  liftIO $ threadDelay' delay
+  int <- asks (logStatsInterval . config)
   forever $ do
-    saveAgentStats c
-    liftIO $ threadDelay' interval
+    saveServersStats c
+    liftIO $ threadDelay' int
 
-saveAgentStats :: AgentClient -> AM' ()
-saveAgentStats c@AgentClient {subQ, smpServersStats, xftpServersStats} = do
+saveServersStats :: AgentClient -> AM' ()
+saveServersStats c@AgentClient {subQ, smpServersStats, xftpServersStats} = do
   sss <- readTVarIO smpServersStats
   sss' <- mapM (atomically . getAgentSMPServerStats) sss
   xss <- readTVarIO xftpServersStats
@@ -241,8 +243,8 @@ saveAgentStats c@AgentClient {subQ, smpServersStats, xftpServersStats} = do
     Left e -> atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ INTERNAL $ show e)
     Right () -> pure ()
 
-restoreAgentStats :: AgentClient -> AM' ()
-restoreAgentStats c@AgentClient {smpServersStats, xftpServersStats} = do
+restoreServersStats :: AgentClient -> AM' ()
+restoreServersStats c@AgentClient {smpServersStats, xftpServersStats} = do
   tryAgentError' (withStore c getServersStats) >>= \case
     Left e -> atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ INTERNAL $ show e)
     Right Nothing -> pure ()
