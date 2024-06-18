@@ -390,6 +390,7 @@ data Command (p :: Party) where
   DEL :: Command Recipient
   QUE :: Command Recipient
   -- SMP sender commands
+  SKEY :: SndPublicAuthKey -> Command Sender
   -- SEND v1 has to be supported for encoding/decoding
   -- SEND :: MsgBody -> Command Sender
   SEND :: MsgFlags -> MsgBody -> Command Sender
@@ -664,6 +665,7 @@ data CommandTag (p :: Party) where
   OFF_ :: CommandTag Recipient
   DEL_ :: CommandTag Recipient
   QUE_ :: CommandTag Recipient
+  SKEY_ :: CommandTag Sender
   SEND_ :: CommandTag Sender
   PING_ :: CommandTag Sender
   PRXY_ :: CommandTag ProxiedClient
@@ -712,6 +714,7 @@ instance PartyI p => Encoding (CommandTag p) where
     OFF_ -> "OFF"
     DEL_ -> "DEL"
     QUE_ -> "QUE"
+    SKEY_ -> "SKEY"
     SEND_ -> "SEND"
     PING_ -> "PING"
     PRXY_ -> "PRXY"
@@ -732,6 +735,7 @@ instance ProtocolMsgTag CmdTag where
     "OFF" -> Just $ CT SRecipient OFF_
     "DEL" -> Just $ CT SRecipient DEL_
     "QUE" -> Just $ CT SRecipient QUE_
+    "SKEY" -> Just $ CT SSender SKEY_
     "SEND" -> Just $ CT SSender SEND_
     "PING" -> Just $ CT SSender PING_
     "PRXY" -> Just $ CT SProxiedClient PRXY_
@@ -1278,7 +1282,7 @@ class ProtocolMsgTag (Tag msg) => ProtocolEncoding v err msg | msg -> err, msg -
 instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol v = \case
-    NEW rKey dhKey sndKey_ auth_ subMode 
+    NEW rKey dhKey sndKey_ auth_ subMode
       | v >= sndAuthKeySMPVersion -> new <> e sndKey_ <> auth <> e subMode
       | v >= subModeSMPVersion -> new <> auth <> e subMode
       | v == basicAuthSMPVersion -> new <> auth
@@ -1295,6 +1299,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     OFF -> e OFF_
     DEL -> e DEL_
     QUE -> e QUE_
+    SKEY k -> e (SKEY_, ' ', k)
     SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
@@ -1319,6 +1324,9 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     -- SEND must have queue ID, signature is not always required
     SEND {}
       | B.null entId -> Left $ CMD NO_ENTITY
+      | otherwise -> Right cmd
+    SKEY _
+      | isNothing auth || B.null entId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
     PING -> noAuthCmd
     PRXY {} -> noAuthCmd
@@ -1365,6 +1373,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
         QUE_ -> pure QUE
     CT SSender tag ->
       Cmd SSender <$> case tag of
+        SKEY_ -> SKEY <$> _smpP
         SEND_ -> SEND <$> _smpP <*> (unTail <$> _smpP)
         PING_ -> pure PING
         RFWD_ -> RFWD <$> (EncFwdTransmission . unTail <$> _smpP)
@@ -1383,7 +1392,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
   encodeProtocol v = \case
     IDS (QIK rcvId sndId srvDh secured)
-      | v >= sndAuthKeySMPVersion ->  ids <> e secured
+      | v >= sndAuthKeySMPVersion -> ids <> e secured
       | otherwise -> ids
       where
         ids = e (IDS_, ' ', rcvId, sndId, srvDh)

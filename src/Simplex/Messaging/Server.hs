@@ -603,7 +603,8 @@ verifyTransmission auth_ tAuth authorized queueId cmd =
   case cmd of
     Cmd SRecipient (NEW k _ _ _ _) -> pure $ Nothing `verifiedWith` k
     Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWith` recipientKey q) <$> get SRecipient
-    -- SEND will be accepted without authorization before the queue is secured with KEY command
+    -- SEND will be accepted without authorization before the queue is secured with KEY or SKEY command
+    Cmd SSender (SKEY k) -> verifyQueue (\q -> Just q `verifiedWith` k) <$> get SSender
     Cmd SSender SEND {} -> verifyQueue (\q -> Just q `verified` maybe (isNothing tAuth) verify (senderKey q)) <$> get SSender
     Cmd SSender PING -> pure $ VRVerified Nothing
     Cmd SSender RFWD {} -> pure $ VRVerified Nothing
@@ -762,13 +763,14 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
     transportErr :: TransportError -> ErrorType
     transportErr = PROXY . BROKER . TRANSPORT
     mkIncProxyStats :: MonadIO m => ProxyStats -> ProxyStats -> OwnServer -> (ProxyStats -> TVar Int) -> m ()
-    mkIncProxyStats ps psOwn = \own sel -> do
+    mkIncProxyStats ps psOwn own sel = do
       atomically $ modifyTVar' (sel ps) (+ 1)
       when own $ atomically $ modifyTVar' (sel psOwn) (+ 1)
     processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Maybe (Transmission BrokerMsg))
     processCommand (qr_, (corrId, queueId, cmd)) = case cmd of
       Cmd SProxiedClient command -> processProxiedCmd (corrId, queueId, command)
       Cmd SSender command -> Just <$> case command of
+        SKEY sKey -> secureSndQueue_ sKey
         SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
         PING -> pure (corrId, "", PONG)
         RFWD encBlock -> (corrId, "",) <$> processForwardedCommand encBlock
@@ -788,7 +790,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           SUB -> withQueue (`subscribeQueue` queueId)
           GET -> withQueue getMessage
           ACK msgId -> withQueue (`acknowledgeMsg` msgId)
-          KEY sKey -> secureQueue_ st sKey
+          KEY sKey -> secureRcvQueue_ st sKey
           NKEY nKey dhKey -> addQueueNotifier_ st nKey dhKey
           NDEL -> deleteQueueNotifier_ st
           OFF -> suspendQueue_ st
@@ -843,12 +845,20 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               n <- asks $ queueIdBytes . config
               liftM2 (,) (randomId n) (randomId n)
 
-        secureQueue_ :: QueueStore -> SndPublicAuthKey -> M (Transmission BrokerMsg)
-        secureQueue_ st sKey = time "KEY" $ do
+        secureRcvQueue_ :: QueueStore -> SndPublicAuthKey -> M (Transmission BrokerMsg)
+        secureRcvQueue_ st sKey = time "KEY" $ do
           withLog $ \s -> logSecureQueue s queueId sKey
           stats <- asks serverStats
           atomically $ modifyTVar' (qSecured stats) (+ 1)
-          atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureQueue st queueId sKey
+          atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureRcvQueue st queueId sKey
+
+        secureSndQueue_ :: SndPublicAuthKey -> M (Transmission BrokerMsg)
+        secureSndQueue_ sKey = time "SKEY" $ do
+          st <- asks queueStore
+          withLog $ \s -> logSecureQueue s queueId sKey
+          stats <- asks serverStats
+          atomically $ modifyTVar' (qSecured stats) (+ 1)
+          atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureSndQueue st queueId sKey
 
         addQueueNotifier_ :: QueueStore -> NtfPublicAuthKey -> RcvNtfPublicDhKey -> M (Transmission BrokerMsg)
         addQueueNotifier_ st notifierKey dhKey = time "NKEY" $ do
