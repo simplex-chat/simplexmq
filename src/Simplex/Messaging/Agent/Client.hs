@@ -1995,14 +1995,6 @@ data XFTPServerSessions = XFTPServerSessions
   }
   deriving (Show)
 
-getAgentServersStats :: AgentClient -> IO AgentPersistedServerStats
-getAgentServersStats AgentClient {smpServersStats, xftpServersStats} = do
-  sss <- readTVarIO smpServersStats
-  smpServersStatsData <- mapM (atomically . getAgentSMPServerStats) sss
-  xss <- readTVarIO xftpServersStats
-  xftpServersStatsData <- mapM (atomically . getAgentXFTPServerStats) xss
-  pure AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData}
-
 getAgentServersSummary :: AgentClient -> IO AgentServersSummary
 getAgentServersSummary AgentClient {smpServersStats, xftpServersStats} = do
   sss <- readTVarIO smpServersStats
