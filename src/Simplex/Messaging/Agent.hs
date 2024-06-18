@@ -105,6 +105,7 @@ module Simplex.Messaging.Agent
     rcConnectCtrl,
     rcDiscoverCtrl,
     getAgentServersSummary,
+    resetAgentServersStats,
     foregroundAgent,
     suspendAgent,
     execAgentStoreSQL,
@@ -587,6 +588,10 @@ rcDiscoverCtrl AgentClient {agentEnv = Env {multicastSubscribers = subs}} = with
 getAgentServersSummary :: AgentClient -> AE AgentServersSummary
 getAgentServersSummary c = withAgentEnv c $ getAgentServersSummary' c
 {-# INLINE getAgentServersSummary #-}
+
+resetAgentServersStats :: AgentClient -> AE ()
+resetAgentServersStats c = withAgentEnv c $ resetAgentServersSummary' c
+{-# INLINE resetAgentServersStats #-}
 
 getAgentStats :: AgentClient -> IO [(AgentStatsKey, Int)]
 getAgentStats c = readTVarIO (agentStats c) >>= mapM (\(k, cnt) -> (k,) <$> readTVarIO cnt) . M.assocs
@@ -2853,3 +2858,9 @@ getAgentServersSummary' c@AgentClient {smpServersStats, xftpServersStats} = do
         xftpServersSessions = M.empty, -- collect, see XFTPServerSessions
         onlyProxiedSMPServers = [] -- collect, smpProxiedRelays (key) minus smpClients
       }
+
+resetAgentServersSummary' :: AgentClient -> AM ()
+resetAgentServersSummary' c@AgentClient {smpServersStats, xftpServersStats} = do
+  atomically $ TM.clear smpServersStats
+  atomically $ TM.clear xftpServersStats
+  withStore' c resetServersStats
