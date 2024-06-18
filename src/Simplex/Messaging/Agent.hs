@@ -619,11 +619,15 @@ createUser' c smp xftp = do
   pure userId
 
 deleteUser' :: AgentClient -> UserId -> Bool -> AM ()
-deleteUser' c userId delSMPQueues = do
+deleteUser' c@AgentClient {smpServersStats, xftpServersStats} userId delSMPQueues = do
   if delSMPQueues
     then withStore c (`setUserDeleted` userId) >>= deleteConnectionsAsync_ delUser c False
     else withStore c (`deleteUserRecord` userId)
   atomically $ TM.delete userId $ smpServers c
+  atomically $ TM.delete userId $ xftpServers c
+  atomically $ TM.filterWithKey (\(userId', _) _ -> userId' /= userId) smpServersStats
+  atomically $ TM.filterWithKey (\(userId', _) _ -> userId' /= userId) xftpServersStats
+  lift $ saveServersStats c
   where
     delUser =
       whenM (withStore' c (`deleteUserWithoutConns` userId)) . atomically $
