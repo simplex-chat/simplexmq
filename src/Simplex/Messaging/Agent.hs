@@ -2002,6 +2002,29 @@ setNtfServers :: AgentClient -> [NtfServer] -> IO ()
 setNtfServers c = atomically . writeTVar (ntfServers c)
 {-# INLINE setNtfServers #-}
 
+getAgentServersSummary' :: AgentClient -> AM AgentServersSummary
+getAgentServersSummary' c@AgentClient {smpServersStats, xftpServersStats} = do
+  sss <- readTVarIO smpServersStats
+  sss' <- mapM (atomically . getAgentSMPServerStats) sss
+  xss <- readTVarIO xftpServersStats
+  xss' <- mapM (atomically . getAgentXFTPServerStats) xss
+  statsStartedAt <- withStore c getServersStatsStartedAt
+  pure
+    AgentServersSummary
+      { smpServersStats = sss',
+        xftpServersStats = xss',
+        statsStartedAt,
+        smpServersSessions = M.empty, -- collect, see SMPServerSessions
+        xftpServersSessions = M.empty, -- collect, see XFTPServerSessions
+        onlyProxiedSMPServers = [] -- collect, smpProxiedRelays (key) minus smpClients
+      }
+
+resetAgentServersSummary' :: AgentClient -> AM ()
+resetAgentServersSummary' c@AgentClient {smpServersStats, xftpServersStats} = do
+  atomically $ TM.clear smpServersStats
+  atomically $ TM.clear xftpServersStats
+  withStore' c resetServersStats
+
 -- | Activate operations
 foregroundAgent :: AgentClient -> IO ()
 foregroundAgent c = do
@@ -2841,26 +2864,3 @@ newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAdd
         sndSwchStatus = Nothing,
         smpClientVersion
       }
-
-getAgentServersSummary' :: AgentClient -> AM AgentServersSummary
-getAgentServersSummary' c@AgentClient {smpServersStats, xftpServersStats} = do
-  sss <- readTVarIO smpServersStats
-  sss' <- mapM (atomically . getAgentSMPServerStats) sss
-  xss <- readTVarIO xftpServersStats
-  xss' <- mapM (atomically . getAgentXFTPServerStats) xss
-  statsStartedAt <- withStore c getServersStatsStartedAt
-  pure
-    AgentServersSummary
-      { smpServersStats = sss',
-        xftpServersStats = xss',
-        statsStartedAt,
-        smpServersSessions = M.empty, -- collect, see SMPServerSessions
-        xftpServersSessions = M.empty, -- collect, see XFTPServerSessions
-        onlyProxiedSMPServers = [] -- collect, smpProxiedRelays (key) minus smpClients
-      }
-
-resetAgentServersSummary' :: AgentClient -> AM ()
-resetAgentServersSummary' c@AgentClient {smpServersStats, xftpServersStats} = do
-  atomically $ TM.clear smpServersStats
-  atomically $ TM.clear xftpServersStats
-  withStore' c resetServersStats
