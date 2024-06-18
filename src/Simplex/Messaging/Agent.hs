@@ -104,6 +104,7 @@ module Simplex.Messaging.Agent
     rcConnectHost,
     rcConnectCtrl,
     rcDiscoverCtrl,
+    getAgentServersSummary,
     foregroundAgent,
     suspendAgent,
     execAgentStoreSQL,
@@ -582,6 +583,10 @@ rcConnectCtrl AgentClient {agentEnv = Env {random}} = withExceptT RCP .:. connec
 rcDiscoverCtrl :: AgentClient -> NonEmpty RCCtrlPairing -> AE (RCCtrlPairing, RCVerifiedInvitation)
 rcDiscoverCtrl AgentClient {agentEnv = Env {multicastSubscribers = subs}} = withExceptT RCP . discoverRCCtrl subs
 {-# INLINE rcDiscoverCtrl #-}
+
+getAgentServersSummary :: AgentClient -> AE AgentServersSummary
+getAgentServersSummary c = withAgentEnv c $ getAgentServersSummary' c
+{-# INLINE getAgentServersSummary #-}
 
 getAgentStats :: AgentClient -> IO [(AgentStatsKey, Int)]
 getAgentStats c = readTVarIO (agentStats c) >>= mapM (\(k, cnt) -> (k,) <$> readTVarIO cnt) . M.assocs
@@ -2826,4 +2831,21 @@ newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAdd
         dbReplaceQueueId = Nothing,
         sndSwchStatus = Nothing,
         smpClientVersion
+      }
+
+getAgentServersSummary' :: AgentClient -> AM AgentServersSummary
+getAgentServersSummary' c@AgentClient {smpServersStats, xftpServersStats} = do
+  sss <- readTVarIO smpServersStats
+  sss' <- mapM (atomically . getAgentSMPServerStats) sss
+  xss <- readTVarIO xftpServersStats
+  xss' <- mapM (atomically . getAgentXFTPServerStats) xss
+  statsStartedAt <- withStore c getServersStatsStartedAt
+  pure
+    AgentServersSummary
+      { smpServersStats = sss',
+        xftpServersStats = xss',
+        statsStartedAt,
+        smpServersSessions = M.empty, -- collect, see SMPServerSessions
+        xftpServersSessions = M.empty, -- collect, see XFTPServerSessions
+        onlyProxiedSMPServers = [] -- collect, smpProxiedRelays (key) minus smpClients
       }

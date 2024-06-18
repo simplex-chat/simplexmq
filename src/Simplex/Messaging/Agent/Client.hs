@@ -91,7 +91,6 @@ module Simplex.Messaging.Agent.Client
     AgentServersSummary (..),
     SMPServerSessions (..),
     XFTPServerSessions (..),
-    getAgentServersSummary,
     getAgentSubscriptions,
     slowNetworkConfig,
     protocolClientError,
@@ -1972,11 +1971,12 @@ incXFTPServerStat AgentClient {xftpServersStats} userId srv sel n = do
 --   and stats are used to track real network activity (probably also via smpClients),
 --   so they [stats] would be accounted for proxy (unless we want double counting messages as sent and proxied)
 data AgentServersSummary = AgentServersSummary
-  { smpServersSessions :: Map (UserId, SMPServer) SMPServerSessions,
-    smpServersStats :: Map (UserId, SMPServer) AgentSMPServerStatsData,
-    onlyProxiedSMPServers :: [SMPServer],
+  { smpServersStats :: Map (UserId, SMPServer) AgentSMPServerStatsData,
+    xftpServersStats :: Map (UserId, XFTPServer) AgentXFTPServerStatsData,
+    statsStartedAt :: UTCTime,
+    smpServersSessions :: Map (UserId, SMPServer) SMPServerSessions,
     xftpServersSessions :: Map (UserId, XFTPServer) XFTPServerSessions,
-    xftpServersStats :: Map (UserId, XFTPServer) AgentXFTPServerStatsData
+    onlyProxiedSMPServers :: [SMPServer]
   }
   deriving (Show)
 
@@ -1994,21 +1994,6 @@ data XFTPServerSessions = XFTPServerSessions
     delInProgress :: Bool -- based on xftpDelWorkers, hasWork
   }
   deriving (Show)
-
-getAgentServersSummary :: AgentClient -> IO AgentServersSummary
-getAgentServersSummary AgentClient {smpServersStats, xftpServersStats} = do
-  sss <- readTVarIO smpServersStats
-  sss' <- mapM (atomically . getAgentSMPServerStats) sss
-  xss <- readTVarIO xftpServersStats
-  xss' <- mapM (atomically . getAgentXFTPServerStats) xss
-  pure
-    AgentServersSummary
-      { smpServersSessions = M.empty, -- collect, see SMPServerSessions
-        smpServersStats = sss',
-        onlyProxiedSMPServers = [], -- collect, smpProxiedRelays (key) minus smpClients
-        xftpServersSessions = M.empty, -- collect, see XFTPServerSessions
-        xftpServersStats = xss'
-      }
 
 data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text, subError :: Maybe String}
   deriving (Show)
