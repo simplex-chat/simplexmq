@@ -346,9 +346,18 @@ setAgentXFTPServerStats s d = do
   writeTVar (replDeleteAttempts s) $! _replDeleteAttempts d
   writeTVar (replDeleteErr s) $! _replDeleteErr d
 
-data AgentServerStats = AgentServerStats
-  { smpServersStats :: Map (UserId, SMPServer) AgentSMPServerStatsData,
-    xftpServersStats :: Map (UserId, XFTPServer) AgentXFTPServerStatsData
+-- Type for gathering both smp and xftp stats across all users and servers.
+--
+-- Idea is to provide agent with a single path to save/restore stats, instead of managing it in UI
+-- and providing agent with "initial stats".
+--
+-- Agent would use this unifying type to write/read json representation of all stats
+-- and populating AgentClient maps:
+-- smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
+-- xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats
+data AgentPersistedServerStats = AgentPersistedServerStats
+  { smpServersStatsData :: Map (UserId, SMPServer) AgentSMPServerStatsData,
+    xftpServersStatsData :: Map (UserId, XFTPServer) AgentXFTPServerStatsData
   }
   deriving (Show)
 
@@ -356,4 +365,4 @@ $(J.deriveJSON defaultJSON ''AgentSMPServerStatsData)
 
 $(J.deriveJSON defaultJSON ''AgentXFTPServerStatsData)
 
-$(J.deriveJSON defaultJSON ''AgentServerStats)
+$(J.deriveJSON defaultJSON ''AgentPersistedServerStats)

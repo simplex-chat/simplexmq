@@ -91,7 +91,6 @@ module Simplex.Messaging.Agent.Client
     AgentServersSummary (..),
     SMPServerSessions (..),
     XFTPServerSessions (..),
-    getAgentServersStats,
     getAgentServersSummary,
     getAgentSubscriptions,
     slowNetworkConfig,
@@ -1973,10 +1972,11 @@ incXFTPServerStat AgentClient {xftpServersStats} userId srv sel n = do
 --   and stats are used to track real network activity (probably also via smpClients),
 --   so they [stats] would be accounted for proxy (unless we want double counting messages as sent and proxied)
 data AgentServersSummary = AgentServersSummary
-  { serverStats :: AgentServerStats,
-    smpServersSessions :: Map (UserId, SMPServer) SMPServerSessions,
+  { smpServersSessions :: Map (UserId, SMPServer) SMPServerSessions,
+    smpServersStats :: Map (UserId, SMPServer) AgentSMPServerStatsData,
     onlyProxiedSMPServers :: [SMPServer],
-    xftpServersSessions :: Map (UserId, XFTPServer) XFTPServerSessions
+    xftpServersSessions :: Map (UserId, XFTPServer) XFTPServerSessions,
+    xftpServersStats :: Map (UserId, XFTPServer) AgentXFTPServerStatsData
   }
   deriving (Show)
 
@@ -1995,27 +1995,27 @@ data XFTPServerSessions = XFTPServerSessions
   }
   deriving (Show)
 
-getAgentServersStats :: AgentClient -> IO AgentServerStats
+getAgentServersStats :: AgentClient -> IO AgentPersistedServerStats
 getAgentServersStats AgentClient {smpServersStats, xftpServersStats} = do
+  sss <- readTVarIO smpServersStats
+  smpServersStatsData <- mapM (atomically . getAgentSMPServerStats) sss
+  xss <- readTVarIO xftpServersStats
+  xftpServersStatsData <- mapM (atomically . getAgentXFTPServerStats) xss
+  pure AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData}
+
+getAgentServersSummary :: AgentClient -> IO AgentServersSummary
+getAgentServersSummary AgentClient {smpServersStats, xftpServersStats} = do
   sss <- readTVarIO smpServersStats
   sss' <- mapM (atomically . getAgentSMPServerStats) sss
   xss <- readTVarIO xftpServersStats
   xss' <- mapM (atomically . getAgentXFTPServerStats) xss
   pure
-    AgentServerStats
-      { smpServersStats = sss',
-        xftpServersStats = xss'
-      }
-
-getAgentServersSummary :: AgentClient -> IO AgentServersSummary
-getAgentServersSummary c = do
-  serverStats <- getAgentServersStats c
-  pure
     AgentServersSummary
-      { serverStats,
-        smpServersSessions = M.empty, -- collect, see SMPServerSessions
+      { smpServersSessions = M.empty, -- collect, see SMPServerSessions
+        smpServersStats = sss',
         onlyProxiedSMPServers = [], -- collect, smpProxiedRelays (key) minus smpClients
-        xftpServersSessions = M.empty -- collect, see XFTPServerSessions
+        xftpServersSessions = M.empty, -- collect, see XFTPServerSessions
+        xftpServersStats = xss'
       }
 
 data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text, subError :: Maybe String}
