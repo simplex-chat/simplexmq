@@ -3028,7 +3028,7 @@ updateServersStats db stats = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE servers_stats SET servers_stats = ?, updated_at = ? WHERE servers_stats_id = 1" (stats, updatedAt)
 
-getServersStats :: DB.Connection -> IO (Either StoreError AgentPersistedServerStats)
+getServersStats :: DB.Connection -> IO (Either StoreError (Maybe AgentPersistedServerStats))
 getServersStats db =
   firstRow fromOnly SEServersStatsNotFound $
     DB.query_ db "SELECT servers_stats FROM servers_stats WHERE servers_stats_id = 1"

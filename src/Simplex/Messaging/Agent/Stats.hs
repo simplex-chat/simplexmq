@@ -352,8 +352,8 @@ setAgentXFTPServerStats s d = do
 -- Type for gathering both smp and xftp stats across all users and servers,
 -- to then be persisted to db as a single json.
 data AgentPersistedServerStats = AgentPersistedServerStats
-  { smpServersStatsData :: Map (UserId, SMPServer) AgentSMPServerStatsData,
-    xftpServersStatsData :: Map (UserId, XFTPServer) AgentXFTPServerStatsData
+  { smpServersStats :: Map (UserId, SMPServer) AgentSMPServerStatsData,
+    xftpServersStats :: Map (UserId, XFTPServer) AgentXFTPServerStatsData
   }
   deriving (Show)
 
