@@ -230,47 +230,26 @@ logAgentStats c = do
     saveAgentStats c
     liftIO $ threadDelay' interval
 
--- TODO save to db
 saveAgentStats :: AgentClient -> AM' ()
-saveAgentStats AgentClient {smpServersStats, xftpServersStats} =
-  -- asks (agentStatsLogFile . config) >>= mapM_ (liftIO . saveStats)
-  -- where
-  --   saveStats f = do
-  --     sss <- readTVarIO smpServersStats
-  --     smpServersStatsData <- mapM (atomically . getAgentSMPServerStats) sss
-  --     xss <- readTVarIO xftpServersStats
-  --     xftpServersStatsData <- mapM (atomically . getAgentXFTPServerStats) xss
-  --     let stats = AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData}
-  --     logInfo $ "saving agent stats to file " <> T.pack f
-  --     B.writeFile f $ LB.toStrict $ J.encode stats
-  --     -- logInfo "agent stats saved"
-  --     liftIO $ print "agent stats saved"
-  pure ()
+saveAgentStats c@AgentClient {subQ, smpServersStats, xftpServersStats} = do
+  sss <- readTVarIO smpServersStats
+  smpServersStatsData <- mapM (atomically . getAgentSMPServerStats) sss
+  xss <- readTVarIO xftpServersStats
+  xftpServersStatsData <- mapM (atomically . getAgentXFTPServerStats) xss
+  let stats = AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData}
+  tryAgentError' (withStore' c (`updateServersStats` stats)) >>= \case
+    Left e -> atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ INTERNAL $ show e)
+    Right () -> pure ()
 
--- TODO restore to db
 restoreAgentStats :: AgentClient -> AM' ()
-restoreAgentStats AgentClient {smpServersStats, xftpServersStats} =
-  -- asks (agentStatsLogFile . config) >>= mapM_ (liftIO . restoreStats)
-  -- where
-  --   restoreStats f = whenM (doesFileExist f) $ do
-  --     -- logInfo $ "restoring agent stats from file " <> T.pack f
-  --     liftIO $ print $ "restoring agent stats from file " <> T.pack f
-  --     liftIO (J.decode . LB.fromStrict <$> B.readFile f) >>= \case
-  --       Just AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData} -> do
-  --         sss <- mapM (atomically . newAgentSMPServerStats') smpServersStatsData
-  --         atomically $ writeTVar smpServersStats sss
-  --         xss <- mapM (atomically . newAgentXFTPServerStats') xftpServersStatsData
-  --         atomically $ writeTVar xftpServersStats xss
-  --         -- TODO restore from db
-  --         -- renameFile f $ f <> ".bak"
-  --         -- logInfo "server stats restored"
-  --         liftIO $ print "server stats restored"
-  --       Nothing -> do
-  --         -- logInfo "error restoring server stats"
-  --         liftIO $ print "error restoring server stats"
-  pure ()
-
--- renameFile f $ f <> ".bak"
+restoreAgentStats c@AgentClient {smpServersStats, xftpServersStats} = do
+  tryAgentError' (withStore c getServersStats) >>= \case
+    Left e -> atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ INTERNAL $ show e)
+    Right AgentPersistedServerStats {smpServersStatsData, xftpServersStatsData} -> do
+      sss <- mapM (atomically . newAgentSMPServerStats') smpServersStatsData
+      atomically $ writeTVar smpServersStats sss
+      xss <- mapM (atomically . newAgentXFTPServerStats') xftpServersStatsData
+      atomically $ writeTVar xftpServersStats xss
 
 disconnectAgentClient :: AgentClient -> IO ()
 disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAgent = xa}} = do

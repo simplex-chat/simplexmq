@@ -210,6 +210,11 @@ module Simplex.Messaging.Agent.Store.SQLite
     deleteDeletedSndChunkReplica,
     getPendingDelFilesServers,
     deleteDeletedSndChunkReplicasExpired,
+    -- Stats
+    updateServersStats,
+    getServersStats,
+    getServersStatsStartedAt,
+    resetServersStats,
 
     -- * utilities
     withConnection,
@@ -263,6 +268,7 @@ import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
 import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State (..))
+import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Common
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
@@ -3016,6 +3022,26 @@ deleteDeletedSndChunkReplicasExpired :: DB.Connection -> NominalDiffTime -> IO (
 deleteDeletedSndChunkReplicasExpired db ttl = do
   cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.execute db "DELETE FROM deleted_snd_chunk_replicas WHERE created_at < ?" (Only cutoffTs)
+
+updateServersStats :: DB.Connection -> AgentPersistedServerStats -> IO ()
+updateServersStats db stats = do
+  updatedAt <- getCurrentTime
+  DB.execute db "UPDATE servers_stats SET servers_stats = ?, updated_at = ? WHERE servers_stats_id = 1" (stats, updatedAt)
+
+getServersStats :: DB.Connection -> IO (Either StoreError AgentPersistedServerStats)
+getServersStats db =
+  firstRow fromOnly SEServersStatsNotFound $
+    DB.query_ db "SELECT servers_stats FROM servers_stats WHERE servers_stats_id = 1"
+
+getServersStatsStartedAt :: DB.Connection -> IO (Either StoreError UTCTime)
+getServersStatsStartedAt db =
+  firstRow fromOnly SEServersStatsNotFound $
+    DB.query_ db "SELECT started_at FROM servers_stats WHERE servers_stats_id = 1"
+
+resetServersStats :: DB.Connection -> IO ()
+resetServersStats db = do
+  currentTs <- getCurrentTime
+  DB.execute db "UPDATE servers_stats SET servers_stats = NULL, started_at = ?, updated_at = ? WHERE servers_stats_id = 1" (currentTs, currentTs)
 
 $(J.deriveJSON defaultJSON ''UpMigration)
 

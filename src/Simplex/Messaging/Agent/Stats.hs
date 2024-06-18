@@ -6,9 +6,12 @@ module Simplex.Messaging.Agent.Stats where
 
 import qualified Data.Aeson.TH as J
 import Data.Map (Map)
+import Database.SQLite.Simple.FromField (FromField (..))
+import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.Protocol (UserId)
-import Simplex.Messaging.Parsers (defaultJSON)
+import Simplex.Messaging.Parsers (defaultJSON, fromTextField_)
 import Simplex.Messaging.Protocol (SMPServer, XFTPServer)
+import Simplex.Messaging.Util (decodeJSON, encodeJSON)
 import UnliftIO.STM
 
 data AgentSMPServerStats = AgentSMPServerStats
@@ -359,3 +362,9 @@ $(J.deriveJSON defaultJSON ''AgentSMPServerStatsData)
 $(J.deriveJSON defaultJSON ''AgentXFTPServerStatsData)
 
 $(J.deriveJSON defaultJSON ''AgentPersistedServerStats)
+
+instance ToField AgentPersistedServerStats where
+  toField = toField . encodeJSON
+
+instance FromField AgentPersistedServerStats where
+  fromField = fromTextField_ decodeJSON

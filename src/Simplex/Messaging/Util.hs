@@ -8,16 +8,19 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except
+import Data.Aeson (FromJSON, ToJSON)
+import qualified Data.Aeson as J
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
 import Data.List (groupBy, sortOn)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8With)
+import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
 import Data.Time (NominalDiffTime)
 import GHC.Conc (labelThread, myThreadId, threadDelay)
 import UnliftIO
@@ -170,3 +173,9 @@ diffToMilliseconds diff = fromIntegral ((truncate $ diff * 1000) :: Integer)
 
 labelMyThread :: MonadIO m => String -> m ()
 labelMyThread label = liftIO $ myThreadId >>= (`labelThread` label)
+
+encodeJSON :: ToJSON a => a -> Text
+encodeJSON = safeDecodeUtf8 . LB.toStrict . J.encode
+
+decodeJSON :: FromJSON a => Text -> Maybe a
+decodeJSON = J.decode . LB.fromStrict . encodeUtf8
