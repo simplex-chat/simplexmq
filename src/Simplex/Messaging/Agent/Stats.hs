@@ -207,6 +207,7 @@ getAgentSMPServerStats s = do
         _connSubErrs
       }
 
+-- TODO remove?
 setAgentSMPServerStats :: AgentSMPServerStats -> AgentSMPServerStatsData -> STM ()
 setAgentSMPServerStats s d = do
   writeTVar (sentDirect s) $! _sentDirect d
@@ -336,6 +337,7 @@ getAgentXFTPServerStats s = do
         _replDeleteErr
       }
 
+-- TODO remove?
 setAgentXFTPServerStats :: AgentXFTPServerStats -> AgentXFTPServerStatsData -> STM ()
 setAgentXFTPServerStats s d = do
   writeTVar (replUpload s) $! _replUpload d
