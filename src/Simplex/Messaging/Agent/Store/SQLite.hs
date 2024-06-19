@@ -213,7 +213,6 @@ module Simplex.Messaging.Agent.Store.SQLite
     -- Stats
     updateServersStats,
     getServersStats,
-    getServersStatsStartedAt,
     resetServersStats,
 
     -- * utilities
@@ -3028,15 +3027,10 @@ updateServersStats db stats = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE servers_stats SET servers_stats = ?, updated_at = ? WHERE servers_stats_id = 1" (stats, updatedAt)
 
-getServersStats :: DB.Connection -> IO (Either StoreError (Maybe AgentPersistedServerStats))
+getServersStats :: DB.Connection -> IO (Either StoreError (UTCTime, Maybe AgentPersistedServerStats))
 getServersStats db =
-  firstRow fromOnly SEServersStatsNotFound $
-    DB.query_ db "SELECT servers_stats FROM servers_stats WHERE servers_stats_id = 1"
-
-getServersStatsStartedAt :: DB.Connection -> IO (Either StoreError UTCTime)
-getServersStatsStartedAt db =
-  firstRow fromOnly SEServersStatsNotFound $
-    DB.query_ db "SELECT started_at FROM servers_stats WHERE servers_stats_id = 1"
+  firstRow id SEServersStatsNotFound $
+    DB.query_ db "SELECT started_at, servers_stats FROM servers_stats WHERE servers_stats_id = 1"
 
 resetServersStats :: DB.Connection -> IO ()
 resetServersStats db = do

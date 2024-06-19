@@ -204,7 +204,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..), getServersStatsStartedAt, withTransaction)
+import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..), withTransaction)
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues (getRcvQueues))
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
@@ -324,7 +324,8 @@ data AgentClient = AgentClient
     clientId :: Int,
     agentEnv :: Env,
     smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
-    xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats
+    xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats,
+    statsStartedAt :: TVar UTCTime
   }
 
 data SMPConnectedClient = SMPConnectedClient
@@ -452,8 +453,8 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-newAgentClient :: Int -> InitialAgentServers -> Env -> STM AgentClient
-newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
+newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Env -> STM AgentClient
+newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
   acThread <- newTVar Nothing
@@ -493,6 +494,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   msgCounts <- TM.empty
   smpServersStats <- TM.empty
   xftpServersStats <- TM.empty
+  statsStartedAt <- newTVar currentTs
   return
     AgentClient
       { acThread,
@@ -533,7 +535,8 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         clientId,
         agentEnv,
         smpServersStats,
-        xftpServersStats
+        xftpServersStats,
+        statsStartedAt
       }
 
 slowNetworkConfig :: NetworkConfig -> NetworkConfig
@@ -2004,12 +2007,12 @@ data SMPServerSessions = SMPServerSessions
 --   deriving (Show)
 
 getAgentServersSummary' :: AgentClient -> AM AgentServersSummary
-getAgentServersSummary' c@AgentClient {smpServersStats, xftpServersStats, agentEnv} = do
+getAgentServersSummary' c@AgentClient {smpServersStats, xftpServersStats, statsStartedAt, agentEnv} = do
   sss <- readTVarIO smpServersStats
   sss' <- mapM (atomically . getAgentSMPServerStats) sss
   xss <- readTVarIO xftpServersStats
   xss' <- mapM (atomically . getAgentXFTPServerStats) xss
-  statsStartedAt <- withStore c getServersStatsStartedAt
+  statsStartedAt <- readTVarIO statsStartedAt
   smpServersSessions <- collectSMPServersSessions
   xftpServersSessions <- collectXFTPServersSessions
   xftpRcvInProgress <- catMaybes <$> collectXFTPWorkerSrvs xftpRcvWorkers

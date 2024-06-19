@@ -205,7 +205,8 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
   liftIO $ newSMPAgentEnv cfg store >>= runReaderT runAgent
   where
     runAgent = do
-      c@AgentClient {acThread} <- atomically . newAgentClient clientId initServers =<< ask
+      currentTs <- liftIO getCurrentTime
+      c@AgentClient {acThread} <- atomically . newAgentClient clientId initServers currentTs =<< ask
       t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
       atomically . writeTVar acThread . Just =<< mkWeakThreadId t
       pure c
@@ -246,11 +247,12 @@ saveServersStats c@AgentClient {subQ, smpServersStats, xftpServersStats} = do
     Right () -> pure ()
 
 restoreServersStats :: AgentClient -> AM' ()
-restoreServersStats c@AgentClient {smpServersStats, xftpServersStats} = do
+restoreServersStats c@AgentClient {smpServersStats, xftpServersStats, statsStartedAt} = do
   tryAgentError' (withStore c getServersStats) >>= \case
     Left e -> atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ INTERNAL $ show e)
-    Right Nothing -> pure ()
-    Right (Just AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss}) -> do
+    Right (startedAt, Nothing) -> atomically $ writeTVar statsStartedAt startedAt
+    Right (startedAt, Just AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss}) -> do
+      atomically $ writeTVar statsStartedAt startedAt
       sss' <- mapM (atomically . newAgentSMPServerStats') sss
       atomically $ writeTVar smpServersStats sss'
       xss' <- mapM (atomically . newAgentXFTPServerStats') xss
@@ -590,7 +592,7 @@ getAgentServersSummary c = withAgentEnv c $ getAgentServersSummary' c
 {-# INLINE getAgentServersSummary #-}
 
 resetAgentServersStats :: AgentClient -> AE ()
-resetAgentServersStats c = withAgentEnv c $ resetAgentServersSummary' c
+resetAgentServersStats c = withAgentEnv c $ resetAgentServersStats' c
 {-# INLINE resetAgentServersStats #-}
 
 getAgentStats :: AgentClient -> IO [(AgentStatsKey, Int)]
@@ -2000,8 +2002,8 @@ setNtfServers :: AgentClient -> [NtfServer] -> IO ()
 setNtfServers c = atomically . writeTVar (ntfServers c)
 {-# INLINE setNtfServers #-}
 
-resetAgentServersSummary' :: AgentClient -> AM ()
-resetAgentServersSummary' c@AgentClient {smpServersStats, xftpServersStats} = do
+resetAgentServersStats' :: AgentClient -> AM ()
+resetAgentServersStats' c@AgentClient {smpServersStats, xftpServersStats} = do
   atomically $ TM.clear smpServersStats
   atomically $ TM.clear xftpServersStats
   withStore' c resetServersStats
