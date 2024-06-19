@@ -8,7 +8,6 @@ module Simplex.Messaging.TMap
     member,
     insert,
     delete,
-    filterWithKey,
     lookupInsert,
     lookupDelete,
     adjust,
@@ -56,10 +55,6 @@ insert k v m = modifyTVar' m $ M.insert k v
 delete :: Ord k => k -> TMap k a -> STM ()
 delete k m = modifyTVar' m $ M.delete k
 {-# INLINE delete #-}
-
-filterWithKey :: (k -> a -> Bool) -> TMap k a -> STM ()
-filterWithKey p m = modifyTVar' m $ M.filterWithKey p
-{-# INLINE filterWithKey #-}
 
 lookupInsert :: Ord k => k -> a -> TMap k a -> STM (Maybe a)
 lookupInsert k v m = stateTVar m $ \mv -> (M.lookup k mv, M.insert k v mv)

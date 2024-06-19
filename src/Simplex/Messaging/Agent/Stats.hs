@@ -31,8 +31,8 @@ data AgentSMPServerStats = AgentSMPServerStats
     recvErrs :: TVar Int, -- receive errors
     connCreated :: TVar Int,
     connSecured :: TVar Int,
-    connCompleted :: TVar Int, -- ? unclear what this means in context of server (rcv/snd)
-    connDeleted :: TVar Int, -- ? queue deleted?
+    connCompleted :: TVar Int,
+    connDeleted :: TVar Int,
     connSubscribed :: TVar Int, -- total successful subscription
     connSubAttempts :: TVar Int, -- subscription attempts
     connSubErrs :: TVar Int -- permanent subscription errors (temporary accounted for in attempts)
@@ -233,123 +233,123 @@ setAgentSMPServerStats s d = do
   writeTVar (connSubErrs s) $! _connSubErrs d
 
 data AgentXFTPServerStats = AgentXFTPServerStats
-  { replUpload :: TVar Int, -- total replicas uploaded to server
-    replUploadAttempts :: TVar Int, -- upload attempts
-    replUploadErr :: TVar Int, -- upload errors
-    replDownload :: TVar Int, -- total replicas downloaded from server
-    replDownloadAttempts :: TVar Int, -- download attempts
-    replDownloadAuth :: TVar Int, -- download AUTH errors
-    replDownloadErr :: TVar Int, -- other download errors (excluding above)
-    replDelete :: TVar Int, -- total replicas deleted from server
-    replDeleteAttempts :: TVar Int, -- delete attempts
-    replDeleteErr :: TVar Int -- delete errors
+  { uploads :: TVar Int, -- total replicas uploaded to server
+    uploadAttempts :: TVar Int, -- upload attempts
+    uploadErrs :: TVar Int, -- upload errors
+    downloads :: TVar Int, -- total replicas downloaded from server
+    downloadAttempts :: TVar Int, -- download attempts
+    downloadAuthErrs :: TVar Int, -- download AUTH errors
+    downloadErrs :: TVar Int, -- other download errors (excluding above)
+    deletions :: TVar Int, -- total replicas deleted from server
+    deleteAttempts :: TVar Int, -- delete attempts
+    deleteErrs :: TVar Int -- delete errors
   }
 
 data AgentXFTPServerStatsData = AgentXFTPServerStatsData
-  { _replUpload :: Int,
-    _replUploadAttempts :: Int,
-    _replUploadErr :: Int,
-    _replDownload :: Int,
-    _replDownloadAttempts :: Int,
-    _replDownloadAuth :: Int,
-    _replDownloadErr :: Int,
-    _replDelete :: Int,
-    _replDeleteAttempts :: Int,
-    _replDeleteErr :: Int
+  { _uploads :: Int,
+    _uploadAttempts :: Int,
+    _uploadErrs :: Int,
+    _downloads :: Int,
+    _downloadAttempts :: Int,
+    _downloadAuthErrs :: Int,
+    _downloadErrs :: Int,
+    _deletions :: Int,
+    _deleteAttempts :: Int,
+    _deleteErrs :: Int
   }
   deriving (Show)
 
 newAgentXFTPServerStats :: STM AgentXFTPServerStats
 newAgentXFTPServerStats = do
-  replUpload <- newTVar 0
-  replUploadAttempts <- newTVar 0
-  replUploadErr <- newTVar 0
-  replDownload <- newTVar 0
-  replDownloadAttempts <- newTVar 0
-  replDownloadAuth <- newTVar 0
-  replDownloadErr <- newTVar 0
-  replDelete <- newTVar 0
-  replDeleteAttempts <- newTVar 0
-  replDeleteErr <- newTVar 0
+  uploads <- newTVar 0
+  uploadAttempts <- newTVar 0
+  uploadErrs <- newTVar 0
+  downloads <- newTVar 0
+  downloadAttempts <- newTVar 0
+  downloadAuthErrs <- newTVar 0
+  downloadErrs <- newTVar 0
+  deletions <- newTVar 0
+  deleteAttempts <- newTVar 0
+  deleteErrs <- newTVar 0
   pure
     AgentXFTPServerStats
-      { replUpload,
-        replUploadAttempts,
-        replUploadErr,
-        replDownload,
-        replDownloadAttempts,
-        replDownloadAuth,
-        replDownloadErr,
-        replDelete,
-        replDeleteAttempts,
-        replDeleteErr
+      { uploads,
+        uploadAttempts,
+        uploadErrs,
+        downloads,
+        downloadAttempts,
+        downloadAuthErrs,
+        downloadErrs,
+        deletions,
+        deleteAttempts,
+        deleteErrs
       }
 
 newAgentXFTPServerStats' :: AgentXFTPServerStatsData -> STM AgentXFTPServerStats
 newAgentXFTPServerStats' s = do
-  replUpload <- newTVar $ _replUpload s
-  replUploadAttempts <- newTVar $ _replUploadAttempts s
-  replUploadErr <- newTVar $ _replUploadErr s
-  replDownload <- newTVar $ _replDownload s
-  replDownloadAttempts <- newTVar $ _replDownloadAttempts s
-  replDownloadAuth <- newTVar $ _replDownloadAuth s
-  replDownloadErr <- newTVar $ _replDownloadErr s
-  replDelete <- newTVar $ _replDelete s
-  replDeleteAttempts <- newTVar $ _replDeleteAttempts s
-  replDeleteErr <- newTVar $ _replDeleteErr s
+  uploads <- newTVar $ _uploads s
+  uploadAttempts <- newTVar $ _uploadAttempts s
+  uploadErrs <- newTVar $ _uploadErrs s
+  downloads <- newTVar $ _downloads s
+  downloadAttempts <- newTVar $ _downloadAttempts s
+  downloadAuthErrs <- newTVar $ _downloadAuthErrs s
+  downloadErrs <- newTVar $ _downloadErrs s
+  deletions <- newTVar $ _deletions s
+  deleteAttempts <- newTVar $ _deleteAttempts s
+  deleteErrs <- newTVar $ _deleteErrs s
   pure
     AgentXFTPServerStats
-      { replUpload,
-        replUploadAttempts,
-        replUploadErr,
-        replDownload,
-        replDownloadAttempts,
-        replDownloadAuth,
-        replDownloadErr,
-        replDelete,
-        replDeleteAttempts,
-        replDeleteErr
+      { uploads,
+        uploadAttempts,
+        uploadErrs,
+        downloads,
+        downloadAttempts,
+        downloadAuthErrs,
+        downloadErrs,
+        deletions,
+        deleteAttempts,
+        deleteErrs
       }
 
 getAgentXFTPServerStats :: AgentXFTPServerStats -> STM AgentXFTPServerStatsData
 getAgentXFTPServerStats s = do
-  _replUpload <- readTVar $ replUpload s
-  _replUploadAttempts <- readTVar $ replUploadAttempts s
-  _replUploadErr <- readTVar $ replUploadErr s
-  _replDownload <- readTVar $ replDownload s
-  _replDownloadAttempts <- readTVar $ replDownloadAttempts s
-  _replDownloadAuth <- readTVar $ replDownloadAuth s
-  _replDownloadErr <- readTVar $ replDownloadErr s
-  _replDelete <- readTVar $ replDelete s
-  _replDeleteAttempts <- readTVar $ replDeleteAttempts s
-  _replDeleteErr <- readTVar $ replDeleteErr s
+  _uploads <- readTVar $ uploads s
+  _uploadAttempts <- readTVar $ uploadAttempts s
+  _uploadErrs <- readTVar $ uploadErrs s
+  _downloads <- readTVar $ downloads s
+  _downloadAttempts <- readTVar $ downloadAttempts s
+  _downloadAuthErrs <- readTVar $ downloadAuthErrs s
+  _downloadErrs <- readTVar $ downloadErrs s
+  _deletions <- readTVar $ deletions s
+  _deleteAttempts <- readTVar $ deleteAttempts s
+  _deleteErrs <- readTVar $ deleteErrs s
   pure
     AgentXFTPServerStatsData
-      { _replUpload,
-        _replUploadAttempts,
-        _replUploadErr,
-        _replDownload,
-        _replDownloadAttempts,
-        _replDownloadAuth,
-        _replDownloadErr,
-        _replDelete,
-        _replDeleteAttempts,
-        _replDeleteErr
+      { _uploads,
+        _uploadAttempts,
+        _uploadErrs,
+        _downloads,
+        _downloadAttempts,
+        _downloadAuthErrs,
+        _downloadErrs,
+        _deletions,
+        _deleteAttempts,
+        _deleteErrs
       }
 
 -- TODO remove?
 setAgentXFTPServerStats :: AgentXFTPServerStats -> AgentXFTPServerStatsData -> STM ()
 setAgentXFTPServerStats s d = do
-  writeTVar (replUpload s) $! _replUpload d
-  writeTVar (replUploadAttempts s) $! _replUploadAttempts d
-  writeTVar (replUploadErr s) $! _replUploadErr d
-  writeTVar (replDownload s) $! _replDownload d
-  writeTVar (replDownloadAttempts s) $! _replDownloadAttempts d
-  writeTVar (replDownloadAuth s) $! _replDownloadAuth d
-  writeTVar (replDownloadErr s) $! _replDownloadErr d
-  writeTVar (replDelete s) $! _replDelete d
-  writeTVar (replDeleteAttempts s) $! _replDeleteAttempts d
-  writeTVar (replDeleteErr s) $! _replDeleteErr d
+  writeTVar (uploads s) $! _uploads d
+  writeTVar (uploadAttempts s) $! _uploadAttempts d
+  writeTVar (uploadErrs s) $! _uploadErrs d
+  writeTVar (downloads s) $! _downloads d
+  writeTVar (downloadAttempts s) $! _downloadAttempts d
+  writeTVar (downloadAuthErrs s) $! _downloadAuthErrs d
+  writeTVar (downloadErrs s) $! _downloadErrs d
+  writeTVar (deletions s) $! _deletions d
+  writeTVar (deleteAttempts s) $! _deleteAttempts d
+  writeTVar (deleteErrs s) $! _deleteErrs d
 
 -- Type for gathering both smp and xftp stats across all users and servers,
 -- to then be persisted to db as a single json.

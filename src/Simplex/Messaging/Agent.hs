@@ -630,8 +630,8 @@ deleteUser' c@AgentClient {smpServersStats, xftpServersStats} userId delSMPQueue
     else withStore c (`deleteUserRecord` userId)
   atomically $ TM.delete userId $ smpServers c
   atomically $ TM.delete userId $ xftpServers c
-  atomically $ TM.filterWithKey (\(userId', _) _ -> userId' /= userId) smpServersStats
-  atomically $ TM.filterWithKey (\(userId', _) _ -> userId' /= userId) xftpServersStats
+  atomically $ modifyTVar' smpServersStats $ M.filterWithKey (\(userId', _) _ -> userId' /= userId)
+  atomically $ modifyTVar' xftpServersStats $ M.filterWithKey (\(userId', _) _ -> userId' /= userId)
   lift $ saveServersStats c
   where
     delUser =
@@ -1196,9 +1196,7 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
                 | otherwise -> do
                     checkRQSwchStatus rq' RSReceivedMessage
                     tryError (deleteQueue c rq') >>= \case
-                      Right () -> do
-                        -- atomically $ incSMPServerStat c userId srv connDeleted 1 -- ? queue deleted?
-                        finalizeSwitch
+                      Right () -> finalizeSwitch
                       Left e
                         | temporaryOrHostError e -> throwE e
                         | otherwise -> finalizeSwitch >> throwE e

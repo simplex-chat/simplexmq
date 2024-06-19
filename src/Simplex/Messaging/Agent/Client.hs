@@ -1954,13 +1954,13 @@ incSMPServerStat AgentClient {smpServersStats} userId srv sel n = do
       modifyTVar' (sel newStats) (+ n)
       TM.insert (userId, srv) newStats smpServersStats
 
-incXFTPServerStat :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int) -> Int -> STM ()
-incXFTPServerStat AgentClient {xftpServersStats} userId srv sel n = do
+incXFTPServerStat :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int) -> STM ()
+incXFTPServerStat AgentClient {xftpServersStats} userId srv sel = do
   TM.lookup (userId, srv) xftpServersStats >>= \case
-    Just v -> modifyTVar' (sel v) (+ n)
+    Just v -> modifyTVar' (sel v) (+ 1)
     Nothing -> do
       newStats <- newAgentXFTPServerStats
-      modifyTVar' (sel newStats) (+ n)
+      modifyTVar' (sel newStats) (+ 1)
       TM.insert (userId, srv) newStats xftpServersStats
 
 -- - currently used servers - those that have state
