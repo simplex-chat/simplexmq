@@ -587,10 +587,6 @@ rcDiscoverCtrl :: AgentClient -> NonEmpty RCCtrlPairing -> AE (RCCtrlPairing, RC
 rcDiscoverCtrl AgentClient {agentEnv = Env {multicastSubscribers = subs}} = withExceptT RCP . discoverRCCtrl subs
 {-# INLINE rcDiscoverCtrl #-}
 
-getAgentServersSummary :: AgentClient -> AE AgentServersSummary
-getAgentServersSummary c = withAgentEnv c $ getAgentServersSummary' c
-{-# INLINE getAgentServersSummary #-}
-
 resetAgentServersStats :: AgentClient -> AE ()
 resetAgentServersStats c = withAgentEnv c $ resetAgentServersStats' c
 {-# INLINE resetAgentServersStats #-}

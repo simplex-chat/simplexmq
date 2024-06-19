@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -89,8 +90,8 @@ module Simplex.Messaging.Agent.Client
     agentClientStore,
     agentDRG,
     AgentServersSummary (..),
-    SMPServerSessions (..),
-    getAgentServersSummary',
+    ServerSessions (..),
+    getAgentServersSummary,
     getAgentSubscriptions,
     slowNetworkConfig,
     protocolClientError,
@@ -1976,13 +1977,14 @@ incXFTPServerStat AgentClient {xftpServersStats} userId srv sel = do
 -- - proxied destination servers (onlyProxiedSMPServers) - based on smpProxiedRelays (key) minus smpClients;
 --   don't have state and stats? since: state is based on smpClients and activeSubs/pendingSubs,
 --   and stats are used to track real network activity (probably also via smpClients),
---   so they [stats] would be accounted for proxy (unless we want double counting messages as sent and proxied)
+--   so the stats are accounted for proxy (unless we want double counting messages as sent and proxied)
 data AgentServersSummary = AgentServersSummary
   { smpServersStats :: Map (UserId, SMPServer) AgentSMPServerStatsData,
     xftpServersStats :: Map (UserId, XFTPServer) AgentXFTPServerStatsData,
     statsStartedAt :: UTCTime,
-    smpServersSessions :: Map (UserId, SMPServer) SMPServerSessions,
-    xftpServersSessions :: Map (UserId, XFTPServer) Int,
+    smpServersSessions :: Map (UserId, SMPServer) ServerSessions,
+    smpServersSubs :: Map (UserId, SMPServer) SMPServerSubs,
+    xftpServersSessions :: Map (UserId, XFTPServer) ServerSessions,
     xftpRcvInProgress :: [XFTPServer],
     xftpSndInProgress :: [XFTPServer],
     xftpDelInProgress :: [XFTPServer],
@@ -1990,41 +1992,38 @@ data AgentServersSummary = AgentServersSummary
   }
   deriving (Show)
 
-data SMPServerSessions = SMPServerSessions
-  { sessions :: Int, -- number of active sessions, based on smpClients - SMPClientVar has client
-    activeSubscriptions :: Int, -- based on activeSubs
-    pendingSubscriptions :: Int -- based on pendingSubs
+data SMPServerSubs = SMPServerSubs
+  { ssActive :: Int, -- based on activeSubs
+    ssPending :: Int -- based on pendingSubs
   }
   deriving (Show)
 
--- data XFTPServerSessions = XFTPServerSessions
---   { sessions :: Int, -- number of active sessions, based on xftpClients - XFTPClientVar has client
---     -- ! below is not per user
---     rcvInProgress :: Bool, -- based on xftpRcvWorkers, hasWork
---     sndInProgress :: Bool, -- based on xftpSndWorkers, hasWork
---     delInProgress :: Bool -- based on xftpDelWorkers, hasWork
---   }
---   deriving (Show)
+data ServerSessions = ServerSessions
+  { ssConnected :: Int,
+    ssErrors :: Int,
+    ssConnecting :: Int
+  }
+  deriving (Show)
 
-getAgentServersSummary' :: AgentClient -> AM AgentServersSummary
-getAgentServersSummary' c@AgentClient {smpServersStats, xftpServersStats, srvStatsStartedAt, agentEnv} = do
-  sss <- readTVarIO smpServersStats
-  sss' <- mapM (liftIO . getAgentSMPServerStats) sss
-  xss <- readTVarIO xftpServersStats
-  xss' <- mapM (liftIO . getAgentXFTPServerStats) xss
+getAgentServersSummary :: AgentClient -> IO AgentServersSummary
+getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, srvStatsStartedAt, agentEnv} = do
+  sss <- mapM getAgentSMPServerStats =<< readTVarIO smpServersStats
+  xss <- mapM getAgentXFTPServerStats =<< readTVarIO xftpServersStats
   statsStartedAt <- readTVarIO srvStatsStartedAt
-  smpServersSessions <- collectSMPServersSessions
-  xftpServersSessions <- collectXFTPServersSessions
-  xftpRcvInProgress <- catMaybes <$> collectXFTPWorkerSrvs xftpRcvWorkers
-  xftpSndInProgress <- catMaybes <$> collectXFTPWorkerSrvs xftpSndWorkers
-  xftpDelInProgress <- collectXFTPWorkerSrvs xftpDelWorkers
+  smpServersSessions <- countSessions =<< readTVarIO (smpClients c)
+  smpServersSubs <- getServerSubs
+  xftpServersSessions <- countSessions =<< readTVarIO (xftpClients c)
+  xftpRcvInProgress <- catMaybes <$> getXFTPWorkerSrvs xftpRcvWorkers
+  xftpSndInProgress <- catMaybes <$> getXFTPWorkerSrvs xftpSndWorkers
+  xftpDelInProgress <- getXFTPWorkerSrvs xftpDelWorkers
   onlyProxiedSMPServers <- collectProxiedSMPServers
   pure
     AgentServersSummary
-      { smpServersStats = sss',
-        xftpServersStats = xss',
+      { smpServersStats = sss,
+        xftpServersStats = xss,
         statsStartedAt,
         smpServersSessions,
+        smpServersSubs,
         xftpServersSessions,
         xftpRcvInProgress,
         xftpSndInProgress,
@@ -2032,49 +2031,14 @@ getAgentServersSummary' c@AgentClient {smpServersStats, xftpServersStats, srvSta
         onlyProxiedSMPServers
       }
   where
-    collectSMPServersSessions = do
-      scs <- readTVarIO $ smpClients c
-      sessions <- countClients scs
-      activeSubscriptions <- countSubs activeSubs
-      pendingSubscriptions <- countSubs pendingSubs
-      pure $ combineMaps sessions activeSubscriptions pendingSubscriptions
+    getServerSubs = do
+      subs <- M.foldrWithKey' addActiveSub M.empty <$> readTVarIO (getRcvQueues $ activeSubs c)
+      M.foldrWithKey' addPendingSub subs <$> readTVarIO (getRcvQueues $ pendingSubs c)
       where
-        countSubs sel = do
-          rcvQs <- readTVarIO (getRcvQueues $ sel c)
-          pure $ countByUserIdSrv rcvQs
-          where
-            countByUserIdSrv :: Map (UserId, SMPServer, SMP.RecipientId) x -> Map (UserId, SMPServer) Int
-            countByUserIdSrv = M.foldrWithKey (\(userId, srv, _) _ acc -> M.insertWith (+) (userId, srv) 1 acc) M.empty
-        combineMaps ::
-          Map (UserId, SMPServer) Int ->
-          Map (UserId, SMPServer) Int ->
-          Map (UserId, SMPServer) Int ->
-          Map (UserId, SMPServer) SMPServerSessions
-        combineMaps sessions asubs psubs = M.fromList combinedList
-          where
-            -- collect all unique keys from the three maps
-            allKeys = M.keysSet sessions `S.union` M.keysSet asubs `S.union` M.keysSet psubs
-            -- look up a key in a map, defaulting to 0 if not found
-            lookupOrZero m key = M.findWithDefault 0 key m
-            -- generate the combined list by folding over all keys
-            combinedList =
-              [ ( key,
-                  SMPServerSessions
-                    { sessions = lookupOrZero sessions key,
-                      activeSubscriptions = lookupOrZero asubs key,
-                      pendingSubscriptions = lookupOrZero psubs key
-                    }
-                )
-                | key <- S.toList allKeys
-              ]
-    collectXFTPServersSessions = do
-      xcs <- readTVarIO $ xftpClients c
-      countClients xcs
-    Env {xftpAgent} = agentEnv
-    XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers} = xftpAgent
-    collectXFTPWorkerSrvs sel = do
-      workers <- readTVarIO sel
-      foldM addSrv [] (M.toList workers)
+        addActiveSub (userId, srv, _) _ = M.alter (Just . maybe SMPServerSubs {ssActive = 1, ssPending = 0} (\ss -> ss {ssActive = ssActive ss + 1})) (userId, srv)
+        addPendingSub (userId, srv, _) _ = M.alter (Just . maybe SMPServerSubs {ssActive = 0, ssPending = 1} (\ss -> ss {ssPending = ssPending ss + 1})) (userId, srv)
+    Env {xftpAgent = XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}} = agentEnv
+    getXFTPWorkerSrvs workers = foldM addSrv [] . M.toList =<< readTVarIO workers
       where
         addSrv acc (srv, Worker {doWork}) = do
           hasWork <- atomically $ not <$> isEmptyTMVar doWork
@@ -2085,15 +2049,21 @@ getAgentServersSummary' c@AgentClient {smpServersStats, xftpServersStats, srvSta
       scs <- readTVarIO $ smpClients c
       let connectedSrvs = S.fromList $ map (\(_, srv, _) -> srv) $ M.keys scs
       pure $ S.toList $ S.difference proxiedSrvs connectedSrvs
-    countClients sessVarMap = do
-      -- fold over the map while reading the SessionVar and updating the result map
-      foldM countClient M.empty (M.toList sessVarMap)
+    countSessions :: Map (TransportSession msg) (ClientVar msg) -> IO (Map (UserId, ProtoServer msg) ServerSessions)
+    countSessions = foldM addClient M.empty . M.toList
       where
-        countClient acc ((userId, srv, _), SessionVar {sessionVar}) = do
-          clientOrErr <- atomically $ readTMVar sessionVar
-          case clientOrErr of
-            Right _ -> return $ M.insertWith (+) (userId, srv) 1 acc
-            Left _ -> return acc
+        addClient !acc ((userId, srv, _), SessionVar {sessionVar}) = do
+          c_ <- atomically $ tryReadTMVar sessionVar
+          pure $ M.alter (Just . add c_) (userId, srv) acc
+          where
+            add c_ Nothing = case c_ of
+              Just (Right _) -> ServerSessions {ssConnected = 1, ssErrors = 0, ssConnecting = 0}
+              Just (Left _) -> ServerSessions {ssConnected = 0, ssErrors = 1, ssConnecting = 0}
+              Nothing -> ServerSessions {ssConnected = 0, ssErrors = 0, ssConnecting = 1}
+            add c_ (Just ss) = case c_ of
+              Just (Right _) -> ss {ssConnected = ssConnected ss + 1}
+              Just (Left _) -> ss {ssErrors = ssErrors ss + 1}
+              Nothing -> ss {ssConnecting = ssConnecting ss + 1}
 
 data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text, subError :: Maybe String}
   deriving (Show)
@@ -2285,9 +2255,9 @@ $(J.deriveJSON (enumJSON $ dropPrefix "TS") ''ProtocolTestStep)
 
 $(J.deriveJSON defaultJSON ''ProtocolTestFailure)
 
--- $(J.deriveJSON defaultJSON ''XFTPServerSessions)
+$(J.deriveJSON defaultJSON ''ServerSessions)
 
-$(J.deriveJSON defaultJSON ''SMPServerSessions)
+$(J.deriveJSON defaultJSON ''SMPServerSubs)
 
 $(J.deriveJSON defaultJSON ''AgentServersSummary)
 
