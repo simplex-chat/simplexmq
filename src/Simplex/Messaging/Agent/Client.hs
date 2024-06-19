@@ -139,6 +139,7 @@ module Simplex.Messaging.Agent.Client
     withUserServers,
     withNextSrv,
     incSMPServerStat,
+    incSMPServerStat',
     incXFTPServerStat,
     AgentWorkersDetails (..),
     getAgentWorkersDetails,
@@ -1073,7 +1074,7 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
     sendViaProxy destSess@(_, _, qId) = do
       r <- tryAgentError . withProxySession c destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess) -> do
         r' <- liftClient SMP (clientServer smp) $ do
-          atomically $ incSMPServerStat c userId destSrv sentViaProxyAttempts 1
+          atomically $ incSMPServerStat c userId destSrv sentViaProxyAttempts
           proxySMPMessage smp proxySess spKey_ senderId msgFlags msg
         case r' of
           Right () -> pure . Just $ protocolClientServer' smp
@@ -1104,7 +1105,7 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
               sameProxiedRelay proxySess' = prSessionId proxySess == prSessionId proxySess'
       case r of
         Right r' -> do
-          atomically $ incSMPServerStat c userId destSrv sentViaProxy 1
+          atomically $ incSMPServerStat c userId destSrv sentViaProxy
           pure r'
         Left e
           | serverHostError e -> ifM (atomically directAllowed) (sendDirectly destSess $> Nothing) (throwE e)
@@ -1114,11 +1115,11 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
         r <-
           tryAgentError $
             liftClient SMP (clientServer smp) $ do
-              atomically $ incSMPServerStat c userId destSrv sentDirectAttempts 1
+              atomically $ incSMPServerStat c userId destSrv sentDirectAttempts
               sendSMPMessage smp spKey_ senderId msgFlags msg
         case r of
           Right () -> do
-            atomically $ incSMPServerStat c userId destSrv sentDirect 1
+            atomically $ incSMPServerStat c userId destSrv sentDirect
             pure ()
           Left e -> throwE e
 
@@ -1397,7 +1398,7 @@ subscribeQueues c qs = do
     subscribeQueues_ env session smp qs' = do
       -- ? use userId and server from the first queue?
       -- ? count number of queues?
-      -- atomically $ incSMPServerStat c userId server connSubAttempts 1
+      -- atomically $ incSMPServerStat c userId server connSubAttempts
       rs <- sendBatch subscribeSMPQueues smp qs'
       active <-
         atomically $
@@ -1945,8 +1946,11 @@ withNextSrv c userId usedSrvs initUsed action = do
     writeTVar usedSrvs $! used'
   action srvAuth
 
-incSMPServerStat :: AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int) -> Int -> STM ()
-incSMPServerStat AgentClient {smpServersStats} userId srv sel n = do
+incSMPServerStat :: AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int) -> STM ()
+incSMPServerStat c userId srv sel = incSMPServerStat' c userId srv sel 1
+
+incSMPServerStat' :: AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int) -> Int -> STM ()
+incSMPServerStat' AgentClient {smpServersStats} userId srv sel n = do
   TM.lookup (userId, srv) smpServersStats >>= \case
     Just v -> modifyTVar' (sel v) (+ n)
     Nothing -> do
