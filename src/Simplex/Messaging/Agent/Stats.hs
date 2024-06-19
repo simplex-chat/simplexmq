@@ -17,8 +17,10 @@ import UnliftIO.STM
 data AgentSMPServerStats = AgentSMPServerStats
   { sentDirect :: TVar Int, -- successfully sent messages
     sentViaProxy :: TVar Int, -- successfully sent messages via proxy
+    sentProxied :: TVar Int, -- successfully sent messages via proxy
     sentDirectAttempts :: TVar Int, -- direct sending attempts (min 1 for each sent message)
     sentViaProxyAttempts :: TVar Int, -- proxy sending attempts
+    sentProxiedAttempts :: TVar Int, -- successfully sent messages via proxy
     sentAuthErrs :: TVar Int, -- send AUTH errors
     sentQuotaErrs :: TVar Int, -- send QUOTA permanent errors (message expired)
     sentExpiredErrs :: TVar Int, -- send expired errors
@@ -39,8 +41,10 @@ data AgentSMPServerStats = AgentSMPServerStats
 data AgentSMPServerStatsData = AgentSMPServerStatsData
   { _sentDirect :: Int,
     _sentViaProxy :: Int,
+    _sentProxied :: Int,
     _sentDirectAttempts :: Int,
     _sentViaProxyAttempts :: Int,
+    _sentProxiedAttempts :: Int,
     _sentAuthErrs :: Int,
     _sentQuotaErrs :: Int,
     _sentExpiredErrs :: Int,
@@ -63,8 +67,10 @@ newAgentSMPServerStats :: STM AgentSMPServerStats
 newAgentSMPServerStats = do
   sentDirect <- newTVar 0
   sentViaProxy <- newTVar 0
+  sentProxied <- newTVar 0
   sentDirectAttempts <- newTVar 0
   sentViaProxyAttempts <- newTVar 0
+  sentProxiedAttempts <- newTVar 0
   sentAuthErrs <- newTVar 0
   sentQuotaErrs <- newTVar 0
   sentExpiredErrs <- newTVar 0
@@ -84,8 +90,10 @@ newAgentSMPServerStats = do
     AgentSMPServerStats
       { sentDirect,
         sentViaProxy,
+        sentProxied,
         sentDirectAttempts,
         sentViaProxyAttempts,
+        sentProxiedAttempts,
         sentAuthErrs,
         sentQuotaErrs,
         sentExpiredErrs,
@@ -107,8 +115,10 @@ newAgentSMPServerStats' :: AgentSMPServerStatsData -> STM AgentSMPServerStats
 newAgentSMPServerStats' s = do
   sentDirect <- newTVar $ _sentDirect s
   sentViaProxy <- newTVar $ _sentViaProxy s
+  sentProxied <- newTVar $ _sentProxied s
   sentDirectAttempts <- newTVar $ _sentDirectAttempts s
   sentViaProxyAttempts <- newTVar $ _sentViaProxyAttempts s
+  sentProxiedAttempts <- newTVar $ _sentProxiedAttempts s
   sentAuthErrs <- newTVar $ _sentAuthErrs s
   sentQuotaErrs <- newTVar $ _sentQuotaErrs s
   sentExpiredErrs <- newTVar $ _sentExpiredErrs s
@@ -128,8 +138,10 @@ newAgentSMPServerStats' s = do
     AgentSMPServerStats
       { sentDirect,
         sentViaProxy,
+        sentProxied,
         sentDirectAttempts,
         sentViaProxyAttempts,
+        sentProxiedAttempts,
         sentAuthErrs,
         sentQuotaErrs,
         sentExpiredErrs,
@@ -153,8 +165,10 @@ getAgentSMPServerStats :: AgentSMPServerStats -> IO AgentSMPServerStatsData
 getAgentSMPServerStats s = do
   _sentDirect <- readTVarIO $ sentDirect s
   _sentViaProxy <- readTVarIO $ sentViaProxy s
+  _sentProxied <- readTVarIO $ sentProxied s
   _sentDirectAttempts <- readTVarIO $ sentDirectAttempts s
   _sentViaProxyAttempts <- readTVarIO $ sentViaProxyAttempts s
+  _sentProxiedAttempts <- readTVarIO $ sentProxiedAttempts s
   _sentAuthErrs <- readTVarIO $ sentAuthErrs s
   _sentQuotaErrs <- readTVarIO $ sentQuotaErrs s
   _sentExpiredErrs <- readTVarIO $ sentExpiredErrs s
@@ -174,8 +188,10 @@ getAgentSMPServerStats s = do
     AgentSMPServerStatsData
       { _sentDirect,
         _sentViaProxy,
+        _sentProxied,
         _sentDirectAttempts,
         _sentViaProxyAttempts,
+        _sentProxiedAttempts,
         _sentAuthErrs,
         _sentQuotaErrs,
         _sentExpiredErrs,

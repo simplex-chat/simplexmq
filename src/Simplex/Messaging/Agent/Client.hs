@@ -1987,8 +1987,7 @@ data AgentServersSummary = AgentServersSummary
     xftpServersSessions :: Map (UserId, XFTPServer) ServerSessions,
     xftpRcvInProgress :: [XFTPServer],
     xftpSndInProgress :: [XFTPServer],
-    xftpDelInProgress :: [XFTPServer],
-    onlyProxiedSMPServers :: [SMPServer]
+    xftpDelInProgress :: [XFTPServer]
   }
   deriving (Show)
 
@@ -2016,7 +2015,6 @@ getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, srvStat
   xftpRcvInProgress <- catMaybes <$> getXFTPWorkerSrvs xftpRcvWorkers
   xftpSndInProgress <- catMaybes <$> getXFTPWorkerSrvs xftpSndWorkers
   xftpDelInProgress <- getXFTPWorkerSrvs xftpDelWorkers
-  onlyProxiedSMPServers <- collectProxiedSMPServers
   pure
     AgentServersSummary
       { smpServersStats = sss,
@@ -2027,8 +2025,7 @@ getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, srvStat
         xftpServersSessions,
         xftpRcvInProgress,
         xftpSndInProgress,
-        xftpDelInProgress,
-        onlyProxiedSMPServers
+        xftpDelInProgress
       }
   where
     getServerSubs = do
@@ -2043,12 +2040,6 @@ getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, srvStat
         addSrv acc (srv, Worker {doWork}) = do
           hasWork <- atomically $ not <$> isEmptyTMVar doWork
           pure $ if hasWork then srv : acc else acc
-    collectProxiedSMPServers = do
-      sprs <- readTVarIO $ smpProxiedRelays c
-      let proxiedSrvs = S.fromList $ map (\(_, srv, _) -> srv) $ M.keys sprs
-      scs <- readTVarIO $ smpClients c
-      let connectedSrvs = S.fromList $ map (\(_, srv, _) -> srv) $ M.keys scs
-      pure $ S.toList $ S.difference proxiedSrvs connectedSrvs
     countSessions :: Map (TransportSession msg) (ClientVar msg) -> IO (Map (UserId, ProtoServer msg) ServerSessions)
     countSessions = foldM addClient M.empty . M.toList
       where
