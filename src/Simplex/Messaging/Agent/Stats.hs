@@ -147,27 +147,29 @@ newAgentSMPServerStats' s = do
         connSubErrs
       }
 
-getAgentSMPServerStats :: AgentSMPServerStats -> STM AgentSMPServerStatsData
+-- as this is used to periodically update stats in db,
+-- this is not STM to decrease contention with stats updates
+getAgentSMPServerStats :: AgentSMPServerStats -> IO AgentSMPServerStatsData
 getAgentSMPServerStats s = do
-  _sentDirect <- readTVar $ sentDirect s
-  _sentViaProxy <- readTVar $ sentViaProxy s
-  _sentDirectAttempts <- readTVar $ sentDirectAttempts s
-  _sentViaProxyAttempts <- readTVar $ sentViaProxyAttempts s
-  _sentAuthErrs <- readTVar $ sentAuthErrs s
-  _sentQuotaErrs <- readTVar $ sentQuotaErrs s
-  _sentExpiredErrs <- readTVar $ sentExpiredErrs s
-  _sentOtherErrs <- readTVar $ sentOtherErrs s
-  _recvMsgs <- readTVar $ recvMsgs s
-  _recvDuplicates <- readTVar $ recvDuplicates s
-  _recvCryptoErrs <- readTVar $ recvCryptoErrs s
-  _recvErrs <- readTVar $ recvErrs s
-  _connCreated <- readTVar $ connCreated s
-  _connSecured <- readTVar $ connSecured s
-  _connCompleted <- readTVar $ connCompleted s
-  _connDeleted <- readTVar $ connDeleted s
-  _connSubscribed <- readTVar $ connSubscribed s
-  _connSubAttempts <- readTVar $ connSubAttempts s
-  _connSubErrs <- readTVar $ connSubErrs s
+  _sentDirect <- readTVarIO $ sentDirect s
+  _sentViaProxy <- readTVarIO $ sentViaProxy s
+  _sentDirectAttempts <- readTVarIO $ sentDirectAttempts s
+  _sentViaProxyAttempts <- readTVarIO $ sentViaProxyAttempts s
+  _sentAuthErrs <- readTVarIO $ sentAuthErrs s
+  _sentQuotaErrs <- readTVarIO $ sentQuotaErrs s
+  _sentExpiredErrs <- readTVarIO $ sentExpiredErrs s
+  _sentOtherErrs <- readTVarIO $ sentOtherErrs s
+  _recvMsgs <- readTVarIO $ recvMsgs s
+  _recvDuplicates <- readTVarIO $ recvDuplicates s
+  _recvCryptoErrs <- readTVarIO $ recvCryptoErrs s
+  _recvErrs <- readTVarIO $ recvErrs s
+  _connCreated <- readTVarIO $ connCreated s
+  _connSecured <- readTVarIO $ connSecured s
+  _connCompleted <- readTVarIO $ connCompleted s
+  _connDeleted <- readTVarIO $ connDeleted s
+  _connSubscribed <- readTVarIO $ connSubscribed s
+  _connSubAttempts <- readTVarIO $ connSubAttempts s
+  _connSubErrs <- readTVarIO $ connSubErrs s
   pure
     AgentSMPServerStatsData
       { _sentDirect,
@@ -293,18 +295,20 @@ newAgentXFTPServerStats' s = do
         deleteErrs
       }
 
-getAgentXFTPServerStats :: AgentXFTPServerStats -> STM AgentXFTPServerStatsData
+-- as this is used to periodically update stats in db,
+-- this is not STM to decrease contention with stats updates
+getAgentXFTPServerStats :: AgentXFTPServerStats -> IO AgentXFTPServerStatsData
 getAgentXFTPServerStats s = do
-  _uploads <- readTVar $ uploads s
-  _uploadAttempts <- readTVar $ uploadAttempts s
-  _uploadErrs <- readTVar $ uploadErrs s
-  _downloads <- readTVar $ downloads s
-  _downloadAttempts <- readTVar $ downloadAttempts s
-  _downloadAuthErrs <- readTVar $ downloadAuthErrs s
-  _downloadErrs <- readTVar $ downloadErrs s
-  _deletions <- readTVar $ deletions s
-  _deleteAttempts <- readTVar $ deleteAttempts s
-  _deleteErrs <- readTVar $ deleteErrs s
+  _uploads <- readTVarIO $ uploads s
+  _uploadAttempts <- readTVarIO $ uploadAttempts s
+  _uploadErrs <- readTVarIO $ uploadErrs s
+  _downloads <- readTVarIO $ downloads s
+  _downloadAttempts <- readTVarIO $ downloadAttempts s
+  _downloadAuthErrs <- readTVarIO $ downloadAuthErrs s
+  _downloadErrs <- readTVarIO $ downloadErrs s
+  _deletions <- readTVarIO $ deletions s
+  _deleteAttempts <- readTVarIO $ deleteAttempts s
+  _deleteErrs <- readTVarIO $ deleteErrs s
   pure
     AgentXFTPServerStatsData
       { _uploads,

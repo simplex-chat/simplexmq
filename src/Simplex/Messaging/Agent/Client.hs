@@ -325,7 +325,7 @@ data AgentClient = AgentClient
     agentEnv :: Env,
     smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
     xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats,
-    statsStartedAt :: TVar UTCTime
+    srvStatsStartedAt :: TVar UTCTime
   }
 
 data SMPConnectedClient = SMPConnectedClient
@@ -494,7 +494,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs a
   msgCounts <- TM.empty
   smpServersStats <- TM.empty
   xftpServersStats <- TM.empty
-  statsStartedAt <- newTVar currentTs
+  srvStatsStartedAt <- newTVar currentTs
   return
     AgentClient
       { acThread,
@@ -536,7 +536,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs a
         agentEnv,
         smpServersStats,
         xftpServersStats,
-        statsStartedAt
+        srvStatsStartedAt
       }
 
 slowNetworkConfig :: NetworkConfig -> NetworkConfig
@@ -2007,12 +2007,12 @@ data SMPServerSessions = SMPServerSessions
 --   deriving (Show)
 
 getAgentServersSummary' :: AgentClient -> AM AgentServersSummary
-getAgentServersSummary' c@AgentClient {smpServersStats, xftpServersStats, statsStartedAt, agentEnv} = do
+getAgentServersSummary' c@AgentClient {smpServersStats, xftpServersStats, srvStatsStartedAt, agentEnv} = do
   sss <- readTVarIO smpServersStats
-  sss' <- mapM (atomically . getAgentSMPServerStats) sss
+  sss' <- mapM (liftIO . getAgentSMPServerStats) sss
   xss <- readTVarIO xftpServersStats
-  xss' <- mapM (atomically . getAgentXFTPServerStats) xss
-  statsStartedAt <- readTVarIO statsStartedAt
+  xss' <- mapM (liftIO . getAgentXFTPServerStats) xss
+  statsStartedAt <- readTVarIO srvStatsStartedAt
   smpServersSessions <- collectSMPServersSessions
   xftpServersSessions <- collectXFTPServersSessions
   xftpRcvInProgress <- catMaybes <$> collectXFTPWorkerSrvs xftpRcvWorkers
