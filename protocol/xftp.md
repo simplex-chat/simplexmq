@@ -1,0 +1,317 @@
+# SimpleX File Transfer Protocol
+
+## Table of contents
+
+- [Abstract](#abstract)
+- [Introduction](#introduction)
+- [XFTP Model](#xftp-model)
+- [Persistence model](#persistence-model)
+- [XFTP procedure](#xftp-procedure)
+- [File description](#file-description)
+- [URIs syntax](#uris-syntax)
+  - [XFTP server URI](#xftp-server-uri)
+  - [File description URI](#file-description-URI)
+- [XFTP qualities and features](#xftp-qualities-and-features)
+- [Cryptographic algorithms](#cryptographic-algorithms)
+- [File chunk IDs](#file-chunk-ids)
+- [Server security requirements](#server-security-requirements)
+- [Transport protocol](#transport-protocol)
+  - [TLS ALPN](#tls-alpn)
+  - [Connection handshake](#connection-handshake)
+  - [Requests and responses](#requests-and-responses)
+- [XFTP commands](#xftp-commands)
+  - [Correlating responses with commands](#correlating-responses-with-commands)
+  - [Command authentication](#command-authentication)
+  - [Keep-alive command](#keep-alive-command)
+  - [File sender commands](#file-sender-commands)
+    - [Create queue command](#create-queue-command)
+    - [Subscribe to queue](#subscribe-to-queue)
+    - [Secure queue command](#secure-queue-command)
+    - [Enable notifications command](#enable-notifications-command)
+    - [Disable notifications command](#disable-notifications-command)
+    - [Acknowledge message delivery](#acknowledge-message-delivery)
+    - [Suspend queue](#suspend-queue)
+    - [Delete queue](#delete-queue)
+  - [File recipient commands](#file-recipient-commands)
+    - [Send message](#send-message)
+
+## Abstract
+
+SimpleX File Transfer Protocol is a client-server protocol for asynchronous unidirectional file transmission.
+
+It's designed with the focus on communication security, integrity and meta-data privacy, under the assumption that any part of the message transmission network can be compromised.
+
+It is designed as a application level protocol to solve the problem of secure and private file transmission, making [MITM attacks][1] very difficult at any part of the file transmission system, and preserving meta-data privacy of the sent files.
+
+## Introduction
+
+The objective of SimpleX File Transfer Protocol (XFTP) is to facilitate the secure and private unidirectional transfer of files from senders to recipients via persistent file chunks stored by the xftp server.
+
+XFTP is implemeted as an application level protocol on top of HTTP2 and TLS.
+
+The protocol describes the set of commands that senders and recipients can send to XFTP servers to create, upload, download and delete file chunks of several pre-defined sizes. XFTP servers SHOULD support chunks of 4 sizes: 64KB, 256KB, 1MB and 4MB (1KB = 1024 bytes, 1MB = 1024KB).
+
+The protocol is designed with the focus on meta-data privacy and security. While using TLS, the protocol does not rely on TLS security by using additional encryption to achieve that there are no identifiers or ciphertext in common in received and sent server traffic, frustrating traffic correlation even if TLS is compromised.
+
+XFTP does not use any form of participants' identities. It relies on out-of-band passing of "file description" - a human-readable YAML document with the list of file chunk locations, hashes and necessary cryptographic keys.
+
+## XFTP Model
+
+The XFTP model has three communication participants: the recipient, the file server (XFTP server) that is chosen and, possibly, controlled by the sender, and the sender.
+
+XFTP server allows uploading fixed size file chunks, with or without basic authentication. The same party that can be the sender of one file chunk can be the recipient of another, without exposing it to the server.
+
+Each file chunk allows multiple recipients, each recipient can download the same chunk multiple times. It allows depending on the threat model use the same recipient credentials for multiple parties, thus reducing server ability to understand the number of intended recipients (but server can still track IP addresses to determine it), or use one unique set of credentials for each recipient, frustrating traffic correlation on the assumption of compromised TLS. In the latter case, senders can create a larger number of recipient credentials to hide the actual number of intended recipients from the servers (which is what SimpleX clients do).
+
+When sender client uploads a file chunk, it has to register it first with one sender ID and multiple recipient IDs, and one random unique key per ID to authenticate sender and recipients, and also provide its size and hash that will be validated when chunk is uploaded.
+
+To send the actual file, the sender client MUST pad it and encrypt it with a random symmetric key and distribute chunks of fixed sized across multiple XFTP servers. Information about chunk locations, keys, hashes and required keys is passed to the recipients as "[file description](#file-description)" out-of-band. 
+
+Creating, uploading, downloading and deleting file chunks requires sending commands to the XFTP server - they are described in detail in [XFTP commands](#xftp-commands) section.
+
+## Persistence model
+
+Server stores file chunk records in memory, with optinal adding to append-only log, to allow restoring them on server restart. File chunk bodies can be stored as files or as objects in any object store (e.g. S3).
+
+## XFTP procedure
+
+1. Sending the file.
+
+To send the file, the sender will:
+
+1) Prepare file
+  - compute its SHA512 digest.
+  - prepend header with the name and pad the file to match the whole number of chunks in size. It is RECOMMENDED to use 2 of 4 allowed chunk sizes, to balance upload size and metadata privacy.
+  - encrypt it with a randomly chosen symmetric key and IV (e.g., using NaCL secret_box).
+  - split into allowed size chunks.
+  - generate per-recipient keys. It is recommended that the sending client generates more per-recipient keys than the actual number of recipients, rounding up to a power of 2, to conceal the actual number of intended recipients.
+
+2) Upload file chunks
+  - register each chunk record with randomly chosen one or more (for redundancy) XFTP server(s).
+  - upload each chunk to chosen server(s).
+
+3) Prepare file descriptions, one per recipient.
+
+The sending client combines addresses of all chunks and other information into "file description", different for each file recipient, that will include:
+
+- an encryption key used to encrypt/decrypt the full file (the same for all recipients).
+- file SHA512 digest to validate download.
+- list of chunk descriptions; information for each chunk:
+  - private Ed25519 key to sign commands for file transfer server.
+  - chunk address (server host and chunk ID).
+  - chunk sha512 digest.
+
+To reduce the size of file description, chunks are grouped by the server host.
+
+4) Send file description(s) to the recipient(s) out-of-band, via pre-existing secure and authenticated channel. E.g., SimpleX clients send it as messages via SMP protocol, but it can be done via any other channel.
+
+2. Receiving the file.
+
+Having received the description, the recipient will:
+
+1) Download all chunks
+
+The receiving client can fall back to secondary servers, if necessary:
+- if the server is not available.
+- if the chunk is not present on the server (ERR AUTH response).
+- if the hash of the downloaded file chunk does not match the description.
+
+2) Combine the chunks into a file.
+
+3) Decrypt the file using the key in file description.
+
+4) Extract file name and unpad the file.
+
+5) Validate file digest with the file description.
+
+## File description
+
+"File description" is a human-readable YAML document that is sent via secure and authenticated channel.
+
+It includes these fields:
+- `party` - "sender" or "recipient". Sender's file description is required to delete the file.
+- `size` - padded file size equal to total size of all chunks, see `fileSize` syntax below.
+- `digest` - SHA512 hash of encrypted file, base64url encoded string.
+- `key` - symmetric encryption key to decrypt the file, base64url encoded string.
+- `nonce` - nonce to decrypt the file, base64url encoded string.
+- `chunkSize` - default chunk size, see `fileSize` syntax below.
+- `replicas` - the array of file chunk replicas descriptions.
+- `redirect` - optional property for redirect information indicating that the file is itself a description to another file, allowing to use file description as a short URI.
+
+Each replica description is an object with 2 fields:
+
+- `chunks` - and array of chunk replica descriptions stored on one server.
+- `server` - [server address](#xftp-server-uri) where the chunks can be downloaded from.
+
+Each server replica description is a string with this syntax:
+
+```abnf
+chunkReplica = chunkNo ":" replicaId ":" replicaKey [":" chunkDigest [":" chunkSize]]
+chunkNo = 1*DIGIT
+    ; a sequential 1-based chunk number in the original file.
+replicaId = base64url
+    ; server-assigned random chunk replica ID.
+replicaKey = base64url
+    ; sender-generated random key to receive (or to delete, in case of sender's file description) the chunk replica.
+chunkDigest = base64url
+    ; chunk digest that MUST be specified for the first replica of each chunk,
+    ; and SHOULD be omitted (or be the same) on the subsequent replicas
+chunkSize = fileSize
+fileSize = sizeInBytes / sizeInUnits
+    ; chunk size SHOULD only be specified on the first replica and only if it is different from default chunk size
+sizeInBytes = 1*DIGIT
+sizeInUnits = 1*DIGIT sizeUnit
+sizeUnit = %s"kb" / %s"mb" / %s"gb"
+base64url = <base64url encoded binary> ; RFC4648, section 5
+```
+
+Optional redirect information has two fields:
+- `size` - the size of the original encrypted file to which file description downloaded via the current file description will lead to, see `fileSize` syntax below.
+- `digest` - SHA512 hash of the original file, base64url encoded string.
+
+## URIs syntax
+
+### XFTP server URI
+
+The XFTP server address is a URI with the following syntax:
+
+```abnf
+xftpServerURI = %s"xftp://" xftpServer
+xftpServer = serverIdentity [":" basicAuth] "@" srvHost [":" port]
+srvHost = <hostname> ; RFC1123, RFC5891
+port = 1*DIGIT
+serverIdentity = base64url
+basicAuth = base64url
+```
+
+### File description URI
+
+This file description URI can be generated by the client application to share a small file description as a QR code or as a link. Practically, to be able to scan a QR code it should be under 1000 characters, so only file descriptions with 1-2 chunks can be used in this case. This is supported with `redirect` property when file description leads to a file which in itself is a larger file description to another file - akin to URL shortener.
+
+File description URI syntax:
+
+```abnf
+fileDescriptionURI = serviceScheme "/file"  "#/?desc=" description [ "&data=" userData ]
+serviceScheme = (%s"https://" clientAppServer) | %s"simplex:"
+clientAppServer = hostname [ ":" port ]
+; client app server, e.g. simplex.chat
+description = <URI-escaped YAML file description>
+userData = <any URI-compatible string>
+```
+
+clientAppServer is not a server the client connects to - it is a server that shows the instruction on how to download the client app that will connect using this connection request. This server can also host a mobile or desktop app manifest so that this link is opened directly in the app if it is installed on the device.
+
+"simplex" URI scheme in serviceScheme can be used instead of client app server. Client apps MUST support this URI scheme.
+
+## XFTP qualities and features
+
+## Cryptographic algorithms
+
+## File chunk IDs
+
+XFTP servers MUST generate a separate new set of IDs for each new chunk - for the sender (that uploads the chunk) and for each intended recipient. It is REQUIRED that:
+
+- These IDs are different and unique within the server.
+- Based on random bytes generated with cryptographically strong pseudo-random number generator.
+
+## Server security requirements
+
+## Transport protocol
+
+### TLS ALPN
+
+### Connection handshake
+
+### Requests and responses
+
+## XFTP commands
+
+### Correlating responses with commands
+
+### Command authentication
+
+### Keep-alive command
+
+  PING :: FileCommand FRecipient
+
+### File sender commands
+
+#### Register new file chunk
+
+  FNEW :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe BasicAuth -> FileCommand FSender
+
+#### Add file chunk recipients
+
+  FADD :: NonEmpty RcvPublicAuthKey -> FileCommand FSender
+
+#### Upload file chunk
+
+  FPUT :: FileCommand FSender
+
+#### Delete file chunk
+
+  FDEL :: FileCommand FSender
+
+### File recipient commands
+
+#### Download file chunk
+
+  FGET :: RcvPublicDhKey -> FileCommand FRecipient
+
+#### Acknowledge file chunk download
+
+  FACK :: FileCommand FRecipient
+
+
+
+
+
+
+
+
+### Transport protocol
+
+- binary-encoded commands sent as fixed-size padded block in the body of HTTP2 POST request, similar to SMP and notifications server protocol transmission encodings.
+- HTTP2 POST with a fixed size padded block body for file upload and download.
+
+Block size - 4096 bytes (it would fit ~120 Ed25519 recipient keys).
+
+The reasons to use HTTP2:
+
+- avoid the need to have two hostnames (or two different ports) for commands and file uploads.
+- compatibility with the existing HTTP2 client libraries.
+
+The reason not to use JSON bodies:
+
+- bigger request size, so fewer recipient keys would fit in a single request
+- signature over command has to be outside of JSON anyway.
+
+The reason not to use URI segments / HTTP verbs / REST semantics is to have consistent request size.
+
+### Required server commands:
+
+- File sender:
+  - create file chunk record.
+    - Parameters:
+      - Ed25519 key for subsequent sender commands and Ed25519 keys for commands of each recipient.
+      - chunk size.
+    - Response:
+      - chunk ID for the sender and different IDs for all recipients.
+  - add recipients to file chunk
+    - Parameters:
+      - sender's chunk ID
+      - Ed25519 keys for commands of each recipient.
+    - Response:
+      - chunk IDs for new recipients.
+  - upload file chunk.
+  - delete file chunk (invalidates all recipient IDs).
+- File recipient:
+  - download file chunk:
+    - chunk ID
+    - DH key for additional encryption of the chunk.
+    - command should be signed with the key passed by the sender when creating chunk record.
+  - delete file chunk ID (only for one recipient): signed with the same key.
+
+
+
+

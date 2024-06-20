@@ -1,0 +1,1 @@
+# SimpleX Remote Control Protocol
