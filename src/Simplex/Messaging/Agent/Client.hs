@@ -91,6 +91,7 @@ module Simplex.Messaging.Agent.Client
     agentDRG,
     AgentServersSummary (..),
     ServerSessions (..),
+    SMPServerSubs (..),
     getAgentServersSummary,
     getAgentSubscriptions,
     slowNetworkConfig,
