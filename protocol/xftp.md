@@ -148,17 +148,17 @@ Each server replica description is a string with this syntax:
 ```abnf
 chunkReplica = chunkNo ":" replicaId ":" replicaKey [":" chunkDigest [":" chunkSize]]
 chunkNo = 1*DIGIT
-    ; a sequential 1-based chunk number in the original file.
+  ; a sequential 1-based chunk number in the original file.
 replicaId = base64url
-    ; server-assigned random chunk replica ID.
+  ; server-assigned random chunk replica ID.
 replicaKey = base64url
-    ; sender-generated random key to receive (or to delete, in case of sender's file description) the chunk replica.
+  ; sender-generated random key to receive (or to delete, in case of sender's file description) the chunk replica.
 chunkDigest = base64url
-    ; chunk digest that MUST be specified for the first replica of each chunk,
-    ; and SHOULD be omitted (or be the same) on the subsequent replicas
+  ; chunk digest that MUST be specified for the first replica of each chunk,
+  ; and SHOULD be omitted (or be the same) on the subsequent replicas
 chunkSize = fileSize
 fileSize = sizeInBytes / sizeInUnits
-    ; chunk size SHOULD only be specified on the first replica and only if it is different from default chunk size
+  ; chunk size SHOULD only be specified on the first replica and only if it is different from default chunk size
 sizeInBytes = 1*DIGIT
 sizeInUnits = 1*DIGIT sizeUnit
 sizeUnit = %s"kb" / %s"mb" / %s"gb"
@@ -215,6 +215,16 @@ XFTP servers MUST generate a separate new set of IDs for each new chunk - for th
 - Based on random bytes generated with cryptographically strong pseudo-random number generator.
 
 ## Server security requirements
+
+XFTP server implementations MUST NOT create, store or send to any other servers:
+
+- Logs of the client commands and transport connections in the production environment.
+
+- History of retrieved files.
+
+- Snapshots of the database they use to store file chunks (instead simplex messaging clients must manage redundancy by using more than one simplex messaging server). In-memory persistence is recommended.
+
+- Any other information that may compromise privacy or [forward secrecy][4] of communication between clients using XFTP servers.
 
 ## Transport protocol
 
