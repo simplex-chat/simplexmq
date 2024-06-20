@@ -1176,7 +1176,9 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
                 case find ((replaceQId ==) . dbQId) rqs of
                   Just rq1 -> when (status == Confirmed) $ do
                     secureQueue c rq' senderKey
-                    atomically $ incSMPServerStat c userId server connSecured
+                    -- we may add more statistics special to queue rotation later on,
+                    -- not accounting secure during rotation for now:
+                    -- atomically $ incSMPServerStat c userId server connSecured
                     withStore' c $ \db -> setRcvQueueStatus db rq' Secured
                     void . enqueueMessages c cData sqs SMP.noMsgFlags $ QUSE [((server, sndId), True)]
                     rq1' <- withStore' c $ \db -> setRcvSwitchStatus db rq1 $ Just RSSendingQUSE
