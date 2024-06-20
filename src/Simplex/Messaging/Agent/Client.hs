@@ -1079,6 +1079,7 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
       r <- tryAgentError . withProxySession c destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess) -> do
         r' <- liftClient SMP (clientServer smp) $ do
           atomically $ incSMPServerStat c userId destSrv sentViaProxyAttempts
+          atomically $ incSMPServerStat c userId (protocolClientServer' smp) sentProxiedAttempts
           proxySMPMessage smp proxySess spKey_ senderId msgFlags msg
         case r' of
           Right () -> pure . Just $ protocolClientServer' smp
@@ -1110,6 +1111,7 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
       case r of
         Right r' -> do
           atomically $ incSMPServerStat c userId destSrv sentViaProxy
+          forM_ r' $ \proxySrv -> atomically $ incSMPServerStat c userId proxySrv sentProxied
           pure r'
         Left e
           | serverHostError e -> ifM (atomically directAllowed) (sendDirectly destSess $> Nothing) (throwE e)
