@@ -17,10 +17,10 @@ import UnliftIO.STM
 data AgentSMPServerStats = AgentSMPServerStats
   { sentDirect :: TVar Int, -- successfully sent messages
     sentViaProxy :: TVar Int, -- successfully sent messages via proxy
-    sentProxied :: TVar Int, -- successfully sent messages via proxy
+    sentProxied :: TVar Int, -- successfully sent messages to other destination server via this as proxy
     sentDirectAttempts :: TVar Int, -- direct sending attempts (min 1 for each sent message)
     sentViaProxyAttempts :: TVar Int, -- proxy sending attempts
-    sentProxiedAttempts :: TVar Int, -- successfully sent messages via proxy
+    sentProxiedAttempts :: TVar Int, -- attempts sending to other destination server via this as proxy
     sentAuthErrs :: TVar Int, -- send AUTH errors
     sentQuotaErrs :: TVar Int, -- send QUOTA permanent errors (message expired)
     sentExpiredErrs :: TVar Int, -- send expired errors
