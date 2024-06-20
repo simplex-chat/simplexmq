@@ -1972,13 +1972,6 @@ incXFTPServerStat AgentClient {xftpServersStats} userId srv sel = do
       modifyTVar' (sel newStats) (+ 1)
       TM.insert (userId, srv) newStats xftpServersStats
 
--- - currently used servers - those that have state
--- - previously used servers - have stats but no state - they could be used earlier in session,
---   or in previous sessions and stats for them were restored
--- - proxied destination servers (onlyProxiedSMPServers) - based on smpProxiedRelays (key) minus smpClients;
---   don't have state and stats? since: state is based on smpClients and activeSubs/pendingSubs,
---   and stats are used to track real network activity (probably also via smpClients),
---   so the stats are accounted for proxy (unless we want double counting messages as sent and proxied)
 data AgentServersSummary = AgentServersSummary
   { smpServersStats :: Map (UserId, SMPServer) AgentSMPServerStatsData,
     xftpServersStats :: Map (UserId, XFTPServer) AgentXFTPServerStatsData,
