@@ -209,29 +209,6 @@ getAgentSMPServerStats s = do
         _connSubErrs
       }
 
--- TODO remove?
-setAgentSMPServerStats :: AgentSMPServerStats -> AgentSMPServerStatsData -> STM ()
-setAgentSMPServerStats s d = do
-  writeTVar (sentDirect s) $! _sentDirect d
-  writeTVar (sentViaProxy s) $! _sentViaProxy d
-  writeTVar (sentDirectAttempts s) $! _sentDirectAttempts d
-  writeTVar (sentViaProxyAttempts s) $! _sentViaProxyAttempts d
-  writeTVar (sentAuthErrs s) $! _sentAuthErrs d
-  writeTVar (sentQuotaErrs s) $! _sentQuotaErrs d
-  writeTVar (sentExpiredErrs s) $! _sentExpiredErrs d
-  writeTVar (sentOtherErrs s) $! _sentOtherErrs d
-  writeTVar (recvMsgs s) $! _recvMsgs d
-  writeTVar (recvDuplicates s) $! _recvDuplicates d
-  writeTVar (recvCryptoErrs s) $! _recvCryptoErrs d
-  writeTVar (recvErrs s) $! _recvErrs d
-  writeTVar (connCreated s) $! _connCreated d
-  writeTVar (connSecured s) $! _connSecured d
-  writeTVar (connCompleted s) $! _connCompleted d
-  writeTVar (connDeleted s) $! _connDeleted d
-  writeTVar (connSubscribed s) $! _connSubscribed d
-  writeTVar (connSubAttempts s) $! _connSubAttempts d
-  writeTVar (connSubErrs s) $! _connSubErrs d
-
 data AgentXFTPServerStats = AgentXFTPServerStats
   { uploads :: TVar Int, -- total replicas uploaded to server
     uploadAttempts :: TVar Int, -- upload attempts
@@ -338,20 +315,6 @@ getAgentXFTPServerStats s = do
         _deleteAttempts,
         _deleteErrs
       }
-
--- TODO remove?
-setAgentXFTPServerStats :: AgentXFTPServerStats -> AgentXFTPServerStatsData -> STM ()
-setAgentXFTPServerStats s d = do
-  writeTVar (uploads s) $! _uploads d
-  writeTVar (uploadAttempts s) $! _uploadAttempts d
-  writeTVar (uploadErrs s) $! _uploadErrs d
-  writeTVar (downloads s) $! _downloads d
-  writeTVar (downloadAttempts s) $! _downloadAttempts d
-  writeTVar (downloadAuthErrs s) $! _downloadAuthErrs d
-  writeTVar (downloadErrs s) $! _downloadErrs d
-  writeTVar (deletions s) $! _deletions d
-  writeTVar (deleteAttempts s) $! _deleteAttempts d
-  writeTVar (deleteErrs s) $! _deleteErrs d
 
 -- Type for gathering both smp and xftp stats across all users and servers,
 -- to then be persisted to db as a single json.
