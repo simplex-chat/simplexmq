@@ -24,12 +24,18 @@ The additional advantage here is that if the queue of the initiating client was 
 
 These are the proposed changes:
 
-1. Add SKEY command to SMP protocol to allow both clients securing the message queues.
-2. This command has to be supported by SMP proxy as well, so that the sender does not connect to the recipient's server directly.
-3. Accepting client will secure the messaging queue before sending the confirmation to it.
-4. Initiating client will secure the messaging queue before sending the confirmation.
+1. Modify NEW command to add flag allowing sender to secure the queue (it should not be allowed if queue is created for the contact address).
+2. Include flag into the invitation link URI and in reply address encoding that queue(s) can be secured by the sender (to avoid coupling with the protocol version and preserve the possibility of the longer handshakes).
+3. Add SKEY command to SMP protocol to allow the sender securing the message queue.
+4. This command has to be supported by SMP proxy as well, so that the sender does not connect to the recipient's server directly.
+5. Accepting client will secure the messaging queue before sending the confirmation to it.
+6. Initiating client will secure the messaging queue before sending the confirmation.
 
 See [this sequence diagram](../protocol/diagrams/duplex-messaging/duplex-creating-v6.mmd) for the updated handshake protocol.
+
+Changes to threat model: the attacker who compromised TLS and knows the queue address can block the connection, as the protocol no longer requires the recipient to decrypt the confirmation to secure the queue.
+
+Possibly, "fast connection" should be an option in Privacy & security settings.
 
 ## Implementation questions
 
