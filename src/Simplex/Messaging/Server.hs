@@ -601,7 +601,7 @@ data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
 verifyTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> QueueId -> Cmd -> M VerificationResult
 verifyTransmission auth_ tAuth authorized queueId cmd =
   case cmd of
-    Cmd SRecipient (NEW k _ _ _) -> pure $ Nothing `verifiedWith` k
+    Cmd SRecipient (NEW k _ _ _ _) -> pure $ Nothing `verifiedWith` k
     Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWith` recipientKey q) <$> get SRecipient
     -- SEND will be accepted without authorization before the queue is secured with KEY or SKEY command
     Cmd SSender (SKEY k) -> verifyQueue (\q -> Just q `verifiedWith` k) <$> get SSender
@@ -778,10 +778,10 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
       Cmd SRecipient command -> do
         st <- asks queueStore
         Just <$> case command of
-          NEW rKey dhKey auth subMode ->
+          NEW rKey dhKey auth subMode sndSecure ->
             ifM
               allowNew
-              (createQueue st rKey dhKey subMode)
+              (createQueue st rKey dhKey subMode sndSecure)
               (pure (corrId, queueId, ERR AUTH))
             where
               allowNew = do
@@ -797,11 +797,11 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           DEL -> delQueueAndMsgs st
           QUE -> withQueue getQueueInfo
       where
-        createQueue :: QueueStore -> RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> M (Transmission BrokerMsg)
-        createQueue st recipientKey dhKey subMode = time "NEW" $ do
+        createQueue :: QueueStore -> RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> SenderCanSecure -> M (Transmission BrokerMsg)
+        createQueue st recipientKey dhKey subMode sndSecure = time "NEW" $ do
           (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
           let rcvDhSecret = C.dh' dhKey privDhKey
-              qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey}
+              qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey, sndSecure}
               qRec (recipientId, senderId) =
                 QueueRec
                   { recipientId,
@@ -810,7 +810,8 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                     rcvDhSecret,
                     senderKey = Nothing,
                     notifier = Nothing,
-                    status = QueueActive
+                    status = QueueActive,
+                    sndSecure
                   }
           (corrId,queueId,) <$> addQueueRetry 3 qik qRec
           where

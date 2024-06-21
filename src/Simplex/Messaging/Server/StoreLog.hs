@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
@@ -53,13 +54,14 @@ data StoreLogRecord
   | DeleteNotifier QueueId
 
 instance StrEncoding QueueRec where
-  strEncode QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier} =
+  strEncode QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier} =
     B.unwords
       [ "rid=" <> strEncode recipientId,
         "rk=" <> strEncode recipientKey,
         "rdh=" <> strEncode rcvDhSecret,
         "sid=" <> strEncode senderId,
-        "sk=" <> strEncode senderKey
+        "sk=" <> strEncode senderKey,
+        "sndSecure=" <> strEncode sndSecure
       ]
       <> maybe "" notifierStr notifier
     where
@@ -71,8 +73,9 @@ instance StrEncoding QueueRec where
     rcvDhSecret <- "rdh=" *> strP_
     senderId <- "sid=" *> strP_
     senderKey <- "sk=" *> strP
+    sndSecure <- " sndSecure=" *> strP <|> pure False
     notifier <- optional $ " notifier=" *> strP
-    pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier, status = QueueActive}
+    pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status = QueueActive}
 
 instance StrEncoding StoreLogRecord where
   strEncode = \case
