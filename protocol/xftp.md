@@ -24,16 +24,13 @@
   - [Command authentication](#command-authentication)
   - [Keep-alive command](#keep-alive-command)
   - [File sender commands](#file-sender-commands)
-    - [Create queue command](#create-queue-command)
-    - [Subscribe to queue](#subscribe-to-queue)
-    - [Secure queue command](#secure-queue-command)
-    - [Enable notifications command](#enable-notifications-command)
-    - [Disable notifications command](#disable-notifications-command)
-    - [Acknowledge message delivery](#acknowledge-message-delivery)
-    - [Suspend queue](#suspend-queue)
-    - [Delete queue](#delete-queue)
+    - [Register new file chunk](#register-new-file-chunk)
+    - [Add file chunk recipients](#add-file-chunk-recipients)
+    - [Upload file chunk](#upload-file-chunk)
+    - [Delete file chunk](#delete-file-chunk)
   - [File recipient commands](#file-recipient-commands)
-    - [Send message](#send-message)
+    - [Download file chunk](#download-file-chunk)
+    - [Acknowledge file chunk download](#acknowledge-file-chunk-download)
 
 ## Abstract
 
@@ -63,15 +60,41 @@ XFTP server allows uploading fixed size file chunks, with or without basic authe
 
 Each file chunk allows multiple recipients, each recipient can download the same chunk multiple times. It allows depending on the threat model use the same recipient credentials for multiple parties, thus reducing server ability to understand the number of intended recipients (but server can still track IP addresses to determine it), or use one unique set of credentials for each recipient, frustrating traffic correlation on the assumption of compromised TLS. In the latter case, senders can create a larger number of recipient credentials to hide the actual number of intended recipients from the servers (which is what SimpleX clients do).
 
+```
+           Sender                      Internet                XFTP relays             Internet         Recipient
+----------------------------   |   -----------------   |   -------------------   |   ------------   |   ---------- 
+                               |                       |                         |                  |
+                               |                       |   (can be self-hosted)  |                  |
+                               |                       |        +---------+      |                  |
+                  chunk 1     ----- HTTP2 over TLS ------       |  XFTP   |     ---- HTTP2 / TLS -----   chunk 1
+                |---> SimpleX File Transfer Protocol (XFTP) --> |  Relay  | --->        XFTP         ------------->|
+                |             ---------------------------       +---------+     ----------------------             |
+                |              |                       |                         |                  |              | 
+                |              |                       |                         |                  |              v
+          +----------+         |                       |        +---------+      |                  |        +-------------+
+          | Sending  | ch. 2  ------- HTTP2 / TLS -------       |  XFTP   |     ---- HTTP2 / TLS ----  ch. 2 |  Receiving  |
+file ---> |   XFTP   | ------>           XFTP            ---->  |  Relay  | --->        XFTP         ------> |     XFTP    | ---> file
+          |  Client  |        ---------------------------       +---------+     ----------------------       |    Client   |
+          +----------+         |                       |                         |                  |        +-------------+
+                |              |                       |                         |                  |              ^
+                |              |                       |        +---------+      |                  |              |
+                |             ------- HTTP2 / TLS -------       |  XFTP   |     ---- HTTP2 / TLS ----              |
+                |------------->           XFTP           ---->  |  Relay  | --->        XFTP         ------------->|
+                   chunk N    ---------------------------       +---------+     ---------------------    chunk N
+                               |                       |   (store file chunks)   |                  |
+                               |                       |                         |                  |
+                               |                       |                         |                  |
+```
+
 When sender client uploads a file chunk, it has to register it first with one sender ID and multiple recipient IDs, and one random unique key per ID to authenticate sender and recipients, and also provide its size and hash that will be validated when chunk is uploaded.
 
-To send the actual file, the sender client MUST pad it and encrypt it with a random symmetric key and distribute chunks of fixed sized across multiple XFTP servers. Information about chunk locations, keys, hashes and required keys is passed to the recipients as "[file description](#file-description)" out-of-band. 
+To send the actual file, the sender client MUST pad it and encrypt it with a random symmetric key and distribute chunks of fixed sized across multiple XFTP servers. Information about chunk locations, keys, hashes and required keys is passed to the recipients as "[file description](#file-description)" out-of-band.
 
 Creating, uploading, downloading and deleting file chunks requires sending commands to the XFTP server - they are described in detail in [XFTP commands](#xftp-commands) section.
 
 ## Persistence model
 
-Server stores file chunk records in memory, with optinal adding to append-only log, to allow restoring them on server restart. File chunk bodies can be stored as files or as objects in any object store (e.g. S3).
+Server stores file chunk records in memory, with optional adding to append-only log, to allow restoring them on server restart. File chunk bodies can be stored as files or as objects in any object store (e.g. S3).
 
 ## XFTP procedure
 
@@ -88,6 +111,7 @@ To send the file, the sender will:
 
 2) Upload file chunks
   - register each chunk record with randomly chosen one or more (for redundancy) XFTP server(s).
+  - optionally request additional recipient IDs, if required number of recipient keys didn't fit into register request.
   - upload each chunk to chosen server(s).
 
 3) Prepare file descriptions, one per recipient.
@@ -105,16 +129,20 @@ To reduce the size of file description, chunks are grouped by the server host.
 
 4) Send file description(s) to the recipient(s) out-of-band, via pre-existing secure and authenticated channel. E.g., SimpleX clients send it as messages via SMP protocol, but it can be done via any other channel.
 
+![Sending file](./diagrams/xftp/xftp-sending-file.svg)
+
 2. Receiving the file.
 
 Having received the description, the recipient will:
 
-1) Download all chunks
+1) Download all chunks.
 
 The receiving client can fall back to secondary servers, if necessary:
 - if the server is not available.
 - if the chunk is not present on the server (ERR AUTH response).
 - if the hash of the downloaded file chunk does not match the description.
+
+Optionally recipient can acknowledge file chunk reception to delete file ID from server for this recipient.
 
 2) Combine the chunks into a file.
 
@@ -123,6 +151,8 @@ The receiving client can fall back to secondary servers, if necessary:
 4) Extract file name and unpad the file.
 
 5) Validate file digest with the file description.
+
+![Receiving file](./diagrams/xftp/xftp-receiving-file.svg)
 
 ## File description
 
@@ -205,7 +235,26 @@ clientAppServer is not a server the client connects to - it is a server that sho
 
 ## XFTP qualities and features
 
+XFTP stands for SimpleX File Transfer Protocol. Its design is based on the same ideas and has some of the qualities of SimpleX Messaging Protocol:
+
+- recipient cannot see sender's IP address, as the file fragments (chunks) are temporarily stored on multiple XFTP relays.
+- file can be sent asynchronously, without requiring the sender to be online for file to be received.
+- there is no network of peers that can observe this transfer - sender chooses which XFTP relays to use, and can self-host their own.
+- XFTP relays do not have any file metadata - they only see individual chunks, with access to each chunk authorized with anonymous credentials (using Edwards curve cryptographic signature) that are random per chunk.
+- chunks have one of the sizes allowed by the servers - 64KB, 256KB, 1MB and 4MB chunks, so sending a large file looks indistinguishable from sending many small files to XFTP server. If the same transport connection is reused, server would only know that chunks are sent by the same user.
+- each chunk can be downloaded by multiple recipients, but each recipient uses their own key and chunk ID to authorize access, and the chunk is encrypted by a different key agreed via ephemeral DH keys (NaCl crypto_box (SalsaX20Poly1305 authenticated encryption scheme ) with shared secret derived from Curve25519 key exchange) on the way from the server to each recipient. XFTP protocol as a result has the same quality as SMP protocol - there are no identifiers and ciphertext in common between sent and received traffic inside TLS connection, so even if TLS is compromised, it complicates traffic correlation attacks.
+- XFTP protocol supports redundancy - each file chunk can be sent via multiple relays, and the recipient can choose the one that is available. Current implementation of XFTP protocol in SimpleX Chat does not support redundancy though.
+- the file as a whole is encrypted with a random symmetric key using NaCl secret_box.
+
 ## Cryptographic algorithms
+
+Clients must cryptographically authorize XFTP commands, see [Command authentication](#command-authentication).
+
+To authorize/verify transmissions clients and servers MUST use either signature algorithm Ed25519 algorithm defined in RFC8709 or using deniable authentication scheme based on NaCL crypto_box (see Simplex Messaging Protocol).
+
+To encrypt/decrypt file chunk bodies delivered to the recipients, servers/clients MUST use NaCL crypto_box.
+
+Clients MUST encrypt file chunk bodies sent via XFTP servers using use NaCL crypto_box.
 
 ## File chunk IDs
 
@@ -222,64 +271,11 @@ XFTP server implementations MUST NOT create, store or send to any other servers:
 
 - History of retrieved files.
 
-- Snapshots of the database they use to store file chunks (instead simplex messaging clients must manage redundancy by using more than one simplex messaging server). In-memory persistence is recommended.
+- Snapshots of the database they use to store file chunks (instead clients can manage redundancy by creating chunk replicas using more than one XFTP server). In-memory persistence is recommended for file chunks records.
 
 - Any other information that may compromise privacy or [forward secrecy][4] of communication between clients using XFTP servers.
 
 ## Transport protocol
-
-### TLS ALPN
-
-### Connection handshake
-
-### Requests and responses
-
-## XFTP commands
-
-### Correlating responses with commands
-
-### Command authentication
-
-### Keep-alive command
-
-  PING :: FileCommand FRecipient
-
-### File sender commands
-
-#### Register new file chunk
-
-  FNEW :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe BasicAuth -> FileCommand FSender
-
-#### Add file chunk recipients
-
-  FADD :: NonEmpty RcvPublicAuthKey -> FileCommand FSender
-
-#### Upload file chunk
-
-  FPUT :: FileCommand FSender
-
-#### Delete file chunk
-
-  FDEL :: FileCommand FSender
-
-### File recipient commands
-
-#### Download file chunk
-
-  FGET :: RcvPublicDhKey -> FileCommand FRecipient
-
-#### Acknowledge file chunk download
-
-  FACK :: FileCommand FRecipient
-
-
-
-
-
-
-
-
-### Transport protocol
 
 - binary-encoded commands sent as fixed-size padded block in the body of HTTP2 POST request, similar to SMP and notifications server protocol transmission encodings.
 - HTTP2 POST with a fixed size padded block body for file upload and download.
@@ -298,7 +294,15 @@ The reason not to use JSON bodies:
 
 The reason not to use URI segments / HTTP verbs / REST semantics is to have consistent request size.
 
-### Required server commands:
+### TLS ALPN
+
+TODO
+
+### Connection handshake
+
+TODO
+
+### Requests and responses
 
 - File sender:
   - create file chunk record.
@@ -322,6 +326,172 @@ The reason not to use URI segments / HTTP verbs / REST semantics is to have cons
     - command should be signed with the key passed by the sender when creating chunk record.
   - delete file chunk ID (only for one recipient): signed with the same key.
 
+## XFTP commands
 
+Commands syntax below is provided using ABNF with case-sensitive strings extension.
 
+```abnf
+xftpCommand = ping / senderCommand / recipientCmd / serverMsg
+senderCommand = register / add / put / delete
+recipientCmd = get / ack
+serverMsg = pong / sndIds / rcvIds / ok / file
+```
 
+The syntax of specific commands and responses is defined below.
+
+### Correlating responses with commands
+
+Commands are made via HTTP2 requests, responses to commands are correlated as HTTP2 responses.
+
+### Command authentication
+
+XFTP servers must authenticate all transmissions (excluding `ping`) by verifying the client signatures. Command signature should be generated by applying the algorithm specified for the file to the `signed` block of the transmission, using the key associated with the file chunk ID (recipient's or sender's depending on which file chunk ID is used).
+
+### Keep-alive command
+
+  PING :: FileCommand FRecipient
+
+To keep the transport connection alive and to generate noise traffic the clients should use `ping` command to which the server responds with `pong` response. This command should be sent unsigned and without file chunk ID.
+
+```abnf
+ping = %s"PING"
+```
+
+This command is always sent unsigned.
+
+  data FileResponse = ... | FRPong | ...
+
+```abnf
+pong = %s"PONG"
+```
+
+### File sender commands
+
+Sending any of the commands in this section (other than `register`, that is sent without file chunk ID) is only allowed with sender's ID.
+
+#### Register new file chunk
+
+  FNEW :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe BasicAuth -> FileCommand FSender
+
+This command is sent by the sender to the XFTP server to register a new file chunk. The syntax is:
+
+```abnf
+register = %s"FNEW " fileInfo rcvPublicAuthKeys basicAuth
+fileInfo = sndKey size digest
+sndKey = length x509encoded
+size = 1*DIGIT
+digest = length *OCTET
+rcvPublicAuthKeys = length 1*rcvPublicAuthKey
+rcvPublicAuthKey = length x509encoded
+basicAuth = "0" / "1" length *OCTET
+
+x509encoded = <binary X509 key encoding>
+
+length = 1*1 OCTET
+```
+
+If the file chunk is registered successfully, the server must send `sndIds` response with the sender's and recipients' file chunk IDs:
+
+  data FileResponse = ... | FRSndIds SenderId (NonEmpty RecipientId) | ...
+
+```abnf
+sndIds = %s"SIDS " senderId recipientIds
+senderId = length *OCTET
+recipientIds = length 1*recipientId
+recipientId = length *OCTET
+```
+
+#### Add file chunk recipients
+
+  FADD :: NonEmpty RcvPublicAuthKey -> FileCommand FSender
+
+This command is sent by the sender to the XFTP server to add additional recipient keys to the file chunk record, in case number of keys requested by client didn't fit into `register` command. The syntax is:
+
+```abnf
+add = %s"FADD " rcvPublicAuthKeys
+rcvPublicAuthKeys = length 1*rcvPublicAuthKey
+rcvPublicAuthKey = length x509encoded
+```
+
+If additional keys were added successfully, the server must send `rcvIds` response with the added recipients' file chunk IDs:
+
+  data FileResponse = ... | FRRcvIds (NonEmpty RecipientId) | ...
+
+```abnf
+rcvIds = %s"RIDS " recipientIds
+recipientIds = length 1*recipientId
+recipientId = length *OCTET
+```
+
+#### Upload file chunk
+
+  FPUT :: FileCommand FSender
+
+This command is sent by the sender to the XFTP server to upload file chunk body to server. The syntax is:
+
+```abnf
+put = %s"FPUT"
+```
+
+Chunk body is streamed via HTTP2 request.
+
+If file chunk body was successfully received, the server must send `ok` response.
+
+  data FileResponse = ... | FROk | ...
+
+```abnf
+ok = %s"OK"
+```
+
+#### Delete file chunk
+
+  FDEL :: FileCommand FSender
+
+This command is sent by the sender to the XFTP server to delete file chunk from the server. The syntax is:
+
+```abnf
+delete = %s"FDEL"
+```
+
+Server should delete file chunk record, invalidating all recipient IDs, and delete file body from file storage. If file chunk was successfully deleted, the server must send `ok` response.
+
+### File recipient commands
+
+Sending any of the commands in this section is only allowed with recipient's ID.
+
+#### Download file chunk
+
+  FGET :: RcvPublicDhKey -> FileCommand FRecipient
+
+This command is sent by the recipient to the XFTP server to download file chunk body from the server. The syntax is:
+
+```abnf
+get = %s"FGET " rDhKey
+rDhKey = length x509encoded
+```
+
+If requested file is successfully located, the server must send `file` response. File chunk body is sent as HTTP2 response body.
+
+  data FileResponse = ... | FRFile RcvPublicDhKey C.CbNonce | ...
+
+```abnf
+file = %s"FILE " sDhKey cbNonce
+sDhKey = length x509encoded
+cbNonce = <nonce used in NaCl crypto_box encryption scheme>
+```
+
+Chunk is additionally encrypted on the way from the server to the recipient using a key agreed via ephemeral DH keys `rDhKey` and `sDhKey`, so there is no ciphertext in common between sent and received traffic inside TLS connection, in order to complicate traffic correlation attacks, if TLS is compromised.
+
+#### Acknowledge file chunk download
+
+  FACK :: FileCommand FRecipient
+
+This command is sent by the recipient to the XFTP server to acknowledge file reception, deleting file ID from server for this recipient. The syntax is:
+
+```abnf
+ack = %s"FACK"
+```
+
+If file recipient ID is successfully deleted, the server must send `ok` response.
+
+In current implementation of XFTP protocol in SimpleX Chat clients don't use FACK command. Files are automatically expired on servers after configured time interval.

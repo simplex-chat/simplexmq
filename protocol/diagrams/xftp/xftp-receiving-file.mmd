@@ -1,0 +1,18 @@
+sequenceDiagram
+  participant B as Bob (recipient)
+  participant S as XFTP server(s)
+
+  note over B: having received file description<br>from sender
+
+  loop for each chunk
+    B ->> S: 1a. download chunk ("FGET")
+    S ->> B: send chunk body ("FILE")
+
+    opt
+      B ->> S: 1b. acknowledge chunk reception ("FACK")
+      note over S: delete recipient ID
+      S ->> B: respond with ok ("OK")
+    end
+  end
+
+  note over B: 2. combine chunks into a file<br>3. decrypt file using key from file description<br>4. extract file name and unpad the file<br>5. validate file digest with the file description
