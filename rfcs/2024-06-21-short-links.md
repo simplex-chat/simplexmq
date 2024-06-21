@@ -37,7 +37,16 @@ This link has the length of ~240 characters, which is a bit shorter than the ful
 
 This size can be further reduced by
 - not pinning server TLS certificate - the downside here is that while the attack that compromises TLS will not be able to substitute the link (because it's hash will not match), it will be able to intercept and to block it.
-- using even shorter hash - reducing the collision resistance.
+- do not include onion address, as the connection happens via proxy anyway, if it's untrusted server.
+- using shorter hash, e.g. SHA128 - reducing the collision resistance.
+
+If the server is known, the client could use it's hash and onion address, otherwise it could trust the proxy to use any existing session with the same hostname or to accept the risk of interception - given that there is no risk of substitution.
+
+With these "improvements" the link would be ~132 characters:
+
+```
+https://simplex.chat/contact/#smp8.simplex.im/abcdefghij0123456789abcdefghij0123456789abcdefghij0123456789abcdefghij0123456789abcd=
+```
 
 If we implement it, the request to resolve the link would be made via proxied SMP command (to avoid the direct connection between the client and the recipient's server).
 
