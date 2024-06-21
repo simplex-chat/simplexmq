@@ -135,12 +135,14 @@ To reduce the size of file description, chunks are grouped by the server host.
 
 Having received the description, the recipient will:
 
-1) Download all chunks
+1) Download all chunks.
 
 The receiving client can fall back to secondary servers, if necessary:
 - if the server is not available.
 - if the chunk is not present on the server (ERR AUTH response).
 - if the hash of the downloaded file chunk does not match the description.
+
+Optionally recipient can acknowledge file chunk reception to delete file ID from server for this recipient.
 
 2) Combine the chunks into a file.
 
@@ -149,6 +151,8 @@ The receiving client can fall back to secondary servers, if necessary:
 4) Extract file name and unpad the file.
 
 5) Validate file digest with the file description.
+
+![Receiving file](./diagrams/xftp/xftp-receiving-file.svg)
 
 ## File description
 
