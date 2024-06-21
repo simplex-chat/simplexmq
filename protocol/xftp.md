@@ -111,6 +111,7 @@ To send the file, the sender will:
 
 2) Upload file chunks
   - register each chunk record with randomly chosen one or more (for redundancy) XFTP server(s).
+  - optionally request additional recipient IDs, if required number of recipient keys didn't fit into register request.
   - upload each chunk to chosen server(s).
 
 3) Prepare file descriptions, one per recipient.
@@ -127,6 +128,8 @@ The sending client combines addresses of all chunks and other information into "
 To reduce the size of file description, chunks are grouped by the server host.
 
 4) Send file description(s) to the recipient(s) out-of-band, via pre-existing secure and authenticated channel. E.g., SimpleX clients send it as messages via SMP protocol, but it can be done via any other channel.
+
+![Sending file](./diagrams/xftp/xftp-sending-file.svg)
 
 2. Receiving the file.
 
@@ -486,3 +489,5 @@ ack = %s"FACK"
 ```
 
 If file recipient ID is successfully deleted, the server must send `ok` response.
+
+In current implementation of XFTP protocol in SimpleX Chat clients don't use FACK command. Files are automatically expired on servers after configured time interval.
