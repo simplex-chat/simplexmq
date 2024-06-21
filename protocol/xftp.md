@@ -202,7 +202,20 @@ clientAppServer is not a server the client connects to - it is a server that sho
 
 ## XFTP qualities and features
 
+XFTP stands for SimpleX File Transfer Protocol. Its design is based on the same ideas and has some of the qualities of SimpleX Messaging Protocol:
+
+- recipient cannot see sender's IP address, as the file fragments (chunks) are temporarily stored on multiple XFTP relays.
+- file can be sent asynchronously, without requiring the sender to be online for file to be received.
+- there is no network of peers that can observe this transfer - sender chooses which XFTP relays to use, and can self-host their own.
+- XFTP relays do not have any file metadata - they only see individual chunks, with access to each chunk authorized with anonymous credentials (using Edwards curve cryptographic signature) that are random per chunk.
+- chunks have one of the sizes allowed by the servers - 64KB, 256KB, 1MB and 4MB chunks, so sending a large file looks indistinguishable from sending many small files to XFTP server. If the same transport connection is reused, server would only know that chunks are sent by the same user.
+- each chunk can be downloaded by multiple recipients, but each recipient uses their own key and chunk ID to authorize access, and the chunk is encrypted by a different key agreed via ephemeral DH keys (NaCl crypto_box (SalsaX20Poly1305 authenticated encryption scheme ) with shared secret derived from Curve25519 key exchange) on the way from the server to each recipient. XFTP protocol as a result has the same quality as SMP protocol - there are no identifiers and ciphertext in common between sent and received traffic inside TLS connection, so even if TLS is compromised, it complicates traffic correlation attacks.
+- XFTP protocol supports redundancy - each file chunk can be sent via multiple relays, and the recipient can choose the one that is available. Current implementation of XFTP protocol in SimpleX Chat does not support redundancy though.
+- the file as a whole is encrypted with a random symmetric key using NaCl secret_box.
+
 ## Cryptographic algorithms
+
+TODO
 
 ## File chunk IDs
 
