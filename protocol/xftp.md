@@ -241,7 +241,13 @@ XFTP stands for SimpleX File Transfer Protocol. Its design is based on the same 
 
 ## Cryptographic algorithms
 
-TODO
+Clients must cryptographically authorize XFTP commands, see [Command authentication](#command-authentication).
+
+To authorize/verify transmissions clients and servers MUST use either signature algorithm Ed25519 algorithm defined in RFC8709 or using deniable authentication scheme based on NaCL crypto_box (see Simplex Messaging Protocol).
+
+To encrypt/decrypt file chunk bodies delivered to the recipients, servers/clients MUST use NaCL crypto_box.
+
+Clients MUST encrypt file chunk bodies sent via XFTP servers using use NaCL crypto_box.
 
 ## File chunk IDs
 
