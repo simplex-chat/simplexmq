@@ -315,6 +315,8 @@ pong = %s"PONG"
 
 ### File sender commands
 
+Sending any of the commands in this section (other than `register`, that is sent without file chunk ID) is only allowed with sender's ID.
+
 #### Register new file chunk
 
   FNEW :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe BasicAuth -> FileCommand FSender
@@ -402,6 +404,8 @@ delete = %s"FDEL"
 Server should delete file chunk record, invalidating all recipient IDs, and delete file body from file storage. If file chunk was successfully deleted, the server must send `ok` response.
 
 ### File recipient commands
+
+Sending any of the commands in this section is only allowed with recipient's ID.
 
 #### Download file chunk
 
