@@ -60,6 +60,32 @@ XFTP server allows uploading fixed size file chunks, with or without basic authe
 
 Each file chunk allows multiple recipients, each recipient can download the same chunk multiple times. It allows depending on the threat model use the same recipient credentials for multiple parties, thus reducing server ability to understand the number of intended recipients (but server can still track IP addresses to determine it), or use one unique set of credentials for each recipient, frustrating traffic correlation on the assumption of compromised TLS. In the latter case, senders can create a larger number of recipient credentials to hide the actual number of intended recipients from the servers (which is what SimpleX clients do).
 
+```
+           Sender                      Internet                XFTP relays             Internet         Recipient
+----------------------------   |   -----------------   |   -------------------   |   ------------   |   ---------- 
+                               |                       |                         |                  |
+                               |                       |   (can be self-hosted)  |                  |
+                               |                       |        +---------+      |                  |
+                  chunk 1     ----- HTTP2 over TLS ------       |  XFTP   |     ---- HTTP2 / TLS -----   chunk 1
+                |---> SimpleX File Transfer Protocol (XFTP) --> |  Relay  | --->        XFTP         ------------->|
+                |             ---------------------------       +---------+     ----------------------             |
+                |              |                       |                         |                  |              | 
+                |              |                       |                         |                  |              v
+          +----------+         |                       |        +---------+      |                  |        +-------------+
+          | Sending  | ch. 2  ------- HTTP2 / TLS -------       |  XFTP   |     ---- HTTP2 / TLS ----  ch. 2 |  Receiving  |
+file ---> |   XFTP   | ------>           XFTP            ---->  |  Relay  | --->        XFTP         ------> |     XFTP    | ---> file
+          |  Client  |        ---------------------------       +---------+     ----------------------       |    Client   |
+          +----------+         |                       |                         |                  |        +-------------+
+                |              |                       |                         |                  |              ^
+                |              |                       |        +---------+      |                  |              |
+                |             ------- HTTP2 / TLS -------       |  XFTP   |     ---- HTTP2 / TLS ----              |
+                |------------->           XFTP           ---->  |  Relay  | --->        XFTP         ------------->|
+                   chunk N    ---------------------------       +---------+     ---------------------    chunk N
+                               |                       |   (store file chunks)   |                  |
+                               |                       |                         |                  |
+                               |                       |                         |                  |
+```
+
 When sender client uploads a file chunk, it has to register it first with one sender ID and multiple recipient IDs, and one random unique key per ID to authenticate sender and recipients, and also provide its size and hash that will be validated when chunk is uploaded.
 
 To send the actual file, the sender client MUST pad it and encrypt it with a random symmetric key and distribute chunks of fixed sized across multiple XFTP servers. Information about chunk locations, keys, hashes and required keys is passed to the recipients as "[file description](#file-description)" out-of-band.
