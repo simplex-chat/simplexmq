@@ -24,16 +24,13 @@
   - [Command authentication](#command-authentication)
   - [Keep-alive command](#keep-alive-command)
   - [File sender commands](#file-sender-commands)
-    - [Create queue command](#create-queue-command)
-    - [Subscribe to queue](#subscribe-to-queue)
-    - [Secure queue command](#secure-queue-command)
-    - [Enable notifications command](#enable-notifications-command)
-    - [Disable notifications command](#disable-notifications-command)
-    - [Acknowledge message delivery](#acknowledge-message-delivery)
-    - [Suspend queue](#suspend-queue)
-    - [Delete queue](#delete-queue)
+    - [Register new file chunk](#register-new-file-chunk)
+    - [Add file chunk recipients](#add-file-chunk-recipients)
+    - [Upload file chunk](#upload-file-chunk)
+    - [Delete file chunk](#delete-file-chunk)
   - [File recipient commands](#file-recipient-commands)
-    - [Send message](#send-message)
+    - [Download file chunk](#download-file-chunk)
+    - [Acknowledge file chunk download](#acknowledge-file-chunk-download)
 
 ## Abstract
 
@@ -228,11 +225,54 @@ XFTP server implementations MUST NOT create, store or send to any other servers:
 
 ## Transport protocol
 
+- binary-encoded commands sent as fixed-size padded block in the body of HTTP2 POST request, similar to SMP and notifications server protocol transmission encodings.
+- HTTP2 POST with a fixed size padded block body for file upload and download.
+
+Block size - 4096 bytes (it would fit ~120 Ed25519 recipient keys).
+
+The reasons to use HTTP2:
+
+- avoid the need to have two hostnames (or two different ports) for commands and file uploads.
+- compatibility with the existing HTTP2 client libraries.
+
+The reason not to use JSON bodies:
+
+- bigger request size, so fewer recipient keys would fit in a single request
+- signature over command has to be outside of JSON anyway.
+
+The reason not to use URI segments / HTTP verbs / REST semantics is to have consistent request size.
+
 ### TLS ALPN
+
+TODO
 
 ### Connection handshake
 
+TODO
+
 ### Requests and responses
+
+- File sender:
+  - create file chunk record.
+    - Parameters:
+      - Ed25519 key for subsequent sender commands and Ed25519 keys for commands of each recipient.
+      - chunk size.
+    - Response:
+      - chunk ID for the sender and different IDs for all recipients.
+  - add recipients to file chunk
+    - Parameters:
+      - sender's chunk ID
+      - Ed25519 keys for commands of each recipient.
+    - Response:
+      - chunk IDs for new recipients.
+  - upload file chunk.
+  - delete file chunk (invalidates all recipient IDs).
+- File recipient:
+  - download file chunk:
+    - chunk ID
+    - DH key for additional encryption of the chunk.
+    - command should be signed with the key passed by the sender when creating chunk record.
+  - delete file chunk ID (only for one recipient): signed with the same key.
 
 ## XFTP commands
 
@@ -395,46 +435,3 @@ ack = %s"FACK"
 ```
 
 If file recipient ID is successfully deleted, the server must send `ok` response.
-
-### Transport protocol
-
-- binary-encoded commands sent as fixed-size padded block in the body of HTTP2 POST request, similar to SMP and notifications server protocol transmission encodings.
-- HTTP2 POST with a fixed size padded block body for file upload and download.
-
-Block size - 4096 bytes (it would fit ~120 Ed25519 recipient keys).
-
-The reasons to use HTTP2:
-
-- avoid the need to have two hostnames (or two different ports) for commands and file uploads.
-- compatibility with the existing HTTP2 client libraries.
-
-The reason not to use JSON bodies:
-
-- bigger request size, so fewer recipient keys would fit in a single request
-- signature over command has to be outside of JSON anyway.
-
-The reason not to use URI segments / HTTP verbs / REST semantics is to have consistent request size.
-
-### Required server commands:
-
-- File sender:
-  - create file chunk record.
-    - Parameters:
-      - Ed25519 key for subsequent sender commands and Ed25519 keys for commands of each recipient.
-      - chunk size.
-    - Response:
-      - chunk ID for the sender and different IDs for all recipients.
-  - add recipients to file chunk
-    - Parameters:
-      - sender's chunk ID
-      - Ed25519 keys for commands of each recipient.
-    - Response:
-      - chunk IDs for new recipients.
-  - upload file chunk.
-  - delete file chunk (invalidates all recipient IDs).
-- File recipient:
-  - download file chunk:
-    - chunk ID
-    - DH key for additional encryption of the chunk.
-    - command should be signed with the key passed by the sender when creating chunk record.
-  - delete file chunk ID (only for one recipient): signed with the same key.
