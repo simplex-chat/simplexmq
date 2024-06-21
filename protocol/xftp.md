@@ -414,19 +414,21 @@ Sending any of the commands in this section is only allowed with recipient's ID.
 This command is sent by the recipient to the XFTP server to download file chunk body from the server. The syntax is:
 
 ```abnf
-get = %s"FGET " rcvPublicDhKey
-rcvPublicDhKey = length x509encoded
+get = %s"FGET " rDhKey
+rDhKey = length x509encoded
 ```
 
-If requested file is located, the server must send `file` response. File chunk body is sent as HTTP2 response body.
+If requested file is successfully located, the server must send `file` response. File chunk body is sent as HTTP2 response body.
 
   data FileResponse = ... | FRFile RcvPublicDhKey C.CbNonce | ...
 
 ```abnf
-file = %s"FILE " rcvPublicDhKey cbNonce
-rcvPublicDhKey = length x509encoded
+file = %s"FILE " sDhKey cbNonce
+sDhKey = length x509encoded
 cbNonce = <nonce used in NaCl crypto_box encryption scheme>
 ```
+
+Chunk is additionally encrypted on the way from the server to the recipient using a key agreed via ephemeral DH keys `rDhKey` and `sDhKey`, so there is no ciphertext in common between sent and received traffic inside TLS connection, in order to complicate traffic correlation attacks, if TLS is compromised.
 
 #### Acknowledge file chunk download
 
