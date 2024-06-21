@@ -41,9 +41,7 @@
   - [Notifier commands](#notifier-commands)
     - [Subscribe to queue notifications](#subscribe-to-queue-notifications)
   - [Server messages](#server-messages)
-    - [Queue IDs response](#queue-ids-response)
     - [Deliver queue message](#deliver-queue-message)
-    - [Notifier queue ID response](#notifier-queue-id-response)
     - [Deliver message notification](#deliver-message-notification)
     - [Subscription END notification](#subscription-end-notification)
     - [Error responses](#error-responses)
@@ -333,9 +331,9 @@ Simplex messaging clients must cryptographically authorize commands for the foll
 - With the optional notifier's key:
   - subscribe to message notifications (`NSUB`)
 
-To authorize/verify transmissions clients and servers MUST use either signature algorithm Ed25519 algorithm defined in [RFC8709][15] or using [deniable authentication scheme](#deniable-client-authentication-scheme) based on NaCL crypto_box.
+To authorize/verify transmissions clients and servers MUST use either signature algorithm Ed25519 algorithm defined in [RFC8709][15] or [deniable authentication scheme](#deniable-client-authentication-scheme) based on NaCL crypto_box.
 
-It is recommended that clients use signature algorith for the recipient commands and deniable authentication scheme for sender commands (to preserve non-repudiation quality in the whole protocol stack).
+It is recommended that clients use signature algorith for the recipient commands and deniable authentication scheme for sender commands (to have non-repudiation quality in the whole protocol stack).
 
 To encrypt/decrypt message bodies delivered to the recipients, servers/clients MUST use NaCL crypto_box.
 
@@ -343,7 +341,17 @@ Clients MUST encrypt message bodies sent via SMP servers using use NaCL crypto_b
 
 ## Deniable client authentication scheme
 
-TODO
+While e2e encryption algorithms used in the client applications have repudiation quality, which is the desirable default, using signature algorithm for command authorization has non-repudiation quality.
+
+SMP protocol supports repudiable authenticators to authorize client commands. These authenticators use NaCl crypto_box that proves authentication and third party unforgeability and, unlike signature, provides repudiation guarantee. See [crypto_box docs](https://nacl.cr.yp.to/box.html).
+
+When queue is created or secured, the recipient would provide a DH key (X25519) to the server (either their own or received from the sender, in case of KEY command), and the server would provide its own random X25519 key per session in the handshake header. The authenticator is computed in this way:
+
+```abnf
+transmission = authenticator authorized
+authenticator = crypto_box(sha512(authorized), secret = dh(client long term queue key, server session key), nonce = correlation ID)
+authorized = sessionIdentifier corrId queueId protocol_command ; same as the currently signed part of the transmission
+```
 
 ## Simplex queue IDs
 
@@ -409,18 +417,20 @@ transmissionLength = 2*2 OCTET ; word16 encoded in network byte order
 
 transmission = authorization authorized
 authorized = sessionIdentifier corrId entityId smpCommand
+corrId = %x18 24*24 OCTET / %x0 ""
   ; corrId is required in client commands and server responses,
-  ; it is empty in server notifications.
-corrId = length *OCTET
-entityId = length *OCTET ; queueId or proxySessionId
+  ; it is empty (0-length) in server notifications.
+  ; %x18 is 24 - the random correlation ID must be 24 bytes as it is used as a nonce for NaCL crypto_box in some contexts.
+entityId = shortString ; queueId or proxySessionId
   ; empty entityId ID is used with "create" command and in some server responses
-authorization = length *OCTET ; signature or authenticator
+authorization = shortString ; signature or authenticator
   ; empty authorization can be used with "send" before the queue is secured with secure command
   ; authorization is always empty with "ping" and server responses
 sessionIdentifier = "" ; 
-sessionIdentifierForAuth = length *OCTET 
+sessionIdentifierForAuth = shortString 
   ; sessionIdentifierForAuth MUST be included in authorized transmission body.
   ; From v7 of SMP protocol but it is no longer used in the transmission to save space and fit more transmissions in the transport block.
+shortString = length *OCTET ; length prefixed bytearray 0-255 bytes
 length = 1*1 OCTET
 ```
 
@@ -433,12 +443,12 @@ smpCommand = ping / recipientCmd / senderCommand /
              proxyCommand / subscribeNotifications / serverMsg
 recipientCmd = create / subscribe / rcvSecure /
                enableNotifications / disableNotifications /
-               acknowledge / suspend / delete / queueInfo
+               acknowledge / suspend / delete / getQueueInfo
 senderCommand = send / sndSecure
 proxyCommand = proxySession / proxyCommand / relayCommand
 serverMsg = queueIds / message / notifierId / messageNotification /
             proxySessionKey / proxyResponse / relayResponse
-            unsubscribed / ok / error
+            unsubscribed / queueInfo/ ok / error
 ```
 
 The syntax of specific commands and responses is defined below.
@@ -495,8 +505,8 @@ queueIds = %s"IDS " recipientId senderId srvDhPublicKey
 serverDhPublicKey = length x509encoded
 ; the server's Curve25519 key for DH exchange to derive the secret
 ; that the server will use to encrypt delivered message bodies to the recipient
-recipientId = length *OCTET ; 16-24 bytes
-senderId = length *OCTET ; 16-24 bytes
+recipientId = shortString ; 16-24 bytes
+senderId = shortString ; 16-24 bytes
 ```
 
 Once the queue is created, the recipient gets automatically subscribed to receive the messages from that queue, until the transport connection is closed. The `subscribe` command is needed only to start receiving the messages from the existing queue when the new transport connection is opened.
@@ -521,19 +531,21 @@ This transmission and its response MUST be signed.
 
 #### Secure queue by recipient
 
-  KEY :: SndPublicAuthKey -> Command Recipient
+This command is only used until v8 of SMP protocol. V9 uses [SKEY](#secure-queue-by-sender).
 
 This command is sent by the recipient to the server to add sender's key to the queue:
 
 ```abnf
-rcvSecure = %s"KEY " senderSignaturePublicKey
-senderSignaturePublicKey = length x509encoded
-; the sender's Ed25519 or Ed448 key to verify SEND commands for this queue
+rcvSecure = %s"KEY " senderAuthPublicKey
+senderAuthPublicKey = length x509encoded
+; the sender's Ed25519 or X25519 key to verify SEND commands for this queue
 ```
 
 `senderKey` is received from the sender as part of the first message - see [Send Message](#send-message) command.
 
-Once the queue is secured only signed messages can be sent to it.
+Once the queue is secured only authorized messages can be sent to it.
+
+This command MUST be used in transmission with recipient queue ID.
 
 #### Enable notifications command
 
@@ -556,7 +568,7 @@ The server will respond with `notifierId` response if notifications were enabled
 
 ```abnf
 notifierId = %s"NID " notifierId srvNotificationDhPublicKey
-notifierId = length *OCTET ; 16-24 bytes
+notifierId = shortString ; 16-24 bytes
 srvNotificationDhPublicKey = length x509encoded
 ; the server's Curve25519 key for DH exchange to derive the secret
 ; that the server will use to encrypt notification metadata to the recipient (encryptedNMsgMeta in NMSG)
@@ -624,13 +636,44 @@ delete = %s"DEL"
 
 #### Get queue state
 
-  QUE :: Command Recipient
+This command is used by the queue recipient to get the debugging information about the current state of the queue.
+
+The response to that command is `INFO`.
 
 ```abnf
-queueInfo =
+getQueueInfo = %s"QUE"
+queueInfo = %s"INFO " info
+info = <json encoded queue information>
 ```
 
-TODO
+The format of queue information is implementation specific, and is not part of the specification. For information, JTD schema (RFC 8927) for queue information returned by the reference implementation of SMP server is:
+
+```json
+{
+  "properties": {
+    "qiSnd": {"type": "boolean"},
+    "qiNtf": {"type": "boolean"},
+    "qiSize": {"type": "uint16"}
+  },
+  "optionalProperties": {
+    "qiSub": {
+      "properties": {
+        "qSubThread": {"enum": ["noSub", "subPending", "subThread", "prohibitSub"]}
+      },
+      "optionalProperties": {
+        "qDelivered": {"type": "string", "metadata": {"description": "message ID"}}
+      }
+    },
+    "qiMsg": {
+      "properties": {
+        "msgId": {"type": "string"},
+        "msgTs": {"type": "timestamp"},
+        "msgType": {"enum": ["message", "quota"]}
+      }
+    }
+  }
+}
+```
 
 ### Sender commands
 
@@ -638,17 +681,21 @@ Currently SMP defines only one command that can be used by senders - `send` mess
 
 #### Secure queue by sender
 
-  SKEY :: SndPublicAuthKey -> Command Sender
+This command is used from v8 of SMP protocol. V8 and earlier uses [KEY](#secure-queue-by-recipient).
+
+This command is sent by the sender to the server to add sender's key to the queue:
 
 ```abnf
-sndSecure =
+sndSecure = %s"SKEY " senderAuthPublicKey
+senderAuthPublicKey = length x509encoded
+; the sender's Ed25519 or X25519 key to verify SEND commands for this queue
 ```
 
-TODO
+Once the queue is secured only authorized messages can be sent to it.
+
+This command MUST be used in transmission with sender queue ID.
 
 #### Send message
-
-  SEND :: MsgFlags -> MsgBody -> Command Sender
 
 This command is sent to the server by the sender both to confirm the queue after the sender received out-of-band message from the recipient and to send messages after the queue is secured:
 
@@ -670,15 +717,17 @@ word16 = 2*2 OCTET
 
 The first message is sent to confirm the queue - it should contain sender's server key (see decrypted message syntax below) - this first message must be sent without signature.
 
-Once the queue is secured (see [Secure queue command](#secure-queue-command)), the following send commands must be sent with the signature.
+Once the queue is secured (see [Secure queue by sender](#secure-queue-by-sender)), the following send commands must be sent with the authorization.
 
 The server must respond with `"ERR AUTH"` response in the following cases:
 
 - the queue does not exist or is suspended
-- the queue is secured but the transmission does NOT have a signature
-- the queue is NOT secured but the transmission has a signature
+- the queue is secured but the transmission does NOT have a authorization
+- the queue is NOT secured but the transmission has a authorization
 
-Until the queue is secured, the server should accept any number of unsigned messages - it both enables the legitimate sender to resend the confirmation in case of failure and also allows the simplex messaging client to ignore any confirmation messages that may be sent by the attackers (assuming they could have intercepted the queue ID in the server response, but do not have a correct encryption key passed to sender in out-of-band message).
+The server must respond with `"ERR QUOTA"` response when queue capacity is reached. The number of messages that the server can hold is defined by the server configuration. When sender reaches queue capacity the server will not accept any messages until the recipient receives ALL messages from the queue. After the last message is delivered, the server will deliver an additional special message indicating that the queue capacity was reached. See [Deliver queue message](#deliver-queue-message)
+
+Until the queue is secured, the server should accept any number of unsigned messages (up to queue  capacity) - it allows the sender to resend the confirmation in case of failure.
 
 The body should be encrypted with the recipient's "public" key (`EK`); once decrypted it must have this format:
 
@@ -686,34 +735,36 @@ The body should be encrypted with the recipient's "public" key (`EK`); once decr
 sentMsgBody = <encrypted padded(smpClientMessage, 16032)>
 smpClientMessage = smpPrivHeader clientMsgBody
 smpPrivHeader = emptyHeader / smpConfirmationHeader
-emptyHeader = " "
-smpConfirmationHeader = %s"K" senderKey
+emptyHeader = "_"
+smpConfirmationHeader = %s"K" senderKey ; only used up until SMP v8
 senderKey = length x509encoded
-; the sender's Ed25519 or Ed448 public key to sign SEND commands for this queue
+; the sender's Ed25519 or X25519 public key to authorize SEND commands for this queue
 clientMsgBody = *OCTET ; up to 16016 in case of emptyHeader
 ```
 
 `clientHeader` in the initial unsigned message is used to transmit sender's server key and can be used in the future revisions of SMP protocol for other purposes.
 
-SMP transmission structure for sent messages:
+SMP transmission structure for directly sent messages:
 
 ```
-------- transmission (= 16384 bytes)
+------- transmissions (= 16384 bytes)
+    1 | transmission count (= 1)
     2 | originalLength
- 276- | signature sessionId corrId queueId %s"SEND" SP (1+114 + 1+32? + 1+32 + 1+24 + 4+1 = 210)
-      ....... smpEncMessage (= 16088 bytes = 16384 - 296 bytes)
+ 299- | authorization sessionId corrId queueId %s"SEND" SP (1+114 + 1+32? + 1+24 + 1+24 + 4+1 = 203)
+      ....... smpEncMessage (= 16064 bytes = 16384 - 320 bytes)
          8- | smpPubHeader (for messages it is only version and '0' to mean "no DH key" = 3 bytes)
          24 | nonce for smpClientMessage
          16 | auth tag for smpClientMessage
-            ------- smpClientMessage (E2E encrypted, = 16032 bytes = 16088 - 48)
+            ------- smpClientMessage (E2E encrypted, = 16016 bytes = 16064 - 48)
                 2 | originalLength
-               12- | smpPrivHeader
+               2- | smpPrivHeader
                   .......
-                        | clientMsgBody (<= 16016 bytes = 16032 - 14)
+                        | clientMsgBody (<= 16012 bytes = 16016 - 4)
                   .......
                0+ | smpClientMessage pad
             ------- smpClientMessage end
             |
+         0+ | message pad
       ....... smpEncMessage end
   18+ | transmission pad
 ------- transmission end
@@ -722,20 +773,23 @@ SMP transmission structure for sent messages:
 SMP transmission structure for received messages:
 
 ```
-------- transmission (= 16384 bytes)
+------- transmissions (= 16384 bytes)
+    1 | transmission count (= 1)
     2 | originalLength
- 276- | signature sessionId corrId queueId %s"MSG" SP msgId timestamp (1+114 + 1+32? + 1+32 + 1+24 + 3+1 + 24+1 + 8 = 243)
+ 275- | signature sessionId corrId queueId %s"MSG" SP msgId (1+114 + 1+32? + 1+24 + 1+24 + 3+1 + 1+24 = 227)
    16 | auth tag (msgId is used as nonce)
       ------- serverEncryptedMsg (= 16090 bytes = 16384 - 294 bytes)
           2 | originalLength
-            ....... smpEncMessage (= 16088 bytes = 16090 - 2 bytes)
-               16- | smpPubHeader (empty header for the message)
+          8 | timestamp
+        16- | message flags
+            ....... smpEncMessage (= 16064 bytes = 16090 - 26 bytes)
+               8- | smpPubHeader (empty header for the message)
                24 | nonce for smpClientMessage
                16 | auth tag for smpClientMessage
-                  ------- smpClientMessage (E2E encrypted, = 16032 bytes = 16088 - 56 bytes)
+                  ------- smpClientMessage (E2E encrypted, = 16016 bytes = 16064 - 48 bytes)
                       2 | originalLength
-                     16- | smpPrivHeader (empty header for the message)
-                        ....... clientMsgBody (<= 16016 bytes = 16032 - 16)
+                     2- | smpPrivHeader (empty header for the message)
+                        ....... clientMsgBody (<= 16012 bytes = 16016 - 4)
                               -- TODO move internal structure (below) to agent protocol
                           20- | agentPublicHeader (the size is for user messages post handshake, without E2E X3DH keys - it is version and 'M' for the messages - 3 bytes in total)
                               ....... E2E double-ratchet encrypted (<= 15996 bytes = 16016 - 20)
@@ -772,55 +826,153 @@ SMP transmission structure for received messages:
 
 ### Proxying sender commands
 
+To protect transport (IP address and session) anonymity of the sender from the server chosen (and, potentially, controlled) by the recipient SMP v8 added support for proxying sender's command to the recipient's server via the server chosen by the sender.
+
+Sequence diagram for sending the message and `SKEY` commands via SMP proxy:
+
+```
+-------------               -------------                     -------------              -------------
+|  sending  |               |    SMP    |                     |    SMP    |              | receiving |
+|  client   |               |   proxy   |                     |   server  |              |  client   |
+-------------               -------------                     -------------              -------------
+     |           `PRXY`           |                                 |                          |
+     | -------------------------> |                                 |                          |
+     |                            | ------------------------------> |                          |
+     |                            |          SMP handshake          |                          |
+     |                            | <------------------------------ |                          |
+     |           `PKEY`           |                                 |                          |
+     | <------------------------- |                                 |                          |
+     |                            |                                 |                          |
+     |        `PFWD` (s2r)        |                                 |                          |
+     | -------------------------> |                                 |                          |
+     |                            |           `RFWD` (p2r)          |                          |
+     |                            | ------------------------------> |                          |
+     |                            |           `RRES` (p2r)          |                          |
+     |                            | <------------------------------ |                          |
+     |        `PRES` (s2r)        |                                 |           `MSG`          |
+     | <------------------------- |                                 | -----------------------> |
+     |                            |                                 |           `ACK`          |
+     |                            |                                 | <----------------------- |
+     |                            |                                 |                          |
+     |                            |                                 |                          |
+```
+
+1. The client requests (`PRXY` command) the chosen server to connect to the destination SMP server and receives (`PKEY` response) the session information, including server certificate and the session key signed by this certificate. To protect client session anonymity the proxy MUST re-use the same session with all clients that request connection with any given destination server.
+
+2. The client encrypts the transmission (`SKEY` or `SEND`) to the destination server using the shared secret computed from per-command random key and server's session key and sends it to proxying server in `PFWD` command.
+
+3. Proxy additionally encrypts the body to prevent correlation by ciphertext (in case TLS is compromised) and forwards it to proxy in `RFWD` command.
+
+4. Proxy receives the double-encrypted response from the destination server, removes one encryption layer and forwards it to the client.
+
+The diagram below shows the encrypttion layers for `PFWD`/`RFWD` commands and `RRES`/`PRES` responses:
+
+- s2r - encryption between client and SMP relay, with relay key returned in relay handshake, with MITM by proxy mitigated by verifying the certificate fingerprint included in the relay address. This encryptio prevents proxy server from observing commands and responses - proxy does not know how many different queues a connected client sends messages and commands to.
+- e2e - end-to-end encryption per SMP queue, with additional client encryption inside it.
+- p2r - additional encryption between proxy and SMP relay with the shared secret agreed in the handshake, to mitigate traffic correlation inside TLS.
+- r2c - additional encryption between SMP relay and client to prevent traffic correlation inside TLS.
+
+```
+-----------------             -----------------  -- TLS --  -----------------             -----------------
+|               |  -- TLS --  |               |  -- p2r --  |               |  -- TLS --  |               |
+|               |  -- s2r --  |               |  -- s2r --  |               |  -- r2c --  |               |
+|    sending    |  -- e2e --  |               |  -- e2e --  |               |  -- e2e --  |   receiving   |
+|    client     |     MSG     |   SMP proxy   |     MSG     |   SMP server  |     MSG     |    client     |
+|               |  -- e2e --  |               |  -- e2e --  |               |  -- e2e --  |               |
+|               |  -- s2r --  |               |  -- s2r --  |               |  -- r2c --  |               |
+|               |  -- TLS --  |               |  -- p2r --  |               |  -- TLS --  |               |
+-----------------             -----------------  -- TLS --  -----------------             -----------------
+```
+
+SMP proxy is not another type of the server, it is a role that any SMP server can play when forwarding the commands.
+
 #### Request proxied session
 
-  PRXY :: SMPServer -> Maybe BasicAuth -> Command ProxiedClient -- request a relay server connection by URI
+The sender uses this command to request the session with the destination proxy.
+
+Servers SHOULD support basic auth with this command, to allow only server owners and trusted users to proxy commands to the destination servers.
 
 ```abnf
-proxySession =
+proxySession = %s"PRXY" SP smpServer basicAuth
+smpServer = hosts port fingerprint
+hosts = length 1*host
+host = shortString
+port = shortString
+fingerprint = shortString
+basicAuth = "0" / "1" shortString ; server password
 ```
 
 ```abnf
-proxySessionKey =
+proxySessionKey = %s"PKEY" SP sessionId smpVersionRange certChain signedKey
+sessionId = shortString
+  ; Session ID (tlsunique) of the proxy with the destination server.
+  ; This session ID should be used as entity ID in transmission with `PFWD` command
+certChain = length 1*cert
+cert = originalLength x509encoded
+signedKey = originalLength x509encoded ; key signed with certificate
+originalLength = 2*2 OCTET
 ```
 
-TODO
+When the client receives PKEY response it MUST validate that:
+- the fingerprint of the received certificate matches fingerprint in the server address - it mitigates MITM attack by proxy.
+- the server session key is correctly signed with the received certificate.
+
+The proxy server may respond with error response in case the destination server is not available or in case it has an earlier version that does not support proxied commands.
 
 #### Send command via proxy
 
-  -- Transmission to proxy:
-  -- - entity ID: ID of the session with relay returned in PKEY (response to PRXY)
-  -- - corrId: also used as a nonce to encrypt transmission to relay, corrId + 1 - from relay
-  -- - key (1st param in the command) is used to agree DH secret for this particular transmission and its response
-  -- Encrypted transmission should include session ID (tlsunique) from proxy-relay connection.
-  PFWD :: VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> Command ProxiedClient -- use CorrId as CbNonce, client to proxy
-  -- Transmission forwarded to relay:
-  -- - entity ID: empty
-  -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
+Sender can send `SKEY` and `SEND` commands via proxy after obtaining the session ID with `PRXY` command (see [Request proxied session](#request-proxied-session)).
+
+Transmission sent to proxy server should use session ID as entity ID and use a random correlation ID of 24 bytes as a nonce for crypto_box encryption of transmission to the destination server. The random ephemeral X25519 key to encrypt transmission should be unique per command, and it should be combined with the key sent by the server in the handshake header to proxy and to the client in `PKEY` command.
+
+Encrypted transmission should use the received session ID from the connection between proxy server and destination server in the authorized body.
+
+-- Transmission to proxy:
+-- - entity ID: ID of the session with relay returned in PKEY (response to PRXY)
+-- - corrId: also used as a nonce to encrypt transmission to relay, corrId + 1 - from relay
+-- - key (1st param in the command) is used to agree DH secret for this particular transmission and its response
+-- Encrypted transmission should include session ID (tlsunique) from proxy-relay connection.
+PFWD :: VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> Command ProxiedClient -- use CorrId as CbNonce, client to proxy
 
 ```abnf
-proxyCommand =
+proxyCommand = %s"PFWD" SP smpVersion commandKey <encrypted padded(transmission, 16242)>
+smpVersion = 2*2 OCTET
+commandKey = length x509encoded
 ```
+
+The proxy server will forward the encrypted transmission in `RFWD` command (see below).
+
+Having received the `RRES` response from the destination server, proxy server will forward `PRES` response to the client. `PRES` response should use the same correlation ID as `PFWD` command. The destination server will use this correlation ID increased by 1 as a nonce for encryption of the response.
 
 ```abnf
-proxyResponse =
+proxyResponse = %s"PRES" SP <encrypted padded(forwardedResponse, 16242)>
 ```
 
-TODO
+#### Forward command to destination server
 
-#### Forward message or secure queue command to destination server
+Having received `PFWD` command from the client, the server should additionally encrypt it (without padding, as the received transmission is already encrypted by the client and padded to a fixed size) together with the correlation ID, sender command key, and protocol version, and forward it to the destination server as `RFWD` command:
 
-  RFWD :: EncFwdTransmission -> Command Sender -- use CorrId as CbNonce, proxy to relay
+Transmission forwarded to relay uses empty entity ID and its unique random correlation ID is used as a nonce to encrypt forwarded transmission. Correlation ID increased by 1 is used by the destination server as a nonce to encrypt responses.
 
 ```abnf
-relayCommand =
+relayCommand = %s"RFWD" SP <encrypted(forwardedTransmission)>
+forwardedTransmission = fwdCorrId fwdSmpVersion fwdCommandKey transmission
+fwdCorrId = lenght 24*24 OCTET
+  ; `fwdCorrId` - correlation ID used in `PFWD` command transmission - it is used as a nonce for client encryption,
+  ; and `fwdCorrId + 1` is used as a nonce for the destination server response encryption.
+fwdSmpVersion = 2*2 OCTET
+fwdCommandKey = length x509encoded
+transmission = *OCTET ; note that it is not prefixed with the length
 ```
+
+The destination server having received this command decrypts both encryption layers (proxy and client), verifies client authorization as usual, processes it, and send the double encrypted `RRES` response to proxy.
+
+The shared secret for encrypting transmission bodies between proxy server and destination server is agreed from proxy and destination server keys exchanged in handshake headers - proxy and server use the same shared secred during the session for the encryption between them.
+
 
 ```abnf
-relayResponse =
+relayResponse = %s"RRES" SP <encrypted(responseTransmission)>
 ```
-
-TODO
 
 ### Notifier commands
 
@@ -838,13 +990,13 @@ The first message notification will be delivered either immediately or as soon a
 
 ### Server messages
 
-#### Queue IDs response
+This section includes server events and generic command responses used for several commands.
 
-Server must respond with this message when the new queue is created.
-
-See its syntax in [Create queue command](#create-queue-command)
+The syntax for command-specific responses is shown together with the commands.
 
 #### Deliver queue message
+
+TODO quota messages
 
 The server must deliver messages to all subscribed simplex queues on the currently open transport connection. The syntax for the message delivery is:
 
@@ -867,12 +1019,6 @@ timestamp = 8*8OCTET
 When server delivers the messages to the recipient, message body should be encrypted with the secret derived from DH exchange using the keys passed during the queue creation and returned with `queueIds` response.
 
 This is done to prevent the possibility of correlation of incoming and outgoing traffic of SMP server inside transport protocol.
-
-#### Notifier queue ID response
-
-Server must respond with this message when queue notifications are enabled.
-
-See its syntax in [Enable notifications command](#enable-notifications-command)
 
 #### Deliver message notification
 
@@ -983,10 +1129,11 @@ Once TLS handshake is complete, client and server will exchange blocks of fixed 
 The first block sent by the server should be `serverHello` and the client should respond with `clientHello` - these blocks are used to agree SMP protocol version:
 
 ```abnf
-serverHello = minSmpVersion maxSmpVersion sessionIdentifier pad
+serverHello = smpVersionRange sessionIdentifier pad
+smpVersionRange = minSmpVersion maxSmpVersion
 minSmpVersion = smpVersion
 maxSmpVersion = smpVersion
-sessionIdentifier = length *OCTET
+sessionIdentifier = shortString
 ; unique session identifier derived from transport connection handshake
 ; it should be included in all SMP transmissions sent in this transport connection.
 
