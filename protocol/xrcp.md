@@ -13,17 +13,16 @@
 
 ## Abstract
 
-SimpleX Remote Control Protocol is a client-server protocol to turn application UI into a thin client for a controller running on another device.
-This allows using chat profiles remotely without the need for a complicated protocol for master-master replication of E2EE state.
+The SimpleX Remote Control Protocol is a client-server protocol designed to transform application UIs into thin clients, enabling remote control from another device. This approach allows users to remotely access and utilize chat profiles without the complexities of master-master replication for end-to-end encryption states.
 
-It uses OOB invitations to mitigate MITM attacks and multiple cryptographic layers to secure application data.
+Like SMP and XFTP, XRCP leverages out-of-band invitations to mitigate MITM attacks and employs multiple cryptographic layers to safeguard application data.
 
 ## XRCP model
 
 XRCP assumes two application roles: host (that contain the profile data) and controller that gains limited access to host data.
 Applications are also split into two components: UI and core.
 
-When a XRCP session is established a host UI is locked out and controller UI uses its core to proxy commands to the host core, getting back responses and events. Host UI is then locked out to prevent concurrent access, avoiding the need for synchronization.
+When an XRCP session is established a host UI is locked out and a controller UI uses its core to proxy commands to the host core, getting back responses and events.
 
 ```
 
@@ -48,6 +47,8 @@ Protocol consists of four phases:
 - session verification and protocol negotiation
 - session operation
 
+![Session sequence](./diagrams/xrcp/session.svg)
+
 ### Session invitation
 
 The invitation to the first session between host and controller pair MUST be shared out-of-band, to establish a long term identity keys/certificates of the controller to host device.
@@ -63,9 +64,9 @@ The session invitation contains this data:
 - CA TLS certificate fingerprint of the controller - this is part of long term identity of the controller established during the first session, and repeated in the subsequent session announcements.
 - Session Ed25519 public key used to verify the announcement and commands - this mitigates the compromise of the long term signature key, as the controller will have to sign each command with this key first.
 - Long-term Ed25519 public key used to verify the announcement and commands - this is part of the long term controller identity.
-- Session X25519 DH key and SNTRUP761 KEM encapsulation key to agree session encryption (both for multicast announcement and for commands and responses in TLS), as described in https://datatracker.ietf.org/doc/draft-josefsson-ntruprime-hybrid/. The new keys are used for each session, and if client key is already available (from the previous session), the computed shared secret will be used to encrypt the announcement multicast packet. The out-of-band invitation is unencrypted. DH public key and KEM encapsulation key are sent unencrypted. NaCL Cryptobox is used for encryption.
+- Session X25519 DH key and SNTRUP761 KEM encapsulation key to agree session encryption (both for multicast announcement and for commands and responses in TLS), as described in https://datatracker.ietf.org/doc/draft-josefsson-ntruprime-hybrid/. The new keys are used for each session, and if client key is already available (from the previous session), the computed shared secret will be used to encrypt the announcement multicast packet. The out-of-band invitation is unencrypted. DH public key and KEM encapsulation key are sent unencrypted. NaCL cryptobox is used for encryption.
 
-Host device decrypts (except the first session) and validates the invitation:
+Host application decrypts (except the first session) and validates the invitation:
 - Session signature is valid.
 - Timestamp is within some window from the current time.
 - Long-term key signature is valid.
@@ -110,19 +111,21 @@ packetPad = <pad packet size to 1450 bytes> ; possibly, we may need to move KEM 
 
 ### Establishing TLS connection
 
-Host connects to controller via TCP session and validates CA credentials during TLS handshake. Controller acts as a TCP server in this connection, to avoid host device listening on a port, which might create an attack vector. During TLS handshake the controller's TCP server MUST present a self-signed two-certificate chain where the fingerprint of the first certificate MUST be the same as in the announcement.
+Both controller and host use 2-element certificate chains with unique self-signed CA root representing long-term identities. Leaf certificates aren't stored and instead generated on each session start.
 
-Host device presents its own client certificate chain with CA representing a long-term identity of the host device.
+A controller runs a TCP server to avoid opening listening socket on a host, which might create an attack vector. A controller keeps no sensitive data to be exposed this way.
+
+During TLS handshake, parties validate certificate chains against previously known (from invitation or storage) CA fingerprints. The fingerprints MUST be the same as in the invitation and in the subsequent connections.
 
 ### Session verification and protocol negotiation
 
-Once TLS session is established, both the host and controller device present a "session security code" to the user who must match them (e.g., visually or via QR code scan) and confirm on the host device. The session security code must be a digest of tlsunique channel binding. As it is computed as a digest of the TLS handshake for both the controller and the host, it will validate that the same TLS certificates are used on both sides, and that the same TLS session is established, mitigating the possibility of MITM attack in the connection.
+Once TLS session is established, both the host and controller devices present a "session security code" to the user who must match them (e.g., visually or via QR code scan) and confirm on the host device. The session security code must be a digest of tlsunique channel binding. As it is computed as a digest of the TLS handshake for both the controller and the host, it will validate that the same TLS certificates are used on both sides, and that the same TLS session is established, mitigating the possibility of MITM attack in the connection.
 
-Once the session is confirmed by the user, the host device sends HELLO block to the controller.
+Once the session is confirmed by the user, the host sends HELLO block to the controller.
 
-XRCP block size is 16384 bytes.
+XRCP blocks inside TLS are padded to 16384 bytes.
 
-Host HELLO must contain:
+Host HELLO block must contain:
 - new session DH key - used to compute new shared secret with the controller keys from the announcement.
 - encrypted part of HELLO block (JSON object), containing:
   - chosen protocol version.
@@ -130,7 +133,7 @@ Host HELLO must contain:
   - KEM encapsulation key - used to compute new shared secret for the session.
   - additional application specific parameters, e.g host device name, application version, host settings or JSON encoding format.
 
-HELLO block syntax:
+Host HELLO block syntax:
 
 ```abnf
 hostHello = %s"HELLO " dhPubKey nonce encrypted(unpaddedSize hostHelloJSON helloPad) pad
@@ -141,7 +144,7 @@ helloPad = <pad hello size to 12888 bytes>
 largeLength = 2*2 OCTET
 ```
 
-Controller decrypts (including the first session) and validates the received HELLO block:
+The controller decrypts (including the first session) and validates the received HELLO block:
 - Chosen versions are supported (must be within offered ranges).
 - CA fingerprint matches the one presented in TLS handshake and the previous sessions - in subsequent sessions TLS connection should be rejected if the fingerprint is different.
 
@@ -175,7 +178,7 @@ JTD schema for the encrypted part of host HELLO block `hostHelloJSON`:
 }
 ```
 
-Controller should reply with with `ctrlHello` or `ctrlError` response:
+The controller should reply with with `ctrlHello` or `ctrlError` response:
 
 ```abnf
 ctrlHello = %s"HELLO " kemCyphertext nonce encrypted(unpaddedSize ctrlHelloJSON helloPad) pad
@@ -200,15 +203,15 @@ JTD schema for the encrypted part of controller HELLO block `ctrlHelloJSON`:
 }
 ```
 
-Once controller replies HELLO to the valid host HELLO block, it should stop accepting new TCP connections.
+Once the controller replies HELLO to the valid host HELLO block, it should stop accepting new TCP connections.
 
 ### Сontroller/host session operation
 
 The protocol for communication during the session is out of scope of this protocol.
 
-SimpleX Chat uses HTTP2 encoding, where host device acts as a server and controller acts as a client (these roles are reversed compared with TLS connection).
+SimpleX Chat uses HTTP2 encoding, where host device acts as a server and controller acts as a client (these roles are reversed compared with TLS connection, restoring client-server semantics in HTTP).
 
-Payloads in the protocol must be encrypted using NaCL cryptobox using the hybrid shared secret agreed during session establishment.
+Payloads in the protocol must be encrypted using NaCL secretbox using the hybrid shared secret agreed during session establishment.
 
 Commands of the controller must be signed after the encryption using the controller's session and long term Ed25519 keys.
 
