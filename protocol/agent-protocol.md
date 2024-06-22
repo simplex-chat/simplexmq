@@ -111,6 +111,36 @@ The most communication happens between the agents and servers, from the point of
 
 Clients SHOULD support establishing duplex connection asynchronously (when parties are intermittently offline) by persisting intermediate states and resuming SMP queue subscriptions.
 
+## Fast duplex connection procedure
+
+Previously described duplex connection procedure requires sending 4 messages creating a bad UX for the users - it requires waiting until each party in online before the messages can be sent.
+
+It allows users validating connecting party profile before proceding with the connection, but it turned out to be unnecessary UX step and is not used in the client applications.
+
+It also protects against an attacker who compromised TLS and uses the sender queue ID sent to the recipient to secure the queue before the sender can. This attack is very hard, and this accepting its risk is better than worse UX. Future protocol versions could mitigate this attack by encrypting entity IDs.
+
+Faster duplex connection process is possible with the `SKEY` command added in v9 of SMP protocol.
+
+![Fast duplex connection procedure](./diagrams/duplex-messaging/duplex-creating-fast.svg)
+
+1. Alice requests the new connection from the SMP agent A using agent `NEW` api function
+2. Agent A creates an SMP queue on the server (using [SMP protocol](./simplex-messaging.md) `NEW` command with the flag allowing the sender to secure the queue) and responds to Alice with the invitation that contains queue information and the encryption keys Bob's agent B should use. The invitation format is described in [Connection request](#connection-request).
+3. Alice sends the [connection request](#connection-request) to Bob via any secure channel (out-of-band message) - as a link or as a QR code. This link contains the flag that the queue can be secured by the sender.
+4. Bob uses agent `JOIN` api function with the connection request as a parameter to agent B to accept the connection.
+5. Agent B secures Alice's queue with SMP command `SKEY` - this command can be proxied.
+6. Agent B creates Bob's SMP reply queue with SMP server `NEW` command (with the flag allowing the sender to secure the queue).
+7. Agent B confirms the connection: sends an "SMP confirmation" with SMP server `SEND` command to the SMP queue specified in the connection request - SMP confirmation is an unauthenticated message with an ephemeral key that will be used to authenticate Bob's commands to the queue, as described in SMP protocol, and Bob's info (profile, public key for E2E encryption, and the connection request to this 2nd queue to Agent A - this connection request SHOULD use "simplex" URI scheme). This message is encrypted using key passed in the connection request (or with the derived shared secret, in which case public key for key derivation should be sent in clear text).
+8. Alice confirms the connection:
+  - Agent A receives the SMP confirmation containing Bob's key, reply queue and info as SMP server `MSG`.
+  - Agent A notifies Alice sending `CONF` notification with Bob's info (that indicates that Agent B already secured the queue).
+  - Agent A secures Bob's queue with SMP command `SKEY`.
+  - Agent A sends SMP confirmation with ephemeral public encryption key and profile (but without reply queue, and without sender key).
+9. Agent A notifies Alice with `CON` notification.
+10. Agent B notifiees Bob about connection success:
+  - receives `HELLO` message from Alice.
+  - sends the notification `INFO` with Alice's information to Bob.
+  - sends `CON` notification to Bob.
+
 ## Communication between SMP agents
 
 To establish duplex connections and to send messages on behalf of their clients, SMP agents communicate via SMP servers.
