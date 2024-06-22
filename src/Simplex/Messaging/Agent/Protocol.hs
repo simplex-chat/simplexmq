@@ -41,7 +41,6 @@ module Simplex.Messaging.Agent.Protocol
     ratchetSyncSMPAgentVersion,
     deliveryRcptsSMPAgentVersion,
     pqdrSMPAgentVersion,
-    sndAuthKeySMPAgentVersion,
     currentSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
@@ -210,6 +209,7 @@ import Simplex.Messaging.Protocol
     noAuthSrv,
     sameSrvAddr,
     srvHostnamesSMPClientVersion,
+    sndAuthKeySMPClientVersion,
     pattern ProtoServerWithAuth,
     pattern SMPServer,
   )
@@ -253,11 +253,8 @@ deliveryRcptsSMPAgentVersion = VersionSMPA 4
 pqdrSMPAgentVersion :: VersionSMPA
 pqdrSMPAgentVersion = VersionSMPA 5
 
-sndAuthKeySMPAgentVersion :: VersionSMPA
-sndAuthKeySMPAgentVersion = VersionSMPA 6
-
 currentSMPAgentVersion :: VersionSMPA
-currentSMPAgentVersion = VersionSMPA 6
+currentSMPAgentVersion = VersionSMPA 5
 
 supportedSMPAgentVRange :: VersionRangeSMPA
 supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentSMPAgentVersion
@@ -1123,14 +1120,16 @@ data SMPQueueInfo = SMPQueueInfo {clientVersion :: VersionSMPC, queueAddress :: 
   deriving (Eq, Show)
 
 instance Encoding SMPQueueInfo where
-  smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey})
-    | clientVersion > initialSMPClientVersion = smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
+  smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure})
+    | clientVersion >= sndAuthKeySMPClientVersion && sndSecure = smpEncode (clientVersion, smpServer, senderId, dhPublicKey, sndSecure)
+    | clientVersion >= srvHostnamesSMPClientVersion = smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
     | otherwise = smpEncode clientVersion <> legacyEncodeServer smpServer <> smpEncode (senderId, dhPublicKey)
   smpP = do
     clientVersion <- smpP
-    smpServer <- if clientVersion > initialSMPClientVersion then smpP else updateSMPServerHosts <$> legacyServerP
+    smpServer <- if clientVersion >= srvHostnamesSMPClientVersion then smpP else updateSMPServerHosts <$> legacyServerP
     (senderId, dhPublicKey) <- smpP
-    pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey}
+    sndSecure <- if clientVersion >= sndAuthKeySMPClientVersion then fromMaybe False <$> optional smpP else pure False
+    pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure}
 
 -- This instance seems contrived and there was a temptation to split a common part of both types.
 -- But this is created to allow backward and forward compatibility where SMPQueueUri
@@ -1156,7 +1155,8 @@ data SMPQueueUri = SMPQueueUri {clientVRange :: VersionRangeSMPC, queueAddress :
 data SMPQueueAddress = SMPQueueAddress
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,
-    dhPublicKey :: C.PublicKeyX25519
+    dhPublicKey :: C.PublicKeyX25519,
+    sndSecure :: Bool
   }
   deriving (Eq, Show)
 
@@ -1183,37 +1183,43 @@ sameQAddress (srv, qId) (srv', qId') = sameSrvAddr srv srv' && qId == qId'
 {-# INLINE sameQAddress #-}
 
 instance StrEncoding SMPQueueUri where
-  strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey})
-    | minVersion vr >= srvHostnamesSMPClientVersion = strEncode srv <> "/" <> strEncode qId <> "#/?" <> query queryParams
+  strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey, sndSecure})
+    | minVersion vr >= srvHostnamesSMPClientVersion = strEncode srv <> "/" <> strEncode qId <> "#/?" <> query (queryParams <> sndSecureParam)
     | otherwise = legacyStrEncodeServer srv <> "/" <> strEncode qId <> "#/?" <> query (queryParams <> srvParam)
     where
       query = strEncode . QSP QEscape
       queryParams = [("v", strEncode vr), ("dh", strEncode dhPublicKey)]
+      sndSecureParam = [("k", "s") | sndSecure]
       srvParam = [("srv", strEncode $ TransportHosts_ hs) | not (null hs)]
       hs = L.tail $ host srv
   strP = do
     srv@ProtocolServer {host = h :| host} <- strP <* A.char '/'
     senderId <- strP <* optional (A.char '/') <* A.char '#'
-    (vr, hs, dhPublicKey) <- unversioned <|> versioned
+    (vr, hs, dhPublicKey, sndSecure) <- versioned <|> unversioned
     let srv' = srv {host = h :| host <> hs}
         smpServer = if maxVersion vr < srvHostnamesSMPClientVersion then updateSMPServerHosts srv' else srv'
-    pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey}
+    pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure}
     where
-      unversioned = (versionToRange initialSMPClientVersion,[],) <$> strP <* A.endOfInput
+      unversioned = (versionToRange initialSMPClientVersion,[],,False) <$> strP <* A.endOfInput
       versioned = do
         dhKey_ <- optional strP
         query <- optional (A.char '/') *> A.char '?' *> strP
         vr <- queryParam "v" query
         dhKey <- maybe (queryParam "dh" query) pure dhKey_
         hs_ <- queryParam_ "srv" query
-        pure (vr, maybe [] thList_ hs_, dhKey)
+        sndSecure <- (Just ("s" :: ByteString) ==) <$> queryParam_ "k" query
+        pure (vr, maybe [] thList_ hs_, dhKey, sndSecure)
 
 instance Encoding SMPQueueUri where
-  smpEncode (SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey}) =
-    smpEncode (clientVRange, smpServer, senderId, dhPublicKey)
+  smpEncode (SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure})
+    | maxVersion clientVRange >= sndAuthKeySMPClientVersion && sndSecure =
+        smpEncode (clientVRange, smpServer, senderId, dhPublicKey, sndSecure)
+    | otherwise =
+        smpEncode (clientVRange, smpServer, senderId, dhPublicKey)
   smpP = do
     (clientVRange, smpServer, senderId, dhPublicKey) <- smpP
-    pure $ SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey}
+    sndSecure <- if maxVersion clientVRange >= sndAuthKeySMPClientVersion then fromMaybe False <$> optional smpP else pure False
+    pure $ SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure}
 
 data ConnectionRequestUri (m :: ConnectionMode) where
   CRInvitationUri :: ConnReqUriData -> RcvE2ERatchetParamsUri 'C.X448 -> ConnectionRequestUri CMInvitation

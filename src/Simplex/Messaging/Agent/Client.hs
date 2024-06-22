@@ -1297,7 +1297,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
             clientNtfCreds = Nothing,
             deleteErrors = 0
           }
-      qUri = SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey
+      qUri = SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey False -- TODO SKEY
   pure (rq, qUri, tSess, sessId)
 
 processSubResult :: AgentClient -> RcvQueue -> Either SMPClientError () -> STM ()

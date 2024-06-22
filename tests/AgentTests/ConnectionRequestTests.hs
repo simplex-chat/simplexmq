@@ -31,7 +31,8 @@ queueAddr =
   SMPQueueAddress
     { smpServer = srv,
       senderId = "\223\142z\251",
-      dhPublicKey = testDhKey
+      dhPublicKey = testDhKey,
+      sndSecure = False
     }
 
 queueAddrNoPort :: SMPQueueAddress
@@ -100,17 +101,17 @@ connectionRequestTests =
   describe "connection request parsing / serializing" $ do
     it "should serialize SMP queue URIs" $ do
       strEncode (queue :: SMPQueueUri) {queueAddress = queueAddrNoPort}
-        `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#/?v=1-2&dh=" <> testDhKeyStrUri
+        `shouldBe` "smp://1234-w==@smp.simplex.im/3456-w==#/?v=2-3&dh=" <> testDhKeyStrUri
       strEncode queue {clientVRange = mkVersionRange (VersionSMPC 1) (VersionSMPC 2)}
         `shouldBe` "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-2&dh=" <> testDhKeyStrUri
     it "should parse SMP queue URIs" $ do
-      strDecode ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=1-2&dh=" <> testDhKeyStr)
+      strDecode ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=2-3&dh=" <> testDhKeyStr)
         `shouldBe` Right (queue :: SMPQueueUri) {queueAddress = queueAddrNoPort}
       strDecode ("smp://1234-w==@smp.simplex.im/3456-w==#" <> testDhKeyStr)
         `shouldBe` Right (queueV1 :: SMPQueueUri) {queueAddress = queueAddrNoPort}
       strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr)
         `shouldBe` Right queueV1
-      strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=1-2&extra_param=abc")
+      strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=2-3&extra_param=abc")
         `shouldBe` Right queue
       strDecode ("smp://1234-w==@smp.simplex.im:5223/3456-w==#/?extra_param=abc&v=1&dh=" <> testDhKeyStr)
         `shouldBe` Right queueV1
@@ -122,7 +123,7 @@ connectionRequestTests =
           <> urlEncode True testDhKeyStrUri
           <> "&e2e=v%3D1%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
       strEncode connectionRequestCurrentRange
-        `shouldBe` "simplex:/invitation#/?v=2-6&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23%2F%3Fv%3D1%26dh%3D"
+        `shouldBe` "simplex:/invitation#/?v=2-5&smp=smp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23%2F%3Fv%3D1%26dh%3D"
           <> urlEncode True testDhKeyStrUri
           <> "%2Csmp%3A%2F%2F1234-w%3D%3D%40smp.simplex.im%3A5223%2F3456-w%3D%3D%23%2F%3Fv%3D1%26dh%3D"
           <> urlEncode True testDhKeyStrUri
@@ -172,7 +173,7 @@ connectionRequestTests =
             <> testDhKeyStrUri
             <> "&e2e=extra_key%3Dnew%26v%3D2-3%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
             <> "&some_new_param=abc"
-            <> "&v=2-6"
+            <> "&v=2-5"
         )
         `shouldBe` Right connectionRequestCurrentRange
       strDecode

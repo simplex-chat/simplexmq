@@ -154,6 +154,7 @@ module Simplex.Messaging.Protocol
     legacyServerP,
     legacyStrEncodeServer,
     srvHostnamesSMPClientVersion,
+    sndAuthKeySMPClientVersion,
     sameSrvAddr,
     sameSrvAddr',
     noAuthSrv,
@@ -241,11 +242,14 @@ initialSMPClientVersion = VersionSMPC 1
 srvHostnamesSMPClientVersion :: VersionSMPC
 srvHostnamesSMPClientVersion = VersionSMPC 2
 
+sndAuthKeySMPClientVersion :: VersionSMPC
+sndAuthKeySMPClientVersion = VersionSMPC 3
+
 currentSMPClientVersion :: VersionSMPC
-currentSMPClientVersion = VersionSMPC 2
+currentSMPClientVersion = VersionSMPC 3
 
 supportedSMPClientVRange :: VersionRangeSMPC
-supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClientVersion
+supportedSMPClientVRange = mkVersionRange srvHostnamesSMPClientVersion currentSMPClientVersion
 
 -- TODO v6.0 remove dependency on version
 maxMessageLength :: VersionSMP -> Int
