@@ -11,6 +11,7 @@ Version 9, 2024-06-22
 - [Simplex queue](#simplex-queue)
 - [SMP queue URI](#smp-queue-uri)
 - [SMP procedure](#smp-procedure)
+- [Fast SMP procedure](#fast-smp-procedure)
 - [SMP qualities and features](#smp-qualities-and-features)
 - [Cryptographic algorithms](#cryptographic-algorithms)
 - [Deniable client authentication scheme](#deniable-client-authentication-scheme)
@@ -80,7 +81,7 @@ The protocol is designed with the focus on privacy and security, to some extent 
 
 SMP does not use any form of participants' identities and provides [E2EE][2] without the possibility of [MITM attack][1] relying on two pre-requisites:
 
-- the users can establish a secure encrypted transport connection with the SMP server. [Appendix A](#appendix-a) describes SMP transport protocol of such connection over TCP, but any other transport connection protocol can be used.
+- the users can establish a secure encrypted transport connection with the SMP server. [Transport connection](#transport-connection-with-the-smp-server) section describes SMP transport protocol of such connection over TCP, but any other transport connection protocol can be used.
 
 - the recipient can pass a single message to the sender via a pre-existing secure and private communication channel (out-of-band message) - the information in this message is used to encrypt messages and to establish connection with SMP server.
 
@@ -128,12 +129,12 @@ The protocol uses different IDs for sender and recipient in order to provide an 
 
 ## SMP queue URI
 
-The SMP queue URIs MUST include server identity, queue hostname, an optional port, and sender queue ID, and the recipient's public key to agree shared secret for e2e encryption. Server identity is used to establish secure connection protected from MITM attack with SMP server (see [Appendix A](#appendix-a) for SMP transport protocol).
+The SMP queue URIs MUST include server identity, queue hostname, an optional port, sender queue ID, and the recipient's public key to agree shared secret for e2e encryption, and an optional query string parameter `k=s` to indicate that the queue can be secured by the sender using `SKEY` command (see [Fast SMP procedure](#fast-smp-procedure) and [Secure queue by sender](#secure-queue-by-sender)). Server identity is used to establish secure connection protected from MITM attack with SMP server (see [Transport connection](#transport-connection-with-the-smp-server) for SMP transport protocol).
 
 The [ABNF][8] syntax of the queue URI is:
 
 ```abnf
-queueURI = %s"smp://" smpServer "/" queueId "#/?" versionParam keyParam
+queueURI = %s"smp://" smpServer "/" queueId "#/?" versionParam keyParam [sndSecureParam]
 smpServer = serverIdentity "@" srvHosts [":" port]
 srvHosts = <hostname> ["," srvHosts] ; RFC1123, RFC5891
 port = 1*DIGIT
@@ -142,6 +143,7 @@ queueId = base64url
 versionParam = %s"v=" versionRange
 versionRange = 1*DIGIT / 1*DIGIT "-" 1*DIGIT
 keyParam = %s"&dh=" recipientDhPublicKey
+sndSecureParam = %s"&k=s"
 base64url = <base64url encoded binary> ; RFC4648, section 5
 recipientDhPublicKey = x509UrlEncoded
 ; the recipient's Curve25519 key for DH exchange to derive the secret
@@ -155,17 +157,17 @@ x509UrlEncoded = <base64url X509 key encoding>
 
 `port` is optional, the default TCP port for SMP protocol is 5223.
 
-`serverIdentity` is a required hash of the server certificate SPKI block (without line breaks, header and footer) used by the client to validate server certificate during transport handshake (see [Appendix A](#appendix-a))
+`serverIdentity` is a required hash of the server certificate SPKI block (without line breaks, header and footer) used by the client to validate server certificate during transport handshake (see [Transport connection](#transport-connection-with-the-smp-server))
 
-## SMP procedure v8
+## SMP procedure
 
-The SMP procedure of creating a simplex queue on SMP server with v8 of the protocol is explained using participants Alice (the recipient) who wants to receive messages from Bob (the sender).
+The SMP procedure of creating a simplex queue on SMP server is explained using participants Alice (the recipient) who wants to receive messages from Bob (the sender).
 
 To create and start using a simplex queue Alice and Bob follow these steps:
 
 1. Alice creates a simplex queue on the server:
 
-   1. Decides which SMP server to use (can be the same or different server that Alice uses for other queues) and opens secure encrypted transport connection to the chosen SMP server (see [Appendix A](#appendix-a)).
+   1. Decides which SMP server to use (can be the same or different server that Alice uses for other queues) and opens secure encrypted transport connection to the chosen SMP server (see [Transport connection](#transport-connection-with-the-smp-server)).
 
    2. Generates a new random public/private key pair (encryption key - `EK`) that she did not use before to agree a shared secret with Bob to encrypt the messages.
 
@@ -175,7 +177,7 @@ To create and start using a simplex queue Alice and Bob follow these steps:
 
    5. Sends `"NEW"` command to the server to create a simplex queue (see `create` in [Create queue command](#create-queue-command)). This command contains previously generated unique "public" keys `RK` and `RDHK`. `RK` will be used by the server to verify the subsequent commands related to the same queue authorized by its private counterpart, for example to subscribe to the messages received to this queue or to update the queue, e.g. by setting the key required to send the messages (initially Alice creates the queue that accepts unauthorized messages, so anybody could send the message via this queue if they knew the queue sender's ID and server address).
 
-   6. The server sends `"IDS"` response with queue IDs (`queueIds`):
+   6. The server sends `IDS` response with queue IDs (`queueIds`):
 
       - Recipient ID `RID` for Alice to manage the queue and to receive the messages.
 
@@ -183,11 +185,11 @@ To create and start using a simplex queue Alice and Bob follow these steps:
 
       - Server public DH key (`SDHK`) to negotiate a shared secret for message body encryption, that Alice uses to derive a shared secret with the server `SS`.
 
-2. Alice sends an out-of-band message to Bob via the alternative channel that both Alice and Bob trust (see [protocol abstract](#simplex-messaging-protocol-abstract)). The message must include:
+2. Alice sends an out-of-band message to Bob via the alternative channel that both Alice and Bob trust (see [protocol abstract](#simplex-messaging-protocol-abstract)). The message must include [SMP queue URI](#smp-queue-uri) with:
 
    - Unique "public" key (`EK`) that Bob must use to agree a shared secret for E2E encryption.
 
-   - SMP server hostname and information to open secure encrypted transport connection (see [Appendix A](#appendix-a)).
+   - SMP server hostname and information to open secure encrypted transport connection (see [Transport connection](#transport-connection-with-the-smp-server)).
 
    - Sender queue ID `SID` for Bob to use.
 
@@ -273,11 +275,17 @@ The established queues can also be used to change the encryption keys providing 
 
 This protocol also can be used for off-the-record messaging, as Alice and Bob can use multiple queues between them and only information they pass to each other allows proving their identity, so if they want to share anything off-the-record they can initiate a new queue without linking it to any other information they exchanged.
 
-## SMP procedure v9
+## Fast SMP procedure
 
-V9 of SMP protocol supports creating messaging queue in fewer steps, with the sender being able to send the messages without waiting for the recipient to be online to secure the key.
+V9 of SMP protocol added support for creating messaging queue in fewer steps, with the sender being able to send the messages without waiting for the recipient to be online to secure the key.
 
-In step 3.2 in [SMP procedure v8](#smp-procedure-v8), prior to sending the confirmation message Bob secures the queue using `SKEY` command. Confirmation message is now sent with sender authorization and Bob can continue sending the messages without Alice being online. This also allows faster negotiation of duplex connections.
+In step 1.5 of [SMP procedure](#smp-procedure) the client must use sndSecure parameter set to `T` (true) to allow sender securing the queue.
+
+In step 2, the [SMP queue URI](#smp-queue-uri) should include parameter indicating that the sender can secure the queue.
+
+In step 3.2, prior to sending the confirmation message Bob secures the queue using `SKEY` command. Confirmation message is now sent with sender authorization and Bob can continue sending the messages without Alice being online. This also allows faster negotiation of duplex connections.
+
+![Creating queue](./diagrams/simplex-messaging/simplex-creating-fast.svg)
 
 ## SMP qualities and features
 

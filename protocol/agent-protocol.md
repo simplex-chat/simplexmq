@@ -1,3 +1,5 @@
+Version 6, 2024-06-22
+
 # SMP agent protocol - duplex communication over SMP protocol
 
 ## Table of contents
@@ -36,38 +38,36 @@
 The purpose of SMP agent protocol is to define the syntax and the semantics of communications between the client and the agent that connects to [SMP](./simplex-messaging.md) servers.
 
 It provides:
-- protocol to create and manage bi-directional (duplex) connections between the users of SMP agents consisting of two (or more) separate unidirectional (simplex) SMP queues, abstracting away multiple steps required to establish bi-directional connections and any information about the servers location from the users of the agent protocol.
+- API to create and manage bi-directional (duplex) connections between the users of SMP agents consisting of two (or more) separate unidirectional (simplex) SMP queues, abstracting away multiple steps required to establish bi-directional connections and any information about the servers location from the users of the agent protocol.
 - management of E2E encryption between SMP agents, generating ephemeral asymmetric keys for each connection.
 - SMP command authentication on SMP servers, generating ephemeral keys for each SMP queue.
 - TCP/TLS transport handshake with SMP servers.
 - validation of message integrity.
 
-SMP agent protocol provides no encryption or security on the client side - it is assumed that the agent is executed in the trusted and secure environment, in one of three ways:
-- via TCP network using secure connection.
-- via local port (when the agent runs on the same device as a separate process).
-- via agent library, when the agent logic is included directly into the client application - [SimpleX Chat for terminal](https://github.com/simplex-chat/simplex-chat) uses this approach.
+SMP agent API provides no security between the agent and the client - it is assumed that the agent is executed in the trusted and secure environment, via the agent library, when the agent logic is included directly into the client application - [SimpleX Chat for terminal](https://github.com/simplex-chat/simplex-chat) uses this approach.
 
 ## SMP agent
 
-SMP agents communicate with each other via SMP servers using [simplex messaging protocol (SMP)](./simplex-messaging.md) according to the commands received from its users. This protocol is a middle layer in SimpleX protocols (above SMP protocol but below any application level protocol) - it is intended to be used by client-side applications that need secure asynchronous bi-directional communication channels ("connections").
+SMP agents communicate with each other via SMP servers using [simplex messaging protocol (SMP)](./simplex-messaging.md) according to the API calls used by the client applications. This protocol is a middle layer in SimpleX protocols (above SMP protocol but below any application level protocol) - it is intended to be used by client-side applications that need secure asynchronous bi-directional communication channels ("connections").
 
 The agent must have a persistent storage to manage the states of known connections and of the client-side information of SMP queues that each connection consists of, and also the buffer of the most recent sent and received messages. The number of the messages that should be stored is implementation specific, depending on the error management approach that the agent implements; at the very least the agent must store the hashes and IDs of the last received and sent messages.
 
 ## SMP servers management
 
-SMP agent protocol commands do not contain the addresses of the SMP servers that the agent will use to create and use the connections (excluding the server address in queue URIs used in JOIN command). The list of the servers is a part of the agent configuration and can be dynamically changed by the agent implementation:
+SMP agent API does not use the addresses of the SMP servers that the agent will use to create and use the connections (excluding the server address in queue URIs used in JOIN command). The list of the servers is a part of the agent configuration and can be dynamically changed by the agent implementation:
 - by the client applications via any API that is outside of scope of this protocol.
 - by the agents themselves based on availability and latency of the configured servers.
 
 ## SMP agent protocol components
 
-SMP agent protocol has 3 main parts:
+SMP agent protocol has 4 main parts:
 
-- the syntax and semantics of the messages that SMP agents exchange with each other in order to:
+- the messages that SMP agents exchange with each other in order to:
   - negotiate establishing unidirectional (simplex) encrypted queues on SMP servers.
   - exchange client messages and delivery notifications, providing sequential message IDs and message integrity (by including the hash of the previous message).
-- the syntax and semantics of the commands that are sent by the agent clients to the agents. This protocol allows to create and manage multiple connections, each consisting of two or more SMP queues.
-- the syntax and semantics of the message that the clients of SMP agents should send out-of-band (as pre-shared "invitation" including queue URIs) to protect [E2E encryption][1] from active attacks ([MITM attacks][2]).
+- the functional API used by the client application with the agent. This API allows to create and manage multiple connections, each consisting of two or more SMP queues.
+- events that the agent passes to the clients.
+- the messages that the clients of SMP agents should send out-of-band (as pre-shared "invitation" including queue URIs) to protect [E2E encryption][1] from active attacks ([MITM attacks][2]).
 
 ## Duplex connection procedure
 
@@ -75,36 +75,38 @@ SMP agent protocol has 3 main parts:
 
 The procedure of establishing a duplex connection is explained on the example of Alice and Bob creating a bi-directional connection consisting of two unidirectional (simplex) queues, using SMP agents (A and B) to facilitate it, and two different SMP servers (which could be the same server). It is shown on the diagram above and has these steps:
 
-1. Alice requests the new connection from the SMP agent A using SMP NEW command.
-2. Agent A creates an SMP connection on the server (using [SMP protocol](./simplex-messaging.md)) and responds to Alice with the invitation that contains queue information and the encryption key Bob's agent B should use. The invitation format is described in [Connection request](#connection-request).
-3. Alice sends the [connection request](#connection-request) to Bob via any secure channel (out-of-band message).
-4. Bob sends `JOIN` command with the connection request as a parameter to agent B to accept the connection.
-5. Establishing Alice's SMP queue (with SMP protocol commands):
-  - Agent B sends an "SMP confirmation" with SMP SEND command to the SMP queue specified in the connection request - SMP confirmation is an unauthenticated message with an ephemeral key that will be used to authenticate Bob's commands to the queue, as described in SMP protocol, and Bob's info (profile, public key for E2E encryption, etc.). This message is encrypted using key passed in the connection request (or with the derived key, in which case public key for key derivation should be sent in clear text).
-  - Agent A receives the SMP confirmation containing Bob's key and info as SMP MSG.
-  - Agent A notifies Alice sending REQ notification with Bob's info.
-  - Alice accepts connection request with ACPT command.
-  - Agent A secures the queue with SMP KEY command.
-  - Agent B tries sending authenticated SMP SEND command with agent `HELLO` message until it succeeds. Once it succeeds, Bob's agent "knows" the queue is secured.
-6. Agent B creates a new SMP queue on the server.
-7. Establish Bob's SMP queue:
-  - Agent B sends `REPLY` message (SMP SEND command) with the connection request to this 2nd queue to Alice's agent (via the 1st queue) - this connection request SHOULD use "simplex" URI scheme.
-  - Agent A, having received `REPLY` message, sends unauthenticated message (SMP SEND) to SMP queue with Alice agent's ephemeral key that will be used to authenticate Alice's commands to the queue, as described in SMP protocol, and Alice's info.
-  - Bob's agent receives the key and Alice's information and secures the queue (SMP KEY).
-  - Bob's agent sends the notification `INFO` with Alice's information to Bob.
-  - Alice's agent keeps sending `HELLO` message until it succeeds.
-8. Agents A and B notify Alice and Bob that connection is established.
-  - Once sending `HELLO` succeeds, Alice's agent sends to Alice `CON` notification that confirms that now both parties can communicate.
-  - Once Bob's agent receives `HELLO` from Alice's agent, it sends to Bob `CON` notification as well.
+1. Alice requests the new connection from the SMP agent A using agent `NEW` api function.
+2. Agent A creates an SMP queue on the server (using [SMP protocol](./simplex-messaging.md) `NEW` command) and responds to Alice with the invitation that contains queue information and the encryption keys Bob's agent B should use. The invitation format is described in [Connection request](#connection-request).
+3. Alice sends the [connection request](#connection-request) to Bob via any secure channel (out-of-band message) - as a link or as a QR code.
+4. Bob uses agent `JOIN` api function with the connection request as a parameter to agent B to accept the connection.
+5. Agent B creates Bob's SMP reply queue with SMP server `NEW` command.
+6. Agent B confirms the connection: sends an "SMP confirmation" with SMP server `SEND` command to the SMP queue specified in the connection request - SMP confirmation is an unauthenticated message with an ephemeral key that will be used to authenticate Bob's commands to the queue, as described in SMP protocol, and Bob's info (profile, public key for E2E encryption, and the connection request to this 2nd queue to Agent A - this connection request SHOULD use "simplex" URI scheme). This message is encrypted using key passed in the connection request (or with the derived shared secret, in which case public key for key derivation should be sent in clear text).
+6. Alice confirms and continues the connection:
+  - Agent A receives the SMP confirmation containing Bob's key, reply queue and info as SMP server `MSG`.
+  - Agent A notifies Alice sending `CONF` notification with Bob's info.
+  - Alice accepts connection request with agent `LET` api function.
+  - Agent A secures the queue with SMP server `KEY` command.
+  - Agent A sends SMP confirmation with ephemeral sender key, ephemeral public encryption key and profile (but without reply queue).
+7. Agent B confirms the connection:
+  - receives the confirmation.
+  - sends the notification `INFO` with Alice's information to Bob.
+  - secures SMP queue that it sent to Alice in the first confirmation with SMP `KEY` command .
+  - sends `HELLO` message via SMP `SEND` command. This confirms that the reply queue is secured and also validates that Agent A secured the first SMP queue
+8. Agent A notifies Alice.
+  - receives `HELLO` message from Agent B.
+  - sends `HELLO` message to Agent B via SMP `SEND` command.
+  - sends `CON` notification to Alice, confirming that the connection is established.
+9. Agent B notifies Bob.
+  - Once Agent B receives `HELLO` from Agent A, it sends to Bob `CON` notification as well.
 
 At this point the duplex connection between Alice and Bob is established, they can use `SEND` command to send messages. The diagram also shows how the connection status changes for both parties, where the first part is the status of the SMP queue to receive messages, and the second part - the status of the queue to send messages.
 
 The most communication happens between the agents and servers, from the point of view of Alice and Bob there are 4 steps (not including notifications):
 
-1. Alice requests a new connection with `NEW` command and receives the invitation.
+1. Alice requests a new connection with `NEW` agent API function and receives the invitation.
 2. Alice passes connection request out-of-band to Bob.
-3. Bob accepts the connection with `JOIN` command with the connection request to his agent.
-4. Alice accepts the connection with `ACPT` command.
+3. Bob accepts the connection with `JOIN` agent API function with the connection request to his agent.
+4. Alice accepts the connection with `ACPT` agent API function.
 5. Both parties receive `CON` notification once duplex connection is established.
 
 Clients SHOULD support establishing duplex connection asynchronously (when parties are intermittently offline) by persisting intermediate states and resuming SMP queue subscriptions.
