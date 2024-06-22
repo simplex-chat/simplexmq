@@ -722,15 +722,22 @@ This command is sent to the server by the sender both to confirm the queue after
 send = %s"SEND " msgFlags SP smpEncMessage
 msgFlags = notificationFlag reserved
 notificationFlag = %s"T" / %s"F"
-smpEncMessage = smpPubHeader sentMsgBody ; message up to 16064 bytes
-smpPubHeader = smpClientVersion ("1" senderPublicDhKey / "0")
-smpClientVersion = word16
+smpEncMessage = smpEncClientMessage / smpEncConfirmation ; message up to 16064 bytes
+
+smpEncClientMessage = smpPubHeaderNoKey msgNonce sentClientMsgBody ; message up to 16064 bytes
+smpPubHeaderNoKey = smpClientVersion "0"
+sentClientMsgBody = 16016*16016 OCTET
+
+smpEncConfirmation = smpPubHeaderWithKey msgNonce sentConfirmationBody
+smpPubHeaderWithKey = smpClientVersion "1" senderPublicDhKey
+  ; sender's Curve25519 public key to agree DH secret for E2E encryption in this queue
+  ; it is only sent in confirmation message
+sentConfirmationBody = 15920*15920 OCTET ; E2E-encrypted smpClientMessage padded to 16016 bytes before encryption
 senderPublicDhKey = length x509encoded
-; sender's Curve25519 public key to agree DH secret for E2E encryption in this queue
-; it is only sent in confirmation message
+
+smpClientVersion = word16
 x509encoded = <binary X509 key encoding>
-sentMsgBody = 16016*16016 OCTET
-; E2E-encrypted smpClientMessage padded to 16016 bytes before encryption
+msgNonce = 24*24 OCTET
 word16 = 2*2 OCTET
 ```
 
@@ -751,14 +758,18 @@ Until the queue is secured, the server should accept any number of unsigned mess
 The body should be encrypted with the shared secred based on recipient's "public" key (`EK`); once decrypted it must have this format:
 
 ```abnf
-sentMsgBody = <encrypted padded(smpClientMessage, 16016)>
-smpClientMessage = smpPrivHeader clientMsgBody
-smpPrivHeader = emptyHeader / smpConfirmationHeader
+sentClientMsgBody = <encrypted padded(smpClientMessage, 16016)>
+smpClientMessage = emptyHeader clientMsgBody
 emptyHeader = "_"
-smpConfirmationHeader = %s"K" senderKey
+clientMsgBody = *OCTET ; up to 16016 - 2
+
+sentConfirmationBody = <encrypted padded(smpConfirmation, 15920)>
+smpConfirmation = smpConfirmationHeader confirmationBody
+smpConfirmationHeader = emptyHeader / %s"K" senderKey
+  ; emptyHeader is used when queue is already secured by sender
+confirmationBody = *OCTET ; up to 15920 - 2
 senderKey = length x509encoded
-; the sender's Ed25519 or X25519 public key to authorize SEND commands for this queue
-clientMsgBody = *OCTET ; up to 16016 in case of emptyHeader
+  ; the sender's Ed25519 or X25519 public key to authorize SEND commands for this queue
 ```
 
 `clientHeader` in the initial unsigned message is used to transmit sender's server key and can be used in the future revisions of SMP protocol for other purposes.

@@ -12,8 +12,7 @@ Version 6, 2024-06-22
 - [Communication between SMP agents](#communication-between-smp-agents)
   - [Message syntax](#messages-between-smp-agents)
     - [HELLO message](#hello-message)
-    - [REPLY message](#reply-message)
-    - [MSG message](#msg-message)
+    - [A_MSG message](#a_msg-message)
     - [INV message](#inv-message)
     - [ACK message](#ack-message)
     - [NEW message](#new-message)
@@ -141,20 +140,58 @@ Faster duplex connection process is possible with the `SKEY` command added in v9
   - sends the notification `INFO` with Alice's information to Bob.
   - sends `CON` notification to Bob.
 
+## Contact address
+
+TODO
+
 ## Communication between SMP agents
 
 To establish duplex connections and to send messages on behalf of their clients, SMP agents communicate via SMP servers.
 
 Agents use SMP message client body (the part of the SMP message after header - see [SMP protocol](./simplex-messaging.md)) to transmit agent client messages and exchange messages between each other.
 
-Each SMP message client body, once decrypted, contains 3 parts (one of them may include binary message body), as defined by `decryptedSmpMessageBody` syntax:
+These messages are encrypted with per-queue shared secret using NaCL crypto_box and can be of 4 types, as defined by `decryptedSMPClientMessage`:
+- `agentConfirmation` - used when confirming SMP queues, contains connection information encrypted with double ratchet. This envelope can only contain `agentConnInfo` or `agentConnInfoReply` encrypted with double ratchet.
+- `agentMsgEnvelope` - contains different agent messages encrypted with double ratchet, as defined in `agentMessage`.
+- `agentInvitation` - sent to SMP queue that is used as contact address, does not use double ratchet.
+- `agentRatchetKey` - used to re-negotiate double ratchet encryption - can contain additional information in `agentRatchetKey`.
 
+```abnf
+decryptedSMPClientMessage = agentConfirmation / agentMsgEnvelope / agentInvitation / agentRatchetKey
+agentConfirmation = agentVersion %s"C" ("0" / "1" sndE2EEncryptionParams) encConnInfo
+agentVersion = 2*2 OCTET
+sndE2EEncryptionParams = TODO
+encConnInfo = doubleRatchetEncryptedMessage
+
+agentMsgEnvelope = agentVersion %s"M" encAgentMessage
+encAgentMessage = doubleRatchetEncryptedMessage
+
+agentInvitation = agentVersion %s"I" connReqLength connReq connInfo
+connReqLength = 2*2 OCTET ; Word16
+
+agentRatchetKey = agentVersion %s"R" rcvE2EEncryptionParams info
+rcvE2EEncryptionParams = TODO
+info = *OCTET
+
+doubleRatchetEncryptedMessage = TODO
+```
+
+This syntax of decrypted SMP client message body is defined by `decryptedAgentMessage` below.
+
+Decrypted SMP message client body can be one of 4 types:
+- `agentConnInfo` - used by the initiating party when confirming reply queue - sent in `agentConfirmation` envelope.
+- `agentConnInfoReply` - used by accepting party, includes reply queue(s) in the initial confirmation - sent in `agentConfirmation` envelope.
+- `agentRatchetInfo` - used to pass additional information when renegotiating double ratchet encryption - sent in `agentRatchetKey` envelope.
+- `agentMessage` - all other agent messages.
+
+`agentMessage` contains these parts:
 - `agentMsgHeader` - agent message header that contains sequential agent message ID for a particular SMP queue, agent timestamp (ISO8601) and the hash of the previous message.
-- `agentMessage` - a command/message to the other SMP agent:
-  - to establish the connection with two SMP queues (`helloMsg`, `replyQueueMsg`)
-  - to send and to acknowledge user messages (`clientMsg`, `acknowledgeMsg`)
-  - to manage SMP queue rotation (`newQueueMessage`, `deleteQueueMsg`)
-  - to manage encryption key rotation (TODO)
+- `aMessage` - a command/message to the other SMP agent:
+  - to confirm the connection (`HELLO`).
+  - to send and to confirm reception of user messages (`A_MSG`, `A_RCVD`).
+  - to confirm that the new double ratchet encryption is agreed (`EREADY`).
+  - to notify another party that it can continue sending messages after queue capacity was exceeded (`A_QCONT`).
+  - to manage SMP queue rotation (`QADD`, `QKEY`, `QUSE`, `QTEST`).
 - `msgPadding` - an optional message padding to make all SMP messages have constant size, to prevent servers from observing the actual message size. The only case the message padding can be absent is when the message has exactly the maximum size, in all other cases the message MUST be padded to a fixed size.
 
 ### Messages between SMP agents
@@ -162,69 +199,93 @@ Each SMP message client body, once decrypted, contains 3 parts (one of them may 
 Message syntax below uses [ABNF][3] with [case-sensitive strings extension][4].
 
 ```abnf
-decryptedSmpMessageBody = agentMsgHeader CRLF agentMessage CRLF msgPadding
-agentMsgHeader = agentMsgId SP previousMsgHash ; here `agentMsgId` is sequential ID set by the sending agent
-agentMsgId = 1*DIGIT
-previousMsgHash = encoded
-encoded = <base64 encoded>
+decryptedAgentMessage = agentConnInfo / agentConnInfoReply / agentRatchetInfo / agentMessage
+agentConnInfo = %s"I" connInfo
+connInfo = *OCTET
+agentConnInfoReply = %s"D" smpQueues connInfo
+agentRatchetInfo = %s"R" ratchetInfo
 
-agentMessage = helloMsg / replyQueueMsg /
-               clientMsg / invitationMsg /
-               newQueueMessage / deleteQueueMsg 
+agentMessage = %s"M" agentMsgHeader aMessage msgPadding
+agentMsgHeader = agentMsgId prevMsgHash
+agentMsgId = 8*8 OCTET ; Int64
+prevMsgHash = shortString
 
-msgPadding = *OCTET ; optional random bytes to get messages to the same size (as defined in SMP message size)
+aMessage = HELLO / A_MSG / A_RCVD / EREADY / A_QCONT /
+           QADD / QKEY / QUSE / QTEST
 
-helloMsg = %s"H"
+HELLO = %s"H"
 
-replyQueueMsg = %s"R" connectionRequest ; `connectionRequest` is defined below
-; this message can only be sent by the second connection party
+A_MSG = %s"M" userMsgBody
+userMsgBody = *OCTET
 
-clientMsg = %s"M" clientMsgBody
-clientMsgBody = *OCTET
+A_RCVD = %s"V" msgReceipt
+msgReceipt = agentMsgId msgHash rcptLength rcptInfo
 
-; TODO remove and move to "public" header
-invitationMsg = %s"INV" SP connReqInvitation SP connInfo
-; `connReqInvitation` and `connInfo` are defined below
+EREADY = %s"E" agentMsgId
 
-newQueueMsg = %s"N" queueURI
-; this message can be sent by any party to add SMP queue to the connection.
-; NOT SUPPORTED in the current implementation
+A_QCONT = %s"QC" sndQueueAddr
 
-deleteQueueMsg = %s"D" queueURI
-; notification that the queue with passed URI will be deleted
-; no need to notify the other party about suspending queue separately, as suspended and deleted queues are indistinguishable to the sender
-; NOT SUPPORTED in the current implementation
+QADD = %s"QA" sndQueues
+sndQueues = length 1*(newQueueUri replacedSndQueue)
+newQueueUri = clientVRange smpServer senderId dhPublicKey [sndSecure]
+dhPublicKey = length x509ecoded
+sndSecure = "T"
+replacedSndQueue = "0" / "1" sndQueueAddr
+
+QKEY = %s"QK" sndQueueKeys
+sndQueueKeys = length 1*(newQueueInfo senderKey)
+newQueueInfo = version smpServer senderId dhPublicKey [sndSecure]
+senderKey = length x509ecoded
+
+QUSE = %s"QU" sndQueuesReady
+sndQueuesReady = length 1*(sndQueueAddr primary)
+primary = %s"T" / %s"F"
+
+QTEST = %s"QT" sndQueueAddrs
+sndQueueAddrs = length 1*sndQueueAddr
+
+sndQueueAddr = smpServer senderId
+smpServer = hosts port keyHash
+hosts = length 1*host
+host = shortString
+port = shortString
+keyHash = shortString
+senderId = shortString
+
+clientVRange = version version
+version = 2*2 OCTET
+
+msgPadding = *OCTET
+rcptLength = 2*2 OCTET
+shortString = length *OCTET
+length = 1*1 OCTET
 ```
 
 #### HELLO message
 
-This is the first message that both agents send after the respective SMP queue is secured by the receiving agent (see diagram). It MAY contain the public key that the recipient would use to verify messages signed by the sender.
+This is the first message that both agents send after the respective SMP queue is secured by the receiving agent (see diagram).
 
-Sending agent might need to retry sending HELLO message, as it would not have any other confirmation that the queue is secured other than the success of sending this message with the signed SMP SEND command.
+#### A_MSG message
 
-#### REPLY message
+This is the agent envelope used to send client messages once the connection is established. This is different from the MSG sent by SMP server to the agent and MSG event from SMP agent to the client that are sent in different contexts.
 
-This is the message that is sent by the agent that received an out-of-band connection request to pass the connection request for the reply SMP queues to the agent that originated the connection (see diagram).
+#### A_RCVD message
 
-#### MSG message
+This message is sent to confirm the client message reception. It includes received message number and message hash.
 
-This is the agent envelope used to send client messages once the connection is established. Do not confuse it with the MSG response from SMP server to the agent and MSG response from SMP agent to the client that are sent in different contexts.
+#### EREADY message
 
-#### INV message
+TODO
 
-This message is sent to the SMP queue(s) in `connReqContact`, to establish a new connection via existing unsecured queue, that acts as a permanent connection link of a user.
+#### A_QCONT message
 
-#### ACK message
+TODO
 
-This message is sent to confirm the client message reception. It includes received message number, message hash and the reception status.
+### Rotating messaging queue
 
-#### NEW message
+TODO
 
-This message is sent to add an additional SMP queue to the connection. Unlike REPLY message it can be sent at any time.
-
-#### DEL message 
-
-This message is sent to notify that the queue with passed URI will be deleted - having received this message, the receiving agent should no longer send messages to this queue. In case it was the last remaining send queue in the duplex connection, the agent MAY also delete the reply queue(s) in the connection.
+QADD / QKEY / QUSE / QTEST
 
 ## SMP agent commands
 
