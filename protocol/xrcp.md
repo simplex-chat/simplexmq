@@ -19,7 +19,7 @@ Like SMP and XFTP, XRCP leverages out-of-band invitations to mitigate MITM attac
 
 ## XRCP model
 
-XRCP assumes two application roles: host (that contain the profile data) and controller that gains limited access to host data.
+XRCP assumes two application roles: host (that contain the application data) and controller that gains limited access to host data.
 Applications are also split into two components: UI and core.
 
 When an XRCP session is established a host UI is locked out and a controller UI uses its core to proxy commands to the host core, getting back responses and events.
@@ -148,7 +148,7 @@ The controller decrypts (including the first session) and validates the received
 - Chosen versions are supported (must be within offered ranges).
 - CA fingerprint matches the one presented in TLS handshake and the previous sessions - in subsequent sessions TLS connection should be rejected if the fingerprint is different.
 
-JTD schema for the encrypted part of host HELLO block `hostHelloJSON`:
+[JTD schema](https://www.rfc-editor.org/rfc/rfc8927) for the encrypted part of host HELLO block `hostHelloJSON`:
 
 ```json
 {
