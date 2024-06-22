@@ -1,5 +1,16 @@
 # SimpleX Remote Control Protocol
 
+## Table of contents
+
+- [Abstract](#abstract)
+- [XRCP model](#xrcp-model)
+- [Transport protocol](#transport-protocol)
+  - [Session invitation](#session-invitation)
+  - [Establishing TLS connection](#establishing-tls-connection)
+  - [Session verification and protocol negotiation](#session-verification-and-protocol-negotiation)
+  - [Controller/host session operation](#сontrollerhost-session-operation)
+- [Key agreement for announcement packet and for session](#key-agreement-for-announcement-packet-and-for-session)
+
 ## Abstract
 
 SimpleX Remote Control Protocol is a client-server protocol to turn application UI into a thin client for a controller running on another device.
@@ -97,7 +108,7 @@ packetPad = <pad packet size to 1450 bytes> ; possibly, we may need to move KEM 
 ; with encapsulation key in HELLO block and KEM ciphertext in reply to HELLO.
 ```
 
-### Establishing session TLS connection
+### Establishing TLS connection
 
 Host connects to controller via TCP session and validates CA credentials during TLS handshake. Controller acts as a TCP server in this connection, to avoid host device listening on a port, which might create an attack vector. During TLS handshake the controller's TCP server MUST present a self-signed two-certificate chain where the fingerprint of the first certificate MUST be the same as in the announcement.
 
