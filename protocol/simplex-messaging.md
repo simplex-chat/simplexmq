@@ -1,3 +1,5 @@
+Version 9, 2024-06-22
+
 # Simplex Messaging Protocol (SMP)
 
 ## Table of contents
@@ -46,8 +48,13 @@
     - [Subscription END notification](#subscription-end-notification)
     - [Error responses](#error-responses)
     - [OK response](#ok-response)
-- [Appendices](#appendices)
-  - [Appendix A. Transport connection with the SMP server](#appendix-a)
+- [Transport connection with the SMP server](#transport-connection-with-the-SMP-server)
+  - [General transport protocol consideraion](#general-transport-protocol-consideraion)
+  - [TLS transport encryption](#tls-transport-encryption)
+  - [Server certificate](#server-certificate)
+  - [ALPN to agree handshake version](#alpn-to-agree-handshake-version)
+  - [Transport handshake](#transport-handshake)
+  - [Additional transport privacy](#additional-transport-privacy)
 
 ## Abstract
 
@@ -650,7 +657,7 @@ queueInfo = %s"INFO " info
 info = <json encoded queue information>
 ```
 
-The format of queue information is implementation specific, and is not part of the specification. For information, JTD schema (RFC 8927) for queue information returned by the reference implementation of SMP server is:
+The format of queue information is implementation specific, and is not part of the specification. For information, [JTD schema][17] for queue information returned by the reference implementation of SMP server is:
 
 ```json
 {
@@ -1112,27 +1119,11 @@ When the command is successfully executed by the server, it should respond with 
 ok = %s"OK"
 ```
 
-## Appendices
+## Transport connection with the SMP server
 
-### Appendix A.
-
-**SMP transport protocol.**
-
-TODO:
-
-- ALPN
-- update handshake syntax
-- support chains of 3 and 4 certificates
+### General transport protocol consideraion
 
 Both the recipient and the sender can use TCP or some other, possibly higher level, transport protocol to communicate with the server. The default TCP port for SMP server is 5223.
-
-For scenarios when meta-data privacy is critical, it is recommended that clients:
-
-- communicating over Tor network,
-- establish a separate connection for each SMP queue,
-- send noise traffic (using PING command).
-
-In addition to that, the servers can be deployed as Tor onion services.
 
 The transport protocol should provide the following:
 
@@ -1141,40 +1132,109 @@ The transport protocol should provide the following:
 - integrity (preventing data modification by the attacker without detection),
 - unique channel binding (`sessionIdentifier`) to include in the signed part of SMP transmissions.
 
-By default, the client and server communicate using [TLS 1.3 protocol][13] restricted to:
+### TLS transport encryption
+
+The client and server communicate using [TLS 1.3 protocol][13] restricted to:
 
 - TLS_CHACHA20_POLY1305_SHA256 cipher suite (for better performance on mobile devices),
 - ed25519 EdDSA algorithms for signatures,
 - x25519 ECDHE groups for key exchange.
-- servers must send the chain of exactly 2 self-signed certificates in the handshake, with the first (offline) certificate one signing the second (online) certificate. Offline certificate fingerprint is used as a server identity - it is a part of SMP server address.
+- servers must send the chain of 2, 3 or 4 self-signed certificates in the handshake (see [Server certificate](#server-certificate)), with the first (offline) certificate one signing the second (online) certificate. Offline certificate fingerprint is used as a server identity - it is a part of SMP server address.
 - The clients must abort the connection in case a different number of certificates is sent.
 - server and client TLS configuration should not allow resuming the sessions.
 
 During TLS handshake the client must validate that the fingerprint of the online server certificate is equal to the `serverIdentity` the client received as part of SMP server address; if the server identity does not match the client must abort the connection.
 
+### Server certificate
+
+Servers use self-signed certificates that the clients validate by comparing the fingerprint of one of the certificates in the chain with the certificate fingerprint present in the server address.
+
+Clients SHOULD support the chains of 2, 3 and 4 server certificates:
+
+**2 certificates**:
+1. offline server certificate:
+   - its fingerprint is present in the server address.
+   - its private key is not stored on the server.
+2. online server certificate:
+   - it must be signed by offline certificate.
+   - its private key is stored on the server and is used in TLS session.
+
+**3 certificates**:
+1. offline server certificate - same as with 2 certificates.
+2. online server certificate:
+   - it must be signed by offline certificate.
+   - its private key is stored on the server.
+3. session certificate:
+   - generated automatically on every server start and/or on schedule.
+   - signed by online server certificate.
+   - its private key is used in TLS session.
+
+**4 certificates**:
+0. offline operator identity certificate:
+   - used for all servers operated by the same entity.
+   - its private key is not stored on the server.
+1. offline server certificate:
+   - signed by offline operator certificate.
+   - same as with 2 certificates.
+2. online server certificate - same as with 3 certificates.
+3. session certificate - same as with 3 certificates.
+
+### ALPN to agree handshake version
+
+Client and server use [ALPN extension][18] of TLS to agree handshake version.
+
+Server SHOULD send `smp/1` protocol name and the client should confirm this name in order to use the current protocol version. This is added to allow support of older clients without breaking backward compatibility and to extend or modify handshake syntax.
+
+If the client does not confirm this protocol name, the server would fall back to v6 of SMP protocol.
+
+### Transport handshake
+
 Once TLS handshake is complete, client and server will exchange blocks of fixed size (16384 bytes).
 
-The first block sent by the server should be `serverHello` and the client should respond with `clientHello` - these blocks are used to agree SMP protocol version:
+The first block sent by the server should be `paddedServerHello` and the client should respond with `paddedClientHello` - these blocks are used to agree SMP protocol version:
 
 ```abnf
-serverHello = smpVersionRange sessionIdentifier pad
+paddedServerHello = <padded(serverHello, 16384)>
+serverHello = smpVersionRange sessionIdentifier [serverCert signedServerKey] ignoredPart
 smpVersionRange = minSmpVersion maxSmpVersion
 minSmpVersion = smpVersion
 maxSmpVersion = smpVersion
 sessionIdentifier = shortString
 ; unique session identifier derived from transport connection handshake
-; it should be included in all SMP transmissions sent in this transport connection.
+; it should be included in authorized part of all SMP transmissions sent in this transport connection,
+; but it must not be sent as part of the transmission in the current protocol version.
+serverCert = originalLength x509encoded
+signedServerKey = originalLength x509encoded ; signed by server certificate
 
-clientHello = smpVersion pad
+paddedClientHello = <padded(clientHello, 16384)>
+clientHello = smpVersion [clientKey] ignoredPart
 ; chosen SMP protocol version - it must be the maximum supported version
 ; within the range offered by the server
+clientKey = length x509encoded
 
 smpVersion = 2*2OCTET ; Word16 version number
-
+originalLength = 2*2OCTET
+ignoredPart = *OCTET
 pad = *OCTET
 ```
 
+`signedServerKey` is used to compute a shared secret to authorize client transmission - it is combined with the per-queue key that was used when the queue was created.
+
+`clientKey` is used only by SMP proxy server when it connects to the destination server to agree shared secret for the additional encryption layer, end user clients do not use this key.
+
+`ignoredPart` in handshake allows to add additional parameters in handshake without changing protocol version - the client and servers must ignore any extra bytes within the original block length.
+
 For TLS transport client should assert that `sessionIdentifier` is equal to `tls-unique` channel binding defined in [RFC 5929][14] (TLS Finished message struct); we pass it in `serverHello` block to allow communication over some other transport protocol (possibly, with another channel binding).
+
+### Additional transport privacy
+
+For scenarios when meta-data privacy is critical, it is recommended that clients:
+
+- communicating over Tor network,
+- establish a separate connection for each SMP queue,
+- send noise traffic (using PING command).
+
+In addition to that, the servers can be deployed as Tor onion services.
 
 [1]: https://en.wikipedia.org/wiki/Man-in-the-middle_attack
 [2]: https://en.wikipedia.org/wiki/End-to-end_encryption
@@ -1192,3 +1252,5 @@ For TLS transport client should assert that `sessionIdentifier` is equal to `tls
 [14]: https://datatracker.ietf.org/doc/html/rfc5929#section-3
 [15]: https://www.rfc-editor.org/rfc/rfc8709.html
 [16]: https://nacl.cr.yp.to/box.html
+[17]: https://datatracker.ietf.org/doc/html/rfc8927
+[18]: https://datatracker.ietf.org/doc/html/rfc7301
