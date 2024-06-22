@@ -294,13 +294,58 @@ The reason not to use JSON bodies:
 
 The reason not to use URI segments / HTTP verbs / REST semantics is to have consistent request size.
 
-### TLS ALPN
+### ALPN to agree handshake version
 
-TODO
+Client and server use [ALPN extension][18] of TLS to agree handshake version.
 
-### Connection handshake
+Server SHOULD send `xftp/1` protocol name and the client should confirm this name in order to use the current protocol version. This is added to allow support of older clients without breaking backward compatibility and to extend or modify handshake syntax.
 
-TODO
+If the client does not confirm this protocol name, the server would fall back to v1 of XFTP protocol.
+
+### Transport handshake
+
+When a client and a server agree on handshake version using ALPN extension, they should proceed with XFTP handshake.
+
+As with SMP, a client doesn't reveal its version range to avoid version fingerprinting. Unlike SMP, XFTP runs a HTTP2 protocol over TLS and the server can't just send its handshake right away. So a session handshake is driven by client-sent requests:
+
+1. To pass initiative to the server, the client sends a request with empty body.
+2. Server responds with its `paddedServerHello` block.
+3. Clients sends a request containing `paddedClientHello` block,
+4. Server sends an empty response, finalizing the handshake.
+
+Once TLS handshake is complete, client and server will exchange blocks of fixed size (16384 bytes).
+
+```abnf
+paddedServerHello = <padded(serverHello, 16384)>
+serverHello = xftpVersionRange sessionIdentifier serverCert signedServerKey ignoredPart
+xftpVersionRange = minXftpVersion maxXftpVersion
+minXftpVersion = xftpVersion
+maxXftpVersion = xftpVersion
+sessionIdentifier = shortString
+; unique session identifier derived from transport connection handshake
+serverCert = originalLength <x509encoded>
+signedServerKey = originalLength <x509encoded> ; signed by server certificate
+
+paddedClientHello = <padded(clientHello, 16384)>
+clientHello = xftpVersion keyHash ignoredPart
+; chosen XFTP protocol version - must be the maximum supported version
+; within the range offered by the server
+
+xftpVersion = 2*2OCTET ; Word16 version number
+keyHash = shortString
+shortString = length length*OCTET
+length = 1*1OCTET
+originalLength = 2*2OCTET
+ignoredPart = *OCTET
+```
+
+In XFTP v2 the handshake is only used for version negotiation, but `serverCert` and `signedServerKey` must be validated by the client.
+
+`keyHash` is the CA fingerprint used by client to validate TLS certificate chain and is checked by a server against its own key.
+
+`ignoredPart` in handshake allows to add additional parameters in handshake without changing protocol version - the client and servers must ignore any extra bytes within the original block length.
+
+For TLS transport client should assert that `sessionIdentifier` is equal to `tls-unique` channel binding defined in [RFC 5929][14] (TLS Finished message struct); we pass it in `serverHello` block to allow communication over some other transport protocol (possibly, with another channel binding).
 
 ### Requests and responses
 
