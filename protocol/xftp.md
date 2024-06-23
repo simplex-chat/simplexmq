@@ -1,4 +1,4 @@
-Revision 1, 2024-06-22
+Version 2, 2024-06-22
 
 # SimpleX File Transfer Protocol
 

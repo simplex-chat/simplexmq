@@ -1,4 +1,6 @@
-# Post-quantum resistant augmented double ratchet algorithm
+Version 1, 2024-06-22
+
+# Post-quantum resistant augmented double ratchet algorithm (PQDR)
 
 ## Table of contents
 

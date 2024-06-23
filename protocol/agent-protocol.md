@@ -1,4 +1,4 @@
-Version 6, 2024-06-22
+Version 5, 2024-06-22
 
 # SMP agent protocol - duplex communication over SMP protocol
 

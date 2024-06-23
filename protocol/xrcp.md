@@ -1,4 +1,4 @@
-Revision 1, 2024-06-22
+Version 1, 2024-06-22
 
 # SimpleX Remote Control Protocol
 

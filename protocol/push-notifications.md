@@ -1,4 +1,4 @@
-Version 1, 2024-06-22
+Version 2, 2024-06-22
 
 # Overview of push notifications for SimpleX Messaging Servers
 
