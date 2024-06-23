@@ -22,18 +22,6 @@ Version 5, 2024-06-22
 - [Connection link: 1-time invitation and contact address](#connection-link-1-time-invitation-and-contact-address)
 - [Appendix A: SMP agent API](#smp-agent-api)
   - [API functions](#api-functions)
-    - [Create conection](#create-conection)
-    - [Join connection](#join-connection)
-    - [Allow connection](#allow-connection)
-    - [Accept and reject connection requests](#accept-and-reject-connection-requests)
-    - [Send message](#send-message)
-    - [Acknowledge received message](#acknowledge-received-message)
-    - [Subscribe connection](#subscribe-connection)
-    - [Get notification message](#get-notification-message)
-    - [Rotate message queue to another server](#rotate-message-queue-to-another-server)
-    - [Renegotiate e2e encryption](#renegotiate-e2e-encryption)
-    - [Delete connection](#delete-connection)
-    - [Suspend connection](#suspend-connection)
   - [API events](#api-events)
 
 ## Abstract
