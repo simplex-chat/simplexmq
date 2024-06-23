@@ -216,8 +216,6 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
  - identify that and when a user is using SimpleX.
 
- - block SimpleX traffic.
-
  - determine which servers the user receives the messages from.
 
  - observe how much traffic is being sent, and make guesses as to its purpose.
@@ -254,6 +252,8 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 - know how many messages are sent via the queue (although some may be noise or not content messages).
 
+- learn which messages would trigger notifications even if a user does not use [push notifications](./push-notifications.md).
+
 - perform the correlation of the queue used to receive messages (matching multiple queues to a single user) via either a re-used transport connection, user's IP Address, or connection timing regularities.
 
 - learn a recipient's IP address, track them through other IP addresses they use to access the same queue, and infer information (e.g. employer) based on the IP addresses, as long as Tor is not used.
@@ -270,7 +270,7 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 - undetectably drop individual messages, so long as a subsequent message is delivered.
 
-- learn the contents of messages.
+- learn the contents or type of messages.
 
 - distinguish noise messages from regular messages except via timing regularities.
 
@@ -302,7 +302,9 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 - undetectably drop individual messages, so long as a subsequent message is delivered.
 
-- learn the contents of messages.
+- learn the contents or type of messages.
+
+- learn which messages would trigger notifications.
 
 - learn the destination queues of messages.
 
