@@ -7,7 +7,7 @@ Version 5, 2024-06-22
 - [Abstract](#abstract)
 - [SMP agent](#smp-agent)
 - [SMP servers management](#smp-servers-management)
-- [SMP agent protocol components](#smp-agent-protocol-components)
+- [SMP agent protocol scope](#smp-agent-protocol-scope)
 - [Duplex connection procedure](#duplex-connection-procedure)
 - [Contact addresses](#contact-addresses)
 - [Communication between SMP agents](#communication-between-smp-agents)
@@ -49,16 +49,19 @@ SMP agent API does not use the addresses of the SMP servers that the agent will 
 - by the client applications via any API that is outside of scope of this protocol.
 - by the agents themselves based on availability and latency of the configured servers.
 
-## SMP agent protocol components
+## SMP agent protocol scope
 
-SMP agent protocol has 4 main parts:
+SMP agent protocol has 2 main parts:
 
 - the messages that SMP agents exchange with each other in order to:
   - negotiate establishing unidirectional (simplex) encrypted queues on SMP servers.
   - exchange client messages and delivery notifications, providing sequential message IDs and message integrity (by including the hash of the previous message).
+  - re-negotiate messaging queues to use and connection e2e encryption.
+- the messages that the clients of SMP agents should send out-of-band (as pre-shared "invitation" including queue URIs) to protect [E2E encryption][1] from active attacks ([MITM attacks][2]).
+
+[Appendix A](#appendix-a-smp-agent-api) of this document describes:
 - the functional API used by the client application with the agent. This API allows to create and manage multiple connections, each consisting of two or more SMP queues.
 - events that the agent passes to the clients.
-- the messages that the clients of SMP agents should send out-of-band (as pre-shared "invitation" including queue URIs) to protect [E2E encryption][1] from active attacks ([MITM attacks][2]).
 
 ## Duplex connection procedure
 
