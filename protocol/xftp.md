@@ -33,6 +33,7 @@ Revision 1, 2024-06-22
   - [File recipient commands](#file-recipient-commands)
     - [Download file chunk](#download-file-chunk)
     - [Acknowledge file chunk download](#acknowledge-file-chunk-download)
+- [Threat model](#threat-model)
 
 ## Abstract
 
@@ -524,3 +525,108 @@ ack = %s"FACK"
 If file recipient ID is successfully deleted, the server must send `ok` response.
 
 In current implementation of XFTP protocol in SimpleX Chat clients don't use FACK command. Files are automatically expired on servers after configured time interval.
+
+## Threat model
+
+#### Global Assumptions
+
+ - A user protects their local database and key material.
+ - The user's application is authentic, and no local malware is running.
+ - The cryptographic primitives in use are not broken.
+ - A user's choice of servers is not directly tied to their identity or otherwise represents distinguishing information about the user.
+
+#### A passive adversary able to monitor the traffic of one user
+
+*can:*
+
+ - identify that and when a user is sending files over XFTP protocol.
+
+ - determine which servers the user sends/receives files to/from.
+
+ - observe how much traffic is being sent, and make guesses as to its purpose.
+
+*cannot:*
+
+ - see who sends files to the user and who the user sends the files to.
+
+#### A passive adversary able to monitor a set of file senders and recipients
+
+ *can:*
+
+ - learn which XFTP servers are used to send and receive files for which users.
+
+ - learn when files are sent and received.
+
+ - perform traffic correlation attacks against senders and recipients and correlate senders and recipients within the monitored set, frustrated by the number of users on the servers.
+
+ - observe how much traffic is being sent, and make guesses as to its purpose
+
+*cannot, even in case of a compromised transport protocol:*
+
+ - perform traffic correlation attacks with any increase in efficiency over a non-compromised transport protocol
+
+#### XFTP server
+
+*can:*
+
+- learn when file senders and recipients are online.
+
+- know how many file chunks and chunk sizes are sent via the server.
+
+- perform the correlation of the file chunks as belonging to one file via either a re-used transport connection, user's IP address, or connection timing regularities.
+
+- learn file senders' and recipients' IP addresses, and infer information (e.g. employer) based on the IP addresses, as long as Tor is not used.
+
+- delete file chunks, preventing file delivery, as long as redundant delivery is not used.
+
+- lie about the state of a file chunk to the recipient and/or to the sender  (e.g. deleted when it is not).
+
+- refuse deleting the file when instructed by the sender.
+
+*cannot:*
+
+- undetectably corrupt file chunks.
+
+- learn the contents, name or the exact size of sent files.
+
+- learn approximate size of sent files, as long as more than one server is used to send file chunks.
+
+- compromise the users' end-to-end encryption of files with an active attack.
+
+#### An attacker who obtained Alice's (decrypted) chat database
+
+*can:*
+
+- see the history of all files exchanged by Alice with her communication partners, as long as files were not deleted from the database.
+
+- receive all files sent and received by Alice that did not expire yet, as long as information about these files was not removed from the database.
+
+- prevent Alice's contacts from receiving the files she sent by deleting all or some of the file chunks from XFTP servers.
+
+#### A user's contact
+
+*can:*
+
+- spam the user with files.
+
+- forever retain files from the user.
+
+*cannot:*
+
+- cryptographically prove to a third-party that a file came from a user (assuming the user's device is not seized).
+
+- prove that two contacts they have is the same user.
+
+- cannot collaborate with another of the user's contacts to confirm they are communicating with the same user, even if they receive the same file.
+
+#### An attacker with Internet access
+
+*can:*
+
+- Denial of Service XFTP servers.
+
+*cannot:*
+
+- send files to a user who they are not connected with.
+
+- enumerate file chunks on an XFTP server.
