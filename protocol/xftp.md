@@ -1,3 +1,5 @@
+Revision 1, 2024-06-22
+
 # SimpleX File Transfer Protocol
 
 ## Table of contents
@@ -44,7 +46,7 @@ It is designed as a application level protocol to solve the problem of secure an
 
 The objective of SimpleX File Transfer Protocol (XFTP) is to facilitate the secure and private unidirectional transfer of files from senders to recipients via persistent file chunks stored by the xftp server.
 
-XFTP is implemeted as an application level protocol on top of HTTP2 and TLS.
+XFTP is implemented as an application level protocol on top of HTTP2 and TLS.
 
 The protocol describes the set of commands that senders and recipients can send to XFTP servers to create, upload, download and delete file chunks of several pre-defined sizes. XFTP servers SHOULD support chunks of 4 sizes: 64KB, 256KB, 1MB and 4MB (1KB = 1024 bytes, 1MB = 1024KB).
 

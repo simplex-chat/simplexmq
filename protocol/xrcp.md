@@ -1,3 +1,5 @@
+Revision 1, 2024-06-22
+
 # SimpleX Remote Control Protocol
 
 ## Table of contents
@@ -64,7 +66,7 @@ The session invitation contains this data:
 - CA TLS certificate fingerprint of the controller - this is part of long term identity of the controller established during the first session, and repeated in the subsequent session announcements.
 - Session Ed25519 public key used to verify the announcement and commands - this mitigates the compromise of the long term signature key, as the controller will have to sign each command with this key first.
 - Long-term Ed25519 public key used to verify the announcement and commands - this is part of the long term controller identity.
-- Session X25519 DH key and SNTRUP761 KEM encapsulation key to agree session encryption (both for multicast announcement and for commands and responses in TLS), as described in https://datatracker.ietf.org/doc/draft-josefsson-ntruprime-hybrid/. The new keys are used for each session, and if client key is already available (from the previous session), the computed shared secret will be used to encrypt the announcement multicast packet. The out-of-band invitation is unencrypted. DH public key and KEM encapsulation key are sent unencrypted. NaCL cryptobox is used for encryption.
+- Session X25519 DH key and SNTRUP761 KEM encapsulation key to agree session encryption (both for multicast announcement and for commands and responses in TLS), as described in https://datatracker.ietf.org/doc/draft-josefsson-ntruprime-hybrid/. The new keys are used for each session, and if client key is already available (from the previous session), the computed shared secret will be used to encrypt the announcement multicast packet. The out-of-band invitation is unencrypted. DH public key and KEM encapsulation key are sent unencrypted. NaCL crypto_box is used for encryption.
 
 Host application decrypts (except the first session) and validates the invitation:
 - Session signature is valid.
@@ -181,11 +183,11 @@ The controller decrypts (including the first session) and validates the received
 The controller should reply with with `ctrlHello` or `ctrlError` response:
 
 ```abnf
-ctrlHello = %s"HELLO " kemCyphertext nonce encrypted(unpaddedSize ctrlHelloJSON helloPad) pad
+ctrlHello = %s"HELLO " kemCiphertext nonce encrypted(unpaddedSize ctrlHelloJSON helloPad) pad
 ; ctrlHelloJSON is encrypted with the hybrid secret,
-; including both previously agreed DH secret and KEM secret from kemCyphertext
+; including both previously agreed DH secret and KEM secret from kemCiphertext
 unpaddedSize = largeLength
-kemCyphertext = largeLength *OCTET
+kemCiphertext = largeLength *OCTET
 pad = <pad block size to 16384 bytes>
 helloPad = <pad hello size to 12888 bytes>
 largeLength = 2*2 OCTET
@@ -205,13 +207,13 @@ JTD schema for the encrypted part of controller HELLO block `ctrlHelloJSON`:
 
 Once the controller replies HELLO to the valid host HELLO block, it should stop accepting new TCP connections.
 
-### Сontroller/host session operation
+### Controller/host session operation
 
 The protocol for communication during the session is out of scope of this protocol.
 
 SimpleX Chat uses HTTP2 encoding, where host device acts as a server and controller acts as a client (these roles are reversed compared with TLS connection, restoring client-server semantics in HTTP).
 
-Payloads in the protocol must be encrypted using NaCL secretbox using the hybrid shared secret agreed during session establishment.
+Payloads in the protocol must be encrypted using NaCL secret_box using the hybrid shared secret agreed during session establishment.
 
 Commands of the controller must be signed after the encryption using the controller's session and long term Ed25519 keys.
 
@@ -236,13 +238,13 @@ If the command or response includes attachment, its hash must be included in com
 
 Initial announcement is shared out-of-band (URI with xrcp scheme), and it is not encrypted.
 
-This announcement contains only DH keys, as KEM key is too large to include in QR code, which are used to agree encryption key for host HELLO block. The host HELLO block will contain DH key in plaintext part and KEM encapsulation (public) key in encrypted part, that will be used to determine the shared secret (using SHA256 over concatenated DH shared secret and KEM encapsulated secret) both for controller HELLO response (that contains KEM cyphertext in plaintext part) and subsequent session commands and responses.
+This announcement contains only DH keys, as KEM key is too large to include in QR code, which are used to agree encryption key for host HELLO block. The host HELLO block will contain DH key in plaintext part and KEM encapsulation (public) key in encrypted part, that will be used to determine the shared secret (using SHA256 over concatenated DH shared secret and KEM encapsulated secret) both for controller HELLO response (that contains KEM ciphertext in plaintext part) and subsequent session commands and responses.
 
-During the next session the announcement is sent via encrypted multicast block. The shared key for this announcement and for host HELLO block is determined using the KEM shared secred from the previous session and DH shared secret computed using the host DH key from the previous session and the new controller DH key from the announcement.
+During the next session the announcement is sent via encrypted multicast block. The shared key for this announcement and for host HELLO block is determined using the KEM shared secret from the previous session and DH shared secret computed using the host DH key from the previous session and the new controller DH key from the announcement.
 
-For the session, the shared secred is computed again using the KEM shared secret encapsulated by the controller using the new KEM key from the host HELLO block and DH shared secret computed using the host DH key from HELLO block and the new controller DH key from the announcement.
+For the session, the shared secret is computed again using the KEM shared secret encapsulated by the controller using the new KEM key from the host HELLO block and DH shared secret computed using the host DH key from HELLO block and the new controller DH key from the announcement.
 
-In pseudocode:
+In pseudo-code:
 
 ```
 // session 1

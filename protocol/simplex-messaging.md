@@ -50,7 +50,7 @@ Version 9, 2024-06-22
     - [Error responses](#error-responses)
     - [OK response](#ok-response)
 - [Transport connection with the SMP server](#transport-connection-with-the-SMP-server)
-  - [General transport protocol consideraion](#general-transport-protocol-consideraion)
+  - [General transport protocol considerations](#general-transport-protocol-considerations)
   - [TLS transport encryption](#tls-transport-encryption)
   - [Server certificate](#server-certificate)
   - [ALPN to agree handshake version](#alpn-to-agree-handshake-version)
@@ -348,7 +348,7 @@ Simplex messaging clients must cryptographically authorize commands for the foll
 
 To authorize/verify transmissions clients and servers MUST use either signature algorithm Ed25519 algorithm defined in [RFC8709][15] or [deniable authentication scheme](#deniable-client-authentication-scheme) based on NaCL crypto_box.
 
-It is recommended that clients use signature algorith for the recipient commands and deniable authentication scheme for sender commands (to have non-repudiation quality in the whole protocol stack).
+It is recommended that clients use signature algorithm for the recipient commands and deniable authentication scheme for sender commands (to have non-repudiation quality in the whole protocol stack).
 
 To encrypt/decrypt message bodies delivered to the recipients, servers/clients MUST use NaCL crypto_box.
 
@@ -400,7 +400,7 @@ The clients can optionally instruct a dedicated push notification server to subs
 - `subscribeNotifications` (`"NSUB"`) - see [Subscribe to queue notifications](#subscribe-to-queue-notifications).
 - `messageNotification` (`"NMSG"`) - see [Deliver message notification](#deliver-message-notification).
 
-[`SEND` command](#send-message) includes the notification flag to instruct SMP server whether to send the notification - this flag is forwarded to the recepient inside encrypted envelope, together with the timestamp and the message body, so even if TLS is compromised this flag cannot be used for traffic correlation.
+[`SEND` command](#send-message) includes the notification flag to instruct SMP server whether to send the notification - this flag is forwarded to the recipient inside encrypted envelope, together with the timestamp and the message body, so even if TLS is compromised this flag cannot be used for traffic correlation.
 
 ## SMP Transmission and transport block structure
 
@@ -755,7 +755,7 @@ The server must respond with `"ERR QUOTA"` response when queue capacity is excee
 
 Until the queue is secured, the server should accept any number of unsigned messages (up to queue  capacity) - it allows the sender to resend the confirmation in case of failure.
 
-The body should be encrypted with the shared secred based on recipient's "public" key (`EK`); once decrypted it must have this format:
+The body should be encrypted with the shared secret based on recipient's "public" key (`EK`); once decrypted it must have this format:
 
 ```abnf
 sentClientMsgBody = <encrypted padded(smpClientMessage, 16016)>
@@ -895,9 +895,9 @@ Sequence diagram for sending the message and `SKEY` commands via SMP proxy:
 
 4. Proxy receives the double-encrypted response from the destination server, removes one encryption layer and forwards it to the client.
 
-The diagram below shows the encrypttion layers for `PFWD`/`RFWD` commands and `RRES`/`PRES` responses:
+The diagram below shows the encryption layers for `PFWD`/`RFWD` commands and `RRES`/`PRES` responses:
 
-- s2r - encryption between client and SMP relay, with relay key returned in relay handshake, with MITM by proxy mitigated by verifying the certificate fingerprint included in the relay address. This encryptio prevents proxy server from observing commands and responses - proxy does not know how many different queues a connected client sends messages and commands to.
+- s2r - encryption between client and SMP relay, with relay key returned in relay handshake, with MITM by proxy mitigated by verifying the certificate fingerprint included in the relay address. This encryption prevents proxy server from observing commands and responses - proxy does not know how many different queues a connected client sends messages and commands to.
 - e2e - end-to-end encryption per SMP queue, with additional client encryption inside it.
 - p2r - additional encryption between proxy and SMP relay with the shared secret agreed in the handshake, to mitigate traffic correlation inside TLS.
 - r2c - additional encryption between SMP relay and client to prevent traffic correlation inside TLS.
@@ -980,7 +980,7 @@ Transmission forwarded to relay uses empty entity ID and its unique random corre
 ```abnf
 relayCommand = %s"RFWD" SP <encrypted(forwardedTransmission)>
 forwardedTransmission = fwdCorrId fwdSmpVersion fwdCommandKey transmission
-fwdCorrId = lenght 24*24 OCTET
+fwdCorrId = length 24*24 OCTET
   ; `fwdCorrId` - correlation ID used in `PFWD` command transmission - it is used as a nonce for client encryption,
   ; and `fwdCorrId + 1` is used as a nonce for the destination server response encryption.
 fwdSmpVersion = 2*2 OCTET
@@ -990,7 +990,7 @@ transmission = *OCTET ; note that it is not prefixed with the length
 
 The destination server having received this command decrypts both encryption layers (proxy and client), verifies client authorization as usual, processes it, and send the double encrypted `RRES` response to proxy.
 
-The shared secret for encrypting transmission bodies between proxy server and destination server is agreed from proxy and destination server keys exchanged in handshake headers - proxy and server use the same shared secred during the session for the encryption between them.
+The shared secret for encrypting transmission bodies between proxy server and destination server is agreed from proxy and destination server keys exchanged in handshake headers - proxy and server use the same shared secret during the session for the encryption between them.
 
 
 ```abnf
@@ -1140,7 +1140,7 @@ ok = %s"OK"
 
 ## Transport connection with the SMP server
 
-### General transport protocol consideraion
+### General transport protocol considerations
 
 Both the recipient and the sender can use TCP or some other, possibly higher level, transport protocol to communicate with the server. The default TCP port for SMP server is 5223.
 

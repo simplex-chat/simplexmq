@@ -114,7 +114,7 @@ Clients SHOULD support establishing duplex connection asynchronously (when parti
 
 Previously described duplex connection procedure requires sending 4 messages creating a bad UX for the users - it requires waiting until each party in online before the messages can be sent.
 
-It allows users validating connecting party profile before proceding with the connection, but it turned out to be unnecessary UX step and is not used in the client applications.
+It allows users validating connecting party profile before proceeding with the connection, but it turned out to be unnecessary UX step and is not used in the client applications.
 
 It also protects against an attacker who compromised TLS and uses the sender queue ID sent to the recipient to secure the queue before the sender can. This attack is very hard, and this accepting its risk is better than worse UX. Future protocol versions could mitigate this attack by encrypting entity IDs.
 
@@ -135,7 +135,7 @@ Faster duplex connection process is possible with the `SKEY` command added in v9
   - Agent A secures Bob's queue with SMP command `SKEY`.
   - Agent A sends SMP confirmation with ephemeral public encryption key and profile (but without reply queue, and without sender key).
 9. Agent A notifies Alice with `CON` notification.
-10. Agent B notifiees Bob about connection success:
+10. Agent B notifies Bob about connection success:
   - receives `HELLO` message from Alice.
   - sends the notification `INFO` with Alice's information to Bob.
   - sends `CON` notification to Bob.
@@ -228,14 +228,14 @@ A_QCONT = %s"QC" sndQueueAddr
 QADD = %s"QA" sndQueues
 sndQueues = length 1*(newQueueUri replacedSndQueue)
 newQueueUri = clientVRange smpServer senderId dhPublicKey [sndSecure]
-dhPublicKey = length x509ecoded
+dhPublicKey = length x509encoded
 sndSecure = "T"
 replacedSndQueue = "0" / "1" sndQueueAddr
 
 QKEY = %s"QK" sndQueueKeys
 sndQueueKeys = length 1*(newQueueInfo senderKey)
 newQueueInfo = version smpServer senderId dhPublicKey [sndSecure]
-senderKey = length x509ecoded
+senderKey = length x509encoded
 
 QUSE = %s"QU" sndQueuesReady
 sndQueuesReady = length 1*(sndQueueAddr primary)

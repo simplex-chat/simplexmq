@@ -51,9 +51,9 @@ In addition to that, the authentication of parties in the proposed scheme is als
 
 ### Problems with ML-KEM / Kyber
 
-ML-KEM / Kyber used in both Signal and Tutanota schemes is the chosen algorithm by NIST, but its standardisation process raised some concerns amongst the experts:
+ML-KEM / Kyber used in both Signal and Tutanota schemes is the chosen algorithm by NIST, but its standardization process raised some concerns amongst the experts:
 
-- hashing of random numbers that was present in the original submission was removed from the standardised version of the algorithm. See lines 304-314 in the published spec (https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.203.ipd.pdf) and also the linked discussion on the subject: https://groups.google.com/a/list.nist.gov/g/pqc-forum/c/WFRDl8DqYQ4. This decision polarised the experts, with some of them saying that it effectively created a backdoor.
+- hashing of random numbers that was present in the original submission was removed from the standardized version of the algorithm. See lines 304-314 in the published spec (https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.203.ipd.pdf) and also the linked discussion on the subject: https://groups.google.com/a/list.nist.gov/g/pqc-forum/c/WFRDl8DqYQ4. This decision polarized the experts, with some of them saying that it effectively created a backdoor.
 - calculation of security levels of Kyber appears to have been done incorrectly, and overall, the chosen Kyber seems worse than rejected NTRU according to [the analysis by Daniel Bernstein](https://blog.cr.yp.to/20231003-countcorrectly.html).
 
 ## Proposed solution: augmented double ratchet algorithm
@@ -72,7 +72,7 @@ Algorithm below assumes that in addition to shared secret from the initial key a
 
 ### Initialization
 
-The double ratchet initialization is defined in pseudocode as follows:
+The double ratchet initialization is defined in pseudo-code as follows:
 
 ```
 // Alice obtained Bob's keys and initializes ratchet first
@@ -123,7 +123,7 @@ def RatchetInitBobPQ2HE(state, SK, bob_dh_key_pair, shared_hka, shared_nhkb, bob
 
 `PQKEM-ENC` is key encapsulation algorithm.
 
-Other than commented lines, the above adds parameters `bob_pq_kem_encapsulation_key` and `bob_pq_kem_key_pair` to the ratchet intialization. Otherwise it is identical to the original double ratchet initialization.
+Other than commented lines, the above adds parameters `bob_pq_kem_encapsulation_key` and `bob_pq_kem_key_pair` to the ratchet initialization. Otherwise it is identical to the original double ratchet initialization.
 
 ### Encrypting messages
 
@@ -206,13 +206,13 @@ It is worth noting that while DH agreements work as ping-pong, when the new rece
 
 ## Implementation considerations for SimpleX Chat
 
-As SimpleX Chat pads messages to a fixed size, using 16kb transport blocks, the size increase introduced by this scheme will not cause additional traffic in most cases. For large texts it may require additional messages to be sent. Similarly, for media previews it may require either reducing the preview size (and quality), or sending additional messages, or compressing the current JSON encoding, e.g. with zstd algorithm.
+As SimpleX Chat pads messages to a fixed size, using 16kb transport blocks, the size increase introduced by this scheme will not cause additional traffic in most cases. For large texts it may require additional messages to be sent. Similarly, for media previews it may require either reducing the preview size (and quality), or sending additional messages, or compressing the current JSON encoding, e.g. with ZSTD algorithm.
 
 That might be the primary reason why this scheme was not adopted by Signal, as it would have resulted in substantial traffic growth – to the best of our knowledge, Signal messages are not padded to a fixed size.
 
 Sharing the initial keys in case of SimpleX Chat it is equivalent to sharing the invitation link. As encapsulation key is large, it may be inconvenient to share it in the link in some contexts.
 
-It is possible to postpone sharing the encapsulation key until the first message from Alice (confirmation message in SMP protocol), the party sending connection request. The upside here is that the invitation link size would not increase. The downside is that the user profile shared in this confirmation will not be encrypted with PQ-resistant algorithm. To mitigate it, the hadnshake protocol can be modified to postpone sending the user profile until the second message from Alice (HELLO message in SMP protocol).
+It is possible to postpone sharing the encapsulation key until the first message from Alice (confirmation message in SMP protocol), the party sending connection request. The upside here is that the invitation link size would not increase. The downside is that the user profile shared in this confirmation will not be encrypted with PQ-resistant algorithm. To mitigate it, the handshake protocol can be modified to postpone sending the user profile until the second message from Alice (HELLO message in SMP protocol).
 
 Another consideration is pairwise ratchets in groups. Key generation in sntrup761 is quite slow - on slow devices it can probably be as slow as 10 keys per second, so using this primitive in groups larger than 10 members would result in slow performance. An option could be not to use ratchets in groups at all, but that would result in the lack of protection in small groups that simply combine multiple devices of 1-3 people. So a better option would be to support dynamically adding and removing sntrup761 keys for pairwise ratchets in groups, which means that when sending each message a boolean flag needs to be passed whether to use PQ KEM or not.
 
