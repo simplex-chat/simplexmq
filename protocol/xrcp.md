@@ -12,6 +12,7 @@ Revision 1, 2024-06-22
   - [Session verification and protocol negotiation](#session-verification-and-protocol-negotiation)
   - [Controller/host session operation](#сontrollerhost-session-operation)
 - [Key agreement for announcement packet and for session](#key-agreement-for-announcement-packet-and-for-session)
+- [Threat model](#threat-model)
 
 ## Abstract
 
@@ -271,3 +272,59 @@ kemSecret(n) = dec(kemCiphertext(n), kemDecKey(n))
 If controller fails to store the new host DH key after receiving HELLO block, the encryption will become out of sync and the host won't be able to decrypt the next announcement. To mitigate it, the host should keep the last session DH key and also previous session DH key to try to decrypt the next announcement computing shared secret using both keys (first the new one, and in case it fails - the previous).
 
 To decrypt a multicast announcement, the host should try to decrypt it using the keys of all known (paired) remote controllers.
+
+## Threat model
+
+#### A passive network adversary able to monitor the site-local traffic:
+
+*can:*
+- observe session times, duration and volume of the transmitted data between host and controller.
+
+*cannot:*
+- observe the content of the transmitted data.
+- substitute the transmitted commands or responses.
+- replay transmitted commands or events from the hosts.
+
+#### An active network adversary able to intercept and substitute the site-local traffic:
+
+*can:*
+- prevent host and controller devices from establishing the session
+
+*cannot:*
+- same as passive adversary, provided that user visually verified session code out-of-band.
+
+#### An active adversary with the access to the network:
+
+*can:*
+- spam controller device.
+
+*cannot:*
+- compromise host or controller devices.
+
+#### An active adversary with the access to the network who also observed OOB announcement:
+
+*can:*
+- connect to controller instead of the host.
+- present incorrect data to the controller.
+
+*cannot:*
+- connect to the host or make host connect to itself.
+
+#### Compromised controller device:
+
+*can:*
+- observe the content of the transmitted data.
+- access any data of the controlled host application, within the capabilities of the provided API.
+
+*cannot:*
+- access other data on the host device.
+- compromise host device.
+
+#### Compromised host device:
+
+*can:*
+- present incorrect data to the controller.
+- incorrectly interpret controller commands.
+
+*cannot:*
+- access controller data, even related to this host device.
