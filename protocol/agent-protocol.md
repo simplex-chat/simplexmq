@@ -9,28 +9,28 @@ Version 6, 2024-06-22
 - [SMP servers management](#smp-servers-management)
 - [SMP agent protocol components](#smp-agent-protocol-components)
 - [Duplex connection procedure](#duplex-connection-procedure)
+- [Contact addresses](#contact-addresses)
 - [Communication between SMP agents](#communication-between-smp-agents)
   - [Message syntax](#messages-between-smp-agents)
     - [HELLO message](#hello-message)
     - [A_MSG message](#a_msg-message)
-    - [INV message](#inv-message)
     - [ACK message](#ack-message)
-    - [NEW message](#new-message)
-    - [DEL message](#del-message)
-- [SMP agent commands](#smp-agent-commands)
-  - [Client commands and server responses](#client-commands-and-server-responses)
-    - [NEW command and INV response](#new-command-and-inv-response)
-    - [JOIN command](#join-command)
-    - [CONF notification and LET command](#conf-notification-and-let-command)
-    - [REQ notification and ACPT command](#req-notification-and-acpt-command)
-    - [INFO and CON notifications](#info-and-con-notifications)
-    - [SUB command](#sub-command)
-    - [SEND command and MID, SENT and MERR responses](#send-command-and-mid-sent-and-merr-responses)
-    - [MSG notification](#msg-notification)
-    - [END notification](#end-notification)
-    - [OFF command](#off-command)
-    - [DEL command](#del-command)
-- [Connection request](#connection-request)
+- [Connection link: 1-time invitation and contact address](#connection-link-1-time-invitation-and-contact-address)
+- [Appendix A: SMP agent API](#smp-agent-api)
+  - [API functions](#api-functions)
+    - [Create conection](#create-conection)
+    - [Join connection](#join-connection)
+    - [Allow connection](#allow-connection)
+    - [Accept and reject connection requests](#accept-and-reject-connection-requests)
+    - [Send message](#send-message)
+    - [Acknowledge received message](#acknowledge-received-message)
+    - [Subscribe connection](#subscribe-connection)
+    - [Get notification message](#get-notification-message)
+    - [Rotate message queue to another server](#rotate-message-queue-to-another-server)
+    - [Renegotiate e2e encryption](#renegotiate-e2e-encryption)
+    - [Delete connection](#delete-connection)
+    - [Suspend connection](#suspend-connection)
+  - [API events](#api-events)
 
 ## Abstract
 
@@ -74,16 +74,16 @@ SMP agent protocol has 4 main parts:
 
 The procedure of establishing a duplex connection is explained on the example of Alice and Bob creating a bi-directional connection consisting of two unidirectional (simplex) queues, using SMP agents (A and B) to facilitate it, and two different SMP servers (which could be the same server). It is shown on the diagram above and has these steps:
 
-1. Alice requests the new connection from the SMP agent A using agent `NEW` api function.
-2. Agent A creates an SMP queue on the server (using [SMP protocol](./simplex-messaging.md) `NEW` command) and responds to Alice with the invitation that contains queue information and the encryption keys Bob's agent B should use. The invitation format is described in [Connection request](#connection-request).
-3. Alice sends the [connection request](#connection-request) to Bob via any secure channel (out-of-band message) - as a link or as a QR code.
-4. Bob uses agent `JOIN` api function with the connection request as a parameter to agent B to accept the connection.
+1. Alice requests the new connection from the SMP agent A using agent `createConnection` api function.
+2. Agent A creates an SMP queue on the server (using [SMP protocol](./simplex-messaging.md) `NEW` command) and responds to Alice with the invitation that contains queue information and the encryption keys Bob's agent B should use. The invitation format is described in [Connection link](connection-link-1-time-invitation-and-contact-address).
+3. Alice sends the [connection link](#connection-link-1-time-invitation-and-contact-address) to Bob via any secure channel (out-of-band message) - as a link or as a QR code.
+4. Bob uses agent `joinConnection` api function with the connection link as a parameter to agent B to accept the connection.
 5. Agent B creates Bob's SMP reply queue with SMP server `NEW` command.
-6. Agent B confirms the connection: sends an "SMP confirmation" with SMP server `SEND` command to the SMP queue specified in the connection request - SMP confirmation is an unauthenticated message with an ephemeral key that will be used to authenticate Bob's commands to the queue, as described in SMP protocol, and Bob's info (profile, public key for E2E encryption, and the connection request to this 2nd queue to Agent A - this connection request SHOULD use "simplex" URI scheme). This message is encrypted using key passed in the connection request (or with the derived shared secret, in which case public key for key derivation should be sent in clear text).
+6. Agent B confirms the connection: sends an "SMP confirmation" with SMP server `SEND` command to the SMP queue specified in the connection link - SMP confirmation is an unauthenticated message with an ephemeral key that will be used to authenticate Bob's commands to the queue, as described in SMP protocol, and Bob's info (profile, public key for E2E encryption, and the connection link to this 2nd queue to Agent A - this connection link SHOULD use "simplex" URI scheme). This message is encrypted using key passed in the connection link (or with the derived shared secret, in which case public key for key derivation should be sent in clear text).
 6. Alice confirms and continues the connection:
   - Agent A receives the SMP confirmation containing Bob's key, reply queue and info as SMP server `MSG`.
   - Agent A notifies Alice sending `CONF` notification with Bob's info.
-  - Alice accepts connection request with agent `LET` api function.
+  - Alice allows connection to continue with agent `allowConnection` api function.
   - Agent A secures the queue with SMP server `KEY` command.
   - Agent A sends SMP confirmation with ephemeral sender key, ephemeral public encryption key and profile (but without reply queue).
 7. Agent B confirms the connection:
@@ -102,9 +102,9 @@ At this point the duplex connection between Alice and Bob is established, they c
 
 The most communication happens between the agents and servers, from the point of view of Alice and Bob there are 4 steps (not including notifications):
 
-1. Alice requests a new connection with `NEW` agent API function and receives the invitation.
-2. Alice passes connection request out-of-band to Bob.
-3. Bob accepts the connection with `JOIN` agent API function with the connection request to his agent.
+1. Alice requests a new connection with `createConnection` agent API function and receives the connection link.
+2. Alice passes connection link out-of-band to Bob.
+3. Bob accepts the connection with `joinConnection` agent API function with the connection link to his agent.
 4. Alice accepts the connection with `ACPT` agent API function.
 5. Both parties receive `CON` notification once duplex connection is established.
 
@@ -122,27 +122,30 @@ Faster duplex connection process is possible with the `SKEY` command added in v9
 
 ![Fast duplex connection procedure](./diagrams/duplex-messaging/duplex-creating-fast.svg)
 
-1. Alice requests the new connection from the SMP agent A using agent `NEW` api function
-2. Agent A creates an SMP queue on the server (using [SMP protocol](./simplex-messaging.md) `NEW` command with the flag allowing the sender to secure the queue) and responds to Alice with the invitation that contains queue information and the encryption keys Bob's agent B should use. The invitation format is described in [Connection request](#connection-request).
-3. Alice sends the [connection request](#connection-request) to Bob via any secure channel (out-of-band message) - as a link or as a QR code. This link contains the flag that the queue can be secured by the sender.
-4. Bob uses agent `JOIN` api function with the connection request as a parameter to agent B to accept the connection.
+1. Alice requests the new connection from the SMP agent A using agent `createConnection` api function
+2. Agent A creates an SMP queue on the server (using [SMP protocol](./simplex-messaging.md) `NEW` command with the flag allowing the sender to secure the queue) and responds to Alice with the invitation that contains queue information and the encryption keys Bob's agent B should use. The invitation format is described in [Connection link](connection-link-1-time-invitation-and-contact-address).
+3. Alice sends the [connection link](connection-link-1-time-invitation-and-contact-address) to Bob via any secure channel (out-of-band message) - as a link or as a QR code. This link contains the flag that the queue can be secured by the sender.
+4. Bob uses agent `joinConnection` api function with the connection link as a parameter to agent B to accept the connection.
 5. Agent B secures Alice's queue with SMP command `SKEY` - this command can be proxied.
 6. Agent B creates Bob's SMP reply queue with SMP server `NEW` command (with the flag allowing the sender to secure the queue).
-7. Agent B confirms the connection: sends an "SMP confirmation" with SMP server `SEND` command to the SMP queue specified in the connection request - SMP confirmation is an unauthenticated message with an ephemeral key that will be used to authenticate Bob's commands to the queue, as described in SMP protocol, and Bob's info (profile, public key for E2E encryption, and the connection request to this 2nd queue to Agent A - this connection request SHOULD use "simplex" URI scheme). This message is encrypted using key passed in the connection request (or with the derived shared secret, in which case public key for key derivation should be sent in clear text).
+7. Agent B confirms the connection: sends an "SMP confirmation" with SMP server `SEND` command to the SMP queue specified in the connection link - SMP confirmation is an unauthenticated message with an ephemeral key that will be used to authenticate Bob's commands to the queue, as described in SMP protocol, and Bob's info (profile, public key for E2E encryption, and the connection link to this 2nd queue to Agent A - this connection link SHOULD use "simplex" URI scheme). This message is encrypted using key passed in the connection link (or with the derived shared secret, in which case public key for key derivation should be sent in clear text).
 8. Alice confirms the connection:
   - Agent A receives the SMP confirmation containing Bob's key, reply queue and info as SMP server `MSG`.
   - Agent A notifies Alice sending `CONF` notification with Bob's info (that indicates that Agent B already secured the queue).
+  - Alice allows connection to continue with agent `allowConnection` api function.
   - Agent A secures Bob's queue with SMP command `SKEY`.
   - Agent A sends SMP confirmation with ephemeral public encryption key and profile (but without reply queue, and without sender key).
 9. Agent A notifies Alice with `CON` notification.
 10. Agent B notifies Bob about connection success:
-  - receives `HELLO` message from Alice.
+  - receives confirmation message from Alice.
   - sends the notification `INFO` with Alice's information to Bob.
   - sends `CON` notification to Bob.
 
-## Contact address
+## Contact addresses
 
-TODO
+SMP agents support creating a special type of connection - a contact address - that allows to connect to multiple network users who can send connection requests by sending 1-time connection links to the message queue. 
+
+This connection address uses a messaging queue on SMP server to receive invitations to connect - see `agentInvitation` message below. Once connection request is accepted, a new connection is created and the address itself is no longer used to send the messages - deleting this address does not disrupt the connections that were created via it.
 
 ## Communication between SMP agents
 
@@ -169,9 +172,8 @@ encAgentMessage = doubleRatchetEncryptedMessage
 agentInvitation = agentVersion %s"I" connReqLength connReq connInfo
 connReqLength = 2*2 OCTET ; Word16
 
-agentRatchetKey = agentVersion %s"R" rcvE2EEncryptionParams info
+agentRatchetKey = agentVersion %s"R" rcvE2EEncryptionParams agentRatchetInfo
 rcvE2EEncryptionParams = TODO
-info = *OCTET
 
 doubleRatchetEncryptedMessage = TODO
 ```
@@ -265,6 +267,8 @@ length = 1*1 OCTET
 
 This is the first message that both agents send after the respective SMP queue is secured by the receiving agent (see diagram).
 
+This message is not used with [fast duplex connection](#fast-duplex-connection-procedure).
+
 #### A_MSG message
 
 This is the agent envelope used to send client messages once the connection is established. This is different from the MSG sent by SMP server to the agent and MSG event from SMP agent to the client that are sent in different contexts.
@@ -275,217 +279,39 @@ This message is sent to confirm the client message reception. It includes receiv
 
 #### EREADY message
 
-TODO
+This message is sent after re-negotiating a new double ratchet encryption with `agentRatchetKey`.
 
 #### A_QCONT message
 
-TODO
+This message is sent to notify the sender client that it can continue sending the messages after queue capacity was exhausted.
 
 ### Rotating messaging queue
 
-TODO
+SMP agents SHOULD support 4 messages to rotate message reception to another messaging server:
+`QADD`: add the new queue address(es) to the connection - sent by the client that initiates rotation.
+`QKEY`: pass sender's key via existing connection (SMP confirmation message will not be used, to avoid the same "race" of the initial key exchange that would create the risk of intercepting the queue for the attacker) - sent by the client accepting the rotation
+`QUSE`: instruct the sender to use the new queue with sender's queue ID as parameter. From this point some messages can be sent to both the new queue and the old queue.
+`QTEST`: send test message to the new connection. Any other message can be sent if available to continue rotation, the absence of this message is not an error. Once this message is successfully sent the sender will stop using the old queue. Once this message (or any other message in the new queue) is received, the recipient will stop using the old queue and delete it.
 
-QADD / QKEY / QUSE / QTEST
+**Queue rotation procedure**
 
-## SMP agent commands
+![Queue rotation procedure](./diagrams/duplex-messaging/queue-rotation.svg)
 
-This part describes the transmissions between users and client-side SMP agents: commands that the users send to create and operate duplex connections and SMP agent responses and messages they deliver.
+`SKEY` command added in v9 of SMP protocol allows for faster queue rotation procedure.
 
-Commands syntax below is provided using [ABNF][3] with [case-sensitive strings extension][4].
+**Fast queue rotation procedure**
 
-Each transmission between the user and SMP agent must have this format/syntax:
+![Fast queue rotation procedure](./diagrams/duplex-messaging/queue-rotation-fast.svg)
 
-```abnf
-agentTransmission = [corrId] CRLF [connId] CRLF agentCommand
+## Connection link: 1-time invitation and contact address
 
-corrId = 1*(%x21-7F) ; any characters other than control/whitespace
+Connection links are generated by SMP agent in response to `createConnection` api call, used by another party user with `joinConnection` api, and then another connection link is sent by the agent in `agentConnInfoReply` and used by the first party agent to connect to the reply queue (the second part of the process is invisible to the users).
 
-connId = encoded
-
-agentCommand = (userCmd / agentMsg) CRLF
-userCmd = newCmd / joinCmd / letCmd / acceptCmd / subscribeCmd / sendCmd / acknowledgeCmd / suspendCmd / deleteCmd
-agentMsg = invitation / confMsg / connReqMsg / connInfo / connected / unsubscribed / connDown / connUp / messageId / sent / messageError / message / received / ok / error
-
-newCmd = %s"NEW" SP connectionMode [SP %s"NO_ACK"] ; response is `invitation` or `error`
-; NO_ACK parameter currently not supported
-
-connectionMode = %s"INV" / %s"CON"
-
-invitation = %s"INV" SP connectionRequest ; `connectionRequest` is defined below
-
-confMsg = %s"CONF" SP confirmationId SP msgBody
-; msgBody here is any binary information identifying connection request
-
-letCmd = %s"LET" SP confirmationId SP msgBody
-; msgBody here is any binary information identifying connecting party
-
-confirmationId = 1*DIGIT
-
-connReqMsg = %s"REQ" SP invitationId SP msgBody
-; msgBody here is any binary information identifying connection request
-
-acceptCmd = %s"ACPT" SP invitationId SP msgBody
-; msgBody here is any binary information identifying connecting party
-
-invitationId = 1*DIGIT
-
-connInfo = %s"INFO" SP msgBody
-; msgBody here is any binary information identifying connecting party
-
-connected = %s"CON"
-
-subscribeCmd = %s"SUB" ; response is `ok` or `error`
-
-unsubscribed = %s"END"
-; when another agent (or another client of the same agent)
-; subscribes to the same SMP queue on the server
-
-connDown = %s"DOWN"
-; lost connection (e.g. because of Internet connectivity or server is down)
-
-connUp = %s"UP"
-; restored connection
-
-joinCmd = %s"JOIN" SP connectionRequest SP connInfo [SP %s"NO_REPLY"] [SP %s"NO_ACK"]
-; `connectionRequest` and `connInfo` are defined below
-; response is `connected` or `error`
-; parameters NO_REPLY and NO_ACK are currently not supported
-
-suspendCmd = %s"OFF" ; can be sent by either party, response `ok` or `error`
-
-deleteCmd = %s"DEL" ; can be sent by either party, response `ok` or `error`
-
-sendCmd = %s"SEND" SP msgBody
-; send syntax is similar to that of SMP protocol, but it is wrapped in SMP message
-msgBody = stringMsg | binaryMsg
-stringMsg = ":" string ; until CRLF in the transmission
-string = *(%x01-09 / %x0B-0C / %x0E-FF %) ; any characters other than NUL, CR and LF
-binaryMsg = size CRLF msgBody CRLF ; the last CRLF is in addition to CRLF in the transmission
-size = 1*DIGIT ; size in bytes
-msgBody = *OCTET ; any content of specified size - safe for binary
-
-messageId = %s"MID" SP agentMsgId
-
-sent = %s"SENT" SP agentMsgId
-
-messageError = %s"MERR" SP agentMsgId SP <errorType>
-
-message = %s"MSG" SP msgIntegrity SP recipientMeta SP brokerMeta SP senderMeta SP binaryMsg
-recipientMeta = %s"R=" agentMsgId "," agentTimestamp ; receiving agent message metadata 
-brokerMeta = %s"B=" brokerMsgId "," brokerTimestamp ; broker (server) message metadata
-senderMeta = %s"S=" agentMsgId ; sending agent message ID 
-brokerMsgId = encoded
-brokerTimestamp = <date-time>
-msgIntegrity = ok / msgIntegrityError
-
-msgIntegrityError = %s"ERR" SP msgIntegrityErrorType
-msgIntegrityErrorType = skippedMsgErr / badMsgIdErr / badHashErr
-
-skippedMsgErr = %s"NO_ID" SP missingFromMsgId SP missingToMsgId
-badMsgIdErr = %s"ID" SP previousMsgId ; ID is lower than the previous
-badHashErr = %s"HASH"
-
-missingFromMsgId = agentMsgId
-missingToMsgId = agentMsgId
-previousMsgId = agentMsgId
-
-acknowledgeCmd = %s"ACK" SP agentMsgId ; ID assigned by receiving agent (in MSG "R")
-
-received = %s"RCVD" SP agentMsgId SP msgIntegrity
-; ID assigned by sending agent (in SENT response)
-; currently not implemented
-
-msgStatus = ok | error
-
-ok = %s"OK"
-
-error = %s"ERR" SP <errorType>
-```
-
-### Client commands and server responses
-
-#### NEW command and INV response
-
-`NEW` command is used to create a connection and a connection request to be sent out-of-band to another protocol user (the joining party). It should be used by the client of the agent that initiates creating a duplex connection (the initiating party).
-
-`INV` response is sent by the agent to the client of the initiating party.
-
-`NEW` command has `connectionMode` parameter to define the connection mode - to be used to communicate with a single contact (invitation mode, `connectionMode` is `INV`) or to accept connection requests from anybody (contact mode, `connectionMode` is `CON`). The type of connection request is determined by `connectionMode` parameter.
-
-#### JOIN command
-
-It is used to create a connection and accept the connection request received out-of-band. It should be used by the client of the agent that accepts the connection (the joining party).
-
-#### CONF notification and LET command
-
-When the joining party uses `JOIN` command to accept connection invitation created with `NEW INV` command, the initiating party will receive `CONF` notification with some numeric identifier and an additional binary information, that can be used to identify the joining party or for any other purpose.
-
-To continue with the connection the initiating party should use `LET` command.
-
-#### REQ notification and ACPT command
-
-When the joining party uses `JOIN` command to connect to the contact created with `NEW CON` command, the initiating party will receive `REQ` notification with some numeric identifier and an additional binary information, that can be used to identify the joining party or for any other purpose.
-
-To continue with the connection the party that created the contact should use `ACPT` command.
-
-#### INFO and CON notifications
-
-After the initiating party proceeds with the connection using `ACPT` command, the joining party will receive `INFO` notification that can be used to identify the initiating party or for any other purpose.
-
-Once the connection is established and ready to accept client messages, both agents will send `CON` notification to their clients.
-
-#### SUB command
-
-This command can be used by the client to resume receiving messages from the connection that was created in another TCP/client session. Agent response to this command can be `OK` or `ERR` in case connection does not exist (or can only be used to send connections - e.g. when the reply queue was not created).
-
-#### SEND command and MID, SENT, RCVD and MERR responses
-
-`SEND` command is used by the client to send messages.
-
-`MID` response with the message ID (the sequential message number that includes both sent and received messages in the connection) is sent to the client to confirm that the message is accepted by the agent, before it is sent to the SMP server.
-
-`SENT` notification is sent by the agent to confirm that the message was delivered to at least one of SMP servers. This notification contains the same message ID as `MID` notification. `SENT` notification, depending on network availability, can be sent at any time later, potentially in the next client session.
-
-`RCVD` notification is sent by the agent when it receives `ACK` message from the receiving agent. This notification contains reception status, only one successful notification will be sent, and multiple error notifications will be sent in case `ACK` had error status.
-
-In case of the failure to send the message for any other reason than network connection or message queue quota - e.g. authentication error (`ERR AUTH`) or syntax error (`ERR CMD error`), the agent will send to the client `MERR` notification with the message ID, and this message delivery will no longer be attempted to this SMP queue.
-
-#### MSG notification
-
-It is sent by the agent to the client when agent receives the message from the SMP server. It has message ID and timestamp from both the receiving and sending agents and from SMP server:
-- recipient agent ID is intended to be used to refer to the message in the future.
-- sender agent ID is intended to be used to identify any missed / skipped message(s)
-- broker ID should be used to detect duplicate deliveries (it would happen if TCP connection is lost before the message is acknowledged by the agent - see [SMP protocol](./simplex-messaging.md))
-
-#### END notification
-
-It is sent by the agent to the client when agent receives SMP protocol `END` notification from SMP server. It indicates that another agent has subscribed to the same SMP queue on the server and the server terminated the subscription of the current agent.
-
-#### DOWN and UP notifications
-
-These notifications are sent when server or network connection is, respectively, `DOWN` or back `UP`.
-
-All the subscriptions made in the current client session will be automatically resumed when `UP` notification is received.
-
-#### OFF command
-
-It is used to suspend the receiving SMP queue - sender will no longer be able to send the messages to the connection, but the recipient can retrieve the remaining messages. Agent response to this command can be `OK` or `ERR`. This command is irreversible.
-
-#### DEL command
-
-It is used to delete the connection and all messages in it, as well as the receiving SMP queue and all messages in it that were remaining on the server. Agent response to this command can be `OK` or `ERR`. This command is irreversible.
-
-## Connection request
-
-Connection request `connectionRequest` is generated by SMP agent in response to `newCmd` command (`"NEW"`), used by another party user with `joinCmd` command (`"JOIN"`), and then another connection request is sent by the agent in `replyQueueMsg` and used by the first party agent to connect to the reply queue (the second part of the process is invisible to the users).
-
-Connection request syntax:
+Connection link syntax:
 
 ```
-connectionRequest = connectionScheme "/" connReqType "#/?smp=" smpQueues "&e2e=" e2eEncryption
-connReqType = %s"invitation" / %s"contact"
-; this parameter has the same meaning as connectionMode in agent commands
-; `NEW INV` creates `invitation` connection request, `NEW CON` - `contact`
+connectionLink = connectionScheme "/" connLinkType "#/?smp=" smpQueues "&e2e=" e2eEncryption
+connLinkType = %s"invitation" / %s"contact"
 connectionScheme = (%s"https://" clientAppServer) | %s"simplex:"
 clientAppServer = hostname [ ":" port ]
 ; client app server, e.g. simplex.chat
@@ -500,11 +326,111 @@ smpQueue = <URL-encoded queueURI defined in SMP protocol>
 
 All parameters are passed via URI hash to avoid sending them to the server (in case "https" scheme is used) - they can be used by the client-side code and processed by the client application. Parameters `smp` and `e2e` can be present in any order, any unknown additional parameters SHOULD be ignored.
 
-`clientAppServer` is not an SMP server - it is a server that shows the instruction on how to download the client app that will connect using this connection request. This server can also host a mobile or desktop app manifest so that this link is opened directly in the app if it is installed on the device.
+`clientAppServer` is not an SMP server - it is a server that shows the instruction on how to download the client app that will connect using this connection link. This server can also host a mobile or desktop app manifest so that this link is opened directly in the app if it is installed on the device.
 
 "simplex" URI scheme in `connectionProtocol` can be used instead of client app server, to connect without creating any web traffic. Client apps MUST support this URI scheme.
 
 See SMP protocol [out-of-band messages](./simplex-messaging.md#out-of-band-messages) for syntax of `queueURI`.
+
+## Appendix A: SMP agent API
+
+The exact specification of agent library API and of the events that the agent sends to the client application is out of scope of the protocol specification.
+
+The list of some of the API functions and events below is supported by the reference implementation, and they are likely to be required by the client applications.
+
+### API functions
+
+The list of APIs below is not exhaustive and provided for information only. Please consult the source code for more information.
+
+#### Create conection
+
+`createConnection` api is used to create a connection - it returns the connection link that should be sent out-of-band to another protocol user (the joining party). It should be used by the client of the agent that initiates creating a duplex connection (the initiating party).
+
+This api is also used to create a contact address - a special connection that can be used by multiple people to connect to the user.
+
+Some communication scenarios may require fault-tolerant mechanism of creating connections that retries on network failures and continue retrying after the client is restarted. Such asynchronous API would return its result via `INV` event once it succeeds.
+
+#### Join connection
+
+`joinConnection` is used to create a connection record and accept the connection invitation received out-of-band. It should be used by the client of the agent that accepts the connection (the joining party).
+
+This api can also be required as asynchronous, in which case `OK` event will be dispatched to the client to indicate the success or `ERR` in case it permanently failed (e.g., in case connection was deleted by another party).
+
+#### Allow connection
+
+Once the client receives `CONF` event, it should use synchronous `allowConnection` api to proceed with the connection (both for the [standard](#duplex-connection-procedure) and for the [fast duplex procedure](#fast-duplex-connection-procedure)).
+
+In case this API is used as asynchronous it will return its result via `OK` or `ERR` event.
+
+#### Accept and reject connection requests
+
+Connection requests are delivered to the client application via `REQ` event.
+
+Client can `acceptContact` and `rejectContact`, with `OK` and `ERR` events in case of asynchronous calls.
+
+#### Send message
+
+`sendMessage` api is always asynchronous. The api call returns message ID, `SENT` event once the message is sent to the server, `MWARN` event in case of temporary delivery failure that can be resolved by the user (e.g., by connecting via Tor or by upgrading the client) and `MERR` in case of permanent delivery failure.
+
+#### Acknowledge received message
+
+Messages are delivered to the client application via `MSG` event.
+
+Client application must always `ackMessage` to receive the next one - failure to call it in reference implementation will prevent the delivery of subsequent messages until the client reconnects to the server.
+
+This api is also used to acknowledge message delivery to the sending party - that party client application will receive `RCVD` event.
+
+#### Subscribe connection
+
+`subscribeConnection` api is used by the client to resume receiving messages from the connection that was created in another TCP/client session.
+
+#### Get notification message
+
+`getNotificationMessage` is used by push notification subsystem of the client application to receive the message from a specific messaging queue mentioned in the notification. The client application would receive `MSG` and any other events from the agent, and then `MSGNTF` event once the message related to this notification is received.
+
+#### Rotate message queue to another server
+
+`switchConnection` api is used to rotate connection queues to another messaging server.
+
+#### Renegotiate e2e encryption
+
+`synchronizeRatchet` api is used to re-negotiate double ratchet encryption for the connection.
+
+#### Delete connection
+
+`deleteConnection` api is used to delete connection. In case of asynchronous call, the connection deletion will be confirmed with `DEL_RCVQ` and `DEL_CONN` events.
+
+#### Suspend connection
+
+`suspendConnection` api is used to prevent any further messages delivered to the connection without deleting it.
+
+### API events
+
+Agent API uses these events dispatch to notify client application about events related to the connections:
+- `INV` - connection invitation or connection address URI after connection is created.
+- `CONF` - confirmation that connection is accepted by another party. When the accepting party uses `joinConnection` api to accept connection invitation, the initiating party will receive `CONF` notification with some identifier and additional information from the accepting party (e.g., profile). To continue the connection the initiating party client should use `allowConnection` api.
+- `REQ` - connection request is sent when another party uses `joinConnection` api with contact address. The client application can use `acceptContact` or `rejectContact` api.
+- `INFO` - information from the party that initiated the connection with `createConnection` sent to the party accepting the connection with `joinConnection`.
+- `CON` - notification that connection is established sent to both parties of the connection.
+- `END` - notification that connection subscription is terminated when another client subscribed to the same messaging queue.  
+- `DOWN` - notification that connection server is temporarily unavailable.
+- `UP` - notification that the subscriptions made in the current client session are resumed after the server became available.
+- `SWITCH` - notification about queue rotation process.
+- `RSYNC` - notification about e2e encryption re-negotiation process.
+- `SENT` - notification to confirm that the message was delivered to at least one of SMP servers. This notification contains the same message ID as returned to `sendMessage` api. `SENT` notification, depending on network availability, can be sent at any time later, potentially in the next client session.
+- `MWARN` - temporary delivery failure that can be resolved by the user (e.g., by connecting via Tor or by upgrading the client).
+- `MERR` - notification about permanent message delivery failure.
+- `MERRS` - notification about permanent message delivery failure for multiple messages (e.g., when multiple messages expire).
+- `MSG` - sent when agent receives the message from the SMP server.
+- `MSGNTF` - sent after agent received and processed the message referenced in the push notification.
+- `RCVD` - notification confirming message receipt by another party.
+- `QCONT` - notification that the agent continued sending messages after queue capacity was exceeded and recipient received all messages.
+- `DEL_RCVQ` - confirmation that message queue was deleted.
+- `DEL_CONN` - confirmation that connection was deleted.
+- `OK` - confirmation that asynchronous api call was successful.
+- `ERR` - error of asynchronous api call or some other error event.
+
+This list of events is not exhaustive and provided for information only. Please consult the source code for more information.
 
 [1]: https://en.wikipedia.org/wiki/End-to-end_encryption
 [2]: https://en.wikipedia.org/wiki/Man-in-the-middle_attack

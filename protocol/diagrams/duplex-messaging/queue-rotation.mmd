@@ -1,0 +1,21 @@
+sequenceDiagram
+  participant A as Alice
+  participant R as Current server<br>that has A's<br>receive queue
+  participant R' as New server<br>that has the new A's<br>receive queue
+  participant S as Server<br>that has A's send queue<br>(B's receive queue)
+  participant B as Bob
+
+  A ->> R': NEW: create new queue
+  A ->> S: SEND: QADD (R'): send address<br>of the new queue(s)
+  S ->> B: MSG: QADD (R')
+  B ->> R: SEND: QKEY (R'): sender's key<br>for the new queue(s)
+  R ->> A: MSG: QKEY(R')
+  A ->> R': KEY: secure new queue
+  A ->> S: SEND: QUSE (R'): instruction to use new queue(s)
+  S ->> B: MSG: QUSE (R')
+  B ->> R': SEND: QTEST
+  R' ->> A: MSG: QTEST
+  A ->> R: DEL: delete the old queue
+  B ->> R': SEND: send messages to the new queue
+  R' ->> A: MSG: receive messages from the new queue
+  

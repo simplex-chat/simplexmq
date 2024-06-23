@@ -9,7 +9,7 @@ sequenceDiagram
   note over AA, BA: status (receive/send): NONE/NONE
 
   note over A, AA: 1. request connection<br>from agent
-  A ->> AA: NEW: create<br>duplex connection
+  A ->> AA: createConnection
  
   note over AA, AS: 2. create Alice's SMP queue
   AA ->> AS: NEW: create SMP queue<br>allow sender to secure
@@ -22,7 +22,7 @@ sequenceDiagram
   A ->> B: OOB: invitation to connect
 
   note over BA, B: 4. accept connection
-  B ->> BA: JOIN:<br>via invitation info
+  B ->> BA: joinConnection:<br>via invitation info
   note over BA: status: NONE/NEW
 
   note over BA, AS: 5. secure Alice's SMP queue
@@ -40,9 +40,10 @@ sequenceDiagram
 
   AS ->> AA: MSG: Bob's info without<br>sender server key
   note over AA: status: CONFIRMED/NEW
-  AA ->> A: CONF: connection request ID<br>and Bob's info
   AA ->> AS: ACK: confirm message
-
+  AA ->> A: CONF: connection request ID<br>and Bob's info
+  A -> AA: allowConnection: accept connection request,<br>send Alice's info
+  
   note over AA, BS: 8. secure Bob's SMP queue
   AA ->> BS: SKEY: secure queue (this command needs to be proxied)
   note over BA: status: CONFIRMED/SECURED

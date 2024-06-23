@@ -396,8 +396,6 @@ XFTP servers must authenticate all transmissions (excluding `ping`) by verifying
 
 ### Keep-alive command
 
-  PING :: FileCommand FRecipient
-
 To keep the transport connection alive and to generate noise traffic the clients should use `ping` command to which the server responds with `pong` response. This command should be sent unsigned and without file chunk ID.
 
 ```abnf
@@ -418,9 +416,11 @@ Sending any of the commands in this section (other than `register`, that is sent
 
 #### Register new file chunk
 
-  FNEW :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe BasicAuth -> FileCommand FSender
+This command is sent by the sender to the XFTP server to register a new file chunk.
 
-This command is sent by the sender to the XFTP server to register a new file chunk. The syntax is:
+Servers SHOULD support basic auth with this command, to allow only server owners and trusted users to create file chunks on the servers.
+
+The syntax is:
 
 ```abnf
 register = %s"FNEW " fileInfo rcvPublicAuthKeys basicAuth
@@ -439,8 +439,6 @@ length = 1*1 OCTET
 
 If the file chunk is registered successfully, the server must send `sndIds` response with the sender's and recipients' file chunk IDs:
 
-  data FileResponse = ... | FRSndIds SenderId (NonEmpty RecipientId) | ...
-
 ```abnf
 sndIds = %s"SIDS " senderId recipientIds
 senderId = length *OCTET
@@ -449,8 +447,6 @@ recipientId = length *OCTET
 ```
 
 #### Add file chunk recipients
-
-  FADD :: NonEmpty RcvPublicAuthKey -> FileCommand FSender
 
 This command is sent by the sender to the XFTP server to add additional recipient keys to the file chunk record, in case number of keys requested by client didn't fit into `register` command. The syntax is:
 
@@ -462,8 +458,6 @@ rcvPublicAuthKey = length x509encoded
 
 If additional keys were added successfully, the server must send `rcvIds` response with the added recipients' file chunk IDs:
 
-  data FileResponse = ... | FRRcvIds (NonEmpty RecipientId) | ...
-
 ```abnf
 rcvIds = %s"RIDS " recipientIds
 recipientIds = length 1*recipientId
@@ -471,8 +465,6 @@ recipientId = length *OCTET
 ```
 
 #### Upload file chunk
-
-  FPUT :: FileCommand FSender
 
 This command is sent by the sender to the XFTP server to upload file chunk body to server. The syntax is:
 
@@ -484,15 +476,11 @@ Chunk body is streamed via HTTP2 request.
 
 If file chunk body was successfully received, the server must send `ok` response.
 
-  data FileResponse = ... | FROk | ...
-
 ```abnf
 ok = %s"OK"
 ```
 
 #### Delete file chunk
-
-  FDEL :: FileCommand FSender
 
 This command is sent by the sender to the XFTP server to delete file chunk from the server. The syntax is:
 
@@ -508,8 +496,6 @@ Sending any of the commands in this section is only allowed with recipient's ID.
 
 #### Download file chunk
 
-  FGET :: RcvPublicDhKey -> FileCommand FRecipient
-
 This command is sent by the recipient to the XFTP server to download file chunk body from the server. The syntax is:
 
 ```abnf
@@ -518,8 +504,6 @@ rDhKey = length x509encoded
 ```
 
 If requested file is successfully located, the server must send `file` response. File chunk body is sent as HTTP2 response body.
-
-  data FileResponse = ... | FRFile RcvPublicDhKey C.CbNonce | ...
 
 ```abnf
 file = %s"FILE " sDhKey cbNonce
@@ -530,8 +514,6 @@ cbNonce = <nonce used in NaCl crypto_box encryption scheme>
 Chunk is additionally encrypted on the way from the server to the recipient using a key agreed via ephemeral DH keys `rDhKey` and `sDhKey`, so there is no ciphertext in common between sent and received traffic inside TLS connection, in order to complicate traffic correlation attacks, if TLS is compromised.
 
 #### Acknowledge file chunk download
-
-  FACK :: FileCommand FRecipient
 
 This command is sent by the recipient to the XFTP server to acknowledge file reception, deleting file ID from server for this recipient. The syntax is:
 

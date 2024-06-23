@@ -494,7 +494,11 @@ Sending any of the commands in this section (other than `create`, that is sent w
 
 #### Create queue command
 
-This command is sent by the recipient to the SMP server to create a new queue. The syntax is:
+This command is sent by the recipient to the SMP server to create a new queue.
+
+Servers SHOULD support basic auth with this command, to allow only server owners and trusted users to create queues on the destiation servers.
+
+The syntax is:
 
 ```abnf
 create = %s"NEW " recipientAuthPublicKey recipientDhPublicKey basicAuth subscribe sndSecure
