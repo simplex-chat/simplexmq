@@ -3,45 +3,37 @@
 ## Table of contents
 
 - [Overview](#overview)
-- [Problem](#problem)
-- [Comparison of the proposed solutions](#comparison-of-the-proposed-solutions)
+- [Comparison with the other approaches](#comparison-with-the-other-approaches)
   - [PQXDH for post-quantum key agreement](#pqxdh-for-post-quantum-key-agreement) (Signal)
   - [Hybrid Signal protocol for post-quantum encryption](#hybrid-signal-protocol-for-post-quantum-encryption) (Tutanota)
-  - [Problems with ML-KEM / Kyber](#problems-with-ml-kem--kyber)
-- [Proposed solution: augmented double ratchet algorithm](#proposed-solution-augmented-double-ratchet-algorithm)
+- [Augmented double ratchet algorithm](#augmented-double-ratchet-algorithm)
 - [Double ratchet with encrypted headers augmented with double PQ KEM](#double-ratchet-with-encrypted-headers-augmented-with-double-pq-kem)
   - [Initialization](#initialization)
   - [Encrypting messages](#encrypting-messages)
   - [Decrypting messages](#decrypting-messages)
 - [Implementation considerations](#implementation-considerations)
+- [Chosen KEM algorithm](#chosen-kem-algorithm)
 - [Summary](#summary)
-- [Notes](#notes)
 
-## 1. Overview
-
-SimpleX Chat uses [double-ratchet with header encryption](https://signal.org/docs/specifications/doubleratchet/#double-ratchet-with-header-encryption) to provide end-to-end encryption to messages and files. This document proposes a way to augment this algorithm with post-quantum key encapsulation mechanism (KEM) to make it resistant to quantum computers.
-
-This document is purposefully written in an informal style to make it understandable for general audience with some technical, but without mathematical background. It does not compromise on the technical accuracy though.
-
-## 2. Problem
+## Overview
 
 It is a reasonable assumption that "record-now-decrypt-later" attacks are ongoing, so the users want to use cryptographic schemes for end-to-end encryption that are augmented with some post-quantum algorithm that is believed to be resistant to quantum computers.
 
-Double-ratchet algorithm is a state of the art solution for end to end encryption offering a set of qualities that is unmatched by any other algorithm:
+SimpleX Chat uses [double-ratchet with header encryption](https://signal.org/docs/specifications/doubleratchet/#double-ratchet-with-header-encryption) to provide end-to-end encryption to messages and files. This document describes augmented algorithm with post-quantum key encapsulation mechanism (KEM) making it resistant to quantum computers.
+
+Double-ratchet algorithm is a state of the art solution for end to end encryption offering a set of qualities that is not present in any other algorithm:
 
 - perfect forward secrecy, i.e. compromise of session or long term keys does not lead to the ability to decrypt any of the past messages.
-- deniability (also known as repudiation), i.e. the fact that the recipient of the message cannot prove to a third party that the sender actually sent this message [1].
-- break-in recovery [2] (also know as post-compromise security or future secrecy), i.e. the ability of the end-to-end encryption security to recover from the compromise of the long term keys. This is achieved by generating a new random key pair whenever a new DH key is received (DH ratchet step).
+- deniability (also known as repudiation), i.e. the fact that the recipient of the message while having the proof of message authenticity, cannot prove to a third party that the sender actually sent this message.
+- break-in recovery (also know as post-compromise security or future secrecy), i.e. the ability of the end-to-end encryption security to recover from the compromise of the long term keys. This is achieved by generating a new random key pair whenever a new DH key is received (DH ratchet step).
 
-It is desirable to preserve all these qualities when augmenting the algorithm with a post-quantum algorithm, and having these qualities resistant (or "believed to be" resistant [3]) to both conventional and quantum computers.
+It is desirable to preserve all these qualities when augmenting the algorithm with a post-quantum algorithm, and having these qualities resistant to both conventional and quantum computers.
 
-## Comparison of the proposed solutions
+## Comparison with the other approaches
 
 ### PQXDH for post-quantum key agreement
 
-[The solution](https://signal.org/docs/specifications/pqxdh/) recently [introduced by Signal](https://signal.org/blog/pqxdh/) augments the initial key agreement ([X3DH](https://signal.org/docs/specifications/x3dh/)) that is made prior to double ratchet algorithm. This is believed to provide protection from "record-now-decrypt-later" attack, but if the attacker at any point obtains long term keys from any of the devices, the break-in recovery will not be post-quantum resistant, and the attacker would be able to decrypt all the subsequent messages.
-
-In addition to that, the authentication of parties in the proposed scheme is also not post-quantum resistant, although this is not part of double ratchet algorithm.
+[The solution](https://signal.org/docs/specifications/pqxdh/) recently [introduced by Signal](https://signal.org/blog/pqxdh/) augments the initial key agreement ([X3DH](https://signal.org/docs/specifications/x3dh/)) that is made prior to double ratchet algorithm. This is believed to provide protection from "record-now-decrypt-later" attack, but if the attacker at any point obtains long term keys from any of the devices, the break-in recovery will not be post-quantum resistant, and the attacker with quantum computer will be able to decrypt all the subsequent messages.
 
 ### Hybrid Signal protocol for post-quantum encryption
 
@@ -49,22 +41,17 @@ In addition to that, the authentication of parties in the proposed scheme is als
 - replaces rather than augments DH key agreement with post-quantum KEM mechanism, making it potentially vulnerable to conventional computers.
 - adds signature to the DH ratchet step, to compensate for not keeping DH key agreement, but losing the deniability property for some of the messages.
 
-### Problems with ML-KEM / Kyber
+## Augmented double ratchet algorithm
 
-ML-KEM / Kyber used in both Signal and Tutanota schemes is the chosen algorithm by NIST, but its standardization process raised some concerns amongst the experts:
+The double ratchet algorithm is augmented with post-quantum KEM mechanism, preserving all properties of the double ratchet algorithm.
 
-- hashing of random numbers that was present in the original submission was removed from the standardized version of the algorithm. See lines 304-314 in the published spec (https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.203.ipd.pdf) and also the linked discussion on the subject: https://groups.google.com/a/list.nist.gov/g/pqc-forum/c/WFRDl8DqYQ4. This decision polarized the experts, with some of them saying that it effectively created a backdoor.
-- calculation of security levels of Kyber appears to have been done incorrectly, and overall, the chosen Kyber seems worse than rejected NTRU according to [the analysis by Daniel Bernstein](https://blog.cr.yp.to/20231003-countcorrectly.html).
+It is possible, because although double ratchet uses DH (which is a non-interactive key exchanges), it uses it "interactively", when the new DH keys are generated by both parties in turns. Parties of double-ratchet encrypted communication can run two post-quantum key encapsulation mechanisms in parallel with both DH and KEM key agreements in each DH ratchet step, making break-in recovery of double ratchet algorithm post-quantum resistant, without losing deniability or resistance to conventional computers.
 
-## Proposed solution: augmented double ratchet algorithm
+Specifically, [double ratchet with encrypted headers](https://signal.org/docs/specifications/doubleratchet/#double-ratchet-with-header-encryption) is augmented with some post-quantum key encapsulation mechanism (KEM) as described below. A possible algorithm for PQ KEM is [NTRU-prime](https://ntruprime.cr.yp.to), that is currently adopted in SSH and has available implementations. It is important though that the proposed scheme can be used with any PQ KEM algorithm.
 
-We will augment the double ratchet algorithm with post-quantum KEM mechanism, preserving all properties of the double ratchet algorithm.
+The downside of the scheme is its substantial size overhead, as the encapsulation key and encapsulated shared secret are added to the header of each message. For the algorithm described below NTRU-prime adds ~2-4kb to each message (depending on the key size and the chosen variant). See [this table](https://ntruprime.cr.yp.to/security.html) for key and ciphertext sizes and the assessment of the security level for various key sizes.
 
-It is possible, because although double ratchet uses DH (which is a non-interactive key exchange [4]), it uses it "interactively", when the new DH keys are generated by both parties in turns. Parties of double-ratchet encrypted communication can run one or two post-quantum key encapsulation mechanisms in parallel with DH key agreement on each DH ratchet step, making break-in recovery of double ratchet algorithm post-quantum resistant (unlike Signal PQXDH scheme), without losing deniability or resistance to conventional computers (unlike Tutanota scheme).
-
-Specifically, it is proposed to augment [double ratchet with encrypted headers](https://signal.org/docs/specifications/doubleratchet/#double-ratchet-with-header-encryption) with some post-quantum key encapsulation mechanism (KEM) as described below. A possible algorithm for PQ KEM is [NTRU-prime](https://ntruprime.cr.yp.to), that is currently adopted in SSH and has available implementations. It is important though that the proposed scheme can be used with any PQ KEM algorithm.
-
-The downside of the proposed scheme is its substantial size overhead, as the encapsulation key and/or encapsulated shared secret are added to the header of each message. For the scheme described below, when both the encapsulation key and encapsulated secret are added to each message header, NTRU-prime adds ~2-4kb to each message (depending on the key size and the chosen variant). See [this table](https://ntruprime.cr.yp.to/security.html) for key and ciphertext sizes and the assessment of the security level for various key sizes.
+It is possible to reduce size overhead by using only one KEM agreement and making only one of two ratchet steps providing post-quantum resistant break-in recovery.
 
 ## Double ratchet with encrypted headers augmented with double PQ KEM
 
@@ -72,7 +59,7 @@ Algorithm below assumes that in addition to shared secret from the initial key a
 
 ### Initialization
 
-The double ratchet initialization is defined in pseudo-code as follows:
+The double ratchet initialization is defined in pseudo-code. This pseudo-code is identical to Signal algorithm specification except for that parts that add post-quantum key agreement.
 
 ```
 // Alice obtained Bob's keys and initializes ratchet first
@@ -85,7 +72,7 @@ def RatchetInitAlicePQ2HE(state, SK, bob_dh_public_key, shared_hka, shared_nhkb,
     state.PQRss = random // shared secret for KEM
     state.PQRct = PQKEM-ENC(state.PQRr, state.PQRss) // encapsulated additional shared secret
     // above added for KEM
-    // below augments DH key agreement with PQ shared secret
+    // the next line augments DH key agreement with PQ shared secret
     state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr) || state.PQRss) 
     state.CKr = None
     state.Ns = 0
@@ -145,8 +132,6 @@ def RatchetEncryptPQ2HE(state, plaintext, AD):
 
 Other than adding encapsulation key and encapsulated shared secret into the header, the above is identical to the original double ratchet message encryption step.
 
-As an optimization, to save space, it might be possible to add encapsulation key and encapsulated secret only when they change. The downside of this optimization would be that it will be impossible to decrypt the message when the message that has them is skipped or lost, compromising the ability of double ratchet to manage skipped messages.
-
 ### Decrypting messages
 
 ```
@@ -204,28 +189,32 @@ Other than augmenting DH key agreements with the shared secrets from KEM, the ab
 
 It is worth noting that while DH agreements work as ping-pong, when the new received DH key is used for both DH agreements (and only the sent DH key is updated for the second DH key agreement), PQ KEM agreements in the proposed scheme work as a "parallel ping-pong", with two balls in play all the time (two KEM agreements run in parallel).
 
-## Implementation considerations for SimpleX Chat
+## Implementation considerations for SimpleX Messaging Protocol
 
-As SimpleX Chat pads messages to a fixed size, using 16kb transport blocks, the size increase introduced by this scheme will not cause additional traffic in most cases. For large texts it may require additional messages to be sent. Similarly, for media previews it may require either reducing the preview size (and quality), or sending additional messages, or compressing the current JSON encoding, e.g. with ZSTD algorithm.
+As SimpleX Messaging Protocol pads messages to a fixed size, using 16kb transport blocks, the size increase introduced by this scheme can be compensated for by using ZSTD encryption of JSON bodies and image previews encoded as base64. While there may be some rare cases of random texts that would fail to compress, in all real scenarios it would not cause the message size reduction.
 
-That might be the primary reason why this scheme was not adopted by Signal, as it would have resulted in substantial traffic growth – to the best of our knowledge, Signal messages are not padded to a fixed size.
+Sharing the initial keys in case of SimpleX Chat it is equivalent to sharing the invitation link. As encapsulation key is large, it may be inconvenient to share it in the link in some contexts, e.g. when QR codes are used.
 
-Sharing the initial keys in case of SimpleX Chat it is equivalent to sharing the invitation link. As encapsulation key is large, it may be inconvenient to share it in the link in some contexts.
+It is possible to postpone sharing the encapsulation key until the first message from Alice (confirmation message in SMP protocol), the party sending connection request. The upside here is that the invitation link size would not increase. The downside is that the user profile shared in this confirmation will not be encrypted with PQ-resistant algorithm.
 
-It is possible to postpone sharing the encapsulation key until the first message from Alice (confirmation message in SMP protocol), the party sending connection request. The upside here is that the invitation link size would not increase. The downside is that the user profile shared in this confirmation will not be encrypted with PQ-resistant algorithm. To mitigate it, the handshake protocol can be modified to postpone sending the user profile until the second message from Alice (HELLO message in SMP protocol).
+Another consideration is pairwise ratchets in groups. Key generation in sntrup761 is quite slow - on slow devices it can be as slow as 10-20 keys per second, so using this primitive in groups larger than 10-20 members would result in slow performance.
 
-Another consideration is pairwise ratchets in groups. Key generation in sntrup761 is quite slow - on slow devices it can probably be as slow as 10 keys per second, so using this primitive in groups larger than 10 members would result in slow performance. An option could be not to use ratchets in groups at all, but that would result in the lack of protection in small groups that simply combine multiple devices of 1-3 people. So a better option would be to support dynamically adding and removing sntrup761 keys for pairwise ratchets in groups, which means that when sending each message a boolean flag needs to be passed whether to use PQ KEM or not.
+For backward compatibility the implementation must support adding PQ-resistant key agreement to the existing connections.
+
+It is also beneficial to support removing PQ-resistant key agreement from the connections that have them, e.g. as the group size grows.
+
+### Chosen KEM algorithm
+
+The implementation uses Streamlined NTRU-Prime 761 (sntrup761) that was also used for OpenSSH for a long time.
+
+It was chosen over ML-KEM (Kyber) standardized by NIST for several reasons:
+
+- sntrup761 was used in OpenSSH for a long period of time.
+- ML-KEM standardization process raised [concerns](https://groups.google.com/a/list.nist.gov/g/pqc-forum/c/WFRDl8DqYQ4) [amongst](https://blog.cr.yp.to/20231003-countcorrectly.html) the experts.
+- ML-KEM (if modified) is likely to have conflicts with the existing patents, unlike sntrup761.
+
+It was chosen over non-interactive CTIDH due to its slower implementation, and lack of optimized code for aarch64 CPUs used in mobile devices.
 
 ## Summary
 
-If chosen PQ KEM proves secure against quantum computer attacks, then the proposed augmented double ratchet will also be secure against quantum computer attack, including break-in recovery property, while keeping deniability and forward secrecy, because the [same proof](https://eprint.iacr.org/2016/1013.pdf) as for double ratchet algorithm would hold here, provided KEM is secure.
-
-## Notes
-
-[1] This is often misunderstood to mean that the recipient cannot prove that the sender sent the message at all, which is incorrect, as the recipient has the proof that either themselves or the sender encrypted the message, and as they know that the recipient themselves did not encrypt it, therefore the sender did. So the communication is secure and authenticated for the parties, without providing a proof to a third party.
-
-[2] The term "break-in recovery" is used in this document, consistent with the terminology of the double ratchet algorithm specification, and also because it can be used to mean both the quality of being able to recover from the compromise and the actual process used to recover.
-
-[3] This is important to remember that no existing post-quantum algorithms are proven to be resistant to quantum or even conventional computers, therefore the correct approach is to augment rather than replace existing algorithms with the post-quantum ones.
-
-[4] Non-interactive key exchange is a type of key agreement that allows both parties to generate key pairs independently, without input from another parties, and then use the public keys from each other to compute the same shared secret.
+If chosen PQ KEM proves secure against quantum computer attacks, then the proposed augmented double ratchet will also be secure against quantum computer attack, including break-in recovery property, while keeping deniability and forward secrecy, because the [same proof](https://eprint.iacr.org/2016/1013.pdf) as for double ratchet algorithm would hold here, provided chosen KEM is secure.
