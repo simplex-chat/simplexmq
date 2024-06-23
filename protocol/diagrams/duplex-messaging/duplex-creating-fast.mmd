@@ -1,0 +1,65 @@
+sequenceDiagram
+  participant A as Alice
+  participant AA as Alice's<br>agent
+  participant AS as Alice's<br>server
+  participant BS as Bob's<br>server
+  participant BA as Bob's<br>agent
+  participant B as Bob
+
+  note over AA, BA: status (receive/send): NONE/NONE
+
+  note over A, AA: 1. request connection<br>from agent
+  A ->> AA: createConnection
+ 
+  note over AA, AS: 2. create Alice's SMP queue
+  AA ->> AS: NEW: create SMP queue<br>allow sender to secure
+  AS ->> AA: IDS: SMP queue IDs
+  note over AA: status: NEW/NONE
+
+  AA ->> A: INV: invitation<br>to connect
+
+  note over A, B: 3. out-of-band invitation
+  A ->> B: OOB: invitation to connect
+
+  note over BA, B: 4. accept connection
+  B ->> BA: joinConnection:<br>via invitation info
+  note over BA: status: NONE/NEW
+
+  note over BA, AS: 5. secure Alice's SMP queue
+  BA ->> AS: SKEY: secure queue (this command needs to be proxied)
+  note over BA: status: NONE/SECURED
+
+  note over BA, BS: 6. create Bob's SMP queue
+  BA ->> BS: NEW: create SMP queue<br>allow sender to secure
+  BS ->> BA: IDS: SMP queue IDs
+  note over BA: status: NEW/SECURED
+
+  note over BA, AA: 7. confirm Alice's SMP queue
+  BA ->> AS: SEND: Bob's info without sender's key (SMP confirmation with reply queues)
+  note over BA: status: NEW/CONFIRMED
+
+  AS ->> AA: MSG: Bob's info without<br>sender server key
+  note over AA: status: CONFIRMED/NEW
+  AA ->> AS: ACK: confirm message
+  AA ->> A: CONF: connection request ID<br>and Bob's info
+  A -> AA: allowConnection: accept connection request,<br>send Alice's info
+  
+  note over AA, BS: 8. secure Bob's SMP queue
+  AA ->> BS: SKEY: secure queue (this command needs to be proxied)
+  note over BA: status: CONFIRMED/SECURED
+
+  AA ->> BS: SEND: Alice's info without sender's server key (SMP confirmation without reply queues)
+  note over AA: status: CONFIRMED/CONFIRMED
+
+  note over AA, A: 9. notify Alice<br>about connection success<br>(no HELLO needed in v6)
+  AA ->> A: CON: connected
+  note over AA: status: ACTIVE/ACTIVE
+
+  note over BA, B: 10. notify Bob<br>about connection success
+  BS ->> BA: MSG: Alice's info without<br>sender's server key
+  note over BA: status: CONFIRMED/CONFIRMED
+  BA ->> B: INFO: Alice's info
+  BA ->> BS: ACK: confirm message
+
+  BA ->> B: CON: connected
+  note over BA: status: ACTIVE/ACTIVE
