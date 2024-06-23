@@ -14,7 +14,11 @@ Version 6, 2024-06-22
   - [Message syntax](#messages-between-smp-agents)
     - [HELLO message](#hello-message)
     - [A_MSG message](#a_msg-message)
-    - [ACK message](#ack-message)
+    - [A_RCVD message](#a_rcvd-message)
+    - [EREADY message](#eready-message)
+    - [A_QCONT message](#a_qcont-message)
+    - [Rotating messaging queue](#rotating-messaging-queue)
+- [End-to-end encryption](#end-to-end-encryption)
 - [Connection link: 1-time invitation and contact address](#connection-link-1-time-invitation-and-contact-address)
 - [Appendix A: SMP agent API](#smp-agent-api)
   - [API functions](#api-functions)
@@ -302,6 +306,49 @@ SMP agents SHOULD support 4 messages to rotate message reception to another mess
 **Fast queue rotation procedure**
 
 ![Fast queue rotation procedure](./diagrams/duplex-messaging/queue-rotation-fast.svg)
+
+## End-to-end encryption
+
+Messages between SMP agents have two layers of e2e encryption:
+- simple encryption agreed in SMP protocol with a fixed key agreed when the messaging queue is agreed by parties.
+- post-quantum resistant augmented double ratchet algorithm (PQDR) specified in [this document](./pqdr.md).
+
+The protocol supports adding and removing post-quantum KEM primitive to the key agreement in double ratchet:
+- to support migration of pre-existing connections to PQDR.
+- to be able to disable PQ key agreement.
+- to be able to use invitation links and contact addresses without large PQ keys.
+
+Possible scenarios below show the possible states of PQ key agreement, assuming that both clients support it.
+
+Possible options for each stage are:
+- no KEM encapsulation key was sent (No PQ key),
+- only KEM encapsulation key was sent, but not ciphertext yet (PQ key sent),
+- both KEM encapsulation key from one KEM agreement and ciphertext from the previous agreement were sent (PQ key + PQ ct sent).
+
+`+` in the table means that this scenario is possible, and `-` - that it is not possible.
+
+| Connection stage                                       | No PQ key        | PQ key sent      | PQ key + PQ ct sent |
+|:------------------------------------------------------:|:----------------:|:----------------:|:-------------------:|
+| invitation                                             |         +        |         +        |          -          |
+| confirmation, in reply to: <br>no-pq inv <br>pq inv    | &nbsp;<br>+<br>+ | &nbsp;<br>+<br>- | &nbsp;<br>-<br>+    |
+| 1st msg, in reply to: <br>no-pq conf <br>pq/pq+ct conf | &nbsp;<br>+<br>+ | &nbsp;<br>+<br>- | &nbsp;<br>-<br>+    |
+| Nth msg, in reply to: <br>no-pq msg <br>pq/pq+ct msg   | &nbsp;<br>+<br>+ | &nbsp;<br>+<br>- | &nbsp;<br>-<br>+    |
+
+These scenarios can be reduced to:
+1. initial invitation optionally has PQ key, but must not have ciphertext.
+2. all subsequent messages should be allowed without PQ key/ciphertext, but:
+  - if the previous message had PQ key or PQ key with ciphertext, they must either have no PQ key, or have PQ key with ciphertext (PQ key without ciphertext is an error).
+  - if the previous message had no PQ key, they must either have no PQ key, or have PQ key without ciphertext (PQ key with ciphertext is an error).
+
+The rules for calculating the shared secret for received/sent messages are (assuming received message is valid according to the above rules):
+
+|  sent msg > <br>V received msg | no-pq       | pq      | pq+ct           |
+|:------------------------------:|:-----------:|:-------:|:---------------:|
+| no-pq                          | DH / DH     | DH / DH | err             |
+| pq (sent msg was NOT pq)       | DH / DH     | err     | DH / DH+KEM     |
+| pq+ct (sent msg was NOT no-pq) | DH+KEM / DH | err     | DH+KEM / DH+KEM |
+
+To summarize, the upgrade to DH+KEM secret happens in a sent message that has PQ key with ciphertext sent in reply to message with PQ key only (without ciphertext), and the downgrade to DH secret happens in the message that has no PQ key.
 
 ## Connection link: 1-time invitation and contact address
 
