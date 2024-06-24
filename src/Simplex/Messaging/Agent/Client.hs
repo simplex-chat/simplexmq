@@ -2040,11 +2040,10 @@ getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, srvStat
           c_ <- atomically $ tryReadTMVar sessionVar
           pure $ M.alter (Just . add c_) (userId, srv) acc
           where
-            add c_ Nothing = case c_ of
-              Just (Right _) -> ServerSessions {ssConnected = 1, ssErrors = 0, ssConnecting = 0}
-              Just (Left _) -> ServerSessions {ssConnected = 0, ssErrors = 1, ssConnecting = 0}
-              Nothing -> ServerSessions {ssConnected = 0, ssErrors = 0, ssConnecting = 1}
-            add c_ (Just ss) = case c_ of
+            add c_ = \case
+              Nothing -> modifySessions c_ ServerSessions {ssConnected = 0, ssErrors = 0, ssConnecting = 0}
+              Just ss -> modifySessions c_ ss
+            modifySessions c_ ss = case c_ of
               Just (Right _) -> ss {ssConnected = ssConnected ss + 1}
               Just (Left _) -> ss {ssErrors = ssErrors ss + 1}
               Nothing -> ss {ssConnecting = ssConnecting ss + 1}
