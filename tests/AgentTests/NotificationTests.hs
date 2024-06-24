@@ -19,6 +19,7 @@ import AgentTests.FunctionalAPITests
     joinConnection,
     makeConnection,
     nGet,
+    nGetUP,
     runRight,
     runRight_,
     sendMessage,
@@ -605,8 +606,8 @@ testNotificationsSMPRestart t APNSMockServer {apnsQ} = withAgentClients2 $ \alic
     nGet bob =##> \case ("", "", DOWN _ [c]) -> c == aliceId; _ -> False
 
   withSmpServerStoreLogOn t testPort $ \threadId -> runRight_ $ do
-    nGet alice =##> \case ("", "", UP _ [c]) -> c == bobId; _ -> False
-    nGet bob =##> \case ("", "", UP _ [c]) -> c == aliceId; _ -> False
+    nGetUP alice =##> \case ("", "", UP _ [c]) -> c == bobId; _ -> False
+    nGetUP bob =##> \case ("", "", UP _ [c]) -> c == aliceId; _ -> False
     liftIO $ threadDelay 1000000
     5 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
     get bob ##> ("", aliceId, SENT 5)
@@ -639,11 +640,11 @@ testNotificationsSMPRestartBatch n t APNSMockServer {apnsQ} =
       liftIO $ length (acs1 <> acs2) `shouldBe` length conns
 
     runServers $ do
-      ("", "", UP _ bcs1) <- nGet a
-      ("", "", UP _ bcs2) <- nGet a
+      ("", "", UP _ bcs1) <- nGetUP a
+      ("", "", UP _ bcs2) <- nGetUP a
       liftIO $ length (bcs1 <> bcs2) `shouldBe` length conns
-      ("", "", UP _ acs1) <- nGet b
-      ("", "", UP _ acs2) <- nGet b
+      ("", "", UP _ acs1) <- nGetUP b
+      ("", "", UP _ acs2) <- nGetUP b
       liftIO $ length (acs1 <> acs2) `shouldBe` length conns
       liftIO $ threadDelay 1500000
       forM_ conns $ \(aliceId, bobId) -> do

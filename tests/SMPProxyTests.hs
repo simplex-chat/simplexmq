@@ -368,7 +368,7 @@ agentViaProxyRetryOffline = do
     withServer2 = withServer_ testStoreLogFile2 testStoreMsgsFile2 testPort2
     withServer_ storeLog storeMsgs port =
       withSmpServerConfigOn (transport @TLS) proxyCfg {storeLogFile = Just storeLog, storeMsgsFile = Just storeMsgs} port
-    a `up` cId = nGet a =##> \case ("", "", UP _ [c]) -> c == cId; _ -> False
+    a `up` cId = nGetUP a =##> \case ("", "", UP _ [c]) -> c == cId; _ -> False
     a `down` cId = nGet a =##> \case ("", "", DOWN _ [c]) -> c == cId; _ -> False
     aCfg = agentProxyCfg {messageRetryInterval = fastMessageRetryInterval}
     baseId = 3
