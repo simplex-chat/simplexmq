@@ -1125,9 +1125,7 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
               atomically $ incSMPServerStat c userId destSrv sentDirectAttempts
               sendSMPMessage smp spKey_ senderId msgFlags msg
         case r of
-          Right () -> do
-            atomically $ incSMPServerStat c userId destSrv sentDirect
-            pure ()
+          Right () -> atomically $ incSMPServerStat c userId destSrv sentDirect
           Left e -> throwE e
 
 ipAddressProtected :: NetworkConfig -> ProtocolServer p -> Bool
