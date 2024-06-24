@@ -776,7 +776,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
     processCommand (qr_, (corrId, queueId, cmd)) = case cmd of
       Cmd SProxiedClient command -> processProxiedCmd (corrId, queueId, command)
       Cmd SSender command -> Just <$> case command of
-        SKEY sKey -> secureSndQueue_ sKey
+        SKEY sKey -> secureQueue_ "SKEY" sKey
         SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
         PING -> pure (corrId, "", PONG)
         RFWD encBlock -> (corrId, "",) <$> processForwardedCommand encBlock
@@ -796,7 +796,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           SUB -> withQueue (`subscribeQueue` queueId)
           GET -> withQueue getMessage
           ACK msgId -> withQueue (`acknowledgeMsg` msgId)
-          KEY sKey -> secureRcvQueue_ st sKey
+          KEY sKey -> secureQueue_ "KEY" sKey
           NKEY nKey dhKey -> addQueueNotifier_ st nKey dhKey
           NDEL -> deleteQueueNotifier_ st
           OFF -> suspendQueue_ st
@@ -852,20 +852,15 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               n <- asks $ queueIdBytes . config
               liftM2 (,) (randomId n) (randomId n)
 
-        secureRcvQueue_ :: QueueStore -> SndPublicAuthKey -> M (Transmission BrokerMsg)
-        secureRcvQueue_ st sKey = time "KEY" $ do
-          withLog $ \s -> logSecureQueue s queueId sKey
-          stats <- asks serverStats
-          atomically $ modifyTVar' (qSecured stats) (+ 1)
-          atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureRcvQueue st queueId sKey
-
-        secureSndQueue_ :: SndPublicAuthKey -> M (Transmission BrokerMsg)
-        secureSndQueue_ sKey = time "SKEY" $ do
-          st <- asks queueStore
-          withLog $ \s -> logSecureQueue s queueId sKey
-          stats <- asks serverStats
-          atomically $ modifyTVar' (qSecured stats) (+ 1)
-          atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureSndQueue st queueId sKey
+        secureQueue_ :: T.Text -> SndPublicAuthKey -> M (Transmission BrokerMsg)
+        secureQueue_ name sKey = case qr_ of
+          Nothing -> pure (corrId, queueId, ERR INTERNAL)
+          Just QueueRec {recipientId} -> time name $ do
+            withLog $ \s -> logSecureQueue s recipientId sKey
+            st <- asks queueStore
+            stats <- asks serverStats
+            atomically $ modifyTVar' (qSecured stats) (+ 1)
+            atomically $ (corrId,queueId,) . either ERR (const OK) <$> secureQueue st recipientId sKey
 
         addQueueNotifier_ :: QueueStore -> NtfPublicAuthKey -> RcvNtfPublicDhKey -> M (Transmission BrokerMsg)
         addQueueNotifier_ st notifierKey dhKey = time "NKEY" $ do
