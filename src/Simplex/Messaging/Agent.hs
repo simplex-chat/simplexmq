@@ -237,11 +237,9 @@ logServersStats c = do
 
 saveServersStats :: AgentClient -> AM' ()
 saveServersStats c@AgentClient {subQ, smpServersStats, xftpServersStats} = do
-  sss <- readTVarIO smpServersStats
-  sss' <- mapM (lift . getAgentSMPServerStats) sss
-  xss <- readTVarIO xftpServersStats
-  xss' <- mapM (lift . getAgentXFTPServerStats) xss
-  let stats = AgentPersistedServerStats {smpServersStats = sss', xftpServersStats = xss'}
+  sss <- mapM (lift . getAgentSMPServerStats) =<< readTVarIO smpServersStats
+  xss <- mapM (lift . getAgentXFTPServerStats) =<< readTVarIO xftpServersStats
+  let stats = AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss}
   tryAgentError' (withStore' c (`updateServersStats` stats)) >>= \case
     Left e -> atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ INTERNAL $ show e)
     Right () -> pure ()

@@ -197,9 +197,9 @@ runXFTPRcvWorker c srv Worker {doWork} = do
               atomically $ assertAgentForeground c
               loop
             retryDone e = do
-              case e of
-                XFTP _ XFTP.AUTH -> atomically $ incXFTPServerStat c userId srv downloadAuthErrs
-                _ -> atomically $ incXFTPServerStat c userId srv downloadErrs
+              atomically . incXFTPServerStat c userId srv $ case e of
+                XFTP _ XFTP.AUTH -> downloadAuthErrs
+                _ -> downloadErrs
               rcvWorkerInternalError c rcvFileId rcvFileEntityId (Just fileTmpPath) e
     downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> Bool -> AM ()
     downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica approvedRelays = do
