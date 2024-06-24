@@ -182,7 +182,7 @@ import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, isJust, isNothing, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -2040,9 +2040,7 @@ getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, srvStat
           c_ <- atomically $ tryReadTMVar sessionVar
           pure $ M.alter (Just . add c_) (userId, srv) acc
           where
-            add c_ = \case
-              Nothing -> modifySessions c_ ServerSessions {ssConnected = 0, ssErrors = 0, ssConnecting = 0}
-              Just ss -> modifySessions c_ ss
+            add c_ = modifySessions c_ . fromMaybe ServerSessions {ssConnected = 0, ssErrors = 0, ssConnecting = 0}
             modifySessions c_ ss = case c_ of
               Just (Right _) -> ss {ssConnected = ssConnected ss + 1}
               Just (Left _) -> ss {ssErrors = ssErrors ss + 1}
