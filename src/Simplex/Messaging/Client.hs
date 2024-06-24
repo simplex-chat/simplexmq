@@ -47,6 +47,7 @@ module Simplex.Messaging.Client
     subscribeSMPQueueNotifications,
     subscribeSMPQueuesNtfs,
     secureSMPQueue,
+    secureSndSMPQueue,
     enableSMPQueueNotifications,
     disableSMPQueueNotifications,
     enableSMPQueuesNtfs,
@@ -729,6 +730,11 @@ subscribeSMPQueuesNtfs = okSMPCommands NSUB
 secureSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> SndPublicAuthKey -> ExceptT SMPClientError IO ()
 secureSMPQueue c rpKey rId senderKey = okSMPCommand (KEY senderKey) c rpKey rId
 {-# INLINE secureSMPQueue #-}
+
+-- | Secure the SMP queue via sender queue ID.
+secureSndSMPQueue :: SMPClient -> SndPrivateAuthKey -> SenderId -> SndPublicAuthKey -> ExceptT SMPClientError IO ()
+secureSndSMPQueue c spKey sId senderKey = okSMPCommand (SKEY senderKey) c spKey sId
+{-# INLINE secureSndSMPQueue #-}
 
 -- | Enable notifications for the queue for push notifications server.
 --

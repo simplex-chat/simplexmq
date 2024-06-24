@@ -44,6 +44,7 @@ import Simplex.Messaging.Protocol
     RcvPrivateAuthKey,
     SndPrivateAuthKey,
     SndPublicAuthKey,
+    SenderCanSecure,
     VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
@@ -83,6 +84,8 @@ data StoredRcvQueue (q :: QueueStored) = RcvQueue
     e2eDhSecret :: Maybe C.DhSecretX25519,
     -- | sender queue ID
     sndId :: SMP.SenderId,
+    -- | sender can secure the queue
+    sndSecure :: SenderCanSecure,
     -- | queue status
     status :: QueueStatus,
     -- | database queue ID (within connection)
@@ -138,6 +141,8 @@ data StoredSndQueue (q :: QueueStored) = SndQueue
     server :: SMPServer,
     -- | sender queue ID
     sndId :: SMP.SenderId,
+    -- | sender can secure the queue
+    sndSecure :: SenderCanSecure,
     -- | key pair used by the sender to authorize transmissions
     -- TODO combine keys to key pair so that types match
     sndPublicKey :: Maybe SndPublicAuthKey,

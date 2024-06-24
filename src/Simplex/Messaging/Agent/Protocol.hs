@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent.Protocol
     ratchetSyncSMPAgentVersion,
     deliveryRcptsSMPAgentVersion,
     pqdrSMPAgentVersion,
+    sndAuthKeySMPAgentVersion,
     currentSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
@@ -253,8 +254,11 @@ deliveryRcptsSMPAgentVersion = VersionSMPA 4
 pqdrSMPAgentVersion :: VersionSMPA
 pqdrSMPAgentVersion = VersionSMPA 5
 
+sndAuthKeySMPAgentVersion :: VersionSMPA
+sndAuthKeySMPAgentVersion = VersionSMPA 6
+
 currentSMPAgentVersion :: VersionSMPA
-currentSMPAgentVersion = VersionSMPA 5
+currentSMPAgentVersion = VersionSMPA 6
 
 supportedSMPAgentVRange :: VersionRangeSMPA
 supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentSMPAgentVersion
@@ -1204,7 +1208,7 @@ instance StrEncoding SMPQueueUri where
         vr <- queryParam "v" query
         dhKey <- maybe (queryParam "dh" query) pure dhKey_
         hs_ <- queryParam_ "srv" query
-        sndSecure <- (Just ("s" :: ByteString) ==) <$> queryParam_ "k" query
+        let sndSecure = queryParamStr "k" query == Just "s"
         pure (vr, maybe [] thList_ hs_, dhKey, sndSecure)
 
 instance Encoding SMPQueueUri where

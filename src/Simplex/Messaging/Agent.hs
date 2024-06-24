@@ -172,7 +172,7 @@ import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfReg
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC, XFTPServerWithAuth)
+import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC, XFTPServerWithAuth, sndAuthKeySMPClientVersion)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
@@ -706,7 +706,8 @@ newRcvConnSrv c userId connId enableNtfs cMode clientData pqInitKeys subMode srv
     (SCMContact, CR.IKUsePQ) -> throwE $ CMD PROHIBITED "newRcvConnSrv"
     _ -> pure ()
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
-  (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srv smpClientVRange subMode `catchAgentError` \e -> liftIO (print e) >> throwE e
+  let sndSecure = case cMode of SCMInvitation -> True; SCMContact -> False
+  (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srv smpClientVRange subMode sndSecure `catchAgentError` \e -> liftIO (print e) >> throwE e
   rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
   lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
   when enableNtfs $ do
@@ -725,7 +726,7 @@ newConnToJoin :: forall c. AgentClient -> UserId -> ConnId -> Bool -> Connection
 newConnToJoin c userId connId enableNtfs cReq pqSup = case cReq of
   CRInvitationUri {} ->
     lift (compatibleInvitationUri cReq) >>= \case
-      Just (_, (Compatible (CR.E2ERatchetParams v _ _ _)), aVersion) -> create aVersion (Just v)
+      Just (_, Compatible (CR.E2ERatchetParams v _ _ _), aVersion) -> create aVersion (Just v)
       Nothing -> throwE $ AGENT A_VERSION
   CRContactUri {} ->
     lift (compatibleContactUri cReq) >>= \case
@@ -833,7 +834,8 @@ joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode
 
 createReplyQueue :: AgentClient -> ConnData -> SndQueue -> SubscriptionMode -> SMPServerWithAuth -> AM SMPQueueInfo
 createReplyQueue c ConnData {userId, connId, enableNtfs} SndQueue {smpClientVersion} subMode srv = do
-  (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srv (versionToRange smpClientVersion) subMode
+  let sndSecure = smpClientVersion >= sndAuthKeySMPClientVersion
+  (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srv (versionToRange smpClientVersion) subMode sndSecure
   let qInfo = toVersionT qUri smpClientVersion
   rq' <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq
   lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
@@ -1496,13 +1498,14 @@ switchConnection' c connId =
       _ -> throwE $ CMD PROHIBITED "switchConnection: not duplex"
 
 switchDuplexConnection :: AgentClient -> Connection 'CDuplex -> RcvQueue -> AM ConnectionStats
-switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs sqs) rq@RcvQueue {server, dbQueueId = DBQueueId dbQueueId, sndId} = do
+switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId, connAgentVersion} rqs sqs) rq@RcvQueue {server, dbQueueId = DBQueueId dbQueueId, sndId} = do
   checkRQSwchStatus rq RSSwitchStarted
   clientVRange <- asks $ smpClientVRange . config
   -- try to get the server that is different from all queues, or at least from the primary rcv queue
   srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
   srv' <- if srv == server then getNextServer c userId [server] else pure srvAuth
-  (q, qUri, tSess, sessId) <- newRcvQueue c userId connId srv' clientVRange SMSubscribe
+  let sndSecure = connAgentVersion >= sndAuthKeySMPAgentVersion
+  (q, qUri, tSess, sessId) <- newRcvQueue c userId connId srv' clientVRange SMSubscribe sndSecure
   let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
   rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq'
   lift $ addNewQueueSubscription c rq'' tSess sessId
@@ -2746,7 +2749,7 @@ agentRatchetDecrypt' g db connId rc encAgentMsg = do
   liftEither $ bimap (SEAgentError . cryptoError) (,CR.rcRcvKEM rc') agentMsgBody_
 
 newSndQueue :: UserId -> ConnId -> Compatible SMPQueueInfo -> AM' NewSndQueue
-newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey = rcvE2ePubDhKey})) = do
+newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, sndSecure, dhPublicKey = rcvE2ePubDhKey})) = do
   C.AuthAlg a <- asks $ sndAuthAlg . config
   g <- asks random
   (sndPublicKey, sndPrivateKey) <- atomically $ C.generateAuthKeyPair a g
@@ -2757,6 +2760,7 @@ newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAdd
         connId,
         server = smpServer,
         sndId = senderId,
+        sndSecure,
         sndPublicKey = Just sndPublicKey,
         sndPrivateKey,
         e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey,

@@ -233,6 +233,7 @@ import Simplex.Messaging.Protocol
     SProtocolType (..),
     SndPublicAuthKey,
     SubscriptionMode (..),
+    SenderCanSecure,
     UserProtocol,
     VersionRangeSMPC,
     VersionSMPC,
@@ -1164,11 +1165,14 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
     getProtocolClient g tSess cfg Nothing (\_ -> pure ()) >>= \case
       Right smp -> do
         rKeys@(_, rpKey) <- atomically $ C.generateAuthKeyPair ra g
-        (sKey, _) <- atomically $ C.generateAuthKeyPair sa g
+        (sKey, spKey) <- atomically $ C.generateAuthKeyPair sa g
         (dhKey, _) <- atomically $ C.generateKeyPair g
         r <- runExceptT $ do
-          SMP.QIK {rcvId} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey auth SMSubscribe False -- TODO SKEY
-          liftError (testErr TSSecureQueue) $ secureSMPQueue smp rpKey rcvId sKey
+          SMP.QIK {rcvId, sndId, sndSecure} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey auth SMSubscribe True
+          liftError (testErr TSSecureQueue) $
+            if sndSecure
+              then secureSndSMPQueue smp spKey sndId sKey
+              else secureSMPQueue smp rpKey rcvId sKey
           liftError (testErr TSDeleteQueue) $ deleteSMPQueue smp rpKey rcvId
         ok <- tcpTimeout (networkConfig cfg) `timeout` closeProtocolClient smp
         pure $ either Just (const Nothing) r <|> maybe (Just (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const Nothing) ok
@@ -1275,8 +1279,8 @@ getSessionMode :: AgentClient -> IO TransportSessionMode
 getSessionMode = atomically . fmap sessionMode . getNetworkConfig
 {-# INLINE getSessionMode #-}
 
-newRcvQueue :: AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SubscriptionMode -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
-newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
+newRcvQueue :: AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SubscriptionMode -> SenderCanSecure -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
+newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode senderCanSecure = do
   C.AuthAlg a <- asks (rcvAuthAlg . config)
   g <- asks random
   rKeys@(_, rcvPrivateKey) <- atomically $ C.generateAuthKeyPair a g
@@ -1284,9 +1288,9 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
   (e2eDhKey, e2ePrivKey) <- atomically $ C.generateKeyPair g
   logServer "-->" c srv "" "NEW"
   tSess <- liftIO $ mkTransportSession c userId srv connId
-  (sessId, QIK {rcvId, sndId, rcvPublicDhKey}) <-
+  (sessId, QIK {rcvId, sndId, rcvPublicDhKey, sndSecure}) <-
     withClient c tSess "NEW" $ \(SMPConnectedClient smp _) ->
-      (sessionId $ thParams smp,) <$> createSMPQueue smp rKeys dhKey auth subMode False -- TODO SKEY
+      (sessionId $ thParams smp,) <$> createSMPQueue smp rKeys dhKey auth subMode senderCanSecure
   liftIO . logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue
@@ -1299,6 +1303,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
             e2ePrivKey,
             e2eDhSecret = Nothing,
             sndId,
+            sndSecure,
             status = New,
             dbQueueId = DBNewQueue,
             primary = True,
@@ -1308,7 +1313,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode = do
             clientNtfCreds = Nothing,
             deleteErrors = 0
           }
-      qUri = SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey False -- TODO SKEY
+      qUri = SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey sndSecure
   pure (rq, qUri, tSess, sessId)
 
 processSubResult :: AgentClient -> RcvQueue -> Either SMPClientError () -> STM ()
