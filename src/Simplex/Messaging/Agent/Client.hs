@@ -2025,8 +2025,9 @@ getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, srvStat
       subs <- M.foldrWithKey' addActiveSub M.empty <$> readTVarIO (getRcvQueues $ activeSubs c)
       M.foldrWithKey' addPendingSub subs <$> readTVarIO (getRcvQueues $ pendingSubs c)
       where
-        addActiveSub (userId, srv, _) _ = M.alter (Just . maybe SMPServerSubs {ssActive = 1, ssPending = 0} (\ss -> ss {ssActive = ssActive ss + 1})) (userId, srv)
-        addPendingSub (userId, srv, _) _ = M.alter (Just . maybe SMPServerSubs {ssActive = 0, ssPending = 1} (\ss -> ss {ssPending = ssPending ss + 1})) (userId, srv)
+        addActiveSub (userId, srv, _) _ = M.alter (Just . (\ss -> ss {ssActive = ssActive ss + 1}) . fromMaybe newSubs) (userId, srv)
+        addPendingSub (userId, srv, _) _ = M.alter (Just . (\ss -> ss {ssPending = ssPending ss + 1}) . fromMaybe newSubs) (userId, srv)
+        newSubs = SMPServerSubs {ssActive = 0, ssPending = 0}
     Env {xftpAgent = XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}} = agentEnv
     getXFTPWorkerSrvs workers = foldM addSrv [] . M.toList =<< readTVarIO workers
       where
