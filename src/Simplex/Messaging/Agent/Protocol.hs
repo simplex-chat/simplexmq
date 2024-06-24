@@ -334,7 +334,6 @@ data AEvent (e :: AEntity) where
   UP :: SMPServer -> [ConnId] -> AEvent AENone
   SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> AEvent AEConn
   RSYNC :: RatchetSyncState -> Maybe AgentCryptoError -> ConnectionStats -> AEvent AEConn
-  MID :: AgentMsgId -> PQEncryption -> AEvent AEConn
   SENT :: AgentMsgId -> Maybe SMPServer -> AEvent AEConn
   MWARN :: AgentMsgId -> AgentErrorType -> AEvent AEConn
   MERR :: AgentMsgId -> AgentErrorType -> AEvent AEConn
@@ -403,7 +402,6 @@ data AEventTag (e :: AEntity) where
   UP_ :: AEventTag AENone
   SWITCH_ :: AEventTag AEConn
   RSYNC_ :: AEventTag AEConn
-  MID_ :: AEventTag AEConn
   SENT_ :: AEventTag AEConn
   MWARN_ :: AEventTag AEConn
   MERR_ :: AEventTag AEConn
@@ -456,7 +454,6 @@ aEventTag = \case
   UP {} -> UP_
   SWITCH {} -> SWITCH_
   RSYNC {} -> RSYNC_
-  MID {} -> MID_
   SENT {} -> SENT_
   MWARN {} -> MWARN_
   MERR {} -> MERR_

@@ -100,6 +100,7 @@ module Simplex.Messaging.Client
 where
 
 import Control.Applicative ((<|>))
+import Control.Concurrent (ThreadId, forkFinally, killThread, mkWeakThreadId)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
@@ -138,13 +139,14 @@ import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, diffToMicroseconds, ifM, liftEitherWith, raceAny_, threadDelay', tshow, whenM)
 import Simplex.Messaging.Version
+import System.Mem.Weak (Weak, deRefWeak)
 import System.Timeout (timeout)
 
 -- | 'SMPClient' is a handle used to send commands to a specific SMP server.
 --
 -- Use 'getSMPClient' to connect to an SMP server and create a client handle.
 data ProtocolClient v err msg = ProtocolClient
-  { action :: Maybe (Async ()),
+  { action :: Maybe (Weak ThreadId),
     thParams :: THandleParams v 'TClient,
     sessionTs :: UTCTime,
     client_ :: PClient v err msg
@@ -475,15 +477,14 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
       cVar <- newEmptyTMVarIO
       let tcConfig = (transportClientConfig networkConfig useHost) {alpn = clientALPN}
           username = proxyUsername transportSession
-      action <-
-        async $
-          runTransportClient tcConfig (Just username) useHost port' (Just $ keyHash srv) (client t c cVar)
-            `finally` atomically (tryPutTMVar cVar $ Left PCENetworkError)
+      tId <-
+        runTransportClient tcConfig (Just username) useHost port' (Just $ keyHash srv) (client t c cVar)
+          `forkFinally` \_ -> void (atomically . tryPutTMVar cVar $ Left PCENetworkError)
       c_ <- tcpConnectTimeout `timeout` atomically (takeTMVar cVar)
       case c_ of
-        Just (Right c') -> pure $ Right c' {action = Just action}
+        Just (Right c') -> mkWeakThreadId tId >>= \tId' -> pure $ Right c' {action = Just tId'}
         Just (Left e) -> pure $ Left e
-        Nothing -> cancel action $> Left PCENetworkError
+        Nothing -> killThread tId $> Left PCENetworkError
 
     useTransport :: (ServiceName, ATransport)
     useTransport = case port srv of
@@ -589,7 +590,7 @@ proxyUsername (userId, _, entityId_) = C.sha256Hash $ bshow userId <> maybe "" (
 
 -- | Disconnects client from the server and terminates client threads.
 closeProtocolClient :: ProtocolClient v err msg -> IO ()
-closeProtocolClient = mapM_ uninterruptibleCancel . action
+closeProtocolClient = mapM_ (deRefWeak >=> mapM_ killThread) . action
 {-# INLINE closeProtocolClient #-}
 
 -- | SMP client error type.
