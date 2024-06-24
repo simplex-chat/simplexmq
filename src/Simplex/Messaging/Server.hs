@@ -525,7 +525,7 @@ receive h@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiv
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   forever $ do
     ts <- L.toList <$> liftIO (tGet h)
-    atomically . writeTVar rcvActiveAt =<< liftIO getSystemTime
+    atomically . (writeTVar rcvActiveAt $!) =<< liftIO getSystemTime
     stats <- asks serverStats
     (errs, cmds) <- partitionEithers <$> mapM (cmdAction stats) ts
     write sndQ errs
@@ -581,7 +581,7 @@ tSend :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> NonEmpty (Tran
 tSend th Client {sndActiveAt} ts = do
   withMVar th $ \h@THandle {params} ->
     void . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
-  atomically . writeTVar sndActiveAt =<< liftIO getSystemTime
+  atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
 
 disconnectTransport :: Transport c => THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
 disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
@@ -1037,15 +1037,16 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             mkMessage body = do
               msgId <- randomId =<< asks (msgIdBytes . config)
               msgTs <- liftIO getSystemTime
-              pure $ Message msgId msgTs msgFlags body
+              pure $! Message msgId msgTs msgFlags body
 
             expireMessages :: MsgQueue -> M ()
             expireMessages q = do
               msgExp <- asks $ messageExpiration . config
               old <- liftIO $ mapM expireBeforeEpoch msgExp
-              stats <- asks serverStats
               deleted <- atomically $ sum <$> mapM (deleteExpiredMsgs q) old
-              atomically $ modifyTVar' (msgExpired stats) (+ deleted)
+              when (deleted > 0) $ do
+                stats <- asks serverStats
+                atomically $ modifyTVar' (msgExpired stats) (+ deleted)
 
             trySendNotification :: NtfCreds -> Message -> TVar ChaChaDRG -> STM (Maybe Bool)
             trySendNotification NtfCreds {notifierId, rcvNtfDhSecret} msg ntfNonceDrg =
@@ -1164,7 +1165,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             msgTs' = messageTs msg
 
         setDelivered :: Sub -> Message -> STM Bool
-        setDelivered s msg = tryPutTMVar (delivered s) (messageId msg)
+        setDelivered s msg = tryPutTMVar (delivered s) $! messageId msg
 
         getStoreMsgQueue :: T.Text -> RecipientId -> M MsgQueue
         getStoreMsgQueue name rId = time (name <> " getMsgQueue") $ do
