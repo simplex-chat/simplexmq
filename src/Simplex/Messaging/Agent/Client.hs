@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -89,6 +90,10 @@ module Simplex.Messaging.Agent.Client
     activeClientSession,
     agentClientStore,
     agentDRG,
+    AgentServersSummary (..),
+    ServerSessions (..),
+    SMPServerSubs (..),
+    getAgentServersSummary,
     getAgentSubscriptions,
     slowNetworkConfig,
     protocolClientError,
@@ -136,6 +141,9 @@ module Simplex.Messaging.Agent.Client
     getNextServer,
     withUserServers,
     withNextSrv,
+    incSMPServerStat,
+    incSMPServerStat',
+    incXFTPServerStat,
     AgentWorkersDetails (..),
     getAgentWorkersDetails,
     AgentWorkersSummary (..),
@@ -175,7 +183,7 @@ import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (isJust, isNothing, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -197,6 +205,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
+import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..), withTransaction)
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
@@ -317,7 +326,10 @@ data AgentClient = AgentClient
     agentStats :: TMap AgentStatsKey (TVar Int),
     msgCounts :: TMap ConnId (TVar (Int, Int)), -- (total, duplicates)
     clientId :: Int,
-    agentEnv :: Env
+    agentEnv :: Env,
+    smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
+    xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats,
+    srvStatsStartedAt :: TVar UTCTime
   }
 
 data SMPConnectedClient = SMPConnectedClient
@@ -445,8 +457,8 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-newAgentClient :: Int -> InitialAgentServers -> Env -> STM AgentClient
-newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = do
+newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Env -> STM AgentClient
+newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
   acThread <- newTVar Nothing
@@ -484,6 +496,9 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
   smpSubWorkers <- TM.empty
   agentStats <- TM.empty
   msgCounts <- TM.empty
+  smpServersStats <- TM.empty
+  xftpServersStats <- TM.empty
+  srvStatsStartedAt <- newTVar currentTs
   return
     AgentClient
       { acThread,
@@ -522,7 +537,10 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} agentEnv = 
         agentStats,
         msgCounts,
         clientId,
-        agentEnv
+        agentEnv,
+        smpServersStats,
+        xftpServersStats,
+        srvStatsStartedAt
       }
 
 slowNetworkConfig :: NetworkConfig -> NetworkConfig
@@ -1062,7 +1080,11 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
     unknownServer = maybe True (all ((destSrv /=) . protoServer)) <$> TM.lookup userId (userServers c)
     sendViaProxy destSess@(_, _, qId) = do
       r <- tryAgentError . withProxySession c destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess) -> do
-        liftClient SMP (clientServer smp) (proxySMPMessage smp proxySess spKey_ senderId msgFlags msg) >>= \case
+        r' <- liftClient SMP (clientServer smp) $ do
+          atomically $ incSMPServerStat c userId destSrv sentViaProxyAttempts
+          atomically $ incSMPServerStat c userId (protocolClientServer' smp) sentProxiedAttempts
+          proxySMPMessage smp proxySess spKey_ senderId msgFlags msg
+        case r' of
           Right () -> pure . Just $ protocolClientServer' smp
           Left proxyErr -> do
             case proxyErr of
@@ -1090,13 +1112,23 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
               sameClient smp' = sessionId (thParams smp) == sessionId (thParams smp')
               sameProxiedRelay proxySess' = prSessionId proxySess == prSessionId proxySess'
       case r of
-        Right r' -> pure r'
+        Right r' -> do
+          atomically $ incSMPServerStat c userId destSrv sentViaProxy
+          forM_ r' $ \proxySrv -> atomically $ incSMPServerStat c userId proxySrv sentProxied
+          pure r'
         Left e
           | serverHostError e -> ifM (atomically directAllowed) (sendDirectly destSess $> Nothing) (throwE e)
           | otherwise -> throwE e
     sendDirectly tSess =
-      withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) ->
-        liftClient SMP (clientServer smp) $ sendSMPMessage smp spKey_ senderId msgFlags msg
+      withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) -> do
+        r <-
+          tryAgentError $
+            liftClient SMP (clientServer smp) $ do
+              atomically $ incSMPServerStat c userId destSrv sentDirectAttempts
+              sendSMPMessage smp spKey_ senderId msgFlags msg
+        case r of
+          Right () -> atomically $ incSMPServerStat c userId destSrv sentDirect
+          Left e -> throwE e
 
 ipAddressProtected :: NetworkConfig -> ProtocolServer p -> Bool
 ipAddressProtected NetworkConfig {socksProxy, hostMode} (ProtocolServer _ hosts _ _) = do
@@ -1375,6 +1407,8 @@ subscribeQueues c qs = do
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED "subscribeQueues") else Right rq
     subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
     subscribeQueues_ env session smp qs' = do
+      let (userId, srv, _) = transportSession' smp
+      atomically $ incSMPServerStat' c userId srv connSubAttempts (length qs')
       rs <- sendBatch subscribeSMPQueues smp qs'
       active <-
         atomically $
@@ -1927,6 +1961,103 @@ withNextSrv c userId usedSrvs initUsed action = do
     writeTVar usedSrvs $! used'
   action srvAuth
 
+incSMPServerStat :: AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int) -> STM ()
+incSMPServerStat c userId srv sel = incSMPServerStat' c userId srv sel 1
+
+incSMPServerStat' :: AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int) -> Int -> STM ()
+incSMPServerStat' AgentClient {smpServersStats} userId srv sel n = do
+  TM.lookup (userId, srv) smpServersStats >>= \case
+    Just v -> modifyTVar' (sel v) (+ n)
+    Nothing -> do
+      newStats <- newAgentSMPServerStats
+      modifyTVar' (sel newStats) (+ n)
+      TM.insert (userId, srv) newStats smpServersStats
+
+incXFTPServerStat :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int) -> STM ()
+incXFTPServerStat AgentClient {xftpServersStats} userId srv sel = do
+  TM.lookup (userId, srv) xftpServersStats >>= \case
+    Just v -> modifyTVar' (sel v) (+ 1)
+    Nothing -> do
+      newStats <- newAgentXFTPServerStats
+      modifyTVar' (sel newStats) (+ 1)
+      TM.insert (userId, srv) newStats xftpServersStats
+
+data AgentServersSummary = AgentServersSummary
+  { smpServersStats :: Map (UserId, SMPServer) AgentSMPServerStatsData,
+    xftpServersStats :: Map (UserId, XFTPServer) AgentXFTPServerStatsData,
+    statsStartedAt :: UTCTime,
+    smpServersSessions :: Map (UserId, SMPServer) ServerSessions,
+    smpServersSubs :: Map (UserId, SMPServer) SMPServerSubs,
+    xftpServersSessions :: Map (UserId, XFTPServer) ServerSessions,
+    xftpRcvInProgress :: [XFTPServer],
+    xftpSndInProgress :: [XFTPServer],
+    xftpDelInProgress :: [XFTPServer]
+  }
+  deriving (Show)
+
+data SMPServerSubs = SMPServerSubs
+  { ssActive :: Int, -- based on activeSubs
+    ssPending :: Int -- based on pendingSubs
+  }
+  deriving (Show)
+
+data ServerSessions = ServerSessions
+  { ssConnected :: Int,
+    ssErrors :: Int,
+    ssConnecting :: Int
+  }
+  deriving (Show)
+
+getAgentServersSummary :: AgentClient -> IO AgentServersSummary
+getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, srvStatsStartedAt, agentEnv} = do
+  sss <- mapM getAgentSMPServerStats =<< readTVarIO smpServersStats
+  xss <- mapM getAgentXFTPServerStats =<< readTVarIO xftpServersStats
+  statsStartedAt <- readTVarIO srvStatsStartedAt
+  smpServersSessions <- countSessions =<< readTVarIO (smpClients c)
+  smpServersSubs <- getServerSubs
+  xftpServersSessions <- countSessions =<< readTVarIO (xftpClients c)
+  xftpRcvInProgress <- catMaybes <$> getXFTPWorkerSrvs xftpRcvWorkers
+  xftpSndInProgress <- catMaybes <$> getXFTPWorkerSrvs xftpSndWorkers
+  xftpDelInProgress <- getXFTPWorkerSrvs xftpDelWorkers
+  pure
+    AgentServersSummary
+      { smpServersStats = sss,
+        xftpServersStats = xss,
+        statsStartedAt,
+        smpServersSessions,
+        smpServersSubs,
+        xftpServersSessions,
+        xftpRcvInProgress,
+        xftpSndInProgress,
+        xftpDelInProgress
+      }
+  where
+    getServerSubs = do
+      subs <- M.foldrWithKey' (addSub incActive) M.empty <$> readTVarIO (getRcvQueues $ activeSubs c)
+      M.foldrWithKey' (addSub incPending) subs <$> readTVarIO (getRcvQueues $ pendingSubs c)
+      where
+        addSub f (userId, srv, _) _ = M.alter (Just . f . fromMaybe SMPServerSubs {ssActive = 0, ssPending = 0}) (userId, srv)
+        incActive ss = ss {ssActive = ssActive ss + 1}
+        incPending ss = ss {ssPending = ssPending ss + 1}
+    Env {xftpAgent = XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}} = agentEnv
+    getXFTPWorkerSrvs workers = foldM addSrv [] . M.toList =<< readTVarIO workers
+      where
+        addSrv acc (srv, Worker {doWork}) = do
+          hasWork <- atomically $ not <$> isEmptyTMVar doWork
+          pure $ if hasWork then srv : acc else acc
+    countSessions :: Map (TransportSession msg) (ClientVar msg) -> IO (Map (UserId, ProtoServer msg) ServerSessions)
+    countSessions = foldM addClient M.empty . M.toList
+      where
+        addClient !acc ((userId, srv, _), SessionVar {sessionVar}) = do
+          c_ <- atomically $ tryReadTMVar sessionVar
+          pure $ M.alter (Just . add c_) (userId, srv) acc
+          where
+            add c_ = modifySessions c_ . fromMaybe ServerSessions {ssConnected = 0, ssErrors = 0, ssConnecting = 0}
+            modifySessions c_ ss = case c_ of
+              Just (Right _) -> ss {ssConnected = ssConnected ss + 1}
+              Just (Left _) -> ss {ssErrors = ssErrors ss + 1}
+              Nothing -> ss {ssConnecting = ssConnecting ss + 1}
+
 data SubInfo = SubInfo {userId :: UserId, server :: Text, rcvId :: Text, subError :: Maybe String}
   deriving (Show)
 
@@ -2116,6 +2247,12 @@ $(J.deriveJSON defaultJSON ''AgentLocks)
 $(J.deriveJSON (enumJSON $ dropPrefix "TS") ''ProtocolTestStep)
 
 $(J.deriveJSON defaultJSON ''ProtocolTestFailure)
+
+$(J.deriveJSON defaultJSON ''ServerSessions)
+
+$(J.deriveJSON defaultJSON ''SMPServerSubs)
+
+$(J.deriveJSON defaultJSON ''AgentServersSummary)
 
 $(J.deriveJSON defaultJSON ''SubInfo)
 
