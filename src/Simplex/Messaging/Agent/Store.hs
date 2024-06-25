@@ -145,7 +145,7 @@ data StoredSndQueue (q :: QueueStored) = SndQueue
     sndSecure :: SenderCanSecure,
     -- | key pair used by the sender to authorize transmissions
     -- TODO combine keys to key pair so that types match
-    sndPublicKey :: Maybe SndPublicAuthKey,
+    sndPublicKey :: SndPublicAuthKey,
     sndPrivateKey :: SndPrivateAuthKey,
     -- | DH public key used to negotiate per-queue e2e encryption
     e2ePubKey :: Maybe C.PublicKeyX25519,

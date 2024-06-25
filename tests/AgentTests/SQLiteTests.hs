@@ -197,6 +197,9 @@ cData1 =
 testPrivateAuthKey :: C.APrivateAuthKey
 testPrivateAuthKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
 
+testPublicAuthKey :: C.APublicAuthKey
+testPublicAuthKey = C.APublicAuthKey C.SEd25519 (C.publicKey "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe")
+
 testPrivDhKey :: C.PrivateKeyX25519
 testPrivDhKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOpk"
 
@@ -237,7 +240,7 @@ sndQueue1 =
       server = smpServer1,
       sndId = "3456",
       sndSecure = True,
-      sndPublicKey = Nothing,
+      sndPublicKey = testPublicAuthKey,
       sndPrivateKey = testPrivateAuthKey,
       e2ePubKey = Nothing,
       e2eDhSecret = testDhSecret,
@@ -382,7 +385,7 @@ testUpgradeRcvConnToDuplex =
               server = SMPServer "smp.simplex.im" "5223" testKeyHash,
               sndId = "2345",
               sndSecure = True,
-              sndPublicKey = Nothing,
+              sndPublicKey = testPublicAuthKey,
               sndPrivateKey = testPrivateAuthKey,
               e2ePubKey = Nothing,
               e2eDhSecret = testDhSecret,

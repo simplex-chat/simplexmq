@@ -52,6 +52,7 @@ module Simplex.Messaging.Agent.Client
     temporaryOrHostError,
     serverHostError,
     secureQueue,
+    secureSndQueue,
     enableQueueNotifications,
     enableQueuesNtfs,
     disableQueueNotifications,
@@ -1495,7 +1496,7 @@ logSecret bs = encode $ B.take 3 bs
 {-# INLINE logSecret #-}
 
 sendConfirmation :: AgentClient -> SndQueue -> ByteString -> AM (Maybe SMPServer)
-sendConfirmation c sq@SndQueue {userId, server, sndId, sndPublicKey = Just sndPublicKey, e2ePubKey = e2ePubKey@Just {}} agentConfirmation = do
+sendConfirmation c sq@SndQueue {userId, server, sndId, sndPublicKey, e2ePubKey = e2ePubKey@Just {}} agentConfirmation = do
   let clientMsg = SMP.ClientMessage (SMP.PHConfirmation sndPublicKey) agentConfirmation
   msg <- agentCbEncrypt sq e2ePubKey $ smpEncode clientMsg
   sendOrProxySMPMessage c userId server "<CONF>" Nothing sndId (MsgFlags {notification = True}) msg
@@ -1529,7 +1530,7 @@ getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do
           pure $ Just l
 
 decryptSMPMessage :: RcvQueue -> SMP.RcvMessage -> AM SMP.ClientRcvMsgBody
-decryptSMPMessage rq SMP.RcvMessage {msgId, msgBody = SMP.EncRcvMsgBody body} =
+decryptSMPMessage rq SMP.RcvMessage {msgId, msgBody = SMP.EncRcvMsgBody body} = do
   liftEither . parse SMP.clientRcvMsgBodyP (AGENT A_MESSAGE) =<< decrypt body
   where
     decrypt = agentCbDecrypt (rcvDhSecret rq) (C.cbNonce msgId)
@@ -1538,6 +1539,11 @@ secureQueue :: AgentClient -> RcvQueue -> SndPublicAuthKey -> AM ()
 secureQueue c rq@RcvQueue {rcvId, rcvPrivateKey} senderKey =
   withSMPClient c rq "KEY <key>" $ \smp ->
     secureSMPQueue smp rcvPrivateKey rcvId senderKey
+
+secureSndQueue :: AgentClient -> SndQueue -> SndPublicAuthKey -> AM ()
+secureSndQueue c sq@SndQueue {sndId, sndPrivateKey} senderKey =
+  withSMPClient c sq "SKEY <key>" $ \smp ->
+    secureSndSMPQueue smp sndPrivateKey sndId senderKey
 
 enableQueueNotifications :: AgentClient -> RcvQueue -> SMP.NtfPublicAuthKey -> SMP.RcvNtfPublicDhKey -> AM (SMP.NotifierId, SMP.RcvNtfPublicDhKey)
 enableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} notifierKey rcvNtfPublicDhKey =

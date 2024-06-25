@@ -2059,10 +2059,11 @@ toSndQueue ::
   SndQueue
 toSndQueue
   ( (userId, keyHash, connId, host, port, sndId, sndSecure)
-      :. (sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status)
+      :. (sndPubKey, sndPrivateKey@(C.APrivateAuthKey a pk), e2ePubKey, e2eDhSecret, status)
       :. (dbQueueId, primary, dbReplaceQueueId, sndSwchStatus, smpClientVersion)
     ) =
     let server = SMPServer host port keyHash
+        sndPublicKey = fromMaybe (C.APublicAuthKey a (C.publicKey pk)) sndPubKey
      in SndQueue {userId, connId, server, sndId, sndSecure, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbQueueId, primary, dbReplaceQueueId, sndSwchStatus, smpClientVersion}
 
 getSndQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError SndQueue)
