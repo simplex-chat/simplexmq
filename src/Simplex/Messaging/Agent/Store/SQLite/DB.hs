@@ -15,6 +15,9 @@ module Simplex.Messaging.Agent.Store.SQLite.DB
     query,
     query_,
     queryNamed,
+    fold,
+    fold_,
+    foldNamed,
   )
 where
 
@@ -97,5 +100,17 @@ query_ Connection {conn, slow} sql = timeIt slow sql $ SQL.query_ conn sql
 queryNamed :: FromRow r => Connection -> Query -> [NamedParam] -> IO [r]
 queryNamed Connection {conn, slow} sql = timeIt slow sql . SQL.queryNamed conn sql
 {-# INLINE queryNamed #-}
+
+fold :: (FromRow row, ToRow params) => Connection -> Query -> params -> a -> (a -> row -> IO a) -> IO a
+fold Connection {conn, slow} sql params initial = timeIt slow sql . SQL.fold conn sql params initial
+{-# INLINE fold #-}
+
+fold_ :: FromRow row => Connection -> Query -> a -> (a -> row -> IO a) -> IO a
+fold_ Connection {conn, slow} sql initial = timeIt slow sql . SQL.fold_ conn sql initial
+{-# INLINE fold_ #-}
+
+foldNamed :: FromRow row => Connection -> Query -> [NamedParam] -> a -> (a -> row -> IO a) -> IO a
+foldNamed Connection {conn, slow} sql params initial = timeIt slow sql . SQL.foldNamed conn sql params initial
+{-# INLINE foldNamed #-}
 
 $(J.deriveJSON defaultJSON ''SlowQueryStats)
