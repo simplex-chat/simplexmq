@@ -142,6 +142,24 @@ On Linux, you can deploy smp and xftp server using Docker. This will download im
          simplexchat/xftp-server:latest
      ```
 
+#### Using Docker Compose
+
+Alternatively you can use Docker Compose to deploy SMP and XFTP servers. In this case the servers store their data in docker volumes rather then the current directory.
+
+1. Download [docker-compose.yml](https://github.com/simplex-chat/simplexmq/blob/stable/docker-compose.yml):
+
+```sh
+curl -O https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/docker-compose.yml
+```
+
+2. Start the servers:
+   
+```sh
+ADDR=your_ip_or_domain.com PASS=password QUOTA=100gb docker-compose up -d
+```
+
+Environment variables are used only on the first start when server config files are created, you don't need to specify them on subsequent starts.
+
 #### Using installation script
 
 **Please note** that currently, only Ubuntu distribution is supported.
