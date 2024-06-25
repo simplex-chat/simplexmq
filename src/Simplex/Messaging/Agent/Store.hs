@@ -635,4 +635,6 @@ data StoreError
     SEDeletedSndChunkReplicaNotFound
   | -- | Error when reading work item that suspends worker - do not use!
     SEWorkItemError ByteString
+  | -- | Servers stats not found.
+    SEServersStatsNotFound
   deriving (Eq, Show, Exception)
