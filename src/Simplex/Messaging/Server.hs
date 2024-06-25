@@ -52,14 +52,19 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (fromRight, partitionEithers)
+import Data.Foldable (toList)
 import Data.Functor (($>))
 import Data.Int (Int64)
+import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
+import qualified Data.IntSet as IS
 import Data.List (intercalate, mapAccumR)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
+import Data.Set (Set)
+import qualified Data.Set as S
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
@@ -85,6 +90,7 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.QueueStore.STM as QS
 import Simplex.Messaging.Server.Stats
+import qualified Simplex.Messaging.Server.Stats.Client as CS
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -94,11 +100,12 @@ import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Exit (exitFailure)
+import System.FilePath (takeDirectory)
 import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (timeout)
 import UnliftIO.Concurrent
-import UnliftIO.Directory (doesFileExist, renameFile)
+import UnliftIO.Directory (createDirectoryIfMissing, doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.IO
 import UnliftIO.STM
@@ -135,7 +142,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     ( serverThread s "server subscribedQ" subscribedQ subscribers subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ())
         : receiveFromProxyAgent pa
-        : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
+        : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> rateStatsThread_ cfg <> controlPortThread_ cfg
     )
     `finally` withLock' (savingLock s) "final" (saveServer False >> closeServer)
   where
@@ -223,6 +230,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       [logServerStats logStatsStartTime interval serverStatsLogFile]
     serverStatsThread_ _ = []
 
+    rateStatsThread_ :: ServerConfig -> [M ()]
+    rateStatsThread_ ServerConfig {rateStatsLength = nBuckets, rateStatsInterval = Just bucketWidth, logStatsInterval = Just logInterval, logStatsStartTime, rateStatsLogFile} =
+      [ monitorServerRates nBuckets bucketWidth, -- roll windows, collect counters, runs at a faster rate so the measurements can be used for online anomaly detection
+        logServerRates logStatsStartTime logInterval rateStatsLogFile -- log current distributions once in a while
+      ]
+    rateStatsThread_ _ = []
+
     logServerStats :: Int64 -> Int64 -> FilePath -> M ()
     logServerStats startAt logInterval statsFilePath = do
       labelMyThread "logServerStats"
@@ -309,6 +323,66 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       where
         showProxyStats ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther} =
           [show _pRequests, show _pSuccesses, show _pErrorsConnect, show _pErrorsCompat, show _pErrorsOther]
+
+    monitorServerRates :: Int -> Int64 -> M ()
+    monitorServerRates nBuckets bucketWidth = do
+      labelMyThread "monitorServerRates"
+      stats' <- asks clientStats
+      rates' <- asks serverRates
+      liftIO . forever $ do
+        -- now <- getCurrentTime
+        -- TODO: calculate delay for the next bucket closing time
+        threadDelay' $ bucketWidth * 1000000
+        stats <- readTVarIO stats' >>= mapM (CS.readClientStatsData readTVarIO)
+        let !rates = distribution . histogram <$> collect stats
+        atomically . modifyTVar' rates' $ \old ->
+          let timeline = take nBuckets old
+          in length timeline `seq` rates : timeline
+      where
+        collect :: IntMap CS.ClientStatsData -> CS.ClientStatsC (IntMap Int)
+        collect = IM.foldlWithKey' toColumns (CS.clientStatsC IM.empty)
+          where
+            toColumns acc statsId csd =
+              CS.ClientStatsC
+                { peerAddressesC = IS.size _peerAddresses +> CS.peerAddressesC acc,
+                  socketCountC = _socketCount +> CS.socketCountC acc,
+                  -- created/updated skpped
+                  qCreatedC = S.size _qCreated +> CS.qCreatedC acc,
+                  qSentSignedC = S.size _qSentSigned +> CS.qSentSignedC acc,
+                  msgSentSignedC = _msgSentSigned +> CS.msgSentSignedC acc,
+                  msgSentUnsignedC = _msgSentUnsigned +> CS.msgSentUnsignedC acc,
+                  msgDeliveredSignedC = _msgDeliveredSigned +> CS.msgDeliveredSignedC acc,
+                  proxyRelaysRequestedC = _proxyRelaysRequested +> CS.proxyRelaysRequestedC acc,
+                  proxyRelaysConnectedC = _proxyRelaysConnected +> CS.proxyRelaysConnectedC acc,
+                  msgSentViaProxyC = _msgSentViaProxy +> CS.msgSentViaProxyC acc
+                }
+              where
+                (+>) = IM.insertWith (+) statsId
+                CS.ClientStatsData {_peerAddresses, _socketCount, _qCreated, _qSentSigned, _msgSentSigned, _msgSentUnsigned, _msgDeliveredSigned, _proxyRelaysRequested, _proxyRelaysConnected, _msgSentViaProxy} = csd
+
+    logServerRates :: Int64 -> Int64 -> FilePath -> M ()
+    logServerRates startAt logInterval statsFilePath = do
+      labelMyThread "logServerStats"
+      liftIO . unlessM (doesFileExist statsFilePath) $ do
+        createDirectoryIfMissing True (takeDirectory statsFilePath)
+        B.writeFile statsFilePath $ B.intercalate "," csvLabels <> "\n"
+      initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
+      liftIO $ putStrLn $ "server rates log enabled: " <> statsFilePath
+      liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
+      let interval = 1000000 * logInterval
+      rates' <- asks serverRates
+      liftIO . forever $ do
+        -- write the thing
+        rates <- readTVarIO rates'
+        forM_ (listToMaybe rates) $ \cs -> do
+          ts <- getCurrentTime
+          let values = concatMap (map bshow . toList) cs
+          withFile statsFilePath AppendMode $ \h -> liftIO $ do
+            hSetBuffering h LineBuffering
+            B.hPut h $ B.intercalate "," (strEncode ts : values) <> "\n"
+        threadDelay' interval
+      where
+        csvLabels = "ts" : concatMap (\s -> concatMap (\d -> [s <> "." <> d]) distributionLabels) CS.clientStatsLabels
 
     runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
     runClient signKey tp h = do
@@ -402,6 +476,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 putProxyStat "pMsgFwds" pMsgFwds
                 putProxyStat "pMsgFwdsOwn" pMsgFwdsOwn
                 putStat "pMsgFwdsRecv" pMsgFwdsRecv
+              CPStatsClients -> withAdminRole $ do
+                stats' <- unliftIO u (asks clientStats) >>= readTVarIO
+                B.hPutStr h "peerAddresses,socketCount,createdAt,updatedAt,qCreated,qSentSigned,msgSentSigned,msgSentUnsigned,msgDeliveredSigned,proxyRelaysRequested,proxyRelaysConnected,msgSentViaProxy\n"
+                forM_ stats' $ \cs -> do
+                  csd <- CS.readClientStatsData readTVarIO cs
+                  let CS.ClientStatsData {_peerAddresses, _socketCount, _createdAt, _updatedAt, _qCreated, _qSentSigned, _msgSentSigned, _msgSentUnsigned, _msgDeliveredSigned, _proxyRelaysRequested, _proxyRelaysConnected, _msgSentViaProxy} = csd
+                  B.hPutStrLn h $ B.intercalate "," [bshow $ IS.size _peerAddresses, bshow _socketCount, strEncode _createdAt, strEncode _updatedAt, bshow $ S.size _qCreated, bshow $ S.size _qSentSigned, bshow _msgSentSigned, bshow _msgSentUnsigned, bshow _msgDeliveredSigned, bshow _proxyRelaysRequested, bshow _proxyRelaysConnected, bshow _msgSentViaProxy]
               CPStatsRTS -> getRTSStats >>= hPrint h
               CPThreads -> withAdminRole $ do
 #if MIN_VERSION_base(4,18,0)
@@ -472,13 +553,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                     hPutStrLn h "AUTH"
 
 runClientTransport :: Transport c => THandleSMP c 'TServer -> M ()
-runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessionId}} = do
+runClientTransport h@THandle {connection, params = thParams@THandleParams {thVersion, sessionId}} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
   active <- asks clients
   nextClientId <- asks clientSeq
+  let peerId = getPeerId connection
+      skipStats = False -- TODO: check peerId
+  statsIds' <- asks statsClients
   c <- atomically $ do
-    new@Client {clientId} <- newClient nextClientId q thVersion sessionId ts
+    new@Client {clientId} <- newClient peerId nextClientId q thVersion sessionId ts
+    unless skipStats $ modifyTVar' statsIds' $ IM.insert clientId clientId -- until merged, its own fresh id is its stats id
     modifyTVar' active $ IM.insert clientId new
     pure new
   s <- asks server
@@ -503,6 +588,7 @@ clientDisconnected c@Client {clientId, subscriptions, connected, sessionId, endT
   atomically $ modifyTVar' srvSubs $ \cs ->
     M.foldrWithKey (\sub _ -> M.update deleteCurrentClient sub) cs subs
   asks clients >>= atomically . (`modifyTVar'` IM.delete clientId)
+  asks statsClients >>= atomically . (`modifyTVar'` IM.delete clientId)
   tIds <- atomically $ swapTVar endThreads IM.empty
   liftIO $ mapM_ (mapM_ killThread <=< deRefWeak) tIds
   where
@@ -682,7 +768,7 @@ forkClient Client {endThreads, endThreadSeq} label action = do
   mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
 
 client :: THandleParams SMPVersion 'TServer -> Client -> Server -> M ()
-client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
+client thParams' clnt@Client {clientId, peerId, subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
   forever $
     atomically (readTBQueue rcvQ)
@@ -714,7 +800,9 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               Right (own, smp) -> do
                 inc own pRequests
                 case proxyResp smp of
-                  r@PKEY {} -> r <$ inc own pSuccesses
+                  r@PKEY {} -> do
+                    withClientStatsId $ \cs -> atomically $ modifyTVar' (CS.proxyRelaysConnected cs) (+ 1)
+                    r <$ inc own pSuccesses
                   r -> r <$ inc own pErrorsCompat
               Left e -> do
                 let own = isOwnServer a srv
@@ -742,7 +830,9 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             if v >= sendingProxySMPVersion
               then forkProxiedCmd $ do
                 liftIO (runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catch` (pure . Left . PCEIOError))  >>= \case
-                  Right r -> PRES r <$ inc own pSuccesses
+                  Right r -> do
+                      withClientStatsId $ \cs -> atomically $ modifyTVar' (CS.msgSentViaProxy cs) (+ 1)
+                      PRES r <$ inc own pSuccesses
                   Left e -> ERR (smpProxyError e) <$ case e of
                     PCEProtocolError {} -> inc own pSuccesses
                     _ -> inc own pErrorsOther
@@ -803,6 +893,10 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
       where
         createQueue :: QueueStore -> RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> M (Transmission BrokerMsg)
         createQueue st recipientKey dhKey subMode = time "NEW" $ do
+          -- TODO: read client Q rate
+          -- TODO: read server Q rate for peerId
+          -- TODO: read global server Q rate
+          -- TODO: add throttling delay/blackhole request if needed
           (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
           let rcvDhSecret = C.dh' dhKey privDhKey
               qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey}
@@ -833,6 +927,9 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                   stats <- asks serverStats
                   atomically $ modifyTVar' (qCreated stats) (+ 1)
                   atomically $ modifyTVar' (qCount stats) (+ 1)
+                  withClientStatsId $ \cs -> atomically $ modifyTVar' (CS.qCreated cs) $ S.insert rId
+                  -- TODO: increment current Q counter in IP timeline
+                  -- TODO: increment current Q counter in server timeline
                   case subMode of
                     SMOnlyCreate -> pure ()
                     SMSubscribe -> void $ subscribeQueue qr rId
@@ -989,6 +1086,13 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                 when (notification msgFlags) $ do
                   atomically $ modifyTVar' (msgRecvNtf stats) (+ 1)
                   atomically $ updatePeriodStats (activeQueuesNtf stats) queueId
+                senders' <- asks sendSignedClients
+                stats' <- asks clientStats
+                atomically $ do
+                  sender_ <- mapM readTVar =<< TM.lookup (recipientId qr) senders'
+                  forM_ sender_ $ \statsId -> do
+                    cs_ <- IM.lookup statsId <$> readTVar stats'
+                    forM_ cs_ $ \cs -> modifyTVar' (CS.msgDeliveredSigned cs) (+ 1)
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> M (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
@@ -1006,6 +1110,10 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                   case C.maxLenBS msgBody of
                     Left _ -> pure $ err LARGE_MSG
                     Right body -> do
+                      -- TODO: read client S rate
+                      -- TODO: read server S rate for peerId
+                      -- TODO: read global server S rate
+                      -- TODO: add throttling delay/blackhole request if needed
                       msg_ <- time "SEND" $ do
                         q <- getStoreMsgQueue "SEND" $ recipientId qr
                         expireMessages q
@@ -1030,6 +1138,14 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                           atomically $ modifyTVar' (msgSent stats) (+ 1)
                           atomically $ modifyTVar' (msgCount stats) (+ 1)
                           atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
+                          case senderKey qr of
+                            Nothing -> withClientStatsId $ \cs -> atomically $ modifyTVar' (CS.msgSentUnsigned cs) (+ 1)
+                            Just _secured -> do
+                              withMergedClientStatsId qr $ \cs -> do
+                                atomically $ modifyTVar' (CS.qSentSigned cs) $ S.insert (recipientId qr)
+                                atomically $ modifyTVar' (CS.msgSentSigned cs) (+ 1)
+                          -- TODO: increment current S counter in IP timeline
+                          -- TODO: increment current S counter in server timeline
                           pure ok
           where
             THandleParams {thVersion} = thParams'
@@ -1209,6 +1325,62 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
 
         okResp :: Either ErrorType () -> Transmission BrokerMsg
         okResp = either err $ const ok
+
+    -- missing clientId entry means the client is exempt from stats
+    withClientStatsId_ statsIds' getCS = IM.lookup clientId <$> readTVar statsIds' >>= mapM getCS
+
+    withClientStatsId updateCS = do
+      statsIds' <- asks statsClients
+      stats' <- asks clientStats
+      now <- liftIO getCurrentTime
+      atomically (withClientStatsId_ statsIds' $ getClientStats stats' now) >>= mapM_ updateCS
+
+    getClientStats stats' now statsId = do
+      stats <- readTVar stats'
+      case IM.lookup statsId stats of
+        Nothing -> do
+          new <- CS.newClientStats newTVar peerId now
+          writeTVar stats' $ IM.insert statsId new stats
+          pure new
+        Just cs -> cs <$ writeTVar (CS.updatedAt cs) now
+
+    withMergedClientStatsId qr updateCS = do
+      senders' <- asks sendSignedClients
+      statsIds' <- asks statsClients
+      stats' <- asks clientStats
+      now <- liftIO getCurrentTime
+      atomically (withClientStatsId_ statsIds' $ getMergeClientStats senders' statsIds' stats' now qr) >>= mapM_ updateCS
+
+    getMergeClientStats senders' statsIds' stats' now qr currentStatsId = do
+      senders <- readTVar senders'
+      statsId <- case M.lookup (recipientId qr) senders of
+        Nothing -> do
+          newOwner <- newTVar currentStatsId
+          writeTVar senders' $ M.insert (recipientId qr) newOwner senders
+          pure currentStatsId
+        Just sender -> do
+          prevStatsId <- readTVar sender
+          unless (prevStatsId == currentStatsId) $ do
+            modifyTVar' statsIds' $ IM.insert clientId prevStatsId
+            qsToTransfer <- mergeClientStats stats' prevStatsId currentStatsId
+            unless (S.null qsToTransfer) $ writeTVar senders' $ S.foldl' (\os k -> M.insert k sender os) senders qsToTransfer
+          pure prevStatsId
+      getClientStats stats' now statsId
+
+    mergeClientStats :: TVar (IntMap CS.ClientStats) -> CS.ClientStatsId -> CS.ClientStatsId -> STM (Set RecipientId)
+    mergeClientStats stats' prevId curId = do
+      stats <- readTVar stats'
+      case (IM.lookup prevId stats, IM.lookup curId stats) of
+        (_, Nothing) -> pure mempty
+        (Nothing, Just cur@CS.ClientStats {qCreated}) -> do
+          writeTVar stats' $ IM.insert prevId cur (IM.delete curId stats)
+          readTVar qCreated
+        (Just prev, Just cur) -> do
+          curData@CS.ClientStatsData {_qCreated} <- CS.readClientStatsData readTVar cur
+          prevData <- CS.readClientStatsData readTVar prev
+          CS.writeClientStatsData prev $ CS.mergeClientStatsData prevData curData
+          writeTVar stats' $ IM.delete curId stats
+          pure _qCreated
 
 updateDeletedStats :: QueueRec -> M ()
 updateDeletedStats q = do

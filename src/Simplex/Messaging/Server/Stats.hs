@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -10,8 +12,14 @@ module Simplex.Messaging.Server.Stats where
 import Control.Applicative (optional, (<|>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
+import Data.Foldable (toList)
+import Data.IntMap (IntMap)
+import qualified Data.IntMap.Strict as IM
+import Data.List (find)
+import Data.Maybe (listToMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
+import Data.String (IsString)
 import Data.Time.Calendar.Month (pattern MonthDay)
 import Data.Time.Calendar.OrdinalDate (mondayStartWeek)
 import Data.Time.Clock (UTCTime (..))
@@ -517,3 +525,61 @@ instance StrEncoding ProxyStatsData where
     _pErrorsCompat <- "errorsCompat=" *> strP <* A.endOfLine
     _pErrorsOther <- "errorsOther=" *> strP
     pure ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther}
+
+-- counter -> occurences
+newtype Histogram = Histogram (IntMap Int)
+  deriving (Show)
+
+histogram :: Foldable t => t Int -> Histogram
+histogram = Histogram . IM.fromListWith (+) . map (,1) . toList
+{-# INLINE histogram #-}
+
+distribution :: Histogram -> Distribution Int
+distribution h =
+  Distribution
+    { minimal = maybe 0 fst $ listToMaybe cdf',
+      bottom50p = bot 0.5, -- std median
+      top50p = top 0.5,
+      top20p = top 0.2,
+      top10p = top 0.1,
+      top5p = top 0.05,
+      top1p = top 0.01,
+      maximal = maybe 0 fst $ listToMaybe rcdf'
+    }
+  where
+    bot p = maybe 0 fst $ find (\(_, p') -> p' >= p) cdf'
+    top p = maybe 0 fst $ find (\(_, p') -> p' <= 1 - p) rcdf'
+    cdf' = cdf h
+    rcdf' = reverse cdf' -- allow find to work from the smaller end
+
+cdf :: Histogram -> [(Int, Float)]
+cdf (Histogram h) = map (\(v, cc) -> (v, fromIntegral cc / total)) . scanl1 cumulative $ IM.assocs h
+  where
+    total :: Float
+    total = fromIntegral $ sum h
+    cumulative (_, acc) (v, c) = (v, acc + c)
+
+data Distribution a = Distribution
+  { minimal :: a,
+    bottom50p :: a,
+    top50p :: a,
+    top20p :: a,
+    top10p :: a,
+    top5p :: a,
+    top1p :: a,
+    maximal :: a
+  }
+  deriving (Show, Functor, Foldable, Traversable)
+
+distributionLabels :: IsString a => Distribution a
+distributionLabels =
+  Distribution
+    { minimal = "minimal",
+      bottom50p = "bottom50p",
+      top50p = "top50p",
+      top20p = "top20p",
+      top10p = "top10p",
+      top5p = "top5p",
+      top1p = "top1p",
+      maximal = "maximal"
+    }

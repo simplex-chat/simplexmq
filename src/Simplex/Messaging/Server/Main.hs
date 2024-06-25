@@ -290,6 +290,10 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "smp-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log",
+              rateStatsInterval = Just 60, -- TODO: add to options
+              rateStatsLength = 0, -- Just (24 * 60), -- TODO: add to options
+              rateStatsLogFile = combine logPath "smp-server-rates.daily.log",
+              rateStatsBackupFile = Just $ combine logPath "smp-server-rates.log",
               smpServerVRange = supportedServerSMPRelayVRange,
               transportConfig =
                 defaultTransportServerConfig

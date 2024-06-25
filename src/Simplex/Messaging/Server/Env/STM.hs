@@ -18,6 +18,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isJust, isNothing)
 import Data.Time.Clock (getCurrentTime)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
@@ -34,10 +35,12 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
+import Simplex.Messaging.Server.Stats.Client (ClientStats, ClientStatsC, ClientStatsId)
+import Simplex.Messaging.Server.Stats.Timeline (Timeline, newTimeline, perMinute)
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
+import Simplex.Messaging.Transport (ATransport, PeerId, VersionRangeSMP, VersionSMP)
 import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, alpn, loadFingerprint, loadTLSServerParams, newSocketState)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
@@ -74,6 +77,12 @@ data ServerConfig = ServerConfig
     serverStatsLogFile :: FilePath,
     -- | file to save and restore stats
     serverStatsBackupFile :: Maybe FilePath,
+    -- | rate limit monitoring interval / bucket width, seconds
+    rateStatsInterval :: Maybe Int64,
+    -- | number of rate limit samples to keep
+    rateStatsLength :: Int,
+    rateStatsLogFile :: FilePath,
+    rateStatsBackupFile :: Maybe FilePath,
     -- | CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -123,6 +132,12 @@ data Env = Env
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerParams :: T.ServerParams,
     serverStats :: ServerStats,
+    qCreatedByIp :: Timeline Int,
+    msgSentByIp :: Timeline Int,
+    clientStats :: TVar (IntMap ClientStats), -- transitive session stats
+    statsClients :: TVar (IntMap ClientStatsId), -- reverse index from sockets
+    sendSignedClients :: TMap RecipientId (TVar ClientStatsId), -- reverse index from queues to their senders
+    serverRates :: TVar [ClientStatsC (Distribution Int)], -- current (head) + historical distributions extracted from clientStats for logging and assessing ClientStatsData deviations
     sockets :: SocketState,
     clientSeq :: TVar ClientId,
     clients :: TVar (IntMap Client),
@@ -145,6 +160,7 @@ type ClientId = Int
 
 data Client = Client
   { clientId :: ClientId,
+    peerId :: PeerId, -- send updates for this Id to time series
     subscriptions :: TMap RecipientId (TVar Sub),
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
@@ -177,8 +193,8 @@ newServer = do
   savingLock <- createLock
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
 
-newClient :: TVar ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> STM Client
-newClient nextClientId qSize thVersion sessionId createdAt = do
+newClient :: PeerId -> TVar ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> STM Client
+newClient peerId nextClientId qSize thVersion sessionId createdAt = do
   clientId <- stateTVar nextClientId $ \next -> (next, next + 1)
   subscriptions <- TM.empty
   ntfSubscriptions <- TM.empty
@@ -191,7 +207,7 @@ newClient nextClientId qSize thVersion sessionId createdAt = do
   connected <- newTVar True
   rcvActiveAt <- newTVar createdAt
   sndActiveAt <- newTVar createdAt
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, procThreads, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
+  return Client {peerId, clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, procThreads, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription subThread = do
@@ -213,7 +229,14 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   proxyAgent <- atomically $ newSMPProxyAgent smpAgentCfg random
-  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
+  now <- getPOSIXTime
+  qCreatedByIp <- atomically $ newTimeline perMinute now
+  msgSentByIp <- atomically $ newTimeline perMinute now
+  clientStats <- newTVarIO mempty
+  statsClients <- newTVarIO mempty
+  sendSignedClients <- newTVarIO mempty
+  serverRates <- newTVarIO mempty
+  return Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent, qCreatedByIp, msgSentByIp, clientStats, statsClients, sendSignedClients, serverRates}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
