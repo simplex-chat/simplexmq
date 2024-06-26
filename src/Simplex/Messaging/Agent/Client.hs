@@ -93,6 +93,7 @@ module Simplex.Messaging.Agent.Client
     ServerSessions (..),
     SMPServerSubs (..),
     getAgentServersSummary,
+    getAgentSubsSummary,
     getAgentSubscriptions,
     slowNetworkConfig,
     protocolClientError,
@@ -1996,6 +1997,15 @@ data ServerSessions = ServerSessions
     ssConnecting :: Int
   }
   deriving (Show)
+
+getAgentSubsSummary :: AgentClient -> IO (Map UserId SMPServerSubs)
+getAgentSubsSummary c = do
+  subs <- M.foldrWithKey' (addSub incActive) M.empty <$> readTVarIO (getRcvQueues $ activeSubs c)
+  M.foldrWithKey' (addSub incPending) subs <$> readTVarIO (getRcvQueues $ pendingSubs c)
+  where
+    addSub f (userId, _, _) _ = M.alter (Just . f . fromMaybe SMPServerSubs {ssActive = 0, ssPending = 0}) userId
+    incActive ss = ss {ssActive = ssActive ss + 1}
+    incPending ss = ss {ssPending = ssPending ss + 1}
 
 getAgentServersSummary :: AgentClient -> IO AgentServersSummary
 getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, srvStatsStartedAt, agentEnv} = do
