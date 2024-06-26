@@ -971,6 +971,8 @@ data ProtocolServer p = ProtocolServer
 
 data AProtocolServer = forall p. ProtocolTypeI p => AProtocolServer (SProtocolType p) (ProtocolServer p)
 
+deriving instance Show AProtocolServer
+
 instance ProtocolTypeI p => IsString (ProtocolServer p) where
   fromString = parseString strDecode
 
