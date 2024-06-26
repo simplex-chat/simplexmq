@@ -29,6 +29,8 @@ data AgentSMPServerStats = AgentSMPServerStats
     recvDuplicates :: TVar Int, -- duplicate messages received
     recvCryptoErrs :: TVar Int, -- message decryption errors
     recvErrs :: TVar Int, -- receive errors
+    ackMsgs :: TVar Int, -- total messages acknowledged
+    ackAttempts :: TVar Int, -- acknowledgement attempts
     connCreated :: TVar Int,
     connSecured :: TVar Int,
     connCompleted :: TVar Int,
@@ -53,6 +55,8 @@ data AgentSMPServerStatsData = AgentSMPServerStatsData
     _recvDuplicates :: Int,
     _recvCryptoErrs :: Int,
     _recvErrs :: Int,
+    _ackMsgs :: Int,
+    _ackAttempts :: Int,
     _connCreated :: Int,
     _connSecured :: Int,
     _connCompleted :: Int,
@@ -79,6 +83,8 @@ newAgentSMPServerStats = do
   recvDuplicates <- newTVar 0
   recvCryptoErrs <- newTVar 0
   recvErrs <- newTVar 0
+  ackMsgs <- newTVar 0
+  ackAttempts <- newTVar 0
   connCreated <- newTVar 0
   connSecured <- newTVar 0
   connCompleted <- newTVar 0
@@ -102,6 +108,8 @@ newAgentSMPServerStats = do
         recvDuplicates,
         recvCryptoErrs,
         recvErrs,
+        ackMsgs,
+        ackAttempts,
         connCreated,
         connSecured,
         connCompleted,
@@ -127,6 +135,8 @@ newAgentSMPServerStats' s = do
   recvDuplicates <- newTVar $ _recvDuplicates s
   recvCryptoErrs <- newTVar $ _recvCryptoErrs s
   recvErrs <- newTVar $ _recvErrs s
+  ackMsgs <- newTVar $ _ackMsgs s
+  ackAttempts <- newTVar $ _ackAttempts s
   connCreated <- newTVar $ _connCreated s
   connSecured <- newTVar $ _connSecured s
   connCompleted <- newTVar $ _connCompleted s
@@ -150,6 +160,8 @@ newAgentSMPServerStats' s = do
         recvDuplicates,
         recvCryptoErrs,
         recvErrs,
+        ackMsgs,
+        ackAttempts,
         connCreated,
         connSecured,
         connCompleted,
@@ -177,6 +189,8 @@ getAgentSMPServerStats s = do
   _recvDuplicates <- readTVarIO $ recvDuplicates s
   _recvCryptoErrs <- readTVarIO $ recvCryptoErrs s
   _recvErrs <- readTVarIO $ recvErrs s
+  _ackMsgs <- readTVarIO $ ackMsgs s
+  _ackAttempts <- readTVarIO $ ackAttempts s
   _connCreated <- readTVarIO $ connCreated s
   _connSecured <- readTVarIO $ connSecured s
   _connCompleted <- readTVarIO $ connCompleted s
@@ -200,6 +214,8 @@ getAgentSMPServerStats s = do
         _recvDuplicates,
         _recvCryptoErrs,
         _recvErrs,
+        _ackMsgs,
+        _ackAttempts,
         _connCreated,
         _connSecured,
         _connCompleted,

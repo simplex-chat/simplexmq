@@ -1595,9 +1595,11 @@ disableQueuesNtfs :: AgentClient -> [RcvQueue] -> AM' [(RcvQueue, Either AgentEr
 disableQueuesNtfs = sendTSessionBatches "NDEL" 90 id $ sendBatch disableSMPQueuesNtfs
 
 sendAck :: AgentClient -> RcvQueue -> MsgId -> AM ()
-sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId = do
-  withSMPClient c rq ("ACK:" <> logSecret msgId) $ \smp ->
+sendAck c rq@RcvQueue {userId, server, rcvId, rcvPrivateKey} msgId = do
+  withSMPClient c rq ("ACK:" <> logSecret msgId) $ \smp -> do
+    atomically $ incSMPServerStat c userId server ackAttempts
     ackSMPMessage smp rcvPrivateKey rcvId msgId
+    atomically $ incSMPServerStat c userId server ackMsgs
   atomically $ releaseGetLock c rq
 
 hasGetLock :: AgentClient -> RcvQueue -> STM Bool
