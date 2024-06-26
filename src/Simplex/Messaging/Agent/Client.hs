@@ -176,7 +176,7 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (partitionEithers)
+import Data.Either (isRight, partitionEithers)
 import Data.Functor (($>))
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
@@ -1405,6 +1405,9 @@ subscribeQueues c qs = do
       let (userId, srv, _) = transportSession' smp
       atomically $ incSMPServerStat' c userId srv connSubAttempts (length qs')
       rs <- sendBatch subscribeSMPQueues smp qs'
+      let (successes, errs) = partition (isRight . snd) (L.toList rs)
+      atomically $ incSMPServerStat' c userId srv connSubscribed (length successes)
+      atomically $ incSMPServerStat' c userId srv connSubErrs (length errs)
       active <-
         atomically $
           ifM

@@ -2177,15 +2177,13 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
             Left e -> notify' connId (ERR e)
             Right () -> pure ()
     processSubOk :: RcvQueue -> TVar [ConnId] -> AM ()
-    processSubOk rq@RcvQueue {userId, connId} upConnIds = do
+    processSubOk rq@RcvQueue {connId} upConnIds =
       atomically . whenM (isPendingSub connId) $ do
         addSubscription c rq
         modifyTVar' upConnIds (connId :)
-      atomically $ incSMPServerStat c userId srv connSubscribed
     processSubErr :: RcvQueue -> SMPClientError -> AM ()
-    processSubErr rq@RcvQueue {userId, connId} e = do
+    processSubErr rq@RcvQueue {connId} e = do
       atomically . whenM (isPendingSub connId) $ failSubscription c rq e
-      atomically $ incSMPServerStat c userId srv connSubErrs
       lift $ notifyErr connId e
     isPendingSub connId = (&&) <$> hasPendingSubscription c connId <*> activeClientSession c tSess sessId
     notify' :: forall e m. (AEntityI e, MonadIO m) => ConnId -> AEvent e -> m ()
