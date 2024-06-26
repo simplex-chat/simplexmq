@@ -83,6 +83,7 @@ module Simplex.Messaging.Protocol
     ProtocolTypeI (..),
     UserProtocol,
     ProtocolServer (..),
+    AProtocolServer (..),
     ProtoServer,
     SMPServer,
     pattern SMPServer,
