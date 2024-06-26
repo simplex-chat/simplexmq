@@ -2001,10 +2001,12 @@ setNtfServers c = atomically . writeTVar (ntfServers c)
 {-# INLINE setNtfServers #-}
 
 resetAgentServersStats' :: AgentClient -> AM ()
-resetAgentServersStats' c@AgentClient {smpServersStats, xftpServersStats} = do
+resetAgentServersStats' c@AgentClient {smpServersStats, xftpServersStats, srvStatsStartedAt} = do
+  startedAt <- liftIO getCurrentTime
+  atomically $ writeTVar srvStatsStartedAt startedAt
   atomically $ TM.clear smpServersStats
   atomically $ TM.clear xftpServersStats
-  withStore' c resetServersStats
+  withStore' c (`resetServersStats` startedAt)
 
 -- | Activate operations
 foregroundAgent :: AgentClient -> IO ()

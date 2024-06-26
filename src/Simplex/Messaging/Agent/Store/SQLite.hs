@@ -3032,10 +3032,9 @@ getServersStats db =
   firstRow id SEServersStatsNotFound $
     DB.query_ db "SELECT started_at, servers_stats FROM servers_stats WHERE servers_stats_id = 1"
 
-resetServersStats :: DB.Connection -> IO ()
-resetServersStats db = do
-  currentTs <- getCurrentTime
-  DB.execute db "UPDATE servers_stats SET servers_stats = NULL, started_at = ?, updated_at = ? WHERE servers_stats_id = 1" (currentTs, currentTs)
+resetServersStats :: DB.Connection -> UTCTime -> IO ()
+resetServersStats db startedAt =
+  DB.execute db "UPDATE servers_stats SET servers_stats = NULL, started_at = ?, updated_at = ? WHERE servers_stats_id = 1" (startedAt, startedAt)
 
 $(J.deriveJSON defaultJSON ''UpMigration)
 
