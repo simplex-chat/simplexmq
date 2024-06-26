@@ -102,8 +102,10 @@ module Simplex.Messaging.Agent.Store.SQLite
     -- Messages
     updateRcvIds,
     createRcvMsg,
+    updateRcvMsgHash,
     updateSndIds,
     createSndMsg,
+    updateSndMsgHash,
     createSndMsgDelivery,
     getSndMsgViaRcpt,
     updateSndMsgRcpt,
@@ -811,7 +813,7 @@ setRcvQueueNtfCreds db connId clientNtfCreds =
       Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} -> (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret)
       Nothing -> (Nothing, Nothing, Nothing, Nothing)
 
-type SMPConfirmationRow = (SndPublicAuthKey, C.PublicKeyX25519, ConnInfo, Maybe [SMPQueueInfo], Maybe VersionSMPC)
+type SMPConfirmationRow = (Maybe SndPublicAuthKey, C.PublicKeyX25519, ConnInfo, Maybe [SMPQueueInfo], Maybe VersionSMPC)
 
 smpConfirmation :: SMPConfirmationRow -> SMPConfirmation
 smpConfirmation (senderKey, e2ePubKey, connInfo, smpReplyQueues_, smpClientVersion_) =
@@ -958,10 +960,10 @@ updateRcvIds db connId = do
   pure (internalId, internalRcvId, lastExternalSndId, lastRcvHash)
 
 createRcvMsg :: DB.Connection -> ConnId -> RcvQueue -> RcvMsgData -> IO ()
-createRcvMsg db connId rq rcvMsgData = do
+createRcvMsg db connId rq rcvMsgData@RcvMsgData {msgMeta = MsgMeta {sndMsgId}, internalRcvId, internalHash} = do
   insertRcvMsgBase_ db connId rcvMsgData
   insertRcvMsgDetails_ db connId rq rcvMsgData
-  updateHashRcv_ db connId rcvMsgData
+  updateRcvMsgHash db connId sndMsgId internalRcvId internalHash
 
 updateSndIds :: DB.Connection -> ConnId -> IO (InternalId, InternalSndId, PrevSndMsgHash)
 updateSndIds db connId = do
@@ -972,10 +974,10 @@ updateSndIds db connId = do
   pure (internalId, internalSndId, prevSndHash)
 
 createSndMsg :: DB.Connection -> ConnId -> SndMsgData -> IO ()
-createSndMsg db connId sndMsgData = do
+createSndMsg db connId sndMsgData@SndMsgData {internalSndId, internalHash} = do
   insertSndMsgBase_ db connId sndMsgData
   insertSndMsgDetails_ db connId sndMsgData
-  updateHashSnd_ db connId sndMsgData
+  updateSndMsgHash db connId internalSndId internalHash
 
 createSndMsgDelivery :: DB.Connection -> ConnId -> SndQueue -> InternalId -> IO ()
 createSndMsgDelivery db connId SndQueue {dbQueueId} msgId =
@@ -2148,10 +2150,10 @@ insertRcvMsgDetails_ db connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, interna
     ]
   DB.execute db "INSERT INTO encrypted_rcv_message_hashes (conn_id, hash) VALUES (?,?)" (connId, encryptedMsgHash)
 
-updateHashRcv_ :: DB.Connection -> ConnId -> RcvMsgData -> IO ()
-updateHashRcv_ dbConn connId RcvMsgData {msgMeta = MsgMeta {sndMsgId}, internalHash, internalRcvId} =
+updateRcvMsgHash :: DB.Connection -> ConnId -> AgentMsgId -> InternalRcvId -> MsgHash -> IO ()
+updateRcvMsgHash db connId sndMsgId internalRcvId internalHash =
   DB.executeNamed
-    dbConn
+    db
     -- last_internal_rcv_msg_id equality check prevents race condition in case next id was reserved
     [sql|
       UPDATE connections
@@ -2227,10 +2229,10 @@ insertSndMsgDetails_ dbConn connId SndMsgData {..} =
       ":previous_msg_hash" := prevMsgHash
     ]
 
-updateHashSnd_ :: DB.Connection -> ConnId -> SndMsgData -> IO ()
-updateHashSnd_ dbConn connId SndMsgData {..} =
+updateSndMsgHash :: DB.Connection -> ConnId -> InternalSndId -> MsgHash -> IO ()
+updateSndMsgHash db connId internalSndId internalHash =
   DB.executeNamed
-    dbConn
+    db
     -- last_internal_snd_msg_id equality check prevents race condition in case next id was reserved
     [sql|
       UPDATE connections

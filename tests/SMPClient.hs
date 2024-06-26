@@ -138,13 +138,13 @@ proxyCfg =
   cfgV7
     { allowSMPProxy = True,
       smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion,
-      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {serverVRange = proxyVRange, agreeSecret = True}}
+      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {serverVRange = proxyVRangeV8, agreeSecret = True}}
     }
   where
     smpAgentCfg' = smpAgentCfg cfgV7
 
-proxyVRange :: VersionRangeSMP
-proxyVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion
+proxyVRangeV8 :: VersionRangeSMP
+proxyVRangeV8 = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}

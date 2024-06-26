@@ -377,7 +377,7 @@ instance StrEncoding AgentCommandTag where
 data InternalCommand
   = ICAck SMP.RecipientId MsgId
   | ICAckDel SMP.RecipientId MsgId InternalId
-  | ICAllowSecure SMP.RecipientId SMP.SndPublicAuthKey
+  | ICAllowSecure SMP.RecipientId (Maybe SMP.SndPublicAuthKey)
   | ICDuplexSecure SMP.RecipientId SMP.SndPublicAuthKey
   | ICDeleteConn
   | ICDeleteRcvQueue SMP.RecipientId

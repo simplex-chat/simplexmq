@@ -234,7 +234,7 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
   where
     baseId = 3
     msgId = subtract baseId . fst
-    aCfg = agentProxyCfg {sndAuthAlg = C.AuthAlg alg, rcvAuthAlg = C.AuthAlg alg}
+    aCfg = agentProxyCfgV8 {sndAuthAlg = C.AuthAlg alg, rcvAuthAlg = C.AuthAlg alg}
     servers (srvs, smpProxyMode, _) = (initAgentServersProxy smpProxyMode SPFAllow) {smp = userServers $ L.map noAuthSrv srvs}
 
 agentDeliverMessagesViaProxyConc :: [NonEmpty SMPServer] -> [MsgBody] -> IO ()
@@ -299,14 +299,14 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
         Left (Left e) -> cancel aSender >> throwIO e
       logDebug "run finished"
     pqEnc = CR.PQEncOn
-    aCfg = agentProxyCfg {sndAuthAlg = C.AuthAlg C.SEd448, rcvAuthAlg = C.AuthAlg C.SEd448}
+    aCfg = agentProxyCfgV8 {sndAuthAlg = C.AuthAlg C.SEd448, rcvAuthAlg = C.AuthAlg C.SEd448}
     servers srvs = (initAgentServersProxy SPMAlways SPFAllow) {smp = userServers $ L.map noAuthSrv srvs}
 
 agentViaProxyVersionError :: IO ()
 agentViaProxyVersionError =
-  withAgent 1 agentProxyCfg (servers [SMPServer testHost testPort testKeyHash]) testDB $ \alice -> do
+  withAgent 1 agentProxyCfgV8 (servers [SMPServer testHost testPort testKeyHash]) testDB $ \alice -> do
     Left (A.BROKER _ (TRANSPORT TEVersion)) <-
-      withAgent 2 agentProxyCfg (servers [SMPServer testHost testPort2 testKeyHash]) testDB2 $ \bob -> runExceptT $ do
+      withAgent 2 agentProxyCfgV8 (servers [SMPServer testHost testPort2 testKeyHash]) testDB2 $ \bob -> runExceptT $ do
         (_bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
         A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     pure ()
@@ -370,7 +370,7 @@ agentViaProxyRetryOffline = do
       withSmpServerConfigOn (transport @TLS) proxyCfg {storeLogFile = Just storeLog, storeMsgsFile = Just storeMsgs} port
     a `up` cId = nGet a =##> \case ("", "", UP _ [c]) -> c == cId; _ -> False
     a `down` cId = nGet a =##> \case ("", "", DOWN _ [c]) -> c == cId; _ -> False
-    aCfg = agentProxyCfg {messageRetryInterval = fastMessageRetryInterval}
+    aCfg = agentProxyCfgV8 {messageRetryInterval = fastMessageRetryInterval}
     baseId = 3
     msgId = subtract baseId . fst
     servers srv = (initAgentServersProxy SPMAlways SPFProhibit) {smp = userServers $ L.map noAuthSrv [srv]}
@@ -378,14 +378,14 @@ agentViaProxyRetryOffline = do
 testNoProxy :: IO ()
 testNoProxy = do
   withSmpServerConfigOn (transport @TLS) cfg testPort2 $ \_ -> do
-    testSMPClient_ "127.0.0.1" testPort2 proxyVRange $ \(th :: THandleSMP TLS 'TClient) -> do
+    testSMPClient_ "127.0.0.1" testPort2 proxyVRangeV8 $ \(th :: THandleSMP TLS 'TClient) -> do
       (_, _, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", "", PRXY testSMPServer Nothing)
       reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
 
 testProxyAuth :: IO ()
 testProxyAuth = do
   withSmpServerConfigOn (transport @TLS) proxyCfgAuth testPort $ \_ -> do
-    testSMPClient_ "127.0.0.1" testPort proxyVRange $ \(th :: THandleSMP TLS 'TClient) -> do
+    testSMPClient_ "127.0.0.1" testPort proxyVRangeV8 $ \(th :: THandleSMP TLS 'TClient) -> do
       (_, _s, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", "", PRXY testSMPServer2 $ Just "wrong")
       reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
   where

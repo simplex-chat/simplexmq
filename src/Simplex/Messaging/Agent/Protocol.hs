@@ -691,7 +691,7 @@ data MsgMeta = MsgMeta
 
 data SMPConfirmation = SMPConfirmation
   { -- | sender's public key to use for authentication of sender's commands at the recepient's server
-    senderKey :: SndPublicAuthKey,
+    senderKey :: Maybe SndPublicAuthKey,
     -- | sender's DH public key for simple per-queue e2e encryption
     e2ePubKey :: C.PublicKeyX25519,
     -- | sender's information to be associated with the connection, e.g. sender's profile information
