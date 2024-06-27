@@ -1405,9 +1405,9 @@ subscribeQueues c qs = do
       let (userId, srv, _) = transportSession' smp
       atomically $ incSMPServerStat' c userId srv connSubAttempts (length qs')
       rs <- sendBatch subscribeSMPQueues smp qs'
-      let (successes, errs) = partition (isRight . snd) (L.toList rs)
-      atomically $ incSMPServerStat' c userId srv connSubscribed (length successes)
-      atomically $ incSMPServerStat' c userId srv connSubErrs (length errs)
+      let (successes, errs) = countSubResults rs
+      atomically $ incSMPServerStat' c userId srv connSubscribed successes
+      atomically $ incSMPServerStat' c userId srv connSubErrs errs
       active <-
         atomically $
           ifM
@@ -1420,6 +1420,13 @@ subscribeQueues c qs = do
           logWarn "subcription batch result for replaced SMP client, resubscribing"
           resubscribe $> L.map (second $ \_ -> Left PCENetworkError) rs
       where
+        countSubResults :: NonEmpty (RcvQueue, Either SMPClientError ()) -> (Int, Int)
+        countSubResults = foldr addSub (0, 0)
+          where
+            addSub (_, Right ()) (successes, errs) = (successes + 1, errs)
+            addSub (_, Left e) (successes, errs)
+              | temporaryClientError e = (successes, errs)
+              | otherwise = (successes, errs + 1)
         tSess = transportSession' smp
         sessId = sessionId $ thParams smp
         hasTempErrors = any (either temporaryClientError (const False) . snd)
