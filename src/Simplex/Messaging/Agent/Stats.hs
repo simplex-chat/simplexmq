@@ -34,10 +34,13 @@ data AgentSMPServerStats = AgentSMPServerStats
     ackAttempts :: TVar Int64, -- acknowledgement attempts
     ackNoMsgErrs :: TVar Int64, -- NO_MSG ack errors
     ackOtherErrs :: TVar Int64, -- other permanent ack errors (temporary accounted for in attempts)
-    connCreated :: TVar Int64,
-    connSecured :: TVar Int64,
-    connCompleted :: TVar Int64,
-    connDeleted :: TVar Int64,
+    -- conn stats are accounted for rcv queue server
+    connCreated :: TVar Int64, -- total connections created
+    connSecured :: TVar Int64, -- connections secured
+    connCompleted :: TVar Int64, -- connections completed
+    connDeleted :: TVar Int64, -- total connections deleted
+    connDelAttempts :: TVar Int64, -- total connection deletion attempts
+    connDelErrs :: TVar Int64, -- permanent connection deletion errors (temporary accounted for in attempts)
     connSubscribed :: TVar Int64, -- total successful subscription
     connSubAttempts :: TVar Int64, -- subscription attempts
     connSubErrs :: TVar Int64 -- permanent subscription errors (temporary accounted for in attempts)
@@ -66,6 +69,8 @@ data AgentSMPServerStatsData = AgentSMPServerStatsData
     _connSecured :: Int64,
     _connCompleted :: Int64,
     _connDeleted :: Int64,
+    _connDelAttempts :: Int64,
+    _connDelErrs :: Int64,
     _connSubscribed :: Int64,
     _connSubAttempts :: Int64,
     _connSubErrs :: Int64
@@ -96,6 +101,8 @@ newAgentSMPServerStats = do
   connSecured <- newTVar 0
   connCompleted <- newTVar 0
   connDeleted <- newTVar 0
+  connDelAttempts <- newTVar 0
+  connDelErrs <- newTVar 0
   connSubscribed <- newTVar 0
   connSubAttempts <- newTVar 0
   connSubErrs <- newTVar 0
@@ -123,6 +130,8 @@ newAgentSMPServerStats = do
         connSecured,
         connCompleted,
         connDeleted,
+        connDelAttempts,
+        connDelErrs,
         connSubscribed,
         connSubAttempts,
         connSubErrs
@@ -152,6 +161,8 @@ newAgentSMPServerStats' s = do
   connSecured <- newTVar $ _connSecured s
   connCompleted <- newTVar $ _connCompleted s
   connDeleted <- newTVar $ _connDeleted s
+  connDelAttempts <- newTVar $ _connDelAttempts s
+  connDelErrs <- newTVar $ _connDelErrs s
   connSubscribed <- newTVar $ _connSubscribed s
   connSubAttempts <- newTVar $ _connSubAttempts s
   connSubErrs <- newTVar $ _connSubErrs s
@@ -179,6 +190,8 @@ newAgentSMPServerStats' s = do
         connSecured,
         connCompleted,
         connDeleted,
+        connDelAttempts,
+        connDelErrs,
         connSubscribed,
         connSubAttempts,
         connSubErrs
@@ -210,6 +223,8 @@ getAgentSMPServerStats s = do
   _connSecured <- readTVarIO $ connSecured s
   _connCompleted <- readTVarIO $ connCompleted s
   _connDeleted <- readTVarIO $ connDeleted s
+  _connDelAttempts <- readTVarIO $ connDelAttempts s
+  _connDelErrs <- readTVarIO $ connDelErrs s
   _connSubscribed <- readTVarIO $ connSubscribed s
   _connSubAttempts <- readTVarIO $ connSubAttempts s
   _connSubErrs <- readTVarIO $ connSubErrs s
@@ -237,6 +252,8 @@ getAgentSMPServerStats s = do
         _connSecured,
         _connCompleted,
         _connDeleted,
+        _connDelAttempts,
+        _connDelErrs,
         _connSubscribed,
         _connSubAttempts,
         _connSubErrs

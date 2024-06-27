@@ -1423,10 +1423,10 @@ subscribeQueues c qs = do
           resubscribe $> L.map (second $ \_ -> Left PCENetworkError) rs
       where
         countSubResults :: NonEmpty (RcvQueue, Either SMPClientError ()) -> (Int64, Int64)
-        countSubResults = foldr addSub (0, 0)
+        countSubResults = foldr addRes (0, 0)
           where
-            addSub (_, Right ()) (successes, errs) = (successes + 1, errs)
-            addSub (_, Left e) (successes, errs)
+            addRes (_, Right ()) (successes, errs) = (successes + 1, errs)
+            addRes (_, Left e) (successes, errs)
               | temporaryClientError e = (successes, errs)
               | otherwise = (successes, errs + 1)
         tSess = transportSession' smp

@@ -191,6 +191,7 @@ import System.Mem.Weak (deRefWeak)
 import UnliftIO.Concurrent (forkFinally, forkIO, killThread, mkWeakThreadId, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import Data.Int (Int64)
 
 -- import GHC.Conc (unsafeIOToSTM)
 
@@ -1170,7 +1171,6 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
         ICDeleteRcvQueue rId -> withServer $ \srv -> tryWithLock "ICDeleteRcvQueue" $ do
           rq <- withStore c (\db -> getDeletedRcvQueue db connId srv rId)
           deleteQueue c rq
-          atomically $ incSMPServerStat c userId srv connDeleted
           withStore' c (`deleteConnRcvQueue` rq)
         ICQSecure rId senderKey ->
           withServer $ \srv -> tryWithLock "ICQSecure" . withDuplexConn $ \(DuplexConnection cData rqs sqs) ->
@@ -1703,26 +1703,46 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
 
 deleteConnQueues :: AgentClient -> Bool -> Bool -> [RcvQueue] -> AM' (Map ConnId (Either AgentErrorType ()))
 deleteConnQueues c waitDelivery ntf rqs = do
-  rs <- connResults <$> (deleteQueueRecs =<< deleteQueues c rqs)
-  let connIds = M.keys $ M.filter isRight rs
+  let attemptsStats = countDelAttempts rqs
+  forM_ (M.toList attemptsStats) $ \((userId, srv), attempts) ->
+    atomically $ incSMPServerStat' c userId srv connDelAttempts attempts
+  rs <- deleteQueues c rqs
+  maxErrs <- asks $ deleteErrorCount . config
+  let rsStats = countDelResults rs maxErrs
+  forM_ (M.toList rsStats) $ \((userId, srv), (succs, errs)) -> do
+    atomically $ incSMPServerStat' c userId srv connDeleted succs
+    atomically $ incSMPServerStat' c userId srv connDelErrs errs
+  crs <- connResults <$> deleteQueueRecs rs maxErrs
+  let connIds = M.keys $ M.filter isRight crs
   deliveryTimeout <- if waitDelivery then asks (Just . connDeleteDeliveryTimeout . config) else pure Nothing
-  rs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) connIds)
-  forM_ rs' $ \cId -> notify ("", cId, AEvt SAEConn DEL_CONN)
-  pure rs
+  crs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) connIds)
+  forM_ crs' $ \cId -> notify ("", cId, AEvt SAEConn DEL_CONN)
+  pure crs
   where
-    deleteQueueRecs :: [(RcvQueue, Either AgentErrorType ())] -> AM' [(RcvQueue, Either AgentErrorType ())]
-    deleteQueueRecs rs = do
-      maxErrs <- asks $ deleteErrorCount . config
-      (rs', notifyActions) <- unzip . rights <$> withStoreBatch' c (\db -> map (deleteQueueRec db maxErrs) rs)
+    countDelAttempts :: [RcvQueue] -> Map (UserId, SMPServer) Int64
+    countDelAttempts = foldr addAttempt M.empty
+      where
+        addAttempt RcvQueue {userId, server} =
+          M.alter (Just . (+ 1) . fromMaybe 0) (userId, server)
+    countDelResults :: [(RcvQueue, Either AgentErrorType ())] -> Int -> Map (UserId, SMPServer) (Int64, Int64)
+    countDelResults rs maxErrs = foldr addRes M.empty rs
+      where
+        addRes (RcvQueue {userId, server}, Right ()) =
+          M.alter (Just . (\(succs, errs) -> (succs + 1, errs)) . fromMaybe (0, 0)) (userId, server)
+        addRes (rq@RcvQueue {userId, server}, Left e)
+          | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs = id
+          | otherwise = M.alter (Just . (\(succs, errs) -> (succs, errs + 1)) . fromMaybe (0, 0)) (userId, server)
+    deleteQueueRecs :: [(RcvQueue, Either AgentErrorType ())] -> Int -> AM' [(RcvQueue, Either AgentErrorType ())]
+    deleteQueueRecs rs maxErrs = do
+      (rs', notifyActions) <- unzip . rights <$> withStoreBatch' c (\db -> map (deleteQueueRec db) rs)
       mapM_ sequence_ notifyActions
       pure rs'
       where
         deleteQueueRec ::
           DB.Connection ->
-          Int ->
           (RcvQueue, Either AgentErrorType ()) ->
           IO ((RcvQueue, Either AgentErrorType ()), Maybe (AM' ()))
-        deleteQueueRec db maxErrs (rq, r) = case r of
+        deleteQueueRec db (rq, r) = case r of
           Right _ -> deleteConnRcvQueue db rq $> ((rq, r), Just (notifyRQ rq Nothing))
           Left e
             | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs -> incRcvDeleteErrors db rq $> ((rq, r), Nothing)
