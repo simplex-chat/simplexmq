@@ -29,6 +29,7 @@ import qualified Simplex.Messaging.Transport.Client as Client
 import Simplex.Messaging.Transport.Server
 import qualified Simplex.Messaging.Transport.Server as Server
 import Simplex.Messaging.Version
+import Simplex.Messaging.Version.Internal
 import System.Environment (lookupEnv)
 import System.Info (os)
 import Test.Hspec
@@ -133,15 +134,23 @@ cfgV7 = cfg {smpServerVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVer
 cfgV8 :: ServerConfig
 cfgV8 = cfg {smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion}
 
+cfgVPrev :: ServerConfig
+cfgVPrev = cfg {smpServerVRange = prevRange $ smpServerVRange cfg}
+
+prevRange :: VersionRange v -> VersionRange v
+prevRange vr = vr {maxVersion = max (minVersion vr) (prevVersion $ maxVersion vr)}
+
+prevVersion :: Version v -> Version v
+prevVersion (Version v) = Version (v - 1)
+
 proxyCfg :: ServerConfig
 proxyCfg =
-  cfgV7
+  cfg
     { allowSMPProxy = True,
-      smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion,
-      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {serverVRange = proxyVRangeV8, agreeSecret = True}}
+      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {agreeSecret = True}}
     }
   where
-    smpAgentCfg' = smpAgentCfg cfgV7
+    smpAgentCfg' = smpAgentCfg cfg
 
 proxyVRangeV8 :: VersionRangeSMP
 proxyVRangeV8 = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion

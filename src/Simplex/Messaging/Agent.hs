@@ -794,8 +794,8 @@ joinConn c userId connId hasNewConn enableNtfs cReq cInfo pqSupport subMode = do
     _ -> getSMPServer c userId
   joinConnSrv c userId connId hasNewConn enableNtfs cReq cInfo pqSupport subMode srv
 
-startJoinInvitation :: UserId -> ConnId -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM (ConnData, NewSndQueue, C.PublicKeyX25519, CR.Ratchet 'C.X448, CR.SndE2ERatchetParams 'C.X448)
-startJoinInvitation userId connId enableNtfs cReqUri pqSup =
+startJoinInvitation :: UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM (ConnData, NewSndQueue, C.PublicKeyX25519, CR.Ratchet 'C.X448, CR.SndE2ERatchetParams 'C.X448)
+startJoinInvitation userId connId sq_ enableNtfs cReqUri pqSup =
   lift (compatibleInvitationUri cReqUri) >>= \case
     Just (qInfo, Compatible e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_), Compatible connAgentVersion) -> do
       g <- asks random
@@ -806,9 +806,11 @@ startJoinInvitation userId connId enableNtfs cReqUri pqSup =
       maxSupported <- asks $ maxVersion . e2eEncryptVRange . config
       let rcVs = CR.RatchetVersions {current = v, maxSupported}
           rc = CR.initSndRatchet rcVs rcDHRr rcDHRs rcParams
-      -- TODO SKEY his should check if the send queue already exists to correctly work if SKEY needs to be retried
-      -- (when it was processed in the server but the response not received in the client).
-      (q, e2ePubKey) <- lift $ newSndQueue userId "" qInfo
+      -- this case avoids re-generating queue keys and subsequent failure of SKEY that timed out
+      -- e2ePubKey is always present, it's Maybe historically
+      (q, e2ePubKey) <- case sq_ of
+        Just sq@SndQueue {e2ePubKey = Just k} -> pure ((sq :: SndQueue) {dbQueueId = DBNewQueue}, k)
+        _ -> lift $ newSndQueue userId "" qInfo
       let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
       pure (cData, q, e2ePubKey, rc, e2eSndParams)
     Nothing -> throwE $ AGENT A_VERSION
@@ -846,7 +848,7 @@ versionPQSupport_ agentV e2eV_ = PQSupport $ agentV >= pqdrSMPAgentVersion && ma
 joinConnSrv :: AgentClient -> UserId -> ConnId -> Bool -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM ConnId
 joinConnSrv c userId connId hasNewConn enableNtfs inv@CRInvitationUri {} cInfo pqSup subMode srv =
   withInvLock c (strEncode inv) "joinConnSrv" $ do
-    (cData, q, _, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv pqSup
+    (cData, q, _, rc, e2eSndParams) <- startJoinInvitation userId connId Nothing enableNtfs inv pqSup
     g <- asks random
     (connId', sq) <- withStore c $ \db -> runExceptT $ do
       r@(connId', _) <-
@@ -856,7 +858,9 @@ joinConnSrv c userId connId hasNewConn enableNtfs inv@CRInvitationUri {} cInfo p
       liftIO $ createRatchet db connId' rc
       pure r
     let cData' = (cData :: ConnData) {connId = connId'}
-    -- TODO SKEY make it work correctly on retry of SKEY - it should check if the send queue is already stored, and if it is, use the same queue/keys
+    -- joinConnSrv is only used on user interaction, and its failure is permanent,
+    -- otherwise we would need to manage retries here to avoid SndQueue recreated with a different key,
+    -- similar to how joinConnAsync does that.
     tryError (secureConfirmQueue c cData' sq srv cInfo (Just e2eSndParams) subMode) >>= \case
       Right _ -> pure connId'
       Left e -> do
@@ -873,11 +877,19 @@ joinConnSrv c userId connId hasNewConn enableNtfs cReqUri@CRContactUri {} cInfo 
 
 joinConnSrvAsync :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM ()
 joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSupport subMode srv = do
-  (cData, q, _, rc, e2eSndParams) <- startJoinInvitation userId connId enableNtfs inv pqSupport
-  q' <- withStore c $ \db -> runExceptT $ do
-    liftIO $ createRatchet db connId rc
-    ExceptT $ updateNewConnSnd db connId q
-  secureConfirmQueueAsync c cData q' srv cInfo (Just e2eSndParams) subMode
+  SomeConn cType conn <- withStore c (`getConn` connId)
+  case conn of
+    NewConnection _ -> doJoin Nothing
+    SndConnection _ sq -> doJoin $ Just sq
+    _ -> throwE $ CMD PROHIBITED $ "joinConnSrvAsync: bad connection " <> show cType
+  where
+    doJoin :: Maybe SndQueue -> AM ()
+    doJoin sq_ = do
+      (cData, sq, _, rc, e2eSndParams) <- startJoinInvitation userId connId sq_ enableNtfs inv pqSupport
+      sq' <- withStore c $ \db -> runExceptT $ do
+        liftIO $ createRatchet db connId rc
+        maybe (ExceptT $ updateNewConnSnd db connId sq) pure sq_
+      secureConfirmQueueAsync c cData sq' srv cInfo (Just e2eSndParams) subMode
 joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode _pqSupport _srv = do
   throwE $ CMD PROHIBITED "joinConnSrvAsync"
 
@@ -1141,9 +1153,7 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
           let initUsed = [qServer q]
           usedSrvs <- newTVarIO initUsed
           tryCommand . withNextSrv c userId usedSrvs initUsed $ \srv -> do
-            liftIO $ print 111
             joinConnSrvAsync c userId connId enableNtfs cReq connInfo pqEnc subMode srv
-            liftIO $ print 222
             notify OK
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK
@@ -1165,6 +1175,7 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
             RcvConnection cData rq -> do
               mapM_ (secure rq) senderKey
               mapM_ (connectReplyQueues c cData ownConnInfo) (L.nonEmpty $ smpReplyQueues senderConf)
+            -- TODO SKEY support retries on failed SKEY commands
             _ -> throwE $ INTERNAL $ "incorrect connection type " <> show (internalCmdTag cmd)
         ICDuplexSecure _rId senderKey -> withServer' . tryWithLock "ICDuplexSecure" . withDuplexConn $ \(DuplexConnection cData (rq :| _) (sq :| _)) -> do
           secure rq senderKey
@@ -1418,7 +1429,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                 AM_CONN_INFO -> do
                   setConfirmed
                   -- TODO SKEY set correct connection status
-                  when sndSecure $ notify $ CON PQEncOn -- does it have pq encryption?
+                  when sndSecure $ notify $ CON PQEncOn -- TODO SKEY does it have pq encryption?
                 AM_CONN_INFO_REPLY -> setConfirmed
                 AM_RATCHET_INFO -> pure ()
                 AM_HELLO_ -> do
@@ -2554,7 +2565,6 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                     let (delSqs, keepSqs) = L.partition ((Just dbQueueId ==) . dbReplaceQId) sqs
                     case L.nonEmpty keepSqs of
                       Just sqs' -> do
-                        -- move inside case?
                         (sq_@SndQueue {sndPublicKey}, dhPublicKey) <- lift $ newSndQueue userId connId qInfo
                         sq2 <- withStore c $ \db -> do
                           liftIO $ mapM_ (deleteConnSndQueue db connId) delSqs
@@ -2773,7 +2783,10 @@ secureConfirmQueue c cData@ConnData {connId, connAgentVersion, pqSupport} sq srv
         pure . smpEncode $ AgentConfirmation {agentVersion = connAgentVersion, e2eEncryption_, encConnInfo}
 
 agentSecureSndQueue :: AgentClient -> SndQueue -> AM ()
-agentSecureSndQueue c sq@SndQueue {sndSecure} = when sndSecure $ secureSndQueue c sq
+agentSecureSndQueue c sq@SndQueue {sndSecure, status} = 
+  when (sndSecure && status == New) $ do
+    secureSndQueue c sq
+    withStore' c $ \db -> setSndQueueStatus db sq Secured
 
 mkAgentConfirmation :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> SubscriptionMode -> AM AgentMessage
 mkAgentConfirmation c cData sq srv connInfo subMode = do

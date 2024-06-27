@@ -28,7 +28,7 @@ import Network.HTTP.Types (Status)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket
-import SMPClient (serverBracket)
+import SMPClient (prevRange, serverBracket)
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
@@ -108,18 +108,19 @@ ntfServerCfg =
       serverStatsLogFile = "tests/ntf-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
       ntfServerVRange = supportedServerNTFVRange,
-      transportConfig = defaultTransportServerConfig
+      transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedNTFHandshakes}
     }
 
-ntfServerCfgV2 :: NtfServerConfig
-ntfServerCfgV2 =
+ntfServerCfgVPrev :: NtfServerConfig
+ntfServerCfgVPrev =
   ntfServerCfg
-    { ntfServerVRange = mkVersionRange initialNTFVersion authBatchCmdsNTFVersion,
-      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}},
-      Env.transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedNTFHandshakes}
+    { ntfServerVRange = prevRange $ ntfServerVRange ntfServerCfg,
+      smpAgentCfg = smpAgentCfg' {smpCfg = smpCfg' {serverVRange = prevRange serverVRange'}}
     }
   where
     smpAgentCfg' = smpAgentCfg ntfServerCfg
+    smpCfg' = smpCfg smpAgentCfg'
+    serverVRange' = serverVRange smpCfg'
 
 withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a
 withNtfServerStoreLog t = withNtfServerCfg ntfServerCfg {storeLogFile = Just ntfTestStoreLogFile, transports = [(ntfTestPort, t)]}
