@@ -144,6 +144,7 @@ module Simplex.Messaging.Agent.Client
     incSMPServerStat,
     incSMPServerStat',
     incXFTPServerStat,
+    incXFTPServerStat',
     AgentWorkersDetails (..),
     getAgentWorkersDetails,
     AgentWorkersSummary (..),
@@ -1977,12 +1978,15 @@ incSMPServerStat' AgentClient {smpServersStats} userId srv sel n = do
       TM.insert (userId, srv) newStats smpServersStats
 
 incXFTPServerStat :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int64) -> STM ()
-incXFTPServerStat AgentClient {xftpServersStats} userId srv sel = do
+incXFTPServerStat c userId srv sel = incXFTPServerStat' c userId srv sel 1
+
+incXFTPServerStat' :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int64) -> Int64 -> STM ()
+incXFTPServerStat' AgentClient {xftpServersStats} userId srv sel n = do
   TM.lookup (userId, srv) xftpServersStats >>= \case
-    Just v -> modifyTVar' (sel v) (+ 1)
+    Just v -> modifyTVar' (sel v) (+ n)
     Nothing -> do
       newStats <- newAgentXFTPServerStats
-      modifyTVar' (sel newStats) (+ 1)
+      modifyTVar' (sel newStats) (+ n)
       TM.insert (userId, srv) newStats xftpServersStats
 
 data AgentServersSummary = AgentServersSummary

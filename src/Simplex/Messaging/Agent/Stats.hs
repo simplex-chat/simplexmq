@@ -228,9 +228,11 @@ getAgentSMPServerStats s = do
 
 data AgentXFTPServerStats = AgentXFTPServerStats
   { uploads :: TVar Int64, -- total replicas uploaded to server
+    uploadsSize :: TVar Int64, -- total size of uploaded replicas in KB
     uploadAttempts :: TVar Int64, -- upload attempts
     uploadErrs :: TVar Int64, -- upload errors
     downloads :: TVar Int64, -- total replicas downloaded from server
+    downloadsSize :: TVar Int64, -- total size of downloaded replicas in KB
     downloadAttempts :: TVar Int64, -- download attempts
     downloadAuthErrs :: TVar Int64, -- download AUTH errors
     downloadErrs :: TVar Int64, -- other download errors (excluding above)
@@ -241,9 +243,11 @@ data AgentXFTPServerStats = AgentXFTPServerStats
 
 data AgentXFTPServerStatsData = AgentXFTPServerStatsData
   { _uploads :: Int64,
+    _uploadsSize :: Int64,
     _uploadAttempts :: Int64,
     _uploadErrs :: Int64,
     _downloads :: Int64,
+    _downloadsSize :: Int64,
     _downloadAttempts :: Int64,
     _downloadAuthErrs :: Int64,
     _downloadErrs :: Int64,
@@ -256,9 +260,11 @@ data AgentXFTPServerStatsData = AgentXFTPServerStatsData
 newAgentXFTPServerStats :: STM AgentXFTPServerStats
 newAgentXFTPServerStats = do
   uploads <- newTVar 0
+  uploadsSize <- newTVar 0
   uploadAttempts <- newTVar 0
   uploadErrs <- newTVar 0
   downloads <- newTVar 0
+  downloadsSize <- newTVar 0
   downloadAttempts <- newTVar 0
   downloadAuthErrs <- newTVar 0
   downloadErrs <- newTVar 0
@@ -268,9 +274,11 @@ newAgentXFTPServerStats = do
   pure
     AgentXFTPServerStats
       { uploads,
+        uploadsSize,
         uploadAttempts,
         uploadErrs,
         downloads,
+        downloadsSize,
         downloadAttempts,
         downloadAuthErrs,
         downloadErrs,
@@ -282,9 +290,11 @@ newAgentXFTPServerStats = do
 newAgentXFTPServerStats' :: AgentXFTPServerStatsData -> STM AgentXFTPServerStats
 newAgentXFTPServerStats' s = do
   uploads <- newTVar $ _uploads s
+  uploadsSize <- newTVar $ _uploadsSize s
   uploadAttempts <- newTVar $ _uploadAttempts s
   uploadErrs <- newTVar $ _uploadErrs s
   downloads <- newTVar $ _downloads s
+  downloadsSize <- newTVar $ _downloadsSize s
   downloadAttempts <- newTVar $ _downloadAttempts s
   downloadAuthErrs <- newTVar $ _downloadAuthErrs s
   downloadErrs <- newTVar $ _downloadErrs s
@@ -294,9 +304,11 @@ newAgentXFTPServerStats' s = do
   pure
     AgentXFTPServerStats
       { uploads,
+        uploadsSize,
         uploadAttempts,
         uploadErrs,
         downloads,
+        downloadsSize,
         downloadAttempts,
         downloadAuthErrs,
         downloadErrs,
@@ -310,9 +322,11 @@ newAgentXFTPServerStats' s = do
 getAgentXFTPServerStats :: AgentXFTPServerStats -> IO AgentXFTPServerStatsData
 getAgentXFTPServerStats s = do
   _uploads <- readTVarIO $ uploads s
+  _uploadsSize <- readTVarIO $ uploadsSize s
   _uploadAttempts <- readTVarIO $ uploadAttempts s
   _uploadErrs <- readTVarIO $ uploadErrs s
   _downloads <- readTVarIO $ downloads s
+  _downloadsSize <- readTVarIO $ downloadsSize s
   _downloadAttempts <- readTVarIO $ downloadAttempts s
   _downloadAuthErrs <- readTVarIO $ downloadAuthErrs s
   _downloadErrs <- readTVarIO $ downloadErrs s
@@ -322,9 +336,11 @@ getAgentXFTPServerStats s = do
   pure
     AgentXFTPServerStatsData
       { _uploads,
+        _uploadsSize,
         _uploadAttempts,
         _uploadErrs,
         _downloads,
+        _downloadsSize,
         _downloadAttempts,
         _downloadAuthErrs,
         _downloadErrs,

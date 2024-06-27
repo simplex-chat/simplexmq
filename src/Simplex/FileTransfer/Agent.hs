@@ -206,7 +206,8 @@ runXFTPRcvWorker c srv Worker {doWork} = do
       unlessM ((approvedRelays ||) <$> ipAddressProtected') $ throwE $ FILE NOT_APPROVED
       fsFileTmpPath <- lift $ toFSFilePath fileTmpPath
       chunkPath <- uniqueCombine fsFileTmpPath $ show chunkNo
-      let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
+      let chSize = unFileSize chunkSize
+          chunkSpec = XFTPRcvChunkSpec chunkPath chSize (unFileDigest digest)
           relChunkPath = fileTmpPath </> takeFileName chunkPath
       agentXFTPDownloadChunk c userId digest replica chunkSpec
       atomically $ waitUntilForeground c
@@ -221,6 +222,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
         liftIO . when complete $ updateRcvFileStatus db rcvFileId RFSReceived
         pure (entityId, complete, RFPROG rcvd total)
       atomically $ incXFTPServerStat c userId srv downloads
+      atomically $ incXFTPServerStat' c userId srv downloadsSize (fromIntegral chSize)
       notify c entityId progress
       when complete . lift . void $
         getXFTPRcvWorker True c Nothing
@@ -506,7 +508,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
               atomically $ incXFTPServerStat c userId srv uploadErrs
               sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) e
     uploadFileChunk :: AgentConfig -> SndFileChunk -> SndFileChunkReplica -> AM ()
-    uploadFileChunk AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients} sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath}, digest = chunkDigest} replica = do
+    uploadFileChunk AgentConfig {xftpMaxRecipientsPerRequest = maxRecipients} sndFileChunk@SndFileChunk {sndFileId, userId, chunkSpec = chunkSpec@XFTPChunkSpec {filePath, chunkSize = chSize}, digest = chunkDigest} replica = do
       replica'@SndFileChunkReplica {sndChunkReplicaId} <- addRecipients sndFileChunk replica
       fsFilePath <- lift $ toFSFilePath filePath
       unlessM (doesFileExist fsFilePath) $ throwE $ FILE NO_FILE
@@ -521,6 +523,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
           total = totalSize chunks
           complete = all chunkUploaded chunks
       atomically $ incXFTPServerStat c userId srv uploads
+      atomically $ incXFTPServerStat' c userId srv uploadsSize (fromIntegral chSize)
       notify c sndFileEntityId $ SFPROG uploaded total
       when complete $ do
         (sndDescr, rcvDescrs) <- sndFileToDescrs sf
