@@ -135,6 +135,7 @@ import Data.Either (isRight, rights)
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
 import Data.Functor.Identity
+import Data.Int (Int64)
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -191,7 +192,6 @@ import System.Mem.Weak (deRefWeak)
 import UnliftIO.Concurrent (forkFinally, forkIO, killThread, mkWeakThreadId, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
-import Data.Int (Int64)
 
 -- import GHC.Conc (unsafeIOToSTM)
 
