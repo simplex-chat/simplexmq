@@ -291,6 +291,38 @@ getAgentSMPServerStats s = do
         _connSubErrs
       }
 
+addSMPStatsData :: AgentSMPServerStatsData -> AgentSMPServerStatsData -> AgentSMPServerStatsData
+addSMPStatsData sd1 sd2 =
+  AgentSMPServerStatsData
+    { _sentDirect = _sentDirect sd1 + _sentDirect sd2,
+      _sentViaProxy = _sentViaProxy sd1 + _sentViaProxy sd2,
+      _sentProxied = _sentProxied sd1 + _sentProxied sd2,
+      _sentDirectAttempts = _sentDirectAttempts sd1 + _sentDirectAttempts sd2,
+      _sentViaProxyAttempts = _sentViaProxyAttempts sd1 + _sentViaProxyAttempts sd2,
+      _sentProxiedAttempts = _sentProxiedAttempts sd1 + _sentProxiedAttempts sd2,
+      _sentAuthErrs = _sentAuthErrs sd1 + _sentAuthErrs sd2,
+      _sentQuotaErrs = _sentQuotaErrs sd1 + _sentQuotaErrs sd2,
+      _sentExpiredErrs = _sentExpiredErrs sd1 + _sentExpiredErrs sd2,
+      _sentOtherErrs = _sentOtherErrs sd1 + _sentOtherErrs sd2,
+      _recvMsgs = _recvMsgs sd1 + _recvMsgs sd2,
+      _recvDuplicates = _recvDuplicates sd1 + _recvDuplicates sd2,
+      _recvCryptoErrs = _recvCryptoErrs sd1 + _recvCryptoErrs sd2,
+      _recvErrs = _recvErrs sd1 + _recvErrs sd2,
+      _ackMsgs = _ackMsgs sd1 + _ackMsgs sd2,
+      _ackAttempts = _ackAttempts sd1 + _ackAttempts sd2,
+      _ackNoMsgErrs = _ackNoMsgErrs sd1 + _ackNoMsgErrs sd2,
+      _ackOtherErrs = _ackOtherErrs sd1 + _ackOtherErrs sd2,
+      _connCreated = _connCreated sd1 + _connCreated sd2,
+      _connSecured = _connSecured sd1 + _connSecured sd2,
+      _connCompleted = _connCompleted sd1 + _connCompleted sd2,
+      _connDeleted = _connDeleted sd1 + _connDeleted sd2,
+      _connDelAttempts = _connDelAttempts sd1 + _connDelAttempts sd2,
+      _connDelErrs = _connDelErrs sd1 + _connDelErrs sd2,
+      _connSubscribed = _connSubscribed sd1 + _connSubscribed sd2,
+      _connSubAttempts = _connSubAttempts sd1 + _connSubAttempts sd2,
+      _connSubErrs = _connSubErrs sd1 + _connSubErrs sd2
+    }
+
 data AgentXFTPServerStats = AgentXFTPServerStats
   { uploads :: TVar Int64, -- total replicas uploaded to server
     uploadsSize :: TVar Int64, -- total size of uploaded replicas in KB
@@ -430,6 +462,23 @@ getAgentXFTPServerStats s = do
         _deleteAttempts,
         _deleteErrs
       }
+
+addXFTPStatsData :: AgentXFTPServerStatsData -> AgentXFTPServerStatsData -> AgentXFTPServerStatsData
+addXFTPStatsData sd1 sd2 =
+  AgentXFTPServerStatsData
+    { _uploads = _uploads sd1 + _uploads sd2,
+      _uploadsSize = _uploadsSize sd1 + _uploadsSize sd2,
+      _uploadAttempts = _uploadAttempts sd1 + _uploadAttempts sd2,
+      _uploadErrs = _uploadErrs sd1 + _uploadErrs sd2,
+      _downloads = _downloads sd1 + _downloads sd2,
+      _downloadsSize = _downloadsSize sd1 + _downloadsSize sd2,
+      _downloadAttempts = _downloadAttempts sd1 + _downloadAttempts sd2,
+      _downloadAuthErrs = _downloadAuthErrs sd1 + _downloadAuthErrs sd2,
+      _downloadErrs = _downloadErrs sd1 + _downloadErrs sd2,
+      _deletions = _deletions sd1 + _deletions sd2,
+      _deleteAttempts = _deleteAttempts sd1 + _deleteAttempts sd2,
+      _deleteErrs = _deleteErrs sd1 + _deleteErrs sd2
+    }
 
 -- Type for gathering both smp and xftp stats across all users and servers,
 -- to then be persisted to db as a single json.
