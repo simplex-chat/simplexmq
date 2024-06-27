@@ -1620,10 +1620,12 @@ synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchroni
     _ -> throwE $ CMD PROHIBITED "synchronizeRatchet: not duplex"
 
 ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM ()
-ackQueueMessage c rq srvMsgId =
+ackQueueMessage c rq@RcvQueue {userId, server} srvMsgId =
   sendAck c rq srvMsgId `catchAgentError` \case
-    SMP _ SMP.NO_MSG -> pure ()
-    e -> throwE e
+    SMP _ SMP.NO_MSG -> atomically $ incSMPServerStat c userId server ackNoMsgErrs
+    e -> do
+      unless (temporaryOrHostError e) $ atomically $ incSMPServerStat c userId server ackOtherErrs
+      throwE e
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentClient -> ConnId -> AM ()

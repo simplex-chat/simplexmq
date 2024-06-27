@@ -32,6 +32,8 @@ data AgentSMPServerStats = AgentSMPServerStats
     recvErrs :: TVar Int64, -- receive errors
     ackMsgs :: TVar Int64, -- total messages acknowledged
     ackAttempts :: TVar Int64, -- acknowledgement attempts
+    ackNoMsgErrs :: TVar Int64, -- NO_MSG ack errors
+    ackOtherErrs :: TVar Int64, -- other permanent ack errors (temporary accounted for in attempts)
     connCreated :: TVar Int64,
     connSecured :: TVar Int64,
     connCompleted :: TVar Int64,
@@ -58,6 +60,8 @@ data AgentSMPServerStatsData = AgentSMPServerStatsData
     _recvErrs :: Int64,
     _ackMsgs :: Int64,
     _ackAttempts :: Int64,
+    _ackNoMsgErrs :: Int64,
+    _ackOtherErrs :: Int64,
     _connCreated :: Int64,
     _connSecured :: Int64,
     _connCompleted :: Int64,
@@ -86,6 +90,8 @@ newAgentSMPServerStats = do
   recvErrs <- newTVar 0
   ackMsgs <- newTVar 0
   ackAttempts <- newTVar 0
+  ackNoMsgErrs <- newTVar 0
+  ackOtherErrs <- newTVar 0
   connCreated <- newTVar 0
   connSecured <- newTVar 0
   connCompleted <- newTVar 0
@@ -111,6 +117,8 @@ newAgentSMPServerStats = do
         recvErrs,
         ackMsgs,
         ackAttempts,
+        ackNoMsgErrs,
+        ackOtherErrs,
         connCreated,
         connSecured,
         connCompleted,
@@ -138,6 +146,8 @@ newAgentSMPServerStats' s = do
   recvErrs <- newTVar $ _recvErrs s
   ackMsgs <- newTVar $ _ackMsgs s
   ackAttempts <- newTVar $ _ackAttempts s
+  ackNoMsgErrs <- newTVar $ _ackNoMsgErrs s
+  ackOtherErrs <- newTVar $ _ackOtherErrs s
   connCreated <- newTVar $ _connCreated s
   connSecured <- newTVar $ _connSecured s
   connCompleted <- newTVar $ _connCompleted s
@@ -163,6 +173,8 @@ newAgentSMPServerStats' s = do
         recvErrs,
         ackMsgs,
         ackAttempts,
+        ackNoMsgErrs,
+        ackOtherErrs,
         connCreated,
         connSecured,
         connCompleted,
@@ -192,6 +204,8 @@ getAgentSMPServerStats s = do
   _recvErrs <- readTVarIO $ recvErrs s
   _ackMsgs <- readTVarIO $ ackMsgs s
   _ackAttempts <- readTVarIO $ ackAttempts s
+  _ackNoMsgErrs <- readTVarIO $ ackNoMsgErrs s
+  _ackOtherErrs <- readTVarIO $ ackOtherErrs s
   _connCreated <- readTVarIO $ connCreated s
   _connSecured <- readTVarIO $ connSecured s
   _connCompleted <- readTVarIO $ connCompleted s
@@ -217,6 +231,8 @@ getAgentSMPServerStats s = do
         _recvErrs,
         _ackMsgs,
         _ackAttempts,
+        _ackNoMsgErrs,
+        _ackOtherErrs,
         _connCreated,
         _connSecured,
         _connCompleted,
