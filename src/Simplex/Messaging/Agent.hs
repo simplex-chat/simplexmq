@@ -1482,7 +1482,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
       forM_ (L.nonEmpty msgIds_) $ \msgIds -> do
         notify $ MERRS (L.map unId msgIds) err
         withStore' c $ \db -> forM_ msgIds $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False `catchAll_` pure ()
-      atomically $ incSMPServerStat' c userId server sentExpiredErrs (length msgIds_ + 1)
+      atomically $ incSMPServerStat' c userId server sentExpiredErrs (fromIntegral $ length msgIds_ + 1)
     delMsg :: InternalId -> AM ()
     delMsg = delMsgKeep False
     delMsgKeep :: Bool -> InternalId -> AM ()

@@ -5,6 +5,7 @@
 module Simplex.Messaging.Agent.Stats where
 
 import qualified Data.Aeson.TH as J
+import Data.Int (Int64)
 import Data.Map (Map)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
@@ -15,55 +16,55 @@ import Simplex.Messaging.Util (decodeJSON, encodeJSON)
 import UnliftIO.STM
 
 data AgentSMPServerStats = AgentSMPServerStats
-  { sentDirect :: TVar Int, -- successfully sent messages
-    sentViaProxy :: TVar Int, -- successfully sent messages via proxy
-    sentProxied :: TVar Int, -- successfully sent messages to other destination server via this as proxy
-    sentDirectAttempts :: TVar Int, -- direct sending attempts (min 1 for each sent message)
-    sentViaProxyAttempts :: TVar Int, -- proxy sending attempts
-    sentProxiedAttempts :: TVar Int, -- attempts sending to other destination server via this as proxy
-    sentAuthErrs :: TVar Int, -- send AUTH errors
-    sentQuotaErrs :: TVar Int, -- send QUOTA permanent errors (message expired)
-    sentExpiredErrs :: TVar Int, -- send expired errors
-    sentOtherErrs :: TVar Int, -- other send permanent errors (excluding above)
-    recvMsgs :: TVar Int, -- total messages received
-    recvDuplicates :: TVar Int, -- duplicate messages received
-    recvCryptoErrs :: TVar Int, -- message decryption errors
-    recvErrs :: TVar Int, -- receive errors
-    ackMsgs :: TVar Int, -- total messages acknowledged
-    ackAttempts :: TVar Int, -- acknowledgement attempts
-    connCreated :: TVar Int,
-    connSecured :: TVar Int,
-    connCompleted :: TVar Int,
-    connDeleted :: TVar Int,
-    connSubscribed :: TVar Int, -- total successful subscription
-    connSubAttempts :: TVar Int, -- subscription attempts
-    connSubErrs :: TVar Int -- permanent subscription errors (temporary accounted for in attempts)
+  { sentDirect :: TVar Int64, -- successfully sent messages
+    sentViaProxy :: TVar Int64, -- successfully sent messages via proxy
+    sentProxied :: TVar Int64, -- successfully sent messages to other destination server via this as proxy
+    sentDirectAttempts :: TVar Int64, -- direct sending attempts (min 1 for each sent message)
+    sentViaProxyAttempts :: TVar Int64, -- proxy sending attempts
+    sentProxiedAttempts :: TVar Int64, -- attempts sending to other destination server via this as proxy
+    sentAuthErrs :: TVar Int64, -- send AUTH errors
+    sentQuotaErrs :: TVar Int64, -- send QUOTA permanent errors (message expired)
+    sentExpiredErrs :: TVar Int64, -- send expired errors
+    sentOtherErrs :: TVar Int64, -- other send permanent errors (excluding above)
+    recvMsgs :: TVar Int64, -- total messages received
+    recvDuplicates :: TVar Int64, -- duplicate messages received
+    recvCryptoErrs :: TVar Int64, -- message decryption errors
+    recvErrs :: TVar Int64, -- receive errors
+    ackMsgs :: TVar Int64, -- total messages acknowledged
+    ackAttempts :: TVar Int64, -- acknowledgement attempts
+    connCreated :: TVar Int64,
+    connSecured :: TVar Int64,
+    connCompleted :: TVar Int64,
+    connDeleted :: TVar Int64,
+    connSubscribed :: TVar Int64, -- total successful subscription
+    connSubAttempts :: TVar Int64, -- subscription attempts
+    connSubErrs :: TVar Int64 -- permanent subscription errors (temporary accounted for in attempts)
   }
 
 data AgentSMPServerStatsData = AgentSMPServerStatsData
-  { _sentDirect :: Int,
-    _sentViaProxy :: Int,
-    _sentProxied :: Int,
-    _sentDirectAttempts :: Int,
-    _sentViaProxyAttempts :: Int,
-    _sentProxiedAttempts :: Int,
-    _sentAuthErrs :: Int,
-    _sentQuotaErrs :: Int,
-    _sentExpiredErrs :: Int,
-    _sentOtherErrs :: Int,
-    _recvMsgs :: Int,
-    _recvDuplicates :: Int,
-    _recvCryptoErrs :: Int,
-    _recvErrs :: Int,
-    _ackMsgs :: Int,
-    _ackAttempts :: Int,
-    _connCreated :: Int,
-    _connSecured :: Int,
-    _connCompleted :: Int,
-    _connDeleted :: Int,
-    _connSubscribed :: Int,
-    _connSubAttempts :: Int,
-    _connSubErrs :: Int
+  { _sentDirect :: Int64,
+    _sentViaProxy :: Int64,
+    _sentProxied :: Int64,
+    _sentDirectAttempts :: Int64,
+    _sentViaProxyAttempts :: Int64,
+    _sentProxiedAttempts :: Int64,
+    _sentAuthErrs :: Int64,
+    _sentQuotaErrs :: Int64,
+    _sentExpiredErrs :: Int64,
+    _sentOtherErrs :: Int64,
+    _recvMsgs :: Int64,
+    _recvDuplicates :: Int64,
+    _recvCryptoErrs :: Int64,
+    _recvErrs :: Int64,
+    _ackMsgs :: Int64,
+    _ackAttempts :: Int64,
+    _connCreated :: Int64,
+    _connSecured :: Int64,
+    _connCompleted :: Int64,
+    _connDeleted :: Int64,
+    _connSubscribed :: Int64,
+    _connSubAttempts :: Int64,
+    _connSubErrs :: Int64
   }
   deriving (Show)
 
@@ -226,29 +227,29 @@ getAgentSMPServerStats s = do
       }
 
 data AgentXFTPServerStats = AgentXFTPServerStats
-  { uploads :: TVar Int, -- total replicas uploaded to server
-    uploadAttempts :: TVar Int, -- upload attempts
-    uploadErrs :: TVar Int, -- upload errors
-    downloads :: TVar Int, -- total replicas downloaded from server
-    downloadAttempts :: TVar Int, -- download attempts
-    downloadAuthErrs :: TVar Int, -- download AUTH errors
-    downloadErrs :: TVar Int, -- other download errors (excluding above)
-    deletions :: TVar Int, -- total replicas deleted from server
-    deleteAttempts :: TVar Int, -- delete attempts
-    deleteErrs :: TVar Int -- delete errors
+  { uploads :: TVar Int64, -- total replicas uploaded to server
+    uploadAttempts :: TVar Int64, -- upload attempts
+    uploadErrs :: TVar Int64, -- upload errors
+    downloads :: TVar Int64, -- total replicas downloaded from server
+    downloadAttempts :: TVar Int64, -- download attempts
+    downloadAuthErrs :: TVar Int64, -- download AUTH errors
+    downloadErrs :: TVar Int64, -- other download errors (excluding above)
+    deletions :: TVar Int64, -- total replicas deleted from server
+    deleteAttempts :: TVar Int64, -- delete attempts
+    deleteErrs :: TVar Int64 -- delete errors
   }
 
 data AgentXFTPServerStatsData = AgentXFTPServerStatsData
-  { _uploads :: Int,
-    _uploadAttempts :: Int,
-    _uploadErrs :: Int,
-    _downloads :: Int,
-    _downloadAttempts :: Int,
-    _downloadAuthErrs :: Int,
-    _downloadErrs :: Int,
-    _deletions :: Int,
-    _deleteAttempts :: Int,
-    _deleteErrs :: Int
+  { _uploads :: Int64,
+    _uploadAttempts :: Int64,
+    _uploadErrs :: Int64,
+    _downloads :: Int64,
+    _downloadAttempts :: Int64,
+    _downloadAuthErrs :: Int64,
+    _downloadErrs :: Int64,
+    _deletions :: Int64,
+    _deleteAttempts :: Int64,
+    _deleteErrs :: Int64
   }
   deriving (Show)
 
