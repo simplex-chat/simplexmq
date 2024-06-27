@@ -49,6 +49,7 @@ import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
+import Simplex.FileTransfer.Chunks (toKB)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Client.Main
 import Simplex.FileTransfer.Crypto
@@ -222,7 +223,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
         liftIO . when complete $ updateRcvFileStatus db rcvFileId RFSReceived
         pure (entityId, complete, RFPROG rcvd total)
       atomically $ incXFTPServerStat c userId srv downloads
-      atomically $ incXFTPServerStat' c userId srv downloadsSize (fromIntegral chSize)
+      atomically $ incXFTPServerStat' c userId srv downloadsSize (fromIntegral $ toKB chSize)
       notify c entityId progress
       when complete . lift . void $
         getXFTPRcvWorker True c Nothing
@@ -523,7 +524,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
           total = totalSize chunks
           complete = all chunkUploaded chunks
       atomically $ incXFTPServerStat c userId srv uploads
-      atomically $ incXFTPServerStat' c userId srv uploadsSize (fromIntegral chSize)
+      atomically $ incXFTPServerStat' c userId srv uploadsSize (fromIntegral $ toKB chSize)
       notify c sndFileEntityId $ SFPROG uploaded total
       when complete $ do
         (sndDescr, rcvDescrs) <- sndFileToDescrs sf
