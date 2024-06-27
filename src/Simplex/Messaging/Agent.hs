@@ -881,6 +881,8 @@ joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode
 createReplyQueue :: AgentClient -> ConnData -> SndQueue -> SubscriptionMode -> SMPServerWithAuth -> AM SMPQueueInfo
 createReplyQueue c ConnData {userId, connId, enableNtfs} SndQueue {smpClientVersion} subMode srv = do
   (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srv (versionToRange smpClientVersion) subMode
+  let RcvQueue {server} = rq
+  atomically $ incSMPServerStat c userId server connCreated
   let qInfo = toVersionT qUri smpClientVersion
   rq' <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq
   lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
@@ -1427,9 +1429,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                       -- it would lead to the non-deterministic internal ID of the first sent message, at to some other race conditions,
                       -- because it can be sent before HELLO is received
                       -- With `status == Active` condition, CON is sent here only by the accepting party, that previously received HELLO
-                      when (status == Active) $ do
-                        atomically $ incSMPServerStat c userId server connCompleted
-                        notify $ CON pqEncryption
+                      when (status == Active) $ notify $ CON pqEncryption
                     -- this branch should never be reached as receive queue is created before the confirmation,
                     _ -> logError "HELLO sent without receive queue"
                 AM_A_MSG_ -> notify $ SENT mId proxySrv_
@@ -2252,7 +2252,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                           Right (Just (msgId, msgMeta, aMessage, rcPrev)) -> do
                             conn'' <- resetRatchetSync
                             case aMessage of
-                              HELLO -> helloMsg srvMsgId msgMeta conn'' >> ackDel msgId
+                              HELLO -> helloMsg srvMsgId msgMeta conn'' rq >> ackDel msgId
                               -- note that there is no ACK sent for A_MSG, it is sent with agent's user ACK command
                               A_MSG body -> do
                                 logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret srvMsgId
@@ -2463,8 +2463,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                 _ -> prohibited "conf: incorrect state"
               _ -> prohibited "conf: status /= new"
 
-          helloMsg :: SMP.MsgId -> MsgMeta -> Connection c -> AM ()
-          helloMsg srvMsgId MsgMeta {pqEncryption} conn' = do
+          helloMsg :: SMP.MsgId -> MsgMeta -> Connection c -> RcvQueue -> AM ()
+          helloMsg srvMsgId MsgMeta {pqEncryption} conn' RcvQueue {server} = do
             logServer "<--" c srv rId $ "MSG <HELLO>:" <> logSecret srvMsgId
             case status of
               Active -> prohibited "hello: active"
@@ -2475,7 +2475,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                     -- this branch is executed by the accepting party in duplexHandshake mode (v2)
                     -- (was executed by initiating party in v1 that is no longer supported)
                     | sndStatus == Active -> do
-                        atomically $ incSMPServerStat c userId srv connCompleted
+                        atomically $ incSMPServerStat c userId server connCompleted
                         notify $ CON pqEncryption
                     | otherwise -> enqueueDuplexHello sq
                   _ -> pure ()
