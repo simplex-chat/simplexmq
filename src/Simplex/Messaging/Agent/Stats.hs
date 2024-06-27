@@ -137,6 +137,38 @@ newAgentSMPServerStats = do
         connSubErrs
       }
 
+newAgentSMPServerStatsData :: AgentSMPServerStatsData
+newAgentSMPServerStatsData =
+  AgentSMPServerStatsData
+    { _sentDirect = 0,
+      _sentViaProxy = 0,
+      _sentProxied = 0,
+      _sentDirectAttempts = 0,
+      _sentViaProxyAttempts = 0,
+      _sentProxiedAttempts = 0,
+      _sentAuthErrs = 0,
+      _sentQuotaErrs = 0,
+      _sentExpiredErrs = 0,
+      _sentOtherErrs = 0,
+      _recvMsgs = 0,
+      _recvDuplicates = 0,
+      _recvCryptoErrs = 0,
+      _recvErrs = 0,
+      _ackMsgs = 0,
+      _ackAttempts = 0,
+      _ackNoMsgErrs = 0,
+      _ackOtherErrs = 0,
+      _connCreated = 0,
+      _connSecured = 0,
+      _connCompleted = 0,
+      _connDeleted = 0,
+      _connDelAttempts = 0,
+      _connDelErrs = 0,
+      _connSubscribed = 0,
+      _connSubAttempts = 0,
+      _connSubErrs = 0
+    }
+
 newAgentSMPServerStats' :: AgentSMPServerStatsData -> STM AgentSMPServerStats
 newAgentSMPServerStats' s = do
   sentDirect <- newTVar $ _sentDirect s
@@ -319,6 +351,23 @@ newAgentXFTPServerStats = do
         deleteAttempts,
         deleteErrs
       }
+
+newAgentXFTPServerStatsData :: AgentXFTPServerStatsData
+newAgentXFTPServerStatsData =
+  AgentXFTPServerStatsData
+    { _uploads = 0,
+      _uploadsSize = 0,
+      _uploadAttempts = 0,
+      _uploadErrs = 0,
+      _downloads = 0,
+      _downloadsSize = 0,
+      _downloadAttempts = 0,
+      _downloadAuthErrs = 0,
+      _downloadErrs = 0,
+      _deletions = 0,
+      _deleteAttempts = 0,
+      _deleteErrs = 0
+    }
 
 newAgentXFTPServerStats' :: AgentXFTPServerStatsData -> STM AgentXFTPServerStats
 newAgentXFTPServerStats' s = do
