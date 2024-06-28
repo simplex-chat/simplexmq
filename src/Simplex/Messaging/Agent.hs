@@ -1174,8 +1174,10 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
           case conn of
             RcvConnection cData rq -> do
               mapM_ (secure rq) senderKey
-              mapM_ (connectReplyQueues c cData ownConnInfo) (L.nonEmpty $ smpReplyQueues senderConf)
-            -- TODO SKEY support retries on failed SKEY commands
+              mapM_ (connectReplyQueues c cData ownConnInfo Nothing) (L.nonEmpty $ smpReplyQueues senderConf)
+            -- duplex connection is matched to handle SKEY retries
+            DuplexConnection cData _ (sq :| _) ->
+              mapM_ (connectReplyQueues c cData ownConnInfo (Just sq)) (L.nonEmpty $ smpReplyQueues senderConf)
             _ -> throwE $ INTERNAL $ "incorrect connection type " <> show (internalCmdTag cmd)
         ICDuplexSecure _rId senderKey -> withServer' . tryWithLock "ICDuplexSecure" . withDuplexConn $ \(DuplexConnection cData (rq :| _) (sq :| _)) -> do
           secure rq senderKey
@@ -2745,17 +2747,20 @@ switchStatusError q expected actual =
       <> (", expected=" <> show expected)
       <> (", actual=" <> show actual)
 
-connectReplyQueues :: AgentClient -> ConnData -> ConnInfo -> NonEmpty SMPQueueInfo -> AM ()
-connectReplyQueues c cData@ConnData {userId, connId} ownConnInfo (qInfo :| _) = do
+connectReplyQueues :: AgentClient -> ConnData -> ConnInfo -> Maybe SndQueue -> NonEmpty SMPQueueInfo -> AM ()
+connectReplyQueues c cData@ConnData {userId, connId} ownConnInfo sq_ (qInfo :| _) = do
   clientVRange <- asks $ smpClientVRange . config
   case qInfo `proveCompatible` clientVRange of
     Nothing -> throwE $ AGENT A_VERSION
     Just qInfo' -> do
-      -- TODO make it work correctly on retry of SKEY - it should check if the queue is already stored, and if it is, use the same key
-      (sq, _) <- lift $ newSndQueue userId connId qInfo'
-      sq' <- withStore c $ \db -> upgradeRcvConnToDuplex db connId sq
+      -- in case of SKEY retry the connection is already duplex
+      sq' <- maybe upgradeConn pure sq_
       agentSecureSndQueue c sq'
       enqueueConfirmation c cData sq' ownConnInfo Nothing
+      where
+        upgradeConn = do
+          (sq, _) <- lift $ newSndQueue userId connId qInfo'
+          withStore c $ \db -> upgradeRcvConnToDuplex db connId sq
 
 secureConfirmQueueAsync :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> SubscriptionMode -> AM ()
 secureConfirmQueueAsync c cData sq srv connInfo e2eEncryption_ subMode = do

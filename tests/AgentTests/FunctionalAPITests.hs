@@ -926,7 +926,7 @@ testAllowConnectionClientRestart t = do
 
     runRight_ $ do
       allowConnectionAsync alice "1" bobId confId "alice's connInfo"
-      get alice =##> \case ("1", _, OK) -> True; _ -> False
+      get alice ##> ("1", bobId, OK)
       pure ()
 
     threadDelay 100000 -- give time to enqueue confirmation (enqueueConfirmation)
@@ -943,8 +943,7 @@ testAllowConnectionClientRestart t = do
         get alice2 ##> ("", bobId, CON)
         get bob ##> ("", aliceId, INFO "alice's connInfo")
         get bob ##> ("", aliceId, CON)
-
-        exchangeGreetingsMsgId 4 alice2 bobId bob aliceId
+        exchangeGreetings alice2 bobId bob aliceId
     disposeAgentClient alice2
     disposeAgentClient bob
 

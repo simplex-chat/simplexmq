@@ -1868,7 +1868,10 @@ upsertNtfServer_ db ProtocolServer {host, port, keyHash} = do
 
 insertRcvQueue_ :: DB.Connection -> ConnId -> NewRcvQueue -> Maybe C.KeyHash -> IO RcvQueue
 insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
-  qId <- newQueueId_ <$> DB.query db "SELECT rcv_queue_id FROM rcv_queues WHERE conn_id = ? ORDER BY rcv_queue_id DESC LIMIT 1" (Only connId')
+  -- to preserve ID if the queue already exists.
+  -- possibly, it can be done in one query.
+  currQId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT rcv_queue_id FROM rcv_queues WHERE conn_id = ? AND host = ? AND port = ? AND snd_id = ?" (connId', host server, port server, sndId)
+  qId <- maybe (newQueueId_ <$> DB.query db "SELECT rcv_queue_id FROM rcv_queues WHERE conn_id = ? ORDER BY rcv_queue_id DESC LIMIT 1" (Only connId')) pure currQId_
   DB.execute
     db
     [sql|
@@ -1882,7 +1885,10 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
 
 insertSndQueue_ :: DB.Connection -> ConnId -> NewSndQueue -> Maybe C.KeyHash -> IO SndQueue
 insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
-  qId <- newQueueId_ <$> DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? ORDER BY snd_queue_id DESC LIMIT 1" (Only connId')
+  -- to preserve ID if the queue already exists.
+  -- possibly, it can be done in one query.
+  currQId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? AND host = ? AND port = ? AND snd_id = ?" (connId', host server, port server, sndId)
+  qId <- maybe (newQueueId_ <$> DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? ORDER BY snd_queue_id DESC LIMIT 1" (Only connId')) pure currQId_
   DB.execute
     db
     [sql|
