@@ -75,7 +75,7 @@ import Data.Word (Word16)
 import qualified Database.SQLite.Simple as SQL
 import GHC.Stack (withFrozenCallStack)
 import SMPAgentClient
-import SMPClient (cfg, prevVersion, prevRange, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerProxy, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, withSmpServerV7)
+import SMPClient (cfg, prevVersion, prevRange, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerProxy, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), UserNetworkInfo (..), UserNetworkType (..), waitForUserNetwork)
@@ -89,7 +89,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Transport (NTFVersion, authBatchCmdsNTFVersion, pattern VersionNTF)
+import Simplex.Messaging.Notifications.Transport (NTFVersion, pattern VersionNTF)
 import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
@@ -195,14 +195,8 @@ pattern Rcvd agentMsgId <- RCVD MsgMeta {integrity = MsgOk} [MsgReceipt {agentMs
 smpCfgVPrev :: ProtocolClientConfig SMPVersion
 smpCfgVPrev = (smpCfg agentCfg) {clientALPN = Nothing, serverVRange = prevRange $ serverVRange $ smpCfg agentCfg}
 
-smpCfgV7 :: ProtocolClientConfig SMPVersion
-smpCfgV7 = (smpCfg agentCfg) {serverVRange = V.mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}
-
 ntfCfgVPrev :: ProtocolClientConfig NTFVersion
 ntfCfgVPrev = (ntfCfg agentCfg) {clientALPN = Nothing, serverVRange = V.mkVersionRange (VersionNTF 1) (VersionNTF 1)}
-
-ntfCfgV2 :: ProtocolClientConfig NTFVersion
-ntfCfgV2 = (ntfCfg agentCfg) {serverVRange = V.mkVersionRange (VersionNTF 1) authBatchCmdsNTFVersion}
 
 agentCfgVPrev :: AgentConfig
 agentCfgVPrev = agentCfgVPrevPQ {e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg}
@@ -215,17 +209,6 @@ agentCfgVPrevPQ =
       smpClientVRange = prevRange $ smpClientVRange agentCfg,
       smpCfg = smpCfgVPrev,
       ntfCfg = ntfCfgVPrev
-    }
-
--- agent config for the next client version
-agentCfgV7 :: AgentConfig
-agentCfgV7 =
-  agentCfg
-    { sndAuthAlg = C.AuthAlg C.SX25519,
-      smpAgentVRange = V.mkVersionRange duplexHandshakeSMPAgentVersion $ max pqdrSMPAgentVersion currentSMPAgentVersion,
-      e2eEncryptVRange = V.mkVersionRange CR.kdfX3DHE2EEncryptVersion $ max CR.pqRatchetE2EEncryptVersion CR.currentE2EEncryptVersion,
-      smpCfg = smpCfgV7,
-      ntfCfg = ntfCfgV2
     }
 
 agentCfgRatchetVPrev :: AgentConfig
@@ -462,7 +445,6 @@ functionalAPITests t = do
       withSmpServer t testRatchetAdHash
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer t testDeliveryReceipts
-    -- TODO SKEY - fix PQEncOff
     it "should send delivery receipt only in connection v3+" $ testDeliveryReceiptsVersion t
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent t
   describe "user network info" $ do
@@ -509,14 +491,12 @@ testBasicMatrix2 t runTest = do
 
 testRatchetMatrix2 :: HasCallStack => ATransport -> (PQSupport -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 t runTest = do
+  it "current, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentCfg agentCfg (initAgentServersProxy SPMAlways SPFProhibit) 1 $ runTest PQSupportOn True
   it "v8, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentProxyCfgV8 agentProxyCfgV8 (initAgentServersProxy SPMAlways SPFProhibit) 3 $ runTest PQSupportOn True
-  it "ratchet next" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfgV7 3 $ runTest PQSupportOn False
-  it "ratchet next to current" $ withSmpServerV7 t $ runTestCfg2 agentCfgV7 agentCfg 3 $ runTest PQSupportOn False
-  it "ratchet current to next" $ withSmpServerV7 t $ runTestCfg2 agentCfg agentCfgV7 3 $ runTest PQSupportOn False
-  it "ratchet current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 3 $ runTest PQSupportOn False
-  it "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 3 $ runTest PQSupportOff False
-  it "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 3 $ runTest PQSupportOff False
-  it "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 3 $ runTest PQSupportOff False
+  it "ratchet current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 1 $ runTest PQSupportOn False
+  it "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 1 $ runTest PQSupportOff False
+  it "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 1 $ runTest PQSupportOff False
+  it "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 1 $ runTest PQSupportOff False
 
 testServerMatrix2 :: HasCallStack => ATransport -> (InitialAgentServers -> IO ()) -> Spec
 testServerMatrix2 t runTest = do
@@ -643,48 +623,48 @@ testEnablePQEncryption =
     (aId, bId) <- makeConnection_ PQSupportOff ca cb
     let a = (ca, aId)
         b = (cb, bId)
-    (a, 4, "msg 1") \#>\ b
-    (b, 5, "msg 2") \#>\ a
+    (a, 2, "msg 1") \#>\ b
+    (b, 3, "msg 2") \#>\ a
     -- 45 bytes is used by agent message envelope inside double ratchet message envelope
     let largeMsg g' pqEnc = atomically $ C.randomBytes (e2eEncAgentMsgLength pqdrSMPAgentVersion pqEnc - 45) g'
     lrg <- largeMsg g PQSupportOff
-    (a, 6, lrg) \#>\ b
-    (b, 7, lrg) \#>\ a
+    (a, 4, lrg) \#>\ b
+    (b, 5, lrg) \#>\ a
     -- switched to smaller envelopes (before reporting PQ encryption enabled)
     sml <- largeMsg g PQSupportOn
     -- fail because of message size
     Left (A.CMD LARGE _) <- tryError $ A.sendMessage ca bId PQEncOn SMP.noMsgFlags lrg
-    (9, PQEncOff) <- A.sendMessage ca bId PQEncOn SMP.noMsgFlags sml
-    get ca =##> \case ("", connId, SENT 9) -> connId == bId; _ -> False
-    get cb =##> \case ("", connId, MsgErr' 8 MsgSkipped {} PQEncOff msg') -> connId == aId && msg' == sml; _ -> False
-    ackMessage cb aId 8 Nothing
+    (7, PQEncOff) <- A.sendMessage ca bId PQEncOn SMP.noMsgFlags sml
+    get ca =##> \case ("", connId, SENT 7) -> connId == bId; _ -> False
+    get cb =##> \case ("", connId, MsgErr' 6 MsgSkipped {} PQEncOff msg') -> connId == aId && msg' == sml; _ -> False
+    ackMessage cb aId 6 Nothing
     -- -- fail in reply to sync IDss
     Left (A.CMD LARGE _) <- tryError $ A.sendMessage cb aId PQEncOn SMP.noMsgFlags lrg
-    (10, PQEncOff) <- A.sendMessage cb aId PQEncOn SMP.noMsgFlags sml
-    get cb =##> \case ("", connId, SENT 10) -> connId == aId; _ -> False
-    get ca =##> \case ("", connId, MsgErr' 10 MsgSkipped {} PQEncOff msg') -> connId == bId && msg' == sml; _ -> False
-    ackMessage ca bId 10 Nothing
-    (a, 11, sml) \#>! b
+    (8, PQEncOff) <- A.sendMessage cb aId PQEncOn SMP.noMsgFlags sml
+    get cb =##> \case ("", connId, SENT 8) -> connId == aId; _ -> False
+    get ca =##> \case ("", connId, MsgErr' 8 MsgSkipped {} PQEncOff msg') -> connId == bId && msg' == sml; _ -> False
+    ackMessage ca bId 8 Nothing
+    (a, 9, sml) \#>! b
     -- PQ encryption now enabled
+    (b, 10, sml) !#>! a
+    (a, 11, sml) !#>! b
     (b, 12, sml) !#>! a
-    (a, 13, sml) !#>! b
-    (b, 14, sml) !#>! a
     -- disabling PQ encryption
-    (a, 15, sml) !#>\ b
-    (b, 16, sml) !#>\ a
-    (a, 17, sml) \#>\ b
-    (b, 18, sml) \#>\ a
+    (a, 13, sml) !#>\ b
+    (b, 14, sml) !#>\ a
+    (a, 15, sml) \#>\ b
+    (b, 16, sml) \#>\ a
     -- enabling PQ encryption again
+    (a, 17, sml) \#>! b
+    (b, 18, sml) \#>! a
     (a, 19, sml) \#>! b
-    (b, 20, sml) \#>! a
-    (a, 21, sml) \#>! b
-    (b, 22, sml) !#>! a
-    (a, 23, sml) !#>! b
+    (b, 20, sml) !#>! a
+    (a, 21, sml) !#>! b
     -- disabling PQ encryption again
-    (b, 24, sml) !#>\ a
-    (a, 25, sml) !#>\ b
-    (b, 26, sml) \#>\ a
-    (a, 27, sml) \#>\ b
+    (b, 22, sml) !#>\ a
+    (a, 23, sml) !#>\ b
+    (b, 24, sml) \#>\ a
+    (a, 25, sml) \#>\ b
     -- PQ encryption is now disabled, but support remained enabled, so we still cannot send larger messages
     Left (A.CMD LARGE _) <- tryError $ A.sendMessage ca bId PQEncOff SMP.noMsgFlags (sml <> "123456")
     Left (A.CMD LARGE _) <- tryError $ A.sendMessage cb aId PQEncOff SMP.noMsgFlags (sml <> "123456")
@@ -954,7 +934,7 @@ testIncreaseConnAgentVersion t = do
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ do
       (aliceId, bobId) <- makeConnection_ PQSupportOff alice bob
-      exchangeGreetingsMsgId_ PQEncOff 4 alice bobId bob aliceId
+      exchangeGreetingsMsgId_ PQEncOff 2 alice bobId bob aliceId
       checkVersion alice bobId 2
       checkVersion bob aliceId 2
       pure (aliceId, bobId)
@@ -966,7 +946,7 @@ testIncreaseConnAgentVersion t = do
 
     runRight_ $ do
       subscribeConnection alice2 bobId
-      exchangeGreetingsMsgId_ PQEncOff 6 alice2 bobId bob aliceId
+      exchangeGreetingsMsgId_ PQEncOff 4 alice2 bobId bob aliceId
       checkVersion alice2 bobId 2
       checkVersion bob aliceId 2
 
@@ -977,7 +957,7 @@ testIncreaseConnAgentVersion t = do
 
     runRight_ $ do
       subscribeConnection bob2 aliceId
-      exchangeGreetingsMsgId_ PQEncOff 8 alice2 bobId bob2 aliceId
+      exchangeGreetingsMsgId_ PQEncOff 6 alice2 bobId bob2 aliceId
       checkVersion alice2 bobId 3
       checkVersion bob2 aliceId 3
 
@@ -988,7 +968,7 @@ testIncreaseConnAgentVersion t = do
 
     runRight_ $ do
       subscribeConnection alice3 bobId
-      exchangeGreetingsMsgId_ PQEncOff 10 alice3 bobId bob2 aliceId
+      exchangeGreetingsMsgId_ PQEncOff 8 alice3 bobId bob2 aliceId
       checkVersion alice3 bobId 3
       checkVersion bob2 aliceId 3
 
@@ -997,7 +977,7 @@ testIncreaseConnAgentVersion t = do
 
     runRight_ $ do
       subscribeConnection bob3 aliceId
-      exchangeGreetingsMsgId_ PQEncOff 12 alice3 bobId bob3 aliceId
+      exchangeGreetingsMsgId_ PQEncOff 10 alice3 bobId bob3 aliceId
       checkVersion alice3 bobId 3
       checkVersion bob3 aliceId 3
     disposeAgentClient alice3
@@ -1015,7 +995,7 @@ testIncreaseConnAgentVersionMaxCompatible t = do
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ do
       (aliceId, bobId) <- makeConnection_ PQSupportOff alice bob
-      exchangeGreetingsMsgId_ PQEncOff 4 alice bobId bob aliceId
+      exchangeGreetingsMsgId_ PQEncOff 2 alice bobId bob aliceId
       checkVersion alice bobId 2
       checkVersion bob aliceId 2
       pure (aliceId, bobId)
@@ -1030,7 +1010,7 @@ testIncreaseConnAgentVersionMaxCompatible t = do
     runRight_ $ do
       subscribeConnection alice2 bobId
       subscribeConnection bob2 aliceId
-      exchangeGreetingsMsgId_ PQEncOff 6 alice2 bobId bob2 aliceId
+      exchangeGreetingsMsgId_ PQEncOff 4 alice2 bobId bob2 aliceId
       checkVersion alice2 bobId 3
       checkVersion bob2 aliceId 3
     disposeAgentClient alice2
@@ -1043,7 +1023,7 @@ testIncreaseConnAgentVersionStartDifferentVersion t = do
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ do
       (aliceId, bobId) <- makeConnection_ PQSupportOff alice bob
-      exchangeGreetingsMsgId_ PQEncOff 4 alice bobId bob aliceId
+      exchangeGreetingsMsgId_ PQEncOff 2 alice bobId bob aliceId
       checkVersion alice bobId 2
       checkVersion bob aliceId 2
       pure (aliceId, bobId)
@@ -1055,7 +1035,7 @@ testIncreaseConnAgentVersionStartDifferentVersion t = do
 
     runRight_ $ do
       subscribeConnection alice2 bobId
-      exchangeGreetingsMsgId_ PQEncOff 6 alice2 bobId bob aliceId
+      exchangeGreetingsMsgId_ PQEncOff 4 alice2 bobId bob aliceId
       checkVersion alice2 bobId 3
       checkVersion bob aliceId 3
     disposeAgentClient alice2
@@ -1759,10 +1739,10 @@ testBatchedSubscriptions nCreate nDel t =
           (aIds', bIds') = unzip conns'
       subscribe a bIds
       subscribe b aIds
-      forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId_ PQEncOff 6 a bId b aId
+      forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId_ PQEncOff 4 a bId b aId
       void $ resubscribeConnections a bIds
       void $ resubscribeConnections b aIds
-      forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId_ PQEncOff 8 a bId b aId
+      forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId_ PQEncOff 6 a bId b aId
       delete a bIds'
       delete b aIds'
       deleteFail a bIds'
@@ -2730,15 +2710,15 @@ testDeliveryReceiptsVersion t = do
       (aId, bId) <- makeConnection_ PQSupportOff a b
       checkVersion a bId 3
       checkVersion b aId 3
-      (4, _) <- A.sendMessage a bId PQEncOff SMP.noMsgFlags "hello"
-      get a ##> ("", bId, SENT 4)
-      get b =##> \case ("", c, Msg' 4 PQEncOff "hello") -> c == aId; _ -> False
-      ackMessage b aId 4 $ Just ""
+      (2, _) <- A.sendMessage a bId PQEncOff SMP.noMsgFlags "hello"
+      get a ##> ("", bId, SENT 2)
+      get b =##> \case ("", c, Msg' 2 PQEncOff "hello") -> c == aId; _ -> False
+      ackMessage b aId 2 $ Just ""
       liftIO $ noMessages a "no delivery receipt (unsupported version)"
-      (5, _) <- A.sendMessage b aId PQEncOff SMP.noMsgFlags "hello too"
-      get b ##> ("", aId, SENT 5)
-      get a =##> \case ("", c, Msg' 5 PQEncOff "hello too") -> c == bId; _ -> False
-      ackMessage a bId 5 $ Just ""
+      (3, _) <- A.sendMessage b aId PQEncOff SMP.noMsgFlags "hello too"
+      get b ##> ("", aId, SENT 3)
+      get a =##> \case ("", c, Msg' 3 PQEncOff "hello too") -> c == bId; _ -> False
+      ackMessage a bId 3 $ Just ""
       liftIO $ noMessages b "no delivery receipt (unsupported version)"
       pure (aId, bId)
 
@@ -2750,27 +2730,27 @@ testDeliveryReceiptsVersion t = do
     runRight_ $ do
       subscribeConnection a' bId
       subscribeConnection b' aId
-      exchangeGreetingsMsgId_ PQEncOff 6 a' bId b' aId
+      exchangeGreetingsMsgId_ PQEncOff 4 a' bId b' aId
       checkVersion a' bId 6
       checkVersion b' aId 6
-      (8, PQEncOff) <- A.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello"
-      get a' ##> ("", bId, SENT 8)
-      get b' =##> \case ("", c, Msg' 8 PQEncOff "hello") -> c == aId; _ -> False
-      ackMessage b' aId 8 $ Just ""
-      get a' =##> \case ("", c, Rcvd 8) -> c == bId; _ -> False
-      ackMessage a' bId 9 Nothing
-      (10, PQEncOff) <- A.sendMessage b' aId PQEncOn SMP.noMsgFlags "hello too"
-      get b' ##> ("", aId, SENT 10)
-      get a' =##> \case ("", c, Msg' 10 PQEncOff "hello too") -> c == bId; _ -> False
-      ackMessage a' bId 10 $ Just ""
-      get b' =##> \case ("", c, Rcvd 10) -> c == aId; _ -> False
-      ackMessage b' aId 11 Nothing
-      (12, _) <- A.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello 2"
-      get a' ##> ("", bId, SENT 12)
-      get b' =##> \case ("", c, Msg' 12 PQEncOff "hello 2") -> c == aId; _ -> False
-      ackMessage b' aId 12 $ Just ""
-      get a' =##> \case ("", c, Rcvd 12) -> c == bId; _ -> False
-      ackMessage a' bId 13 Nothing
+      (6, PQEncOff) <- A.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello"
+      get a' ##> ("", bId, SENT 6)
+      get b' =##> \case ("", c, Msg' 6 PQEncOff "hello") -> c == aId; _ -> False
+      ackMessage b' aId 6 $ Just ""
+      get a' =##> \case ("", c, Rcvd 6) -> c == bId; _ -> False
+      ackMessage a' bId 7 Nothing
+      (8, PQEncOff) <- A.sendMessage b' aId PQEncOn SMP.noMsgFlags "hello too"
+      get b' ##> ("", aId, SENT 8)
+      get a' =##> \case ("", c, Msg' 8 PQEncOff "hello too") -> c == bId; _ -> False
+      ackMessage a' bId 8 $ Just ""
+      get b' =##> \case ("", c, Rcvd 8) -> c == aId; _ -> False
+      ackMessage b' aId 9 Nothing
+      (10, _) <- A.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello 2"
+      get a' ##> ("", bId, SENT 10)
+      get b' =##> \case ("", c, Msg' 10 PQEncOff "hello 2") -> c == aId; _ -> False
+      ackMessage b' aId 10 $ Just ""
+      get a' =##> \case ("", c, Rcvd 10) -> c == bId; _ -> False
+      ackMessage a' bId 11 Nothing
     disposeAgentClient a'
     disposeAgentClient b'
 

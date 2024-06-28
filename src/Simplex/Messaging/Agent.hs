@@ -1428,11 +1428,10 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                   retrySndOp c $ loop riMode
             Right proxySrv_ -> do
               case msgType of
-                AM_CONN_INFO -> do
-                  setConfirmed
-                  -- TODO SKEY set correct connection status
-                  when sndSecure $ notify $ CON PQEncOn -- TODO SKEY does it have pq encryption?
-                AM_CONN_INFO_REPLY -> setConfirmed
+                AM_CONN_INFO
+                  | sndSecure -> notify (CON pqEncryption) >> setStatus Active
+                  | otherwise -> setStatus Confirmed
+                AM_CONN_INFO_REPLY -> setStatus Confirmed
                 AM_RATCHET_INFO -> pure ()
                 AM_HELLO_ -> do
                   withStore' c $ \db -> setSndQueueStatus db sq Active
@@ -1490,9 +1489,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                 AM_EREADY_ -> pure ()
               delMsgKeep (msgType == AM_A_MSG_) msgId
               where
-                setConfirmed = do
+                setStatus status = do
                   withStore' c $ \db -> do
-                    setSndQueueStatus db sq Confirmed
+                    setSndQueueStatus db sq status
                     when (isJust rq_) $ removeConfirmations db connId
   where
     notifyDelMsgs :: InternalId -> AgentErrorType -> UTCTime -> AM ()
@@ -2478,7 +2477,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                           notify $ CONF confId pqSupport' srvs connInfo
                     _ -> prohibited "conf: decrypt error or skipped"
                 -- party accepting connection
-                (DuplexConnection _ (RcvQueue {smpClientVersion = v'} :| _) _, Nothing) -> do
+                (DuplexConnection _ (rq'@RcvQueue {smpClientVersion = v'} :| _) _, Nothing) -> do
                   g <- asks random
                   (agentMsgBody, pqEncryption) <- withStore c $ \db -> runExceptT $ agentRatchetDecrypt g db connId encConnInfo
                   parseMessage agentMsgBody >>= \case
@@ -2490,8 +2489,9 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                         updateRcvMsgHash db connId 1 (InternalRcvId 0) (C.sha256Hash agentMsgBody)
                       case senderKey of
                         Just k -> enqueueCmd $ ICDuplexSecure rId k
-                        -- TODO SKEY set correct connection status
-                        Nothing -> notify $ CON pqEncryption
+                        Nothing -> do
+                          notify $ CON pqEncryption
+                          withStore' c $ \db -> setRcvQueueStatus db rq' Active
                     _ -> prohibited "conf: not AgentConnInfo"
                 _ -> prohibited "conf: incorrect state"
               _ -> prohibited "conf: status /= new"
@@ -2764,7 +2764,6 @@ connectReplyQueues c cData@ConnData {userId, connId} ownConnInfo sq_ (qInfo :| _
 
 secureConfirmQueueAsync :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> SubscriptionMode -> AM ()
 secureConfirmQueueAsync c cData sq srv connInfo e2eEncryption_ subMode = do
-  -- TODO SKEY - handle retries correctly
   agentSecureSndQueue c sq
   storeConfirmation c cData sq e2eEncryption_ =<< mkAgentConfirmation c cData sq srv connInfo subMode
   lift $ submitPendingMsg c cData sq

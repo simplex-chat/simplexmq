@@ -189,9 +189,6 @@ withSmpServerOn t port' = withSmpServerThreadOn t port' . const
 withSmpServer :: HasCallStack => ATransport -> IO a -> IO a
 withSmpServer t = withSmpServerOn t testPort
 
-withSmpServerV7 :: HasCallStack => ATransport -> IO a -> IO a
-withSmpServerV7 t = withSmpServerConfigOn t cfgV7 testPort . const
-
 withSmpServerProxy :: HasCallStack => ATransport -> IO a -> IO a
 withSmpServerProxy t = withSmpServerConfigOn t proxyCfg testPort . const
 
