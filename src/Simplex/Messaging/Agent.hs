@@ -2372,7 +2372,12 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                                 pure $ Just (internalId, msgMeta, aMessage, rc)
                               _ -> pure Nothing
                       _ -> prohibited "msg: bad client msg" >> ack
-                  _ -> prohibited "msg: no keys" >> ack
+                  (Just e2eDh, Just _) ->
+                    decryptClientMessage e2eDh clientMsg >>= \case
+                      -- this is a repeated confirmation delivery because ack failed to be sent
+                      (_, AgentConfirmation {}) -> ack
+                      _ -> prohibited "msg: public header" >> ack
+                  (Nothing, Nothing) -> prohibited "msg: no keys" >> ack
               updateConnVersion :: Connection c -> ConnData -> VersionSMPA -> AM (Connection c)
               updateConnVersion conn' cData' msgAgentVersion = do
                 aVRange <- asks $ smpAgentVRange . config
@@ -2409,10 +2414,10 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
           notify :: forall e m. (AEntityI e, MonadIO m) => AEvent e -> m ()
           notify = notify' connId
 
-          prohibited :: String -> AM ()
+          prohibited :: Text -> AM ()
           prohibited s = do
-            liftIO $ putStrLn $ "prohibited: " <> s
-            notify . ERR . AGENT $ A_PROHIBITED s
+            logError $ "prohibited: " <> s
+            notify . ERR . AGENT $ A_PROHIBITED $ T.unpack s
 
           enqueueCmd :: InternalCommand -> AM ()
           enqueueCmd = enqueueCommand c "" connId (Just srv) . AInternalCommand

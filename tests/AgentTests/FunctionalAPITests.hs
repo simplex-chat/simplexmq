@@ -1788,7 +1788,6 @@ testBatchedPendingMessages nCreate nMsgs =
       r <- subscribeConnections b $ map fst conns
       liftIO $ all isRight r `shouldBe` True
       replicateM_ nMsgs $ do
-        -- TODO SKEY: it fails with ERR AGENT A_PROHIBITED "msg: no keys" on some of the message(s), inconsistently
         ("", cId, Msg' msgId _ "hello") <- get b
         liftIO $ isJust (find ((cId ==) . fst) msgConns) `shouldBe` True
         ackMessage b cId msgId Nothing
