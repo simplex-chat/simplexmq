@@ -60,9 +60,9 @@ instance StrEncoding QueueRec where
         "rk=" <> strEncode recipientKey,
         "rdh=" <> strEncode rcvDhSecret,
         "sid=" <> strEncode senderId,
-        "sk=" <> strEncode senderKey,
-        "sndSecure=" <> strEncode sndSecure
+        "sk=" <> strEncode senderKey
       ]
+      <> if sndSecure then " sndSecure=" <> strEncode sndSecure else ""
       <> maybe "" notifierStr notifier
     where
       notifierStr ntfCreds = " notifier=" <> strEncode ntfCreds
@@ -73,7 +73,7 @@ instance StrEncoding QueueRec where
     rcvDhSecret <- "rdh=" *> strP_
     senderId <- "sid=" *> strP_
     senderKey <- "sk=" *> strP
-    sndSecure <- " sndSecure=" *> strP <|> pure False
+    sndSecure <- (" sndSecure=" *> strP) <|> pure False
     notifier <- optional $ " notifier=" *> strP
     pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status = QueueActive}
 
