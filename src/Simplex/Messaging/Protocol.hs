@@ -134,6 +134,7 @@ module Simplex.Messaging.Protocol
     FwdTransmission (..),
     MsgFlags (..),
     initialSMPClientVersion,
+    currentSMPClientVersion,
     userProtocol,
     rcvMessageMeta,
     noMsgFlags,
@@ -249,7 +250,7 @@ currentSMPClientVersion :: VersionSMPC
 currentSMPClientVersion = VersionSMPC 3
 
 supportedSMPClientVRange :: VersionRangeSMPC
-supportedSMPClientVRange = mkVersionRange srvHostnamesSMPClientVersion currentSMPClientVersion
+supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClientVersion
 
 -- TODO v6.0 remove dependency on version
 maxMessageLength :: VersionSMP -> Int
