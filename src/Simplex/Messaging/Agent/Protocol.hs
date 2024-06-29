@@ -37,6 +37,7 @@ module Simplex.Messaging.Agent.Protocol
     VersionSMPA,
     VersionRangeSMPA,
     pattern VersionSMPA,
+    duplexHandshakeSMPAgentVersion,
     ratchetSyncSMPAgentVersion,
     deliveryRcptsSMPAgentVersion,
     pqdrSMPAgentVersion,

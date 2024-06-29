@@ -2787,7 +2787,7 @@ secureConfirmQueue c cData@ConnData {connId, connAgentVersion, pqSupport} sq srv
         pure . smpEncode $ AgentConfirmation {agentVersion = connAgentVersion, e2eEncryption_, encConnInfo}
 
 agentSecureSndQueue :: AgentClient -> SndQueue -> AM ()
-agentSecureSndQueue c sq@SndQueue {sndSecure, status} = 
+agentSecureSndQueue c sq@SndQueue {sndSecure, status} =
   when (sndSecure && status == New) $ do
     secureSndQueue c sq
     withStore' c $ \db -> setSndQueueStatus db sq Secured
@@ -2873,7 +2873,7 @@ newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAdd
   g <- asks random
   (sndPublicKey, sndPrivateKey) <- atomically $ C.generateAuthKeyPair a g
   (e2ePubKey, e2ePrivKey) <- atomically $ C.generateKeyPair g
-  let sq = 
+  let sq =
         SndQueue
           { userId,
             connId,
