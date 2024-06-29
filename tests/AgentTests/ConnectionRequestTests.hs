@@ -40,6 +40,9 @@ queueAddr =
       sndSecure = False
     }
 
+queueAddrSK :: SMPQueueAddress
+queueAddrSK = queueAddr {sndSecure = True}
+
 queueAddr1 :: SMPQueueAddress
 queueAddr1 = queueAddr {smpServer = srv1}
 
@@ -53,8 +56,14 @@ queueAddrNoPort1 = queueAddr {smpServer = srv1 {port = ""}}
 queue :: SMPQueueUri
 queue = SMPQueueUri supportedSMPClientVRange queueAddr
 
+queueSK :: SMPQueueUri
+queueSK = SMPQueueUri supportedSMPClientVRange queueAddrSK
+
 queueStr :: ByteString
 queueStr = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-3&dh=" <> url testDhKeyStr <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"
+
+queueStrSK :: ByteString
+queueStrSK = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-3&dh=" <> url testDhKeyStr <> "&k=s" <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"
 
 queue1 :: SMPQueueUri
 queue1 = SMPQueueUri supportedSMPClientVRange queueAddr1
@@ -106,6 +115,9 @@ connReqData =
       crClientData = Nothing
     }
 
+connReqDataSK :: ConnReqUriData
+connReqDataSK = connReqData {crSmpQueues = [queueSK]}
+
 connReqData1 :: ConnReqUriData
 connReqData1 = connReqData {crSmpQueues = [queue1]}
 
@@ -135,6 +147,9 @@ testE2ERatchetParams12 = E2ERatchetParamsUri supportedE2EEncryptVRange testDhPub
 
 connectionRequest :: AConnectionRequestUri
 connectionRequest = ACR SCMInvitation $ CRInvitationUri connReqData testE2ERatchetParams
+
+connectionRequestSK :: AConnectionRequestUri
+connectionRequestSK = ACR SCMInvitation $ CRInvitationUri connReqDataSK testE2ERatchetParams
 
 connectionRequestV1 :: AConnectionRequestUri
 connectionRequestV1 = ACR SCMInvitation $ CRInvitationUri connReqDataV1 testE2ERatchetParams
@@ -195,6 +210,7 @@ connectionRequestTests =
     it "should serialize and parse SMP queue URIs" $ do
       queue #==# queueStr
       queue #== ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=1-3&extra_param=abc&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion")
+      queueSK #==# queueStrSK
       queue1 #==# queue1Str
       queueNew #==# queueNewStr
       queueNew #== queueNewStr'
@@ -211,6 +227,7 @@ connectionRequestTests =
     it "should serialize and parse connection invitations and contact addresses" $ do
       connectionRequest #==# ("simplex:/invitation#/?v=2-6&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
       connectionRequest #== ("https://simplex.chat/invitation#/?v=2-6&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequestSK #==# ("simplex:/invitation#/?v=2-6&smp=" <> url queueStrSK <> "&e2e=" <> testE2ERatchetParamsStrUri)
       connectionRequest1 #==# ("simplex:/invitation#/?v=2-6&smp=" <> url queue1Str <> "&e2e=" <> testE2ERatchetParamsStrUri)
       connectionRequest2queues #==# ("simplex:/invitation#/?v=2-6&smp=" <> url (queueStr <> ";" <> queueStr) <> "&e2e=" <> testE2ERatchetParamsStrUri)
       connectionRequestNew #==# ("simplex:/invitation#/?v=2-6&smp=" <> url queueNewStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
