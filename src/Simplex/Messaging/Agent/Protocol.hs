@@ -526,16 +526,22 @@ instance FromJSON RcvSwitchStatus where
 data SndSwitchStatus
   = SSSendingQKEY
   | SSSendingQTEST
+  | SSSecuringQueue
+  | SSSendingQSEC
   deriving (Eq, Show)
 
 instance StrEncoding SndSwitchStatus where
   strEncode = \case
     SSSendingQKEY -> "sending_qkey"
     SSSendingQTEST -> "sending_qtest"
+    SSSecuringQueue -> "securing_queue"
+    SSSendingQSEC -> "sending_qsec"
   strP =
     A.takeTill (== ' ') >>= \case
       "sending_qkey" -> pure SSSendingQKEY
       "sending_qtest" -> pure SSSendingQTEST
+      "securing_queue" -> pure SSSecuringQueue
+      "sending_qsec" -> pure SSSendingQSEC
       _ -> fail "bad SndSwitchStatus"
 
 instance ToField SndSwitchStatus where toField = toField . decodeLatin1 . strEncode
@@ -795,6 +801,7 @@ data AgentMessageType
   | AM_QCONT_
   | AM_QADD_
   | AM_QKEY_
+  | AM_QSEC_
   | AM_QUSE_
   | AM_QTEST_
   | AM_EREADY_
@@ -811,6 +818,7 @@ instance Encoding AgentMessageType where
     AM_QCONT_ -> "QC"
     AM_QADD_ -> "QA"
     AM_QKEY_ -> "QK"
+    AM_QSEC_ -> "QS"
     AM_QUSE_ -> "QU"
     AM_QTEST_ -> "QT"
     AM_EREADY_ -> "E"
@@ -827,6 +835,7 @@ instance Encoding AgentMessageType where
           'C' -> pure AM_QCONT_
           'A' -> pure AM_QADD_
           'K' -> pure AM_QKEY_
+          'S' -> pure AM_QSEC_
           'U' -> pure AM_QUSE_
           'T' -> pure AM_QTEST_
           _ -> fail "bad AgentMessageType"
@@ -849,6 +858,7 @@ agentMessageType = \case
     A_QCONT _ -> AM_QCONT_
     QADD _ -> AM_QADD_
     QKEY _ -> AM_QKEY_
+    QSEC _ -> AM_QSEC_
     QUSE _ -> AM_QUSE_
     QTEST _ -> AM_QTEST_
     EREADY _ -> AM_EREADY_
@@ -873,6 +883,7 @@ data AMsgType
   | A_QCONT_
   | QADD_
   | QKEY_
+  | QSEC_
   | QUSE_
   | QTEST_
   | EREADY_
@@ -886,6 +897,7 @@ instance Encoding AMsgType where
     A_QCONT_ -> "QC"
     QADD_ -> "QA"
     QKEY_ -> "QK"
+    QSEC_ -> "QS"
     QUSE_ -> "QU"
     QTEST_ -> "QT"
     EREADY_ -> "E"
@@ -899,6 +911,7 @@ instance Encoding AMsgType where
           'C' -> pure A_QCONT_
           'A' -> pure QADD_
           'K' -> pure QKEY_
+          'S' -> pure QSEC_
           'U' -> pure QUSE_
           'T' -> pure QTEST_
           _ -> fail "bad AMsgType"
@@ -921,6 +934,10 @@ data AMessage
     QADD (NonEmpty (SMPQueueUri, Maybe SndQAddr))
   | -- key to secure the added queues and agree e2e encryption key (sent by sender)
     QKEY (NonEmpty (SMPQueueInfo, SndPublicAuthKey))
+  | -- sent by the sender who secured the queue with SKEY (SMP protocol v9).
+    -- This message is needed to agree shared secret - it completes switching.
+    -- This message requires a new envelope that is sent together with public DH key.
+    QSEC (NonEmpty SMPQueueInfo)
   | -- inform that the queues are ready to use (sent by recipient)
     QUSE (NonEmpty (SndQAddr, Bool))
   | -- sent by the sender to test new queues and to complete switching
@@ -977,6 +994,7 @@ instance Encoding AMessage where
     A_QCONT addr -> smpEncode (A_QCONT_, addr)
     QADD qs -> smpEncode (QADD_, qs)
     QKEY qs -> smpEncode (QKEY_, qs)
+    QSEC qs -> smpEncode (QSEC_, qs)
     QUSE qs -> smpEncode (QUSE_, qs)
     QTEST qs -> smpEncode (QTEST_, qs)
     EREADY lastDecryptedMsgId -> smpEncode (EREADY_, lastDecryptedMsgId)
@@ -989,6 +1007,7 @@ instance Encoding AMessage where
         A_QCONT_ -> A_QCONT <$> smpP
         QADD_ -> QADD <$> smpP
         QKEY_ -> QKEY <$> smpP
+        QSEC_ -> QSEC <$> smpP
         QUSE_ -> QUSE <$> smpP
         QTEST_ -> QTEST <$> smpP
         EREADY_ -> EREADY <$> smpP

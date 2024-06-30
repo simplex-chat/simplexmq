@@ -31,11 +31,17 @@ These are the proposed changes:
 5. Accepting client will secure the messaging queue before sending the confirmation to it.
 6. Initiating client will secure the messaging queue before sending the confirmation.
 
-See [this sequence diagram](../protocol/diagrams/duplex-messaging/duplex-creating-v6.mmd) for the updated handshake protocol.
+See [this sequence diagram](../protocol/diagrams/duplex-messaging/duplex-creating-fast.mmd) for the updated handshake protocol.
 
 Changes to threat model: the attacker who compromised TLS and knows the queue address can block the connection, as the protocol no longer requires the recipient to decrypt the confirmation to secure the queue.
 
 Possibly, "fast connection" should be an option in Privacy & security settings.
+
+## Queue rotation
+
+It is possible to design a faster connection rotation protocol that also uses only 2 instead of 4 messages, QADD and SMP confirmation (to agree per-queue encryption) - it would require to stop delivery to the old queue as soon as QSEC message is sent, without any additional test messages.
+
+It would also require sending a new message envelope with the DH key in the public header instead of the usual confirmation message or a normal message.
 
 ## Implementation questions
 

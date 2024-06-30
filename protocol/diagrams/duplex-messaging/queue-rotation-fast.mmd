@@ -9,8 +9,8 @@ sequenceDiagram
   A ->> S: SEND: QADD (R'): send address<br>of the new queue(s)
   S ->> B: MSG: QADD (R')
   B ->> R': SKEY: secure new queue
-  B ->> R': SEND: QTEST
-  R' ->> A: MSG: QTEST
+  B ->> R': SEND: QSEC: to agree shared secret
+  R' ->> A: MSG: QSEC
   A ->> R: DEL: delete the old queue
   B ->> R': SEND: send messages to the new queue
   R' ->> A: MSG: receive messages from the new queue
