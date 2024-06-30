@@ -1026,7 +1026,27 @@ withSMPClient c q cmdStr action = do
   withLogClient c tSess (queueId q) cmdStr $ action . connectedClient
 
 sendOrProxySMPMessage :: AgentClient -> UserId -> SMPServer -> ByteString -> Maybe SMP.SndPrivateAuthKey -> SMP.SenderId -> MsgFlags -> SMP.MsgBody -> AM (Maybe SMPServer)
-sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
+sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg =
+  sendOrProxySMPCommand c userId destSrv cmdStr senderId sendViaProxy sendDirectly
+  where
+    sendViaProxy smp proxySess = do
+      atomically $ incSMPServerStat c userId destSrv sentViaProxyAttempts
+      atomically $ incSMPServerStat c userId (protocolClientServer' smp) sentProxiedAttempts
+      proxySMPMessage smp proxySess spKey_ senderId msgFlags msg
+    sendDirectly smp = do
+      atomically $ incSMPServerStat c userId destSrv sentDirectAttempts
+      sendSMPMessage smp spKey_ senderId msgFlags msg
+
+sendOrProxySMPCommand ::
+  AgentClient ->
+  UserId ->
+  SMPServer ->
+  ByteString ->
+  SMP.SenderId ->
+  (SMPClient -> ProxiedRelay -> ExceptT SMPClientError IO (Either ProxyClientError ())) ->
+  (SMPClient -> ExceptT SMPClientError IO ()) ->
+  AM (Maybe SMPServer)
+sendOrProxySMPCommand c userId destSrv cmdStr senderId sendCmdViaProxy sendCmdDirectly = do
   sess <- liftIO $ mkTransportSession c userId destSrv senderId
   ifM (atomically shouldUseProxy) (sendViaProxy sess) (sendDirectly sess $> Nothing)
   where
@@ -1048,10 +1068,7 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
     unknownServer = maybe True (all ((destSrv /=) . protoServer)) <$> TM.lookup userId (userServers c)
     sendViaProxy destSess@(_, _, qId) = do
       r <- tryAgentError . withProxySession c destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess) -> do
-        r' <- liftClient SMP (clientServer smp) $ do
-          atomically $ incSMPServerStat c userId destSrv sentViaProxyAttempts
-          atomically $ incSMPServerStat c userId (protocolClientServer' smp) sentProxiedAttempts
-          proxySMPMessage smp proxySess spKey_ senderId msgFlags msg
+        r' <- liftClient SMP (clientServer smp) $ sendCmdViaProxy smp proxySess
         case r' of
           Right () -> pure . Just $ protocolClientServer' smp
           Left proxyErr -> do
@@ -1089,11 +1106,7 @@ sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg = do
           | otherwise -> throwE e
     sendDirectly tSess =
       withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) -> do
-        r <-
-          tryAgentError $
-            liftClient SMP (clientServer smp) $ do
-              atomically $ incSMPServerStat c userId destSrv sentDirectAttempts
-              sendSMPMessage smp spKey_ senderId msgFlags msg
+        r <- tryAgentError $ liftClient SMP (clientServer smp) $ sendCmdDirectly smp
         case r of
           Right () -> atomically $ incSMPServerStat c userId destSrv sentDirect
           Left e -> throwE e
@@ -1536,9 +1549,12 @@ secureQueue c rq@RcvQueue {rcvId, rcvPrivateKey} senderKey =
     secureSMPQueue smp rcvPrivateKey rcvId senderKey
 
 secureSndQueue :: AgentClient -> SndQueue -> AM ()
-secureSndQueue c sq@SndQueue {sndId, sndPrivateKey, sndPublicKey} =
-  withSMPClient c sq "SKEY <key>" $ \smp ->
-    secureSndSMPQueue smp sndPrivateKey sndId sndPublicKey
+secureSndQueue c SndQueue {userId, server, sndId, sndPrivateKey, sndPublicKey} =
+  void $ sendOrProxySMPCommand c userId server "SKEY <key>" sndId secureViaProxy secureDirectly
+  where
+    -- TODO track statistics
+    secureViaProxy smp proxySess = proxySecureSndSMPQueue smp proxySess sndPrivateKey sndId sndPublicKey
+    secureDirectly smp = secureSndSMPQueue smp sndPrivateKey sndId sndPublicKey
 
 enableQueueNotifications :: AgentClient -> RcvQueue -> SMP.NtfPublicAuthKey -> SMP.RcvNtfPublicDhKey -> AM (SMP.NotifierId, SMP.RcvNtfPublicDhKey)
 enableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} notifierKey rcvNtfPublicDhKey =

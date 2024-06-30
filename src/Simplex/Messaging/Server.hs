@@ -70,7 +70,7 @@ import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, forwardSMPMessage, smpProxyError, temporaryClientError)
+import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, forwardSMPTransmission, smpProxyError, temporaryClientError)
 import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -742,7 +742,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             inc own pRequests
             if v >= sendingProxySMPVersion
               then forkProxiedCmd $ do
-                liftIO (runExceptT (forwardSMPMessage smp corrId fwdV pubKey encBlock) `catch` (pure . Left . PCEIOError))  >>= \case
+                liftIO (runExceptT (forwardSMPTransmission smp corrId fwdV pubKey encBlock) `catch` (pure . Left . PCEIOError))  >>= \case
                   Right r -> PRES r <$ inc own pSuccesses
                   Left e -> ERR (smpProxyError e) <$ case e of
                     PCEProtocolError {} -> inc own pSuccesses
@@ -1095,16 +1095,13 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             t :| [] -> pure $ tDecodeParseValidate clntTHParams t
             _ -> throwE BLOCK
           let clntThAuth = Just $ THAuthServer {serverPrivKey, sessSecret' = Just clientSecret}
-          -- process forwarded SEND
+          -- process forwarded command
           r <-
             lift (rejectOrVerify clntThAuth t') >>= \case
               Left r -> pure r
-              Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
-                Cmd SSender SEND {} ->
-                  -- Left will not be returned by processCommand, as only SEND command is allowed
-                  fromMaybe (corrId', entId', ERR INTERNAL) <$> lift (processCommand t'')
-                _ ->
-                  pure (corrId', entId', ERR $ CMD PROHIBITED)
+              -- rejectOrVerify filters allowed commands, no need to repeat it here.
+              -- INTERNAL is used because processCommand never returns Nothing for sender commands (could be extracted for better types).
+              Right t''@(_, (corrId', entId', _)) -> fromMaybe (corrId', entId', ERR INTERNAL) <$> lift (processCommand t'')
           -- encode response
           r' <- case batchTransmissions (batch clntTHParams) (blockSize clntTHParams) [Right (Nothing, encodeTransmission clntTHParams r)] of
             [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right
@@ -1112,7 +1109,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             TBTransmission b' _ : _ -> pure b'
             TBTransmissions b' _ _ : _ -> pure b'
           -- encrypt to client
-          r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedMsgLength
+          r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedTLength
           -- encrypt to proxy
           let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
               r3 = EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
@@ -1124,13 +1121,17 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             rejectOrVerify clntThAuth (tAuth, authorized, (corrId', entId', cmdOrError)) =
               case cmdOrError of
                 Left e -> pure $ Left (corrId', entId', ERR e)
-                Right cmd'@(Cmd SSender SEND {}) -> verified <$> verifyTransmission ((,C.cbNonce (bs corrId')) <$> clntThAuth) tAuth authorized entId' cmd'
+                Right cmd'
+                  | allowed -> verified <$> verifyTransmission ((,C.cbNonce (bs corrId')) <$> clntThAuth) tAuth authorized entId' cmd'
+                  | otherwise -> pure $ Left (corrId', entId', ERR $ CMD PROHIBITED)
                   where
+                    allowed = case cmd' of
+                      Cmd SSender SEND {} -> True
+                      Cmd SSender (SKEY _) -> True
+                      _ -> False
                     verified = \case
                       VRVerified qr -> Right (qr, (corrId', entId', cmd'))
                       VRFailed -> Left (corrId', entId', ERR AUTH)
-                Right _ -> pure $ Left (corrId', entId', ERR $ CMD PROHIBITED)
-
         deliverMessage :: T.Text -> QueueRec -> RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> M (Transmission BrokerMsg)
         deliverMessage name qr rId sub q msg_ = time (name <> " deliver") $ do
           readTVarIO sub >>= \case

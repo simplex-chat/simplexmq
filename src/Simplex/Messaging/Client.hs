@@ -48,6 +48,7 @@ module Simplex.Messaging.Client
     subscribeSMPQueuesNtfs,
     secureSMPQueue,
     secureSndSMPQueue,
+    proxySecureSndSMPQueue,
     enableSMPQueueNotifications,
     disableSMPQueueNotifications,
     enableSMPQueuesNtfs,
@@ -59,7 +60,7 @@ module Simplex.Messaging.Client
     deleteSMPQueues,
     connectSMPProxiedRelay,
     proxySMPMessage,
-    forwardSMPMessage,
+    forwardSMPTransmission,
     getSMPQueueInfo,
     sendProtocolCommand,
 
@@ -736,6 +737,10 @@ secureSndSMPQueue :: SMPClient -> SndPrivateAuthKey -> SenderId -> SndPublicAuth
 secureSndSMPQueue c spKey sId senderKey = okSMPCommand (SKEY senderKey) c spKey sId
 {-# INLINE secureSndSMPQueue #-}
 
+proxySecureSndSMPQueue :: SMPClient -> ProxiedRelay -> SndPrivateAuthKey -> SenderId -> SndPublicAuthKey -> ExceptT SMPClientError IO (Either ProxyClientError ())
+proxySecureSndSMPQueue c proxiedRelay spKey sId senderKey = proxySMPCommand c proxiedRelay (Just spKey) sId (SKEY senderKey)
+{-# INLINE proxySecureSndSMPQueue #-}
+
 -- | Enable notifications for the queue for push notifications server.
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#enable-notifications-command
@@ -775,6 +780,9 @@ sendSMPMessage c spKey sId flags msg =
   sendSMPCommand c spKey sId (SEND flags msg) >>= \case
     OK -> pure ()
     r -> throwE $ unexpectedResponse r
+
+proxySMPMessage :: SMPClient -> ProxiedRelay -> Maybe SndPrivateAuthKey -> SenderId -> MsgFlags -> MsgBody -> ExceptT SMPClientError IO (Either ProxyClientError ())
+proxySMPMessage c proxiedRelay spKey sId flags msg = proxySMPCommand c proxiedRelay spKey sId (SEND flags msg)
 
 -- | Acknowledge message delivery (server deletes the message).
 --
@@ -877,24 +885,24 @@ instance StrEncoding ProxyClientError where
 -- 8) PFWD(SEND) -> WTF  -> ProxyUnexpectedResponse - client/proxy protocol logic
 -- 9) PFWD(SEND) -> ???  -> ProxyResponseError - client/proxy syntax
 --
--- We report as proxySMPMessage error (ExceptT error) the errors of two kinds:
+-- We report as proxySMPCommand error (ExceptT error) the errors of two kinds:
 -- - protocol errors from the destination relay wrapped in PRES - to simplify processing of AUTH and QUOTA errors, in this case proxy is "transparent" for such errors (PCEProtocolError, PCEUnexpectedResponse, PCEResponseError)
 -- - other response/transport/connection errors from the client connected to proxy itself
 -- Other errors are reported in the function result as `Either ProxiedRelayError ()`, including
 -- - protocol  errors from the client connected to proxy in ProxyClientError (PCEProtocolError, PCEUnexpectedResponse, PCEResponseError)
 -- - other errors from the client running on proxy and connected to relay in PREProxiedRelayError
 
-proxySMPMessage ::
+-- This function proxies Sender commands that return OK or ERR
+proxySMPCommand ::
   SMPClient ->
   -- proxy session from PKEY
   ProxiedRelay ->
   -- message to deliver
   Maybe SndPrivateAuthKey ->
   SenderId ->
-  MsgFlags ->
-  MsgBody ->
+  Command 'Sender ->
   ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g, tcpTimeout}} (ProxiedRelay sessionId v serverKey) spKey sId flags msg = do
+proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g, tcpTimeout}} (ProxiedRelay sessionId v serverKey) spKey sId command = do
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
       serverThParams = smpTHParamsSetVersion v proxyThParams {sessionId, thAuth = serverThAuth}
@@ -902,14 +910,14 @@ proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
   let cmdSecret = C.dh' serverKey cmdPrivKey
   nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
   -- encode
-  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId corrId, sId, Cmd SSender (SEND flags msg))
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId corrId, sId, Cmd SSender command)
   auth <- liftEitherWith PCETransportError $ authTransmission serverThAuth spKey nonce tForAuth
   b <- case batchTransmissions (batch serverThParams) (blockSize serverThParams) [Right (auth, tToSend)] of
     [] -> throwE $ PCETransportError TELargeMsg
     TBError e _ : _ -> throwE $ PCETransportError e
     TBTransmission s _ : _ -> pure s
     TBTransmissions s _ _ : _ -> pure s
-  et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedMsgLength
+  et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedTLength
   -- proxy interaction errors are wrapped
   let tOut = Just $ 2 * tcpTimeout
   tryE (sendProtocolCommand_ c (Just nonce) tOut Nothing sessionId (Cmd SProxiedClient (PFWD v cmdPubKey et))) >>= \case
@@ -937,8 +945,8 @@ proxySMPMessage c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
 -- sends RFWD :: EncFwdTransmission -> Command Sender
 -- receives RRES :: EncFwdResponse -> BrokerMsg
 -- proxy should send PRES to the client with EncResponse
-forwardSMPMessage :: SMPClient -> CorrId -> VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
-forwardSMPMessage c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdVersion fwdKey fwdTransmission = do
+forwardSMPTransmission :: SMPClient -> CorrId -> VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
+forwardSMPTransmission c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdVersion fwdKey fwdTransmission = do
   -- prepare params
   sessSecret <- case thAuth thParams of
     Nothing -> throwE $ PCETransportError TENoServerAuth
