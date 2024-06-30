@@ -135,7 +135,6 @@ import Data.Either (isRight, rights)
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
 import Data.Functor.Identity
-import Data.Int (Int64)
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -1484,7 +1483,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
       forM_ (L.nonEmpty msgIds_) $ \msgIds -> do
         notify $ MERRS (L.map unId msgIds) err
         withStore' c $ \db -> forM_ msgIds $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False `catchAll_` pure ()
-      atomically $ incSMPServerStat' c userId server sentExpiredErrs (fromIntegral $ length msgIds_ + 1)
+      atomically $ incSMPServerStat' c userId server sentExpiredErrs (length msgIds_ + 1)
     delMsg :: InternalId -> AM ()
     delMsg = delMsgKeep False
     delMsgKeep :: Bool -> InternalId -> AM ()
@@ -1721,12 +1720,12 @@ deleteConnQueues c waitDelivery ntf rqs = do
   forM_ crs' $ \cId -> notify ("", cId, AEvt SAEConn DEL_CONN)
   pure crs
   where
-    countDelAttempts :: [RcvQueue] -> Map (UserId, SMPServer) Int64
+    countDelAttempts :: [RcvQueue] -> Map (UserId, SMPServer) Int
     countDelAttempts = foldr addAttempt M.empty
       where
         addAttempt RcvQueue {userId, server} =
           M.alter (Just . (+ 1) . fromMaybe 0) (userId, server)
-    countDelResults :: [(RcvQueue, Either AgentErrorType ())] -> Int -> Map (UserId, SMPServer) (Int64, Int64)
+    countDelResults :: [(RcvQueue, Either AgentErrorType ())] -> Int -> Map (UserId, SMPServer) (Int, Int)
     countDelResults rs maxErrs = foldr addRes M.empty rs
       where
         addRes (RcvQueue {userId, server}, Right ()) =

@@ -145,6 +145,7 @@ module Simplex.Messaging.Agent.Client
     incSMPServerStat',
     incXFTPServerStat,
     incXFTPServerStat',
+    incXFTPServerSizeStat,
     AgentWorkersDetails (..),
     getAgentWorkersDetails,
     AgentWorkersSummary (..),
@@ -1405,7 +1406,7 @@ subscribeQueues c qs = do
     subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
     subscribeQueues_ env session smp qs' = do
       let (userId, srv, _) = transportSession' smp
-      atomically $ incSMPServerStat' c userId srv connSubAttempts (fromIntegral $ length qs')
+      atomically $ incSMPServerStat' c userId srv connSubAttempts $ length qs'
       rs <- sendBatch subscribeSMPQueues smp qs'
       let (successes, errs) = countSubResults rs
       atomically $ incSMPServerStat' c userId srv connSubscribed successes
@@ -1422,7 +1423,7 @@ subscribeQueues c qs = do
           logWarn "subcription batch result for replaced SMP client, resubscribing"
           resubscribe $> L.map (second $ \_ -> Left PCENetworkError) rs
       where
-        countSubResults :: NonEmpty (RcvQueue, Either SMPClientError ()) -> (Int64, Int64)
+        countSubResults :: NonEmpty (RcvQueue, Either SMPClientError ()) -> (Int, Int)
         countSubResults = foldr addRes (0, 0)
           where
             addRes (_, Right ()) (successes, errs) = (successes + 1, errs)
@@ -1965,10 +1966,10 @@ withNextSrv c userId usedSrvs initUsed action = do
     writeTVar usedSrvs $! used'
   action srvAuth
 
-incSMPServerStat :: AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int64) -> STM ()
+incSMPServerStat :: AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int) -> STM ()
 incSMPServerStat c userId srv sel = incSMPServerStat' c userId srv sel 1
 
-incSMPServerStat' :: AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int64) -> Int64 -> STM ()
+incSMPServerStat' :: AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int) -> Int -> STM ()
 incSMPServerStat' AgentClient {smpServersStats} userId srv sel n = do
   TM.lookup (userId, srv) smpServersStats >>= \case
     Just v -> modifyTVar' (sel v) (+ n)
@@ -1977,11 +1978,20 @@ incSMPServerStat' AgentClient {smpServersStats} userId srv sel n = do
       modifyTVar' (sel newStats) (+ n)
       TM.insert (userId, srv) newStats smpServersStats
 
-incXFTPServerStat :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int64) -> STM ()
-incXFTPServerStat c userId srv sel = incXFTPServerStat' c userId srv sel 1
+incXFTPServerStat :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int) -> STM ()
+incXFTPServerStat c userId srv sel = incXFTPServerStat_ c userId srv sel 1
+{-# INLINE incXFTPServerStat #-}
 
-incXFTPServerStat' :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int64) -> Int64 -> STM ()
-incXFTPServerStat' AgentClient {xftpServersStats} userId srv sel n = do
+incXFTPServerStat' :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int) -> Int -> STM ()
+incXFTPServerStat' = incXFTPServerStat_
+{-# INLINE incXFTPServerStat' #-}
+
+incXFTPServerSizeStat :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int64) -> Int64 -> STM ()
+incXFTPServerSizeStat = incXFTPServerStat_
+{-# INLINE incXFTPServerSizeStat #-}
+
+incXFTPServerStat_ :: Num n => AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar n) -> n -> STM ()
+incXFTPServerStat_ AgentClient {xftpServersStats} userId srv sel n = do
   TM.lookup (userId, srv) xftpServersStats >>= \case
     Just v -> modifyTVar' (sel v) (+ n)
     Nothing -> do
