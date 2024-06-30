@@ -112,6 +112,7 @@ import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
+import System.IO.Error (isEOFError)
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -335,11 +336,12 @@ instance Transport TLS where
 
   getLn :: TLS -> IO ByteString
   getLn TLS {tlsContext, tlsBuffer} = do
-    getLnBuffered tlsBuffer (T.recvData tlsContext) `E.catch` handleEOF
+    getLnBuffered tlsBuffer (T.recvData tlsContext) `E.catches` [E.Handler handleTlsEOF, E.Handler handleEOF]
     where
-      handleEOF = \case
-        T.Error_EOF -> E.throwIO TEBadBlock
+      handleTlsEOF = \case
+        T.PostHandshake T.Error_EOF -> E.throwIO TEBadBlock
         e -> E.throwIO e
+      handleEOF e = if isEOFError e then E.throwIO TEBadBlock else E.throwIO e
 
 -- * SMP transport
 
