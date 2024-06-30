@@ -311,7 +311,7 @@ functionalAPITests t = do
       testAllowConnectionClientRestart t
   describe "Message delivery" $ do
     describe "update connection agent version on received messages" $ do
-      fit "should increase if compatible, shouldn't decrease" $
+      it "should increase if compatible, shouldn't decrease" $
         testIncreaseConnAgentVersion t
       it "should increase to max compatible version" $
         testIncreaseConnAgentVersionMaxCompatible t
@@ -320,7 +320,7 @@ functionalAPITests t = do
     -- TODO PQ tests for upgrading connection to PQ encryption
     it "should deliver message after client restart" $
       testDeliverClientRestart t
-    fit "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
+    it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
       testDuplicateMessage t
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages t
@@ -334,9 +334,9 @@ functionalAPITests t = do
       it "should expire one message if quota is exceeded" $ testExpireMessageQuota t
       it "should expire multiple messages if quota is exceeded" $ testExpireManyMessagesQuota t
     describe "Ratchet synchronization" $ do
-      fit "should report ratchet de-synchronization, synchronize ratchets" $
+      it "should report ratchet de-synchronization, synchronize ratchets" $
         testRatchetSync t
-      fit "should synchronize ratchets after server being offline" $
+      it "should synchronize ratchets after server being offline" $
         testRatchetSyncServerOffline t
       it "should synchronize ratchets after client restart" $
         testRatchetSyncClientRestart t
