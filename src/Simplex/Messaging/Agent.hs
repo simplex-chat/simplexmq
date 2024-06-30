@@ -2275,7 +2275,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                           Right (Just (msgId, msgMeta, aMessage, rcPrev)) -> do
                             conn'' <- resetRatchetSync
                             case aMessage of
-                              HELLO -> helloMsg srvMsgId msgMeta conn'' rq >> ackDel msgId
+                              HELLO -> helloMsg srvMsgId msgMeta conn'' >> ackDel msgId
                               -- note that there is no ACK sent for A_MSG, it is sent with agent's user ACK command
                               A_MSG body -> do
                                 logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret srvMsgId
@@ -2486,8 +2486,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                 _ -> prohibited "conf: incorrect state"
               _ -> prohibited "conf: status /= new"
 
-          helloMsg :: SMP.MsgId -> MsgMeta -> Connection c -> RcvQueue -> AM ()
-          helloMsg srvMsgId MsgMeta {pqEncryption} conn' RcvQueue {server} = do
+          helloMsg :: SMP.MsgId -> MsgMeta -> Connection c -> AM ()
+          helloMsg srvMsgId MsgMeta {pqEncryption} conn' = do
             logServer "<--" c srv rId $ "MSG <HELLO>:" <> logSecret srvMsgId
             case status of
               Active -> prohibited "hello: active"
@@ -2498,7 +2498,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                     -- this branch is executed by the accepting party in duplexHandshake mode (v2)
                     -- (was executed by initiating party in v1 that is no longer supported)
                     | sndStatus == Active -> do
-                        atomically $ incSMPServerStat c userId server connCompleted
+                        atomically $ incSMPServerStat c userId (qServer rq) connCompleted
                         notify $ CON pqEncryption
                     | otherwise -> enqueueDuplexHello sq
                   _ -> pure ()
