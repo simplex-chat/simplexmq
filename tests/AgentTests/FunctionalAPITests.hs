@@ -969,6 +969,7 @@ testIncreaseConnAgentVersion t = do
     -- version increases if compatible
 
     disposeAgentClient bob
+    threadDelay 250000
     bob2 <- getSMPAgentClient' 4 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
 
     runRight_ $ do
@@ -990,6 +991,7 @@ testIncreaseConnAgentVersion t = do
       checkVersion bob2 aliceId 3
 
     disposeAgentClient bob2
+    threadDelay 250000
     bob3 <- getSMPAgentClient' 6 agentCfg {smpAgentVRange = mkVersionRange 1 1} initAgentServers testDB2
 
     runRight_ $ do
