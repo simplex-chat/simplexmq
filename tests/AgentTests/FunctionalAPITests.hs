@@ -1022,8 +1022,10 @@ testIncreaseConnAgentVersionMaxCompatible t = do
     -- version increases to max compatible
 
     disposeAgentClient alice
+    threadDelay 250000
     alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
     disposeAgentClient bob
+    threadDelay 250000
     bob2 <- getSMPAgentClient' 4 agentCfg {smpAgentVRange = supportedSMPAgentVRange} initAgentServers testDB2
 
     runRight_ $ do
