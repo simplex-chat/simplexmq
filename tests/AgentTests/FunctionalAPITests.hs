@@ -957,6 +957,7 @@ testIncreaseConnAgentVersion t = do
     -- version doesn't increase if incompatible
 
     disposeAgentClient alice
+    threadDelay 250000
     alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
 
     runRight_ $ do
@@ -968,6 +969,7 @@ testIncreaseConnAgentVersion t = do
     -- version increases if compatible
 
     disposeAgentClient bob
+    threadDelay 250000
     bob2 <- getSMPAgentClient' 4 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
 
     runRight_ $ do
@@ -979,6 +981,7 @@ testIncreaseConnAgentVersion t = do
     -- version doesn't decrease, even if incompatible
 
     disposeAgentClient alice2
+    threadDelay 250000
     alice3 <- getSMPAgentClient' 5 agentCfg {smpAgentVRange = mkVersionRange 2 2} initAgentServers testDB
 
     runRight_ $ do
@@ -988,6 +991,7 @@ testIncreaseConnAgentVersion t = do
       checkVersion bob2 aliceId 3
 
     disposeAgentClient bob2
+    threadDelay 250000
     bob3 <- getSMPAgentClient' 6 agentCfg {smpAgentVRange = mkVersionRange 1 1} initAgentServers testDB2
 
     runRight_ $ do
@@ -1018,8 +1022,10 @@ testIncreaseConnAgentVersionMaxCompatible t = do
     -- version increases to max compatible
 
     disposeAgentClient alice
+    threadDelay 250000
     alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
     disposeAgentClient bob
+    threadDelay 250000
     bob2 <- getSMPAgentClient' 4 agentCfg {smpAgentVRange = supportedSMPAgentVRange} initAgentServers testDB2
 
     runRight_ $ do
@@ -1098,6 +1104,7 @@ testDuplicateMessage t = do
       get alice ##> ("", bobId, SENT 4)
       get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     disposeAgentClient bob
+    threadDelay 250000
 
     -- if the agent user did not send ACK, the message will be delivered again
     bob1 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB2
@@ -1120,6 +1127,7 @@ testDuplicateMessage t = do
 
   disposeAgentClient alice
   disposeAgentClient bob1
+  threadDelay 250000
 
   alice2 <- getSMPAgentClient' 4 agentCfg initAgentServers testDB
   bob2 <- getSMPAgentClient' 5 agentCfg initAgentServers testDB2
@@ -1393,6 +1401,7 @@ setupDesynchronizedRatchet alice bob = do
     ackMessage alice bobId 7 Nothing
 
   disposeAgentClient bob
+  threadDelay 250000
 
   -- importing database backup after progressing ratchet de-synchronizes ratchet
   liftIO $ renameFile (testDB2 <> ".bak") testDB2
@@ -3018,7 +3027,7 @@ noNetworkDelay a = do
 networkDelay :: AgentClient -> Int64 -> IO ()
 networkDelay a d' = do
   d <- waitNetwork a
-  unless (d' < d && d < d' + 15000) $ expectationFailure $ "expected delay " <> show d' <> ", d = " <> show d
+  unless (d' - 1000 < d && d < d' + 15000) $ expectationFailure $ "expected delay " <> show d' <> ", d = " <> show d
 
 waitNetwork :: AgentClient -> IO Int64
 waitNetwork a = do

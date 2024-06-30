@@ -111,9 +111,6 @@ module Simplex.Messaging.Agent
     execAgentStoreSQL,
     getAgentMigrations,
     debugAgentLocks,
-    getAgentStats,
-    resetAgentStats,
-    getMsgCounts,
     getAgentSubscriptions,
     logConnection,
   )
@@ -126,7 +123,7 @@ import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
-import Data.Bifunctor (bimap, first, second)
+import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::), (.::.))
@@ -590,16 +587,6 @@ rcDiscoverCtrl AgentClient {agentEnv = Env {multicastSubscribers = subs}} = with
 resetAgentServersStats :: AgentClient -> AE ()
 resetAgentServersStats c = withAgentEnv c $ resetAgentServersStats' c
 {-# INLINE resetAgentServersStats #-}
-
-getAgentStats :: AgentClient -> IO [(AgentStatsKey, Int)]
-getAgentStats c = readTVarIO (agentStats c) >>= mapM (\(k, cnt) -> (k,) <$> readTVarIO cnt) . M.assocs
-
-resetAgentStats :: AgentClient -> IO ()
-resetAgentStats = atomically . TM.clear . agentStats
-{-# INLINE resetAgentStats #-}
-
-getMsgCounts :: AgentClient -> IO [(ConnId, (Int, Int))] -- (total, duplicates)
-getMsgCounts c = readTVarIO (msgCounts c) >>= mapM (\(connId, cnt) -> (connId,) <$> readTVarIO cnt) . M.assocs
 
 withAgentEnv' :: AgentClient -> AM' a -> IO a
 withAgentEnv' c = (`runReaderT` agentEnv c)
@@ -2246,7 +2233,6 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                           _ -> pure ()
                         let encryptedMsgHash = C.sha256Hash encAgentMessage
                         g <- asks random
-                        atomically updateTotalMsgCount
                         tryAgentError (agentClientMsg g encryptedMsgHash) >>= \case
                           Right (Just (msgId, msgMeta, aMessage, rcPrev)) -> do
                             conn'' <- resetRatchetSync
@@ -2280,7 +2266,6 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                                 | otherwise = pure conn'
                           Right Nothing -> prohibited "msg: bad agent msg" >> ack
                           Left e@(AGENT A_DUPLICATE) -> do
-                            atomically updateDupMsgCount
                             atomically $ incSMPServerStat c userId srv recvDuplicates
                             withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
                               Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
@@ -2315,20 +2300,6 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
                           checkDuplicateHash e encryptedMsgHash =
                             unlessM (withStore' c $ \db -> checkRcvMsgHashExists db connId encryptedMsgHash) $
                               throwE e
-                          updateTotalMsgCount :: STM ()
-                          updateTotalMsgCount =
-                            TM.lookup connId (msgCounts c) >>= \case
-                              Just v -> modifyTVar' v $ first (+ 1)
-                              Nothing -> addMsgCount 0
-                          updateDupMsgCount :: STM ()
-                          updateDupMsgCount =
-                            TM.lookup connId (msgCounts c) >>= \case
-                              Just v -> modifyTVar' v $ second (+ 1)
-                              Nothing -> addMsgCount 1
-                          addMsgCount :: Int -> STM ()
-                          addMsgCount duplicate = do
-                            counts <- newTVar (1, duplicate)
-                            TM.insert connId counts (msgCounts c)
                           agentClientMsg :: TVar ChaChaDRG -> ByteString -> AM (Maybe (InternalId, MsgMeta, AMessage, CR.RatchetX448))
                           agentClientMsg g encryptedMsgHash = withStore c $ \db -> runExceptT $ do
                             rc <- ExceptT $ getRatchet db connId -- ratchet state pre-decryption - required for processing EREADY
