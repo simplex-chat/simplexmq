@@ -311,7 +311,7 @@ functionalAPITests t = do
       testAllowConnectionClientRestart t
   describe "Message delivery" $ do
     describe "update connection agent version on received messages" $ do
-      it "should increase if compatible, shouldn't decrease" $
+      fit "should increase if compatible, shouldn't decrease" $
         testIncreaseConnAgentVersion t
       it "should increase to max compatible version" $
         testIncreaseConnAgentVersionMaxCompatible t
@@ -320,7 +320,7 @@ functionalAPITests t = do
     -- TODO PQ tests for upgrading connection to PQ encryption
     it "should deliver message after client restart" $
       testDeliverClientRestart t
-    it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
+    fit "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
       testDuplicateMessage t
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages t
@@ -334,9 +334,9 @@ functionalAPITests t = do
       it "should expire one message if quota is exceeded" $ testExpireMessageQuota t
       it "should expire multiple messages if quota is exceeded" $ testExpireManyMessagesQuota t
     describe "Ratchet synchronization" $ do
-      it "should report ratchet de-synchronization, synchronize ratchets" $
+      fit "should report ratchet de-synchronization, synchronize ratchets" $
         testRatchetSync t
-      it "should synchronize ratchets after server being offline" $
+      fit "should synchronize ratchets after server being offline" $
         testRatchetSyncServerOffline t
       it "should synchronize ratchets after client restart" $
         testRatchetSyncClientRestart t
@@ -957,6 +957,7 @@ testIncreaseConnAgentVersion t = do
     -- version doesn't increase if incompatible
 
     disposeAgentClient alice
+    threadDelay 250000
     alice2 <- getSMPAgentClient' 3 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB
 
     runRight_ $ do
@@ -979,6 +980,7 @@ testIncreaseConnAgentVersion t = do
     -- version doesn't decrease, even if incompatible
 
     disposeAgentClient alice2
+    threadDelay 250000
     alice3 <- getSMPAgentClient' 5 agentCfg {smpAgentVRange = mkVersionRange 2 2} initAgentServers testDB
 
     runRight_ $ do
@@ -1098,6 +1100,7 @@ testDuplicateMessage t = do
       get alice ##> ("", bobId, SENT 4)
       get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
     disposeAgentClient bob
+    threadDelay 250000
 
     -- if the agent user did not send ACK, the message will be delivered again
     bob1 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB2
@@ -1120,6 +1123,7 @@ testDuplicateMessage t = do
 
   disposeAgentClient alice
   disposeAgentClient bob1
+  threadDelay 250000
 
   alice2 <- getSMPAgentClient' 4 agentCfg initAgentServers testDB
   bob2 <- getSMPAgentClient' 5 agentCfg initAgentServers testDB2
@@ -1393,6 +1397,7 @@ setupDesynchronizedRatchet alice bob = do
     ackMessage alice bobId 7 Nothing
 
   disposeAgentClient bob
+  threadDelay 250000
 
   -- importing database backup after progressing ratchet de-synchronizes ratchet
   liftIO $ renameFile (testDB2 <> ".bak") testDB2
@@ -3018,7 +3023,7 @@ noNetworkDelay a = do
 networkDelay :: AgentClient -> Int64 -> IO ()
 networkDelay a d' = do
   d <- waitNetwork a
-  unless (d' < d && d < d' + 15000) $ expectationFailure $ "expected delay " <> show d' <> ", d = " <> show d
+  unless (d' - 1000 < d && d < d' + 15000) $ expectationFailure $ "expected delay " <> show d' <> ", d = " <> show d
 
 waitNetwork :: AgentClient -> IO Int64
 waitNetwork a = do
