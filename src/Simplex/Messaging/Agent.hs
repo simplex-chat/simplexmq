@@ -106,7 +106,6 @@ module Simplex.Messaging.Agent
     rcDiscoverCtrl,
     getAgentServersSummary,
     resetAgentServersStats,
-    getAgentSubsSummary,
     foregroundAgent,
     suspendAgent,
     execAgentStoreSQL,
