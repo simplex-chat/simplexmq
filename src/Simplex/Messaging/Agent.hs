@@ -210,14 +210,14 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
     runAgentThreads c
       | backgroundMode = run c "subscriber" $ subscriber c
       | otherwise = do
-          restoreServersStats c
+          -- restoreServersStats c
           raceAny_
             [ run c "subscriber" $ subscriber c,
               run c "runNtfSupervisor" $ runNtfSupervisor c,
-              run c "cleanupManager" $ cleanupManager c,
-              run c "logServersStats" $ logServersStats c
+              run c "cleanupManager" $ cleanupManager c
+              -- run c "logServersStats" $ logServersStats c
             ]
-            `E.finally` saveServersStats c
+            -- `E.finally` saveServersStats c
     run AgentClient {subQ, acThread} name a =
       a `E.catchAny` \e -> whenM (isJust <$> readTVarIO acThread) $ do
         logError $ "Agent thread " <> name <> " crashed: " <> tshow e
@@ -234,12 +234,13 @@ logServersStats c = do
 
 saveServersStats :: AgentClient -> AM' ()
 saveServersStats c@AgentClient {subQ, smpServersStats, xftpServersStats} = do
-  sss <- mapM (lift . getAgentSMPServerStats) =<< readTVarIO smpServersStats
-  xss <- mapM (lift . getAgentXFTPServerStats) =<< readTVarIO xftpServersStats
-  let stats = AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss}
-  tryAgentError' (withStore' c (`updateServersStats` stats)) >>= \case
-    Left e -> atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ INTERNAL $ show e)
-    Right () -> pure ()
+  -- sss <- mapM (lift . getAgentSMPServerStats) =<< readTVarIO smpServersStats
+  -- xss <- mapM (lift . getAgentXFTPServerStats) =<< readTVarIO xftpServersStats
+  -- let stats = AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss}
+  -- tryAgentError' (withStore' c (`updateServersStats` stats)) >>= \case
+  --   Left e -> atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ INTERNAL $ show e)
+  --   Right () -> pure ()
+  pure ()
 
 restoreServersStats :: AgentClient -> AM' ()
 restoreServersStats c@AgentClient {smpServersStats, xftpServersStats, srvStatsStartedAt} = do

@@ -113,8 +113,8 @@ schemaMigrations =
     ("m20240124_file_redirect", m20240124_file_redirect, Just down_m20240124_file_redirect),
     ("m20240223_connections_wait_delivery", m20240223_connections_wait_delivery, Just down_m20240223_connections_wait_delivery),
     ("m20240225_ratchet_kem", m20240225_ratchet_kem, Just down_m20240225_ratchet_kem),
-    ("m20240417_rcv_files_approved_relays", m20240417_rcv_files_approved_relays, Just down_m20240417_rcv_files_approved_relays),
-    ("m20240518_servers_stats", m20240518_servers_stats, Just down_m20240518_servers_stats)
+    ("m20240417_rcv_files_approved_relays", m20240417_rcv_files_approved_relays, Just down_m20240417_rcv_files_approved_relays)
+    -- ("m20240518_servers_stats", m20240518_servers_stats, Just down_m20240518_servers_stats)
   ]
 
 -- | The list of migrations in ascending order by date
