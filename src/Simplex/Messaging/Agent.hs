@@ -210,7 +210,7 @@ getSMPAgentClient_ clientId cfg initServers store backgroundMode =
     runAgentThreads c
       | backgroundMode = run c "subscriber" $ subscriber c
       | otherwise = do
-          restoreServersStats c
+          -- restoreServersStats c
           raceAny_
             [ run c "subscriber" $ subscriber c,
               run c "runNtfSupervisor" $ runNtfSupervisor c,
