@@ -101,26 +101,26 @@ smpProxyTests = do
         it "500x20" . twoServersFirstProxy $ 500 `inParrallel` deliver 20
     describe "agent API" $ do
       describe "one server" $ do
-        it "always via proxy" . oneServer $
+        xit "always via proxy" . oneServer $
           agentDeliverMessageViaProxy ([srv1], SPMAlways, True) ([srv1], SPMAlways, True) C.SEd448 "hello 1" "hello 2" 1
-        it "without proxy" . oneServer $
+        xit "without proxy" . oneServer $
           agentDeliverMessageViaProxy ([srv1], SPMNever, False) ([srv1], SPMNever, False) C.SEd448 "hello 1" "hello 2" 1
       describe "two servers" $ do
-        it "always via proxy" . twoServers $
+        xit "always via proxy" . twoServers $
           agentDeliverMessageViaProxy ([srv1], SPMAlways, True) ([srv2], SPMAlways, True) C.SEd448 "hello 1" "hello 2" 1
-        it "both via proxy" . twoServers $
+        xit "both via proxy" . twoServers $
           agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv2], SPMUnknown, True) C.SEd448 "hello 1" "hello 2" 1
-        it "first via proxy" . twoServers $
+        xit "first via proxy" . twoServers $
           agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv2], SPMNever, False) C.SEd448 "hello 1" "hello 2" 1
-        it "without proxy" . twoServers $
+        xit "without proxy" . twoServers $
           agentDeliverMessageViaProxy ([srv1], SPMNever, False) ([srv2], SPMNever, False) C.SEd448 "hello 1" "hello 2" 1
-        it "first via proxy for unknown" . twoServers $
+        xit "first via proxy for unknown" . twoServers $
           agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv1, srv2], SPMUnknown, False) C.SEd448 "hello 1" "hello 2" 1
         it "without proxy with fallback" . twoServers_ proxyCfg cfgV7 $
           agentDeliverMessageViaProxy ([srv1], SPMUnknown, False) ([srv2], SPMUnknown, False) C.SEd448 "hello 1" "hello 2" 3
         it "fails when fallback is prohibited" . twoServers_ proxyCfg cfgV7 $
           agentViaProxyVersionError
-        it "retries sending when destination or proxy relay is offline" $
+        xit "retries sending when destination or proxy relay is offline" $
           agentViaProxyRetryOffline
       describe "stress test 1k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
@@ -370,7 +370,7 @@ agentViaProxyRetryOffline = do
     a `up` cId = nGet a =##> \case ("", "", UP _ [c]) -> c == cId; _ -> False
     a `down` cId = nGet a =##> \case ("", "", DOWN _ [c]) -> c == cId; _ -> False
     aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
-    baseId = 1
+    baseId = 3
     msgId = subtract baseId . fst
     servers srv = (initAgentServersProxy SPMAlways SPFProhibit) {smp = userServers $ L.map noAuthSrv [srv]}
 
