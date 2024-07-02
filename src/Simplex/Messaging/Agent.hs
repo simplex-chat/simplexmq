@@ -1418,7 +1418,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                   withStore' c $ \db -> setSndQueueStatus db sq Active
                   case rq_ of
                     -- party initiating connection (in v1)
-                    Just RcvQueue {status} ->
+                    Just rq@RcvQueue {status} ->
                       -- it is unclear why subscribeQueue was needed here,
                       -- message delivery can only be enabled for queues that were created in the current session or subscribed
                       -- subscribeQueue c rq connId
@@ -1428,7 +1428,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                       -- because it can be sent before HELLO is received
                       -- With `status == Active` condition, CON is sent here only by the accepting party, that previously received HELLO
                       when (status == Active) $ do
-                        atomically $ incSMPServerStat c userId server connCompleted
+                        atomically $ incSMPServerStat c userId (qServer rq) connCompleted
                         notify $ CON pqEncryption
                     -- this branch should never be reached as receive queue is created before the confirmation,
                     _ -> logError "HELLO sent without receive queue"
