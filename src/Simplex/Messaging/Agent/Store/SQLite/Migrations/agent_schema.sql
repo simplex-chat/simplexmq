@@ -55,6 +55,7 @@ CREATE TABLE rcv_queues(
   server_key_hash BLOB,
   switch_status TEXT,
   deleted INTEGER NOT NULL DEFAULT 0,
+  snd_secure INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -77,6 +78,7 @@ CREATE TABLE snd_queues(
   replace_snd_queue_id INTEGER NULL,
   server_key_hash BLOB,
   switch_status TEXT,
+  snd_secure INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(host, port, snd_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
@@ -132,7 +134,7 @@ CREATE TABLE conn_confirmations(
   confirmation_id BLOB NOT NULL PRIMARY KEY,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   e2e_snd_pub_key BLOB NOT NULL,
-  sender_key BLOB NOT NULL,
+  sender_key BLOB,
   ratchet_state BLOB NOT NULL,
   sender_conn_info BLOB NOT NULL,
   accepted INTEGER NOT NULL,
@@ -391,13 +393,6 @@ CREATE TABLE processed_ratchet_key_hashes(
   processed_ratchet_key_hash_id INTEGER PRIMARY KEY,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   hash BLOB NOT NULL,
-  created_at TEXT NOT NULL DEFAULT(datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT(datetime('now'))
-);
-CREATE TABLE servers_stats(
-  servers_stats_id INTEGER PRIMARY KEY,
-  servers_stats TEXT,
-  started_at TEXT NOT NULL DEFAULT(datetime('now')),
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
 );

@@ -183,6 +183,7 @@ dummyRQ userId server connId =
       e2ePrivKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOpk",
       e2eDhSecret = Nothing,
       sndId = "",
+      sndSecure = True,
       status = New,
       dbQueueId = DBQueueId 0,
       primary = True,
