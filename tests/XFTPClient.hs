@@ -67,10 +67,10 @@ withXFTPServer2 :: HasCallStack => IO a -> IO a
 withXFTPServer2 = withXFTPServerCfg testXFTPServerConfig {xftpPort = xftpTestPort2, filesPath = xftpServerFiles2} . const
 
 xftpTestPort :: ServiceName
-xftpTestPort = "7000"
+xftpTestPort = "8000"
 
 xftpTestPort2 :: ServiceName
-xftpTestPort2 = "7001"
+xftpTestPort2 = "8001"
 
 testXFTPServer :: XFTPServer
 testXFTPServer = fromString testXFTPServerStr
@@ -79,10 +79,10 @@ testXFTPServer2 :: XFTPServer
 testXFTPServer2 = fromString testXFTPServerStr2
 
 testXFTPServerStr :: String
-testXFTPServerStr = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000"
+testXFTPServerStr = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000"
 
 testXFTPServerStr2 :: String
-testXFTPServerStr2 = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7001"
+testXFTPServerStr2 = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8001"
 
 xftpServerFiles :: FilePath
 xftpServerFiles = "tests/tmp/xftp-server-files"

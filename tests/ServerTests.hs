@@ -73,7 +73,7 @@ pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmission ErrorType B
 pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
 
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> BrokerMsg
-pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh)
+pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure)
 
 pattern Msg :: MsgId -> MsgBody -> BrokerMsg
 pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
@@ -134,7 +134,7 @@ testCreateSecure (ATransport t) =
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv r rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe)
+      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv r rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe False)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       (rId1, "") #== "creates queue"
 
@@ -199,7 +199,7 @@ testCreateDelete (ATransport t) =
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe)
+      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe False)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       (rId1, "") #== "creates queue"
 
@@ -271,7 +271,7 @@ stressTest (ATransport t) =
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       rIds <- forM ([1 .. 50] :: [Int]) . const $ do
-        Resp "" "" (Ids rId _ _) <- signSendRecv h1 rKey ("", "", NEW rPub dhPub Nothing SMSubscribe)
+        Resp "" "" (Ids rId _ _) <- signSendRecv h1 rKey ("", "", NEW rPub dhPub Nothing SMSubscribe False)
         pure rId
       let subscribeQueues h = forM_ rIds $ \rId -> do
             Resp "" rId' OK <- signSendRecv h rKey ("", rId, SUB)
@@ -289,7 +289,7 @@ testAllowNewQueues t =
         g <- C.newRandom
         (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
         (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-        Resp "abcd" "" (ERR AUTH) <- signSendRecv h rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe)
+        Resp "abcd" "" (ERR AUTH) <- signSendRecv h rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe False)
         pure ()
 
 testDuplex :: ATransport -> Spec
@@ -299,7 +299,7 @@ testDuplex (ATransport t) =
       g <- C.newRandom
       (arPub, arKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (aDhPub, aDhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" _ (Ids aRcv aSnd aSrvDh) <- signSendRecv alice arKey ("abcd", "", NEW arPub aDhPub Nothing SMSubscribe)
+      Resp "abcd" _ (Ids aRcv aSnd aSrvDh) <- signSendRecv alice arKey ("abcd", "", NEW arPub aDhPub Nothing SMSubscribe False)
       let aDec = decryptMsgV3 $ C.dh' aSrvDh aDhPriv
       -- aSnd ID is passed to Bob out-of-band
 
@@ -315,7 +315,7 @@ testDuplex (ATransport t) =
 
       (brPub, brKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (bDhPub, bDhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" _ (Ids bRcv bSnd bSrvDh) <- signSendRecv bob brKey ("abcd", "", NEW brPub bDhPub Nothing SMSubscribe)
+      Resp "abcd" _ (Ids bRcv bSnd bSrvDh) <- signSendRecv bob brKey ("abcd", "", NEW brPub bDhPub Nothing SMSubscribe False)
       let bDec = decryptMsgV3 $ C.dh' bSrvDh bDhPriv
       Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, _SEND $ "reply_id " <> encode bSnd)
       -- "reply_id ..." is ad-hoc, not a part of SMP protocol
@@ -354,7 +354,7 @@ testSwitchSub (ATransport t) =
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" _ (Ids rId sId srvDh) <- signSendRecv rh1 rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe)
+      Resp "abcd" _ (Ids rId sId srvDh) <- signSendRecv rh1 rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe False)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, _SEND "test1")
       (ok1, OK) #== "sent test message 1"
@@ -740,7 +740,7 @@ createAndSecureQueue h sPub = do
   g <- C.newRandom
   (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
   (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-  Resp "abcd" "" (Ids rId sId srvDh) <- signSendRecv h rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe)
+  Resp "abcd" "" (Ids rId sId srvDh) <- signSendRecv h rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe False)
   let dhShared = C.dh' srvDh dhPriv
   Resp "dabc" rId' OK <- signSendRecv h rKey ("dabc", rId, KEY sPub)
   (rId', rId) #== "same queue ID"
@@ -751,7 +751,7 @@ testTiming (ATransport t) =
   describe "should have similar time for auth error, whether queue exists or not, for all key types" $
     forM_ timingTests $ \tst ->
       it (testName tst) $
-        smpTest2Cfg cfgV7 (mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion) t $ \rh sh ->
+        smpTest2Cfg cfg (mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion) t $ \rh sh ->
           testSameTiming rh sh tst
   where
     testName :: (C.AuthAlg, C.AuthAlg, Int) -> String
@@ -775,7 +775,7 @@ testTiming (ATransport t) =
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" "" (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe)
+      Resp "abcd" "" (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", "", NEW rPub dhPub Nothing SMSubscribe False)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       Resp "cdab" _ OK <- signSendRecv rh rKey ("cdab", rId, SUB)
 
@@ -937,8 +937,8 @@ syntaxTests (ATransport t) = do
   describe "NEW" $ do
     it "no parameters" $ (sampleSig, "bcda", "", NEW_) >#> ("", "bcda", "", ERR $ CMD SYNTAX)
     it "many parameters" $ (sampleSig, "cdab", "", (NEW_, ' ', ('\x01', 'A'), samplePubKey, sampleDhPubKey)) >#> ("", "cdab", "", ERR $ CMD SYNTAX)
-    it "no signature" $ ("", "dabc", "", (NEW_, ' ', samplePubKey, sampleDhPubKey, SMSubscribe)) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
-    it "queue ID" $ (sampleSig, "abcd", "12345678", (NEW_, ' ', samplePubKey, sampleDhPubKey, SMSubscribe)) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
+    it "no signature" $ ("", "dabc", "", (NEW_, ' ', samplePubKey, sampleDhPubKey, '0', SMSubscribe, False)) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
+    it "queue ID" $ (sampleSig, "abcd", "12345678", (NEW_, ' ', samplePubKey, sampleDhPubKey, '0', SMSubscribe, False)) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
   describe "KEY" $ do
     it "valid syntax" $ (sampleSig, "bcda", "12345678", (KEY_, ' ', samplePubKey)) >#> ("", "bcda", "12345678", ERR AUTH)
     it "no parameters" $ (sampleSig, "cdab", "12345678", KEY_) >#> ("", "cdab", "12345678", ERR $ CMD SYNTAX)

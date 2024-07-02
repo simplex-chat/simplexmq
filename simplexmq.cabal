@@ -134,6 +134,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240225_ratchet_kem
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240417_rcv_files_approved_relays
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240518_servers_stats
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240624_snd_secure
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
