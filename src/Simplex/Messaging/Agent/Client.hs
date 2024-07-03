@@ -1332,12 +1332,14 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode sender
   pure (rq, qUri, tSess, sessId)
 
 processSubResult :: AgentClient -> RcvQueue -> Either SMPClientError () -> STM ()
-processSubResult c rq@RcvQueue {connId} = \case
+processSubResult c rq@RcvQueue {userId, server, connId} = \case
   Left e ->
-    unless (temporaryClientError e) $
+    unless (temporaryClientError e) $ do
+      incSMPServerStat c userId server connSubErrs
       failSubscription c rq e
   Right () ->
-    whenM (hasPendingSubscription c connId) $
+    whenM (hasPendingSubscription c connId) $ do
+      incSMPServerStat c userId server connSubscribed
       addSubscription c rq
 
 temporaryAgentError :: AgentErrorType -> Bool
@@ -1392,28 +1394,21 @@ subscribeQueues c qs = do
       let (userId, srv, _) = transportSession' smp
       atomically $ incSMPServerStat' c userId srv connSubAttempts $ length qs'
       rs <- sendBatch subscribeSMPQueues smp qs'
-      let (successes, errs) = countSubResults rs
-      atomically $ incSMPServerStat' c userId srv connSubscribed successes
-      atomically $ incSMPServerStat' c userId srv connSubErrs errs
       active <-
         atomically $
           ifM
             (activeClientSession c tSess sessId)
             (writeTVar session (Just sessId) >> processSubResults rs $> True)
-            (pure False)
+            ( do
+                incSMPServerStat' c userId srv connSubIgnored $ length rs
+                pure False
+            )
       if active
         then when (hasTempErrors rs) resubscribe $> rs
         else do
           logWarn "subcription batch result for replaced SMP client, resubscribing"
           resubscribe $> L.map (second $ \_ -> Left PCENetworkError) rs
       where
-        countSubResults :: NonEmpty (RcvQueue, Either SMPClientError ()) -> (Int, Int)
-        countSubResults = foldr addRes (0, 0)
-          where
-            addRes (_, Right ()) (successes, errs) = (successes + 1, errs)
-            addRes (_, Left e) (successes, errs)
-              | temporaryClientError e = (successes, errs)
-              | otherwise = (successes, errs + 1)
         tSess = transportSession' smp
         sessId = sessionId $ thParams smp
         hasTempErrors = any (either temporaryClientError (const False) . snd)

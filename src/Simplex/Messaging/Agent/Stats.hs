@@ -43,6 +43,7 @@ data AgentSMPServerStats = AgentSMPServerStats
     connDelErrs :: TVar Int, -- permanent connection deletion errors (temporary accounted for in attempts)
     connSubscribed :: TVar Int, -- total successful subscription
     connSubAttempts :: TVar Int, -- subscription attempts
+    connSubIgnored :: TVar Int, -- subscription result ignored (e.g. client switched to different session)
     connSubErrs :: TVar Int -- permanent subscription errors (temporary accounted for in attempts)
   }
 
@@ -73,6 +74,7 @@ data AgentSMPServerStatsData = AgentSMPServerStatsData
     _connDelErrs :: Int,
     _connSubscribed :: Int,
     _connSubAttempts :: Int,
+    _connSubIgnored :: Int,
     _connSubErrs :: Int
   }
   deriving (Show)
@@ -105,6 +107,7 @@ newAgentSMPServerStats = do
   connDelErrs <- newTVar 0
   connSubscribed <- newTVar 0
   connSubAttempts <- newTVar 0
+  connSubIgnored <- newTVar 0
   connSubErrs <- newTVar 0
   pure
     AgentSMPServerStats
@@ -134,6 +137,7 @@ newAgentSMPServerStats = do
         connDelErrs,
         connSubscribed,
         connSubAttempts,
+        connSubIgnored,
         connSubErrs
       }
 
@@ -166,6 +170,7 @@ newAgentSMPServerStatsData =
       _connDelErrs = 0,
       _connSubscribed = 0,
       _connSubAttempts = 0,
+      _connSubIgnored = 0,
       _connSubErrs = 0
     }
 
@@ -197,6 +202,7 @@ newAgentSMPServerStats' s = do
   connDelErrs <- newTVar $ _connDelErrs s
   connSubscribed <- newTVar $ _connSubscribed s
   connSubAttempts <- newTVar $ _connSubAttempts s
+  connSubIgnored <- newTVar $ _connSubIgnored s
   connSubErrs <- newTVar $ _connSubErrs s
   pure
     AgentSMPServerStats
@@ -226,6 +232,7 @@ newAgentSMPServerStats' s = do
         connDelErrs,
         connSubscribed,
         connSubAttempts,
+        connSubIgnored,
         connSubErrs
       }
 
@@ -259,6 +266,7 @@ getAgentSMPServerStats s = do
   _connDelErrs <- readTVarIO $ connDelErrs s
   _connSubscribed <- readTVarIO $ connSubscribed s
   _connSubAttempts <- readTVarIO $ connSubAttempts s
+  _connSubIgnored <- readTVarIO $ connSubIgnored s
   _connSubErrs <- readTVarIO $ connSubErrs s
   pure
     AgentSMPServerStatsData
@@ -288,6 +296,7 @@ getAgentSMPServerStats s = do
         _connDelErrs,
         _connSubscribed,
         _connSubAttempts,
+        _connSubIgnored,
         _connSubErrs
       }
 
@@ -320,6 +329,7 @@ addSMPStatsData sd1 sd2 =
       _connDelErrs = _connDelErrs sd1 + _connDelErrs sd2,
       _connSubscribed = _connSubscribed sd1 + _connSubscribed sd2,
       _connSubAttempts = _connSubAttempts sd1 + _connSubAttempts sd2,
+      _connSubIgnored = _connSubIgnored sd1 + _connSubIgnored sd2,
       _connSubErrs = _connSubErrs sd1 + _connSubErrs sd2
     }
 
