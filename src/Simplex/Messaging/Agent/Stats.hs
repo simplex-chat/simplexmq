@@ -43,7 +43,7 @@ data AgentSMPServerStats = AgentSMPServerStats
     connDelErrs :: TVar Int, -- permanent connection deletion errors (temporary accounted for in attempts)
     connSubscribed :: TVar Int, -- total successful subscription
     connSubAttempts :: TVar Int, -- subscription attempts
-    connSubIgnored :: TVar Int, -- subscription result ignored (e.g. client switched to different session)
+    connSubIgnored :: TVar Int, -- subscription results ignored (client switched to different session)
     connSubErrs :: TVar Int -- permanent subscription errors (temporary accounted for in attempts)
   }
 
