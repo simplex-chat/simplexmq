@@ -105,7 +105,7 @@ notificationTests t = do
   describe "Managing notification subscriptions" $ do
     describe "should create notification subscription for existing connection" $
       testNtfMatrix t testNotificationSubscriptionExistingConnection
-    xdescribe "should create notification subscription for new connection" $
+    describe "should create notification subscription for new connection" $
       testNtfMatrix t testNotificationSubscriptionNewConnection
     it "should change notifications mode" $
       withSmpServer t $
@@ -116,19 +116,19 @@ notificationTests t = do
         withAPNSMockServer $ \apns ->
           withNtfServer t $ testChangeToken apns
   describe "Notifications server store log" $
-    xit "should save and restore tokens and subscriptions" $
+    it "should save and restore tokens and subscriptions" $
       withSmpServer t $
         withAPNSMockServer $ \apns ->
           testNotificationsStoreLog t apns
   describe "Notifications after SMP server restart" $
-    xit "should resume subscriptions after SMP server is restarted" $
+    it "should resume subscriptions after SMP server is restarted" $
       withAPNSMockServer $ \apns ->
         withNtfServer t $ testNotificationsSMPRestart t apns
   describe "Notifications after SMP server restart" $
     it "should resume batched subscriptions after SMP server is restarted" $
       withAPNSMockServer $ \apns ->
         withNtfServer t $ testNotificationsSMPRestartBatch 100 t apns
-  xdescribe "should switch notifications to the new queue" $
+  describe "should switch notifications to the new queue" $
     testServerMatrix2 t $ \servers ->
       withAPNSMockServer $ \apns ->
         withNtfServer t $ testSwitchNotifications servers apns
@@ -146,7 +146,7 @@ notificationTests t = do
 testNtfMatrix :: HasCallStack => ATransport -> (APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()) -> Spec
 testNtfMatrix t runTest = do
   describe "next and current" $ do
-    xit "curr servers; curr clients" $ runNtfTestCfg t 1 cfg ntfServerCfg agentCfg agentCfg runTest
+    it "curr servers; curr clients" $ runNtfTestCfg t 1 cfg ntfServerCfg agentCfg agentCfg runTest
     it "curr servers; prev clients" $ runNtfTestCfg t 3 cfg ntfServerCfg agentCfgVPrevPQ agentCfgVPrevPQ runTest
     it "prev servers; prev clients" $ runNtfTestCfg t 3 cfgVPrev ntfServerCfgVPrev agentCfgVPrevPQ agentCfgVPrevPQ runTest
     it "prev servers; curr clients" $ runNtfTestCfg t 3 cfgVPrev ntfServerCfgVPrev agentCfg agentCfg runTest
@@ -374,20 +374,20 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} baseId ali
   -- alice client already has subscription for the connection
   Left (CMD PROHIBITED _) <- runExceptT $ getNotificationMessage alice nonce message
 
-  threadDelay 200000
+  threadDelay 300000
   suspendAgent alice 0
   closeSQLiteStore store
-  threadDelay 200000
+  threadDelay 300000
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
   withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> runRight_ $ do
     (_, [SMPMsgMeta {msgFlags = MsgFlags True}]) <- getNotificationMessage aliceNtf nonce message
     pure ()
 
-  threadDelay 200000
+  threadDelay 300000
   reopenSQLiteStore store
   foregroundAgent alice
-  threadDelay 200000
+  threadDelay 300000
 
   runRight_ $ do
     get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
@@ -515,7 +515,7 @@ testChangeNotificationsMode APNSMockServer {apnsQ} =
     -- no notifications should follow
     noNotification apnsQ
   where
-    baseId = 3
+    baseId = 1
     msgId = subtract baseId
 
 testChangeToken :: APNSMockServer -> IO ()
@@ -554,7 +554,7 @@ testChangeToken APNSMockServer {apnsQ} = withAgent 1 agentCfg initAgentServers t
     -- no notifications should follow
     noNotification apnsQ
   where
-    baseId = 3
+    baseId = 1
     msgId = subtract baseId
 
 testNotificationsStoreLog :: ATransport -> APNSMockServer -> IO ()
