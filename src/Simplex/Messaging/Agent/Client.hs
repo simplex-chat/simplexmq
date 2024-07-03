@@ -89,7 +89,7 @@ module Simplex.Messaging.Agent.Client
     activeClientSession,
     agentClientStore,
     agentDRG,
-    AgentQueueInfo,
+    AgentQueueInfo (..),
     AgentServersSummary (..),
     ServerSessions (..),
     SMPServerSubs (..),
