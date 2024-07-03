@@ -1631,16 +1631,17 @@ data ServerQueueInfo = ServerQueueInfo
     rcvId :: Text,
     sndId :: Text,
     ntfId :: Maybe Text,
-    status :: QueueStatus,
+    status :: Text,
     info :: QueueInfo
   }
+  deriving (Show)
 
 getQueueInfo :: AgentClient -> RcvQueue -> AM ServerQueueInfo
 getQueueInfo c rq@RcvQueue {server, rcvId, rcvPrivateKey, sndId, status, clientNtfCreds} =
   withSMPClient c rq "QUE" $ \smp -> do
     info <- getSMPQueueInfo smp rcvPrivateKey rcvId
     let ntfId = enc . (\ClientNtfCreds {notifierId} -> notifierId) <$> clientNtfCreds
-    pure ServerQueueInfo {server, rcvId = enc rcvId, sndId = enc sndId, ntfId, status, info}
+    pure ServerQueueInfo {server, rcvId = enc rcvId, sndId = enc sndId, ntfId, status = serializeQueueStatus status, info}
   where
     enc = decodeLatin1 . B64.encode
 
@@ -2263,3 +2264,5 @@ $(J.deriveJSON defaultJSON ''AgentQueuesInfo)
 $(J.deriveJSON (enumJSON $ dropPrefix "UN") ''UserNetworkType)
 
 $(J.deriveJSON defaultJSON ''UserNetworkInfo)
+
+$(J.deriveJSON defaultJSON ''ServerQueueInfo)
