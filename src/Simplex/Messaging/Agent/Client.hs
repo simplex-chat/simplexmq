@@ -89,7 +89,7 @@ module Simplex.Messaging.Agent.Client
     activeClientSession,
     agentClientStore,
     agentDRG,
-    AgentQueueInfo (..),
+    ServerQueueInfo (..),
     AgentServersSummary (..),
     ServerSessions (..),
     SMPServerSubs (..),
@@ -1626,7 +1626,7 @@ sendAgentMessage c sq@SndQueue {userId, server, sndId, sndPrivateKey} msgFlags a
   msg <- agentCbEncrypt sq Nothing $ smpEncode clientMsg
   sendOrProxySMPMessage c userId server "<MSG>" (Just sndPrivateKey) sndId msgFlags msg
 
-data AgentQueueInfo = AgentQueueInfo
+data ServerQueueInfo = ServerQueueInfo
   { server :: SMPServer,
     rcvId :: Text,
     sndId :: Text,
@@ -1635,12 +1635,12 @@ data AgentQueueInfo = AgentQueueInfo
     info :: QueueInfo
   }
 
-getQueueInfo :: AgentClient -> RcvQueue -> AM AgentQueueInfo
+getQueueInfo :: AgentClient -> RcvQueue -> AM ServerQueueInfo
 getQueueInfo c rq@RcvQueue {server, rcvId, rcvPrivateKey, sndId, status, clientNtfCreds} =
   withSMPClient c rq "QUE" $ \smp -> do
     info <- getSMPQueueInfo smp rcvPrivateKey rcvId
     let ntfId = enc . (\ClientNtfCreds {notifierId} -> notifierId) <$> clientNtfCreds
-    pure AgentQueueInfo {server, rcvId = enc rcvId, sndId = enc sndId, ntfId, status, info}
+    pure ServerQueueInfo {server, rcvId = enc rcvId, sndId = enc sndId, ntfId, status, info}
   where
     enc = decodeLatin1 . B64.encode
 

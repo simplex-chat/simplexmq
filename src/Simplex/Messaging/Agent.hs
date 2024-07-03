@@ -402,7 +402,7 @@ ackMessage :: AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AE 
 ackMessage c = withAgentEnv c .:. ackMessage' c
 {-# INLINE ackMessage #-}
 
-getConnectionQueueInfo :: AgentClient -> ConnId -> AE AgentQueueInfo
+getConnectionQueueInfo :: AgentClient -> ConnId -> AE ServerQueueInfo
 getConnectionQueueInfo c = withAgentEnv c . getConnectionQueueInfo' c
 {-# INLINE getConnectionQueueInfo #-}
 
@@ -1541,7 +1541,7 @@ ackMessage' c connId msgId rcptInfo_ = withConnLock c connId "ackMessage" $ do
             withStore' c $ \db -> deleteDeliveredSndMsg db connId $ InternalId sndMsgId
           _ -> pure ()
 
-getConnectionQueueInfo' :: AgentClient -> ConnId -> AM AgentQueueInfo
+getConnectionQueueInfo' :: AgentClient -> ConnId -> AM ServerQueueInfo
 getConnectionQueueInfo' c connId = do
   SomeConn _ conn <- withStore c (`getConn` connId)
   case conn of
