@@ -398,7 +398,7 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
     -- receive file - should fail with AUTH error
     withAgent 3 agentCfg initAgentServers testDB2 $ \rcp' -> do
       runRight_ $ xftpStartWorkers rcp' (Just recipientFiles)
-      ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <- rfGet rcp'
+      ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <- rfGet rcp'
       rfId' `shouldBe` rfId
 
   -- tmp path should be removed after permanent error
@@ -477,7 +477,7 @@ testXFTPAgentSendCleanup = withGlobalLogging logCfgNoLogs $ do
     -- send file - should fail with AUTH error
     withAgent 2 agentCfg initAgentServers testDB $ \sndr' -> do
       runRight_ $ xftpStartWorkers sndr' (Just senderFiles)
-      ("", sfId', SFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <-
+      ("", sfId', SFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <-
         sfGet sndr'
       sfId' `shouldBe` sfId
 
@@ -513,7 +513,7 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
       withAgent 3 agentCfg initAgentServers testDB2 $ \rcp2 -> runRight $ do
         xftpStartWorkers rcp2 (Just recipientFiles)
         rfId <- xftpReceiveFile rcp2 1 rfd2 Nothing True
-        ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <-
+        ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <-
           rfGet rcp2
         liftIO $ rfId' `shouldBe` rfId
 
@@ -551,7 +551,7 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
       withAgent 5 agentCfg initAgentServers testDB3 $ \rcp2 -> runRight $ do
         xftpStartWorkers rcp2 (Just recipientFiles)
         rfId <- xftpReceiveFile rcp2 1 rfd2 Nothing True
-        ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <-
+        ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <-
           rfGet rcp2
         liftIO $ rfId' `shouldBe` rfId
 
@@ -586,7 +586,7 @@ testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs $
         runRight_ . void $ do
           -- receive file 1 again
           rfId1 <- xftpReceiveFile rcp 1 rfd1_2 Nothing True
-          ("", rfId1', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <-
+          ("", rfId1', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <-
             rfGet rcp
           liftIO $ rfId1 `shouldBe` rfId1'
 
@@ -619,7 +619,7 @@ testXFTPAgentExpiredOnServer = withGlobalLogging logCfgNoLogs $ do
         -- receive file 1 again - should fail with AUTH error
         runRight $ do
           rfId <- xftpReceiveFile rcp 1 rfd1_2 Nothing True
-          ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <-
+          ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <-
             rfGet rcp
           liftIO $ rfId' `shouldBe` rfId
 

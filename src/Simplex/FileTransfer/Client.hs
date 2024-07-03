@@ -22,7 +22,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
-import Data.Time (UTCTime)
 import Data.Word (Word32)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
@@ -167,9 +166,6 @@ xftpClientServer = B.unpack . strEncode . snd3 . transportSession
 
 xftpTransportHost :: XFTPClient -> TransportHost
 xftpTransportHost XFTPClient {http2Client = HTTP2Client {client_ = HClient {host}}} = host
-
-xftpSessionTs :: XFTPClient -> UTCTime
-xftpSessionTs = sessionTs . http2Client
 
 xftpHTTP2Config :: TransportClientConfig -> XFTPClientConfig -> HTTP2ClientConfig
 xftpHTTP2Config transportConfig XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpConnectTimeout}} =
