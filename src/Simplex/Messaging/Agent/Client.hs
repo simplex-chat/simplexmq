@@ -1338,9 +1338,10 @@ processSubResult c rq@RcvQueue {userId, server, connId} = \case
       incSMPServerStat c userId server connSubErrs
       failSubscription c rq e
   Right () ->
-    whenM (hasPendingSubscription c connId) $ do
-      incSMPServerStat c userId server connSubscribed
-      addSubscription c rq
+    ifM
+      (hasPendingSubscription c connId)
+      (incSMPServerStat c userId server connSubscribed >> addSubscription c rq)
+      (incSMPServerStat c userId server connSubIgnored)
 
 temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
@@ -1399,10 +1400,7 @@ subscribeQueues c qs = do
           ifM
             (activeClientSession c tSess sessId)
             (writeTVar session (Just sessId) >> processSubResults rs $> True)
-            ( do
-                incSMPServerStat' c userId srv connSubIgnored $ length rs
-                pure False
-            )
+            (incSMPServerStat' c userId srv connSubIgnored (length rs) $> False)
       if active
         then when (hasTempErrors rs) resubscribe $> rs
         else do

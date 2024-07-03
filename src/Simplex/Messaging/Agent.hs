@@ -2171,7 +2171,7 @@ data ACKd = ACKd | ACKPending
 -- It cannot be finally, as sometimes it needs to be ACK+DEL,
 -- and sometimes ACK has to be sent from the consumer.
 processSMPTransmissions :: AgentClient -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> AM' ()
-processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts) = do
+processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId, ts) = do
   upConnIds <- newTVarIO []
   forM_ ts $ \(entId, t) -> case t of
     STEvent msgOrErr ->
@@ -2196,7 +2196,9 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
       logServer "<--" c srv entId $ "error: " <> bshow e
       notifyErr "" e
   connIds <- readTVarIO upConnIds
-  unless (null connIds) $ notify' "" $ UP srv connIds
+  unless (null connIds) $ do
+    notify' "" $ UP srv connIds
+    atomically $ incSMPServerStat' c userId srv connSubscribed $ length connIds
   where
     withRcvConn :: SMP.RecipientId -> (forall c. RcvQueue -> Connection c -> AM ()) -> AM' ()
     withRcvConn rId a = do
@@ -2213,9 +2215,13 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
         modifyTVar' upConnIds (connId :)
     processSubErr :: RcvQueue -> SMPClientError -> AM ()
     processSubErr rq@RcvQueue {connId} e = do
-      atomically . whenM (isPendingSub connId) $ failSubscription c rq e
+      atomically . whenM (isPendingSub connId) $
+        failSubscription c rq e >> incSMPServerStat c userId srv connSubErrs
       lift $ notifyErr connId e
-    isPendingSub connId = (&&) <$> hasPendingSubscription c connId <*> activeClientSession c tSess sessId
+    isPendingSub connId = do
+      pending <- (&&) <$> hasPendingSubscription c connId <*> activeClientSession c tSess sessId
+      unless pending $ incSMPServerStat c userId srv connSubIgnored
+      pure pending
     notify' :: forall e m. (AEntityI e, MonadIO m) => ConnId -> AEvent e -> m ()
     notify' connId msg = atomically $ writeTBQueue subQ ("", connId, AEvt (sAEntity @e) msg)
     notifyErr :: ConnId -> SMPClientError -> AM' ()
@@ -2224,7 +2230,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(_, srv, _), _v, sessId, ts)
     processSMP
       rq@RcvQueue {rcvId = rId, sndSecure, e2ePrivKey, e2eDhSecret, status}
       conn
-      cData@ConnData {userId, connId, connAgentVersion, ratchetSyncState = rss}
+      cData@ConnData {connId, connAgentVersion, ratchetSyncState = rss}
       smpMsg =
         withConnLock c connId "processSMP" $ case smpMsg of
           SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} -> do
