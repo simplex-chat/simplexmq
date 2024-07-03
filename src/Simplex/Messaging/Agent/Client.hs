@@ -89,6 +89,7 @@ module Simplex.Messaging.Agent.Client
     activeClientSession,
     agentClientStore,
     agentDRG,
+    ServerQueueInfo (..),
     AgentServersSummary (..),
     ServerSessions (..),
     SMPServerSubs (..),
@@ -173,7 +174,7 @@ import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as J
 import Data.Bifunctor (bimap, first, second)
-import Data.ByteString.Base64
+import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight, partitionEithers)
@@ -1505,7 +1506,7 @@ showServer ProtocolServer {host, port} =
 {-# INLINE showServer #-}
 
 logSecret :: ByteString -> ByteString
-logSecret bs = encode $ B.take 3 bs
+logSecret bs = B64.encode $ B.take 3 bs
 {-# INLINE logSecret #-}
 
 sendConfirmation :: AgentClient -> SndQueue -> ByteString -> AM (Maybe SMPServer)
@@ -1625,10 +1626,24 @@ sendAgentMessage c sq@SndQueue {userId, server, sndId, sndPrivateKey} msgFlags a
   msg <- agentCbEncrypt sq Nothing $ smpEncode clientMsg
   sendOrProxySMPMessage c userId server "<MSG>" (Just sndPrivateKey) sndId msgFlags msg
 
-getQueueInfo :: AgentClient -> RcvQueue -> AM QueueInfo
-getQueueInfo c rq@RcvQueue {rcvId, rcvPrivateKey} =
-  withSMPClient c rq "QUE" $ \smp ->
-    getSMPQueueInfo smp rcvPrivateKey rcvId
+data ServerQueueInfo = ServerQueueInfo
+  { server :: SMPServer,
+    rcvId :: Text,
+    sndId :: Text,
+    ntfId :: Maybe Text,
+    status :: Text,
+    info :: QueueInfo
+  }
+  deriving (Show)
+
+getQueueInfo :: AgentClient -> RcvQueue -> AM ServerQueueInfo
+getQueueInfo c rq@RcvQueue {server, rcvId, rcvPrivateKey, sndId, status, clientNtfCreds} =
+  withSMPClient c rq "QUE" $ \smp -> do
+    info <- getSMPQueueInfo smp rcvPrivateKey rcvId
+    let ntfId = enc . (\ClientNtfCreds {notifierId} -> notifierId) <$> clientNtfCreds
+    pure ServerQueueInfo {server, rcvId = enc rcvId, sndId = enc sndId, ntfId, status = serializeQueueStatus status, info}
+  where
+    enc = decodeLatin1 . B64.encode
 
 agentNtfRegisterToken :: AgentClient -> NtfToken -> NtfPublicAuthKey -> C.PublicKeyX25519 -> AM (NtfTokenId, C.PublicKeyX25519)
 agentNtfRegisterToken c NtfToken {deviceToken, ntfServer, ntfPrivKey} ntfPubKey pubDhKey =
@@ -2249,3 +2264,5 @@ $(J.deriveJSON defaultJSON ''AgentQueuesInfo)
 $(J.deriveJSON (enumJSON $ dropPrefix "UN") ''UserNetworkType)
 
 $(J.deriveJSON defaultJSON ''UserNetworkInfo)
+
+$(J.deriveJSON defaultJSON ''ServerQueueInfo)
