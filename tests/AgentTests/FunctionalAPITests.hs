@@ -911,6 +911,7 @@ testAllowConnectionClientRestart t = do
 
     threadDelay 100000 -- give time to enqueue confirmation (enqueueConfirmation)
     disposeAgentClient alice
+    threadDelay 250000
 
     alice2 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
 
