@@ -142,6 +142,8 @@ module Simplex.Messaging.Agent.Client
     incSMPServerStat,
     incSMPServerStat',
     incXFTPServerStat,
+    incXFTPServerStat',
+    incXFTPServerSizeStat,
     AgentWorkersDetails (..),
     getAgentWorkersDetails,
     AgentWorkersSummary (..),
@@ -174,8 +176,9 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (partitionEithers)
+import Data.Either (isRight, partitionEithers)
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
@@ -1329,13 +1332,16 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode sender
   pure (rq, qUri, tSess, sessId)
 
 processSubResult :: AgentClient -> RcvQueue -> Either SMPClientError () -> STM ()
-processSubResult c rq@RcvQueue {connId} = \case
+processSubResult c rq@RcvQueue {userId, server, connId} = \case
   Left e ->
-    unless (temporaryClientError e) $
+    unless (temporaryClientError e) $ do
+      incSMPServerStat c userId server connSubErrs
       failSubscription c rq e
   Right () ->
-    whenM (hasPendingSubscription c connId) $
-      addSubscription c rq
+    ifM
+      (hasPendingSubscription c connId)
+      (incSMPServerStat c userId server connSubscribed >> addSubscription c rq)
+      (incSMPServerStat c userId server connSubIgnored)
 
 temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
@@ -1387,14 +1393,14 @@ subscribeQueues c qs = do
     subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
     subscribeQueues_ env session smp qs' = do
       let (userId, srv, _) = transportSession' smp
-      atomically $ incSMPServerStat' c userId srv connSubAttempts (length qs')
+      atomically $ incSMPServerStat' c userId srv connSubAttempts $ length qs'
       rs <- sendBatch subscribeSMPQueues smp qs'
       active <-
         atomically $
           ifM
             (activeClientSession c tSess sessId)
             (writeTVar session (Just sessId) >> processSubResults rs $> True)
-            (pure False)
+            (incSMPServerStat' c userId srv connSubIgnored (length rs) $> False)
       if active
         then when (hasTempErrors rs) resubscribe $> rs
         else do
@@ -1603,7 +1609,15 @@ deleteQueue c rq@RcvQueue {rcvId, rcvPrivateKey} = do
     deleteSMPQueue smp rcvPrivateKey rcvId
 
 deleteQueues :: AgentClient -> [RcvQueue] -> AM' [(RcvQueue, Either AgentErrorType ())]
-deleteQueues = sendTSessionBatches "DEL" id $ sendBatch deleteSMPQueues
+deleteQueues c = sendTSessionBatches "DEL" id deleteQueues_ c
+  where
+    deleteQueues_ smp rqs = do
+      let (userId, srv, _) = transportSession' smp
+      atomically $ incSMPServerStat' c userId srv connDelAttempts $ length rqs
+      rs <- sendBatch deleteSMPQueues smp rqs
+      let successes = foldl' (\n (_, r) -> if isRight r then n + 1 else n) 0 rs
+      atomically $ incSMPServerStat' c userId srv connDeleted successes
+      pure rs
 
 sendAgentMessage :: AgentClient -> SndQueue -> MsgFlags -> ByteString -> AM (Maybe SMPServer)
 sendAgentMessage c sq@SndQueue {userId, server, sndId, sndPrivateKey} msgFlags agentMsg = do
@@ -1924,12 +1938,24 @@ incSMPServerStat' AgentClient {smpServersStats} userId srv sel n = do
       TM.insert (userId, srv) newStats smpServersStats
 
 incXFTPServerStat :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int) -> STM ()
-incXFTPServerStat AgentClient {xftpServersStats} userId srv sel = do
+incXFTPServerStat c userId srv sel = incXFTPServerStat_ c userId srv sel 1
+{-# INLINE incXFTPServerStat #-}
+
+incXFTPServerStat' :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int) -> Int -> STM ()
+incXFTPServerStat' = incXFTPServerStat_
+{-# INLINE incXFTPServerStat' #-}
+
+incXFTPServerSizeStat :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int64) -> Int64 -> STM ()
+incXFTPServerSizeStat = incXFTPServerStat_
+{-# INLINE incXFTPServerSizeStat #-}
+
+incXFTPServerStat_ :: Num n => AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar n) -> n -> STM ()
+incXFTPServerStat_ AgentClient {xftpServersStats} userId srv sel n = do
   TM.lookup (userId, srv) xftpServersStats >>= \case
-    Just v -> modifyTVar' (sel v) (+ 1)
+    Just v -> modifyTVar' (sel v) (+ n)
     Nothing -> do
       newStats <- newAgentXFTPServerStats
-      modifyTVar' (sel newStats) (+ 1)
+      modifyTVar' (sel newStats) (+ n)
       TM.insert (userId, srv) newStats xftpServersStats
 
 data AgentServersSummary = AgentServersSummary
