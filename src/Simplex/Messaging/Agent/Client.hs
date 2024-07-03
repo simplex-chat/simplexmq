@@ -176,7 +176,7 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (partitionEithers)
+import Data.Either (isRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
@@ -1609,7 +1609,15 @@ deleteQueue c rq@RcvQueue {rcvId, rcvPrivateKey} = do
     deleteSMPQueue smp rcvPrivateKey rcvId
 
 deleteQueues :: AgentClient -> [RcvQueue] -> AM' [(RcvQueue, Either AgentErrorType ())]
-deleteQueues = sendTSessionBatches "DEL" id $ sendBatch deleteSMPQueues
+deleteQueues c = sendTSessionBatches "DEL" id deleteQueues_ c
+  where
+    deleteQueues_ smp rqs = do
+      let (userId, srv, _) = transportSession' smp
+      atomically $ incSMPServerStat' c userId srv connDelAttempts $ length rqs
+      rs <- sendBatch deleteSMPQueues smp rqs
+      let successes = foldl' (\n (_, r) -> if isRight r then n + 1 else n) 0 rs
+      atomically $ incSMPServerStat' c userId srv connDeleted successes
+      pure rs
 
 sendAgentMessage :: AgentClient -> SndQueue -> MsgFlags -> ByteString -> AM (Maybe SMPServer)
 sendAgentMessage c sq@SndQueue {userId, server, sndId, sndPrivateKey} msgFlags agentMsg = do

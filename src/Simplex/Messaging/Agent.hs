@@ -157,6 +157,7 @@ import Simplex.Messaging.Agent.NtfSubSupervisor
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
+import Simplex.Messaging.Agent.Stats (AgentSMPServerStats (connSubErrs))
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
@@ -1711,50 +1712,34 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
 
 deleteConnQueues :: AgentClient -> Bool -> Bool -> [RcvQueue] -> AM' (Map ConnId (Either AgentErrorType ()))
 deleteConnQueues c waitDelivery ntf rqs = do
-  let attemptsStats = countDelAttempts rqs
-  forM_ (M.toList attemptsStats) $ \((userId, srv), attempts) ->
-    atomically $ incSMPServerStat' c userId srv connDelAttempts attempts
-  rs <- deleteQueues c rqs
-  maxErrs <- asks $ deleteErrorCount . config
-  let rsStats = countDelResults rs maxErrs
-  forM_ (M.toList rsStats) $ \((userId, srv), (succs, errs)) -> do
-    atomically $ incSMPServerStat' c userId srv connDeleted succs
-    atomically $ incSMPServerStat' c userId srv connDelErrs errs
-  crs <- connResults <$> deleteQueueRecs rs maxErrs
-  let connIds = M.keys $ M.filter isRight crs
+  rs <- connResults <$> (deleteQueueRecs =<< deleteQueues c rqs)
+  let connIds = M.keys $ M.filter isRight rs
   deliveryTimeout <- if waitDelivery then asks (Just . connDeleteDeliveryTimeout . config) else pure Nothing
-  crs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) connIds)
-  forM_ crs' $ \cId -> notify ("", cId, AEvt SAEConn DEL_CONN)
-  pure crs
+  rs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) connIds)
+  forM_ rs' $ \cId -> notify ("", cId, AEvt SAEConn DEL_CONN)
+  pure rs
   where
-    countDelAttempts :: [RcvQueue] -> Map (UserId, SMPServer) Int
-    countDelAttempts = foldr addAttempt M.empty
-      where
-        addAttempt RcvQueue {userId, server} =
-          M.alter (Just . (+ 1) . fromMaybe 0) (userId, server)
-    countDelResults :: [(RcvQueue, Either AgentErrorType ())] -> Int -> Map (UserId, SMPServer) (Int, Int)
-    countDelResults rs maxErrs = foldr addRes M.empty rs
-      where
-        addRes (RcvQueue {userId, server}, Right ()) =
-          M.alter (Just . (\(succs, errs) -> (succs + 1, errs)) . fromMaybe (0, 0)) (userId, server)
-        addRes (rq@RcvQueue {userId, server}, Left e)
-          | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs = id
-          | otherwise = M.alter (Just . (\(succs, errs) -> (succs, errs + 1)) . fromMaybe (0, 0)) (userId, server)
-    deleteQueueRecs :: [(RcvQueue, Either AgentErrorType ())] -> Int -> AM' [(RcvQueue, Either AgentErrorType ())]
-    deleteQueueRecs rs maxErrs = do
-      (rs', notifyActions) <- unzip . rights <$> withStoreBatch' c (\db -> map (deleteQueueRec db) rs)
+    deleteQueueRecs :: [(RcvQueue, Either AgentErrorType ())] -> AM' [(RcvQueue, Either AgentErrorType ())]
+    deleteQueueRecs rs = do
+      maxErrs <- asks $ deleteErrorCount . config
+      (rs', notifyActions) <- unzip . rights <$> withStoreBatch' c (\db -> map (deleteQueueRec db maxErrs) rs)
       mapM_ sequence_ notifyActions
       pure rs'
       where
         deleteQueueRec ::
           DB.Connection ->
+          Int ->
           (RcvQueue, Either AgentErrorType ()) ->
           IO ((RcvQueue, Either AgentErrorType ()), Maybe (AM' ()))
-        deleteQueueRec db (rq, r) = case r of
+        deleteQueueRec db maxErrs (rq@RcvQueue {userId, server}, r) = case r of
           Right _ -> deleteConnRcvQueue db rq $> ((rq, r), Just (notifyRQ rq Nothing))
           Left e
             | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs -> incRcvDeleteErrors db rq $> ((rq, r), Nothing)
-            | otherwise -> deleteConnRcvQueue db rq $> ((rq, Right ()), Just (notifyRQ rq (Just e)))
+            | otherwise -> do
+                deleteConnRcvQueue db rq
+                -- attempts and successes are counted in deleteQueues function
+                atomically $ incSMPServerStat c userId server connDeleted
+                pure ((rq, Right ()), Just (notifyRQ rq (Just e)))
     notifyRQ rq e_ = notify ("", qConnId rq, AEvt SAEConn $ DEL_RCVQ (qServer rq) (queueId rq) e_)
     notify = when ntf . atomically . writeTBQueue (subQ c)
     connResults :: [(RcvQueue, Either AgentErrorType ())] -> Map ConnId (Either AgentErrorType ())
