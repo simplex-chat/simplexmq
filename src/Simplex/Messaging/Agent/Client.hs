@@ -290,6 +290,9 @@ data AgentClient = AgentClient
     subQ :: TBQueue ATransmission,
     msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
     smpServers :: TMap UserId (NonEmpty SMPServerWithAuth),
+    -- smpServersKnown :: TMap UserId (NonEmpty SMPKnownServer),
+    -- smpServersProxy :: TMap UserId (NonEmpty SMPKnownServer),
+    -- smpServersReceive :: TMap UserId (NonEmpty SMPKnownServer),
     smpClients :: TMap SMPTransportSession SMPClientVar,
     -- smpProxiedRelays:
     -- SMPTransportSession defines connection from proxy to relay,
@@ -298,6 +301,8 @@ data AgentClient = AgentClient
     ntfServers :: TVar [NtfServer],
     ntfClients :: TMap NtfTransportSession NtfClientVar,
     xftpServers :: TMap UserId (NonEmpty XFTPServerWithAuth),
+    -- xftpServersKnown :: TMap UserId (NonEmpty XFTPKnownServer),
+    -- xftpServersEnabled :: TMap UserId (NonEmpty XFTPKnownServer),
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
     useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
     userNetworkInfo :: TVar UserNetworkInfo,

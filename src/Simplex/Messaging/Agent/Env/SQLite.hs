@@ -80,6 +80,16 @@ data InitialAgentServers = InitialAgentServers
     netCfg :: NetworkConfig
   }
 
+data InitialAgentServers' = InitialAgentServers'
+  { smpKnown :: Map UserId (NonEmpty SMPKnownServer),
+    smpProxy :: Map UserId (NonEmpty SMPKnownServer),
+    smpReceive :: Map UserId (NonEmpty SMPKnownServer),
+    xftpKnown :: Map UserId (NonEmpty XFTPKnownServer),
+    xftpEnabled :: Map UserId (NonEmpty XFTPKnownServer),
+    ntf :: [NtfServer],
+    netCfg :: NetworkConfig
+  }
+
 data AgentConfig = AgentConfig
   { tcpPort :: Maybe ServiceName,
     rcvAuthAlg :: C.AuthAlg,
