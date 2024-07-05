@@ -33,6 +33,7 @@ module Simplex.Messaging.Agent.Client
     closeAgentClient,
     closeProtocolServerClients,
     reconnectServerClients,
+    reconnectSMPServerClients,
     reconnectSMPServer,
     closeXFTPServerClient,
     runSMPServerTest,
@@ -211,7 +212,7 @@ import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..), withTransaction)
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
-import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues (getRcvQueues))
+import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues (getRcvQueues), activeToPendingQueues)
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
@@ -241,6 +242,7 @@ import Simplex.Messaging.Protocol
     QueueIdsKeys (..),
     RcvMessage (..),
     RcvNtfPublicDhKey,
+    RecipientId,
     SMPMsgMeta (..),
     SProtocolType (..),
     SenderCanSecure,
@@ -921,6 +923,33 @@ closeProtocolServerClients c clientsSel =
 reconnectServerClients :: ProtocolServerClient v err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
 reconnectServerClients c clientsSel =
   readTVarIO (clientsSel c) >>= mapM_ (forkIO . closeClient_ c)
+
+reconnectSMPServerClients :: AgentClient -> AM' ()
+reconnectSMPServerClients c = do
+  -- 1. swap smpClients to empty map, move active subscriptions to pending
+  (clients, prevActive) <- atomically $ do
+    clients <- smpClients c `swapTVar` M.empty
+    prevActive <- activeToPendingQueues (activeSubs c) (pendingSubs c)
+    pure (clients, prevActive)
+  -- 2. notify DOWN for connections that had active subscriptions
+  let downConns = groupConnsByServer prevActive
+  forM_ (M.toList downConns) $ \(server, connIds) ->
+    liftIO $ notifyDOWN server connIds
+  -- 3. close clients
+  mapM_ (liftIO . forkIO . closeClient_ c) clients
+  -- 4. resubscribe pending subscriptions
+  pending <- readTVarIO (getRcvQueues $ pendingSubs c)
+  forM_ (M.toList pending) $ \((userId, srv, rId), _) ->
+    resubscribeSMPSession c (userId, srv, Just rId)
+  where
+    groupConnsByServer :: Map (UserId, SMPServer, RecipientId) RcvQueue -> Map SMPServer [ConnId]
+    groupConnsByServer = foldl' insertConnId M.empty
+      where
+        insertConnId :: Map SMPServer [ConnId] -> RcvQueue -> Map SMPServer [ConnId]
+        insertConnId acc RcvQueue {server, connId} =
+          M.insertWith (<>) server [connId] acc
+    notifyDOWN :: SMPServer -> [ConnId] -> IO ()
+    notifyDOWN server connIds = atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone (DOWN server connIds))
 
 reconnectSMPServer :: AgentClient -> UserId -> SMPServer -> IO ()
 reconnectSMPServer c userId srv = do
