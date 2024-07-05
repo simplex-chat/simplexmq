@@ -938,9 +938,11 @@ reconnectSMPServerClients c = do
   -- 3. close clients
   mapM_ (liftIO . forkIO . closeClient_ c) clients
   -- 4. resubscribe pending subscriptions
+  mode <- liftIO $ getSessionMode c
   pending <- readTVarIO (getRcvQueues $ pendingSubs c)
-  forM_ (M.toList pending) $ \((userId, srv, rId), _) ->
-    resubscribeSMPSession c (userId, srv, Just rId)
+  -- Group transport sessions to avoid multiple UP events in case session mode is TSMUser
+  let tSessions = queuesToSessions pending mode
+  forM_ tSessions $ \tSess -> resubscribeSMPSession c tSess
   where
     groupConnsByServer :: Map (UserId, SMPServer, RecipientId) RcvQueue -> Map SMPServer [ConnId]
     groupConnsByServer = foldl' insertConnId M.empty
@@ -950,6 +952,10 @@ reconnectSMPServerClients c = do
           M.insertWith (<>) server [connId] acc
     notifyDOWN :: SMPServer -> [ConnId] -> IO ()
     notifyDOWN server connIds = atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone (DOWN server connIds))
+    queuesToSessions :: Map (UserId, SMPServer, RecipientId) RcvQueue -> TransportSessionMode -> Set SMPTransportSession
+    queuesToSessions qs mode = case mode of
+      TSMEntity -> M.foldrWithKey (\(userId, srv, rId) _ acc -> S.insert (userId, srv, Just rId) acc) S.empty qs
+      TSMUser -> M.foldrWithKey (\(userId, srv, _) _ acc -> S.insert (userId, srv, Nothing) acc) S.empty qs
 
 reconnectSMPServer :: AgentClient -> UserId -> SMPServer -> IO ()
 reconnectSMPServer c userId srv = do
