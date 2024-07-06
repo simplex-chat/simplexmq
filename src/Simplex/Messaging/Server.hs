@@ -193,8 +193,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           CAConnected srv -> logInfo $ "SMP server connected " <> showServer' srv
           CADisconnected srv [] -> logInfo $ "SMP server disconnected " <> showServer' srv
           CADisconnected srv subs -> logError $ "SMP server disconnected " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
-          CASubscribed srv subs -> logError $ "SMP server subscribed " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
-          CASubError srv errs -> logError $ "SMP server subscription errors " <> showServer' srv <> " / errors: " <> tshow (length errs)
+          CASubscribed srv _ subs -> logError $ "SMP server subscribed " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
+          CASubError srv _ errs -> logError $ "SMP server subscription errors " <> showServer' srv <> " / errors: " <> tshow (length errs)
       where
         showServer' = decodeLatin1 . strEncode . host
 

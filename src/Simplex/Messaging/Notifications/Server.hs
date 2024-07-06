@@ -222,7 +222,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
               incNtfStat ntfReceived
             Right SMP.END -> updateSubStatus smpQueue NSEnd
             Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
-            Right _ -> logError $ "SMP server unexpected response"
+            Right _ -> logError "SMP server unexpected response"
             Left e -> logError $ "SMP client error: " <> tshow e
 
     receiveAgent =
@@ -235,11 +235,11 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
             forM_ subs $ \(_, ntfId) -> do
               let smpQueue = SMPQueueNtf srv ntfId
               updateSubStatus smpQueue NSInactive
-          CASubscribed srv subs -> do
-            forM_ subs $ \(_, ntfId) -> updateSubStatus (SMPQueueNtf srv ntfId) NSActive
+          CASubscribed srv _ subs -> do
+            forM_ subs $ \ntfId -> updateSubStatus (SMPQueueNtf srv ntfId) NSActive
             logSubStatus srv "subscribed" $ length subs
-          CASubError srv errs ->
-            forM errs (\((_, ntfId), err) -> handleSubError (SMPQueueNtf srv ntfId) err)
+          CASubError srv _ errs ->
+            forM errs (\(ntfId, err) -> handleSubError (SMPQueueNtf srv ntfId) err)
               >>= logSubErrors srv . catMaybes . L.toList
 
     logSubStatus srv event n =
