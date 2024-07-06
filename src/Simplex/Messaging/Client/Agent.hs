@@ -328,7 +328,7 @@ subscribeQueues_ party ca srv subs = do
   atomically $ addPendingSubs ca srv party $ L.toList subs
   runExceptT (getSMPServerClient' ca srv) >>= \case
     Right smp -> smpSubscribeQueues party ca smp srv subs
-    Left _ -> pure ()
+    Left _ -> pure () -- no call to reconnectClient - failing getSMPServerClient' does that
 
 smpSubscribeQueues :: SMPSubParty -> SMPClientAgent -> SMPClient -> SMPServer -> NonEmpty (QueueId, C.APrivateAuthKey) -> IO ()
 smpSubscribeQueues party ca smp srv subs = do
