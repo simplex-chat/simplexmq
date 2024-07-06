@@ -340,29 +340,27 @@ smpSubscribeQueues party ca smp srv subs = do
         (Just <$> processSubscriptions rs)
         (pure Nothing)
   case rs' of
-    Just (tempErrs, finalErrs, oks) -> do
+    Just (tempErrs, finalErrs, oks, _) -> do
       notify_ CASubscribed $ map fst oks
       notify_ CASubError finalErrs
       when tempErrs $ reconnectClient ca srv
     Nothing -> reconnectClient ca srv
   where
-    processSubscriptions :: NonEmpty (Either SMPClientError ()) -> STM (Bool, [(QueueId, SMPClientError)], [(QueueId, C.APrivateAuthKey)])
+    processSubscriptions :: NonEmpty (Either SMPClientError ()) -> STM (Bool, [(QueueId, SMPClientError)], [(QueueId, C.APrivateAuthKey)], [QueueId])
     processSubscriptions rs = do
       pending <- maybe (pure M.empty) readTVar =<< TM.lookup srv (pendingSrvSubs ca)
-      let acc@(_, finalErrs, oks) = foldr (groupSub pending) (False, [], []) (L.zip subs rs)
-      unless (null oks) $ do
-        addSubscriptions ca srv party oks
-        removePendingSubs ca srv party $ map fst oks
-      unless (null finalErrs) $ removePendingSubs ca srv party $ map fst finalErrs
+      let acc@(_, _, oks, notPending) = foldr (groupSub pending) (False, [], [], []) (L.zip subs rs)
+      unless (null oks) $ addSubscriptions ca srv party oks
+      unless (null notPending) $ removePendingSubs ca srv party notPending
       pure acc
-    groupSub :: Map SMPSub C.APrivateAuthKey -> ((QueueId, C.APrivateAuthKey), Either SMPClientError ()) -> (Bool, [(QueueId, SMPClientError)], [(QueueId, C.APrivateAuthKey)]) -> (Bool, [(QueueId, SMPClientError)], [(QueueId, C.APrivateAuthKey)])
-    groupSub pending (s@(qId, _), r) acc@(!tempErrs, finalErrs, oks) = case r of
+    groupSub :: Map SMPSub C.APrivateAuthKey -> ((QueueId, C.APrivateAuthKey), Either SMPClientError ()) -> (Bool, [(QueueId, SMPClientError)], [(QueueId, C.APrivateAuthKey)], [QueueId]) -> (Bool, [(QueueId, SMPClientError)], [(QueueId, C.APrivateAuthKey)], [QueueId])
+    groupSub pending (s@(qId, _), r) acc@(!tempErrs, finalErrs, oks, notPending) = case r of
       Right ()
-        | M.member (party, qId) pending -> (tempErrs, finalErrs, s : oks)
+        | M.member (party, qId) pending -> (tempErrs, finalErrs, s : oks, qId : notPending)
         | otherwise -> acc
       Left e
-        | temporaryClientError e -> (True, finalErrs, oks)
-        | otherwise -> (tempErrs, (qId, e) : finalErrs, oks)
+        | temporaryClientError e -> (True, finalErrs, oks, notPending)
+        | otherwise -> (tempErrs, (qId, e) : finalErrs, oks, qId : notPending)
     subscribe = case party of
       SPRecipient -> subscribeSMPQueues
       SPNotifier -> subscribeSMPQueuesNtfs
