@@ -3051,7 +3051,7 @@ testServerQueueInfo = do
     pure ()
   where
     checkEmptyQ c cId qiSnd' = do
-      r <- checkQ c cId qiSnd' (Just QSubThread) 0 Nothing
+      r <- checkQ c cId qiSnd' (Just QNoSub) 0 Nothing
       liftIO $ r `shouldBe` Nothing
     checkMsgQ c cId qiSize' = do
       r <- checkQ c cId True (Just QNoSub) qiSize' (Just MTMessage)

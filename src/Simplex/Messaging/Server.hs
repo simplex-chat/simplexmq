@@ -683,7 +683,7 @@ forkClient Client {endThreads, endThreadSeq} label action = do
   mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
 
 client :: THandleParams SMPVersion 'TServer -> Client -> Server -> M ()
-client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, notifiers} = do
+client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, subscribers, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
   forever $
     atomically (readTBQueue rcvQ)
@@ -921,7 +921,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             deliver sub = do
               q <- getStoreMsgQueue "SUB" rId
               msg_ <- atomically $ tryPeekMsg q
-              deliverMessage "SUB" qr rId sub q msg_
+              deliverMessage "SUB" qr rId sub msg_
 
         getMessage :: QueueRec -> M (Transmission BrokerMsg)
         getMessage qr = time "GET" $ do
@@ -978,7 +978,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                     _ -> do
                       (deletedMsg_, msg_) <- atomically $ tryDelPeekMsg q msgId
                       mapM_ updateStats deletedMsg_
-                      deliverMessage "ACK" qr queueId sub q msg_
+                      deliverMessage "ACK" qr queueId sub msg_
                 _ -> pure $ err NO_MSG
           where
             getDelivered :: TVar Sub -> STM (Maybe Sub)
@@ -1024,7 +1024,8 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                         Nothing -> do
                           atomically $ modifyTVar' (msgSentQuota stats) (+ 1)
                           pure $ err QUOTA
-                        Just msg -> time "SEND ok" $ do
+                        Just (msg, wasEmpty) -> time "SEND ok" $ do
+                          when wasEmpty $ tryDeliverMessage msg
                           when (notification msgFlags) $ do
                             forM_ (notifier qr) $ \ntf -> do
                               asks random >>= atomically . trySendNotification ntf msg >>= \case
@@ -1057,6 +1058,53 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               when (deleted > 0) $ do
                 stats <- asks serverStats
                 atomically $ modifyTVar' (msgExpired stats) (+ deleted)
+
+            -- The condition for delivery of the message is:
+            -- - the queue was empty when the message was sent,
+            -- - there is subscribed recipient,
+            -- - no message was "delivered" that was not acknowledged.
+            -- If the send queue of the subscribed client is not full the message is put there in the same transaction.
+            -- If the queue is not full, then the thread is created where these checks are made:
+            -- - it is the same subscribed client (in case it was reconnected it would receive message via SUB command)
+            -- - nothing was delivered to this subscription (to avoid race conditions with the recipient).
+            tryDeliverMessage :: Message -> M ()
+            tryDeliverMessage msg = atomically deliverToSub >>= mapM_ forkDeliver
+              where
+                rId = recipientId qr
+                deliverToSub =
+                  TM.lookup rId subscribers
+                    $>>= \rc@Client {subscriptions = subs, sndQ = q} -> TM.lookup rId subs
+                    $>>= \sub -> readTVar sub >>= \case
+                      s@Sub {subThread = NoSub, delivered} ->
+                        tryTakeTMVar delivered >>= \case
+                          Just _ -> pure Nothing -- if a message was already delivered, should not deliver more
+                          Nothing ->
+                            ifM
+                              (isFullTBQueue q)
+                              (modifyTVar' sub (\s' -> s' {subThread = SubPending}) $> Just (rc, sub))
+                              (deliver q s $> Nothing)
+                      _ -> pure Nothing
+                deliver q s = do
+                  let encMsg = encryptMsg qr msg
+                  writeTBQueue q [(CorrId "", rId, MSG encMsg)]
+                  void $ setDelivered s msg
+                forkDeliver (rc@Client {sndQ = q}, sub) = do
+                  t <- mkWeakThreadId =<< forkIO deliverThread
+                  atomically . modifyTVar' sub $ \case
+                    -- this case is needed because deliverThread can exit before it
+                    s@Sub {subThread = SubPending} -> s {subThread = SubThread t}
+                    s -> s
+                  where
+                    deliverThread = do
+                      labelMyThread $ B.unpack ("client $" <> encode sessionId) <> " deliver/SEND"
+                      time "deliver" . atomically $
+                        whenM (maybe False (sameClientId rc) <$> TM.lookup rId subscribers) $ do
+                          s@Sub {delivered} <- readTVar sub
+                          tryTakeTMVar delivered >>= \case
+                            Just _ -> pure () -- if a message was already delivered, should not deliver more
+                            Nothing -> do
+                              deliver q s
+                              writeTVar sub $! s {subThread = NoSub}
 
             trySendNotification :: NtfCreds -> Message -> TVar ChaChaDRG -> STM (Maybe Bool)
             trySendNotification NtfCreds {notifierId, rcvNtfDhSecret} msg ntfNonceDrg =
@@ -1132,35 +1180,17 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                     verified = \case
                       VRVerified qr -> Right (qr, (corrId', entId', cmd'))
                       VRFailed -> Left (corrId', entId', ERR AUTH)
-        deliverMessage :: T.Text -> QueueRec -> RecipientId -> TVar Sub -> MsgQueue -> Maybe Message -> M (Transmission BrokerMsg)
-        deliverMessage name qr rId sub q msg_ = time (name <> " deliver") $ do
-          readTVarIO sub >>= \case
-            s@Sub {subThread = NoSub} ->
-              case msg_ of
-                Just msg ->
-                  let encMsg = encryptMsg qr msg
-                   in atomically (setDelivered s msg) $> (corrId, rId, MSG encMsg)
-                _ -> forkSub $> resp
-            _ -> pure resp
+        deliverMessage :: T.Text -> QueueRec -> RecipientId -> TVar Sub -> Maybe Message -> M (Transmission BrokerMsg)
+        deliverMessage name qr rId sub msg_ = time (name <> " deliver") . atomically $
+          readTVar sub >>= \case
+            Sub {subThread = ProhibitSub} -> pure resp
+            s -> case msg_ of
+              Just msg ->
+                let encMsg = encryptMsg qr msg
+                 in setDelivered s msg $> (corrId, rId, MSG encMsg)
+              _ -> pure resp
           where
             resp = (corrId, rId, OK)
-            forkSub :: M ()
-            forkSub = do
-              atomically . modifyTVar' sub $ \s -> s {subThread = SubPending}
-              t <- mkWeakThreadId =<< forkIO subscriber
-              atomically . modifyTVar' sub $ \case
-                s@Sub {subThread = SubPending} -> s {subThread = SubThread t}
-                s -> s
-              where
-                subscriber = do
-                  labelMyThread $ B.unpack ("client $" <> encode sessionId) <> " subscriber/" <> T.unpack name
-                  msg <- atomically $ peekMsg q
-                  time "subscriber" . atomically $ do
-                    let encMsg = encryptMsg qr msg
-                    writeTBQueue sndQ [(CorrId "", rId, MSG encMsg)]
-                    s <- readTVar sub
-                    void $ setDelivered s msg
-                    writeTVar sub $! s {subThread = NoSub}
 
         time :: T.Text -> M a -> M a
         time name = timed name queueId

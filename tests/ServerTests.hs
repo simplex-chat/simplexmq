@@ -509,19 +509,21 @@ testWithStoreLog at@(ATransport t) =
         writeTVar senderId1 sId1
         writeTVar notifierId nId
       Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, NSUB)
-      signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello") >>= \case
-        Resp "bcda" _ OK -> pure ()
-        r -> unexpected r
-      Resp "" _ (Msg mId1 msg1) <- tGet1 h
+      (mId1, msg1) <-
+        signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello") >>= \case
+          Resp "" _ (Msg mId1 msg1) -> pure (mId1, msg1)
+          r -> error $ "unexpected response " <> take 100 (show r)
+      Resp "bcda" _ OK <- tGet1 h
       (decryptMsgV3 dhShared mId1 msg1, Right "hello") #== "delivered from queue 1"
       Resp "" _ (NMSG _ _) <- tGet1 h1
 
       (sId2, rId2, rKey2, dhShared2) <- createAndSecureQueue h sPub2
       atomically $ writeTVar senderId2 sId2
-      signSendRecv h sKey2 ("cdab", sId2, _SEND "hello too") >>= \case
-        Resp "cdab" _ OK -> pure ()
-        r -> unexpected r
-      Resp "" _ (Msg mId2 msg2) <- tGet1 h
+      (mId2, msg2) <-
+        signSendRecv h sKey2 ("cdab", sId2, _SEND "hello too") >>= \case
+          Resp "" _ (Msg mId2 msg2) -> pure (mId2, msg2)
+          r -> error $ "unexpected response " <> take 100 (show r)
+      Resp "cdab" _ OK <- tGet1 h
       (decryptMsgV3 dhShared2 mId2 msg2, Right "hello too") #== "delivered from queue 2"
 
       Resp "dabc" _ OK <- signSendRecv h rKey2 ("dabc", rId2, DEL)
