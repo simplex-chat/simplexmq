@@ -2991,6 +2991,7 @@ testServerMultipleIdentities =
     bob' <- liftIO $ do
       Left (BROKER _ NETWORK) <- runExceptT $ joinConnection bob 1 True secondIdentityCReq "bob's connInfo" SMSubscribe
       disposeAgentClient bob
+      threadDelay 250000
       getSMPAgentClient' 3 agentCfg initAgentServers testDB2
     subscribeConnection bob' aliceId
     exchangeGreetingsMsgId 4 alice bobId bob' aliceId
@@ -3140,7 +3141,7 @@ testServerQueueInfo = do
     pure ()
   where
     checkEmptyQ c cId qiSnd' = do
-      r <- checkQ c cId qiSnd' (Just QSubThread) 0 Nothing
+      r <- checkQ c cId qiSnd' (Just QNoSub) 0 Nothing
       liftIO $ r `shouldBe` Nothing
     checkMsgQ c cId qiSize' = do
       r <- checkQ c cId True (Just QNoSub) qiSize' (Just MTMessage)
