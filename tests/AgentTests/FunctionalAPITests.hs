@@ -1319,13 +1319,13 @@ testMsgDeliveryQuotaExceeded t =
 
 testExpireMessage :: HasCallStack => ATransport -> IO ()
 testExpireMessage t =
-  withAgent 1 agentCfg {messageTimeout = 1, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB $ \a ->
+  withAgent 1 agentCfg {messageTimeout = 1.5, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB $ \a ->
     withAgent 2 agentCfg initAgentServers testDB2 $ \b -> do
       (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ makeConnection a b
       nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
       nGet b =##> \case ("", "", DOWN _ [c]) -> c == aId; _ -> False
       2 <- runRight $ sendMessage a bId SMP.noMsgFlags "1"
-      threadDelay 1000000
+      threadDelay 1500000
       3 <- runRight $ sendMessage a bId SMP.noMsgFlags "2" -- this won't expire
       get a =##> \case ("", c, MERR 2 (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
       withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
@@ -1335,7 +1335,7 @@ testExpireMessage t =
 
 testExpireManyMessages :: HasCallStack => ATransport -> IO ()
 testExpireManyMessages t =
-  withAgent 1 agentCfg {messageTimeout = 1, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB $ \a ->
+  withAgent 1 agentCfg {messageTimeout = 1.5, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB $ \a ->
     withAgent 2 agentCfg initAgentServers testDB2 $ \b -> do
       (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ makeConnection a b
       runRight_ $ do
@@ -1344,7 +1344,7 @@ testExpireManyMessages t =
         2 <- sendMessage a bId SMP.noMsgFlags "1"
         3 <- sendMessage a bId SMP.noMsgFlags "2"
         4 <- sendMessage a bId SMP.noMsgFlags "3"
-        liftIO $ threadDelay 1000000
+        liftIO $ threadDelay 1500000
         5 <- sendMessage a bId SMP.noMsgFlags "4" -- this won't expire
         get a =##> \case ("", c, MERR 2 (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
         -- get a =##> \case ("", c, MERRS [5, 6] (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
@@ -1364,7 +1364,7 @@ testExpireManyMessages t =
         withUP b aId $ \case ("", _, MsgErr 2 (MsgSkipped 2 4) "4") -> True; _ -> False
         ackMessage b aId 2 Nothing
 
-withUP :: AgentClient -> ConnId -> (AEntityTransmission 'AEConn -> Bool) -> ExceptT AgentErrorType IO ()
+withUP :: HasCallStack => AgentClient -> ConnId -> (AEntityTransmission 'AEConn -> Bool) -> ExceptT AgentErrorType IO ()
 withUP a bId p =
   liftIO $
     getInAnyOrder
