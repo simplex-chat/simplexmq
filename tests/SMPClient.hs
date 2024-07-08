@@ -99,8 +99,7 @@ cfg =
   ServerConfig
     { transports = [],
       smpHandshakeTimeout = 60000000,
-      tbqSize = 1,
-      -- serverTbqSize = 1,
+      tbqSize = 64,
       msgQueueQuota = 4,
       queueIdBytes = 24,
       msgIdBytes = 24,

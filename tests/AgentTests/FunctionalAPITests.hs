@@ -263,6 +263,11 @@ functionalAPITests t = do
       withSmpServer t testAgentClient3
     it "should establish connection without PQ encryption and enable it" $
       withSmpServer t testEnablePQEncryption
+  describe "Duplex connection - delivery stress test" $ do
+    describe "one way (50)" $ testMatrix2Stress t $ runAgentClientStressTestOneWay 50
+    xdescribe "one way (1000)" $ testMatrix2Stress t $ runAgentClientStressTestOneWay 1000
+    describe "two way concurrently (50)" $ testMatrix2Stress t $ runAgentClientStressTestConc 25
+    xdescribe "two way concurrently (1000)" $ testMatrix2Stress t $ runAgentClientStressTestConc 500
   describe "Establishing duplex connection, different PQ settings" $ do
     testPQMatrix2 t $ runAgentClientTestPQ True
   describe "Establishing duplex connection v2, different Ratchet versions" $
@@ -482,6 +487,19 @@ testMatrix2 t runTest = do
   it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 $ runTest PQSupportOff False
   it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 $ runTest PQSupportOff False
 
+testMatrix2Stress :: HasCallStack => ATransport -> (PQSupport -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testMatrix2Stress t runTest = do
+  it "current, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 aCfg aCfg (initAgentServersProxy SPMAlways SPFProhibit) 1 $ runTest PQSupportOn True
+  it "v8, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 aProxyCfgV8 aProxyCfgV8 (initAgentServersProxy SPMAlways SPFProhibit) 3 $ runTest PQSupportOn True
+  it "current" $ withSmpServer t $ runTestCfg2 aCfg aCfg 1 $ runTest PQSupportOn False
+  it "prev" $ withSmpServer t $ runTestCfg2 aCfgVPrev aCfgVPrev 3 $ runTest PQSupportOff False
+  it "prev to current" $ withSmpServer t $ runTestCfg2 aCfgVPrev aCfg 3 $ runTest PQSupportOff False
+  it "current to prev" $ withSmpServer t $ runTestCfg2 aCfg aCfgVPrev 3 $ runTest PQSupportOff False
+  where
+    aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
+    aProxyCfgV8 = agentProxyCfgV8 {messageRetryInterval = fastMessageRetryInterval}
+    aCfgVPrev = agentCfgVPrev {messageRetryInterval = fastMessageRetryInterval}
+
 testBasicMatrix2 :: HasCallStack => ATransport -> (AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testBasicMatrix2 t runTest = do
   it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 1 $ runTest
@@ -615,6 +633,67 @@ runAgentClientTestPQ viaProxy (alice, aPQ) (bob, bPQ) baseId =
 
 pqConnectionMode :: InitialKeys -> PQSupport -> Bool
 pqConnectionMode pqMode1 pqMode2 = supportPQ (CR.connPQEncryption pqMode1) && supportPQ pqMode2
+
+runAgentClientStressTestOneWay :: HasCallStack => Int64 -> PQSupport -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
+runAgentClientStressTestOneWay n pqSupport viaProxy alice bob baseId = runRight_ $ do
+  let pqEnc = PQEncryption $ supportPQ pqSupport
+  (aliceId, bobId) <- makeConnection_ pqSupport alice bob
+  let proxySrv = if viaProxy then Just testSMPServer else Nothing
+      message i = "message " <> bshow i
+  concurrently_
+    ( forM_ ([1 .. n] :: [Int64]) $ \i -> do
+        mId <- msgId <$> A.sendMessage alice bobId pqEnc SMP.noMsgFlags (message i)
+        liftIO $ do
+          mId >= i `shouldBe` True
+          let getEvent =
+                get alice >>= \case
+                  ("", c, A.SENT mId' srv) -> c == bobId && mId' >= baseId + i && srv == proxySrv `shouldBe` True
+                  ("", c, QCONT) -> do
+                    c == bobId `shouldBe` True
+                    getEvent
+                  r -> expectationFailure $ "wrong message: " <> show r
+          getEvent
+    )
+    ( forM_ ([1 .. n] :: [Int64]) $ \i -> do
+        get bob >>= \case
+          ("", c, Msg' mId pq msg) -> do
+            liftIO $ c == aliceId && mId >= baseId + i && pq == pqEnc && msg == message i `shouldBe` True
+            ackMessage bob aliceId mId Nothing
+          r -> liftIO $ expectationFailure $ "wrong message: " <> show r
+    )
+  liftIO $ noMessages alice "nothing else should be delivered to alice"
+  liftIO $ noMessages bob "nothing else should be delivered to bob"
+  where
+    msgId = subtract baseId . fst
+
+runAgentClientStressTestConc :: HasCallStack => Int64 -> PQSupport -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
+runAgentClientStressTestConc n pqSupport viaProxy alice bob baseId = runRight_ $ do
+  let pqEnc = PQEncryption $ supportPQ pqSupport
+  (aliceId, bobId) <- makeConnection_ pqSupport alice bob
+  let proxySrv = if viaProxy then Just testSMPServer else Nothing
+      message i = "message " <> bshow i
+      loop a bId i = do
+        when (i <= n) $ do
+          mId <- msgId <$> A.sendMessage a bId pqEnc SMP.noMsgFlags (message i)
+          liftIO $ mId >= i `shouldBe` True
+        let getEvent = do
+              get a >>= \case
+                ("", c, A.SENT _ srv) -> liftIO $ c == bId && srv == proxySrv `shouldBe` True
+                ("", c, QCONT) -> do
+                  liftIO $ c == bId `shouldBe` True
+                  getEvent
+                ("", c, Msg' mId pq msg) -> do
+                  liftIO $ c == bId && pq == pqEnc && ("message " `B.isPrefixOf` msg) `shouldBe` True
+                  ackMessage a bId mId Nothing
+                r -> liftIO $ expectationFailure $ "wrong message: " <> show r
+        getEvent
+  concurrently_
+    (forM_ ([1 .. n * 2] :: [Int64]) $ loop alice bobId)
+    (forM_ ([1 .. n * 2] :: [Int64]) $ loop bob aliceId)
+  liftIO $ noMessagesIngoreQCONT alice "nothing else should be delivered to alice"
+  liftIO $ noMessagesIngoreQCONT bob "nothing else should be delivered to bob"
+  where
+    msgId = subtract baseId . fst
 
 testEnablePQEncryption :: HasCallStack => IO ()
 testEnablePQEncryption =
@@ -789,10 +868,17 @@ runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId 
       ackMessage a bId (baseId + 2) Nothing
 
 noMessages :: HasCallStack => AgentClient -> String -> Expectation
-noMessages c err = tryGet `shouldReturn` ()
+noMessages = noMessages_ False
+
+noMessagesIngoreQCONT :: AgentClient -> String -> Expectation
+noMessagesIngoreQCONT = noMessages_ True
+
+noMessages_ :: Bool -> HasCallStack => AgentClient -> String -> Expectation
+noMessages_ ingoreQCONT c err = tryGet `shouldReturn` ()
   where
     tryGet =
       10000 `timeout` get c >>= \case
+        Just (_, _, QCONT) | ingoreQCONT -> noMessages_ ingoreQCONT c err
         Just msg -> error $ err <> ": " <> show msg
         _ -> return ()
 

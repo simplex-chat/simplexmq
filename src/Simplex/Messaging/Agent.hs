@@ -2206,7 +2206,15 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
       unless pending $ incSMPServerStat c userId srv connSubIgnored
       pure pending
     notify' :: forall e m. (AEntityI e, MonadIO m) => ConnId -> AEvent e -> m ()
-    notify' connId msg = atomically $ writeTBQueue subQ ("", connId, AEvt (sAEntity @e) msg)
+    notify' connId msg = do
+      forkNotify <-
+        atomically $
+          ifM
+            (isFullTBQueue subQ)
+            (pure True)
+            (False <$ writeTBQueue subQ ("", connId, AEvt (sAEntity @e) msg))
+      liftIO . when forkNotify . void . forkIO . atomically $
+        writeTBQueue subQ ("", connId, AEvt (sAEntity @e) msg)
     notifyErr :: ConnId -> SMPClientError -> AM' ()
     notifyErr connId = notify' connId . ERR . protocolClientError SMP (B.unpack $ strEncode srv)
     processSMP :: forall c. RcvQueue -> Connection c -> ConnData -> BrokerMsg -> AM ()
