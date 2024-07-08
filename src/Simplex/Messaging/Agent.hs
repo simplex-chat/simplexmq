@@ -1126,10 +1126,14 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
     lift $ waitForWork doWork
     atomically $ throwWhenInactive c
     atomically $ beginAgentOperation c AOSndNetwork
-    withWork c doWork (`getPendingServerCommand` server_) $ processCmd (riFast ri)
+    withWork c doWork (`getPendingServerCommand` server_) $ runProcessCmd (riFast ri)
   where
-    processCmd :: RetryInterval -> PendingCommand -> AM ()
-    processCmd ri PendingCommand {cmdId, corrId, userId, connId, command} = case command of
+    runProcessCmd ri cmd = do
+      pending <- newTVarIO []
+      processCmd ri cmd pending
+      mapM_ (atomically . writeTBQueue subQ) . reverse =<< readTVarIO pending
+    processCmd :: RetryInterval -> PendingCommand -> TVar [ATransmission] -> AM ()
+    processCmd ri PendingCommand {cmdId, corrId, userId, connId, command} pendingCmds = case command of
       AClientCommand cmd -> case cmd of
         NEW enableNtfs (ACM cMode) pqEnc subMode -> noServer $ do
           usedSrvs <- newTVarIO ([] :: [SMPServer])
@@ -1145,7 +1149,7 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK
         SWCH ->
-          noServer . tryCommand . withConnLock c connId "switchConnection" $
+          noServer . tryWithLock "switchConnection" $
             withStore c (`getConn` connId) >>= \case
               SomeConn _ conn@(DuplexConnection _ (replaced :| _rqs) _) ->
                 switchDuplexConnection c conn replaced >>= notify . SWITCH QDRcv SPStarted
@@ -1247,7 +1251,9 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
         internalErr s = cmdError $ INTERNAL $ s <> ": " <> show (agentCommandTag command)
         cmdError e = notify (ERR e) >> withStore' c (`deleteCommand` cmdId)
         notify :: forall e. AEntityI e => AEvent e -> AM ()
-        notify cmd = atomically $ writeTBQueue subQ (corrId, connId, AEvt (sAEntity @e) cmd)
+        notify cmd =
+          let t = (corrId, connId, AEvt (sAEntity @e) cmd)
+           in atomically $ ifM (isFullTBQueue subQ) (modifyTVar' pendingCmds (t :)) (writeTBQueue subQ t)
 -- ^ ^ ^ async command processing /
 
 enqueueMessages :: AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> AM (AgentMsgId, PQEncryption)
@@ -2211,16 +2217,16 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
     notifyErr connId = notify' connId . ERR . protocolClientError SMP (B.unpack $ strEncode srv)
     runProcessSMP :: RcvQueue -> Connection c -> ConnData -> BrokerMsg -> AM ()
     runProcessSMP rq conn cData msg = do
-      evts <- newTVarIO []
-      processSMP rq conn cData msg evts
-      mapM_ (atomically . writeTBQueue subQ) . reverse =<< readTVarIO evts
+      pending <- newTVarIO []
+      processSMP rq conn cData msg pending
+      mapM_ (atomically . writeTBQueue subQ) . reverse =<< readTVarIO pending
     processSMP :: forall c. RcvQueue -> Connection c -> ConnData -> BrokerMsg -> TVar [ATransmission] -> AM ()
     processSMP
       rq@RcvQueue {rcvId = rId, sndSecure, e2ePrivKey, e2eDhSecret, status}
       conn
       cData@ConnData {connId, connAgentVersion, ratchetSyncState = rss}
       smpMsg
-      pendingEvents =
+      pendingMsgs =
         withConnLock c connId "processSMP" $ case smpMsg of
           SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} -> do
             atomically $ incSMPServerStat c userId srv recvMsgs
@@ -2401,9 +2407,9 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
           r -> unexpected r
         where
           notify :: forall e m. (AEntityI e, MonadIO m) => AEvent e -> m ()
-          notify evt =
-            let t = ("", connId, AEvt (sAEntity @e) evt)
-             in atomically $ ifM (isFullTBQueue subQ) (modifyTVar' pendingEvents (t :)) (writeTBQueue subQ t)
+          notify msg =
+            let t = ("", connId, AEvt (sAEntity @e) msg)
+             in atomically $ ifM (isFullTBQueue subQ) (modifyTVar' pendingMsgs (t :)) (writeTBQueue subQ t)
 
           prohibited :: Text -> AM ()
           prohibited s = do
