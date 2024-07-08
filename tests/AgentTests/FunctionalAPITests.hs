@@ -2991,6 +2991,7 @@ testServerMultipleIdentities =
     bob' <- liftIO $ do
       Left (BROKER _ NETWORK) <- runExceptT $ joinConnection bob 1 True secondIdentityCReq "bob's connInfo" SMSubscribe
       disposeAgentClient bob
+      threadDelay 250000
       getSMPAgentClient' 3 agentCfg initAgentServers testDB2
     subscribeConnection bob' aliceId
     exchangeGreetingsMsgId 4 alice bobId bob' aliceId
