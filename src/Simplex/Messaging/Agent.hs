@@ -2159,7 +2159,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
   forM_ ts $ \(entId, t) -> case t of
     STEvent msgOrErr ->
       withRcvConn entId $ \rq@RcvQueue {connId} conn -> case msgOrErr of
-        Right msg -> processSMP rq conn (toConnData conn) msg
+        Right msg -> runProcessSMP rq conn (toConnData conn) msg
         Left e -> lift $ notifyErr connId e
     STResponse (Cmd SRecipient cmd) respOrErr ->
       withRcvConn entId $ \rq conn -> case cmd of
@@ -2167,11 +2167,11 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
           Right SMP.OK -> processSubOk rq upConnIds
           Right msg@SMP.MSG {} -> do
             processSubOk rq upConnIds -- the connection is UP even when processing this particular message fails
-            processSMP rq conn (toConnData conn) msg
+            runProcessSMP rq conn (toConnData conn) msg
           Right r -> processSubErr rq $ unexpectedResponse r
           Left e -> unless (temporaryClientError e) $ processSubErr rq e -- timeout/network was already reported
         SMP.ACK _ -> case respOrErr of
-          Right msg@SMP.MSG {} -> processSMP rq conn (toConnData conn) msg
+          Right msg@SMP.MSG {} -> runProcessSMP rq conn (toConnData conn) msg
           _ -> pure () -- TODO process OK response to ACK
         _ -> pure () -- TODO process expired response to DEL
     STResponse {} -> pure () -- TODO process expired responses to sent messages
@@ -2206,23 +2206,21 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
       unless pending $ incSMPServerStat c userId srv connSubIgnored
       pure pending
     notify' :: forall e m. (AEntityI e, MonadIO m) => ConnId -> AEvent e -> m ()
-    notify' connId msg = do
-      forkNotify <-
-        atomically $
-          ifM
-            (isFullTBQueue subQ)
-            (pure True)
-            (False <$ writeTBQueue subQ ("", connId, AEvt (sAEntity @e) msg))
-      liftIO . when forkNotify . void . forkIO . atomically $
-        writeTBQueue subQ ("", connId, AEvt (sAEntity @e) msg)
+    notify' connId msg = atomically $ writeTBQueue subQ ("", connId, AEvt (sAEntity @e) msg)
     notifyErr :: ConnId -> SMPClientError -> AM' ()
     notifyErr connId = notify' connId . ERR . protocolClientError SMP (B.unpack $ strEncode srv)
-    processSMP :: forall c. RcvQueue -> Connection c -> ConnData -> BrokerMsg -> AM ()
+    runProcessSMP :: RcvQueue -> Connection c -> ConnData -> BrokerMsg -> AM ()
+    runProcessSMP rq conn cData msg = do
+      evts <- newTVarIO []
+      processSMP rq conn cData msg evts
+      mapM_ (atomically . writeTBQueue subQ) . reverse =<< readTVarIO evts
+    processSMP :: forall c. RcvQueue -> Connection c -> ConnData -> BrokerMsg -> TVar [ATransmission] -> AM ()
     processSMP
       rq@RcvQueue {rcvId = rId, sndSecure, e2ePrivKey, e2eDhSecret, status}
       conn
       cData@ConnData {connId, connAgentVersion, ratchetSyncState = rss}
-      smpMsg =
+      smpMsg
+      pendingEvents =
         withConnLock c connId "processSMP" $ case smpMsg of
           SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} -> do
             atomically $ incSMPServerStat c userId srv recvMsgs
@@ -2403,7 +2401,9 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
           r -> unexpected r
         where
           notify :: forall e m. (AEntityI e, MonadIO m) => AEvent e -> m ()
-          notify = notify' connId
+          notify evt =
+            let t = ("", connId, AEvt (sAEntity @e) evt)
+             in atomically $ ifM (isFullTBQueue subQ) (modifyTVar' pendingEvents (t :)) (writeTBQueue subQ t)
 
           prohibited :: Text -> AM ()
           prohibited s = do

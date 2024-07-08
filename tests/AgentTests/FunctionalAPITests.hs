@@ -661,8 +661,8 @@ runAgentClientStressTestOneWay n pqSupport viaProxy alice bob baseId = runRight_
             ackMessage bob aliceId mId Nothing
           r -> liftIO $ expectationFailure $ "wrong message: " <> show r
     )
-  liftIO $ noMessages alice "nothing else should be delivered to alice"
-  liftIO $ noMessages bob "nothing else should be delivered to bob"
+  liftIO $ noMessagesIngoreQCONT alice "nothing else should be delivered to alice"
+  liftIO $ noMessagesIngoreQCONT bob "nothing else should be delivered to bob"
   where
     msgId = subtract baseId . fst
 
@@ -672,7 +672,7 @@ runAgentClientStressTestConc n pqSupport viaProxy alice bob baseId = runRight_ $
   (aliceId, bobId) <- makeConnection_ pqSupport alice bob
   let proxySrv = if viaProxy then Just testSMPServer else Nothing
       message i = "message " <> bshow i
-      loop a bId i = do
+      loop a bId mIdVar i = do
         when (i <= n) $ do
           mId <- msgId <$> A.sendMessage a bId pqEnc SMP.noMsgFlags (message i)
           liftIO $ mId >= i `shouldBe` True
@@ -683,13 +683,17 @@ runAgentClientStressTestConc n pqSupport viaProxy alice bob baseId = runRight_ $
                   liftIO $ c == bId `shouldBe` True
                   getEvent
                 ("", c, Msg' mId pq msg) -> do
+                  -- tests that mId increases
+                  liftIO $ (mId >) <$> atomically (swapTVar mIdVar mId) `shouldReturn` True
                   liftIO $ c == bId && pq == pqEnc && ("message " `B.isPrefixOf` msg) `shouldBe` True
                   ackMessage a bId mId Nothing
                 r -> liftIO $ expectationFailure $ "wrong message: " <> show r
         getEvent
+  amId <- newTVarIO 0
+  bmId <- newTVarIO 0
   concurrently_
-    (forM_ ([1 .. n * 2] :: [Int64]) $ loop alice bobId)
-    (forM_ ([1 .. n * 2] :: [Int64]) $ loop bob aliceId)
+    (forM_ ([1 .. n * 2] :: [Int64]) $ loop alice bobId amId)
+    (forM_ ([1 .. n * 2] :: [Int64]) $ loop bob aliceId bmId)
   liftIO $ noMessagesIngoreQCONT alice "nothing else should be delivered to alice"
   liftIO $ noMessagesIngoreQCONT bob "nothing else should be delivered to bob"
   where
@@ -1280,7 +1284,6 @@ testDeliveryAfterSubscriptionError t = do
   withAgentClients2 $ \a b -> do
     Left (BROKER _ NETWORK) <- runExceptT $ subscribeConnection a bId
     Left (BROKER _ NETWORK) <- runExceptT $ subscribeConnection b aId
-    pure ()
     withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
       withUP a bId $ \case ("", c, SENT 2) -> c == bId; _ -> False
       withUP b aId $ \case ("", c, Msg "hello") -> c == aId; _ -> False
