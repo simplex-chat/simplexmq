@@ -47,7 +47,6 @@ data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport)],
     smpHandshakeTimeout :: Int,
     tbqSize :: Natural,
-    -- serverTbqSize :: Natural,
     msgQueueQuota :: Int,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
