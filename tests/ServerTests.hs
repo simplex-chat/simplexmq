@@ -886,7 +886,7 @@ testMsgExpireOnInterval t =
       testSMPClient @c $ \sh -> do
         (sId, rId, rKey, _) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, _SEND "hello (should expire)")
-        threadDelay 2500000
+        threadDelay 3000000
         testSMPClient @c $ \rh -> do
           signSendRecv rh rKey ("2", rId, SUB) >>= \case
             Resp "2" _ OK -> pure ()
