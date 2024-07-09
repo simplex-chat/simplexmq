@@ -11,7 +11,7 @@ module Simplex.Messaging.Agent.TRcvQueues
     deleteQueue,
     getSessQueues,
     getDelSessQueues,
-    activeToPendingQueues,
+    getDelAllQueues,
     qKey,
   )
 where
@@ -20,7 +20,6 @@ import Control.Concurrent.STM
 import Data.Foldable (foldl')
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
-import Data.Map (Map)
 import qualified Data.Map.Strict as M
 import Simplex.Messaging.Agent.Protocol (ConnId, UserId)
 import Simplex.Messaging.Agent.Store (RcvQueue, StoredRcvQueue (..))
@@ -98,22 +97,10 @@ getDelSessQueues tSess (TRcvQueues qs cs) = do
             Nothing -> (cId : removed, Nothing)
           Nothing -> (removed, Nothing) -- "impossible" in invariant holds, because we get keys from the known queues
 
--- moves active queues to pending queues and returns queues that were active
-activeToPendingQueues :: TRcvQueues -> TRcvQueues -> STM (Map (UserId, SMPServer, RecipientId) RcvQueue)
-activeToPendingQueues (TRcvQueues aqs acs) (TRcvQueues pqs pcs) = do
-  aqs' <- mergeQueues
-  mergeConns
-  pure aqs'
-  where
-    mergeQueues :: STM (Map (UserId, SMPServer, RecipientId) RcvQueue)
-    mergeQueues = do
-      aqs' <- aqs `swapTVar` M.empty
-      modifyTVar pqs $ \pqs' -> M.union aqs' pqs'
-      pure aqs'
-    mergeConns :: STM ()
-    mergeConns = do
-      acs' <- acs `swapTVar` M.empty
-      modifyTVar pcs $ \pcs' -> M.unionWith (<>) acs' pcs'
+getDelAllQueues :: TRcvQueues -> STM [RcvQueue]
+getDelAllQueues (TRcvQueues qs cs) = do
+  writeTVar cs M.empty
+  M.elems <$> swapTVar qs M.empty
 
 isSession :: RcvQueue -> (UserId, SMPServer, Maybe ConnId) -> Bool
 isSession rq (uId, srv, connId_) =

@@ -29,7 +29,6 @@ tRcvQueuesTests = do
     it "getDelSessQueues" getDelSessQueuesTest
   describe "queue transfer" $ do
     it "getDelSessQueues-batchAddQueues preserves total length" removeSubsTest
-    it "activeToPendingQueues" activeToPendingTest
 
 checkDataInvariant :: RQ.TRcvQueues -> IO Bool
 checkDataInvariant trq = atomically $ do
@@ -163,33 +162,6 @@ removeSubsTest = do
 
   atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@beta", Just "c3") aq >>= RQ.batchAddQueues pq . fst
   atomically (totalSize aq pq) `shouldReturn` (4, 4)
-
-activeToPendingTest :: IO ()
-activeToPendingTest = do
-  aq <- atomically RQ.empty
-  let qs1 =
-        [ dummyRQ 0 "smp://1234-w==@alpha" "c1",
-          dummyRQ 0 "smp://1234-w==@alpha" "c2"
-        ]
-  atomically $ RQ.batchAddQueues aq qs1
-
-  pq <- atomically RQ.empty
-  let qs2 =
-        [ dummyRQ 0 "smp://1234-w==@beta" "c3",
-          dummyRQ 1 "smp://1234-w==@beta" "c4"
-        ]
-  atomically $ RQ.batchAddQueues pq qs2
-
-  atomically (totalSize aq pq) `shouldReturn` (4, 4)
-
-  prevActive <- atomically $ RQ.activeToPendingQueues aq pq
-  atomically (totalSize aq pq) `shouldReturn` (4, 4)
-  M.keys <$> readTVarIO (RQ.getConnections aq) `shouldReturn` []
-  M.keys <$> readTVarIO (RQ.getConnections pq) `shouldReturn` ["c1", "c2", "c3", "c4"]
-  -- M.keys prevActive `shouldMatchList` [(0, "smp://1234-w==@alpha", ""), (0, "smp://1234-w==@alpha", "")]
-  M.keys prevActive `shouldMatchList` [(0, "smp://1234-w==@alpha", "c1"), (0, "smp://1234-w==@alpha", "c2")]
-  checkDataInvariant aq `shouldReturn` True
-  checkDataInvariant pq `shouldReturn` True
 
 totalSize :: RQ.TRcvQueues -> RQ.TRcvQueues -> STM (Int, Int)
 totalSize a b = do
