@@ -255,7 +255,6 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
             { transports = iniTransports ini,
               smpHandshakeTimeout = 120000000,
               tbqSize = 64,
-              -- serverTbqSize = 1024,
               msgQueueQuota = 128,
               queueIdBytes = 24,
               msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
