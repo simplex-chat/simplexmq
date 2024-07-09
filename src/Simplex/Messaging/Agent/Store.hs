@@ -44,6 +44,7 @@ import Simplex.Messaging.Protocol
     RcvPrivateAuthKey,
     SndPrivateAuthKey,
     SndPublicAuthKey,
+    SenderCanSecure,
     VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
@@ -83,6 +84,8 @@ data StoredRcvQueue (q :: QueueStored) = RcvQueue
     e2eDhSecret :: Maybe C.DhSecretX25519,
     -- | sender queue ID
     sndId :: SMP.SenderId,
+    -- | sender can secure the queue
+    sndSecure :: SenderCanSecure,
     -- | queue status
     status :: QueueStatus,
     -- | database queue ID (within connection)
@@ -138,9 +141,11 @@ data StoredSndQueue (q :: QueueStored) = SndQueue
     server :: SMPServer,
     -- | sender queue ID
     sndId :: SMP.SenderId,
+    -- | sender can secure the queue
+    sndSecure :: SenderCanSecure,
     -- | key pair used by the sender to authorize transmissions
     -- TODO combine keys to key pair so that types match
-    sndPublicKey :: Maybe SndPublicAuthKey,
+    sndPublicKey :: SndPublicAuthKey,
     sndPrivateKey :: SndPrivateAuthKey,
     -- | DH public key used to negotiate per-queue e2e encryption
     e2ePubKey :: Maybe C.PublicKeyX25519,
@@ -165,6 +170,12 @@ sndQueueInfo SndQueue {server, sndSwchStatus} =
   SndQueueInfo {sndServer = server, sndSwitchStatus = sndSwchStatus}
 
 instance SMPQueue RcvQueue where
+  qServer RcvQueue {server} = server
+  {-# INLINE qServer #-}
+  queueId RcvQueue {rcvId} = rcvId
+  {-# INLINE queueId #-}
+
+instance SMPQueue NewRcvQueue where
   qServer RcvQueue {server} = server
   {-# INLINE qServer #-}
   queueId RcvQueue {rcvId} = rcvId
@@ -372,7 +383,7 @@ instance StrEncoding AgentCommandTag where
 data InternalCommand
   = ICAck SMP.RecipientId MsgId
   | ICAckDel SMP.RecipientId MsgId InternalId
-  | ICAllowSecure SMP.RecipientId SMP.SndPublicAuthKey
+  | ICAllowSecure SMP.RecipientId (Maybe SMP.SndPublicAuthKey)
   | ICDuplexSecure SMP.RecipientId SMP.SndPublicAuthKey
   | ICDeleteConn
   | ICDeleteRcvQueue SMP.RecipientId
@@ -635,4 +646,6 @@ data StoreError
     SEDeletedSndChunkReplicaNotFound
   | -- | Error when reading work item that suspends worker - do not use!
     SEWorkItemError ByteString
+  | -- | Servers stats not found.
+    SEServersStatsNotFound
   deriving (Eq, Show, Exception)

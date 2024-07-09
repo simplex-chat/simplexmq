@@ -26,6 +26,10 @@ kb :: Integral a => a -> a
 kb n = 1024 * n
 {-# INLINE kb #-}
 
+toKB :: Integral a => a -> a
+toKB n = n `div` 1024
+{-# INLINE toKB #-}
+
 mb :: Integral a => a -> a
 mb n = 1024 * kb n
 {-# INLINE mb #-}

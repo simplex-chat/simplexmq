@@ -75,7 +75,7 @@ snapshotMsgQueue st rId = TM.lookup rId st >>= maybe (pure []) (snapshotTQueue .
       mapM_ (writeTQueue q) msgs
       pure msgs
 
-writeMsg :: MsgQueue -> Message -> STM (Maybe Message)
+writeMsg :: MsgQueue -> Message -> STM (Maybe (Message, Bool))
 writeMsg MsgQueue {msgQueue = q, quota, canWrite, size} !msg = do
   canWrt <- readTVar canWrite
   empty <- isEmptyTQueue q
@@ -85,7 +85,7 @@ writeMsg MsgQueue {msgQueue = q, quota, canWrite, size} !msg = do
       writeTVar canWrite $! canWrt'
       modifyTVar' size (+ 1)
       if canWrt'
-        then writeTQueue q msg $> Just msg
+        then writeTQueue q msg $> Just (msg, empty)
         else (writeTQueue q $! msgQuota) $> Nothing
     else pure Nothing
   where

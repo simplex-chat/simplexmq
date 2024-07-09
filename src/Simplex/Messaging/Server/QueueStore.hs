@@ -14,6 +14,7 @@ data QueueRec = QueueRec
     rcvDhSecret :: !RcvDhSecret,
     senderId :: !SenderId,
     senderKey :: !(Maybe SndPublicAuthKey),
+    sndSecure :: !SenderCanSecure,
     notifier :: !(Maybe NtfCreds),
     status :: !ServerQueueStatus
   }

@@ -14,7 +14,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import NtfClient (ntfTestPort)
-import SMPClient (proxyVRange, testPort)
+import SMPClient (proxyVRangeV8, testPort)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
@@ -80,8 +80,8 @@ agentCfg =
   where
     networkConfig = defaultNetworkConfig {tcpConnectTimeout = 1_000_000, tcpTimeout = 2_000_000}
 
-agentProxyCfg :: AgentConfig
-agentProxyCfg = agentCfg {smpCfg = (smpCfg agentCfg) {serverVRange = proxyVRange}}
+agentProxyCfgV8 :: AgentConfig
+agentProxyCfgV8 = agentCfg {smpCfg = (smpCfg agentCfg) {serverVRange = proxyVRangeV8}}
 
 fastRetryInterval :: RetryInterval
 fastRetryInterval = defaultReconnectInterval {initialInterval = 50_000}
