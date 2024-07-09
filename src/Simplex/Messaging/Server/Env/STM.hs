@@ -144,7 +144,7 @@ type ClientId = Int
 
 data Client = Client
   { clientId :: ClientId,
-    subscriptions :: TMap RecipientId (TVar Sub),
+    subscriptions :: TMap RecipientId Sub,
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
@@ -163,7 +163,7 @@ data Client = Client
 data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId) | ProhibitSub
 
 data Sub = Sub
-  { subThread :: SubscriptionThread,
+  { subThread :: TVar SubscriptionThread,
     delivered :: TMVar MsgId
   }
 
@@ -193,8 +193,9 @@ newClient nextClientId qSize thVersion sessionId createdAt = do
   return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, procThreads, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
-newSubscription subThread = do
+newSubscription st = do
   delivered <- newEmptyTMVar
+  subThread <- newTVar st
   return Sub {subThread, delivered}
 
 newEnv :: ServerConfig -> IO Env
