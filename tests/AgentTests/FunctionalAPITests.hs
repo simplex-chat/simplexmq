@@ -1335,7 +1335,7 @@ testExpireMessage t =
 
 testExpireManyMessages :: HasCallStack => ATransport -> IO ()
 testExpireManyMessages t =
-  withAgent 1 agentCfg {messageTimeout = 1.5, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB $ \a ->
+  withAgent 1 agentCfg {messageTimeout = 2, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB $ \a ->
     withAgent 2 agentCfg initAgentServers testDB2 $ \b -> do
       (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ makeConnection a b
       runRight_ $ do
@@ -1344,7 +1344,7 @@ testExpireManyMessages t =
         2 <- sendMessage a bId SMP.noMsgFlags "1"
         3 <- sendMessage a bId SMP.noMsgFlags "2"
         4 <- sendMessage a bId SMP.noMsgFlags "3"
-        liftIO $ threadDelay 1500000
+        liftIO $ threadDelay 2000000
         5 <- sendMessage a bId SMP.noMsgFlags "4" -- this won't expire
         get a =##> \case ("", c, MERR 2 (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
         -- get a =##> \case ("", c, MERRS [5, 6] (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
@@ -1401,7 +1401,7 @@ testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testP
 
 testExpireManyMessagesQuota :: ATransport -> IO ()
 testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testPort $ \_ -> do
-  a <- getSMPAgentClient' 1 agentCfg {quotaExceededTimeout = 1, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB
+  a <- getSMPAgentClient' 1 agentCfg {quotaExceededTimeout = 2, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aId, bId) <- runRight $ do
     (aId, bId) <- makeConnection a b
@@ -1411,7 +1411,7 @@ testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} 
     3 <- sendMessage a bId SMP.noMsgFlags "2"
     4 <- sendMessage a bId SMP.noMsgFlags "3"
     5 <- sendMessage a bId SMP.noMsgFlags "4"
-    liftIO $ threadDelay 1000000
+    liftIO $ threadDelay 2000000
     6 <- sendMessage a bId SMP.noMsgFlags "5" -- this won't expire
     get a =##> \case ("", c, MERR 3 (SMP _ QUOTA)) -> bId == c; _ -> False
     get a >>= \case
