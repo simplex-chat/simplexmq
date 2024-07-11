@@ -20,6 +20,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     UserServers (..),
     NetworkConfig (..),
     presetServerCfg,
+    enabledServerCfg,
     mkUserServers,
     defaultAgentConfig,
     defaultReconnectInterval,
@@ -97,6 +98,9 @@ data ServerCfg p = ServerCfg
     enabled :: Bool
   }
   deriving (Show)
+
+enabledServerCfg :: ProtoServerWithAuth p -> ServerCfg p
+enabledServerCfg server = ServerCfg {server, preset = False, tested = Nothing, enabled = True}
 
 presetServerCfg :: Bool -> ProtoServerWithAuth p -> ServerCfg p
 presetServerCfg enabled server = ServerCfg {server, preset = True, tested = Nothing, enabled}
