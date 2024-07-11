@@ -7,7 +7,6 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -16,7 +15,11 @@ module Simplex.Messaging.Agent.Env.SQLite
     AM,
     AgentConfig (..),
     InitialAgentServers (..),
+    ServerCfg (..),
+    UserServers (..),
     NetworkConfig (..),
+    presetServerCfg,
+    mkUserServers,
     defaultAgentConfig,
     defaultReconnectInterval,
     tryAgentError,
@@ -45,8 +48,7 @@ import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map (Map)
-import qualified Data.Map as M
-import Data.Maybe (mapMaybe)
+import Data.Maybe (fromMaybe)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16)
@@ -63,7 +65,7 @@ import Simplex.Messaging.Crypto.Ratchet (VersionRangeE2E, supportedE2EEncryptVRa
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Protocol (NtfServer, VersionRangeSMPC, XFTPServer, XFTPServerWithAuth, supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth, ProtocolServer, ProtocolType (..), VersionRangeSMPC, XFTPServer, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion, TLS, Transport (..))
@@ -78,12 +80,33 @@ type AM' a = ReaderT Env IO a
 type AM a = ExceptT AgentErrorType (ReaderT Env IO) a
 
 data InitialAgentServers = InitialAgentServers
-  { smp :: Map UserId (NonEmpty SMPServerWithAuth),
-    smpKnown :: Map UserId (NonEmpty SMPServer),
+  { smp :: Map UserId (NonEmpty (ServerCfg 'PSMP)),
     ntf :: [NtfServer],
-    xftp :: Map UserId (NonEmpty XFTPServerWithAuth),
+    xftp :: Map UserId (NonEmpty (ServerCfg 'PXFTP)),
     netCfg :: NetworkConfig
   }
+
+data ServerCfg p = ServerCfg
+  { server :: ProtoServerWithAuth p,
+    preset :: Bool,
+    tested :: Maybe Bool,
+    enabled :: Bool
+  }
+  deriving (Show)
+
+presetServerCfg :: Bool -> ProtoServerWithAuth p -> ServerCfg p
+presetServerCfg enabled server = ServerCfg {server, preset = True, tested = Nothing, enabled}
+
+data UserServers p = UserServers
+  { enabledSrvs :: NonEmpty (ProtoServerWithAuth p),
+    knownSrvs :: NonEmpty (ProtocolServer p)
+  }
+
+mkUserServers :: NonEmpty (ServerCfg p) -> UserServers p
+mkUserServers srvs = UserServers {enabledSrvs, knownSrvs}
+  where
+    enabledSrvs = L.map (\ServerCfg {server} -> server) $ fromMaybe srvs $ L.nonEmpty $ L.filter (\ServerCfg {enabled} -> enabled) srvs
+    knownSrvs = L.map (\ServerCfg {server = ProtoServerWithAuth srv _} -> srv) srvs
 
 data AgentConfig = AgentConfig
   { tcpPort :: Maybe ServiceName,

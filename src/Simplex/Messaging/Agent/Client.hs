@@ -135,6 +135,7 @@ module Simplex.Messaging.Agent.Client
     withStoreBatch,
     withStoreBatch',
     storeError,
+    userServers,
     pickServer,
     getNextServer,
     withUserServers,
@@ -235,6 +236,7 @@ import Simplex.Messaging.Protocol
     ProtoServerWithAuth (..),
     Protocol (..),
     ProtocolServer (..),
+    ProtocolType (..),
     ProtocolTypeI (..),
     QueueId,
     QueueIdsKeys (..),
@@ -288,8 +290,7 @@ data AgentClient = AgentClient
     active :: TVar Bool,
     subQ :: TBQueue ATransmission,
     msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
-    smpServers :: TMap UserId (NonEmpty SMPServerWithAuth),
-    smpKnownServers :: TMap UserId (NonEmpty SMPServer),
+    smpServers :: TMap UserId (UserServers 'PSMP),
     smpClients :: TMap SMPTransportSession SMPClientVar,
     -- smpProxiedRelays:
     -- SMPTransportSession defines connection from proxy to relay,
@@ -297,7 +298,7 @@ data AgentClient = AgentClient
     smpProxiedRelays :: TMap SMPTransportSession SMPServerWithAuth,
     ntfServers :: TVar [NtfServer],
     ntfClients :: TMap NtfTransportSession NtfClientVar,
-    xftpServers :: TMap UserId (NonEmpty XFTPServerWithAuth),
+    xftpServers :: TMap UserId (UserServers 'PXFTP),
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
     useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
     userNetworkInfo :: TVar UserNetworkInfo,
@@ -449,20 +450,19 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Env -> STM AgentClient
-newAgentClient clientId InitialAgentServers {smp, smpKnown, ntf, xftp, netCfg} currentTs agentEnv = do
+newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
   acThread <- newTVar Nothing
   active <- newTVar True
   subQ <- newTBQueue qSize
   msgQ <- newTBQueue qSize
-  smpServers <- newTVar smp
-  smpKnownServers <- newTVar smpKnown
+  smpServers <- newTVar $ M.map mkUserServers smp
   smpClients <- TM.empty
   smpProxiedRelays <- TM.empty
   ntfServers <- newTVar ntf
   ntfClients <- TM.empty
-  xftpServers <- newTVar xftp
+  xftpServers <- newTVar $ M.map mkUserServers xftp
   xftpClients <- TM.empty
   useNetworkConfig <- newTVar (slowNetworkConfig netCfg, netCfg)
   userNetworkInfo <- newTVar $ UserNetworkInfo UNOther True
@@ -496,7 +496,6 @@ newAgentClient clientId InitialAgentServers {smp, smpKnown, ntf, xftp, netCfg} c
         subQ,
         msgQ,
         smpServers,
-        smpKnownServers,
         smpClients,
         smpProxiedRelays,
         ntfServers,
@@ -1071,7 +1070,7 @@ sendOrProxySMPCommand c userId destSrv cmdStr senderId sendCmdViaProxy sendCmdDi
         SPFAllow -> True
         SPFAllowProtected -> ipAddressProtected cfg destSrv
         SPFProhibit -> False
-    unknownServer = maybe True (notElem destSrv) <$> TM.lookup userId (smpKnownServers c)
+    unknownServer = maybe True (notElem destSrv . knownSrvs) <$> TM.lookup userId (smpServers c)
     sendViaProxy destSess@(_, _, qId) = do
       r <- tryAgentError . withProxySession c destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess) -> do
         r' <- liftClient SMP (clientServer smp) $ sendCmdViaProxy smp proxySess
@@ -1906,7 +1905,7 @@ storeError = \case
   SEDatabaseBusy e -> CRITICAL True $ B.unpack e
   e -> INTERNAL $ show e
 
-userServers :: forall p. (ProtocolTypeI p, UserProtocol p) => AgentClient -> TMap UserId (NonEmpty (ProtoServerWithAuth p))
+userServers :: forall p. (ProtocolTypeI p, UserProtocol p) => AgentClient -> TMap UserId (UserServers p)
 userServers c = case protocolTypeI @p of
   SPSMP -> smpServers c
   SPXFTP -> xftpServers c
@@ -1928,7 +1927,7 @@ getNextServer c userId usedSrvs = withUserServers c userId $ \srvs ->
 withUserServers :: forall p a. (ProtocolTypeI p, UserProtocol p) => AgentClient -> UserId -> (NonEmpty (ProtoServerWithAuth p) -> AM a) -> AM a
 withUserServers c userId action =
   atomically (TM.lookup userId $ userServers c) >>= \case
-    Just srvs -> action srvs
+    Just srvs -> action $ enabledSrvs srvs
     _ -> throwE $ INTERNAL "unknown userId - no user servers"
 
 withNextSrv :: forall p a. (ProtocolTypeI p, UserProtocol p) => AgentClient -> UserId -> TVar [ProtocolServer p] -> [ProtocolServer p] -> (ProtoServerWithAuth p -> AM a) -> AM a
@@ -1937,7 +1936,7 @@ withNextSrv c userId usedSrvs initUsed action = do
   srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId used
   atomically $ do
     srvs_ <- TM.lookup userId $ userServers c
-    let unused = maybe [] ((\\ used) . map protoServer . L.toList) srvs_
+    let unused = maybe [] ((\\ used) . map protoServer . L.toList . enabledSrvs) srvs_
         used' = if null unused then initUsed else srv : used
     writeTVar usedSrvs $! used'
   action srvAuth

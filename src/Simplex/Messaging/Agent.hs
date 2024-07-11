@@ -76,8 +76,7 @@ module Simplex.Messaging.Agent
     deleteConnections,
     getConnectionServers,
     getConnectionRatchetAdHash,
-    setXFTPServers,
-    setSMPServers,
+    setProtocolServers,
     testProtocolServer,
     setNtfServers,
     setNetworkConfig,
@@ -173,7 +172,7 @@ import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfReg
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), VersionSMPC, XFTPServerWithAuth, sndAuthKeySMPClientVersion)
+import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolType (..), ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC, sndAuthKeySMPClientVersion)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import qualified Simplex.Messaging.TMap as TM
@@ -199,7 +198,7 @@ getSMPAgentClient = getSMPAgentClient_ 1
 
 getSMPAgentClient_ :: Int -> AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> IO AgentClient
 getSMPAgentClient_ clientId cfg initServers store backgroundMode =
-  liftIO $ newSMPAgentEnv cfg store >>= runReaderT runAgent
+  newSMPAgentEnv cfg store >>= runReaderT runAgent
   where
     runAgent = do
       currentTs <- liftIO getCurrentTime
@@ -272,7 +271,7 @@ resumeAgentClient :: AgentClient -> IO ()
 resumeAgentClient c = atomically $ writeTVar (active c) True
 {-# INLINE resumeAgentClient #-}
 
-createUser :: AgentClient -> NonEmpty SMPServerWithAuth -> NonEmpty XFTPServerWithAuth -> AE UserId
+createUser :: AgentClient -> NonEmpty (ServerCfg 'PSMP) -> NonEmpty (ServerCfg 'PXFTP) -> AE UserId
 createUser c = withAgentEnv c .: createUser' c
 {-# INLINE createUser #-}
 
@@ -601,11 +600,11 @@ logConnection c connected =
   let event = if connected then "connected to" else "disconnected from"
    in logInfo $ T.unwords ["client", tshow (clientId c), event, "Agent"]
 
-createUser' :: AgentClient -> NonEmpty SMPServerWithAuth -> NonEmpty XFTPServerWithAuth -> AM UserId
+createUser' :: AgentClient -> NonEmpty (ServerCfg 'PSMP) -> NonEmpty (ServerCfg 'PXFTP) -> AM UserId
 createUser' c smp xftp = do
   userId <- withStore' c createUserRecord
-  atomically $ TM.insert userId smp $ smpServers c
-  atomically $ TM.insert userId xftp $ xftpServers c
+  atomically $ TM.insert userId (mkUserServers smp) $ smpServers c
+  atomically $ TM.insert userId (mkUserServers xftp) $ xftpServers c
   pure userId
 
 deleteUser' :: AgentClient -> UserId -> Bool -> AM ()
@@ -1817,13 +1816,9 @@ connectionStats = \case
         }
 
 -- | Change servers to be used for creating new queues, in Reader monad
-setXFTPServers :: AgentClient -> UserId -> NonEmpty XFTPServerWithAuth -> IO ()
-setXFTPServers c userId srvs = atomically $ TM.insert userId srvs (xftpServers c)
-{-# INLINE setXFTPServers #-}
-
-setSMPServers :: AgentClient -> UserId -> NonEmpty SMPServerWithAuth -> NonEmpty SMPServer -> IO ()
-setSMPServers c userId srvs knownSrvs = atomically $ TM.insert userId srvs (smpServers c) >> TM.insert userId knownSrvs (smpKnownServers c)
-{-# INLINE setSMPServers #-}
+setProtocolServers :: forall p. (ProtocolTypeI p, UserProtocol p) => AgentClient -> UserId -> NonEmpty (ServerCfg p) -> IO ()
+setProtocolServers c userId srvs = atomically $ TM.insert userId (mkUserServers srvs) (userServers c)
+{-# INLINE setProtocolServers #-}
 
 registerNtfToken' :: AgentClient -> DeviceToken -> NotificationsMode -> AM NtfTknStatus
 registerNtfToken' c suppliedDeviceToken suppliedNtfMode =

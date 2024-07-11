@@ -980,7 +980,7 @@ testAsyncServerOffline t = withAgentClients2 $ \alice bob -> do
 
 testAllowConnectionClientRestart :: HasCallStack => ATransport -> IO ()
 testAllowConnectionClientRestart t = do
-  let initAgentServersSrv2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer2], smpKnown = userServers [testSMPServer2]}
+  let initAgentServersSrv2 = initAgentServers {smp = userServers [testSMPServer2]}
   alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
   bob <- getSMPAgentClient' 2 agentCfg initAgentServersSrv2 testDB2
   withSmpServerStoreLogOn t testPort $ \_ -> do
@@ -2226,7 +2226,7 @@ testWaitDeliveryTimeout2 t =
 
 testJoinConnectionAsyncReplyErrorV8 :: HasCallStack => ATransport -> IO ()
 testJoinConnectionAsyncReplyErrorV8 t = do
-  let initAgentServersSrv2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer2], smpKnown = userServers [testSMPServer2]}
+  let initAgentServersSrv2 = initAgentServers {smp = userServers [testSMPServer2]}
   withAgent 1 agentCfgVPrevPQ initAgentServers testDB $ \a ->
     withAgent 2 agentCfgVPrevPQ initAgentServersSrv2 testDB2 $ \b -> do
       (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
@@ -2265,7 +2265,7 @@ testJoinConnectionAsyncReplyErrorV8 t = do
 
 testJoinConnectionAsyncReplyError :: HasCallStack => ATransport -> IO ()
 testJoinConnectionAsyncReplyError t = do
-  let initAgentServersSrv2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer2], smpKnown = userServers [testSMPServer2]}
+  let initAgentServersSrv2 = initAgentServers {smp = userServers [testSMPServer2]}
   withAgent 1 agentCfg initAgentServers testDB $ \a ->
     withAgent 2 agentCfg initAgentServersSrv2 testDB2 $ \b -> do
       (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
@@ -2308,7 +2308,7 @@ testUsers =
   withAgentClients2 $ \a b -> runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetings a bId b aId
-    auId <- createUser a [noAuthSrv testSMPServer] [noAuthSrv testXFTPServer]
+    auId <- createUser a [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
     (aId', bId') <- makeConnectionForUsers a auId b 1
     exchangeGreetings a bId' b aId'
     deleteUser a auId True
@@ -2323,7 +2323,7 @@ testDeleteUserQuietly =
   withAgentClients2 $ \a b -> runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetings a bId b aId
-    auId <- createUser a [noAuthSrv testSMPServer] [noAuthSrv testXFTPServer]
+    auId <- createUser a [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
     (aId', bId') <- makeConnectionForUsers a auId b 1
     exchangeGreetings a bId' b aId'
     deleteUser a auId False
@@ -2335,7 +2335,7 @@ testUsersNoServer t = withAgentClientsCfg2 aCfg agentCfg $ \a b -> do
   (aId, bId, auId, _aId', bId') <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetings a bId b aId
-    auId <- createUser a [noAuthSrv testSMPServer] [noAuthSrv testXFTPServer]
+    auId <- createUser a [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
     (aId', bId') <- makeConnectionForUsers a auId b 1
     exchangeGreetings a bId' b aId'
     pure (aId, bId, auId, aId', bId')
@@ -2759,7 +2759,7 @@ testCreateQueueAuth srvVersion clnt1 clnt2 baseId = do
   pure r
   where
     getClient clientId (clntAuth, clntVersion) db =
-      let servers = initAgentServers {smp = userServers [ProtoServerWithAuth testSMPServer clntAuth], smpKnown = userServers [testSMPServer]}
+      let servers = initAgentServers {smp = userServers' [ProtoServerWithAuth testSMPServer clntAuth]}
           alpn_ = if clntVersion >= authCmdsSMPVersion then Just supportedSMPHandshakes else Nothing
           smpCfg = defaultClientConfig alpn_ $ V.mkVersionRange (prevVersion basicAuthSMPVersion) clntVersion
           sndAuthAlg = if srvVersion >= authCmdsSMPVersion && clntVersion >= authCmdsSMPVersion then C.AuthAlg C.SX25519 else C.AuthAlg C.SEd25519
@@ -2931,7 +2931,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     ("", "", UP _ _) <- nGet a
     a `hasClients` 1
 
-    aUserId2 <- createUser a [noAuthSrv testSMPServer] [noAuthSrv testXFTPServer]
+    aUserId2 <- createUser a [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
     (aId2, bId2) <- makeConnectionForUsers a aUserId2 b 1
     exchangeGreetings a bId2 b aId2
     (aId2', bId2') <- makeConnectionForUsers a aUserId2 b 1
