@@ -130,7 +130,7 @@ import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
+import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, sumTypeJSON)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.TMap (TMap)
@@ -847,11 +847,11 @@ data ProxiedRelay = ProxiedRelay
 
 data ProxyClientError
   = -- | protocol error response from proxy
-    ProxyProtocolError ErrorType
+    ProxyProtocolError {protocolErr :: ErrorType}
   | -- | unexpexted response
-    ProxyUnexpectedResponse String
+    ProxyUnexpectedResponse {responseStr :: String}
   | -- | error between proxy and server
-    ProxyResponseError ErrorType
+    ProxyResponseError {responseErr :: ErrorType}
   deriving (Eq, Show, Exception)
 
 instance StrEncoding ProxyClientError where
@@ -1139,6 +1139,6 @@ $(J.deriveJSON (enumJSON $ dropPrefix "SPF") ''SMPProxyFallback)
 
 $(J.deriveJSON defaultJSON ''NetworkConfig)
 
-$(J.deriveJSON (enumJSON $ dropPrefix "Proxy") ''ProxyClientError)
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "Proxy") ''ProxyClientError)
 
 $(J.deriveJSON defaultJSON ''TBQueueInfo)
