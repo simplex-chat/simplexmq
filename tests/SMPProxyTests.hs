@@ -234,7 +234,7 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
   where
     msgId = subtract baseId . fst
     aCfg = agentCfg {sndAuthAlg = C.AuthAlg alg, rcvAuthAlg = C.AuthAlg alg}
-    servers (srvs, smpProxyMode, _) = (initAgentServersProxy smpProxyMode SPFAllow) {smp = userServers $ L.map noAuthSrv srvs}
+    servers (srvs, smpProxyMode, _) = (initAgentServersProxy smpProxyMode SPFAllow) {smp = userServers $ L.map noAuthSrv srvs, smpKnown = userServers srvs}
 
 agentDeliverMessagesViaProxyConc :: [NonEmpty SMPServer] -> [MsgBody] -> IO ()
 agentDeliverMessagesViaProxyConc agentServers msgs =
@@ -299,7 +299,7 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
       logDebug "run finished"
     pqEnc = CR.PQEncOn
     aCfg = agentCfg {sndAuthAlg = C.AuthAlg C.SEd448, rcvAuthAlg = C.AuthAlg C.SEd448}
-    servers srvs = (initAgentServersProxy SPMAlways SPFAllow) {smp = userServers $ L.map noAuthSrv srvs}
+    servers srvs = (initAgentServersProxy SPMAlways SPFAllow) {smp = userServers $ L.map noAuthSrv srvs, smpKnown = userServers srvs}
 
 agentViaProxyVersionError :: IO ()
 agentViaProxyVersionError =
@@ -310,7 +310,7 @@ agentViaProxyVersionError =
         A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     pure ()
   where
-    servers srvs = (initAgentServersProxy SPMUnknown SPFProhibit) {smp = userServers $ L.map noAuthSrv srvs}
+    servers srvs = (initAgentServersProxy SPMUnknown SPFProhibit) {smp = userServers $ L.map noAuthSrv srvs, smpKnown = userServers srvs}
 
 agentViaProxyRetryOffline :: IO ()
 agentViaProxyRetryOffline = do
@@ -372,7 +372,7 @@ agentViaProxyRetryOffline = do
     aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
     baseId = 1
     msgId = subtract baseId . fst
-    servers srv = (initAgentServersProxy SPMAlways SPFProhibit) {smp = userServers $ L.map noAuthSrv [srv]}
+    servers srv = (initAgentServersProxy SPMAlways SPFProhibit) {smp = userServers $ L.map noAuthSrv [srv], smpKnown = userServers [srv]}
 
 testNoProxy :: IO ()
 testNoProxy = do

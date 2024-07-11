@@ -20,7 +20,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Client (ProtocolClientConfig (..), SMPProxyFallback, SMPProxyMode, defaultNetworkConfig, defaultSMPClientConfig)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
-import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth)
+import Simplex.Messaging.Protocol (NtfServer)
 import Simplex.Messaging.Transport
 import XFTPClient (testXFTPServer)
 
@@ -49,13 +49,18 @@ initAgentServers :: InitialAgentServers
 initAgentServers =
   InitialAgentServers
     { smp = userServers [noAuthSrv testSMPServer],
+      smpKnown = userServers [testSMPServer],
       ntf = [testNtfServer],
       xftp = userServers [noAuthSrv testXFTPServer],
       netCfg = defaultNetworkConfig {tcpTimeout = 500_000, tcpConnectTimeout = 500_000}
     }
 
 initAgentServers2 :: InitialAgentServers
-initAgentServers2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer, noAuthSrv testSMPServer2]}
+initAgentServers2 =
+  initAgentServers
+    { smp = userServers [noAuthSrv testSMPServer, noAuthSrv testSMPServer2],
+      smpKnown = userServers [testSMPServer, testSMPServer2]
+    }
 
 initAgentServersProxy :: SMPProxyMode -> SMPProxyFallback -> InitialAgentServers
 initAgentServersProxy smpProxyMode smpProxyFallback =
@@ -89,5 +94,5 @@ fastRetryInterval = defaultReconnectInterval {initialInterval = 50_000}
 fastMessageRetryInterval :: RetryInterval2
 fastMessageRetryInterval = RetryInterval2 {riFast = fastRetryInterval, riSlow = fastRetryInterval}
 
-userServers :: NonEmpty (ProtoServerWithAuth p) -> Map UserId (NonEmpty (ProtoServerWithAuth p))
+userServers :: NonEmpty s -> Map UserId (NonEmpty s)
 userServers srvs = M.fromList [(1, srvs)]

@@ -76,7 +76,8 @@ module Simplex.Messaging.Agent
     deleteConnections,
     getConnectionServers,
     getConnectionRatchetAdHash,
-    setProtocolServers,
+    setXFTPServers,
+    setSMPServers,
     testProtocolServer,
     setNtfServers,
     setNetworkConfig,
@@ -172,7 +173,7 @@ import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfReg
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC, XFTPServerWithAuth, sndAuthKeySMPClientVersion)
+import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), VersionSMPC, XFTPServerWithAuth, sndAuthKeySMPClientVersion)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import qualified Simplex.Messaging.TMap as TM
@@ -1816,9 +1817,13 @@ connectionStats = \case
         }
 
 -- | Change servers to be used for creating new queues, in Reader monad
-setProtocolServers :: (ProtocolTypeI p, UserProtocol p) => AgentClient -> UserId -> NonEmpty (ProtoServerWithAuth p) -> IO ()
-setProtocolServers c userId srvs = atomically $ TM.insert userId srvs (userServers c)
-{-# INLINE setProtocolServers #-}
+setXFTPServers :: AgentClient -> UserId -> NonEmpty XFTPServerWithAuth -> IO ()
+setXFTPServers c userId srvs = atomically $ TM.insert userId srvs (xftpServers c)
+{-# INLINE setXFTPServers #-}
+
+setSMPServers :: AgentClient -> UserId -> NonEmpty SMPServerWithAuth -> NonEmpty SMPServer -> IO ()
+setSMPServers c userId srvs knownSrvs = atomically $ TM.insert userId srvs (smpServers c) >> TM.insert userId knownSrvs (smpKnownServers c)
+{-# INLINE setSMPServers #-}
 
 registerNtfToken' :: AgentClient -> DeviceToken -> NotificationsMode -> AM NtfTknStatus
 registerNtfToken' c suppliedDeviceToken suppliedNtfMode =

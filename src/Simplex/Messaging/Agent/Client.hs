@@ -135,7 +135,6 @@ module Simplex.Messaging.Agent.Client
     withStoreBatch,
     withStoreBatch',
     storeError,
-    userServers,
     pickServer,
     getNextServer,
     withUserServers,
@@ -290,6 +289,7 @@ data AgentClient = AgentClient
     subQ :: TBQueue ATransmission,
     msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
     smpServers :: TMap UserId (NonEmpty SMPServerWithAuth),
+    smpKnownServers :: TMap UserId (NonEmpty SMPServer),
     smpClients :: TMap SMPTransportSession SMPClientVar,
     -- smpProxiedRelays:
     -- SMPTransportSession defines connection from proxy to relay,
@@ -449,7 +449,7 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Env -> STM AgentClient
-newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs agentEnv = do
+newAgentClient clientId InitialAgentServers {smp, smpKnown, ntf, xftp, netCfg} currentTs agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
   acThread <- newTVar Nothing
@@ -457,6 +457,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs a
   subQ <- newTBQueue qSize
   msgQ <- newTBQueue qSize
   smpServers <- newTVar smp
+  smpKnownServers <- newTVar smpKnown
   smpClients <- TM.empty
   smpProxiedRelays <- TM.empty
   ntfServers <- newTVar ntf
@@ -495,6 +496,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs a
         subQ,
         msgQ,
         smpServers,
+        smpKnownServers,
         smpClients,
         smpProxiedRelays,
         ntfServers,
@@ -1069,7 +1071,7 @@ sendOrProxySMPCommand c userId destSrv cmdStr senderId sendCmdViaProxy sendCmdDi
         SPFAllow -> True
         SPFAllowProtected -> ipAddressProtected cfg destSrv
         SPFProhibit -> False
-    unknownServer = maybe True (all ((destSrv /=) . protoServer)) <$> TM.lookup userId (userServers c)
+    unknownServer = maybe True (notElem destSrv) <$> TM.lookup userId (smpKnownServers c)
     sendViaProxy destSess@(_, _, qId) = do
       r <- tryAgentError . withProxySession c destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess) -> do
         r' <- liftClient SMP (clientServer smp) $ sendCmdViaProxy smp proxySess

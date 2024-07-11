@@ -980,7 +980,7 @@ testAsyncServerOffline t = withAgentClients2 $ \alice bob -> do
 
 testAllowConnectionClientRestart :: HasCallStack => ATransport -> IO ()
 testAllowConnectionClientRestart t = do
-  let initAgentServersSrv2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer2]}
+  let initAgentServersSrv2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer2], smpKnown = userServers [testSMPServer2]}
   alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
   bob <- getSMPAgentClient' 2 agentCfg initAgentServersSrv2 testDB2
   withSmpServerStoreLogOn t testPort $ \_ -> do
@@ -2226,7 +2226,7 @@ testWaitDeliveryTimeout2 t =
 
 testJoinConnectionAsyncReplyErrorV8 :: HasCallStack => ATransport -> IO ()
 testJoinConnectionAsyncReplyErrorV8 t = do
-  let initAgentServersSrv2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer2]}
+  let initAgentServersSrv2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer2], smpKnown = userServers [testSMPServer2]}
   withAgent 1 agentCfgVPrevPQ initAgentServers testDB $ \a ->
     withAgent 2 agentCfgVPrevPQ initAgentServersSrv2 testDB2 $ \b -> do
       (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
@@ -2265,7 +2265,7 @@ testJoinConnectionAsyncReplyErrorV8 t = do
 
 testJoinConnectionAsyncReplyError :: HasCallStack => ATransport -> IO ()
 testJoinConnectionAsyncReplyError t = do
-  let initAgentServersSrv2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer2]}
+  let initAgentServersSrv2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer2], smpKnown = userServers [testSMPServer2]}
   withAgent 1 agentCfg initAgentServers testDB $ \a ->
     withAgent 2 agentCfg initAgentServersSrv2 testDB2 $ \b -> do
       (aId, bId) <- withSmpServerStoreLogOn t testPort $ \_ -> runRight $ do
@@ -2759,7 +2759,7 @@ testCreateQueueAuth srvVersion clnt1 clnt2 baseId = do
   pure r
   where
     getClient clientId (clntAuth, clntVersion) db =
-      let servers = initAgentServers {smp = userServers [ProtoServerWithAuth testSMPServer clntAuth]}
+      let servers = initAgentServers {smp = userServers [ProtoServerWithAuth testSMPServer clntAuth], smpKnown = userServers [testSMPServer]}
           alpn_ = if clntVersion >= authCmdsSMPVersion then Just supportedSMPHandshakes else Nothing
           smpCfg = defaultClientConfig alpn_ $ V.mkVersionRange (prevVersion basicAuthSMPVersion) clntVersion
           sndAuthAlg = if srvVersion >= authCmdsSMPVersion && clntVersion >= authCmdsSMPVersion then C.AuthAlg C.SX25519 else C.AuthAlg C.SEd25519
