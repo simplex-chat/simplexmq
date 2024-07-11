@@ -7,6 +7,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -43,6 +44,8 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
+import Data.Aeson (FromJSON (..), ToJSON (..))
+import qualified Data.Aeson.TH as JQ
 import Data.ByteArray (ScrubbedBytes)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
@@ -65,7 +68,8 @@ import Simplex.Messaging.Crypto.Ratchet (VersionRangeE2E, supportedE2EEncryptVRa
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth, ProtocolServer, ProtocolType (..), VersionRangeSMPC, XFTPServer, supportedSMPClientVRange)
+import Simplex.Messaging.Parsers (defaultJSON)
+import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth, ProtocolServer, ProtocolType (..), ProtocolTypeI, VersionRangeSMPC, XFTPServer, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion, TLS, Transport (..))
@@ -322,3 +326,12 @@ updateRestartCount :: SystemTime -> RestartCount -> RestartCount
 updateRestartCount t (RestartCount minute count) = do
   let min' = systemSeconds t `div` 60
    in RestartCount min' $ if minute == min' then count + 1 else 1
+
+$(pure [])
+
+instance ProtocolTypeI p => ToJSON (ServerCfg p) where
+  toEncoding = $(JQ.mkToEncoding defaultJSON ''ServerCfg)
+  toJSON = $(JQ.mkToJSON defaultJSON ''ServerCfg)
+
+instance ProtocolTypeI p => FromJSON (ServerCfg p) where
+  parseJSON = $(JQ.mkParseJSON defaultJSON ''ServerCfg)
