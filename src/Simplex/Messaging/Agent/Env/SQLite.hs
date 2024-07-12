@@ -110,6 +110,7 @@ data UserServers p = UserServers
     knownSrvs :: NonEmpty (ProtocolServer p)
   }
 
+-- This function sets all servers as enabled in case all passed servers are disabled.
 mkUserServers :: NonEmpty (ServerCfg p) -> UserServers p
 mkUserServers srvs = UserServers {enabledSrvs, knownSrvs}
   where
