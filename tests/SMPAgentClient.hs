@@ -11,6 +11,7 @@
 module SMPAgentClient where
 
 import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import NtfClient (ntfTestPort)
@@ -20,7 +21,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Client (ProtocolClientConfig (..), SMPProxyFallback, SMPProxyMode, defaultNetworkConfig, defaultSMPClientConfig)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
-import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth)
+import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth (..), ProtocolServer)
 import Simplex.Messaging.Transport
 import XFTPClient (testXFTPServer)
 
@@ -48,14 +49,14 @@ testNtfServer2 = "ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6
 initAgentServers :: InitialAgentServers
 initAgentServers =
   InitialAgentServers
-    { smp = userServers [noAuthSrv testSMPServer],
+    { smp = userServers [testSMPServer],
       ntf = [testNtfServer],
-      xftp = userServers [noAuthSrv testXFTPServer],
+      xftp = userServers [testXFTPServer],
       netCfg = defaultNetworkConfig {tcpTimeout = 500_000, tcpConnectTimeout = 500_000}
     }
 
 initAgentServers2 :: InitialAgentServers
-initAgentServers2 = initAgentServers {smp = userServers [noAuthSrv testSMPServer, noAuthSrv testSMPServer2]}
+initAgentServers2 = initAgentServers {smp = userServers [testSMPServer, testSMPServer2]}
 
 initAgentServersProxy :: SMPProxyMode -> SMPProxyFallback -> InitialAgentServers
 initAgentServersProxy smpProxyMode smpProxyFallback =
@@ -89,5 +90,11 @@ fastRetryInterval = defaultReconnectInterval {initialInterval = 50_000}
 fastMessageRetryInterval :: RetryInterval2
 fastMessageRetryInterval = RetryInterval2 {riFast = fastRetryInterval, riSlow = fastRetryInterval}
 
-userServers :: NonEmpty (ProtoServerWithAuth p) -> Map UserId (NonEmpty (ProtoServerWithAuth p))
-userServers srvs = M.fromList [(1, srvs)]
+userServers :: NonEmpty (ProtocolServer p) -> Map UserId (NonEmpty (ServerCfg p))
+userServers = userServers' . L.map noAuthSrv
+
+userServers' :: NonEmpty (ProtoServerWithAuth p) -> Map UserId (NonEmpty (ServerCfg p))
+userServers' srvs = M.fromList [(1, L.map (presetServerCfg True) srvs)]
+
+noAuthSrvCfg :: ProtocolServer p -> ServerCfg p
+noAuthSrvCfg = presetServerCfg True . noAuthSrv
