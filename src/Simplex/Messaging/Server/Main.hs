@@ -317,11 +317,6 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini,
               information = serverPublicInfo ini
             }
-        textToSocksMode :: Text -> SocksMode
-        textToSocksMode = \case
-          "always" -> SMAlways
-          "onion" -> SMOnion
-          s -> error . T.unpack $ "Invalid socks_mode: " <> s
         textToHostMode :: Text -> HostMode
         textToHostMode = \case
           "public" -> HMPublic
