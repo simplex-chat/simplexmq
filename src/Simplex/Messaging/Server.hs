@@ -452,8 +452,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   activeClients <- readTVarIO clients
                   hPutStrLn h $ "Clients: " <> show (IM.size activeClients)
                   when (r == CPRAdmin) $ do
-                    (smpClCnt, smpSubCnt) <- countClientSubs subscriptions subscribers
-                    (ntfClCnt, ntfSubCnt) <- countClientSubs subscriptions subscribers
+                    (smpSubCnt, smpClCnt) <- countClientSubs subscriptions activeClients
+                    (ntfSubCnt, ntfClCnt) <- countClientSubs ntfSubscriptions activeClients
                     hPutStrLn h $ "SMP subscriptions (via clients, slow): " <> show smpSubCnt
                     hPutStrLn h $ "SMP subscribed clients (via clients, slow): " <> show smpClCnt
                     hPutStrLn h $ "Ntf subscriptions (via clients, slow): " <> show ntfSubCnt
@@ -465,10 +465,16 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   hPutStrLn h $ "Ntf subscriptions: " <> show (M.size activeNtfSubs)
                   hPutStrLn h $ "Ntf subscribed clients: " <> show (countSubClients activeNtfSubs)
                   where
-                    countClientSubs :: (Client -> TMap QueueId a) -> TMap QueueId Client -> IO (Int, Int)
-                    countClientSubs subSel = readTVarIO >=> foldM (addSubs subSel) (0, 0)
-                    addSubs :: (Client -> TMap QueueId a) -> (Int, Int) -> Client -> IO (Int, Int)
-                    addSubs subSel (clCnt, subCnt) cl = (\v -> let subs = M.size v in (clCnt + (if subs == 0 then 0 else 1), subCnt + subs)) <$> readTVarIO (subSel cl)
+                    countClientSubs :: (Client -> TMap QueueId a) -> IM.IntMap Client -> IO (Int, Int)
+                    countClientSubs subSel = foldM addSubs (0, 0)
+                      where
+                        addSubs :: (Int, Int) -> Client -> IO (Int, Int)
+                        addSubs (subCnt, clCnt) cl = do
+                          subs <- readTVarIO $ subSel cl
+                          let cnt = M.size subs 
+                              subCnt' = subCnt + cnt
+                              clCnt' = clCnt + if cnt == 0 then 0 else 1
+                          pure (subCnt', clCnt')
                     countSubClients = S.size . M.foldr' (S.insert . clientId) S.empty
               CPDelete queueId' -> withUserRole $ unliftIO u $ do
                 st <- asks queueStore
