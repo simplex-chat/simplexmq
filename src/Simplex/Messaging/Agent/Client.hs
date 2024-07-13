@@ -597,10 +597,10 @@ getSMPServerClient c@AgentClient {active, smpClients, workerSeq} tSess = do
       prs <- atomically TM.empty
       smpConnectClient c tSess prs v
 
-getSMPProxyClient :: AgentClient -> SMPTransportSession -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
-getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq} destSess@(userId, destSrv, qId) = do
+getSMPProxyClient :: AgentClient -> Maybe SMPServerWithAuth -> SMPTransportSession -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
+getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq} proxySrv_ destSess@(userId, destSrv, qId) = do
   unlessM (readTVarIO active) $ throwE INACTIVE
-  proxySrv <- getNextServer c userId [destSrv]
+  proxySrv <- maybe (getNextServer c userId [destSrv]) pure proxySrv_
   ts <- liftIO getCurrentTime
   atomically (getClientVar proxySrv ts) >>= \(tSess, auth, v) ->
     either (newProxyClient tSess auth ts) (waitForProxyClient tSess auth) v
@@ -993,9 +993,9 @@ withClient_ c tSess@(_, srv, _) action = do
       logServer "<--" c srv "" $ bshow e
       throwE e
 
-withProxySession :: AgentClient -> SMPTransportSession -> SMP.SenderId -> ByteString -> ((SMPConnectedClient, ProxiedRelay) -> AM a) -> AM a
-withProxySession c destSess@(_, destSrv, _) entId cmdStr action = do
-  (cl, sess_) <- getSMPProxyClient c destSess
+withProxySession :: AgentClient -> Maybe SMPServerWithAuth -> SMPTransportSession -> SMP.SenderId -> ByteString -> ((SMPConnectedClient, ProxiedRelay) -> AM a) -> AM a
+withProxySession c proxySrv_ destSess@(_, destSrv, _) entId cmdStr action = do
+  (cl, sess_) <- getSMPProxyClient c proxySrv_ destSess
   logServer ("--> " <> proxySrv cl <> " >") c destSrv entId cmdStr
   case sess_ of
     Right sess -> do
@@ -1053,7 +1053,7 @@ sendOrProxySMPCommand ::
   AM (Maybe SMPServer)
 sendOrProxySMPCommand c userId destSrv cmdStr senderId sendCmdViaProxy sendCmdDirectly = do
   sess <- liftIO $ mkTransportSession c userId destSrv senderId
-  ifM (atomically shouldUseProxy) (sendViaProxy sess) (sendDirectly sess $> Nothing)
+  ifM (atomically shouldUseProxy) (sendViaProxy Nothing sess) (sendDirectly sess $> Nothing)
   where
     shouldUseProxy = do
       cfg <- getNetworkConfig c
@@ -1071,22 +1071,31 @@ sendOrProxySMPCommand c userId destSrv cmdStr senderId sendCmdViaProxy sendCmdDi
         SPFAllowProtected -> ipAddressProtected cfg destSrv
         SPFProhibit -> False
     unknownServer = maybe True (notElem destSrv . knownSrvs) <$> TM.lookup userId (smpServers c)
-    sendViaProxy destSess@(_, _, qId) = do
-      r <- tryAgentError . withProxySession c destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess) -> do
+    sendViaProxy :: Maybe SMPServerWithAuth -> SMPTransportSession -> AM (Maybe SMPServer)
+    sendViaProxy proxySrv_ destSess@(_, _, qId) = do
+      r <- tryAgentError . withProxySession c proxySrv_ destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess@ProxiedRelay {prBasicAuth}) -> do
         r' <- liftClient SMP (clientServer smp) $ sendCmdViaProxy smp proxySess
+        let proxySrv = protocolClientServer' smp
         case r' of
-          Right () -> pure . Just $ protocolClientServer' smp
+          Right () -> pure $ Just proxySrv
           Left proxyErr -> do
             case proxyErr of
-              (ProxyProtocolError (SMP.PROXY SMP.NO_SESSION)) -> atomically deleteRelaySession
-              _ -> pure ()
-            throwE
-              PROXY
-                { proxyServer = protocolClientServer smp,
-                  relayServer = B.unpack $ strEncode destSrv,
-                  proxyErr
-                }
+              ProxyProtocolError (SMP.PROXY SMP.NO_SESSION) -> do
+                atomically deleteRelaySession
+                case proxySrv_ of
+                  Just _ -> proxyError
+                  -- sendViaProxy is called recursively here to re-create the session via the same server
+                  -- to avoid failure in interactive calls that don't retry after the session disconnection.
+                  Nothing -> sendViaProxy (Just $ ProtoServerWithAuth proxySrv prBasicAuth) destSess
+              _ -> proxyError
             where
+              proxyError =
+                throwE
+                  PROXY
+                    { proxyServer = protocolClientServer smp,
+                      relayServer = B.unpack $ strEncode destSrv,
+                      proxyErr
+                    }
               -- checks that the current proxied relay session is the same one that was used to send the message and removes it
               deleteRelaySession =
                 ( TM.lookup destSess (smpProxiedRelays c)
