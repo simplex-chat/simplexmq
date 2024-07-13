@@ -471,10 +471,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                         addSubs :: (Int, Int) -> Client -> IO (Int, Int)
                         addSubs (subCnt, clCnt) cl = do
                           subs <- readTVarIO $ subSel cl
-                          let cnt = M.size subs 
-                              subCnt' = subCnt + cnt
-                              clCnt' = clCnt + if cnt == 0 then 0 else 1
-                          pure (subCnt', clCnt')
+                          let cnt = M.size subs
+                          pure (subCnt + cnt, clCnt + if cnt == 0 then 0 else 1)
                     countSubClients = S.size . M.foldr' (S.insert . clientId) S.empty
               CPDelete queueId' -> withUserRole $ unliftIO u $ do
                 st <- asks queueStore
