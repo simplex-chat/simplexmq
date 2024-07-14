@@ -88,9 +88,15 @@ notificationTests t = do
     it "should allow the second registration with different credentials and delete the first after verification" $
       withAPNSMockServer $ \apns ->
         withNtfServer t $ testNtfTokenSecondRegistration apns
-    it "should re-register token when notification server is restarted" $
+    it "should verify token after notification server is restarted" $
       withAPNSMockServer $ \apns ->
         testNtfTokenServerRestart t apns
+    it "should re-verify token after notification server is restarted" $
+      withAPNSMockServer $ \apns ->
+        testNtfTokenServerRestartReverify t apns
+    it "should re-register token when notification server is restarted" $
+      withAPNSMockServer $ \apns ->
+        testNtfTokenServerRestartReregister t apns
     it "should work with multiple configured servers" $
       withAPNSMockServer $ \apns ->
         testNtfTokenMultipleServers t apns
@@ -251,7 +257,7 @@ testNtfTokenServerRestart :: ATransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
   let tkn = DeviceToken PPApnsTest "abcd"
   ntfData <- withAgent 1 agentCfg initAgentServers testDB $ \a ->
-    withNtfServer t . runRight $ do
+    withNtfServerStoreLog t $ \_ -> runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
         atomically $ readTBQueue apnsQ
@@ -262,16 +268,60 @@ testNtfTokenServerRestart t APNSMockServer {apnsQ} = do
   withAgent 2 agentCfg initAgentServers testDB $ \a' ->
     -- server stopped before token is verified, so now the attempt to verify it will return AUTH error but re-register token,
     -- so that repeat verification happens without restarting the clients, when notification arrives
-    withNtfServer t . runRight_ $ do
+    withNtfServerStoreLog t $ \_ -> runRight_ $ do
       verification <- ntfData .-> "verification"
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
-      Left (NTF _ AUTH) <- tryE $ verifyNtfToken a' tkn nonce verification
-      APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}, sendApnsResponse = sendApnsResponse'} <-
+      verifyNtfToken a' tkn nonce verification
+      NTActive <- checkNtfToken a' tkn
+      pure ()
+
+testNtfTokenServerRestartReverify :: ATransport -> APNSMockServer -> IO ()
+testNtfTokenServerRestartReverify t APNSMockServer {apnsQ} = do
+  let tkn = DeviceToken PPApnsTest "abcd"
+  withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+    ntfData <- withNtfServerStoreLog t $ \_ -> runRight $ do
+      NTRegistered <- registerNtfToken a tkn NMPeriodic
+      APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
         atomically $ readTBQueue apnsQ
-      verification' <- ntfData' .-> "verification"
-      nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
-      liftIO $ sendApnsResponse' APNSRespOk
-      verifyNtfToken a' tkn nonce' verification'
+      liftIO $ sendApnsResponse APNSRespOk
+      pure ntfData
+    runRight_ $ do
+      verification <- ntfData .-> "verification"
+      nonce <- C.cbNonce <$> ntfData .-> "nonce"
+      Left (BROKER _ NETWORK) <- tryE $ verifyNtfToken a tkn nonce verification
+      pure ()
+  -- the new agent is created as otherwise when running the tests in CI the old agent was keeping the connection to the server
+  threadDelay 1000000
+  withAgent 2 agentCfg initAgentServers testDB $ \a' ->
+    -- server stopped before token is verified, so now the attempt to verify it will return AUTH error but re-register token,
+    -- so that repeat verification happens without restarting the clients, when notification arrives
+    withNtfServerStoreLog t $ \_ -> runRight_ $ do
+      NTActive <- registerNtfToken a' tkn NMPeriodic
+      NTActive <- checkNtfToken a' tkn
+      pure ()
+
+testNtfTokenServerRestartReregister :: ATransport -> APNSMockServer -> IO ()
+testNtfTokenServerRestartReregister t APNSMockServer {apnsQ} = do
+  let tkn = DeviceToken PPApnsTest "abcd"
+  withAgent 1 agentCfg initAgentServers testDB $ \a ->
+    withNtfServerStoreLog t $ \_ -> runRight $ do
+      NTRegistered <- registerNtfToken a tkn NMPeriodic
+      APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just _}, sendApnsResponse} <-
+        atomically $ readTBQueue apnsQ
+      liftIO $ sendApnsResponse APNSRespOk
+  -- the new agent is created as otherwise when running the tests in CI the old agent was keeping the connection to the server
+  threadDelay 1000000
+  withAgent 2 agentCfg initAgentServers testDB $ \a' ->
+    -- server stopped before token is verified, and client might have lost verification notification.
+    -- so that repeat registration happens when client is restarted.
+    withNtfServerStoreLog t $ \_ -> runRight_ $ do
+      NTRegistered <- registerNtfToken a' tkn NMPeriodic
+      APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse} <-
+        atomically $ readTBQueue apnsQ
+      liftIO $ sendApnsResponse APNSRespOk
+      verification <- ntfData .-> "verification"
+      nonce <- C.cbNonce <$> ntfData .-> "nonce"
+      verifyNtfToken a' tkn nonce verification
       NTActive <- checkNtfToken a' tkn
       pure ()
 
