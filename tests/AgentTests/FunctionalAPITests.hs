@@ -1347,12 +1347,11 @@ testExpireManyMessages t =
         liftIO $ threadDelay 2000000
         5 <- sendMessage a bId SMP.noMsgFlags "4" -- this won't expire
         get a =##> \case ("", c, MERR 2 (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
-        -- get a =##> \case ("", c, MERRS [5, 6] (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
         let expected c e = bId == c && (e == TIMEOUT || e == NETWORK)
         get a >>= \case
           ("", c, MERR 3 (BROKER _ e)) -> do
             liftIO $ expected c e `shouldBe` True
-            get a =##> \case ("", c', MERR 4 (BROKER _ e')) -> expected c' e'; ("", c', MERRS [6] (BROKER _ e')) -> expected c' e'; _ -> False
+            get a =##> \case ("", c', MERR 4 (BROKER _ e')) -> expected c' e'; ("", c', MERRS [4] (BROKER _ e')) -> expected c' e'; _ -> False
           ("", c, MERRS [3] (BROKER _ e)) -> do
             liftIO $ expected c e `shouldBe` True
             get a =##> \case ("", c', MERR 4 (BROKER _ e')) -> expected c' e'; _ -> False
