@@ -240,7 +240,7 @@ data SocksMode
   = -- | always use SOCKS proxy when enabled
     SMAlways
   | -- | use SOCKS proxy only for .onion hosts when no public host is available
-    -- This mode is used in SMP proxy to minimize SOCKS proxy usage.
+    -- This mode is used in SMP proxy and in notifications server to minimize SOCKS proxy usage.
     SMOnion
   deriving (Eq, Show)
 
