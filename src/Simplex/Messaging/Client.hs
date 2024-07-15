@@ -244,6 +244,16 @@ data SocksMode
     SMOnion
   deriving (Eq, Show)
 
+instance StrEncoding SocksMode where
+  strEncode = \case
+    SMAlways -> "always"
+    SMOnion -> "onion"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "always" -> pure SMAlways
+      "onion" -> pure SMOnion
+      _ -> fail "Invalid Socks mode"
+
 -- | network configuration for the client
 data NetworkConfig = NetworkConfig
   { -- | use SOCKS5 proxy

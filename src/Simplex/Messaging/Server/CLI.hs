@@ -302,9 +302,3 @@ clearDirIfExists path = whenM (doesDirectoryExist path) $ listDirectory path >>=
 
 getEnvPath :: String -> FilePath -> IO FilePath
 getEnvPath name def = maybe def (\case "" -> def; f -> f) <$> lookupEnv name
-
-textToSocksMode :: Text -> SocksMode
-textToSocksMode = \case
-  "always" -> SMAlways
-  "onion" -> SMOnion
-  s -> error . T.unpack $ "Invalid socks_mode: " <> s
