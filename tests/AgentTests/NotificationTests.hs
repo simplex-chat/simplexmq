@@ -507,14 +507,14 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} baseId ali
   threadDelay 500000
   suspendAgent alice 0
   closeSQLiteStore store
-  threadDelay 500000
+  threadDelay 1000000
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
   withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> runRight_ $ do
     (_, [SMPMsgMeta {msgFlags = MsgFlags True}]) <- getNotificationMessage aliceNtf nonce message
     pure ()
 
-  threadDelay 500000
+  threadDelay 1000000
   reopenSQLiteStore store
   foregroundAgent alice
   threadDelay 500000
@@ -524,7 +524,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} baseId ali
     ackMessage alice bobId (baseId + 1) Nothing
     -- delete notification subscription
     toggleConnectionNtfs alice bobId False
-    liftIO $ threadDelay 250000
+    liftIO $ threadDelay 500000
     -- send message
     2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
     get bob ##> ("", aliceId, SENT $ baseId + 2)

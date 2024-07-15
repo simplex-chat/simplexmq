@@ -132,7 +132,7 @@ ntfServerCLI cfgPath logPath =
                         { networkConfig =
                             defaultNetworkConfig
                               { socksProxy = either error id <$!> strDecodeIni "SUBSCRIBER" "socks_proxy" ini,
-                                socksMode = either (const SMOnion) textToSocksMode $ lookupValue "SUBSCRIBER" "socks_mode" ini
+                                socksMode = maybe SMOnion (either error id) $! strDecodeIni "SUBSCRIBER" "socks_mode" ini
                               }
                         },
                     persistErrorInterval = 0 -- seconds

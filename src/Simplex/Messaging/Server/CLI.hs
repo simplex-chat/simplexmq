@@ -24,7 +24,6 @@ import qualified Data.X509.File as XF
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (HostName, ServiceName)
 import Options.Applicative
-import Simplex.Messaging.Client (SocksMode (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
 import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
@@ -302,9 +301,3 @@ clearDirIfExists path = whenM (doesDirectoryExist path) $ listDirectory path >>=
 
 getEnvPath :: String -> FilePath -> IO FilePath
 getEnvPath name def = maybe def (\case "" -> def; f -> f) <$> lookupEnv name
-
-textToSocksMode :: Text -> SocksMode
-textToSocksMode = \case
-  "always" -> SMAlways
-  "onion" -> SMOnion
-  s -> error . T.unpack $ "Invalid socks_mode: " <> s
