@@ -10,11 +10,13 @@ sequenceDiagram
   note over A: out-of-band msg<br>(sender's queue SID<br>and "public" key EK<br>to encrypt msgs)
   A -->> B: 2. send out-of-band message
 
-  note over B: confirm queue<br>("public" key SK for<br>sending messages<br>and any optional<br>info encrypted with<br>"public" key EK)
+  note over B: confirm queue<br>("public" key SK for<br>sending messages,<br>public key for<br>e2e encryption<br>and any optional<br>encrypted info)
   B ->> S: 3. confirm queue ("SEND" command not signed)
 
-  S ->> A: 4. deliver Bob's message
+  S ->> A: 4. deliver Bob's message (MSG)
   note over A: decrypt message<br>("private" key EK)
+  A ->> S: acknowledge message (ACK)
+
   A ->> S: 5. secure queue ("KEY", RK-signed)
 
   note over S: 6. simplex<br>queue RID<br>is ready to use!

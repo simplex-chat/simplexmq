@@ -1,3 +1,87 @@
+# 5.8.2
+
+Agent:
+- fast handshake support (disabled).
+- new statistics api.
+
+SMP server:
+- fast handshake support (SKEY command).
+- minor changes to reduce memory usage.
+
+# 5.8.1
+
+Agent:
+- API to reconnect one server.
+- Better error handling of file errors and remote control connection errors.
+- Only start uploading file once all chunks were registered on the servers.
+
+SMP server:
+- additional stats for sent message notifications.
+- fix server page layout.
+
+# 5.8.0
+
+Version 5.8.0.10
+
+SMP server and client:
+- protocol extension to forward messages to the destination servers, to protect sending client IP address and transport session.
+
+Agent:
+- process timed out subscription responses to reduce the number of resubscriptions.
+- avoid sending messages and commands when waiting for response timed out (except batched SUB and DEL commands).
+- fix issue with stuck message reception on slow connection (when response to ACK timed out, and the new message was not processed until resubscribed).
+- fix issue when temporary file sending or receiving error was treated as permanent.
+
+SMP server:
+- include OK responses to all batched SUB requests to reduce subscription timeouts.
+
+XFTP server:
+- report file upload timeout as TIMEOUT, to avoid delivery failure.
+
+# 5.7.6
+
+XFTP agent:
+- treat XFTP handshake timeouts and network errors as temporary, to retry file operations.
+
+# 5.7.5
+
+SMP agent:
+- fail if non-unique connection IDs are passed to sendMessages (to prevent client errors and deadlocks).
+
+# 5.7.4
+
+SMP agent:
+- remove re-subscription timeouts (as they are tracked per operation, and could cause failed subscriptions).
+- reconnect XFTP clients when network settings changes.
+- fix lock contention resulting in stuck subscriptions on network change.
+
+# 5.7.3
+
+SMP/NTF protocol:
+- add ALPN for handshake version negotiation, similar to XFTP (to preserve backwards compatibility with the old clients).
+- upgrade clients to versions v7/v2 of the protocols.
+
+SMP server:
+- faster responses to subscription requests.
+
+XFTP client:
+- fix network exception during file download treated as permanent file error.
+
+SMP agent:
+- do not report subscription timeouts while client is offline.
+
+# 5.7.2
+
+SMP agent:
+- fix connections failing when connecting via link due to race condition on slow network.
+- remove concurrency limit when waiting for connection subscription.
+- remove TLS timeout.
+
+# 5.7.1
+
+SMP agent:
+- increase timeout for TLS connection via SOCKS
+
 # 5.7.0
 
 Version 5.7.0.4

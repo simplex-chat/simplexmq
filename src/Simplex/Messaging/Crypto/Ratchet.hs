@@ -117,7 +117,7 @@ import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, defaultJSON, parseE, parseE')
-import Simplex.Messaging.Util ((<$?>), ($>>=))
+import Simplex.Messaging.Util (($>>=), (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import UnliftIO.STM
@@ -166,9 +166,9 @@ instance TestEquality SRatchetKEMState where
 
 class RatchetKEMStateI (s :: RatchetKEMState) where sRatchetKEMState :: SRatchetKEMState s
 
-instance RatchetKEMStateI RKSProposed where sRatchetKEMState = SRKSProposed
+instance RatchetKEMStateI 'RKSProposed where sRatchetKEMState = SRKSProposed
 
-instance RatchetKEMStateI RKSAccepted where sRatchetKEMState = SRKSAccepted
+instance RatchetKEMStateI 'RKSAccepted where sRatchetKEMState = SRKSAccepted
 
 checkRatchetKEMState :: forall t s s' a. (RatchetKEMStateI s, RatchetKEMStateI s') => t s' a -> Either String (t s a)
 checkRatchetKEMState x = case testEquality (sRatchetKEMState @s) (sRatchetKEMState @s') of
@@ -266,6 +266,7 @@ instance VersionRangeI E2EVersion (E2ERatchetParamsUri s a) where
   type VersionT E2EVersion (E2ERatchetParamsUri s a) = (E2ERatchetParams s a)
   versionRange (E2ERatchetParamsUri vr _ _ _) = vr
   toVersionT (E2ERatchetParamsUri _ k1 k2 kem_) v = E2ERatchetParams v k1 k2 kem_
+  toVersionRange (E2ERatchetParamsUri _ k1 k2 kem_) vr = E2ERatchetParamsUri vr k1 k2 kem_
 
 type RcvE2ERatchetParamsUri a = E2ERatchetParamsUri 'RKSProposed a
 
@@ -377,13 +378,15 @@ generateE2EParams g v useKEM_ = do
   where
     kemParams :: IO (Maybe (RKEMParams s, PrivRKEMParams s))
     kemParams = case useKEM_ of
-      Just useKem | v >= pqRatchetE2EEncryptVersion -> Just <$> do
-        ks@(k, _) <- sntrup761Keypair g
-        case useKem of
-          ProposeKEM -> pure (RKParamsProposed k, PrivateRKParamsProposed ks)
-          AcceptKEM k' -> do
-            (ct, shared) <- sntrup761Enc g k'
-            pure (RKParamsAccepted ct k, PrivateRKParamsAccepted ct shared ks)
+      Just useKem
+        | v >= pqRatchetE2EEncryptVersion ->
+            Just <$> do
+              ks@(k, _) <- sntrup761Keypair g
+              case useKem of
+                ProposeKEM -> pure (RKParamsProposed k, PrivateRKParamsProposed ks)
+                AcceptKEM k' -> do
+                  (ct, shared) <- sntrup761Enc g k'
+                  pure (RKParamsAccepted ct k, PrivateRKParamsAccepted ct shared ks)
       _ -> pure Nothing
 
 -- used by party initiating connection, Bob in double-ratchet spec
@@ -444,7 +447,7 @@ pqX3dhRcv rpk1 rpk2 rpKem_ (E2ERatchetParams v sk1 sk2 sKem_) = do
         Just (PrivateRKParamsProposed ks@(_, pk)) -> do
           shared <- liftIO $ sntrup761Dec ct pk
           pure $ Just (ks, RatchetKEMAccepted k' shared ct)
-        Nothing -> throwError CERatchetKEMState
+        Nothing -> throwE CERatchetKEMState
       _ -> pure Nothing -- both parties can send "proposal" in case of ratchet renegotiation
 
 pqX3dh :: DhAlgorithm a => (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> Maybe RatchetKEMAccepted -> RatchetInitParams
@@ -456,7 +459,7 @@ pqX3dh (sk1, rk1) dh1 dh2 dh3 kemAccepted =
     pq = maybe "" (\RatchetKEMAccepted {rcPQRss = KEMSharedKey ss} -> BA.convert ss) kemAccepted
     (hk, nhk, sk) =
       let salt = B.replicate 64 '\0'
-        in hkdf3 salt dhs "SimpleXX3DH"
+       in hkdf3 salt dhs "SimpleXX3DH"
 
 type RatchetX448 = Ratchet 'X448
 
@@ -698,8 +701,8 @@ data EncMessageHeader = EncMessageHeader
 
 -- this encoding depends on version in EncMessageHeader because it is "current" ratchet version
 instance Encoding EncMessageHeader where
-  smpEncode EncMessageHeader {ehVersion, ehIV, ehAuthTag, ehBody}
-    = smpEncode (ehVersion, ehIV, ehAuthTag) <> encodeLarge ehVersion ehBody
+  smpEncode EncMessageHeader {ehVersion, ehIV, ehAuthTag, ehBody} =
+    smpEncode (ehVersion, ehIV, ehAuthTag) <> encodeLarge ehVersion ehBody
   smpP = do
     (ehVersion, ehIV, ehAuthTag) <- smpP
     ehBody <- largeP
@@ -708,8 +711,6 @@ instance Encoding EncMessageHeader where
 -- the encoder always uses 2-byte lengths for the new version, even for short headers without PQ keys.
 encodeLarge :: VersionE2E -> ByteString -> ByteString
 encodeLarge v s
-  -- the condition for length is not necessary, it's here as a fallback.
-  -- | v >= pqRatchetE2EEncryptVersion || B.length s > 255 = smpEncode $ Large s
   | v >= pqRatchetE2EEncryptVersion = smpEncode $ Large s
   | otherwise = smpEncode s
 
@@ -729,8 +730,8 @@ data EncRatchetMessage = EncRatchetMessage
   }
 
 encodeEncRatchetMessage :: VersionE2E -> EncRatchetMessage -> ByteString
-encodeEncRatchetMessage v EncRatchetMessage {emHeader, emBody, emAuthTag}
-  = encodeLarge v emHeader <> smpEncode (emAuthTag, Tail emBody)
+encodeEncRatchetMessage v EncRatchetMessage {emHeader, emBody, emAuthTag} =
+  encodeLarge v emHeader <> smpEncode (emAuthTag, Tail emBody)
 
 encRatchetMessageP :: Parser EncRatchetMessage
 encRatchetMessageP = do

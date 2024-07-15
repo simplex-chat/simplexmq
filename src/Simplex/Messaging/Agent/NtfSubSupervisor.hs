@@ -29,11 +29,10 @@ import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Data.Time.Clock (diffUTCTime)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.Protocol (ACommand (..), APartyCmd (..), AgentErrorType (..), BrokerErrorType (..), ConnId, NotificationsMode (..), SAEntity (..))
+import Simplex.Messaging.Agent.Protocol (AEvent (..), AEvt (..), AgentErrorType (..), BrokerErrorType (..), ConnId, NotificationsMode (..), SAEntity (..))
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Client.Agent ()
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..), SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Types
@@ -161,7 +160,7 @@ runNtfWorker c srv Worker {doWork} = do
           logInfo $ "runNtfWorker, nextSub " <> tshow nextSub
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop -> do
-            lift $ waitForUserNetwork c
+            liftIO $ waitForUserNetwork c
             processSub nextSub
               `catchAgentError` retryOnError c "NtfWorker" loop (workerInternalError c connId . show)
     processSub :: (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> AM ()
@@ -245,7 +244,7 @@ runNtfSMPWorker c srv Worker {doWork} = do
           logInfo $ "runNtfSMPWorker, nextSub " <> tshow nextSub
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop -> do
-            lift $ waitForUserNetwork c
+            liftIO $ waitForUserNetwork c
             processSub nextSub
               `catchAgentError` retryOnError c "NtfSMPWorker" loop (workerInternalError c connId . show)
     processSub :: (NtfSubscription, NtfSubSMPAction, NtfActionTs) -> AM ()
@@ -307,7 +306,7 @@ workerInternalError c connId internalErrStr = do
 
 -- TODO change error
 notifyInternalError :: MonadIO m => AgentClient -> ConnId -> String -> m ()
-notifyInternalError AgentClient {subQ} connId internalErrStr = atomically $ writeTBQueue subQ ("", connId, APC SAEConn $ ERR $ INTERNAL internalErrStr)
+notifyInternalError AgentClient {subQ} connId internalErrStr = atomically $ writeTBQueue subQ ("", connId, AEvt SAEConn $ ERR $ INTERNAL internalErrStr)
 {-# INLINE notifyInternalError #-}
 
 getNtfToken :: AM' (Maybe NtfToken)

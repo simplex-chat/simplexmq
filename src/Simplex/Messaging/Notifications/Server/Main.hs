@@ -7,24 +7,28 @@
 
 module Simplex.Messaging.Notifications.Server.Main where
 
+import Control.Monad ((<$!>))
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import Network.Socket (HostName)
 import Options.Applicative
-import Simplex.Messaging.Client.Agent (defaultSMPClientAgentConfig)
+import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig)
+import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server (runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..), defaultInactiveClientExpiration)
 import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientConfig)
-import Simplex.Messaging.Notifications.Transport (supportedServerNTFVRange)
+import Simplex.Messaging.Notifications.Transport (supportedNTFHandshakes, supportedServerNTFVRange)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
+import Simplex.Messaging.Util (tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
@@ -65,7 +69,7 @@ ntfServerCLI cfgPath logPath =
       fp <- createServerX509 cfgPath x509cfg
       let host = fromMaybe (if ip == "127.0.0.1" then "<hostnames>" else ip) fqdn
           srv = ProtoServerWithAuth (NtfServer [THDomainName host] "" (C.KeyHash fp)) Nothing
-      writeFile iniFile $ iniFileContent host
+      T.writeFile iniFile $ iniFileContent host
       putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `" <> executableName <> " start` to start server."
       warnCAPrivateKeyFile cfgPath x509cfg
       printServiceInfo serverVersion srv
@@ -81,15 +85,23 @@ ntfServerCLI cfgPath logPath =
             <> "log_stats: off\n\n\
                \[TRANSPORT]\n\
                \# host is only used to print server address on start\n"
-            <> ("host: " <> host <> "\n")
-            <> ("port: " <> defaultServerPort <> "\n")
+            <> ("host: " <> T.pack host <> "\n")
+            <> ("port: " <> T.pack defaultServerPort <> "\n")
             <> "log_tls_errors: off\n"
             <> "websockets: off\n\n\
+               \[SUBSCRIBER]\n\
+               \# Network configuration for notification server client.\n\
+               \# SOCKS proxy port for subscribing to SMP servers.\n\
+               \# You may need a separate instance of SOCKS proxy for incoming single-hop requests.\n\
+               \# socks_proxy: localhost:9050\n\n\
+               \# `socks_mode` can be 'onion' for SOCKS proxy to be used for .onion destination hosts only (default)\n\
+               \# or 'always' to be used for all destination hosts (can be used if it is an .onion server).\n\
+               \# socks_mode: onion\n\n\
                \[INACTIVE_CLIENTS]\n\
                \# TTL and interval to check inactive clients\n\
                \disconnect: off\n"
-            <> ("# ttl: " <> show (ttl defaultInactiveClientExpiration) <> "\n")
-            <> ("# check_interval: " <> show (checkInterval defaultInactiveClientExpiration) <> "\n")
+            <> ("# ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
+            <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -113,7 +125,18 @@ ntfServerCLI cfgPath logPath =
               clientQSize = 64,
               subQSize = 512,
               pushQSize = 1048,
-              smpAgentCfg = defaultSMPClientAgentConfig,
+              smpAgentCfg =
+                defaultSMPClientAgentConfig
+                  { smpCfg =
+                      (smpCfg defaultSMPClientAgentConfig)
+                        { networkConfig =
+                            defaultNetworkConfig
+                              { socksProxy = either error id <$!> strDecodeIni "SUBSCRIBER" "socks_proxy" ini,
+                                socksMode = either (const SMOnion) textToSocksMode $ lookupValue "SUBSCRIBER" "socks_mode" ini
+                              }
+                        },
+                    persistErrorInterval = 0 -- seconds
+                  },
               apnsConfig = defaultAPNSPushClientConfig,
               subsBatchSize = 900,
               inactiveClientExpiration =
@@ -133,7 +156,8 @@ ntfServerCLI cfgPath logPath =
               ntfServerVRange = supportedServerNTFVRange,
               transportConfig =
                 defaultTransportServerConfig
-                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
+                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini,
+                    alpn = Just supportedNTFHandshakes
                   }
             }
 

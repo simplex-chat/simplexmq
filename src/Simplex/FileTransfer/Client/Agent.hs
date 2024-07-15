@@ -11,6 +11,7 @@ import Control.Logger.Simple (logInfo)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Trans (lift)
+import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Char8 as B
 import Data.Text (Text)
@@ -18,7 +19,6 @@ import Data.Text.Encoding (decodeUtf8)
 import Simplex.FileTransfer.Client
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientError (..), temporaryClientError)
-import Simplex.Messaging.Client.Agent ()
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtocolServer (..), XFTPServer)
 import Simplex.Messaging.TMap (TMap)
@@ -109,7 +109,7 @@ getXFTPServerClient XFTPClientAgent {xftpClients, config} srv = do
                 else atomically $ do
                   putTMVar clientVar r
                   TM.delete srv xftpClients
-              throwError e
+              throwE e
         tryConnectAsync :: ME ()
         tryConnectAsync = void . lift . async . runExceptT $ do
           withRetryInterval (reconnectInterval config) $ \_ loop -> void $ tryConnectClient loop

@@ -9,6 +9,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth)
 
 data CPClientRole = CPRNone | CPRUser | CPRAdmin
+  deriving (Eq)
 
 data ControlProtocol
   = CPAuth BasicAuth
@@ -20,6 +21,7 @@ data ControlProtocol
   | CPThreads
   | CPSockets
   | CPSocketThreads
+  | CPServerInfo
   | CPDelete ByteString
   | CPSave
   | CPHelp
@@ -37,6 +39,7 @@ instance StrEncoding ControlProtocol where
     CPThreads -> "threads"
     CPSockets -> "sockets"
     CPSocketThreads -> "socket-threads"
+    CPServerInfo -> "server-info"
     CPDelete bs -> "delete " <> strEncode bs
     CPSave -> "save"
     CPHelp -> "help"
@@ -53,6 +56,7 @@ instance StrEncoding ControlProtocol where
       "threads" -> pure CPThreads
       "sockets" -> pure CPSockets
       "socket-threads" -> pure CPSocketThreads
+      "server-info" -> pure CPServerInfo
       "delete" -> CPDelete <$> (A.space *> strP)
       "save" -> pure CPSave
       "help" -> pure CPHelp

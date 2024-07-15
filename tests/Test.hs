@@ -11,7 +11,6 @@ import CoreTests.BatchingTests
 import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
-import CoreTests.ProtocolErrorTests
 import CoreTests.RetryIntervalTests
 import CoreTests.TRcvQueuesTests
 import CoreTests.UtilTests
@@ -21,6 +20,7 @@ import GHC.IO.Exception (IOException (..))
 import qualified GHC.IO.Exception as IOException
 import NtfServerTests (ntfServerTests)
 import RemoteControl (remoteControlTests)
+import SMPProxyTests (smpProxyTests)
 import ServerTests
 import Simplex.Messaging.Transport (TLS, Transport (..))
 import Simplex.Messaging.Transport.WebSockets (WS)
@@ -48,7 +48,6 @@ main = do
         describe "Core tests" $ do
           describe "Batching tests" batchingTests
           describe "Encoding tests" encodingTests
-          describe "Protocol error tests" protocolErrorTests
           describe "Version range" versionRangeTests
           describe "Encryption tests" cryptoTests
           describe "Encrypted files tests" cryptoFileTests
@@ -59,6 +58,7 @@ main = do
         describe "SMP server via WebSockets" $ serverTests (transport @WS)
         describe "Notifications server" $ ntfServerTests (transport @TLS)
         describe "SMP client agent" $ agentTests (transport @TLS)
+        describe "SMP proxy" smpProxyTests
         describe "XFTP" $ do
           describe "XFTP server" xftpServerTests
           describe "XFTP file description" fileDescriptionTests

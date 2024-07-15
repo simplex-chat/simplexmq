@@ -5,8 +5,8 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -17,6 +17,7 @@ module AgentTests.SQLiteTests (storeTests) where
 
 import AgentTests.EqInstances ()
 import Control.Concurrent.Async (concurrently_)
+import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception (SomeException)
 import Control.Monad (replicateM_)
@@ -45,9 +46,9 @@ import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
-import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (SubscriptionMode (..), pattern VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -88,7 +89,7 @@ removeStore db = do
   removeFile $ dbFilePath db
   where
     close :: SQLiteStore -> IO ()
-    close st = mapM_ DB.close =<< atomically (tryTakeTMVar $ dbConnection st)
+    close st = mapM_ DB.close =<< tryTakeMVar (dbConnection st)
 
 storeTests :: Spec
 storeTests = do
@@ -196,6 +197,9 @@ cData1 =
 testPrivateAuthKey :: C.APrivateAuthKey
 testPrivateAuthKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
 
+testPublicAuthKey :: C.APublicAuthKey
+testPublicAuthKey = C.APublicAuthKey C.SEd25519 (C.publicKey "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe")
+
 testPrivDhKey :: C.PrivateKeyX25519
 testPrivDhKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOpk"
 
@@ -217,6 +221,7 @@ rcvQueue1 =
       e2ePrivKey = testPrivDhKey,
       e2eDhSecret = Nothing,
       sndId = "2345",
+      sndSecure = True,
       status = New,
       dbQueueId = DBNewQueue,
       primary = True,
@@ -234,7 +239,8 @@ sndQueue1 =
       connId = "conn1",
       server = smpServer1,
       sndId = "3456",
-      sndPublicKey = Nothing,
+      sndSecure = True,
+      sndPublicKey = testPublicAuthKey,
       sndPrivateKey = testPrivateAuthKey,
       e2ePubKey = Nothing,
       e2eDhSecret = testDhSecret,
@@ -378,7 +384,8 @@ testUpgradeRcvConnToDuplex =
               connId = "conn1",
               server = SMPServer "smp.simplex.im" "5223" testKeyHash,
               sndId = "2345",
-              sndPublicKey = Nothing,
+              sndSecure = True,
+              sndPublicKey = testPublicAuthKey,
               sndPrivateKey = testPrivateAuthKey,
               e2ePubKey = Nothing,
               e2eDhSecret = testDhSecret,
@@ -411,6 +418,7 @@ testUpgradeSndConnToDuplex =
               e2ePrivKey = testPrivDhKey,
               e2eDhSecret = Nothing,
               sndId = "4567",
+              sndSecure = True,
               status = New,
               dbQueueId = DBNewQueue,
               rcvSwchStatus = Nothing,
@@ -662,7 +670,7 @@ testGetPendingServerCommand st = do
     Right (Just PendingCommand {corrId = corrId'}) <- getPendingServerCommand db (Just smpServer1)
     corrId' `shouldBe` "4"
   where
-    command = AClientCommand $ APC SAEConn $ NEW True (ACM SCMInvitation) (IKNoPQ PQSupportOn) SMSubscribe
+    command = AClientCommand $ NEW True (ACM SCMInvitation) (IKNoPQ PQSupportOn) SMSubscribe
     corruptCmd :: DB.Connection -> ByteString -> ConnId -> IO ()
     corruptCmd db corrId connId = DB.execute db "UPDATE commands SET command = cast('bad' as blob) WHERE conn_id = ? AND corr_id = ?" (connId, corrId)
 
@@ -708,15 +716,15 @@ testGetNextRcvChunkToDownload st = do
   withTransaction st $ \db -> do
     Right Nothing <- getNextRcvChunkToDownload db xftpServer1 86400
 
-    Right _ <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+    Right _ <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing) True
     DB.execute_ db "UPDATE rcv_file_chunk_replicas SET replica_key = cast('bad' as blob) WHERE rcv_file_chunk_replica_id = 1"
-    Right fId2 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+    Right fId2 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing) True
 
     Left e <- getNextRcvChunkToDownload db xftpServer1 86400
     show e `shouldContain` "ConversionFailed"
     DB.query_ db "SELECT rcv_file_id FROM rcv_files WHERE failed = 1" `shouldReturn` [Only (1 :: Int)]
 
-    Right (Just RcvFileChunk {rcvFileEntityId}) <- getNextRcvChunkToDownload db xftpServer1 86400
+    Right (Just (RcvFileChunk {rcvFileEntityId}, _)) <- getNextRcvChunkToDownload db xftpServer1 86400
     rcvFileEntityId `shouldBe` fId2
 
 testGetNextRcvFileToDecrypt :: SQLiteStore -> Expectation
@@ -725,10 +733,10 @@ testGetNextRcvFileToDecrypt st = do
   withTransaction st $ \db -> do
     Right Nothing <- getNextRcvFileToDecrypt db 86400
 
-    Right _ <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+    Right _ <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing) True
     DB.execute_ db "UPDATE rcv_files SET status = 'received' WHERE rcv_file_id = 1"
     DB.execute_ db "UPDATE rcv_file_chunk_replicas SET replica_key = cast('bad' as blob) WHERE rcv_file_chunk_replica_id = 1"
-    Right fId2 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing)
+    Right fId2 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing) True
     DB.execute_ db "UPDATE rcv_files SET status = 'received' WHERE rcv_file_id = 2"
 
     Left e <- getNextRcvFileToDecrypt db 86400

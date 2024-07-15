@@ -14,6 +14,7 @@ import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Server (runXFTPServerBlocking)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration, defaultInactiveClientExpiration, supportedXFTPhandshakes)
+import Simplex.FileTransfer.Transport (supportedFileServerVRange)
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.Transport (ALPN)
 import Simplex.Messaging.Transport.Server
@@ -66,10 +67,10 @@ withXFTPServer2 :: HasCallStack => IO a -> IO a
 withXFTPServer2 = withXFTPServerCfg testXFTPServerConfig {xftpPort = xftpTestPort2, filesPath = xftpServerFiles2} . const
 
 xftpTestPort :: ServiceName
-xftpTestPort = "7000"
+xftpTestPort = "8000"
 
 xftpTestPort2 :: ServiceName
-xftpTestPort2 = "7001"
+xftpTestPort2 = "8001"
 
 testXFTPServer :: XFTPServer
 testXFTPServer = fromString testXFTPServerStr
@@ -78,10 +79,10 @@ testXFTPServer2 :: XFTPServer
 testXFTPServer2 = fromString testXFTPServerStr2
 
 testXFTPServerStr :: String
-testXFTPServerStr = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000"
+testXFTPServerStr = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000"
 
 testXFTPServerStr2 :: String
-testXFTPServerStr2 = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7001"
+testXFTPServerStr2 = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8001"
 
 xftpServerFiles :: FilePath
 xftpServerFiles = "tests/tmp/xftp-server-files"
@@ -118,11 +119,13 @@ testXFTPServerConfig_ alpn =
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
+      xftpServerVRange = supportedFileServerVRange,
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/tmp/xftp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
-      transportConfig = defaultTransportServerConfig {alpn}
+      transportConfig = defaultTransportServerConfig {alpn},
+      responseDelay = 0
     }
 
 testXFTPClientConfig :: XFTPClientConfig

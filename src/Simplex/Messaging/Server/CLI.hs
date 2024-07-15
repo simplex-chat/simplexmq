@@ -24,6 +24,7 @@ import qualified Data.X509.File as XF
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (HostName, ServiceName)
 import Options.Applicative
+import Simplex.Messaging.Client (SocksMode (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
 import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
@@ -254,7 +255,7 @@ onOffPrompt prompt def =
       "N" -> pure False
       _ -> putStrLn "Invalid input, please enter 'y' or 'n'" >> onOffPrompt prompt def
 
-onOff :: Bool -> String
+onOff :: Bool -> Text
 onOff True = "on"
 onOff _ = "off"
 
@@ -301,3 +302,9 @@ clearDirIfExists path = whenM (doesDirectoryExist path) $ listDirectory path >>=
 
 getEnvPath :: String -> FilePath -> IO FilePath
 getEnvPath name def = maybe def (\case "" -> def; f -> f) <$> lookupEnv name
+
+textToSocksMode :: Text -> SocksMode
+textToSocksMode = \case
+  "always" -> SMAlways
+  "onion" -> SMOnion
+  s -> error . T.unpack $ "Invalid socks_mode: " <> s

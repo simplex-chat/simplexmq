@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
@@ -54,7 +55,7 @@ addQueue QueueStore {queues, senders} q@QueueRec {recipientId = rId, senderId = 
   where
     hasId = (||) <$> TM.member rId queues <*> TM.member sId senders
 
-getQueue :: QueueStore -> SParty p -> QueueId -> STM (Either ErrorType QueueRec)
+getQueue :: DirectParty p => QueueStore -> SParty p -> QueueId -> STM (Either ErrorType QueueRec)
 getQueue QueueStore {queues, senders, notifiers} party qId =
   toResult <$> (mapM readTVar =<< getVar)
   where
@@ -69,7 +70,7 @@ secureQueue QueueStore {queues} rId sKey =
     readTVar qVar >>= \q -> case senderKey q of
       Just k -> pure $ if sKey == k then Just q else Nothing
       _ ->
-        let q' = q {senderKey = Just sKey}
+        let !q' = q {senderKey = Just sKey}
          in writeTVar qVar q' $> Just q'
 
 addQueueNotifier :: QueueStore -> RecipientId -> NtfCreds -> STM (Either ErrorType QueueRec)

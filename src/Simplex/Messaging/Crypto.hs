@@ -141,6 +141,7 @@ module Simplex.Messaging.Crypto
     sbEncrypt_,
     cbNonce,
     randomCbNonce,
+    reverseNonce,
 
     -- * NaCl crypto_secretbox
     SbKey (unSbKey),
@@ -756,6 +757,8 @@ data Signature (a :: Algorithm) where
   SignatureEd25519 :: Ed25519.Signature -> Signature Ed25519
   SignatureEd448 :: Ed448.Signature -> Signature Ed448
 
+deriving instance Eq (Signature a)
+
 deriving instance Show (Signature a)
 
 data ASignature
@@ -1289,6 +1292,9 @@ randomCbNonce = fmap CryptoBoxNonce . randomBytes 24
 
 randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
 randomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
+
+reverseNonce :: CbNonce -> CbNonce
+reverseNonce (CryptoBoxNonce s) = CryptoBoxNonce (B.reverse s)
 
 instance Encoding CbNonce where
   smpEncode = unCbNonce

@@ -16,7 +16,8 @@ import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import Network.Socket
-import Simplex.Messaging.Client (chooseTransportHost, defaultNetworkConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
+import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
@@ -24,8 +25,11 @@ import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
+import qualified Simplex.Messaging.Transport.Client as Client
 import Simplex.Messaging.Transport.Server
-import Simplex.Messaging.Version (mkVersionRange)
+import qualified Simplex.Messaging.Transport.Server as Server
+import Simplex.Messaging.Version
+import Simplex.Messaging.Version.Internal
 import System.Environment (lookupEnv)
 import System.Info (os)
 import Test.Hspec
@@ -56,6 +60,9 @@ testStoreLogFile2 = "tests/tmp/smp-server-store.log.2"
 testStoreMsgsFile :: FilePath
 testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
 
+testStoreMsgsFile2 :: FilePath
+testStoreMsgsFile2 = "tests/tmp/smp-server-messages.log.2"
+
 testServerStatsBackupFile :: FilePath
 testServerStatsBackupFile = "tests/tmp/smp-server-stats.log"
 
@@ -73,10 +80,19 @@ testSMPClient = testSMPClientVR supportedClientSMPRelayVRange
 testSMPClientVR :: Transport c => VersionRangeSMP -> (THandleSMP c 'TClient -> IO a) -> IO a
 testSMPClientVR vr client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
-  runTransportClient defaultTransportClientConfig Nothing useHost testPort (Just testKeyHash) $ \h ->
+  testSMPClient_ useHost testPort vr client
+
+testSMPClient_ :: Transport c => TransportHost -> ServiceName -> VersionRangeSMP -> (THandleSMP c 'TClient -> IO a) -> IO a
+testSMPClient_ host port vr client = do
+  let tcConfig = defaultTransportClientConfig {Client.alpn = clientALPN}
+  runTransportClient tcConfig Nothing host port (Just testKeyHash) $ \h ->
     runExceptT (smpClientHandshake h Nothing testKeyHash vr) >>= \case
       Right th -> client th
       Left e -> error $ show e
+  where
+    clientALPN
+      | authCmdsSMPVersion `isCompatible` vr = Just supportedSMPHandshakes
+      | otherwise = Nothing
 
 cfg :: ServerConfig
 cfg =
@@ -84,7 +100,6 @@ cfg =
     { transports = [],
       smpHandshakeTimeout = 60000000,
       tbqSize = 1,
-      -- serverTbqSize = 1,
       msgQueueQuota = 4,
       queueIdBytes = 24,
       msgIdBytes = 24,
@@ -104,12 +119,40 @@ cfg =
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
       smpServerVRange = supportedServerSMPRelayVRange,
-      transportConfig = defaultTransportServerConfig,
-      controlPort = Nothing
+      transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedSMPHandshakes},
+      controlPort = Nothing,
+      smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1}, -- seconds
+      allowSMPProxy = False,
+      serverClientConcurrency = 2,
+      information = Nothing
     }
 
 cfgV7 :: ServerConfig
 cfgV7 = cfg {smpServerVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}
+
+cfgV8 :: ServerConfig
+cfgV8 = cfg {smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion}
+
+cfgVPrev :: ServerConfig
+cfgVPrev = cfg {smpServerVRange = prevRange $ smpServerVRange cfg}
+
+prevRange :: VersionRange v -> VersionRange v
+prevRange vr = vr {maxVersion = max (minVersion vr) (prevVersion $ maxVersion vr)}
+
+prevVersion :: Version v -> Version v
+prevVersion (Version v) = Version (v - 1)
+
+proxyCfg :: ServerConfig
+proxyCfg =
+  cfg
+    { allowSMPProxy = True,
+      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {agreeSecret = True}}
+    }
+  where
+    smpAgentCfg' = smpAgentCfg cfg
+
+proxyVRangeV8 :: VersionRangeSMP
+proxyVRangeV8 = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
@@ -145,8 +188,8 @@ withSmpServerOn t port' = withSmpServerThreadOn t port' . const
 withSmpServer :: HasCallStack => ATransport -> IO a -> IO a
 withSmpServer t = withSmpServerOn t testPort
 
-withSmpServerV7 :: HasCallStack => ATransport -> IO a -> IO a
-withSmpServerV7 t = withSmpServerConfigOn t cfgV7 testPort . const
+withSmpServerProxy :: HasCallStack => ATransport -> IO a -> IO a
+withSmpServerProxy t = withSmpServerConfigOn t proxyCfg testPort . const
 
 runSmpTest :: forall c a. (HasCallStack, Transport c) => (HasCallStack => THandleSMP c 'TClient -> IO a) -> IO a
 runSmpTest test = withSmpServer (transport @c) $ testSMPClient test

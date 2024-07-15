@@ -1,0 +1,44 @@
+sequenceDiagram
+  participant CI as Controller UI
+  participant CC as Controller Core
+  participant HC as Host Core
+  participant HI as Host UI
+
+note over CI, HI: 1. Session invitation
+CI->>CC: "Link a mobile"
+CC-->>CI: Session invitation URI
+note over CC: Listen for TCP connection
+activate CC
+HI->>HC: Session invitation URI
+
+note over CI, HI: 2. Establishing TLS connection
+HC-->>CC: TCP connect
+note over CC, HC: TLS handshake
+par
+    note over CC: validate client X509 credentials
+    CC->>CI: session code from tlsUnique
+    CI-->>CC: user confirmation
+and
+    note over HC: validate server X509 credentials
+    HC->>HI: session code from tlsUnique
+    HI-->>HC: user confirmation
+end
+
+note over CI, HI: 3. Session verification and protocol negotiation
+HC->>CC: host HELLO
+note over CC: validate version, CA fingerprint
+alt
+    CC-->>HC: controller ERROR
+else
+    CC-->>HC: controller HELLO
+    note over CC, HC: update stored keys
+end
+deactivate CC
+
+note over CI, HI: 4. Session operation
+loop
+    CI->>CC: command
+    CC->>HC: XRCP command
+    HC-->>CC: XRCP response
+    CC-->>CI: response
+end

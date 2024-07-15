@@ -208,14 +208,17 @@ On Linux, you can build smp server using Docker.
 
 #### Using your distribution
 
-1. Install [Haskell GHCup](https://www.haskell.org/ghcup/), GHC 8.10.7 and cabal:
+1. Install dependencies and build tools (`GHC`, `cabal` and dev libs):
 
    ```sh
-   curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh
-   ghcup install ghc 8.10.7
-   ghcup install cabal
-   ghcup set ghc 8.10.7
-   ghcup set cabal
+   # On Ubuntu. Depending on your distribution, use your package manager to determine package names.
+   sudo apt-get update && apt-get install -y build-essential curl libffi-dev libffi7 libgmp3-dev libgmp10 libncurses-dev libncurses5 libtinfo5 pkg-config zlib1g-dev libnuma-dev libssl-dev
+   export BOOTSTRAP_HASKELL_GHC_VERSION=9.6.3
+   export BOOTSTRAP_HASKELL_CABAL_VERSION=3.10.3.0
+   curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | BOOTSTRAP_HASKELL_NONINTERACTIVE=1 sh
+   ghcup set ghc "${BOOTSTRAP_HASKELL_GHC_VERSION}"
+   ghcup set cabal "${BOOTSTRAP_HASKELL_CABAL_VERSION}"
+   source ~/.ghcup/env
    ```
 
 2. Build the project:
@@ -224,10 +227,20 @@ On Linux, you can build smp server using Docker.
    git clone https://github.com/simplex-chat/simplexmq
    cd simplexmq
    git checkout stable
-   # On Ubuntu. Depending on your distribution, use your package manager to determine package names.
-   apt-get update && apt-get install -y build-essential libgmp3-dev zlib1g-dev
    cabal update
-   cabal install
+   cabal build exe:smp-server exe:xftp-server
+   ```
+
+3. List compiled binaries:
+
+   `smp-server`
+   ```sh
+   cabal list-bin exe:smp-server
+   ```
+
+   `xftp-server`
+   ```sh
+   cabal list-bin exe:xftp-server 
    ```
 
 - Initialize SMP server with `smp-server init [-l] -n <fqdn>` or `smp-server init [-l] --ip <ip>` - depending on how you initialize it, either FQDN or IP will be used for server's address.
