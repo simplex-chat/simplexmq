@@ -33,6 +33,7 @@ module Simplex.Messaging.Agent
     AgentClient (..),
     AE,
     SubscriptionsInfo (..),
+    SndQueueSecured,
     getSMPAgentClient,
     getSMPAgentClient_,
     disconnectAgentClient,
@@ -869,7 +870,7 @@ joinConnSrv c userId connId hasNewConn enableNtfs cReqUri@CRContactUri {} cInfo 
       pure (connId', False)
     Nothing -> throwE $ AGENT A_VERSION
 
-joinConnSrvAsync :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM ()
+joinConnSrvAsync :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
 joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSupport subMode srv = do
   SomeConn cType conn <- withStore c (`getConn` connId)
   case conn of
@@ -877,7 +878,7 @@ joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSuppo
     SndConnection _ sq -> doJoin $ Just sq
     _ -> throwE $ CMD PROHIBITED $ "joinConnSrvAsync: bad connection " <> show cType
   where
-    doJoin :: Maybe SndQueue -> AM ()
+    doJoin :: Maybe SndQueue -> AM SndQueueSecured
     doJoin sq_ = do
       (cData, sq, _, rc, e2eSndParams) <- startJoinInvitation userId connId sq_ enableNtfs inv pqSupport
       sq' <- withStore c $ \db -> runExceptT $ do
@@ -1152,8 +1153,10 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
           let initUsed = [qServer q]
           usedSrvs <- newTVarIO initUsed
           tryCommand . withNextSrv c userId usedSrvs initUsed $ \srv -> do
-            joinConnSrvAsync c userId connId enableNtfs cReq connInfo pqEnc subMode srv
-            notify OK
+            sqSecured <- joinConnSrvAsync c userId connId enableNtfs cReq connInfo pqEnc subMode srv
+            if sqSecured
+              then notify OK -- SND_SECURED
+              else notify OK
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK
         SWCH ->
@@ -2779,11 +2782,12 @@ connectReplyQueues c cData@ConnData {userId, connId} ownConnInfo sq_ (qInfo :| _
           (sq, _) <- lift $ newSndQueue userId connId qInfo'
           withStore c $ \db -> upgradeRcvConnToDuplex db connId sq
 
-secureConfirmQueueAsync :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> SubscriptionMode -> AM ()
+secureConfirmQueueAsync :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> SubscriptionMode -> AM SndQueueSecured
 secureConfirmQueueAsync c cData sq srv connInfo e2eEncryption_ subMode = do
-  void $ agentSecureSndQueue c sq
+  sqSecured <- agentSecureSndQueue c sq
   storeConfirmation c cData sq e2eEncryption_ =<< mkAgentConfirmation c cData sq srv connInfo subMode
   lift $ submitPendingMsg c cData sq
+  pure sqSecured
 
 secureConfirmQueue :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> SubscriptionMode -> AM SndQueueSecured
 secureConfirmQueue c cData@ConnData {connId, connAgentVersion, pqSupport} sq srv connInfo e2eEncryption_ subMode = do

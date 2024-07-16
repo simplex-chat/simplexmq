@@ -354,6 +354,7 @@ data AEvent (e :: AEntity) where
   DEL_USER :: Int64 -> AEvent AENone
   STAT :: ConnectionStats -> AEvent AEConn
   OK :: AEvent AEConn
+  SND_SECURED :: AEvent AEConn
   ERR :: AgentErrorType -> AEvent AEConn
   SUSPENDED :: AEvent AENone
   RFPROG :: Int64 -> Int64 -> AEvent AERcvFile
@@ -422,6 +423,7 @@ data AEventTag (e :: AEntity) where
   DEL_USER_ :: AEventTag AENone
   STAT_ :: AEventTag AEConn
   OK_ :: AEventTag AEConn
+  SND_SECURED_ :: AEventTag AEConn
   ERR_ :: AEventTag AEConn
   SUSPENDED_ :: AEventTag AENone
   -- XFTP commands and responses
@@ -474,6 +476,7 @@ aEventTag = \case
   DEL_USER _ -> DEL_USER_
   STAT _ -> STAT_
   OK -> OK_
+  SND_SECURED -> SND_SECURED_
   ERR _ -> ERR_
   SUSPENDED -> SUSPENDED_
   RFPROG {} -> RFPROG_
