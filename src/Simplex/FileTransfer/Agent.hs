@@ -12,6 +12,7 @@
 
 module Simplex.FileTransfer.Agent
   ( startXFTPWorkers,
+    startXFTPSndWorkers,
     closeXFTPAgent,
     toFSFilePath,
     -- Receiving files
@@ -83,11 +84,10 @@ import qualified UnliftIO.Exception as E
 
 startXFTPWorkers :: AgentClient -> Maybe FilePath -> AM ()
 startXFTPWorkers c workDir = do
-  wd <- asks $ xftpWorkDir . xftpAgent
-  atomically $ writeTVar wd workDir
+  storeWorkDir workDir
   cfg <- asks config
   startRcvFiles cfg
-  startSndFiles cfg
+  startSndFiles c cfg
   startDelFiles cfg
   where
     startRcvFiles :: AgentConfig -> AM ()
@@ -98,16 +98,25 @@ startXFTPWorkers c workDir = do
       -- no need to make an extra query for the check
       -- as the worker will check the store anyway
       lift $ resumeXFTPRcvWork c Nothing
-    startSndFiles :: AgentConfig -> AM ()
-    startSndFiles AgentConfig {sndFilesTTL} = do
-      -- start worker for files pending encryption/creation
-      lift $ resumeXFTPSndWork c Nothing
-      pendingSndServers <- withStore' c (`getPendingSndFilesServers` sndFilesTTL)
-      lift . forM_ pendingSndServers $ \s -> resumeXFTPSndWork c (Just s)
     startDelFiles :: AgentConfig -> AM ()
     startDelFiles AgentConfig {rcvFilesTTL} = do
       pendingDelServers <- withStore' c (`getPendingDelFilesServers` rcvFilesTTL)
       lift . forM_ pendingDelServers $ resumeXFTPDelWork c
+
+startXFTPSndWorkers :: AgentClient -> Maybe FilePath -> AM ()
+startXFTPSndWorkers c workDir = storeWorkDir workDir >> asks config >>= startSndFiles c
+
+storeWorkDir :: Maybe FilePath -> AM ()
+storeWorkDir workDir = do
+  wd <- asks $ xftpWorkDir . xftpAgent
+  atomically $ writeTVar wd workDir
+
+startSndFiles :: AgentClient -> AgentConfig -> AM ()
+startSndFiles c AgentConfig {sndFilesTTL} = do
+  -- start worker for files pending encryption/creation
+  lift $ resumeXFTPSndWork c Nothing
+  pendingSndServers <- withStore' c (`getPendingSndFilesServers` sndFilesTTL)
+  lift . forM_ pendingSndServers $ \s -> resumeXFTPSndWork c (Just s)
 
 closeXFTPAgent :: XFTPAgent -> IO ()
 closeXFTPAgent a = do

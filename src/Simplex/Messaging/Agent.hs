@@ -92,6 +92,7 @@ module Simplex.Messaging.Agent
     getNtfTokenData,
     toggleConnectionNtfs,
     xftpStartWorkers,
+    xftpStartSndWorkers,
     xftpReceiveFile,
     xftpDeleteRcvFile,
     xftpDeleteRcvFiles,
@@ -146,7 +147,7 @@ import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Traversable (mapAccumL)
 import Data.Word (Word16)
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPWorkers, startXFTPSndWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
@@ -521,6 +522,10 @@ toggleConnectionNtfs c = withAgentEnv c .: toggleConnectionNtfs' c
 xftpStartWorkers :: AgentClient -> Maybe FilePath -> AE ()
 xftpStartWorkers c = withAgentEnv c . startXFTPWorkers c
 {-# INLINE xftpStartWorkers #-}
+
+xftpStartSndWorkers :: AgentClient -> Maybe FilePath -> AE ()
+xftpStartSndWorkers c = withAgentEnv c . startXFTPSndWorkers c
+{-# INLINE xftpStartSndWorkers #-}
 
 -- | Receive XFTP file
 xftpReceiveFile :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> Bool -> AE RcvFileId
