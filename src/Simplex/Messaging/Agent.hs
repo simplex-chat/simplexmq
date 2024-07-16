@@ -146,7 +146,7 @@ import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Traversable (mapAccumL)
 import Data.Word (Word16)
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
+import Simplex.FileTransfer.Agent (AllXFTPWorkers, closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
@@ -518,7 +518,7 @@ toggleConnectionNtfs :: AgentClient -> ConnId -> Bool -> AE ()
 toggleConnectionNtfs c = withAgentEnv c .: toggleConnectionNtfs' c
 {-# INLINE toggleConnectionNtfs #-}
 
-xftpStartWorkers :: AgentClient -> Maybe FilePath -> Bool -> AE ()
+xftpStartWorkers :: AgentClient -> Maybe FilePath -> AllXFTPWorkers -> AE ()
 xftpStartWorkers c = withAgentEnv c .: startXFTPWorkers c
 {-# INLINE xftpStartWorkers #-}
 
