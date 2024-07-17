@@ -158,7 +158,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       forall s.
       Server ->
       String ->
-      (Server -> TQueue (QueueId, Client)) ->
+      (Server -> TQueue (QueueId, Client, Subscribed)) ->
       (Server -> TMap QueueId Client) ->
       (Client -> TMap QueueId s) ->
       (s -> IO ()) ->
@@ -172,14 +172,16 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       where
         updateSubscribers :: STM (Maybe (QueueId, Client))
         updateSubscribers = do
-          (qId, clnt) <- readTQueue $ subQ s
-          let clientToBeNotified c' =
-                if sameClientId clnt c'
-                  then pure Nothing
-                  else do
+          (qId, clnt, subscribed) <- readTQueue $ subQ s
+          let updateSub
+                | subscribed = TM.lookupInsert qId clnt (subs s)
+                | otherwise = TM.lookupDelete qId (subs s)
+              clientToBeNotified c'
+                | sameClientId clnt c' = pure Nothing
+                | otherwise = do
                     yes <- readTVar $ connected c'
                     pure $ if yes then Just (qId, c') else Nothing
-          TM.lookupInsert qId clnt (subs s) $>>= clientToBeNotified
+          updateSub $>>= clientToBeNotified
         endPreviousSubscriptions :: (QueueId, Client) -> M (Maybe s)
         endPreviousSubscriptions (qId, c) = do
           forkClient c (label <> ".endPreviousSubscriptions") $
@@ -925,7 +927,12 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
         deleteQueueNotifier_ :: QueueStore -> M (Transmission BrokerMsg)
         deleteQueueNotifier_ st = do
           withLog (`logDeleteNotifier` queueId)
-          okResp <$> atomically (deleteQueueNotifier st queueId)
+          atomically (deleteQueueNotifier st queueId) >>= \case
+            Right () -> do
+              -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
+              atomically $ writeTQueue ntfSubscribedQ (queueId, clnt, False)
+              pure ok
+            Left e -> pure $ err e
 
         suspendQueue_ :: QueueStore -> M (Transmission BrokerMsg)
         suspendQueue_ st = do
@@ -951,7 +958,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           where
             newSub :: M Sub
             newSub = time "SUB newSub" . atomically $ do
-              writeTQueue subscribedQ (rId, clnt)
+              writeTQueue subscribedQ (rId, clnt, True)
               sub <- newSubscription NoSub
               TM.insert rId sub subscriptions
               pure sub
@@ -995,7 +1002,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
         subscribeNotifications :: M (Transmission BrokerMsg)
         subscribeNotifications = time "NSUB" . atomically $ do
           unlessM (TM.member queueId ntfSubscriptions) $ do
-            writeTQueue ntfSubscribedQ (queueId, clnt)
+            writeTQueue ntfSubscribedQ (queueId, clnt, True)
             TM.insert queueId () ntfSubscriptions
           pure ok
 
@@ -1254,7 +1261,12 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           withLog (`logDeleteQueue` queueId)
           ms <- asks msgStore
           atomically (deleteQueue st queueId $>>= \q -> delMsgQueue ms queueId $> Right q) >>= \case
-            Right q -> updateDeletedStats q $> ok
+            Right q -> do
+              -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
+              atomically $ writeTQueue subscribedQ (queueId, clnt, False)
+              atomically $ writeTQueue ntfSubscribedQ (queueId, clnt, False)
+              updateDeletedStats q
+              pure ok
             Left e -> pure $ err e
 
         getQueueInfo :: QueueRec -> M (Transmission BrokerMsg)
