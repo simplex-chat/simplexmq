@@ -33,7 +33,6 @@ module Simplex.Messaging.Agent
     AgentClient (..),
     AE,
     SubscriptionsInfo (..),
-    SndQueueSecured,
     getSMPAgentClient,
     getSMPAgentClient_,
     disconnectAgentClient,
@@ -337,8 +336,6 @@ createConnection c userId enableNtfs = withAgentEnv c .:: newConn c userId "" en
 -- "link deleted" (SMP AUTH) interactively, so this approach is simpler overall.
 prepareConnectionToJoin :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> PQSupport -> AE ConnId
 prepareConnectionToJoin c userId enableNtfs = withAgentEnv c .: newConnToJoin c userId "" enableNtfs
-
-type SndQueueSecured = Bool
 
 -- | Join SMP agent connection (JOIN command).
 joinConnection :: AgentClient -> UserId -> Maybe ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE (ConnId, SndQueueSecured)
@@ -1154,9 +1151,7 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
           usedSrvs <- newTVarIO initUsed
           tryCommand . withNextSrv c userId usedSrvs initUsed $ \srv -> do
             sqSecured <- joinConnSrvAsync c userId connId enableNtfs cReq connInfo pqEnc subMode srv
-            if sqSecured
-              then notify OK -- SND_SECURED
-              else notify OK
+            notify $ JOINED sqSecured
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK
         SWCH ->
@@ -2814,6 +2809,7 @@ agentSecureSndQueue c sq@SndQueue {sndSecure, status}
       secureSndQueue c sq
       withStore' c $ \db -> setSndQueueStatus db sq Secured
       pure True
+  | sndSecure && status == Secured = pure True -- on repeat JOIN processing (e.g. previous attempt to create reply queue failed)
   | otherwise = pure False
 
 mkAgentConfirmation :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> SubscriptionMode -> AM AgentMessage

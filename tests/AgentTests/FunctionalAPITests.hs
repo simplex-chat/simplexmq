@@ -501,12 +501,12 @@ testMatrix2Stress t runTest = do
     aProxyCfgV8 = agentProxyCfgV8 {messageRetryInterval = fastMessageRetryInterval}
     aCfgVPrev = agentCfgVPrev {messageRetryInterval = fastMessageRetryInterval}
 
-testBasicMatrix2 :: HasCallStack => ATransport -> (SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testBasicMatrix2 :: HasCallStack => ATransport -> (SndQueueSecured -> SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testBasicMatrix2 t runTest = do
-  it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 1 $ runTest True
-  it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrevPQ agentCfgVPrevPQ 3 $ runTest False
-  it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrevPQ agentCfg 3 $ runTest False
-  it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrevPQ 3 $ runTest False
+  it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 1 $ runTest True True
+  it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrevPQ agentCfgVPrevPQ 3 $ runTest False False
+  it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrevPQ agentCfg 3 $ runTest False True
+  it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrevPQ 3 $ runTest True False
 
 testRatchetMatrix2 :: HasCallStack => ATransport -> (PQSupport -> SndQueueSecured -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 t runTest = do
@@ -1913,15 +1913,17 @@ testBatchedPendingMessages nCreate nMsgs =
     withA = withAgent 1 agentCfg initAgentServers testDB
     withB = withAgent 2 agentCfg initAgentServers testDB2
 
-testAsyncCommands :: SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
-testAsyncCommands _sqSecuredJoin alice bob baseId =
+testAsyncCommands :: SndQueueSecured -> SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
+testAsyncCommands sqSecuredJoin _sqSecuredAccept alice bob baseId =
   runRight_ $ do
     bobId <- createConnectionAsync alice 1 "1" True SCMInvitation (IKNoPQ PQSupportOn) SMSubscribe
     ("1", bobId', INV (ACR _ qInfo)) <- get alice
     liftIO $ bobId' `shouldBe` bobId
     aliceId <- joinConnectionAsync bob 1 "2" True qInfo "bob's connInfo" PQSupportOn SMSubscribe
-    ("2", aliceId', OK) <- get bob -- TODO SND_SECURED
-    liftIO $ aliceId' `shouldBe` aliceId
+    ("2", aliceId', JOINED sqSecuredJoin') <- get bob
+    liftIO $ do
+      aliceId' `shouldBe` aliceId
+      sqSecuredJoin' `shouldBe` sqSecuredJoin
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnectionAsync alice "3" bobId confId "alice's connInfo"
     get alice =##> \case ("3", _, OK) -> True; _ -> False
@@ -1974,15 +1976,15 @@ testAsyncCommandsRestore t = do
       get alice' =##> \case ("1", _, INV _) -> True; _ -> False
       pure ()
 
-testAcceptContactAsync :: SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
-testAcceptContactAsync _sqSecuredJoin alice bob baseId =
+testAcceptContactAsync :: SndQueueSecured -> SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
+testAcceptContactAsync _sqSecuredJoin sqSecuredAccept alice bob baseId =
   runRight_ $ do
     (_, qInfo) <- createConnection alice 1 True SCMContact Nothing SMSubscribe
     (aliceId, sqSecured) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     liftIO $ sqSecured `shouldBe` False -- joining via contact address connection
     ("", _, REQ invId _ "bob's connInfo") <- get alice
     bobId <- acceptContactAsync alice "1" True invId "alice's connInfo" PQSupportOn SMSubscribe
-    get alice =##> \case ("1", c, OK) -> c == bobId; _ -> False -- TODO SND_SECURED
+    get alice =##> \case ("1", c, JOINED sqSecuredAccept') -> c == bobId && sqSecuredAccept' == sqSecuredAccept; _ -> False
     ("", _, CONF confId _ "alice's connInfo") <- get bob
     allowConnection bob aliceId confId "bob's connInfo"
     get alice ##> ("", bobId, INFO "bob's connInfo")
@@ -2258,7 +2260,7 @@ testJoinConnectionAsyncReplyErrorV8 t = do
         pure (aId, bId)
       nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
       withSmpServerOn t testPort2 $ do
-        get b =##> \case ("2", c, OK) -> c == aId; _ -> False
+        get b =##> \case ("2", c, JOINED sqSecured) -> c == aId && not sqSecured; _ -> False
         confId <- withSmpServerStoreLogOn t testPort $ \_ -> do
           pGet a >>= \case
             ("", "", AEvt _ (UP _ [_])) -> do
@@ -2299,7 +2301,7 @@ testJoinConnectionAsyncReplyError t = do
       withSmpServerOn t testPort2 $ do
         confId <- withSmpServerStoreLogOn t testPort $ \_ -> do
           -- both servers need to be online for connection to progress because of SKEY
-          get b =##> \case ("2", c, OK) -> c == aId; _ -> False
+          get b =##> \case ("2", c, JOINED sqSecured) -> c == aId && sqSecured; _ -> False
           pGet a >>= \case
             ("", "", AEvt _ (UP _ [_])) -> do
               ("", _, CONF confId _ "bob's connInfo") <- get a
