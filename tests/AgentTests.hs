@@ -23,7 +23,7 @@ agentTests :: ATransport -> Spec
 agentTests (ATransport t) = do
   describe "Connection request" connectionRequestTests
   describe "Double ratchet tests" doubleRatchetTests
-  fdescribe "Functional API" $ functionalAPITests (ATransport t)
+  describe "Functional API" $ functionalAPITests (ATransport t)
   describe "Notification tests" $ notificationTests (ATransport t)
   describe "SQLite store" storeTests
   describe "Migration tests" migrationTests
