@@ -11,8 +11,8 @@
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.FileTransfer.Agent
-  ( AllXFTPWorkers,
-    startXFTPWorkers,
+  ( startXFTPWorkers,
+    startXFTPSndWorkers,
     closeXFTPAgent,
     toFSFilePath,
     -- Receiving files
@@ -82,10 +82,16 @@ import UnliftIO
 import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 
-type AllXFTPWorkers = Bool
+startXFTPWorkers :: AgentClient -> Maybe FilePath -> AM ()
+startXFTPWorkers = startXFTPWorkers_ True
+{-# INLINE startXFTPWorkers #-}
 
-startXFTPWorkers :: AgentClient -> Maybe FilePath -> AllXFTPWorkers -> AM ()
-startXFTPWorkers c workDir allWorkers = do
+startXFTPSndWorkers :: AgentClient -> Maybe FilePath -> AM ()
+startXFTPSndWorkers = startXFTPWorkers_ False
+{-# INLINE startXFTPSndWorkers #-}
+
+startXFTPWorkers_ :: Bool -> AgentClient -> Maybe FilePath -> AM ()
+startXFTPWorkers_ allWorkers c workDir = do
   wd <- asks $ xftpWorkDir . xftpAgent
   atomically $ writeTVar wd workDir
   cfg <- asks config
