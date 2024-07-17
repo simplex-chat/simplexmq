@@ -11,7 +11,7 @@ import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.Protocol (UserId)
 import Simplex.Messaging.Parsers (defaultJSON, fromTextField_)
-import Simplex.Messaging.Protocol (SMPServer, XFTPServer)
+import Simplex.Messaging.Protocol (SMPServer, XFTPServer, NtfServer)
 import Simplex.Messaging.Util (decodeJSON, encodeJSON)
 import UnliftIO.STM
 
@@ -44,7 +44,12 @@ data AgentSMPServerStats = AgentSMPServerStats
     connSubscribed :: TVar Int, -- total successful subscription
     connSubAttempts :: TVar Int, -- subscription attempts
     connSubIgnored :: TVar Int, -- subscription results ignored (client switched to different session or it was not pending)
-    connSubErrs :: TVar Int -- permanent subscription errors (temporary accounted for in attempts)
+    connSubErrs :: TVar Int, -- permanent subscription errors (temporary accounted for in attempts)
+    -- notifications stats
+    ntfKey :: TVar Int,
+    ntfKeyAttempts :: TVar Int,
+    ntfKeyDeleted :: TVar Int,
+    ntfKeyDeleteAttempts :: TVar Int
   }
 
 data AgentSMPServerStatsData = AgentSMPServerStatsData
@@ -75,7 +80,11 @@ data AgentSMPServerStatsData = AgentSMPServerStatsData
     _connSubscribed :: Int,
     _connSubAttempts :: Int,
     _connSubIgnored :: Int,
-    _connSubErrs :: Int
+    _connSubErrs :: Int,
+    _ntfKey :: Int,
+    _ntfKeyAttempts :: Int,
+    _ntfKeyDeleted :: Int,
+    _ntfKeyDeleteAttempts :: Int
   }
   deriving (Show)
 
@@ -109,6 +118,10 @@ newAgentSMPServerStats = do
   connSubAttempts <- newTVar 0
   connSubIgnored <- newTVar 0
   connSubErrs <- newTVar 0
+  ntfKey <- newTVar 0
+  ntfKeyAttempts <- newTVar 0
+  ntfKeyDeleted <- newTVar 0
+  ntfKeyDeleteAttempts <- newTVar 0
   pure
     AgentSMPServerStats
       { sentDirect,
@@ -138,7 +151,11 @@ newAgentSMPServerStats = do
         connSubscribed,
         connSubAttempts,
         connSubIgnored,
-        connSubErrs
+        connSubErrs,
+        ntfKey,
+        ntfKeyAttempts,
+        ntfKeyDeleted,
+        ntfKeyDeleteAttempts
       }
 
 newAgentSMPServerStatsData :: AgentSMPServerStatsData
@@ -171,7 +188,11 @@ newAgentSMPServerStatsData =
       _connSubscribed = 0,
       _connSubAttempts = 0,
       _connSubIgnored = 0,
-      _connSubErrs = 0
+      _connSubErrs = 0,
+      _ntfKey = 0,
+      _ntfKeyAttempts = 0,
+      _ntfKeyDeleted = 0,
+      _ntfKeyDeleteAttempts = 0
     }
 
 newAgentSMPServerStats' :: AgentSMPServerStatsData -> STM AgentSMPServerStats
@@ -204,6 +225,10 @@ newAgentSMPServerStats' s = do
   connSubAttempts <- newTVar $ _connSubAttempts s
   connSubIgnored <- newTVar $ _connSubIgnored s
   connSubErrs <- newTVar $ _connSubErrs s
+  ntfKey <- newTVar $ _ntfKey s
+  ntfKeyAttempts <- newTVar $ _ntfKeyAttempts s
+  ntfKeyDeleted <- newTVar $ _ntfKeyDeleted s
+  ntfKeyDeleteAttempts <- newTVar $ _ntfKeyDeleteAttempts s
   pure
     AgentSMPServerStats
       { sentDirect,
@@ -233,7 +258,11 @@ newAgentSMPServerStats' s = do
         connSubscribed,
         connSubAttempts,
         connSubIgnored,
-        connSubErrs
+        connSubErrs,
+        ntfKey,
+        ntfKeyAttempts,
+        ntfKeyDeleted,
+        ntfKeyDeleteAttempts
       }
 
 -- as this is used to periodically update stats in db,
@@ -268,6 +297,10 @@ getAgentSMPServerStats s = do
   _connSubAttempts <- readTVarIO $ connSubAttempts s
   _connSubIgnored <- readTVarIO $ connSubIgnored s
   _connSubErrs <- readTVarIO $ connSubErrs s
+  _ntfKey <- readTVarIO $ ntfKey s
+  _ntfKeyAttempts <- readTVarIO $ ntfKeyAttempts s
+  _ntfKeyDeleted <- readTVarIO $ ntfKeyDeleted s
+  _ntfKeyDeleteAttempts <- readTVarIO $ ntfKeyDeleteAttempts s
   pure
     AgentSMPServerStatsData
       { _sentDirect,
@@ -297,7 +330,11 @@ getAgentSMPServerStats s = do
         _connSubscribed,
         _connSubAttempts,
         _connSubIgnored,
-        _connSubErrs
+        _connSubErrs,
+        _ntfKey,
+        _ntfKeyAttempts,
+        _ntfKeyDeleted,
+        _ntfKeyDeleteAttempts
       }
 
 addSMPStatsData :: AgentSMPServerStatsData -> AgentSMPServerStatsData -> AgentSMPServerStatsData
@@ -330,7 +367,11 @@ addSMPStatsData sd1 sd2 =
       _connSubscribed = _connSubscribed sd1 + _connSubscribed sd2,
       _connSubAttempts = _connSubAttempts sd1 + _connSubAttempts sd2,
       _connSubIgnored = _connSubIgnored sd1 + _connSubIgnored sd2,
-      _connSubErrs = _connSubErrs sd1 + _connSubErrs sd2
+      _connSubErrs = _connSubErrs sd1 + _connSubErrs sd2,
+      _ntfKey = _ntfKey sd1 + _ntfKey sd2,
+      _ntfKeyAttempts = _ntfKeyAttempts sd1 + _ntfKeyAttempts sd2,
+      _ntfKeyDeleted = _ntfKeyDeleted sd1 + _ntfKeyDeleted sd2,
+      _ntfKeyDeleteAttempts = _ntfKeyDeleteAttempts sd1 + _ntfKeyDeleteAttempts sd2
     }
 
 data AgentXFTPServerStats = AgentXFTPServerStats
@@ -490,17 +531,115 @@ addXFTPStatsData sd1 sd2 =
       _deleteErrs = _deleteErrs sd1 + _deleteErrs sd2
     }
 
+data AgentNtfServerStats = AgentNtfServerStats
+  { ntfCreated :: TVar Int,
+    ntfCreateAttempts :: TVar Int,
+    ntfChecked :: TVar Int,
+    ntfCheckAttempts :: TVar Int,
+    ntfDeleted :: TVar Int,
+    ntfDelAttempts :: TVar Int
+  }
+
+data AgentNtfServerStatsData = AgentNtfServerStatsData
+  { _ntfCreated :: Int,
+    _ntfCreateAttempts :: Int,
+    _ntfChecked :: Int,
+    _ntfCheckAttempts :: Int,
+    _ntfDeleted :: Int,
+    _ntfDelAttempts :: Int
+  }
+  deriving (Show)
+
+newAgentNtfServerStats :: STM AgentNtfServerStats
+newAgentNtfServerStats = do
+  ntfCreated <- newTVar 0
+  ntfCreateAttempts <- newTVar 0
+  ntfChecked <- newTVar 0
+  ntfCheckAttempts <- newTVar 0
+  ntfDeleted <- newTVar 0
+  ntfDelAttempts <- newTVar 0
+  pure
+    AgentNtfServerStats
+      { ntfCreated,
+        ntfCreateAttempts,
+        ntfChecked,
+        ntfCheckAttempts,
+        ntfDeleted,
+        ntfDelAttempts
+      }
+
+newAgentNtfServerStatsData :: AgentNtfServerStatsData
+newAgentNtfServerStatsData =
+  AgentNtfServerStatsData
+    { _ntfCreated = 0,
+      _ntfCreateAttempts = 0,
+      _ntfChecked = 0,
+      _ntfCheckAttempts = 0,
+      _ntfDeleted = 0,
+      _ntfDelAttempts = 0
+    }
+
+newAgentNtfServerStats' :: AgentNtfServerStatsData -> STM AgentNtfServerStats
+newAgentNtfServerStats' s = do
+  ntfCreated <- newTVar $ _ntfCreated s
+  ntfCreateAttempts <- newTVar $ _ntfCreateAttempts s
+  ntfChecked <- newTVar $ _ntfChecked s
+  ntfCheckAttempts <- newTVar $ _ntfCheckAttempts s
+  ntfDeleted <- newTVar $ _ntfDeleted s
+  ntfDelAttempts <- newTVar $ _ntfDelAttempts s
+  pure
+    AgentNtfServerStats
+      { ntfCreated,
+        ntfCreateAttempts,
+        ntfChecked,
+        ntfCheckAttempts,
+        ntfDeleted,
+        ntfDelAttempts
+      }
+
+getAgentNtfServerStats :: AgentNtfServerStats -> IO AgentNtfServerStatsData
+getAgentNtfServerStats s = do
+  _ntfCreated <- readTVarIO $ ntfCreated s
+  _ntfCreateAttempts <- readTVarIO $ ntfCreateAttempts s
+  _ntfChecked <- readTVarIO $ ntfChecked s
+  _ntfCheckAttempts <- readTVarIO $ ntfCheckAttempts s
+  _ntfDeleted <- readTVarIO $ ntfDeleted s
+  _ntfDelAttempts <- readTVarIO $ ntfDelAttempts s
+  pure
+    AgentNtfServerStatsData
+      { _ntfCreated,
+        _ntfCreateAttempts,
+        _ntfChecked,
+        _ntfCheckAttempts,
+        _ntfDeleted,
+        _ntfDelAttempts
+      }
+
+addNtfStatsData :: AgentNtfServerStatsData -> AgentNtfServerStatsData -> AgentNtfServerStatsData
+addNtfStatsData sd1 sd2 =
+  AgentNtfServerStatsData
+    { _ntfCreated = _ntfCreated sd1 + _ntfCreated sd2,
+      _ntfCreateAttempts = _ntfCreateAttempts sd1 + _ntfCreateAttempts sd2,
+      _ntfChecked = _ntfChecked sd1 + _ntfChecked sd2,
+      _ntfCheckAttempts = _ntfCheckAttempts sd1 + _ntfCheckAttempts sd2,
+      _ntfDeleted = _ntfDeleted sd1 + _ntfDeleted sd2,
+      _ntfDelAttempts = _ntfDelAttempts sd1 + _ntfDelAttempts sd2
+    }
+
 -- Type for gathering both smp and xftp stats across all users and servers,
 -- to then be persisted to db as a single json.
 data AgentPersistedServerStats = AgentPersistedServerStats
   { smpServersStats :: Map (UserId, SMPServer) AgentSMPServerStatsData,
-    xftpServersStats :: Map (UserId, XFTPServer) AgentXFTPServerStatsData
+    xftpServersStats :: Map (UserId, XFTPServer) AgentXFTPServerStatsData,
+    ntfServersStats :: Map (UserId, NtfServer) AgentNtfServerStatsData
   }
   deriving (Show)
 
 $(J.deriveJSON defaultJSON ''AgentSMPServerStatsData)
 
 $(J.deriveJSON defaultJSON ''AgentXFTPServerStatsData)
+
+$(J.deriveJSON defaultJSON ''AgentNtfServerStatsData)
 
 $(J.deriveJSON defaultJSON ''AgentPersistedServerStats)
 

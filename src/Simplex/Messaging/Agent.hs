@@ -237,25 +237,25 @@ logServersStats c = do
     liftIO $ threadDelay' int
 
 saveServersStats :: AgentClient -> AM' ()
-saveServersStats c@AgentClient {subQ, smpServersStats, xftpServersStats} = do
+saveServersStats c@AgentClient {subQ, smpServersStats, xftpServersStats, ntfServersStats} = do
   sss <- mapM (lift . getAgentSMPServerStats) =<< readTVarIO smpServersStats
   xss <- mapM (lift . getAgentXFTPServerStats) =<< readTVarIO xftpServersStats
-  let stats = AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss}
+  nss <- mapM (lift . getAgentNtfServerStats) =<< readTVarIO ntfServersStats
+  let stats = AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss, ntfServersStats = nss}
   tryAgentError' (withStore' c (`updateServersStats` stats)) >>= \case
     Left e -> atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ INTERNAL $ show e)
     Right () -> pure ()
 
 restoreServersStats :: AgentClient -> AM' ()
-restoreServersStats c@AgentClient {smpServersStats, xftpServersStats, srvStatsStartedAt} = do
+restoreServersStats c@AgentClient {smpServersStats, xftpServersStats, ntfServersStats, srvStatsStartedAt} = do
   tryAgentError' (withStore c getServersStats) >>= \case
     Left e -> atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ INTERNAL $ show e)
     Right (startedAt, Nothing) -> atomically $ writeTVar srvStatsStartedAt startedAt
-    Right (startedAt, Just AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss}) -> do
+    Right (startedAt, Just AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss, ntfServersStats = nss}) -> do
       atomically $ writeTVar srvStatsStartedAt startedAt
-      sss' <- mapM (atomically . newAgentSMPServerStats') sss
-      atomically $ writeTVar smpServersStats sss'
-      xss' <- mapM (atomically . newAgentXFTPServerStats') xss
-      atomically $ writeTVar xftpServersStats xss'
+      atomically . writeTVar smpServersStats =<< mapM (atomically . newAgentSMPServerStats') sss
+      atomically . writeTVar xftpServersStats =<< mapM (atomically . newAgentXFTPServerStats') xss
+      atomically . writeTVar ntfServersStats =<< mapM (atomically . newAgentNtfServerStats') nss
 
 disconnectAgentClient :: AgentClient -> IO ()
 disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAgent = xa}} = do

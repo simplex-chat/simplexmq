@@ -1457,23 +1457,24 @@ getNtfSubscription db connId =
     DB.query
       db
       [sql|
-        SELECT s.host, s.port, COALESCE(nsb.smp_server_key_hash, s.key_hash), ns.ntf_host, ns.ntf_port, ns.ntf_key_hash,
+        SELECT c.user_id, s.host, s.port, COALESCE(nsb.smp_server_key_hash, s.key_hash), ns.ntf_host, ns.ntf_port, ns.ntf_key_hash,
           nsb.smp_ntf_id, nsb.ntf_sub_id, nsb.ntf_sub_status, nsb.ntf_sub_action, nsb.ntf_sub_smp_action, nsb.ntf_sub_action_ts
         FROM ntf_subscriptions nsb
+        JOIN connections c USING (conn_id)
         JOIN servers s ON s.host = nsb.smp_host AND s.port = nsb.smp_port
         JOIN ntf_servers ns USING (ntf_host, ntf_port)
         WHERE nsb.conn_id = ?
       |]
       (Only connId)
   where
-    ntfSubscription (smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfAction_, smpAction_, actionTs_) =
+    ntfSubscription ((userId, smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash ) :. (ntfQueueId, ntfSubId, ntfSubStatus, ntfAction_, smpAction_, actionTs_)) =
       let smpServer = SMPServer smpHost smpPort smpKeyHash
           ntfServer = NtfServer ntfHost ntfPort ntfKeyHash
           action = case (ntfAction_, smpAction_, actionTs_) of
-            (Just ntfAction, Nothing, Just actionTs) -> Just (NtfSubNTFAction ntfAction, actionTs)
-            (Nothing, Just smpAction, Just actionTs) -> Just (NtfSubSMPAction smpAction, actionTs)
+            (Just ntfAction, Nothing, Just actionTs) -> Just (NSANtf ntfAction, actionTs)
+            (Nothing, Just smpAction, Just actionTs) -> Just (NSASMP smpAction, actionTs)
             _ -> Nothing
-       in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}, action)
+       in (NtfSubscription {userId, connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}, action)
 
 createNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubAction -> IO (Either StoreError ())
 createNtfSubscription db ntfSubscription action = runExceptT $ do
@@ -1607,18 +1608,19 @@ getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) =
         DB.query
           db
           [sql|
-            SELECT s.host, s.port, COALESCE(ns.smp_server_key_hash, s.key_hash),
+            SELECT c.user_id, s.host, s.port, COALESCE(ns.smp_server_key_hash, s.key_hash),
               ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_action
             FROM ntf_subscriptions ns
+            JOIN connections s USING (conn_id)
             JOIN servers s ON s.host = ns.smp_host AND s.port = ns.smp_port
             WHERE ns.conn_id = ?
           |]
           (Only connId)
       where
         err = SEInternal $ "ntf subscription " <> bshow connId <> " returned []"
-        ntfSubAction (smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
+        ntfSubAction (userId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
           let smpServer = SMPServer smpHost smpPort smpKeyHash
-              ntfSubscription = NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
+              ntfSubscription = NtfSubscription {userId, connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
            in (ntfSubscription, action, actionTs)
 
 markNtfSubActionNtfFailed_ :: DB.Connection -> ConnId -> IO ()
@@ -1650,18 +1652,19 @@ getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) =
         DB.query
           db
           [sql|
-            SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
+            SELECT c.user_id, s.ntf_host, s.ntf_port, s.ntf_key_hash,
               ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_smp_action
             FROM ntf_subscriptions ns
+            JOIN connections c USING (conn_id)
             JOIN ntf_servers s USING (ntf_host, ntf_port)
             WHERE ns.conn_id = ?
           |]
           (Only connId)
       where
         err = SEInternal $ "ntf subscription " <> bshow connId <> " returned []"
-        ntfSubAction (ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
+        ntfSubAction (userId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
           let ntfServer = NtfServer ntfHost ntfPort ntfKeyHash
-              ntfSubscription = NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
+              ntfSubscription = NtfSubscription {userId, connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
            in (ntfSubscription, action, actionTs)
 
 markNtfSubActionSMPFailed_ :: DB.Connection -> ConnId -> IO ()
@@ -2272,8 +2275,8 @@ randomId :: TVar ChaChaDRG -> Int -> IO ByteString
 randomId gVar n = atomically $ U.encode <$> C.randomBytes n gVar
 
 ntfSubAndSMPAction :: NtfSubAction -> (Maybe NtfSubNTFAction, Maybe NtfSubSMPAction)
-ntfSubAndSMPAction (NtfSubNTFAction action) = (Just action, Nothing)
-ntfSubAndSMPAction (NtfSubSMPAction action) = (Nothing, Just action)
+ntfSubAndSMPAction (NSANtf action) = (Just action, Nothing)
+ntfSubAndSMPAction (NSASMP action) = (Nothing, Just action)
 
 createXFTPServer_ :: DB.Connection -> XFTPServer -> IO Int64
 createXFTPServer_ db newSrv@ProtocolServer {host, port, keyHash} =
