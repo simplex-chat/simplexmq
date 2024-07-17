@@ -454,9 +454,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   activeClients <- readTVarIO clients
                   hPutStrLn h $ "Clients: " <> show (IM.size activeClients)
                   when (r == CPRAdmin) $ do
-                    (smpSubCnt, smpClCnt) <- countClientSubs subscriptions activeClients
-                    (ntfSubCnt, ntfClCnt) <- countClientSubs ntfSubscriptions activeClients
+                    (smpSubCnt, smpSubCntByGroup, smpClCnt) <- countClientSubs subscriptions countSMPSubs activeClients
+                    (ntfSubCnt, _, ntfClCnt) <- countClientSubs ntfSubscriptions (\_ -> pure (0, 0, 0, 0)) activeClients
                     hPutStrLn h $ "SMP subscriptions (via clients, slow): " <> show smpSubCnt
+                    hPutStrLn h $ "SMP subscriptions (by group: NoSub, SubPending, SubThread, ProhibitSub): " <> show smpSubCntByGroup
                     hPutStrLn h $ "SMP subscribed clients (via clients, slow): " <> show smpClCnt
                     hPutStrLn h $ "Ntf subscriptions (via clients, slow): " <> show ntfSubCnt
                     hPutStrLn h $ "Ntf subscribed clients (via clients, slow): " <> show ntfClCnt
@@ -467,14 +468,25 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   hPutStrLn h $ "Ntf subscriptions: " <> show (M.size activeNtfSubs)
                   hPutStrLn h $ "Ntf subscribed clients: " <> show (countSubClients activeNtfSubs)
                   where
-                    countClientSubs :: (Client -> TMap QueueId a) -> IM.IntMap Client -> IO (Int, Int)
-                    countClientSubs subSel = foldM addSubs (0, 0)
+                    countClientSubs :: (Client -> TMap QueueId a) -> (M.Map QueueId a -> IO (Int, Int, Int, Int)) -> IM.IntMap Client -> IO (Int, (Int, Int, Int, Int), Int)
+                    countClientSubs subSel countSubs = foldM addSubs (0, (0, 0, 0, 0), 0)
                       where
-                        addSubs :: (Int, Int) -> Client -> IO (Int, Int)
-                        addSubs (subCnt, clCnt) cl = do
+                        addSubs :: (Int, (Int, Int, Int, Int), Int) -> Client -> IO (Int, (Int, Int, Int, Int), Int)
+                        addSubs (subCnt, (c1, c2, c3, c4), clCnt) cl = do
                           subs <- readTVarIO $ subSel cl
+                          (c1', c2', c3', c4') <- countSubs subs
                           let cnt = M.size subs
-                          pure (subCnt + cnt, clCnt + if cnt == 0 then 0 else 1)
+                              cnts' = (c1 + c1', c2 + c2', c3 + c3', c4 + c4')
+                          pure (subCnt + cnt, cnts', clCnt + if cnt == 0 then 0 else 1)
+                    countSMPSubs :: M.Map QueueId Sub -> IO (Int, Int, Int, Int)
+                    countSMPSubs = foldM countSubs (0, 0, 0, 0)
+                      where
+                        countSubs (c1, c2, c3, c4) Sub {subThread} =
+                          readTVarIO subThread >>= \st -> pure $ case st of
+                            NoSub -> (c1 + 1, c2, c3, c4)
+                            SubPending -> (c1, c2 + 1, c3, c4)
+                            SubThread _ -> (c1, c2, c3 + 1, c4)
+                            ProhibitSub -> (c1, c2, c3, c4 + 1)
                     countSubClients = S.size . M.foldr' (S.insert . clientId) S.empty
               CPDelete queueId' -> withUserRole $ unliftIO u $ do
                 st <- asks queueStore
@@ -533,19 +545,22 @@ runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessio
     noSubscriptions c = atomically $ (&&) <$> TM.null (subscriptions c) <*> TM.null (ntfSubscriptions c)
 
 clientDisconnected :: Client -> M ()
-clientDisconnected c@Client {clientId, subscriptions, connected, sessionId, endThreads} = do
+clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, connected, sessionId, endThreads} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disc"
-  subs <- atomically $ do
+  (subs, ntfSubs) <- atomically $ do
     writeTVar connected False
-    swapTVar subscriptions M.empty
+    (,) <$> swapTVar subscriptions M.empty <*> swapTVar ntfSubscriptions M.empty
   liftIO $ mapM_ cancelSub subs
-  srvSubs <- asks $ subscribers . server
-  atomically $ modifyTVar' srvSubs $ \cs ->
-    M.foldrWithKey (\sub _ -> M.update deleteCurrentClient sub) cs subs
+  Server {subscribers, notifiers} <- asks server
+  updateSubscribers subs subscribers
+  updateSubscribers ntfSubs notifiers
   asks clients >>= atomically . (`modifyTVar'` IM.delete clientId)
   tIds <- atomically $ swapTVar endThreads IM.empty
   liftIO $ mapM_ (mapM_ killThread <=< deRefWeak) tIds
   where
+    updateSubscribers subs srvSubs = do
+      atomically $ modifyTVar' srvSubs $ \cs ->
+        M.foldrWithKey (\sub _ -> M.update deleteCurrentClient sub) cs subs
     deleteCurrentClient :: Client -> Maybe Client
     deleteCurrentClient c'
       | sameClientId c c' = Nothing
