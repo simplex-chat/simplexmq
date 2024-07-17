@@ -130,7 +130,7 @@ import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
+import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, sumTypeJSON)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.TMap (TMap)
@@ -240,9 +240,19 @@ data SocksMode
   = -- | always use SOCKS proxy when enabled
     SMAlways
   | -- | use SOCKS proxy only for .onion hosts when no public host is available
-    -- This mode is used in SMP proxy to minimize SOCKS proxy usage.
+    -- This mode is used in SMP proxy and in notifications server to minimize SOCKS proxy usage.
     SMOnion
   deriving (Eq, Show)
+
+instance StrEncoding SocksMode where
+  strEncode = \case
+    SMAlways -> "always"
+    SMOnion -> "onion"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "always" -> pure SMAlways
+      "onion" -> pure SMOnion
+      _ -> fail "Invalid Socks mode"
 
 -- | network configuration for the client
 data NetworkConfig = NetworkConfig
@@ -823,7 +833,7 @@ connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, t
         PKEY sId vr (chain, key) ->
           case supportedClientSMPRelayVRange `compatibleVersion` vr of
             Nothing -> throwE $ transportErr TEVersion
-            Just (Compatible v) -> liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) $ ProxiedRelay sId v <$> validateRelay chain key
+            Just (Compatible v) -> liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) $ ProxiedRelay sId v proxyAuth <$> validateRelay chain key
         r -> throwE $ unexpectedResponse r
   | otherwise = throwE $ PCETransportError TEVersion
   where
@@ -842,16 +852,17 @@ connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, t
 data ProxiedRelay = ProxiedRelay
   { prSessionId :: SessionId,
     prVersion :: VersionSMP,
+    prBasicAuth :: Maybe BasicAuth, -- auth is included here to allow reconnecting via the same proxy after NO_SESSION error
     prServerKey :: C.PublicKeyX25519
   }
 
 data ProxyClientError
   = -- | protocol error response from proxy
-    ProxyProtocolError ErrorType
+    ProxyProtocolError {protocolErr :: ErrorType}
   | -- | unexpexted response
-    ProxyUnexpectedResponse String
+    ProxyUnexpectedResponse {responseStr :: String}
   | -- | error between proxy and server
-    ProxyResponseError ErrorType
+    ProxyResponseError {responseErr :: ErrorType}
   deriving (Eq, Show, Exception)
 
 instance StrEncoding ProxyClientError where
@@ -902,7 +913,7 @@ proxySMPCommand ::
   SenderId ->
   Command 'Sender ->
   ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g, tcpTimeout}} (ProxiedRelay sessionId v serverKey) spKey sId command = do
+proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g, tcpTimeout}} (ProxiedRelay sessionId v _ serverKey) spKey sId command = do
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
       serverThParams = smpTHParamsSetVersion v proxyThParams {sessionId, thAuth = serverThAuth}
@@ -1139,6 +1150,6 @@ $(J.deriveJSON (enumJSON $ dropPrefix "SPF") ''SMPProxyFallback)
 
 $(J.deriveJSON defaultJSON ''NetworkConfig)
 
-$(J.deriveJSON (enumJSON $ dropPrefix "Proxy") ''ProxyClientError)
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "Proxy") ''ProxyClientError)
 
 $(J.deriveJSON defaultJSON ''TBQueueInfo)

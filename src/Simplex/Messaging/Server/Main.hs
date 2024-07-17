@@ -305,7 +305,7 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                           networkConfig =
                             defaultNetworkConfig
                               { socksProxy = either error id <$!> strDecodeIni "PROXY" "socks_proxy" ini,
-                                socksMode = either (const SMOnion) textToSocksMode $ lookupValue "PROXY" "socks_mode" ini,
+                                socksMode = maybe SMOnion (either error id) $! strDecodeIni "PROXY" "socks_mode" ini,
                                 hostMode = either (const HMPublic) textToHostMode $ lookupValue "PROXY" "host_mode" ini,
                                 requiredHostMode = fromMaybe False $ iniOnOff "PROXY" "required_host_mode" ini
                               }
@@ -317,11 +317,6 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini,
               information = serverPublicInfo ini
             }
-        textToSocksMode :: Text -> SocksMode
-        textToSocksMode = \case
-          "always" -> SMAlways
-          "onion" -> SMOnion
-          s -> error . T.unpack $ "Invalid socks_mode: " <> s
         textToHostMode :: Text -> HostMode
         textToHostMode = \case
           "public" -> HMPublic

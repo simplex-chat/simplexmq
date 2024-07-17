@@ -77,6 +77,7 @@ module Simplex.Messaging.Agent
     getConnectionServers,
     getConnectionRatchetAdHash,
     setProtocolServers,
+    checkUserServers,
     testProtocolServer,
     setNtfServers,
     setNetworkConfig,
@@ -91,6 +92,7 @@ module Simplex.Messaging.Agent
     getNtfTokenData,
     toggleConnectionNtfs,
     xftpStartWorkers,
+    xftpStartSndWorkers,
     xftpReceiveFile,
     xftpDeleteRcvFile,
     xftpDeleteRcvFiles,
@@ -145,7 +147,7 @@ import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Traversable (mapAccumL)
 import Data.Word (Word16)
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPSndWorkers, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
@@ -172,7 +174,7 @@ import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfReg
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC, XFTPServerWithAuth, sndAuthKeySMPClientVersion)
+import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolType (..), ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC, sndAuthKeySMPClientVersion)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import qualified Simplex.Messaging.TMap as TM
@@ -197,15 +199,18 @@ getSMPAgentClient = getSMPAgentClient_ 1
 {-# INLINE getSMPAgentClient #-}
 
 getSMPAgentClient_ :: Int -> AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> IO AgentClient
-getSMPAgentClient_ clientId cfg initServers store backgroundMode =
-  liftIO $ newSMPAgentEnv cfg store >>= runReaderT runAgent
+getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp} store backgroundMode =
+  newSMPAgentEnv cfg store >>= runReaderT runAgent
   where
     runAgent = do
+      liftIO $ checkServers "SMP" smp >> checkServers "XFTP" xftp
       currentTs <- liftIO getCurrentTime
       c@AgentClient {acThread} <- atomically . newAgentClient clientId initServers currentTs =<< ask
       t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
       atomically . writeTVar acThread . Just =<< mkWeakThreadId t
       pure c
+    checkServers protocol srvs =
+      forM_ (M.assocs srvs) $ \(userId, srvs') -> checkUserServers ("getSMPAgentClient " <> protocol <> " " <> tshow userId) srvs'
     runAgentThreads c
       | backgroundMode = run c "subscriber" $ subscriber c
       | otherwise = do
@@ -271,7 +276,7 @@ resumeAgentClient :: AgentClient -> IO ()
 resumeAgentClient c = atomically $ writeTVar (active c) True
 {-# INLINE resumeAgentClient #-}
 
-createUser :: AgentClient -> NonEmpty SMPServerWithAuth -> NonEmpty XFTPServerWithAuth -> AE UserId
+createUser :: AgentClient -> NonEmpty (ServerCfg 'PSMP) -> NonEmpty (ServerCfg 'PXFTP) -> AE UserId
 createUser c = withAgentEnv c .: createUser' c
 {-# INLINE createUser #-}
 
@@ -518,6 +523,10 @@ xftpStartWorkers :: AgentClient -> Maybe FilePath -> AE ()
 xftpStartWorkers c = withAgentEnv c . startXFTPWorkers c
 {-# INLINE xftpStartWorkers #-}
 
+xftpStartSndWorkers :: AgentClient -> Maybe FilePath -> AE ()
+xftpStartSndWorkers c = withAgentEnv c . startXFTPSndWorkers c
+{-# INLINE xftpStartSndWorkers #-}
+
 -- | Receive XFTP file
 xftpReceiveFile :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> Bool -> AE RcvFileId
 xftpReceiveFile c = withAgentEnv c .:: xftpReceiveFile' c
@@ -600,11 +609,13 @@ logConnection c connected =
   let event = if connected then "connected to" else "disconnected from"
    in logInfo $ T.unwords ["client", tshow (clientId c), event, "Agent"]
 
-createUser' :: AgentClient -> NonEmpty SMPServerWithAuth -> NonEmpty XFTPServerWithAuth -> AM UserId
+createUser' :: AgentClient -> NonEmpty (ServerCfg 'PSMP) -> NonEmpty (ServerCfg 'PXFTP) -> AM UserId
 createUser' c smp xftp = do
+  liftIO $ checkUserServers "createUser SMP" smp
+  liftIO $ checkUserServers "createUser XFTP" xftp
   userId <- withStore' c createUserRecord
-  atomically $ TM.insert userId smp $ smpServers c
-  atomically $ TM.insert userId xftp $ xftpServers c
+  atomically $ TM.insert userId (mkUserServers smp) $ smpServers c
+  atomically $ TM.insert userId (mkUserServers xftp) $ xftpServers c
   pure userId
 
 deleteUser' :: AgentClient -> UserId -> Bool -> AM ()
@@ -1815,10 +1826,17 @@ connectionStats = \case
           ratchetSyncSupported = connAgentVersion >= ratchetSyncSMPAgentVersion
         }
 
--- | Change servers to be used for creating new queues, in Reader monad
-setProtocolServers :: (ProtocolTypeI p, UserProtocol p) => AgentClient -> UserId -> NonEmpty (ProtoServerWithAuth p) -> IO ()
-setProtocolServers c userId srvs = atomically $ TM.insert userId srvs (userServers c)
-{-# INLINE setProtocolServers #-}
+-- | Change servers to be used for creating new queues.
+-- This function will set all servers as enabled in case all passed servers are disabled.
+setProtocolServers :: forall p. (ProtocolTypeI p, UserProtocol p) => AgentClient -> UserId -> NonEmpty (ServerCfg p) -> IO ()
+setProtocolServers c userId srvs = do
+  checkUserServers "setProtocolServers" srvs
+  atomically $ TM.insert userId (mkUserServers srvs) (userServers c)
+
+checkUserServers :: Text -> NonEmpty (ServerCfg p) -> IO ()
+checkUserServers name srvs =
+  unless (any (\ServerCfg {enabled} -> enabled) srvs) $
+    logWarn (name <> ": all passed servers are disabled, using all servers.")
 
 registerNtfToken' :: AgentClient -> DeviceToken -> NotificationsMode -> AM NtfTknStatus
 registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
