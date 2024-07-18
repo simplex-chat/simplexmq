@@ -184,22 +184,18 @@ runNtfWorker c srv Worker {doWork} =
               _ -> workerInternalError c connId "NSACreate - no active token"
           NSACheck ->
             lift getNtfToken >>= \case
-              Just tkn@NtfToken {ntfServer = srv'} ->
+              Just tkn@NtfToken {ntfServer} ->
                 case ntfSubId of
                   Just nSubId -> do
-                    atomically $ incNtfServerStat c userId srv' ntfCheckAttempts
+                    atomically $ incNtfServerStat c userId ntfServer ntfCheckAttempts
                     agentNtfCheckSubscription c nSubId tkn >>= \case
                       NSAuth -> do
-                        -- TODO it's unclear why we are getting a random server here and upgrade ntf subscription with it
-                        lift (getNtfServer c) >>= \case
-                          Just ntfServer -> do
-                            withStore' c $ \db ->
-                              updateNtfSubscription db sub {ntfServer, ntfQueueId = Nothing, ntfSubId = Nothing, ntfSubStatus = NASNew} (NSASMP NSASmpKey) ts
-                            ns <- asks ntfSupervisor
-                            atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCNtfSMPWorker smpServer)
-                          _ -> workerInternalError c connId "NSACheck - failed to reset subscription, notification server not configured"
+                        withStore' c $ \db ->
+                          updateNtfSubscription db sub {ntfServer, ntfQueueId = Nothing, ntfSubId = Nothing, ntfSubStatus = NASNew} (NSASMP NSASmpKey) ts
+                        ns <- asks ntfSupervisor
+                        atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCNtfSMPWorker smpServer)
                       status -> updateSubNextCheck ts status
-                    atomically $ incNtfServerStat c userId srv ntfChecked
+                    atomically $ incNtfServerStat c userId ntfServer ntfChecked
                   Nothing -> workerInternalError c connId "NSACheck - no subscription ID"
               _ -> workerInternalError c connId "NSACheck - no active token"
           NSADelete -> deleteNtfSub continueDeletion
