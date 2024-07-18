@@ -197,6 +197,9 @@ cData1 =
 testPrivateAuthKey :: C.APrivateAuthKey
 testPrivateAuthKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
 
+testPublicAuthKey :: C.APublicAuthKey
+testPublicAuthKey = C.APublicAuthKey C.SEd25519 (C.publicKey "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe")
+
 testPrivDhKey :: C.PrivateKeyX25519
 testPrivDhKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOpk"
 
@@ -218,6 +221,7 @@ rcvQueue1 =
       e2ePrivKey = testPrivDhKey,
       e2eDhSecret = Nothing,
       sndId = "2345",
+      sndSecure = True,
       status = New,
       dbQueueId = DBNewQueue,
       primary = True,
@@ -235,7 +239,8 @@ sndQueue1 =
       connId = "conn1",
       server = smpServer1,
       sndId = "3456",
-      sndPublicKey = Nothing,
+      sndSecure = True,
+      sndPublicKey = testPublicAuthKey,
       sndPrivateKey = testPrivateAuthKey,
       e2ePubKey = Nothing,
       e2eDhSecret = testDhSecret,
@@ -379,7 +384,8 @@ testUpgradeRcvConnToDuplex =
               connId = "conn1",
               server = SMPServer "smp.simplex.im" "5223" testKeyHash,
               sndId = "2345",
-              sndPublicKey = Nothing,
+              sndSecure = True,
+              sndPublicKey = testPublicAuthKey,
               sndPrivateKey = testPrivateAuthKey,
               e2ePubKey = Nothing,
               e2eDhSecret = testDhSecret,
@@ -412,6 +418,7 @@ testUpgradeSndConnToDuplex =
               e2ePrivKey = testPrivDhKey,
               e2eDhSecret = Nothing,
               sndId = "4567",
+              sndSecure = True,
               status = New,
               dbQueueId = DBNewQueue,
               rcvSwchStatus = Nothing,
@@ -663,7 +670,7 @@ testGetPendingServerCommand st = do
     Right (Just PendingCommand {corrId = corrId'}) <- getPendingServerCommand db (Just smpServer1)
     corrId' `shouldBe` "4"
   where
-    command = AClientCommand $ APC SAEConn $ NEW True (ACM SCMInvitation) (IKNoPQ PQSupportOn) SMSubscribe
+    command = AClientCommand $ NEW True (ACM SCMInvitation) (IKNoPQ PQSupportOn) SMSubscribe
     corruptCmd :: DB.Connection -> ByteString -> ConnId -> IO ()
     corruptCmd db corrId connId = DB.execute db "UPDATE commands SET command = cast('bad' as blob) WHERE conn_id = ? AND corr_id = ?" (connId, corrId)
 

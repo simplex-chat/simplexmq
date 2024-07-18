@@ -15,6 +15,12 @@
   <link rel="stylesheet" href="/media/style.css">
 
   <style>
+    body,
+    html {
+      width: 100%;
+      overflow-x: hidden;
+    }
+
     table#config {
       border-collapse: collapse;
       margin-bottom: 4px;
@@ -39,6 +45,17 @@
     @media screen and (max-width: 767px) {
       tr td:not(:last-child) {
         font-size: 16px;
+      }
+    }
+
+    @media screen and (max-width: 440px) {
+      table {
+        width: 100%;
+        table-layout: fixed;
+      }
+
+      tr td:not(:last-child) {
+        width: 40%;
       }
     }
 

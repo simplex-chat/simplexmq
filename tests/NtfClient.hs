@@ -28,7 +28,7 @@ import Network.HTTP.Types (Status)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket
-import SMPClient (serverBracket)
+import SMPClient (prevRange, serverBracket)
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
@@ -36,7 +36,6 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol (NtfResponse)
 import Simplex.Messaging.Notifications.Server (runNtfServerBlocking)
 import Simplex.Messaging.Notifications.Server.Env
-import qualified Simplex.Messaging.Notifications.Server.Env as Env
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
 import Simplex.Messaging.Notifications.Transport
@@ -47,7 +46,6 @@ import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2TLSParams)
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Transport.Server
 import qualified Simplex.Messaging.Transport.Server as Server
-import Simplex.Messaging.Version (mkVersionRange)
 import Test.Hspec
 import UnliftIO.Async
 import UnliftIO.Concurrent
@@ -108,18 +106,19 @@ ntfServerCfg =
       serverStatsLogFile = "tests/ntf-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
       ntfServerVRange = supportedServerNTFVRange,
-      transportConfig = defaultTransportServerConfig
+      transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedNTFHandshakes}
     }
 
-ntfServerCfgV2 :: NtfServerConfig
-ntfServerCfgV2 =
+ntfServerCfgVPrev :: NtfServerConfig
+ntfServerCfgVPrev =
   ntfServerCfg
-    { ntfServerVRange = mkVersionRange initialNTFVersion authBatchCmdsNTFVersion,
-      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}},
-      Env.transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedNTFHandshakes}
+    { ntfServerVRange = prevRange $ ntfServerVRange ntfServerCfg,
+      smpAgentCfg = smpAgentCfg' {smpCfg = smpCfg' {serverVRange = prevRange serverVRange'}}
     }
   where
     smpAgentCfg' = smpAgentCfg ntfServerCfg
+    smpCfg' = smpCfg smpAgentCfg'
+    serverVRange' = serverVRange smpCfg'
 
 withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a
 withNtfServerStoreLog t = withNtfServerCfg ntfServerCfg {storeLogFile = Just ntfTestStoreLogFile, transports = [(ntfTestPort, t)]}

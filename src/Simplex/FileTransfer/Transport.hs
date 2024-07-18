@@ -194,7 +194,7 @@ receiveFile_ :: (Handle -> Word32 -> IO (Either XFTPErrorType ())) -> XFTPRcvChu
 receiveFile_ receive XFTPRcvChunkSpec {filePath, chunkSize, chunkDigest} = do
   ExceptT $ withFile filePath WriteMode (`receive` chunkSize)
   digest' <- liftIO $ LC.sha256Hash <$> LB.readFile filePath
-  when (digest' /= chunkDigest) $ throwError DIGEST
+  when (digest' /= chunkDigest) $ throwE DIGEST
 
 data XFTPErrorType
   = -- | incorrect block format, encoding or signature size
@@ -223,10 +223,6 @@ data XFTPErrorType
     FILE_IO
   | -- | file sending or receiving timeout
     TIMEOUT
-  | -- | bad redirect data
-    REDIRECT {redirectError :: String}
-  | -- | cannot proceed with download from not approved relays without proxy
-    NOT_APPROVED
   | -- | internal server error
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
@@ -236,11 +232,9 @@ data XFTPErrorType
 instance StrEncoding XFTPErrorType where
   strEncode = \case
     CMD e -> "CMD " <> bshow e
-    REDIRECT e -> "REDIRECT " <> bshow e
     e -> bshow e
   strP =
     "CMD " *> (CMD <$> parseRead1)
-      <|> "REDIRECT " *> (REDIRECT <$> parseRead A.takeByteString)
       <|> parseRead1
 
 instance Encoding XFTPErrorType where
@@ -258,8 +252,6 @@ instance Encoding XFTPErrorType where
     HAS_FILE -> "HAS_FILE"
     FILE_IO -> "FILE_IO"
     TIMEOUT -> "TIMEOUT"
-    REDIRECT err -> "REDIRECT " <> smpEncode err
-    NOT_APPROVED -> "NOT_APPROVED"
     INTERNAL -> "INTERNAL"
     DUPLICATE_ -> "DUPLICATE_"
 
@@ -278,8 +270,6 @@ instance Encoding XFTPErrorType where
       "HAS_FILE" -> pure HAS_FILE
       "FILE_IO" -> pure FILE_IO
       "TIMEOUT" -> pure TIMEOUT
-      "REDIRECT" -> REDIRECT <$> _smpP
-      "NOT_APPROVED" -> pure NOT_APPROVED
       "INTERNAL" -> pure INTERNAL
       "DUPLICATE_" -> pure DUPLICATE_
       _ -> fail "bad error type"

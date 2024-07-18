@@ -1,0 +1,23 @@
+sequenceDiagram
+  participant B as Bob (sender)
+  participant S as server (queue RID)
+  participant A as Alice (recipient)
+
+  note over A: creating queue<br>("public" key RK<br>for msg retrieval)
+  A ->> S: 1. create queue ("NEW")
+  S ->> A: respond with queue RID and SID ("IDS")
+
+  note over A: out-of-band msg<br>(sender's queue SID<br>and "public" key EK<br>to encrypt msgs)
+  A -->> B: 2. send out-of-band message
+
+  note over B: secure queue<br>(with "public" key SK for<br>sending messages)
+  B ->> S: 3. confirm queue ("SKEY" command authorized with SK)
+
+  note over B: confirm queue<br>(public key<br>for e2e encryption<br>and any optional<br>encrypted info.)
+  B ->> S: 4. confirm queue ("SEND" command authorized with SK)
+
+  S ->> A: 5. deliver Bob's message (MSG)
+  note over A: decrypt message<br>("private" key EK)
+  A ->> S: acknowledge message (ACK)
+
+  note over S: 6. simplex<br>queue RID<br>is ready to use!
