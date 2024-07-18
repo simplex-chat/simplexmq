@@ -902,13 +902,9 @@ createReplyQueue c ConnData {userId, connId, enableNtfs} SndQueue {smpClientVers
 allowConnection' :: AgentClient -> ConnId -> ConfirmationId -> ConnInfo -> AM ()
 allowConnection' c connId confId ownConnInfo = withConnLock c connId "allowConnection" $ do
   withStore c (`getConn` connId) >>= \case
-    SomeConn _ (RcvConnection _ rq@RcvQueue {server, rcvId, e2ePrivKey, smpClientVersion = v}) -> do
-      senderKey <- withStore c $ \db -> runExceptT $ do
-        AcceptedConfirmation {ratchetState, senderConf = SMPConfirmation {senderKey, e2ePubKey, smpClientVersion = v'}} <- ExceptT $ acceptConfirmation db confId ownConnInfo
-        liftIO $ createRatchet db connId ratchetState
-        let dhSecret = C.dh' e2ePubKey e2ePrivKey
-        liftIO $ setRcvQueueConfirmedE2E db rq dhSecret $ min v v'
-        pure senderKey
+    SomeConn _ (RcvConnection _ RcvQueue {server, rcvId}) -> do
+      AcceptedConfirmation {senderConf = SMPConfirmation {senderKey}} <-
+        withStore c $ \db -> acceptConfirmation db confId ownConnInfo
       enqueueCommand c "" connId (Just server) . AInternalCommand $ ICAllowSecure rcvId senderKey
     _ -> throwE $ CMD PROHIBITED "allowConnection"
 
@@ -2487,6 +2483,17 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                           confId <- withStore c $ \db -> do
                             setConnAgentVersion db connId agentVersion
                             when (pqSupport /= pqSupport') $ setConnPQSupport db connId pqSupport'
+                            -- /
+                            -- starting with agent version 7, initiating party initializes ratchet on processing confirmation;
+                            -- before that, it initialized ratchet on allowConnection;
+                            -- this is to support decryption of messages that may be received before allowConnection
+                            liftIO $ do
+                              createRatchet db connId rc'
+                              let RcvQueue {smpClientVersion = v, e2ePrivKey = e2ePrivKey'} = rq
+                                  SMPConfirmation {smpClientVersion = v', e2ePubKey = e2ePubKey'} = senderConf
+                                  dhSecret = C.dh' e2ePubKey' e2ePrivKey'
+                              setRcvQueueConfirmedE2E db rq dhSecret $ min v v'
+                            -- /
                             createConfirmation db g newConfirmation
                           let srvs = map qServer $ smpReplyQueues senderConf
                           notify $ CONF confId pqSupport' srvs connInfo

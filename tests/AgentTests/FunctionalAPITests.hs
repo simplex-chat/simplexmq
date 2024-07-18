@@ -914,16 +914,34 @@ testAsyncInitiatingOffline =
     alice <- liftIO $ getSMPAgentClient' 1 agentCfg initAgentServers testDB
     (bobId, cReq) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
     liftIO $ disposeAgentClient alice
+
     (aliceId, sqSecured) <- joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
     liftIO $ sqSecured `shouldBe` True
+
+    -- send messages
+    msgId1 <- A.sendMessage bob aliceId PQEncOn SMP.noMsgFlags "can send 1"
+    liftIO $ msgId1 `shouldBe` (2, PQEncOff)
+    get bob ##> ("", aliceId, SENT 2)
+    msgId2 <- A.sendMessage bob aliceId PQEncOn SMP.noMsgFlags "can send 2"
+    liftIO $ msgId2 `shouldBe` (3, PQEncOff)
+    get bob ##> ("", aliceId, SENT 3)
+
     alice' <- liftIO $ getSMPAgentClient' 3 agentCfg initAgentServers testDB
     subscribeConnection alice' bobId
     ("", _, CONF confId _ "bob's connInfo") <- get alice'
+    -- receive messages
+    get alice' =##> \case ("", c, Msg' mId pq "can send 1") -> c == bobId && mId == 1 && pq == PQEncOff; _ -> False
+    ackMessage alice' bobId 1 Nothing
+    get alice' =##> \case ("", c, Msg' mId pq "can send 2") -> c == bobId && mId == 2 && pq == PQEncOff; _ -> False
+    ackMessage alice' bobId 2 Nothing
+    -- for alice msg id 3 is sent confirmation, then they're matched with bob at msg id 4
+
+    -- allow connection
     allowConnection alice' bobId confId "alice's connInfo"
     get alice' ##> ("", bobId, CON)
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
-    exchangeGreetings alice' bobId bob aliceId
+    exchangeGreetingsMsgId 4 alice' bobId bob aliceId
     liftIO $ disposeAgentClient alice'
 
 testAsyncJoiningOfflineBeforeActivation :: HasCallStack => IO ()
