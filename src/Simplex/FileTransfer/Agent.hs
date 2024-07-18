@@ -12,6 +12,7 @@
 
 module Simplex.FileTransfer.Agent
   ( startXFTPWorkers,
+    startXFTPSndWorkers,
     closeXFTPAgent,
     toFSFilePath,
     -- Receiving files
@@ -82,13 +83,21 @@ import UnliftIO.Directory
 import qualified UnliftIO.Exception as E
 
 startXFTPWorkers :: AgentClient -> Maybe FilePath -> AM ()
-startXFTPWorkers c workDir = do
+startXFTPWorkers = startXFTPWorkers_ True
+{-# INLINE startXFTPWorkers #-}
+
+startXFTPSndWorkers :: AgentClient -> Maybe FilePath -> AM ()
+startXFTPSndWorkers = startXFTPWorkers_ False
+{-# INLINE startXFTPSndWorkers #-}
+
+startXFTPWorkers_ :: Bool -> AgentClient -> Maybe FilePath -> AM ()
+startXFTPWorkers_ allWorkers c workDir = do
   wd <- asks $ xftpWorkDir . xftpAgent
   atomically $ writeTVar wd workDir
   cfg <- asks config
-  startRcvFiles cfg
+  when allWorkers $ startRcvFiles cfg
   startSndFiles cfg
-  startDelFiles cfg
+  when allWorkers $ startDelFiles cfg
   where
     startRcvFiles :: AgentConfig -> AM ()
     startRcvFiles AgentConfig {rcvFilesTTL} = do
