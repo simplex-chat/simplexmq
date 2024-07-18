@@ -128,10 +128,12 @@ data Env = Env
     proxyAgent :: ProxyAgent -- senders served on this proxy
   }
 
+type Subscribed = Bool
+
 data Server = Server
-  { subscribedQ :: TQueue (RecipientId, Client),
+  { subscribedQ :: TQueue (RecipientId, Client, Subscribed),
     subscribers :: TMap RecipientId Client,
-    ntfSubscribedQ :: TQueue (NotifierId, Client),
+    ntfSubscribedQ :: TQueue (NotifierId, Client, Subscribed),
     notifiers :: TMap NotifierId Client,
     savingLock :: Lock
   }

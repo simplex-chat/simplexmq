@@ -610,7 +610,7 @@ testRestoreMessages at@(ATransport t) =
 
     logSize testStoreLogFile `shouldReturn` 2
     logSize testStoreMsgsFile `shouldReturn` 5
-    logSize testServerStatsBackupFile `shouldReturn` 55
+    logSize testServerStatsBackupFile `shouldReturn` 62
     Right stats1 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats1 [rId] 5 1
 
@@ -628,7 +628,7 @@ testRestoreMessages at@(ATransport t) =
     logSize testStoreLogFile `shouldReturn` 1
     -- the last message is not removed because it was not ACK'd
     logSize testStoreMsgsFile `shouldReturn` 3
-    logSize testServerStatsBackupFile `shouldReturn` 55
+    logSize testServerStatsBackupFile `shouldReturn` 62
     Right stats2 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats2 [rId] 5 3
 
@@ -647,7 +647,7 @@ testRestoreMessages at@(ATransport t) =
 
     logSize testStoreLogFile `shouldReturn` 1
     logSize testStoreMsgsFile `shouldReturn` 0
-    logSize testServerStatsBackupFile `shouldReturn` 55
+    logSize testServerStatsBackupFile `shouldReturn` 62
     Right stats3 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats3 [rId] 5 5
 
