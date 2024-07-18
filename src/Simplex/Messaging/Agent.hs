@@ -2486,7 +2486,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                             -- /
                             -- Starting with agent version 7 (ratchetOnConfSMPAgentVersion),
                             -- initiating party initializes ratchet on processing confirmation;
-                            -- before that, it initialized ratchet on allowConnection;
+                            -- previously, it initialized ratchet on allowConnection;
                             -- this is to support decryption of messages that may be received before allowConnection
                             liftIO $ do
                               createRatchet db connId rc'
