@@ -42,6 +42,7 @@ module Simplex.Messaging.Agent.Protocol
     deliveryRcptsSMPAgentVersion,
     pqdrSMPAgentVersion,
     sndAuthKeySMPAgentVersion,
+    ratchetOnConfSMPAgentVersion,
     currentSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
@@ -258,11 +259,14 @@ pqdrSMPAgentVersion = VersionSMPA 5
 sndAuthKeySMPAgentVersion :: VersionSMPA
 sndAuthKeySMPAgentVersion = VersionSMPA 6
 
+ratchetOnConfSMPAgentVersion :: VersionSMPA
+ratchetOnConfSMPAgentVersion = VersionSMPA 7
+
 minSupportedSMPAgentVersion :: VersionSMPA
 minSupportedSMPAgentVersion = duplexHandshakeSMPAgentVersion
 
 currentSMPAgentVersion :: VersionSMPA
-currentSMPAgentVersion = VersionSMPA 6
+currentSMPAgentVersion = VersionSMPA 7
 
 supportedSMPAgentVRange :: VersionRangeSMPA
 supportedSMPAgentVRange = mkVersionRange minSupportedSMPAgentVersion currentSMPAgentVersion

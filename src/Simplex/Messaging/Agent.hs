@@ -2484,7 +2484,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                             setConnAgentVersion db connId agentVersion
                             when (pqSupport /= pqSupport') $ setConnPQSupport db connId pqSupport'
                             -- /
-                            -- starting with agent version 7, initiating party initializes ratchet on processing confirmation;
+                            -- Starting with agent version 7 (ratchetOnConfSMPAgentVersion),
+                            -- initiating party initializes ratchet on processing confirmation;
                             -- before that, it initialized ratchet on allowConnection;
                             -- this is to support decryption of messages that may be received before allowConnection
                             liftIO $ do
@@ -2777,7 +2778,7 @@ connectReplyQueues c cData@ConnData {userId, connId} ownConnInfo sq_ (qInfo :| _
     Just qInfo' -> do
       -- in case of SKEY retry the connection is already duplex
       sq' <- maybe upgradeConn pure sq_
-      void $ agentSecureSndQueue c sq'
+      void $ agentSecureSndQueue c cData sq'
       enqueueConfirmation c cData sq' ownConnInfo Nothing
       where
         upgradeConn = do
@@ -2786,14 +2787,14 @@ connectReplyQueues c cData@ConnData {userId, connId} ownConnInfo sq_ (qInfo :| _
 
 secureConfirmQueueAsync :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> SubscriptionMode -> AM SndQueueSecured
 secureConfirmQueueAsync c cData sq srv connInfo e2eEncryption_ subMode = do
-  sqSecured <- agentSecureSndQueue c sq
+  sqSecured <- agentSecureSndQueue c cData sq
   storeConfirmation c cData sq e2eEncryption_ =<< mkAgentConfirmation c cData sq srv connInfo subMode
   lift $ submitPendingMsg c cData sq
   pure sqSecured
 
 secureConfirmQueue :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> SubscriptionMode -> AM SndQueueSecured
 secureConfirmQueue c cData@ConnData {connId, connAgentVersion, pqSupport} sq srv connInfo e2eEncryption_ subMode = do
-  sqSecured <- agentSecureSndQueue c sq
+  sqSecured <- agentSecureSndQueue c cData sq
   msg <- mkConfirmation =<< mkAgentConfirmation c cData sq srv connInfo subMode
   void $ sendConfirmation c sq msg
   withStore' c $ \db -> setSndQueueStatus db sq Confirmed
@@ -2810,14 +2811,17 @@ secureConfirmQueue c cData@ConnData {connId, connAgentVersion, pqSupport} sq srv
         (encConnInfo, _) <- agentRatchetEncrypt db cData agentMsgBody e2eEncConnInfoLength (Just pqEnc) currentE2EVersion
         pure . smpEncode $ AgentConfirmation {agentVersion = connAgentVersion, e2eEncryption_, encConnInfo}
 
-agentSecureSndQueue :: AgentClient -> SndQueue -> AM SndQueueSecured
-agentSecureSndQueue c sq@SndQueue {sndSecure, status}
+agentSecureSndQueue :: AgentClient -> ConnData -> SndQueue -> AM SndQueueSecured
+agentSecureSndQueue c ConnData {connAgentVersion} sq@SndQueue {sndSecure, status}
   | sndSecure && status == New = do
       secureSndQueue c sq
       withStore' c $ \db -> setSndQueueStatus db sq Secured
-      pure True
-  | sndSecure && status == Secured = pure True -- on repeat JOIN processing (e.g. previous attempt to create reply queue failed)
+      pure initiatorRatchetOnConf
+  -- on repeat JOIN processing (e.g. previous attempt to create reply queue failed)
+  | sndSecure && status == Secured = pure initiatorRatchetOnConf
   | otherwise = pure False
+  where
+    initiatorRatchetOnConf = connAgentVersion >= ratchetOnConfSMPAgentVersion
 
 mkAgentConfirmation :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> SubscriptionMode -> AM AgentMessage
 mkAgentConfirmation c cData sq srv connInfo subMode = do

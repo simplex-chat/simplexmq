@@ -479,14 +479,14 @@ canCreateQueue allowNew (srvAuth, srvVersion) (clntAuth, clntVersion) =
   let v = basicAuthSMPVersion
    in allowNew && (isNothing srvAuth || (srvVersion >= v && clntVersion >= v && srvAuth == clntAuth))
 
-testMatrix2 :: HasCallStack => ATransport -> (PQSupport -> SndQueueSecured -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testMatrix2 :: HasCallStack => ATransport -> (PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 t runTest = do
-  it "current, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentCfg agentCfg (initAgentServersProxy SPMAlways SPFProhibit) 1 $ runTest PQSupportOn True True True
-  it "v8, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentProxyCfgV8 agentProxyCfgV8 (initAgentServersProxy SPMAlways SPFProhibit) 3 $ runTest PQSupportOn False False True
-  it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 1 $ runTest PQSupportOn True True False
-  it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 $ runTest PQSupportOff False False False
-  it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 $ runTest PQSupportOff False True False
-  it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 $ runTest PQSupportOff True False False
+  it "current, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentCfg agentCfg (initAgentServersProxy SPMAlways SPFProhibit) 1 $ runTest PQSupportOn True True
+  it "v8, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentProxyCfgV8 agentProxyCfgV8 (initAgentServersProxy SPMAlways SPFProhibit) 3 $ runTest PQSupportOn False True
+  it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 1 $ runTest PQSupportOn True False
+  it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 $ runTest PQSupportOff False False
+  it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 $ runTest PQSupportOff False False
+  it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 $ runTest PQSupportOff False False
 
 testMatrix2Stress :: HasCallStack => ATransport -> (PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2Stress t runTest = do
@@ -495,27 +495,27 @@ testMatrix2Stress t runTest = do
   it "current" $ withSmpServer t $ runTestCfg2 aCfg aCfg 1 $ runTest PQSupportOn True False
   it "prev" $ withSmpServer t $ runTestCfg2 aCfgVPrev aCfgVPrev 3 $ runTest PQSupportOff False False
   it "prev to current" $ withSmpServer t $ runTestCfg2 aCfgVPrev aCfg 3 $ runTest PQSupportOff False False
-  it "current to prev" $ withSmpServer t $ runTestCfg2 aCfg aCfgVPrev 3 $ runTest PQSupportOff True False
+  it "current to prev" $ withSmpServer t $ runTestCfg2 aCfg aCfgVPrev 3 $ runTest PQSupportOff False False
   where
     aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
     aProxyCfgV8 = agentProxyCfgV8 {messageRetryInterval = fastMessageRetryInterval}
     aCfgVPrev = agentCfgVPrev {messageRetryInterval = fastMessageRetryInterval}
 
-testBasicMatrix2 :: HasCallStack => ATransport -> (SndQueueSecured -> SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testBasicMatrix2 :: HasCallStack => ATransport -> (SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testBasicMatrix2 t runTest = do
-  it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 1 $ runTest True True
-  it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrevPQ agentCfgVPrevPQ 3 $ runTest False False
-  it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrevPQ agentCfg 3 $ runTest False True
-  it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrevPQ 3 $ runTest True False
+  it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 1 $ runTest True
+  it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrevPQ agentCfgVPrevPQ 3 $ runTest False
+  it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrevPQ agentCfg 3 $ runTest False
+  it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrevPQ 3 $ runTest False
 
-testRatchetMatrix2 :: HasCallStack => ATransport -> (PQSupport -> SndQueueSecured -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testRatchetMatrix2 :: HasCallStack => ATransport -> (PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 t runTest = do
-  it "current, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentCfg agentCfg (initAgentServersProxy SPMAlways SPFProhibit) 1 $ runTest PQSupportOn True True True
-  it "v8, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentProxyCfgV8 agentProxyCfgV8 (initAgentServersProxy SPMAlways SPFProhibit) 3 $ runTest PQSupportOn False False True
-  it "ratchet current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 1 $ runTest PQSupportOn True True False
-  it "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 1 $ runTest PQSupportOff True True False
-  it "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 1 $ runTest PQSupportOff True True False
-  it "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 1 $ runTest PQSupportOff True True False
+  it "current, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentCfg agentCfg (initAgentServersProxy SPMAlways SPFProhibit) 1 $ runTest PQSupportOn True True
+  it "v8, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentProxyCfgV8 agentProxyCfgV8 (initAgentServersProxy SPMAlways SPFProhibit) 3 $ runTest PQSupportOn False True
+  it "ratchet current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 1 $ runTest PQSupportOn True False
+  it "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 1 $ runTest PQSupportOff True False
+  it "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 1 $ runTest PQSupportOff True False
+  it "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 1 $ runTest PQSupportOff True False
 
 testServerMatrix2 :: HasCallStack => ATransport -> (InitialAgentServers -> IO ()) -> Spec
 testServerMatrix2 t runTest = do
@@ -590,9 +590,9 @@ withAgentClients3 runTest =
     withAgent 3 agentCfg initAgentServers testDB3 $ \c ->
       runTest a b c
 
-runAgentClientTest :: HasCallStack => PQSupport -> SndQueueSecured -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
-runAgentClientTest pqSupport sqSecuredJoin _sqSecuredAccept viaProxy alice bob baseId =
-  runAgentClientTestPQ sqSecuredJoin viaProxy (alice, IKNoPQ pqSupport) (bob, pqSupport) baseId
+runAgentClientTest :: HasCallStack => PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
+runAgentClientTest pqSupport sqSecured viaProxy alice bob baseId =
+  runAgentClientTestPQ sqSecured viaProxy (alice, IKNoPQ pqSupport) (bob, pqSupport) baseId
 
 runAgentClientTestPQ :: HasCallStack => SndQueueSecured -> Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientTestPQ sqSecured viaProxy (alice, aPQ) (bob, bPQ) baseId =
@@ -791,12 +791,12 @@ testAgentClient3 =
     get c =##> \case ("", connId, Msg "c5") -> connId == aIdForC; _ -> False
     ackMessage c aIdForC 3 Nothing
 
-runAgentClientContactTest :: HasCallStack => PQSupport -> SndQueueSecured -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
-runAgentClientContactTest pqSupport _sqSecuredJoin sqSecuredAccept viaProxy alice bob baseId =
-  runAgentClientContactTestPQ sqSecuredAccept viaProxy pqSupport (alice, IKNoPQ pqSupport) (bob, pqSupport) baseId
+runAgentClientContactTest :: HasCallStack => PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
+runAgentClientContactTest pqSupport sqSecured viaProxy alice bob baseId =
+  runAgentClientContactTestPQ sqSecured viaProxy pqSupport (alice, IKNoPQ pqSupport) (bob, pqSupport) baseId
 
 runAgentClientContactTestPQ :: HasCallStack => SndQueueSecured -> Bool -> PQSupport -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
-runAgentClientContactTestPQ sqSecuredAccept viaProxy reqPQSupport (alice, aPQ) (bob, bPQ) baseId =
+runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, bPQ) baseId =
   runRight_ $ do
     (_, qInfo) <- A.createConnection alice 1 True SCMContact Nothing aPQ SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo bPQ
@@ -806,8 +806,8 @@ runAgentClientContactTestPQ sqSecuredAccept viaProxy reqPQSupport (alice, aPQ) (
       sqSecuredJoin `shouldBe` False -- joining via contact address connection
     ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` reqPQSupport
-    (bobId, sqSecuredAccept') <- acceptContact alice True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
-    liftIO $ sqSecuredAccept' `shouldBe` sqSecuredAccept
+    (bobId, sqSecured') <- acceptContact alice True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
+    liftIO $ sqSecured' `shouldBe` sqSecured
     ("", _, A.CONF confId pqSup'' _ "alice's connInfo") <- get bob
     liftIO $ pqSup'' `shouldBe` bPQ
     allowConnection bob aliceId confId "bob's connInfo"
@@ -1057,7 +1057,7 @@ testIncreaseConnAgentVersion t = do
   bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ do
-      (aliceId, bobId) <- makeConnection_ PQSupportOff True alice bob
+      (aliceId, bobId) <- makeConnection_ PQSupportOff False alice bob
       exchangeGreetingsMsgId_ PQEncOff 2 alice bobId bob aliceId
       checkVersion alice bobId 2
       checkVersion bob aliceId 2
@@ -1122,7 +1122,7 @@ testIncreaseConnAgentVersionMaxCompatible t = do
   bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ do
-      (aliceId, bobId) <- makeConnection_ PQSupportOff True alice bob
+      (aliceId, bobId) <- makeConnection_ PQSupportOff False alice bob
       exchangeGreetingsMsgId_ PQEncOff 2 alice bobId bob aliceId
       checkVersion alice bobId 2
       checkVersion bob aliceId 2
@@ -1152,7 +1152,7 @@ testIncreaseConnAgentVersionStartDifferentVersion t = do
   bob <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ do
-      (aliceId, bobId) <- makeConnection_ PQSupportOff True alice bob
+      (aliceId, bobId) <- makeConnection_ PQSupportOff False alice bob
       exchangeGreetingsMsgId_ PQEncOff 2 alice bobId bob aliceId
       checkVersion alice bobId 2
       checkVersion bob aliceId 2
@@ -1931,17 +1931,17 @@ testBatchedPendingMessages nCreate nMsgs =
     withA = withAgent 1 agentCfg initAgentServers testDB
     withB = withAgent 2 agentCfg initAgentServers testDB2
 
-testAsyncCommands :: SndQueueSecured -> SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
-testAsyncCommands sqSecuredJoin _sqSecuredAccept alice bob baseId =
+testAsyncCommands :: SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
+testAsyncCommands sqSecured alice bob baseId =
   runRight_ $ do
     bobId <- createConnectionAsync alice 1 "1" True SCMInvitation (IKNoPQ PQSupportOn) SMSubscribe
     ("1", bobId', INV (ACR _ qInfo)) <- get alice
     liftIO $ bobId' `shouldBe` bobId
     aliceId <- joinConnectionAsync bob 1 "2" True qInfo "bob's connInfo" PQSupportOn SMSubscribe
-    ("2", aliceId', JOINED sqSecuredJoin') <- get bob
+    ("2", aliceId', JOINED sqSecured') <- get bob
     liftIO $ do
       aliceId' `shouldBe` aliceId
-      sqSecuredJoin' `shouldBe` sqSecuredJoin
+      sqSecured' `shouldBe` sqSecured
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnectionAsync alice "3" bobId confId "alice's connInfo"
     get alice =##> \case ("3", _, OK) -> True; _ -> False
@@ -1994,15 +1994,15 @@ testAsyncCommandsRestore t = do
       get alice' =##> \case ("1", _, INV _) -> True; _ -> False
       pure ()
 
-testAcceptContactAsync :: SndQueueSecured -> SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
-testAcceptContactAsync _sqSecuredJoin sqSecuredAccept alice bob baseId =
+testAcceptContactAsync :: SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
+testAcceptContactAsync sqSecured alice bob baseId =
   runRight_ $ do
     (_, qInfo) <- createConnection alice 1 True SCMContact Nothing SMSubscribe
-    (aliceId, sqSecured) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
-    liftIO $ sqSecured `shouldBe` False -- joining via contact address connection
+    (aliceId, sqSecuredJoin) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
+    liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
     ("", _, REQ invId _ "bob's connInfo") <- get alice
     bobId <- acceptContactAsync alice "1" True invId "alice's connInfo" PQSupportOn SMSubscribe
-    get alice =##> \case ("1", c, JOINED sqSecuredAccept') -> c == bobId && sqSecuredAccept' == sqSecuredAccept; _ -> False
+    get alice =##> \case ("1", c, JOINED sqSecured') -> c == bobId && sqSecured' == sqSecured; _ -> False
     ("", _, CONF confId _ "alice's connInfo") <- get bob
     allowConnection bob aliceId confId "bob's connInfo"
     get alice ##> ("", bobId, INFO "bob's connInfo")
@@ -2846,7 +2846,7 @@ testDeliveryReceiptsVersion t = do
   b <- getSMPAgentClient' 2 agentCfg {smpAgentVRange = mkVersionRange 1 3} initAgentServers testDB2
   withSmpServerStoreMsgLogOn t testPort $ \_ -> do
     (aId, bId) <- runRight $ do
-      (aId, bId) <- makeConnection_ PQSupportOff True a b
+      (aId, bId) <- makeConnection_ PQSupportOff False a b
       checkVersion a bId 3
       checkVersion b aId 3
       (2, _) <- A.sendMessage a bId PQEncOff SMP.noMsgFlags "hello"
@@ -2870,8 +2870,8 @@ testDeliveryReceiptsVersion t = do
       subscribeConnection a' bId
       subscribeConnection b' aId
       exchangeGreetingsMsgId_ PQEncOff 4 a' bId b' aId
-      checkVersion a' bId 6
-      checkVersion b' aId 6
+      checkVersion a' bId 7
+      checkVersion b' aId 7
       (6, PQEncOff) <- A.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello"
       get a' ##> ("", bId, SENT 6)
       get b' =##> \case ("", c, Msg' 6 PQEncOff "hello") -> c == aId; _ -> False
