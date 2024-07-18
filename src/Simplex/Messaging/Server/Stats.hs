@@ -27,6 +27,7 @@ data ServerStats = ServerStats
     qDeletedNew :: TVar Int,
     qDeletedSecured :: TVar Int,
     qSub :: TVar Int,
+    qSubNoMsg :: TVar Int,
     qSubAuth :: TVar Int,
     qSubDuplicate :: TVar Int,
     qSubProhibited :: TVar Int,
@@ -35,6 +36,12 @@ data ServerStats = ServerStats
     msgSentQuota :: TVar Int,
     msgSentLarge :: TVar Int,
     msgRecv :: TVar Int,
+    msgRecvGet :: TVar Int,
+    msgGet :: TVar Int,
+    msgGetNoMsg :: TVar Int,
+    msgGetAuth :: TVar Int,
+    msgGetDuplicate :: TVar Int,
+    msgGetProhibited :: TVar Int,
     msgExpired :: TVar Int,
     activeQueues :: PeriodStats RecipientId,
     msgSentNtf :: TVar Int, -- sent messages with NTF flag
@@ -60,6 +67,7 @@ data ServerStatsData = ServerStatsData
     _qDeletedNew :: Int,
     _qDeletedSecured :: Int,
     _qSub :: Int,
+    _qSubNoMsg :: Int,
     _qSubAuth :: Int,
     _qSubDuplicate :: Int,
     _qSubProhibited :: Int,
@@ -68,6 +76,12 @@ data ServerStatsData = ServerStatsData
     _msgSentQuota :: Int,
     _msgSentLarge :: Int,
     _msgRecv :: Int,
+    _msgRecvGet :: Int,
+    _msgGet :: Int,
+    _msgGetNoMsg :: Int,
+    _msgGetAuth :: Int,
+    _msgGetDuplicate :: Int,
+    _msgGetProhibited :: Int,
     _msgExpired :: Int,
     _activeQueues :: PeriodStatsData RecipientId,
     _msgSentNtf :: Int,
@@ -95,6 +109,7 @@ newServerStats ts = do
   qDeletedNew <- newTVar 0
   qDeletedSecured <- newTVar 0
   qSub <- newTVar 0
+  qSubNoMsg <- newTVar 0
   qSubAuth <- newTVar 0
   qSubDuplicate <- newTVar 0
   qSubProhibited <- newTVar 0
@@ -103,6 +118,12 @@ newServerStats ts = do
   msgSentQuota <- newTVar 0
   msgSentLarge <- newTVar 0
   msgRecv <- newTVar 0
+  msgRecvGet <- newTVar 0
+  msgGet <- newTVar 0
+  msgGetNoMsg <- newTVar 0
+  msgGetAuth <- newTVar 0
+  msgGetDuplicate <- newTVar 0
+  msgGetProhibited <- newTVar 0
   msgExpired <- newTVar 0
   activeQueues <- newPeriodStats
   msgSentNtf <- newTVar 0
@@ -127,6 +148,7 @@ newServerStats ts = do
         qDeletedNew,
         qDeletedSecured,
         qSub,
+        qSubNoMsg,
         qSubAuth,
         qSubDuplicate,
         qSubProhibited,
@@ -135,6 +157,12 @@ newServerStats ts = do
         msgSentQuota,
         msgSentLarge,
         msgRecv,
+        msgRecvGet,
+        msgGet,
+        msgGetNoMsg,
+        msgGetAuth,
+        msgGetDuplicate,
+        msgGetProhibited,
         msgExpired,
         activeQueues,
         msgSentNtf,
@@ -161,6 +189,7 @@ getServerStatsData s = do
   _qDeletedNew <- readTVar $ qDeletedNew s
   _qDeletedSecured <- readTVar $ qDeletedSecured s
   _qSub <- readTVar $ qSub s
+  _qSubNoMsg <- readTVar $ qSubNoMsg s
   _qSubAuth <- readTVar $ qSubAuth s
   _qSubDuplicate <- readTVar $ qSubDuplicate s
   _qSubProhibited <- readTVar $ qSubProhibited s
@@ -169,6 +198,12 @@ getServerStatsData s = do
   _msgSentQuota <- readTVar $ msgSentQuota s
   _msgSentLarge <- readTVar $ msgSentLarge s
   _msgRecv <- readTVar $ msgRecv s
+  _msgRecvGet <- readTVar $ msgRecvGet s
+  _msgGet <- readTVar $ msgGet s
+  _msgGetNoMsg <- readTVar $ msgGetNoMsg s
+  _msgGetAuth <- readTVar $ msgGetAuth s
+  _msgGetDuplicate <- readTVar $ msgGetDuplicate s
+  _msgGetProhibited <- readTVar $ msgGetProhibited s
   _msgExpired <- readTVar $ msgExpired s
   _activeQueues <- getPeriodStatsData $ activeQueues s
   _msgSentNtf <- readTVar $ msgSentNtf s
@@ -193,6 +228,7 @@ getServerStatsData s = do
         _qDeletedNew,
         _qDeletedSecured,
         _qSub,
+        _qSubNoMsg,
         _qSubAuth,
         _qSubDuplicate,
         _qSubProhibited,
@@ -201,6 +237,12 @@ getServerStatsData s = do
         _msgSentQuota,
         _msgSentLarge,
         _msgRecv,
+        _msgRecvGet,
+        _msgGet,
+        _msgGetNoMsg,
+        _msgGetAuth,
+        _msgGetDuplicate,
+        _msgGetProhibited,
         _msgExpired,
         _activeQueues,
         _msgSentNtf,
@@ -227,6 +269,7 @@ setServerStats s d = do
   writeTVar (qDeletedNew s) $! _qDeletedNew d
   writeTVar (qDeletedSecured s) $! _qDeletedSecured d
   writeTVar (qSub s) $! _qSub d
+  writeTVar (qSubNoMsg s) $! _qSubNoMsg d
   writeTVar (qSubAuth s) $! _qSubAuth d
   writeTVar (qSubDuplicate s) $! _qSubDuplicate d
   writeTVar (qSubProhibited s) $! _qSubProhibited d
@@ -235,6 +278,12 @@ setServerStats s d = do
   writeTVar (msgSentQuota s) $! _msgSentQuota d
   writeTVar (msgSentLarge s) $! _msgSentLarge d
   writeTVar (msgRecv s) $! _msgRecv d
+  writeTVar (msgRecvGet s) $! _msgRecvGet d
+  writeTVar (msgGet s) $! _msgGet d
+  writeTVar (msgGetNoMsg s) $! _msgGetNoMsg d
+  writeTVar (msgGetAuth s) $! _msgGetAuth d
+  writeTVar (msgGetDuplicate s) $! _msgGetDuplicate d
+  writeTVar (msgGetProhibited s) $! _msgGetProhibited d
   writeTVar (msgExpired s) $! _msgExpired d
   setPeriodStats (activeQueues s) (_activeQueues d)
   writeTVar (msgSentNtf s) $! _msgSentNtf d
@@ -262,6 +311,7 @@ instance StrEncoding ServerStatsData where
         "qDeletedSecured=" <> strEncode (_qDeletedSecured d),
         "qCount=" <> strEncode (_qCount d),
         "qSub=" <> strEncode (_qSub d),
+        "qSubNoMsg=" <> strEncode (_qSubNoMsg d),
         "qSubAuth=" <> strEncode (_qSubAuth d),
         "qSubDuplicate=" <> strEncode (_qSubDuplicate d),
         "qSubProhibited=" <> strEncode (_qSubProhibited d),
@@ -270,6 +320,12 @@ instance StrEncoding ServerStatsData where
         "msgSentQuota=" <> strEncode (_msgSentQuota d),
         "msgSentLarge=" <> strEncode (_msgSentLarge d),
         "msgRecv=" <> strEncode (_msgRecv d),
+        "msgRecvGet=" <> strEncode (_msgRecvGet d),
+        "msgGet=" <> strEncode (_msgGet d),
+        "msgGetNoMsg=" <> strEncode (_msgGetNoMsg d),
+        "msgGetAuth=" <> strEncode (_msgGetAuth d),
+        "msgGetDuplicate=" <> strEncode (_msgGetDuplicate d),
+        "msgGetProhibited=" <> strEncode (_msgGetProhibited d),
         "msgExpired=" <> strEncode (_msgExpired d),
         "msgSentNtf=" <> strEncode (_msgSentNtf d),
         "msgRecvNtf=" <> strEncode (_msgRecvNtf d),
@@ -299,6 +355,7 @@ instance StrEncoding ServerStatsData where
         <|> ((,,) <$> ("qDeletedAll=" *> strP <* A.endOfLine) <*> ("qDeletedNew=" *> strP <* A.endOfLine) <*> ("qDeletedSecured=" *> strP <* A.endOfLine))
     _qCount <- opt "qCount="
     _qSub <- opt "qSub="
+    _qSubNoMsg <- opt "qSubNoMsg="
     _qSubAuth <- opt "qSubAuth="
     _qSubDuplicate <- opt "qSubDuplicate="
     _qSubProhibited <- opt "qSubProhibited="
@@ -307,6 +364,12 @@ instance StrEncoding ServerStatsData where
     _msgSentQuota <- opt "msgSentQuota="
     _msgSentLarge <- opt "msgSentLarge="
     _msgRecv <- "msgRecv=" *> strP <* A.endOfLine
+    _msgRecvGet <- opt "msgRecvGet="
+    _msgGet <- opt "msgGet="
+    _msgGetNoMsg <- opt "msgGetNoMsg="
+    _msgGetAuth <- opt "msgGetAuth="
+    _msgGetDuplicate <- opt "msgGetDuplicate="
+    _msgGetProhibited <- opt "msgGetProhibited="
     _msgExpired <- opt "msgExpired="
     _msgSentNtf <- opt "msgSentNtf="
     _msgRecvNtf <- opt "msgRecvNtf="
@@ -339,6 +402,7 @@ instance StrEncoding ServerStatsData where
           _qDeletedNew,
           _qDeletedSecured,
           _qSub,
+          _qSubNoMsg,
           _qSubAuth,
           _qSubDuplicate,
           _qSubProhibited,
@@ -347,6 +411,12 @@ instance StrEncoding ServerStatsData where
           _msgSentQuota,
           _msgSentLarge,
           _msgRecv,
+          _msgRecvGet,
+          _msgGet,
+          _msgGetNoMsg,
+          _msgGetAuth,
+          _msgGetDuplicate,
+          _msgGetProhibited,
           _msgExpired,
           _msgSentNtf,
           _msgRecvNtf,
