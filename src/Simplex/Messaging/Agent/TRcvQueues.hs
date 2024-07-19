@@ -11,6 +11,7 @@ module Simplex.Messaging.Agent.TRcvQueues
     deleteQueue,
     getSessQueues,
     getDelSessQueues,
+    getDelAllQueues,
     qKey,
   )
 where
@@ -95,6 +96,11 @@ getDelSessQueues tSess (TRcvQueues qs cs) = do
             Just ks' -> (removed, Just ks')
             Nothing -> (cId : removed, Nothing)
           Nothing -> (removed, Nothing) -- "impossible" in invariant holds, because we get keys from the known queues
+
+getDelAllQueues :: TRcvQueues -> STM [RcvQueue]
+getDelAllQueues (TRcvQueues qs cs) = do
+  writeTVar cs M.empty
+  M.elems <$> swapTVar qs M.empty
 
 isSession :: RcvQueue -> (UserId, SMPServer, Maybe ConnId) -> Bool
 isSession rq (uId, srv, connId_) =

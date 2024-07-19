@@ -33,6 +33,7 @@ module Simplex.Messaging.Agent.Client
     closeAgentClient,
     closeProtocolServerClients,
     reconnectServerClients,
+    reconnectSMPServerClients,
     reconnectSMPServer,
     closeXFTPServerClient,
     runSMPServerTest,
@@ -922,6 +923,30 @@ closeProtocolServerClients c clientsSel =
 reconnectServerClients :: ProtocolServerClient v err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
 reconnectServerClients c clientsSel =
   readTVarIO (clientsSel c) >>= mapM_ (forkIO . closeClient_ c)
+
+reconnectSMPServerClients :: AgentClient -> AM' ()
+reconnectSMPServerClients c = do
+  (clients, qs) <- atomically $ do
+    clients <- swapTVar (smpClients c) M.empty
+    qs <- RQ.getDelAllQueues (activeSubs c)
+    qs' <- RQ.getDelAllQueues (pendingSubs c)
+    pure (clients, qs <> qs')
+  atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone DOWN_ALL)
+  mapM_ (liftIO . forkIO . closeClient_ c) clients
+  (qSubRs, _) <- subscribeQueues c qs
+  let upConns = subscribedConnsByServer qSubRs
+  forM_ (M.toList upConns) $ \(server, connIds) ->
+    liftIO $ notifyUP server (S.toList . S.fromList $ connIds)
+  where
+    subscribedConnsByServer :: [(RcvQueue, Either AgentErrorType ())] -> Map SMPServer [ConnId]
+    subscribedConnsByServer = foldl' insertConnId M.empty
+      where
+        insertConnId :: Map SMPServer [ConnId] -> (RcvQueue, Either AgentErrorType ()) -> Map SMPServer [ConnId]
+        insertConnId acc (RcvQueue {server, connId}, qSubResult) = case qSubResult of
+          Right _ -> M.insertWith (<>) server [connId] acc
+          Left _ -> acc
+    notifyUP :: SMPServer -> [ConnId] -> IO ()
+    notifyUP server connIds = atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone (UP server connIds))
 
 reconnectSMPServer :: AgentClient -> UserId -> SMPServer -> IO ()
 reconnectSMPServer c userId srv = do

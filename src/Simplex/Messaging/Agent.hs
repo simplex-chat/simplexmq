@@ -484,7 +484,7 @@ setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkUpdated} ni = with
 
 reconnectAllServers :: AgentClient -> IO ()
 reconnectAllServers c = do
-  reconnectServerClients c smpClients
+  withAgentEnv' c $ reconnectSMPServerClients c
   reconnectServerClients c xftpClients
   reconnectServerClients c ntfClients
 

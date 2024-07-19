@@ -345,6 +345,7 @@ data AEvent (e :: AEntity) where
   CONNECT :: AProtocolType -> TransportHost -> AEvent AENone
   DISCONNECT :: AProtocolType -> TransportHost -> AEvent AENone
   DOWN :: SMPServer -> [ConnId] -> AEvent AENone
+  DOWN_ALL :: AEvent AENone
   UP :: SMPServer -> [ConnId] -> AEvent AENone
   SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> AEvent AEConn
   RSYNC :: RatchetSyncState -> Maybe AgentCryptoError -> ConnectionStats -> AEvent AEConn
@@ -414,6 +415,7 @@ data AEventTag (e :: AEntity) where
   CONNECT_ :: AEventTag AENone
   DISCONNECT_ :: AEventTag AENone
   DOWN_ :: AEventTag AENone
+  DOWN_ALL_ :: AEventTag AENone
   UP_ :: AEventTag AENone
   SWITCH_ :: AEventTag AEConn
   RSYNC_ :: AEventTag AEConn
@@ -467,6 +469,7 @@ aEventTag = \case
   CONNECT {} -> CONNECT_
   DISCONNECT {} -> DISCONNECT_
   DOWN {} -> DOWN_
+  DOWN_ALL {} -> DOWN_ALL_
   UP {} -> UP_
   SWITCH {} -> SWITCH_
   RSYNC {} -> RSYNC_

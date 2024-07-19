@@ -76,7 +76,7 @@ batchIdempotentTest = do
   atomically $ RQ.batchAddQueues trq qs
   checkDataInvariant trq `shouldReturn` True
   readTVarIO (RQ.getRcvQueues trq) `shouldReturn` qs'
-  fmap L.nub <$> readTVarIO (RQ.getConnections trq) `shouldReturn`cs' -- connections get duplicated, but that doesn't appear to affect anybody
+  fmap L.nub <$> readTVarIO (RQ.getConnections trq) `shouldReturn` cs' -- connections get duplicated, but that doesn't appear to affect anybody
 
 deleteConnTest :: IO ()
 deleteConnTest = do

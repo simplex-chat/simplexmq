@@ -14,6 +14,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module AgentTests.FunctionalAPITests
   ( functionalAPITests,
@@ -2944,7 +2945,7 @@ testDeliveryReceiptsConcurrent t =
             _ -> error "timeout"
 
 testTwoUsers :: HasCallStack => IO ()
-testTwoUsers = withAgentClients2 $ \a b -> do
+testTwoUsers = withAgentClientsCfg2 aCfg aCfg $ \a b -> do
   let nc = netCfg initAgentServers
   sessionMode nc `shouldBe` TSMUser
   runRight_ $ do
@@ -2956,7 +2957,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     b `hasClients` 1
     liftIO $ setNetworkConfig a nc {sessionMode = TSMEntity}
     liftIO $ threadDelay 250000
-    ("", "", DOWN _ _) <- nGet a
+    ("", "", DOWN_ALL) <- nGet a
     ("", "", UP _ _) <- nGet a
     a `hasClients` 2
 
@@ -2965,9 +2966,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     liftIO $ threadDelay 250000
     liftIO $ setNetworkConfig a nc {sessionMode = TSMUser}
     liftIO $ threadDelay 250000
-    ("", "", DOWN _ _) <- nGet a
-    ("", "", DOWN _ _) <- nGet a
-    ("", "", UP _ _) <- nGet a
+    ("", "", DOWN_ALL) <- nGet a
     ("", "", UP _ _) <- nGet a
     a `hasClients` 1
 
@@ -2980,9 +2979,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     b `hasClients` 1
     liftIO $ setNetworkConfig a nc {sessionMode = TSMEntity}
     liftIO $ threadDelay 250000
-    ("", "", DOWN _ _) <- nGet a
-    ("", "", DOWN _ _) <- nGet a
-    ("", "", UP _ _) <- nGet a
+    ("", "", DOWN_ALL) <- nGet a
     ("", "", UP _ _) <- nGet a
     a `hasClients` 4
     exchangeGreetingsMsgId 6 a bId1 b aId1
@@ -2992,13 +2989,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     liftIO $ threadDelay 250000
     liftIO $ setNetworkConfig a nc {sessionMode = TSMUser}
     liftIO $ threadDelay 250000
-    ("", "", DOWN _ _) <- nGet a
-    ("", "", DOWN _ _) <- nGet a
-    ("", "", DOWN _ _) <- nGet a
-    ("", "", DOWN _ _) <- nGet a
-    ("", "", UP _ _) <- nGet a
-    ("", "", UP _ _) <- nGet a
-    ("", "", UP _ _) <- nGet a
+    ("", "", DOWN_ALL) <- nGet a
     ("", "", UP _ _) <- nGet a
     a `hasClients` 2
     exchangeGreetingsMsgId 8 a bId1 b aId1
@@ -3006,6 +2997,8 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     exchangeGreetingsMsgId 6 a bId2 b aId2
     exchangeGreetingsMsgId 6 a bId2' b aId2'
   where
+    aCfg :: AgentConfig
+    aCfg = agentCfg {tbqSize = 16}
     hasClients :: HasCallStack => AgentClient -> Int -> ExceptT AgentErrorType IO ()
     hasClients c n = liftIO $ M.size <$> readTVarIO (smpClients c) `shouldReturn` n
 
