@@ -1611,7 +1611,7 @@ getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) =
             SELECT c.user_id, s.host, s.port, COALESCE(ns.smp_server_key_hash, s.key_hash),
               ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_action
             FROM ntf_subscriptions ns
-            JOIN connections s USING (conn_id)
+            JOIN connections c USING (conn_id)
             JOIN servers s ON s.host = ns.smp_host AND s.port = ns.smp_port
             WHERE ns.conn_id = ?
           |]
