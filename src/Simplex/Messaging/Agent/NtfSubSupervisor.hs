@@ -198,19 +198,17 @@ runNtfWorker c srv Worker {doWork} =
                     atomically $ incNtfServerStat c userId ntfServer ntfChecked
                   Nothing -> workerInternalError c connId "NSACheck - no subscription ID"
               _ -> workerInternalError c connId "NSACheck - no active token"
-          NSADelete -> deleteNtfSub continueDeletion
-            where
-              continueDeletion = do
-                let sub' = sub {ntfSubId = Nothing, ntfSubStatus = NASOff}
-                withStore' c $ \db -> updateNtfSubscription db sub' (NSASMP NSASmpDelete) ts
-                ns <- asks ntfSupervisor
-                atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCNtfSMPWorker smpServer)
-          NSARotate -> deleteNtfSub deleteCreate
-            where
-              deleteCreate = do
-                withStore' c $ \db -> deleteNtfSubscription db connId
-                ns <- asks ntfSupervisor
-                atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCCreate)
+          NSADelete ->
+            deleteNtfSub $ do
+              let sub' = sub {ntfSubId = Nothing, ntfSubStatus = NASOff}
+              withStore' c $ \db -> updateNtfSubscription db sub' (NSASMP NSASmpDelete) ts
+              ns <- asks ntfSupervisor
+              atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCNtfSMPWorker smpServer)
+          NSARotate ->
+            deleteNtfSub $ do
+              withStore' c $ \db -> deleteNtfSubscription db connId
+              ns <- asks ntfSupervisor
+              atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCCreate)
       where
         deleteNtfSub continue = case ntfSubId of
           Just nSubId ->
