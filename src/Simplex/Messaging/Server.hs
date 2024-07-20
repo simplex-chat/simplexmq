@@ -54,6 +54,7 @@ import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM
+import qualified Data.IntSet as IS
 import Data.List (intercalate, mapAccumR)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -494,9 +495,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                     putActiveClientsInfo protoName clients = do
                       activeSubs <- readTVarIO clients
                       hPutStrLn h $ protoName <> " subscriptions: " <> show (M.size activeSubs)
-                      hPutStrLn h $ protoName <> " subscribed clients: " <> show (countSubClients activeSubs)
+                      let cls = subscribedClients activeSubs
+                      hPutStrLn h $ protoName <> " subscribed clients: " <> show (IS.size cls)
                       when (r == CPRAdmin) $ do
-                        clQs <- clientTBQueueLengths activeSubs
+                        let activeClients = M.filter ((`IS.member` cls) . clientId) activeSubs
+                        clQs <- clientTBQueueLengths activeClients
                         hPutStrLn h $ protoName <> " subscribed clients queues (rcvQ, sndQ, msgQ): " <> show clQs
                     countClientSubs :: (Client -> TMap QueueId a) -> Maybe (M.Map QueueId a -> IO (Int, Int, Int, Int)) -> IM.IntMap Client -> IO (Int, (Int, Int, Int, Int), Int, (Natural, Natural, Natural))
                     countClientSubs subSel countSubs_ = foldM addSubs (0, (0, 0, 0, 0), 0, (0, 0, 0))
@@ -532,7 +535,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                             SubPending -> (c1, c2 + 1, c3, c4)
                             SubThread _ -> (c1, c2, c3 + 1, c4)
                             ProhibitSub -> (c1, c2, c3, c4 + 1)
-                    countSubClients = S.size . M.foldr' (S.insert . clientId) S.empty
+                    subscribedClients :: M.Map QueueId Client -> IS.IntSet
+                    subscribedClients = M.foldr' (IS.insert . clientId) IS.empty
               CPDelete queueId' -> withUserRole $ unliftIO u $ do
                 st <- asks queueStore
                 ms <- asks msgStore
