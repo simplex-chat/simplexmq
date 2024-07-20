@@ -1,9 +1,11 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.Messaging.Agent.Stats where
 
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Int (Int64)
 import Data.Map (Map)
@@ -81,12 +83,15 @@ data AgentSMPServerStatsData = AgentSMPServerStatsData
     _connSubAttempts :: Int,
     _connSubIgnored :: Int,
     _connSubErrs :: Int,
-    _ntfKey :: Int,
-    _ntfKeyAttempts :: Int,
-    _ntfKeyDeleted :: Int,
-    _ntfKeyDeleteAttempts :: Int
+    _ntfKey :: OptionalInt,
+    _ntfKeyAttempts :: OptionalInt,
+    _ntfKeyDeleted :: OptionalInt,
+    _ntfKeyDeleteAttempts :: OptionalInt
   }
   deriving (Show)
+
+newtype OptionalInt = OInt {toInt :: Int}
+  deriving (Num, Show)
 
 newAgentSMPServerStats :: STM AgentSMPServerStats
 newAgentSMPServerStats = do
@@ -225,10 +230,10 @@ newAgentSMPServerStats' s = do
   connSubAttempts <- newTVar $ _connSubAttempts s
   connSubIgnored <- newTVar $ _connSubIgnored s
   connSubErrs <- newTVar $ _connSubErrs s
-  ntfKey <- newTVar $ _ntfKey s
-  ntfKeyAttempts <- newTVar $ _ntfKeyAttempts s
-  ntfKeyDeleted <- newTVar $ _ntfKeyDeleted s
-  ntfKeyDeleteAttempts <- newTVar $ _ntfKeyDeleteAttempts s
+  ntfKey <- newTVar $ toInt $ _ntfKey s
+  ntfKeyAttempts <- newTVar $ toInt $ _ntfKeyAttempts s
+  ntfKeyDeleted <- newTVar $ toInt $ _ntfKeyDeleted s
+  ntfKeyDeleteAttempts <- newTVar $ toInt $ _ntfKeyDeleteAttempts s
   pure
     AgentSMPServerStats
       { sentDirect,
@@ -297,10 +302,10 @@ getAgentSMPServerStats s = do
   _connSubAttempts <- readTVarIO $ connSubAttempts s
   _connSubIgnored <- readTVarIO $ connSubIgnored s
   _connSubErrs <- readTVarIO $ connSubErrs s
-  _ntfKey <- readTVarIO $ ntfKey s
-  _ntfKeyAttempts <- readTVarIO $ ntfKeyAttempts s
-  _ntfKeyDeleted <- readTVarIO $ ntfKeyDeleted s
-  _ntfKeyDeleteAttempts <- readTVarIO $ ntfKeyDeleteAttempts s
+  _ntfKey <- OInt <$> readTVarIO (ntfKey s)
+  _ntfKeyAttempts <- OInt <$> readTVarIO (ntfKeyAttempts s)
+  _ntfKeyDeleted <- OInt <$> readTVarIO (ntfKeyDeleted s)
+  _ntfKeyDeleteAttempts <- OInt <$> readTVarIO (ntfKeyDeleteAttempts s)
   pure
     AgentSMPServerStatsData
       { _sentDirect,
@@ -635,11 +640,25 @@ data AgentPersistedServerStats = AgentPersistedServerStats
   }
   deriving (Show)
 
+instance ToJSON OptionalInt where
+  toEncoding (OInt n) = toEncoding n
+  toJSON (OInt n) = toJSON n
+
+instance FromJSON OptionalInt where
+  parseJSON v = OInt <$> parseJSON v
+  omittedField = Just (OInt 0)
+
 $(J.deriveJSON defaultJSON ''AgentSMPServerStatsData)
 
 $(J.deriveJSON defaultJSON ''AgentXFTPServerStatsData)
 
-$(J.deriveJSON defaultJSON ''AgentNtfServerStatsData)
+instance ToJSON AgentNtfServerStatsData where
+  toEncoding = $(J.mkToEncoding defaultJSON ''AgentNtfServerStatsData)
+  toJSON = $(J.mkToJSON defaultJSON ''AgentNtfServerStatsData)
+
+instance FromJSON AgentNtfServerStatsData where
+  parseJSON = $(J.mkParseJSON defaultJSON ''AgentNtfServerStatsData)
+  omittedField = Just newAgentNtfServerStatsData
 
 $(J.deriveJSON defaultJSON ''AgentPersistedServerStats)
 
