@@ -495,12 +495,23 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                     putActiveClientsInfo protoName clients = do
                       activeSubs <- readTVarIO clients
                       hPutStrLn h $ protoName <> " subscriptions: " <> show (M.size activeSubs)
-                      let cls = subscribedClients activeSubs
-                      hPutStrLn h $ protoName <> " subscribed clients: " <> show (IS.size cls)
-                      when (r == CPRAdmin) $ do
-                        let activeClients = M.filter ((`IS.member` cls) . clientId) activeSubs
-                        clQs <- clientTBQueueLengths activeClients
-                        hPutStrLn h $ protoName <> " subscribed clients queues (rcvQ, sndQ, msgQ): " <> show clQs
+                      clCnt <- if r == CPRAdmin then putClientQueues activeSubs else pure $ countSubClients activeSubs
+                      hPutStrLn h $ protoName <> " subscribed clients: " <> show clCnt
+                      where
+                        putClientQueues :: M.Map QueueId Client -> IO Int
+                        putClientQueues subs = do
+                          let cls = differentClients subs
+                          clQs <- clientTBQueueLengths cls
+                          hPutStrLn h $ protoName <> " subscribed clients queues (rcvQ, sndQ, msgQ): " <> show clQs
+                          pure $ length cls
+                        differentClients :: M.Map QueueId Client -> [Client]
+                        differentClients = fst . M.foldl' addClient ([], IS.empty)
+                          where
+                            addClient acc@(cls, clSet) cl@Client {clientId}
+                              | IS.member clientId clSet = acc
+                              | otherwise = (cl : cls, IS.insert clientId clSet)
+                        countSubClients :: M.Map QueueId Client -> Int
+                        countSubClients = IS.size . M.foldr' (IS.insert . clientId) IS.empty
                     countClientSubs :: (Client -> TMap QueueId a) -> Maybe (M.Map QueueId a -> IO (Int, Int, Int, Int)) -> IM.IntMap Client -> IO (Int, (Int, Int, Int, Int), Int, (Natural, Natural, Natural))
                     countClientSubs subSel countSubs_ = foldM addSubs (0, (0, 0, 0, 0), 0, (0, 0, 0))
                       where
@@ -535,8 +546,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                             SubPending -> (c1, c2 + 1, c3, c4)
                             SubThread _ -> (c1, c2, c3 + 1, c4)
                             ProhibitSub -> (c1, c2, c3, c4 + 1)
-                    subscribedClients :: M.Map QueueId Client -> IS.IntSet
-                    subscribedClients = M.foldr' (IS.insert . clientId) IS.empty
               CPDelete queueId' -> withUserRole $ unliftIO u $ do
                 st <- asks queueStore
                 ms <- asks msgStore
