@@ -478,36 +478,44 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   when (r == CPRAdmin) $ do
                     clQs <- clientTBQueueLengths activeClients
                     hPutStrLn h $ "Client queues (rcvQ, sndQ, msgQ): " <> show clQs
-                    (smpSubCnt, smpSubCntByGroup, smpClCnt, smpClQs) <- countClientSubs subscriptions countSMPSubs activeClients
-                    (ntfSubCnt, _, ntfClCnt, ntfClQs) <- countClientSubs ntfSubscriptions (\_ -> pure (0, 0, 0, 0)) activeClients
+                    (smpSubCnt, smpSubCntByGroup, smpClCnt, smpClQs) <- countClientSubs subscriptions (Just countSMPSubs) activeClients
                     hPutStrLn h $ "SMP subscriptions (via clients): " <> show smpSubCnt
                     hPutStrLn h $ "SMP subscriptions (by group: NoSub, SubPending, SubThread, ProhibitSub): " <> show smpSubCntByGroup
                     hPutStrLn h $ "SMP subscribed clients (via clients): " <> show smpClCnt
-                    hPutStrLn h $ "SMP subscribed clients queues (rcvQ, sndQ, msgQ): " <> show smpClQs
+                    hPutStrLn h $ "SMP subscribed clients queues (via clients, rcvQ, sndQ, msgQ): " <> show smpClQs
+                    (ntfSubCnt, _, ntfClCnt, ntfClQs) <- countClientSubs ntfSubscriptions Nothing activeClients
                     hPutStrLn h $ "Ntf subscriptions (via clients): " <> show ntfSubCnt
                     hPutStrLn h $ "Ntf subscribed clients (via clients): " <> show ntfClCnt
-                    hPutStrLn h $ "Ntf subscribed clients queues (rcvQ, sndQ, msgQ): " <> show ntfClQs
-                  activeSubs <- readTVarIO subscribers
-                  activeNtfSubs <- readTVarIO notifiers
-                  hPutStrLn h $ "SMP subscriptions: " <> show (M.size activeSubs)
-                  hPutStrLn h $ "SMP subscribed clients: " <> show (countSubClients activeSubs)
-                  hPutStrLn h $ "Ntf subscriptions: " <> show (M.size activeNtfSubs)
-                  hPutStrLn h $ "Ntf subscribed clients: " <> show (countSubClients activeNtfSubs)
+                    hPutStrLn h $ "Ntf subscribed clients queues (via clients, rcvQ, sndQ, msgQ): " <> show ntfClQs
+                  putActiveClientsInfo "SMP" subscribers
+                  putActiveClientsInfo "Ntf" notifiers
                   where
-                    countClientSubs :: (Client -> TMap QueueId a) -> (M.Map QueueId a -> IO (Int, Int, Int, Int)) -> IM.IntMap Client -> IO (Int, (Int, Int, Int, Int), Int, (Natural, Natural, Natural))
-                    countClientSubs subSel countSubs = foldM addSubs (0, (0, 0, 0, 0), 0, (0, 0, 0))
+                    putActiveClientsInfo :: String -> TMap QueueId Client -> IO ()
+                    putActiveClientsInfo protoName clients = do
+                      activeSubs <- readTVarIO clients
+                      hPutStrLn h $ protoName <> " subscriptions: " <> show (M.size activeSubs)
+                      hPutStrLn h $ protoName <> " subscribed clients: " <> show (countSubClients activeSubs)
+                      when (r == CPRAdmin) $ do
+                        clQs <- clientTBQueueLengths activeSubs
+                        hPutStrLn h $ protoName <> " subscribed clients queues (rcvQ, sndQ, msgQ): " <> show clQs
+                    countClientSubs :: (Client -> TMap QueueId a) -> Maybe (M.Map QueueId a -> IO (Int, Int, Int, Int)) -> IM.IntMap Client -> IO (Int, (Int, Int, Int, Int), Int, (Natural, Natural, Natural))
+                    countClientSubs subSel countSubs_ = foldM addSubs (0, (0, 0, 0, 0), 0, (0, 0, 0))
                       where
                         addSubs :: (Int, (Int, Int, Int, Int), Int, (Natural, Natural, Natural)) -> Client -> IO (Int, (Int, Int, Int, Int), Int, (Natural, Natural, Natural))
-                        addSubs (subCnt, (c1, c2, c3, c4), clCnt, qs) cl = do
+                        addSubs (!subCnt, cnts@(!c1, !c2, !c3, !c4), !clCnt, !qs) cl = do
                           subs <- readTVarIO $ subSel cl
-                          (c1', c2', c3', c4') <- countSubs subs
+                          cnts' <- case countSubs_ of
+                            Nothing -> pure cnts
+                            Just countSubs -> do
+                              (c1', c2', c3', c4') <- countSubs subs
+                              pure (c1 + c1', c2 + c2', c3 + c3', c4 + c4')
                           let cnt = M.size subs
-                              cnts' = (c1 + c1', c2 + c2', c3 + c3', c4 + c4')
-                          qs' <- if cnt == 0 then addQueueLengths qs cl else pure qs
-                          pure (subCnt + cnt, cnts', clCnt + if cnt == 0 then 0 else 1, qs')
+                              clCnt' = if cnt == 0 then clCnt else clCnt + 1
+                          qs' <- if cnt == 0 then pure qs else addQueueLengths qs cl
+                          pure (subCnt + cnt, cnts', clCnt', qs')
                     clientTBQueueLengths :: Foldable t => t Client -> IO (Natural, Natural, Natural)
                     clientTBQueueLengths = foldM addQueueLengths (0, 0, 0)
-                    addQueueLengths (rl, sl, ml) cl = do
+                    addQueueLengths (!rl, !sl, !ml) cl = do
                       (rl', sl', ml') <- queueLengths cl
                       pure (rl + rl', sl + sl', ml + ml')
                     queueLengths Client {rcvQ, sndQ, msgQ} = do
