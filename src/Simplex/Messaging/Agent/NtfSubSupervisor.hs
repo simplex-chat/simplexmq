@@ -20,8 +20,8 @@ where
 
 import Control.Logger.Simple (logError, logInfo)
 import Control.Monad
-import Control.Monad.Except
 import Control.Monad.Reader
+import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
@@ -215,7 +215,9 @@ runNtfWorker c srv Worker {doWork} =
             lift getNtfToken >>= \case
               Just tkn@NtfToken {ntfServer} -> do
                 atomically $ incNtfServerStat c userId ntfServer ntfDelAttempts
-                agentNtfDeleteSubscription c nSubId tkn `agentFinally` continue
+                tryAgentError (agentNtfDeleteSubscription c nSubId tkn) >>= \case
+                  Left e | temporaryOrHostError e -> throwE e
+                  _ -> continue
                 atomically $ incNtfServerStat c userId ntfServer ntfDeleted
               Nothing -> continue
           _ -> continue
@@ -266,6 +268,7 @@ runNtfSMPWorker c srv Worker {doWork} = do
                 atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
               _ -> workerInternalError c connId "NSASmpKey - no active token"
           NSASmpDelete -> do
+            -- TODO should we remove it after successful removal from the server?
             rq_ <- withStore' c $ \db -> do
               setRcvQueueNtfCreds db connId Nothing
               getPrimaryRcvQueue db connId
