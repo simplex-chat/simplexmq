@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE StrictData #-}
 
 module Simplex.Messaging.Agent.TRcvQueues
   ( TRcvQueues (getRcvQueues, getConnections),
@@ -16,6 +17,7 @@ module Simplex.Messaging.Agent.TRcvQueues
 where
 
 import Control.Concurrent.STM
+import Control.DeepSeq (NFData (..))
 import Data.Foldable (foldl')
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
@@ -32,6 +34,8 @@ data TRcvQueues = TRcvQueues
   { getRcvQueues :: TMap (UserId, SMPServer, RecipientId) RcvQueue,
     getConnections :: TMap ConnId (NonEmpty (UserId, SMPServer, RecipientId))
   }
+
+instance NFData TRcvQueues where rnf TRcvQueues {} = ()
 
 empty :: STM TRcvQueues
 empty = TRcvQueues <$> TM.empty <*> TM.empty
