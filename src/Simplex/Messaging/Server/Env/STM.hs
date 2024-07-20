@@ -1,12 +1,15 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 
 module Simplex.Messaging.Server.Env.STM where
 
 import Control.Concurrent (ThreadId)
+import Control.Logger.Simple
+import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
@@ -17,6 +20,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isJust, isNothing)
+import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
@@ -206,7 +210,10 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
   random <- liftIO C.newRandom
-  storeLog <- restoreQueues queueStore `mapM` storeLogFile
+  storeLog <-
+    forM storeLogFile $ \f -> do
+      logInfo $ "restoring queues from file " <> T.pack f
+      restoreQueues queueStore f
   tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
   Fingerprint fp <- loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp

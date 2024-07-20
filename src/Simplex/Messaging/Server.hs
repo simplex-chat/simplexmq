@@ -37,6 +37,7 @@ module Simplex.Messaging.Server
   )
 where
 
+import Control.Concurrent.STM.TQueue (flushTQueue)
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -47,6 +48,7 @@ import Crypto.Random
 import Control.Monad.STM (retry)
 import Data.Bifunctor (first)
 import Data.ByteString.Base64 (encode)
+import qualified Data.ByteString.Builder as BLD
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -1421,13 +1423,19 @@ saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessag
       logInfo $ "saving messages to file " <> T.pack f
       ms <- asks msgStore
       liftIO . withFile f WriteMode $ \h ->
-        readTVarIO ms >>= mapM_ (saveQueueMsgs ms h) . M.keys
+        readTVarIO ms >>= mapM_ (saveQueueMsgs h) . M.assocs
       logInfo "messages saved"
       where
-        getMessages = if keepMsgs then snapshotMsgQueue else flushMsgQueue
-        saveQueueMsgs ms h rId =
-          atomically (getMessages ms rId)
-            >>= mapM_ (B.hPutStrLn h . strEncode . MLRv3 rId)
+        getMessages = if keepMsgs then snapshotTQueue else flushTQueue
+        snapshotTQueue q = do
+          msgs <- flushTQueue q
+          mapM_ (writeTQueue q) msgs
+          pure msgs
+        saveQueueMsgs h (rId, q) = BLD.hPutBuilder h . encodeMessages rId =<< atomically (getMessages $ msgQueue q)
+        encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
+        -- saveQueueMsgs qs h rId =
+        --   atomically (getMessages qs rId)
+        --     >>= mapM_ (B.hPutStrLn h . strEncode . MLRv3 rId)
 
 restoreServerMessages :: M Int
 restoreServerMessages =
