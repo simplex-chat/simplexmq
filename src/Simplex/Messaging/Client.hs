@@ -58,6 +58,10 @@ module Simplex.Messaging.Client
     suspendSMPQueue,
     deleteSMPQueue,
     deleteSMPQueues,
+    createSMPDataBlob,
+    deleteSMPDataBlob,
+    getSMPDataBlob,
+    proxyGetSMPDataBlob,
     connectSMPProxiedRelay,
     proxySMPMessage,
     forwardSMPTransmission,
@@ -748,8 +752,13 @@ secureSndSMPQueue c spKey sId senderKey = okSMPCommand (SKEY senderKey) c spKey 
 {-# INLINE secureSndSMPQueue #-}
 
 proxySecureSndSMPQueue :: SMPClient -> ProxiedRelay -> SndPrivateAuthKey -> SenderId -> SndPublicAuthKey -> ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySecureSndSMPQueue c proxiedRelay spKey sId senderKey = proxySMPCommand c proxiedRelay (Just spKey) sId (SKEY senderKey)
+proxySecureSndSMPQueue c proxiedRelay spKey sId senderKey = proxySMPCommand c proxiedRelay (Just spKey) sId (SKEY senderKey) okResult
 {-# INLINE proxySecureSndSMPQueue #-}
+
+okResult :: BrokerMsg -> Maybe ()
+okResult = \case
+  OK -> Just ()
+  _ -> Nothing
 
 -- | Enable notifications for the queue for push notifications server.
 --
@@ -792,7 +801,7 @@ sendSMPMessage c spKey sId flags msg =
     r -> throwE $ unexpectedResponse r
 
 proxySMPMessage :: SMPClient -> ProxiedRelay -> Maybe SndPrivateAuthKey -> SenderId -> MsgFlags -> MsgBody -> ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySMPMessage c proxiedRelay spKey sId flags msg = proxySMPCommand c proxiedRelay spKey sId (SEND flags msg)
+proxySMPMessage c proxiedRelay spKey sId flags msg = proxySMPCommand c proxiedRelay spKey sId (SEND flags msg) okResult
 
 -- | Acknowledge message delivery (server deletes the message).
 --
@@ -823,6 +832,25 @@ deleteSMPQueue = okSMPCommand DEL
 deleteSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
 deleteSMPQueues = okSMPCommands DEL
 {-# INLINE deleteSMPQueues #-}
+
+createSMPDataBlob :: SMPClient -> C.AAuthKeyPair -> BlobId -> DataBody -> ExceptT SMPClientError IO ()
+createSMPDataBlob c (dKey, dpKey) dId body = okSMPCommand (WRT dKey body) c dpKey dId
+{-# INLINE createSMPDataBlob #-}
+
+deleteSMPDataBlob :: SMPClient -> DataPrivateAuthKey -> BlobId -> ExceptT SMPClientError IO ()
+deleteSMPDataBlob = okSMPCommand CLR
+{-# INLINE deleteSMPDataBlob #-}
+
+getSMPDataBlob :: SMPClient -> BlobId -> ExceptT SMPClientError IO EncDataBody
+getSMPDataBlob c dId =
+  sendSMPCommand c Nothing dId READ >>= \case
+    DATA body -> pure body
+    r -> throwE $ unexpectedResponse r
+
+proxyGetSMPDataBlob :: SMPClient -> ProxiedRelay -> BlobId -> ExceptT SMPClientError IO (Either ProxyClientError EncDataBody)
+proxyGetSMPDataBlob c proxiedRelay dId = proxySMPCommand c proxiedRelay Nothing dId READ $ \case
+  DATA body -> Just body
+  _ -> Nothing
 
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
@@ -912,8 +940,9 @@ proxySMPCommand ::
   Maybe SndPrivateAuthKey ->
   SenderId ->
   Command 'Sender ->
-  ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g, tcpTimeout}} (ProxiedRelay sessionId v _ serverKey) spKey sId command = do
+  (BrokerMsg -> Maybe r) ->
+  ExceptT SMPClientError IO (Either ProxyClientError r)
+proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g, tcpTimeout}} (ProxiedRelay sessionId v _ serverKey) spKey sId command toResult = do
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
       serverThParams = smpTHParamsSetVersion v proxyThParams {sessionId, thAuth = serverThAuth}
@@ -939,9 +968,11 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
         case tParse serverThParams t' of
           t'' :| [] -> case tDecodeParseValidate serverThParams t'' of
             (_auth, _signed, (_c, _e, cmd)) -> case cmd of
-              Right OK -> pure $ Right ()
-              Right (ERR e) -> throwE $ PCEProtocolError e -- this is the error from the destination relay
-              Right r' -> throwE $ unexpectedResponse r'
+              Right r' -> case toResult r' of
+                Just r'' -> pure $ Right r''
+                Nothing -> case r' of
+                  ERR e -> throwE $ PCEProtocolError e -- this is the error from the destination relay
+                  _ -> throwE $ unexpectedResponse r'
               Left e -> throwE $ PCEResponseError e
           _ -> throwE $ PCETransportError TEBadBlock
       ERR e -> pure . Left $ ProxyProtocolError e -- this will not happen, this error is returned via Left

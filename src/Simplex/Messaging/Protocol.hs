@@ -115,6 +115,7 @@ module Simplex.Messaging.Protocol
     NtfPublicAuthKey,
     RcvNtfPublicDhKey,
     RcvNtfDhSecret,
+    DataPrivateAuthKey,
     DataPublicAuthKey,
     Message (..),
     RcvMessage (..),
@@ -135,6 +136,8 @@ module Simplex.Messaging.Protocol
     FwdResponse (..),
     FwdTransmission (..),
     MsgFlags (..),
+    DataBody,
+    EncDataBody,
     initialSMPClientVersion,
     currentSMPClientVersion,
     userProtocol,
@@ -485,7 +488,7 @@ data BrokerMsg where
   PRES :: EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
   INFO :: QueueInfo -> BrokerMsg
-  DATA :: EncryptedDataBody -> BrokerMsg
+  DATA :: EncDataBody -> BrokerMsg
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
@@ -1179,6 +1182,9 @@ type RcvNtfPublicDhKey = C.PublicKeyX25519
 -- | DH Secret used to encrypt notification metadata from server to recipient
 type RcvNtfDhSecret = C.DhSecretX25519
 
+-- | private key to authorize owner access to data blobs
+type DataPrivateAuthKey = C.APrivateAuthKey
+
 -- | public key to authorize owner access to data blobs
 type DataPublicAuthKey = C.APublicAuthKey
 
@@ -1190,7 +1196,7 @@ type MsgBody = ByteString
 
 type DataBody = ByteString
 
-type EncryptedDataBody = ByteString
+type EncDataBody = ByteString
 
 data ProtocolErrorType = PECmdSyntax | PECmdUnknown | PESession | PEBlock
 

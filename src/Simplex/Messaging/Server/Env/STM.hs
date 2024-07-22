@@ -146,11 +146,13 @@ newtype ProxyAgent = ProxyAgent
 
 type ClientId = Int
 
+data VerificationResult = VRVerified (Maybe QueueRec) | VRVerifiedData (Maybe DataRec) | VRFailed
+
 data Client = Client
   { clientId :: ClientId,
     subscriptions :: TMap RecipientId Sub,
     ntfSubscriptions :: TMap NotifierId (),
-    rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
+    rcvQ :: TBQueue (NonEmpty (VerificationResult, Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     procThreads :: TVar Int,
