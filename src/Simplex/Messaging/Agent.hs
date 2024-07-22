@@ -375,7 +375,7 @@ getConnectionMessage c = withAgentEnv c . getConnectionMessage' c
 {-# INLINE getConnectionMessage #-}
 
 -- | Get connection message for received notification
-getNotificationMessage :: AgentClient -> C.CbNonce -> ByteString -> AE (NotificationInfo, [SMPMsgMeta])
+getNotificationMessage :: AgentClient -> C.CbNonce -> ByteString -> AE (NotificationInfo, Maybe SMPMsgMeta)
 getNotificationMessage c = withAgentEnv c .: getNotificationMessage' c
 {-# INLINE getNotificationMessage #-}
 
@@ -1032,7 +1032,7 @@ getConnectionMessage' c connId = do
     SndConnection _ _ -> throwE $ CONN SIMPLEX
     NewConnection _ -> throwE $ CMD PROHIBITED "getConnectionMessage: NewConnection"
 
-getNotificationMessage' :: AgentClient -> C.CbNonce -> ByteString -> AM (NotificationInfo, [SMPMsgMeta])
+getNotificationMessage' :: AgentClient -> C.CbNonce -> ByteString -> AM (NotificationInfo, Maybe SMPMsgMeta)
 getNotificationMessage' c nonce encNtfInfo = do
   withStore' c getActiveNtfToken >>= \case
     Just NtfToken {ntfDhSecret = Just dhSecret} -> do
@@ -1040,22 +1040,9 @@ getNotificationMessage' c nonce encNtfInfo = do
       PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} <- liftEither (parse strP (INTERNAL "error parsing PNMessageData") ntfData)
       (ntfConnId, rcvNtfDhSecret) <- withStore c (`getNtfRcvQueue` smpQueue)
       ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
-      maxMsgs <- asks $ ntfMaxMessages . config
-      (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta},) <$> getNtfMessages ntfConnId ntfMsgMeta maxMsgs
+      msgMeta <- getConnectionMessage' c ntfConnId
+      pure (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}, msgMeta)
     _ -> throwE $ CMD PROHIBITED "getNotificationMessage"
-  where
-    getNtfMessages ntfConnId nMeta = getMsg
-      where
-        getMsg 0 = pure []
-        getMsg n =
-          getConnectionMessage' c ntfConnId >>= \case
-            Just m
-              | lastMsg m -> pure [m]
-              | otherwise -> (m :) <$> getMsg (n - 1)
-            Nothing -> pure []
-        lastMsg SMP.SMPMsgMeta {msgId, msgTs, msgFlags} = case nMeta of
-          Just SMP.NMsgMeta {msgId = msgId', msgTs = msgTs'} -> msgId == msgId' || msgTs > msgTs'
-          Nothing -> SMP.notification msgFlags
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: AgentClient -> ConnId -> PQEncryption -> MsgFlags -> MsgBody -> AM (AgentMsgId, PQEncryption)

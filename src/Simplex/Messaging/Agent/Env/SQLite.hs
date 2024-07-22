@@ -149,7 +149,6 @@ data AgentConfig = AgentConfig
     deleteErrorCount :: Int,
     ntfCron :: Word16,
     ntfSubCheckInterval :: NominalDiffTime,
-    ntfMaxMessages :: Int,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
@@ -219,7 +218,6 @@ defaultAgentConfig =
       deleteErrorCount = 10,
       ntfCron = 20, -- minutes
       ntfSubCheckInterval = nominalDay,
-      ntfMaxMessages = 3,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
