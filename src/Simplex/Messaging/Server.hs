@@ -77,6 +77,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Control
+import Simplex.Messaging.Server.DataStore
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
@@ -611,6 +612,7 @@ verifyTransmission auth_ tAuth authorized queueId cmd =
     Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWith` recipientKey q) <$> get SRecipient
     -- SEND will be accepted without authorization before the queue is secured with KEY command
     Cmd SSender SEND {} -> verifyQueue (\q -> Just q `verified` maybe (isNothing tAuth) verify (senderKey q)) <$> get SSender
+    Cmd SSender READ -> pure $ VRVerified Nothing
     Cmd SSender PING -> pure $ VRVerified Nothing
     Cmd SSender RFWD {} -> pure $ VRVerified Nothing
     -- NSUB will not be accepted without authorization
@@ -776,6 +778,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
       Cmd SProxiedClient command -> processProxiedCmd (corrId, queueId, command)
       Cmd SSender command -> Just <$> case command of
         SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
+        READ -> getDataBlob
         PING -> pure (corrId, "", PONG)
         RFWD encBlock -> (corrId, "",) <$> processForwardedCommand encBlock
       Cmd SNotifier NSUB -> Just <$> subscribeNotifications
@@ -800,6 +803,8 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           OFF -> suspendQueue_ st
           DEL -> delQueueAndMsgs st
           QUE -> withQueue getQueueInfo
+          WRT key blob -> storeDataBlob key blob
+          CLR -> deleteDataBlob
       where
         createQueue :: QueueStore -> RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> M (Transmission BrokerMsg)
         createQueue st recipientKey dhKey subMode = time "NEW" $ do
@@ -1199,6 +1204,29 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                     ProhibitSub -> QProhibitSub
               qDelivered <- decodeLatin1 . encode <$$> tryReadTMVar delivered
               pure QSub {qSubThread, qDelivered}
+
+        storeDataBlob :: DataPublicAuthKey -> ByteString -> M (Transmission BrokerMsg)
+        storeDataBlob blobKey blobData = do
+          ds <- asks dataStore
+          atomically $ TM.insert queueId DataRec {blobId = queueId, blobKey, blobData} ds
+          pure ok
+
+        deleteDataBlob :: M (Transmission BrokerMsg)
+        deleteDataBlob = do
+          ds <- asks dataStore
+          atomically $ TM.delete queueId ds
+          pure ok
+
+        getDataBlob :: M (Transmission BrokerMsg)
+        getDataBlob = do
+          ds <- asks dataStore
+          -- hash queueId
+          -- TM.lookup hash(queueId) dataStore >>= \case
+          --   Just DataRec {blobData} -> do
+          --     blob <- encrypt blobData
+          --     pure $ DATA blob
+          --   Nothing -> pure $ err AUTH
+          pure ok
 
         ok :: Transmission BrokerMsg
         ok = (corrId, queueId, OK)
