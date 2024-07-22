@@ -106,6 +106,7 @@ module Simplex.Messaging.Agent
     rcConnectHost,
     rcConnectCtrl,
     rcDiscoverCtrl,
+    getAgentSubsTotal,
     getAgentServersSummary,
     resetAgentServersStats,
     foregroundAgent,

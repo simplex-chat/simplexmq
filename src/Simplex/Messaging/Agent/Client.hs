@@ -93,6 +93,7 @@ module Simplex.Messaging.Agent.Client
     AgentServersSummary (..),
     ServerSessions (..),
     SMPServerSubs (..),
+    getAgentSubsTotal,
     getAgentServersSummary,
     getAgentSubscriptions,
     slowNetworkConfig,
@@ -2016,6 +2017,23 @@ data ServerSessions = ServerSessions
     ssConnecting :: Int
   }
   deriving (Show)
+
+getAgentSubsTotal :: AgentClient -> [UserId] -> IO (SMPServerSubs, Bool)
+getAgentSubsTotal c userIds = do
+  ssActive <- getSubsCount activeSubs
+  ssPending <- getSubsCount pendingSubs
+  sess <- hasSession . M.toList =<< readTVarIO (smpClients c)
+  pure (SMPServerSubs {ssActive, ssPending}, sess)
+  where
+    getSubsCount subs = M.foldrWithKey' addSub 0 <$> readTVarIO (getRcvQueues $ subs c)
+    addSub (userId, _, _) _ cnt = if userId `elem` userIds then cnt + 1 else cnt
+    hasSession :: [(SMPTransportSession, SMPClientVar)] -> IO Bool
+    hasSession = \case
+      [] -> pure False
+      (s : ss) -> ifM (isConnected s) (pure True) (hasSession ss)
+    isConnected ((userId, _, _), SessionVar {sessionVar})
+      | userId `elem` userIds = atomically $ maybe False isRight <$> tryReadTMVar sessionVar
+      | otherwise = pure False
 
 getAgentServersSummary :: AgentClient -> IO AgentServersSummary
 getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, ntfServersStats, srvStatsStartedAt, agentEnv} = do
