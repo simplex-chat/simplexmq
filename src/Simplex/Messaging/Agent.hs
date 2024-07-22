@@ -241,7 +241,7 @@ saveServersStats c@AgentClient {subQ, smpServersStats, xftpServersStats, ntfServ
   sss <- mapM (lift . getAgentSMPServerStats) =<< readTVarIO smpServersStats
   xss <- mapM (lift . getAgentXFTPServerStats) =<< readTVarIO xftpServersStats
   nss <- mapM (lift . getAgentNtfServerStats) =<< readTVarIO ntfServersStats
-  let stats = AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss, ntfServersStats = nss}
+  let stats = AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss, ntfServersStats = OptionalMap nss}
   tryAgentError' (withStore' c (`updateServersStats` stats)) >>= \case
     Left e -> atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ INTERNAL $ show e)
     Right () -> pure ()
@@ -251,7 +251,7 @@ restoreServersStats c@AgentClient {smpServersStats, xftpServersStats, ntfServers
   tryAgentError' (withStore c getServersStats) >>= \case
     Left e -> atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ INTERNAL $ show e)
     Right (startedAt, Nothing) -> atomically $ writeTVar srvStatsStartedAt startedAt
-    Right (startedAt, Just AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss, ntfServersStats = nss}) -> do
+    Right (startedAt, Just AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss, ntfServersStats = OptionalMap nss}) -> do
       atomically $ writeTVar srvStatsStartedAt startedAt
       atomically . writeTVar smpServersStats =<< mapM (atomically . newAgentSMPServerStats') sss
       atomically . writeTVar xftpServersStats =<< mapM (atomically . newAgentXFTPServerStats') xss

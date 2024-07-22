@@ -5,10 +5,11 @@
 
 module Simplex.Messaging.Agent.Stats where
 
-import Data.Aeson (FromJSON (..), ToJSON (..))
+import Data.Aeson (FromJSON (..), FromJSONKey, ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Int (Int64)
-import Data.Map (Map)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.Protocol (UserId)
@@ -91,7 +92,7 @@ data AgentSMPServerStatsData = AgentSMPServerStatsData
   deriving (Show)
 
 newtype OptionalInt = OInt {toInt :: Int}
-  deriving (Num, Show)
+  deriving (Num, Show, ToJSON)
 
 newAgentSMPServerStats :: STM AgentSMPServerStats
 newAgentSMPServerStats = do
@@ -636,29 +637,26 @@ addNtfStatsData sd1 sd2 =
 data AgentPersistedServerStats = AgentPersistedServerStats
   { smpServersStats :: Map (UserId, SMPServer) AgentSMPServerStatsData,
     xftpServersStats :: Map (UserId, XFTPServer) AgentXFTPServerStatsData,
-    ntfServersStats :: Map (UserId, NtfServer) AgentNtfServerStatsData
+    ntfServersStats :: OptionalMap (UserId, NtfServer) AgentNtfServerStatsData
   }
   deriving (Show)
-
-instance ToJSON OptionalInt where
-  toEncoding (OInt n) = toEncoding n
-  toJSON (OInt n) = toJSON n
 
 instance FromJSON OptionalInt where
   parseJSON v = OInt <$> parseJSON v
   omittedField = Just (OInt 0)
 
+newtype OptionalMap k v = OptionalMap (Map k v)
+  deriving (Show, ToJSON)
+
+instance (FromJSONKey k, Ord k, FromJSON v) => FromJSON (OptionalMap k v) where
+  parseJSON v = OptionalMap <$> parseJSON v
+  omittedField = Just (OptionalMap M.empty)
+
 $(J.deriveJSON defaultJSON ''AgentSMPServerStatsData)
 
 $(J.deriveJSON defaultJSON ''AgentXFTPServerStatsData)
 
-instance ToJSON AgentNtfServerStatsData where
-  toEncoding = $(J.mkToEncoding defaultJSON ''AgentNtfServerStatsData)
-  toJSON = $(J.mkToJSON defaultJSON ''AgentNtfServerStatsData)
-
-instance FromJSON AgentNtfServerStatsData where
-  parseJSON = $(J.mkParseJSON defaultJSON ''AgentNtfServerStatsData)
-  omittedField = Just newAgentNtfServerStatsData
+$(J.deriveJSON defaultJSON ''AgentNtfServerStatsData)
 
 $(J.deriveJSON defaultJSON ''AgentPersistedServerStats)
 
