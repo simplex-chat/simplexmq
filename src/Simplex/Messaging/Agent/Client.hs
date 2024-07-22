@@ -2012,17 +2012,13 @@ data ServerSessions = ServerSessions
 
 getAgentSubsTotal :: AgentClient -> [UserId] -> IO (SMPServerSubs, ServerSessions)
 getAgentSubsTotal c userIds = do
-  subs <- getServerSubs
+  ssActive <- getSubsCount activeSubs
+  ssPending <- getSubsCount pendingSubs
   sess <- countSessions =<< readTVarIO (smpClients c)
-  pure (subs, sess)
+  pure (SMPServerSubs {ssActive, ssPending}, sess)
   where
-    getServerSubs = do
-      subs <- M.foldrWithKey' (addSub incActive) (SMPServerSubs 0 0) <$> readTVarIO (getRcvQueues $ activeSubs c)
-      M.foldrWithKey' (addSub incPending) subs <$> readTVarIO (getRcvQueues $ pendingSubs c)
-      where
-        addSub f (userId, _, _) _ = if userId `elem` userIds then f else id
-        incActive ss = ss {ssActive = ssActive ss + 1}
-        incPending ss = ss {ssPending = ssPending ss + 1}
+    getSubsCount subs = M.foldrWithKey' addSub 0 <$> readTVarIO (getRcvQueues $ subs c)
+    addSub (userId, _, _) _ cnt = if userId `elem` userIds then cnt + 1 else cnt
     countSessions :: Map (TransportSession msg) (ClientVar msg) -> IO ServerSessions
     countSessions = foldM addClient (ServerSessions 0 0 0) . M.toList
       where
