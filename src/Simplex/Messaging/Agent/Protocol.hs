@@ -41,6 +41,8 @@ module Simplex.Messaging.Agent.Protocol
     ratchetSyncSMPAgentVersion,
     deliveryRcptsSMPAgentVersion,
     pqdrSMPAgentVersion,
+    sndAuthKeySMPAgentVersion,
+    ratchetOnConfSMPAgentVersion,
     currentSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
@@ -48,6 +50,7 @@ module Simplex.Messaging.Agent.Protocol
 
     -- * SMP agent protocol types
     ConnInfo,
+    SndQueueSecured,
     ACommand (..),
     AEvent (..),
     AEvt (..),
@@ -208,6 +211,7 @@ import Simplex.Messaging.Protocol
     legacyStrEncodeServer,
     noAuthSrv,
     sameSrvAddr,
+    sndAuthKeySMPClientVersion,
     srvHostnamesSMPClientVersion,
     pattern ProtoServerWithAuth,
     pattern SMPServer,
@@ -227,6 +231,7 @@ import UnliftIO.Exception (Exception)
 -- 3 - support ratchet renegotiation (6/30/2023)
 -- 4 - delivery receipts (7/13/2023)
 -- 5 - post-quantum double ratchet (3/14/2024)
+-- 6 - secure reply queues with provided keys (6/14/2024)
 
 data SMPAgentVersion
 
@@ -251,11 +256,20 @@ deliveryRcptsSMPAgentVersion = VersionSMPA 4
 pqdrSMPAgentVersion :: VersionSMPA
 pqdrSMPAgentVersion = VersionSMPA 5
 
+sndAuthKeySMPAgentVersion :: VersionSMPA
+sndAuthKeySMPAgentVersion = VersionSMPA 6
+
+ratchetOnConfSMPAgentVersion :: VersionSMPA
+ratchetOnConfSMPAgentVersion = VersionSMPA 7
+
+minSupportedSMPAgentVersion :: VersionSMPA
+minSupportedSMPAgentVersion = duplexHandshakeSMPAgentVersion
+
 currentSMPAgentVersion :: VersionSMPA
-currentSMPAgentVersion = VersionSMPA 5
+currentSMPAgentVersion = VersionSMPA 7
 
 supportedSMPAgentVRange :: VersionRangeSMPA
-supportedSMPAgentVRange = mkVersionRange duplexHandshakeSMPAgentVersion currentSMPAgentVersion
+supportedSMPAgentVRange = mkVersionRange minSupportedSMPAgentVersion currentSMPAgentVersion
 
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
@@ -318,6 +332,8 @@ deriving instance Show AEvt
 
 type ConnInfo = ByteString
 
+type SndQueueSecured = Bool
+
 -- | Parameterized type for SMP agent events
 data AEvent (e :: AEntity) where
   INV :: AConnectionRequestUri -> AEvent AEConn
@@ -332,7 +348,6 @@ data AEvent (e :: AEntity) where
   UP :: SMPServer -> [ConnId] -> AEvent AENone
   SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> AEvent AEConn
   RSYNC :: RatchetSyncState -> Maybe AgentCryptoError -> ConnectionStats -> AEvent AEConn
-  MID :: AgentMsgId -> PQEncryption -> AEvent AEConn
   SENT :: AgentMsgId -> Maybe SMPServer -> AEvent AEConn
   MWARN :: AgentMsgId -> AgentErrorType -> AEvent AEConn
   MERR :: AgentMsgId -> AgentErrorType -> AEvent AEConn
@@ -346,6 +361,7 @@ data AEvent (e :: AEntity) where
   DEL_USER :: Int64 -> AEvent AENone
   STAT :: ConnectionStats -> AEvent AEConn
   OK :: AEvent AEConn
+  JOINED :: SndQueueSecured -> AEvent AEConn
   ERR :: AgentErrorType -> AEvent AEConn
   SUSPENDED :: AEvent AENone
   RFPROG :: Int64 -> Int64 -> AEvent AERcvFile
@@ -401,7 +417,6 @@ data AEventTag (e :: AEntity) where
   UP_ :: AEventTag AENone
   SWITCH_ :: AEventTag AEConn
   RSYNC_ :: AEventTag AEConn
-  MID_ :: AEventTag AEConn
   SENT_ :: AEventTag AEConn
   MWARN_ :: AEventTag AEConn
   MERR_ :: AEventTag AEConn
@@ -415,6 +430,7 @@ data AEventTag (e :: AEntity) where
   DEL_USER_ :: AEventTag AENone
   STAT_ :: AEventTag AEConn
   OK_ :: AEventTag AEConn
+  JOINED_ :: AEventTag AEConn
   ERR_ :: AEventTag AEConn
   SUSPENDED_ :: AEventTag AENone
   -- XFTP commands and responses
@@ -454,7 +470,6 @@ aEventTag = \case
   UP {} -> UP_
   SWITCH {} -> SWITCH_
   RSYNC {} -> RSYNC_
-  MID {} -> MID_
   SENT {} -> SENT_
   MWARN {} -> MWARN_
   MERR {} -> MERR_
@@ -468,6 +483,7 @@ aEventTag = \case
   DEL_USER _ -> DEL_USER_
   STAT _ -> STAT_
   OK -> OK_
+  JOINED _ -> JOINED_
   ERR _ -> ERR_
   SUSPENDED -> SUSPENDED_
   RFPROG {} -> RFPROG_
@@ -688,7 +704,7 @@ data MsgMeta = MsgMeta
 
 data SMPConfirmation = SMPConfirmation
   { -- | sender's public key to use for authentication of sender's commands at the recepient's server
-    senderKey :: SndPublicAuthKey,
+    senderKey :: Maybe SndPublicAuthKey,
     -- | sender's DH public key for simple per-queue e2e encryption
     e2ePubKey :: C.PublicKeyX25519,
     -- | sender's information to be associated with the connection, e.g. sender's profile information
@@ -778,12 +794,12 @@ instance Encoding AgentMessage where
       'M' -> AgentMessage <$> smpP <*> smpP
       _ -> fail "bad AgentMessage"
 
+-- internal type for storing message type in the database
 data AgentMessageType
   = AM_CONN_INFO
   | AM_CONN_INFO_REPLY
   | AM_RATCHET_INFO
   | AM_HELLO_
-  | AM_REPLY_
   | AM_A_MSG_
   | AM_A_RCVD_
   | AM_QCONT_
@@ -800,7 +816,6 @@ instance Encoding AgentMessageType where
     AM_CONN_INFO_REPLY -> "D"
     AM_RATCHET_INFO -> "S"
     AM_HELLO_ -> "H"
-    AM_REPLY_ -> "R"
     AM_A_MSG_ -> "M"
     AM_A_RCVD_ -> "V"
     AM_QCONT_ -> "QC"
@@ -815,7 +830,6 @@ instance Encoding AgentMessageType where
       'D' -> pure AM_CONN_INFO_REPLY
       'S' -> pure AM_RATCHET_INFO
       'H' -> pure AM_HELLO_
-      'R' -> pure AM_REPLY_
       'M' -> pure AM_A_MSG_
       'V' -> pure AM_A_RCVD_
       'Q' ->
@@ -1007,7 +1021,8 @@ instance ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
         where
           queryStr =
             strEncode . QSP QEscape $
-              [("v", strEncode crAgentVRange), ("smp", strEncode crSmpQueues)]
+              -- semicolon is used to separate SMP queues because comma is used to separate server address hostnames
+              [("v", strEncode crAgentVRange), ("smp", B.intercalate ";" $ map strEncode $ L.toList crSmpQueues)]
                 <> maybe [] (\e2e -> [("e2e", strEncode e2e)]) e2eParams
                 <> maybe [] (\cd -> [("data", encodeUtf8 cd)]) crClientData
   strP = connReqUriP' (Just SSSimplex)
@@ -1029,7 +1044,7 @@ connReqUriP overrideScheme = do
   crMode <- A.char '/' *> crModeP <* optional (A.char '/') <* "#/?"
   query <- strP
   aVRange <- queryParam "v" query
-  crSmpQueues <- queryParam "smp" query
+  crSmpQueues <- queryParamParser queuesP "smp" query
   let crClientData = safeDecodeUtf8 <$> queryParamStr "data" query
       crData = ConnReqUriData {crScheme, crAgentVRange = aVRange, crSmpQueues, crClientData}
   case crMode of
@@ -1041,8 +1056,10 @@ connReqUriP overrideScheme = do
     CMContact -> pure . ACR SCMContact $ CRContactUri crData {crAgentVRange = adjustAgentVRange aVRange}
   where
     crModeP = "invitation" $> CMInvitation <|> "contact" $> CMContact
+    -- semicolon is used to separate SMP queues because comma is used to separate server address hostnames
+    queuesP = L.fromList <$> (strDecode <$?> A.takeTill (== ';')) `A.sepBy1'` A.char ';'
     adjustAgentVRange vr =
-      let v = max duplexHandshakeSMPAgentVersion $ minVersion vr
+      let v = max minSupportedSMPAgentVersion $ minVersion vr
        in fromMaybe vr $ safeVersionRange v (max v $ maxVersion vr)
 
 instance ConnectionModeI m => FromJSON (ConnectionRequestUri m) where
@@ -1120,14 +1137,16 @@ data SMPQueueInfo = SMPQueueInfo {clientVersion :: VersionSMPC, queueAddress :: 
   deriving (Eq, Show)
 
 instance Encoding SMPQueueInfo where
-  smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey})
+  smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure})
+    | clientVersion >= sndAuthKeySMPClientVersion && sndSecure = smpEncode (clientVersion, smpServer, senderId, dhPublicKey, sndSecure)
     | clientVersion > initialSMPClientVersion = smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
     | otherwise = smpEncode clientVersion <> legacyEncodeServer smpServer <> smpEncode (senderId, dhPublicKey)
   smpP = do
     clientVersion <- smpP
     smpServer <- if clientVersion > initialSMPClientVersion then smpP else updateSMPServerHosts <$> legacyServerP
     (senderId, dhPublicKey) <- smpP
-    pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey}
+    sndSecure <- fromMaybe False <$> optional smpP
+    pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure}
 
 -- This instance seems contrived and there was a temptation to split a common part of both types.
 -- But this is created to allow backward and forward compatibility where SMPQueueUri
@@ -1153,7 +1172,8 @@ data SMPQueueUri = SMPQueueUri {clientVRange :: VersionRangeSMPC, queueAddress :
 data SMPQueueAddress = SMPQueueAddress
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,
-    dhPublicKey :: C.PublicKeyX25519
+    dhPublicKey :: C.PublicKeyX25519,
+    sndSecure :: Bool
   }
   deriving (Eq, Show)
 
@@ -1180,37 +1200,42 @@ sameQAddress (srv, qId) (srv', qId') = sameSrvAddr srv srv' && qId == qId'
 {-# INLINE sameQAddress #-}
 
 instance StrEncoding SMPQueueUri where
-  strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey})
+  strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey, sndSecure})
     | minVersion vr >= srvHostnamesSMPClientVersion = strEncode srv <> "/" <> strEncode qId <> "#/?" <> query queryParams
     | otherwise = legacyStrEncodeServer srv <> "/" <> strEncode qId <> "#/?" <> query (queryParams <> srvParam)
     where
       query = strEncode . QSP QEscape
-      queryParams = [("v", strEncode vr), ("dh", strEncode dhPublicKey)]
+      queryParams = [("v", strEncode vr), ("dh", strEncode dhPublicKey)] <> [("k", "s") | sndSecure]
       srvParam = [("srv", strEncode $ TransportHosts_ hs) | not (null hs)]
       hs = L.tail $ host srv
   strP = do
     srv@ProtocolServer {host = h :| host} <- strP <* A.char '/'
     senderId <- strP <* optional (A.char '/') <* A.char '#'
-    (vr, hs, dhPublicKey) <- unversioned <|> versioned
+    (vr, hs, dhPublicKey, sndSecure) <- versioned <|> unversioned
     let srv' = srv {host = h :| host <> hs}
         smpServer = if maxVersion vr < srvHostnamesSMPClientVersion then updateSMPServerHosts srv' else srv'
-    pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey}
+    pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure}
     where
-      unversioned = (versionToRange initialSMPClientVersion,[],) <$> strP <* A.endOfInput
+      unversioned = (versionToRange initialSMPClientVersion,[],,False) <$> strP <* A.endOfInput
       versioned = do
         dhKey_ <- optional strP
         query <- optional (A.char '/') *> A.char '?' *> strP
         vr <- queryParam "v" query
         dhKey <- maybe (queryParam "dh" query) pure dhKey_
         hs_ <- queryParam_ "srv" query
-        pure (vr, maybe [] thList_ hs_, dhKey)
+        let sndSecure = queryParamStr "k" query == Just "s"
+        pure (vr, maybe [] thList_ hs_, dhKey, sndSecure)
 
 instance Encoding SMPQueueUri where
-  smpEncode (SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey}) =
-    smpEncode (clientVRange, smpServer, senderId, dhPublicKey)
+  smpEncode (SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure})
+    | maxVersion clientVRange >= sndAuthKeySMPClientVersion && sndSecure =
+        smpEncode (clientVRange, smpServer, senderId, dhPublicKey, sndSecure)
+    | otherwise =
+        smpEncode (clientVRange, smpServer, senderId, dhPublicKey)
   smpP = do
     (clientVRange, smpServer, senderId, dhPublicKey) <- smpP
-    pure $ SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey}
+    sndSecure <- fromMaybe False <$> optional smpP
+    pure $ SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure}
 
 data ConnectionRequestUri (m :: ConnectionMode) where
   CRInvitationUri :: ConnReqUriData -> RcvE2ERatchetParamsUri 'C.X448 -> ConnectionRequestUri CMInvitation

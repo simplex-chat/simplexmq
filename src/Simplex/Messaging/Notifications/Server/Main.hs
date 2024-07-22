@@ -7,6 +7,7 @@
 
 module Simplex.Messaging.Notifications.Server.Main where
 
+import Control.Monad ((<$!>))
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Maybe (fromMaybe)
@@ -14,6 +15,7 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Network.Socket (HostName)
 import Options.Applicative
+import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server (runNtfServer)
@@ -87,6 +89,14 @@ ntfServerCLI cfgPath logPath =
             <> ("port: " <> T.pack defaultServerPort <> "\n")
             <> "log_tls_errors: off\n"
             <> "websockets: off\n\n\
+               \[SUBSCRIBER]\n\
+               \# Network configuration for notification server client.\n\
+               \# SOCKS proxy port for subscribing to SMP servers.\n\
+               \# You may need a separate instance of SOCKS proxy for incoming single-hop requests.\n\
+               \# socks_proxy: localhost:9050\n\n\
+               \# `socks_mode` can be 'onion' for SOCKS proxy to be used for .onion destination hosts only (default)\n\
+               \# or 'always' to be used for all destination hosts (can be used if it is an .onion server).\n\
+               \# socks_mode: onion\n\n\
                \[INACTIVE_CLIENTS]\n\
                \# TTL and interval to check inactive clients\n\
                \disconnect: off\n"
@@ -115,7 +125,18 @@ ntfServerCLI cfgPath logPath =
               clientQSize = 64,
               subQSize = 512,
               pushQSize = 1048,
-              smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 0},
+              smpAgentCfg =
+                defaultSMPClientAgentConfig
+                  { smpCfg =
+                      (smpCfg defaultSMPClientAgentConfig)
+                        { networkConfig =
+                            defaultNetworkConfig
+                              { socksProxy = either error id <$!> strDecodeIni "SUBSCRIBER" "socks_proxy" ini,
+                                socksMode = maybe SMOnion (either error id) $! strDecodeIni "SUBSCRIBER" "socks_mode" ini
+                              }
+                        },
+                    persistErrorInterval = 0 -- seconds
+                  },
               apnsConfig = defaultAPNSPushClientConfig,
               subsBatchSize = 900,
               inactiveClientExpiration =

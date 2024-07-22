@@ -102,8 +102,10 @@ module Simplex.Messaging.Agent.Store.SQLite
     -- Messages
     updateRcvIds,
     createRcvMsg,
+    updateRcvMsgHash,
     updateSndIds,
     createSndMsg,
+    updateSndMsgHash,
     createSndMsgDelivery,
     getSndMsgViaRcpt,
     updateSndMsgRcpt,
@@ -210,6 +212,10 @@ module Simplex.Messaging.Agent.Store.SQLite
     deleteDeletedSndChunkReplica,
     getPendingDelFilesServers,
     deleteDeletedSndChunkReplicasExpired,
+    -- Stats
+    updateServersStats,
+    getServersStats,
+    resetServersStats,
 
     -- * utilities
     withConnection,
@@ -263,6 +269,7 @@ import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
 import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State (..))
+import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Common
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
@@ -806,7 +813,7 @@ setRcvQueueNtfCreds db connId clientNtfCreds =
       Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} -> (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret)
       Nothing -> (Nothing, Nothing, Nothing, Nothing)
 
-type SMPConfirmationRow = (SndPublicAuthKey, C.PublicKeyX25519, ConnInfo, Maybe [SMPQueueInfo], Maybe VersionSMPC)
+type SMPConfirmationRow = (Maybe SndPublicAuthKey, C.PublicKeyX25519, ConnInfo, Maybe [SMPQueueInfo], Maybe VersionSMPC)
 
 smpConfirmation :: SMPConfirmationRow -> SMPConfirmation
 smpConfirmation (senderKey, e2ePubKey, connInfo, smpReplyQueues_, smpClientVersion_) =
@@ -953,10 +960,10 @@ updateRcvIds db connId = do
   pure (internalId, internalRcvId, lastExternalSndId, lastRcvHash)
 
 createRcvMsg :: DB.Connection -> ConnId -> RcvQueue -> RcvMsgData -> IO ()
-createRcvMsg db connId rq rcvMsgData = do
+createRcvMsg db connId rq rcvMsgData@RcvMsgData {msgMeta = MsgMeta {sndMsgId}, internalRcvId, internalHash} = do
   insertRcvMsgBase_ db connId rcvMsgData
   insertRcvMsgDetails_ db connId rq rcvMsgData
-  updateHashRcv_ db connId rcvMsgData
+  updateRcvMsgHash db connId sndMsgId internalRcvId internalHash
 
 updateSndIds :: DB.Connection -> ConnId -> IO (InternalId, InternalSndId, PrevSndMsgHash)
 updateSndIds db connId = do
@@ -967,10 +974,10 @@ updateSndIds db connId = do
   pure (internalId, internalSndId, prevSndHash)
 
 createSndMsg :: DB.Connection -> ConnId -> SndMsgData -> IO ()
-createSndMsg db connId sndMsgData = do
+createSndMsg db connId sndMsgData@SndMsgData {internalSndId, internalHash} = do
   insertSndMsgBase_ db connId sndMsgData
   insertSndMsgDetails_ db connId sndMsgData
-  updateHashSnd_ db connId sndMsgData
+  updateSndMsgHash db connId internalSndId internalHash
 
 createSndMsgDelivery :: DB.Connection -> ConnId -> SndQueue -> InternalId -> IO ()
 createSndMsgDelivery db connId SndQueue {dbQueueId} msgId =
@@ -1450,23 +1457,24 @@ getNtfSubscription db connId =
     DB.query
       db
       [sql|
-        SELECT s.host, s.port, COALESCE(nsb.smp_server_key_hash, s.key_hash), ns.ntf_host, ns.ntf_port, ns.ntf_key_hash,
+        SELECT c.user_id, s.host, s.port, COALESCE(nsb.smp_server_key_hash, s.key_hash), ns.ntf_host, ns.ntf_port, ns.ntf_key_hash,
           nsb.smp_ntf_id, nsb.ntf_sub_id, nsb.ntf_sub_status, nsb.ntf_sub_action, nsb.ntf_sub_smp_action, nsb.ntf_sub_action_ts
         FROM ntf_subscriptions nsb
+        JOIN connections c USING (conn_id)
         JOIN servers s ON s.host = nsb.smp_host AND s.port = nsb.smp_port
         JOIN ntf_servers ns USING (ntf_host, ntf_port)
         WHERE nsb.conn_id = ?
       |]
       (Only connId)
   where
-    ntfSubscription (smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, ntfAction_, smpAction_, actionTs_) =
+    ntfSubscription ((userId, smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash ) :. (ntfQueueId, ntfSubId, ntfSubStatus, ntfAction_, smpAction_, actionTs_)) =
       let smpServer = SMPServer smpHost smpPort smpKeyHash
           ntfServer = NtfServer ntfHost ntfPort ntfKeyHash
           action = case (ntfAction_, smpAction_, actionTs_) of
-            (Just ntfAction, Nothing, Just actionTs) -> Just (NtfSubNTFAction ntfAction, actionTs)
-            (Nothing, Just smpAction, Just actionTs) -> Just (NtfSubSMPAction smpAction, actionTs)
+            (Just ntfAction, Nothing, Just actionTs) -> Just (NSANtf ntfAction, actionTs)
+            (Nothing, Just smpAction, Just actionTs) -> Just (NSASMP smpAction, actionTs)
             _ -> Nothing
-       in (NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}, action)
+       in (NtfSubscription {userId, connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}, action)
 
 createNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubAction -> IO (Either StoreError ())
 createNtfSubscription db ntfSubscription action = runExceptT $ do
@@ -1600,18 +1608,19 @@ getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) =
         DB.query
           db
           [sql|
-            SELECT s.host, s.port, COALESCE(ns.smp_server_key_hash, s.key_hash),
+            SELECT c.user_id, s.host, s.port, COALESCE(ns.smp_server_key_hash, s.key_hash),
               ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_action
             FROM ntf_subscriptions ns
+            JOIN connections c USING (conn_id)
             JOIN servers s ON s.host = ns.smp_host AND s.port = ns.smp_port
             WHERE ns.conn_id = ?
           |]
           (Only connId)
       where
         err = SEInternal $ "ntf subscription " <> bshow connId <> " returned []"
-        ntfSubAction (smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
+        ntfSubAction (userId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
           let smpServer = SMPServer smpHost smpPort smpKeyHash
-              ntfSubscription = NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
+              ntfSubscription = NtfSubscription {userId, connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
            in (ntfSubscription, action, actionTs)
 
 markNtfSubActionNtfFailed_ :: DB.Connection -> ConnId -> IO ()
@@ -1643,18 +1652,19 @@ getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) =
         DB.query
           db
           [sql|
-            SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
+            SELECT c.user_id, s.ntf_host, s.ntf_port, s.ntf_key_hash,
               ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_smp_action
             FROM ntf_subscriptions ns
+            JOIN connections c USING (conn_id)
             JOIN ntf_servers s USING (ntf_host, ntf_port)
             WHERE ns.conn_id = ?
           |]
           (Only connId)
       where
         err = SEInternal $ "ntf subscription " <> bshow connId <> " returned []"
-        ntfSubAction (ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
+        ntfSubAction (userId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
           let ntfServer = NtfServer ntfHost ntfPort ntfKeyHash
-              ntfSubscription = NtfSubscription {connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
+              ntfSubscription = NtfSubscription {userId, connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
            in (ntfSubscription, action, actionTs)
 
 markNtfSubActionSMPFailed_ :: DB.Connection -> ConnId -> IO ()
@@ -1861,28 +1871,34 @@ upsertNtfServer_ db ProtocolServer {host, port, keyHash} = do
 
 insertRcvQueue_ :: DB.Connection -> ConnId -> NewRcvQueue -> Maybe C.KeyHash -> IO RcvQueue
 insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
-  qId <- newQueueId_ <$> DB.query db "SELECT rcv_queue_id FROM rcv_queues WHERE conn_id = ? ORDER BY rcv_queue_id DESC LIMIT 1" (Only connId')
+  -- to preserve ID if the queue already exists.
+  -- possibly, it can be done in one query.
+  currQId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT rcv_queue_id FROM rcv_queues WHERE conn_id = ? AND host = ? AND port = ? AND snd_id = ?" (connId', host server, port server, sndId)
+  qId <- maybe (newQueueId_ <$> DB.query db "SELECT rcv_queue_id FROM rcv_queues WHERE conn_id = ? ORDER BY rcv_queue_id DESC LIMIT 1" (Only connId')) pure currQId_
   DB.execute
     db
     [sql|
       INSERT INTO rcv_queues
-        (host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, status, rcv_queue_id, rcv_primary, replace_rcv_queue_id, smp_client_version, server_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+        (host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, snd_secure, status, rcv_queue_id, rcv_primary, replace_rcv_queue_id, smp_client_version, server_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
-    ((host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret) :. (sndId, status, qId, primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
+    ((host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret) :. (sndId, sndSecure, status, qId, primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
   pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId}
 
 -- * createSndConn helpers
 
 insertSndQueue_ :: DB.Connection -> ConnId -> NewSndQueue -> Maybe C.KeyHash -> IO SndQueue
 insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
-  qId <- newQueueId_ <$> DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? ORDER BY snd_queue_id DESC LIMIT 1" (Only connId')
+  -- to preserve ID if the queue already exists.
+  -- possibly, it can be done in one query.
+  currQId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? AND host = ? AND port = ? AND snd_id = ?" (connId', host server, port server, sndId)
+  qId <- maybe (newQueueId_ <$> DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? ORDER BY snd_queue_id DESC LIMIT 1" (Only connId')) pure currQId_
   DB.execute
     db
     [sql|
       INSERT OR REPLACE INTO snd_queues
-        (host, port, snd_id, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, snd_queue_id, snd_primary, replace_snd_queue_id, smp_client_version, server_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+        (host, port, snd_id, snd_secure, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, snd_queue_id, snd_primary, replace_snd_queue_id, smp_client_version, server_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
-    ((host server, port server, sndId, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) :. (status, qId, primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
+    ((host server, port server, sndId, sndSecure, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) :. (status, qId, primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
   pure (sq :: NewSndQueue) {connId = connId', dbQueueId = qId}
 
 newQueueId_ :: [Only Int64] -> DBQueueId 'QSStored
@@ -2004,7 +2020,7 @@ rcvQueueQuery :: Query
 rcvQueueQuery =
   [sql|
     SELECT c.user_id, COALESCE(q.server_key_hash, s.key_hash), q.conn_id, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
-      q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.status,
+      q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.snd_secure, q.status,
       q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id, q.switch_status, q.smp_client_version, q.delete_errors,
       q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret
     FROM rcv_queues q
@@ -2013,17 +2029,17 @@ rcvQueueQuery =
   |]
 
 toRcvQueue ::
-  (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateAuthKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, QueueStatus)
-    :. (DBQueueId 'QSStored, Bool, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int)
+  (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateAuthKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, SenderCanSecure)
+    :. (QueueStatus, DBQueueId 'QSStored, Bool, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int)
     :. (Maybe SMP.NtfPublicAuthKey, Maybe SMP.NtfPrivateAuthKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret) ->
   RcvQueue
-toRcvQueue ((userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status) :. (dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
+toRcvQueue ((userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, sndSecure) :. (status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
   let server = SMPServer host port keyHash
       smpClientVersion = fromMaybe initialSMPClientVersion smpClientVersion_
       clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
         (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
         _ -> Nothing
-   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
+   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, sndSecure, status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
 
 getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById db connId dbRcvId =
@@ -2044,7 +2060,7 @@ sndQueueQuery :: Query
 sndQueueQuery =
   [sql|
     SELECT
-      c.user_id, COALESCE(q.server_key_hash, s.key_hash), q.conn_id, q.host, q.port, q.snd_id,
+      c.user_id, COALESCE(q.server_key_hash, s.key_hash), q.conn_id, q.host, q.port, q.snd_id, q.snd_secure,
       q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status,
       q.snd_queue_id, q.snd_primary, q.replace_snd_queue_id, q.switch_status, q.smp_client_version
     FROM snd_queues q
@@ -2053,17 +2069,18 @@ sndQueueQuery =
   |]
 
 toSndQueue ::
-  (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SenderId)
+  (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SenderId, SenderCanSecure)
     :. (Maybe SndPublicAuthKey, SndPrivateAuthKey, Maybe C.PublicKeyX25519, C.DhSecretX25519, QueueStatus)
     :. (DBQueueId 'QSStored, Bool, Maybe Int64, Maybe SndSwitchStatus, VersionSMPC) ->
   SndQueue
 toSndQueue
-  ( (userId, keyHash, connId, host, port, sndId)
-      :. (sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status)
+  ( (userId, keyHash, connId, host, port, sndId, sndSecure)
+      :. (sndPubKey, sndPrivateKey@(C.APrivateAuthKey a pk), e2ePubKey, e2eDhSecret, status)
       :. (dbQueueId, primary, dbReplaceQueueId, sndSwchStatus, smpClientVersion)
     ) =
     let server = SMPServer host port keyHash
-     in SndQueue {userId, connId, server, sndId, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbQueueId, primary, dbReplaceQueueId, sndSwchStatus, smpClientVersion}
+        sndPublicKey = fromMaybe (C.APublicAuthKey a (C.publicKey pk)) sndPubKey
+     in SndQueue {userId, connId, server, sndId, sndSecure, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbQueueId, primary, dbReplaceQueueId, sndSwchStatus, smpClientVersion}
 
 getSndQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError SndQueue)
 getSndQueueById db connId dbSndId =
@@ -2142,10 +2159,10 @@ insertRcvMsgDetails_ db connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, interna
     ]
   DB.execute db "INSERT INTO encrypted_rcv_message_hashes (conn_id, hash) VALUES (?,?)" (connId, encryptedMsgHash)
 
-updateHashRcv_ :: DB.Connection -> ConnId -> RcvMsgData -> IO ()
-updateHashRcv_ dbConn connId RcvMsgData {msgMeta = MsgMeta {sndMsgId}, internalHash, internalRcvId} =
+updateRcvMsgHash :: DB.Connection -> ConnId -> AgentMsgId -> InternalRcvId -> MsgHash -> IO ()
+updateRcvMsgHash db connId sndMsgId internalRcvId internalHash =
   DB.executeNamed
-    dbConn
+    db
     -- last_internal_rcv_msg_id equality check prevents race condition in case next id was reserved
     [sql|
       UPDATE connections
@@ -2221,10 +2238,10 @@ insertSndMsgDetails_ dbConn connId SndMsgData {..} =
       ":previous_msg_hash" := prevMsgHash
     ]
 
-updateHashSnd_ :: DB.Connection -> ConnId -> SndMsgData -> IO ()
-updateHashSnd_ dbConn connId SndMsgData {..} =
+updateSndMsgHash :: DB.Connection -> ConnId -> InternalSndId -> MsgHash -> IO ()
+updateSndMsgHash db connId internalSndId internalHash =
   DB.executeNamed
-    dbConn
+    db
     -- last_internal_snd_msg_id equality check prevents race condition in case next id was reserved
     [sql|
       UPDATE connections
@@ -2258,8 +2275,8 @@ randomId :: TVar ChaChaDRG -> Int -> IO ByteString
 randomId gVar n = atomically $ U.encode <$> C.randomBytes n gVar
 
 ntfSubAndSMPAction :: NtfSubAction -> (Maybe NtfSubNTFAction, Maybe NtfSubSMPAction)
-ntfSubAndSMPAction (NtfSubNTFAction action) = (Just action, Nothing)
-ntfSubAndSMPAction (NtfSubSMPAction action) = (Nothing, Just action)
+ntfSubAndSMPAction (NSANtf action) = (Just action, Nothing)
+ntfSubAndSMPAction (NSASMP action) = (Nothing, Just action)
 
 createXFTPServer_ :: DB.Connection -> XFTPServer -> IO Int64
 createXFTPServer_ db newSrv@ProtocolServer {host, port, keyHash} =
@@ -3016,6 +3033,20 @@ deleteDeletedSndChunkReplicasExpired :: DB.Connection -> NominalDiffTime -> IO (
 deleteDeletedSndChunkReplicasExpired db ttl = do
   cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.execute db "DELETE FROM deleted_snd_chunk_replicas WHERE created_at < ?" (Only cutoffTs)
+
+updateServersStats :: DB.Connection -> AgentPersistedServerStats -> IO ()
+updateServersStats db stats = do
+  updatedAt <- getCurrentTime
+  DB.execute db "UPDATE servers_stats SET servers_stats = ?, updated_at = ? WHERE servers_stats_id = 1" (stats, updatedAt)
+
+getServersStats :: DB.Connection -> IO (Either StoreError (UTCTime, Maybe AgentPersistedServerStats))
+getServersStats db =
+  firstRow id SEServersStatsNotFound $
+    DB.query_ db "SELECT started_at, servers_stats FROM servers_stats WHERE servers_stats_id = 1"
+
+resetServersStats :: DB.Connection -> UTCTime -> IO ()
+resetServersStats db startedAt =
+  DB.execute db "UPDATE servers_stats SET servers_stats = NULL, started_at = ?, updated_at = ? WHERE servers_stats_id = 1" (startedAt, startedAt)
 
 $(J.deriveJSON defaultJSON ''UpMigration)
 

@@ -43,7 +43,7 @@ module Simplex.Messaging.Protocol
   ( -- * SMP protocol parameters
     supportedSMPClientVRange,
     maxMessageLength,
-    paddedProxiedMsgLength,
+    paddedProxiedTLength,
     e2eEncConfirmationLength,
     e2eEncMessageLength,
 
@@ -55,6 +55,7 @@ module Simplex.Messaging.Protocol
     ProtocolEncoding (..),
     Command (..),
     SubscriptionMode (..),
+    SenderCanSecure,
     Party (..),
     Cmd (..),
     DirectParty,
@@ -135,6 +136,7 @@ module Simplex.Messaging.Protocol
     FwdTransmission (..),
     MsgFlags (..),
     initialSMPClientVersion,
+    currentSMPClientVersion,
     userProtocol,
     rcvMessageMeta,
     noMsgFlags,
@@ -155,6 +157,7 @@ module Simplex.Messaging.Protocol
     legacyServerP,
     legacyStrEncodeServer,
     srvHostnamesSMPClientVersion,
+    sndAuthKeySMPClientVersion,
     sameSrvAddr,
     sameSrvAddr',
     noAuthSrv,
@@ -242,8 +245,11 @@ initialSMPClientVersion = VersionSMPC 1
 srvHostnamesSMPClientVersion :: VersionSMPC
 srvHostnamesSMPClientVersion = VersionSMPC 2
 
+sndAuthKeySMPClientVersion :: VersionSMPC
+sndAuthKeySMPClientVersion = VersionSMPC 3
+
 currentSMPClientVersion :: VersionSMPC
-currentSMPClientVersion = VersionSMPC 2
+currentSMPClientVersion = VersionSMPC 3
 
 supportedSMPClientVRange :: VersionRangeSMPC
 supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClientVersion
@@ -254,8 +260,8 @@ maxMessageLength v
   | v >= sendingProxySMPVersion = 16064 -- max 16067
   | otherwise = 16088 -- 16064 - always use this size to determine allowed ranges
 
-paddedProxiedMsgLength :: Int
-paddedProxiedMsgLength = 16242 -- 16241 .. 16243
+paddedProxiedTLength :: Int
+paddedProxiedTLength = 16242 -- 16241 .. 16243
 
 -- TODO v6.0 change to 16064
 type MaxMessageLen = 16088
@@ -381,7 +387,7 @@ data Command (p :: Party) where
   -- v6 of SMP servers only support signature algorithm for command authorization.
   -- v7 of SMP servers additionally support additional layer of authenticated encryption.
   -- RcvPublicAuthKey is defined as C.APublicKey - it can be either signature or DH public keys.
-  NEW :: RcvPublicAuthKey -> RcvPublicDhKey -> Maybe BasicAuth -> SubscriptionMode -> Command Recipient
+  NEW :: RcvPublicAuthKey -> RcvPublicDhKey -> Maybe BasicAuth -> SubscriptionMode -> SenderCanSecure -> Command Recipient
   SUB :: Command Recipient
   KEY :: SndPublicAuthKey -> Command Recipient
   NKEY :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> Command Recipient
@@ -398,6 +404,7 @@ data Command (p :: Party) where
   CLR :: Command Recipient
   READ :: Command Sender
   -- SMP sender commands
+  SKEY :: SndPublicAuthKey -> Command Sender
   -- SEND v1 has to be supported for encoding/decoding
   -- SEND :: MsgBody -> Command Sender
   SEND :: MsgFlags -> MsgBody -> Command Sender
@@ -440,6 +447,8 @@ instance Encoding SubscriptionMode where
       'S' -> pure SMSubscribe
       'C' -> pure SMOnlyCreate
       _ -> fail "bad SubscriptionMode"
+
+type SenderCanSecure = Bool
 
 newtype EncTransmission = EncTransmission ByteString
   deriving (Show)
@@ -677,6 +686,7 @@ data CommandTag (p :: Party) where
   WRT_ :: CommandTag Recipient
   CLR_ :: CommandTag Recipient
   READ_ :: CommandTag Sender
+  SKEY_ :: CommandTag Sender
   SEND_ :: CommandTag Sender
   PING_ :: CommandTag Sender
   PRXY_ :: CommandTag ProxiedClient
@@ -729,6 +739,7 @@ instance PartyI p => Encoding (CommandTag p) where
     WRT_ -> "WRT"
     CLR_ -> "CLR"
     READ_ -> "READ"
+    SKEY_ -> "SKEY"
     SEND_ -> "SEND"
     PING_ -> "PING"
     PRXY_ -> "PRXY"
@@ -752,6 +763,7 @@ instance ProtocolMsgTag CmdTag where
     "WRT" -> Just $ CT SRecipient WRT_
     "CLR" -> Just $ CT SRecipient CLR_
     "READ" -> Just $ CT SSender READ_
+    "SKEY" -> Just $ CT SSender SKEY_
     "SEND" -> Just $ CT SSender SEND_
     "PING" -> Just $ CT SSender PING_
     "PRXY" -> Just $ CT SProxiedClient PRXY_
@@ -1128,7 +1140,8 @@ instance FromJSON CorrId where
 data QueueIdsKeys = QIK
   { rcvId :: RecipientId,
     sndId :: SenderId,
-    rcvPublicDhKey :: RcvPublicDhKey
+    rcvPublicDhKey :: RcvPublicDhKey,
+    sndSecure :: SenderCanSecure
   }
   deriving (Eq, Show)
 
@@ -1306,7 +1319,8 @@ class ProtocolMsgTag (Tag msg) => ProtocolEncoding v err msg | msg -> err, msg -
 instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol v = \case
-    NEW rKey dhKey auth_ subMode
+    NEW rKey dhKey auth_ subMode sndSecure
+      | v >= sndAuthKeySMPVersion -> new <> e (auth_, subMode, sndSecure)
       | v >= subModeSMPVersion -> new <> auth <> e subMode
       | v == basicAuthSMPVersion -> new <> auth
       | otherwise -> new
@@ -1325,6 +1339,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     WRT k blob -> e (WRT_, ' ', k, Tail blob)
     CLR -> e CLR_
     READ -> e READ_
+    SKEY k -> e (SKEY_, ' ', k)
     SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
@@ -1349,6 +1364,9 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     -- SEND must have queue ID, signature is not always required
     SEND {}
       | B.null entId -> Left $ CMD NO_ENTITY
+      | otherwise -> Right cmd
+    SKEY _
+      | isNothing auth || B.null entId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
     PING -> noAuthCmd
     PRXY {} -> noAuthCmd
@@ -1376,9 +1394,10 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
         NEW_
-          | v >= subModeSMPVersion -> new <*> auth <*> smpP
-          | v == basicAuthSMPVersion -> new <*> auth <*> pure SMSubscribe
-          | otherwise -> new <*> pure Nothing <*> pure SMSubscribe
+          | v >= sndAuthKeySMPVersion -> new <*> smpP <*> smpP <*> smpP
+          | v >= subModeSMPVersion -> new <*> auth <*> smpP <*> pure False
+          | v == basicAuthSMPVersion -> new <*> auth <*> pure SMSubscribe <*> pure False
+          | otherwise -> new <*> pure Nothing <*> pure SMSubscribe <*> pure False
           where
             new = NEW <$> _smpP <*> smpP
             auth = optional (A.char 'A' *> smpP)
@@ -1395,6 +1414,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
         CLR_ -> pure CLR
     CT SSender tag ->
       Cmd SSender <$> case tag of
+        SKEY_ -> SKEY <$> _smpP
         SEND_ -> SEND <$> _smpP <*> (unTail <$> _smpP)
         READ_ -> pure READ
         PING_ -> pure PING
@@ -1412,8 +1432,12 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
 
 instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
-  encodeProtocol _v = \case
-    IDS (QIK rcvId sndId srvDh) -> e (IDS_, ' ', rcvId, sndId, srvDh)
+  encodeProtocol v = \case
+    IDS (QIK rcvId sndId srvDh sndSecure)
+      | v >= sndAuthKeySMPVersion -> ids <> e sndSecure
+      | otherwise -> ids
+      where
+        ids = e (IDS_, ' ', rcvId, sndId, srvDh)
     MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body} ->
       e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
@@ -1431,13 +1455,17 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       e :: Encoding a => a -> ByteString
       e = smpEncode
 
-  protocolP _v = \case
+  protocolP v = \case
     MSG_ -> do
       msgId <- _smpP
       MSG . RcvMessage msgId <$> bodyP
       where
         bodyP = EncRcvMsgBody . unTail <$> smpP
-    IDS_ -> IDS <$> (QIK <$> _smpP <*> smpP <*> smpP)
+    IDS_
+      | v >= sndAuthKeySMPVersion -> ids smpP
+      | otherwise -> ids $ pure False
+      where
+        ids p = IDS <$> (QIK <$> _smpP <*> smpP <*> smpP <*> p)
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> ((,) <$> C.certChainP <*> (C.getSignedExact <$> smpP))

@@ -1,0 +1,23 @@
+sequenceDiagram
+  participant A as Alice (sender)
+  participant S as XFTP server(s)
+  participant B as recipient(s)
+
+  note over A: 1. prepare file:<br>encrypt,<br>split into chunks,<br>generate recipient<br>keys, etc.
+
+  loop for each chunk
+    A ->> S: 2a. register chunk ("FNEW")
+    S ->> A: respond with sender's and recipients' chunk IDs ("SIDS")
+
+    opt
+      A ->> S: 2b. request additional recipient IDs ("FADD")
+      S ->> A: respond with added recipients' chunk IDs ("RIDS")
+    end
+
+    A ->> S: 2c. upload chunk to chosen server ("FPUT")
+    S ->> A: respond with ok ("OK")
+  end
+
+  note over A: 3. prepare file description(s)
+
+  A -->> B: 4. send file description(s) out-of-band

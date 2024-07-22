@@ -46,6 +46,7 @@ module Simplex.Messaging.Transport
     subModeSMPVersion,
     authCmdsSMPVersion,
     sendingProxySMPVersion,
+    sndAuthKeySMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -83,7 +84,7 @@ module Simplex.Messaging.Transport
 where
 
 import Control.Applicative (optional)
-import Control.Monad (forM)
+import Control.Monad (forM, (<$!>))
 import Control.Monad.Except
 import Control.Monad.Trans.Except (throwE)
 import qualified Data.Aeson.TH as J
@@ -156,14 +157,17 @@ authCmdsSMPVersion = VersionSMP 7
 sendingProxySMPVersion :: VersionSMP
 sendingProxySMPVersion = VersionSMP 8
 
+sndAuthKeySMPVersion :: VersionSMP
+sndAuthKeySMPVersion = VersionSMP 9
+
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 8
+currentClientSMPRelayVersion = VersionSMP 9
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 8
+currentServerSMPRelayVersion = VersionSMP 9
 
 -- Max SMP protocol version to be used in e2e encrypted
 -- connection between client and server, as defined by SMP proxy.
@@ -171,7 +175,7 @@ currentServerSMPRelayVersion = VersionSMP 8
 -- to prevent client version fingerprinting by the
 -- destination relays when clients upgrade at different times.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 8
+proxiedSMPRelayVersion = VersionSMP 9
 
 -- minimal supported protocol version is 4
 -- TODO remove code that supports sending commands without batching
@@ -540,12 +544,12 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) smpVRange = do
 
 smpTHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> VersionRangeSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandleSMP c 'TServer
 smpTHandleServer th v vr pk k_ =
-  let thAuth = THAuthServer {serverPrivKey = pk, sessSecret' = (`C.dh'` pk) <$> k_}
+  let thAuth = THAuthServer {serverPrivKey = pk, sessSecret' = (`C.dh'` pk) <$!> k_}
    in smpTHandle_ th v vr (Just thAuth)
 
 smpTHandleClient :: forall c. THandleSMP c 'TClient -> VersionSMP -> VersionRangeSMP -> Maybe C.PrivateKeyX25519 -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> THandleSMP c 'TClient
 smpTHandleClient th v vr pk_ ck_ =
-  let thAuth = (\(k, ck) -> THAuthClient {serverPeerPubKey = k, serverCertKey = ck, sessSecret = C.dh' k <$> pk_}) <$> ck_
+  let thAuth = (\(k, ck) -> THAuthClient {serverPeerPubKey = k, serverCertKey = forceCertChain ck, sessSecret = C.dh' k <$!> pk_}) <$!> ck_
    in smpTHandle_ th v vr thAuth
 
 smpTHandle_ :: forall c p. THandleSMP c p -> VersionSMP -> VersionRangeSMP -> Maybe (THandleAuth p) -> THandleSMP c p
@@ -553,6 +557,10 @@ smpTHandle_ th@THandle {params} v vr thAuth =
   -- TODO drop SMP v6: make thAuth non-optional
   let params' = params {thVersion = v, thServerVRange = vr, thAuth, implySessId = v >= authCmdsSMPVersion}
    in (th :: THandleSMP c p) {params = params'}
+
+{-# INLINE forceCertChain #-}
+forceCertChain :: (X.CertificateChain, X.SignedExact T.PubKey) -> (X.CertificateChain, X.SignedExact T.PubKey)
+forceCertChain cert@(X.CertificateChain cc, signedKey) = length (show cc) `seq` show signedKey `seq` cert
 
 -- This function is only used with v >= 8, so currently it's a simple record update.
 -- It may require some parameters update in the future, to be consistent with smpTHandle_.

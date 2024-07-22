@@ -48,7 +48,6 @@ data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport)],
     smpHandshakeTimeout :: Int,
     tbqSize :: Natural,
-    -- serverTbqSize :: Natural,
     msgQueueQuota :: Int,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
@@ -131,10 +130,12 @@ data Env = Env
     proxyAgent :: ProxyAgent -- senders served on this proxy
   }
 
+type Subscribed = Bool
+
 data Server = Server
-  { subscribedQ :: TQueue (RecipientId, Client),
+  { subscribedQ :: TQueue (RecipientId, Client, Subscribed),
     subscribers :: TMap RecipientId Client,
-    ntfSubscribedQ :: TQueue (NotifierId, Client),
+    ntfSubscribedQ :: TQueue (NotifierId, Client, Subscribed),
     notifiers :: TMap NotifierId Client,
     savingLock :: Lock
   }
@@ -147,7 +148,7 @@ type ClientId = Int
 
 data Client = Client
   { clientId :: ClientId,
-    subscriptions :: TMap RecipientId (TVar Sub),
+    subscriptions :: TMap RecipientId Sub,
     ntfSubscriptions :: TMap NotifierId (),
     rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
@@ -166,7 +167,7 @@ data Client = Client
 data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId) | ProhibitSub
 
 data Sub = Sub
-  { subThread :: SubscriptionThread,
+  { subThread :: TVar SubscriptionThread,
     delivered :: TMVar MsgId
   }
 
@@ -196,8 +197,9 @@ newClient nextClientId qSize thVersion sessionId createdAt = do
   return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, procThreads, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
-newSubscription subThread = do
+newSubscription st = do
   delivered <- newEmptyTMVar
+  subThread <- newTVar st
   return Sub {subThread, delivered}
 
 newEnv :: ServerConfig -> IO Env

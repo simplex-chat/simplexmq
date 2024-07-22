@@ -1,3 +1,13 @@
+# 5.8.2
+
+Agent:
+- fast handshake support (disabled).
+- new statistics api.
+
+SMP server:
+- fast handshake support (SKEY command).
+- minor changes to reduce memory usage.
+
 # 5.8.1
 
 Agent:
