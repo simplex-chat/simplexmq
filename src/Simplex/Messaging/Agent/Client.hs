@@ -2010,14 +2010,32 @@ data ServerSessions = ServerSessions
   }
   deriving (Show)
 
-getAgentSubsTotal :: AgentClient -> [UserId] -> IO SMPServerSubs
+getAgentSubsTotal :: AgentClient -> [UserId] -> IO (SMPServerSubs, ServerSessions)
 getAgentSubsTotal c userIds = do
-  subs <- M.foldrWithKey' (addSub incActive) (SMPServerSubs 0 0) <$> readTVarIO (getRcvQueues $ activeSubs c)
-  M.foldrWithKey' (addSub incPending) subs <$> readTVarIO (getRcvQueues $ pendingSubs c)
+  subs <- getServerSubs
+  sess <- countSessions =<< readTVarIO (smpClients c)
+  pure (subs, sess)
   where
-    addSub f (userId, _, _) _ = if userId `elem` userIds then f else id
-    incActive ss = ss {ssActive = ssActive ss + 1}
-    incPending ss = ss {ssPending = ssPending ss + 1}
+    getServerSubs = do
+      subs <- M.foldrWithKey' (addSub incActive) (SMPServerSubs 0 0) <$> readTVarIO (getRcvQueues $ activeSubs c)
+      M.foldrWithKey' (addSub incPending) subs <$> readTVarIO (getRcvQueues $ pendingSubs c)
+      where
+        addSub f (userId, _, _) _ = if userId `elem` userIds then f else id
+        incActive ss = ss {ssActive = ssActive ss + 1}
+        incPending ss = ss {ssPending = ssPending ss + 1}
+    countSessions :: Map (TransportSession msg) (ClientVar msg) -> IO ServerSessions
+    countSessions = foldM addClient (ServerSessions 0 0 0) . M.toList
+      where
+        addClient !acc ((userId, _, _), SessionVar {sessionVar})
+          | userId `elem` userIds = do
+              c_ <- atomically $ tryReadTMVar sessionVar
+              pure $ modifySessions c_ acc
+          | otherwise = pure acc
+          where
+            modifySessions c_ ss = case c_ of
+              Just (Right _) -> ss {ssConnected = ssConnected ss + 1}
+              Just (Left _) -> ss {ssErrors = ssErrors ss + 1}
+              Nothing -> ss {ssConnecting = ssConnecting ss + 1}
 
 getAgentServersSummary :: AgentClient -> IO AgentServersSummary
 getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, srvStatsStartedAt, agentEnv} = do
