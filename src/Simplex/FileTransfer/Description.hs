@@ -52,7 +52,7 @@ import Data.Int (Int64)
 import Data.List (foldl', sortOn)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Map (Map)
+import Data.Map.Strict (Map)
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
 import Data.String
