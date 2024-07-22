@@ -1984,15 +1984,6 @@ incXFTPServerStat_ AgentClient {xftpServersStats} userId srv sel n = do
       modifyTVar' (sel newStats) (+ n)
       TM.insert (userId, srv) newStats xftpServersStats
 
-getAgentSubsTotal :: AgentClient -> [UserId] -> IO SMPServerSubs
-getAgentSubsTotal c userIds = do
-  subs <- M.foldrWithKey' (addSub incActive) (SMPServerSubs 0 0) <$> readTVarIO (getRcvQueues $ activeSubs c)
-  M.foldrWithKey' (addSub incPending) subs <$> readTVarIO (getRcvQueues $ pendingSubs c)
-  where
-    addSub f (userId, _, _) _ = if userId `elem` userIds then f else id
-    incActive ss = ss {ssActive = ssActive ss + 1}
-    incPending ss = ss {ssPending = ssPending ss + 1}
-
 data AgentServersSummary = AgentServersSummary
   { smpServersStats :: Map (UserId, SMPServer) AgentSMPServerStatsData,
     xftpServersStats :: Map (UserId, XFTPServer) AgentXFTPServerStatsData,
@@ -2018,6 +2009,15 @@ data ServerSessions = ServerSessions
     ssConnecting :: Int
   }
   deriving (Show)
+
+getAgentSubsTotal :: AgentClient -> [UserId] -> IO SMPServerSubs
+getAgentSubsTotal c userIds = do
+  subs <- M.foldrWithKey' (addSub incActive) (SMPServerSubs 0 0) <$> readTVarIO (getRcvQueues $ activeSubs c)
+  M.foldrWithKey' (addSub incPending) subs <$> readTVarIO (getRcvQueues $ pendingSubs c)
+  where
+    addSub f (userId, _, _) _ = if userId `elem` userIds then f else id
+    incActive ss = ss {ssActive = ssActive ss + 1}
+    incPending ss = ss {ssPending = ssPending ss + 1}
 
 getAgentServersSummary :: AgentClient -> IO AgentServersSummary
 getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, srvStatsStartedAt, agentEnv} = do
