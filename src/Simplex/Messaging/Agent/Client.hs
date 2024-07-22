@@ -2010,28 +2010,22 @@ data ServerSessions = ServerSessions
   }
   deriving (Show)
 
-getAgentSubsTotal :: AgentClient -> [UserId] -> IO (SMPServerSubs, ServerSessions)
+getAgentSubsTotal :: AgentClient -> [UserId] -> IO (SMPServerSubs, Bool)
 getAgentSubsTotal c userIds = do
   ssActive <- getSubsCount activeSubs
   ssPending <- getSubsCount pendingSubs
-  sess <- countSessions =<< readTVarIO (smpClients c)
+  sess <- hasSession . M.toList =<< readTVarIO (smpClients c)
   pure (SMPServerSubs {ssActive, ssPending}, sess)
   where
     getSubsCount subs = M.foldrWithKey' addSub 0 <$> readTVarIO (getRcvQueues $ subs c)
     addSub (userId, _, _) _ cnt = if userId `elem` userIds then cnt + 1 else cnt
-    countSessions :: Map (TransportSession msg) (ClientVar msg) -> IO ServerSessions
-    countSessions = foldM addClient (ServerSessions 0 0 0) . M.toList
-      where
-        addClient !acc ((userId, _, _), SessionVar {sessionVar})
-          | userId `elem` userIds = do
-              c_ <- atomically $ tryReadTMVar sessionVar
-              pure $ modifySessions c_ acc
-          | otherwise = pure acc
-          where
-            modifySessions c_ ss = case c_ of
-              Just (Right _) -> ss {ssConnected = ssConnected ss + 1}
-              Just (Left _) -> ss {ssErrors = ssErrors ss + 1}
-              Nothing -> ss {ssConnecting = ssConnecting ss + 1}
+    hasSession :: [(SMPTransportSession, SMPClientVar)] -> IO Bool
+    hasSession = \case
+      [] -> pure False
+      (s : ss) -> ifM (isConnected s) (pure True) (hasSession ss)
+    isConnected ((userId, _, _), SessionVar {sessionVar})
+      | userId `elem` userIds = atomically $ maybe False isRight <$> tryReadTMVar sessionVar
+      | otherwise = pure False
 
 getAgentServersSummary :: AgentClient -> IO AgentServersSummary
 getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, srvStatsStartedAt, agentEnv} = do
