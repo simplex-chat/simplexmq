@@ -148,10 +148,7 @@ data AgentConfig = AgentConfig
     xftpMaxRecipientsPerRequest :: Int,
     deleteErrorCount :: Int,
     ntfCron :: Word16,
-    ntfWorkerDelay :: Int,
-    ntfSMPWorkerDelay :: Int,
     ntfSubCheckInterval :: NominalDiffTime,
-    ntfMaxMessages :: Int,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
@@ -220,10 +217,7 @@ defaultAgentConfig =
       xftpMaxRecipientsPerRequest = 200,
       deleteErrorCount = 10,
       ntfCron = 20, -- minutes
-      ntfWorkerDelay = 100000, -- microseconds
-      ntfSMPWorkerDelay = 500000, -- microseconds
       ntfSubCheckInterval = nominalDay,
-      ntfMaxMessages = 3,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
