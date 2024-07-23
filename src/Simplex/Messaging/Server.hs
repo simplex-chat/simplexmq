@@ -1441,12 +1441,12 @@ saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessag
         readTVarIO ms >>= mapM_ (saveQueueMsgs h) . M.assocs
       logInfo "messages saved"
       where
+        saveQueueMsgs h (rId, q) = BLD.hPutBuilder h . encodeMessages rId =<< atomically (getMessages $ msgQueue q)
         getMessages = if keepMsgs then snapshotTQueue else flushTQueue
         snapshotTQueue q = do
           msgs <- flushTQueue q
           mapM_ (writeTQueue q) msgs
           pure msgs
-        saveQueueMsgs h (rId, q) = BLD.hPutBuilder h . encodeMessages rId =<< atomically (getMessages $ msgQueue q)
         encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
 
 restoreServerMessages :: M Int
