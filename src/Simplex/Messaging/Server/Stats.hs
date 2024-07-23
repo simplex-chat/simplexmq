@@ -44,6 +44,7 @@ data ServerStats = ServerStats
     msgGetProhibited :: TVar Int,
     msgExpired :: TVar Int,
     activeQueues :: PeriodStats RecipientId,
+    subscribedQueues :: PeriodStats RecipientId,
     msgSentNtf :: TVar Int, -- sent messages with NTF flag
     msgRecvNtf :: TVar Int, -- received messages with NTF flag
     activeQueuesNtf :: PeriodStats RecipientId,
@@ -84,6 +85,7 @@ data ServerStatsData = ServerStatsData
     _msgGetProhibited :: Int,
     _msgExpired :: Int,
     _activeQueues :: PeriodStatsData RecipientId,
+    _subscribedQueues :: PeriodStatsData RecipientId,
     _msgSentNtf :: Int,
     _msgRecvNtf :: Int,
     _activeQueuesNtf :: PeriodStatsData RecipientId,
@@ -126,6 +128,7 @@ newServerStats ts = do
   msgGetProhibited <- newTVar 0
   msgExpired <- newTVar 0
   activeQueues <- newPeriodStats
+  subscribedQueues <- newPeriodStats
   msgSentNtf <- newTVar 0
   msgRecvNtf <- newTVar 0
   activeQueuesNtf <- newPeriodStats
@@ -165,6 +168,7 @@ newServerStats ts = do
         msgGetProhibited,
         msgExpired,
         activeQueues,
+        subscribedQueues,
         msgSentNtf,
         msgRecvNtf,
         activeQueuesNtf,
@@ -206,6 +210,7 @@ getServerStatsData s = do
   _msgGetProhibited <- readTVar $ msgGetProhibited s
   _msgExpired <- readTVar $ msgExpired s
   _activeQueues <- getPeriodStatsData $ activeQueues s
+  _subscribedQueues <- getPeriodStatsData $ subscribedQueues s
   _msgSentNtf <- readTVar $ msgSentNtf s
   _msgRecvNtf <- readTVar $ msgRecvNtf s
   _activeQueuesNtf <- getPeriodStatsData $ activeQueuesNtf s
@@ -245,6 +250,7 @@ getServerStatsData s = do
         _msgGetProhibited,
         _msgExpired,
         _activeQueues,
+        _subscribedQueues,
         _msgSentNtf,
         _msgRecvNtf,
         _activeQueuesNtf,
@@ -286,6 +292,7 @@ setServerStats s d = do
   writeTVar (msgGetProhibited s) $! _msgGetProhibited d
   writeTVar (msgExpired s) $! _msgExpired d
   setPeriodStats (activeQueues s) (_activeQueues d)
+  setPeriodStats (subscribedQueues s) (_subscribedQueues d)
   writeTVar (msgSentNtf s) $! _msgSentNtf d
   writeTVar (msgRecvNtf s) $! _msgRecvNtf d
   setPeriodStats (activeQueuesNtf s) (_activeQueuesNtf d)
@@ -334,6 +341,8 @@ instance StrEncoding ServerStatsData where
         "msgNtfLost=" <> strEncode (_msgNtfLost d),
         "activeQueues:",
         strEncode (_activeQueues d),
+        "subscribedQueues:",
+        strEncode (_subscribedQueues d),
         "activeQueuesNtf:",
         strEncode (_activeQueuesNtf d),
         "pRelays:",
@@ -384,6 +393,10 @@ instance StrEncoding ServerStatsData where
           _week <- "weekMsgQueues=" *> strP <* A.endOfLine
           _month <- "monthMsgQueues=" *> strP <* optional A.endOfLine
           pure PeriodStatsData {_day, _week, _month}
+    _subscribedQueues <-
+      optional ("subscribedQueues:" <* A.endOfLine) >>= \case
+        Just _ -> strP <* optional A.endOfLine
+        _ -> pure newPeriodStatsData
     _activeQueuesNtf <-
       optional ("activeQueuesNtf:" <* A.endOfLine) >>= \case
         Just _ -> strP <* optional A.endOfLine
@@ -424,6 +437,7 @@ instance StrEncoding ServerStatsData where
           _msgNtfNoSub,
           _msgNtfLost,
           _activeQueues,
+          _subscribedQueues,
           _activeQueuesNtf,
           _pRelays,
           _pRelaysOwn,

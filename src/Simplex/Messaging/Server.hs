@@ -235,7 +235,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, qSub, qSubNoMsg, qSubAuth, qSubDuplicate, qSubProhibited, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv} <- asks serverStats
+      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, qSub, qSubNoMsg, qSubAuth, qSubDuplicate, qSubProhibited, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, subscribedQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv} <- asks serverStats
       let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -265,6 +265,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           msgGetProhibited' <- atomically $ swapTVar msgGetProhibited 0
           msgExpired' <- atomically $ swapTVar msgExpired 0
           ps <- atomically $ periodStatCounts activeQueues ts
+          psSub <- atomically $ periodStatCounts subscribedQueues ts
           msgSentNtf' <- atomically $ swapTVar msgSentNtf 0
           msgRecvNtf' <- atomically $ swapTVar msgRecvNtf 0
           psNtf <- atomically $ periodStatCounts activeQueuesNtf ts
@@ -322,7 +323,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                        show msgGetNoMsg',
                        show msgGetAuth',
                        show msgGetDuplicate',
-                       show msgGetProhibited'
+                       show msgGetProhibited',
+                       dayCount psSub,
+                       weekCount psSub,
+                       monthCount psSub
                      ]
               )
         liftIO $ threadDelay' interval
@@ -413,7 +417,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 putStat "qDeletedAll" qDeletedAll
                 putStat "qDeletedNew" qDeletedNew
                 putStat "qDeletedSecured" qDeletedSecured
-                getStat (day . activeQueues) >>= \v -> hPutStrLn h $ "dayMsgQueues: " <> show (S.size v)
+                getStat (day . activeQueues) >>= \v -> hPutStrLn h $ "daily active queues: " <> show (S.size v)
+                getStat (day . subscribedQueues) >>= \v -> hPutStrLn h $ "daily subscribed queues: " <> show (S.size v)
                 subs <- (,,,,) <$> getStat qSub <*> getStat qSubNoMsg <*> getStat qSubAuth <*> getStat qSubDuplicate <*> getStat qSubProhibited
                 hPutStrLn h $ "SUBs (count, noMsg, auth, duplicate, prohibited): " <> show subs
                 putStat "msgSent" msgSent
@@ -1048,6 +1053,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               when inc $ do
                 stats <- asks serverStats
                 incStat $ (if isJust msg_ then qSub else qSubNoMsg) stats
+                atomically $ updatePeriodStats (subscribedQueues stats) rId
               deliverMessage "SUB" qr rId sub msg_
 
         getMessage :: QueueRec -> M (Transmission BrokerMsg)
