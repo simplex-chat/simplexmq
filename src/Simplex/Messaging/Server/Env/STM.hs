@@ -108,7 +108,7 @@ defaultMessageExpiration =
 defaultInactiveClientExpiration :: ExpirationConfig
 defaultInactiveClientExpiration =
   ExpirationConfig
-    { ttl = 43200, -- seconds, 12 hours
+    { ttl = 21600, -- seconds, 6 hours
       checkInterval = 3600 -- seconds, 1 hours
     }
 
@@ -166,10 +166,12 @@ data Client = Client
     sndActiveAt :: TVar SystemTime
   }
 
-data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId) | ProhibitSub
+data ServerSub = ServerSub (TVar SubscriptionThread) | ProhibitSub
+
+data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId)
 
 data Sub = Sub
-  { subThread :: TVar SubscriptionThread,
+  { subThread :: ServerSub, -- Nothing value indicates that sub
     delivered :: TMVar MsgId
   }
 
@@ -201,8 +203,13 @@ newClient nextClientId qSize thVersion sessionId createdAt = do
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription st = do
   delivered <- newEmptyTMVar
-  subThread <- newTVar st
+  subThread <- ServerSub <$> newTVar st
   return Sub {subThread, delivered}
+
+newProhibitedSub :: STM Sub
+newProhibitedSub = do
+  delivered <- newEmptyTMVar
+  return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
 newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, smpAgentCfg, transportConfig, information, messageExpiration} = do
