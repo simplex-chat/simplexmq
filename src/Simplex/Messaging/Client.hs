@@ -833,23 +833,23 @@ deleteSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO 
 deleteSMPQueues = okSMPCommands DEL
 {-# INLINE deleteSMPQueues #-}
 
-createSMPDataBlob :: SMPClient -> C.AAuthKeyPair -> BlobId -> DataBody -> ExceptT SMPClientError IO ()
-createSMPDataBlob c (dKey, dpKey) dId body = okSMPCommand (WRT dKey body) c dpKey dId
+createSMPDataBlob :: SMPClient -> C.AAuthKeyPair -> BlobId -> DataBlob -> ExceptT SMPClientError IO ()
+createSMPDataBlob c (dKey, dpKey) dId blob = okSMPCommand (WRT dKey blob) c dpKey dId
 {-# INLINE createSMPDataBlob #-}
 
 deleteSMPDataBlob :: SMPClient -> DataPrivateAuthKey -> BlobId -> ExceptT SMPClientError IO ()
 deleteSMPDataBlob = okSMPCommand CLR
 {-# INLINE deleteSMPDataBlob #-}
 
-getSMPDataBlob :: SMPClient -> BlobId -> ExceptT SMPClientError IO EncDataBody
+getSMPDataBlob :: SMPClient -> BlobId -> ExceptT SMPClientError IO EncDataBlob
 getSMPDataBlob c dId =
   sendSMPCommand c Nothing dId READ >>= \case
-    DATA body -> pure body
+    DATA encBlob -> pure encBlob
     r -> throwE $ unexpectedResponse r
 
-proxyGetSMPDataBlob :: SMPClient -> ProxiedRelay -> BlobId -> ExceptT SMPClientError IO (Either ProxyClientError EncDataBody)
+proxyGetSMPDataBlob :: SMPClient -> ProxiedRelay -> BlobId -> ExceptT SMPClientError IO (Either ProxyClientError EncDataBlob)
 proxyGetSMPDataBlob c proxiedRelay dId = proxySMPCommand c proxiedRelay Nothing dId READ $ \case
-  DATA body -> Just body
+  DATA encBlob -> Just encBlob
   _ -> Nothing
 
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender

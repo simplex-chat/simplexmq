@@ -3,18 +3,17 @@
 
 module Simplex.Messaging.Server.DataStore where
 
-import Data.ByteString.Char8
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 
 data DataRec = DataRec
-  { blobId :: BlobId,
-    blobKey :: DataPublicAuthKey,
-    blobData :: ByteString
+  { dataId :: BlobId,
+    dataKey :: DataPublicAuthKey,
+    dataBlob :: DataBlob
   }
 
 instance StrEncoding DataRec where
-  strEncode DataRec {blobId, blobKey, blobData} = strEncode (Str "v1", blobId, blobKey, blobData)
+  strEncode DataRec {dataId, dataKey, dataBlob} = strEncode (Str "v1", dataId, dataKey, dataBlob)
   strP = do
-    (blobId, blobKey, blobData) <- "v1 " *> strP
-    pure DataRec {blobId, blobKey, blobData}
+    (dataId, dataKey, dataBlob) <- "v1 " *> strP
+    pure DataRec {dataId, dataKey, dataBlob}

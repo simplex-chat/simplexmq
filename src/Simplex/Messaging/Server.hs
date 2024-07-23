@@ -710,8 +710,8 @@ verifyTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe Transmiss
 verifyTransmission auth_ tAuth authorized entId cmd =
   case cmd of
     Cmd SRecipient (NEW k _ _ _ _) -> pure $ Nothing `verifiedWith` k
-    Cmd SRecipient (WRT k _) -> (\d -> d `verifiedData` (verify k && maybe True ((k ==) . blobKey) d)) <$> getData entId
-    Cmd SRecipient CLR -> maybe dummyVerify (\d -> Just d `verifiedData` verify (blobKey d)) <$> getData entId
+    Cmd SRecipient (WRT k _) -> (\d -> d `verifiedData` (verify k && maybe True ((k ==) . dataKey) d)) <$> getData entId
+    Cmd SRecipient CLR -> maybe dummyVerify (\d -> Just d `verifiedData` verify (dataKey d)) <$> getData entId
     Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWith` recipientKey q) <$> get SRecipient
     -- SEND will be accepted without authorization before the queue is secured with KEY or SKEY command
     Cmd SSender (SKEY k) -> verifyQueue (\q -> Just q `verifiedWith` k) <$> get SSender
@@ -1299,6 +1299,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                     allowed = case cmd' of
                       Cmd SSender SEND {} -> True
                       Cmd SSender (SKEY _) -> True
+                      Cmd SSender READ -> True
                       _ -> False
                     verified = \case
                       VRFailed -> Left (corrId', entId', ERR AUTH)
@@ -1371,19 +1372,19 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               qDelivered <- decodeLatin1 . encode <$$> tryReadTMVar delivered
               pure QSub {qSubThread, qDelivered}
 
-        storeDataBlob :: DataPublicAuthKey -> DataBody -> M (Transmission BrokerMsg)
-        storeDataBlob blobKey blobData
-          | B.length blobData > e2eEncMessageLength = pure $ err LARGE_MSG
+        storeDataBlob :: DataPublicAuthKey -> DataBlob -> M (Transmission BrokerMsg)
+        storeDataBlob dataKey dataBlob
+          | B.length (dataBody dataBlob) > e2eEncMessageLength = pure $ err LARGE_MSG
           | otherwise = ok <$ (atomically . TM.insert entId d =<< asks dataStore)
           where
-            d = DataRec {blobId = entId, blobKey, blobData}
+            d = DataRec {dataId = entId, dataKey, dataBlob}
 
         deleteDataBlob :: M (Transmission BrokerMsg)
         deleteDataBlob = ok <$ (atomically . TM.delete entId =<< asks dataStore)
 
         getDataBlob :: M (Transmission BrokerMsg)
         getDataBlob = case vRes of
-          VRVerifiedData (Just DataRec {blobData}) -> 
+          VRVerifiedData (Just DataRec {dataBlob}) -> 
             case thAuth thParams' of
               Nothing -> pure $ err $ transportErr TENoServerAuth
               Just THAuthServer {serverPrivKey} -> case X25519.publicKey entId of
@@ -1393,7 +1394,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                       nonce = C.cbNonce $ bs corrId
                       THandleParams {thVersion} = thParams'
                   pure . (corrId,entId,) $
-                    case C.cbEncrypt secret nonce blobData (maxMessageLength thVersion) of
+                    case C.cbEncrypt secret nonce (smpEncode dataBlob) (maxMessageLength thVersion) of
                       Left _ -> ERR CRYPTO
                       Right encBlob -> DATA encBlob
           _ -> pure $ err INTERNAL

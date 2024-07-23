@@ -136,8 +136,8 @@ module Simplex.Messaging.Protocol
     FwdResponse (..),
     FwdTransmission (..),
     MsgFlags (..),
-    DataBody,
-    EncDataBody,
+    DataBlob (..),
+    EncDataBlob,
     initialSMPClientVersion,
     currentSMPClientVersion,
     userProtocol,
@@ -403,7 +403,7 @@ data Command (p :: Party) where
   DEL :: Command Recipient
   QUE :: Command Recipient
   -- Data storage commands
-  WRT :: DataPublicAuthKey -> DataBody -> Command Recipient
+  WRT :: DataPublicAuthKey -> DataBlob -> Command Recipient
   CLR :: Command Recipient
   READ :: Command Sender
   -- SMP sender commands
@@ -488,7 +488,7 @@ data BrokerMsg where
   PRES :: EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
   INFO :: QueueInfo -> BrokerMsg
-  DATA :: EncDataBody -> BrokerMsg
+  DATA :: EncDataBlob -> BrokerMsg
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
@@ -1194,9 +1194,25 @@ type MsgId = ByteString
 -- | SMP message body.
 type MsgBody = ByteString
 
-type DataBody = ByteString
+data DataBlob = DataBlob
+  { dataNonce :: C.CbNonce,
+    dataBody :: ByteString
+  }
+  deriving (Eq, Show)
 
-type EncDataBody = ByteString
+instance Encoding DataBlob where
+  smpEncode DataBlob {dataNonce, dataBody} = smpEncode (dataNonce, Tail dataBody)
+  smpP = do
+    (dataNonce, Tail dataBody) <- smpP
+    pure DataBlob {dataNonce, dataBody}
+
+instance StrEncoding DataBlob where
+  strEncode DataBlob {dataNonce, dataBody} = strEncode (dataNonce, dataBody)
+  strP = do
+    (dataNonce, dataBody) <- strP
+    pure DataBlob {dataNonce, dataBody}
+
+type EncDataBlob = ByteString
 
 data ProtocolErrorType = PECmdSyntax | PECmdUnknown | PESession | PEBlock
 
@@ -1342,7 +1358,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     OFF -> e OFF_
     DEL -> e DEL_
     QUE -> e QUE_
-    WRT k blob -> e (WRT_, ' ', k, Tail blob)
+    WRT k blob -> e (WRT_, ' ', k, blob)
     CLR -> e CLR_
     READ -> e READ_
     SKEY k -> e (SKEY_, ' ', k)
@@ -1374,14 +1390,12 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     SKEY _
       | isNothing auth || B.null entId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
+    READ -> entityNoAuthCmd
     PING -> noAuthCmd
     PRXY {} -> noAuthCmd
-    PFWD {}
-      | B.null entId -> Left $ CMD NO_ENTITY
-      | isNothing auth -> Right cmd
-      | otherwise -> Left $ CMD HAS_AUTH
+    PFWD {} -> entityNoAuthCmd
     RFWD _ -> noAuthCmd
-    -- other client commands must have both signature and queue ID
+    -- other client commands must have both signature and entity ID
     _
       | isNothing auth || B.null entId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
@@ -1391,6 +1405,11 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
       noAuthCmd
         | isNothing auth && B.null entId = Right cmd
         | otherwise = Left $ CMD HAS_AUTH
+      entityNoAuthCmd :: Either ErrorType (Command p)
+      entityNoAuthCmd
+        | B.null entId = Left $ CMD NO_ENTITY
+        | isJust auth = Left $ CMD HAS_AUTH
+        | otherwise = Right cmd
 
 instance ProtocolEncoding SMPVersion ErrorType Cmd where
   type Tag Cmd = CmdTag
@@ -1416,7 +1435,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
         OFF_ -> pure OFF
         DEL_ -> pure DEL
         QUE_ -> pure QUE
-        WRT_ -> WRT <$> _smpP <*> (unTail <$> smpP)
+        WRT_ -> WRT <$> _smpP <*> smpP
         CLR_ -> pure CLR
     CT SSender tag ->
       Cmd SSender <$> case tag of
