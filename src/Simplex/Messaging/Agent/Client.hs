@@ -93,6 +93,7 @@ module Simplex.Messaging.Agent.Client
     AgentServersSummary (..),
     ServerSessions (..),
     SMPServerSubs (..),
+    getAgentSubsTotal,
     getAgentServersSummary,
     getAgentSubscriptions,
     slowNetworkConfig,
@@ -145,6 +146,7 @@ module Simplex.Messaging.Agent.Client
     incXFTPServerStat,
     incXFTPServerStat',
     incXFTPServerSizeStat,
+    incNtfServerStat,
     AgentWorkersDetails (..),
     getAgentWorkersDetails,
     AgentWorkersSummary (..),
@@ -330,6 +332,7 @@ data AgentClient = AgentClient
     agentEnv :: Env,
     smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
     xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats,
+    ntfServersStats :: TMap  (UserId, NtfServer) AgentNtfServerStats,
     srvStatsStartedAt :: TVar UTCTime
   }
 
@@ -488,6 +491,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs a
   smpSubWorkers <- TM.empty
   smpServersStats <- TM.empty
   xftpServersStats <- TM.empty
+  ntfServersStats <- TM.empty
   srvStatsStartedAt <- newTVar currentTs
   return
     AgentClient
@@ -528,6 +532,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs a
         agentEnv,
         smpServersStats,
         xftpServersStats,
+        ntfServersStats,
         srvStatsStartedAt
       }
 
@@ -1954,13 +1959,7 @@ incSMPServerStat :: AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -
 incSMPServerStat c userId srv sel = incSMPServerStat' c userId srv sel 1
 
 incSMPServerStat' :: AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int) -> Int -> STM ()
-incSMPServerStat' AgentClient {smpServersStats} userId srv sel n = do
-  TM.lookup (userId, srv) smpServersStats >>= \case
-    Just v -> modifyTVar' (sel v) (+ n)
-    Nothing -> do
-      newStats <- newAgentSMPServerStats
-      modifyTVar' (sel newStats) (+ n)
-      TM.insert (userId, srv) newStats smpServersStats
+incSMPServerStat' = incServerStat (\AgentClient {smpServersStats = s} -> s) newAgentSMPServerStats
 
 incXFTPServerStat :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int) -> STM ()
 incXFTPServerStat c userId srv sel = incXFTPServerStat_ c userId srv sel 1
@@ -1975,24 +1974,34 @@ incXFTPServerSizeStat = incXFTPServerStat_
 {-# INLINE incXFTPServerSizeStat #-}
 
 incXFTPServerStat_ :: Num n => AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar n) -> n -> STM ()
-incXFTPServerStat_ AgentClient {xftpServersStats} userId srv sel n = do
-  TM.lookup (userId, srv) xftpServersStats >>= \case
+incXFTPServerStat_ = incServerStat (\AgentClient {xftpServersStats = s} -> s) newAgentXFTPServerStats
+{-# INLINE incXFTPServerStat_ #-}
+
+incNtfServerStat :: AgentClient -> UserId -> NtfServer -> (AgentNtfServerStats -> TVar Int) -> STM ()
+incNtfServerStat c userId srv sel = incServerStat (\AgentClient {ntfServersStats = s} -> s) newAgentNtfServerStats c userId srv sel 1
+{-# INLINE incNtfServerStat #-}
+
+incServerStat :: Num n => (AgentClient -> TMap (UserId, ProtocolServer p) s) -> STM s -> AgentClient -> UserId -> ProtocolServer p -> (s -> TVar n) -> n -> STM ()
+incServerStat statsSel mkNewStats c userId srv sel n = do
+  TM.lookup (userId, srv) (statsSel c) >>= \case
     Just v -> modifyTVar' (sel v) (+ n)
     Nothing -> do
-      newStats <- newAgentXFTPServerStats
+      newStats <- mkNewStats
       modifyTVar' (sel newStats) (+ n)
-      TM.insert (userId, srv) newStats xftpServersStats
+      TM.insert (userId, srv) newStats (statsSel c)
 
 data AgentServersSummary = AgentServersSummary
   { smpServersStats :: Map (UserId, SMPServer) AgentSMPServerStatsData,
     xftpServersStats :: Map (UserId, XFTPServer) AgentXFTPServerStatsData,
+    ntfServersStats :: Map (UserId, NtfServer) AgentNtfServerStatsData,
     statsStartedAt :: UTCTime,
     smpServersSessions :: Map (UserId, SMPServer) ServerSessions,
     smpServersSubs :: Map (UserId, SMPServer) SMPServerSubs,
     xftpServersSessions :: Map (UserId, XFTPServer) ServerSessions,
     xftpRcvInProgress :: [XFTPServer],
     xftpSndInProgress :: [XFTPServer],
-    xftpDelInProgress :: [XFTPServer]
+    xftpDelInProgress :: [XFTPServer],
+    ntfServersSessions :: Map (UserId, NtfServer) ServerSessions
   }
   deriving (Show)
 
@@ -2009,10 +2018,28 @@ data ServerSessions = ServerSessions
   }
   deriving (Show)
 
+getAgentSubsTotal :: AgentClient -> [UserId] -> IO (SMPServerSubs, Bool)
+getAgentSubsTotal c userIds = do
+  ssActive <- getSubsCount activeSubs
+  ssPending <- getSubsCount pendingSubs
+  sess <- hasSession . M.toList =<< readTVarIO (smpClients c)
+  pure (SMPServerSubs {ssActive, ssPending}, sess)
+  where
+    getSubsCount subs = M.foldrWithKey' addSub 0 <$> readTVarIO (getRcvQueues $ subs c)
+    addSub (userId, _, _) _ cnt = if userId `elem` userIds then cnt + 1 else cnt
+    hasSession :: [(SMPTransportSession, SMPClientVar)] -> IO Bool
+    hasSession = \case
+      [] -> pure False
+      (s : ss) -> ifM (isConnected s) (pure True) (hasSession ss)
+    isConnected ((userId, _, _), SessionVar {sessionVar})
+      | userId `elem` userIds = atomically $ maybe False isRight <$> tryReadTMVar sessionVar
+      | otherwise = pure False
+
 getAgentServersSummary :: AgentClient -> IO AgentServersSummary
-getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, srvStatsStartedAt, agentEnv} = do
+getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, ntfServersStats, srvStatsStartedAt, agentEnv} = do
   sss <- mapM getAgentSMPServerStats =<< readTVarIO smpServersStats
   xss <- mapM getAgentXFTPServerStats =<< readTVarIO xftpServersStats
+  nss <- mapM getAgentNtfServerStats =<< readTVarIO ntfServersStats
   statsStartedAt <- readTVarIO srvStatsStartedAt
   smpServersSessions <- countSessions =<< readTVarIO (smpClients c)
   smpServersSubs <- getServerSubs
@@ -2020,17 +2047,20 @@ getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, srvStat
   xftpRcvInProgress <- catMaybes <$> getXFTPWorkerSrvs xftpRcvWorkers
   xftpSndInProgress <- catMaybes <$> getXFTPWorkerSrvs xftpSndWorkers
   xftpDelInProgress <- getXFTPWorkerSrvs xftpDelWorkers
+  ntfServersSessions <- countSessions =<< readTVarIO (ntfClients c)
   pure
     AgentServersSummary
       { smpServersStats = sss,
         xftpServersStats = xss,
+        ntfServersStats = nss,
         statsStartedAt,
         smpServersSessions,
         smpServersSubs,
         xftpServersSessions,
         xftpRcvInProgress,
         xftpSndInProgress,
-        xftpDelInProgress
+        xftpDelInProgress,
+        ntfServersSessions
       }
   where
     getServerSubs = do
