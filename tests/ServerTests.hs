@@ -920,7 +920,7 @@ testMsgNOTExpireOnInterval t =
 
 testDataBlobs :: forall c. Transport c => TProxy c -> Spec
 testDataBlobs t =
-  it "should NOT expire messages that are not received before messageTTL if expiry interval is large" $
+  it "should store, retrieve, update and delete data blob directly from the server" $
     smpTest2 t $ \r s -> do
       g <- C.newRandom
       -- k: ID to retrive blob.

@@ -133,9 +133,6 @@ smpProxyTests = do
       xdescribe "stress test 10k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "25 agents, 300 pairs, 17 messages" . oneServer . withNumCapabilities 4 $ deliver 25 17
-  -- describe "store and read data blobs via client api" $ do
-  --   describe "directly" $ do
-  --     it "should send "
   where
     oneServer = withSmpServerConfigOn (transport @TLS) proxyCfg {msgQueueQuota = 128} testPort . const
     twoServers = twoServers_ proxyCfg proxyCfg
