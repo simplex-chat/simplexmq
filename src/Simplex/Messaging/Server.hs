@@ -235,7 +235,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, qSub, qSubNoMsg, qSubAuth, qSubDuplicate, qSubProhibited, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, subscribedQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv} <- asks serverStats
+      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedNew, qDeletedSecured, qSub, qSubNoMsg, qSubAuth, qSubDuplicate, qSubProhibited, ntfCreated, ntfDeleted, ntfSub, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, subscribedQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv}
+        <- asks serverStats
+      QueueStore {queues, notifiers} <- asks queueStore
       let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -252,6 +254,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           qSubAuth' <- atomically $ swapTVar qSubAuth 0
           qSubDuplicate' <- atomically $ swapTVar qSubDuplicate 0
           qSubProhibited' <- atomically $ swapTVar qSubProhibited 0
+          ntfCreated' <- atomically $ swapTVar ntfCreated 0
+          ntfDeleted' <- atomically $ swapTVar ntfDeleted 0
+          ntfSub' <- atomically $ swapTVar ntfSub 0
+          ntfSubAuth' <- atomically $ swapTVar ntfSubAuth 0
+          ntfSubDuplicate' <- atomically $ swapTVar ntfSubDuplicate 0
           msgSent' <- atomically $ swapTVar msgSent 0
           msgSentAuth' <- atomically $ swapTVar msgSentAuth 0
           msgSentQuota' <- atomically $ swapTVar msgSentQuota 0
@@ -278,6 +285,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           pMsgFwdsOwn' <- atomically $ getResetProxyStatsData pMsgFwdsOwn
           pMsgFwdsRecv' <- atomically $ swapTVar pMsgFwdsRecv 0
           qCount' <- readTVarIO qCount
+          qCount'' <- M.size <$> readTVarIO queues
+          ntfCount' <- M.size <$> readTVarIO notifiers
           msgCount' <- readTVarIO msgCount
           hPutStrLn h $
             intercalate
@@ -326,7 +335,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                        show msgGetProhibited',
                        dayCount psSub,
                        weekCount psSub,
-                       monthCount psSub
+                       monthCount psSub,
+                       show qCount'',
+                       show ntfCreated',
+                       show ntfDeleted',
+                       show ntfSub',
+                       show ntfSubAuth',
+                       show ntfSubDuplicate',
+                       show ntfCount'
                      ]
               )
         liftIO $ threadDelay' interval

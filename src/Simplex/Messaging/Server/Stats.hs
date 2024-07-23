@@ -31,6 +31,11 @@ data ServerStats = ServerStats
     qSubAuth :: TVar Int,
     qSubDuplicate :: TVar Int,
     qSubProhibited :: TVar Int,
+    ntfCreated :: TVar Int,
+    ntfDeleted :: TVar Int,
+    ntfSub :: TVar Int,
+    ntfSubAuth :: TVar Int,
+    ntfSubDuplicate :: TVar Int,
     msgSent :: TVar Int,
     msgSentAuth :: TVar Int,
     msgSentQuota :: TVar Int,
@@ -72,6 +77,11 @@ data ServerStatsData = ServerStatsData
     _qSubAuth :: Int,
     _qSubDuplicate :: Int,
     _qSubProhibited :: Int,
+    _ntfCreated :: Int,
+    _ntfDeleted :: Int,
+    _ntfSub :: Int,
+    _ntfSubAuth :: Int,
+    _ntfSubDuplicate :: Int,
     _msgSent :: Int,
     _msgSentAuth :: Int,
     _msgSentQuota :: Int,
@@ -115,6 +125,11 @@ newServerStats ts = do
   qSubAuth <- newTVar 0
   qSubDuplicate <- newTVar 0
   qSubProhibited <- newTVar 0
+  ntfCreated <- newTVar 0
+  ntfDeleted <- newTVar 0
+  ntfSub <- newTVar 0
+  ntfSubAuth <- newTVar 0
+  ntfSubDuplicate <- newTVar 0
   msgSent <- newTVar 0
   msgSentAuth <- newTVar 0
   msgSentQuota <- newTVar 0
@@ -155,6 +170,11 @@ newServerStats ts = do
         qSubAuth,
         qSubDuplicate,
         qSubProhibited,
+        ntfCreated,
+        ntfDeleted,
+        ntfSub,
+        ntfSubAuth,
+        ntfSubDuplicate,
         msgSent,
         msgSentAuth,
         msgSentQuota,
@@ -197,6 +217,11 @@ getServerStatsData s = do
   _qSubAuth <- readTVar $ qSubAuth s
   _qSubDuplicate <- readTVar $ qSubDuplicate s
   _qSubProhibited <- readTVar $ qSubProhibited s
+  _ntfCreated <- readTVar $ ntfCreated s
+  _ntfDeleted <- readTVar $ ntfDeleted s
+  _ntfSub <- readTVar $ ntfSub s
+  _ntfSubAuth <- readTVar $ ntfSubAuth s
+  _ntfSubDuplicate <- readTVar $ ntfSubDuplicate s
   _msgSent <- readTVar $ msgSent s
   _msgSentAuth <- readTVar $ msgSentAuth s
   _msgSentQuota <- readTVar $ msgSentQuota s
@@ -237,6 +262,11 @@ getServerStatsData s = do
         _qSubAuth,
         _qSubDuplicate,
         _qSubProhibited,
+        _ntfCreated,
+        _ntfDeleted,
+        _ntfSub,
+        _ntfSubAuth,
+        _ntfSubDuplicate,
         _msgSent,
         _msgSentAuth,
         _msgSentQuota,
@@ -279,6 +309,11 @@ setServerStats s d = do
   writeTVar (qSubAuth s) $! _qSubAuth d
   writeTVar (qSubDuplicate s) $! _qSubDuplicate d
   writeTVar (qSubProhibited s) $! _qSubProhibited d
+  writeTVar (ntfCreated s) $! _ntfCreated d
+  writeTVar (ntfDeleted s) $! _ntfDeleted d
+  writeTVar (ntfSub s) $! _ntfSub d
+  writeTVar (ntfSubAuth s) $! _ntfSubAuth d
+  writeTVar (ntfSubDuplicate s) $! _ntfSubDuplicate d
   writeTVar (msgSent s) $! _msgSent d
   writeTVar (msgSentAuth s) $! _msgSentAuth d
   writeTVar (msgSentQuota s) $! _msgSentQuota d
@@ -322,6 +357,11 @@ instance StrEncoding ServerStatsData where
         "qSubAuth=" <> strEncode (_qSubAuth d),
         "qSubDuplicate=" <> strEncode (_qSubDuplicate d),
         "qSubProhibited=" <> strEncode (_qSubProhibited d),
+        "ntfCreated=" <> strEncode (_ntfCreated d),
+        "ntfDeleted=" <> strEncode (_ntfDeleted d),
+        "ntfSub=" <> strEncode (_ntfSub d),
+        "ntfSubAuth=" <> strEncode (_ntfSubAuth d),
+        "ntfSubDuplicate=" <> strEncode (_ntfSubDuplicate d),
         "msgSent=" <> strEncode (_msgSent d),
         "msgSentAuth=" <> strEncode (_msgSentAuth d),
         "msgSentQuota=" <> strEncode (_msgSentQuota d),
@@ -368,6 +408,11 @@ instance StrEncoding ServerStatsData where
     _qSubAuth <- opt "qSubAuth="
     _qSubDuplicate <- opt "qSubDuplicate="
     _qSubProhibited <- opt "qSubProhibited="
+    _ntfCreated <- opt "ntfCreated="
+    _ntfDeleted <- opt "ntfDeleted="
+    _ntfSub <- opt "ntfSub="
+    _ntfSubAuth <- opt "ntfSubAuth="
+    _ntfSubDuplicate <- opt "ntfSubDuplicate="
     _msgSent <- "msgSent=" *> strP <* A.endOfLine
     _msgSentAuth <- opt "msgSentAuth="
     _msgSentQuota <- opt "msgSentQuota="
@@ -419,6 +464,11 @@ instance StrEncoding ServerStatsData where
           _qSubAuth,
           _qSubDuplicate,
           _qSubProhibited,
+          _ntfCreated,
+          _ntfDeleted,
+          _ntfSub,
+          _ntfSubAuth,
+          _ntfSubDuplicate,
           _msgSent,
           _msgSentAuth,
           _msgSentQuota,
