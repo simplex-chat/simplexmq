@@ -43,7 +43,7 @@ import Data.Either (partitionEithers, rights)
 import Data.Int (Int64)
 import Data.List (foldl', partition, sortOn)
 import qualified Data.List.NonEmpty as L
-import Data.Map (Map)
+import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (mapMaybe)
 import qualified Data.Set as S
