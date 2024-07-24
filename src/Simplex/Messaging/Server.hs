@@ -684,6 +684,7 @@ receive h@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiv
                 case cmd of
                   Cmd _ SEND {} -> incStat $ msgSentAuth stats
                   Cmd _ SUB -> incStat $ qSubAuth stats
+                  Cmd _ NSUB -> incStat $ ntfSubAuth stats
                   Cmd _ GET -> incStat $ msgGetAuth stats
                   _ -> pure ()
                 pure $ Left (corrId, entId, ERR AUTH)
@@ -1024,6 +1025,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                 Left e -> pure $ ERR e
                 Right _ -> do
                   withLog $ \s -> logAddNotifier s entId ntfCreds
+                  incStat . ntfCreated =<< asks serverStats
                   pure $ NID notifierId rcvPublicDhKey
 
         deleteQueueNotifier_ :: QueueStore -> M (Transmission BrokerMsg)
@@ -1033,6 +1035,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             Right () -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
               atomically $ writeTQueue ntfSubscribedQ (entId, clnt, False)
+              incStat . ntfDeleted =<< asks serverStats
               pure ok
             Left e -> pure $ err e
 
@@ -1112,11 +1115,19 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
         withQueue action = maybe (pure $ err AUTH) action qr_
 
         subscribeNotifications :: M (Transmission BrokerMsg)
-        subscribeNotifications = time "NSUB" . atomically $ do
-          unlessM (TM.member entId ntfSubscriptions) $ do
-            writeTQueue ntfSubscribedQ (entId, clnt, True)
-            TM.insert entId () ntfSubscriptions
+        subscribeNotifications = do
+          statCount <-
+            time "NSUB" . atomically $ do
+              ifM
+                (TM.member entId ntfSubscriptions)
+                (pure ntfSubDuplicate)
+                (newSub $> ntfSub)
+          incStat . statCount =<< asks serverStats
           pure ok
+          where
+            newSub = do
+              writeTQueue ntfSubscribedQ (entId, clnt, True)
+              TM.insert entId () ntfSubscriptions
 
         acknowledgeMsg :: QueueRec -> MsgId -> M (Transmission BrokerMsg)
         acknowledgeMsg qr msgId = time "ACK" $ do
