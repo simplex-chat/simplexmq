@@ -204,9 +204,14 @@ connectClient ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, random
 
     removeClientAndSubs :: SMPClient -> IO (Maybe (Map SMPSub C.APrivateAuthKey))
     removeClientAndSubs smp = atomically $ do
-      removeSessVar v srv smpClients
       TM.delete (sessionId $ thParams smp) smpSessions
-      TM.lookupDelete srv (srvSubs ca) >>= mapM updateSubs
+      -- TODO associate each subscription with a specific client that made it,
+      -- so that when client disconnects we can remove subscriptions that it made,
+      -- and not to decide all or nothing. The same needs to be done in the main agent.
+      ifM
+        (removeSessVar' v srv smpClients)
+        (TM.lookupDelete srv (srvSubs ca) >>= mapM updateSubs)
+        (pure Nothing)
       where
         updateSubs sVar = do
           ss <- readTVar sVar
