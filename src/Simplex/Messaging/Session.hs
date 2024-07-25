@@ -5,9 +5,6 @@
 module Simplex.Messaging.Session where
 
 import Control.Concurrent.STM
-import Control.Monad
-import Data.Composition ((.:.))
-import Data.Functor (($>))
 import Data.Time (UTCTime)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -31,14 +28,10 @@ getSessVar sessSeq sessKey vs sessionVarTs = maybe (Left <$> newSessionVar) (pur
       pure v
 
 removeSessVar :: Ord k => SessionVar a -> k -> TMap k (SessionVar a) -> STM ()
-removeSessVar = void .:. removeSessVar'
-{-# INLINE removeSessVar #-}
-
-removeSessVar' :: Ord k => SessionVar a -> k -> TMap k (SessionVar a) -> STM Bool
-removeSessVar' v sessKey vs =
+removeSessVar v sessKey vs =
   TM.lookup sessKey vs >>= \case
-    Just v' | sessionVarId v == sessionVarId v' -> TM.delete sessKey vs $> True
-    _ -> pure False
+    Just v' | sessionVarId v == sessionVarId v' -> TM.delete sessKey vs
+    _ -> pure ()
 
 tryReadSessVar :: Ord k => k -> TMap k (SessionVar a) -> STM (Maybe a)
 tryReadSessVar sessKey vs = TM.lookup sessKey vs $>>= (tryReadTMVar . sessionVar)

@@ -11,7 +11,7 @@ import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time (UTCTime)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
-import Simplex.Messaging.Agent.Protocol (UserId, ConnId, NotificationsMode (..))
+import Simplex.Messaging.Agent.Protocol (ConnId, NotificationsMode (..), UserId)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
@@ -48,6 +48,7 @@ data NtfToken = NtfToken
     ntfServer :: NtfServer,
     ntfTokenId :: Maybe NtfTokenId,
     -- TODO combine keys to key pair as the types should match
+
     -- | key used by the ntf server to verify transmissions
     ntfPubKey :: C.APublicAuthKey,
     -- | key used by the ntf client to sign transmissions
