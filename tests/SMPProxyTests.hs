@@ -361,11 +361,15 @@ agentViaProxyRetryOffline = do
           -- proxy relay down
           4 <- msgId <$> A.sendMessage bob aliceId pqEnc noMsgFlags msg2
           bob `down` aliceId
-        withServer2 $ \_ -> runRight_ $ do
-          bob `up` aliceId
-          get bob ##> ("", aliceId, A.SENT (baseId + 4) bProxySrv)
-          get alice =##> \case ("", c, Msg' _ pq msg2') -> c == bobId && pq == pqEnc && msg2 == msg2'; _ -> False
-          ackMessage alice bobId (baseId + 4) Nothing
+        withServer2 $ \_ -> do
+          getInAnyOrder
+            bob
+            [ \case ("", "", AEvt SAENone (UP _ [c])) -> c == aliceId; _ -> False,
+              \case ("", c, AEvt SAEConn (A.SENT mId srv)) -> c == aliceId && mId == baseId + 4 && srv == bProxySrv; _ -> False
+            ]
+          runRight_ $ do
+            get alice =##> \case ("", c, Msg' _ pq msg2') -> c == bobId && pq == pqEnc && msg2 == msg2'; _ -> False
+            ackMessage alice bobId (baseId + 4) Nothing
   where
     withServer :: (ThreadId -> IO a) -> IO a
     withServer = withServer_ testStoreLogFile testStoreMsgsFile testPort
