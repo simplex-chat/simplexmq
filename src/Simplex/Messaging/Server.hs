@@ -435,13 +435,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 putStat "qDeletedSecured" qDeletedSecured
                 getStat (day . activeQueues) >>= \v -> hPutStrLn h $ "daily active queues: " <> show (S.size v)
                 getStat (day . subscribedQueues) >>= \v -> hPutStrLn h $ "daily subscribed queues: " <> show (S.size v)
-                subs <- (,,,,) <$> getStat qSub <*> getStat qSubNoMsg <*> getStat qSubAuth <*> getStat qSubDuplicate <*> getStat qSubProhibited
-                hPutStrLn h $ "SUBs (count, noMsg, auth, duplicate, prohibited): " <> show subs
+                putStat "qSub" qSub
+                putStat "qSubNoMsg" qSubNoMsg
+                subs <- (,,) <$> getStat qSubAuth <*> getStat qSubDuplicate <*> getStat qSubProhibited
+                hPutStrLn h $ "other SUB events (auth, duplicate, prohibited): " <> show subs
                 putStat "msgSent" msgSent
                 putStat "msgRecv" msgRecv
                 putStat "msgRecvGet" msgRecvGet
-                gets <- (,,,,) <$> getStat msgGet <*> getStat msgGetNoMsg <*> getStat msgGetAuth <*> getStat msgGetDuplicate <*> getStat msgGetProhibited
-                hPutStrLn h $ "GETs (count, noMsg, auth, duplicate, prohibited): " <> show gets
+                putStat "msgGet" msgGet
+                putStat "msgGetNoMsg" msgGet
+                gets <- (,,) <$> getStat msgGetAuth <*> getStat msgGetDuplicate <*> getStat msgGetProhibited
+                hPutStrLn h $ "other GET events (auth, duplicate, prohibited): " <> show gets
                 putStat "msgSentNtf" msgSentNtf
                 putStat "msgRecvNtf" msgRecvNtf
                 putStat "qCount" qCount
