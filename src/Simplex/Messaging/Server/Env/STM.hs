@@ -1,12 +1,15 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 
 module Simplex.Messaging.Server.Env.STM where
 
 import Control.Concurrent (ThreadId)
+import Control.Logger.Simple
+import Control.Monad
 import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
@@ -17,6 +20,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isJust, isNothing)
+import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.X509.Validation (Fingerprint (..))
@@ -105,7 +109,7 @@ defaultMessageExpiration =
 defaultInactiveClientExpiration :: ExpirationConfig
 defaultInactiveClientExpiration =
   ExpirationConfig
-    { ttl = 43200, -- seconds, 12 hours
+    { ttl = 21600, -- seconds, 6 hours
       checkInterval = 3600 -- seconds, 1 hours
     }
 
@@ -166,10 +170,12 @@ data Client = Client
     sndActiveAt :: TVar SystemTime
   }
 
-data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId) | ProhibitSub
+data ServerSub = ServerSub (TVar SubscriptionThread) | ProhibitSub
+
+data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId)
 
 data Sub = Sub
-  { subThread :: TVar SubscriptionThread,
+  { subThread :: ServerSub, -- Nothing value indicates that sub
     delivered :: TMVar MsgId
   }
 
@@ -201,8 +207,13 @@ newClient nextClientId qSize thVersion sessionId createdAt = do
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription st = do
   delivered <- newEmptyTMVar
-  subThread <- newTVar st
+  subThread <- ServerSub <$> newTVar st
   return Sub {subThread, delivered}
+
+newProhibitedSub :: STM Sub
+newProhibitedSub = do
+  delivered <- newEmptyTMVar
+  return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
 newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, smpAgentCfg, transportConfig, information, messageExpiration} = do
@@ -211,7 +222,10 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   msgStore <- atomically newMsgStore
   dataStore <- atomically TM.empty
   random <- liftIO C.newRandom
-  storeLog <- restoreQueues queueStore `mapM` storeLogFile
+  storeLog <-
+    forM storeLogFile $ \f -> do
+      logInfo $ "restoring queues from file " <> T.pack f
+      restoreQueues queueStore f
   tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
   Fingerprint fp <- loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp

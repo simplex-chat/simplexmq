@@ -38,6 +38,7 @@ module AgentTests.FunctionalAPITests
     rfGet,
     sfGet,
     nGet,
+    getInAnyOrder,
     (##>),
     (=##>),
     pattern CON,
