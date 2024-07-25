@@ -32,6 +32,7 @@ import Simplex.Messaging.Client.Agent (SMPClientAgent, SMPClientAgentConfig, new
 import Simplex.Messaging.Crypto (KeyHash (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.DataLog
 import Simplex.Messaging.Server.DataStore
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
@@ -56,6 +57,7 @@ data ServerConfig = ServerConfig
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLogFile :: Maybe FilePath,
+    dataLogFile :: Maybe FilePath,
     storeMsgsFile :: Maybe FilePath,
     -- | set to False to prohibit creating new queues
     allowNewQueues :: Bool,
@@ -126,6 +128,7 @@ data Env = Env
     dataStore :: TMap BlobId DataRec,
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
+    dataLog :: Maybe (StoreLog 'WriteMode),
     tlsServerParams :: T.ServerParams,
     serverStats :: ServerStats,
     sockets :: SocketState,
@@ -216,7 +219,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, smpAgentCfg, transportConfig, information, messageExpiration} = do
+newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, dataLogFile, smpAgentCfg, transportConfig, information, messageExpiration} = do
   server <- atomically newServer
   queueStore <- atomically newQueueStore
   msgStore <- atomically newMsgStore
@@ -226,6 +229,10 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
     forM storeLogFile $ \f -> do
       logInfo $ "restoring queues from file " <> T.pack f
       restoreQueues queueStore f
+  dataLog <-
+    forM dataLogFile $ \f -> do
+      logInfo $ "restoring data blobs from file " <> T.pack f
+      restoreDataBlobs dataStore f
   tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
   Fingerprint fp <- loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
@@ -234,7 +241,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   proxyAgent <- atomically $ newSMPProxyAgent smpAgentCfg random
-  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, dataStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
+  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, dataStore, random, storeLog, dataLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
@@ -243,6 +250,11 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
         writeTVar queues =<< mapM newTVar qs
         writeTVar senders $! M.foldr' addSender M.empty qs
         writeTVar notifiers $! M.foldr' addNotifier M.empty qs
+      pure s
+    restoreDataBlobs :: TMap BlobId DataRec -> FilePath -> IO (StoreLog 'WriteMode)
+    restoreDataBlobs dataStore f = do
+      (ds, s) <- readWriteDataLog f
+      atomically $ writeTVar dataStore ds
       pure s
     addSender :: QueueRec -> Map SenderId RecipientId -> Map SenderId RecipientId
     addSender q = M.insert (senderId q) (recipientId q)

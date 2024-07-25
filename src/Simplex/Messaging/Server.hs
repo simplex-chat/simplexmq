@@ -83,6 +83,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Control
+import Simplex.Messaging.Server.DataLog
 import Simplex.Messaging.Server.DataStore
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
@@ -156,7 +157,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
 
     saveServer :: Bool -> M ()
-    saveServer keepMsgs = withLog closeStoreLog >> saveServerMessages keepMsgs >> saveServerStats
+    saveServer keepMsgs = do
+      withLog closeStoreLog
+      withLog' dataLog closeStoreLog
+      saveServerMessages keepMsgs
+      saveServerStats
 
     closeServer :: M ()
     closeServer = asks (smpAgent . proxyAgent) >>= liftIO . closeSMPClientAgent
@@ -1436,12 +1441,18 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
         storeDataBlob :: DataPublicAuthKey -> DataBlob -> M (Transmission BrokerMsg)
         storeDataBlob dataKey dataBlob
           | B.length (dataBody dataBlob) > e2eEncMessageLength = pure $ err LARGE_MSG
-          | otherwise = ok <$ (atomically . TM.insert entId d =<< asks dataStore)
+          | otherwise = do
+              atomically . TM.insert entId d =<< asks dataStore
+              withLog' dataLog (`logCreateBlob` d)
+              pure ok
           where
             d = DataRec {dataId = entId, dataKey, dataBlob}
 
         deleteDataBlob :: M (Transmission BrokerMsg)
-        deleteDataBlob = ok <$ (atomically . TM.delete entId =<< asks dataStore)
+        deleteDataBlob = do
+          atomically . TM.delete entId =<< asks dataStore
+          withLog' dataLog (`logDeleteBlob` entId)
+          pure ok
 
         getDataBlob :: M (Transmission BrokerMsg)
         getDataBlob = case vRes of
@@ -1482,9 +1493,11 @@ incStat v = atomically $ modifyTVar' v (+ 1)
 {-# INLINE incStat #-}
 
 withLog :: (StoreLog 'WriteMode -> IO a) -> M ()
-withLog action = do
-  env <- ask
-  liftIO . mapM_ action $ storeLog (env :: Env)
+withLog = withLog' storeLog
+{-# INLINE withLog #-}
+
+withLog' :: (Env -> Maybe (StoreLog 'WriteMode)) -> (StoreLog 'WriteMode -> IO a) -> M ()
+withLog' sel action = liftIO . mapM_ action =<< asks sel
 
 timed :: T.Text -> RecipientId -> M a -> M a
 timed name qId a = do
