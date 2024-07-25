@@ -47,6 +47,7 @@ module Simplex.Messaging.Transport
     authCmdsSMPVersion,
     sendingProxySMPVersion,
     sndAuthKeySMPVersion,
+    dataBlobSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -160,14 +161,17 @@ sendingProxySMPVersion = VersionSMP 8
 sndAuthKeySMPVersion :: VersionSMP
 sndAuthKeySMPVersion = VersionSMP 9
 
+dataBlobSMPVersion :: VersionSMP
+dataBlobSMPVersion = VersionSMP 10
+
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 9
+currentClientSMPRelayVersion = VersionSMP 10
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 9
+currentServerSMPRelayVersion = VersionSMP 10
 
 -- Max SMP protocol version to be used in e2e encrypted
 -- connection between client and server, as defined by SMP proxy.
