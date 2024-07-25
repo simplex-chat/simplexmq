@@ -358,9 +358,9 @@ smpSubscribeQueues party ca smp srv subs = do
       pure acc
     sessId = sessionId $ thParams smp
     groupSub :: Map SMPSub C.APrivateAuthKey -> ((QueueId, C.APrivateAuthKey), Either SMPClientError ()) -> (Bool, [(QueueId, SMPClientError)], [(QueueId, (SessionId, C.APrivateAuthKey))], [QueueId]) -> (Bool, [(QueueId, SMPClientError)], [(QueueId, (SessionId, C.APrivateAuthKey))], [QueueId])
-    groupSub pending (s@(qId, _), r) acc@(!tempErrs, finalErrs, oks, notPending) = case r of
+    groupSub pending ((qId, pk), r) acc@(!tempErrs, finalErrs, oks, notPending) = case r of
       Right ()
-        | M.member (party, qId) pending -> (tempErrs, finalErrs, (sessId, s) : oks, qId : notPending)
+        | M.member (party, qId) pending -> (tempErrs, finalErrs, (qId, (sessId, pk)) : oks, qId : notPending)
         | otherwise -> acc
       Left e
         | temporaryClientError e -> (True, finalErrs, oks, notPending)
