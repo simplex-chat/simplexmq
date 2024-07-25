@@ -79,6 +79,7 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
     defaultServerPort = "5223"
     executableName = "smp-server"
     storeLogFilePath = combine logPath "smp-server-store.log"
+    dataLogFilePath = combine logPath "smp-server-data.log"
     httpsCertFile = combine cfgPath "web.cert"
     httpsKeyFile = combine cfgPath "web.key"
     defaultStaticPath = combine logPath "www"
@@ -262,6 +263,7 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               privateKeyFile = c serverKeyFile,
               certificateFile = c serverCrtFile,
               storeLogFile = enableStoreLog $> storeLogFilePath,
+              dataLogFile = enableStoreLog $> dataLogFilePath,
               storeMsgsFile =
                 let messagesPath = combine logPath "smp-server-messages.log"
                  in case iniOnOff "STORE_LOG" "restore_messages" ini of
