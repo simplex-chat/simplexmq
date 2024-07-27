@@ -393,7 +393,9 @@ sendMessage :: AgentClient -> ConnId -> PQEncryption -> MsgFlags -> MsgBody -> A
 sendMessage c = withAgentEnv c .:: sendMessage' c
 {-# INLINE sendMessage #-}
 
-type MsgReq = (ConnId, PQEncryption, MsgFlags, MsgBody)
+type AdditionalMessage = Bool
+
+type MsgReq = (ConnId, AdditionalMessage, PQEncryption, MsgFlags, MsgBody)
 
 -- | Send multiple messages to different connections (SEND command)
 sendMessages :: AgentClient -> [MsgReq] -> AE [Either AgentErrorType (AgentMsgId, PQEncryption)]
@@ -1047,7 +1049,7 @@ getNotificationMessage' c nonce encNtfInfo = do
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: AgentClient -> ConnId -> PQEncryption -> MsgFlags -> MsgBody -> AM (AgentMsgId, PQEncryption)
-sendMessage' c connId pqEnc msgFlags msg = ExceptT $ runIdentity <$> sendMessagesB_ c (Identity (Right (connId, pqEnc, msgFlags, msg))) (S.singleton connId)
+sendMessage' c connId pqEnc msgFlags msg = ExceptT $ runIdentity <$> sendMessagesB_ c (Identity (Right (connId, False, pqEnc, msgFlags, msg))) (S.singleton connId)
 {-# INLINE sendMessage' #-}
 
 -- | Send multiple messages to different connections (SEND command) in Reader monad
@@ -1057,25 +1059,36 @@ sendMessages' c = sendMessagesB' c . map Right
 
 sendMessagesB' :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> AM (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
 sendMessagesB' c reqs = do
-  connIds <- liftEither $ foldl' addConnId (Right S.empty) reqs
-  lift $ sendMessagesB_ c reqs connIds
+  connIds <- liftEither $ foldl' addConnId (Right (S.empty, Nothing)) reqs
+  lift $ sendMessagesB_ c reqs $ fst connIds
   where
-    addConnId s@(Right s') (Right (connId, _, _, _))
-      | B.null connId = s
-      | connId `S.notMember` s' = Right $ S.insert connId s'
+    addConnId s@(Right (s', prevConnId_)) (Right (connId, additional, _, _, _))
+      | B.null connId = Left $ INTERNAL "sendMessages: empty connection ID"
+      | additional =
+          if prevConnId_ == Just connId
+            then s
+            else Left $ INTERNAL "sendMessages: different connection ID with additional message"
+      | connId `S.notMember` s' = Right (S.insert connId s', Just connId)
       | otherwise = Left $ INTERNAL "sendMessages: duplicate connection ID"
     addConnId s _ = s
 
 sendMessagesB_ :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> Set ConnId -> AM' (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
 sendMessagesB_ c reqs connIds = withConnLocks c connIds "sendMessages" $ do
-  reqs' <- withStoreBatch c (\db -> fmap (bindRight $ \req@(connId, _, _, _) -> bimap storeError (req,) <$> getConn db connId) reqs)
+  prev <- newTVarIO Nothing
+  reqs' <- withStoreBatch c $ \db -> fmap (bindRight $ getConn_ db prev) reqs
   let (toEnable, reqs'') = mapAccumL prepareConn [] reqs'
   void $ withStoreBatch' c $ \db -> map (\connId -> setConnPQSupport db connId PQSupportOn) toEnable
   enqueueMessagesB c reqs''
   where
+    getConn_ db prev req@(connId, additional, _, _, _)
+      | additional = readTVarIO prev >>= pure . fromMaybe (Left $ INTERNAL "sendMessagesB_: empty prevConnn")
+      | otherwise = do
+          r <- bimap storeError (req,) <$> getConn db connId
+          atomically $ writeTVar prev $ Just r
+          pure r
     prepareConn :: [ConnId] -> Either AgentErrorType (MsgReq, SomeConn) -> ([ConnId], Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage))
     prepareConn acc (Left e) = (acc, Left e)
-    prepareConn acc (Right ((_, pqEnc, msgFlags, msg), SomeConn _ conn)) = case conn of
+    prepareConn acc (Right ((_, _, pqEnc, msgFlags, msg), SomeConn _ conn)) = case conn of
       DuplexConnection cData _ sqs -> prepareMsg cData sqs
       SndConnection cData sq -> prepareMsg cData [sq]
       _ -> (acc, Left $ CONN SIMPLEX)
