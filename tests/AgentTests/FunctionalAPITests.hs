@@ -357,6 +357,8 @@ functionalAPITests t = do
     it "should subscribe to multiple connections with pending messages" $
       withSmpServer t $
         testBatchedPendingMessages 10 5
+  describe "Batch send messages" $ do
+    it "should send multiple messages to the same connection" $ withSmpServer t testSendMessagesB
   describe "Async agent commands" $ do
     describe "connect using async agent commands" $
       testBasicMatrix2 t testAsyncCommands
@@ -1931,6 +1933,24 @@ testBatchedPendingMessages nCreate nMsgs =
   where
     withA = withAgent 1 agentCfg initAgentServers testDB
     withB = withAgent 2 agentCfg initAgentServers testDB2
+
+testSendMessagesB :: IO ()
+testSendMessagesB = withAgentClients2 $ \a b -> runRight_ $ do
+  (aId, bId) <- makeConnection a b
+  let msg cId body = Right (cId, PQEncOn, SMP.noMsgFlags, body)
+  [Right (2, PQEncOn), Right (3, PQEncOn), Right (4, PQEncOn)] <-
+    sendMessagesB a ([msg bId "msg 1", msg "" "msg 2", msg "" "msg 3"] :: [Either AgentErrorType MsgReq])
+  get a ##> ("", bId, SENT 2)
+  get a ##> ("", bId, SENT 3)
+  get a ##> ("", bId, SENT 4)
+  receiveMsg b aId 2 "msg 1"
+  receiveMsg b aId 3 "msg 2"
+  receiveMsg b aId 4 "msg 3"
+
+receiveMsg :: AgentClient -> ConnId -> AgentMsgId -> MsgBody -> ExceptT AgentErrorType IO ()
+receiveMsg c cId msgId msg  = do
+  get c =##> \case ("", cId', Msg' mId' PQEncOn msg') -> cId' == cId && mId' == msgId && msg' == msg; _ -> False
+  ackMessage c cId msgId Nothing
 
 testAsyncCommands :: SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
 testAsyncCommands sqSecured alice bob baseId =
