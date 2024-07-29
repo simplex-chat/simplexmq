@@ -220,7 +220,6 @@ module Simplex.Messaging.Agent.Store.SQLite
     -- * utilities
     withConnection,
     withTransaction,
-    withTransactionCtx,
     firstRow,
     firstRow',
     maybeFirstRow,
@@ -395,7 +394,8 @@ connectSQLiteStore dbFilePath key keepKey = do
   atomically $ do
     dbKey <- newTVar $! storeKey key keepKey
     dbClosed <- newTVar False
-    pure SQLiteStore {dbFilePath, dbKey, dbConnection, dbNew, dbClosed}
+    dbSem <- newTVar 0
+    pure SQLiteStore {dbFilePath, dbKey, dbSem, dbConnection, dbNew, dbClosed}
 
 connectDB :: FilePath -> ScrubbedBytes -> IO DB.Connection
 connectDB path key = do

@@ -8,20 +8,19 @@ module Simplex.Messaging.Agent.Store.SQLite.Common
     withConnection',
     withTransaction,
     withTransaction',
-    withTransactionCtx,
     dbBusyLoop,
     storeKey,
   )
 where
 
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.STM (retry)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
-import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Database.SQLite.Simple (SQLError)
 import qualified Database.SQLite.Simple as SQL
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
-import Simplex.Messaging.Util (diffToMilliseconds)
+import Simplex.Messaging.Util (ifM, unlessM)
 import qualified UnliftIO.Exception as E
 import UnliftIO.MVar
 import UnliftIO.STM
@@ -32,35 +31,44 @@ storeKey key keepKey = if keepKey || BA.null key then Just key else Nothing
 data SQLiteStore = SQLiteStore
   { dbFilePath :: FilePath,
     dbKey :: TVar (Maybe ScrubbedBytes),
+    dbSem :: TVar Int,
     dbConnection :: MVar DB.Connection,
     dbClosed :: TVar Bool,
     dbNew :: Bool
   }
 
+withConnection_ :: SQLiteStore -> Bool -> (DB.Connection -> IO a) -> IO a
+withConnection_ SQLiteStore {dbSem, dbConnection} priority action
+  | priority = E.bracket_ signal release $ withMVar dbConnection action
+  | otherwise = lowPriority
+  where
+    lowPriority = wait >> withMVar dbConnection (\db -> ifM free (action db) lowPriority)
+    signal = atomically $ modifyTVar' dbSem (+ 1)
+    release = atomically $ modifyTVar' dbSem $ \sem -> if sem > 0 then sem - 1 else 0
+    wait = atomically $ unlessM ((0 ==) <$> readTVar dbSem) retry
+    free = (0 ==) <$> readTVarIO dbSem
+
 withConnection :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withConnection SQLiteStore {dbConnection} = withMVar dbConnection
+withConnection st = withConnection_ st False
 
 withConnection' :: SQLiteStore -> (SQL.Connection -> IO a) -> IO a
 withConnection' st action = withConnection st $ action . DB.conn
 
-withTransaction :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withTransaction = withTransactionCtx Nothing
-
 withTransaction' :: SQLiteStore -> (SQL.Connection -> IO a) -> IO a
 withTransaction' st action = withTransaction st $ action . DB.conn
 
-withTransactionCtx :: Maybe String -> SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withTransactionCtx ctx_ st action = withConnection st $ dbBusyLoop . transactionWithCtx
+withTransaction :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
+withTransaction st = withTransaction_ st False
+{-# INLINE withTransaction #-}
+
+withPriorityTransaction :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
+withPriorityTransaction st = withTransaction_ st True
+{-# INLINE withPriorityTransaction #-}
+
+withTransaction_ :: SQLiteStore -> Bool -> (DB.Connection -> IO a) -> IO a
+withTransaction_ st priority action = withConnection_ st priority $ dbBusyLoop . transaction
   where
-    transactionWithCtx db@DB.Connection {conn} = case ctx_ of
-      Nothing -> SQL.withImmediateTransaction conn $ action db
-      Just ctx -> do
-        t1 <- getCurrentTime
-        r <- SQL.withImmediateTransaction conn $ action db
-        t2 <- getCurrentTime
-        putStrLn $ "withTransactionCtx start :: " <> show t1 <> " :: " <> ctx
-        putStrLn $ "withTransactionCtx end   :: " <> show t2 <> " :: " <> ctx <> " :: duration=" <> show (diffToMilliseconds $ diffUTCTime t2 t1)
-        pure r
+    transaction db@DB.Connection {conn} = SQL.withImmediateTransaction conn $ action db
 
 dbBusyLoop :: forall a. IO a -> IO a
 dbBusyLoop action = loop 500 3000000
