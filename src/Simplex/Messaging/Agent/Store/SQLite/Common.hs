@@ -8,6 +8,7 @@ module Simplex.Messaging.Agent.Store.SQLite.Common
     withConnection',
     withTransaction,
     withTransaction',
+    withTransactionPriority,
     dbBusyLoop,
     storeKey,
   )
@@ -37,8 +38,8 @@ data SQLiteStore = SQLiteStore
     dbNew :: Bool
   }
 
-withConnection_ :: SQLiteStore -> Bool -> (DB.Connection -> IO a) -> IO a
-withConnection_ SQLiteStore {dbSem, dbConnection} priority action
+withConnectionPriority :: SQLiteStore -> Bool -> (DB.Connection -> IO a) -> IO a
+withConnectionPriority SQLiteStore {dbSem, dbConnection} priority action
   | priority = E.bracket_ signal release $ withMVar dbConnection action
   | otherwise = lowPriority
   where
@@ -49,7 +50,7 @@ withConnection_ SQLiteStore {dbSem, dbConnection} priority action
     free = (0 ==) <$> readTVarIO dbSem
 
 withConnection :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withConnection st = withConnection_ st False
+withConnection st = withConnectionPriority st False
 
 withConnection' :: SQLiteStore -> (SQL.Connection -> IO a) -> IO a
 withConnection' st action = withConnection st $ action . DB.conn
@@ -58,15 +59,11 @@ withTransaction' :: SQLiteStore -> (SQL.Connection -> IO a) -> IO a
 withTransaction' st action = withTransaction st $ action . DB.conn
 
 withTransaction :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withTransaction st = withTransaction_ st False
+withTransaction st = withTransactionPriority st False
 {-# INLINE withTransaction #-}
 
-withPriorityTransaction :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
-withPriorityTransaction st = withTransaction_ st True
-{-# INLINE withPriorityTransaction #-}
-
-withTransaction_ :: SQLiteStore -> Bool -> (DB.Connection -> IO a) -> IO a
-withTransaction_ st priority action = withConnection_ st priority $ dbBusyLoop . transaction
+withTransactionPriority :: SQLiteStore -> Bool -> (DB.Connection -> IO a) -> IO a
+withTransactionPriority st priority action = withConnectionPriority st priority $ dbBusyLoop . transaction
   where
     transaction db@DB.Connection {conn} = SQL.withImmediateTransaction conn $ action db
 

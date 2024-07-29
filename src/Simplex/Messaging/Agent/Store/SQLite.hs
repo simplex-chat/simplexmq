@@ -220,6 +220,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     -- * utilities
     withConnection,
     withTransaction,
+    withTransactionPriority,
     firstRow,
     firstRow',
     maybeFirstRow,
