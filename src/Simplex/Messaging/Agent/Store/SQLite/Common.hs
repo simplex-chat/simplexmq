@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -43,7 +44,7 @@ withConnectionPriority SQLiteStore {dbSem, dbConnection} priority action
   | priority = E.bracket_ signal release $ withMVar dbConnection action
   | otherwise = lowPriority
   where
-    lowPriority = wait >> withMVar dbConnection (\db -> ifM free (action db) lowPriority)
+    lowPriority = wait >> withMVar dbConnection (\db -> ifM free (Just <$> action db) (pure Nothing)) >>= maybe lowPriority pure
     signal = atomically $ modifyTVar' dbSem (+ 1)
     release = atomically $ modifyTVar' dbSem $ \sem -> if sem > 0 then sem - 1 else 0
     wait = atomically $ unlessM ((0 ==) <$> readTVar dbSem) retry
