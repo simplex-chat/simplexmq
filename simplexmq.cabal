@@ -167,6 +167,8 @@ library
       Simplex.Messaging.Server
       Simplex.Messaging.Server.CLI
       Simplex.Messaging.Server.Control
+      Simplex.Messaging.Server.DataLog
+      Simplex.Messaging.Server.DataStore
       Simplex.Messaging.Server.Env.STM
       Simplex.Messaging.Server.Expiration
       Simplex.Messaging.Server.Information

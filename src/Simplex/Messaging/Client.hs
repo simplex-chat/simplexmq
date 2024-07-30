@@ -58,6 +58,10 @@ module Simplex.Messaging.Client
     suspendSMPQueue,
     deleteSMPQueue,
     deleteSMPQueues,
+    createSMPDataBlob,
+    deleteSMPDataBlob,
+    getSMPDataBlob,
+    proxyGetSMPDataBlob,
     connectSMPProxiedRelay,
     proxySMPMessage,
     forwardSMPTransmission,
@@ -114,6 +118,8 @@ import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Bitraversable (bimapM)
+import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -748,8 +754,13 @@ secureSndSMPQueue c spKey sId senderKey = okSMPCommand (SKEY senderKey) c spKey 
 {-# INLINE secureSndSMPQueue #-}
 
 proxySecureSndSMPQueue :: SMPClient -> ProxiedRelay -> SndPrivateAuthKey -> SenderId -> SndPublicAuthKey -> ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySecureSndSMPQueue c proxiedRelay spKey sId senderKey = proxySMPCommand c proxiedRelay (Just spKey) sId (SKEY senderKey)
+proxySecureSndSMPQueue c proxiedRelay spKey sId senderKey = proxySMPCommand c proxiedRelay (Just spKey) sId (SKEY senderKey) okResult
 {-# INLINE proxySecureSndSMPQueue #-}
+
+okResult :: BrokerMsg -> Maybe ()
+okResult = \case
+  OK -> Just ()
+  _ -> Nothing
 
 -- | Enable notifications for the queue for push notifications server.
 --
@@ -792,7 +803,7 @@ sendSMPMessage c spKey sId flags msg =
     r -> throwE $ unexpectedResponse r
 
 proxySMPMessage :: SMPClient -> ProxiedRelay -> Maybe SndPrivateAuthKey -> SenderId -> MsgFlags -> MsgBody -> ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySMPMessage c proxiedRelay spKey sId flags msg = proxySMPCommand c proxiedRelay spKey sId (SEND flags msg)
+proxySMPMessage c proxiedRelay spKey sId flags msg = proxySMPCommand c proxiedRelay spKey sId (SEND flags msg) okResult
 
 -- | Acknowledge message delivery (server deletes the message).
 --
@@ -823,6 +834,43 @@ deleteSMPQueue = okSMPCommand DEL
 deleteSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
 deleteSMPQueues = okSMPCommands DEL
 {-# INLINE deleteSMPQueues #-}
+
+createSMPDataBlob :: SMPClient -> C.AAuthKeyPair -> BlobId -> DataBlob -> ExceptT SMPClientError IO ()
+createSMPDataBlob c (dKey, dpKey) dId blob = okSMPCommand (WRT dKey blob) c dpKey dId
+{-# INLINE createSMPDataBlob #-}
+
+deleteSMPDataBlob :: SMPClient -> DataPrivateAuthKey -> BlobId -> ExceptT SMPClientError IO ()
+deleteSMPDataBlob = okSMPCommand CLR
+{-# INLINE deleteSMPDataBlob #-}
+
+-- pk is the private key passed to the client out of band.
+-- Associated public key is used as ID to retrieve data blob
+getSMPDataBlob :: SMPClient -> C.PrivateKeyX25519 -> ExceptT SMPClientError IO DataBlob
+getSMPDataBlob c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} pk = do
+  serverKey <- case thAuth thParams of
+    Nothing -> throwE $ PCETransportError TENoServerAuth
+    Just THAuthClient {serverPeerPubKey = k} -> pure k
+  nonce <- liftIO . atomically $ C.randomCbNonce g
+  let dId = BA.convert $ C.pubKeyBytes $ C.publicKey pk
+  sendProtocolCommand_ c (Just nonce) Nothing Nothing dId (Cmd SSender READ) >>= \case
+    DATA encBlob -> decryptDataBlob serverKey pk nonce encBlob
+    r -> throwE $ unexpectedResponse r
+
+proxyGetSMPDataBlob :: SMPClient -> ProxiedRelay -> C.PrivateKeyX25519 -> ExceptT SMPClientError IO (Either ProxyClientError DataBlob)
+proxyGetSMPDataBlob c@ProtocolClient {client_ = PClient {clientCorrId = g}} proxiedRelay@ProxiedRelay {prServerKey} pk = do
+  nonce <- liftIO . atomically $ C.randomCbNonce g
+  let dId = BA.convert $ C.pubKeyBytes $ C.publicKey pk
+  encBlob_ <-
+    proxySMPCommand_ c (Just nonce) proxiedRelay Nothing dId READ $ \case
+      DATA encBlob -> Just encBlob
+      _ -> Nothing
+  bimapM pure (decryptDataBlob prServerKey pk nonce) encBlob_
+
+decryptDataBlob :: C.PublicKeyX25519 -> C.PrivateKeyX25519 -> C.CbNonce -> ByteString -> ExceptT (ProtocolClientError ErrorType) IO DataBlob
+decryptDataBlob serverKey pk nonce encBlob = do
+  let ss = C.dh' serverKey pk
+  blobStr <- liftEitherWith PCECryptoError $ C.cbDecrypt ss nonce encBlob
+  liftEitherWith (const $ PCEResponseError BLOCK) $ smpDecode blobStr
 
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
@@ -877,6 +925,9 @@ instance StrEncoding ProxyClientError where
       "SYNTAX" -> ProxyResponseError <$> _strP
       _ -> fail "bad ProxyClientError"
 
+proxySMPCommand :: SMPClient -> ProxiedRelay -> Maybe SndPrivateAuthKey -> SenderId -> Command 'Sender -> (BrokerMsg -> Maybe r) -> ExceptT SMPClientError IO (Either ProxyClientError r)
+proxySMPCommand c = proxySMPCommand_ c Nothing
+
 -- consider how to process slow responses - is it handled somehow locally or delegated to the caller
 -- this method is used in the client
 -- sends PFWD :: C.PublicKeyX25519 -> EncTransmission -> Command Sender
@@ -904,22 +955,25 @@ instance StrEncoding ProxyClientError where
 -- - other errors from the client running on proxy and connected to relay in PREProxiedRelayError
 
 -- This function proxies Sender commands that return OK or ERR
-proxySMPCommand ::
+proxySMPCommand_ ::
   SMPClient ->
+  -- optional correlation ID/nonce for the sending client
+  Maybe C.CbNonce ->
   -- proxy session from PKEY
   ProxiedRelay ->
-  -- message to deliver
+  -- command to deliver
   Maybe SndPrivateAuthKey ->
   SenderId ->
   Command 'Sender ->
-  ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g, tcpTimeout}} (ProxiedRelay sessionId v _ serverKey) spKey sId command = do
+  (BrokerMsg -> Maybe r) ->
+  ExceptT SMPClientError IO (Either ProxyClientError r)
+proxySMPCommand_ c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g, tcpTimeout}} nonce_ (ProxiedRelay sessionId v _ serverKey) spKey sId command toResult = do
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
       serverThParams = smpTHParamsSetVersion v proxyThParams {sessionId, thAuth = serverThAuth}
   (cmdPubKey, cmdPrivKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
   let cmdSecret = C.dh' serverKey cmdPrivKey
-  nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
+  nonce@(C.CbNonce corrId) <- liftIO $ maybe (atomically $ C.randomCbNonce g) pure nonce_
   -- encode
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId corrId, sId, Cmd SSender command)
   auth <- liftEitherWith PCETransportError $ authTransmission serverThAuth spKey nonce tForAuth
@@ -939,9 +993,11 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
         case tParse serverThParams t' of
           t'' :| [] -> case tDecodeParseValidate serverThParams t'' of
             (_auth, _signed, (_c, _e, cmd)) -> case cmd of
-              Right OK -> pure $ Right ()
-              Right (ERR e) -> throwE $ PCEProtocolError e -- this is the error from the destination relay
-              Right r' -> throwE $ unexpectedResponse r'
+              Right r' -> case toResult r' of
+                Just r'' -> pure $ Right r''
+                Nothing -> case r' of
+                  ERR e -> throwE $ PCEProtocolError e -- this is the error from the destination relay
+                  _ -> throwE $ unexpectedResponse r'
               Left e -> throwE $ PCEResponseError e
           _ -> throwE $ PCETransportError TEBadBlock
       ERR e -> pure . Left $ ProxyProtocolError e -- this will not happen, this error is returned via Left

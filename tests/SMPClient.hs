@@ -57,6 +57,9 @@ testStoreLogFile = "tests/tmp/smp-server-store.log"
 testStoreLogFile2 :: FilePath
 testStoreLogFile2 = "tests/tmp/smp-server-store.log.2"
 
+testDataLogFile :: FilePath
+testDataLogFile = "tests/tmp/smp-server-data.log"
+
 testStoreMsgsFile :: FilePath
 testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
 
@@ -104,6 +107,7 @@ cfg =
       queueIdBytes = 24,
       msgIdBytes = 24,
       storeLogFile = Nothing,
+      dataLogFile = Nothing,
       storeMsgsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
@@ -158,7 +162,7 @@ withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasC
 withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
 
 withSmpServerStoreLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerStoreLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, serverStatsBackupFile = Just testServerStatsBackupFile}
+withSmpServerStoreLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, dataLogFile = Just testDataLogFile, serverStatsBackupFile = Just testServerStatsBackupFile}
 
 withSmpServerConfigOn :: HasCallStack => ATransport -> ServerConfig -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerConfigOn t cfg' port' =

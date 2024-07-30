@@ -19,6 +19,9 @@ import Control.Concurrent (ThreadId, threadDelay)
 import Control.Logger.Simple
 import Control.Monad (forM, forM_, forever, replicateM_)
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
+import Crypto.Hash (SHA512)
+import qualified Crypto.KDF.HKDF as H
+import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -34,7 +37,7 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
-import Simplex.Messaging.Protocol (EncRcvMsgBody (..), MsgBody, RcvMessage (..), SubscriptionMode (..), maxMessageLength, noMsgFlags)
+import Simplex.Messaging.Protocol (DataBlob (..), EncRcvMsgBody (..), MsgBody, RcvMessage (..), SubscriptionMode (..), e2eEncConfirmationLength, maxMessageLength, noMsgFlags)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport
@@ -133,6 +136,25 @@ smpProxyTests = do
       xdescribe "stress test 10k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "25 agents, 300 pairs, 17 messages" . oneServer . withNumCapabilities 4 $ deliver 25 17
+  describe "receive data blobs via SMP proxy" $ do
+    let srv1 = SMPServer testHost testPort testKeyHash
+        srv2 = SMPServer testHost testPort2 testKeyHash
+    describe "client API" $ do
+      describe "one server" $ do
+        it "deliver via proxy" . oneServer $ do
+          receiveBlobViaProxy srv1 srv1 C.SEd448 "hello"
+      describe "two servers" $ do
+        let proxyServ = srv1
+            relayServ = srv2
+        blob <- runIO $ atomically . C.randomBytes (e2eEncConfirmationLength - 2) =<< C.newRandom
+        it "deliver via proxy" . twoServersFirstProxy $
+          receiveBlobViaProxy proxyServ relayServ C.SEd448 "hello"
+        it "max blob size, Ed448 keys" . twoServersFirstProxy $
+          receiveBlobViaProxy proxyServ relayServ C.SEd448 blob
+        it "max blob size, Ed25519 keys" . twoServersFirstProxy $
+          receiveBlobViaProxy proxyServ relayServ C.SEd25519 blob
+        it "max blob size, X25519 keys" . twoServersFirstProxy $
+          receiveBlobViaProxy proxyServ relayServ C.SX25519 blob
   where
     oneServer = withSmpServerConfigOn (transport @TLS) proxyCfg {msgQueueQuota = 128} testPort . const
     twoServers = twoServers_ proxyCfg proxyCfg
@@ -403,6 +425,53 @@ agentViaProxyRetryNoSession = do
   where
     withServer2 = withSmpServerConfigOn (transport @TLS) proxyCfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsFile2} testPort2
     servers srv = (initAgentServersProxy SPMAlways SPFProhibit) {smp = userServers [srv]}
+
+receiveBlobViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => SMPServer -> SMPServer -> C.SAlgorithm a -> ByteString -> IO ()
+receiveBlobViaProxy proxyServ relayServ alg origData = do
+  g <- C.newRandom
+  -- proxy client
+  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig Nothing (\_ -> pure ())
+  pc <- either (fail . show) pure pc'
+  THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
+  -- relay client
+  rc' <- getProtocolClient g (2, relayServ, Nothing) defaultSMPClientConfig Nothing (\_ -> pure ())
+  rc <- either (fail . show) pure rc'
+  -- prepare blob
+  -- k: ID to retrive blob.
+  -- pk: part of the link sent to the accepting party (Sender role),
+  --     also key material for HKDF to derive key to e2e encrypt blob.
+  -- hash(k): ID used to store blob
+  -- (k, pk): used to agree additional server-to-client encryption when retrieving blob,
+  --          using DH with server session keys.
+  (C.PublicKeyX25519 k, pk'@(C.PrivateKeyX25519 pk _)) <- atomically $ C.generateKeyPair @'C.X25519 g
+  blobKeys@(_, blobPKey) <- atomically $ C.generateAuthKeyPair alg g
+  let kBytes = BA.convert k :: ByteString -- blob ID for "sender" (blob recipient)
+      rBlobId = C.sha256Hash kBytes
+      pkBytes = BA.convert pk :: ByteString
+      ikm = pkBytes
+      salt = "" :: ByteString
+      info = "SimpleXDataBlob" :: ByteString
+      prk = H.extract salt ikm :: H.PRK SHA512
+      skBytes = H.expand prk info 32
+  dataNonce <- atomically $ C.randomCbNonce g
+  Right sk <- pure $ C.sbKey skBytes
+  -- store blob
+  Right dataBody <- pure $ C.sbEncrypt sk dataNonce origData e2eEncConfirmationLength
+  let blob = DataBlob {dataNonce, dataBody}
+  runRight_ $ do
+    createSMPDataBlob rc blobKeys rBlobId blob
+    -- retrive blob directly
+    blob1@DataBlob {dataNonce = dataNonce1, dataBody = body1} <- getSMPDataBlob rc pk'
+    liftIO $ blob1 `shouldBe` blob
+    liftIO $ C.sbDecrypt sk dataNonce1 body1 `shouldBe` Right origData
+    -- retrive blob via proxy
+    sess <- connectSMPProxiedRelay pc relayServ (Just "correct")
+    Right blob2 <- proxyGetSMPDataBlob pc sess pk'
+    liftIO $ blob2 `shouldBe` blob
+    -- delete blob
+    deleteSMPDataBlob rc blobPKey rBlobId
+    liftIO $ runExceptT (getSMPDataBlob rc pk') `shouldReturn` Left (PCEProtocolError SMP.AUTH)
+    liftIO $ runExceptT (proxyGetSMPDataBlob pc sess pk') `shouldReturn` Left (PCEProtocolError SMP.AUTH)
 
 testNoProxy :: IO ()
 testNoProxy = do

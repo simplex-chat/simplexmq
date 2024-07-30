@@ -47,6 +47,7 @@ module Simplex.Messaging.Transport
     authCmdsSMPVersion,
     sendingProxySMPVersion,
     sndAuthKeySMPVersion,
+    dataBlobSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -130,6 +131,9 @@ smpBlockSize = 16384
 -- 5 - basic auth for SMP servers (11/12/2022)
 -- 6 - allow creating queues without subscribing (9/10/2023)
 -- 7 - support authenticated encryption to verify senders' commands, imply but do NOT send session ID in signed part (4/30/2024)
+-- 8 - forwarding proxy protecting IP addresses and sessions of command senders (5/14/2024)
+-- 9 - securing message queue by sender (SKEY command) for faster connection handshake (6/30/2024)
+-- 10 - storing data blobs on SMP servers for short invitation links (7/25/2024)
 
 data SMPVersion
 
@@ -160,14 +164,17 @@ sendingProxySMPVersion = VersionSMP 8
 sndAuthKeySMPVersion :: VersionSMP
 sndAuthKeySMPVersion = VersionSMP 9
 
+dataBlobSMPVersion :: VersionSMP
+dataBlobSMPVersion = VersionSMP 10
+
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 9
+currentClientSMPRelayVersion = VersionSMP 10
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 9
+currentServerSMPRelayVersion = VersionSMP 10
 
 -- Max SMP protocol version to be used in e2e encrypted
 -- connection between client and server, as defined by SMP proxy.
@@ -175,7 +182,7 @@ currentServerSMPRelayVersion = VersionSMP 9
 -- to prevent client version fingerprinting by the
 -- destination relays when clients upgrade at different times.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 9
+proxiedSMPRelayVersion = VersionSMP 10
 
 -- minimal supported protocol version is 4
 -- TODO remove code that supports sending commands without batching

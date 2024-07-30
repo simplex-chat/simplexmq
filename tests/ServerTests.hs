@@ -21,7 +21,10 @@ import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
 import Control.Monad
 import Control.Monad.IO.Class
+import Crypto.Hash (SHA512)
+import qualified Crypto.KDF.HKDF as H
 import Data.Bifunctor (first)
+import qualified Data.ByteArray as BA
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -68,6 +71,9 @@ serverTests t@(ATransport t') = do
     testMsgExpireOnSend t'
     testMsgExpireOnInterval t'
     testMsgNOTExpireOnInterval t'
+  describe "Data blobs" $ do
+    testDataBlobs t'
+    testDataBlobsWithLog t
 
 pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmission ErrorType BrokerMsg
 pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
@@ -913,6 +919,127 @@ testMsgNOTExpireOnInterval t =
           1000 `timeout` tGet @SMPVersion @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
             Just _ -> error "nothing else should be delivered"
+
+testDataBlobs :: forall c. Transport c => TProxy c -> Spec
+testDataBlobs t =
+  it "should store, retrieve, update and delete data blob directly from the server" $
+    smpTest2 t $ \r s -> do
+      g <- C.newRandom
+      -- k: ID to retrive blob.
+      -- pk: part of the link sent to the accepting party (Sender role),
+      --     also key material for HKDF to derive key to e2e encrypt blob.
+      -- hash(k): ID used to store blob
+      -- (k, pk): used to agree additional server-to-client encryption when retrieving blob,
+      --          using DH with server session keys.
+      (C.PublicKeyX25519 k, pk'@(C.PrivateKeyX25519 pk _)) <- atomically $ C.generateKeyPair @'C.X25519 g
+      (blobKey, blobPKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      let kBytes = BA.convert k :: ByteString
+          rBlobId = C.sha256Hash kBytes
+          sBlobId = kBytes
+          pkBytes = BA.convert pk :: ByteString
+          ikm = pkBytes
+          salt = "" :: ByteString
+          info = "SimpleXDataBlob" :: ByteString
+          prk = H.extract salt ikm :: H.PRK SHA512
+          skBytes = H.expand prk info 32
+          origData = "hello"
+          origData2 = "hello 2"
+      dataNonce <- atomically $ C.randomCbNonce g
+      Right sk <- pure $ C.sbKey skBytes
+      -- store and retrieve blob
+      Right dataBody <- pure $ C.sbEncrypt sk dataNonce origData e2eEncConfirmationLength
+      let blob = DataBlob {dataNonce, dataBody}
+      -- storing data signed with the incorrect key fails (not matching key in command)
+      (_, blobPKey') <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      Resp "0" _ (ERR AUTH) <- signSendRecv r blobPKey' ("0", rBlobId, WRT blobKey blob)
+      -- correct key succeeds
+      Resp "1" _ OK <- signSendRecv r blobPKey ("1", rBlobId, WRT blobKey blob)
+      Resp "2" _ (DATA encBlob) <- sendRecv s ("", "2",  sBlobId, READ)
+      THandle {params = THandleParams {thAuth = Just THAuthClient {serverPeerPubKey}}} <- pure s
+      let ss = C.dh' serverPeerPubKey pk'
+          respNonce = C.cbNonce "2" -- correlation ID sent in READ request
+      Right blobStr <- pure $ C.cbDecrypt ss respNonce encBlob
+      Right  blob'@DataBlob {dataNonce = dataNonce', dataBody = body'} <- pure $ smpDecode blobStr
+      blob' `shouldBe` blob
+      Right origData' <- pure $ C.sbDecrypt sk dataNonce' body'
+      origData' `shouldBe` origData
+      -- update and retrieve blob
+      dataNonce2 <- atomically $ C.randomCbNonce g
+      Right dataBody2 <- pure $ C.sbEncrypt sk dataNonce2 origData2 e2eEncConfirmationLength
+      let blob2 = DataBlob {dataNonce = dataNonce2, dataBody = dataBody2}
+      -- storing data under the same ID but signed with the different key fails (even if it matches key in command)
+      (blobKey'', blobPKey'') <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      Resp "3" _ (ERR AUTH) <- signSendRecv r blobPKey'' ("3", rBlobId, WRT blobKey'' blob2)
+      -- same key but signed with the wrong key also fails
+      Resp "4" _ (ERR AUTH) <- signSendRecv r blobPKey'' ("4", rBlobId, WRT blobKey blob2)
+      -- same key bsucceeds
+      Resp "5" _ OK <- signSendRecv r blobPKey ("5", rBlobId, WRT blobKey blob2)
+      Resp "6" _ (DATA encBlob2) <- sendRecv s ("", "6",  sBlobId, READ)
+      let respNonce2 = C.cbNonce "6" -- correlation ID sent in READ request
+      Right blobStr2 <- pure $ C.cbDecrypt ss respNonce2 encBlob2
+      Right  blob2'@DataBlob {dataNonce = dataNonce2', dataBody = body2'} <- pure $ smpDecode blobStr2
+      blob2' `shouldBe` blob2
+      Right origData2' <- pure $ C.sbDecrypt sk dataNonce2' body2'
+      origData2' `shouldBe` origData2
+      -- remove data blob
+      -- incorrect ID fails
+      Resp "7" _ (ERR AUTH) <- signSendRecv r blobPKey ("7", sBlobId, CLR)
+      -- incorrect key fails
+      Resp "8" _ (ERR AUTH) <- signSendRecv r blobPKey'' ("8", rBlobId, CLR)
+      Resp "9" _ (DATA encBlob2') <- sendRecv s ("", "9",  sBlobId, READ)
+      encBlob2' `shouldBe` encBlob2'
+      -- correct key and ID succeed
+      Resp "10" _ OK <- signSendRecv r blobPKey ("10", rBlobId, CLR)
+      Resp "11" _ (ERR AUTH) <- sendRecv s ("", "11",  sBlobId, READ)
+      pure ()
+
+testDataBlobsWithLog :: ATransport -> Spec
+testDataBlobsWithLog at@(ATransport t) =
+  it "should store data blob to log and restore after server restart" $ do
+    g <- C.newRandom
+    (C.PublicKeyX25519 k, pk) <- atomically $ C.generateKeyPair @'C.X25519 g
+    (blobKey, blobPKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    dataNonce <- atomically $ C.randomCbNonce g
+    let kBytes = BA.convert k :: ByteString
+        rBlobId = C.sha256Hash kBytes
+        sBlobId = kBytes
+        blob = DataBlob {dataNonce, dataBody = "some random encrypted data"} -- the previous test shows e2e blob encryption
+        blob2 = DataBlob {dataNonce, dataBody = "some other encrypted data"}
+
+    clientServer t $ \h -> do
+      Resp "1" _ OK <- signSendRecv h blobPKey ("1", rBlobId, WRT blobKey blob)
+      pure ()
+    clientServer t $ \h -> do
+      testGetBlob h "2" pk sBlobId blob
+      -- update blob
+      Resp "3" _ OK <- signSendRecv h blobPKey ("3", rBlobId, WRT blobKey blob2)
+      testGetBlob h "4" pk sBlobId blob2
+    clientServer t $ \h -> do
+      -- updated after restart
+      testGetBlob h "5" pk sBlobId blob2
+      -- delete blob
+      Resp "6" _ OK <- signSendRecv h blobPKey ("6", rBlobId, CLR)
+      Resp "7" _ (ERR AUTH) <- sendRecv h ("", "7",  sBlobId, READ)
+      pure ()
+    clientServer t $ \h -> do
+      -- deleted after restart
+      Resp "8" _ (ERR AUTH) <- sendRecv h ("", "8",  sBlobId, READ)
+      pure ()
+  where
+    clientServer :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> IO ()
+    clientServer _ test' =
+      withSmpServerStoreLogOn at testPort $ \server -> do
+        testSMPClient test' `shouldReturn` ()
+        killThread server
+    testGetBlob h corrId pk sBlobId expectedBlob = do
+      Resp (CorrId corrId') _ (DATA encBlob) <- sendRecv h ("", corrId,  sBlobId, READ)
+      corrId' `shouldBe` corrId
+      THandle {params = THandleParams {thAuth = Just THAuthClient {serverPeerPubKey}}} <- pure h
+      let ss = C.dh' serverPeerPubKey pk
+          respNonce = C.cbNonce corrId -- correlation ID sent in READ request
+      Right blobStr <- pure $ C.cbDecrypt ss respNonce encBlob
+      Right  blob' <- pure $ smpDecode blobStr
+      blob' `shouldBe` expectedBlob
 
 samplePubKey :: C.APublicVerifyKey
 samplePubKey = C.APublicVerifyKey C.SEd25519 "MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ6buiZJVgSpQWsucXq7U6zjMgY="
