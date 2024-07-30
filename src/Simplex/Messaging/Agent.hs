@@ -1073,20 +1073,20 @@ sendMessagesB' c reqs = do
 
 sendMessagesB_ :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> Set ConnId -> AM' (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
 sendMessagesB_ c reqs connIds = withConnLocks c connIds "sendMessages" $ do
-  prev <- newEmptyTMVarIO
+  prev <- newTVarIO Nothing
   reqs' <- withStoreBatch c $ \db -> fmap (bindRight $ getConn_ db prev) reqs
   let (toEnable, reqs'') = mapAccumL prepareConn [] reqs'
   void $ withStoreBatch' c $ \db -> map (\connId -> setConnPQSupport db connId PQSupportOn) $ S.toList toEnable
   enqueueMessagesB c reqs''
   where
-    getConn_ :: DB.Connection -> TMVar (Either AgentErrorType SomeConn) -> MsgReq -> IO (Either AgentErrorType (MsgReq, SomeConn))
+    getConn_ :: DB.Connection -> TVar (Maybe (Either AgentErrorType SomeConn)) -> MsgReq -> IO (Either AgentErrorType (MsgReq, SomeConn))
     getConn_ db prev req@(connId, _, _, _) =
       (req,) <$$> 
         if B.null connId
-          then fromMaybe (Left $ INTERNAL "sendMessagesB_: empty prev connId") <$> atomically (tryReadTMVar prev)
+          then fromMaybe (Left $ INTERNAL "sendMessagesB_: empty prev connId") <$> atomically (readTVar prev)
           else do
             conn <- first storeError <$> getConn db connId
-            conn <$ atomically (writeTMVar prev conn)
+            conn <$ atomically (writeTVar prev $ Just conn)
     prepareConn :: Set ConnId -> Either AgentErrorType (MsgReq, SomeConn) -> (Set ConnId, Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage))
     prepareConn s (Left e) = (s, Left e)
     prepareConn s (Right ((_, pqEnc, msgFlags, msg), SomeConn _ conn)) = case conn of
