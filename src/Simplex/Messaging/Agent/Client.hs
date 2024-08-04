@@ -127,6 +127,7 @@ module Simplex.Messaging.Agent.Client
     beginAgentOperation,
     endAgentOperation,
     waitUntilForeground,
+    waitWhileSuspended,
     suspendSendingAndDatabase,
     suspendOperation,
     notifySuspended,
@@ -716,12 +717,14 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
       atomically $ putTMVar (sessionVar v) a
     runSubWorker = do
       ri <- asks $ reconnectInterval . config
-      withRetryInterval ri $ \_ loop -> do
+      withRetryForeground ri isForeground $ \_ loop -> do
         pending <- atomically getPending
         forM_ (L.nonEmpty pending) $ \qs -> do
+          atomically $ waitUntilForeground c
           liftIO $ waitForUserNetwork c
           reconnectSMPClient c tSess qs
           loop
+    isForeground = (ASForeground ==) <$> readTVar (agentState c)
     getPending = RQ.getSessQueues tSess $ pendingSubs c
     cleanup :: SessionVar (Async ()) -> STM ()
     cleanup v = do
@@ -1872,6 +1875,12 @@ agentOperationBracket c op check action =
 waitUntilForeground :: AgentClient -> STM ()
 waitUntilForeground c = unlessM ((ASForeground ==) <$> readTVar (agentState c)) retry
 {-# INLINE waitUntilForeground #-}
+
+-- This function waits while agent is suspended, but will proceed while it is suspending,
+-- to allow completing in-flight operations.
+waitWhileSuspended :: AgentClient -> STM ()
+waitWhileSuspended c = unlessM ((ASSuspended /=) <$> readTVar (agentState c)) retry
+{-# INLINE waitWhileSuspended #-}
 
 withStore' :: AgentClient -> (DB.Connection -> IO a) -> AM a
 withStore' c action = withStore c $ fmap Right . action

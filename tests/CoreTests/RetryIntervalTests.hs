@@ -2,6 +2,8 @@
 
 module CoreTests.RetryIntervalTests where
 
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.STM
 import Control.Monad (when)
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime, nominalDiffTimeToSeconds)
@@ -13,6 +15,10 @@ retryIntervalTests = do
   describe "Retry interval with 2 modes and lock" $ do
     testRetryIntervalSameMode
     testRetryIntervalSwitchMode
+  describe "Foreground retry interval" $ do 
+    testRetryForeground
+    testRetryToBackground
+    testRetrySkipWhenForeground
 
 testRI :: RetryInterval2
 testRI =
@@ -23,12 +29,15 @@ testRI =
             increaseAfter = 40000,
             maxInterval = 40000
           },
-      riFast =
-        RetryInterval
-          { initialInterval = 10000,
-            increaseAfter = 20000,
-            maxInterval = 40000
-          }
+      riFast = testFastRI
+    }
+
+testFastRI :: RetryInterval
+testFastRI =
+  RetryInterval
+    { initialInterval = 10000,
+      increaseAfter = 20000,
+      maxInterval = 40000
     }
 
 testRetryIntervalSameMode :: Spec
@@ -80,6 +89,67 @@ testRetryIntervalSwitchMode =
                        (40000, 40000),
                        (40000, 40000)
                      ]
+
+testRetryForeground :: Spec
+testRetryForeground =
+  it "should increase elapased time and interval" $ do
+    intervals <- newTVarIO []
+    reportedIntervals <- newTVarIO []
+    ts <- newTVarIO =<< getCurrentTime
+    let isForeground = pure True
+    withRetryForeground testFastRI isForeground $ \delay loop -> do
+      ints <- addInterval intervals ts
+      atomically $ modifyTVar' reportedIntervals (delay :)
+      when (length ints < 8) $ loop
+    (reverse <$> readTVarIO intervals) `shouldReturn` [0, 1, 1, 1, 2, 3, 4, 4]
+    (reverse <$> readTVarIO reportedIntervals)
+      `shouldReturn` [ 10000, 10000, 15000, 22500, 33750, 40000, 40000, 40000]
+
+testRetryToBackground :: Spec
+testRetryToBackground =
+  it "should not change interval when moving to background" $ do
+    intervals <- newTVarIO []
+    reportedIntervals <- newTVarIO []
+    ts <- newTVarIO =<< getCurrentTime
+    foreground <- newTVarIO True
+    concurrently_
+      ( do
+          threadDelay 50000
+          atomically $ writeTVar foreground False
+      )
+      ( withRetryForeground testFastRI (readTVar foreground) $ \delay loop -> do
+          ints <- addInterval intervals ts
+          atomically $ modifyTVar' reportedIntervals (delay :)
+          when (length ints < 8) $ loop
+      )
+    (reverse <$> readTVarIO intervals) `shouldReturn` [0, 1, 1, 1, 2, 3, 4, 4]
+    (reverse <$> readTVarIO reportedIntervals)
+      `shouldReturn` [ 10000, 10000, 15000, 22500, 33750, 40000, 40000, 40000]
+
+testRetrySkipWhenForeground :: Spec
+testRetrySkipWhenForeground =
+  it "should repeat loop as soon as moving to foreground" $ do
+    intervals <- newTVarIO []
+    reportedIntervals <- newTVarIO []
+    ts <- newTVarIO =<< getCurrentTime
+    foreground <- newTVarIO False
+    concurrently_
+      ( do
+          threadDelay 50000
+          atomically $ writeTVar foreground True
+          threadDelay 10000
+          atomically $ writeTVar foreground False
+          threadDelay 50000
+          atomically $ writeTVar foreground True
+      )
+      ( withRetryForeground testFastRI (readTVar foreground) $ \delay loop -> do
+          ints <- addInterval intervals ts
+          atomically $ modifyTVar' reportedIntervals (delay :)
+          when (length ints < 8) $ loop
+      )
+    (reverse <$> readTVarIO intervals) `shouldReturn` [0, 1, 1, 1, 1, 3, 2, 4]
+    (reverse <$> readTVarIO reportedIntervals)
+      `shouldReturn` [ 10000, 10000, 15000, 22500, 33750, 40000, 40000, 40000]
 
 addInterval :: TVar [Int] -> TVar UTCTime -> IO [Int]
 addInterval intervals ts = do

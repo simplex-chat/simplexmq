@@ -1252,7 +1252,9 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
           withStore c (`getConn` connId) >>= \case
             SomeConn _ conn@DuplexConnection {} -> a conn
             _ -> internalErr "command requires duplex connection"
-        tryCommand action = withRetryInterval ri $ \_ loop ->
+        tryCommand action = withRetryInterval ri $ \_ loop -> do
+          atomically $ waitWhileSuspended c
+          liftIO $ waitForUserNetwork c
           tryError action >>= \case
             Left e
               | temporaryOrHostError e -> retrySndOp c loop
@@ -1369,6 +1371,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
         let mId = unId msgId
             ri' = maybe id updateRetryInterval2 msgRetryState ri
         withRetryLock2 ri' qLock $ \riState loop -> do
+          atomically $ waitWhileSuspended c
           liftIO $ waitForUserNetwork c
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody

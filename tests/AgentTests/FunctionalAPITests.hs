@@ -1813,7 +1813,6 @@ testSuspendingAgentCompleteSending t = withAgentClients2 $ \a b -> do
     get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
     ackMessage b aId 2 Nothing
     pure (aId, bId)
-
   runRight_ $ do
     ("", "", DOWN {}) <- nGet a
     ("", "", DOWN {}) <- nGet b
@@ -1821,15 +1820,17 @@ testSuspendingAgentCompleteSending t = withAgentClients2 $ \a b -> do
     4 <- sendMessage b aId SMP.noMsgFlags "how are you?"
     liftIO $ threadDelay 100000
     liftIO $ suspendAgent b 5000000
-
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ @AgentErrorType $ do
-    pGet b =##> \case ("", c, AEvt SAEConn (SENT 3)) -> c == aId; ("", "", AEvt _ UP {}) -> True; _ -> False
-    pGet b =##> \case ("", c, AEvt SAEConn (SENT 3)) -> c == aId; ("", "", AEvt _ UP {}) -> True; _ -> False
-    pGet b =##> \case ("", c, AEvt SAEConn (SENT 4)) -> c == aId; ("", "", AEvt _ UP {}) -> True; _ -> False
-    ("", "", SUSPENDED) <- nGet b
-
-    pGet a =##> \case ("", c, AEvt _ (Msg "hello too")) -> c == bId; ("", "", AEvt _ UP {}) -> True; _ -> False
-    pGet a =##> \case ("", c, AEvt _ (Msg "hello too")) -> c == bId; ("", "", AEvt _ UP {}) -> True; _ -> False
+    -- there will be no UP event for b, because re-subscriptions are suspended until the agent is in foreground
+    get b =##> \case ("", c, SENT 3) -> c == aId; _ -> False
+    get b =##> \case ("", c, SENT 4) -> c == aId; _ -> False
+    nGet b ##> ("", "", SUSPENDED)
+    liftIO $
+      getInAnyOrder
+        a
+        [ \case ("", c, AEvt _ (Msg "hello too")) -> c == bId; _ -> False,
+          \case ("", "", AEvt _ UP {}) -> True; _ -> False
+        ]
     ackMessage a bId 3 Nothing
     get a =##> \case ("", c, Msg "how are you?") -> c == bId; _ -> False
     ackMessage a bId 4 Nothing
