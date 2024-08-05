@@ -74,11 +74,11 @@ withRetryForeground ri isForeground isOnline action = callAction 0 $ initialInte
         loop = do
           -- limit delay to max Int value (~36 minutes on for 32 bit architectures)
           d <- registerDelay $ fromIntegral $ min delay (fromIntegral (maxBound :: Int))
-          (wasForground, wasOnline) <- atomically $ (,) <$> isForeground <*> isOnline
+          (wasForeground, wasOnline) <- atomically $ (,) <$> isForeground <*> isOnline
           reset <- atomically $ do
             foreground <- isForeground
             online <- isOnline
-            let reset = (not wasForground && foreground) || (not wasOnline && online)
+            let reset = (not wasForeground && foreground) || (not wasOnline && online)
             reset <$ unlessM ((reset ||) <$> readTVar d) retry
           let (elapsed', delay')
                 | reset = (0, initialInterval ri)
