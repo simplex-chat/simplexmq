@@ -162,7 +162,7 @@ defaultReconnectInterval =
   RetryInterval
     { initialInterval = 2_000000,
       increaseAfter = 10_000000,
-      maxInterval = 60_000000
+      maxInterval = 180_000000
     }
 
 defaultMessageRetryInterval :: RetryInterval2
@@ -172,7 +172,7 @@ defaultMessageRetryInterval =
         RetryInterval
           { initialInterval = 2_000000,
             increaseAfter = 10_000000,
-            maxInterval = 60_000000
+            maxInterval = 120_000000
           },
       riSlow =
         RetryInterval

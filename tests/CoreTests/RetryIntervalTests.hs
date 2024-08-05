@@ -97,7 +97,7 @@ testRetryForeground =
     reportedIntervals <- newTVarIO []
     ts <- newTVarIO =<< getCurrentTime
     let isForeground = pure True
-    withRetryForeground testFastRI isForeground $ \delay loop -> do
+    withRetryForeground testFastRI isForeground (pure True) $ \delay loop -> do
       ints <- addInterval intervals ts
       atomically $ modifyTVar' reportedIntervals (delay :)
       when (length ints < 8) $ loop
@@ -117,7 +117,7 @@ testRetryToBackground =
           threadDelay 50000
           atomically $ writeTVar foreground False
       )
-      ( withRetryForeground testFastRI (readTVar foreground) $ \delay loop -> do
+      ( withRetryForeground testFastRI (readTVar foreground) (pure True) $ \delay loop -> do
           ints <- addInterval intervals ts
           atomically $ modifyTVar' reportedIntervals (delay :)
           when (length ints < 8) $ loop
@@ -142,7 +142,7 @@ testRetrySkipWhenForeground =
           threadDelay 100000
           atomically $ writeTVar foreground True
       )
-      ( withRetryForeground testFastRI (readTVar foreground) $ \delay loop -> do
+      ( withRetryForeground testFastRI (readTVar foreground) (pure True) $ \delay loop -> do
           ints <- addInterval intervals ts
           atomically $ modifyTVar' reportedIntervals (delay :)
           when (length ints < 12) $ loop

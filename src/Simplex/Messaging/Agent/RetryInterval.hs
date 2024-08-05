@@ -65,8 +65,8 @@ withRetryIntervalCount ri action = callAction 0 0 $ initialInterval ri
           let elapsed' = elapsed + delay
           callAction (n + 1) elapsed' $ nextRetryDelay elapsed' delay ri
 
-withRetryForeground :: forall m a. MonadIO m => RetryInterval -> STM Bool -> (Int64 -> m a -> m a) -> m a
-withRetryForeground ri isForeground action = callAction 0 $ initialInterval ri
+withRetryForeground :: forall m a. MonadIO m => RetryInterval -> STM Bool -> STM Bool -> (Int64 -> m a -> m a) -> m a
+withRetryForeground ri isForeground isOnline action = callAction 0 $ initialInterval ri
   where
     callAction :: Int64 -> Int64 -> m a
     callAction elapsed delay = action delay loop
@@ -74,9 +74,9 @@ withRetryForeground ri isForeground action = callAction 0 $ initialInterval ri
         loop = do
           -- limit delay to max Int value (~36 minutes on for 32 bit architectures)
           d <- registerDelay $ fromIntegral $ min delay (fromIntegral (maxBound :: Int))
-          wasSuspended <- not <$> atomically isForeground
+          (wasForground, wasOnline) <- atomically $ (,) <$> isForeground <*> isOnline
           reset <- atomically $ do
-            reset <- (wasSuspended &&) <$> isForeground
+            reset <- (||) <$> ((not wasForground &&) <$> isForeground) <*> ((not wasOnline &&) <$> isOnline)
             reset <$ unlessM ((reset ||) <$> readTVar d) retry
           let (elapsed', delay')
                 | reset = (0, initialInterval ri)

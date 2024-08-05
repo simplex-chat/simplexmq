@@ -717,7 +717,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
       atomically $ putTMVar (sessionVar v) a
     runSubWorker = do
       ri <- asks $ reconnectInterval . config
-      withRetryForeground ri isForeground $ \_ loop -> do
+      withRetryForeground ri isForeground (isNetworkOnline c) $ \_ loop -> do
         pending <- atomically getPending
         forM_ (L.nonEmpty pending) $ \qs -> do
           atomically $ waitUntilForeground c
