@@ -73,12 +73,15 @@ withRetryForeground ri isForeground action = callAction 0 $ initialInterval ri
       where
         loop = do
           -- limit delay to max Int value (~36 minutes on for 32 bit architectures)
-          let delay' = fromIntegral $ min delay (fromIntegral (maxBound :: Int))
-          d <- registerDelay delay'
+          d <- registerDelay $ fromIntegral $ min delay (fromIntegral (maxBound :: Int))
           wasSuspended <- not <$> atomically isForeground
-          atomically $ unlessM (readTVar d) $ unlessM ((wasSuspended &&) <$> isForeground) retry
-          let elapsed' = elapsed + delay
-          callAction elapsed' $ nextRetryDelay elapsed' delay ri
+          reset <- atomically $ do
+            reset <- (wasSuspended &&) <$> isForeground
+            reset <$ unlessM ((reset ||) <$> readTVar d) retry
+          let (elapsed', delay')
+                | reset = (0, initialInterval ri)
+                | otherwise = (elapsed + delay, nextRetryDelay elapsed' delay ri)
+          callAction elapsed' delay'
 
 -- This function allows action to toggle between slow and fast retry intervals.
 withRetryLock2 :: forall m. MonadIO m => RetryInterval2 -> TMVar () -> (RI2State -> (RetryIntervalMode -> m ()) -> m ()) -> m ()

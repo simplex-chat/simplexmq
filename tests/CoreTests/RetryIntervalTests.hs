@@ -135,21 +135,21 @@ testRetrySkipWhenForeground =
     foreground <- newTVarIO False
     concurrently_
       ( do
-          threadDelay 50000
+          threadDelay 65000
           atomically $ writeTVar foreground True
           threadDelay 10000
           atomically $ writeTVar foreground False
-          threadDelay 50000
+          threadDelay 100000
           atomically $ writeTVar foreground True
       )
       ( withRetryForeground testFastRI (readTVar foreground) $ \delay loop -> do
           ints <- addInterval intervals ts
           atomically $ modifyTVar' reportedIntervals (delay :)
-          when (length ints < 8) $ loop
+          when (length ints < 12) $ loop
       )
-    (reverse <$> readTVarIO intervals) `shouldReturn` [0, 1, 1, 1, 1, 3, 2, 4]
+    (reverse <$> readTVarIO intervals) `shouldReturn` [0, 1, 1, 1, 2, 0, 1, 1, 1, 2, 3, 1]
     (reverse <$> readTVarIO reportedIntervals)
-      `shouldReturn` [ 10000, 10000, 15000, 22500, 33750, 40000, 40000, 40000]
+      `shouldReturn` [ 10000, 10000, 15000, 22500, 33750, 10000, 10000, 15000, 22500, 33750, 40000, 10000]
 
 addInterval :: TVar [Int] -> TVar UTCTime -> IO [Int]
 addInterval intervals ts = do
