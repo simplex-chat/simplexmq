@@ -79,7 +79,8 @@ withRetryForeground ri isForeground isOnline action = callAction 0 $ initialInte
             foreground <- isForeground
             online <- isOnline
             let reset = (not wasForeground && foreground) || (not wasOnline && online)
-            reset <$ unlessM ((reset ||) <$> readTVar d) retry
+            unlessM ((reset ||) <$> readTVar d) retry
+            pure reset
           let (elapsed', delay')
                 | reset = (0, initialInterval ri)
                 | otherwise = (elapsed + delay, nextRetryDelay elapsed' delay ri)
