@@ -169,23 +169,26 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       M ()
     serverThread s label subQ subs clientSubs unsub = do
       labelMyThread label
+      cls <- asks clients
       forever $
-        atomically updateSubscribers
+        atomically (updateSubscribers cls)
           $>>= endPreviousSubscriptions
           >>= liftIO . mapM_ unsub
       where
-        updateSubscribers :: STM (Maybe (QueueId, Client))
-        updateSubscribers = do
+        updateSubscribers :: TVar (IM.IntMap Client) -> STM (Maybe (QueueId, Client))
+        updateSubscribers cls = do
           (qId, clnt, subscribed) <- readTQueue $ subQ s
+          current <- IM.member (clientId clnt) <$> readTVar cls
           let updateSub
-                | subscribed = TM.lookupInsert qId clnt (subs s)
-                | otherwise = TM.lookupDelete qId (subs s)
+                | not subscribed = TM.lookupDelete qId
+                | not current = TM.lookup qId -- do not insert client if it is already disconnected, but send END to any other client
+                | otherwise = TM.lookupInsert qId clnt -- subscribed and current client
               clientToBeNotified c'
                 | sameClientId clnt c' = pure Nothing
                 | otherwise = do
                     yes <- readTVar $ connected c'
                     pure $ if yes then Just (qId, c') else Nothing
-          updateSub $>>= clientToBeNotified
+          updateSub (subs s) $>>= clientToBeNotified
         endPreviousSubscriptions :: (QueueId, Client) -> M (Maybe s)
         endPreviousSubscriptions (qId, c) = do
           forkClient c (label <> ".endPreviousSubscriptions") $
