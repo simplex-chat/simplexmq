@@ -9,6 +9,7 @@ module Simplex.Messaging.Agent.RetryInterval
     RI2State (..),
     withRetryInterval,
     withRetryIntervalCount,
+    withRetryForeground,
     withRetryLock2,
     updateRetryInterval2,
     nextRetryDelay,
@@ -16,10 +17,11 @@ module Simplex.Messaging.Agent.RetryInterval
 where
 
 import Control.Concurrent (forkIO)
+import Control.Concurrent.STM (retry)
 import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Int (Int64)
-import Simplex.Messaging.Util (threadDelay', whenM)
+import Simplex.Messaging.Util (threadDelay', unlessM, whenM)
 import UnliftIO.STM
 
 data RetryInterval = RetryInterval
@@ -62,6 +64,27 @@ withRetryIntervalCount ri action = callAction 0 0 $ initialInterval ri
           liftIO $ threadDelay' delay
           let elapsed' = elapsed + delay
           callAction (n + 1) elapsed' $ nextRetryDelay elapsed' delay ri
+
+withRetryForeground :: forall m a. MonadIO m => RetryInterval -> STM Bool -> STM Bool -> (Int64 -> m a -> m a) -> m a
+withRetryForeground ri isForeground isOnline action = callAction 0 $ initialInterval ri
+  where
+    callAction :: Int64 -> Int64 -> m a
+    callAction elapsed delay = action delay loop
+      where
+        loop = do
+          -- limit delay to max Int value (~36 minutes on for 32 bit architectures)
+          d <- registerDelay $ fromIntegral $ min delay (fromIntegral (maxBound :: Int))
+          (wasForeground, wasOnline) <- atomically $ (,) <$> isForeground <*> isOnline
+          reset <- atomically $ do
+            foreground <- isForeground
+            online <- isOnline
+            let reset = (not wasForeground && foreground) || (not wasOnline && online)
+            unlessM ((reset ||) <$> readTVar d) retry
+            pure reset
+          let (elapsed', delay')
+                | reset = (0, initialInterval ri)
+                | otherwise = (elapsed + delay, nextRetryDelay elapsed' delay ri)
+          callAction elapsed' delay'
 
 -- This function allows action to toggle between slow and fast retry intervals.
 withRetryLock2 :: forall m. MonadIO m => RetryInterval2 -> TMVar () -> (RI2State -> (RetryIntervalMode -> m ()) -> m ()) -> m ()

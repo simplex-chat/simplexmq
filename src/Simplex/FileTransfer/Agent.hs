@@ -194,6 +194,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
         (fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, digest, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _}, approvedRelays) -> do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
+            atomically $ waitWhileSuspended c
             liftIO $ waitForUserNetwork c
             atomically $ incXFTPServerStat c userId srv downloadAttempts
             downloadFileChunk fc replica approvedRelays
@@ -463,6 +464,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
               let AgentClient {xftpServers} = c
               userSrvCount <- length <$> atomically (TM.lookup userId xftpServers)
               withRetryIntervalCount (riFast ri) $ \n _ loop -> do
+                atomically $ waitWhileSuspended c
                 liftIO $ waitForUserNetwork c
                 let triedAllSrvs = n > userSrvCount
                 createWithNextSrv usedSrvs
@@ -502,6 +504,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
         fc@SndFileChunk {userId, sndFileId, sndFileEntityId, filePrefixPath, digest, replicas = replica@SndFileChunkReplica {sndChunkReplicaId, server, delay} : _} -> do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
+            atomically $ waitWhileSuspended c
             liftIO $ waitForUserNetwork c
             atomically $ incXFTPServerStat c userId srv uploadAttempts
             uploadFileChunk cfg fc replica
@@ -674,6 +677,7 @@ runXFTPDelWorker c srv Worker {doWork} = do
         processDeletedReplica replica@DeletedSndChunkReplica {deletedSndChunkReplicaId, userId, server, chunkDigest, delay} = do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
           withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
+            atomically $ waitWhileSuspended c
             liftIO $ waitForUserNetwork c
             atomically $ incXFTPServerStat c userId srv deleteAttempts
             deleteChunkReplica
