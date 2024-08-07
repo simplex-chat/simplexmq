@@ -235,6 +235,7 @@ logServersStats c = do
   liftIO $ threadDelay' delay
   int <- asks (logStatsInterval . config)
   forever $ do
+    atomically $ waitUntilActive c
     saveServersStats c
     liftIO $ threadDelay' int
 
@@ -2112,6 +2113,7 @@ cleanupManager c@AgentClient {subQ} = do
   int <- asks (cleanupInterval . config)
   ttl <- asks $ storedMsgDataTTL . config
   forever $ do
+    atomically $ waitUntilActive c
     run ERR deleteConns
     run ERR $ withStore' c (`deleteRcvMsgHashesExpired` ttl)
     run ERR $ withStore' c (`deleteSndMsgsExpired` ttl)
