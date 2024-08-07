@@ -320,7 +320,7 @@ data UpMigration = UpMigration {upName :: String, withDown :: Bool}
 upMigration :: Migration -> UpMigration
 upMigration Migration {name, down} = UpMigration name $ isJust down
 
-data MigrationConfirmation = MCYesUp | MCYesUpDown | MCConsole | MCError
+data MigrationConfirmation = MCYesUp | MCYesUpDown | MCConsole | MCError | MCSkip
   deriving (Eq, Show)
 
 instance StrEncoding MigrationConfirmation where
@@ -329,12 +329,14 @@ instance StrEncoding MigrationConfirmation where
     MCYesUpDown -> "yesUpDown"
     MCConsole -> "console"
     MCError -> "error"
+    MCSkip -> "skip"
   strP =
     A.takeByteString >>= \case
       "yesUp" -> pure MCYesUp
       "yesUpDown" -> pure MCYesUpDown
       "console" -> pure MCConsole
       "error" -> pure MCError
+      "skip" -> pure MCSkip
       _ -> fail "invalid MigrationConfirmation"
 
 createSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
@@ -342,10 +344,13 @@ createSQLiteStore dbFilePath dbKey keepKey migrations confirmMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing True dbDir
   st <- connectSQLiteStore dbFilePath dbKey keepKey
-  r <- migrateSchema st migrations confirmMigrations `onException` closeSQLiteStore st
-  case r of
-    Right () -> pure $ Right st
-    Left e -> closeSQLiteStore st $> Left e
+  case confirmMigrations of
+    MCSkip -> pure $ Right st
+    _ -> do
+      r <- migrateSchema st migrations confirmMigrations `onException` closeSQLiteStore st
+      case r of
+        Right () -> pure $ Right st
+        Left e -> closeSQLiteStore st $> Left e
 
 migrateSchema :: SQLiteStore -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError ())
 migrateSchema st migrations confirmMigrations = do
@@ -362,6 +367,7 @@ migrateSchema st migrations confirmMigrations = do
           MCYesUpDown -> run ms
           MCConsole -> confirm err >> run ms
           MCError -> pure $ Left err
+          MCSkip -> pure $ Right ()
       where
         err = MEUpgrade $ map upMigration ums -- "The app has a newer version than the database.\nConfirm to back up and upgrade using these migrations: " <> intercalate ", " (map name ums)
     Right ms@(MTRDown dms) -> case confirmMigrations of
@@ -369,6 +375,7 @@ migrateSchema st migrations confirmMigrations = do
       MCConsole -> confirm err >> run ms
       MCYesUp -> pure $ Left err
       MCError -> pure $ Left err
+      MCSkip -> pure $ Right ()
       where
         err = MEDowngrade $ map downName dms
   where
