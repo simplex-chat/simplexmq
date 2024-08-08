@@ -1,5 +1,5 @@
 name: simplexmq
-version: 6.0.0.6
+version: 6.0.0.7
 synopsis: SimpleXMQ message broker
 description: |
   This package includes <./docs/Simplex-Messaging-Server.html server>,
