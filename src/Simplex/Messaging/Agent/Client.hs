@@ -720,7 +720,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
       withRetryForeground ri isForeground (isNetworkOnline c) $ \_ loop -> do
         pending <- atomically getPending
         forM_ (L.nonEmpty pending) $ \qs -> do
-          atomically $ waitUntilForeground c
+          liftIO $ waitUntilForeground c
           liftIO $ waitForUserNetwork c
           reconnectSMPClient c tSess qs
           loop
@@ -911,12 +911,13 @@ cancelWorker Worker {doWork, action} = do
   noWorkToDo doWork
   atomically (tryTakeTMVar action) >>= mapM_ (mapM_ uninterruptibleCancel)
 
-waitUntilActive :: AgentClient -> STM ()
-waitUntilActive c = unlessM (readTVar $ active c) retry
-{-# INLINE waitUntilActive #-}
+waitUntilActive :: AgentClient -> IO ()
+waitUntilActive AgentClient {active} =
+  unlessM (readTVarIO active) . atomically $
+    unlessM (readTVar active) retry
 
-throwWhenInactive :: AgentClient -> STM ()
-throwWhenInactive c = unlessM (readTVar $ active c) $ throwSTM ThreadKilled
+throwWhenInactive :: AgentClient -> IO ()
+throwWhenInactive c = unlessM (readTVarIO $ active c) $ E.throwIO ThreadKilled
 {-# INLINE throwWhenInactive #-}
 
 -- this function is used to remove workers once delivery is complete, not when it is removed from the map
@@ -1865,22 +1866,24 @@ beginAgentOperation c op = do
   -- unsafeIOToSTM $ putStrLn $ "beginOperation! " <> show op <> " " <> show (opsInProgress s + 1)
   writeTVar opVar $! s {opsInProgress = opsInProgress s + 1}
 
-agentOperationBracket :: MonadUnliftIO m => AgentClient -> AgentOperation -> (AgentClient -> STM ()) -> m a -> m a
+agentOperationBracket :: MonadUnliftIO m => AgentClient -> AgentOperation -> (AgentClient -> IO ()) -> m a -> m a
 agentOperationBracket c op check action =
   E.bracket
-    (atomically (check c) >> atomically (beginAgentOperation c op))
+    (liftIO (check c) >> atomically (beginAgentOperation c op))
     (\_ -> atomically $ endAgentOperation c op)
     (const action)
 
-waitUntilForeground :: AgentClient -> STM ()
-waitUntilForeground c = unlessM ((ASForeground ==) <$> readTVar (agentState c)) retry
-{-# INLINE waitUntilForeground #-}
+waitUntilForeground :: AgentClient -> IO ()
+waitUntilForeground AgentClient {agentState} =
+  unlessM ((ASForeground ==) <$> readTVarIO agentState) . atomically $
+    unlessM ((ASForeground ==) <$> readTVar agentState) retry
 
 -- This function waits while agent is suspended, but will proceed while it is suspending,
 -- to allow completing in-flight operations.
-waitWhileSuspended :: AgentClient -> STM ()
-waitWhileSuspended c = unlessM ((ASSuspended /=) <$> readTVar (agentState c)) retry
-{-# INLINE waitWhileSuspended #-}
+waitWhileSuspended :: AgentClient -> IO ()
+waitWhileSuspended AgentClient {agentState} =
+  unlessM ((ASSuspended /=) <$> readTVarIO agentState) . atomically $
+    unlessM ((ASSuspended /=) <$> readTVar agentState) retry
 
 withStore' :: AgentClient -> (DB.Connection -> IO a) -> AM a
 withStore' c action = withStore c $ fmap Right . action

@@ -235,7 +235,7 @@ logServersStats c = do
   liftIO $ threadDelay' delay
   int <- asks (logStatsInterval . config)
   forever $ do
-    atomically $ waitUntilActive c
+    liftIO $ waitUntilActive c
     saveServersStats c
     liftIO $ threadDelay' int
 
@@ -1136,7 +1136,7 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
     lift $ waitForWork doWork
-    atomically $ throwWhenInactive c
+    liftIO $ throwWhenInactive c
     atomically $ beginAgentOperation c AOSndNetwork
     withWork c doWork (`getPendingServerCommand` server_) $ runProcessCmd (riFast ri)
   where
@@ -1254,7 +1254,7 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
             SomeConn _ conn@DuplexConnection {} -> a conn
             _ -> internalErr "command requires duplex connection"
         tryCommand action = withRetryInterval ri $ \_ loop -> do
-          atomically $ waitWhileSuspended c
+          liftIO $ waitWhileSuspended c
           liftIO $ waitForUserNetwork c
           tryError action >>= \case
             Left e
@@ -1363,7 +1363,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
     lift $ waitForWork doWork
-    atomically $ throwWhenInactive c
+    liftIO $ throwWhenInactive c
     atomically $ throwWhenNoDelivery c sq
     atomically $ beginAgentOperation c AOSndNetwork
     withWork c doWork (\db -> getPendingQueueMsg db connId sq) $
@@ -1372,7 +1372,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
         let mId = unId msgId
             ri' = maybe id updateRetryInterval2 msgRetryState ri
         withRetryLock2 ri' qLock $ \riState loop -> do
-          atomically $ waitWhileSuspended c
+          liftIO $ waitWhileSuspended c
           liftIO $ waitForUserNetwork c
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
@@ -1525,7 +1525,7 @@ retrySndOp :: AgentClient -> AM () -> AM ()
 retrySndOp c loop = do
   -- end... is in a separate atomically because if begin... blocks, SUSPENDED won't be sent
   atomically $ endAgentOperation c AOSndNetwork
-  atomically $ throwWhenInactive c
+  liftIO $ throwWhenInactive c
   atomically $ beginAgentOperation c AOSndNetwork
   loop
 
@@ -2113,7 +2113,7 @@ cleanupManager c@AgentClient {subQ} = do
   int <- asks (cleanupInterval . config)
   ttl <- asks $ storedMsgDataTTL . config
   forever $ do
-    atomically $ waitUntilActive c
+    liftIO $ waitUntilActive c
     run ERR deleteConns
     run ERR $ withStore' c (`deleteRcvMsgHashesExpired` ttl)
     run ERR $ withStore' c (`deleteSndMsgsExpired` ttl)
@@ -2133,7 +2133,7 @@ cleanupManager c@AgentClient {subQ} = do
       step <- asks $ cleanupStepInterval . config
       liftIO $ threadDelay step
     -- we are catching it to avoid CRITICAL errors in tests when this is the only remaining handle to active
-    waitActive a = liftIO (E.tryAny . atomically $ waitUntilActive c) >>= either (\_ -> pure ()) (\_ -> void a)
+    waitActive a = liftIO (E.tryAny $ waitUntilActive c) >>= either (\_ -> pure ()) (\_ -> void a)
     deleteConns =
       withLock (deleteLock c) "cleanupManager" $ do
         void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
