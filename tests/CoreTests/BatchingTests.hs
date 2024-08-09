@@ -261,7 +261,7 @@ testClientStub :: IO (ProtocolClient SMPVersion ErrorType BrokerMsg)
 testClientStub = do
   g <- C.newRandom
   sessId <- atomically $ C.randomBytes 32 g
-  atomically $ smpClientStub g sessId subModeSMPVersion Nothing
+  smpClientStub g sessId subModeSMPVersion Nothing
 
 clientStubV7 :: IO (ProtocolClient SMPVersion ErrorType BrokerMsg)
 clientStubV7 = do
@@ -269,7 +269,7 @@ clientStubV7 = do
   sessId <- atomically $ C.randomBytes 32 g
   (rKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
   thAuth_ <- testTHandleAuth authCmdsSMPVersion g rKey
-  atomically $ smpClientStub g sessId authCmdsSMPVersion thAuth_
+  smpClientStub g sessId authCmdsSMPVersion thAuth_
 
 randomSUB :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSUB = randomSUB_ C.SEd25519 subModeSMPVersion

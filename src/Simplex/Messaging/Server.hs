@@ -428,7 +428,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                     putStat label var = getStat var >>= \v -> hPutStrLn h $ label <> ": " <> show v
                     putProxyStat :: String -> (ServerStats -> ProxyStats) -> IO ()
                     putProxyStat label var = do
-                      ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther} <- atomically $ getProxyStatsData $ var ss
+                      ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther} <- getProxyStatsData $ var ss
                       hPutStrLn h $ label <> ": requests=" <> show _pRequests <> ", successes=" <> show _pSuccesses <> ", errorsConnect=" <> show _pErrorsConnect <> ", errorsCompat=" <> show _pErrorsCompat <> ", errorsOther=" <> show _pErrorsOther
                 putStat "fromTime" fromTime
                 putStat "qCreated" qCreated
@@ -472,7 +472,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 #endif
               CPSockets -> withUserRole $ do
                 (accepted', closed', active') <- unliftIO u $ asks sockets
-                (accepted, closed, active) <- atomically $ (,,) <$> readTVar accepted' <*> readTVar closed' <*> readTVar active'
+                (accepted, closed, active) <- (,,) <$> readTVarIO accepted' <*> readTVarIO closed' <*> readTVarIO active'
                 hPutStrLn h "Sockets: "
                 hPutStrLn h $ "accepted: " <> show accepted
                 hPutStrLn h $ "closed: " <> show closed
@@ -619,10 +619,8 @@ runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessio
   ts <- liftIO getSystemTime
   active <- asks clients
   nextClientId <- asks clientSeq
-  c <- atomically $ do
-    new@Client {clientId} <- newClient nextClientId q thVersion sessionId ts
-    modifyTVar' active $ IM.insert clientId new
-    pure new
+  c@Client {clientId} <- liftIO $ newClient nextClientId q thVersion sessionId ts
+  atomically $ modifyTVar' active $ IM.insert clientId c
   s <- asks server
   expCfg <- asks $ inactiveClientExpiration . config
   th <- newMVar h -- put TH under a fair lock to interleave messages and command responses
@@ -887,7 +885,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
         ProxyAgent {smpAgent = a} <- asks proxyAgent
         ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
         let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
-        atomically (lookupSMPServerClient a sessId) >>= \case
+        liftIO (lookupSMPServerClient a sessId) >>= \case
           Just (own, smp) -> do
             inc own pRequests
             if v >= sendingProxySMPVersion
@@ -1138,7 +1136,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
 
         acknowledgeMsg :: QueueRec -> MsgId -> M (Transmission BrokerMsg)
         acknowledgeMsg qr msgId = time "ACK" $ do
-          atomically (TM.lookup entId subscriptions) >>= \case
+          liftIO (TM.lookupIO entId subscriptions) >>= \case
             Nothing -> pure $ err NO_MSG
             Just sub ->
               atomically (getDelivered sub) >>= \case
@@ -1524,7 +1522,7 @@ restoreServerMessages =
 saveServerStats :: M ()
 saveServerStats =
   asks (serverStatsBackupFile . config)
-    >>= mapM_ (\f -> asks serverStats >>= atomically . getServerStatsData >>= liftIO . saveStats f)
+    >>= mapM_ (\f -> asks serverStats >>= liftIO . getServerStatsData >>= liftIO . saveStats f)
   where
     saveStats f stats = do
       logInfo $ "saving server stats to file " <> T.pack f

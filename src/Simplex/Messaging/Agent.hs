@@ -207,7 +207,7 @@ getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp} stor
     runAgent = do
       liftIO $ checkServers "SMP" smp >> checkServers "XFTP" xftp
       currentTs <- liftIO getCurrentTime
-      c@AgentClient {acThread} <- atomically . newAgentClient clientId initServers currentTs =<< ask
+      c@AgentClient {acThread} <- liftIO . newAgentClient clientId initServers currentTs =<< ask
       t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
       atomically . writeTVar acThread . Just =<< mkWeakThreadId t
       pure c
@@ -241,9 +241,9 @@ logServersStats c = do
 
 saveServersStats :: AgentClient -> AM' ()
 saveServersStats c@AgentClient {subQ, smpServersStats, xftpServersStats, ntfServersStats} = do
-  sss <- mapM (lift . getAgentSMPServerStats) =<< readTVarIO smpServersStats
-  xss <- mapM (lift . getAgentXFTPServerStats) =<< readTVarIO xftpServersStats
-  nss <- mapM (lift . getAgentNtfServerStats) =<< readTVarIO ntfServersStats
+  sss <- mapM (liftIO . getAgentSMPServerStats) =<< readTVarIO smpServersStats
+  xss <- mapM (liftIO . getAgentXFTPServerStats) =<< readTVarIO xftpServersStats
+  nss <- mapM (liftIO . getAgentNtfServerStats) =<< readTVarIO ntfServersStats
   let stats = AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss, ntfServersStats = OptionalMap nss}
   tryAgentError' (withStore' c (`updateServersStats` stats)) >>= \case
     Left e -> atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ INTERNAL $ show e)
@@ -1084,7 +1084,7 @@ sendMessagesB_ c reqs connIds = withConnLocks c connIds "sendMessages" $ do
     getConn_ db prev req@(connId, _, _, _) =
       (req,) <$$> 
         if B.null connId
-          then fromMaybe (Left $ INTERNAL "sendMessagesB_: empty prev connId") <$> atomically (readTVar prev)
+          then fromMaybe (Left $ INTERNAL "sendMessagesB_: empty prev connId") <$> readTVarIO prev
           else do
             conn <- first storeError <$> getConn db connId
             conn <$ atomically (writeTVar prev $ Just conn)
@@ -1364,7 +1364,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
     atomically $ endAgentOperation c AOSndNetwork
     lift $ waitForWork doWork
     liftIO $ throwWhenInactive c
-    atomically $ throwWhenNoDelivery c sq
+    liftIO $ throwWhenNoDelivery c sq
     atomically $ beginAgentOperation c AOSndNetwork
     withWork c doWork (\db -> getPendingQueueMsg db connId sq) $
       \(rq_, PendingMsgData {msgId, msgType, msgBody, pqEncryption, msgFlags, msgRetryState, internalTs}) -> do
@@ -2030,7 +2030,7 @@ deleteNtfSubs c deleteCmd = do
 sendNtfConnCommands :: AgentClient -> NtfSupervisorCommand -> AM ()
 sendNtfConnCommands c cmd = do
   ns <- asks ntfSupervisor
-  connIds <- atomically $ getSubscriptions c
+  connIds <- liftIO $ getSubscriptions c
   forM_ connIds $ \connId -> do
     withStore' c (`getConnData` connId) >>= \case
       Just (ConnData {enableNtfs}, _) ->
@@ -2258,7 +2258,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
               ack' <- handleNotifyAck $ case msg' of
                 SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} -> processClientMsg srvTs msgFlags msgBody
                 SMP.ClientRcvMsgQuota {} -> queueDrained >> ack
-              whenM (atomically $ hasGetLock c rq) $
+              whenM (liftIO $ hasGetLock c rq) $
                 notify (MSGNTF $ SMP.rcvMessageMeta srvMsgId msg')
               pure ack'
             where

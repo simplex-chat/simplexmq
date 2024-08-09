@@ -41,8 +41,8 @@ data MsgQueue = MsgQueue
 
 type STMMsgStore = TMap RecipientId MsgQueue
 
-newMsgStore :: STM STMMsgStore
-newMsgStore = TM.empty
+newMsgStore :: IO STMMsgStore
+newMsgStore = TM.emptyIO
 
 getMsgQueue :: STMMsgStore -> RecipientId -> Int -> STM MsgQueue
 getMsgQueue st rId quota = maybe newQ pure =<< TM.lookup rId st

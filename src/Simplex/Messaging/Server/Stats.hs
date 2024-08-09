@@ -112,51 +112,51 @@ data ServerStatsData = ServerStatsData
   }
   deriving (Show)
 
-newServerStats :: UTCTime -> STM ServerStats
+newServerStats :: UTCTime -> IO ServerStats
 newServerStats ts = do
-  fromTime <- newTVar ts
-  qCreated <- newTVar 0
-  qSecured <- newTVar 0
-  qDeletedAll <- newTVar 0
-  qDeletedNew <- newTVar 0
-  qDeletedSecured <- newTVar 0
-  qSub <- newTVar 0
-  qSubNoMsg <- newTVar 0
-  qSubAuth <- newTVar 0
-  qSubDuplicate <- newTVar 0
-  qSubProhibited <- newTVar 0
-  ntfCreated <- newTVar 0
-  ntfDeleted <- newTVar 0
-  ntfSub <- newTVar 0
-  ntfSubAuth <- newTVar 0
-  ntfSubDuplicate <- newTVar 0
-  msgSent <- newTVar 0
-  msgSentAuth <- newTVar 0
-  msgSentQuota <- newTVar 0
-  msgSentLarge <- newTVar 0
-  msgRecv <- newTVar 0
-  msgRecvGet <- newTVar 0
-  msgGet <- newTVar 0
-  msgGetNoMsg <- newTVar 0
-  msgGetAuth <- newTVar 0
-  msgGetDuplicate <- newTVar 0
-  msgGetProhibited <- newTVar 0
-  msgExpired <- newTVar 0
+  fromTime <- newTVarIO ts
+  qCreated <- newTVarIO 0
+  qSecured <- newTVarIO 0
+  qDeletedAll <- newTVarIO 0
+  qDeletedNew <- newTVarIO 0
+  qDeletedSecured <- newTVarIO 0
+  qSub <- newTVarIO 0
+  qSubNoMsg <- newTVarIO 0
+  qSubAuth <- newTVarIO 0
+  qSubDuplicate <- newTVarIO 0
+  qSubProhibited <- newTVarIO 0
+  ntfCreated <- newTVarIO 0
+  ntfDeleted <- newTVarIO 0
+  ntfSub <- newTVarIO 0
+  ntfSubAuth <- newTVarIO 0
+  ntfSubDuplicate <- newTVarIO 0
+  msgSent <- newTVarIO 0
+  msgSentAuth <- newTVarIO 0
+  msgSentQuota <- newTVarIO 0
+  msgSentLarge <- newTVarIO 0
+  msgRecv <- newTVarIO 0
+  msgRecvGet <- newTVarIO 0
+  msgGet <- newTVarIO 0
+  msgGetNoMsg <- newTVarIO 0
+  msgGetAuth <- newTVarIO 0
+  msgGetDuplicate <- newTVarIO 0
+  msgGetProhibited <- newTVarIO 0
+  msgExpired <- newTVarIO 0
   activeQueues <- newPeriodStats
   subscribedQueues <- newPeriodStats
-  msgSentNtf <- newTVar 0
-  msgRecvNtf <- newTVar 0
+  msgSentNtf <- newTVarIO 0
+  msgRecvNtf <- newTVarIO 0
   activeQueuesNtf <- newPeriodStats
-  msgNtfs <- newTVar 0
-  msgNtfNoSub <- newTVar 0
-  msgNtfLost <- newTVar 0
+  msgNtfs <- newTVarIO 0
+  msgNtfNoSub <- newTVarIO 0
+  msgNtfLost <- newTVarIO 0
   pRelays <- newProxyStats
   pRelaysOwn <- newProxyStats
   pMsgFwds <- newProxyStats
   pMsgFwdsOwn <- newProxyStats
-  pMsgFwdsRecv <- newTVar 0
-  qCount <- newTVar 0
-  msgCount <- newTVar 0
+  pMsgFwdsRecv <- newTVarIO 0
+  qCount <- newTVarIO 0
+  msgCount <- newTVarIO 0
   pure
     ServerStats
       { fromTime,
@@ -204,51 +204,51 @@ newServerStats ts = do
         msgCount
       }
 
-getServerStatsData :: ServerStats -> STM ServerStatsData
+getServerStatsData :: ServerStats -> IO ServerStatsData
 getServerStatsData s = do
-  _fromTime <- readTVar $ fromTime s
-  _qCreated <- readTVar $ qCreated s
-  _qSecured <- readTVar $ qSecured s
-  _qDeletedAll <- readTVar $ qDeletedAll s
-  _qDeletedNew <- readTVar $ qDeletedNew s
-  _qDeletedSecured <- readTVar $ qDeletedSecured s
-  _qSub <- readTVar $ qSub s
-  _qSubNoMsg <- readTVar $ qSubNoMsg s
-  _qSubAuth <- readTVar $ qSubAuth s
-  _qSubDuplicate <- readTVar $ qSubDuplicate s
-  _qSubProhibited <- readTVar $ qSubProhibited s
-  _ntfCreated <- readTVar $ ntfCreated s
-  _ntfDeleted <- readTVar $ ntfDeleted s
-  _ntfSub <- readTVar $ ntfSub s
-  _ntfSubAuth <- readTVar $ ntfSubAuth s
-  _ntfSubDuplicate <- readTVar $ ntfSubDuplicate s
-  _msgSent <- readTVar $ msgSent s
-  _msgSentAuth <- readTVar $ msgSentAuth s
-  _msgSentQuota <- readTVar $ msgSentQuota s
-  _msgSentLarge <- readTVar $ msgSentLarge s
-  _msgRecv <- readTVar $ msgRecv s
-  _msgRecvGet <- readTVar $ msgRecvGet s
-  _msgGet <- readTVar $ msgGet s
-  _msgGetNoMsg <- readTVar $ msgGetNoMsg s
-  _msgGetAuth <- readTVar $ msgGetAuth s
-  _msgGetDuplicate <- readTVar $ msgGetDuplicate s
-  _msgGetProhibited <- readTVar $ msgGetProhibited s
-  _msgExpired <- readTVar $ msgExpired s
+  _fromTime <- readTVarIO $ fromTime s
+  _qCreated <- readTVarIO $ qCreated s
+  _qSecured <- readTVarIO $ qSecured s
+  _qDeletedAll <- readTVarIO $ qDeletedAll s
+  _qDeletedNew <- readTVarIO $ qDeletedNew s
+  _qDeletedSecured <- readTVarIO $ qDeletedSecured s
+  _qSub <- readTVarIO $ qSub s
+  _qSubNoMsg <- readTVarIO $ qSubNoMsg s
+  _qSubAuth <- readTVarIO $ qSubAuth s
+  _qSubDuplicate <- readTVarIO $ qSubDuplicate s
+  _qSubProhibited <- readTVarIO $ qSubProhibited s
+  _ntfCreated <- readTVarIO $ ntfCreated s
+  _ntfDeleted <- readTVarIO $ ntfDeleted s
+  _ntfSub <- readTVarIO $ ntfSub s
+  _ntfSubAuth <- readTVarIO $ ntfSubAuth s
+  _ntfSubDuplicate <- readTVarIO $ ntfSubDuplicate s
+  _msgSent <- readTVarIO $ msgSent s
+  _msgSentAuth <- readTVarIO $ msgSentAuth s
+  _msgSentQuota <- readTVarIO $ msgSentQuota s
+  _msgSentLarge <- readTVarIO $ msgSentLarge s
+  _msgRecv <- readTVarIO $ msgRecv s
+  _msgRecvGet <- readTVarIO $ msgRecvGet s
+  _msgGet <- readTVarIO $ msgGet s
+  _msgGetNoMsg <- readTVarIO $ msgGetNoMsg s
+  _msgGetAuth <- readTVarIO $ msgGetAuth s
+  _msgGetDuplicate <- readTVarIO $ msgGetDuplicate s
+  _msgGetProhibited <- readTVarIO $ msgGetProhibited s
+  _msgExpired <- readTVarIO $ msgExpired s
   _activeQueues <- getPeriodStatsData $ activeQueues s
   _subscribedQueues <- getPeriodStatsData $ subscribedQueues s
-  _msgSentNtf <- readTVar $ msgSentNtf s
-  _msgRecvNtf <- readTVar $ msgRecvNtf s
+  _msgSentNtf <- readTVarIO $ msgSentNtf s
+  _msgRecvNtf <- readTVarIO $ msgRecvNtf s
   _activeQueuesNtf <- getPeriodStatsData $ activeQueuesNtf s
-  _msgNtfs <- readTVar $ msgNtfs s
-  _msgNtfNoSub <- readTVar $ msgNtfNoSub s
-  _msgNtfLost <- readTVar $ msgNtfLost s
+  _msgNtfs <- readTVarIO $ msgNtfs s
+  _msgNtfNoSub <- readTVarIO $ msgNtfNoSub s
+  _msgNtfLost <- readTVarIO $ msgNtfLost s
   _pRelays <- getProxyStatsData $ pRelays s
   _pRelaysOwn <- getProxyStatsData $ pRelaysOwn s
   _pMsgFwds <- getProxyStatsData $ pMsgFwds s
   _pMsgFwdsOwn <- getProxyStatsData $ pMsgFwdsOwn s
-  _pMsgFwdsRecv <- readTVar $ pMsgFwdsRecv s
-  _qCount <- readTVar $ qCount s
-  _msgCount <- readTVar $ msgCount s
+  _pMsgFwdsRecv <- readTVarIO $ pMsgFwdsRecv s
+  _qCount <- readTVarIO $ qCount s
+  _msgCount <- readTVarIO $ msgCount s
   pure
     ServerStatsData
       { _fromTime,
@@ -510,11 +510,11 @@ data PeriodStats a = PeriodStats
     month :: TVar (Set a)
   }
 
-newPeriodStats :: STM (PeriodStats a)
+newPeriodStats :: IO (PeriodStats a)
 newPeriodStats = do
-  day <- newTVar S.empty
-  week <- newTVar S.empty
-  month <- newTVar S.empty
+  day <- newTVarIO S.empty
+  week <- newTVarIO S.empty
+  month <- newTVarIO S.empty
   pure PeriodStats {day, week, month}
 
 data PeriodStatsData a = PeriodStatsData
@@ -527,11 +527,11 @@ data PeriodStatsData a = PeriodStatsData
 newPeriodStatsData :: PeriodStatsData a
 newPeriodStatsData = PeriodStatsData {_day = S.empty, _week = S.empty, _month = S.empty}
 
-getPeriodStatsData :: PeriodStats a -> STM (PeriodStatsData a)
+getPeriodStatsData :: PeriodStats a -> IO (PeriodStatsData a)
 getPeriodStatsData s = do
-  _day <- readTVar $ day s
-  _week <- readTVar $ week s
-  _month <- readTVar $ month s
+  _day <- readTVarIO $ day s
+  _week <- readTVarIO $ week s
+  _month <- readTVarIO $ month s
   pure PeriodStatsData {_day, _week, _month}
 
 setPeriodStats :: PeriodStats a -> PeriodStatsData a -> STM ()
@@ -585,13 +585,13 @@ data ProxyStats = ProxyStats
     pErrorsOther :: TVar Int
   }
 
-newProxyStats :: STM ProxyStats
+newProxyStats :: IO ProxyStats
 newProxyStats = do
-  pRequests <- newTVar 0
-  pSuccesses <- newTVar 0
-  pErrorsConnect <- newTVar 0
-  pErrorsCompat <- newTVar 0
-  pErrorsOther <- newTVar 0
+  pRequests <- newTVarIO 0
+  pSuccesses <- newTVarIO 0
+  pErrorsConnect <- newTVarIO 0
+  pErrorsCompat <- newTVarIO 0
+  pErrorsOther <- newTVarIO 0
   pure ProxyStats {pRequests, pSuccesses, pErrorsConnect, pErrorsCompat, pErrorsOther}
 
 data ProxyStatsData = ProxyStatsData
@@ -606,13 +606,13 @@ data ProxyStatsData = ProxyStatsData
 newProxyStatsData :: ProxyStatsData
 newProxyStatsData = ProxyStatsData {_pRequests = 0, _pSuccesses = 0, _pErrorsConnect = 0, _pErrorsCompat = 0, _pErrorsOther = 0}
 
-getProxyStatsData :: ProxyStats -> STM ProxyStatsData
+getProxyStatsData :: ProxyStats -> IO ProxyStatsData
 getProxyStatsData s = do
-  _pRequests <- readTVar $ pRequests s
-  _pSuccesses <- readTVar $ pSuccesses s
-  _pErrorsConnect <- readTVar $ pErrorsConnect s
-  _pErrorsCompat <- readTVar $ pErrorsCompat s
-  _pErrorsOther <- readTVar $ pErrorsOther s
+  _pRequests <- readTVarIO $ pRequests s
+  _pSuccesses <- readTVarIO $ pSuccesses s
+  _pErrorsConnect <- readTVarIO $ pErrorsConnect s
+  _pErrorsCompat <- readTVarIO $ pErrorsCompat s
+  _pErrorsOther <- readTVarIO $ pErrorsOther s
   pure ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther}
 
 getResetProxyStatsData :: ProxyStats -> STM ProxyStatsData

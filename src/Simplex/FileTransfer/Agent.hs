@@ -240,7 +240,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
       where
         ipAddressProtected' :: AM Bool
         ipAddressProtected' = do
-          cfg <- liftIO $ getNetworkConfig' c
+          cfg <- liftIO $ getFastNetworkConfig c
           pure $ ipAddressProtected cfg srv
         receivedSize :: [RcvFileChunk] -> Int64
         receivedSize = foldl' (\sz ch -> sz + receivedChunkSize ch) 0
@@ -462,7 +462,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
             tryCreate = do
               usedSrvs <- newTVarIO ([] :: [XFTPServer])
               let AgentClient {xftpServers} = c
-              userSrvCount <- length <$> atomically (TM.lookup userId xftpServers)
+              userSrvCount <- liftIO $ length <$> TM.lookupIO userId xftpServers
               withRetryIntervalCount (riFast ri) $ \n _ loop -> do
                 liftIO $ waitWhileSuspended c
                 liftIO $ waitForUserNetwork c

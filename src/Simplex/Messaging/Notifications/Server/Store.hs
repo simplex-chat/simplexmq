@@ -33,13 +33,13 @@ data NtfStore = NtfStore
     subscriptionLookup :: TMap SMPQueueNtf NtfSubscriptionId
   }
 
-newNtfStore :: STM NtfStore
+newNtfStore :: IO NtfStore
 newNtfStore = do
-  tokens <- TM.empty
-  tokenRegistrations <- TM.empty
-  subscriptions <- TM.empty
-  tokenSubscriptions <- TM.empty
-  subscriptionLookup <- TM.empty
+  tokens <- TM.emptyIO
+  tokenRegistrations <- TM.emptyIO
+  subscriptions <- TM.emptyIO
+  tokenSubscriptions <- TM.emptyIO
+  subscriptionLookup <- TM.emptyIO
   pure NtfStore {tokens, tokenRegistrations, subscriptions, tokenSubscriptions, subscriptionLookup}
 
 data NtfTknData = NtfTknData
@@ -76,6 +76,9 @@ data NtfEntityRec (e :: NtfEntity) where
 
 getNtfToken :: NtfStore -> NtfTokenId -> STM (Maybe NtfTknData)
 getNtfToken st tknId = TM.lookup tknId (tokens st)
+
+getNtfTokenIO :: NtfStore -> NtfTokenId -> IO (Maybe NtfTknData)
+getNtfTokenIO st tknId = TM.lookupIO tknId (tokens st)
 
 addNtfToken :: NtfStore -> NtfTokenId -> NtfTknData -> STM ()
 addNtfToken st tknId tkn@NtfTknData {token, tknVerifyKey} = do

@@ -170,17 +170,17 @@ data PClient v err msg = PClient
     msgQ :: Maybe (TBQueue (ServerTransmissionBatch v err msg))
   }
 
-smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe (THandleAuth 'TClient) -> STM SMPClient
+smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe (THandleAuth 'TClient) -> IO SMPClient
 smpClientStub g sessionId thVersion thAuth = do
   let ts = UTCTime (read "2024-03-31") 0
-  connected <- newTVar False
-  clientCorrId <- C.newRandomDRG g
-  sentCommands <- TM.empty
-  sendPings <- newTVar False
-  lastReceived <- newTVar ts
-  timeoutErrorCount <- newTVar 0
-  sndQ <- newTBQueue 100
-  rcvQ <- newTBQueue 100
+  connected <- newTVarIO False
+  clientCorrId <- atomically $ C.newRandomDRG g
+  sentCommands <- TM.emptyIO
+  sendPings <- newTVarIO False
+  lastReceived <- newTVarIO ts
+  timeoutErrorCount <- newTVarIO 0
+  sndQ <- newTBQueueIO 100
+  rcvQ <- newTBQueueIO 100
   return
     ProtocolClient
       { action = Nothing,
@@ -452,21 +452,21 @@ getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> T
 getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret} msgQ disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
-      (getCurrentTime >>= atomically . mkProtocolClient useHost >>= runClient useTransport useHost)
+      (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
     NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
-    mkProtocolClient :: TransportHost -> UTCTime -> STM (PClient v err msg)
+    mkProtocolClient :: TransportHost -> UTCTime -> IO (PClient v err msg)
     mkProtocolClient transportHost ts = do
-      connected <- newTVar False
-      sendPings <- newTVar False
-      lastReceived <- newTVar ts
-      timeoutErrorCount <- newTVar 0
-      clientCorrId <- C.newRandomDRG g
-      sentCommands <- TM.empty
-      sndQ <- newTBQueue qSize
-      rcvQ <- newTBQueue qSize
+      connected <- newTVarIO False
+      sendPings <- newTVarIO False
+      lastReceived <- newTVarIO ts
+      timeoutErrorCount <- newTVarIO 0
+      clientCorrId <- atomically $ C.newRandomDRG g
+      sentCommands <- TM.emptyIO
+      sndQ <- newTBQueueIO qSize
+      rcvQ <- newTBQueueIO qSize
       return
         PClient
           { connected,
@@ -565,7 +565,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     processMsg ProtocolClient {client_ = PClient {sentCommands}} (_, _, (corrId, entId, respOrErr))
       | B.null $ bs corrId = sendMsg $ STEvent clientResp
       | otherwise =
-          atomically (TM.lookup corrId sentCommands) >>= \case
+          TM.lookupIO corrId sentCommands >>= \case
             Nothing -> sendMsg $ STUnexpectedError unexpected
             Just Request {entityId, command, pending, responseVar} -> do
               wasPending <-
@@ -1089,13 +1089,13 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentC
   nonce@(C.CbNonce corrId) <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entityId, command)
       auth = authTransmission (thAuth thParams) pKey_ nonce tForAuth
-  r <- atomically $ mkRequest (CorrId corrId)
+  r <- mkRequest (CorrId corrId)
   pure ((,tToSend) <$> auth, r)
   where
-    mkRequest :: CorrId -> STM (Request err msg)
+    mkRequest :: CorrId -> IO (Request err msg)
     mkRequest corrId = do
-      pending <- newTVar True
-      responseVar <- newEmptyTMVar
+      pending <- newTVarIO True
+      responseVar <- newEmptyTMVarIO
       let r =
             Request
               { corrId,
@@ -1104,7 +1104,7 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentC
                 pending,
                 responseVar
               }
-      TM.insert corrId r sentCommands
+      atomically $ TM.insert corrId r sentCommands
       pure r
 
 authTransmission :: Maybe (THandleAuth 'TClient) -> Maybe C.APrivateAuthKey -> C.CbNonce -> ByteString -> Either TransportError (Maybe TransmissionAuth)

@@ -104,13 +104,13 @@ attachHTTP2Client config host port disconnected bufferSize tls = getVerifiedHTTP
 
 getVerifiedHTTP2ClientWith :: HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> ((TLS -> H.Client HTTP2Response) -> IO HTTP2Response) -> IO (Either HTTP2ClientError HTTP2Client)
 getVerifiedHTTP2ClientWith config host port disconnected setup =
-  (atomically mkHTTPS2Client >>= runClient)
+  (mkHTTPS2Client >>= runClient)
     `E.catch` \(e :: IOException) -> pure . Left $ HCIOError e
   where
-    mkHTTPS2Client :: STM HClient
+    mkHTTPS2Client :: IO HClient
     mkHTTPS2Client = do
-      connected <- newTVar False
-      reqQ <- newTBQueue $ qSize config
+      connected <- newTVarIO False
+      reqQ <- newTBQueueIO $ qSize config
       pure HClient {connected, disconnected, host, port, config, reqQ}
 
     runClient :: HClient -> IO (Either HTTP2ClientError HTTP2Client)

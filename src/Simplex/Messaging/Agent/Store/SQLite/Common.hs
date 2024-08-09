@@ -47,7 +47,7 @@ withConnectionPriority SQLiteStore {dbSem, dbConnection} priority action
     lowPriority = wait >> withMVar dbConnection (\db -> ifM free (Just <$> action db) (pure Nothing)) >>= maybe lowPriority pure
     signal = atomically $ modifyTVar' dbSem (+ 1)
     release = atomically $ modifyTVar' dbSem $ \sem -> if sem > 0 then sem - 1 else 0
-    wait = atomically $ unlessM ((0 ==) <$> readTVar dbSem) retry
+    wait = unlessM free $ atomically $ unlessM ((0 ==) <$> readTVar dbSem) retry
     free = (0 ==) <$> readTVarIO dbSem
 
 withConnection :: SQLiteStore -> (DB.Connection -> IO a) -> IO a

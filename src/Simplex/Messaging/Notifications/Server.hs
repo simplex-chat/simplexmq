@@ -176,10 +176,10 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     getSMPSubscriber :: SMPServer -> M SMPSubscriber
     getSMPSubscriber smpServer =
-      atomically (TM.lookup smpServer smpSubscribers) >>= maybe createSMPSubscriber pure
+      liftIO (TM.lookupIO smpServer smpSubscribers) >>= maybe createSMPSubscriber pure
       where
         createSMPSubscriber = do
-          sub@SMPSubscriber {subThreadId} <- atomically newSMPSubscriber
+          sub@SMPSubscriber {subThreadId} <- liftIO newSMPSubscriber
           atomically $ TM.insert smpServer sub smpSubscribers
           tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber sub)
           atomically . writeTVar subThreadId $ Just tId
@@ -333,7 +333,7 @@ runNtfClientTransport :: Transport c => THandleNTF c 'TServer -> M ()
 runNtfClientTransport th@THandle {params} = do
   qSize <- asks $ clientQSize . config
   ts <- liftIO getSystemTime
-  c <- atomically $ newNtfServerClient qSize params ts
+  c <- liftIO $ newNtfServerClient qSize params ts
   s <- asks subscriber
   ps <- asks pushServer
   expCfg <- asks $ inactiveClientExpiration . config
@@ -507,7 +507,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             | otherwise -> do
                 logDebug "TCRN"
                 atomically $ writeTVar tknCronInterval int
-                atomically (TM.lookup tknId intervalNotifiers) >>= \case
+                liftIO (TM.lookupIO tknId intervalNotifiers) >>= \case
                   Nothing -> runIntervalNotifier int
                   Just IntervalNotifier {interval, action} ->
                     unless (interval == int) $ do
@@ -585,7 +585,7 @@ incNtfStat statSel = do
 saveServerStats :: M ()
 saveServerStats =
   asks (serverStatsBackupFile . config)
-    >>= mapM_ (\f -> asks serverStats >>= atomically . getNtfServerStatsData >>= liftIO . saveStats f)
+    >>= mapM_ (\f -> asks serverStats >>= liftIO . getNtfServerStatsData >>= liftIO . saveStats f)
   where
     saveStats f stats = do
       logInfo $ "saving server stats to file " <> T.pack f

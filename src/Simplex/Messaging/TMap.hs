@@ -1,11 +1,14 @@
 module Simplex.Messaging.TMap
   ( TMap,
     empty,
+    emptyIO,
     singleton,
     clear,
     Simplex.Messaging.TMap.null,
     Simplex.Messaging.TMap.lookup,
+    lookupIO,
     member,
+    memberIO,
     insert,
     delete,
     lookupInsert,
@@ -28,6 +31,10 @@ empty :: STM (TMap k a)
 empty = newTVar M.empty
 {-# INLINE empty #-}
 
+emptyIO :: IO (TMap k a)
+emptyIO = newTVarIO M.empty
+{-# INLINE emptyIO #-}
+
 singleton :: k -> a -> STM (TMap k a)
 singleton k v = newTVar $ M.singleton k v
 {-# INLINE singleton #-}
@@ -44,9 +51,17 @@ lookup :: Ord k => k -> TMap k a -> STM (Maybe a)
 lookup k m = M.lookup k <$> readTVar m
 {-# INLINE lookup #-}
 
+lookupIO :: Ord k => k -> TMap k a -> IO (Maybe a)
+lookupIO k m = M.lookup k <$> readTVarIO m
+{-# INLINE lookupIO #-}
+
 member :: Ord k => k -> TMap k a -> STM Bool
 member k m = M.member k <$> readTVar m
 {-# INLINE member #-}
+
+memberIO :: Ord k => k -> TMap k a -> IO Bool
+memberIO k m = M.member k <$> readTVarIO m
+{-# INLINE memberIO #-}
 
 insert :: Ord k => k -> a -> TMap k a -> STM ()
 insert k v m = modifyTVar' m $ M.insert k v
