@@ -1,6 +1,5 @@
 module Simplex.Messaging.TMap
   ( TMap,
-    empty,
     emptyIO,
     singleton,
     clear,
@@ -26,10 +25,6 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 
 type TMap k a = TVar (Map k a)
-
-empty :: STM (TMap k a)
-empty = newTVar M.empty
-{-# INLINE empty #-}
 
 emptyIO :: IO (TMap k a)
 emptyIO = newTVarIO M.empty

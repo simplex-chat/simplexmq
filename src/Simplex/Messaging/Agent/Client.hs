@@ -618,11 +618,10 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
       (tSess,auth,) <$> getSessVar workerSeq tSess smpClients ts
     newProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> UTCTime -> SMPClientVar -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
     newProxyClient tSess auth ts v = do
-      (prs, rv) <- atomically $ do
-        prs <- TM.empty
-        -- we do not need to check if it is a new proxied relay session,
-        -- as the client is just created and there are no sessions yet
-        (prs,) . either id id <$> getSessVar workerSeq destSrv prs ts
+      prs <- liftIO TM.emptyIO
+      -- we do not need to check if it is a new proxied relay session,
+      -- as the client is just created and there are no sessions yet
+      rv <- atomically $ either id id <$> getSessVar workerSeq destSrv prs ts
       clnt <- smpConnectClient c tSess prs v
       (clnt,) <$> newProxiedRelay clnt auth rv
     waitForProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> SMPClientVar -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
