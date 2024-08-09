@@ -75,7 +75,7 @@ instance HTTP2BodyChunk HS.Request where
 
 getHTTP2Body :: HTTP2BodyChunk a => a -> Int -> IO HTTP2Body
 getHTTP2Body r n = do
-  bodyBuffer <- atomically newTBuffer
+  bodyBuffer <- newTBuffer
   let getPart n' = getBuffered bodyBuffer n' Nothing $ getBodyChunk r
   bodyHead <- getPart n
   let bodySize = fromMaybe 0 $ getBodySize r

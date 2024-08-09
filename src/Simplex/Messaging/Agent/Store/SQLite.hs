@@ -392,11 +392,10 @@ connectSQLiteStore dbFilePath key keepKey = do
   dbNew <- not <$> doesFileExist dbFilePath
   dbConn <- dbBusyLoop (connectDB dbFilePath key)
   dbConnection <- newMVar dbConn
-  atomically $ do
-    dbKey <- newTVar $! storeKey key keepKey
-    dbClosed <- newTVar False
-    dbSem <- newTVar 0
-    pure SQLiteStore {dbFilePath, dbKey, dbSem, dbConnection, dbNew, dbClosed}
+  dbKey <- newTVarIO $! storeKey key keepKey
+  dbClosed <- newTVarIO False
+  dbSem <- newTVarIO 0
+  pure SQLiteStore {dbFilePath, dbKey, dbSem, dbConnection, dbNew, dbClosed}
 
 connectDB :: FilePath -> ScrubbedBytes -> IO DB.Connection
 connectDB path key = do

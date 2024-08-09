@@ -10,7 +10,6 @@ module Simplex.Messaging.Server.Env.STM where
 import Control.Concurrent (ThreadId)
 import Control.Logger.Simple
 import Control.Monad
-import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
@@ -175,29 +174,29 @@ data Sub = Sub
     delivered :: TMVar MsgId
   }
 
-newServer :: STM Server
+newServer :: IO Server
 newServer = do
-  subscribedQ <- newTQueue
-  subscribers <- TM.empty
-  ntfSubscribedQ <- newTQueue
-  notifiers <- TM.empty
-  savingLock <- createLock
+  subscribedQ <- newTQueueIO
+  subscribers <- TM.emptyIO
+  ntfSubscribedQ <- newTQueueIO
+  notifiers <- TM.emptyIO
+  savingLock <- atomically createLock
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
 
-newClient :: TVar ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> STM Client
+newClient :: TVar ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO Client
 newClient nextClientId qSize thVersion sessionId createdAt = do
-  clientId <- stateTVar nextClientId $ \next -> (next, next + 1)
-  subscriptions <- TM.empty
-  ntfSubscriptions <- TM.empty
-  rcvQ <- newTBQueue qSize
-  sndQ <- newTBQueue qSize
-  msgQ <- newTBQueue qSize
-  procThreads <- newTVar 0
-  endThreads <- newTVar IM.empty
-  endThreadSeq <- newTVar 0
-  connected <- newTVar True
-  rcvActiveAt <- newTVar createdAt
-  sndActiveAt <- newTVar createdAt
+  clientId <- atomically $ stateTVar nextClientId $ \next -> (next, next + 1)
+  subscriptions <- TM.emptyIO
+  ntfSubscriptions <- TM.emptyIO
+  rcvQ <- newTBQueueIO qSize
+  sndQ <- newTBQueueIO qSize
+  msgQ <- newTBQueueIO qSize
+  procThreads <- newTVarIO 0
+  endThreads <- newTVarIO IM.empty
+  endThreadSeq <- newTVarIO 0
+  connected <- newTVarIO True
+  rcvActiveAt <- newTVarIO createdAt
+  sndActiveAt <- newTVarIO createdAt
   return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, procThreads, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
@@ -213,10 +212,10 @@ newProhibitedSub = do
 
 newEnv :: ServerConfig -> IO Env
 newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, smpAgentCfg, transportConfig, information, messageExpiration} = do
-  server <- atomically newServer
-  queueStore <- atomically newQueueStore
-  msgStore <- atomically newMsgStore
-  random <- liftIO C.newRandom
+  server <- newServer
+  queueStore <- newQueueStore
+  msgStore <- newMsgStore
+  random <- C.newRandom
   storeLog <-
     forM storeLogFile $ \f -> do
       logInfo $ "restoring queues from file " <> T.pack f
@@ -224,20 +223,19 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
   Fingerprint fp <- loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
-  serverStats <- atomically . newServerStats =<< getCurrentTime
-  sockets <- atomically newSocketState
+  serverStats <- newServerStats =<< getCurrentTime
+  sockets <- newSocketState
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
-  proxyAgent <- atomically $ newSMPProxyAgent smpAgentCfg random
+  proxyAgent <- newSMPProxyAgent smpAgentCfg random
   pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
       (qs, s) <- readWriteStoreLog f
-      atomically $ do
-        writeTVar queues =<< mapM newTVar qs
-        writeTVar senders $! M.foldr' addSender M.empty qs
-        writeTVar notifiers $! M.foldr' addNotifier M.empty qs
+      atomically . writeTVar queues =<< mapM newTVarIO qs
+      atomically $ writeTVar senders $! M.foldr' addSender M.empty qs
+      atomically $ writeTVar notifiers $! M.foldr' addNotifier M.empty qs
       pure s
     addSender :: QueueRec -> Map SenderId RecipientId -> Map SenderId RecipientId
     addSender q = M.insert (senderId q) (recipientId q)
@@ -263,7 +261,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
           | isJust (storeMsgsFile config) = SPMMessages
           | otherwise = SPMQueues
 
-newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> STM ProxyAgent
+newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO ProxyAgent
 newSMPProxyAgent smpAgentCfg random = do
   smpAgent <- newSMPClientAgent smpAgentCfg random
   pure ProxyAgent {smpAgent}

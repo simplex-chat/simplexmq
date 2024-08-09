@@ -112,7 +112,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         Right pk' -> pure pk'
         Left e -> putStrLn ("servers has no valid key: " <> show e) >> exitFailure
       env <- ask
-      sessions <- atomically TM.empty
+      sessions <- liftIO TM.emptyIO
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
       liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize serverParams transportConfig inactiveClientExpiration cleanup $ \sessionId sessionALPN r sendResponse -> do
         reqBody <- getHTTP2Body r xftpBlockSize
@@ -576,7 +576,7 @@ incFileStat statSel = do
 saveServerStats :: M ()
 saveServerStats =
   asks (serverStatsBackupFile . config)
-    >>= mapM_ (\f -> asks serverStats >>= atomically . getFileServerStatsData >>= liftIO . saveStats f)
+    >>= mapM_ (\f -> asks serverStats >>= liftIO . getFileServerStatsData >>= liftIO . saveStats f)
   where
     saveStats f stats = do
       logInfo $ "saving server stats to file " <> T.pack f

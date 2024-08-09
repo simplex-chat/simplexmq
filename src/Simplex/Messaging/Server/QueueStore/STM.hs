@@ -38,11 +38,11 @@ data QueueStore = QueueStore
     notifiers :: TMap NotifierId RecipientId
   }
 
-newQueueStore :: STM QueueStore
+newQueueStore :: IO QueueStore
 newQueueStore = do
-  queues <- TM.empty
-  senders <- TM.empty
-  notifiers <- TM.empty
+  queues <- TM.emptyIO
+  senders <- TM.emptyIO
+  notifiers <- TM.emptyIO
   pure QueueStore {queues, senders, notifiers}
 
 addQueue :: QueueStore -> QueueRec -> STM (Either ErrorType ())

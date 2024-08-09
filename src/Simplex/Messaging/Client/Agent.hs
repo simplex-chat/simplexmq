@@ -108,17 +108,17 @@ data SMPClientAgent = SMPClientAgent
 
 type OwnServer = Bool
 
-newSMPClientAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> STM SMPClientAgent
+newSMPClientAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO SMPClientAgent
 newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg = do
-  active <- newTVar True
-  msgQ <- newTBQueue msgQSize
-  agentQ <- newTBQueue agentQSize
-  smpClients <- TM.empty
-  smpSessions <- TM.empty
-  srvSubs <- TM.empty
-  pendingSrvSubs <- TM.empty
-  smpSubWorkers <- TM.empty
-  workerSeq <- newTVar 0
+  active <- newTVarIO True
+  msgQ <- newTBQueueIO msgQSize
+  agentQ <- newTBQueueIO agentQSize
+  smpClients <- TM.emptyIO
+  smpSessions <- TM.emptyIO
+  srvSubs <- TM.emptyIO
+  pendingSrvSubs <- TM.emptyIO
+  smpSubWorkers <- TM.emptyIO
+  workerSeq <- newTVarIO 0
   pure
     SMPClientAgent
       { agentCfg,
@@ -229,7 +229,7 @@ reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} s
   where
     getWorkerVar ts =
       ifM
-        (null <$> getPending)
+        (noPending)
         (pure Nothing) -- prevent race with cleanup and adding pending queues in another call
         (Just <$> getSessVar workerSeq srv smpSubWorkers ts)
     newSubWorker :: SessionVar (Async ()) -> IO ()
@@ -238,12 +238,13 @@ reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} s
       atomically $ putTMVar (sessionVar v) a
     runSubWorker =
       withRetryInterval (reconnectInterval agentCfg) $ \_ loop -> do
-        pending <- atomically getPending
+        pending <- liftIO getPending
         unless (null pending) $ whenM (readTVarIO active) $ do
           void $ tcpConnectTimeout `timeout` runExceptT (reconnectSMPClient ca srv pending)
           loop
     ProtocolClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} = smpCfg agentCfg
-    getPending = maybe (pure M.empty) readTVar =<< TM.lookup srv (pendingSrvSubs ca)
+    noPending = maybe (pure True) (fmap M.null . readTVar) =<< TM.lookup srv (pendingSrvSubs ca)
+    getPending = maybe (pure M.empty) readTVarIO =<< TM.lookupIO srv (pendingSrvSubs ca)
     cleanup :: SessionVar (Async ()) -> STM ()
     cleanup v = do
       -- Here we wait until TMVar is not empty to prevent worker cleanup happening before worker is added to TMVar.
@@ -254,7 +255,7 @@ reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} s
 reconnectSMPClient :: SMPClientAgent -> SMPServer -> Map SMPSub C.APrivateAuthKey -> ExceptT SMPClientError IO ()
 reconnectSMPClient ca@SMPClientAgent {agentCfg} srv cs =
   withSMP ca srv $ \smp -> liftIO $ do
-    currSubs <- atomically $ maybe (pure M.empty) readTVar =<< TM.lookup srv (srvSubs ca)
+    currSubs <- maybe (pure M.empty) readTVarIO =<< TM.lookupIO srv (srvSubs ca)
     let (nSubs, rSubs) = foldr (groupSub currSubs) ([], []) $ M.assocs cs
     subscribe_ smp SPNotifier nSubs
     subscribe_ smp SPRecipient rSubs
@@ -289,8 +290,8 @@ getConnectedSMPServerClient SMPClientAgent {smpClients} srv =
             (Nothing <$ atomically (removeSessVar v srv smpClients)) -- proxy will create a new connection
             (pure $ Just $ Left e) -- not expired, returning error
 
-lookupSMPServerClient :: SMPClientAgent -> SessionId -> STM (Maybe (OwnServer, SMPClient))
-lookupSMPServerClient SMPClientAgent {smpSessions} sessId = TM.lookup sessId smpSessions
+lookupSMPServerClient :: SMPClientAgent -> SessionId -> IO (Maybe (OwnServer, SMPClient))
+lookupSMPServerClient SMPClientAgent {smpSessions} sessId = TM.lookupIO sessId smpSessions
 
 closeSMPClientAgent :: SMPClientAgent -> IO ()
 closeSMPClientAgent c = do

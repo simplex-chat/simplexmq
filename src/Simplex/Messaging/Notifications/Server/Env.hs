@@ -10,7 +10,6 @@ module Simplex.Messaging.Notifications.Server.Env where
 import Control.Concurrent (ThreadId)
 import Control.Concurrent.Async (Async)
 import Control.Logger.Simple
-import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
@@ -85,16 +84,16 @@ data NtfEnv = NtfEnv
 
 newNtfServerEnv :: NtfServerConfig -> IO NtfEnv
 newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, storeLogFile, caCertificateFile, certificateFile, privateKeyFile, transportConfig} = do
-  random <- liftIO C.newRandom
-  store <- atomically newNtfStore
+  random <- C.newRandom
+  store <- newNtfStore
   logInfo "restoring subscriptions..."
-  storeLog <- liftIO $ mapM (`readWriteNtfStore` store) storeLogFile
+  storeLog <- mapM (`readWriteNtfStore` store) storeLogFile
   logInfo "restored subscriptions"
-  subscriber <- atomically $ newNtfSubscriber subQSize smpAgentCfg random
-  pushServer <- atomically $ newNtfPushServer pushQSize apnsConfig
-  tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
-  Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
-  serverStats <- atomically . newNtfServerStats =<< liftIO getCurrentTime
+  subscriber <- newNtfSubscriber subQSize smpAgentCfg random
+  pushServer <- newNtfPushServer pushQSize apnsConfig
+  tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
+  Fingerprint fp <- loadFingerprint caCertificateFile
+  serverStats <- newNtfServerStats =<< getCurrentTime
   pure NtfEnv {config, subscriber, pushServer, store, storeLog, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
 
 data NtfSubscriber = NtfSubscriber
@@ -103,10 +102,10 @@ data NtfSubscriber = NtfSubscriber
     smpAgent :: SMPClientAgent
   }
 
-newNtfSubscriber :: Natural -> SMPClientAgentConfig -> TVar ChaChaDRG -> STM NtfSubscriber
+newNtfSubscriber :: Natural -> SMPClientAgentConfig -> TVar ChaChaDRG -> IO NtfSubscriber
 newNtfSubscriber qSize smpAgentCfg random = do
-  smpSubscribers <- TM.empty
-  newSubQ <- newTBQueue qSize
+  smpSubscribers <- TM.emptyIO
+  newSubQ <- newTBQueueIO qSize
   smpAgent <- newSMPClientAgent smpAgentCfg random
   pure NtfSubscriber {smpSubscribers, newSubQ, smpAgent}
 
@@ -115,10 +114,10 @@ data SMPSubscriber = SMPSubscriber
     subThreadId :: TVar (Maybe (Weak ThreadId))
   }
 
-newSMPSubscriber :: STM SMPSubscriber
+newSMPSubscriber :: IO SMPSubscriber
 newSMPSubscriber = do
-  newSubQ <- newTQueue
-  subThreadId <- newTVar Nothing
+  newSubQ <- newTQueueIO
+  subThreadId <- newTVarIO Nothing
   pure SMPSubscriber {newSubQ, subThreadId}
 
 data NtfPushServer = NtfPushServer
@@ -134,11 +133,11 @@ data IntervalNotifier = IntervalNotifier
     interval :: Word16
   }
 
-newNtfPushServer :: Natural -> APNSPushClientConfig -> STM NtfPushServer
+newNtfPushServer :: Natural -> APNSPushClientConfig -> IO NtfPushServer
 newNtfPushServer qSize apnsConfig = do
-  pushQ <- newTBQueue qSize
-  pushClients <- TM.empty
-  intervalNotifiers <- TM.empty
+  pushQ <- newTBQueueIO qSize
+  pushClients <- TM.emptyIO
+  intervalNotifiers <- TM.emptyIO
   pure NtfPushServer {pushQ, pushClients, intervalNotifiers, apnsConfig}
 
 newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
@@ -151,7 +150,7 @@ newPushClient NtfPushServer {apnsConfig, pushClients} pp = do
 
 getPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 getPushClient s@NtfPushServer {pushClients} pp =
-  atomically (TM.lookup pp pushClients) >>= maybe (newPushClient s pp) pure
+  TM.lookupIO pp pushClients >>= maybe (newPushClient s pp) pure
 
 data NtfRequest
   = NtfReqNew CorrId ANewNtfEntity
@@ -167,11 +166,11 @@ data NtfServerClient = NtfServerClient
     sndActiveAt :: TVar SystemTime
   }
 
-newNtfServerClient :: Natural -> THandleParams NTFVersion 'TServer -> SystemTime -> STM NtfServerClient
+newNtfServerClient :: Natural -> THandleParams NTFVersion 'TServer -> SystemTime -> IO NtfServerClient
 newNtfServerClient qSize ntfThParams ts = do
-  rcvQ <- newTBQueue qSize
-  sndQ <- newTBQueue qSize
-  connected <- newTVar True
-  rcvActiveAt <- newTVar ts
-  sndActiveAt <- newTVar ts
+  rcvQ <- newTBQueueIO qSize
+  sndQ <- newTBQueueIO qSize
+  connected <- newTVarIO True
+  rcvActiveAt <- newTVarIO ts
+  sndActiveAt <- newTVarIO ts
   return NtfServerClient {rcvQ, sndQ, ntfThParams, connected, rcvActiveAt, sndActiveAt}

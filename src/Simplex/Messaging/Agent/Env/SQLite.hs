@@ -242,8 +242,8 @@ newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
 newSMPAgentEnv config store = do
   random <- C.newRandom
   randomServer <- newTVarIO =<< liftIO newStdGen
-  ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
-  xftpAgent <- atomically newXFTPAgent
+  ntfSupervisor <- newNtfSubSupervisor $ tbqSize config
+  xftpAgent <- newXFTPAgent
   multicastSubscribers <- newTMVarIO 0
   pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
 
@@ -260,12 +260,12 @@ data NtfSupervisor = NtfSupervisor
 data NtfSupervisorCommand = NSCCreate | NSCDelete | NSCSmpDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer
   deriving (Show)
 
-newNtfSubSupervisor :: Natural -> STM NtfSupervisor
+newNtfSubSupervisor :: Natural -> IO NtfSupervisor
 newNtfSubSupervisor qSize = do
-  ntfTkn <- newTVar Nothing
-  ntfSubQ <- newTBQueue qSize
-  ntfWorkers <- TM.empty
-  ntfSMPWorkers <- TM.empty
+  ntfTkn <- newTVarIO Nothing
+  ntfSubQ <- newTBQueueIO qSize
+  ntfWorkers <- TM.emptyIO
+  ntfSMPWorkers <- TM.emptyIO
   pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
 
 data XFTPAgent = XFTPAgent
@@ -276,12 +276,12 @@ data XFTPAgent = XFTPAgent
     xftpDelWorkers :: TMap XFTPServer Worker
   }
 
-newXFTPAgent :: STM XFTPAgent
+newXFTPAgent :: IO XFTPAgent
 newXFTPAgent = do
-  xftpWorkDir <- newTVar Nothing
-  xftpRcvWorkers <- TM.empty
-  xftpSndWorkers <- TM.empty
-  xftpDelWorkers <- TM.empty
+  xftpWorkDir <- newTVarIO Nothing
+  xftpRcvWorkers <- TM.emptyIO
+  xftpSndWorkers <- TM.emptyIO
+  xftpDelWorkers <- TM.emptyIO
   pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}
 
 tryAgentError :: AM a -> AM (Either AgentErrorType a)

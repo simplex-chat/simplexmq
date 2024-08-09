@@ -11,6 +11,7 @@ module Simplex.Messaging.Agent.TRcvQueues
     addQueue,
     batchAddQueues,
     deleteQueue,
+    hasSessQueues,
     getSessQueues,
     getDelSessQueues,
   )
@@ -39,8 +40,8 @@ data TRcvQueues q = TRcvQueues
     getConnections :: TMap ConnId (NonEmpty (UserId, SMPServer, RecipientId))
   }
 
-empty :: STM (TRcvQueues q)
-empty = TRcvQueues <$> TM.empty <*> TM.empty
+empty :: IO (TRcvQueues q)
+empty = TRcvQueues <$> TM.emptyIO <*> TM.emptyIO
 
 clear :: TRcvQueues q -> STM ()
 clear (TRcvQueues qs cs) = TM.clear qs >> TM.clear cs
@@ -78,8 +79,11 @@ deleteQueue rq (TRcvQueues qs cs) = do
     delQ = L.nonEmpty . L.filter (/= k)
     k = qKey rq
 
-getSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues RcvQueue -> STM [RcvQueue]
-getSessQueues tSess (TRcvQueues qs _) = M.foldl' addQ [] <$> readTVar qs
+hasSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues RcvQueue -> STM Bool
+hasSessQueues tSess (TRcvQueues qs _) = any (`isSession` tSess) <$> readTVar qs
+
+getSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues RcvQueue -> IO [RcvQueue]
+getSessQueues tSess (TRcvQueues qs _) = M.foldl' addQ [] <$> readTVarIO qs
   where
     addQ qs' rq = if rq `isSession` tSess then rq : qs' else qs'
 

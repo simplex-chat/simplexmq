@@ -76,7 +76,7 @@ serverTransportConfig TransportServerConfig {logTLSErrors} =
 -- All accepted connections are passed to the passed function.
 runTransportServer :: forall c. Transport c => TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (c -> IO ()) -> IO ()
 runTransportServer started port params cfg server = do
-  ss <- atomically newSocketState
+  ss <- newSocketState
   runTransportServerState ss started port params cfg server
 
 runTransportServerState :: forall c . Transport c => SocketState -> TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (c -> IO ()) -> IO ()
@@ -85,7 +85,7 @@ runTransportServerState ss started port = runTransportServerSocketState ss start
 -- | Run a transport server with provided connection setup and handler.
 runTransportServerSocket :: Transport a => TMVar Bool -> IO Socket -> String -> T.ServerParams -> TransportServerConfig -> (a -> IO ()) -> IO ()
 runTransportServerSocket started getSocket threadLabel serverParams cfg server = do
-  ss <- atomically newSocketState
+  ss <- newSocketState
   runTransportServerSocketState ss started getSocket threadLabel serverParams cfg server
 
 -- | Run a transport server with provided connection setup and handler.
@@ -109,7 +109,7 @@ tlsServerCredentials serverParams = case T.sharedCredentials $ T.serverShared se
 -- | Run TCP server without TLS
 runTCPServer :: TMVar Bool -> ServiceName -> (Socket -> IO ()) -> IO ()
 runTCPServer started port server = do
-  ss <- atomically newSocketState
+  ss <- newSocketState
   runTCPServerSocket ss started (startTCPServer started port) server
 
 -- | Wrap socket provider in a TCP server bracket.
@@ -148,8 +148,8 @@ safeAccept sock =
 
 type SocketState = (TVar Int, TVar Int, TVar (IntMap (Weak ThreadId)))
 
-newSocketState :: STM SocketState
-newSocketState = (,,) <$> newTVar 0 <*> newTVar 0 <*> newTVar mempty
+newSocketState :: IO SocketState
+newSocketState = (,,) <$> newTVarIO 0 <*> newTVarIO 0 <*> newTVarIO mempty
 
 closeServer :: TMVar Bool -> TVar (IntMap (Weak ThreadId)) -> Socket -> IO ()
 closeServer started clients sock = do

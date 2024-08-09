@@ -43,7 +43,7 @@ checkDataInvariant trq = atomically $ do
 
 hasConnTest :: IO ()
 hasConnTest = do
-  trq <- atomically RQ.empty
+  trq <- RQ.empty
   atomically $ RQ.addQueue (dummyRQ 0 "smp://1234-w==@alpha" "c1") trq
   checkDataInvariant trq `shouldReturn` True
   atomically $ RQ.addQueue (dummyRQ 0 "smp://1234-w==@alpha" "c2") trq
@@ -57,7 +57,7 @@ hasConnTest = do
 
 hasConnTestBatch :: IO ()
 hasConnTestBatch = do
-  trq <- atomically RQ.empty
+  trq <- RQ.empty
   let qs = [dummyRQ 0 "smp://1234-w==@alpha" "c1", dummyRQ 0 "smp://1234-w==@alpha" "c2", dummyRQ 0 "smp://1234-w==@beta" "c3"]
   atomically $ RQ.batchAddQueues trq qs
   checkDataInvariant trq `shouldReturn` True
@@ -68,7 +68,7 @@ hasConnTestBatch = do
 
 batchIdempotentTest :: IO ()
 batchIdempotentTest = do
-  trq <- atomically RQ.empty
+  trq <- RQ.empty
   let qs = [dummyRQ 0 "smp://1234-w==@alpha" "c1", dummyRQ 0 "smp://1234-w==@alpha" "c2", dummyRQ 0 "smp://1234-w==@beta" "c3"]
   atomically $ RQ.batchAddQueues trq qs
   checkDataInvariant trq `shouldReturn` True
@@ -81,7 +81,7 @@ batchIdempotentTest = do
 
 deleteConnTest :: IO ()
 deleteConnTest = do
-  trq <- atomically RQ.empty
+  trq <- RQ.empty
   atomically $ do
     RQ.addQueue (dummyRQ 0 "smp://1234-w==@alpha" "c1") trq
     RQ.addQueue (dummyRQ 0 "smp://1234-w==@alpha" "c2") trq
@@ -95,7 +95,7 @@ deleteConnTest = do
 
 getSessQueuesTest :: IO ()
 getSessQueuesTest = do
-  trq <- atomically RQ.empty
+  trq <- RQ.empty
   atomically $ RQ.addQueue (dummyRQ 0 "smp://1234-w==@alpha" "c1") trq
   checkDataInvariant trq `shouldReturn` True
   atomically $ RQ.addQueue (dummyRQ 0 "smp://1234-w==@alpha" "c2") trq
@@ -104,14 +104,22 @@ getSessQueuesTest = do
   checkDataInvariant trq `shouldReturn` True
   atomically $ RQ.addQueue (dummyRQ 1 "smp://1234-w==@beta" "c4") trq
   checkDataInvariant trq `shouldReturn` True
-  atomically (RQ.getSessQueues (0, "smp://1234-w==@alpha", Just "c1") trq) `shouldReturn` [dummyRQ 0 "smp://1234-w==@alpha" "c1"]
-  atomically (RQ.getSessQueues (1, "smp://1234-w==@alpha", Just "c1") trq) `shouldReturn` []
-  atomically (RQ.getSessQueues (0, "smp://1234-w==@alpha", Just "nope") trq) `shouldReturn` []
-  atomically (RQ.getSessQueues (0, "smp://1234-w==@alpha", Nothing) trq) `shouldReturn` [dummyRQ 0 "smp://1234-w==@alpha" "c2", dummyRQ 0 "smp://1234-w==@alpha" "c1"]
+  let tSess1 = (0, "smp://1234-w==@alpha", Just "c1")
+  RQ.getSessQueues tSess1 trq `shouldReturn` [dummyRQ 0 "smp://1234-w==@alpha" "c1"]
+  atomically (RQ.hasSessQueues tSess1 trq) `shouldReturn` True
+  let tSess2 = (1, "smp://1234-w==@alpha", Just "c1")
+  RQ.getSessQueues tSess2 trq `shouldReturn` []
+  atomically (RQ.hasSessQueues tSess2 trq) `shouldReturn` False
+  let tSess3 = (0, "smp://1234-w==@alpha", Just "nope")
+  RQ.getSessQueues tSess3 trq `shouldReturn` []
+  atomically (RQ.hasSessQueues tSess3 trq) `shouldReturn` False
+  let tSess4 = (0, "smp://1234-w==@alpha", Nothing)
+  RQ.getSessQueues tSess4 trq `shouldReturn` [dummyRQ 0 "smp://1234-w==@alpha" "c2", dummyRQ 0 "smp://1234-w==@alpha" "c1"]
+  atomically (RQ.hasSessQueues tSess4 trq) `shouldReturn`True
 
 getDelSessQueuesTest :: IO ()
 getDelSessQueuesTest = do
-  trq <- atomically RQ.empty
+  trq <- RQ.empty
   let qs =
         [ ("1", dummyRQ 0 "smp://1234-w==@alpha" "c1"),
           ("1", dummyRQ 0 "smp://1234-w==@alpha" "c2"),
@@ -140,7 +148,7 @@ getDelSessQueuesTest = do
 
 removeSubsTest :: IO ()
 removeSubsTest = do
-  aq <- atomically RQ.empty
+  aq <- RQ.empty
   let qs =
         [ ("1", dummyRQ 0 "smp://1234-w==@alpha" "c1"),
           ("1", dummyRQ 0 "smp://1234-w==@alpha" "c2"),
@@ -149,7 +157,7 @@ removeSubsTest = do
         ]
   atomically $ RQ.batchAddQueues aq qs
 
-  pq <- atomically RQ.empty
+  pq <- RQ.empty
   atomically (totalSize aq pq) `shouldReturn` (4, 4)
 
   atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@alpha", Nothing) "1" aq >>= RQ.batchAddQueues pq . map ("1",) . fst
