@@ -372,13 +372,15 @@ getAgentWorker' toW fromW name hasWork c key ws work = do
           restart <- atomically $ getWorker >>= maybe (pure False) (shouldRestart e_ (toW w) t maxRestarts)
           when restart runWork
         shouldRestart e_ Worker {workerId = wId, doWork, action, restarts} t maxRestarts w'
-          | wId == workerId (toW w') =
-              checkRestarts . updateRestartCount t =<< readTVar restarts
+          | wId == workerId (toW w') = do
+              rc <- readTVar restarts
+              isActive <- readTVar $ active c
+              checkRestarts isActive $ updateRestartCount t rc
           | otherwise =
               pure False -- there is a new worker in the map, no action
           where
-            checkRestarts rc
-              | restartCount rc < maxRestarts = do
+            checkRestarts isActive rc
+              | isActive && restartCount rc < maxRestarts = do
                   writeTVar restarts rc
                   hasWorkToDo' doWork
                   void $ tryPutTMVar action Nothing
@@ -386,7 +388,7 @@ getAgentWorker' toW fromW name hasWork c key ws work = do
                   pure True
               | otherwise = do
                   TM.delete key ws
-                  notifyErr $ CRITICAL True
+                  when isActive $ notifyErr $ CRITICAL True
                   pure False
               where
                 notifyErr err = do

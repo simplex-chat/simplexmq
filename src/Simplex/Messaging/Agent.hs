@@ -2112,8 +2112,7 @@ cleanupManager c@AgentClient {subQ} = do
   liftIO $ threadDelay' delay
   int <- asks (cleanupInterval . config)
   ttl <- asks $ storedMsgDataTTL . config
-  forever $ do
-    liftIO $ waitUntilActive c
+  forever $ waitActive $ do
     run ERR deleteConns
     run ERR $ withStore' c (`deleteRcvMsgHashesExpired` ttl)
     run ERR $ withStore' c (`deleteSndMsgsExpired` ttl)
@@ -2133,6 +2132,7 @@ cleanupManager c@AgentClient {subQ} = do
       step <- asks $ cleanupStepInterval . config
       liftIO $ threadDelay step
     -- we are catching it to avoid CRITICAL errors in tests when this is the only remaining handle to active
+    waitActive :: ReaderT Env IO a -> AM' ()
     waitActive a = liftIO (E.tryAny $ waitUntilActive c) >>= either (\_ -> pure ()) (\_ -> void a)
     deleteConns =
       withLock (deleteLock c) "cleanupManager" $ do
