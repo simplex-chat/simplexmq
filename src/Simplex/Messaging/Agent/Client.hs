@@ -1871,20 +1871,20 @@ agentOperationBracket c op check action =
     (const action)
 
 waitUntilForeground :: AgentClient -> IO ()
-waitUntilForeground AgentClient {agentState} =
-  unlessM (foreground $ readTVarIO agentState) $ atomically $ unlessM (foreground $ readTVar agentState) retry
+waitUntilForeground c =
+  unlessM (foreground readTVarIO) $ atomically $ unlessM (foreground readTVar) retry
   where
-    foreground :: Monad m => m AgentState -> m Bool
-    foreground = fmap (ASForeground ==)
+    foreground :: Monad m => (TVar AgentState -> m AgentState) -> m Bool
+    foreground rd = (ASForeground ==) <$> rd (agentState c)
 
 -- This function waits while agent is suspended, but will proceed while it is suspending,
 -- to allow completing in-flight operations.
 waitWhileSuspended :: AgentClient -> IO ()
-waitWhileSuspended AgentClient {agentState} =
-  whenM (suspended $ readTVarIO agentState) $ atomically $ whenM (suspended $ readTVar agentState) retry
+waitWhileSuspended c =
+  whenM (suspended readTVarIO) $ atomically $ whenM (suspended readTVar) retry
   where
-    suspended :: Monad m => m AgentState -> m Bool
-    suspended = fmap (ASSuspended ==)
+    suspended :: Monad m => (TVar AgentState -> m AgentState) -> m Bool
+    suspended rd = (ASSuspended ==) <$> rd (agentState c)
 
 withStore' :: AgentClient -> (DB.Connection -> IO a) -> AM a
 withStore' c action = withStore c $ fmap Right . action
