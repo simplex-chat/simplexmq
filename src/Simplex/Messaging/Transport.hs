@@ -115,7 +115,6 @@ import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
-import UnliftIO.STM
 
 -- * Transport parameters
 

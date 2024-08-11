@@ -22,7 +22,7 @@ import qualified Data.ByteArray as BA
 import Database.SQLite.Simple (SQLError)
 import qualified Database.SQLite.Simple as SQL
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
-import Simplex.Messaging.Util (ifM, unlessM)
+import Simplex.Messaging.Util (unlessM)
 import qualified UnliftIO.Exception as E
 import UnliftIO.MVar
 import UnliftIO.STM
@@ -44,11 +44,11 @@ withConnectionPriority SQLiteStore {dbSem, dbConnection} priority action
   | priority = E.bracket_ signal release $ withMVar dbConnection action
   | otherwise = lowPriority
   where
-    lowPriority = wait >> withMVar dbConnection (\db -> ifM free (Just <$> action db) (pure Nothing)) >>= maybe lowPriority pure
+    lowPriority = wait >> withMVar dbConnection action
     signal = atomically $ modifyTVar' dbSem (+ 1)
-    release = atomically $ modifyTVar' dbSem $ \sem -> if sem > 0 then sem - 1 else 0
-    wait = unlessM free $ atomically $ unlessM ((0 ==) <$> readTVar dbSem) retry
-    free = (0 ==) <$> readTVarIO dbSem
+    release = atomically $ modifyTVar' dbSem $ subtract 1
+    wait = unlessM (isFree readTVarIO) $ atomically $ unlessM (isFree readTVar) retry
+    isFree rd = (0 >=) <$> rd dbSem
 
 withConnection :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
 withConnection st = withConnectionPriority st False
