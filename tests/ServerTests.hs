@@ -509,19 +509,21 @@ testWithStoreLog at@(ATransport t) =
         writeTVar senderId1 sId1
         writeTVar notifierId nId
       Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, NSUB)
-      signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello") >>= \case
-        Resp "bcda" _ OK -> pure ()
-        r -> unexpected r
-      Resp "" _ (Msg mId1 msg1) <- tGet1 h
+      (mId1, msg1) <-
+        signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello") >>= \case
+          Resp "" _ (Msg mId1 msg1) -> pure (mId1, msg1)
+          r -> error $ "unexpected response " <> take 100 (show r)
+      Resp "bcda" _ OK <- tGet1 h
       (decryptMsgV3 dhShared mId1 msg1, Right "hello") #== "delivered from queue 1"
       Resp "" _ (NMSG _ _) <- tGet1 h1
 
       (sId2, rId2, rKey2, dhShared2) <- createAndSecureQueue h sPub2
       atomically $ writeTVar senderId2 sId2
-      signSendRecv h sKey2 ("cdab", sId2, _SEND "hello too") >>= \case
-        Resp "cdab" _ OK -> pure ()
-        r -> unexpected r
-      Resp "" _ (Msg mId2 msg2) <- tGet1 h
+      (mId2, msg2) <-
+        signSendRecv h sKey2 ("cdab", sId2, _SEND "hello too") >>= \case
+          Resp "" _ (Msg mId2 msg2) -> pure (mId2, msg2)
+          r -> error $ "unexpected response " <> take 100 (show r)
+      Resp "cdab" _ OK <- tGet1 h
       (decryptMsgV3 dhShared2 mId2 msg2, Right "hello too") #== "delivered from queue 2"
 
       Resp "dabc" _ OK <- signSendRecv h rKey2 ("dabc", rId2, DEL)
@@ -608,7 +610,7 @@ testRestoreMessages at@(ATransport t) =
 
     logSize testStoreLogFile `shouldReturn` 2
     logSize testStoreMsgsFile `shouldReturn` 5
-    logSize testServerStatsBackupFile `shouldReturn` 55
+    logSize testServerStatsBackupFile `shouldReturn` 71
     Right stats1 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats1 [rId] 5 1
 
@@ -626,7 +628,7 @@ testRestoreMessages at@(ATransport t) =
     logSize testStoreLogFile `shouldReturn` 1
     -- the last message is not removed because it was not ACK'd
     logSize testStoreMsgsFile `shouldReturn` 3
-    logSize testServerStatsBackupFile `shouldReturn` 55
+    logSize testServerStatsBackupFile `shouldReturn` 71
     Right stats2 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats2 [rId] 5 3
 
@@ -645,7 +647,7 @@ testRestoreMessages at@(ATransport t) =
 
     logSize testStoreLogFile `shouldReturn` 1
     logSize testStoreMsgsFile `shouldReturn` 0
-    logSize testServerStatsBackupFile `shouldReturn` 55
+    logSize testServerStatsBackupFile `shouldReturn` 71
     Right stats3 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats3 [rId] 5 5
 
@@ -884,7 +886,7 @@ testMsgExpireOnInterval t =
       testSMPClient @c $ \sh -> do
         (sId, rId, rKey, _) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, _SEND "hello (should expire)")
-        threadDelay 2500000
+        threadDelay 3000000
         testSMPClient @c $ \rh -> do
           signSendRecv rh rKey ("2", rId, SUB) >>= \case
             Resp "2" _ OK -> pure ()

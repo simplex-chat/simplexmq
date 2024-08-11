@@ -130,7 +130,7 @@ import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
+import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, sumTypeJSON)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.TMap (TMap)
@@ -170,17 +170,17 @@ data PClient v err msg = PClient
     msgQ :: Maybe (TBQueue (ServerTransmissionBatch v err msg))
   }
 
-smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe (THandleAuth 'TClient) -> STM SMPClient
+smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe (THandleAuth 'TClient) -> IO SMPClient
 smpClientStub g sessionId thVersion thAuth = do
   let ts = UTCTime (read "2024-03-31") 0
-  connected <- newTVar False
-  clientCorrId <- C.newRandomDRG g
-  sentCommands <- TM.empty
-  sendPings <- newTVar False
-  lastReceived <- newTVar ts
-  timeoutErrorCount <- newTVar 0
-  sndQ <- newTBQueue 100
-  rcvQ <- newTBQueue 100
+  connected <- newTVarIO False
+  clientCorrId <- atomically $ C.newRandomDRG g
+  sentCommands <- TM.emptyIO
+  sendPings <- newTVarIO False
+  lastReceived <- newTVarIO ts
+  timeoutErrorCount <- newTVarIO 0
+  sndQ <- newTBQueueIO 100
+  rcvQ <- newTBQueueIO 100
   return
     ProtocolClient
       { action = Nothing,
@@ -240,9 +240,19 @@ data SocksMode
   = -- | always use SOCKS proxy when enabled
     SMAlways
   | -- | use SOCKS proxy only for .onion hosts when no public host is available
-    -- This mode is used in SMP proxy to minimize SOCKS proxy usage.
+    -- This mode is used in SMP proxy and in notifications server to minimize SOCKS proxy usage.
     SMOnion
   deriving (Eq, Show)
+
+instance StrEncoding SocksMode where
+  strEncode = \case
+    SMAlways -> "always"
+    SMOnion -> "onion"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "always" -> pure SMAlways
+      "onion" -> pure SMOnion
+      _ -> fail "Invalid Socks mode"
 
 -- | network configuration for the client
 data NetworkConfig = NetworkConfig
@@ -442,21 +452,21 @@ getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> T
 getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret} msgQ disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
-      (getCurrentTime >>= atomically . mkProtocolClient useHost >>= runClient useTransport useHost)
+      (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
     NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
-    mkProtocolClient :: TransportHost -> UTCTime -> STM (PClient v err msg)
+    mkProtocolClient :: TransportHost -> UTCTime -> IO (PClient v err msg)
     mkProtocolClient transportHost ts = do
-      connected <- newTVar False
-      sendPings <- newTVar False
-      lastReceived <- newTVar ts
-      timeoutErrorCount <- newTVar 0
-      clientCorrId <- C.newRandomDRG g
-      sentCommands <- TM.empty
-      sndQ <- newTBQueue qSize
-      rcvQ <- newTBQueue qSize
+      connected <- newTVarIO False
+      sendPings <- newTVarIO False
+      lastReceived <- newTVarIO ts
+      timeoutErrorCount <- newTVarIO 0
+      clientCorrId <- atomically $ C.newRandomDRG g
+      sentCommands <- TM.emptyIO
+      sndQ <- newTBQueueIO qSize
+      rcvQ <- newTBQueueIO qSize
       return
         PClient
           { connected,
@@ -555,7 +565,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     processMsg ProtocolClient {client_ = PClient {sentCommands}} (_, _, (corrId, entId, respOrErr))
       | B.null $ bs corrId = sendMsg $ STEvent clientResp
       | otherwise =
-          atomically (TM.lookup corrId sentCommands) >>= \case
+          TM.lookupIO corrId sentCommands >>= \case
             Nothing -> sendMsg $ STUnexpectedError unexpected
             Just Request {entityId, command, pending, responseVar} -> do
               wasPending <-
@@ -823,7 +833,7 @@ connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, t
         PKEY sId vr (chain, key) ->
           case supportedClientSMPRelayVRange `compatibleVersion` vr of
             Nothing -> throwE $ transportErr TEVersion
-            Just (Compatible v) -> liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) $ ProxiedRelay sId v <$> validateRelay chain key
+            Just (Compatible v) -> liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) $ ProxiedRelay sId v proxyAuth <$> validateRelay chain key
         r -> throwE $ unexpectedResponse r
   | otherwise = throwE $ PCETransportError TEVersion
   where
@@ -842,16 +852,17 @@ connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, t
 data ProxiedRelay = ProxiedRelay
   { prSessionId :: SessionId,
     prVersion :: VersionSMP,
+    prBasicAuth :: Maybe BasicAuth, -- auth is included here to allow reconnecting via the same proxy after NO_SESSION error
     prServerKey :: C.PublicKeyX25519
   }
 
 data ProxyClientError
   = -- | protocol error response from proxy
-    ProxyProtocolError ErrorType
+    ProxyProtocolError {protocolErr :: ErrorType}
   | -- | unexpexted response
-    ProxyUnexpectedResponse String
+    ProxyUnexpectedResponse {responseStr :: String}
   | -- | error between proxy and server
-    ProxyResponseError ErrorType
+    ProxyResponseError {responseErr :: ErrorType}
   deriving (Eq, Show, Exception)
 
 instance StrEncoding ProxyClientError where
@@ -902,7 +913,7 @@ proxySMPCommand ::
   SenderId ->
   Command 'Sender ->
   ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g, tcpTimeout}} (ProxiedRelay sessionId v serverKey) spKey sId command = do
+proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g, tcpTimeout}} (ProxiedRelay sessionId v _ serverKey) spKey sId command = do
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
       serverThParams = smpTHParamsSetVersion v proxyThParams {sessionId, thAuth = serverThAuth}
@@ -1078,13 +1089,13 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentC
   nonce@(C.CbNonce corrId) <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entityId, command)
       auth = authTransmission (thAuth thParams) pKey_ nonce tForAuth
-  r <- atomically $ mkRequest (CorrId corrId)
+  r <- mkRequest (CorrId corrId)
   pure ((,tToSend) <$> auth, r)
   where
-    mkRequest :: CorrId -> STM (Request err msg)
+    mkRequest :: CorrId -> IO (Request err msg)
     mkRequest corrId = do
-      pending <- newTVar True
-      responseVar <- newEmptyTMVar
+      pending <- newTVarIO True
+      responseVar <- newEmptyTMVarIO
       let r =
             Request
               { corrId,
@@ -1093,7 +1104,7 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentC
                 pending,
                 responseVar
               }
-      TM.insert corrId r sentCommands
+      atomically $ TM.insert corrId r sentCommands
       pure r
 
 authTransmission :: Maybe (THandleAuth 'TClient) -> Maybe C.APrivateAuthKey -> C.CbNonce -> ByteString -> Either TransportError (Maybe TransmissionAuth)
@@ -1139,6 +1150,6 @@ $(J.deriveJSON (enumJSON $ dropPrefix "SPF") ''SMPProxyFallback)
 
 $(J.deriveJSON defaultJSON ''NetworkConfig)
 
-$(J.deriveJSON (enumJSON $ dropPrefix "Proxy") ''ProxyClientError)
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "Proxy") ''ProxyClientError)
 
 $(J.deriveJSON defaultJSON ''TBQueueInfo)

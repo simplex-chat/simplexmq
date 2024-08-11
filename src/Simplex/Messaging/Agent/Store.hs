@@ -175,6 +175,12 @@ instance SMPQueue RcvQueue where
   queueId RcvQueue {rcvId} = rcvId
   {-# INLINE queueId #-}
 
+instance SMPQueue NewRcvQueue where
+  qServer RcvQueue {server} = server
+  {-# INLINE qServer #-}
+  queueId RcvQueue {rcvId} = rcvId
+  {-# INLINE queueId #-}
+
 instance SMPQueue SndQueue where
   qServer SndQueue {server} = server
   {-# INLINE qServer #-}

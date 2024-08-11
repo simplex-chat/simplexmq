@@ -285,7 +285,7 @@ getTLS :: TransportPeer -> TransportConfig -> X.CertificateChain -> T.Context ->
 getTLS tlsPeer cfg tlsServerCerts cxt = withTlsUnique tlsPeer cxt newTLS
   where
     newTLS tlsUniq = do
-      tlsBuffer <- atomically newTBuffer
+      tlsBuffer <- newTBuffer
       tlsALPN <- T.getNegotiatedProtocol cxt
       pure TLS {tlsContext = cxt, tlsALPN, tlsTransportConfig = cfg, tlsServerCerts, tlsPeer, tlsUniq, tlsBuffer}
 

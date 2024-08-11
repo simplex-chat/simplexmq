@@ -7,6 +7,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
@@ -15,7 +16,12 @@ module Simplex.Messaging.Agent.Env.SQLite
     AM,
     AgentConfig (..),
     InitialAgentServers (..),
+    ServerCfg (..),
+    UserServers (..),
     NetworkConfig (..),
+    presetServerCfg,
+    enabledServerCfg,
+    mkUserServers,
     defaultAgentConfig,
     defaultReconnectInterval,
     tryAgentError,
@@ -39,10 +45,14 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Crypto.Random
+import Data.Aeson (FromJSON (..), ToJSON (..))
+import qualified Data.Aeson.TH as JQ
 import Data.ByteArray (ScrubbedBytes)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
-import Data.Map (Map)
+import qualified Data.List.NonEmpty as L
+import Data.Map.Strict (Map)
+import Data.Maybe (fromMaybe)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16)
@@ -59,7 +69,8 @@ import Simplex.Messaging.Crypto.Ratchet (VersionRangeE2E, supportedE2EEncryptVRa
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Protocol (NtfServer, VersionRangeSMPC, XFTPServer, XFTPServerWithAuth, supportedSMPClientVRange)
+import Simplex.Messaging.Parsers (defaultJSON)
+import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth, ProtocolServer, ProtocolType (..), ProtocolTypeI, VersionRangeSMPC, XFTPServer, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion, TLS, Transport (..))
@@ -74,11 +85,37 @@ type AM' a = ReaderT Env IO a
 type AM a = ExceptT AgentErrorType (ReaderT Env IO) a
 
 data InitialAgentServers = InitialAgentServers
-  { smp :: Map UserId (NonEmpty SMPServerWithAuth),
+  { smp :: Map UserId (NonEmpty (ServerCfg 'PSMP)),
     ntf :: [NtfServer],
-    xftp :: Map UserId (NonEmpty XFTPServerWithAuth),
+    xftp :: Map UserId (NonEmpty (ServerCfg 'PXFTP)),
     netCfg :: NetworkConfig
   }
+
+data ServerCfg p = ServerCfg
+  { server :: ProtoServerWithAuth p,
+    preset :: Bool,
+    tested :: Maybe Bool,
+    enabled :: Bool
+  }
+  deriving (Show)
+
+enabledServerCfg :: ProtoServerWithAuth p -> ServerCfg p
+enabledServerCfg server = ServerCfg {server, preset = False, tested = Nothing, enabled = True}
+
+presetServerCfg :: Bool -> ProtoServerWithAuth p -> ServerCfg p
+presetServerCfg enabled server = ServerCfg {server, preset = True, tested = Nothing, enabled}
+
+data UserServers p = UserServers
+  { enabledSrvs :: NonEmpty (ProtoServerWithAuth p),
+    knownSrvs :: NonEmpty (ProtocolServer p)
+  }
+
+-- This function sets all servers as enabled in case all passed servers are disabled.
+mkUserServers :: NonEmpty (ServerCfg p) -> UserServers p
+mkUserServers srvs = UserServers {enabledSrvs, knownSrvs}
+  where
+    enabledSrvs = L.map (\ServerCfg {server} -> server) $ fromMaybe srvs $ L.nonEmpty $ L.filter (\ServerCfg {enabled} -> enabled) srvs
+    knownSrvs = L.map (\ServerCfg {server = ProtoServerWithAuth srv _} -> srv) srvs
 
 data AgentConfig = AgentConfig
   { tcpPort :: Maybe ServiceName,
@@ -111,10 +148,7 @@ data AgentConfig = AgentConfig
     xftpMaxRecipientsPerRequest :: Int,
     deleteErrorCount :: Int,
     ntfCron :: Word16,
-    ntfWorkerDelay :: Int,
-    ntfSMPWorkerDelay :: Int,
     ntfSubCheckInterval :: NominalDiffTime,
-    ntfMaxMessages :: Int,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
@@ -128,7 +162,7 @@ defaultReconnectInterval =
   RetryInterval
     { initialInterval = 2_000000,
       increaseAfter = 10_000000,
-      maxInterval = 60_000000
+      maxInterval = 180_000000
     }
 
 defaultMessageRetryInterval :: RetryInterval2
@@ -138,7 +172,7 @@ defaultMessageRetryInterval =
         RetryInterval
           { initialInterval = 2_000000,
             increaseAfter = 10_000000,
-            maxInterval = 60_000000
+            maxInterval = 120_000000
           },
       riSlow =
         RetryInterval
@@ -183,10 +217,7 @@ defaultAgentConfig =
       xftpMaxRecipientsPerRequest = 200,
       deleteErrorCount = 10,
       ntfCron = 20, -- minutes
-      ntfWorkerDelay = 100000, -- microseconds
-      ntfSMPWorkerDelay = 500000, -- microseconds
       ntfSubCheckInterval = nominalDay,
-      ntfMaxMessages = 3,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
@@ -211,8 +242,8 @@ newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
 newSMPAgentEnv config store = do
   random <- C.newRandom
   randomServer <- newTVarIO =<< liftIO newStdGen
-  ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
-  xftpAgent <- atomically newXFTPAgent
+  ntfSupervisor <- newNtfSubSupervisor $ tbqSize config
+  xftpAgent <- newXFTPAgent
   multicastSubscribers <- newTMVarIO 0
   pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
 
@@ -229,12 +260,12 @@ data NtfSupervisor = NtfSupervisor
 data NtfSupervisorCommand = NSCCreate | NSCDelete | NSCSmpDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer
   deriving (Show)
 
-newNtfSubSupervisor :: Natural -> STM NtfSupervisor
+newNtfSubSupervisor :: Natural -> IO NtfSupervisor
 newNtfSubSupervisor qSize = do
-  ntfTkn <- newTVar Nothing
-  ntfSubQ <- newTBQueue qSize
-  ntfWorkers <- TM.empty
-  ntfSMPWorkers <- TM.empty
+  ntfTkn <- newTVarIO Nothing
+  ntfSubQ <- newTBQueueIO qSize
+  ntfWorkers <- TM.emptyIO
+  ntfSMPWorkers <- TM.emptyIO
   pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
 
 data XFTPAgent = XFTPAgent
@@ -245,12 +276,12 @@ data XFTPAgent = XFTPAgent
     xftpDelWorkers :: TMap XFTPServer Worker
   }
 
-newXFTPAgent :: STM XFTPAgent
+newXFTPAgent :: IO XFTPAgent
 newXFTPAgent = do
-  xftpWorkDir <- newTVar Nothing
-  xftpRcvWorkers <- TM.empty
-  xftpSndWorkers <- TM.empty
-  xftpDelWorkers <- TM.empty
+  xftpWorkDir <- newTVarIO Nothing
+  xftpRcvWorkers <- TM.emptyIO
+  xftpSndWorkers <- TM.emptyIO
+  xftpDelWorkers <- TM.emptyIO
   pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}
 
 tryAgentError :: AM a -> AM (Either AgentErrorType a)
@@ -294,3 +325,12 @@ updateRestartCount :: SystemTime -> RestartCount -> RestartCount
 updateRestartCount t (RestartCount minute count) = do
   let min' = systemSeconds t `div` 60
    in RestartCount min' $ if minute == min' then count + 1 else 1
+
+$(pure [])
+
+instance ProtocolTypeI p => ToJSON (ServerCfg p) where
+  toEncoding = $(JQ.mkToEncoding defaultJSON ''ServerCfg)
+  toJSON = $(JQ.mkToJSON defaultJSON ''ServerCfg)
+
+instance ProtocolTypeI p => FromJSON (ServerCfg p) where
+  parseJSON = $(JQ.mkParseJSON defaultJSON ''ServerCfg)

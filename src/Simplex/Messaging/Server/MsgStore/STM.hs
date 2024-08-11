@@ -14,8 +14,6 @@ module Simplex.Messaging.Server.MsgStore.STM
     getMsgQueue,
     delMsgQueue,
     delMsgQueueSize,
-    flushMsgQueue,
-    snapshotMsgQueue,
     writeMsg,
     tryPeekMsg,
     peekMsg,
@@ -25,7 +23,6 @@ module Simplex.Messaging.Server.MsgStore.STM
   )
 where
 
-import Control.Concurrent.STM.TQueue (flushTQueue)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -44,8 +41,8 @@ data MsgQueue = MsgQueue
 
 type STMMsgStore = TMap RecipientId MsgQueue
 
-newMsgStore :: STM STMMsgStore
-newMsgStore = TM.empty
+newMsgStore :: IO STMMsgStore
+newMsgStore = TM.emptyIO
 
 getMsgQueue :: STMMsgStore -> RecipientId -> Int -> STM MsgQueue
 getMsgQueue st rId quota = maybe newQ pure =<< TM.lookup rId st
@@ -64,18 +61,7 @@ delMsgQueue st rId = TM.delete rId st
 delMsgQueueSize :: STMMsgStore -> RecipientId -> STM Int
 delMsgQueueSize st rId = TM.lookupDelete rId st >>= maybe (pure 0) (\MsgQueue {size} -> readTVar size)
 
-flushMsgQueue :: STMMsgStore -> RecipientId -> STM [Message]
-flushMsgQueue st rId = TM.lookupDelete rId st >>= maybe (pure []) (flushTQueue . msgQueue)
-
-snapshotMsgQueue :: STMMsgStore -> RecipientId -> STM [Message]
-snapshotMsgQueue st rId = TM.lookup rId st >>= maybe (pure []) (snapshotTQueue . msgQueue)
-  where
-    snapshotTQueue q = do
-      msgs <- flushTQueue q
-      mapM_ (writeTQueue q) msgs
-      pure msgs
-
-writeMsg :: MsgQueue -> Message -> STM (Maybe Message)
+writeMsg :: MsgQueue -> Message -> STM (Maybe (Message, Bool))
 writeMsg MsgQueue {msgQueue = q, quota, canWrite, size} !msg = do
   canWrt <- readTVar canWrite
   empty <- isEmptyTQueue q
@@ -85,7 +71,7 @@ writeMsg MsgQueue {msgQueue = q, quota, canWrite, size} !msg = do
       writeTVar canWrite $! canWrt'
       modifyTVar' size (+ 1)
       if canWrt'
-        then writeTQueue q msg $> Just msg
+        then writeTQueue q msg $> Just (msg, empty)
         else (writeTQueue q $! msgQuota) $> Nothing
     else pure Nothing
   where
