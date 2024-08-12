@@ -42,9 +42,8 @@ data SQLiteStore = SQLiteStore
 withConnectionPriority :: SQLiteStore -> Bool -> (DB.Connection -> IO a) -> IO a
 withConnectionPriority SQLiteStore {dbSem, dbConnection} priority action
   | priority = E.bracket_ signal release $ withMVar dbConnection action
-  | otherwise = lowPriority
+  | otherwise = wait >> withMVar dbConnection action
   where
-    lowPriority = wait >> withMVar dbConnection action
     signal = atomically $ modifyTVar' dbSem (+ 1)
     release = atomically $ modifyTVar' dbSem $ subtract 1
     wait = unlessM (isFree readTVarIO) $ atomically $ unlessM (isFree readTVar) retry
