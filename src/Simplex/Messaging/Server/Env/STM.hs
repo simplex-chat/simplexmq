@@ -127,7 +127,7 @@ data Env = Env
     serverStats :: ServerStats,
     sockets :: SocketState,
     clientSeq :: TVar ClientId,
-    clients :: TVar (IntMap Client),
+    clients :: TVar (IntMap (Maybe Client)),
     proxyAgent :: ProxyAgent -- senders served on this proxy
   }
 
@@ -183,9 +183,8 @@ newServer = do
   savingLock <- atomically createLock
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
 
-newClient :: TVar ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO Client
-newClient nextClientId qSize thVersion sessionId createdAt = do
-  clientId <- atomically $ stateTVar nextClientId $ \next -> (next, next + 1)
+newClient :: ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO Client
+newClient clientId qSize thVersion sessionId createdAt = do
   subscriptions <- TM.emptyIO
   ntfSubscriptions <- TM.emptyIO
   rcvQ <- newTBQueueIO qSize
