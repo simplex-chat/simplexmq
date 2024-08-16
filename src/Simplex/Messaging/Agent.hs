@@ -951,6 +951,15 @@ toConnResult connId rs = case M.lookup connId rs of
 
 type QCmdResult = (QueueStatus, Either AgentErrorType ())
 
+-- subscribeConnectionsB :: forall t. Traversable t => AgentClient -> t ConnId -> AM' (t (Either AgentErrorType ()))
+-- subscribeConnectionsB c connIds = do
+--   conns <- withStoreBatch c $ \db -> fmap (fmap (first storeError) . getConn db) connIds
+--   let rcvQs = fmap (second rcvQueueOrResult) conns
+--   mapM_ (mapM_ $ mapM_ (\(cData, sqs) -> mapM_ (resumeMsgDelivery c cData) sqs) . sndQueue) conns
+--   srvs <- concat . rights . toList <$> withStoreBatch' c (\db -> fmap (getPendingCommandServers db) connIds)
+--   mapM_ (resumeSrvCmds c) srvs
+--   pure $ fmap (() <$) conns
+
 subscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType ()))
 subscribeConnections' _ [] = pure M.empty
 subscribeConnections' c connIds = do
@@ -959,7 +968,7 @@ subscribeConnections' c connIds = do
       errs' = M.map (Left . storeError) errs
       (subRs, rcvQs) = M.mapEither rcvQueueOrResult cs
   mapM_ (mapM_ (\(cData, sqs) -> mapM_ (lift . resumeMsgDelivery c cData) sqs) . sndQueue) cs
-  mapM_ (resumeConnCmds c) $ M.keys cs
+  lift $ resumeConnCmds c $ M.keys cs
   rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concat $ M.elems rcvQs)
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
@@ -1118,13 +1127,10 @@ resumeSrvCmds :: AgentClient -> Maybe SMPServer -> AM' ()
 resumeSrvCmds = void .: getAsyncCmdWorker False
 {-# INLINE resumeSrvCmds #-}
 
-resumeConnCmds :: AgentClient -> ConnId -> AM ()
-resumeConnCmds c connId =
-  unlessM connQueued $
-    withStore' c (`getPendingCommandServers` connId)
-      >>= mapM_ (lift . resumeSrvCmds c)
-  where
-    connQueued = atomically $ isJust <$> TM.lookupInsert connId True (connCmdsQueued c)
+resumeConnCmds :: AgentClient -> [ConnId] -> AM' ()
+resumeConnCmds c connIds = do
+  srvs <- concat . rights <$> withStoreBatch' c (\db -> fmap (getPendingCommandServers db) connIds)
+  mapM_ (resumeSrvCmds c) srvs
 
 getAsyncCmdWorker :: Bool -> AgentClient -> Maybe SMPServer -> AM' Worker
 getAsyncCmdWorker hasWork c server =

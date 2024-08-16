@@ -1909,9 +1909,11 @@ newQueueId_ (Only maxId : _) = DBQueueId (maxId + 1)
 
 getConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getConn = getAnyConn False
+{-# INLINE getConn #-}
 
 getDeletedConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getDeletedConn = getAnyConn True
+{-# INLINE getDeletedConn #-}
 
 getAnyConn :: Bool -> DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getAnyConn deleted' dbConn connId =
@@ -1932,9 +1934,11 @@ getAnyConn deleted' dbConn connId =
 
 getConns :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getConns = getAnyConns_ False
+{-# INLINE getConns #-}
 
 getDeletedConns :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getDeletedConns = getAnyConns_ True
+{-# INLINE getDeletedConns #-}
 
 getAnyConns_ :: Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getAnyConns_ deleted' db connIds = forM connIds $ E.handle handleDBError . getAnyConn deleted' db
