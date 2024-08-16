@@ -131,6 +131,7 @@ import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::), (.::.))
+import Data.Containers.ListUtils (nubOrd)
 import Data.Either (isRight, rights)
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
@@ -1129,7 +1130,7 @@ resumeSrvCmds = void .: getAsyncCmdWorker False
 
 resumeConnCmds :: AgentClient -> [ConnId] -> AM' ()
 resumeConnCmds c connIds = do
-  srvs <- concat . rights <$> withStoreBatch' c (\db -> fmap (getPendingCommandServers db) connIds)
+  srvs <- nubOrd . concat . rights <$> withStoreBatch' c (\db -> fmap (getPendingCommandServers db) connIds)
   mapM_ (resumeSrvCmds c) srvs
 
 getAsyncCmdWorker :: Bool -> AgentClient -> Maybe SMPServer -> AM' Worker
