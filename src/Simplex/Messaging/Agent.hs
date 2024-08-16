@@ -952,15 +952,6 @@ toConnResult connId rs = case M.lookup connId rs of
 
 type QCmdResult = (QueueStatus, Either AgentErrorType ())
 
--- subscribeConnectionsB :: forall t. Traversable t => AgentClient -> t ConnId -> AM' (t (Either AgentErrorType ()))
--- subscribeConnectionsB c connIds = do
---   conns <- withStoreBatch c $ \db -> fmap (fmap (first storeError) . getConn db) connIds
---   let rcvQs = fmap (second rcvQueueOrResult) conns
---   mapM_ (mapM_ $ mapM_ (\(cData, sqs) -> mapM_ (resumeMsgDelivery c cData) sqs) . sndQueue) conns
---   srvs <- concat . rights . toList <$> withStoreBatch' c (\db -> fmap (getPendingCommandServers db) connIds)
---   mapM_ (resumeSrvCmds c) srvs
---   pure $ fmap (() <$) conns
-
 subscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType ()))
 subscribeConnections' _ [] = pure M.empty
 subscribeConnections' c connIds = do
