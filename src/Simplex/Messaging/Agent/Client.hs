@@ -313,7 +313,6 @@ data AgentClient = AgentClient
     workerSeq :: TVar Int,
     smpDeliveryWorkers :: TMap SndQAddr (Worker, TMVar ()),
     asyncCmdWorkers :: TMap (Maybe SMPServer) Worker,
-    connCmdsQueued :: TMap ConnId Bool,
     ntfNetworkOp :: TVar AgentOpState,
     rcvNetworkOp :: TVar AgentOpState,
     msgDeliveryOp :: TVar AgentOpState,
@@ -480,7 +479,6 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs a
   workerSeq <- newTVarIO 0
   smpDeliveryWorkers <- TM.emptyIO
   asyncCmdWorkers <- TM.emptyIO
-  connCmdsQueued <- TM.emptyIO
   ntfNetworkOp <- newTVarIO $ AgentOpState False 0
   rcvNetworkOp <- newTVarIO $ AgentOpState False 0
   msgDeliveryOp <- newTVarIO $ AgentOpState False 0
@@ -519,7 +517,6 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs a
         workerSeq,
         smpDeliveryWorkers,
         asyncCmdWorkers,
-        connCmdsQueued,
         ntfNetworkOp,
         rcvNetworkOp,
         msgDeliveryOp,
@@ -893,7 +890,6 @@ closeAgentClient c = do
   atomically (swapTVar (smpSubWorkers c) M.empty) >>= mapM_ cancelReconnect
   clearWorkers smpDeliveryWorkers >>= mapM_ (cancelWorker . fst)
   clearWorkers asyncCmdWorkers >>= mapM_ cancelWorker
-  clear connCmdsQueued
   atomically . RQ.clear $ activeSubs c
   atomically . RQ.clear $ pendingSubs c
   clear subscrConns
