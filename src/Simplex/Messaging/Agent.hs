@@ -959,12 +959,12 @@ subscribeConnections' c connIds = do
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
       (subRs, rcvQs) = M.mapEither rcvQueueOrResult cs
-  mapM_ (mapM_ (\(cData, sqs) -> mapM_ (lift . resumeMsgDelivery c cData) sqs) . sndQueue) cs
+  lift $ mapM_ (mapM_ (\(cData, sqs) -> mapM_ (resumeMsgDelivery c cData) sqs) . sndQueue) cs
   lift $ resumeConnCmds c $ M.keys cs
   rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concat $ M.elems rcvQs)
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
-  when (instantNotifications tkn) . void . lift . forkIO . void . runExceptT $ sendNtfCreate ns rcvRs conns
+  lift $ when (instantNotifications tkn) $ void $ forkIO $ sendNtfCreate ns cs
   let rs = M.unions ([errs', subRs, rcvRs] :: [Map ConnId (Either AgentErrorType ())])
   notifyResultError rs
   pure rs
@@ -996,15 +996,16 @@ subscribeConnections' c connIds = do
         order (Active, _) = 2
         order (_, Right _) = 3
         order _ = 4
-    sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType ()) -> Map ConnId (Either StoreError SomeConn) -> AM ()
-    sendNtfCreate ns rcvRs conns =
-      forM_ (M.assocs rcvRs) $ \case
-        (connId, Right _) -> forM_ (M.lookup connId conns) $ \case
-          Right (SomeConn _ conn) -> do
-            let cmd = if enableNtfs $ toConnData conn then NSCCreate else NSCDelete
-            atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)
-          _ -> pure ()
-        _ -> pure ()
+    sendNtfCreate :: NtfSupervisor -> Map ConnId SomeConn -> AM' ()
+    sendNtfCreate ns cs =
+      -- TODO this needs to be batched end to end.
+      -- Currently, the only change is to ignore failed subscriptions.
+      forM_ cs $ \case
+        SomeConn _ conn -> do
+          let cmd = if enableNtfs $ toConnData conn then NSCCreate else NSCDelete
+          atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)
+          where
+            ConnData {connId} = toConnData conn
     sndQueue :: SomeConn -> Maybe (ConnData, NonEmpty SndQueue)
     sndQueue (SomeConn _ conn) = case conn of
       DuplexConnection cData _ sqs -> Just (cData, sqs)
@@ -1083,8 +1084,8 @@ sendMessagesB_ c reqs connIds = withConnLocks c connIds "sendMessages" $ do
   where
     getConn_ :: DB.Connection -> TVar (Maybe (Either AgentErrorType SomeConn)) -> MsgReq -> IO (Either AgentErrorType (MsgReq, SomeConn))
     getConn_ db prev req@(connId, _, _, _) =
-      (req,) <$$> 
-        if B.null connId
+      (req,)
+        <$$> if B.null connId
           then fromMaybe (Left $ INTERNAL "sendMessagesB_: empty prev connId") <$> readTVarIO prev
           else do
             conn <- first storeError <$> getConn db connId
@@ -1119,9 +1120,9 @@ resumeSrvCmds :: AgentClient -> Maybe SMPServer -> AM' ()
 resumeSrvCmds = void .: getAsyncCmdWorker False
 {-# INLINE resumeSrvCmds #-}
 
-resumeConnCmds :: AgentClient -> [ConnId] -> AM' ()
+resumeConnCmds :: Traversable t => AgentClient -> t ConnId -> AM' ()
 resumeConnCmds c connIds = do
-  srvs <- nubOrd . concat . rights <$> withStoreBatch' c (\db -> fmap (getPendingCommandServers db) connIds)
+  srvs <- nubOrd . concat . rights . toList <$> withStoreBatch' c (\db -> fmap (getPendingCommandServers db) connIds)
   mapM_ (resumeSrvCmds c) srvs
 
 getAsyncCmdWorker :: Bool -> AgentClient -> Maybe SMPServer -> AM' Worker

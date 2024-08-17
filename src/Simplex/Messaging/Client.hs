@@ -101,7 +101,6 @@ module Simplex.Messaging.Client
   )
 where
 
-import Control.Applicative ((<|>))
 import Control.Concurrent (ThreadId, forkFinally, killThread, mkWeakThreadId)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
@@ -693,11 +692,12 @@ subscribeSMPQueues c@ProtocolClient {client_ = PClient {sendPings}} qs = do
   where
     cs = L.map (\(rpKey, rId) -> (Just rpKey, rId, Cmd SRecipient SUB)) qs
 
-streamSubscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> ([(RecipientId, Either SMPClientError ())] -> IO ()) -> IO ()
-streamSubscribeSMPQueues c qs cb = streamProtocolCommands c cs $ mapM process >=> cb
+streamSubscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> (NonEmpty (Either SMPClientError ()) -> IO ()) -> IO ()
+streamSubscribeSMPQueues c@ProtocolClient {client_ = PClient {sendPings}} qs cb = do
+  atomically $ writeTVar sendPings True
+  streamProtocolCommands c cs $ mapM (processSUBResponse c) >=> cb
   where
     cs = L.map (\(rpKey, rId) -> (Just rpKey, rId, Cmd SRecipient SUB)) qs
-    process r@(Response rId _) = (rId,) <$> processSUBResponse c r
 
 processSUBResponse :: SMPClient -> Response ErrorType BrokerMsg -> IO (Either SMPClientError ())
 processSUBResponse c (Response rId r) = case r of
@@ -1022,10 +1022,16 @@ sendProtocolCommands c@ProtocolClient {thParams = THandleParams {batch, blockSiz
       where
         diff = L.length cs - length rs
 
-streamProtocolCommands :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> NonEmpty (ClientCommand msg) -> ([Response err msg] -> IO ()) -> IO ()
+streamProtocolCommands :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> NonEmpty (ClientCommand msg) -> (NonEmpty (Response err msg) -> IO ()) -> IO ()
 streamProtocolCommands c@ProtocolClient {thParams = THandleParams {batch, blockSize}} cs cb = do
   bs <- batchTransmissions' batch blockSize <$> mapM (mkTransmission c) cs
-  mapM_ (cb <=< sendBatch c) bs
+  cnt <- newTVarIO 0
+  mapM_ (sendBatch c >=> processResults cnt) bs
+  whenM ((L.length cs /=) <$> readTVarIO cnt) $ putStrLn "send error: different number of responses than expected"
+  where
+    processResults cnt rs_ = case L.nonEmpty rs_ of
+      Nothing -> putStrLn "send error: empty response from sendBatch"
+      Just rs -> cb rs >> atomically (modifyTVar' cnt (+ L.length rs))
 
 sendBatch :: ProtocolClient v err msg -> TransportBatch (Request err msg) -> IO [Response err msg]
 sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
@@ -1076,7 +1082,7 @@ getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount}} t
     -- Try to read response again in case it arrived after timeout expired
     -- but before `pending` was set to False above.
     -- See `processMsg`.
-    ((r <|>) <$> tryTakeTMVar responseVar) >>= \case
+    maybe (tryTakeTMVar responseVar) (pure . Just) r >>= \case
       Just r' -> writeTVar timeoutErrorCount 0 $> r'
       Nothing -> modifyTVar' timeoutErrorCount (+ 1) $> Left PCEResponseTimeout
   pure Response {entityId, response}
