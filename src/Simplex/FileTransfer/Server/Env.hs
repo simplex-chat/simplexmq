@@ -11,7 +11,6 @@ module Simplex.FileTransfer.Server.Env where
 
 import Control.Logger.Simple
 import Control.Monad
-import Control.Monad.IO.Unlift
 import Crypto.Random
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
@@ -105,17 +104,17 @@ supportedXFTPhandshakes = ["xftp/1"]
 
 newXFTPServerEnv :: XFTPServerConfig -> IO XFTPEnv
 newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertificateFile, certificateFile, privateKeyFile, transportConfig} = do
-  random <- liftIO C.newRandom
-  store <- atomically newFileStore
-  storeLog <- liftIO $ mapM (`readWriteFileStore` store) storeLogFile
+  random <- C.newRandom
+  store <- newFileStore
+  storeLog <- mapM (`readWriteFileStore` store) storeLogFile
   used <- countUsedStorage <$> readTVarIO (files store)
   atomically $ writeTVar (usedStorage store) used
   forM_ fileSizeQuota $ \quota -> do
     logInfo $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
     when (quota < used) $ logInfo "WARNING: storage quota is less than used storage, no files can be uploaded!"
-  tlsServerParams <- liftIO $ loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
-  Fingerprint fp <- liftIO $ loadFingerprint caCertificateFile
-  serverStats <- atomically . newFileServerStats =<< liftIO getCurrentTime
+  tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
+  Fingerprint fp <- loadFingerprint caCertificateFile
+  serverStats <- newFileServerStats =<< getCurrentTime
   pure XFTPEnv {config, store, storeLog, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
 
 countUsedStorage :: M.Map k FileRec -> Int64

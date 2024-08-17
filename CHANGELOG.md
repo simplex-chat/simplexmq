@@ -1,3 +1,26 @@
+# 6.0.0
+
+Version 6.0.0.8
+
+Agent:
+- enabled fast handshake support.
+- batch-send multiple messages in each connection.
+- resume subscriptions as soon as agent moves to foreground or as network connection resumes.
+- "known" servers to determine whether to use SMP proxy.
+- retry on SMP proxy NO_SESSION error.
+- fixes to notification subscriptions.
+- persistent server statistics.
+- better concurrency.
+
+SMP server:
+- reduce threads usage.
+- additional statistics.
+- improve disabling inactive clients.
+- additional control port commands for monitoring.
+
+Notification server:
+- support onion-only SMP servers.
+
 # 5.8.2
 
 Agent:

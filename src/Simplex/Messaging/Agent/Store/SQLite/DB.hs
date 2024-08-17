@@ -64,7 +64,7 @@ timeIt slow sql a = do
 open :: String -> IO Connection
 open f = do
   conn <- SQL.open f
-  slow <- atomically $ TM.empty
+  slow <- TM.emptyIO
   pure Connection {conn, slow}
 
 close :: Connection -> IO ()

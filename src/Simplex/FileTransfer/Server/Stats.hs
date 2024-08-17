@@ -43,34 +43,34 @@ data FileServerStatsData = FileServerStatsData
   }
   deriving (Show)
 
-newFileServerStats :: UTCTime -> STM FileServerStats
+newFileServerStats :: UTCTime -> IO FileServerStats
 newFileServerStats ts = do
-  fromTime <- newTVar ts
-  filesCreated <- newTVar 0
-  fileRecipients <- newTVar 0
-  filesUploaded <- newTVar 0
-  filesExpired <- newTVar 0
-  filesDeleted <- newTVar 0
+  fromTime <- newTVarIO ts
+  filesCreated <- newTVarIO 0
+  fileRecipients <- newTVarIO 0
+  filesUploaded <- newTVarIO 0
+  filesExpired <- newTVarIO 0
+  filesDeleted <- newTVarIO 0
   filesDownloaded <- newPeriodStats
-  fileDownloads <- newTVar 0
-  fileDownloadAcks <- newTVar 0
-  filesCount <- newTVar 0
-  filesSize <- newTVar 0
+  fileDownloads <- newTVarIO 0
+  fileDownloadAcks <- newTVarIO 0
+  filesCount <- newTVarIO 0
+  filesSize <- newTVarIO 0
   pure FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesExpired, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize}
 
-getFileServerStatsData :: FileServerStats -> STM FileServerStatsData
+getFileServerStatsData :: FileServerStats -> IO FileServerStatsData
 getFileServerStatsData s = do
-  _fromTime <- readTVar $ fromTime (s :: FileServerStats)
-  _filesCreated <- readTVar $ filesCreated s
-  _fileRecipients <- readTVar $ fileRecipients s
-  _filesUploaded <- readTVar $ filesUploaded s
-  _filesExpired <- readTVar $ filesExpired s
-  _filesDeleted <- readTVar $ filesDeleted s
+  _fromTime <- readTVarIO $ fromTime (s :: FileServerStats)
+  _filesCreated <- readTVarIO $ filesCreated s
+  _fileRecipients <- readTVarIO $ fileRecipients s
+  _filesUploaded <- readTVarIO $ filesUploaded s
+  _filesExpired <- readTVarIO $ filesExpired s
+  _filesDeleted <- readTVarIO $ filesDeleted s
   _filesDownloaded <- getPeriodStatsData $ filesDownloaded s
-  _fileDownloads <- readTVar $ fileDownloads s
-  _fileDownloadAcks <- readTVar $ fileDownloadAcks s
-  _filesCount <- readTVar $ filesCount s
-  _filesSize <- readTVar $ filesSize s
+  _fileDownloads <- readTVarIO $ fileDownloads s
+  _fileDownloadAcks <- readTVarIO $ fileDownloadAcks s
+  _filesCount <- readTVarIO $ filesCount s
+  _filesSize <- readTVarIO $ filesSize s
   pure FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesExpired, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount, _filesSize}
 
 setFileServerStats :: FileServerStats -> FileServerStatsData -> STM ()

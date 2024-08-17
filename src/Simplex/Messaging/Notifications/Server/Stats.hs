@@ -40,30 +40,30 @@ data NtfServerStatsData = NtfServerStatsData
     _activeSubs :: PeriodStatsData NotifierId
   }
 
-newNtfServerStats :: UTCTime -> STM NtfServerStats
+newNtfServerStats :: UTCTime -> IO NtfServerStats
 newNtfServerStats ts = do
-  fromTime <- newTVar ts
-  tknCreated <- newTVar 0
-  tknVerified <- newTVar 0
-  tknDeleted <- newTVar 0
-  subCreated <- newTVar 0
-  subDeleted <- newTVar 0
-  ntfReceived <- newTVar 0
-  ntfDelivered <- newTVar 0
+  fromTime <- newTVarIO ts
+  tknCreated <- newTVarIO 0
+  tknVerified <- newTVarIO 0
+  tknDeleted <- newTVarIO 0
+  subCreated <- newTVarIO 0
+  subDeleted <- newTVarIO 0
+  ntfReceived <- newTVarIO 0
+  ntfDelivered <- newTVarIO 0
   activeTokens <- newPeriodStats
   activeSubs <- newPeriodStats
   pure NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, activeTokens, activeSubs}
 
-getNtfServerStatsData :: NtfServerStats -> STM NtfServerStatsData
+getNtfServerStatsData :: NtfServerStats -> IO NtfServerStatsData
 getNtfServerStatsData s@NtfServerStats {fromTime} = do
-  _fromTime <- readTVar fromTime
-  _tknCreated <- readTVar $ tknCreated s
-  _tknVerified <- readTVar $ tknVerified s
-  _tknDeleted <- readTVar $ tknDeleted s
-  _subCreated <- readTVar $ subCreated s
-  _subDeleted <- readTVar $ subDeleted s
-  _ntfReceived <- readTVar $ ntfReceived s
-  _ntfDelivered <- readTVar $ ntfDelivered s
+  _fromTime <- readTVarIO fromTime
+  _tknCreated <- readTVarIO $ tknCreated s
+  _tknVerified <- readTVarIO $ tknVerified s
+  _tknDeleted <- readTVarIO $ tknDeleted s
+  _subCreated <- readTVarIO $ subCreated s
+  _subDeleted <- readTVarIO $ subDeleted s
+  _ntfReceived <- readTVarIO $ ntfReceived s
+  _ntfDelivered <- readTVarIO $ ntfDelivered s
   _activeTokens <- getPeriodStatsData $ activeTokens s
   _activeSubs <- getPeriodStatsData $ activeSubs s
   pure NtfServerStatsData {_fromTime, _tknCreated, _tknVerified, _tknDeleted, _subCreated, _subDeleted, _ntfReceived, _ntfDelivered, _activeTokens, _activeSubs}

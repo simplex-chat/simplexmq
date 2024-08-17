@@ -72,8 +72,6 @@ agentCfg =
       ntfCfg = defaultNTFClientConfig {qSize = 1, defaultTransport = (ntfTestPort, transport @TLS), networkConfig},
       reconnectInterval = fastRetryInterval,
       persistErrorInterval = 1,
-      ntfWorkerDelay = 100,
-      ntfSMPWorkerDelay = 100,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt"

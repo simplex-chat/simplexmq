@@ -207,7 +207,8 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
   withAgent 1 aCfg (servers aTestCfg) testDB $ \alice ->
     withAgent 2 aCfg (servers bTestCfg) testDB2 $ \bob -> runRight_ $ do
       (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
-      aliceId <- A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      (aliceId, sqSecured) <- A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      liftIO $ sqSecured `shouldBe` True
       ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
       liftIO $ pqSup' `shouldBe` PQSupportOn
       allowConnection alice bobId confId "alice's connInfo"
@@ -261,7 +262,8 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
     -- otherwise the CONF messages would get mixed with MSG
     prePair alice bob = do
       (bobId, qInfo) <- runExceptT' $ A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
-      aliceId <- runExceptT' $ A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      (aliceId, sqSecured) <- runExceptT' $ A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      liftIO $ sqSecured `shouldBe` True
       confId <-
         get alice >>= \case
           ("", _, A.CONF confId pqSup' _ "bob's connInfo") -> do
@@ -329,7 +331,8 @@ agentViaProxyRetryOffline = do
       withServer $ \_ -> do
         (aliceId, bobId) <- withServer2 $ \_ -> runRight $ do
           (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
-          aliceId <- A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+          (aliceId, sqSecured) <- A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+          liftIO $ sqSecured `shouldBe` True
           ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
           liftIO $ pqSup' `shouldBe` PQSupportOn
           allowConnection alice bobId confId "alice's connInfo"
@@ -358,11 +361,15 @@ agentViaProxyRetryOffline = do
           -- proxy relay down
           4 <- msgId <$> A.sendMessage bob aliceId pqEnc noMsgFlags msg2
           bob `down` aliceId
-        withServer2 $ \_ -> runRight_ $ do
-          bob `up` aliceId
-          get bob ##> ("", aliceId, A.SENT (baseId + 4) bProxySrv)
-          get alice =##> \case ("", c, Msg' _ pq msg2') -> c == bobId && pq == pqEnc && msg2 == msg2'; _ -> False
-          ackMessage alice bobId (baseId + 4) Nothing
+        withServer2 $ \_ -> do
+          getInAnyOrder
+            bob
+            [ \case ("", "", AEvt SAENone (UP _ [c])) -> c == aliceId; _ -> False,
+              \case ("", c, AEvt SAEConn (A.SENT mId srv)) -> c == aliceId && mId == baseId + 4 && srv == bProxySrv; _ -> False
+            ]
+          runRight_ $ do
+            get alice =##> \case ("", c, Msg' _ pq msg2') -> c == bobId && pq == pqEnc && msg2 == msg2'; _ -> False
+            ackMessage alice bobId (baseId + 4) Nothing
   where
     withServer :: (ThreadId -> IO a) -> IO a
     withServer = withServer_ testStoreLogFile testStoreMsgsFile testPort

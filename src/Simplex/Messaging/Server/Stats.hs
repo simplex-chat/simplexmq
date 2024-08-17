@@ -27,16 +27,29 @@ data ServerStats = ServerStats
     qDeletedNew :: TVar Int,
     qDeletedSecured :: TVar Int,
     qSub :: TVar Int,
+    qSubNoMsg :: TVar Int,
     qSubAuth :: TVar Int,
     qSubDuplicate :: TVar Int,
     qSubProhibited :: TVar Int,
+    ntfCreated :: TVar Int,
+    ntfDeleted :: TVar Int,
+    ntfSub :: TVar Int,
+    ntfSubAuth :: TVar Int,
+    ntfSubDuplicate :: TVar Int,
     msgSent :: TVar Int,
     msgSentAuth :: TVar Int,
     msgSentQuota :: TVar Int,
     msgSentLarge :: TVar Int,
     msgRecv :: TVar Int,
+    msgRecvGet :: TVar Int,
+    msgGet :: TVar Int,
+    msgGetNoMsg :: TVar Int,
+    msgGetAuth :: TVar Int,
+    msgGetDuplicate :: TVar Int,
+    msgGetProhibited :: TVar Int,
     msgExpired :: TVar Int,
     activeQueues :: PeriodStats RecipientId,
+    subscribedQueues :: PeriodStats RecipientId,
     msgSentNtf :: TVar Int, -- sent messages with NTF flag
     msgRecvNtf :: TVar Int, -- received messages with NTF flag
     activeQueuesNtf :: PeriodStats RecipientId,
@@ -60,16 +73,29 @@ data ServerStatsData = ServerStatsData
     _qDeletedNew :: Int,
     _qDeletedSecured :: Int,
     _qSub :: Int,
+    _qSubNoMsg :: Int,
     _qSubAuth :: Int,
     _qSubDuplicate :: Int,
     _qSubProhibited :: Int,
+    _ntfCreated :: Int,
+    _ntfDeleted :: Int,
+    _ntfSub :: Int,
+    _ntfSubAuth :: Int,
+    _ntfSubDuplicate :: Int,
     _msgSent :: Int,
     _msgSentAuth :: Int,
     _msgSentQuota :: Int,
     _msgSentLarge :: Int,
     _msgRecv :: Int,
+    _msgRecvGet :: Int,
+    _msgGet :: Int,
+    _msgGetNoMsg :: Int,
+    _msgGetAuth :: Int,
+    _msgGetDuplicate :: Int,
+    _msgGetProhibited :: Int,
     _msgExpired :: Int,
     _activeQueues :: PeriodStatsData RecipientId,
+    _subscribedQueues :: PeriodStatsData RecipientId,
     _msgSentNtf :: Int,
     _msgRecvNtf :: Int,
     _activeQueuesNtf :: PeriodStatsData RecipientId,
@@ -86,38 +112,51 @@ data ServerStatsData = ServerStatsData
   }
   deriving (Show)
 
-newServerStats :: UTCTime -> STM ServerStats
+newServerStats :: UTCTime -> IO ServerStats
 newServerStats ts = do
-  fromTime <- newTVar ts
-  qCreated <- newTVar 0
-  qSecured <- newTVar 0
-  qDeletedAll <- newTVar 0
-  qDeletedNew <- newTVar 0
-  qDeletedSecured <- newTVar 0
-  qSub <- newTVar 0
-  qSubAuth <- newTVar 0
-  qSubDuplicate <- newTVar 0
-  qSubProhibited <- newTVar 0
-  msgSent <- newTVar 0
-  msgSentAuth <- newTVar 0
-  msgSentQuota <- newTVar 0
-  msgSentLarge <- newTVar 0
-  msgRecv <- newTVar 0
-  msgExpired <- newTVar 0
+  fromTime <- newTVarIO ts
+  qCreated <- newTVarIO 0
+  qSecured <- newTVarIO 0
+  qDeletedAll <- newTVarIO 0
+  qDeletedNew <- newTVarIO 0
+  qDeletedSecured <- newTVarIO 0
+  qSub <- newTVarIO 0
+  qSubNoMsg <- newTVarIO 0
+  qSubAuth <- newTVarIO 0
+  qSubDuplicate <- newTVarIO 0
+  qSubProhibited <- newTVarIO 0
+  ntfCreated <- newTVarIO 0
+  ntfDeleted <- newTVarIO 0
+  ntfSub <- newTVarIO 0
+  ntfSubAuth <- newTVarIO 0
+  ntfSubDuplicate <- newTVarIO 0
+  msgSent <- newTVarIO 0
+  msgSentAuth <- newTVarIO 0
+  msgSentQuota <- newTVarIO 0
+  msgSentLarge <- newTVarIO 0
+  msgRecv <- newTVarIO 0
+  msgRecvGet <- newTVarIO 0
+  msgGet <- newTVarIO 0
+  msgGetNoMsg <- newTVarIO 0
+  msgGetAuth <- newTVarIO 0
+  msgGetDuplicate <- newTVarIO 0
+  msgGetProhibited <- newTVarIO 0
+  msgExpired <- newTVarIO 0
   activeQueues <- newPeriodStats
-  msgSentNtf <- newTVar 0
-  msgRecvNtf <- newTVar 0
+  subscribedQueues <- newPeriodStats
+  msgSentNtf <- newTVarIO 0
+  msgRecvNtf <- newTVarIO 0
   activeQueuesNtf <- newPeriodStats
-  msgNtfs <- newTVar 0
-  msgNtfNoSub <- newTVar 0
-  msgNtfLost <- newTVar 0
+  msgNtfs <- newTVarIO 0
+  msgNtfNoSub <- newTVarIO 0
+  msgNtfLost <- newTVarIO 0
   pRelays <- newProxyStats
   pRelaysOwn <- newProxyStats
   pMsgFwds <- newProxyStats
   pMsgFwdsOwn <- newProxyStats
-  pMsgFwdsRecv <- newTVar 0
-  qCount <- newTVar 0
-  msgCount <- newTVar 0
+  pMsgFwdsRecv <- newTVarIO 0
+  qCount <- newTVarIO 0
+  msgCount <- newTVarIO 0
   pure
     ServerStats
       { fromTime,
@@ -127,16 +166,29 @@ newServerStats ts = do
         qDeletedNew,
         qDeletedSecured,
         qSub,
+        qSubNoMsg,
         qSubAuth,
         qSubDuplicate,
         qSubProhibited,
+        ntfCreated,
+        ntfDeleted,
+        ntfSub,
+        ntfSubAuth,
+        ntfSubDuplicate,
         msgSent,
         msgSentAuth,
         msgSentQuota,
         msgSentLarge,
         msgRecv,
+        msgRecvGet,
+        msgGet,
+        msgGetNoMsg,
+        msgGetAuth,
+        msgGetDuplicate,
+        msgGetProhibited,
         msgExpired,
         activeQueues,
+        subscribedQueues,
         msgSentNtf,
         msgRecvNtf,
         activeQueuesNtf,
@@ -152,38 +204,51 @@ newServerStats ts = do
         msgCount
       }
 
-getServerStatsData :: ServerStats -> STM ServerStatsData
+getServerStatsData :: ServerStats -> IO ServerStatsData
 getServerStatsData s = do
-  _fromTime <- readTVar $ fromTime s
-  _qCreated <- readTVar $ qCreated s
-  _qSecured <- readTVar $ qSecured s
-  _qDeletedAll <- readTVar $ qDeletedAll s
-  _qDeletedNew <- readTVar $ qDeletedNew s
-  _qDeletedSecured <- readTVar $ qDeletedSecured s
-  _qSub <- readTVar $ qSub s
-  _qSubAuth <- readTVar $ qSubAuth s
-  _qSubDuplicate <- readTVar $ qSubDuplicate s
-  _qSubProhibited <- readTVar $ qSubProhibited s
-  _msgSent <- readTVar $ msgSent s
-  _msgSentAuth <- readTVar $ msgSentAuth s
-  _msgSentQuota <- readTVar $ msgSentQuota s
-  _msgSentLarge <- readTVar $ msgSentLarge s
-  _msgRecv <- readTVar $ msgRecv s
-  _msgExpired <- readTVar $ msgExpired s
+  _fromTime <- readTVarIO $ fromTime s
+  _qCreated <- readTVarIO $ qCreated s
+  _qSecured <- readTVarIO $ qSecured s
+  _qDeletedAll <- readTVarIO $ qDeletedAll s
+  _qDeletedNew <- readTVarIO $ qDeletedNew s
+  _qDeletedSecured <- readTVarIO $ qDeletedSecured s
+  _qSub <- readTVarIO $ qSub s
+  _qSubNoMsg <- readTVarIO $ qSubNoMsg s
+  _qSubAuth <- readTVarIO $ qSubAuth s
+  _qSubDuplicate <- readTVarIO $ qSubDuplicate s
+  _qSubProhibited <- readTVarIO $ qSubProhibited s
+  _ntfCreated <- readTVarIO $ ntfCreated s
+  _ntfDeleted <- readTVarIO $ ntfDeleted s
+  _ntfSub <- readTVarIO $ ntfSub s
+  _ntfSubAuth <- readTVarIO $ ntfSubAuth s
+  _ntfSubDuplicate <- readTVarIO $ ntfSubDuplicate s
+  _msgSent <- readTVarIO $ msgSent s
+  _msgSentAuth <- readTVarIO $ msgSentAuth s
+  _msgSentQuota <- readTVarIO $ msgSentQuota s
+  _msgSentLarge <- readTVarIO $ msgSentLarge s
+  _msgRecv <- readTVarIO $ msgRecv s
+  _msgRecvGet <- readTVarIO $ msgRecvGet s
+  _msgGet <- readTVarIO $ msgGet s
+  _msgGetNoMsg <- readTVarIO $ msgGetNoMsg s
+  _msgGetAuth <- readTVarIO $ msgGetAuth s
+  _msgGetDuplicate <- readTVarIO $ msgGetDuplicate s
+  _msgGetProhibited <- readTVarIO $ msgGetProhibited s
+  _msgExpired <- readTVarIO $ msgExpired s
   _activeQueues <- getPeriodStatsData $ activeQueues s
-  _msgSentNtf <- readTVar $ msgSentNtf s
-  _msgRecvNtf <- readTVar $ msgRecvNtf s
+  _subscribedQueues <- getPeriodStatsData $ subscribedQueues s
+  _msgSentNtf <- readTVarIO $ msgSentNtf s
+  _msgRecvNtf <- readTVarIO $ msgRecvNtf s
   _activeQueuesNtf <- getPeriodStatsData $ activeQueuesNtf s
-  _msgNtfs <- readTVar $ msgNtfs s
-  _msgNtfNoSub <- readTVar $ msgNtfNoSub s
-  _msgNtfLost <- readTVar $ msgNtfLost s
+  _msgNtfs <- readTVarIO $ msgNtfs s
+  _msgNtfNoSub <- readTVarIO $ msgNtfNoSub s
+  _msgNtfLost <- readTVarIO $ msgNtfLost s
   _pRelays <- getProxyStatsData $ pRelays s
   _pRelaysOwn <- getProxyStatsData $ pRelaysOwn s
   _pMsgFwds <- getProxyStatsData $ pMsgFwds s
   _pMsgFwdsOwn <- getProxyStatsData $ pMsgFwdsOwn s
-  _pMsgFwdsRecv <- readTVar $ pMsgFwdsRecv s
-  _qCount <- readTVar $ qCount s
-  _msgCount <- readTVar $ msgCount s
+  _pMsgFwdsRecv <- readTVarIO $ pMsgFwdsRecv s
+  _qCount <- readTVarIO $ qCount s
+  _msgCount <- readTVarIO $ msgCount s
   pure
     ServerStatsData
       { _fromTime,
@@ -193,16 +258,29 @@ getServerStatsData s = do
         _qDeletedNew,
         _qDeletedSecured,
         _qSub,
+        _qSubNoMsg,
         _qSubAuth,
         _qSubDuplicate,
         _qSubProhibited,
+        _ntfCreated,
+        _ntfDeleted,
+        _ntfSub,
+        _ntfSubAuth,
+        _ntfSubDuplicate,
         _msgSent,
         _msgSentAuth,
         _msgSentQuota,
         _msgSentLarge,
         _msgRecv,
+        _msgRecvGet,
+        _msgGet,
+        _msgGetNoMsg,
+        _msgGetAuth,
+        _msgGetDuplicate,
+        _msgGetProhibited,
         _msgExpired,
         _activeQueues,
+        _subscribedQueues,
         _msgSentNtf,
         _msgRecvNtf,
         _activeQueuesNtf,
@@ -227,16 +305,29 @@ setServerStats s d = do
   writeTVar (qDeletedNew s) $! _qDeletedNew d
   writeTVar (qDeletedSecured s) $! _qDeletedSecured d
   writeTVar (qSub s) $! _qSub d
+  writeTVar (qSubNoMsg s) $! _qSubNoMsg d
   writeTVar (qSubAuth s) $! _qSubAuth d
   writeTVar (qSubDuplicate s) $! _qSubDuplicate d
   writeTVar (qSubProhibited s) $! _qSubProhibited d
+  writeTVar (ntfCreated s) $! _ntfCreated d
+  writeTVar (ntfDeleted s) $! _ntfDeleted d
+  writeTVar (ntfSub s) $! _ntfSub d
+  writeTVar (ntfSubAuth s) $! _ntfSubAuth d
+  writeTVar (ntfSubDuplicate s) $! _ntfSubDuplicate d
   writeTVar (msgSent s) $! _msgSent d
   writeTVar (msgSentAuth s) $! _msgSentAuth d
   writeTVar (msgSentQuota s) $! _msgSentQuota d
   writeTVar (msgSentLarge s) $! _msgSentLarge d
   writeTVar (msgRecv s) $! _msgRecv d
+  writeTVar (msgRecvGet s) $! _msgRecvGet d
+  writeTVar (msgGet s) $! _msgGet d
+  writeTVar (msgGetNoMsg s) $! _msgGetNoMsg d
+  writeTVar (msgGetAuth s) $! _msgGetAuth d
+  writeTVar (msgGetDuplicate s) $! _msgGetDuplicate d
+  writeTVar (msgGetProhibited s) $! _msgGetProhibited d
   writeTVar (msgExpired s) $! _msgExpired d
   setPeriodStats (activeQueues s) (_activeQueues d)
+  setPeriodStats (subscribedQueues s) (_subscribedQueues d)
   writeTVar (msgSentNtf s) $! _msgSentNtf d
   writeTVar (msgRecvNtf s) $! _msgRecvNtf d
   setPeriodStats (activeQueuesNtf s) (_activeQueuesNtf d)
@@ -262,14 +353,26 @@ instance StrEncoding ServerStatsData where
         "qDeletedSecured=" <> strEncode (_qDeletedSecured d),
         "qCount=" <> strEncode (_qCount d),
         "qSub=" <> strEncode (_qSub d),
+        "qSubNoMsg=" <> strEncode (_qSubNoMsg d),
         "qSubAuth=" <> strEncode (_qSubAuth d),
         "qSubDuplicate=" <> strEncode (_qSubDuplicate d),
         "qSubProhibited=" <> strEncode (_qSubProhibited d),
+        "ntfCreated=" <> strEncode (_ntfCreated d),
+        "ntfDeleted=" <> strEncode (_ntfDeleted d),
+        "ntfSub=" <> strEncode (_ntfSub d),
+        "ntfSubAuth=" <> strEncode (_ntfSubAuth d),
+        "ntfSubDuplicate=" <> strEncode (_ntfSubDuplicate d),
         "msgSent=" <> strEncode (_msgSent d),
         "msgSentAuth=" <> strEncode (_msgSentAuth d),
         "msgSentQuota=" <> strEncode (_msgSentQuota d),
         "msgSentLarge=" <> strEncode (_msgSentLarge d),
         "msgRecv=" <> strEncode (_msgRecv d),
+        "msgRecvGet=" <> strEncode (_msgRecvGet d),
+        "msgGet=" <> strEncode (_msgGet d),
+        "msgGetNoMsg=" <> strEncode (_msgGetNoMsg d),
+        "msgGetAuth=" <> strEncode (_msgGetAuth d),
+        "msgGetDuplicate=" <> strEncode (_msgGetDuplicate d),
+        "msgGetProhibited=" <> strEncode (_msgGetProhibited d),
         "msgExpired=" <> strEncode (_msgExpired d),
         "msgSentNtf=" <> strEncode (_msgSentNtf d),
         "msgRecvNtf=" <> strEncode (_msgRecvNtf d),
@@ -278,6 +381,8 @@ instance StrEncoding ServerStatsData where
         "msgNtfLost=" <> strEncode (_msgNtfLost d),
         "activeQueues:",
         strEncode (_activeQueues d),
+        "subscribedQueues:",
+        strEncode (_subscribedQueues d),
         "activeQueuesNtf:",
         strEncode (_activeQueuesNtf d),
         "pRelays:",
@@ -299,14 +404,26 @@ instance StrEncoding ServerStatsData where
         <|> ((,,) <$> ("qDeletedAll=" *> strP <* A.endOfLine) <*> ("qDeletedNew=" *> strP <* A.endOfLine) <*> ("qDeletedSecured=" *> strP <* A.endOfLine))
     _qCount <- opt "qCount="
     _qSub <- opt "qSub="
+    _qSubNoMsg <- opt "qSubNoMsg="
     _qSubAuth <- opt "qSubAuth="
     _qSubDuplicate <- opt "qSubDuplicate="
     _qSubProhibited <- opt "qSubProhibited="
+    _ntfCreated <- opt "ntfCreated="
+    _ntfDeleted <- opt "ntfDeleted="
+    _ntfSub <- opt "ntfSub="
+    _ntfSubAuth <- opt "ntfSubAuth="
+    _ntfSubDuplicate <- opt "ntfSubDuplicate="
     _msgSent <- "msgSent=" *> strP <* A.endOfLine
     _msgSentAuth <- opt "msgSentAuth="
     _msgSentQuota <- opt "msgSentQuota="
     _msgSentLarge <- opt "msgSentLarge="
     _msgRecv <- "msgRecv=" *> strP <* A.endOfLine
+    _msgRecvGet <- opt "msgRecvGet="
+    _msgGet <- opt "msgGet="
+    _msgGetNoMsg <- opt "msgGetNoMsg="
+    _msgGetAuth <- opt "msgGetAuth="
+    _msgGetDuplicate <- opt "msgGetDuplicate="
+    _msgGetProhibited <- opt "msgGetProhibited="
     _msgExpired <- opt "msgExpired="
     _msgSentNtf <- opt "msgSentNtf="
     _msgRecvNtf <- opt "msgRecvNtf="
@@ -321,6 +438,10 @@ instance StrEncoding ServerStatsData where
           _week <- "weekMsgQueues=" *> strP <* A.endOfLine
           _month <- "monthMsgQueues=" *> strP <* optional A.endOfLine
           pure PeriodStatsData {_day, _week, _month}
+    _subscribedQueues <-
+      optional ("subscribedQueues:" <* A.endOfLine) >>= \case
+        Just _ -> strP <* optional A.endOfLine
+        _ -> pure newPeriodStatsData
     _activeQueuesNtf <-
       optional ("activeQueuesNtf:" <* A.endOfLine) >>= \case
         Just _ -> strP <* optional A.endOfLine
@@ -339,14 +460,26 @@ instance StrEncoding ServerStatsData where
           _qDeletedNew,
           _qDeletedSecured,
           _qSub,
+          _qSubNoMsg,
           _qSubAuth,
           _qSubDuplicate,
           _qSubProhibited,
+          _ntfCreated,
+          _ntfDeleted,
+          _ntfSub,
+          _ntfSubAuth,
+          _ntfSubDuplicate,
           _msgSent,
           _msgSentAuth,
           _msgSentQuota,
           _msgSentLarge,
           _msgRecv,
+          _msgRecvGet,
+          _msgGet,
+          _msgGetNoMsg,
+          _msgGetAuth,
+          _msgGetDuplicate,
+          _msgGetProhibited,
           _msgExpired,
           _msgSentNtf,
           _msgRecvNtf,
@@ -354,6 +487,7 @@ instance StrEncoding ServerStatsData where
           _msgNtfNoSub,
           _msgNtfLost,
           _activeQueues,
+          _subscribedQueues,
           _activeQueuesNtf,
           _pRelays,
           _pRelaysOwn,
@@ -376,11 +510,11 @@ data PeriodStats a = PeriodStats
     month :: TVar (Set a)
   }
 
-newPeriodStats :: STM (PeriodStats a)
+newPeriodStats :: IO (PeriodStats a)
 newPeriodStats = do
-  day <- newTVar S.empty
-  week <- newTVar S.empty
-  month <- newTVar S.empty
+  day <- newTVarIO S.empty
+  week <- newTVarIO S.empty
+  month <- newTVarIO S.empty
   pure PeriodStats {day, week, month}
 
 data PeriodStatsData a = PeriodStatsData
@@ -393,11 +527,11 @@ data PeriodStatsData a = PeriodStatsData
 newPeriodStatsData :: PeriodStatsData a
 newPeriodStatsData = PeriodStatsData {_day = S.empty, _week = S.empty, _month = S.empty}
 
-getPeriodStatsData :: PeriodStats a -> STM (PeriodStatsData a)
+getPeriodStatsData :: PeriodStats a -> IO (PeriodStatsData a)
 getPeriodStatsData s = do
-  _day <- readTVar $ day s
-  _week <- readTVar $ week s
-  _month <- readTVar $ month s
+  _day <- readTVarIO $ day s
+  _week <- readTVarIO $ week s
+  _month <- readTVarIO $ month s
   pure PeriodStatsData {_day, _week, _month}
 
 setPeriodStats :: PeriodStats a -> PeriodStatsData a -> STM ()
@@ -451,13 +585,13 @@ data ProxyStats = ProxyStats
     pErrorsOther :: TVar Int
   }
 
-newProxyStats :: STM ProxyStats
+newProxyStats :: IO ProxyStats
 newProxyStats = do
-  pRequests <- newTVar 0
-  pSuccesses <- newTVar 0
-  pErrorsConnect <- newTVar 0
-  pErrorsCompat <- newTVar 0
-  pErrorsOther <- newTVar 0
+  pRequests <- newTVarIO 0
+  pSuccesses <- newTVarIO 0
+  pErrorsConnect <- newTVarIO 0
+  pErrorsCompat <- newTVarIO 0
+  pErrorsOther <- newTVarIO 0
   pure ProxyStats {pRequests, pSuccesses, pErrorsConnect, pErrorsCompat, pErrorsOther}
 
 data ProxyStatsData = ProxyStatsData
@@ -472,13 +606,13 @@ data ProxyStatsData = ProxyStatsData
 newProxyStatsData :: ProxyStatsData
 newProxyStatsData = ProxyStatsData {_pRequests = 0, _pSuccesses = 0, _pErrorsConnect = 0, _pErrorsCompat = 0, _pErrorsOther = 0}
 
-getProxyStatsData :: ProxyStats -> STM ProxyStatsData
+getProxyStatsData :: ProxyStats -> IO ProxyStatsData
 getProxyStatsData s = do
-  _pRequests <- readTVar $ pRequests s
-  _pSuccesses <- readTVar $ pSuccesses s
-  _pErrorsConnect <- readTVar $ pErrorsConnect s
-  _pErrorsCompat <- readTVar $ pErrorsCompat s
-  _pErrorsOther <- readTVar $ pErrorsOther s
+  _pRequests <- readTVarIO $ pRequests s
+  _pSuccesses <- readTVarIO $ pSuccesses s
+  _pErrorsConnect <- readTVarIO $ pErrorsConnect s
+  _pErrorsCompat <- readTVarIO $ pErrorsCompat s
+  _pErrorsOther <- readTVarIO $ pErrorsOther s
   pure ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther}
 
 getResetProxyStatsData :: ProxyStats -> STM ProxyStatsData

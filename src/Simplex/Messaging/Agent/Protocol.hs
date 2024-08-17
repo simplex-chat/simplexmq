@@ -42,6 +42,7 @@ module Simplex.Messaging.Agent.Protocol
     deliveryRcptsSMPAgentVersion,
     pqdrSMPAgentVersion,
     sndAuthKeySMPAgentVersion,
+    ratchetOnConfSMPAgentVersion,
     currentSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
@@ -49,6 +50,7 @@ module Simplex.Messaging.Agent.Protocol
 
     -- * SMP agent protocol types
     ConnInfo,
+    SndQueueSecured,
     ACommand (..),
     AEvent (..),
     AEvt (..),
@@ -153,8 +155,8 @@ import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Map (Map)
-import qualified Data.Map as M
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -257,11 +259,14 @@ pqdrSMPAgentVersion = VersionSMPA 5
 sndAuthKeySMPAgentVersion :: VersionSMPA
 sndAuthKeySMPAgentVersion = VersionSMPA 6
 
+ratchetOnConfSMPAgentVersion :: VersionSMPA
+ratchetOnConfSMPAgentVersion = VersionSMPA 7
+
 minSupportedSMPAgentVersion :: VersionSMPA
 minSupportedSMPAgentVersion = duplexHandshakeSMPAgentVersion
 
 currentSMPAgentVersion :: VersionSMPA
-currentSMPAgentVersion = VersionSMPA 6
+currentSMPAgentVersion = VersionSMPA 7
 
 supportedSMPAgentVRange :: VersionRangeSMPA
 supportedSMPAgentVRange = mkVersionRange minSupportedSMPAgentVersion currentSMPAgentVersion
@@ -327,6 +332,8 @@ deriving instance Show AEvt
 
 type ConnInfo = ByteString
 
+type SndQueueSecured = Bool
+
 -- | Parameterized type for SMP agent events
 data AEvent (e :: AEntity) where
   INV :: AConnectionRequestUri -> AEvent AEConn
@@ -354,6 +361,7 @@ data AEvent (e :: AEntity) where
   DEL_USER :: Int64 -> AEvent AENone
   STAT :: ConnectionStats -> AEvent AEConn
   OK :: AEvent AEConn
+  JOINED :: SndQueueSecured -> AEvent AEConn
   ERR :: AgentErrorType -> AEvent AEConn
   SUSPENDED :: AEvent AENone
   RFPROG :: Int64 -> Int64 -> AEvent AERcvFile
@@ -422,6 +430,7 @@ data AEventTag (e :: AEntity) where
   DEL_USER_ :: AEventTag AENone
   STAT_ :: AEventTag AEConn
   OK_ :: AEventTag AEConn
+  JOINED_ :: AEventTag AEConn
   ERR_ :: AEventTag AEConn
   SUSPENDED_ :: AEventTag AENone
   -- XFTP commands and responses
@@ -474,6 +483,7 @@ aEventTag = \case
   DEL_USER _ -> DEL_USER_
   STAT _ -> STAT_
   OK -> OK_
+  JOINED _ -> JOINED_
   ERR _ -> ERR_
   SUSPENDED -> SUSPENDED_
   RFPROG {} -> RFPROG_

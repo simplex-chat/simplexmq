@@ -51,7 +51,7 @@ import Data.ByteArray (ScrubbedBytes)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
-import Data.Map (Map)
+import Data.Map.Strict (Map)
 import Data.Maybe (fromMaybe)
 import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Data.Time.Clock.System (SystemTime (..))
@@ -148,10 +148,7 @@ data AgentConfig = AgentConfig
     xftpMaxRecipientsPerRequest :: Int,
     deleteErrorCount :: Int,
     ntfCron :: Word16,
-    ntfWorkerDelay :: Int,
-    ntfSMPWorkerDelay :: Int,
     ntfSubCheckInterval :: NominalDiffTime,
-    ntfMaxMessages :: Int,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
@@ -165,7 +162,7 @@ defaultReconnectInterval =
   RetryInterval
     { initialInterval = 2_000000,
       increaseAfter = 10_000000,
-      maxInterval = 60_000000
+      maxInterval = 180_000000
     }
 
 defaultMessageRetryInterval :: RetryInterval2
@@ -175,7 +172,7 @@ defaultMessageRetryInterval =
         RetryInterval
           { initialInterval = 2_000000,
             increaseAfter = 10_000000,
-            maxInterval = 60_000000
+            maxInterval = 120_000000
           },
       riSlow =
         RetryInterval
@@ -220,10 +217,7 @@ defaultAgentConfig =
       xftpMaxRecipientsPerRequest = 200,
       deleteErrorCount = 10,
       ntfCron = 20, -- minutes
-      ntfWorkerDelay = 100000, -- microseconds
-      ntfSMPWorkerDelay = 500000, -- microseconds
       ntfSubCheckInterval = nominalDay,
-      ntfMaxMessages = 3,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
@@ -248,8 +242,8 @@ newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
 newSMPAgentEnv config store = do
   random <- C.newRandom
   randomServer <- newTVarIO =<< liftIO newStdGen
-  ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
-  xftpAgent <- atomically newXFTPAgent
+  ntfSupervisor <- newNtfSubSupervisor $ tbqSize config
+  xftpAgent <- newXFTPAgent
   multicastSubscribers <- newTMVarIO 0
   pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
 
@@ -266,12 +260,12 @@ data NtfSupervisor = NtfSupervisor
 data NtfSupervisorCommand = NSCCreate | NSCDelete | NSCSmpDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer
   deriving (Show)
 
-newNtfSubSupervisor :: Natural -> STM NtfSupervisor
+newNtfSubSupervisor :: Natural -> IO NtfSupervisor
 newNtfSubSupervisor qSize = do
-  ntfTkn <- newTVar Nothing
-  ntfSubQ <- newTBQueue qSize
-  ntfWorkers <- TM.empty
-  ntfSMPWorkers <- TM.empty
+  ntfTkn <- newTVarIO Nothing
+  ntfSubQ <- newTBQueueIO qSize
+  ntfWorkers <- TM.emptyIO
+  ntfSMPWorkers <- TM.emptyIO
   pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
 
 data XFTPAgent = XFTPAgent
@@ -282,12 +276,12 @@ data XFTPAgent = XFTPAgent
     xftpDelWorkers :: TMap XFTPServer Worker
   }
 
-newXFTPAgent :: STM XFTPAgent
+newXFTPAgent :: IO XFTPAgent
 newXFTPAgent = do
-  xftpWorkDir <- newTVar Nothing
-  xftpRcvWorkers <- TM.empty
-  xftpSndWorkers <- TM.empty
-  xftpDelWorkers <- TM.empty
+  xftpWorkDir <- newTVarIO Nothing
+  xftpRcvWorkers <- TM.emptyIO
+  xftpSndWorkers <- TM.emptyIO
+  xftpDelWorkers <- TM.emptyIO
   pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}
 
 tryAgentError :: AM a -> AM (Either AgentErrorType a)

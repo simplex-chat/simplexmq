@@ -11,7 +11,7 @@ import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time (UTCTime)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
-import Simplex.Messaging.Agent.Protocol (ConnId, NotificationsMode (..))
+import Simplex.Messaging.Agent.Protocol (ConnId, NotificationsMode (..), UserId)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
@@ -48,6 +48,7 @@ data NtfToken = NtfToken
     ntfServer :: NtfServer,
     ntfTokenId :: Maybe NtfTokenId,
     -- TODO combine keys to key pair as the types should match
+
     -- | key used by the ntf server to verify transmissions
     ntfPubKey :: C.APublicAuthKey,
     -- | key used by the ntf client to sign transmissions
@@ -79,17 +80,17 @@ newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys ntfMode =
       ntfMode
     }
 
-data NtfSubAction = NtfSubNTFAction NtfSubNTFAction | NtfSubSMPAction NtfSubSMPAction
+data NtfSubAction = NSANtf NtfSubNTFAction | NSASMP NtfSubSMPAction
   deriving (Show)
 
 isDeleteNtfSubAction :: NtfSubAction -> Bool
 isDeleteNtfSubAction = \case
-  NtfSubNTFAction a -> case a of
+  NSANtf a -> case a of
     NSACreate -> False
     NSACheck -> False
     NSADelete -> True
     NSARotate -> True
-  NtfSubSMPAction a -> case a of
+  NSASMP a -> case a of
     NSASmpKey -> False
     NSASmpDelete -> True
 
@@ -177,7 +178,8 @@ instance FromField NtfAgentSubStatus where fromField = fromTextField_ $ either (
 instance ToField NtfAgentSubStatus where toField = toField . decodeLatin1 . smpEncode
 
 data NtfSubscription = NtfSubscription
-  { connId :: ConnId,
+  { userId :: UserId,
+    connId :: ConnId,
     smpServer :: SMPServer,
     ntfQueueId :: Maybe NotifierId,
     ntfServer :: NtfServer,
@@ -186,10 +188,11 @@ data NtfSubscription = NtfSubscription
   }
   deriving (Show)
 
-newNtfSubscription :: ConnId -> SMPServer -> Maybe NotifierId -> NtfServer -> NtfAgentSubStatus -> NtfSubscription
-newNtfSubscription connId smpServer ntfQueueId ntfServer ntfSubStatus =
+newNtfSubscription :: UserId -> ConnId -> SMPServer -> Maybe NotifierId -> NtfServer -> NtfAgentSubStatus -> NtfSubscription
+newNtfSubscription userId connId smpServer ntfQueueId ntfServer ntfSubStatus =
   NtfSubscription
-    { connId,
+    { userId,
+      connId,
       smpServer,
       ntfQueueId,
       ntfServer,
