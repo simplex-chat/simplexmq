@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent.Env.SQLite
   )
 where
 
+import Control.Concurrent (ThreadId)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
@@ -76,8 +77,9 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion, TLS, Transport (..))
 import Simplex.Messaging.Transport.Client (defaultSMPPort)
 import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryAllErrors, tryAllErrors')
+import System.Mem.Weak (Weak)
 import System.Random (StdGen, newStdGen)
-import UnliftIO (Async, SomeException)
+import UnliftIO (SomeException)
 import UnliftIO.STM
 
 type AM' a = ReaderT Env IO a
@@ -312,7 +314,7 @@ mkInternal = INTERNAL . show
 data Worker = Worker
   { workerId :: Int,
     doWork :: TMVar (),
-    action :: TMVar (Maybe (Async ())),
+    action :: TMVar (Maybe (Weak ThreadId)),
     restarts :: TVar RestartCount
   }
 
