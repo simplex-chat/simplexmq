@@ -25,6 +25,7 @@ import Simplex.Messaging.Transport
     withTlsUnique,
   )
 import Simplex.Messaging.Transport.Buffer (trimCR)
+import System.IO.Error (isEOFError)
 
 data WS = WS
   { wsPeer :: TransportPeer,
@@ -108,9 +109,11 @@ makeTLSContextStream cxt =
   S.makeStream readStream writeStream
   where
     readStream :: IO (Maybe ByteString)
-    readStream =
-      (Just <$> T.recvData cxt) `E.catch` \case
-        T.Error_EOF -> pure Nothing
-        e -> E.throwIO e
+    readStream = (Just <$> T.recvData cxt) `E.catches` [E.Handler handleTlsEOF, E.Handler handleEOF]
+      where
+        handleTlsEOF = \case
+          T.PostHandshake T.Error_EOF -> pure Nothing
+          e -> E.throwIO e
+        handleEOF e = if isEOFError e then pure Nothing else E.throwIO e
     writeStream :: Maybe LB.ByteString -> IO ()
     writeStream = maybe (closeTLS cxt) (T.sendData cxt)
