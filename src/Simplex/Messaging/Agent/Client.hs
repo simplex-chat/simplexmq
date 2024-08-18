@@ -928,7 +928,6 @@ exitWhenNoMessages c sq doWork =
     E.throwIO ThreadKilled
   where
     removeWorker = TM.delete (qAddress sq) (smpDeliveryWorkers c)
-    hasWorker = TM.memberIO (qAddress sq) $ smpDeliveryWorkers c
 
 closeProtocolServerClients :: ProtocolServerClient v err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
 closeProtocolServerClients c clientsSel =
