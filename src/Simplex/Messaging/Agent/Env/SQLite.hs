@@ -79,7 +79,7 @@ import Simplex.Messaging.Transport.Client (defaultSMPPort)
 import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryAllErrors, tryAllErrors')
 import System.Mem.Weak (Weak)
 import System.Random (StdGen, newStdGen)
-import UnliftIO (Async, SomeException)
+import UnliftIO (SomeException)
 import UnliftIO.STM
 
 type AM' a = ReaderT Env IO a
