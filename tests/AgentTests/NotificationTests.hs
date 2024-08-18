@@ -118,7 +118,7 @@ notificationTests t = do
     it "should fail with incorrect fingerprint" $ do
       testRunNTFServerTests t srv1 `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
   describe "Managing notification subscriptions" $ do
-    describe "should create notification subscription for existing connection" $
+    fdescribe "should create notification subscription for existing connection" $
       testNtfMatrix t testNotificationSubscriptionExistingConnection
     describe "should create notification subscription for new connection" $
       testNtfMatrix t testNotificationSubscriptionNewConnection
@@ -508,6 +508,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} baseId ali
   suspendAgent alice 0
   closeSQLiteStore store
   threadDelay 1000000
+  print "before opening the database from another agent"
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
   withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> runRight_ $ do
@@ -515,6 +516,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} baseId ali
     pure ()
 
   threadDelay 1000000
+  print "after closing the database in another agent"
   reopenSQLiteStore store
   foregroundAgent alice
   threadDelay 500000
