@@ -1008,7 +1008,7 @@ subscribeConnections' c connIds = do
     resumeDelivery :: Map ConnId SomeConn -> AM ()
     resumeDelivery conns = do
       conns' <- M.restrictKeys conns . S.fromList <$> withStore' c getConnectionsForDelivery
-      mapM_ (mapM_ (\(cData, sqs) -> mapM_ (lift . resumeMsgDelivery c cData) sqs) . sndQueue) conns'
+      lift $ mapM_ (mapM_ (\(cData, sqs) -> mapM_ (resumeMsgDelivery c cData) sqs) . sndQueue) conns'
     sndQueue :: SomeConn -> Maybe (ConnData, NonEmpty SndQueue)
     sndQueue (SomeConn _ conn) = case conn of
       DuplexConnection cData _ sqs -> Just (cData, sqs)
