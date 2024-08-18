@@ -959,7 +959,7 @@ subscribeConnections' c connIds = do
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
       (subRs, rcvQs) = M.mapEither rcvQueueOrResult cs
-  mapM_ (mapM_ (\(cData, sqs) -> mapM_ (lift . resumeMsgDelivery c cData) sqs) . sndQueue) cs
+  resumeDelivery cs
   lift $ resumeConnCmds c $ M.keys cs
   rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concat $ M.elems rcvQs)
   ns <- asks ntfSupervisor
@@ -1005,6 +1005,10 @@ subscribeConnections' c connIds = do
             atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)
           _ -> pure ()
         _ -> pure ()
+    resumeDelivery :: Map ConnId SomeConn -> AM ()
+    resumeDelivery conns = do
+      conns' <- M.restrictKeys conns . S.fromList <$> withStore' c getConnectionsForDelivery
+      mapM_ (mapM_ (\(cData, sqs) -> mapM_ (lift . resumeMsgDelivery c cData) sqs) . sndQueue) conns'
     sndQueue :: SomeConn -> Maybe (ConnData, NonEmpty SndQueue)
     sndQueue (SomeConn _ conn) = case conn of
       DuplexConnection cData _ sqs -> Just (cData, sqs)
@@ -1360,7 +1364,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
   AgentConfig {messageRetryInterval = ri, messageTimeout, helloTimeout, quotaExceededTimeout} <- asks config
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
-    lift $ waitForWork doWork
+    liftIO $ exitWhenNoMessages c sq doWork
     liftIO $ throwWhenInactive c
     liftIO $ throwWhenNoDelivery c sq
     atomically $ beginAgentOperation c AOSndNetwork

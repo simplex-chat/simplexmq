@@ -124,6 +124,7 @@ module Simplex.Messaging.Agent.Client
     isOnline,
     throwWhenInactive,
     throwWhenNoDelivery,
+    exitWhenNoMessages,
     beginAgentOperation,
     endAgentOperation,
     waitUntilForeground,
@@ -920,6 +921,13 @@ throwWhenNoDelivery :: AgentClient -> SndQueue -> IO ()
 throwWhenNoDelivery c sq =
   unlessM (TM.memberIO (qAddress sq) $ smpDeliveryWorkers c) $
     E.throwIO ThreadKilled
+
+exitWhenNoMessages :: AgentClient -> SndQueue -> TMVar () -> IO ()
+exitWhenNoMessages c sq doWork =
+  whenM (atomically $ tryReadTMVar doWork >>= maybe (removeWorker $> True) (const $ pure False)) $
+    E.throwIO ThreadKilled
+  where
+    removeWorker = TM.delete (qAddress sq) (smpDeliveryWorkers c)
 
 closeProtocolServerClients :: ProtocolServerClient v err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
 closeProtocolServerClients c clientsSel =
