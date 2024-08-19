@@ -57,6 +57,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getDeletedConns,
     getConnData,
     setConnDeleted,
+    setConnUserId,
     setConnAgentVersion,
     setConnPQSupport,
     getDeletedConnIds,
@@ -1975,6 +1976,13 @@ setConnDeleted db waitDelivery connId
       DB.execute db "UPDATE connections SET deleted_at_wait_delivery = ? WHERE conn_id = ?" (currentTs, connId)
   | otherwise =
       DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
+
+setConnUserId :: DB.Connection -> UserId -> ConnId -> UserId -> IO (Either StoreError ())
+setConnUserId db oldUserId connId newUserId = getConn db connId $>>= \case
+    (SomeConn _ NewConnection {}) -> do
+      DB.execute db "UPDATE connections SET user_id = ? WHERE conn_id = ? and user_id = ?" (newUserId, connId, oldUserId)
+      return $ Right ()
+    (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
 
 setConnAgentVersion :: DB.Connection -> ConnId -> VersionSMPA -> IO ()
 setConnAgentVersion db connId aVersion =

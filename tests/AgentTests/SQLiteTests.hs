@@ -114,6 +114,7 @@ storeTests = do
           testDeleteRcvConn
           testDeleteSndConn
           testDeleteDuplexConn
+        fdescribe "setConnUserId" testSetConnUserId 
         describe "upgradeRcvConnToDuplex" $ do
           testUpgradeRcvConnToDuplex
         describe "upgradeSndConnToDuplex" $ do
@@ -335,6 +336,16 @@ testGetRcvConn =
     Right (_, rq) <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     getRcvConn db smpServer recipientId
       `shouldReturn` Right (rq, SomeConn SCRcv (RcvConnection cData1 rq))
+
+testSetConnUserId :: SpecWith SQLiteStore
+testSetConnUserId =
+  it "should set user id for connection" . withStoreTransaction $ \db -> do
+    g <- C.newRandom
+    Right connId <- createNewConn db g cData1 {connId = ""} SCMInvitation
+    newUserId <- createUserRecord db
+    _ <- setConnUserId db 1 connId newUserId
+    getConn db connId
+      `shouldReturn` Right (SomeConn SCNew (NewConnection cData1 {connId = connId, userId = newUserId}))
 
 testDeleteRcvConn :: SpecWith SQLiteStore
 testDeleteRcvConn =

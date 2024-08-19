@@ -334,6 +334,11 @@ createConnection :: AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe 
 createConnection c userId enableNtfs = withAgentEnv c .:: newConn c userId "" enableNtfs
 {-# INLINE createConnection #-}
 
+-- | Changes the user id associated with a connection 
+updateConnectionUserId :: AgentClient -> UserId -> ConnId -> UserId -> AE ()
+updateConnectionUserId c oldUserId connId newUserId = withAgentEnv c $ updateConnUserId c oldUserId connId newUserId
+{-# INLINE updateConnectionUserId #-}
+
 -- | Create SMP agent connection without queue (to be joined with joinConnection passing connection ID).
 -- This method is required to prevent race condition when confirmation from peer is received before
 -- the caller of joinConnection saves connection ID to the database.
@@ -741,6 +746,9 @@ switchConnectionAsync' c corrId connId =
 newConn :: AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AM (ConnId, ConnectionRequestUri c)
 newConn c userId connId enableNtfs cMode clientData pqInitKeys subMode =
   getSMPServer c userId >>= newConnSrv c userId connId False enableNtfs cMode clientData pqInitKeys subMode
+
+updateConnUserId :: AgentClient -> UserId -> ConnId -> UserId -> AM ()
+updateConnUserId c oldUserId connId newUserId = withStore c $ \db -> setConnUserId db oldUserId connId newUserId
 
 newConnSrv :: AgentClient -> UserId -> ConnId -> Bool -> Bool -> SConnectionMode c -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> SMPServerWithAuth -> AM (ConnId, ConnectionRequestUri c)
 newConnSrv c userId connId hasNewConn enableNtfs cMode clientData pqInitKeys subMode srv = do
