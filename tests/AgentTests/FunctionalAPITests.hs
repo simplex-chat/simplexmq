@@ -920,7 +920,7 @@ testUpdateConnectionUserId =
   withAgentClients2 $ \alice bob -> runRight_ $ do
     (connId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
     newUserId <- createUser alice [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
-    _ <- A.updateConnectionUserId alice 1 connId newUserId
+    _ <- changeConnectionUser alice 1 connId newUserId
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
     (aliceId', sqSecured') <- A.joinConnection bob 1 (Just aliceId) True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ do

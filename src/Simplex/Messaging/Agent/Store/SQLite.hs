@@ -1977,16 +1977,9 @@ setConnDeleted db waitDelivery connId
   | otherwise =
       DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
 
-setConnUserId :: DB.Connection -> UserId -> ConnId -> UserId -> IO (Either StoreError ())
-setConnUserId db oldUserId connId newUserId = getConn db connId $>>= \case
-    (SomeConn _ NewConnection {}) -> updateConn
-    (SomeConn _ RcvConnection {}) -> updateConn
-    (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
-  where
-    updateConn :: IO (Either StoreError ())
-    updateConn = do 
-      DB.execute db "UPDATE connections SET user_id = ? WHERE conn_id = ? and user_id = ?" (newUserId, connId, oldUserId)
-      pure $ Right ()
+setConnUserId :: DB.Connection -> UserId -> ConnId -> UserId -> IO ()
+setConnUserId db oldUserId connId newUserId = 
+  DB.execute db "UPDATE connections SET user_id = ? WHERE conn_id = ? and user_id = ?" (newUserId, connId, oldUserId)
 
 setConnAgentVersion :: DB.Connection -> ConnId -> VersionSMPA -> IO ()
 setConnAgentVersion db connId aVersion =

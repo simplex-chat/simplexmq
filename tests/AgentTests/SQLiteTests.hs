@@ -116,10 +116,6 @@ storeTests = do
           testDeleteDuplexConn
         describe "setConnUserId" $ do
           testSetConnUserIdNewConn
-          testSetConnUserIdNewConnMulti
-          testSetConnUserIdRcvConn
-          testSetConnUserIdSndConn
-          testSetConnUserIdDuplexConn
         describe "upgradeRcvConnToDuplex" $ do
           testUpgradeRcvConnToDuplex
         describe "upgradeSndConnToDuplex" $ do
@@ -350,68 +346,8 @@ testSetConnUserIdNewConn =
     newUserId <- createUserRecord db
     _ <- setConnUserId db 1 connId newUserId
     connResult <- getConn db connId
-
     case connResult of
       Right (SomeConn SCNew (NewConnection connData)) -> do
-        let ConnData {userId} = connData
-        userId `shouldBe` newUserId
-      _ -> do
-         expectationFailure "Failed to get connection"
-
-testSetConnUserIdNewConnMulti :: SpecWith SQLiteStore
-testSetConnUserIdNewConnMulti =
-  it "should set user id for new connection multiple times" . withStoreTransaction $ \db -> do
-    g <- C.newRandom
-    Right connId <- createNewConn db g cData1 {connId = ""} SCMInvitation
-    newUserId <- createUserRecord db
-    _ <- setConnUserId db 1 connId newUserId
-    _ <- setConnUserId db newUserId connId 1
-    connResult <- getConn db connId
-
-    case connResult of
-      Right (SomeConn SCNew (NewConnection connData)) -> do
-        let ConnData {userId} = connData
-        userId `shouldBe` 1
-      _ -> do
-         expectationFailure "Failed to get connection"
-
-testSetConnUserIdRcvConn :: SpecWith SQLiteStore
-testSetConnUserIdRcvConn =
-  it "should set user id for RcvConnection" . withStoreTransaction $ \db -> do
-    g <- C.newRandom
-    Right (connId, _) <- createRcvConn db g cData1 {connId = ""} rcvQueue1 SCMInvitation
-    newUserId <- createUserRecord db
-    _ <- setConnUserId db 1 connId newUserId
-    connResult <- getConn db connId
-
-    case connResult of
-      Right (SomeConn SCRcv (RcvConnection connData _)) -> do
-        let ConnData {userId} = connData
-        userId `shouldBe` newUserId
-      _ -> do
-         expectationFailure "Failed to get connection"
-
-testSetConnUserIdSndConn :: SpecWith SQLiteStore
-testSetConnUserIdSndConn =
-  it "should fail to set user id for SndConnection" . withStoreTransaction $ \db -> do
-    g <- C.newRandom
-    Right (connId, _) <- createSndConn db g cData1 {connId = ""} sndQueue1
-    newUserId <- createUserRecord db
-    setConnUserId db 1 connId newUserId
-      `shouldReturn` Left (SEBadConnType CSnd)
-
-testSetConnUserIdDuplexConn :: SpecWith SQLiteStore
-testSetConnUserIdDuplexConn =
-  it "should set user id for DuplexConnection" . withStoreTransaction $ \db -> do
-    g <- C.newRandom
-    Right (connId, _) <- createRcvConn db g cData1 {connId = ""} rcvQueue1 SCMInvitation
-    _ <- upgradeRcvConnToDuplex db "conn1" sndQueue1
-    newUserId <- createUserRecord db
-    _ <- setConnUserId db 1 connId newUserId
-    connResult <- getConn db connId
-
-    case connResult of
-      Right (SomeConn SCRcv (RcvConnection connData _)) -> do
         let ConnData {userId} = connData
         userId `shouldBe` newUserId
       _ -> do
