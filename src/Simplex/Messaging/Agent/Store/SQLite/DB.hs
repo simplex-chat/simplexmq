@@ -43,7 +43,7 @@ data SlowQueryStats = SlowQueryStats
   { count :: Int64,
     timeMax :: Int64,
     timeAvg :: Int64,
-    errs :: (Map Text Int)
+    errs :: Map Text Int
   }
   deriving (Show)
 
@@ -51,7 +51,7 @@ timeIt :: TMap Query SlowQueryStats -> Query -> IO a -> IO a
 timeIt slow sql a = do
   t <- getCurrentTime
   r <- a `catch` \e -> do
-    atomically (TM.alter (Just . updateQueryErrors e) sql slow)
+    atomically $ TM.alter (Just . updateQueryErrors e) sql slow
     throwIO e
   t' <- getCurrentTime
   let diff = diffToMicroseconds $ diffUTCTime t' t
