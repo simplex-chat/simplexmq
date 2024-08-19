@@ -114,7 +114,7 @@ storeTests = do
           testDeleteRcvConn
           testDeleteSndConn
           testDeleteDuplexConn
-        fdescribe "setConnUserId" $ do
+        describe "setConnUserId" $ do
           testSetConnUserIdNewConn
           testSetConnUserIdNewConnMulti
           testSetConnUserIdRcvConn

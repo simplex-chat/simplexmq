@@ -25,5 +25,5 @@ agentTests (ATransport t) = do
   describe "Double ratchet tests" doubleRatchetTests
   describe "Functional API" $ functionalAPITests (ATransport t)
   describe "Notification tests" $ notificationTests (ATransport t)
-  fdescribe "SQLite store" storeTests
+  describe "SQLite store" storeTests
   describe "Migration tests" migrationTests
