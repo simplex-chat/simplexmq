@@ -53,6 +53,7 @@ module Simplex.Messaging.Agent
     deleteConnectionAsync,
     deleteConnectionsAsync,
     createConnection,
+    updateConnectionUserId,
     prepareConnectionToJoin,
     joinConnection,
     allowConnection,

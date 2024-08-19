@@ -283,6 +283,9 @@ functionalAPITests t = do
     testPQMatrix3 t $ runAgentClientContactTestPQ3 True
   it "should support rejecting contact request" $
     withSmpServer t testRejectContactRequest
+  fdescribe "Changing connection user id" $ do
+    it "should change user id for new connections" $ do
+      withSmpServer t testUpdateConnectionUserId
   describe "Establishing connection asynchronously" $ do
     it "should connect with initiating client going offline" $
       withSmpServer t testAsyncInitiatingOffline
