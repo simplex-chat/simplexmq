@@ -32,7 +32,7 @@ import qualified Database.SQLite.Simple as SQL
 import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (diffToMilliseconds, tshow)
+import Simplex.Messaging.Util (diffToMicroseconds, tshow)
 
 data Connection = Connection
   { conn :: SQL.Connection,
@@ -50,11 +50,11 @@ data SlowQueryStats = SlowQueryStats
 timeIt :: TMap Query SlowQueryStats -> Query -> IO a -> IO a
 timeIt slow sql a = do
   t <- getCurrentTime
-  r <-
-    a `catch` \e ->
-      atomically (TM.alter (Just . updateQueryErrors e) sql slow) >> throwIO e
+  r <- a `catch` \e -> do
+    atomically (TM.alter (Just . updateQueryErrors e) sql slow)
+    throwIO e
   t' <- getCurrentTime
-  let diff = diffToMilliseconds $ diffUTCTime t' t
+  let diff = diffToMicroseconds $ diffUTCTime t' t
   atomically $ TM.alter (updateQueryStats diff) sql slow
   pure r
   where
