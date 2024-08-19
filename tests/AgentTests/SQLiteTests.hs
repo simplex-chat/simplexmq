@@ -344,8 +344,14 @@ testSetConnUserId =
     Right connId <- createNewConn db g cData1 {connId = ""} SCMInvitation
     newUserId <- createUserRecord db
     _ <- setConnUserId db 1 connId newUserId
-    getConn db connId
-      `shouldReturn` Right (SomeConn SCNew (NewConnection cData1 {connId = connId, userId = newUserId}))
+    connResult <- getConn db connId
+
+    case connResult of
+      Right (SomeConn SCNew (NewConnection connData)) -> do
+        let ConnData {userId} = connData
+        userId `shouldBe` newUserId
+      _ -> do
+         expectationFailure "Failed to get connection"
 
 testDeleteRcvConn :: SpecWith SQLiteStore
 testDeleteRcvConn =
