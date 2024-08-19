@@ -377,12 +377,19 @@ testSetConnUserIdNewConnMulti =
 
 testSetConnUserIdRcvConn :: SpecWith SQLiteStore
 testSetConnUserIdRcvConn =
-  it "should fail to set user id for RcvConnection" . withStoreTransaction $ \db -> do
+  it "should set user id for RcvConnection" . withStoreTransaction $ \db -> do
     g <- C.newRandom
     Right (connId, _) <- createRcvConn db g cData1 {connId = ""} rcvQueue1 SCMInvitation
     newUserId <- createUserRecord db
-    setConnUserId db 1 connId newUserId
-      `shouldReturn` Left (SEBadConnType CRcv)
+    _ <- setConnUserId db 1 connId newUserId
+    connResult <- getConn db connId
+
+    case connResult of
+      Right (SomeConn SCRcv (RcvConnection connData _)) -> do
+        let ConnData {userId} = connData
+        userId `shouldBe` newUserId
+      _ -> do
+         expectationFailure "Failed to get connection"
 
 testSetConnUserIdSndConn :: SpecWith SQLiteStore
 testSetConnUserIdSndConn =
@@ -395,13 +402,20 @@ testSetConnUserIdSndConn =
 
 testSetConnUserIdDuplexConn :: SpecWith SQLiteStore
 testSetConnUserIdDuplexConn =
-  it "should fail to set user id for DuplexConnection" . withStoreTransaction $ \db -> do
+  it "should set user id for DuplexConnection" . withStoreTransaction $ \db -> do
     g <- C.newRandom
     Right (connId, _) <- createRcvConn db g cData1 {connId = ""} rcvQueue1 SCMInvitation
     _ <- upgradeRcvConnToDuplex db "conn1" sndQueue1
     newUserId <- createUserRecord db
-    setConnUserId db 1 connId newUserId
-      `shouldReturn` Left (SEBadConnType CRcv)
+    _ <- setConnUserId db 1 connId newUserId
+    connResult <- getConn db connId
+
+    case connResult of
+      Right (SomeConn SCRcv (RcvConnection connData _)) -> do
+        let ConnData {userId} = connData
+        userId `shouldBe` newUserId
+      _ -> do
+         expectationFailure "Failed to get connection"
 
 testDeleteRcvConn :: SpecWith SQLiteStore
 testDeleteRcvConn =
