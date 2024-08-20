@@ -81,12 +81,14 @@ logAckFile s = logFileStoreRecord s . AckFile
 
 readWriteFileStore :: FilePath -> FileStore -> IO (StoreLog 'WriteMode)
 readWriteFileStore f st = do
-  whenM (doesFileExist f) $ do
-    readFileStore f st
-    renameFile f $ f <> ".bak"
-  s <- openWriteStoreLog f
+  whenM (doesFileExist f) $ readFileStore f st
+  s <- openWriteStoreLog (f <> ".new")
   writeFileStore s st
-  pure s
+  closeStoreLog s
+  whenM (doesFileExist f) $ renameFile f (f <> ".bak")
+  renameFile (f <> ".new") f
+  s' <- openWriteStoreLog f
+  pure s'
 
 readFileStore :: FilePath -> FileStore -> IO ()
 readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f
