@@ -1013,7 +1013,7 @@ subscribeConnections' c connIds = do
         SomeConn _ conn -> do
           let cmd = if enableNtfs $ toConnData conn then NSCCreate else NSCDelete
               ConnData {connId} = toConnData conn
-          atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)            
+          atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)
     resumeDelivery :: Map ConnId SomeConn -> AM ()
     resumeDelivery conns = do
       conns' <- M.restrictKeys conns . S.fromList <$> withStore' c getConnectionsForDelivery
@@ -1096,8 +1096,8 @@ sendMessagesB_ c reqs connIds = withConnLocks c connIds "sendMessages" $ do
   where
     getConn_ :: DB.Connection -> TVar (Maybe (Either AgentErrorType SomeConn)) -> MsgReq -> IO (Either AgentErrorType (MsgReq, SomeConn))
     getConn_ db prev req@(connId, _, _, _) =
-      (req,) <$$> 
-        if B.null connId
+      (req,)
+        <$$> if B.null connId
           then fromMaybe (Left $ INTERNAL "sendMessagesB_: empty prev connId") <$> readTVarIO prev
           else do
             conn <- first storeError <$> getConn db connId
@@ -2845,12 +2845,19 @@ secureConfirmQueue c cData@ConnData {connId, connAgentVersion, pqSupport} sq srv
 agentSecureSndQueue :: AgentClient -> ConnData -> SndQueue -> AM SndQueueSecured
 agentSecureSndQueue c ConnData {connAgentVersion} sq@SndQueue {sndSecure, status}
   | sndSecure && status == New = do
+      logDebug $ "MARKER agentSecureSndQueue sndSecure && status == New, initiatorRatchetOnConf=" <> tshow initiatorRatchetOnConf
       secureSndQueue c sq
+      logDebug $ "MARKER agentSecureSndQueue sndSecure && status == New, after secureSndQueue"
       withStore' c $ \db -> setSndQueueStatus db sq Secured
+      logDebug $ "MARKER agentSecureSndQueue sndSecure && status == New, after setSndQueueStatus, initiatorRatchetOnConf=" <> tshow initiatorRatchetOnConf
       pure initiatorRatchetOnConf
   -- on repeat JOIN processing (e.g. previous attempt to create reply queue failed)
-  | sndSecure && status == Secured = pure initiatorRatchetOnConf
-  | otherwise = pure False
+  | sndSecure && status == Secured = do
+      logDebug $ "MARKER agentSecureSndQueue sndSecure && status == Secured, initiatorRatchetOnConf=" <> tshow initiatorRatchetOnConf
+      pure initiatorRatchetOnConf
+  | otherwise = do
+      logDebug $ "MARKER agentSecureSndQueue otherwise, sndSecure=" <> tshow sndSecure <> ", status=" <> tshow status
+      pure False
   where
     initiatorRatchetOnConf = connAgentVersion >= ratchetOnConfSMPAgentVersion
 

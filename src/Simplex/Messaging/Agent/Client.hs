@@ -1572,8 +1572,10 @@ secureQueue c rq@RcvQueue {rcvId, rcvPrivateKey} senderKey =
     secureSMPQueue smp rcvPrivateKey rcvId senderKey
 
 secureSndQueue :: AgentClient -> SndQueue -> AM ()
-secureSndQueue c SndQueue {userId, server, sndId, sndPrivateKey, sndPublicKey} =
-  void $ sendOrProxySMPCommand c userId server "SKEY <key>" sndId secureViaProxy secureDirectly
+secureSndQueue c SndQueue {userId, server, sndId, sndPrivateKey, sndPublicKey} = do
+  r <- sendOrProxySMPCommand c userId server "SKEY <key>" sndId secureViaProxy secureDirectly
+  logDebug $ "MARKER secureSndQueue r=" <> tshow r
+  pure ()
   where
     -- TODO track statistics
     secureViaProxy smp proxySess = proxySecureSndSMPQueue smp proxySess sndPrivateKey sndId sndPublicKey
