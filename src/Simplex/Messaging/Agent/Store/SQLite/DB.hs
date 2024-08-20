@@ -20,6 +20,7 @@ module Simplex.Messaging.Agent.Store.SQLite.DB
 where
 
 import Control.Concurrent.STM
+import Control.Monad (when)
 import Control.Exception
 import qualified Data.Aeson.TH as J
 import Data.Int (Int64)
@@ -32,7 +33,7 @@ import qualified Database.SQLite.Simple as SQL
 import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (diffToMicroseconds, tshow)
+import Simplex.Messaging.Util (diffToMilliseconds, tshow)
 
 data Connection = Connection
   { conn :: SQL.Connection,
@@ -54,8 +55,8 @@ timeIt slow sql a = do
     atomically $ TM.alter (Just . updateQueryErrors e) sql slow
     throwIO e
   t' <- getCurrentTime
-  let diff = diffToMicroseconds $ diffUTCTime t' t
-  atomically $ TM.alter (updateQueryStats diff) sql slow
+  let diff = diffToMilliseconds $ diffUTCTime t' t
+  when (diff > 1) $ atomically $ TM.alter (updateQueryStats diff) sql slow
   pure r
   where
     updateQueryErrors :: SomeException -> Maybe SlowQueryStats -> SlowQueryStats
