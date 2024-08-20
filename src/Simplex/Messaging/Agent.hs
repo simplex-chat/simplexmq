@@ -656,6 +656,7 @@ newConnNoQueues c userId connId enableNtfs cMode pqSupport = do
 
 joinConnAsync :: AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
 joinConnAsync c userId corrId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup subMode = do
+  logDebug $ "MARKER AGNT joinConnAsync"
   withInvLock c (strEncode cReqUri) "joinConnAsync" $ do
     lift (compatibleInvitationUri cReqUri) >>= \case
       Just (_, Compatible (CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
@@ -663,6 +664,7 @@ joinConnAsync c userId corrId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup 
         let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (Just v)
             cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
         connId <- withStore c $ \db -> createNewConn db g cData SCMInvitation
+        logDebug $ "MARKER AGNT joinConnAsync enqueue JOIN"
         enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN enableNtfs (ACR sConnectionMode cReqUri) pqSupport subMode cInfo
         pure connId
       Nothing -> throwE $ AGENT A_VERSION
@@ -678,11 +680,13 @@ allowConnectionAsync' c corrId connId confId ownConnInfo =
 
 acceptContactAsync' :: AgentClient -> ACorrId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
 acceptContactAsync' c corrId enableNtfs invId ownConnInfo pqSupport subMode = do
+  logDebug $ "MARKER AGNT acceptContactAsync'"
   Invitation {contactConnId, connReq} <- withStore c (`getInvitation` invId)
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ (ContactConnection ConnData {userId} _) -> do
       withStore' c $ \db -> acceptInvitation db invId ownConnInfo
       joinConnAsync c userId corrId enableNtfs connReq ownConnInfo pqSupport subMode `catchAgentError` \err -> do
+        logDebug $ "MARKER AGNT acceptContactAsync' joinConnAsync error: " <> tshow err
         withStore' c (`unacceptInvitation` invId)
         throwE err
     _ -> throwE $ CMD PROHIBITED "acceptContactAsync"
@@ -1155,10 +1159,12 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
             (_, cReq) <- newRcvConnSrv c userId connId enableNtfs cMode Nothing pqEnc subMode srv
             notify $ INV (ACR cMode cReq)
         JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc subMode connInfo -> noServer $ do
+          logDebug $ "MARKER AGNT runCommandProcessing JOIN"
           let initUsed = [qServer q]
           usedSrvs <- newTVarIO initUsed
           tryCommand . withNextSrv c userId usedSrvs initUsed $ \srv -> do
             sqSecured <- joinConnSrvAsync c userId connId enableNtfs cReq connInfo pqEnc subMode srv
+            logDebug $ "MARKER AGNT runCommandProcessing JOIN sqSecured: " <> tshow sqSecured
             notify $ JOINED sqSecured
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK
