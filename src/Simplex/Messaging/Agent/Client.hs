@@ -1058,12 +1058,12 @@ sendOrProxySMPCommand ::
   (SMPClient -> ExceptT SMPClientError IO ()) ->
   AM (Maybe SMPServer)
 sendOrProxySMPCommand c userId destSrv cmdStr senderId sendCmdViaProxy sendCmdDirectly = do
-  -- logDebug $ "MARKER AGNT sendOrProxySMPCommand"
+  logDebug $ "MARKER AGNT server=" <> tshow destSrv <> " sndId=" <> tshow senderId <> " sendOrProxySMPCommand"
   sess <- mkTransportSession c userId destSrv senderId
-  -- shouldUsePrx <- shouldUseProxy
-  -- logDebug $ "MARKER AGNT sendOrProxySMPCommand after mkTransportSession, shouldUseProxy=" <> tshow shouldUsePrx
-  -- if shouldUsePrx then (sendViaProxy Nothing sess) else (sendDirectly sess $> Nothing)
-  ifM shouldUseProxy (sendViaProxy Nothing sess) (sendDirectly sess $> Nothing)
+  shouldUsePrx <- shouldUseProxy
+  logDebug $ "MARKER AGNT server=" <> tshow destSrv <> " sndId=" <> tshow senderId <> " sendOrProxySMPCommand after mkTransportSession, shouldUseProxy=" <> tshow shouldUsePrx
+  if shouldUsePrx then (sendViaProxy Nothing sess) else (sendDirectly sess $> Nothing)
+  -- ifM shouldUseProxy (sendViaProxy Nothing sess) (sendDirectly sess $> Nothing)
   where
     shouldUseProxy = do
       cfg <- getNetworkConfig c
@@ -1129,16 +1129,16 @@ sendOrProxySMPCommand c userId destSrv cmdStr senderId sendCmdViaProxy sendCmdDi
           | serverHostError e -> ifM directAllowed (sendDirectly destSess $> Nothing) (throwE e)
           | otherwise -> throwE e
     sendDirectly tSess = do
-      -- logDebug $ "MARKER AGNT sendOrProxySMPCommand sendDirectly"
+      logDebug $ "MARKER AGNT server=" <> tshow destSrv <> " sndId=" <> tshow senderId <> " sendOrProxySMPCommand sendDirectly"
       withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) -> do
-        -- logDebug $ "MARKER AGNT sendOrProxySMPCommand sendDirectly in withLogClient_"
+        logDebug $ "MARKER AGNT server=" <> tshow destSrv <> " sndId=" <> tshow senderId <> " sendOrProxySMPCommand sendDirectly in withLogClient_"
         r <- tryAgentError $ liftClient SMP (clientServer smp) $ sendCmdDirectly smp
         case r of
           Right () -> do
-            -- logDebug $ "MARKER AGNT sendOrProxySMPCommand sendDirectly Right"
+            logDebug $ "MARKER AGNT server=" <> tshow destSrv <> " sndId=" <> tshow senderId <> " sendOrProxySMPCommand sendDirectly Right"
             atomically $ incSMPServerStat c userId destSrv sentDirect
           Left e -> do
-            -- logDebug $ "MARKER AGNT sendOrProxySMPCommand sendDirectly Left e=" <> tshow e
+            logDebug $ "MARKER AGNT server=" <> tshow destSrv <> " sndId=" <> tshow senderId <> " sendOrProxySMPCommand sendDirectly Left e=" <> tshow e
             throwE e
 
 ipAddressProtected :: NetworkConfig -> ProtocolServer p -> Bool
@@ -1585,9 +1585,9 @@ secureSndQueue :: AgentClient -> SndQueue -> AM ()
 secureSndQueue c SndQueue {userId, server, sndId, sndPrivateKey, sndPublicKey} = do
   r <- sendOrProxySMPCommand c userId server "SKEY <key>" sndId secureViaProxy secureDirectly
     `catchAgentError` \e -> do
-      logDebug $ "MARKER AGNT secureSndQueue catchAgentError e=" <> tshow e
+      logDebug $ "MARKER AGNT server=" <> tshow server <> " sndId=" <> tshow sndId <> " secureSndQueue catchAgentError e=" <> tshow e
       pure Nothing
-  logDebug $ "MARKER AGNT secureSndQueue r=" <> tshow r
+  logDebug $ "MARKER AGNT server=" <> tshow server <> " sndId=" <> tshow sndId <> " secureSndQueue r=" <> tshow r
   pure ()
   where
     -- TODO track statistics
