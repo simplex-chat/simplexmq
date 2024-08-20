@@ -894,11 +894,16 @@ joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSuppo
   where
     doJoin :: Maybe SndQueue -> AM SndQueueSecured
     doJoin sq_ = do
+      logDebug $ "MARKER AGNT joinConnSrvAsync doJoin"
       (cData, sq, _, rc, e2eSndParams) <- startJoinInvitation userId connId sq_ enableNtfs inv pqSupport
+      logDebug $ "MARKER AGNT joinConnSrvAsync after startJoinInvitation"
       sq' <- withStore c $ \db -> runExceptT $ do
         liftIO $ createRatchet db connId rc
         maybe (ExceptT $ updateNewConnSnd db connId sq) pure sq_
-      secureConfirmQueueAsync c cData sq' srv cInfo (Just e2eSndParams) subMode
+      logDebug $ "MARKER AGNT joinConnSrvAsync before secureConfirmQueueAsync"
+      sqSecured <- secureConfirmQueueAsync c cData sq' srv cInfo (Just e2eSndParams) subMode
+      logDebug $ "MARKER AGNT joinConnSrvAsync after secureConfirmQueueAsync sqSecured=" <> tshow sqSecured
+      pure sqSecured
 joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode _pqSupport _srv = do
   throwE $ CMD PROHIBITED "joinConnSrvAsync"
 
@@ -2809,9 +2814,13 @@ connectReplyQueues c cData@ConnData {userId, connId} ownConnInfo sq_ (qInfo :| _
 
 secureConfirmQueueAsync :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> SubscriptionMode -> AM SndQueueSecured
 secureConfirmQueueAsync c cData sq srv connInfo e2eEncryption_ subMode = do
+  logDebug $ "MARKER AGNT secureConfirmQueueAsync"
   sqSecured <- agentSecureSndQueue c cData sq
+  logDebug $ "MARKER AGNT secureConfirmQueueAsync agentSecureSndQueue sqSecured=" <> tshow sqSecured
   storeConfirmation c cData sq e2eEncryption_ =<< mkAgentConfirmation c cData sq srv connInfo subMode
+  logDebug $ "MARKER AGNT secureConfirmQueueAsync after storeConfirmation"
   lift $ submitPendingMsg c cData sq
+  logDebug $ "MARKER AGNT secureConfirmQueueAsync after submitPendingMsg"
   pure sqSecured
 
 secureConfirmQueue :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> SubscriptionMode -> AM SndQueueSecured
