@@ -980,7 +980,7 @@ subscribeConnections' c connIds = do
   rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concat $ M.elems rcvQs)
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
-  lift $ when (instantNotifications tkn) . void . forkIO . void $ sendNtfCreate ns cs
+  lift $ when (instantNotifications tkn) . void . forkIO . void $ sendNtfCreate ns rcvRs cs
   let rs = M.unions ([errs', subRs, rcvRs] :: [Map ConnId (Either AgentErrorType ())])
   notifyResultError rs
   pure rs
@@ -1012,11 +1012,12 @@ subscribeConnections' c connIds = do
         order (Active, _) = 2
         order (_, Right _) = 3
         order _ = 4
-    sendNtfCreate :: NtfSupervisor -> Map ConnId SomeConn -> AM' ()
-    sendNtfCreate ns cs =
+    sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType ()) -> Map ConnId SomeConn -> AM' ()
+    sendNtfCreate ns rcvRs cs = do
       -- TODO this needs to be batched end to end.
       -- Currently, the only change is to ignore failed subscriptions.
-      forM_ cs $ \case
+      let oks = M.keysSet $ M.filter (either temporaryAgentError $ const True) rcvRs
+      forM_ (M.restrictKeys cs oks) $ \case
         SomeConn _ conn -> do
           let cmd = if enableNtfs $ toConnData conn then NSCCreate else NSCDelete
               ConnData {connId} = toConnData conn
