@@ -2845,18 +2845,18 @@ secureConfirmQueue c cData@ConnData {connId, connAgentVersion, pqSupport} sq srv
 agentSecureSndQueue :: AgentClient -> ConnData -> SndQueue -> AM SndQueueSecured
 agentSecureSndQueue c ConnData {connAgentVersion} sq@SndQueue {sndSecure, status}
   | sndSecure && status == New = do
-      logDebug $ "MARKER agentSecureSndQueue sndSecure && status == New, initiatorRatchetOnConf=" <> tshow initiatorRatchetOnConf
+      logDebug $ "MARKER AGNT agentSecureSndQueue sndSecure && status == New, initiatorRatchetOnConf=" <> tshow initiatorRatchetOnConf
       secureSndQueue c sq
-      logDebug $ "MARKER agentSecureSndQueue sndSecure && status == New, after secureSndQueue"
+      logDebug $ "MARKER AGNT agentSecureSndQueue sndSecure && status == New, after secureSndQueue"
       withStore' c $ \db -> setSndQueueStatus db sq Secured
-      logDebug $ "MARKER agentSecureSndQueue sndSecure && status == New, after setSndQueueStatus, initiatorRatchetOnConf=" <> tshow initiatorRatchetOnConf
+      logDebug $ "MARKER AGNT agentSecureSndQueue sndSecure && status == New, after setSndQueueStatus, initiatorRatchetOnConf=" <> tshow initiatorRatchetOnConf
       pure initiatorRatchetOnConf
   -- on repeat JOIN processing (e.g. previous attempt to create reply queue failed)
   | sndSecure && status == Secured = do
-      logDebug $ "MARKER agentSecureSndQueue sndSecure && status == Secured, initiatorRatchetOnConf=" <> tshow initiatorRatchetOnConf
+      logDebug $ "MARKER AGNT agentSecureSndQueue sndSecure && status == Secured, initiatorRatchetOnConf=" <> tshow initiatorRatchetOnConf
       pure initiatorRatchetOnConf
   | otherwise = do
-      logDebug $ "MARKER agentSecureSndQueue otherwise, sndSecure=" <> tshow sndSecure <> ", status=" <> tshow status
+      logDebug $ "MARKER AGNT agentSecureSndQueue otherwise, sndSecure=" <> tshow sndSecure <> ", status=" <> tshow status
       pure False
   where
     initiatorRatchetOnConf = connAgentVersion >= ratchetOnConfSMPAgentVersion
