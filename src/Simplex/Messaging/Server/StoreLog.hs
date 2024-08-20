@@ -35,7 +35,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..), ServerQueueStatus (..))
 import Simplex.Messaging.Transport.Buffer (trimCR)
-import Simplex.Messaging.Util (ifM, whenM)
+import Simplex.Messaging.Util (ifM)
 import System.Directory (doesFileExist, renameFile)
 import System.IO
 
@@ -140,14 +140,12 @@ logDeleteNotifier s = writeStoreLogRecord s . DeleteNotifier
 
 readWriteStoreLog :: FilePath -> IO (Map RecipientId QueueRec, StoreLog 'WriteMode)
 readWriteStoreLog f = do
-  qs <- ifM (doesFileExist f) (readQueues f) (pure M.empty)
-  s <- openWriteStoreLog (f <> ".new")
+  qs <- ifM (doesFileExist f) readQS (pure M.empty)
+  s <- openWriteStoreLog f
   writeQueues s qs
-  closeStoreLog s
-  whenM (doesFileExist f) $ renameFile f (f <> ".bak")
-  renameFile (f <> ".new") f
-  s' <- openWriteStoreLog f
-  pure (qs, s')
+  pure (qs, s)
+  where
+    readQS = readQueues f <* renameFile f (f <> ".bak")
 
 writeQueues :: StoreLog 'WriteMode -> Map RecipientId QueueRec -> IO ()
 writeQueues s = mapM_ $ \q -> when (active q) $ logCreateQueue s q

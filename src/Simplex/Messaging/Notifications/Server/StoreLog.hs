@@ -184,14 +184,12 @@ logDeleteSubscription s subId = logNtfStoreRecord s $ DeleteSubscription subId
 
 readWriteNtfStore :: FilePath -> NtfStore -> IO (StoreLog 'WriteMode)
 readWriteNtfStore f st = do
-  whenM (doesFileExist f) $ readNtfStore f st
-  s <- openWriteStoreLog (f <> ".new")
+  whenM (doesFileExist f) $ do
+    readNtfStore f st
+    renameFile f $ f <> ".bak"
+  s <- openWriteStoreLog f
   writeNtfStore s st
-  closeStoreLog s
-  whenM (doesFileExist f) $ renameFile f (f <> ".bak")
-  renameFile (f <> ".new") f
-  s' <- openWriteStoreLog f
-  pure s'
+  pure s
 
 readNtfStore :: FilePath -> NtfStore -> IO ()
 readNtfStore f st = mapM_ (addNtfLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f
