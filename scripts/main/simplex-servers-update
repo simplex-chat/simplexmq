@@ -46,9 +46,9 @@ os_test() {
  . /etc/os-release
 
  case "$VERSION_ID" in
-  20.04) : ;;
-  22.04) : ;;
-  *) printf "${RED}Unsupported Ubuntu version!${NC}\nPlease file Github issue with request to support Ubuntu %s: https://github.com/simplex-chat/simplexmq/issues/new" "$VERSION_ID" && exit 1 ;;
+  20.04|22.04) : ;;
+  24.04) VERSION_ID='22.04' ;;
+  *) printf "${RED}Unsupported Ubuntu version!${NC}\nPlease file Github issue with request to support Ubuntu %s: https://github.com/simplex-chat/simplexmq/issues/new\n" "$VERSION_ID" && exit 1 ;;
  esac
 
  version="$(printf '%s' "$VERSION_ID" | tr '.' '_')"
