@@ -57,7 +57,7 @@ import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM
 import qualified Data.IntSet as IS
-import Data.List (intercalate, mapAccumR)
+import Data.List (intercalate, mapAccumR, sortOn)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -1484,7 +1484,16 @@ saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessag
 restoreServerMessages :: M Int
 restoreServerMessages =
   asks (storeMsgsFile . config) >>= \case
-    Just f -> ifM (doesFileExist f) (restoreMessages f) (pure 0)
+    Just f -> do
+      r <- ifM (doesFileExist f) (restoreMessages f) (pure 0)
+      ms <- asks msgStore
+      readTVarIO ms >>= mapM_ sortQueueMsgs
+      pure r
+      where
+        sortQueueMsgs q@MsgQueue {msgQueue} = do
+          msgs <- atomically $ flushTQueue msgQueue
+          let msgs' = sortOn messageTs msgs
+          mapM_ (atomically . writeMsg q) msgs'
     Nothing -> pure 0
   where
     restoreMessages f = do
@@ -1510,9 +1519,9 @@ restoreServerMessages =
               (isExpired, logFull) <- atomically $ do
                 q <- getMsgQueue ms rId quota
                 case msg of
-                  Message {msgTs}
-                    | maybe True (systemSeconds msgTs >=) old_ -> (False,) . isNothing <$> writeMsg q msg
-                    | otherwise -> pure (True, False)
+                  Message {msgTs} -> (False,) . isNothing <$> writeMsg q msg
+                    -- | maybe True (systemSeconds msgTs >=) old_ -> (False,) . isNothing <$> writeMsg q msg
+                    -- | otherwise -> pure (True, False)
                   MessageQuota {} -> writeMsg q msg $> (False, False)
               when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
               pure $ if isExpired then expired + 1 else expired
