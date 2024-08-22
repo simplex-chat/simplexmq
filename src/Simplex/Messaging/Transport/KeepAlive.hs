@@ -44,20 +44,34 @@ _TCP_KEEPINTVL = 17
 _TCP_KEEPCNT :: CInt
 _TCP_KEEPCNT = 16
 
-#else
--- Mac/Linux
-
-#if defined(darwin_HOST_OS)
+#elif defined(darwin_HOST_OS)
+-- macOS
 foreign import capi "netinet/tcp.h value TCP_KEEPALIVE" _TCP_KEEPIDLE :: CInt
-#else
-foreign import capi "netinet/tcp.h value TCP_KEEPIDLE" _TCP_KEEPIDLE :: CInt
-#endif
 
 foreign import capi "netinet/tcp.h value TCP_KEEPINTVL" _TCP_KEEPINTVL :: CInt
 
 foreign import capi "netinet/tcp.h value TCP_KEEPCNT" _TCP_KEEPCNT :: CInt
 
-#endif
+#elif defined(openbsd_HOST_OS)
+-- OpenBSD
+
+-- OpenBSD does not support TCP_KEEPIDLE, TCP_KEEPINTVL, and TCP_KEEPCNT.
+-- Only SO_KEEPALIVE can be configured here.
+
+setSocketKeepAlive :: Socket -> KeepAliveOpts -> IO ()
+setSocketKeepAlive sock KeepAliveOpts {} = do
+  setSocketOption sock KeepAlive 1
+  -- Additional parameters cannot be set on OpenBSD,
+  -- keep-alive behavior is controlled by the system.
+
+#else
+-- Linux or other Unix-like systems
+
+foreign import capi "netinet/tcp.h value TCP_KEEPIDLE" _TCP_KEEPIDLE :: CInt
+
+foreign import capi "netinet/tcp.h value TCP_KEEPINTVL" _TCP_KEEPINTVL :: CInt
+
+foreign import capi "netinet/tcp.h value TCP_KEEPCNT" _TCP_KEEPCNT :: CInt
 
 setSocketKeepAlive :: Socket -> KeepAliveOpts -> IO ()
 setSocketKeepAlive sock KeepAliveOpts {keepCnt, keepIdle, keepIntvl} = do
@@ -65,5 +79,6 @@ setSocketKeepAlive sock KeepAliveOpts {keepCnt, keepIdle, keepIntvl} = do
   setSocketOption sock (SockOpt _SOL_TCP _TCP_KEEPIDLE) keepIdle
   setSocketOption sock (SockOpt _SOL_TCP _TCP_KEEPINTVL) keepIntvl
   setSocketOption sock (SockOpt _SOL_TCP _TCP_KEEPCNT) keepCnt
+#endif
 
 $(J.deriveJSON defaultJSON ''KeepAliveOpts)
