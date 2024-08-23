@@ -508,6 +508,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} baseId ali
   suspendAgent alice 0
   closeSQLiteStore store
   threadDelay 1000000
+  print "before opening the database from another agent"
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
   withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> runRight_ $ do
@@ -515,6 +516,7 @@ testNotificationSubscriptionExistingConnection APNSMockServer {apnsQ} baseId ali
     pure ()
 
   threadDelay 1000000
+  print "after closing the database in another agent"
   reopenSQLiteStore store
   foregroundAgent alice
   threadDelay 500000

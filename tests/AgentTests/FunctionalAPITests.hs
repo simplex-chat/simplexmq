@@ -283,6 +283,9 @@ functionalAPITests t = do
     testPQMatrix3 t $ runAgentClientContactTestPQ3 True
   it "should support rejecting contact request" $
     withSmpServer t testRejectContactRequest
+  describe "Changing connection user id" $ do
+    it "should change user id for new connections" $ do
+      withSmpServer t testUpdateConnectionUserId
   describe "Establishing connection asynchronously" $ do
     it "should connect with initiating client going offline" $
       withSmpServer t testAsyncInitiatingOffline
@@ -911,6 +914,25 @@ testRejectContactRequest =
     liftIO $ runExceptT (rejectContact alice "abcd" invId) `shouldReturn` Left (CONN NOT_FOUND)
     rejectContact alice addrConnId invId
     liftIO $ noMessages bob "nothing delivered to bob"
+
+testUpdateConnectionUserId :: HasCallStack => IO ()
+testUpdateConnectionUserId =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    (connId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+    newUserId <- createUser alice [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
+    _ <- changeConnectionUser alice 1 connId newUserId
+    aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+    (aliceId', sqSecured') <- A.joinConnection bob 1 (Just aliceId) True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    liftIO $ do
+      aliceId' `shouldBe` aliceId
+      sqSecured' `shouldBe` True
+    ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
+    liftIO $ pqSup' `shouldBe` PQSupportOn
+    allowConnection alice connId confId "alice's connInfo"
+    let pqEnc = CR.pqSupportToEnc PQSupportOn
+    get alice ##> ("", connId, A.CON pqEnc)
+    get bob ##> ("", aliceId, A.INFO PQSupportOn "alice's connInfo")
+    get bob ##> ("", aliceId, A.CON pqEnc)
 
 testAsyncInitiatingOffline :: HasCallStack => IO ()
 testAsyncInitiatingOffline =

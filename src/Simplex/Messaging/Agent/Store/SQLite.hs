@@ -57,6 +57,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getDeletedConns,
     getConnData,
     setConnDeleted,
+    setConnUserId,
     setConnAgentVersion,
     setConnPQSupport,
     getDeletedConnIds,
@@ -110,6 +111,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getSndMsgViaRcpt,
     updateSndMsgRcpt,
     getPendingQueueMsg,
+    getConnectionsForDelivery,
     updatePendingMsgRIState,
     deletePendingMsgs,
     getExpiredSndMessages,
@@ -1007,6 +1009,10 @@ updateSndMsgRcpt db connId sndMsgId MsgReceipt {agentMsgId, msgRcptStatus} =
     db
     "UPDATE snd_messages SET rcpt_internal_id = ?, rcpt_status = ? WHERE conn_id = ? AND internal_snd_id = ?"
     (agentMsgId, msgRcptStatus, connId, sndMsgId)
+
+getConnectionsForDelivery :: DB.Connection -> IO [ConnId]
+getConnectionsForDelivery db =
+  map fromOnly <$> DB.query_ db "SELECT DISTINCT conn_id FROM snd_message_deliveries WHERE failed = 0"
 
 getPendingQueueMsg :: DB.Connection -> ConnId -> SndQueue -> IO (Either StoreError (Maybe (Maybe RcvQueue, PendingMsgData)))
 getPendingQueueMsg db connId SndQueue {dbQueueId} =
@@ -1909,9 +1915,11 @@ newQueueId_ (Only maxId : _) = DBQueueId (maxId + 1)
 
 getConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getConn = getAnyConn False
+{-# INLINE getConn #-}
 
 getDeletedConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getDeletedConn = getAnyConn True
+{-# INLINE getDeletedConn #-}
 
 getAnyConn :: Bool -> DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getAnyConn deleted' dbConn connId =
@@ -1932,9 +1940,11 @@ getAnyConn deleted' dbConn connId =
 
 getConns :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getConns = getAnyConns_ False
+{-# INLINE getConns #-}
 
 getDeletedConns :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getDeletedConns = getAnyConns_ True
+{-# INLINE getDeletedConns #-}
 
 getAnyConns_ :: Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getAnyConns_ deleted' db connIds = forM connIds $ E.handle handleDBError . getAnyConn deleted' db
@@ -1966,6 +1976,10 @@ setConnDeleted db waitDelivery connId
       DB.execute db "UPDATE connections SET deleted_at_wait_delivery = ? WHERE conn_id = ?" (currentTs, connId)
   | otherwise =
       DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
+
+setConnUserId :: DB.Connection -> UserId -> ConnId -> UserId -> IO ()
+setConnUserId db oldUserId connId newUserId = 
+  DB.execute db "UPDATE connections SET user_id = ? WHERE conn_id = ? and user_id = ?" (newUserId, connId, oldUserId)
 
 setConnAgentVersion :: DB.Connection -> ConnId -> VersionSMPA -> IO ()
 setConnAgentVersion db connId aVersion =

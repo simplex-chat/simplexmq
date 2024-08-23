@@ -53,6 +53,7 @@ module Simplex.Messaging.Agent
     deleteConnectionAsync,
     deleteConnectionsAsync,
     createConnection,
+    changeConnectionUser,
     prepareConnectionToJoin,
     joinConnection,
     allowConnection,
@@ -131,6 +132,7 @@ import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::), (.::.))
+import Data.Containers.ListUtils (nubOrd)
 import Data.Either (isRight, rights)
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
@@ -332,6 +334,11 @@ deleteConnectionsAsync c waitDelivery = withAgentEnv c . deleteConnectionsAsync'
 createConnection :: AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, ConnectionRequestUri c)
 createConnection c userId enableNtfs = withAgentEnv c .:: newConn c userId "" enableNtfs
 {-# INLINE createConnection #-}
+
+-- | Changes the user id associated with a connection 
+changeConnectionUser :: AgentClient -> UserId -> ConnId -> UserId -> AE ()
+changeConnectionUser c oldUserId connId newUserId = withAgentEnv c $ changeConnectionUser' c oldUserId connId newUserId
+{-# INLINE changeConnectionUser #-}
 
 -- | Create SMP agent connection without queue (to be joined with joinConnection passing connection ID).
 -- This method is required to prevent race condition when confirmation from peer is received before
@@ -741,6 +748,16 @@ newConn :: AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe
 newConn c userId connId enableNtfs cMode clientData pqInitKeys subMode =
   getSMPServer c userId >>= newConnSrv c userId connId False enableNtfs cMode clientData pqInitKeys subMode
 
+changeConnectionUser' :: AgentClient -> UserId -> ConnId -> UserId -> AM ()
+changeConnectionUser' c oldUserId connId newUserId = do
+  SomeConn _ conn <- withStore c (`getConn` connId)
+  case conn of
+    NewConnection {} -> updateConn
+    RcvConnection {} -> updateConn
+    _ -> throwE $ CMD PROHIBITED "changeConnectionUser: established connection"
+  where
+    updateConn = withStore' c $ \db -> setConnUserId db oldUserId connId newUserId
+
 newConnSrv :: AgentClient -> UserId -> ConnId -> Bool -> Bool -> SConnectionMode c -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> SMPServerWithAuth -> AM (ConnId, ConnectionRequestUri c)
 newConnSrv c userId connId hasNewConn enableNtfs cMode clientData pqInitKeys subMode srv = do
   connId' <-
@@ -958,12 +975,12 @@ subscribeConnections' c connIds = do
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
       (subRs, rcvQs) = M.mapEither rcvQueueOrResult cs
-  mapM_ (mapM_ (\(cData, sqs) -> mapM_ (lift . resumeMsgDelivery c cData) sqs) . sndQueue) cs
-  mapM_ (resumeConnCmds c) $ M.keys cs
+  resumeDelivery cs
+  lift $ resumeConnCmds c $ M.keys cs
   rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concat $ M.elems rcvQs)
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
-  when (instantNotifications tkn) . void . lift . forkIO . void . runExceptT $ sendNtfCreate ns rcvRs conns
+  lift $ when (instantNotifications tkn) . void . forkIO . void $ sendNtfCreate ns rcvRs cs
   let rs = M.unions ([errs', subRs, rcvRs] :: [Map ConnId (Either AgentErrorType ())])
   notifyResultError rs
   pure rs
@@ -995,15 +1012,20 @@ subscribeConnections' c connIds = do
         order (Active, _) = 2
         order (_, Right _) = 3
         order _ = 4
-    sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType ()) -> Map ConnId (Either StoreError SomeConn) -> AM ()
-    sendNtfCreate ns rcvRs conns =
-      forM_ (M.assocs rcvRs) $ \case
-        (connId, Right _) -> forM_ (M.lookup connId conns) $ \case
-          Right (SomeConn _ conn) -> do
-            let cmd = if enableNtfs $ toConnData conn then NSCCreate else NSCDelete
-            atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)
-          _ -> pure ()
-        _ -> pure ()
+    sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType ()) -> Map ConnId SomeConn -> AM' ()
+    sendNtfCreate ns rcvRs cs = do
+      -- TODO this needs to be batched end to end.
+      -- Currently, the only change is to ignore failed subscriptions.
+      let oks = M.keysSet $ M.filter (either temporaryAgentError $ const True) rcvRs
+      forM_ (M.restrictKeys cs oks) $ \case
+        SomeConn _ conn -> do
+          let cmd = if enableNtfs $ toConnData conn then NSCCreate else NSCDelete
+              ConnData {connId} = toConnData conn
+          atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)            
+    resumeDelivery :: Map ConnId SomeConn -> AM ()
+    resumeDelivery conns = do
+      conns' <- M.restrictKeys conns . S.fromList <$> withStore' c getConnectionsForDelivery
+      lift $ mapM_ (mapM_ (\(cData, sqs) -> mapM_ (resumeMsgDelivery c cData) sqs) . sndQueue) conns'
     sndQueue :: SomeConn -> Maybe (ConnData, NonEmpty SndQueue)
     sndQueue (SomeConn _ conn) = case conn of
       DuplexConnection cData _ sqs -> Just (cData, sqs)
@@ -1118,13 +1140,10 @@ resumeSrvCmds :: AgentClient -> Maybe SMPServer -> AM' ()
 resumeSrvCmds = void .: getAsyncCmdWorker False
 {-# INLINE resumeSrvCmds #-}
 
-resumeConnCmds :: AgentClient -> ConnId -> AM ()
-resumeConnCmds c connId =
-  unlessM connQueued $
-    withStore' c (`getPendingCommandServers` connId)
-      >>= mapM_ (lift . resumeSrvCmds c)
-  where
-    connQueued = atomically $ isJust <$> TM.lookupInsert connId True (connCmdsQueued c)
+resumeConnCmds :: AgentClient -> [ConnId] -> AM' ()
+resumeConnCmds c connIds = do
+  srvs <- nubOrd . concat . rights <$> withStoreBatch' c (\db -> fmap (getPendingCommandServers db) connIds)
+  mapM_ (resumeSrvCmds c) srvs
 
 getAsyncCmdWorker :: Bool -> AgentClient -> Maybe SMPServer -> AM' Worker
 getAsyncCmdWorker hasWork c server =
