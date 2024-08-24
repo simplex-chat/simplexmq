@@ -132,7 +132,6 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::), (.::.))
-import Data.Containers.ListUtils (nubOrd)
 import Data.Either (isRight, rights)
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
@@ -1164,7 +1163,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
       processCmd ri cmd pending
       mapM_ (atomically . writeTBQueue subQ) . reverse =<< readTVarIO pending
     processCmd :: RetryInterval -> PendingCommand -> TVar [ATransmission] -> AM ()
-    processCmd ri PendingCommand {cmdId, corrId, userId, connId, command} pendingCmds = case command of
+    processCmd ri PendingCommand {cmdId, corrId, userId, command} pendingCmds = case command of
       AClientCommand cmd -> case cmd of
         NEW enableNtfs (ACM cMode) pqEnc subMode -> noServer $ do
           usedSrvs <- newTVarIO ([] :: [SMPServer])
@@ -1190,23 +1189,26 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
       AInternalCommand cmd -> case cmd of
         ICAckDel rId srvMsgId msgId -> withServer $ \srv -> tryWithLock "ICAckDel" $ ack srv rId srvMsgId >> withStore' c (\db -> deleteMsg db connId msgId)
         ICAck rId srvMsgId -> withServer $ \srv -> tryWithLock "ICAck" $ ack srv rId srvMsgId
-        ICAllowSecure _rId senderKey -> withServer' . tryWithLock "ICAllowSecure" $ do
+        ICAllowSecure _rId senderKey -> withServer' . tryCancellableWithLock "ICAllowSecure" $ do
           (SomeConn _ conn, AcceptedConfirmation {senderConf, ownConnInfo}) <-
             withStore c $ \db -> runExceptT $ (,) <$> ExceptT (getConn db connId) <*> ExceptT (getAcceptedConfirmation db connId)
           case conn of
             RcvConnection cData rq -> do
               mapM_ (secure rq) senderKey
               mapM_ (connectReplyQueues c cData ownConnInfo Nothing) (L.nonEmpty $ smpReplyQueues senderConf)
+              pure True
             -- duplex connection is matched to handle SKEY retries
             DuplexConnection cData _ (sq :| _) -> do
-              mapM_ (connectReplyQueues c cData ownConnInfo (Just sq)) (L.nonEmpty $ smpReplyQueues senderConf)
-                `catchAgentError` \e -> do
-                    let server = qServer sq
-                    when (temporaryOrHostError e && Just server /= server_) $ do
-                      -- In case the server is different we update server to remove command from this (connId, srv) queue
-                      withStore c $ \db -> updateCommandServer db cmdId server
-                      lift . void $ getAsyncCmdWorker True c connId (Just server)
-                      throwE e
+              tryAgentError (mapM_ (connectReplyQueues c cData ownConnInfo (Just sq)) (L.nonEmpty $ smpReplyQueues senderConf)) >>= \case
+                Right () -> pure True
+                Left e | temporaryOrHostError e && Just server /= server_ -> do
+                  -- In case the server is different we update server to remove command from this (connId, srv) queue
+                  withStore c $ \db -> updateCommandServer db cmdId server
+                  lift . void $ getAsyncCmdWorker True c connId (Just server)
+                  pure False
+                Left e -> throwE e
+              where
+                server = qServer sq
             _ -> throwE $ INTERNAL $ "incorrect connection type " <> show (internalCmdTag cmd)
         ICDuplexSecure _rId senderKey -> withServer' . tryWithLock "ICDuplexSecure" . withDuplexConn $ \(DuplexConnection cData (rq :| _) (sq :| _)) -> do
           secure rq senderKey
@@ -1279,15 +1281,18 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
           withStore c (`getConn` connId) >>= \case
             SomeConn _ conn@DuplexConnection {} -> a conn
             _ -> internalErr "command requires duplex connection"
-        tryCommand action = withRetryInterval ri $ \_ loop -> do
+        tryCommand action = tryCancellableCommand (action $> True)
+        tryCancellableCommand action = withRetryInterval ri $ \_ loop -> do
           liftIO $ waitWhileSuspended c
           liftIO $ waitForUserNetwork c
-          tryError action >>= \case
+          tryAgentError action >>= \case
             Left e
               | temporaryOrHostError e -> retrySndOp c loop
               | otherwise -> cmdError e
-            Right () -> withStore' c (`deleteCommand` cmdId)
+            Right True -> withStore' c (`deleteCommand` cmdId)
+            Right False -> pure () -- command processing cancelled, command moved to another queue
         tryWithLock name = tryCommand . withConnLock c connId name
+        tryCancellableWithLock name = tryCancellableCommand . withConnLock c connId name
         internalErr s = cmdError $ INTERNAL $ s <> ": " <> show (agentCommandTag command)
         cmdError e = notify (ERR e) >> withStore' c (`deleteCommand` cmdId)
         notify :: forall e. AEntityI e => AEvent e -> AM ()
