@@ -147,11 +147,27 @@ newtype ProxyAgent = ProxyAgent
 
 type ClientId = Int
 
+data SMPRequest
+  = SMPReqNew NewSMPQueue
+  | SMPReqSubs (NonEmpty (Transmission QueueRec))
+  | SMPReqCmd DirectCmd QueueRec
+  | SMPReqPrxCmd (Command 'ProxiedClient)
+  | SMPReqFwdCmd EncFwdTransmission
+  | SMPReqPing
+
+data NewSMPQueue = NewSMPQueue
+  { rcvAuthKey :: RcvPublicAuthKey,
+    rcvDhKey :: RcvPublicDhKey,
+    newAuth :: Maybe BasicAuth,
+    subMode :: SubscriptionMode,
+    sndSecure :: SenderCanSecure
+  }
+
 data Client = Client
   { clientId :: ClientId,
     subscriptions :: TMap RecipientId Sub,
     ntfSubscriptions :: TMap NotifierId (),
-    rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
+    rcvQ :: TBQueue (NonEmpty (Transmission SMPRequest)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     procThreads :: TVar Int,

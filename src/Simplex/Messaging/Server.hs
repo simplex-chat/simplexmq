@@ -683,14 +683,14 @@ receive h@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiv
     write sndQ errs
     write rcvQ cmds
   where
-    cmdAction :: ServerStats -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
+    cmdAction :: ServerStats -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Transmission SMPRequest))
     cmdAction stats (tAuth, authorized, (corrId, entId, cmdOrError)) =
       case cmdOrError of
         Left e -> pure $ Left (corrId, entId, ERR e)
         Right cmd -> verified =<< verifyTransmission ((,C.cbNonce (bs corrId)) <$> thAuth) tAuth authorized entId cmd
           where
             verified = \case
-              VRVerified qr -> pure $ Right (qr, (corrId, entId, cmd))
+              VRVerified req -> pure $ Right (corrId, entId, req)
               VRFailed -> do
                 case cmd of
                   Cmd _ SEND {} -> incStat $ msgSentAuth stats
@@ -750,7 +750,7 @@ disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcv
       ts <- max <$> readTVarIO rcvActiveAt <*> readTVarIO sndActiveAt
       if systemSeconds ts < old then closeConnection connection else loop
 
-data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
+data VerificationResult = VRVerified SMPRequest | VRFailed
 
 -- This function verifies queue command authorization, with the objective to have constant time between the three AUTH error scenarios:
 -- - the queue and party key exist, and the provided authorization has type matching queue key, but it is made with the different key.
@@ -759,25 +759,28 @@ data VerificationResult = VRVerified (Maybe QueueRec) | VRFailed
 -- In all cases, the time of the verification should depend only on the provided authorization type,
 -- a dummy key is used to run verification in the last two cases, and failure is returned irrespective of the result.
 verifyTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> QueueId -> Cmd -> M VerificationResult
-verifyTransmission auth_ tAuth authorized queueId cmd =
-  case cmd of
-    Cmd SRecipient (NEW k _ _ _ _) -> pure $ Nothing `verifiedWith` k
-    Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWith` recipientKey q) <$> get SRecipient
-    -- SEND will be accepted without authorization before the queue is secured with KEY or SKEY command
-    Cmd SSender (SKEY k) -> verifyQueue (\q -> Just q `verifiedWith` k) <$> get SSender
-    Cmd SSender SEND {} -> verifyQueue (\q -> Just q `verified` maybe (isNothing tAuth) verify (senderKey q)) <$> get SSender
-    Cmd SSender PING -> pure $ VRVerified Nothing
-    Cmd SSender RFWD {} -> pure $ VRVerified Nothing
+verifyTransmission auth_ tAuth authorized queueId (Cmd p cmd) =
+  case p of
+    SOwner -> case cmd of
+      (NEW k dhKey newAuth_ sm ss) -> pure $ SMPReqNew (NewSMPQueue k dhKey newAuth_ sm ss) `verifiedWith` k
+    SRecipient -> verifyQueue (\q -> SMPReqCmd (DCmd p cmd) q `verifiedWith` recipientKey q) <$> get SRecipient
+    SSender -> case cmd of  
+      SKEY k -> verifyQueue (\q -> SMPReqCmd (DCmd p cmd) q `verifiedWith` k) <$> get SSender
+      -- SEND will be accepted without authorization before the queue is secured with KEY or SKEY command
+      SEND {} -> verifyQueue (\q -> SMPReqCmd (DCmd p cmd) q `verified` maybe (isNothing tAuth) verify (senderKey q)) <$> get SSender
+    SService -> case cmd of
+      PING -> pure $ VRVerified SMPReqPing
+      RFWD encBlock -> pure $ VRVerified $ SMPReqFwdCmd encBlock
     -- NSUB will not be accepted without authorization
-    Cmd SNotifier NSUB -> verifyQueue (\q -> maybe dummyVerify (\n -> Just q `verifiedWith` notifierKey n) (notifier q)) <$> get SNotifier
-    Cmd SProxiedClient _ -> pure $ VRVerified Nothing
+    SNotifier -> verifyQueue (\q -> maybe dummyVerify (\n -> SMPReqCmd (DCmd p cmd) q `verifiedWith` notifierKey n) (notifier q)) <$> get SNotifier
+    SProxiedClient -> pure $ VRVerified $ SMPReqPrxCmd cmd
   where
     verify = verifyCmdAuthorization auth_ tAuth authorized
     dummyVerify = verify (dummyAuthKey tAuth) `seq` VRFailed
     verifyQueue :: (QueueRec -> VerificationResult) -> Either ErrorType QueueRec -> VerificationResult
     verifyQueue = either (const dummyVerify)
-    verified q cond = if cond then VRVerified q else VRFailed
-    verifiedWith q k = q `verified` verify k
+    verified r cond = if cond then VRVerified r else VRFailed
+    verifiedWith r k = r `verified` verify k
     get :: DirectParty p => SParty p -> M (Either ErrorType QueueRec)
     get party = do
       st <- asks queueStore
@@ -926,42 +929,39 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
     mkIncProxyStats ps psOwn own sel = do
       incStat $ sel ps
       when own $ incStat $ sel psOwn
-    processCommand :: (Maybe QueueRec, Transmission Cmd) -> M (Maybe (Transmission BrokerMsg))
-    processCommand (qr_, (corrId, entId, cmd)) = case cmd of
-      Cmd SProxiedClient command -> processProxiedCmd (corrId, entId, command)
-      Cmd SSender command -> Just <$> case command of
-        SKEY sKey -> (corrId,entId,) <$> case qr_ of
-          Just QueueRec {sndSecure, recipientId}
-            | sndSecure -> secureQueue_ "SKEY" recipientId sKey
-            | otherwise -> pure $ ERR AUTH
-          Nothing -> pure $ ERR INTERNAL
-        SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
-        PING -> pure (corrId, "", PONG)
-        RFWD encBlock -> (corrId, "",) <$> processForwardedCommand encBlock
-      Cmd SNotifier NSUB -> Just <$> subscribeNotifications
-      Cmd SRecipient command -> do
+    processCommand :: Transmission SMPRequest -> M (Maybe (Transmission BrokerMsg))
+    processCommand (corrId, entId, req) = case req of
+      SMPReqPrxCmd command -> processProxiedCmd (corrId, entId, command)
+      SMPReqPing -> pure $ Just (corrId, "", PONG)
+      SMPReqFwdCmd encBlock -> Just . (corrId, "",) <$> processForwardedCommand encBlock
+      SMPReqNew (NewSMPQueue rKey dhKey auth subMode sndSecure) -> Just <$> do
+        st <- asks queueStore
+        ifM
+          allowNew
+          (createQueue st rKey dhKey subMode sndSecure)
+          (pure (corrId, entId, ERR AUTH))
+        where
+          allowNew = do
+            ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
+            pure $ allowNewQueues && maybe True ((== auth) . Just) newQueueBasicAuth
+      SMPReqSubs _ -> pure $ Just (corrId, entId, ERR INTERNAL)
+      SMPReqCmd (DCmd _ command) qr@QueueRec {sndSecure, recipientId} -> do
         st <- asks queueStore
         Just <$> case command of
-          NEW rKey dhKey auth subMode sndSecure ->
-            ifM
-              allowNew
-              (createQueue st rKey dhKey subMode sndSecure)
-              (pure (corrId, entId, ERR AUTH))
-            where
-              allowNew = do
-                ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
-                pure $ allowNewQueues && maybe True ((== auth) . Just) newQueueBasicAuth
-          SUB -> withQueue (`subscribeQueue` entId)
-          GET -> withQueue getMessage
-          ACK msgId -> withQueue (`acknowledgeMsg` msgId)
-          KEY sKey -> (corrId,entId,) <$> case qr_ of
-            Just QueueRec {recipientId} -> secureQueue_ "KEY" recipientId sKey
-            Nothing -> pure $ ERR INTERNAL
+          SKEY sKey
+            | sndSecure -> (corrId,entId,) <$> secureQueue_ "SKEY" recipientId sKey
+            | otherwise -> pure (corrId, entId, ERR AUTH)
+          SEND flags msgBody -> sendMessage qr flags msgBody
+          NSUB -> subscribeNotifications
+          SUB -> subscribeQueue qr entId
+          GET -> getMessage qr
+          ACK msgId -> acknowledgeMsg qr msgId
+          KEY sKey -> (corrId,entId,) <$> secureQueue_ "KEY" recipientId sKey
           NKEY nKey dhKey -> addQueueNotifier_ st nKey dhKey
           NDEL -> deleteQueueNotifier_ st
           OFF -> suspendQueue_ st
           DEL -> delQueueAndMsgs st
-          QUE -> withQueue getQueueInfo
+          QUE -> getQueueInfo qr
       where
         createQueue :: QueueStore -> RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> SenderCanSecure -> M (Transmission BrokerMsg)
         createQueue st recipientKey dhKey subMode sndSecure = time "NEW" $ do
@@ -1121,9 +1121,6 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                     _ -> pure (msgGetNoMsg, (corrId, entId, OK))
               incStat $ statCnt stats
               pure r
-
-        withQueue :: (QueueRec -> M (Transmission BrokerMsg)) -> M (Transmission BrokerMsg)
-        withQueue action = maybe (pure $ err AUTH) action qr_
 
         subscribeNotifications :: M (Transmission BrokerMsg)
         subscribeNotifications = do
@@ -1328,7 +1325,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               Left r -> pure r
               -- rejectOrVerify filters allowed commands, no need to repeat it here.
               -- INTERNAL is used because processCommand never returns Nothing for sender commands (could be extracted for better types).
-              Right t''@(_, (corrId', entId', _)) -> fromMaybe (corrId', entId', ERR INTERNAL) <$> lift (processCommand t'')
+              Right t''@(corrId', entId', _) -> fromMaybe (corrId', entId', ERR INTERNAL) <$> lift (processCommand t'')
           -- encode response
           r' <- case batchTransmissions (batch clntTHParams) (blockSize clntTHParams) [Right (Nothing, encodeTransmission clntTHParams r)] of
             [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right
@@ -1344,7 +1341,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           incStat $ pMsgFwdsRecv stats
           pure $ RRES r3
           where
-            rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
+            rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Transmission SMPRequest))
             rejectOrVerify clntThAuth (tAuth, authorized, (corrId', entId', cmdOrError)) =
               case cmdOrError of
                 Left e -> pure $ Left (corrId', entId', ERR e)
@@ -1357,7 +1354,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                       Cmd SSender (SKEY _) -> True
                       _ -> False
                     verified = \case
-                      VRVerified qr -> Right (qr, (corrId', entId', cmd'))
+                      VRVerified req' -> Right (corrId', entId', req')
                       VRFailed -> Left (corrId', entId', ERR AUTH)
         deliverMessage :: T.Text -> QueueRec -> RecipientId -> Sub -> Maybe Message -> M (Transmission BrokerMsg)
         deliverMessage name qr rId s@Sub {subThread} msg_ = time (name <> " deliver") . atomically $

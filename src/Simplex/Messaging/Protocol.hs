@@ -58,6 +58,7 @@ module Simplex.Messaging.Protocol
     SenderCanSecure,
     Party (..),
     Cmd (..),
+    DirectCmd (..),
     DirectParty,
     BrokerMsg (..),
     SParty (..),
@@ -275,26 +276,32 @@ e2eEncMessageLength :: Int
 e2eEncMessageLength = 16016 -- 16004 .. 16021
 
 -- | SMP protocol clients
-data Party = Recipient | Sender | Notifier | ProxiedClient
+data Party = Owner | Recipient | Sender | Notifier | ProxiedClient | Service
   deriving (Show)
 
 -- | Singleton types for SMP protocol clients
 data SParty :: Party -> Type where
+  SOwner :: SParty Owner
   SRecipient :: SParty Recipient
   SSender :: SParty Sender
   SNotifier :: SParty Notifier
   SProxiedClient :: SParty ProxiedClient
+  SService :: SParty Service
 
 instance TestEquality SParty where
+  testEquality SOwner SOwner = Just Refl
   testEquality SRecipient SRecipient = Just Refl
   testEquality SSender SSender = Just Refl
   testEquality SNotifier SNotifier = Just Refl
   testEquality SProxiedClient SProxiedClient = Just Refl
+  testEquality SService SService = Just Refl
   testEquality _ _ = Nothing
 
 deriving instance Show (SParty p)
 
 class PartyI (p :: Party) where sParty :: SParty p
+
+instance PartyI Owner where sParty = SOwner
 
 instance PartyI Recipient where sParty = SRecipient
 
@@ -303,6 +310,8 @@ instance PartyI Sender where sParty = SSender
 instance PartyI Notifier where sParty = SNotifier
 
 instance PartyI ProxiedClient where sParty = SProxiedClient
+
+instance PartyI Service where sParty = SService
 
 type family DirectParty (p :: Party) :: Constraint where
   DirectParty Recipient = ()
@@ -315,6 +324,8 @@ type family DirectParty (p :: Party) :: Constraint where
 data Cmd = forall p. PartyI p => Cmd (SParty p) (Command p)
 
 deriving instance Show Cmd
+
+data DirectCmd = forall p. (PartyI p, DirectParty p) => DCmd (SParty p) (Command p)
 
 -- | Parsed SMP transmission without signature, size and session ID.
 type Transmission c = (CorrId, EntityId, c)
@@ -383,7 +394,7 @@ data Command (p :: Party) where
   -- v6 of SMP servers only support signature algorithm for command authorization.
   -- v7 of SMP servers additionally support additional layer of authenticated encryption.
   -- RcvPublicAuthKey is defined as C.APublicKey - it can be either signature or DH public keys.
-  NEW :: RcvPublicAuthKey -> RcvPublicDhKey -> Maybe BasicAuth -> SubscriptionMode -> SenderCanSecure -> Command Recipient
+  NEW :: RcvPublicAuthKey -> RcvPublicDhKey -> Maybe BasicAuth -> SubscriptionMode -> SenderCanSecure -> Command Owner
   SUB :: Command Recipient
   KEY :: SndPublicAuthKey -> Command Recipient
   NKEY :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> Command Recipient
@@ -400,7 +411,7 @@ data Command (p :: Party) where
   -- SEND v1 has to be supported for encoding/decoding
   -- SEND :: MsgBody -> Command Sender
   SEND :: MsgFlags -> MsgBody -> Command Sender
-  PING :: Command Sender
+  PING :: Command Service
   -- SMP notification subscriber commands
   NSUB :: Command Notifier
   PRXY :: SMPServer -> Maybe BasicAuth -> Command ProxiedClient -- request a relay server connection by URI
@@ -413,7 +424,7 @@ data Command (p :: Party) where
   -- Transmission forwarded to relay:
   -- - entity ID: empty
   -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
-  RFWD :: EncFwdTransmission -> Command Sender -- use CorrId as CbNonce, proxy to relay
+  RFWD :: EncFwdTransmission -> Command Service -- use CorrId as CbNonce, proxy to relay
 
 deriving instance Show (Command p)
 
@@ -663,7 +674,7 @@ noMsgFlags = MsgFlags {notification = False}
 -- * SMP command tags
 
 data CommandTag (p :: Party) where
-  NEW_ :: CommandTag Recipient
+  NEW_ :: CommandTag Owner
   SUB_ :: CommandTag Recipient
   KEY_ :: CommandTag Recipient
   NKEY_ :: CommandTag Recipient
@@ -675,10 +686,10 @@ data CommandTag (p :: Party) where
   QUE_ :: CommandTag Recipient
   SKEY_ :: CommandTag Sender
   SEND_ :: CommandTag Sender
-  PING_ :: CommandTag Sender
+  PING_ :: CommandTag Service
   PRXY_ :: CommandTag ProxiedClient
   PFWD_ :: CommandTag ProxiedClient
-  RFWD_ :: CommandTag Sender
+  RFWD_ :: CommandTag Service
   NSUB_ :: CommandTag Notifier
 
 data CmdTag = forall p. PartyI p => CT (SParty p) (CommandTag p)
@@ -733,7 +744,7 @@ instance PartyI p => Encoding (CommandTag p) where
 
 instance ProtocolMsgTag CmdTag where
   decodeTag = \case
-    "NEW" -> Just $ CT SRecipient NEW_
+    "NEW" -> Just $ CT SOwner NEW_
     "SUB" -> Just $ CT SRecipient SUB_
     "KEY" -> Just $ CT SRecipient KEY_
     "NKEY" -> Just $ CT SRecipient NKEY_
@@ -745,10 +756,10 @@ instance ProtocolMsgTag CmdTag where
     "QUE" -> Just $ CT SRecipient QUE_
     "SKEY" -> Just $ CT SSender SKEY_
     "SEND" -> Just $ CT SSender SEND_
-    "PING" -> Just $ CT SSender PING_
+    "PING" -> Just $ CT SService PING_
     "PRXY" -> Just $ CT SProxiedClient PRXY_
     "PFWD" -> Just $ CT SProxiedClient PFWD_
-    "RFWD" -> Just $ CT SSender RFWD_
+    "RFWD" -> Just $ CT SService RFWD_
     "NSUB" -> Just $ CT SNotifier NSUB_
     _ -> Nothing
 
@@ -1275,7 +1286,7 @@ instance Protocol SMPVersion ErrorType BrokerMsg where
   type ProtoCommand BrokerMsg = Cmd
   type ProtoType BrokerMsg = 'PSMP
   protocolClientHandshake = smpClientHandshake
-  protocolPing = Cmd SSender PING
+  protocolPing = Cmd SService PING
   protocolError = \case
     ERR e -> Just e
     _ -> Nothing
@@ -1359,8 +1370,8 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
   encodeProtocol v (Cmd _ c) = encodeProtocol v c
 
   protocolP v = \case
-    CT SRecipient tag ->
-      Cmd SRecipient <$> case tag of
+    CT SOwner tag ->
+      Cmd SOwner <$> case tag of
         NEW_
           | v >= sndAuthKeySMPVersion -> new <*> smpP <*> smpP <*> smpP
           | v >= subModeSMPVersion -> new <*> auth <*> smpP <*> pure False
@@ -1369,6 +1380,8 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
           where
             new = NEW <$> _smpP <*> smpP
             auth = optional (A.char 'A' *> smpP)
+    CT SRecipient tag ->
+      Cmd SRecipient <$> case tag of
         SUB_ -> pure SUB
         KEY_ -> KEY <$> _smpP
         NKEY_ -> NKEY <$> _smpP <*> smpP
@@ -1382,6 +1395,8 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
       Cmd SSender <$> case tag of
         SKEY_ -> SKEY <$> _smpP
         SEND_ -> SEND <$> _smpP <*> (unTail <$> _smpP)
+    CT SService tag ->
+      Cmd SService <$> case tag of
         PING_ -> pure PING
         RFWD_ -> RFWD <$> (EncFwdTransmission . unTail <$> _smpP)
     CT SProxiedClient tag ->
