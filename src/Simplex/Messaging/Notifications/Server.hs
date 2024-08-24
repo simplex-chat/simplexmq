@@ -203,7 +203,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
-      ((_, srv, _), _, _, ts) <- atomically $ readTBQueue msgQ
+      ((_, srv, _), _thVersion, sessionId, ts) <- atomically $ readTBQueue msgQ
       forM ts $ \(ntfId, t) -> case t of
         STUnexpectedError e -> logError $ "SMP client unexpected error: " <> tshow e -- uncorrelated response, should not happen
         STResponse {} -> pure () -- it was already reported as timeout error
@@ -220,7 +220,9 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
                 findNtfSubscriptionToken st smpQueue
                   >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
               incNtfStat ntfReceived
-            Right SMP.END -> updateSubStatus smpQueue NSEnd
+            Right SMP.END ->
+              whenM (atomically $ activeClientSession' ca sessionId srv) $
+                updateSubStatus smpQueue NSEnd
             Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
             Right _ -> logError "SMP server unexpected response"
             Left e -> logError $ "SMP client error: " <> tshow e
