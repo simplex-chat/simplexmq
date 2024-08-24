@@ -372,13 +372,15 @@ smpSubscribeQueues party ca smp srv subs = do
     notify_ :: (SMPServer -> SMPSubParty -> NonEmpty a -> SMPClientAgentEvent) -> [a] -> IO ()
     notify_ evt qs = mapM_ (notify ca . evt srv party) $ L.nonEmpty qs
 
-activeClientSession :: SMPClientAgent -> SMPClient -> SMPServer -> STM Bool
-activeClientSession ca smp srv = sameSess <$> tryReadSessVar srv (smpClients ca)
+activeClientSession' :: SMPClientAgent -> SessionId -> SMPServer -> STM Bool
+activeClientSession' ca sessId srv = sameSess <$> tryReadSessVar srv (smpClients ca)
   where
-    sessId = sessionId . thParams
     sameSess = \case
-      Just (Right (_, smp')) -> sessId smp == sessId smp'
+      Just (Right (_, smp')) -> sessId == sessionId (thParams smp')
       _ -> False
+
+activeClientSession :: SMPClientAgent -> SMPClient -> SMPServer -> STM Bool
+activeClientSession ca = activeClientSession' ca . sessionId . thParams
 
 showServer :: SMPServer -> ByteString
 showServer ProtocolServer {host, port} =

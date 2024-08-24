@@ -57,6 +57,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getDeletedConns,
     getConnData,
     setConnDeleted,
+    setConnUserId,
     setConnAgentVersion,
     setConnPQSupport,
     getDeletedConnIds,
@@ -136,6 +137,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     createCommand,
     getPendingCommandServers,
     getPendingServerCommand,
+    updateCommandServer,
     deleteCommand,
     -- Notification device token persistence
     createNtfToken,
@@ -1322,38 +1324,39 @@ getPendingCommandServers db connId = do
   where
     smpServer (host, port, keyHash) = SMPServer <$> host <*> port <*> keyHash
 
-getPendingServerCommand :: DB.Connection -> Maybe SMPServer -> IO (Either StoreError (Maybe PendingCommand))
-getPendingServerCommand db srv_ = getWorkItem "command" getCmdId getCommand markCommandFailed
+getPendingServerCommand :: DB.Connection -> ConnId -> Maybe SMPServer -> IO (Either StoreError (Maybe PendingCommand))
+getPendingServerCommand db connId srv_ = getWorkItem "command" getCmdId getCommand markCommandFailed
   where
     getCmdId :: IO (Maybe Int64)
     getCmdId =
       maybeFirstRow fromOnly $ case srv_ of
         Nothing ->
-          DB.query_
+          DB.query
             db
             [sql|
               SELECT command_id FROM commands
-              WHERE host IS NULL AND port IS NULL AND failed = 0
+              WHERE conn_id = ? AND host IS NULL AND port IS NULL AND failed = 0
               ORDER BY created_at ASC, command_id ASC
               LIMIT 1
             |]
+            (Only connId)
         Just (SMPServer host port _) ->
           DB.query
             db
             [sql|
               SELECT command_id FROM commands
-              WHERE host = ? AND port = ? AND failed = 0
+              WHERE conn_id = ? AND host = ? AND port = ? AND failed = 0
               ORDER BY created_at ASC, command_id ASC
               LIMIT 1
             |]
-            (host, port)
+            (connId, host, port)
     getCommand :: Int64 -> IO (Either StoreError PendingCommand)
     getCommand cmdId =
       firstRow pendingCommand err $
         DB.query
           db
           [sql|
-            SELECT c.corr_id, cs.user_id, c.conn_id, c.command
+            SELECT c.corr_id, cs.user_id, c.command
             FROM commands c
             JOIN connections cs USING (conn_id)
             WHERE c.command_id = ?
@@ -1361,8 +1364,21 @@ getPendingServerCommand db srv_ = getWorkItem "command" getCmdId getCommand mark
           (Only cmdId)
       where
         err = SEInternal $ "command  " <> bshow cmdId <> " returned []"
-        pendingCommand (corrId, userId, connId, command) = PendingCommand {cmdId, corrId, userId, connId, command}
+        pendingCommand (corrId, userId, command) = PendingCommand {cmdId, corrId, userId, connId, command}
     markCommandFailed cmdId = DB.execute db "UPDATE commands SET failed = 1 WHERE command_id = ?" (Only cmdId)
+
+updateCommandServer :: DB.Connection -> AsyncCmdId -> SMPServer -> IO (Either StoreError ())
+updateCommandServer db cmdId srv@(SMPServer host port _) = runExceptT $ do
+  serverKeyHash_ <- ExceptT $ getServerKeyHash_ db srv
+  liftIO $
+    DB.execute
+      db
+      [sql|
+        UPDATE commands
+        SET host = ?, port = ?, server_key_hash = ?
+        WHERE command_id = ?
+      |]
+      (host, port, serverKeyHash_, cmdId)
 
 deleteCommand :: DB.Connection -> AsyncCmdId -> IO ()
 deleteCommand db cmdId =
@@ -1975,6 +1991,10 @@ setConnDeleted db waitDelivery connId
       DB.execute db "UPDATE connections SET deleted_at_wait_delivery = ? WHERE conn_id = ?" (currentTs, connId)
   | otherwise =
       DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
+
+setConnUserId :: DB.Connection -> UserId -> ConnId -> UserId -> IO ()
+setConnUserId db oldUserId connId newUserId = 
+  DB.execute db "UPDATE connections SET user_id = ? WHERE conn_id = ? and user_id = ?" (newUserId, connId, oldUserId)
 
 setConnAgentVersion :: DB.Connection -> ConnId -> VersionSMPA -> IO ()
 setConnAgentVersion db connId aVersion =

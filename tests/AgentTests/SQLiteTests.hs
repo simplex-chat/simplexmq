@@ -114,6 +114,8 @@ storeTests = do
           testDeleteRcvConn
           testDeleteSndConn
           testDeleteDuplexConn
+        describe "setConnUserId" $ do
+          testSetConnUserIdNewConn
         describe "upgradeRcvConnToDuplex" $ do
           testUpgradeRcvConnToDuplex
         describe "upgradeSndConnToDuplex" $ do
@@ -335,6 +337,21 @@ testGetRcvConn =
     Right (_, rq) <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     getRcvConn db smpServer recipientId
       `shouldReturn` Right (rq, SomeConn SCRcv (RcvConnection cData1 rq))
+
+testSetConnUserIdNewConn :: SpecWith SQLiteStore
+testSetConnUserIdNewConn =
+  it "should set user id for new connection" . withStoreTransaction $ \db -> do
+    g <- C.newRandom
+    Right connId <- createNewConn db g cData1 {connId = ""} SCMInvitation
+    newUserId <- createUserRecord db
+    _ <- setConnUserId db 1 connId newUserId
+    connResult <- getConn db connId
+    case connResult of
+      Right (SomeConn SCNew (NewConnection connData)) -> do
+        let ConnData {userId} = connData
+        userId `shouldBe` newUserId
+      _ -> do
+         expectationFailure "Failed to get connection"
 
 testDeleteRcvConn :: SpecWith SQLiteStore
 testDeleteRcvConn =
@@ -644,30 +661,30 @@ testGetPendingServerCommand :: SQLiteStore -> Expectation
 testGetPendingServerCommand st = do
   g <- C.newRandom
   withTransaction st $ \db -> do
-    Right Nothing <- getPendingServerCommand db Nothing
+    Right Nothing <- getPendingServerCommand db "" Nothing
     Right connId <- createNewConn db g cData1 {connId = ""} SCMInvitation
     Right () <- createCommand db "1" connId Nothing command
     corruptCmd db "1" connId
     Right () <- createCommand db "2" connId Nothing command
 
-    Left e <- getPendingServerCommand db Nothing
+    Left e <- getPendingServerCommand db connId Nothing
     show e `shouldContain` "bad AgentCmdType"
     DB.query_ db "SELECT conn_id, corr_id FROM commands WHERE failed = 1" `shouldReturn` [(connId, "1" :: ByteString)]
 
-    Right (Just PendingCommand {corrId}) <- getPendingServerCommand db Nothing
+    Right (Just PendingCommand {corrId}) <- getPendingServerCommand db connId Nothing
     corrId `shouldBe` "2"
 
     Right _ <- updateNewConnRcv db connId rcvQueue1
-    Right Nothing <- getPendingServerCommand db $ Just smpServer1
+    Right Nothing <- getPendingServerCommand db connId $ Just smpServer1
     Right () <- createCommand db "3" connId (Just smpServer1) command
     corruptCmd db "3" connId
     Right () <- createCommand db "4" connId (Just smpServer1) command
 
-    Left e' <- getPendingServerCommand db (Just smpServer1)
+    Left e' <- getPendingServerCommand db connId (Just smpServer1)
     show e' `shouldContain` "bad AgentCmdType"
     DB.query_ db "SELECT conn_id, corr_id FROM commands WHERE failed = 1" `shouldReturn` [(connId, "1" :: ByteString), (connId, "3" :: ByteString)]
 
-    Right (Just PendingCommand {corrId = corrId'}) <- getPendingServerCommand db (Just smpServer1)
+    Right (Just PendingCommand {corrId = corrId'}) <- getPendingServerCommand db connId (Just smpServer1)
     corrId' `shouldBe` "4"
   where
     command = AClientCommand $ NEW True (ACM SCMInvitation) (IKNoPQ PQSupportOn) SMSubscribe

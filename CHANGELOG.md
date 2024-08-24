@@ -1,3 +1,18 @@
+# 6.0.1
+
+SMP agent:
+- support changing user of the new connection.
+- do not start delivery workers when there are no messages to deliver.
+- enable notifications for all connections.
+- combine database transactions when subscribing.
+- store query errors, reduce slow query threshold to 1ms.
+
+SMP server:
+- safe compacting of store log.
+- fix possible race when creating client that might lead to memory leak.
+
+Dependencies: upgrade tls to 1.9
+
 # 6.0.0
 
 Version 6.0.0.8
