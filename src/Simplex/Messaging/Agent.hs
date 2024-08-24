@@ -128,7 +128,7 @@ import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
-import Data.Bifunctor (bimap, first)
+import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::), (.::.))
@@ -1134,30 +1134,30 @@ sendMessagesB_ c reqs connIds = withConnLocks c connIds "sendMessages" $ do
 enqueueCommand :: AgentClient -> ACorrId -> ConnId -> Maybe SMPServer -> AgentCommand -> AM ()
 enqueueCommand c corrId connId server aCommand = do
   withStore c $ \db -> createCommand db corrId connId server aCommand
-  lift . void $ getAsyncCmdWorker True c server
+  lift . void $ getAsyncCmdWorker True c connId server
 
-resumeSrvCmds :: AgentClient -> Maybe SMPServer -> AM' ()
-resumeSrvCmds = void .: getAsyncCmdWorker False
+resumeSrvCmds :: AgentClient -> ConnId -> Maybe SMPServer -> AM' ()
+resumeSrvCmds = void .:. getAsyncCmdWorker False
 {-# INLINE resumeSrvCmds #-}
 
 resumeConnCmds :: AgentClient -> [ConnId] -> AM' ()
 resumeConnCmds c connIds = do
-  srvs <- nubOrd . concat . rights <$> withStoreBatch' c (\db -> fmap (getPendingCommandServers db) connIds)
-  mapM_ (resumeSrvCmds c) srvs
+  connSrvs <- rights . zipWith (second . (,)) connIds <$> withStoreBatch' c (\db -> fmap (getPendingCommandServers db) connIds)
+  mapM_ (\(connId, srvs) -> mapM_ (resumeSrvCmds c connId) srvs) connSrvs
 
-getAsyncCmdWorker :: Bool -> AgentClient -> Maybe SMPServer -> AM' Worker
-getAsyncCmdWorker hasWork c server =
-  getAgentWorker "async_cmd" hasWork c server (asyncCmdWorkers c) (runCommandProcessing c server)
+getAsyncCmdWorker :: Bool -> AgentClient -> ConnId -> Maybe SMPServer -> AM' Worker
+getAsyncCmdWorker hasWork c connId server =
+  getAgentWorker "async_cmd" hasWork c (connId, server) (asyncCmdWorkers c) (runCommandProcessing c connId server)
 
-runCommandProcessing :: AgentClient -> Maybe SMPServer -> Worker -> AM ()
-runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
+runCommandProcessing :: AgentClient -> ConnId -> Maybe SMPServer -> Worker -> AM ()
+runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
   ri <- asks $ messageRetryInterval . config -- different retry interval?
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
     lift $ waitForWork doWork
     liftIO $ throwWhenInactive c
     atomically $ beginAgentOperation c AOSndNetwork
-    withWork c doWork (`getPendingServerCommand` server_) $ runProcessCmd (riFast ri)
+    withWork c doWork (\db -> getPendingServerCommand db connId server_) $ runProcessCmd (riFast ri)
   where
     runProcessCmd ri cmd = do
       pending <- newTVarIO []
@@ -1198,8 +1198,15 @@ runCommandProcessing c@AgentClient {subQ} server_ Worker {doWork} = do
               mapM_ (secure rq) senderKey
               mapM_ (connectReplyQueues c cData ownConnInfo Nothing) (L.nonEmpty $ smpReplyQueues senderConf)
             -- duplex connection is matched to handle SKEY retries
-            DuplexConnection cData _ (sq :| _) ->
+            DuplexConnection cData _ (sq :| _) -> do
               mapM_ (connectReplyQueues c cData ownConnInfo (Just sq)) (L.nonEmpty $ smpReplyQueues senderConf)
+                `catchAgentError` \e -> do
+                    let server = qServer sq
+                    when (temporaryOrHostError e && Just server /= server_) $ do
+                      -- In case the server is different we update server to remove command from this (connId, srv) queue
+                      withStore c $ \db -> updateCommandServer db cmdId server
+                      lift . void $ getAsyncCmdWorker True c connId (Just server)
+                      throwE e
             _ -> throwE $ INTERNAL $ "incorrect connection type " <> show (internalCmdTag cmd)
         ICDuplexSecure _rId senderKey -> withServer' . tryWithLock "ICDuplexSecure" . withDuplexConn $ \(DuplexConnection cData (rq :| _) (sq :| _)) -> do
           secure rq senderKey
