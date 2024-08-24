@@ -1148,6 +1148,8 @@ getAsyncCmdWorker :: Bool -> AgentClient -> ConnId -> Maybe SMPServer -> AM' Wor
 getAsyncCmdWorker hasWork c connId server =
   getAgentWorker "async_cmd" hasWork c (connId, server) (asyncCmdWorkers c) (runCommandProcessing c connId server)
 
+data CommandCompletion = CCMoved | CCCompleted
+
 runCommandProcessing :: AgentClient -> ConnId -> Maybe SMPServer -> Worker -> AM ()
 runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
   ri <- asks $ messageRetryInterval . config -- different retry interval?
@@ -1189,24 +1191,25 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
       AInternalCommand cmd -> case cmd of
         ICAckDel rId srvMsgId msgId -> withServer $ \srv -> tryWithLock "ICAckDel" $ ack srv rId srvMsgId >> withStore' c (\db -> deleteMsg db connId msgId)
         ICAck rId srvMsgId -> withServer $ \srv -> tryWithLock "ICAck" $ ack srv rId srvMsgId
-        ICAllowSecure _rId senderKey -> withServer' . tryCancellableWithLock "ICAllowSecure" $ do
+        ICAllowSecure _rId senderKey -> withServer' . tryMoveableWithLock "ICAllowSecure" $ do
           (SomeConn _ conn, AcceptedConfirmation {senderConf, ownConnInfo}) <-
             withStore c $ \db -> runExceptT $ (,) <$> ExceptT (getConn db connId) <*> ExceptT (getAcceptedConfirmation db connId)
           case conn of
             RcvConnection cData rq -> do
               mapM_ (secure rq) senderKey
               mapM_ (connectReplyQueues c cData ownConnInfo Nothing) (L.nonEmpty $ smpReplyQueues senderConf)
-              pure True
+              pure CCCompleted
             -- duplex connection is matched to handle SKEY retries
             DuplexConnection cData _ (sq :| _) -> do
               tryAgentError (mapM_ (connectReplyQueues c cData ownConnInfo (Just sq)) (L.nonEmpty $ smpReplyQueues senderConf)) >>= \case
-                Right () -> pure True
-                Left e | temporaryOrHostError e && Just server /= server_ -> do
-                  -- In case the server is different we update server to remove command from this (connId, srv) queue
-                  withStore c $ \db -> updateCommandServer db cmdId server
-                  lift . void $ getAsyncCmdWorker True c connId (Just server)
-                  pure False
-                Left e -> throwE e
+                Right () -> pure CCCompleted
+                Left e
+                  | temporaryOrHostError e && Just server /= server_ -> do
+                      -- In case the server is different we update server to remove command from this (connId, srv) queue
+                      withStore c $ \db -> updateCommandServer db cmdId server
+                      lift . void $ getAsyncCmdWorker True c connId (Just server)
+                      pure CCMoved
+                  | otherwise -> throwE e
               where
                 server = qServer sq
             _ -> throwE $ INTERNAL $ "incorrect connection type " <> show (internalCmdTag cmd)
@@ -1281,18 +1284,18 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
           withStore c (`getConn` connId) >>= \case
             SomeConn _ conn@DuplexConnection {} -> a conn
             _ -> internalErr "command requires duplex connection"
-        tryCommand action = tryCancellableCommand (action $> True)
-        tryCancellableCommand action = withRetryInterval ri $ \_ loop -> do
+        tryCommand action = tryMoveableCommand (action $> CCCompleted)
+        tryMoveableCommand action = withRetryInterval ri $ \_ loop -> do
           liftIO $ waitWhileSuspended c
           liftIO $ waitForUserNetwork c
           tryAgentError action >>= \case
             Left e
               | temporaryOrHostError e -> retrySndOp c loop
               | otherwise -> cmdError e
-            Right True -> withStore' c (`deleteCommand` cmdId)
-            Right False -> pure () -- command processing cancelled, command moved to another queue
+            Right CCCompleted -> withStore' c (`deleteCommand` cmdId)
+            Right CCMoved -> pure () -- command processing moved to another command queue
         tryWithLock name = tryCommand . withConnLock c connId name
-        tryCancellableWithLock name = tryCancellableCommand . withConnLock c connId name
+        tryMoveableWithLock name = tryMoveableCommand . withConnLock c connId name
         internalErr s = cmdError $ INTERNAL $ s <> ": " <> show (agentCommandTag command)
         cmdError e = notify (ERR e) >> withStore' c (`deleteCommand` cmdId)
         notify :: forall e. AEntityI e => AEvent e -> AM ()
