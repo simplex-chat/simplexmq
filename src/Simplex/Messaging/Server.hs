@@ -1114,7 +1114,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
         suspendQueue_ :: QueueStore -> Transmission QueueRec -> M (Transmission BrokerMsg)
         suspendQueue_ st t@(_, entId, _) = do
           withLog (`logSuspendQueue` entId)
-          okResp' t <$> atomically (suspendQueue st entId)
+          either (err t) (const $ ok t) <$> atomically (suspendQueue st entId)
 
         subscribeQueue :: Transmission QueueRec -> M (Maybe RecipientId, Transmission BrokerMsg)
         subscribeQueue t@(_, rId, _) = do
@@ -1479,9 +1479,6 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
 
         err :: Transmission a -> ErrorType -> Transmission BrokerMsg
         err (corrId, qId, _) e = (corrId, qId, ERR e)
-
-        okResp' :: Transmission a -> Either ErrorType () -> Transmission BrokerMsg
-        okResp' t = either (err t) $ const (ok t)
 
 updateDeletedStats :: QueueRec -> M ()
 updateDeletedStats q = do
