@@ -374,7 +374,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       u <- askUnliftIO
       liftIO $ do
         labelMyThread "control port server"
-        runTCPServer cpStarted port $ runCPClient u srv
+        runLocalTCPServer cpStarted port $ runCPClient u srv
       where
         runCPClient :: UnliftIO (ReaderT Env IO) -> Server -> Socket -> IO ()
         runCPClient u srv sock = do
