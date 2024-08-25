@@ -720,10 +720,10 @@ receive h@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiv
       where
         batchedCmd :: DirectCmd -> Maybe BatchedCommand
         batchedCmd (DCmd _ command) = case command of
-          SUB -> Just BC_SUB
-          DEL -> Just BC_DEL
-          NSUB -> Just BC_NSUB
-          NDEL -> Just BC_NDEL
+          SUB -> Just B_SUB
+          DEL -> Just B_DEL
+          NSUB -> Just B_NSUB
+          NDEL -> Just B_NDEL
           _ -> Nothing
 
 send :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> IO ()
@@ -967,8 +967,8 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
               pure $ allowNewQueues && maybe True ((== auth) . Just) newQueueBasicAuth
         SMPReqBatched br ts -> case br of
-          BC_SUB -> mapM subscribeQueue ts >>= notifySubscriptions subscribedQ True
-          BC_DEL -> do
+          B_SUB -> mapM subscribeQueue ts >>= notifySubscriptions subscribedQ True
+          B_DEL -> do
             (qIds, rs) <- L.unzip <$> mapM (delQueueAndMsgs st) ts
             forM_ (catMaybesNE qIds) $ \qIds' -> do
               let (rIds, nIds) = L.unzip qIds'
@@ -976,8 +976,8 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               atomically $ writeTQueue subscribedQ (clnt, False, rIds)
               mapM_ (atomically . writeTQueue ntfSubscribedQ . (clnt,False,)) $ catMaybesNE nIds
             pure $ L.toList rs
-          BC_NSUB -> mapM subscribeNotifications ts >>= notifySubscriptions ntfSubscribedQ True
-          BC_NDEL -> mapM (deleteQueueNotifier_ st) ts >>= notifySubscriptions ntfSubscribedQ False
+          B_NSUB -> mapM subscribeNotifications ts >>= notifySubscriptions ntfSubscribedQ True
+          B_NDEL -> mapM (deleteQueueNotifier_ st) ts >>= notifySubscriptions ntfSubscribedQ False
         SMPReqCmd (DCmd _ command) t -> (: []) <$> case command of
           SKEY sKey -> sndSecureQueue t sKey
           SEND flags msgBody -> sendMessage t flags msgBody

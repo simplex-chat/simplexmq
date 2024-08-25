@@ -155,7 +155,7 @@ data SMPRequest
   | SMPReqFwdCmd CorrId EncFwdTransmission
   | SMPReqPing CorrId
 
-data BatchedCommand = BC_SUB | BC_DEL | BC_NSUB | BC_NDEL
+data BatchedCommand = B_SUB | B_DEL | B_NSUB | B_NDEL
   deriving (Eq)
 
 data NewSMPQueue = NewSMPQueue
