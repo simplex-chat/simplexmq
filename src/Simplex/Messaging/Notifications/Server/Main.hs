@@ -1,6 +1,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
@@ -132,7 +133,8 @@ ntfServerCLI cfgPath logPath =
                         { networkConfig =
                             defaultNetworkConfig
                               { socksProxy = either error id <$!> strDecodeIni "SUBSCRIBER" "socks_proxy" ini,
-                                socksMode = maybe SMOnion (either error id) $! strDecodeIni "SUBSCRIBER" "socks_mode" ini
+                                socksMode = maybe SMOnion (either error id) $! strDecodeIni "SUBSCRIBER" "socks_mode" ini,
+                                smpPingInterval = 60_000_000 -- 1 minutes
                               }
                         },
                     persistErrorInterval = 0 -- seconds

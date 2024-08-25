@@ -1063,13 +1063,12 @@ testAllowConnectionClientRestart t = do
     threadDelay 250000
 
     alice2 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
+    runRight_ $ subscribeConnection alice2 bobId
+    threadDelay 500000
 
     withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \_ -> do
       runRight $ do
         ("", "", UP _ _) <- nGet bob
-
-        subscribeConnection alice2 bobId
-
         get alice2 ##> ("", bobId, CON)
         get bob ##> ("", aliceId, INFO "alice's connInfo")
         get bob ##> ("", aliceId, CON)

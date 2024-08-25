@@ -166,10 +166,10 @@ threadDelay' = loop
           loop $ time - maxWait
 
 diffToMicroseconds :: NominalDiffTime -> Int64
-diffToMicroseconds diff = fromIntegral ((truncate $ diff * 1000000) :: Integer)
+diffToMicroseconds diff = truncate $ diff * 1000000
 
 diffToMilliseconds :: NominalDiffTime -> Int64
-diffToMilliseconds diff = fromIntegral ((truncate $ diff * 1000) :: Integer)
+diffToMilliseconds diff = truncate $ diff * 1000
 
 labelMyThread :: MonadIO m => String -> m ()
 labelMyThread label = liftIO $ myThreadId >>= (`labelThread` label)

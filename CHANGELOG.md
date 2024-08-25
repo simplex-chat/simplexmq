@@ -1,3 +1,13 @@
+# 6.0.2
+
+SMP agent:
+- fix stuck connection commands when a server is not responding.
+- store query errors, reduce slow query threshold to 1ms.
+
+Notification server:
+- reduce PING interval to 1 minute.
+- fix subscriptions disabled on race condition (only mark subscriptions with END status when received via the active connection).
+
 # 6.0.1
 
 SMP agent:
@@ -5,7 +15,6 @@ SMP agent:
 - do not start delivery workers when there are no messages to deliver.
 - enable notifications for all connections.
 - combine database transactions when subscribing.
-- store query errors, reduce slow query threshold to 1ms.
 
 SMP server:
 - safe compacting of store log.
