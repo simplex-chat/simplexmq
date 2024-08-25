@@ -148,14 +148,14 @@ newtype ProxyAgent = ProxyAgent
 type ClientId = Int
 
 data SMPRequest
-  = SMPReqNew NewSMPQueue
-  | SMPReqBatched BatchedRequest (NonEmpty (Transmission QueueRec))
-  | SMPReqCmd DirectCmd QueueRec
-  | SMPReqPrxCmd (Command 'ProxiedClient)
-  | SMPReqFwdCmd EncFwdTransmission
-  | SMPReqPing
+  = SMPReqNew (Transmission NewSMPQueue)
+  | SMPReqBatched BatchedCommand (NonEmpty (Transmission QueueRec))
+  | SMPReqCmd DirectCmd (Transmission QueueRec)
+  | SMPReqPrxCmd (Transmission (Command 'ProxiedClient))
+  | SMPReqFwdCmd CorrId EncFwdTransmission
+  | SMPReqPing CorrId
 
-data BatchedRequest = BRSUB | BRDEL | BRNtfSUB | BRNtfDEL
+data BatchedCommand = BC_SUB | BC_DEL | BC_NSUB | BC_NDEL
   deriving (Eq)
 
 data NewSMPQueue = NewSMPQueue
@@ -170,7 +170,7 @@ data Client = Client
   { clientId :: ClientId,
     subscriptions :: TMap RecipientId Sub,
     ntfSubscriptions :: TMap NotifierId (),
-    rcvQ :: TBQueue (NonEmpty (Transmission SMPRequest)),
+    rcvQ :: TBQueue (NonEmpty SMPRequest),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     procThreads :: TVar Int,
