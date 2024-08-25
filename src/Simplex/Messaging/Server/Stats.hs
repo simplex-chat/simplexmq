@@ -31,6 +31,8 @@ data ServerStats = ServerStats
     qSubAuth :: TVar Int,
     qSubDuplicate :: TVar Int,
     qSubProhibited :: TVar Int,
+    qSubEnd :: TVar Int,
+    qSubEndSent :: TVar Int,
     ntfCreated :: TVar Int,
     ntfDeleted :: TVar Int,
     ntfSub :: TVar Int,
@@ -77,6 +79,8 @@ data ServerStatsData = ServerStatsData
     _qSubAuth :: Int,
     _qSubDuplicate :: Int,
     _qSubProhibited :: Int,
+    _qSubEnd :: Int,
+    _qSubEndSent :: Int,
     _ntfCreated :: Int,
     _ntfDeleted :: Int,
     _ntfSub :: Int,
@@ -125,6 +129,8 @@ newServerStats ts = do
   qSubAuth <- newTVarIO 0
   qSubDuplicate <- newTVarIO 0
   qSubProhibited <- newTVarIO 0
+  qSubEnd <- newTVarIO 0
+  qSubEndSent <- newTVarIO 0
   ntfCreated <- newTVarIO 0
   ntfDeleted <- newTVarIO 0
   ntfSub <- newTVarIO 0
@@ -170,6 +176,8 @@ newServerStats ts = do
         qSubAuth,
         qSubDuplicate,
         qSubProhibited,
+        qSubEnd,
+        qSubEndSent,
         ntfCreated,
         ntfDeleted,
         ntfSub,
@@ -217,6 +225,8 @@ getServerStatsData s = do
   _qSubAuth <- readTVarIO $ qSubAuth s
   _qSubDuplicate <- readTVarIO $ qSubDuplicate s
   _qSubProhibited <- readTVarIO $ qSubProhibited s
+  _qSubEnd <- readTVarIO $ qSubEnd s
+  _qSubEndSent <- readTVarIO $ qSubEndSent s
   _ntfCreated <- readTVarIO $ ntfCreated s
   _ntfDeleted <- readTVarIO $ ntfDeleted s
   _ntfSub <- readTVarIO $ ntfSub s
@@ -262,6 +272,8 @@ getServerStatsData s = do
         _qSubAuth,
         _qSubDuplicate,
         _qSubProhibited,
+        _qSubEnd,
+        _qSubEndSent,
         _ntfCreated,
         _ntfDeleted,
         _ntfSub,
@@ -309,6 +321,8 @@ setServerStats s d = do
   writeTVar (qSubAuth s) $! _qSubAuth d
   writeTVar (qSubDuplicate s) $! _qSubDuplicate d
   writeTVar (qSubProhibited s) $! _qSubProhibited d
+  writeTVar (qSubEnd s) $! _qSubEnd d
+  writeTVar (qSubEndSent s) $! _qSubEndSent d
   writeTVar (ntfCreated s) $! _ntfCreated d
   writeTVar (ntfDeleted s) $! _ntfDeleted d
   writeTVar (ntfSub s) $! _ntfSub d
@@ -408,6 +422,8 @@ instance StrEncoding ServerStatsData where
     _qSubAuth <- opt "qSubAuth="
     _qSubDuplicate <- opt "qSubDuplicate="
     _qSubProhibited <- opt "qSubProhibited="
+    _qSubEnd <- pure 0
+    _qSubEndSent <- pure 0
     _ntfCreated <- opt "ntfCreated="
     _ntfDeleted <- opt "ntfDeleted="
     _ntfSub <- opt "ntfSub="
@@ -464,6 +480,8 @@ instance StrEncoding ServerStatsData where
           _qSubAuth,
           _qSubDuplicate,
           _qSubProhibited,
+          _qSubEnd,
+          _qSubEndSent,
           _ntfCreated,
           _ntfDeleted,
           _ntfSub,

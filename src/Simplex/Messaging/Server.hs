@@ -170,9 +170,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     serverThread s label subQ subs clientSubs unsub = do
       labelMyThread label
       cls <- asks clients
+      stats <- asks serverStats
       forever $
         atomically (updateSubscribers cls)
-          $>>= endPreviousSubscriptions
+          $>>= endPreviousSubscriptions stats
           >>= liftIO . mapM_ unsub
       where
         updateSubscribers :: TVar (IM.IntMap (Maybe Client)) -> STM (Maybe (QueueId, Client))
@@ -189,10 +190,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                     yes <- readTVar $ connected c'
                     pure $ if yes then Just (qId, c') else Nothing
           updateSub qId (subs s) $>>= clientToBeNotified
-        endPreviousSubscriptions :: (QueueId, Client) -> M (Maybe s)
-        endPreviousSubscriptions (qId, c) = do
-          forkClient c (label <> ".endPreviousSubscriptions") $
+        endPreviousSubscriptions :: ServerStats -> (QueueId, Client) -> M (Maybe s)
+        endPreviousSubscriptions stats (qId, c) = do
+          forkClient c (label <> ".endPreviousSubscriptions") $ do
             atomically $ writeTBQueue (sndQ c) [(CorrId "", qId, END)]
+            incStat $ qSubEnd stats
           atomically $ TM.lookupDelete qId (clientSubs c)
 
     receiveFromProxyAgent :: ProxyAgent -> M ()
@@ -442,6 +444,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 putStat "qSubNoMsg" qSubNoMsg
                 subs <- (,,) <$> getStat qSubAuth <*> getStat qSubDuplicate <*> getStat qSubProhibited
                 hPutStrLn h $ "other SUB events (auth, duplicate, prohibited): " <> show subs
+                putStat "qSubEnd" qSubEnd
+                putStat "qSubEndSent" qSubEndSent
                 putStat "msgSent" msgSent
                 putStat "msgRecv" msgRecv
                 putStat "msgRecvGet" msgRecvGet
@@ -631,9 +635,10 @@ runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessio
       atomically $ modifyTVar' active $ IM.insert clientId $ Just c
       s <- asks server
       expCfg <- asks $ inactiveClientExpiration . config
+      stats <- asks serverStats
       th <- newMVar h -- put TH under a fair lock to interleave messages and command responses
       labelMyThread . B.unpack $ "client $" <> encode sessionId
-      raceAny_ $ [liftIO $ send th c, liftIO $ sendMsg th c, client thParams c s, receive h c] <> disconnectThread_ c expCfg
+      raceAny_ $ [liftIO $ send th c stats, liftIO $ sendMsg th c, client thParams c s, receive h c] <> disconnectThread_ c expCfg
     disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport h (rcvActiveAt c) (sndActiveAt c) expCfg (noSubscriptions c)]
     disconnectThread_ _ _ = []
     noSubscriptions c = atomically $ (&&) <$> TM.null (ntfSubscriptions c) <*> (not . hasSubs <$> readTVar (subscriptions c))
@@ -701,8 +706,8 @@ receive h@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiv
                 pure $ Left (corrId, entId, ERR AUTH)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
-send :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> IO ()
-send th c@Client {sndQ, msgQ, sessionId} = do
+send :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> ServerStats -> IO ()
+send th c@Client {sndQ, msgQ, sessionId} stats = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ atomically (readTBQueue sndQ) >>= sendTransmissions
   where
@@ -715,6 +720,9 @@ send th c@Client {sndQ, msgQ, sessionId} = do
           -- this will reply OK to all SUBs in the first batched transmission,
           -- to reduce client timeouts.
           tSend th c ts'
+          case ts' of
+            [(_, _, END)] -> incStat $ qSubEndSent stats
+            _ -> pure ()
           -- After that all messages will be sent in separate transmissions,
           -- without any client response timeouts, and allowing them to interleave
           -- with other requests responses.
