@@ -134,9 +134,9 @@ data Env = Env
 type Subscribed = Bool
 
 data Server = Server
-  { subscribedQ :: TQueue (RecipientId, Client, Subscribed),
+  { subscribedQ :: TQueue (Client, Subscribed, NonEmpty RecipientId),
     subscribers :: TMap RecipientId Client,
-    ntfSubscribedQ :: TQueue (NotifierId, Client, Subscribed),
+    ntfSubscribedQ :: TQueue (Client, Subscribed, NonEmpty NotifierId),
     notifiers :: TMap NotifierId Client,
     savingLock :: Lock
   }
@@ -149,11 +149,14 @@ type ClientId = Int
 
 data SMPRequest
   = SMPReqNew NewSMPQueue
-  | SMPReqSubs (NonEmpty (Transmission QueueRec))
+  | SMPReqBatched BatchedRequest (NonEmpty (Transmission QueueRec))
   | SMPReqCmd DirectCmd QueueRec
   | SMPReqPrxCmd (Command 'ProxiedClient)
   | SMPReqFwdCmd EncFwdTransmission
   | SMPReqPing
+
+data BatchedRequest = BRSUB | BRDEL | BRNtfSUB | BRNtfDEL
+  deriving (Eq)
 
 data NewSMPQueue = NewSMPQueue
   { rcvAuthKey :: RcvPublicAuthKey,

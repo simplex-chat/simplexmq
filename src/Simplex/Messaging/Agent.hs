@@ -177,7 +177,7 @@ import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfReg
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..))
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolType (..), ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC, sndAuthKeySMPClientVersion)
+import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), EntityId, ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolType (..), ProtocolTypeI (..), SMPMsgMeta, SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC, sndAuthKeySMPClientVersion)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import qualified Simplex.Messaging.TMap as TM
@@ -2224,20 +2224,19 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
       withRcvConn entId $ \rq@RcvQueue {connId} conn -> case msgOrErr of
         Right msg -> runProcessSMP rq conn (toConnData conn) msg
         Left e -> lift $ notifyErr connId e
-    STResponse (Cmd SRecipient cmd) respOrErr ->
-      withRcvConn entId $ \rq conn -> case cmd of
-        SMP.SUB -> case respOrErr of
+    STResponse (Cmd _ cmd) respOrErr -> case cmd of
+      SMP.SUB ->
+        withRcvConn entId $ \rq conn -> case respOrErr of
           Right SMP.OK -> processSubOk rq upConnIds
           Right msg@SMP.MSG {} -> do
             processSubOk rq upConnIds -- the connection is UP even when processing this particular message fails
             runProcessSMP rq conn (toConnData conn) msg
           Right r -> processSubErr rq $ unexpectedResponse r
           Left e -> unless (temporaryClientError e) $ processSubErr rq e -- timeout/network was already reported
-        SMP.ACK _ -> case respOrErr of
-          Right msg@SMP.MSG {} -> runProcessSMP rq conn (toConnData conn) msg
-          _ -> pure () -- TODO process OK response to ACK
-        _ -> pure () -- TODO process expired response to DEL
-    STResponse {} -> pure () -- TODO process expired responses to sent messages
+      SMP.ACK _ -> case respOrErr of
+        Right msg@SMP.MSG {} -> withRcvConn entId $ \rq conn -> runProcessSMP rq conn (toConnData conn) msg
+        _ -> pure () -- TODO process OK response to ACK
+      _ -> pure () -- TODO process expired response to DEL and to sent messages
     STUnexpectedError e -> do
       logServer "<--" c srv entId $ "error: " <> bshow e
       notifyErr "" e

@@ -276,32 +276,30 @@ e2eEncMessageLength :: Int
 e2eEncMessageLength = 16016 -- 16004 .. 16021
 
 -- | SMP protocol clients
-data Party = Owner | Recipient | Sender | Notifier | ProxiedClient | Service
+data Party = Service | Recipient | Sender | Notifier | ProxiedClient
   deriving (Show)
 
 -- | Singleton types for SMP protocol clients
 data SParty :: Party -> Type where
-  SOwner :: SParty Owner
+  SService :: SParty Service
   SRecipient :: SParty Recipient
   SSender :: SParty Sender
   SNotifier :: SParty Notifier
   SProxiedClient :: SParty ProxiedClient
-  SService :: SParty Service
 
 instance TestEquality SParty where
-  testEquality SOwner SOwner = Just Refl
+  testEquality SService SService = Just Refl
   testEquality SRecipient SRecipient = Just Refl
   testEquality SSender SSender = Just Refl
   testEquality SNotifier SNotifier = Just Refl
   testEquality SProxiedClient SProxiedClient = Just Refl
-  testEquality SService SService = Just Refl
   testEquality _ _ = Nothing
 
 deriving instance Show (SParty p)
 
 class PartyI (p :: Party) where sParty :: SParty p
 
-instance PartyI Owner where sParty = SOwner
+instance PartyI Service where sParty = SService
 
 instance PartyI Recipient where sParty = SRecipient
 
@@ -310,8 +308,6 @@ instance PartyI Sender where sParty = SSender
 instance PartyI Notifier where sParty = SNotifier
 
 instance PartyI ProxiedClient where sParty = SProxiedClient
-
-instance PartyI Service where sParty = SService
 
 type family DirectParty (p :: Party) :: Constraint where
   DirectParty Recipient = ()
@@ -394,7 +390,7 @@ data Command (p :: Party) where
   -- v6 of SMP servers only support signature algorithm for command authorization.
   -- v7 of SMP servers additionally support additional layer of authenticated encryption.
   -- RcvPublicAuthKey is defined as C.APublicKey - it can be either signature or DH public keys.
-  NEW :: RcvPublicAuthKey -> RcvPublicDhKey -> Maybe BasicAuth -> SubscriptionMode -> SenderCanSecure -> Command Owner
+  NEW :: RcvPublicAuthKey -> RcvPublicDhKey -> Maybe BasicAuth -> SubscriptionMode -> SenderCanSecure -> Command Service
   SUB :: Command Recipient
   KEY :: SndPublicAuthKey -> Command Recipient
   NKEY :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> Command Recipient
@@ -674,7 +670,7 @@ noMsgFlags = MsgFlags {notification = False}
 -- * SMP command tags
 
 data CommandTag (p :: Party) where
-  NEW_ :: CommandTag Owner
+  NEW_ :: CommandTag Service
   SUB_ :: CommandTag Recipient
   KEY_ :: CommandTag Recipient
   NKEY_ :: CommandTag Recipient
@@ -744,7 +740,7 @@ instance PartyI p => Encoding (CommandTag p) where
 
 instance ProtocolMsgTag CmdTag where
   decodeTag = \case
-    "NEW" -> Just $ CT SOwner NEW_
+    "NEW" -> Just $ CT SService NEW_
     "SUB" -> Just $ CT SRecipient SUB_
     "KEY" -> Just $ CT SRecipient KEY_
     "NKEY" -> Just $ CT SRecipient NKEY_
@@ -1370,8 +1366,8 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
   encodeProtocol v (Cmd _ c) = encodeProtocol v c
 
   protocolP v = \case
-    CT SOwner tag ->
-      Cmd SOwner <$> case tag of
+    CT SService tag ->
+      Cmd SService <$> case tag of
         NEW_
           | v >= sndAuthKeySMPVersion -> new <*> smpP <*> smpP <*> smpP
           | v >= subModeSMPVersion -> new <*> auth <*> smpP <*> pure False
@@ -1380,6 +1376,8 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
           where
             new = NEW <$> _smpP <*> smpP
             auth = optional (A.char 'A' *> smpP)
+        PING_ -> pure PING
+        RFWD_ -> RFWD <$> (EncFwdTransmission . unTail <$> _smpP)
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
         SUB_ -> pure SUB
@@ -1395,10 +1393,6 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
       Cmd SSender <$> case tag of
         SKEY_ -> SKEY <$> _smpP
         SEND_ -> SEND <$> _smpP <*> (unTail <$> _smpP)
-    CT SService tag ->
-      Cmd SService <$> case tag of
-        PING_ -> pure PING
-        RFWD_ -> RFWD <$> (EncFwdTransmission . unTail <$> _smpP)
     CT SProxiedClient tag ->
       Cmd SProxiedClient <$> case tag of
         PFWD_ -> PFWD <$> _smpP <*> smpP <*> (EncTransmission . unTail <$> smpP)
