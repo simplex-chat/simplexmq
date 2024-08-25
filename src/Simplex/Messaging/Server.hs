@@ -790,19 +790,21 @@ verifyTransmission auth_ tAuth authorized corrId entId (Cmd p cmd) =
       (NEW k dhKey newAuth_ sm ss) -> pure $ SMPReqNew (corrId, entId, NewSMPQueue k dhKey newAuth_ sm ss) `verifiedWith` k
       PING -> pure $ VRVerified $ SMPReqPing corrId
       RFWD encBlock -> pure $ VRVerified $ SMPReqFwdCmd corrId encBlock
-    SRecipient -> verifyQueue (\q -> SMPReqCmd (DCmd p cmd) (corrId, entId, q) `verifiedWith` recipientKey q) <$> get SRecipient
+    SRecipient -> verifyQueue (\q -> reqCmd p cmd q `verifiedWith` recipientKey q) <$> get SRecipient
     SSender -> case cmd of
-      SKEY k -> verifyQueue (\q -> SMPReqCmd (DCmd p cmd) (corrId, entId, q) `verifiedWith` k) <$> get SSender
+      SKEY k -> verifyQueue (\q -> reqCmd p cmd q `verifiedWith` k) <$> get SSender
       -- SEND will be accepted without authorization before the queue is secured with KEY or SKEY command
-      SEND {} -> verifyQueue (\q -> SMPReqCmd (DCmd p cmd) (corrId, entId, q) `verified` maybe (isNothing tAuth) verify (senderKey q)) <$> get SSender
+      SEND {} -> verifyQueue (\q -> reqCmd p cmd q `verified` maybe (isNothing tAuth) verify (senderKey q)) <$> get SSender
     -- NSUB will not be accepted without authorization
-    SNotifier -> verifyQueue (\q -> maybe dummyVerify (\n -> SMPReqCmd (DCmd p cmd) (corrId, entId, q) `verifiedWith` notifierKey n) (notifier q)) <$> get SNotifier
+    SNotifier -> verifyQueue (\q -> maybe dummyVerify (\n -> reqCmd p cmd q `verifiedWith` notifierKey n) (notifier q)) <$> get SNotifier
     SProxiedClient -> pure $ VRVerified $ SMPReqPrxCmd (corrId, entId, cmd)
   where
     verify = verifyCmdAuthorization auth_ tAuth authorized
     dummyVerify = verify (dummyAuthKey tAuth) `seq` VRFailed
     verifyQueue :: (QueueRec -> VerificationResult) -> Either ErrorType QueueRec -> VerificationResult
     verifyQueue = either (const dummyVerify)
+    reqCmd :: (PartyI p, DirectParty p) => SParty p -> Command p -> QueueRec -> SMPRequest
+    reqCmd p' cmd' q = SMPReqCmd (DCmd p' cmd') (corrId, entId, q)
     verified r cond = if cond then VRVerified r else VRFailed
     verifiedWith r k = r `verified` verify k
     get :: DirectParty p => SParty p -> M (Either ErrorType QueueRec)
