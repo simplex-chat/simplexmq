@@ -2,6 +2,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -40,6 +41,7 @@ batchingTests = do
       it "should break on large message" testClientBatchWithLargeMessage
     describe "v7 (next)" $ do
       it "should batch with 136 subscriptions per batch" testClientBatchSubscriptionsV7
+      it "should batch with N ENDs per batch" testClientBatchENDs
       it "should break on message that does not fit" testClientBatchWithMessageV7
       it "should break on large message" testClientBatchWithLargeMessageV7
 
@@ -164,6 +166,20 @@ testClientBatchSubscriptionsV7 = do
   (n1, n2, n3) `shouldBe` (28, 136, 136)
   (length rs1, length rs2, length rs3) `shouldBe` (28, 136, 136)
   all lenOk [s1, s2, s3] `shouldBe` True
+
+testClientBatchENDs :: IO ()
+testClientBatchENDs = do
+  client <- clientStubV7
+  ends <- replicateM 300 randomENDCmd
+  let ends' = map (\t -> Right (Nothing, encodeTransmission (thParams client) t)) ends
+      batches1 = batchTransmissions False smpBlockSize $ L.fromList ends'
+  all lenOk1 batches1 `shouldBe` True
+  let batches = batchTransmissions True smpBlockSize $ L.fromList ends'
+  length batches `shouldBe` 2
+  [TBTransmissions s1 n1 rs1, TBTransmissions s2 n2 rs2] <- pure batches
+  (n1, n2) `shouldBe` (45, 255)
+  (length rs1, length rs2) `shouldBe` (45, 255)
+  all lenOk [s1, s2] `shouldBe` True
 
 testClientBatchWithMessage :: IO ()
 testClientBatchWithMessage = do
@@ -300,6 +316,12 @@ randomSUBCmd_ a c = do
   rId <- atomically $ C.randomBytes 24 g
   (_, rpKey) <- atomically $ C.generateAuthKeyPair a g
   mkTransmission c (Just rpKey, rId, Cmd SRecipient SUB)
+
+randomENDCmd :: IO (Transmission BrokerMsg)
+randomENDCmd = do
+  g <- C.newRandom
+  rId <- atomically $ C.randomBytes 24 g
+  pure (CorrId "", rId, END)
 
 randomSEND :: ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSEND = randomSEND_ C.SEd25519 subModeSMPVersion
