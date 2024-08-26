@@ -53,7 +53,7 @@ import Data.List (foldl', sortOn)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
-import qualified Data.Map as M
+import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
 import Data.String
 import Data.Text (Text)
