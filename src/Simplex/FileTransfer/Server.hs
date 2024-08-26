@@ -475,7 +475,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
                 pure FROk
               Left e -> do
                 us <- asks $ usedStorage . store
-                atomically . modifyTVar' us $ subtract (fromIntegral size)
+                atomically $ modifyTVar' us $ subtract (fromIntegral size)
                 liftIO $ whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
                 pure $ FRErr e
           receiveChunk spec = do
@@ -571,7 +571,7 @@ withFileLog action = liftIO . mapM_ action =<< asks storeLog
 incFileStat :: (FileServerStats -> TVar Int) -> M ()
 incFileStat statSel = do
   stats <- asks serverStats
-  atomically $ modifyTVar (statSel stats) (+ 1)
+  atomically $ modifyTVar' (statSel stats) (+ 1)
 
 saveServerStats :: M ()
 saveServerStats =
