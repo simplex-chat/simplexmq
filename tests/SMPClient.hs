@@ -185,7 +185,7 @@ serverBracket process afterProcess f = do
 withSmpServerOn :: HasCallStack => ATransport -> ServiceName -> IO a -> IO a
 withSmpServerOn t port' = withSmpServerThreadOn t port' . const
 
-withSmpServer :: HasCallStack => ATransport -> IO a -> IO a
+withSmpServer :: HasCallStack => ATransport -> (HasCallStack => IO a) -> IO a
 withSmpServer t = withSmpServerOn t testPort
 
 withSmpServerProxy :: HasCallStack => ATransport -> IO a -> IO a

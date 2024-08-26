@@ -360,6 +360,8 @@ functionalAPITests t = do
     it "should subscribe to multiple connections with pending messages" $
       withSmpServer t $
         testBatchedPendingMessages 10 5
+    it "should deliver END events in one batch when another client subscribes or deletes" $
+      withSmpServer t $ testBatchedENDEvents 10
   describe "Batch send messages" $ do
     it "should send multiple messages to the same connection" $ withSmpServer t testSendMessagesB
     it "should send messages to the 2 connections" $ withSmpServer t testSendMessagesB2
@@ -1735,10 +1737,10 @@ testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
   ackMessage alice bobId 3 Nothing
 
-makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
+makeConnection :: HasCallStack => AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection = makeConnection_ PQSupportOn True
 
-makeConnection_ :: PQSupport -> SndQueueSecured -> AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
+makeConnection_ :: HasCallStack => PQSupport -> SndQueueSecured -> AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection_ pqEnc sqSecured alice bob = makeConnectionForUsers_ pqEnc sqSecured alice 1 bob 1
 
 makeConnectionForUsers :: HasCallStack => AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
@@ -1956,6 +1958,25 @@ testBatchedPendingMessages nCreate nMsgs =
   where
     withA = withAgent 1 agentCfg initAgentServers testDB
     withB = withAgent 2 agentCfg initAgentServers testDB2
+
+testBatchedENDEvents :: HasCallStack => Int -> IO ()
+testBatchedENDEvents nCreate = withAgent 2 agentCfg initAgentServers testDB2 $ \b -> do
+  conns <- withA 1 testDB $ \a -> runRight $ replicateM nCreate $ makeConnection a b
+  threadDelay 1000000
+  copyFile testDB testDB3
+  let (_aIds, bIds) = unzip conns
+  withA 3 testDB $ \a1 -> withA 4 testDB3 $ \a2 -> runRight_ $ do
+    allOk =<< subscribeConnections a1 bIds
+    allOk =<< subscribeConnections a2 bIds
+    let getEnds c = replicateM_ nCreate $ do
+          ("", bId, END) <- get c
+          liftIO $ (bId `elem` bIds) `shouldBe` True
+    getEnds a1
+    allOk =<< deleteConnections a1 bIds
+    getEnds a2
+  where
+    withA i = withAgent i agentCfg initAgentServers
+    allOk rs = liftIO $ all isRight rs `shouldBe` True
 
 testSendMessagesB :: IO ()
 testSendMessagesB = withAgentClients2 $ \a b -> runRight_ $ do
