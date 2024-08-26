@@ -712,22 +712,25 @@ send th c@Client {sndQ, msgQ, sessionId} stats = do
   forever $ atomically (readTBQueue sndQ) >>= sendTransmissions
   where
     sendTransmissions :: NonEmpty (Transmission BrokerMsg) -> IO ()
-    sendTransmissions ts
-      | L.length ts <= 2 = tSend th c ts
-      | otherwise = do
+    sendTransmissions ts@((_, _, cmd) :| _) = case cmd of
+      OK | len > 2 -> splitSend
+      MSG {} | len > 2 -> splitSend
+      END -> do -- END events are not combined with others
+        tSend th c ts
+        atomically $ modifyTVar' (qSubEndSent stats) (+ len)
+      _ -> tSend th c ts
+      where
+        len = L.length ts
+        splitSend = do
           let (msgs_, ts') = mapAccumR splitMessages [] ts
-          -- If the request had batched subscriptions (L.length ts > 2)
+          -- If the request had batched subscriptions and L.length ts > 2
           -- this will reply OK to all SUBs in the first batched transmission,
           -- to reduce client timeouts.
           tSend th c ts'
-          case ts' of
-            [(_, _, END)] -> incStat $ qSubEndSent stats
-            _ -> pure ()
           -- After that all messages will be sent in separate transmissions,
           -- without any client response timeouts, and allowing them to interleave
           -- with other requests responses.
           mapM_ (atomically . writeTBQueue msgQ) $ L.nonEmpty msgs_
-      where
         splitMessages :: [Transmission BrokerMsg] -> Transmission BrokerMsg -> ([Transmission BrokerMsg], Transmission BrokerMsg)
         splitMessages msgs t@(corrId, entId, cmd) = case cmd of
           -- replace MSG response with OK, accumulating MSG in a separate list.
