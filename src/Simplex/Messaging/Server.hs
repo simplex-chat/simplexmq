@@ -1446,7 +1446,8 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             Right q -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
               atomically $ writeTQueue subscribedQ (entId, clnt, False)
-              atomically $ writeTQueue ntfSubscribedQ (entId, clnt, False)
+              forM_ (notifierId <$> notifier q) $ \nId ->
+                atomically $ writeTQueue ntfSubscribedQ (nId, clnt, False)
               updateDeletedStats q
               pure ok
             Left e -> pure $ err e
