@@ -63,7 +63,7 @@ addQueue rq (TRcvQueues qs cs) = do
     addQ = Just . maybe (k :| []) (k <|)
     k = qKey rq
 
--- Save time by aggregating modifyTVar
+-- Save time by aggregating modifyTVar'
 batchAddQueues :: (Foldable t, Queue q) => TRcvQueues q -> t q -> STM ()
 batchAddQueues (TRcvQueues qs cs) rqs = do
   modifyTVar' qs $ \now -> foldl' (\rqs' rq -> M.insert (qKey rq) rq rqs') now rqs

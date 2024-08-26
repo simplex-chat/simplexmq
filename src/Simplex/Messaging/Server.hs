@@ -768,7 +768,7 @@ send th c@Client {sndQ, msgQ, sessionId} stats = do
       ts@((_, _, END) :| _) -> do -- END events are not combined with others
         let len = L.length ts
         atomically $ modifyTVar' (qSubEndSent stats) (+ len)
-        atomically $ modifyTVar' (qSubEndSentB stats) (+ len `div` 255) -- up to 255 ENDs in the batch
+        atomically $ modifyTVar' (qSubEndSentB stats) (+ (len `div` 255 + 1)) -- up to 255 ENDs in the batch
       _ -> pure ()
         
 sendMsg :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> IO ()
@@ -1315,7 +1315,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                   void $ setDelivered s msg
                 forkDeliver (rc@Client {sndQ = q}, s@Sub {delivered}, st) = do
                   t <- mkWeakThreadId =<< forkIO deliverThread
-                  atomically . modifyTVar' st $ \case
+                  atomically $ modifyTVar' st $ \case
                     -- this case is needed because deliverThread can exit before it
                     SubPending -> SubThread t
                     st' -> st'
