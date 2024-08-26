@@ -732,9 +732,9 @@ send th c@Client {sndQ, msgQ, sessionId} stats = do
           -- with other requests responses.
           mapM_ (atomically . writeTBQueue msgQ) $ L.nonEmpty msgs_
         splitMessages :: [Transmission BrokerMsg] -> Transmission BrokerMsg -> ([Transmission BrokerMsg], Transmission BrokerMsg)
-        splitMessages msgs t@(corrId, entId, cmd) = case cmd of
+        splitMessages msgs t@(corrId, entId, cmd') = case cmd' of
           -- replace MSG response with OK, accumulating MSG in a separate list.
-          MSG {} -> ((CorrId "", entId, cmd) : msgs, (corrId, entId, OK))
+          MSG {} -> ((CorrId "", entId, cmd') : msgs, (corrId, entId, OK))
           _ -> (msgs, t)
 
 sendMsg :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> IO ()
