@@ -994,21 +994,22 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
         SMPReqCmd (DCmd _ command) t -> (: []) <$> case command of
           SKEY sKey -> sndSecureQueue t sKey
           SEND flags msgBody -> sendMessage t flags msgBody
-          NSUB -> subscribeNotifications t >>= notifySubscription ntfSubscribedQ True
-          SUB -> subscribeQueue t >>= notifySubscription subscribedQ True
+          NSUB -> pure $ err t $ INTERNAL -- subscribeNotifications t >>= notifySubscription ntfSubscribedQ True
+          SUB -> pure $ err t $ INTERNAL -- subscribeQueue t >>= notifySubscription subscribedQ True
           GET -> getMessage t
           ACK msgId -> acknowledgeMsg t msgId
           KEY sKey -> rcvSecureQueue t sKey
           NKEY nKey dhKey -> addQueueNotifier_ st t nKey dhKey
-          NDEL -> deleteQueueNotifier_ st t >>= notifySubscription ntfSubscribedQ False
+          NDEL -> pure $ err t $ INTERNAL -- deleteQueueNotifier_ st t >>= notifySubscription ntfSubscribedQ False
           OFF -> suspendQueue_ st t
-          DEL -> do
-            (qIds_, r) <- delQueueAndMsgs st t
-            forM_ qIds_ $ \(rId, nId_) -> do
-              -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
-              atomically $ writeTQueue subscribedQ (clnt, False, [rId])
-              forM_ nId_ $ \nId -> atomically $ writeTQueue ntfSubscribedQ (clnt, False, [nId])
-            pure r
+          DEL -> pure $ err t $ INTERNAL
+          -- do
+          --   (qIds_, r) <- delQueueAndMsgs st t
+          --   forM_ qIds_ $ \(rId, nId_) -> do
+          --     -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
+          --     atomically $ writeTQueue subscribedQ (clnt, False, [rId])
+          --     forM_ nId_ $ \nId -> atomically $ writeTQueue ntfSubscribedQ (clnt, False, [nId])
+          --   pure r
           QUE -> getQueueInfo t
       where
         -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
