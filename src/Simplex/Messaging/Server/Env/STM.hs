@@ -76,6 +76,8 @@ data ServerConfig = ServerConfig
     serverStatsLogFile :: FilePath,
     -- | file to save and restore stats
     serverStatsBackupFile :: Maybe FilePath,
+    -- | interval between sending pending END events to unsubscribed clients, seconds
+    pendingENDInterval :: Int,
     -- | CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -138,6 +140,7 @@ data Server = Server
     subscribers :: TMap RecipientId Client,
     ntfSubscribedQ :: TQueue (NotifierId, Client, Subscribed),
     notifiers :: TMap NotifierId Client,
+    pendingENDs :: TVar (IntMap (NonEmpty QueueId)),
     savingLock :: Lock
   }
 
@@ -180,8 +183,9 @@ newServer = do
   subscribers <- TM.emptyIO
   ntfSubscribedQ <- newTQueueIO
   notifiers <- TM.emptyIO
+  pendingENDs <- newTVarIO IM.empty
   savingLock <- atomically createLock
-  return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
+  return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, pendingENDs, savingLock}
 
 newClient :: ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO Client
 newClient clientId qSize thVersion sessionId createdAt = do
