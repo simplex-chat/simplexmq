@@ -208,7 +208,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
             atomically $ writeTBQueue (sndQ c) $ L.map (CorrId "",,END) qIds
             let len = L.length qIds
             atomically $ modifyTVar' (qSubEnd stats) (+ len)
-            atomically $ modifyTVar' (qSubEndB stats) (+ len `div` 255) -- up to 255 ENDs in the batch
+            atomically $ modifyTVar' (qSubEndB stats) (+ (len `div` 255 + 1)) -- up to 255 ENDs in the batch
 
     receiveFromProxyAgent :: ProxyAgent -> M ()
     receiveFromProxyAgent ProxyAgent {smpAgent = SMPClientAgent {agentQ}} =
