@@ -24,18 +24,24 @@ data ServerStats = ServerStats
     qCreated :: TVar Int,
     qSecured :: TVar Int,
     qDeletedAll :: TVar Int,
+    qDeletedAllB :: TVar Int,
     qDeletedNew :: TVar Int,
     qDeletedSecured :: TVar Int,
     qSub :: TVar Int,
     qSubNoMsg :: TVar Int,
+    qSubAllB :: TVar Int,
     qSubAuth :: TVar Int,
     qSubDuplicate :: TVar Int,
     qSubProhibited :: TVar Int,
     qSubEnd :: TVar Int,
+    qSubEndB :: TVar Int,
     qSubEndSent :: TVar Int,
+    qSubEndSentB :: TVar Int,
     ntfCreated :: TVar Int,
     ntfDeleted :: TVar Int,
+    ntfDeletedB :: TVar Int,
     ntfSub :: TVar Int,
+    ntfSubB :: TVar Int,
     ntfSubAuth :: TVar Int,
     ntfSubDuplicate :: TVar Int,
     msgSent :: TVar Int,
@@ -72,18 +78,24 @@ data ServerStatsData = ServerStatsData
     _qCreated :: Int,
     _qSecured :: Int,
     _qDeletedAll :: Int,
+    _qDeletedAllB :: Int,
     _qDeletedNew :: Int,
     _qDeletedSecured :: Int,
     _qSub :: Int,
     _qSubNoMsg :: Int,
+    _qSubAllB :: Int,
     _qSubAuth :: Int,
     _qSubDuplicate :: Int,
     _qSubProhibited :: Int,
     _qSubEnd :: Int,
+    _qSubEndB :: Int,
     _qSubEndSent :: Int,
+    _qSubEndSentB :: Int,
     _ntfCreated :: Int,
     _ntfDeleted :: Int,
+    _ntfDeletedB :: Int,
     _ntfSub :: Int,
+    _ntfSubB :: Int,
     _ntfSubAuth :: Int,
     _ntfSubDuplicate :: Int,
     _msgSent :: Int,
@@ -122,18 +134,24 @@ newServerStats ts = do
   qCreated <- newTVarIO 0
   qSecured <- newTVarIO 0
   qDeletedAll <- newTVarIO 0
+  qDeletedAllB <- newTVarIO 0
   qDeletedNew <- newTVarIO 0
   qDeletedSecured <- newTVarIO 0
   qSub <- newTVarIO 0
   qSubNoMsg <- newTVarIO 0
+  qSubAllB <- newTVarIO 0
   qSubAuth <- newTVarIO 0
   qSubDuplicate <- newTVarIO 0
   qSubProhibited <- newTVarIO 0
   qSubEnd <- newTVarIO 0
+  qSubEndB <- newTVarIO 0
   qSubEndSent <- newTVarIO 0
+  qSubEndSentB <- newTVarIO 0
   ntfCreated <- newTVarIO 0
   ntfDeleted <- newTVarIO 0
+  ntfDeletedB <- newTVarIO 0
   ntfSub <- newTVarIO 0
+  ntfSubB <- newTVarIO 0
   ntfSubAuth <- newTVarIO 0
   ntfSubDuplicate <- newTVarIO 0
   msgSent <- newTVarIO 0
@@ -169,18 +187,24 @@ newServerStats ts = do
         qCreated,
         qSecured,
         qDeletedAll,
+        qDeletedAllB,
         qDeletedNew,
         qDeletedSecured,
         qSub,
         qSubNoMsg,
+        qSubAllB,
         qSubAuth,
         qSubDuplicate,
         qSubProhibited,
         qSubEnd,
+        qSubEndB,
         qSubEndSent,
+        qSubEndSentB,
         ntfCreated,
         ntfDeleted,
+        ntfDeletedB,
         ntfSub,
+        ntfSubB,
         ntfSubAuth,
         ntfSubDuplicate,
         msgSent,
@@ -218,18 +242,24 @@ getServerStatsData s = do
   _qCreated <- readTVarIO $ qCreated s
   _qSecured <- readTVarIO $ qSecured s
   _qDeletedAll <- readTVarIO $ qDeletedAll s
+  _qDeletedAllB <- readTVarIO $ qDeletedAllB s
   _qDeletedNew <- readTVarIO $ qDeletedNew s
   _qDeletedSecured <- readTVarIO $ qDeletedSecured s
   _qSub <- readTVarIO $ qSub s
   _qSubNoMsg <- readTVarIO $ qSubNoMsg s
+  _qSubAllB <- readTVarIO $ qSubAllB s
   _qSubAuth <- readTVarIO $ qSubAuth s
   _qSubDuplicate <- readTVarIO $ qSubDuplicate s
   _qSubProhibited <- readTVarIO $ qSubProhibited s
   _qSubEnd <- readTVarIO $ qSubEnd s
+  _qSubEndB <- readTVarIO $ qSubEndB s
   _qSubEndSent <- readTVarIO $ qSubEndSent s
+  _qSubEndSentB <- readTVarIO $ qSubEndSentB s
   _ntfCreated <- readTVarIO $ ntfCreated s
   _ntfDeleted <- readTVarIO $ ntfDeleted s
+  _ntfDeletedB <- readTVarIO $ ntfDeletedB s
   _ntfSub <- readTVarIO $ ntfSub s
+  _ntfSubB <- readTVarIO $ ntfSubB s
   _ntfSubAuth <- readTVarIO $ ntfSubAuth s
   _ntfSubDuplicate <- readTVarIO $ ntfSubDuplicate s
   _msgSent <- readTVarIO $ msgSent s
@@ -265,18 +295,24 @@ getServerStatsData s = do
         _qCreated,
         _qSecured,
         _qDeletedAll,
+        _qDeletedAllB,
         _qDeletedNew,
         _qDeletedSecured,
         _qSub,
         _qSubNoMsg,
+        _qSubAllB,
         _qSubAuth,
         _qSubDuplicate,
         _qSubProhibited,
         _qSubEnd,
+        _qSubEndB,
         _qSubEndSent,
+        _qSubEndSentB,
         _ntfCreated,
         _ntfDeleted,
+        _ntfDeletedB,
         _ntfSub,
+        _ntfSubB,
         _ntfSubAuth,
         _ntfSubDuplicate,
         _msgSent,
@@ -314,18 +350,24 @@ setServerStats s d = do
   writeTVar (qCreated s) $! _qCreated d
   writeTVar (qSecured s) $! _qSecured d
   writeTVar (qDeletedAll s) $! _qDeletedAll d
+  writeTVar (qDeletedAllB s) $! _qDeletedAllB d
   writeTVar (qDeletedNew s) $! _qDeletedNew d
   writeTVar (qDeletedSecured s) $! _qDeletedSecured d
   writeTVar (qSub s) $! _qSub d
   writeTVar (qSubNoMsg s) $! _qSubNoMsg d
+  writeTVar (qSubAllB s) $! _qSubAllB d
   writeTVar (qSubAuth s) $! _qSubAuth d
   writeTVar (qSubDuplicate s) $! _qSubDuplicate d
   writeTVar (qSubProhibited s) $! _qSubProhibited d
   writeTVar (qSubEnd s) $! _qSubEnd d
+  writeTVar (qSubEndB s) $! _qSubEndB d
   writeTVar (qSubEndSent s) $! _qSubEndSent d
+  writeTVar (qSubEndSentB s) $! _qSubEndSentB d
   writeTVar (ntfCreated s) $! _ntfCreated d
   writeTVar (ntfDeleted s) $! _ntfDeleted d
+  writeTVar (ntfDeletedB s) $! _ntfDeletedB d
   writeTVar (ntfSub s) $! _ntfSub d
+  writeTVar (ntfSubB s) $! _ntfSubB d
   writeTVar (ntfSubAuth s) $! _ntfSubAuth d
   writeTVar (ntfSubDuplicate s) $! _ntfSubDuplicate d
   writeTVar (msgSent s) $! _msgSent d
@@ -365,15 +407,23 @@ instance StrEncoding ServerStatsData where
         "qDeletedAll=" <> strEncode (_qDeletedAll d),
         "qDeletedNew=" <> strEncode (_qDeletedNew d),
         "qDeletedSecured=" <> strEncode (_qDeletedSecured d),
+        "qDeletedAllB=" <> strEncode (_qDeletedAllB d),
         "qCount=" <> strEncode (_qCount d),
         "qSub=" <> strEncode (_qSub d),
         "qSubNoMsg=" <> strEncode (_qSubNoMsg d),
+        "qSubAllB=" <> strEncode (_qSubAllB d),
         "qSubAuth=" <> strEncode (_qSubAuth d),
         "qSubDuplicate=" <> strEncode (_qSubDuplicate d),
         "qSubProhibited=" <> strEncode (_qSubProhibited d),
+        "qSubEnd=" <> strEncode (_qSubEnd d),
+        "qSubEndB=" <> strEncode (_qSubEndB d),
+        "qSubEndSent=" <> strEncode (_qSubEndSent d),
+        "qSubEndSentB=" <> strEncode (_qSubEndSentB d),
         "ntfCreated=" <> strEncode (_ntfCreated d),
         "ntfDeleted=" <> strEncode (_ntfDeleted d),
+        "ntfDeletedB=" <> strEncode (_ntfDeletedB d),
         "ntfSub=" <> strEncode (_ntfSub d),
+        "ntfSubB=" <> strEncode (_ntfSubB d),
         "ntfSubAuth=" <> strEncode (_ntfSubAuth d),
         "ntfSubDuplicate=" <> strEncode (_ntfSubDuplicate d),
         "msgSent=" <> strEncode (_msgSent d),
@@ -416,17 +466,23 @@ instance StrEncoding ServerStatsData where
     (_qDeletedAll, _qDeletedNew, _qDeletedSecured) <-
       (,0,0) <$> ("qDeleted=" *> strP <* A.endOfLine)
         <|> ((,,) <$> ("qDeletedAll=" *> strP <* A.endOfLine) <*> ("qDeletedNew=" *> strP <* A.endOfLine) <*> ("qDeletedSecured=" *> strP <* A.endOfLine))
+    _qDeletedAllB <- opt "qDeletedAllB="
     _qCount <- opt "qCount="
     _qSub <- opt "qSub="
     _qSubNoMsg <- opt "qSubNoMsg="
+    _qSubAllB <- opt "qSubAllB="
     _qSubAuth <- opt "qSubAuth="
     _qSubDuplicate <- opt "qSubDuplicate="
     _qSubProhibited <- opt "qSubProhibited="
-    _qSubEnd <- pure 0
-    _qSubEndSent <- pure 0
+    _qSubEnd <- opt "qSubEnd="
+    _qSubEndB <- opt "qSubEndB="
+    _qSubEndSent <- opt "qSubEndSent="
+    _qSubEndSentB <- opt "qSubEndSentB="
     _ntfCreated <- opt "ntfCreated="
     _ntfDeleted <- opt "ntfDeleted="
+    _ntfDeletedB <- opt "ntfDeletedB="
     _ntfSub <- opt "ntfSub="
+    _ntfSubB <- opt "ntfSubB="
     _ntfSubAuth <- opt "ntfSubAuth="
     _ntfSubDuplicate <- opt "ntfSubDuplicate="
     _msgSent <- "msgSent=" *> strP <* A.endOfLine
@@ -473,18 +529,24 @@ instance StrEncoding ServerStatsData where
           _qCreated,
           _qSecured,
           _qDeletedAll,
+          _qDeletedAllB,
           _qDeletedNew,
           _qDeletedSecured,
           _qSub,
           _qSubNoMsg,
+          _qSubAllB,
           _qSubAuth,
           _qSubDuplicate,
           _qSubProhibited,
           _qSubEnd,
+          _qSubEndB,
           _qSubEndSent,
+          _qSubEndSentB,
           _ntfCreated,
           _ntfDeleted,
+          _ntfDeletedB,
           _ntfSub,
+          _ntfSubB,
           _ntfSubAuth,
           _ntfSubDuplicate,
           _msgSent,
