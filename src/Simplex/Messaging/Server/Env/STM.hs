@@ -134,9 +134,9 @@ data Env = Env
 type Subscribed = Bool
 
 data Server = Server
-  { subscribedQ :: TQueue (RecipientId, Client, Subscribed),
+  { subscribedQ :: TQueue (Client, Subscribed, NonEmpty RecipientId),
     subscribers :: TMap RecipientId Client,
-    ntfSubscribedQ :: TQueue (NotifierId, Client, Subscribed),
+    ntfSubscribedQ :: TQueue (Client, Subscribed, NonEmpty NotifierId),
     notifiers :: TMap NotifierId Client,
     savingLock :: Lock
   }
@@ -147,11 +147,30 @@ newtype ProxyAgent = ProxyAgent
 
 type ClientId = Int
 
+data SMPRequest
+  = SMPReqNew (Transmission NewSMPQueue)
+  | SMPReqBatched BatchedCommand (NonEmpty (Transmission QueueRec))
+  | SMPReqCmd DirectCmd (Transmission QueueRec)
+  | SMPReqPrxCmd (Transmission (Command 'ProxiedClient))
+  | SMPReqFwdCmd CorrId EncFwdTransmission
+  | SMPReqPing CorrId
+
+data BatchedCommand = B_SUB | B_DEL | B_NSUB | B_NDEL
+  deriving (Eq)
+
+data NewSMPQueue = NewSMPQueue
+  { rcvAuthKey :: RcvPublicAuthKey,
+    rcvDhKey :: RcvPublicDhKey,
+    newAuth :: Maybe BasicAuth,
+    subMode :: SubscriptionMode,
+    sndSecure :: SenderCanSecure
+  }
+
 data Client = Client
   { clientId :: ClientId,
     subscriptions :: TMap RecipientId Sub,
     ntfSubscriptions :: TMap NotifierId (),
-    rcvQ :: TBQueue (NonEmpty (Maybe QueueRec, Transmission Cmd)),
+    rcvQ :: TBQueue (NonEmpty SMPRequest),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     procThreads :: TVar Int,
