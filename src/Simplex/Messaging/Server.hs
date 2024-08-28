@@ -297,17 +297,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           msgGetDuplicate' <- atomically $ swapTVar msgGetDuplicate 0
           msgGetProhibited' <- atomically $ swapTVar msgGetProhibited 0
           msgExpired' <- atomically $ swapTVar msgExpired 0
-          ps <- atomically $ periodStatCounts activeQueues ts
+          ps <- liftIO $ periodStatCounts activeQueues ts
           msgSentNtf' <- atomically $ swapTVar msgSentNtf 0
           msgRecvNtf' <- atomically $ swapTVar msgRecvNtf 0
-          psNtf <- atomically $ periodStatCounts activeQueuesNtf ts
+          psNtf <- liftIO $ periodStatCounts activeQueuesNtf ts
           msgNtfs' <- atomically $ swapTVar (msgNtfs ss) 0
           msgNtfNoSub' <- atomically $ swapTVar (msgNtfNoSub ss) 0
           msgNtfLost' <- atomically $ swapTVar (msgNtfLost ss) 0
-          pRelays' <- atomically $ getResetProxyStatsData pRelays
-          pRelaysOwn' <- atomically $ getResetProxyStatsData pRelaysOwn
-          pMsgFwds' <- atomically $ getResetProxyStatsData pMsgFwds
-          pMsgFwdsOwn' <- atomically $ getResetProxyStatsData pMsgFwdsOwn
+          pRelays' <- getResetProxyStatsData pRelays
+          pRelaysOwn' <- getResetProxyStatsData pRelaysOwn
+          pMsgFwds' <- getResetProxyStatsData pMsgFwds
+          pMsgFwdsOwn' <- getResetProxyStatsData pMsgFwdsOwn
           pMsgFwdsRecv' <- atomically $ swapTVar pMsgFwdsRecv 0
           qCount' <- readTVarIO qCount
           qCount'' <- M.size <$> readTVarIO queues
@@ -1217,10 +1217,10 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                 incStat $ msgRecv stats
                 when isGet $ incStat $ msgRecvGet stats
                 atomically $ modifyTVar' (msgCount stats) (subtract 1)
-                atomically $ updatePeriodStats (activeQueues stats) entId
+                liftIO $ updatePeriodStats (activeQueues stats) entId
                 when (notification msgFlags) $ do
                   incStat $ msgRecvNtf stats
-                  atomically $ updatePeriodStats (activeQueuesNtf stats) entId
+                  liftIO $ updatePeriodStats (activeQueuesNtf stats) entId
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> M (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
@@ -1259,10 +1259,10 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                                   logWarn "Dropped message notification"
                                 Just True -> incStat $ msgNtfs stats
                             incStat $ msgSentNtf stats
-                            atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
+                            liftIO $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
                           incStat $ msgSent stats
                           incStat $ msgCount stats
-                          atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
+                          liftIO $ updatePeriodStats (activeQueues stats) (recipientId qr)
                           pure ok
           where
             THandleParams {thVersion} = thParams'
@@ -1590,7 +1590,7 @@ restoreServerStats expiredWhileRestoring = asks (serverStatsBackupFile . config)
           s <- asks serverStats
           _qCount <- fmap M.size . readTVarIO . queues =<< asks queueStore
           _msgCount <- foldM (\(!n) q -> (n +) <$> readTVarIO (size q)) 0 =<< readTVarIO =<< asks msgStore
-          atomically $ setServerStats s d {_qCount, _msgCount, _msgExpired = _msgExpired d + expiredWhileRestoring}
+          liftIO $ setServerStats s d {_qCount, _msgCount, _msgExpired = _msgExpired d + expiredWhileRestoring}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
           when (_qCount /= statsQCount) $ logWarn $ "Queue count differs: stats: " <> tshow statsQCount <> ", store: " <> tshow _qCount

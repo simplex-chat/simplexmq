@@ -213,7 +213,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           filesUploaded' <- atomically $ swapTVar filesUploaded 0
           filesExpired' <- atomically $ swapTVar filesExpired 0
           filesDeleted' <- atomically $ swapTVar filesDeleted 0
-          files <- atomically $ periodStatCounts filesDownloaded ts
+          files <- liftIO $ periodStatCounts filesDownloaded ts
           fileDownloads' <- atomically $ swapTVar fileDownloads 0
           fileDownloadAcks' <- atomically $ swapTVar fileDownloadAcks 0
           filesCount' <- readTVarIO filesCount
@@ -495,7 +495,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
                 Right sbState -> do
                   stats <- asks serverStats
                   atomically $ modifyTVar' (fileDownloads stats) (+ 1)
-                  atomically $ updatePeriodStats (filesDownloaded stats) senderId
+                  liftIO $ updatePeriodStats (filesDownloaded stats) senderId
                   pure (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
                 _ -> pure (FRErr INTERNAL, Nothing)
         _ -> pure (FRErr NO_FILE, Nothing)
@@ -594,7 +594,7 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
           FileStore {files, usedStorage} <- asks store
           _filesCount <- M.size <$> readTVarIO files
           _filesSize <- readTVarIO usedStorage
-          atomically $ setFileServerStats s d {_filesCount, _filesSize}
+          liftIO $ setFileServerStats s d {_filesCount, _filesSize}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
           when (statsFilesCount /= _filesCount) $ logWarn $ "Files count differs: stats: " <> tshow statsFilesCount <> ", store: " <> tshow _filesCount

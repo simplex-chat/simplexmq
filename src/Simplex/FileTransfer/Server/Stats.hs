@@ -73,19 +73,19 @@ getFileServerStatsData s = do
   _filesSize <- readTVarIO $ filesSize s
   pure FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesExpired, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount, _filesSize}
 
-setFileServerStats :: FileServerStats -> FileServerStatsData -> STM ()
+setFileServerStats :: FileServerStats -> FileServerStatsData -> IO ()
 setFileServerStats s d = do
-  writeTVar (fromTime (s :: FileServerStats)) $! _fromTime (d :: FileServerStatsData)
-  writeTVar (filesCreated s) $! _filesCreated d
-  writeTVar (fileRecipients s) $! _fileRecipients d
-  writeTVar (filesUploaded s) $! _filesUploaded d
-  writeTVar (filesExpired s) $! _filesExpired d
-  writeTVar (filesDeleted s) $! _filesDeleted d
+  atomically $ writeTVar (fromTime (s :: FileServerStats)) $! _fromTime (d :: FileServerStatsData)
+  atomically $ writeTVar (filesCreated s) $! _filesCreated d
+  atomically $ writeTVar (fileRecipients s) $! _fileRecipients d
+  atomically $ writeTVar (filesUploaded s) $! _filesUploaded d
+  atomically $ writeTVar (filesExpired s) $! _filesExpired d
+  atomically $ writeTVar (filesDeleted s) $! _filesDeleted d
   setPeriodStats (filesDownloaded s) $! _filesDownloaded d
-  writeTVar (fileDownloads s) $! _fileDownloads d
-  writeTVar (fileDownloadAcks s) $! _fileDownloadAcks d
-  writeTVar (filesCount s) $! _filesCount d
-  writeTVar (filesSize s) $! _filesSize d
+  atomically $ writeTVar (fileDownloads s) $! _fileDownloads d
+  atomically $ writeTVar (fileDownloadAcks s) $! _fileDownloadAcks d
+  atomically $ writeTVar (filesCount s) $! _filesCount d
+  atomically $ writeTVar (filesSize s) $! _filesSize d
 
 instance StrEncoding FileServerStatsData where
   strEncode FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesExpired, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount, _filesSize} =
