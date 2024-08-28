@@ -196,19 +196,22 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
 
     sendPendingENDsThread :: Server -> M ()
     sendPendingENDsThread s = do
-      stats <- asks serverStats
       endInt <- asks $ pendingENDInterval . config
       cls <- asks clients
       forever $ do
         threadDelay endInt
         ends <- atomically $ swapTVar (pendingENDs s) IM.empty
-        unless (null ends) $ forM_ (IM.assocs ends) $ \(cId, qIds) -> do
-          c_ <- join . IM.lookup cId <$> readTVarIO cls
-          forM_ c_ $ \c -> forkClient c ("sendPendingENDsThread.endPreviousSubscriptions") $ do
+        unless (null ends) $ forM_ (IM.assocs ends) $ \(cId, qIds) ->
+          queueENDs qIds . IM.lookup cId =<< readTVarIO cls
+      where
+        queueENDs qIds = \case
+          Just (Just c) -> forkClient c ("sendPendingENDsThread.queueENDs") $ do
+            stats <- asks serverStats
             atomically $ writeTBQueue (sndQ c) $ L.map (CorrId "",,END) qIds
             let len = L.length qIds
             atomically $ modifyTVar' (qSubEnd stats) (+ len)
             atomically $ modifyTVar' (qSubEndB stats) (+ (len `div` 255 + 1)) -- up to 255 ENDs in the batch
+          _ -> pure ()
 
     receiveFromProxyAgent :: ProxyAgent -> M ()
     receiveFromProxyAgent ProxyAgent {smpAgent = SMPClientAgent {agentQ}} =
