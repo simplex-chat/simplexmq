@@ -37,6 +37,7 @@ import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Word (Word32)
 import qualified Data.X509 as X
 import GHC.IO.Handle (hSetNewlineMode)
+import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
@@ -207,17 +208,17 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
           ts <- getCurrentTime
-          fromTime' <- atomically $ swapTVar fromTime ts
-          filesCreated' <- atomically $ swapTVar filesCreated 0
-          fileRecipients' <- atomically $ swapTVar fileRecipients 0
-          filesUploaded' <- atomically $ swapTVar filesUploaded 0
-          filesExpired' <- atomically $ swapTVar filesExpired 0
-          filesDeleted' <- atomically $ swapTVar filesDeleted 0
+          fromTime' <- atomicSwapIORef fromTime ts
+          filesCreated' <- atomicSwapIORef filesCreated 0
+          fileRecipients' <- atomicSwapIORef fileRecipients 0
+          filesUploaded' <- atomicSwapIORef filesUploaded 0
+          filesExpired' <- atomicSwapIORef filesExpired 0
+          filesDeleted' <- atomicSwapIORef filesDeleted 0
           files <- liftIO $ periodStatCounts filesDownloaded ts
-          fileDownloads' <- atomically $ swapTVar fileDownloads 0
-          fileDownloadAcks' <- atomically $ swapTVar fileDownloadAcks 0
-          filesCount' <- readTVarIO filesCount
-          filesSize' <- readTVarIO filesSize
+          fileDownloads' <- atomicSwapIORef fileDownloads 0
+          fileDownloadAcks' <- atomicSwapIORef fileDownloadAcks 0
+          filesCount' <- readIORef filesCount
+          filesSize' <- readIORef filesSize
           hPutStrLn h $
             intercalate
               ","
@@ -405,8 +406,8 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
           logAddFile sl sId file ts
           logAddRecipients sl sId rcps
         stats <- asks serverStats
-        atomically $ modifyTVar' (filesCreated stats) (+ 1)
-        atomically $ modifyTVar' (fileRecipients stats) (+ length rks)
+        lift $ incFileStat filesCreated
+        liftIO $ atomicModifyIORef'_ (fileRecipients stats) (+ length rks)
         let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
         pure $ FRSndIds sId rIds
       pure $ either FRErr id r
@@ -435,7 +436,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         rcps <- mapM (ExceptT . addRecipientRetry st 3 sId) rks
         lift $ withFileLog $ \sl -> logAddRecipients sl sId rcps
         stats <- asks serverStats
-        atomically $ modifyTVar' (fileRecipients stats) (+ length rks)
+        liftIO $ atomicModifyIORef'_ (fileRecipients stats) (+ length rks)
         let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
         pure $ FRRcvIds rIds
       pure $ either FRErr id r
@@ -469,9 +470,9 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
                 stats <- asks serverStats
                 withFileLog $ \sl -> logPutFile sl senderId fPath
                 atomically $ writeTVar filePath (Just fPath)
-                atomically $ modifyTVar' (filesUploaded stats) (+ 1)
-                atomically $ modifyTVar' (filesCount stats) (+ 1)
-                atomically $ modifyTVar' (filesSize stats) (+ fromIntegral size)
+                incFileStat filesUploaded
+                incFileStat filesCount
+                liftIO $ atomicModifyIORef'_ (filesSize stats) (+ fromIntegral size)
                 pure FROk
               Left e -> do
                 us <- asks $ usedStorage . store
@@ -494,7 +495,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
               case LC.cbInit dhSecret cbNonce of
                 Right sbState -> do
                   stats <- asks serverStats
-                  atomically $ modifyTVar' (fileDownloads stats) (+ 1)
+                  incFileStat fileDownloads
                   liftIO $ updatePeriodStats (filesDownloaded stats) senderId
                   pure (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
                 _ -> pure (FRErr INTERNAL, Nothing)
@@ -511,8 +512,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       withFileLog (`logAckFile` rId)
       st <- asks store
       atomically $ deleteRecipient st rId fr
-      stats <- asks serverStats
-      atomically $ modifyTVar' (fileDownloadAcks stats) (+ 1)
+      incFileStat fileDownloadAcks
       pure FROk
 
 deleteServerFile_ :: FileRec -> M (Either XFTPErrorType ())
@@ -524,11 +524,11 @@ deleteServerFile_ FileRec {senderId, fileInfo, filePath} = do
     ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
     st <- asks store
     void $ atomically $ deleteFile st senderId
-    atomically $ modifyTVar' (filesDeleted stats) (+ 1)
+    lift $ incFileStat filesDeleted
   where
     deletedStats stats = do
-      atomically $ modifyTVar' (filesCount stats) (subtract 1)
-      atomically $ modifyTVar' (filesSize stats) (subtract $ fromIntegral $ size fileInfo)
+      liftIO $ atomicModifyIORef'_ (filesCount stats) (subtract 1)
+      liftIO $ atomicModifyIORef'_ (filesSize stats) (subtract $ fromIntegral $ size fileInfo)
 
 expireServerFiles :: Maybe Int -> ExpirationConfig -> M ()
 expireServerFiles itemDelay expCfg = do
@@ -554,8 +554,7 @@ expireServerFiles itemDelay expCfg = do
     delete st sId = do
       withFileLog (`logDeleteFile` sId)
       void . atomically $ deleteFile st sId -- will not update usedStorage if sId isn't in store
-      FileServerStats {filesExpired} <- asks serverStats
-      atomically $ modifyTVar' filesExpired (+ 1)
+      incFileStat filesExpired
 
 randomId :: Int -> M ByteString
 randomId n = atomically . C.randomBytes n =<< asks random
@@ -568,10 +567,10 @@ getFileId = do
 withFileLog :: (StoreLog 'WriteMode -> IO a) -> M ()
 withFileLog action = liftIO . mapM_ action =<< asks storeLog
 
-incFileStat :: (FileServerStats -> TVar Int) -> M ()
+incFileStat :: (FileServerStats -> IORef Int) -> M ()
 incFileStat statSel = do
   stats <- asks serverStats
-  atomically $ modifyTVar' (statSel stats) (+ 1)
+  liftIO $ atomicModifyIORef'_ (statSel stats) (+ 1)
 
 saveServerStats :: M ()
 saveServerStats =

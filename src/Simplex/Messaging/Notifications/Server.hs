@@ -19,6 +19,7 @@ import Control.Monad.Reader
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import Data.IORef
 import Data.Int (Int64)
 import Data.List (intercalate, sort)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -30,6 +31,7 @@ import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import GHC.IORef (atomicSwapIORef)
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmission (..))
 import Simplex.Messaging.Client.Agent
@@ -118,14 +120,14 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
           ts <- getCurrentTime
-          fromTime' <- atomically $ swapTVar fromTime ts
-          tknCreated' <- atomically $ swapTVar tknCreated 0
-          tknVerified' <- atomically $ swapTVar tknVerified 0
-          tknDeleted' <- atomically $ swapTVar tknDeleted 0
-          subCreated' <- atomically $ swapTVar subCreated 0
-          subDeleted' <- atomically $ swapTVar subDeleted 0
-          ntfReceived' <- atomically $ swapTVar ntfReceived 0
-          ntfDelivered' <- atomically $ swapTVar ntfDelivered 0
+          fromTime' <- atomicSwapIORef fromTime ts
+          tknCreated' <- atomicSwapIORef tknCreated 0
+          tknVerified' <- atomicSwapIORef tknVerified 0
+          tknDeleted' <- atomicSwapIORef tknDeleted 0
+          subCreated' <- atomicSwapIORef subCreated 0
+          subDeleted' <- atomicSwapIORef subDeleted 0
+          ntfReceived' <- atomicSwapIORef ntfReceived 0
+          ntfDelivered' <- atomicSwapIORef ntfDelivered 0
           tkn <- liftIO $ periodStatCounts activeTokens ts
           sub <- liftIO $ periodStatCounts activeSubs ts
           hPutStrLn h $
@@ -575,14 +577,14 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
 withNtfLog :: (StoreLog 'WriteMode -> IO a) -> M ()
 withNtfLog action = liftIO . mapM_ action =<< asks storeLog
 
-incNtfStatT :: DeviceToken -> (NtfServerStats -> TVar Int) -> M ()
+incNtfStatT :: DeviceToken -> (NtfServerStats -> IORef Int) -> M ()
 incNtfStatT (DeviceToken PPApnsNull _) _ = pure ()
 incNtfStatT _ statSel = incNtfStat statSel
 
-incNtfStat :: (NtfServerStats -> TVar Int) -> M ()
+incNtfStat :: (NtfServerStats -> IORef Int) -> M ()
 incNtfStat statSel = do
   stats <- asks serverStats
-  atomically $ modifyTVar' (statSel stats) (+ 1)
+  liftIO $ atomicModifyIORef'_ (statSel stats) (+ 1)
 
 saveServerStats :: M ()
 saveServerStats =

@@ -325,6 +325,7 @@ getServerStatsData s = do
         _msgCount
       }
 
+-- this function is not thread safe, it is used on server start only
 setServerStats :: ServerStats -> ServerStatsData -> IO ()
 setServerStats s d = do
   writeIORef (fromTime s) $! _fromTime d
@@ -581,6 +582,7 @@ getPeriodStatsData s = do
   _month <- readIORef $ month s
   pure PeriodStatsData {_day, _week, _month}
 
+-- this function is not thread safe, it is used on server start only
 setPeriodStats :: PeriodStats a -> PeriodStatsData a -> IO ()
 setPeriodStats s d = do
   writeIORef (day s) $! _day d
@@ -671,6 +673,7 @@ getResetProxyStatsData s = do
   _pErrorsOther <- atomicSwapIORef (pErrorsOther s) 0
   pure ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther}
 
+-- this function is not thread safe, it is used on server start only
 setProxyStats :: ProxyStats -> ProxyStatsData -> IO ()
 setProxyStats s d = do
   writeIORef (pRequests s) $! _pRequests d
