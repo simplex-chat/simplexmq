@@ -1,30 +1,200 @@
 #!/usr/bin/env sh
 set -eu
 
+# Common
+# ------
+date="$(date -u '+%Y-%m-%dT%H:%M:%S')"
+
+GRN='\033[0;32m'
+YLW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
 path_conf_var="/var/opt"
 path_conf_smp="$path_conf_var/simplex"
 path_conf_xftp="$path_conf_var/simplex-xftp"
+path_conf_smp_archive="$path_conf_smp/archive"
+path_conf_xftp_archive="$path_conf_xftp/archive"
+
+path_conf_smp_archive_storelog="$path_conf_smp_archive/queues"
+path_conf_smp_archive_stats="$path_conf_smp_archive/stats"
+path_conf_smp_archive_messages="$path_conf_smp_archive/messages"
+
+path_conf_xftp_archive_storelog="$path_conf_xftp_archive/queues"
+path_conf_xftp_archive_stats="$path_conf_xftp_archive/stats"
+
+# SMP
+# ---
 path_conf_storelog_smp="$path_conf_smp/smp-server-store.log"
+path_conf_storelog_smp_out="$path_conf_smp_archive_storelog/smp-server-store.log"
+
+path_conf_stats_smp="$path_conf_smp/smp-server-stats.log"
+path_conf_stats_smp_out="$path_conf_smp_archive_stats/smp-server-stats.log"
+
+path_conf_messages_smp="$path_conf_smp/smp-server-messages.log"
+path_conf_messages_smp_out="$path_conf_smp_archive_messages/smp-server-messages.log"
+
+# XFTP
+# ----
 path_conf_storelog_xftp="$path_conf_xftp/file-server-store.log"
-date="$(date -u '+%Y-%m-%dT%H:%M:%S')"
+path_conf_storelog_xftp_out="$path_conf_xftp_archive_storelog/file-server-store.log"
 
-backup_smp() {
- if [ -e "$path_conf_storelog_smp" ]; then
-  cp "$path_conf_storelog_smp" "${path_conf_storelog_smp}.${date:-date-failed}"
- fi
+path_conf_stats_xftp="$path_conf_xftp/file-server-stats.log"
+path_conf_stats_xftp_out="$path_conf_xftp_archive_stats/file-server-stats.log"
+
+checks() {
+	result=${SERVICE_RESULT:-exit-code}
+	status=${EXIT_STATUS:-TERM}
+
+	case "$result" in
+		success)
+			case "$status" in
+				TERM)
+					printf "${RED}Refusing to backup files with failed service state${NC}\n"
+					exit 1
+					;;
+				*)
+					:
+					;;
+			esac
+			;;
+		*)
+			printf "${RED}Refusing to backup files with failed service state${NC}\n"
+			exit 1
+			;;
+	esac
+	
+	smp_check() {
+		if [ ! -d "$path_conf_smp_archive_storelog" ]; then
+			mkdir -p "$path_conf_smp_archive_storelog"
+		fi
+		if [ ! -d "$path_conf_smp_archive_messages" ]; then
+			mkdir -p "$path_conf_smp_archive_messages"
+		fi
+		if [ ! -d "$path_conf_smp_archive_stats" ]; then
+			mkdir -p "$path_conf_smp_archive_stats"
+		fi
+	}
+	xftp_check() {
+		if [ ! -d "$path_conf_xftp_archive_storelog" ]; then
+			mkdir -p "$path_conf_xftp_archive_storelog"
+		fi
+		if [ ! -d "$path_conf_xftp_archive_stats" ]; then
+			mkdir -p "$path_conf_xftp_archive_stats"
+		fi
+	}
+
+	case "$1" in
+		smp-server)
+			smp_check
+			;;
+		xftp-server)
+			xftp_check
+			;;
+		*)
+			printf "${YLW}Unknown server type.${NC}\n"
+			exit 1
+			;;
+	esac
 }
 
-backup_xftp() {
- if [ -e "$path_conf_storelog_xftp" ]; then
-  cp "$path_conf_storelog_xftp" "${path_conf_storelog_xftp}.${date:-date-failed}"
- fi
+smp_backup() {
+	if [ -e "$path_conf_storelog_smp" ]; then
+		if cp "$path_conf_storelog_smp" "${path_conf_storelog_smp_out}.${date:-date-failed}"; then
+			printf "${YLW}Storelog${NC} ${GRN}backup successful:${NC} %s\n" "${path_conf_storelog_smp_out}.${date:-date-failed}"
+		else
+			printf "${YLW}Storelog${NC} ${RED}backup failed!${NC}\n"
+		fi
+	fi
+
+	if [ -e "$path_conf_messages_smp" ]; then
+		if cp "$path_conf_messages_smp" "${path_conf_messages_smp_out}.${date:-date-failed}"; then
+			printf "${YLW}Messages${NC} ${GRN}backup successful:${NC} %s\n" "${path_conf_messages_smp_out}.${date:-date-failed}"
+		else
+			printf "${YLW}Messages${NC} ${RED}backup failed!${NC}\n"
+		fi
+	fi
+
+	if [ -e "$path_conf_stats_smp" ]; then
+		if cp "$path_conf_stats_smp" "${path_conf_stats_smp_out}.${date:-date-failed}"; then
+			printf "${YLW}Stats${NC} ${GRN}backup successful:${NC} %s\n" "${path_conf_stats_smp_out}.${date:-date-failed}"
+		else
+			printf "${YLW}Stats${NC} ${RED}backup failed!${NC}\n"
+		fi
+	fi
 }
 
-if [ "$1" = 'smp-server' ]; then
- backup_smp
-elif [ "$1" = 'xftp-server' ]; then
- backup_xftp
-else
- backup_smp
- backup_xftp
-fi
+smp_cleanup() {
+	if (cd "$path_conf_smp_archive_storelog" && ls -t | sed -e '1,10d' | xargs -rd '\n' rm); then
+		printf "${YLW}Storelog archive${NC} ${GRN}clean up successfull${NC}: keeping the latest 10.\n"
+	else
+		printf "${YLW}Storelog archive${NC} ${RED}clean up failed!${NC}\n"
+	fi
+
+	if (cd "$path_conf_smp_archive_messages" && ls -t | sed -e '1,10d' | xargs -rd '\n' rm); then
+		printf "${YLW}Messages archive${NC} ${GRN}clean up successfull${NC}: keeping the latest 10.\n"
+	else
+		printf "${YLW}Messages archive${NC} ${RED}clean up failed!${NC}\n"
+	fi
+
+	if (cd "$path_conf_smp_archive_stats" && ls -t | sed -e '1,10d' | xargs -rd '\n' rm); then
+		printf "${YLW}Stats archive${NC} ${GRN}clean up successfull${NC}: keeping the latest 10.\n"
+	else
+		printf "${YLW}Stats archive${NC} ${RED}clean up failed!${NC}\n"
+	fi
+}
+
+xftp_backup() {
+	if [ -e "$path_conf_storelog_xftp" ]; then
+		if cp "$path_conf_storelog_xftp" "${path_conf_storelog_xftp_out}.${date:-date-failed}"; then
+			printf "${YLW}Storelog${NC} ${GRN}backup successful:${NC} %s\n" "${path_conf_storelog_xftp_out}.${date:-date-failed}"
+		else
+			printf "${YLW}Storelog${NC} ${RED}backup failed!${NC}\n"
+		fi
+	fi
+
+	if [ -e "$path_conf_stats_xftp" ]; then
+		if cp "$path_conf_stats_xftp" "${path_conf_stats_xftp_out}.${date:-date-failed}"; then
+			printf "${YLW}Stats${NC} ${GRN}backup successful:${NC} %s\n" "${path_conf_stats_xftp_out}.${date:-date-failed}"
+		else
+			printf "${YLW}Stats${NC} ${RED}backup failed!${NC}\n"
+		fi
+	fi
+}
+
+xftp_cleanup() {
+	if (cd "$path_conf_xftp_archive_storelog" && ls -t | sed -e '1,10d' | xargs -rd '\n' rm); then
+		printf "${YLW}Storelog archive${NC} ${GRN}clean up successfull${NC}: keeping the latest 10.\n"
+	else
+		printf "${YLW}Storelog archive${NC} ${RED}clean up failed!${NC}\n"
+	fi
+
+	if (cd "$path_conf_xftp_archive_stats" && ls -t | sed -e '1,10d' | xargs -rd '\n' rm); then
+		printf "${YLW}Stats archive${NC} ${GRN}clean up successfull${NC}: keeping the latest 10.\n"
+	else
+		printf "${YLW}Stats archive${NC} ${RED}clean up failed!${NC}\n"
+	fi
+}
+
+main() {
+	type="${1:-}"
+  
+	checks "$type"
+
+	case "$type" in
+		smp-server)
+			smp_backup
+			smp_cleanup
+			;;
+		xftp-server)
+			xftp_backup
+			xftp_cleanup
+			;;
+		*)
+			printf "${YLW}Unknown server type.${NC}\n"
+			exit 1
+			;;
+	esac 
+}
+
+main "$@"
