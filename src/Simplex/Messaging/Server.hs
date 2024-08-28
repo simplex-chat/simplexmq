@@ -58,7 +58,7 @@ import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM
 import qualified Data.IntSet as IS
 import Data.List (intercalate, mapAccumR)
-import Data.List.NonEmpty (NonEmpty (..))
+import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe)
@@ -138,6 +138,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   raceAny_
     ( serverThread s "server subscribedQ" subscribedQ subscribers subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ())
+        : sendPendingENDsThread s
         : receiveFromProxyAgent pa
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
@@ -170,15 +171,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     serverThread s label subQ subs clientSubs unsub = do
       labelMyThread label
       cls <- asks clients
-      stats <- asks serverStats
       forever $
-        atomically (updateSubscribers cls)
-          $>>= endPreviousSubscriptions stats
+        (atomically (readTQueue $ subQ s) >>= atomically . updateSubscribers cls)
+          $>>= endPreviousSubscriptions
           >>= liftIO . mapM_ unsub
       where
-        updateSubscribers :: TVar (IM.IntMap (Maybe Client)) -> STM (Maybe (QueueId, Client))
-        updateSubscribers cls = do
-          (qId, clnt, subscribed) <- readTQueue $ subQ s
+        updateSubscribers :: TVar (IM.IntMap (Maybe Client)) -> (QueueId, Client, Bool) -> STM (Maybe (QueueId, Client))
+        updateSubscribers cls (qId, clnt, subscribed) = do
           current <- IM.member (clientId clnt) <$> readTVar cls
           let updateSub
                 | not subscribed = TM.lookupDelete
@@ -190,13 +189,29 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                     yes <- readTVar $ connected c'
                     pure $ if yes then Just (qId, c') else Nothing
           updateSub qId (subs s) $>>= clientToBeNotified
-        endPreviousSubscriptions :: ServerStats -> (QueueId, Client) -> M (Maybe s)
-        endPreviousSubscriptions stats (qId, c) = do
-          forkClient c (label <> ".endPreviousSubscriptions") $ do
-            atomically $ writeTBQueue (sndQ c) [(CorrId "", qId, END)]
-            incStat $ qSubEnd stats
-            incStat $ qSubEndB stats
+        endPreviousSubscriptions :: (QueueId, Client) -> M (Maybe s)
+        endPreviousSubscriptions (qId, c) = do
+          atomically $ modifyTVar' (pendingENDs s) $ IM.alter (Just . maybe [qId] (qId <|)) (clientId c)
           atomically $ TM.lookupDelete qId (clientSubs c)
+
+    sendPendingENDsThread :: Server -> M ()
+    sendPendingENDsThread s = do
+      endInt <- asks $ pendingENDInterval . config
+      cls <- asks clients
+      forever $ do
+        threadDelay endInt
+        ends <- atomically $ swapTVar (pendingENDs s) IM.empty
+        unless (null ends) $ forM_ (IM.assocs ends) $ \(cId, qIds) ->
+          queueENDs qIds . IM.lookup cId =<< readTVarIO cls
+      where
+        queueENDs qIds = \case
+          Just (Just c) -> forkClient c ("sendPendingENDsThread.queueENDs") $ do
+            stats <- asks serverStats
+            atomically $ writeTBQueue (sndQ c) $ L.map (CorrId "",,END) qIds
+            let len = L.length qIds
+            atomically $ modifyTVar' (qSubEnd stats) (+ len)
+            atomically $ modifyTVar' (qSubEndB stats) (+ (len `div` 255 + 1)) -- up to 255 ENDs in the batch
+          _ -> pure ()
 
     receiveFromProxyAgent :: ProxyAgent -> M ()
     receiveFromProxyAgent ProxyAgent {smpAgent = SMPClientAgent {agentQ}} =
@@ -1446,7 +1461,8 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             Right q -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
               atomically $ writeTQueue subscribedQ (entId, clnt, False)
-              atomically $ writeTQueue ntfSubscribedQ (entId, clnt, False)
+              forM_ (notifierId <$> notifier q) $ \nId ->
+                atomically $ writeTQueue ntfSubscribedQ (nId, clnt, False)
               updateDeletedStats q
               pure ok
             Left e -> pure $ err e
