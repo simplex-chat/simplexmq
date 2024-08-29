@@ -1349,7 +1349,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                     (isFullTBQueue q)
                     (pure $ False)
                     (True <$ writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)])
-              _ -> pure Nothing -- TODO this should not create stats
+              _ -> pure Nothing
 
             mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> M (C.CbNonce, EncNMsgMeta)
             mkMessageNotification msgId msgTs rcvNtfDhSecret = do
