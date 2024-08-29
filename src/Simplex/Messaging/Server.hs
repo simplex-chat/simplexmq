@@ -246,7 +246,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         old <- liftIO $ expireBeforeEpoch expCfg
         rIds <- M.keysSet <$> readTVarIO ms
         forM_ rIds $ \rId -> do
-          q <- atomically (getMsgQueue ms rId quota)
+          q <- liftIO $ getMsgQueue ms rId quota
           deleted <- atomically $ deleteExpiredMsgs q old
           liftIO $ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
 
@@ -1444,7 +1444,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
         getStoreMsgQueue name rId = time (name <> " getMsgQueue") $ do
           ms <- asks msgStore
           quota <- asks $ msgQueueQuota . config
-          atomically $ getMsgQueue ms rId quota
+          liftIO $ getMsgQueue ms rId quota
 
         delQueueAndMsgs :: QueueStore -> M (Transmission BrokerMsg)
         delQueueAndMsgs st = do
@@ -1462,24 +1462,23 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
 
         getQueueInfo :: QueueRec -> M (Transmission BrokerMsg)
         getQueueInfo QueueRec {senderKey, notifier} = do
-          q@MsgQueue {size} <- getStoreMsgQueue "getQueueInfo" entId
-          info <- atomically $ do
-            qiSub <- TM.lookup entId subscriptions >>= mapM mkQSub
-            qiSize <- readTVar size
-            qiMsg <- toMsgInfo <$$> tryPeekMsg q
-            pure QueueInfo {qiSnd = isJust senderKey, qiNtf = isJust notifier, qiSub, qiSize, qiMsg}
+          q <- getStoreMsgQueue "getQueueInfo" entId
+          qiSub <- liftIO $ TM.lookupIO entId subscriptions >>= mapM mkQSub
+          qiSize <- liftIO $ getQueueSize q
+          qiMsg <- atomically $ toMsgInfo <$$> tryPeekMsg q
+          let info = QueueInfo {qiSnd = isJust senderKey, qiNtf = isJust notifier, qiSub, qiSize, qiMsg}
           pure (corrId, entId, INFO info)
           where
             mkQSub Sub {subThread, delivered} = do
               qSubThread <- case subThread of
                 ServerSub t -> do
-                  st <- readTVar t
+                  st <- readTVarIO t
                   pure $ case st of
                     NoSub -> QNoSub
                     SubPending -> QSubPending
                     SubThread _ -> QSubThread
                 ProhibitSub -> pure QProhibitSub
-              qDelivered <- decodeLatin1 . encode <$$> tryReadTMVar delivered
+              qDelivered <- atomically $ decodeLatin1 . encode <$$> tryReadTMVar delivered
               pure QSub {qSubThread, qDelivered}
 
         ok :: Transmission BrokerMsg
@@ -1567,13 +1566,12 @@ restoreServerMessages =
           where
             s = LB.toStrict s'
             addToMsgQueue rId msg = do
-              (isExpired, logFull) <- atomically $ do
-                q <- getMsgQueue ms rId quota
-                case msg of
-                  Message {msgTs}
-                    | maybe True (systemSeconds msgTs >=) old_ -> (False,) . isNothing <$> writeMsg q msg
-                    | otherwise -> pure (True, False)
-                  MessageQuota {} -> writeMsg q msg $> (False, False)
+              q <- liftIO $ getMsgQueue ms rId quota
+              (isExpired, logFull) <- atomically $ case msg of
+                Message {msgTs}
+                  | maybe True (systemSeconds msgTs >=) old_ -> (False,) . isNothing <$> writeMsg q msg
+                  | otherwise -> pure (True, False)
+                MessageQuota {} -> writeMsg q msg $> (False, False)
               when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
               pure $ if isExpired then expired + 1 else expired
             msgErr :: Show e => String -> e -> String
@@ -1598,7 +1596,7 @@ restoreServerStats expiredWhileRestoring = asks (serverStatsBackupFile . config)
         Right d@ServerStatsData {_qCount = statsQCount} -> do
           s <- asks serverStats
           _qCount <- fmap M.size . readTVarIO . queues =<< asks queueStore
-          _msgCount <- foldM (\(!n) q -> (n +) <$> readTVarIO (size q)) 0 =<< readTVarIO =<< asks msgStore
+          _msgCount <- liftIO . foldM (\(!n) q -> (n +) <$> getQueueSize q) 0 =<< readTVarIO =<< asks msgStore
           liftIO $ setServerStats s d {_qCount, _msgCount, _msgExpired = _msgExpired d + expiredWhileRestoring}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
