@@ -12,6 +12,7 @@ import Control.Logger.Simple
 import Control.Monad
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
+import Data.IORef
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -140,7 +141,8 @@ data Server = Server
     subscribers :: TMap RecipientId Client,
     ntfSubscribedQ :: TQueue (NotifierId, Client, Subscribed),
     notifiers :: TMap NotifierId Client,
-    pendingENDs :: TVar (IntMap (NonEmpty QueueId)),
+    pendingENDs :: IORef (IntMap (NonEmpty RecipientId)),
+    pendingNtfENDs :: IORef (IntMap (NonEmpty NotifierId)),
     savingLock :: Lock
   }
 
@@ -183,9 +185,10 @@ newServer = do
   subscribers <- TM.emptyIO
   ntfSubscribedQ <- newTQueueIO
   notifiers <- TM.emptyIO
-  pendingENDs <- newTVarIO IM.empty
+  pendingENDs <- newIORef IM.empty
+  pendingNtfENDs <- newIORef IM.empty
   savingLock <- atomically createLock
-  return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, pendingENDs, savingLock}
+  return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, pendingENDs, pendingNtfENDs, savingLock}
 
 newClient :: ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO Client
 newClient clientId qSize thVersion sessionId createdAt = do

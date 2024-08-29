@@ -7,22 +7,22 @@ module Simplex.Messaging.Notifications.Server.Stats where
 import Control.Applicative (optional)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
+import Data.IORef
 import Data.Time.Clock (UTCTime)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (NtfTokenId)
 import Simplex.Messaging.Protocol (NotifierId)
 import Simplex.Messaging.Server.Stats
-import UnliftIO.STM
 
 data NtfServerStats = NtfServerStats
-  { fromTime :: TVar UTCTime,
-    tknCreated :: TVar Int,
-    tknVerified :: TVar Int,
-    tknDeleted :: TVar Int,
-    subCreated :: TVar Int,
-    subDeleted :: TVar Int,
-    ntfReceived :: TVar Int,
-    ntfDelivered :: TVar Int,
+  { fromTime :: IORef UTCTime,
+    tknCreated :: IORef Int,
+    tknVerified :: IORef Int,
+    tknDeleted :: IORef Int,
+    subCreated :: IORef Int,
+    subDeleted :: IORef Int,
+    ntfReceived :: IORef Int,
+    ntfDelivered :: IORef Int,
     activeTokens :: PeriodStats NtfTokenId,
     activeSubs :: PeriodStats NotifierId
   }
@@ -42,42 +42,43 @@ data NtfServerStatsData = NtfServerStatsData
 
 newNtfServerStats :: UTCTime -> IO NtfServerStats
 newNtfServerStats ts = do
-  fromTime <- newTVarIO ts
-  tknCreated <- newTVarIO 0
-  tknVerified <- newTVarIO 0
-  tknDeleted <- newTVarIO 0
-  subCreated <- newTVarIO 0
-  subDeleted <- newTVarIO 0
-  ntfReceived <- newTVarIO 0
-  ntfDelivered <- newTVarIO 0
+  fromTime <- newIORef ts
+  tknCreated <- newIORef 0
+  tknVerified <- newIORef 0
+  tknDeleted <- newIORef 0
+  subCreated <- newIORef 0
+  subDeleted <- newIORef 0
+  ntfReceived <- newIORef 0
+  ntfDelivered <- newIORef 0
   activeTokens <- newPeriodStats
   activeSubs <- newPeriodStats
   pure NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, activeTokens, activeSubs}
 
 getNtfServerStatsData :: NtfServerStats -> IO NtfServerStatsData
 getNtfServerStatsData s@NtfServerStats {fromTime} = do
-  _fromTime <- readTVarIO fromTime
-  _tknCreated <- readTVarIO $ tknCreated s
-  _tknVerified <- readTVarIO $ tknVerified s
-  _tknDeleted <- readTVarIO $ tknDeleted s
-  _subCreated <- readTVarIO $ subCreated s
-  _subDeleted <- readTVarIO $ subDeleted s
-  _ntfReceived <- readTVarIO $ ntfReceived s
-  _ntfDelivered <- readTVarIO $ ntfDelivered s
+  _fromTime <- readIORef fromTime
+  _tknCreated <- readIORef $ tknCreated s
+  _tknVerified <- readIORef $ tknVerified s
+  _tknDeleted <- readIORef $ tknDeleted s
+  _subCreated <- readIORef $ subCreated s
+  _subDeleted <- readIORef $ subDeleted s
+  _ntfReceived <- readIORef $ ntfReceived s
+  _ntfDelivered <- readIORef $ ntfDelivered s
   _activeTokens <- getPeriodStatsData $ activeTokens s
   _activeSubs <- getPeriodStatsData $ activeSubs s
   pure NtfServerStatsData {_fromTime, _tknCreated, _tknVerified, _tknDeleted, _subCreated, _subDeleted, _ntfReceived, _ntfDelivered, _activeTokens, _activeSubs}
 
-setNtfServerStats :: NtfServerStats -> NtfServerStatsData -> STM ()
+-- this function is not thread safe, it is used on server start only
+setNtfServerStats :: NtfServerStats -> NtfServerStatsData -> IO ()
 setNtfServerStats s@NtfServerStats {fromTime} d@NtfServerStatsData {_fromTime} = do
-  writeTVar fromTime $! _fromTime
-  writeTVar (tknCreated s) $! _tknCreated d
-  writeTVar (tknVerified s) $! _tknVerified d
-  writeTVar (tknDeleted s) $! _tknDeleted d
-  writeTVar (subCreated s) $! _subCreated d
-  writeTVar (subDeleted s) $! _subDeleted d
-  writeTVar (ntfReceived s) $! _ntfReceived d
-  writeTVar (ntfDelivered s) $! _ntfDelivered d
+  writeIORef fromTime $! _fromTime
+  writeIORef (tknCreated s) $! _tknCreated d
+  writeIORef (tknVerified s) $! _tknVerified d
+  writeIORef (tknDeleted s) $! _tknDeleted d
+  writeIORef (subCreated s) $! _subCreated d
+  writeIORef (subDeleted s) $! _subDeleted d
+  writeIORef (ntfReceived s) $! _ntfReceived d
+  writeIORef (ntfDelivered s) $! _ntfDelivered d
   setPeriodStats (activeTokens s) (_activeTokens d)
   setPeriodStats (activeSubs s) (_activeSubs d)
 
