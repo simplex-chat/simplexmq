@@ -718,7 +718,7 @@ testEnablePQEncryption =
     (a, 2, "msg 1") \#>\ b
     (b, 3, "msg 2") \#>\ a
     -- 45 bytes is used by agent message envelope inside double ratchet message envelope
-    let largeMsg g' pqEnc = atomically $ C.randomBytes (e2eEncAgentMsgLength pqdrSMPAgentVersion pqEnc - 45) g'
+    let largeMsg g' pqEnc = liftIO $ C.randomBytes (e2eEncAgentMsgLength pqdrSMPAgentVersion pqEnc - 45) g'
     lrg <- largeMsg g PQSupportOff
     (a, 4, lrg) \#>\ b
     (b, 5, lrg) \#>\ a

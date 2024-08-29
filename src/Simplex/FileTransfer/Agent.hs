@@ -145,7 +145,7 @@ xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redi
           relSavePathRedirect = relPrefixPath </> "xftp.redirect-decrypted"
       lift $ createDirectory =<< toFSFilePath relTmpPathRedirect
       lift $ createEmptyFile =<< toFSFilePath relSavePathRedirect
-      cfArgsRedirect <- atomically $ CF.randomArgs g
+      cfArgsRedirect <- liftIO $ CF.randomArgs g
       let saveFileRedirect = CryptoFile relSavePathRedirect $ Just cfArgsRedirect
       -- create download tasks
       withStore c $ \db -> createRcvFileRedirect db g userId fd relPrefixPath relTmpPathRedirect saveFileRedirect relTmpPath saveFile approvedRelays
@@ -355,8 +355,8 @@ xftpSendFile' c userId file numRecipients = do
   prefixPath <- lift $ getPrefixPath "snd.xftp"
   createDirectory prefixPath
   let relPrefixPath = takeFileName prefixPath
-  key <- atomically $ C.randomSbKey g
-  nonce <- atomically $ C.randomCbNonce g
+  key <- liftIO $ C.randomSbKey g
+  nonce <- liftIO $ C.randomCbNonce g
   -- saving absolute filePath will not allow to restore file encryption after app update, but it's a short window
   fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce Nothing
   lift . void $ getXFTPSndWorker True c Nothing
@@ -369,11 +369,11 @@ xftpSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {si
   createDirectory prefixPath
   let relPrefixPath = takeFileName prefixPath
   let directYaml = prefixPath </> "direct.yaml"
-  cfArgs <- atomically $ CF.randomArgs g
+  cfArgs <- liftIO $ CF.randomArgs g
   let file = CryptoFile directYaml (Just cfArgs)
   liftError (FILE . FILE_IO . show) $ CF.writeFile file (LB.fromStrict $ strEncode fdDirect)
-  key <- atomically $ C.randomSbKey g
-  nonce <- atomically $ C.randomCbNonce g
+  key <- liftIO $ C.randomSbKey g
+  nonce <- liftIO $ C.randomCbNonce g
   fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce $ Just RedirectFileInfo {size, digest}
   lift . void $ getXFTPSndWorker True c Nothing
   pure fId

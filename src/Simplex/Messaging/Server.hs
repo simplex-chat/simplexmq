@@ -44,7 +44,6 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
-import Crypto.Random
 import Control.Monad.STM (retry)
 import Data.Bifunctor (first)
 import Data.ByteString.Base64 (encode)
@@ -392,7 +391,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
     runClient signKey tp h = do
       kh <- asks serverIdentity
-      ks <- atomically . C.generateKeyPair =<< asks random
+      ks <- liftIO . C.generateKeyPair =<< asks random
       ServerConfig {smpServerVRange, smpHandshakeTimeout} <- asks config
       labelMyThread $ "smp handshake for " <> transportName tp
       liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake signKey h ks kh smpServerVRange) >>= \case
@@ -1017,7 +1016,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
       where
         createQueue :: QueueStore -> RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> SenderCanSecure -> M (Transmission BrokerMsg)
         createQueue st recipientKey dhKey subMode sndSecure = time "NEW" $ do
-          (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
+          (rcvPublicDhKey, privDhKey) <- liftIO . C.generateKeyPair =<< asks random
           let rcvDhSecret = C.dh' dhKey privDhKey
               qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey, sndSecure}
               qRec (recipientId, senderId) =
@@ -1074,7 +1073,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
 
         addQueueNotifier_ :: QueueStore -> NtfPublicAuthKey -> RcvNtfPublicDhKey -> M (Transmission BrokerMsg)
         addQueueNotifier_ st notifierKey dhKey = time "NKEY" $ do
-          (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
+          (rcvPublicDhKey, privDhKey) <- liftIO . C.generateKeyPair =<< asks random
           let rcvNtfDhSecret = C.dh' dhKey privDhKey
           (corrId,entId,) <$> addNotifierRetry 3 rcvPublicDhKey rcvNtfDhSecret
           where
@@ -1255,15 +1254,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                         Just (msg, wasEmpty) -> time "SEND ok" $ do
                           when wasEmpty $ tryDeliverMessage msg
                           when (notification msgFlags) $ do
-                            forM_ (notifier qr) $ \ntf -> do
-                              asks random >>= atomically . trySendNotification ntf msg >>= \case
-                                Nothing -> do
-                                  incStat $ msgNtfNoSub stats
-                                  logWarn "No notification subscription"
-                                Just False -> do
-                                  incStat $ msgNtfLost stats
-                                  logWarn "Dropped message notification"
-                                Just True -> incStat $ msgNtfs stats
+                            mapM_ (`trySendNotification` msg) (notifier qr)
                             incStat $ msgSentNtf stats
                             liftIO $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
                           incStat $ msgSent stats
@@ -1335,23 +1326,34 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                               deliver q s
                               writeTVar st NoSub
 
-            trySendNotification :: NtfCreds -> Message -> TVar ChaChaDRG -> STM (Maybe Bool)
-            trySendNotification NtfCreds {notifierId, rcvNtfDhSecret} msg ntfNonceDrg =
-              mapM (writeNtf notifierId msg rcvNtfDhSecret ntfNonceDrg) =<< TM.lookup notifierId notifiers
+            trySendNotification :: NtfCreds -> Message -> M ()
+            trySendNotification NtfCreds {notifierId, rcvNtfDhSecret} msg = do
+              stats <- asks serverStats
+              liftIO (TM.lookupIO notifierId notifiers) >>= \case
+                Nothing -> do
+                  incStat $ msgNtfNoSub stats
+                  logWarn "No notification subscription"
+                Just ntfClnt -> do
+                  let updateStats True = incStat $ msgNtfs stats
+                      updateStats _ = do
+                        incStat $ msgNtfLost stats
+                        logWarn "Dropped message notification"
+                  writeNtf notifierId msg rcvNtfDhSecret ntfClnt >>= mapM_ updateStats
 
-            writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> Client -> STM Bool
-            writeNtf nId msg rcvNtfDhSecret ntfNonceDrg Client {sndQ = q} =
-              ifM (isFullTBQueue q) (pure False) (sendNtf $> True)
-              where
-                sendNtf = case msg of
-                  Message {msgId, msgTs} -> do
-                    (nmsgNonce, encNMsgMeta) <- mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg
-                    writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)]
-                  _ -> pure ()
+            writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> Client -> M (Maybe Bool)
+            writeNtf nId msg rcvNtfDhSecret Client {sndQ = q} = case msg of
+              Message {msgId, msgTs} -> Just <$> do
+                (nmsgNonce, encNMsgMeta) <- mkMessageNotification msgId msgTs rcvNtfDhSecret
+                atomically $
+                  ifM
+                    (isFullTBQueue q)
+                    (pure $ False)
+                    (True <$ writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)])
+              _ -> pure Nothing -- TODO this should not create stats
 
-            mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> TVar ChaChaDRG -> STM (C.CbNonce, EncNMsgMeta)
-            mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg = do
-              cbNonce <- C.randomCbNonce ntfNonceDrg
+            mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> M (C.CbNonce, EncNMsgMeta)
+            mkMessageNotification msgId msgTs rcvNtfDhSecret = do
+              cbNonce <- liftIO . C.randomCbNonce =<< asks random
               let msgMeta = NMsgMeta {msgId, msgTs}
                   encNMsgMeta = C.cbEncrypt rcvNtfDhSecret cbNonce (smpEncode msgMeta) 128
               pure . (cbNonce,) $ fromRight "" encNMsgMeta
@@ -1518,7 +1520,7 @@ timed name qId a = do
     sec = 1000_000000
 
 randomId :: Int -> M ByteString
-randomId n = atomically . C.randomBytes n =<< asks random
+randomId n = liftIO . C.randomBytes n =<< asks random
 
 saveServerMessages :: Bool -> M ()
 saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessages

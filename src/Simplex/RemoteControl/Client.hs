@@ -78,10 +78,10 @@ helloBlockSize = 12288
 encInvitationSize :: Int
 encInvitationSize = 900
 
-newRCHostPairing :: TVar ChaChaDRG -> IO RCHostPairing
+newRCHostPairing :: IORef ChaChaDRG -> IO RCHostPairing
 newRCHostPairing drg = do
   ((_, caKey), caCert) <- genCredentials drg Nothing (-25, 24 * 999999) "ca"
-  (_, idPrivKey) <- atomically $ C.generateKeyPair drg
+  (_, idPrivKey) <- C.generateKeyPair drg
   pure RCHostPairing {caKey, caCert, idPrivKey, knownHost = Nothing}
 
 data RCHostClient = RCHostClient
@@ -98,12 +98,12 @@ data RCHClient_ = RCHClient_
 
 type RCHostConnection = (NonEmpty RCCtrlAddress, RCSignedInvitation, RCHostClient, RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)))
 
-connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> Bool -> Maybe RCCtrlAddress -> Maybe Word16 -> ExceptT RCErrorType IO RCHostConnection
+connectRCHost :: IORef ChaChaDRG -> RCHostPairing -> J.Value -> Bool -> Maybe RCCtrlAddress -> Maybe Word16 -> ExceptT RCErrorType IO RCHostConnection
 connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ctrlAppInfo multicast rcAddrPrefs_ port_ = do
   r <- newEmptyTMVarIO
   found@(RCCtrlAddress {address} :| _) <- findCtrlAddress
   c@RCHClient_ {startedPort, announcer} <- liftIO mkClient
-  hostKeys <- atomically genHostKeys
+  hostKeys <- liftIO genHostKeys
   action <- liftIO $ runClient c r hostKeys
   -- wait for the port to make invitation
   portNum <- atomically $ readTMVar startedPort
@@ -163,7 +163,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
               _ ->
                 pure $ TLS.CertificateUsageReject TLS.CertificateRejectUnknownCA
         }
-    genHostKeys :: STM RCHostKeys
+    genHostKeys :: IO RCHostKeys
     genHostKeys = do
       sessKeys <- C.generateKeyPair drg
       dhKeys <- C.generateKeyPair drg
@@ -185,7 +185,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
               }
       pure $ signInvitation (snd sessKeys) idPrivKey inv
 
-genTLSCredentials :: TVar ChaChaDRG -> C.APrivateSignKey -> C.SignedCertificate -> IO TLS.Credentials
+genTLSCredentials :: IORef ChaChaDRG -> C.APrivateSignKey -> C.SignedCertificate -> IO TLS.Credentials
 genTLSCredentials drg caKey caCert = do
   let caCreds = (C.signatureKeyPair caKey, caCert)
   leaf <- genCredentials drg (Just caCreds) (0, 24 * 999999) "localhost" -- session-signing cert
@@ -202,7 +202,7 @@ cancelHostClient RCHostClient {action, client_ = RCHClient_ {announcer, endSessi
   atomically (tryTakeTMVar announcer) >>= mapM_ uninterruptibleCancel
   uninterruptibleCancel action
 
-prepareHostSession :: TVar ChaChaDRG -> C.KeyHash -> RCHostPairing -> RCHostKeys -> RCHostEncHello -> ExceptT RCErrorType IO (RCCtrlEncHello, HostSessKeys, RCHostHello, RCHostPairing)
+prepareHostSession :: IORef ChaChaDRG -> C.KeyHash -> RCHostPairing -> RCHostKeys -> RCHostEncHello -> ExceptT RCErrorType IO (RCCtrlEncHello, HostSessKeys, RCHostHello, RCHostPairing)
 prepareHostSession
   drg
   tlsHostFingerprint
@@ -220,7 +220,7 @@ prepareHostSession
     knownHost' <- updateKnownHost ca dhPubKey
     let ctrlHello = RCCtrlHello {}
     -- TODO send error response if something fails
-    nonce' <- liftIO . atomically $ C.randomCbNonce drg
+    nonce' <- liftIO $ C.randomCbNonce drg
     encBody' <- liftEitherWith (const RCEBlockSize) $ kcbEncrypt hybridKey nonce' (LB.toStrict $ J.encode ctrlHello) helloBlockSize
     let ctrlEncHello = RCCtrlEncHello {kem = kemCiphertext, nonce = nonce', encBody = encBody'}
     pure (ctrlEncHello, keys, hostHello, pairing {knownHost = Just knownHost'})
@@ -246,7 +246,7 @@ data RCCClient_ = RCCClient_
 type RCCtrlConnection = (RCCtrlClient, RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCCtrlSession, RCCtrlPairing)))
 
 -- app should determine whether it is a new or known pairing based on CA fingerprint in the invitation
-connectRCCtrl :: TVar ChaChaDRG -> RCVerifiedInvitation -> Maybe RCCtrlPairing -> J.Value -> ExceptT RCErrorType IO RCCtrlConnection
+connectRCCtrl :: IORef ChaChaDRG -> RCVerifiedInvitation -> Maybe RCCtrlPairing -> J.Value -> ExceptT RCErrorType IO RCCtrlConnection
 connectRCCtrl drg (RCVerifiedInvitation inv@RCInvitation {ca, idkey}) pairing_ hostAppInfo = do
   pairing' <- maybe (liftIO newCtrlPairing) updateCtrlPairing pairing_
   connectRCCtrl_ drg pairing' inv hostAppInfo
@@ -254,15 +254,15 @@ connectRCCtrl drg (RCVerifiedInvitation inv@RCInvitation {ca, idkey}) pairing_ h
     newCtrlPairing :: IO RCCtrlPairing
     newCtrlPairing = do
       ((_, caKey), caCert) <- genCredentials drg Nothing (0, 24 * 999999) "ca"
-      (_, dhPrivKey) <- atomically $ C.generateKeyPair drg
+      (_, dhPrivKey) <- liftIO $ C.generateKeyPair drg
       pure RCCtrlPairing {caKey, caCert, ctrlFingerprint = ca, idPubKey = idkey, dhPrivKey, prevDhPrivKey = Nothing}
     updateCtrlPairing :: RCCtrlPairing -> ExceptT RCErrorType IO RCCtrlPairing
     updateCtrlPairing pairing@RCCtrlPairing {ctrlFingerprint, idPubKey, dhPrivKey = currDhPrivKey} = do
       unless (ca == ctrlFingerprint && idPubKey == idkey) $ throwE RCEIdentity
-      (_, dhPrivKey) <- atomically $ C.generateKeyPair drg
+      (_, dhPrivKey) <- liftIO $ C.generateKeyPair drg
       pure pairing {dhPrivKey, prevDhPrivKey = Just currDhPrivKey}
 
-connectRCCtrl_ :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> ExceptT RCErrorType IO RCCtrlConnection
+connectRCCtrl_ :: IORef ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> ExceptT RCErrorType IO RCCtrlConnection
 connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, host, port} hostAppInfo = do
   r <- newEmptyTMVarIO
   c <- liftIO mkClient
@@ -324,7 +324,7 @@ receiveRCPacket tls = do
   b' <- liftEitherWith (const RCEBlockSize) $ C.unPad b
   liftEitherWith RCESyntax $ smpDecode b'
 
-prepareHostHello :: TVar ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> ExceptT RCErrorType IO (C.DhSecretX25519, KEMSecretKey, RCHostEncHello)
+prepareHostHello :: IORef ChaChaDRG -> RCCtrlPairing -> RCInvitation -> J.Value -> ExceptT RCErrorType IO (C.DhSecretX25519, KEMSecretKey, RCHostEncHello)
 prepareHostHello
   drg
   RCCtrlPairing {caCert, dhPrivKey}
@@ -334,7 +334,7 @@ prepareHostHello
     case compatibleVersion v supportedRCPVRange of
       Nothing -> throwE RCEVersion
       Just (Compatible v') -> do
-        nonce <- liftIO . atomically $ C.randomCbNonce drg
+        nonce <- liftIO . liftIO $ C.randomCbNonce drg
         (kemPubKey, kemPrivKey) <- liftIO $ sntrup761Keypair drg
         let helloBody = RCHostHello {v = v', ca = certFingerprint caCert, app = hostAppInfo, kem = kemPubKey}
             sharedKey = C.dh' dhPubKey dhPrivKey
@@ -362,11 +362,11 @@ prepareCtrlSession
 
 -- * Multicast discovery
 
-announceRC :: TVar ChaChaDRG -> Int -> C.PrivateKeyEd25519 -> C.PublicKeyX25519 -> RCHostKeys -> RCInvitation -> ExceptT RCErrorType IO ()
+announceRC :: IORef ChaChaDRG -> Int -> C.PrivateKeyEd25519 -> C.PublicKeyX25519 -> RCHostKeys -> RCInvitation -> ExceptT RCErrorType IO ()
 announceRC drg maxCount idPrivKey knownDhPub RCHostKeys {sessKeys, dhKeys} inv = ExceptT $ withSender $ \sender -> runExceptT $ do
   replicateM_ maxCount $ do
     logDebug "Announcing..."
-    nonce <- atomically $ C.randomCbNonce drg
+    nonce <- liftIO $ C.randomCbNonce drg
     encInvitation <- liftEitherWith (const RCEEncrypt) $ C.cbEncrypt sharedKey nonce sigInvitation encInvitationSize
     liftIO . UDP.send sender $ smpEncode RCEncInvitation {dhPubKey, nonce, encInvitation}
     threadDelay 1000000
@@ -426,9 +426,9 @@ cancelCtrlClient RCCtrlClient {action, client_ = RCCClient_ {endSession}} = do
 
 -- * Session encryption
 
-rcEncryptBody :: TVar ChaChaDRG -> KEMHybridSecret -> LazyByteString -> ExceptT RCErrorType IO (C.CbNonce, LazyByteString)
+rcEncryptBody :: IORef ChaChaDRG -> KEMHybridSecret -> LazyByteString -> ExceptT RCErrorType IO (C.CbNonce, LazyByteString)
 rcEncryptBody drg hybridKey s = do
-  nonce <- atomically $ C.randomCbNonce drg
+  nonce <- liftIO $ C.randomCbNonce drg
   let len = LB.length s
   ct <- liftEitherWith (const RCEEncrypt) $ LC.kcbEncryptTailTag hybridKey nonce s len (len + 8)
   pure (nonce, ct)

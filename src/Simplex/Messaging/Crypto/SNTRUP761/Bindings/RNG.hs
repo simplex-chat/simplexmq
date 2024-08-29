@@ -8,17 +8,18 @@ import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ByteArrayAccess (copyByteArrayToPtr))
+import Data.IORef
 import Foreign
 import Foreign.C
 import qualified Simplex.Messaging.Crypto as C
 
-withDRG :: TVar ChaChaDRG -> (FunPtr RNGFunc -> IO a) -> IO a
+withDRG :: IORef ChaChaDRG -> (FunPtr RNGFunc -> IO a) -> IO a
 withDRG drg = bracket (createRNGFunc drg) freeHaskellFunPtr
 
-createRNGFunc :: TVar ChaChaDRG -> IO (FunPtr RNGFunc)
+createRNGFunc :: IORef ChaChaDRG -> IO (FunPtr RNGFunc)
 createRNGFunc drg =
   mkRNGFunc $ \_ctx sz buf -> do
-    bs <- atomically $ C.randomBytes (fromIntegral sz) drg
+    bs <- C.randomBytes (fromIntegral sz) drg
     copyByteArrayToPtr bs buf
 
 type RNGContext = ()

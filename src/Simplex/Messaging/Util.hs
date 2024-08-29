@@ -23,6 +23,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
 import Data.Time (NominalDiffTime)
+import Data.Tuple (swap)
 import GHC.Conc (labelThread, myThreadId, threadDelay)
 import UnliftIO hiding (atomicModifyIORef')
 import qualified UnliftIO.Exception as UE
@@ -177,6 +178,11 @@ labelMyThread label = liftIO $ myThreadId >>= (`labelThread` label)
 
 atomicModifyIORef'_ :: IORef a -> (a -> a) -> IO ()
 atomicModifyIORef'_ r f = atomicModifyIORef' r $ \v -> (f v, ())
+{-# INLINE atomicModifyIORef'_ #-}
+
+atomicStateIORef :: IORef s -> (s -> (a, s)) -> IO a
+atomicStateIORef r f = atomicModifyIORef' r $ swap . f
+{-# INLINE atomicStateIORef #-}
 
 encodeJSON :: ToJSON a => a -> Text
 encodeJSON = safeDecodeUtf8 . LB.toStrict . J.encode
