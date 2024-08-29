@@ -4,7 +4,6 @@ module Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
     RNGFunc,
   ) where
 
-import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ByteArrayAccess (copyByteArrayToPtr))

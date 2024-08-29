@@ -129,7 +129,7 @@ data Env = Env
     tlsServerParams :: T.ServerParams,
     serverStats :: ServerStats,
     sockets :: SocketState,
-    clientSeq :: TVar ClientId,
+    clientSeq :: IORef ClientId,
     clients :: TVar (IntMap (Maybe Client)),
     proxyAgent :: ProxyAgent -- senders served on this proxy
   }
@@ -231,7 +231,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
   sockets <- newSocketState
-  clientSeq <- newTVarIO 0
+  clientSeq <- newIORef 0
   clients <- newTVarIO mempty
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
   pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}

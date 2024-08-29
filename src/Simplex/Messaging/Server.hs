@@ -661,7 +661,7 @@ runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessio
   ts <- liftIO getSystemTime
   active <- asks clients
   nextClientId <- asks clientSeq
-  clientId <- atomically $ stateTVar nextClientId $ \next -> (next, next + 1)
+  clientId <- liftIO $ atomicStateIORef nextClientId $ \next -> (next, next + 1)
   atomically $ modifyTVar' active $ IM.insert clientId Nothing
   c <- liftIO $ newClient clientId q thVersion sessionId ts
   runClientThreads active c clientId `finally` clientDisconnected c
