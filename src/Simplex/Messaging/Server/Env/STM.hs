@@ -124,7 +124,7 @@ data Env = Env
     serverIdentity :: KeyHash,
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
-    random :: TVar ChaChaDRG,
+    random :: IORef ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerParams :: T.ServerParams,
     serverStats :: ServerStats,
@@ -267,7 +267,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
           | isJust (storeMsgsFile config) = SPMMessages
           | otherwise = SPMQueues
 
-newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO ProxyAgent
+newSMPProxyAgent :: SMPClientAgentConfig -> IORef ChaChaDRG -> IO ProxyAgent
 newSMPProxyAgent smpAgentCfg random = do
   smpAgent <- newSMPClientAgent smpAgentCfg random
   pure ProxyAgent {smpAgent}

@@ -12,6 +12,7 @@ module Simplex.FileTransfer.Server.Env where
 import Control.Logger.Simple
 import Control.Monad
 import Crypto.Random
+import Data.IORef (IORef)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
@@ -83,7 +84,7 @@ data XFTPEnv = XFTPEnv
   { config :: XFTPServerConfig,
     store :: FileStore,
     storeLog :: Maybe (StoreLog 'WriteMode),
-    random :: TVar ChaChaDRG,
+    random :: IORef ChaChaDRG,
     serverIdentity :: C.KeyHash,
     tlsServerParams :: T.ServerParams,
     serverStats :: FileServerStats

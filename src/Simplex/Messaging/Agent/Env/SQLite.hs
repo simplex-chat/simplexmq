@@ -49,6 +49,7 @@ import Crypto.Random
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as JQ
 import Data.ByteArray (ScrubbedBytes)
+import Data.IORef (IORef) 
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -233,7 +234,7 @@ defaultAgentConfig =
 data Env = Env
   { config :: AgentConfig,
     store :: SQLiteStore,
-    random :: TVar ChaChaDRG,
+    random :: IORef ChaChaDRG,
     randomServer :: TVar StdGen,
     ntfSupervisor :: NtfSupervisor,
     xftpAgent :: XFTPAgent,

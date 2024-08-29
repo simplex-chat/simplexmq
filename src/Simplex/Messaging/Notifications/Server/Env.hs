@@ -11,6 +11,7 @@ import Control.Concurrent (ThreadId)
 import Control.Concurrent.Async (Async)
 import Control.Logger.Simple
 import Crypto.Random
+import Data.IORef (IORef)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (getCurrentTime)
@@ -76,7 +77,7 @@ data NtfEnv = NtfEnv
     pushServer :: NtfPushServer,
     store :: NtfStore,
     storeLog :: Maybe (StoreLog 'WriteMode),
-    random :: TVar ChaChaDRG,
+    random :: IORef ChaChaDRG,
     tlsServerParams :: T.ServerParams,
     serverIdentity :: C.KeyHash,
     serverStats :: NtfServerStats
@@ -102,7 +103,7 @@ data NtfSubscriber = NtfSubscriber
     smpAgent :: SMPClientAgent
   }
 
-newNtfSubscriber :: Natural -> SMPClientAgentConfig -> TVar ChaChaDRG -> IO NtfSubscriber
+newNtfSubscriber :: Natural -> SMPClientAgentConfig -> IORef ChaChaDRG -> IO NtfSubscriber
 newNtfSubscriber qSize smpAgentCfg random = do
   smpSubscribers <- TM.emptyIO
   newSubQ <- newTBQueueIO qSize

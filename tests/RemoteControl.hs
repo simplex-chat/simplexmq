@@ -158,7 +158,7 @@ testMulticast = do
         Nothing -> fail "timeout"
         Just _ -> pure ()
 
-runCtrl :: TVar ChaChaDRG -> Bool -> RCHostPairing -> MVar RCSignedInvitation -> IO (Async RCHostPairing)
+runCtrl :: IORef ChaChaDRG -> Bool -> RCHostPairing -> MVar RCSignedInvitation -> IO (Async RCHostPairing)
 runCtrl drg multicast hp invVar = async . runRight $ do
   (_found, inv, hc, r) <- RC.connectRCHost drg hp (J.String "app") multicast Nothing Nothing
   putMVar invVar inv
@@ -168,7 +168,7 @@ runCtrl drg multicast hp invVar = async . runRight $ do
   liftIO $ RC.cancelHostClient hc
   pure hp'
 
-runHostURI :: TVar ChaChaDRG -> Maybe RCCtrlPairing -> RCSignedInvitation -> IO (Async RCCtrlPairing)
+runHostURI :: IORef ChaChaDRG -> Maybe RCCtrlPairing -> RCSignedInvitation -> IO (Async RCCtrlPairing)
 runHostURI drg cp_ signedInv = async . runRight $ do
   inv <- maybe (fail "bad invite") pure $ verifySignedInvitation signedInv
   (rcCtrlClient, r) <- RC.connectRCCtrl drg inv cp_ (J.String "app")
@@ -178,7 +178,7 @@ runHostURI drg cp_ signedInv = async . runRight $ do
   threadDelay 250000
   pure cp'
 
-runHostMulticast :: TVar ChaChaDRG -> TMVar Int -> RCCtrlPairing -> IO (Async RCCtrlPairing)
+runHostMulticast :: IORef ChaChaDRG -> TMVar Int -> RCCtrlPairing -> IO (Async RCCtrlPairing)
 runHostMulticast drg subscribers cp = async . runRight $ do
   (pairing, inv) <- RC.discoverRCCtrl subscribers (cp :| [])
   (rcCtrlClient, r) <- RC.connectRCCtrl drg inv (Just pairing) (J.String "app")

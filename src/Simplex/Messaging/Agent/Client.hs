@@ -182,6 +182,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight, partitionEithers)
 import Data.Functor (($>))
+import Data.IORef (IORef)
 import Data.Int (Int64)
 import Data.List (deleteFirstsBy, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
@@ -548,7 +549,7 @@ agentClientStore :: AgentClient -> SQLiteStore
 agentClientStore AgentClient {agentEnv = Env {store}} = store
 {-# INLINE agentClientStore #-}
 
-agentDRG :: AgentClient -> TVar ChaChaDRG
+agentDRG :: AgentClient -> IORef ChaChaDRG
 agentDRG AgentClient {agentEnv = Env {random}} = random
 {-# INLINE agentDRG #-}
 
@@ -1198,9 +1199,9 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
     let tSess = (userId, srv, Nothing)
     getProtocolClient g tSess cfg Nothing (\_ -> pure ()) >>= \case
       Right smp -> do
-        rKeys@(_, rpKey) <- atomically $ C.generateAuthKeyPair ra g
-        (sKey, spKey) <- atomically $ C.generateAuthKeyPair sa g
-        (dhKey, _) <- atomically $ C.generateKeyPair g
+        rKeys@(_, rpKey) <- liftIO $ C.generateAuthKeyPair ra g
+        (sKey, spKey) <- liftIO $ C.generateAuthKeyPair sa g
+        (dhKey, _) <- liftIO $ C.generateKeyPair g
         r <- runExceptT $ do
           SMP.QIK {rcvId, sndId, sndSecure} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey auth SMSubscribe True
           liftError (testErr TSSecureQueue) $
@@ -1228,8 +1229,8 @@ runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
     let tSess = (userId, srv, Nothing)
     X.getXFTPClient tSess cfg {xftpNetworkConfig} (\_ -> pure ()) >>= \case
       Right xftp -> withTestChunk filePath $ do
-        (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-        (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+        (sndKey, spKey) <- liftIO $ C.generateAuthKeyPair C.SEd25519 g
+        (rcvKey, rpKey) <- liftIO $ C.generateAuthKeyPair C.SEd25519 g
         digest <- liftIO $ C.sha256Hash <$> B.readFile filePath
         let file = FileInfo {sndKey, size = chSize, digest}
             chunkSpec = X.XFTPChunkSpec {filePath, chunkOffset = 0, chunkSize = chSize}
@@ -1261,7 +1262,7 @@ runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
         (whenM (doesFileExist fp) $ removeFile fp `catchAll_` pure ())
     -- this creates a new DRG on purpose to avoid blocking the one used in the agent
     createTestChunk :: FilePath -> IO ()
-    createTestChunk fp = B.writeFile fp =<< atomically . C.randomBytes chSize =<< C.newRandom
+    createTestChunk fp = B.writeFile fp =<< liftIO . C.randomBytes chSize =<< C.newRandom
 
 runNTFServerTest :: AgentClient -> UserId -> NtfServerWithAuth -> AM' (Maybe ProtocolTestFailure)
 runNTFServerTest c userId (ProtoServerWithAuth srv _) = do
@@ -1272,8 +1273,8 @@ runNTFServerTest c userId (ProtoServerWithAuth srv _) = do
     let tSess = (userId, srv, Nothing)
     getProtocolClient g tSess cfg Nothing (\_ -> pure ()) >>= \case
       Right ntf -> do
-        (nKey, npKey) <- atomically $ C.generateAuthKeyPair a g
-        (dhKey, _) <- atomically $ C.generateKeyPair g
+        (nKey, npKey) <- liftIO $ C.generateAuthKeyPair a g
+        (dhKey, _) <- liftIO $ C.generateKeyPair g
         r <- runExceptT $ do
           let deviceToken = DeviceToken PPApnsNull "test_ntf_token"
           (tknId, _) <- liftError (testErr TSCreateNtfToken) $ ntfRegisterToken ntf npKey (NewNtfTkn deviceToken nKey dhKey)
@@ -1315,9 +1316,9 @@ newRcvQueue :: AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRa
 newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode senderCanSecure = do
   C.AuthAlg a <- asks (rcvAuthAlg . config)
   g <- asks random
-  rKeys@(_, rcvPrivateKey) <- atomically $ C.generateAuthKeyPair a g
-  (dhKey, privDhKey) <- atomically $ C.generateKeyPair g
-  (e2eDhKey, e2ePrivKey) <- atomically $ C.generateKeyPair g
+  rKeys@(_, rcvPrivateKey) <- liftIO $ C.generateAuthKeyPair a g
+  (dhKey, privDhKey) <- liftIO $ C.generateKeyPair g
+  (e2eDhKey, e2ePrivKey) <- liftIO $ C.generateKeyPair g
   logServer "-->" c srv "" "NEW"
   tSess <- mkTransportSession c userId srv connId
   (sessId, QIK {rcvId, sndId, rcvPublicDhKey, sndSecure}) <-
@@ -1705,7 +1706,7 @@ agentXFTPDownloadChunk c userId (FileDigest chunkDigest) RcvFileChunkReplica {se
 agentXFTPNewChunk :: AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth -> AM NewSndChunkReplica
 agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest chunkDigest} n (ProtoServerWithAuth srv auth) = do
   rKeys <- xftpRcvKeys n
-  (sndKey, replicaKey) <- atomically . C.generateAuthKeyPair C.SEd25519 =<< asks random
+  (sndKey, replicaKey) <- liftIO . C.generateAuthKeyPair C.SEd25519 =<< asks random
   let fileInfo = FileInfo {sndKey, size = chunkSize, digest = chunkDigest}
   logServer "-->" c srv "" "FNEW"
   tSess <- mkTransportSession c userId srv chunkDigest
@@ -1729,7 +1730,7 @@ agentXFTPDeleteChunk c userId DeletedSndChunkReplica {server, replicaId = ChunkR
 
 xftpRcvKeys :: Int -> AM (NonEmpty C.AAuthKeyPair)
 xftpRcvKeys n = do
-  rKeys <- atomically . replicateM n . C.generateAuthKeyPair C.SEd25519 =<< asks random
+  rKeys <- liftIO . replicateM n . C.generateAuthKeyPair C.SEd25519 =<< asks random
   case L.nonEmpty rKeys of
     Just rKeys' -> pure rKeys'
     _ -> throwE $ INTERNAL "non-positive number of recipients"
@@ -1739,7 +1740,7 @@ xftpRcvIdsKeys rIds rKeys = L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
 
 agentCbEncrypt :: SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> AM ByteString
 agentCbEncrypt SndQueue {e2eDhSecret, smpClientVersion} e2ePubKey msg = do
-  cmNonce <- atomically . C.randomCbNonce =<< asks random
+  cmNonce <- liftIO . C.randomCbNonce =<< asks random
   let paddedLen = maybe SMP.e2eEncMessageLength (const SMP.e2eEncConfirmationLength) e2ePubKey
   cmEncBody <-
     liftEither . first cryptoError $
@@ -1751,9 +1752,9 @@ agentCbEncrypt SndQueue {e2eDhSecret, smpClientVersion} e2ePubKey msg = do
 agentCbEncryptOnce :: VersionSMPC -> C.PublicKeyX25519 -> ByteString -> AM ByteString
 agentCbEncryptOnce clientVersion dhRcvPubKey msg = do
   g <- asks random
-  (dhSndPubKey, dhSndPrivKey) <- atomically $ C.generateKeyPair g
+  (dhSndPubKey, dhSndPrivKey) <- liftIO $ C.generateKeyPair g
   let e2eDhSecret = C.dh' dhRcvPubKey dhSndPrivKey
-  cmNonce <- atomically $ C.randomCbNonce g
+  cmNonce <- liftIO $ C.randomCbNonce g
   cmEncBody <-
     liftEither . first cryptoError $
       C.cbEncrypt e2eDhSecret cmNonce msg SMP.e2eEncConfirmationLength

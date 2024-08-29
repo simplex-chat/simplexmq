@@ -23,6 +23,7 @@ import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.IORef
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -97,7 +98,7 @@ data SMPClientAgent = SMPClientAgent
     active :: TVar Bool,
     msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
     agentQ :: TBQueue SMPClientAgentEvent,
-    randomDrg :: TVar ChaChaDRG,
+    randomDrg :: IORef ChaChaDRG,
     smpClients :: TMap SMPServer SMPClientVar,
     smpSessions :: TMap SessionId (OwnServer, SMPClient),
     srvSubs :: TMap SMPServer (TMap SMPSub (SessionId, C.APrivateAuthKey)),
@@ -108,7 +109,7 @@ data SMPClientAgent = SMPClientAgent
 
 type OwnServer = Bool
 
-newSMPClientAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO SMPClientAgent
+newSMPClientAgent :: SMPClientAgentConfig -> IORef ChaChaDRG -> IO SMPClientAgent
 newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg = do
   active <- newTVarIO True
   msgQ <- newTBQueueIO msgQSize

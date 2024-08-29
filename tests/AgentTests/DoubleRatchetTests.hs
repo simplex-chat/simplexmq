@@ -22,6 +22,7 @@ import Data.Aeson (FromJSON, ToJSON, (.=))
 import qualified Data.Aeson as J
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.IORef (IORef)
 import qualified Data.Map.Strict as M
 import Data.Type.Equality
 import Simplex.Messaging.Crypto (Algorithm (..), AlgorithmI, CryptoError, DhAlgorithm)
@@ -99,7 +100,7 @@ fullMsgLen Ratchet {rcSupportKEM, rcVersion} = headerLenLength + fullHeaderLen v
 
 testMessageHeader :: forall a. AlgorithmI a => VersionE2E -> C.SAlgorithm a -> Expectation
 testMessageHeader v _ = do
-  (k, _) <- atomically . C.generateKeyPair @a =<< C.newRandom
+  (k, _) <- C.generateKeyPair @a =<< C.newRandom
   let hdr = MsgHeader {msgMaxVersion = v, msgDHRs = k, msgKEM = Nothing, msgPN = 0, msgNs = 0}
   parseAll (msgHeaderP v) (encodeMsgHeader v hdr) `shouldBe` Right hdr
 
@@ -117,7 +118,7 @@ testKEMParams = do
 testMessageHeaderKEM :: forall a. AlgorithmI a => C.SAlgorithm a -> Expectation
 testMessageHeaderKEM _ = do
   g <- C.newRandom
-  (k, _) <- atomically $ C.generateKeyPair @a g
+  (k, _) <- C.generateKeyPair @a g
   (kem, _) <- sntrup761Keypair g
   let msgMaxVersion = max pqRatchetE2EEncryptVersion currentE2EEncryptVersion
       msgKEM = Just . ARKP SRKSProposed $ RKParamsProposed kem
@@ -132,15 +133,15 @@ testMessageHeaderKEM _ = do
 pattern Decrypted :: ByteString -> Either CryptoError (Either CryptoError ByteString)
 pattern Decrypted msg <- Right (Right msg)
 
-type Encrypt a = TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError ByteString)
+type Encrypt a = TVar (IORef ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError ByteString)
 
-type Decrypt a = TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString))
+type Decrypt a = TVar (IORef ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString))
 
-type EncryptDecryptSpec a = (TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys), ByteString) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> Expectation
+type EncryptDecryptSpec a = (TVar (IORef ChaChaDRG, Ratchet a, SkippedMsgKeys), ByteString) -> TVar (IORef ChaChaDRG, Ratchet a, SkippedMsgKeys) -> Expectation
 
 type TestRatchets a =
-  TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) ->
-  TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) ->
+  TVar (IORef ChaChaDRG, Ratchet a, SkippedMsgKeys) ->
+  TVar (IORef ChaChaDRG, Ratchet a, SkippedMsgKeys) ->
   Encrypt a ->
   Decrypt a ->
   EncryptDecryptSpec a ->
@@ -167,7 +168,7 @@ instance Eq ARKEMParams where
 
 deriving instance Eq (MsgHeader a)
 
-initRatchetKEM :: (AlgorithmI a, DhAlgorithm a) => TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> IO ()
+initRatchetKEM :: (AlgorithmI a, DhAlgorithm a) => TVar (IORef ChaChaDRG, Ratchet a, SkippedMsgKeys) -> TVar (IORef ChaChaDRG, Ratchet a, SkippedMsgKeys) -> IO ()
 initRatchetKEM s r = encryptDecrypt (Just $ PQEncOn) (const ()) (const ()) (s, "initialising ratchet") r
 
 testEncryptDecrypt :: (AlgorithmI a, DhAlgorithm a) => Bool -> TestRatchets a
@@ -338,7 +339,7 @@ testEnableKEMStrict alice bob _ _ _ = do
 
 testKeyJSON :: forall a. AlgorithmI a => C.SAlgorithm a -> IO ()
 testKeyJSON _ = do
-  (k, pk) <- atomically . C.generateKeyPair @a =<< C.newRandom
+  (k, pk) <- C.generateKeyPair @a =<< C.newRandom
   testEncodeDecode k
   testEncodeDecode pk
 
@@ -519,7 +520,7 @@ initRatchets = do
   (pkAlice1, pkAlice2, _pKem@Nothing, e2eAlice) <- liftIO $ generateRcvE2EParams g v PQSupportOff
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 Nothing e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
-  (_, pkBob3) <- atomically $ C.generateKeyPair g
+  (_, pkBob3) <- C.generateKeyPair g
   let vs = testRatchetVersions
       bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
       alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOff
@@ -536,7 +537,7 @@ initRatchetsKEMProposed = do
   (pkBob1, pkBob2, pKemParams_@(Just _), AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams g v (Just useKem)
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 pKemParams_ e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 Nothing e2eBob
-  (_, pkBob3) <- atomically $ C.generateKeyPair g
+  (_, pkBob3) <- C.generateKeyPair g
   let vs = testRatchetVersions
       bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
       alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
@@ -554,7 +555,7 @@ initRatchetsKEMAccepted = do
   (pkBob1, pkBob2, pKemParams_@(Just _), AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams g v (Just useKem)
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 pKemParams_ e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 pKem_ e2eBob
-  (_, pkBob3) <- atomically $ C.generateKeyPair g
+  (_, pkBob3) <- C.generateKeyPair g
   let vs = testRatchetVersions
       bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
       alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
@@ -571,7 +572,7 @@ initRatchetsKEMProposedAgain = do
   (pkBob1, pkBob2, pKemParams_@(Just _), AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams g v (Just useKem)
   Right paramsBob <- pure $ pqX3dhSnd pkBob1 pkBob2 pKemParams_ e2eAlice
   Right paramsAlice <- runExceptT $ pqX3dhRcv pkAlice1 pkAlice2 pKem_ e2eBob
-  (_, pkBob3) <- atomically $ C.generateKeyPair g
+  (_, pkBob3) <- C.generateKeyPair g
   let vs = testRatchetVersions
       bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
       alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
@@ -582,7 +583,7 @@ testRatchetVersions =
   let v = maxVersion supportedE2EEncryptVRange
    in RatchetVersions v v
 
-encrypt_ :: AlgorithmI a => Maybe PQEncryption -> (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
+encrypt_ :: AlgorithmI a => Maybe PQEncryption -> (IORef ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
 encrypt_ pqEnc_ (_, rc, _) msg =
   -- print msg >>
   runExceptT (rcEncrypt rc paddedMsgLen msg pqEnc_ currentE2EEncryptVersion)
@@ -592,7 +593,7 @@ encrypt_ pqEnc_ (_, rc, _) msg =
       B.length msg' `shouldBe` fullMsgLen rc'
       pure $ Right (msg', rc', SMDNoChange)
 
-decrypt_ :: (AlgorithmI a, DhAlgorithm a) => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff))
+decrypt_ :: (AlgorithmI a, DhAlgorithm a) => (IORef ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff))
 decrypt_ (g, rc, smks) msg = runExceptT $ rcDecrypt g rc smks msg
 
 encrypt' :: AlgorithmI a => (Ratchet a -> ()) -> Encrypt a
@@ -619,9 +620,9 @@ hasRcvKEM _ = error "rcv ratchet has no KEM"
 
 withTVar ::
   AlgorithmI a =>
-  ((TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either e (r, Ratchet a, SkippedMsgDiff))) ->
+  ((IORef ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either e (r, Ratchet a, SkippedMsgDiff))) ->
   (Ratchet a -> ()) ->
-  TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) ->
+  TVar (IORef ChaChaDRG, Ratchet a, SkippedMsgKeys) ->
   ByteString ->
   IO (Either e r)
 withTVar op valid rcVar msg = do

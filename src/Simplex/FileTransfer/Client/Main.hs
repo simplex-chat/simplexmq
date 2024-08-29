@@ -290,13 +290,13 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       putStrLn "Pass file descriptions to the recipient(s):"
     forM_ fdRcvPaths putStrLn
   where
-    encryptFileForUpload :: TVar ChaChaDRG -> String -> ExceptT CLIError IO (FilePath, FileDescription 'FRecipient, FileDescription 'FSender, [XFTPChunkSpec], Int64)
+    encryptFileForUpload :: IORef ChaChaDRG -> String -> ExceptT CLIError IO (FilePath, FileDescription 'FRecipient, FileDescription 'FSender, [XFTPChunkSpec], Int64)
     encryptFileForUpload g fileName = do
       fileSize <- fromInteger <$> getFileSize filePath
       when (fileSize > maxFileSize) $ throwE $ CLIError $ "Files bigger than " <> maxFileSizeStr <> " are not supported"
       encPath <- getEncPath tempPath "xftp"
-      key <- atomically $ C.randomSbKey g
-      nonce <- atomically $ C.randomCbNonce g
+      key <- liftIO $ C.randomSbKey g
+      nonce <- liftIO $ C.randomCbNonce g
       let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
           fileSize' = fromIntegral (B.length fileHdr) + fileSize
           chunkSizes = prepareChunkSizes $ fileSize' + fileSizeLen + authTagSize
@@ -311,7 +311,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
           fdSnd = FileDescription {party = SFSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = [], redirect = Nothing}
       logInfo $ "encrypted file to " <> tshow encPath
       pure (encPath, fdRcv, fdSnd, chunkSpecs, encSize)
-    uploadFile :: TVar ChaChaDRG -> [XFTPChunkSpec] -> TVar [Int64] -> Int64 -> ExceptT CLIError IO [SentFileChunk]
+    uploadFile :: IORef ChaChaDRG -> [XFTPChunkSpec] -> TVar [Int64] -> Int64 -> ExceptT CLIError IO [SentFileChunk]
     uploadFile g chunks uploadedChunks encSize = do
       a <- liftIO $ newXFTPAgent defaultXFTPClientAgentConfig
       gen <- newTVarIO =<< liftIO newStdGen
@@ -330,8 +330,8 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
         uploadFileChunk :: XFTPClientAgent -> (Int, XFTPChunkSpec, XFTPServerWithAuth) -> ExceptT CLIError IO (Int, SentFileChunk)
         uploadFileChunk a (chunkNo, chunkSpec@XFTPChunkSpec {chunkSize}, ProtoServerWithAuth xftpServer auth) = do
           logInfo $ "uploading chunk " <> tshow chunkNo <> " to " <> showServer xftpServer <> "..."
-          (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-          rKeys <- atomically $ L.fromList <$> replicateM numRecipients (C.generateAuthKeyPair C.SEd25519 g)
+          (sndKey, spKey) <- liftIO $ C.generateAuthKeyPair C.SEd25519 g
+          rKeys <- liftIO $ L.fromList <$> replicateM numRecipients (C.generateAuthKeyPair C.SEd25519 g)
           digest <- liftIO $ getChunkDigest chunkSpec
           let ch = FileInfo {sndKey, size = chunkSize, digest}
           c <- withRetry retryCount $ getXFTPServerClient a xftpServer
@@ -451,7 +451,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       liftIO $ do
         printNoNewLine $ "File downloaded: " <> path
         removeFD yes fileDescription
-    downloadFileChunk :: TVar ChaChaDRG -> XFTPClientAgent -> FilePath -> FileSize Int64 -> TVar [Int64] -> FileChunk -> ExceptT CLIError IO (Int, FilePath)
+    downloadFileChunk :: IORef ChaChaDRG -> XFTPClientAgent -> FilePath -> FileSize Int64 -> TVar [Int64] -> FileChunk -> ExceptT CLIError IO (Int, FilePath)
     downloadFileChunk g a encPath (FileSize encSize) downloadedChunks FileChunk {chunkNo, chunkSize, digest, replicas = replica : _} = do
       let FileChunkReplica {server, replicaId, replicaKey} = replica
       logInfo $ "downloading chunk " <> tshow chunkNo <> " from " <> showServer server <> "..."
@@ -615,7 +615,7 @@ cliRandomFile RandomFileOptions {filePath, fileSize = FileSize size} = do
   where
     saveRandomFile h sz = do
       g <- C.newRandom
-      bytes <- atomically $ C.randomBytes (fromIntegral $ min mb' sz) g
+      bytes <- C.randomBytes (fromIntegral $ min mb' sz) g
       B.hPut h bytes
       when (sz > mb') $ saveRandomFile h (sz - mb')
     mb' = mb 1

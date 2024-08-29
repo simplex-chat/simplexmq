@@ -127,7 +127,7 @@ testXFTPAgentSendReceiveEncrypted = withXFTPServer $ do
   g <- C.newRandom
   filePath <- createRandomFile
   s <- LB.readFile filePath
-  file <- atomically $ CryptoFile (senderFiles </> "encrypted_testfile") . Just <$> CF.randomArgs g
+  file <- CryptoFile (senderFiles </> "encrypted_testfile") . Just <$> CF.randomArgs g
   runRight_ $ CF.writeFile file s
   (rfd1, rfd2) <- withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight $ do
     (sfId, _, rfd1, rfd2) <- testSendCF sndr file
@@ -139,7 +139,7 @@ testXFTPAgentSendReceiveEncrypted = withXFTPServer $ do
   where
     testReceiveDelete clientId rfd originalFilePath g =
       withAgent clientId agentCfg initAgentServers testDB2 $ \rcp -> do
-        cfArgs <- atomically $ Just <$> CF.randomArgs g
+        cfArgs <- Just <$> CF.randomArgs g
         rfId <- runRight $ testReceiveCF rcp rfd cfArgs originalFilePath
         xftpDeleteRcvFile rcp rfId
 
