@@ -1344,6 +1344,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             writeNtf nId msg rcvNtfDhSecret Client {sndQ = q} = case msg of
               Message {msgId, msgTs} -> Just <$> do
                 (nmsgNonce, encNMsgMeta) <- mkMessageNotification msgId msgTs rcvNtfDhSecret
+                -- must be in one STM transaction to avoid the queue becoming full between the check and writing
                 atomically $
                   ifM
                     (isFullTBQueue q)
