@@ -132,8 +132,8 @@ testCreateSecure (ATransport t) =
   it "should create (NEW) and secure (KEY) queue" $
     smpTest2 t $ \r s -> do
       g <- C.newRandom
-      (rPub, rKey) <- C.generateAuthKeyPair C.SEd448 g
-      (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair g
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv r rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       (rId1, NoEntity) #== "creates queue"
@@ -289,7 +289,7 @@ testAllowNewQueues t =
         g <- C.newRandom
         (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
         (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-        Resp "abcd" "" (ERR AUTH) <- signSendRecv h rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
+        Resp "abcd" NoEntity (ERR AUTH) <- signSendRecv h rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
         pure ()
 
 testDuplex :: ATransport -> Spec

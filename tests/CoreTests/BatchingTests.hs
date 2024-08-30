@@ -315,7 +315,7 @@ randomSUBCmd_ a c = do
   g <- C.newRandom
   rId <- atomically $ C.randomBytes 24 g
   (_, rpKey) <- atomically $ C.generateAuthKeyPair a g
-  mkTransmission c (Just rpKey, NoEntity rId, Cmd SRecipient SUB)
+  mkTransmission c (Just rpKey, EntityId rId, Cmd SRecipient SUB)
 
 randomENDCmd :: IO (Transmission BrokerMsg)
 randomENDCmd = do

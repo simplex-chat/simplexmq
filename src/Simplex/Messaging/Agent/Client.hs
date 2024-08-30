@@ -12,6 +12,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
@@ -82,6 +83,7 @@ module Simplex.Messaging.Agent.Client
     deleteQueues,
     logServer,
     logSecret,
+    logSecret',
     removeSubscription,
     hasActiveSubscription,
     hasPendingSubscription,
@@ -254,6 +256,7 @@ import Simplex.Messaging.Protocol
     VersionSMPC,
     XFTPServer,
     XFTPServerWithAuth,
+    pattern NoEntity,
     sameSrvAddr',
   )
 import qualified Simplex.Messaging.Protocol as SMP
@@ -995,11 +998,11 @@ withClient_ c tSess@(_, srv, _) action = do
   where
     logServerError :: AgentErrorType -> AM a
     logServerError e = do
-      logServer "<--" c srv "" $ bshow e
+      logServer "<--" c srv NoEntity $ bshow e
       throwE e
 
 withProxySession :: AgentClient -> Maybe SMPServerWithAuth -> SMPTransportSession -> SMP.SenderId -> ByteString -> ((SMPConnectedClient, ProxiedRelay) -> AM a) -> AM a
-withProxySession c proxySrv_ destSess@(_, destSrv, _) (EntityId entId) cmdStr action = do
+withProxySession c proxySrv_ destSess@(_, destSrv, _) entId cmdStr action = do
   (cl, sess_) <- getSMPProxyClient c proxySrv_ destSess
   logServer ("--> " <> proxySrv cl <> " >") c destSrv entId cmdStr
   case sess_ of
@@ -1012,14 +1015,14 @@ withProxySession c proxySrv_ destSess@(_, destSrv, _) (EntityId entId) cmdStr ac
     proxySrv = showServer . protocolClientServer' . protocolClient
     logServerError :: SMPConnectedClient -> AgentErrorType -> AM a
     logServerError cl e = do
-      logServer ("<-- " <> proxySrv cl <> " <") c destSrv "" $ bshow e
+      logServer ("<-- " <> proxySrv cl <> " <") c destSrv NoEntity $ bshow e
       throwE e
 
 withLogClient_ :: ProtocolServerClient v err msg => AgentClient -> TransportSession msg -> ByteString -> ByteString -> (Client msg -> AM a) -> AM a
 withLogClient_ c tSess@(_, srv, _) entId cmdStr action = do
-  logServer "-->" c srv entId cmdStr
+  logServer' "-->" c srv entId cmdStr
   res <- withClient_ c tSess action
-  logServer "<--" c srv entId "OK"
+  logServer' "<--" c srv entId "OK"
   return res
 
 withClient :: forall v err msg a. ProtocolServerClient v err msg => AgentClient -> TransportSession msg -> (Client msg -> ExceptT (ProtocolClientError err) IO a) -> AM a
@@ -1318,12 +1321,12 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode sender
   rKeys@(_, rcvPrivateKey) <- atomically $ C.generateAuthKeyPair a g
   (dhKey, privDhKey) <- atomically $ C.generateKeyPair g
   (e2eDhKey, e2ePrivKey) <- atomically $ C.generateKeyPair g
-  logServer "-->" c srv "" "NEW"
+  logServer "-->" c srv NoEntity "NEW"
   tSess <- mkTransportSession c userId srv connId
   (sessId, QIK {rcvId, sndId, rcvPublicDhKey, sndSecure}) <-
     withClient c tSess $ \(SMPConnectedClient smp _) ->
       (sessionId $ thParams smp,) <$> createSMPQueue smp rKeys dhKey auth subMode senderCanSecure
-  liftIO . logServer "<--" c srv "" $ B.unwords ["IDS", logSecret $ unEntityId rcvId, logSecret $ unEntityId sndId]
+  liftIO . logServer "<--" c srv NoEntity $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue
           { userId,
@@ -1457,7 +1460,7 @@ sendTSessionBatches statCmd toRQ action c qs =
       tryAgentError' (getSMPServerClient c tSess) >>= \case
         Left e -> pure $ L.map ((,Left e) . toRQ) qs'
         Right (SMPConnectedClient smp _) -> liftIO $ do
-          logServer "-->" c srv (bshow (length qs') <> " queues") statCmd
+          logServer' "-->" c srv (bshow (length qs') <> " queues") statCmd
           L.map agentError <$> action smp qs'
           where
             agentError = second . first $ protocolClientError SMP $ clientServer smp
@@ -1511,18 +1514,26 @@ getSubscriptions :: AgentClient -> IO (Set ConnId)
 getSubscriptions = readTVarIO . subscrConns
 {-# INLINE getSubscriptions #-}
 
-logServer :: MonadIO m => ByteString -> AgentClient -> ProtocolServer s -> ByteString -> ByteString -> m ()
-logServer dir AgentClient {clientId} srv qStr cmdStr =
-  logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret qStr, cmdStr]
+logServer :: MonadIO m => ByteString -> AgentClient -> ProtocolServer s -> EntityId -> ByteString -> m ()
+logServer dir c srv = logServer' dir c srv . unEntityId
+{-# INLINE logServer #-}
+
+logServer' :: MonadIO m => ByteString -> AgentClient -> ProtocolServer s -> ByteString -> ByteString -> m ()
+logServer' dir AgentClient {clientId} srv qStr cmdStr =
+  logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret' qStr, cmdStr]
 
 showServer :: ProtocolServer s -> ByteString
 showServer ProtocolServer {host, port} =
   strEncode host <> B.pack (if null port then "" else ':' : port)
 {-# INLINE showServer #-}
 
-logSecret :: ByteString -> ByteString
-logSecret = B64.encode . B.take 3
+logSecret :: EntityId -> ByteString
+logSecret = logSecret' . unEntityId
 {-# INLINE logSecret #-}
+
+logSecret' :: ByteString -> ByteString
+logSecret' = B64.encode . B.take 3
+{-# INLINE logSecret' #-}
 
 sendConfirmation :: AgentClient -> SndQueue -> ByteString -> AM (Maybe SMPServer)
 sendConfirmation c sq@SndQueue {userId, server, connId, sndId, sndSecure, sndPublicKey, sndPrivateKey, e2ePubKey = e2ePubKey@Just {}} agentConfirmation = do
@@ -1602,7 +1613,7 @@ disableQueuesNtfs = sendTSessionBatches "NDEL" id $ sendBatch disableSMPQueuesNt
 
 sendAck :: AgentClient -> RcvQueue -> MsgId -> AM ()
 sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId = do
-  withSMPClient c rq ("ACK:" <> logSecret msgId) $ \smp ->
+  withSMPClient c rq ("ACK:" <> logSecret' msgId) $ \smp ->
     ackSMPMessage smp rcvPrivateKey rcvId msgId
   atomically $ releaseGetLock c rq
 
@@ -1706,10 +1717,10 @@ agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize},
   rKeys <- xftpRcvKeys n
   (sndKey, replicaKey) <- atomically . C.generateAuthKeyPair C.SEd25519 =<< asks random
   let fileInfo = FileInfo {sndKey, size = chunkSize, digest = chunkDigest}
-  logServer "-->" c srv "" "FNEW"
+  logServer "-->" c srv NoEntity "FNEW"
   tSess <- mkTransportSession c userId srv chunkDigest
   (sndId, rIds) <- withClient c tSess $ \xftp -> X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth
-  logServer "<--" c srv "" $ B.unwords ["SIDS", logSecret $ unEntityId sndId]
+  logServer "<--" c srv NoEntity $ B.unwords ["SIDS", logSecret sndId]
   pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys}
 
 agentXFTPUploadChunk :: AgentClient -> UserId -> FileDigest -> SndFileChunkReplica -> XFTPChunkSpec -> AM ()

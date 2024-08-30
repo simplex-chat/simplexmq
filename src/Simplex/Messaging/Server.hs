@@ -1518,7 +1518,7 @@ timed name (EntityId qId) a = do
     sec = 1000_000000
 
 randomId' :: Int -> M ByteString
-randomId' n = liftIO . C.randomBytes n =<< asks random
+randomId' n = atomically . C.randomBytes n =<< asks random
 
 randomId :: Int -> M EntityId
 randomId = fmap EntityId . randomId'
