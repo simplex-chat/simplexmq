@@ -91,7 +91,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
     runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
     runClient signKey _ h = do
       kh <- asks serverIdentity
-      ks <- liftIO . C.generateKeyPair =<< asks random
+      ks <- atomically . C.generateKeyPair =<< asks random
       NtfServerConfig {ntfServerVRange} <- asks config
       liftIO (runExceptT $ ntfServerHandshake signKey h ks kh ntfServerVRange) >>= \case
         Right th -> runNtfClientTransport th
@@ -440,7 +440,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
       NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> do
         logDebug "TNEW - new token"
         st <- asks store
-        ks@(srvDhPubKey, srvDhPrivKey) <- liftIO . C.generateKeyPair =<< asks random
+        ks@(srvDhPubKey, srvDhPrivKey) <- atomically . C.generateKeyPair =<< asks random
         let dhSecret = C.dh' dhPubKey srvDhPrivKey
         tknId <- getId
         regCode <- getRegCode
@@ -569,7 +569,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
     getRegCode :: M NtfRegCode
     getRegCode = NtfRegCode <$> (randomBytes =<< asks (regCodeBytes . config))
     randomBytes :: Int -> M ByteString
-    randomBytes n = liftIO . C.randomBytes n =<< asks random
+    randomBytes n = atomically . C.randomBytes n =<< asks random
     cancelInvervalNotifications :: NtfTokenId -> M ()
     cancelInvervalNotifications tknId =
       atomically (TM.lookupDelete tknId intervalNotifiers)

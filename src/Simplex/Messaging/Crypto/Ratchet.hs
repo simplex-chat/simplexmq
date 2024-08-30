@@ -102,7 +102,6 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Composition ((.:), (.:.))
 import Data.Functor (($>))
-import Data.IORef (IORef)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -121,6 +120,7 @@ import Simplex.Messaging.Parsers (blobFieldDecoder, defaultJSON, parseE, parseE'
 import Simplex.Messaging.Util (($>>=), (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
+import UnliftIO.STM
 
 -- e2e encryption headers version history:
 -- 1 - binary protocol encoding (1/1/2022)
@@ -369,10 +369,10 @@ data UseKEM (s :: RatchetKEMState) where
 
 data AUseKEM = forall s. RatchetKEMStateI s => AUseKEM (SRatchetKEMState s) (UseKEM s)
 
-generateE2EParams :: forall s a. (AlgorithmI a, DhAlgorithm a) => IORef ChaChaDRG -> VersionE2E -> Maybe (UseKEM s) -> IO (PrivateKey a, PrivateKey a, Maybe (PrivRKEMParams s), E2ERatchetParams s a)
+generateE2EParams :: forall s a. (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> VersionE2E -> Maybe (UseKEM s) -> IO (PrivateKey a, PrivateKey a, Maybe (PrivRKEMParams s), E2ERatchetParams s a)
 generateE2EParams g v useKEM_ = do
-  (k1, pk1) <- generateKeyPair g
-  (k2, pk2) <- generateKeyPair g
+  (k1, pk1) <- atomically $ generateKeyPair g
+  (k2, pk2) <- atomically $ generateKeyPair g
   kems <- kemParams
   pure (pk1, pk2, snd <$> kems, E2ERatchetParams v k1 k2 (fst <$> kems))
   where
@@ -390,7 +390,7 @@ generateE2EParams g v useKEM_ = do
       _ -> pure Nothing
 
 -- used by party initiating connection, Bob in double-ratchet spec
-generateRcvE2EParams :: (AlgorithmI a, DhAlgorithm a) => IORef ChaChaDRG -> VersionE2E -> PQSupport -> IO (PrivateKey a, PrivateKey a, Maybe (PrivRKEMParams 'RKSProposed), E2ERatchetParams 'RKSProposed a)
+generateRcvE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> VersionE2E -> PQSupport -> IO (PrivateKey a, PrivateKey a, Maybe (PrivRKEMParams 'RKSProposed), E2ERatchetParams 'RKSProposed a)
 generateRcvE2EParams g v = generateE2EParams g v . proposeKEM_
   where
     proposeKEM_ :: PQSupport -> Maybe (UseKEM 'RKSProposed)
@@ -399,7 +399,7 @@ generateRcvE2EParams g v = generateE2EParams g v . proposeKEM_
       PQSupportOff -> Nothing
 
 -- used by party accepting connection, Alice in double-ratchet spec
-generateSndE2EParams :: forall a. (AlgorithmI a, DhAlgorithm a) => IORef ChaChaDRG -> VersionE2E -> Maybe AUseKEM -> IO (PrivateKey a, PrivateKey a, Maybe APrivRKEMParams, AE2ERatchetParams a)
+generateSndE2EParams :: forall a. (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> VersionE2E -> Maybe AUseKEM -> IO (PrivateKey a, PrivateKey a, Maybe APrivRKEMParams, AE2ERatchetParams a)
 generateSndE2EParams g v = \case
   Nothing -> do
     (pk1, pk2, _, e2eParams) <- generateE2EParams g v Nothing
@@ -911,7 +911,7 @@ maxSkip = 512
 rcDecrypt ::
   forall a.
   (AlgorithmI a, DhAlgorithm a) =>
-  IORef ChaChaDRG ->
+  TVar ChaChaDRG ->
   Ratchet a ->
   SkippedMsgKeys ->
   ByteString ->
@@ -965,7 +965,7 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
         ratchetStep rc'@Ratchet {rcDHRs, rcRK, rcNHKs, rcNHKr, rcSupportKEM, rcVersion = rv} MsgHeader {msgDHRs, msgKEM} = do
           (kemSS, kemSS', rcKEM') <- pqRatchetStep rc' msgKEM
           -- state.DHRs = GENERATE_DH()
-          (_, rcDHRs') <- liftIO $ generateKeyPair @a g
+          (_, rcDHRs') <- atomically $ generateKeyPair @a g
           -- state.RK, state.CKr, state.NHKr = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || ss)
           let (rcRK', rcCKr', rcNHKr') = rootKdf rcRK msgDHRs rcDHRs kemSS
               -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || state.PQRss)

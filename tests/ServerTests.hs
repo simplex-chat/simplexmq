@@ -151,7 +151,7 @@ testCreateSecure (ATransport t) =
       Resp "dabc" _ err6 <- signSendRecv r rKey ("dabc", rId, ACK mId1)
       (err6, ERR NO_MSG) #== "replies ERR when message acknowledged without messages"
 
-      (sPub, sKey) <- C.generateAuthKeyPair C.SEd448 g
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       Resp "abcd" sId2 err1 <- signSendRecv s sKey ("abcd", sId, _SEND "hello")
       (err1, ERR AUTH) #== "rejects signed SEND"
       (sId2, sId) #== "same queue ID in response 2"
@@ -167,7 +167,7 @@ testCreateSecure (ATransport t) =
       (rId2, rId) #== "same queue ID in response 3"
 
       Resp "abcd" _ OK <- signSendRecv r rKey ("abcd", rId, KEY sPub)
-      (sPub', _) <- C.generateAuthKeyPair C.SEd448 g
+      (sPub', _) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       Resp "abcd" _ err4 <- signSendRecv r rKey ("abcd", rId, KEY sPub')
       (err4, ERR AUTH) #== "rejects if secured with different key"
 
@@ -197,13 +197,13 @@ testCreateDelete (ATransport t) =
   it "should create (NEW), suspend (OFF) and delete (DEL) queue" $
     smpTest2 t $ \rh sh -> do
       g <- C.newRandom
-      (rPub, rKey) <- C.generateAuthKeyPair C.SEd25519 g
-      (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair g
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       (rId1, NoEntity) #== "creates queue"
 
-      (sPub, sKey) <- C.generateAuthKeyPair C.SEd25519 g
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       Resp "bcda" _ ok1 <- signSendRecv rh rKey ("bcda", rId, KEY sPub)
       (ok1, OK) #== "secures queue"
 
@@ -268,8 +268,8 @@ stressTest (ATransport t) =
   it "should create many queues, disconnect and re-connect" $
     smpTest3 t $ \h1 h2 h3 -> do
       g <- C.newRandom
-      (rPub, rKey) <- C.generateAuthKeyPair C.SEd25519 g
-      (dhPub, _ :: C.PrivateKeyX25519) <- C.generateKeyPair g
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       rIds <- forM ([1 .. 50] :: [Int]) . const $ do
         Resp "" NoEntity (Ids rId _ _) <- signSendRecv h1 rKey ("", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
         pure rId
@@ -287,9 +287,9 @@ testAllowNewQueues t =
     withSmpServerConfigOn (ATransport t) cfg {allowNewQueues = False} testPort $ \_ ->
       testSMPClient @c $ \h -> do
         g <- C.newRandom
-        (rPub, rKey) <- C.generateAuthKeyPair C.SEd448 g
-        (dhPub, _ :: C.PrivateKeyX25519) <- C.generateKeyPair g
-        Resp "abcd" NoEntity (ERR AUTH) <- signSendRecv h rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
+        (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+        (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+        Resp "abcd" "" (ERR AUTH) <- signSendRecv h rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
         pure ()
 
 testDuplex :: ATransport -> Spec
@@ -297,13 +297,13 @@ testDuplex (ATransport t) =
   it "should create 2 simplex connections and exchange messages" $
     smpTest2 t $ \alice bob -> do
       g <- C.newRandom
-      (arPub, arKey) <- C.generateAuthKeyPair C.SEd448 g
-      (aDhPub, aDhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair g
+      (arPub, arKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+      (aDhPub, aDhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "abcd" _ (Ids aRcv aSnd aSrvDh) <- signSendRecv alice arKey ("abcd", NoEntity, NEW arPub aDhPub Nothing SMSubscribe False)
       let aDec = decryptMsgV3 $ C.dh' aSrvDh aDhPriv
       -- aSnd ID is passed to Bob out-of-band
 
-      (bsPub, bsKey) <- C.generateAuthKeyPair C.SEd448 g
+      (bsPub, bsKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       Resp "bcda" _ OK <- sendRecv bob ("", "bcda", aSnd, _SEND $ "key " <> strEncode bsPub)
       -- "key ..." is ad-hoc, not a part of SMP protocol
 
@@ -313,8 +313,8 @@ testDuplex (ATransport t) =
       (bobKey, strEncode bsPub) #== "key received from Bob"
       Resp "dabc" _ OK <- signSendRecv alice arKey ("dabc", aRcv, KEY bsPub)
 
-      (brPub, brKey) <- C.generateAuthKeyPair C.SEd448 g
-      (bDhPub, bDhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair g
+      (brPub, brKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+      (bDhPub, bDhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "abcd" _ (Ids bRcv bSnd bSrvDh) <- signSendRecv bob brKey ("abcd", NoEntity, NEW brPub bDhPub Nothing SMSubscribe False)
       let bDec = decryptMsgV3 $ C.dh' bSrvDh bDhPriv
       Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, _SEND $ "reply_id " <> encode (unEntityId bSnd))
@@ -325,7 +325,7 @@ testDuplex (ATransport t) =
       Right ["reply_id", bId] <- pure $ B.words <$> aDec mId2 msg2
       (bId, encode (unEntityId bSnd)) #== "reply queue ID received from Bob"
 
-      (asPub, asKey) <- C.generateAuthKeyPair C.SEd448 g
+      (asPub, asKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, _SEND $ "key " <> strEncode asPub)
       -- "key ..." is ad-hoc, not a part of  SMP protocol
 
@@ -352,8 +352,8 @@ testSwitchSub (ATransport t) =
   it "should create simplex connections and switch subscription to another TCP connection" $
     smpTest3 t $ \rh1 rh2 sh -> do
       g <- C.newRandom
-      (rPub, rKey) <- C.generateAuthKeyPair C.SEd448 g
-      (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair g
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "abcd" _ (Ids rId sId srvDh) <- signSendRecv rh1 rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, _SEND "test1")
@@ -392,7 +392,7 @@ testGetCommand :: forall c. Transport c => TProxy c -> Spec
 testGetCommand t =
   it "should retrieve messages from the queue using GET command" $ do
     g <- C.newRandom
-    (sPub, sKey) <- C.generateAuthKeyPair C.SEd25519 g
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     smpTest t $ \sh -> do
       queue <- newEmptyTMVarIO
       testSMPClient @c $ \rh ->
@@ -411,7 +411,7 @@ testGetSubCommands :: forall c. Transport c => TProxy c -> Spec
 testGetSubCommands t =
   it "should retrieve messages with GET and receive with SUB, only one ACK would work" $ do
     g <- C.newRandom
-    (sPub, sKey) <- C.generateAuthKeyPair C.SEd25519 g
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     smpTest3 t $ \rh1 rh2 sh -> do
       (sId, rId, rKey, dhShared) <- createAndSecureQueue rh1 sPub
       let dec = decryptMsgV3 dhShared
@@ -463,7 +463,7 @@ testExceedQueueQuota t =
     withSmpServerConfigOn (ATransport t) cfg {msgQueueQuota = 2} testPort $ \_ ->
       testSMPClient @c $ \sh -> testSMPClient @c $ \rh -> do
         g <- C.newRandom
-        (sPub, sKey) <- C.generateAuthKeyPair C.SEd25519 g
+        (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
         (sId, rId, rKey, dhShared) <- createAndSecureQueue rh sPub
         let dec = decryptMsgV3 dhShared
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, _SEND "hello 1")
@@ -488,9 +488,9 @@ testWithStoreLog :: ATransport -> Spec
 testWithStoreLog at@(ATransport t) =
   it "should store simplex queues to log and restore them after server restart" $ do
     g <- C.newRandom
-    (sPub1, sKey1) <- C.generateAuthKeyPair C.SEd25519 g
-    (sPub2, sKey2) <- C.generateAuthKeyPair C.SEd25519 g
-    (nPub, nKey) <- C.generateAuthKeyPair C.SEd25519 g
+    (sPub1, sKey1) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (sPub2, sKey2) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     recipientId1 <- newTVarIO NoEntity
     recipientKey1 <- newTVarIO Nothing
     dhShared1 <- newTVarIO Nothing
@@ -500,7 +500,7 @@ testWithStoreLog at@(ATransport t) =
 
     withSmpServerStoreLogOn at testPort . runTest t $ \h -> runClient t $ \h1 -> do
       (sId1, rId1, rKey1, dhShared) <- createAndSecureQueue h sPub1
-      (rcvNtfPubDhKey, _) <- C.generateKeyPair g
+      (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
       Resp "abcd" _ (NID nId _) <- signSendRecv h rKey1 ("abcd", rId1, NKEY nPub rcvNtfPubDhKey)
       atomically $ do
         writeTVar recipientId1 rId1
@@ -579,7 +579,7 @@ testRestoreMessages at@(ATransport t) =
     removeFileIfExists testServerStatsBackupFile
 
     g <- C.newRandom
-    (sPub, sKey) <- C.generateAuthKeyPair C.SEd25519 g
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     recipientId <- newTVarIO NoEntity
     recipientKey <- newTVarIO Nothing
     dhShared <- newTVarIO Nothing
@@ -683,7 +683,7 @@ testRestoreExpireMessages :: ATransport -> Spec
 testRestoreExpireMessages at@(ATransport t) =
   it "should store messages on exit and restore on start" $ do
     g <- C.newRandom
-    (sPub, sKey) <- C.generateAuthKeyPair C.SEd25519 g
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     recipientId <- newTVarIO NoEntity
     recipientKey <- newTVarIO Nothing
     dhShared <- newTVarIO Nothing
@@ -740,8 +740,8 @@ testRestoreExpireMessages at@(ATransport t) =
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do
   g <- C.newRandom
-  (rPub, rKey) <- C.generateAuthKeyPair C.SEd448 g
-  (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair g
+  (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+  (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
   Resp "abcd" NoEntity (Ids rId sId srvDh) <- signSendRecv h rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
   let dhShared = C.dh' srvDh dhPriv
   Resp "dabc" rId' OK <- signSendRecv h rKey ("dabc", rId, KEY sPub)
@@ -775,16 +775,16 @@ testTiming (ATransport t) =
     testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
     testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) = do
       g <- C.newRandom
-      (rPub, rKey) <- C.generateAuthKeyPair goodKeyAlg g
-      (dhPub, dhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair g
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "abcd" NoEntity (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       Resp "cdab" _ OK <- signSendRecv rh rKey ("cdab", rId, SUB)
 
-      (_, badKey) <- C.generateAuthKeyPair badKeyAlg g
+      (_, badKey) <- atomically $ C.generateAuthKeyPair badKeyAlg g
       runTimingTest rh badKey rId SUB
 
-      (sPub, sKey) <- C.generateAuthKeyPair goodKeyAlg g
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
       Resp "dabc" _ OK <- signSendRecv rh rKey ("dabc", rId, KEY sPub)
 
       Resp "bcda" _ OK <- signSendRecv sh sKey ("bcda", sId, _SEND "hello")
@@ -822,12 +822,12 @@ testMessageNotifications :: ATransport -> Spec
 testMessageNotifications (ATransport t) =
   it "should create simplex connection, subscribe notifier and deliver notifications" $ do
     g <- C.newRandom
-    (sPub, sKey) <- C.generateAuthKeyPair C.SEd25519 g
-    (nPub, nKey) <- C.generateAuthKeyPair C.SEd25519 g
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     smpTest4 t $ \rh sh nh1 nh2 -> do
       (sId, rId, rKey, dhShared) <- createAndSecureQueue rh sPub
       let dec = decryptMsgV3 dhShared
-      (rcvNtfPubDhKey, _) <- C.generateKeyPair g
+      (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
       Resp "1" _ (NID nId' _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
       Resp "1a" _ (NID nId _) <- signSendRecv rh rKey ("1a", rId, NKEY nPub rcvNtfPubDhKey)
       nId' `shouldNotBe` nId
@@ -859,7 +859,7 @@ testMsgExpireOnSend :: forall c. Transport c => TProxy c -> Spec
 testMsgExpireOnSend t =
   it "should expire messages that are not received before messageTTL on SEND" $ do
     g <- C.newRandom
-    (sPub, sKey) <- C.generateAuthKeyPair C.SEd25519 g
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     let cfg' = cfg {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 10000}}
     withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \sh -> do
@@ -880,7 +880,7 @@ testMsgExpireOnInterval t =
   -- fails on ubuntu
   xit' "should expire messages that are not received before messageTTL after expiry interval" $ do
     g <- C.newRandom
-    (sPub, sKey) <- C.generateAuthKeyPair C.SEd25519 g
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     let cfg' = cfg {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
     withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \sh -> do
@@ -899,7 +899,7 @@ testMsgNOTExpireOnInterval :: forall c. Transport c => TProxy c -> Spec
 testMsgNOTExpireOnInterval t =
   it "should NOT expire messages that are not received before messageTTL if expiry interval is large" $ do
     g <- C.newRandom
-    (sPub, sKey) <- C.generateAuthKeyPair C.SEd25519 g
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     let cfg' = cfg {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 10000}}
     withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \sh -> do

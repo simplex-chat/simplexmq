@@ -2,13 +2,13 @@
 
 module Simplex.Messaging.Crypto.SNTRUP761.Bindings where
 
+import Control.Concurrent.STM
 import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import Data.Bifunctor (bimap)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
-import Data.IORef
 import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.ToField
 import Foreign (nullPtr)
@@ -36,7 +36,7 @@ unsafeRevealKEMSharedKey (KEMSharedKey scrubbed) = show (BA.convert scrubbed :: 
 
 type KEMKeyPair = (KEMPublicKey, KEMSecretKey)
 
-sntrup761Keypair :: IORef ChaChaDRG -> IO KEMKeyPair
+sntrup761Keypair :: TVar ChaChaDRG -> IO KEMKeyPair
 sntrup761Keypair drg =
   bimap KEMPublicKey KEMSecretKey
     <$> BA.allocRet
@@ -46,7 +46,7 @@ sntrup761Keypair drg =
             withDRG drg $ c_sntrup761_keypair pkPtr skPtr nullPtr
       )
 
-sntrup761Enc :: IORef ChaChaDRG -> KEMPublicKey -> IO (KEMCiphertext, KEMSharedKey)
+sntrup761Enc :: TVar ChaChaDRG -> KEMPublicKey -> IO (KEMCiphertext, KEMSharedKey)
 sntrup761Enc drg (KEMPublicKey pk) =
   BA.withByteArray pk $ \pkPtr ->
     bimap KEMCiphertext KEMSharedKey

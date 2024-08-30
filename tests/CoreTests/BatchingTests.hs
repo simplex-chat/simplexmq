@@ -8,11 +8,11 @@
 
 module CoreTests.BatchingTests (batchingTests) where
 
+import Control.Concurrent.STM
 import Control.Monad
 import Crypto.Random (ChaChaDRG)
 import qualified Data.ByteString as B
 import Data.ByteString.Char8 (ByteString)
-import Data.IORef (IORef)
 import qualified Data.List.NonEmpty as L
 import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
@@ -47,7 +47,7 @@ batchingTests = do
 
 testBatchSubscriptions :: IO ()
 testBatchSubscriptions = do
-  sessId <- C.randomBytes 32 =<< C.newRandom
+  sessId <- atomically . C.randomBytes 32 =<< C.newRandom
   subs <- replicateM 250 $ randomSUB sessId
   let batches1 = batchTransmissions False smpBlockSize $ L.fromList subs
   all lenOk1 batches1 `shouldBe` True
@@ -60,7 +60,7 @@ testBatchSubscriptions = do
 
 testBatchSubscriptionsV7 :: IO ()
 testBatchSubscriptionsV7 = do
-  sessId <- C.randomBytes 32 =<< C.newRandom
+  sessId <- atomically . C.randomBytes 32 =<< C.newRandom
   subs <- replicateM 300 $ randomSUBv7 sessId
   let batches1 = batchTransmissions False smpBlockSize $ L.fromList subs
   all lenOk1 batches1 `shouldBe` True
@@ -73,7 +73,7 @@ testBatchSubscriptionsV7 = do
 
 testBatchWithMessage :: IO ()
 testBatchWithMessage = do
-  sessId <- C.randomBytes 32 =<< C.newRandom
+  sessId <- atomically . C.randomBytes 32 =<< C.newRandom
   subs1 <- replicateM 60 $ randomSUB sessId
   send <- randomSEND sessId 8000
   subs2 <- replicateM 40 $ randomSUB sessId
@@ -89,7 +89,7 @@ testBatchWithMessage = do
 
 testBatchWithMessageV7 :: IO ()
 testBatchWithMessageV7 = do
-  sessId <- C.randomBytes 32 =<< C.newRandom
+  sessId <- atomically . C.randomBytes 32 =<< C.newRandom
   subs1 <- replicateM 60 $ randomSUBv7 sessId
   send <- randomSENDv7 sessId 8000
   subs2 <- replicateM 40 $ randomSUBv7 sessId
@@ -105,7 +105,7 @@ testBatchWithMessageV7 = do
 
 testBatchWithLargeMessage :: IO ()
 testBatchWithLargeMessage = do
-  sessId <- C.randomBytes 32 =<< C.newRandom
+  sessId <- atomically . C.randomBytes 32 =<< C.newRandom
   subs1 <- replicateM 50 $ randomSUB sessId
   send <- randomSEND sessId 17000
   subs2 <- replicateM 150 $ randomSUB sessId
@@ -124,7 +124,7 @@ testBatchWithLargeMessage = do
 
 testBatchWithLargeMessageV7 :: IO ()
 testBatchWithLargeMessageV7 = do
-  sessId <- C.randomBytes 32 =<< C.newRandom
+  sessId <- atomically . C.randomBytes 32 =<< C.newRandom
   subs1 <- replicateM 60 $ randomSUBv7 sessId
   send <- randomSENDv7 sessId 17000
   subs2 <- replicateM 150 $ randomSUBv7 sessId
@@ -276,14 +276,14 @@ testClientBatchWithLargeMessageV7 = do
 testClientStub :: IO (ProtocolClient SMPVersion ErrorType BrokerMsg)
 testClientStub = do
   g <- C.newRandom
-  sessId <- C.randomBytes 32 g
+  sessId <- atomically $ C.randomBytes 32 g
   smpClientStub g sessId subModeSMPVersion Nothing
 
 clientStubV7 :: IO (ProtocolClient SMPVersion ErrorType BrokerMsg)
 clientStubV7 = do
   g <- C.newRandom
-  sessId <- C.randomBytes 32 g
-  (rKey, _) <- C.generateAuthKeyPair C.SX25519 g
+  sessId <- atomically $ C.randomBytes 32 g
+  (rKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
   thAuth_ <- testTHandleAuth authCmdsSMPVersion g rKey
   smpClientStub g sessId authCmdsSMPVersion thAuth_
 
@@ -296,9 +296,9 @@ randomSUBv7 = randomSUB_ C.SEd25519 authCmdsSMPVersion
 randomSUB_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> VersionSMP -> ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSUB_ a v sessId = do
   g <- C.newRandom
-  rId <- C.randomBytes 24 g
-  nonce@(C.CbNonce corrId) <- C.randomCbNonce g
-  (rKey, rpKey) <- C.generateAuthKeyPair a g
+  rId <- atomically $ C.randomBytes 24 g
+  nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
+  (rKey, rpKey) <- atomically $ C.generateAuthKeyPair a g
   thAuth_ <- testTHandleAuth v g rKey
   let thParams = testTHandleParams v sessId
       TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, EntityId rId, Cmd SRecipient SUB)
@@ -313,14 +313,14 @@ randomSUBCmdV7 = randomSUBCmd_ C.SEd25519 -- same as v6
 randomSUBCmd_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> ProtocolClient SMPVersion ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
 randomSUBCmd_ a c = do
   g <- C.newRandom
-  rId <- C.randomBytes 24 g
-  (_, rpKey) <- C.generateAuthKeyPair a g
-  mkTransmission c (Just rpKey, EntityId rId, Cmd SRecipient SUB)
+  rId <- atomically $ C.randomBytes 24 g
+  (_, rpKey) <- atomically $ C.generateAuthKeyPair a g
+  mkTransmission c (Just rpKey, NoEntity rId, Cmd SRecipient SUB)
 
 randomENDCmd :: IO (Transmission BrokerMsg)
 randomENDCmd = do
   g <- C.newRandom
-  rId <- C.randomBytes 24 g
+  rId <- atomically $ C.randomBytes 24 g
   pure (CorrId "", EntityId rId, END)
 
 randomSEND :: ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
@@ -332,11 +332,11 @@ randomSENDv7 = randomSEND_ C.SX25519 authCmdsSMPVersion
 randomSEND_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> VersionSMP -> ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSEND_ a v sessId len = do
   g <- C.newRandom
-  sId <- C.randomBytes 24 g
-  nonce@(C.CbNonce corrId) <- C.randomCbNonce g
-  (sKey, spKey) <- C.generateAuthKeyPair a g
+  sId <- atomically $ C.randomBytes 24 g
+  nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
+  (sKey, spKey) <- atomically $ C.generateAuthKeyPair a g
   thAuth_ <- testTHandleAuth v g sKey
-  msg <- C.randomBytes len g
+  msg <- atomically $ C.randomBytes len g
   let thParams = testTHandleParams v sessId
       TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, EntityId sId, Cmd SSender $ SEND noMsgFlags msg)
   pure $ (,tToSend) <$> authTransmission thAuth_ (Just spKey) nonce tForAuth
@@ -353,14 +353,14 @@ testTHandleParams v sessionId =
       batch = True
     }
 
-testTHandleAuth :: VersionSMP -> IORef ChaChaDRG -> C.APublicAuthKey -> IO (Maybe (THandleAuth 'TClient))
+testTHandleAuth :: VersionSMP -> TVar ChaChaDRG -> C.APublicAuthKey -> IO (Maybe (THandleAuth 'TClient))
 testTHandleAuth v g (C.APublicAuthKey a serverPeerPubKey) = case a of
   C.SX25519 | v >= authCmdsSMPVersion -> do
     ca <- head <$> XS.readCertificates "tests/fixtures/ca.crt"
     serverCert <- head <$> XS.readCertificates "tests/fixtures/server.crt"
     serverKey <- head <$> XF.readKeyFile "tests/fixtures/server.key"
     signKey <- either error pure $ C.x509ToPrivate (serverKey, []) >>= C.privKey @C.APrivateSignKey
-    (serverAuthPub, _) <- C.generateKeyPair @'C.X25519 g
+    (serverAuthPub, _) <- atomically $ C.generateKeyPair @'C.X25519 g
     let serverCertKey = (X.CertificateChain [serverCert, ca], C.signX509 signKey $ C.toPubKey C.publicToX509 serverAuthPub)
     pure $ Just THAuthClient {serverPeerPubKey, serverCertKey, sessSecret = Nothing}
   _ -> pure Nothing
@@ -374,9 +374,9 @@ randomSENDCmdV7 = randomSENDCmd_ C.SX25519
 randomSENDCmd_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> ProtocolClient SMPVersion ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
 randomSENDCmd_ a c len = do
   g <- C.newRandom
-  sId <- C.randomBytes 24 g
-  (_, rpKey) <- C.generateAuthKeyPair a g
-  msg <- C.randomBytes len g
+  sId <- atomically $ C.randomBytes 24 g
+  (_, rpKey) <- atomically $ C.generateAuthKeyPair a g
+  msg <- atomically $ C.randomBytes len g
   mkTransmission c (Just rpKey, EntityId sId, Cmd SSender $ SEND noMsgFlags msg)
 
 lenOk :: ByteString -> Bool

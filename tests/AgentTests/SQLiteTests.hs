@@ -18,13 +18,13 @@ module AgentTests.SQLiteTests (storeTests) where
 import AgentTests.EqInstances ()
 import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.MVar
+import Control.Concurrent.STM
 import Control.Exception (SomeException)
 import Control.Monad (replicateM_)
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ScrubbedBytes)
 import Data.ByteString.Char8 (ByteString)
-import Data.IORef (IORef)
 import Data.List (isInfixOf)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -254,7 +254,7 @@ sndQueue1 =
       smpClientVersion = VersionSMPC 1
     }
 
-createRcvConn :: DB.Connection -> IORef ChaChaDRG -> ConnData -> NewRcvQueue -> SConnectionMode c -> IO (Either StoreError (ConnId, RcvQueue))
+createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewRcvQueue -> SConnectionMode c -> IO (Either StoreError (ConnId, RcvQueue))
 createRcvConn db g cData rq cMode = runExceptT $ do
   connId <- ExceptT $ createNewConn db g cData cMode
   rq' <- ExceptT $ updateNewConnRcv db connId rq

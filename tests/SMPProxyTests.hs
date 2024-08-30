@@ -71,7 +71,7 @@ smpProxyTests = do
             relayServ = srv2
         (msg1, msg2) <- runIO $ do
           g <- C.newRandom
-          (,) <$> C.randomBytes maxLen g <*> C.randomBytes maxLen g
+          atomically $ (,) <$> C.randomBytes maxLen g <*> C.randomBytes maxLen g
         it "deliver via proxy" . twoServersFirstProxy $
           deliverMessageViaProxy proxyServ relayServ C.SEd448 "hello 1" "hello 2"
         it "max message size, Ed448 keys" . twoServersFirstProxy $
@@ -158,8 +158,8 @@ deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   rc' <- getProtocolClient g (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion} (Just msgQ) (\_ -> pure ())
   rc <- either (fail . show) pure rc'
   -- prepare receiving queue
-  (rPub, rPriv) <- C.generateAuthKeyPair alg g
-  (rdhPub, rdhPriv :: C.PrivateKeyX25519) <- C.generateKeyPair g
+  (rPub, rPriv) <- atomically $ C.generateAuthKeyPair alg g
+  (rdhPub, rdhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
   SMP.QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- runExceptT' $ createSMPQueue rc (rPub, rPriv) rdhPub (Just "correct") SMSubscribe False
   let dec = decryptMsgV3 $ C.dh' srvDh rdhPriv
   -- get proxy session
@@ -175,7 +175,7 @@ deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
     dec msgId encBody `shouldBe` Right msg
     runExceptT' $ ackSMPMessage rc rPriv rcvId msgId
   -- secure queue
-  (sPub, sPriv) <- C.generateAuthKeyPair alg g
+  (sPub, sPriv) <- atomically $ C.generateAuthKeyPair alg g
   runExceptT' $ secureSMPQueue rc rPriv rcvId sPub
   -- send via proxy to secured queue
   waitSendRecv

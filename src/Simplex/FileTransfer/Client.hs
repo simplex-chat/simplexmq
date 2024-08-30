@@ -237,9 +237,9 @@ uploadXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> XFTPChunkSpe
 uploadXFTPChunk c spKey fId chunkSpec =
   sendXFTPCommand c spKey fId FPUT (Just chunkSpec) >>= okResponse
 
-downloadXFTPChunk :: IORef ChaChaDRG -> XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
+downloadXFTPChunk :: TVar ChaChaDRG -> XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
 downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath, chunkSize} = do
-  (rDhKey, rpDhKey) <- liftIO $ C.generateKeyPair g
+  (rDhKey, rpDhKey) <- atomically $ C.generateKeyPair g
   sendXFTPCommand c rpKey fId (FGET rDhKey) Nothing >>= \case
     (FRFile sDhKey cbNonce, HTTP2Body {bodyHead = _bg, bodySize = _bs, bodyPart}) -> case bodyPart of
       -- TODO atm bodySize is set to 0, so chunkSize will be incorrect - validate once set
