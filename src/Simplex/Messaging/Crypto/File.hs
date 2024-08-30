@@ -30,7 +30,6 @@ import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
-import Data.IORef (IORef)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (isJust)
 import qualified Simplex.Messaging.Crypto as C
@@ -111,7 +110,7 @@ data FTCryptoError
 plain :: FilePath -> CryptoFile
 plain = (`CryptoFile` Nothing)
 
-randomArgs :: IORef ChaChaDRG -> IO CryptoFileArgs
+randomArgs :: TVar ChaChaDRG -> STM CryptoFileArgs
 randomArgs g = CFArgs <$> C.randomSbKey g <*> C.randomCbNonce g
 
 getFileContentsSize :: CryptoFile -> IO Integer

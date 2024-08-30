@@ -188,6 +188,7 @@ module Simplex.Messaging.Crypto
   )
 where
 
+import Control.Concurrent.STM
 import Control.Exception (Exception)
 import Control.Monad
 import Control.Monad.Except
@@ -217,7 +218,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.Constraint (Dict (..))
-import Data.IORef
 import Data.Kind (Constraint, Type)
 import qualified Data.List.NonEmpty as L
 import Data.String
@@ -233,7 +233,7 @@ import Network.Transport.Internal (decodeWord16, encodeWord16)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
-import Simplex.Messaging.Util (atomicStateIORef, (<$?>))
+import Simplex.Messaging.Util ((<$?>))
 
 -- | Cryptographic algorithms.
 data Algorithm = Ed25519 | Ed448 | X25519 | X448
@@ -674,26 +674,26 @@ type ADhKeyPair = KeyPairType APrivateDhKey
 
 type AAuthKeyPair = KeyPairType APrivateAuthKey
 
-newRandom :: IO (IORef ChaChaDRG)
-newRandom = newIORef =<< drgNew
+newRandom :: IO (TVar ChaChaDRG)
+newRandom = newTVarIO =<< drgNew
 
-newRandomDRG :: IORef ChaChaDRG -> IO (IORef ChaChaDRG)
-newRandomDRG g = newIORef =<< atomicStateIORef g (`withDRG` drgNew)
+newRandomDRG :: TVar ChaChaDRG -> STM (TVar ChaChaDRG)
+newRandomDRG g = newTVar =<< stateTVar g (`withDRG` drgNew)
 
-generateAKeyPair :: AlgorithmI a => SAlgorithm a -> IORef ChaChaDRG -> IO AKeyPair
+generateAKeyPair :: AlgorithmI a => SAlgorithm a -> TVar ChaChaDRG -> STM AKeyPair
 generateAKeyPair a g = bimap (APublicKey a) (APrivateKey a) <$> generateKeyPair g
 
-generateSignatureKeyPair :: (AlgorithmI a, SignatureAlgorithm a) => SAlgorithm a -> IORef ChaChaDRG -> IO ASignatureKeyPair
+generateSignatureKeyPair :: (AlgorithmI a, SignatureAlgorithm a) => SAlgorithm a -> TVar ChaChaDRG -> STM ASignatureKeyPair
 generateSignatureKeyPair a g = bimap (APublicVerifyKey a) (APrivateSignKey a) <$> generateKeyPair g
 
-generateAuthKeyPair :: (AlgorithmI a, AuthAlgorithm a) => SAlgorithm a -> IORef ChaChaDRG -> IO AAuthKeyPair
+generateAuthKeyPair :: (AlgorithmI a, AuthAlgorithm a) => SAlgorithm a -> TVar ChaChaDRG -> STM AAuthKeyPair
 generateAuthKeyPair a g = bimap (APublicAuthKey a) (APrivateAuthKey a) <$> generateKeyPair g
 
-generateDhKeyPair :: (AlgorithmI a, DhAlgorithm a) => SAlgorithm a -> IORef ChaChaDRG -> IO ADhKeyPair
+generateDhKeyPair :: (AlgorithmI a, DhAlgorithm a) => SAlgorithm a -> TVar ChaChaDRG -> STM ADhKeyPair
 generateDhKeyPair a g = bimap (APublicDhKey a) (APrivateDhKey a) <$> generateKeyPair g
 
-generateKeyPair :: forall a. AlgorithmI a => IORef ChaChaDRG -> IO (KeyPair a)
-generateKeyPair g = atomicStateIORef g (`withDRG` generateKeyPair_)
+generateKeyPair :: forall a. AlgorithmI a => TVar ChaChaDRG -> STM (KeyPair a)
+generateKeyPair g = stateTVar g (`withDRG` generateKeyPair_)
 
 generateKeyPair_ :: forall a. AlgorithmI a => MonadPseudoRandom ChaChaDRG (KeyPair a)
 generateKeyPair_ = case sAlgorithm @a of
@@ -1070,10 +1070,10 @@ initAEADGCM (Key aesKey) (GCMIV ivBytes) = cryptoFailable $ do
   AES.aeadInit AES.AEAD_GCM cipher ivBytes
 
 -- | Random AES256 key.
-randomAesKey :: IORef ChaChaDRG -> IO Key
+randomAesKey :: TVar ChaChaDRG -> STM Key
 randomAesKey = fmap Key . randomBytes aesKeySize
 
-randomGCMIV :: IORef ChaChaDRG -> IO GCMIV
+randomGCMIV :: TVar ChaChaDRG -> STM GCMIV
 randomGCMIV = fmap GCMIV . randomBytes gcmIVSize
 
 ivSize :: forall c. AES.BlockCipher c => Int
@@ -1287,11 +1287,11 @@ cbNonce s
   where
     len = B.length s
 
-randomCbNonce :: IORef ChaChaDRG -> IO CbNonce
+randomCbNonce :: TVar ChaChaDRG -> STM CbNonce
 randomCbNonce = fmap CryptoBoxNonce . randomBytes 24
 
-randomBytes :: Int -> IORef ChaChaDRG -> IO ByteString
-randomBytes n gRef = atomicStateIORef gRef $ randomBytesGenerate n
+randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
+randomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
 
 reverseNonce :: CbNonce -> CbNonce
 reverseNonce (CryptoBoxNonce s) = CryptoBoxNonce (B.reverse s)
@@ -1331,7 +1331,7 @@ sbKey s
 unsafeSbKey :: ByteString -> SbKey
 unsafeSbKey s = either error id $ sbKey s
 
-randomSbKey :: IORef ChaChaDRG -> IO SbKey
+randomSbKey :: TVar ChaChaDRG -> STM SbKey
 randomSbKey gVar = SecretBoxKey <$> randomBytes 32 gVar
 
 xSalsa20 :: ByteArrayAccess key => key -> ByteString -> ByteString -> (ByteString, ByteString)

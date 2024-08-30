@@ -7,18 +7,17 @@ module Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
 import Control.Exception (bracket)
 import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ByteArrayAccess (copyByteArrayToPtr))
-import Data.IORef
 import Foreign
 import Foreign.C
 import qualified Simplex.Messaging.Crypto as C
 
-withDRG :: IORef ChaChaDRG -> (FunPtr RNGFunc -> IO a) -> IO a
+withDRG :: TVar ChaChaDRG -> (FunPtr RNGFunc -> IO a) -> IO a
 withDRG drg = bracket (createRNGFunc drg) freeHaskellFunPtr
 
-createRNGFunc :: IORef ChaChaDRG -> IO (FunPtr RNGFunc)
+createRNGFunc :: TVar ChaChaDRG -> IO (FunPtr RNGFunc)
 createRNGFunc drg =
   mkRNGFunc $ \_ctx sz buf -> do
-    bs <- C.randomBytes (fromIntegral sz) drg
+    bs <- atomically $ C.randomBytes (fromIntegral sz) drg
     copyByteArrayToPtr bs buf
 
 type RNGContext = ()

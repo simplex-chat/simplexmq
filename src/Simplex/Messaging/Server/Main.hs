@@ -11,6 +11,7 @@
 
 module Simplex.Messaging.Server.Main where
 
+import Control.Concurrent.STM
 import Control.Logger.Simple
 import Control.Monad (void, when, (<$!>))
 import Data.ByteString.Char8 (ByteString)
@@ -134,7 +135,7 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
           where
             createServerPassword = \case
               ServerPassword s -> pure s
-              SPRandom -> BasicAuth . strEncode <$> (C.randomBytes 32 =<< C.newRandom)
+              SPRandom -> BasicAuth . strEncode <$> (atomically . C.randomBytes 32 =<< C.newRandom)
             iniFileContent host basicAuth sourceCode' =
               informationIniContent sourceCode'
                 <> "[STORE_LOG]\n\

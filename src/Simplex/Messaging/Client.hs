@@ -118,7 +118,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.IORef
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -164,18 +163,18 @@ data PClient v err msg = PClient
     sendPings :: TVar Bool,
     lastReceived :: TVar UTCTime,
     timeoutErrorCount :: TVar Int,
-    clientCorrId :: IORef ChaChaDRG,
+    clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
     sndQ :: TBQueue (Maybe (TVar Bool), ByteString),
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmissionBatch v err msg))
   }
 
-smpClientStub :: IORef ChaChaDRG -> ByteString -> VersionSMP -> Maybe (THandleAuth 'TClient) -> IO SMPClient
+smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe (THandleAuth 'TClient) -> IO SMPClient
 smpClientStub g sessionId thVersion thAuth = do
   let ts = UTCTime (read "2024-03-31") 0
   connected <- newTVarIO False
-  clientCorrId <- C.newRandomDRG g
+  clientCorrId <- atomically $ C.newRandomDRG g
   sentCommands <- TM.emptyIO
   sendPings <- newTVarIO False
   lastReceived <- newTVarIO ts
@@ -449,7 +448,7 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe EntityId)
 --
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
-getProtocolClient :: forall v err msg. Protocol v err msg => IORef ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
+getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
 getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret} msgQ disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
@@ -464,7 +463,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
       sendPings <- newTVarIO False
       lastReceived <- newTVarIO ts
       timeoutErrorCount <- newTVarIO 0
-      clientCorrId <- C.newRandomDRG g
+      clientCorrId <- atomically $ C.newRandomDRG g
       sentCommands <- TM.emptyIO
       sndQ <- newTBQueueIO qSize
       rcvQ <- newTBQueueIO qSize
@@ -507,7 +506,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
 
     client :: forall c. Transport c => TProxy c -> PClient v err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient v err msg)) -> c -> IO ()
     client _ c cVar h = do
-      ks <- if agreeSecret then Just <$> C.generateKeyPair g else pure Nothing
+      ks <- if agreeSecret then Just <$> atomically (C.generateKeyPair g) else pure Nothing
       runExceptT (protocolClientHandshake @v @err @msg h ks (keyHash srv) serverVRange) >>= \case
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
         Right th@THandle {params} -> do
@@ -918,9 +917,9 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
       serverThParams = smpTHParamsSetVersion v proxyThParams {sessionId, thAuth = serverThAuth}
-  (cmdPubKey, cmdPrivKey) <- liftIO $ C.generateKeyPair @'C.X25519 g
+  (cmdPubKey, cmdPrivKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
   let cmdSecret = C.dh' serverKey cmdPrivKey
-  nonce@(C.CbNonce corrId) <- liftIO $ C.randomCbNonce g
+  nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
   -- encode
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId corrId, sId, Cmd SSender command)
   auth <- liftEitherWith PCETransportError $ authTransmission serverThAuth spKey nonce tForAuth
@@ -963,7 +962,7 @@ forwardSMPTransmission c@ProtocolClient {thParams, client_ = PClient {clientCorr
   sessSecret <- case thAuth thParams of
     Nothing -> throwE $ PCETransportError TENoServerAuth
     Just THAuthClient {sessSecret} -> maybe (throwE $ PCETransportError TENoServerAuth) pure sessSecret
-  nonce <- liftIO $ C.randomCbNonce g
+  nonce <- liftIO . atomically $ C.randomCbNonce g
   -- wrap
   let fwdT = FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission}
       eft = EncFwdTransmission $ C.cbEncryptNoPad sessSecret nonce (smpEncode fwdT)
@@ -1087,7 +1086,7 @@ mkTransmission c = mkTransmission_ c Nothing
 
 mkTransmission_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.CbNonce -> ClientCommand msg -> IO (PCTransmission err msg)
 mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} nonce_ (pKey_, entityId, command) = do
-  nonce@(C.CbNonce corrId) <- maybe (C.randomCbNonce clientCorrId) pure nonce_
+  nonce@(C.CbNonce corrId) <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entityId, command)
       auth = authTransmission (thAuth thParams) pKey_ nonce tForAuth
   r <- mkRequest (CorrId corrId)

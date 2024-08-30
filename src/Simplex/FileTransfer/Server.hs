@@ -130,7 +130,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           _ -> liftIO . sendResponse $ H.responseNoBody N.ok200 [] -- shouldn't happen: means server picked handshake protocol it doesn't know about
     xftpServerHandshakeV1 :: X.CertificateChain -> C.APrivateSignKey -> TMap SessionId Handshake -> XFTPTransportRequest -> M (Maybe (THandleParams XFTPVersion 'TServer))
     xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams0@THandleParams {sessionId}, reqBody = HTTP2Body {bodyHead}, sendResponse} = do
-      s <- liftIO $ TM.lookupIO sessionId sessions
+      s <- atomically $ TM.lookup sessionId sessions
       r <- runExceptT $ case s of
         Nothing -> processHello
         Just (HandshakeSent pk) -> processClientHandshake pk
@@ -139,7 +139,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       where
         processHello = do
           unless (B.null bodyHead) $ throwE HANDSHAKE
-          (k, pk) <- liftIO . C.generateKeyPair =<< asks random
+          (k, pk) <- atomically . C.generateKeyPair =<< asks random
           atomically $ TM.insert sessionId (HandshakeSent pk) sessions
           let authPubKey = (chain, C.signX509 serverSignKey $ C.publicToX509 k)
           let hs = XFTPServerHandshake {xftpVersionRange = xftpServerVRange, sessionId, authPubKey}
@@ -489,9 +489,9 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
           where
             sendFile = do
               g <- asks random
-              (sDhKey, spDhKey) <- liftIO $ C.generateKeyPair g
+              (sDhKey, spDhKey) <- atomically $ C.generateKeyPair g
               let dhSecret = C.dh' rDhKey spDhKey
-              cbNonce <- liftIO $ C.randomCbNonce g
+              cbNonce <- atomically $ C.randomCbNonce g
               case LC.cbInit dhSecret cbNonce of
                 Right sbState -> do
                   stats <- asks serverStats
@@ -557,12 +557,12 @@ expireServerFiles itemDelay expCfg = do
       incFileStat filesExpired
 
 randomId :: Int -> M ByteString
-randomId n = liftIO . C.randomBytes n =<< asks random
+randomId n = atomically . C.randomBytes n =<< asks random
 
 getFileId :: M XFTPFileId
 getFileId = do
   size <- asks (fileIdSize . config)
-  liftIO . C.randomBytes size =<< asks random
+  atomically . C.randomBytes size =<< asks random
 
 withFileLog :: (StoreLog 'WriteMode -> IO a) -> M ()
 withFileLog action = liftIO . mapM_ action =<< asks storeLog

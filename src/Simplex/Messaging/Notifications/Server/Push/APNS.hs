@@ -33,7 +33,6 @@ import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as LB
-import Data.IORef (IORef)
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Maybe (isNothing)
@@ -222,7 +221,7 @@ data APNSPushClient = APNSPushClient
     privateKey :: EC.PrivateKey,
     jwtHeader :: JWTHeader,
     jwtToken :: TVar (JWTToken, SignedJWTToken),
-    nonceDrg :: IORef ChaChaDRG,
+    nonceDrg :: TVar ChaChaDRG,
     apnsHost :: HostName,
     apnsCfg :: APNSPushClientConfig
   }
@@ -340,7 +339,7 @@ $(JQ.deriveFromJSON defaultJSON ''APNSErrorResponse)
 apnsPushProviderClient :: APNSPushClient -> PushProviderClient
 apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {token = DeviceToken _ tknStr} pn = do
   http2 <- liftHTTPS2 $ getApnsHTTP2Client c
-  nonce <- liftIO $ C.randomCbNonce nonceDrg
+  nonce <- atomically $ C.randomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
   req <- liftIO $ apnsRequest c tknStr apnsNtf
   -- TODO when HTTP2 client is thread-safe, we can use sendRequestDirect

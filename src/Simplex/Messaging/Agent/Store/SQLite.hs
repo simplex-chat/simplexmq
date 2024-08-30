@@ -547,7 +547,7 @@ deleteUsersWithoutConns db = do
   pure userIds
 
 createConn_ ::
-  IORef ChaChaDRG ->
+  TVar ChaChaDRG ->
   ConnData ->
   (ConnId -> IO a) ->
   IO (Either StoreError (ConnId, a))
@@ -555,7 +555,7 @@ createConn_ gVar cData create = checkConstraint SEConnDuplicate $ case cData of
   ConnData {connId = ""} -> createWithRandomId' gVar create
   ConnData {connId} -> Right . (connId,) <$> create connId
 
-createNewConn :: DB.Connection -> IORef ChaChaDRG -> ConnData -> SConnectionMode c -> IO (Either StoreError ConnId)
+createNewConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SConnectionMode c -> IO (Either StoreError ConnId)
 createNewConn db gVar cData cMode = do
   fst <$$> createConn_ gVar cData (\connId -> createConnRecord db connId cData cMode)
 
@@ -579,7 +579,7 @@ updateNewConnSnd db connId sq =
     updateConn :: IO (Either StoreError SndQueue)
     updateConn = Right <$> addConnSndQueue_ db connId sq
 
-createSndConn :: DB.Connection -> IORef ChaChaDRG -> ConnData -> NewSndQueue -> IO (Either StoreError (ConnId, SndQueue))
+createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewSndQueue -> IO (Either StoreError (ConnId, SndQueue))
 createSndConn db gVar cData q@SndQueue {server} =
   -- check confirmed snd queue doesn't already exist, to prevent it being deleted by REPLACE in insertSndQueue_
   ifM (liftIO $ checkConfirmedSndQueueExists_ db q) (pure $ Left SESndQueueExists) $
@@ -828,7 +828,7 @@ smpConfirmation (senderKey, e2ePubKey, connInfo, smpReplyQueues_, smpClientVersi
       smpClientVersion = fromMaybe initialSMPClientVersion smpClientVersion_
     }
 
-createConfirmation :: DB.Connection -> IORef ChaChaDRG -> NewConfirmation -> IO (Either StoreError ConfirmationId)
+createConfirmation :: DB.Connection -> TVar ChaChaDRG -> NewConfirmation -> IO (Either StoreError ConfirmationId)
 createConfirmation db gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues, smpClientVersion}, ratchetState} =
   createWithRandomId gVar $ \confirmationId ->
     DB.execute
@@ -902,7 +902,7 @@ removeConfirmations db connId =
     |]
     [":conn_id" := connId]
 
-createInvitation :: DB.Connection -> IORef ChaChaDRG -> NewInvitation -> IO (Either StoreError InvitationId)
+createInvitation :: DB.Connection -> TVar ChaChaDRG -> NewInvitation -> IO (Either StoreError InvitationId)
 createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =
   createWithRandomId gVar $ \invitationId ->
     DB.execute
@@ -2284,10 +2284,10 @@ updateSndMsgHash db connId internalSndId internalHash =
     ]
 
 -- create record with a random ID
-createWithRandomId :: IORef ChaChaDRG -> (ByteString -> IO ()) -> IO (Either StoreError ByteString)
+createWithRandomId :: TVar ChaChaDRG -> (ByteString -> IO ()) -> IO (Either StoreError ByteString)
 createWithRandomId gVar create = fst <$$> createWithRandomId' gVar create
 
-createWithRandomId' :: forall a. IORef ChaChaDRG -> (ByteString -> IO a) -> IO (Either StoreError (ByteString, a))
+createWithRandomId' :: forall a. TVar ChaChaDRG -> (ByteString -> IO a) -> IO (Either StoreError (ByteString, a))
 createWithRandomId' gVar create = tryCreate 3
   where
     tryCreate :: Int -> IO (Either StoreError (ByteString, a))
@@ -2300,8 +2300,8 @@ createWithRandomId' gVar create = tryCreate 3
           | SQL.sqlError e == SQL.ErrorConstraint -> tryCreate (n - 1)
           | otherwise -> pure . Left . SEInternal $ bshow e
 
-randomId :: IORef ChaChaDRG -> Int -> IO ByteString
-randomId gVar n = U.encode <$> C.randomBytes n gVar
+randomId :: TVar ChaChaDRG -> Int -> IO ByteString
+randomId gVar n = atomically $ U.encode <$> C.randomBytes n gVar
 
 ntfSubAndSMPAction :: NtfSubAction -> (Maybe NtfSubNTFAction, Maybe NtfSubSMPAction)
 ntfSubAndSMPAction (NSANtf action) = (Just action, Nothing)
@@ -2322,7 +2322,7 @@ getXFTPServerId_ db ProtocolServer {host, port, keyHash} = do
   firstRow fromOnly SEXFTPServerNotFound $
     DB.query db "SELECT xftp_server_id FROM xftp_servers WHERE xftp_host = ? AND xftp_port = ? AND xftp_key_hash = ?" (host, port, keyHash)
 
-createRcvFile :: DB.Connection -> IORef ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> Bool -> IO (Either StoreError RcvFileId)
+createRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> Bool -> IO (Either StoreError RcvFileId)
 createRcvFile db gVar userId fd@FileDescription {chunks} prefixPath tmpPath file approvedRelays = runExceptT $ do
   (rcvFileEntityId, rcvFileId) <- ExceptT $ insertRcvFile db gVar userId fd prefixPath tmpPath file Nothing Nothing approvedRelays
   liftIO $
@@ -2331,7 +2331,7 @@ createRcvFile db gVar userId fd@FileDescription {chunks} prefixPath tmpPath file
       forM_ (zip [1 ..] replicas) $ \(rno, replica) -> insertRcvFileChunkReplica db rno replica chunkId
   pure rcvFileEntityId
 
-createRcvFileRedirect :: DB.Connection -> IORef ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> FilePath -> CryptoFile -> Bool -> IO (Either StoreError RcvFileId)
+createRcvFileRedirect :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> FilePath -> CryptoFile -> Bool -> IO (Either StoreError RcvFileId)
 createRcvFileRedirect _ _ _ FileDescription {redirect = Nothing} _ _ _ _ _ _ = pure $ Left $ SEInternal "createRcvFileRedirect called without redirect"
 createRcvFileRedirect db gVar userId redirectFd@FileDescription {chunks = redirectChunks, redirect = Just RedirectFileInfo {size, digest}} prefixPath redirectPath redirectFile dstPath dstFile approvedRelays = runExceptT $ do
   (dstEntityId, dstId) <- ExceptT $ insertRcvFile db gVar userId dummyDst prefixPath dstPath dstFile Nothing Nothing approvedRelays
@@ -2355,7 +2355,7 @@ createRcvFileRedirect db gVar userId redirectFd@FileDescription {chunks = redire
           chunks = []
         }
 
-insertRcvFile :: DB.Connection -> IORef ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> Maybe DBRcvFileId -> Maybe RcvFileId -> Bool -> IO (Either StoreError (RcvFileId, DBRcvFileId))
+insertRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> Maybe DBRcvFileId -> Maybe RcvFileId -> Bool -> IO (Either StoreError (RcvFileId, DBRcvFileId))
 insertRcvFile db gVar userId FileDescription {size, digest, key, nonce, chunkSize, redirect} prefixPath tmpPath (CryptoFile savePath cfArgs) redirectId_ redirectEntityId_ approvedRelays = runExceptT $ do
   let (redirectDigest_, redirectSize_) = case redirect of
         Just RedirectFileInfo {digest = d, size = s} -> (Just d, Just s)
@@ -2651,7 +2651,7 @@ getRcvFilesExpired db ttl = do
     |]
     (Only cutoffTs)
 
-createSndFile :: DB.Connection -> IORef ChaChaDRG -> UserId -> CryptoFile -> Int -> FilePath -> C.SbKey -> C.CbNonce -> Maybe RedirectFileInfo -> IO (Either StoreError SndFileId)
+createSndFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> CryptoFile -> Int -> FilePath -> C.SbKey -> C.CbNonce -> Maybe RedirectFileInfo -> IO (Either StoreError SndFileId)
 createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients prefixPath key nonce redirect_ =
   createWithRandomId gVar $ \sndFileEntityId ->
     DB.execute
