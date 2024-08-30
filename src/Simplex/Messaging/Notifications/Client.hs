@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module Simplex.Messaging.Notifications.Client where
 
@@ -11,7 +12,7 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Transport (NTFVersion, supportedClientNTFVRange, supportedNTFHandshakes)
-import Simplex.Messaging.Protocol (ErrorType)
+import Simplex.Messaging.Protocol (ErrorType, pattern NoEntity)
 
 type NtfClient = ProtocolClient NTFVersion ErrorType NtfResponse
 
@@ -22,7 +23,7 @@ defaultNTFClientConfig = defaultClientConfig (Just supportedNTFHandshakes) suppo
 
 ntfRegisterToken :: NtfClient -> C.APrivateAuthKey -> NewNtfEntity 'Token -> ExceptT NtfClientError IO (NtfTokenId, C.PublicKeyX25519)
 ntfRegisterToken c pKey newTkn =
-  sendNtfCommand c (Just pKey) "" (TNEW newTkn) >>= \case
+  sendNtfCommand c (Just pKey) NoEntity (TNEW newTkn) >>= \case
     NRTknId tknId dhKey -> pure (tknId, dhKey)
     r -> throwE $ unexpectedResponse r
 
@@ -46,7 +47,7 @@ ntfEnableCron c pKey tknId int = okNtfCommand (TCRN int) c pKey tknId
 
 ntfCreateSubscription :: NtfClient -> C.APrivateAuthKey -> NewNtfEntity 'Subscription -> ExceptT NtfClientError IO NtfSubscriptionId
 ntfCreateSubscription c pKey newSub =
-  sendNtfCommand c (Just pKey) "" (SNEW newSub) >>= \case
+  sendNtfCommand c (Just pKey) NoEntity (SNEW newSub) >>= \case
     NRSubId subId -> pure subId
     r -> throwE $ unexpectedResponse r
 

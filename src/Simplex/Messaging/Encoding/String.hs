@@ -53,14 +53,20 @@ class StrEncoding a where
   -- Please note - if you only specify strDecode, it will use base64urlP as default parser before decoding the string
   strDecode :: ByteString -> Either String a
   strDecode = parseAll strP
+  {-# INLINE strDecode #-}
+
   strP :: Parser a
   strP = strDecode <$?> base64urlP
+  {-# INLINE strP #-}
 
 -- base64url encoding/decoding of ByteStrings - the parser only allows non-empty strings
 instance StrEncoding ByteString where
   strEncode = U.encode
+  {-# INLINE strEncode #-}
   strDecode = U.decode
+  {-# INLINE strDecode #-}
   strP = base64urlP
+  {-# INLINE strP #-}
 
 base64urlP :: Parser ByteString
 base64urlP = do

@@ -9,6 +9,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -53,7 +54,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TransmissionAuth)
+import Simplex.Messaging.Protocol (CorrId (..), EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TransmissionAuth, pattern NoEntity)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Stats
@@ -310,7 +311,7 @@ data ServerFile = ServerFile
 
 processRequest :: XFTPTransportRequest -> M ()
 processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse}
-  | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", "", FRErr BLOCK) Nothing
+  | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", NoEntity, FRErr BLOCK) Nothing
   | otherwise = do
       case xftpDecodeTransmission thParams bodyHead of
         Right (sig_, signed, (corrId, fId, cmdOrErr)) ->
@@ -323,7 +324,7 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
             Left e -> send (FRErr e) Nothing
           where
             send resp = sendXFTPResponse (corrId, fId, resp)
-        Left e -> sendXFTPResponse ("", "", FRErr e) Nothing
+        Left e -> sendXFTPResponse ("", NoEntity, FRErr e) Nothing
   where
     sendXFTPResponse (corrId, fId, resp) serverFile_ = do
       let t_ = xftpEncodeTransmission thParams (corrId, fId, resp)
@@ -464,7 +465,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
               \used -> let used' = used + fromIntegral size in if used' <= quota then (True, used') else (False, used)
           receive = do
             path <- asks $ filesPath . config
-            let fPath = path </> B.unpack (B64.encode senderId)
+            let fPath = path </> B.unpack (B64.encode $ unEntityId senderId)
             receiveChunk (XFTPRcvChunkSpec fPath size digest) >>= \case
               Right () -> do
                 stats <- asks serverStats
@@ -560,9 +561,7 @@ randomId :: Int -> M ByteString
 randomId n = atomically . C.randomBytes n =<< asks random
 
 getFileId :: M XFTPFileId
-getFileId = do
-  size <- asks (fileIdSize . config)
-  atomically . C.randomBytes size =<< asks random
+getFileId = fmap EntityId . randomId =<< asks (fileIdSize . config)
 
 withFileLog :: (StoreLog 'WriteMode -> IO a) -> M ()
 withFileLog action = liftIO . mapM_ action =<< asks storeLog

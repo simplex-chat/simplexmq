@@ -1,7 +1,9 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -139,12 +141,9 @@ data FileChunkReplica = FileChunkReplica
   }
   deriving (Eq, Show)
 
-newtype ChunkReplicaId = ChunkReplicaId {unChunkReplicaId :: ByteString}
+newtype ChunkReplicaId = ChunkReplicaId {unChunkReplicaId :: XFTPFileId}
   deriving (Eq, Show)
-
-instance StrEncoding ChunkReplicaId where
-  strEncode (ChunkReplicaId fid) = strEncode fid
-  strP = ChunkReplicaId <$> strP
+  deriving newtype (StrEncoding)
 
 instance FromJSON ChunkReplicaId where
   parseJSON = strParseJSON "ChunkReplicaId"
@@ -152,10 +151,6 @@ instance FromJSON ChunkReplicaId where
 instance ToJSON ChunkReplicaId where
   toJSON = strToJSON
   toEncoding = strToJEncoding
-
-instance FromField ChunkReplicaId where fromField f = ChunkReplicaId <$> fromField f
-
-instance ToField ChunkReplicaId where toField (ChunkReplicaId s) = toField s
 
 data YAMLFileDescription = YAMLFileDescription
   { party :: FileParty,
