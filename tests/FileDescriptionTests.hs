@@ -13,6 +13,7 @@ import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
+import Simplex.Messaging.Protocol (EntityId (..))
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import System.Directory (removeFile)
 import Test.Hspec
@@ -91,7 +92,7 @@ fileDesc =
     }
   where
     defaultChunkSize = FileSize $ mb 8
-    replicaId = ChunkReplicaId "abc"
+    replicaId = ChunkReplicaId $ EntityId "abc"
     replicaKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
     chunkDigest = FileDigest "ghi"
 

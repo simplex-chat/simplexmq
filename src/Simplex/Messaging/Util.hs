@@ -169,9 +169,11 @@ threadDelay' = loop
 
 diffToMicroseconds :: NominalDiffTime -> Int64
 diffToMicroseconds diff = truncate $ diff * 1000000
+{-# INLINE diffToMicroseconds #-}
 
 diffToMilliseconds :: NominalDiffTime -> Int64
 diffToMilliseconds diff = truncate $ diff * 1000
+{-# INLINE diffToMilliseconds #-}
 
 labelMyThread :: MonadIO m => String -> m ()
 labelMyThread label = liftIO $ myThreadId >>= (`labelThread` label)

@@ -301,7 +301,7 @@ randomSUB_ a v sessId = do
   (rKey, rpKey) <- C.generateAuthKeyPair a g
   thAuth_ <- testTHandleAuth v g rKey
   let thParams = testTHandleParams v sessId
-      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, rId, Cmd SRecipient SUB)
+      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, EntityId rId, Cmd SRecipient SUB)
   pure $ (,tToSend) <$> authTransmission thAuth_ (Just rpKey) nonce tForAuth
 
 randomSUBCmd :: ProtocolClient SMPVersion ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
@@ -315,13 +315,13 @@ randomSUBCmd_ a c = do
   g <- C.newRandom
   rId <- C.randomBytes 24 g
   (_, rpKey) <- C.generateAuthKeyPair a g
-  mkTransmission c (Just rpKey, rId, Cmd SRecipient SUB)
+  mkTransmission c (Just rpKey, EntityId rId, Cmd SRecipient SUB)
 
 randomENDCmd :: IO (Transmission BrokerMsg)
 randomENDCmd = do
   g <- C.newRandom
   rId <- C.randomBytes 24 g
-  pure (CorrId "", rId, END)
+  pure (CorrId "", EntityId rId, END)
 
 randomSEND :: ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSEND = randomSEND_ C.SEd25519 subModeSMPVersion
@@ -338,7 +338,7 @@ randomSEND_ a v sessId len = do
   thAuth_ <- testTHandleAuth v g sKey
   msg <- C.randomBytes len g
   let thParams = testTHandleParams v sessId
-      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, sId, Cmd SSender $ SEND noMsgFlags msg)
+      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, EntityId sId, Cmd SSender $ SEND noMsgFlags msg)
   pure $ (,tToSend) <$> authTransmission thAuth_ (Just spKey) nonce tForAuth
 
 testTHandleParams :: VersionSMP -> ByteString -> THandleParams SMPVersion 'TClient
@@ -377,7 +377,7 @@ randomSENDCmd_ a c len = do
   sId <- C.randomBytes 24 g
   (_, rpKey) <- C.generateAuthKeyPair a g
   msg <- C.randomBytes len g
-  mkTransmission c (Just rpKey, sId, Cmd SSender $ SEND noMsgFlags msg)
+  mkTransmission c (Just rpKey, EntityId sId, Cmd SSender $ SEND noMsgFlags msg)
 
 lenOk :: ByteString -> Bool
 lenOk s = 0 < B.length s && B.length s <= smpBlockSize - 2

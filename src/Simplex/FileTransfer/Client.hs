@@ -50,6 +50,7 @@ import Simplex.Messaging.Protocol
     ProtocolServer (..),
     RecipientId,
     SenderId,
+    pattern NoEntity,
   )
 import Simplex.Messaging.Transport (ALPN, HandshakeError (..), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), supportedParameters)
 import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost, alpn)
@@ -222,7 +223,7 @@ createXFTPChunk ::
   Maybe BasicAuth ->
   ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId)
 createXFTPChunk c spKey file rcps auth_ =
-  sendXFTPCommand c spKey "" (FNEW file rcps auth_) Nothing >>= \case
+  sendXFTPCommand c spKey NoEntity (FNEW file rcps auth_) Nothing >>= \case
     (FRSndIds sId rIds, body) -> noFile body (sId, rIds)
     (r, _) -> throwE $ unexpectedResponse r
 
@@ -278,7 +279,7 @@ pingXFTP :: XFTPClient -> ExceptT XFTPClientError IO ()
 pingXFTP c@XFTPClient {thParams} = do
   t <-
     liftEither . first PCETransportError $
-      xftpEncodeTransmission thParams ("", "", FileCmd SFRecipient PING)
+      xftpEncodeTransmission thParams ("", NoEntity, FileCmd SFRecipient PING)
   (r, _) <- sendXFTPTransmission c t Nothing
   case r of
     FRPong -> pure ()

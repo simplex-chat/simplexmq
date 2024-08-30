@@ -898,7 +898,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
     reply :: MonadIO m => NonEmpty (Transmission BrokerMsg) -> m ()
     reply = atomically . writeTBQueue sndQ
     processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Maybe (Transmission BrokerMsg))
-    processProxiedCmd (corrId, sessId, command) = (corrId,sessId,) <$$> case command of
+    processProxiedCmd (corrId, EntityId sessId, command) = (corrId,EntityId sessId,) <$$> case command of
       PRXY srv auth -> ifM allowProxy getRelay (pure $ Just $ ERR $ PROXY BASIC_AUTH)
         where
           allowProxy = do
@@ -961,7 +961,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
         forkProxiedCmd cmdAction = do
           bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $ do
             -- commands MUST be processed under a reasonable timeout or the client would halt
-            cmdAction >>= \t -> reply [(corrId, sessId, t)]
+            cmdAction >>= \t -> reply [(corrId, EntityId sessId, t)]
           pure Nothing
           where
             wait = do
@@ -987,8 +987,8 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             | otherwise -> pure $ ERR AUTH
           Nothing -> pure $ ERR INTERNAL
         SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
-        PING -> pure (corrId, "", PONG)
-        RFWD encBlock -> (corrId, "",) <$> processForwardedCommand encBlock
+        PING -> pure (corrId, NoEntity, PONG)
+        RFWD encBlock -> (corrId, NoEntity,) <$> processForwardedCommand encBlock
       Cmd SNotifier NSUB -> Just <$> subscribeNotifications
       Cmd SRecipient command -> do
         st <- asks queueStore
@@ -1265,7 +1265,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             THandleParams {thVersion} = thParams'
             mkMessage :: C.MaxLenBS MaxMessageLen -> M Message
             mkMessage body = do
-              msgId <- randomId =<< asks (msgIdBytes . config)
+              msgId <- randomId' =<< asks (msgIdBytes . config)
               msgTs <- liftIO getSystemTime
               pure $! Message msgId msgTs msgFlags body
 
@@ -1509,7 +1509,7 @@ withLog action = do
   liftIO . mapM_ action $ storeLog (env :: Env)
 
 timed :: T.Text -> RecipientId -> M a -> M a
-timed name qId a = do
+timed name (EntityId qId) a = do
   t <- liftIO getSystemTime
   r <- a
   t' <- liftIO getSystemTime
@@ -1520,8 +1520,12 @@ timed name qId a = do
     diff t t' = (systemSeconds t' - systemSeconds t) * sec + fromIntegral (systemNanoseconds t' - systemNanoseconds t)
     sec = 1000_000000
 
-randomId :: Int -> M ByteString
-randomId n = liftIO . C.randomBytes n =<< asks random
+randomId' :: Int -> M ByteString
+randomId' n = liftIO . C.randomBytes n =<< asks random
+
+randomId :: Int -> M EntityId
+randomId = fmap EntityId . randomId'
+{-# INLINE randomId #-}
 
 saveServerMessages :: Bool -> M ()
 saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessages
