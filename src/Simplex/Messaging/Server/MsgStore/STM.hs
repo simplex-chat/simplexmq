@@ -9,7 +9,7 @@
 
 module Simplex.Messaging.Server.MsgStore.STM
   ( STMMsgStore,
-    MsgQueue (..),
+    MsgQueue (msgQueue),
     newMsgStore,
     getMsgQueue,
     delMsgQueue,
@@ -20,6 +20,7 @@ module Simplex.Messaging.Server.MsgStore.STM
     tryDelMsg,
     tryDelPeekMsg,
     deleteExpiredMsgs,
+    getQueueSize,
   )
 where
 
@@ -44,9 +45,14 @@ type STMMsgStore = TMap RecipientId MsgQueue
 newMsgStore :: IO STMMsgStore
 newMsgStore = TM.emptyIO
 
-getMsgQueue :: STMMsgStore -> RecipientId -> Int -> STM MsgQueue
-getMsgQueue st rId quota = maybe newQ pure =<< TM.lookup rId st
+-- The reason for double lookup is that majority of messaging queues exist,
+-- because multiple messages are sent to the same queue,
+-- so the first lookup without STM transaction will return the queue faster.
+-- In case the queue does not exist, it needs to be looked-up again inside transaction.
+getMsgQueue :: STMMsgStore -> RecipientId -> Int -> IO MsgQueue
+getMsgQueue st rId quota = TM.lookupIO rId st >>= maybe (atomically maybeNewQ) pure
   where
+    maybeNewQ = TM.lookup rId st >>= maybe newQ pure
     newQ = do
       msgQueue <- newTQueue
       canWrite <- newTVar True
@@ -117,3 +123,6 @@ tryDeleteMsg MsgQueue {msgQueue = q, size} =
   tryReadTQueue q >>= \case
     Just _ -> modifyTVar' size (subtract 1)
     _ -> pure ()
+
+getQueueSize :: MsgQueue -> IO Int
+getQueueSize MsgQueue {size} = readTVarIO size
