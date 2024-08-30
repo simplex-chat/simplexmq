@@ -44,7 +44,6 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
-import Crypto.Random
 import Control.Monad.STM (retry)
 import Data.Bifunctor (first)
 import Data.ByteString.Base64 (encode)
@@ -662,7 +661,7 @@ runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessio
   ts <- liftIO getSystemTime
   active <- asks clients
   nextClientId <- asks clientSeq
-  clientId <- liftIO $ atomicStateIORef nextClientId $ \next -> (next, next + 1)
+  clientId <- atomically $ stateTVar nextClientId $ \next -> (next, next + 1)
   atomically $ modifyTVar' active $ IM.insert clientId Nothing
   c <- liftIO $ newClient clientId q thVersion sessionId ts
   runClientThreads active c clientId `finally` clientDisconnected c
@@ -1255,15 +1254,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                         Just (msg, wasEmpty) -> time "SEND ok" $ do
                           when wasEmpty $ tryDeliverMessage msg
                           when (notification msgFlags) $ do
-                            forM_ (notifier qr) $ \ntf -> do
-                              asks random >>= atomically . trySendNotification ntf msg >>= \case
-                                Nothing -> do
-                                  incStat $ msgNtfNoSub stats
-                                  logWarn "No notification subscription"
-                                Just False -> do
-                                  incStat $ msgNtfLost stats
-                                  logWarn "Dropped message notification"
-                                Just True -> incStat $ msgNtfs stats
+                            mapM_ (`trySendNotification` msg) (notifier qr)
                             incStat $ msgSentNtf stats
                             liftIO $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
                           incStat $ msgSent stats
@@ -1335,23 +1326,35 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                               deliver q s
                               writeTVar st NoSub
 
-            trySendNotification :: NtfCreds -> Message -> TVar ChaChaDRG -> STM (Maybe Bool)
-            trySendNotification NtfCreds {notifierId, rcvNtfDhSecret} msg ntfNonceDrg =
-              mapM (writeNtf notifierId msg rcvNtfDhSecret ntfNonceDrg) =<< TM.lookup notifierId notifiers
+            trySendNotification :: NtfCreds -> Message -> M ()
+            trySendNotification NtfCreds {notifierId, rcvNtfDhSecret} msg = do
+              stats <- asks serverStats
+              liftIO (TM.lookupIO notifierId notifiers) >>= \case
+                Nothing -> do
+                  incStat $ msgNtfNoSub stats
+                  logWarn "No notification subscription"
+                Just ntfClnt -> do
+                  let updateStats True = incStat $ msgNtfs stats
+                      updateStats _ = do
+                        incStat $ msgNtfLost stats
+                        logWarn "Dropped message notification"
+                  writeNtf notifierId msg rcvNtfDhSecret ntfClnt >>= mapM_ updateStats
 
-            writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> TVar ChaChaDRG -> Client -> STM Bool
-            writeNtf nId msg rcvNtfDhSecret ntfNonceDrg Client {sndQ = q} =
-              ifM (isFullTBQueue q) (pure False) (sendNtf $> True)
-              where
-                sendNtf = case msg of
-                  Message {msgId, msgTs} -> do
-                    (nmsgNonce, encNMsgMeta) <- mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg
-                    writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)]
-                  _ -> pure ()
+            writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> Client -> M (Maybe Bool)
+            writeNtf nId msg rcvNtfDhSecret Client {sndQ = q} = case msg of
+              Message {msgId, msgTs} -> Just <$> do
+                (nmsgNonce, encNMsgMeta) <- mkMessageNotification msgId msgTs rcvNtfDhSecret
+                -- must be in one STM transaction to avoid the queue becoming full between the check and writing
+                atomically $
+                  ifM
+                    (isFullTBQueue q)
+                    (pure $ False)
+                    (True <$ writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)])
+              _ -> pure Nothing
 
-            mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> TVar ChaChaDRG -> STM (C.CbNonce, EncNMsgMeta)
-            mkMessageNotification msgId msgTs rcvNtfDhSecret ntfNonceDrg = do
-              cbNonce <- C.randomCbNonce ntfNonceDrg
+            mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> M (C.CbNonce, EncNMsgMeta)
+            mkMessageNotification msgId msgTs rcvNtfDhSecret = do
+              cbNonce <- atomically . C.randomCbNonce =<< asks random
               let msgMeta = NMsgMeta {msgId, msgTs}
                   encNMsgMeta = C.cbEncrypt rcvNtfDhSecret cbNonce (smpEncode msgMeta) 128
               pure . (cbNonce,) $ fromRight "" encNMsgMeta
