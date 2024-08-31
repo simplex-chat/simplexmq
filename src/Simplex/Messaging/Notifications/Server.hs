@@ -127,8 +127,8 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
           subDeleted' <- atomically $ swapTVar subDeleted 0
           ntfReceived' <- atomically $ swapTVar ntfReceived 0
           ntfDelivered' <- atomically $ swapTVar ntfDelivered 0
-          tkn <- atomically $ periodStatCounts activeTokens ts
-          sub <- atomically $ periodStatCounts activeSubs ts
+          tkn <- periodStatCounts activeTokens ts
+          sub <- periodStatCounts activeSubs ts
           hPutStrLn h $
             intercalate
               ","
@@ -216,7 +216,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
               st <- asks store
               NtfPushServer {pushQ} <- asks pushServer
               stats <- asks serverStats
-              atomically $ updatePeriodStats (activeSubs stats) ntfId
+              liftIO $ updatePeriodStats (activeSubs stats) ntfId
               atomically $
                 findNtfSubscriptionToken st smpQueue
                   >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
@@ -300,7 +300,7 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
       void $ deliverNotification pp tkn ntf
     PNMessage {} -> checkActiveTkn status $ do
       stats <- asks serverStats
-      atomically $ updatePeriodStats (activeTokens stats) ntfTknId
+      liftIO $ updatePeriodStats (activeTokens stats) ntfTknId
       void $ deliverNotification pp tkn ntf
       incNtfStat ntfDelivered
   where

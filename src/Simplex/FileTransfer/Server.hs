@@ -214,7 +214,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           filesUploaded' <- atomically $ swapTVar filesUploaded 0
           filesExpired' <- atomically $ swapTVar filesExpired 0
           filesDeleted' <- atomically $ swapTVar filesDeleted 0
-          files <- atomically $ periodStatCounts filesDownloaded ts
+          files <- periodStatCounts filesDownloaded ts
           fileDownloads' <- atomically $ swapTVar fileDownloads 0
           fileDownloadAcks' <- atomically $ swapTVar fileDownloadAcks 0
           filesCount' <- readTVarIO filesCount
@@ -496,7 +496,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
                 Right sbState -> do
                   stats <- asks serverStats
                   atomically $ modifyTVar' (fileDownloads stats) (+ 1)
-                  atomically $ updatePeriodStats (filesDownloaded stats) senderId
+                  liftIO $ updatePeriodStats (filesDownloaded stats) senderId
                   pure (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
                 _ -> pure (FRErr INTERNAL, Nothing)
         _ -> pure (FRErr NO_FILE, Nothing)

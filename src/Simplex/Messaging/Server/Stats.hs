@@ -18,6 +18,7 @@ import Data.Time.Calendar.OrdinalDate (mondayStartWeek)
 import Data.Time.Clock (UTCTime (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (RecipientId)
+import Simplex.Messaging.Util (unlessM)
 import UnliftIO.STM
 
 data ServerStats = ServerStats
@@ -600,7 +601,7 @@ data PeriodStatCounts = PeriodStatCounts
     monthCount :: String
   }
 
-periodStatCounts :: forall a. PeriodStats a -> UTCTime -> STM PeriodStatCounts
+periodStatCounts :: forall a. PeriodStats a -> UTCTime -> IO PeriodStatCounts
 periodStatCounts ps ts = do
   let d = utctDay ts
       (_, wDay) = mondayStartWeek d
@@ -610,17 +611,17 @@ periodStatCounts ps ts = do
   monthCount <- periodCount mDay $ month ps
   pure PeriodStatCounts {dayCount, weekCount, monthCount}
   where
-    periodCount :: Int -> TVar (Set a) -> STM String
-    periodCount 1 pVar = show . S.size <$> swapTVar pVar S.empty
+    periodCount :: Int -> TVar (Set a) -> IO String
+    periodCount 1 pVar = atomically $ show . S.size <$> swapTVar pVar S.empty
     periodCount _ _ = pure ""
 
-updatePeriodStats :: Ord a => PeriodStats a -> a -> STM ()
-updatePeriodStats stats pId = do
-  updatePeriod day
-  updatePeriod week
-  updatePeriod month
+updatePeriodStats :: Ord a => PeriodStats a -> a -> IO ()
+updatePeriodStats ps pId = do
+  updatePeriod $ day ps
+  updatePeriod $ week ps
+  updatePeriod $ month ps
   where
-    updatePeriod pSel = modifyTVar' (pSel stats) (S.insert pId)
+    updatePeriod v = unlessM (S.member pId <$> readTVarIO v) $ atomically $ modifyTVar' v (S.insert pId)
 
 data ProxyStats = ProxyStats
   { pRequests :: TVar Int,
