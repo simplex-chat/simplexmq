@@ -135,8 +135,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   expired <- restoreServerMessages
   restoreServerStats expired
   raceAny_
-    ( serverThread s "server subscribedQ" subscribedQ subscribers subscriptions cancelSub
-        : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ())
+    ( serverThread s "server subscribedQ" subscribedQ subscribers pendingENDs subscriptions cancelSub
+        : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers pendingNtfENDs ntfSubscriptions (\_ -> pure ())
         : sendPendingENDsThread s
         : receiveFromProxyAgent pa
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
@@ -164,16 +164,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       String ->
       (Server -> TQueue (QueueId, Client, Subscribed)) ->
       (Server -> TMap QueueId Client) ->
+      (Server -> TVar (IM.IntMap (NonEmpty RecipientId))) ->
       (Client -> TMap QueueId s) ->
       (s -> IO ()) ->
       M ()
-    serverThread s label subQ subs clientSubs unsub = do
+    serverThread s label subQ subs ends clientSubs unsub = do
       labelMyThread label
       cls <- asks clients
-      forever $
+      liftIO . forever $
         (atomically (readTQueue $ subQ s) >>= atomically . updateSubscribers cls)
           $>>= endPreviousSubscriptions
-          >>= liftIO . mapM_ unsub
+          >>= mapM_ unsub
       where
         updateSubscribers :: TVar (IM.IntMap (Maybe Client)) -> (QueueId, Client, Bool) -> STM (Maybe (QueueId, Client))
         updateSubscribers cls (qId, clnt, subscribed) = do
@@ -188,9 +189,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                     yes <- readTVar $ connected c'
                     pure $ if yes then Just (qId, c') else Nothing
           updateSub qId (subs s) $>>= clientToBeNotified
-        endPreviousSubscriptions :: (QueueId, Client) -> M (Maybe s)
+        endPreviousSubscriptions :: (QueueId, Client) -> IO (Maybe s)
         endPreviousSubscriptions (qId, c) = do
-          atomically $ modifyTVar' (pendingENDs s) $ IM.alter (Just . maybe [qId] (qId <|)) (clientId c)
+          atomically $ modifyTVar' (ends s) $ IM.alter (Just . maybe [qId] (qId <|)) (clientId c)
           atomically $ TM.lookupDelete qId (clientSubs c)
 
     sendPendingENDsThread :: Server -> M ()
@@ -199,10 +200,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       cls <- asks clients
       forever $ do
         threadDelay endInt
-        ends <- atomically $ swapTVar (pendingENDs s) IM.empty
-        unless (null ends) $ forM_ (IM.assocs ends) $ \(cId, qIds) ->
-          queueENDs qIds . IM.lookup cId =<< readTVarIO cls
+        sendPending cls $ pendingENDs s
+        sendPending cls $ pendingNtfENDs s
       where
+        sendPending cls v = do
+          ends <- atomically $ swapTVar v IM.empty
+          unless (null ends) $ forM_ (IM.assocs ends) $ \(cId, qIds) ->
+            queueENDs qIds . IM.lookup cId =<< readTVarIO cls
         queueENDs qIds = \case
           Just (Just c) -> forkClient c ("sendPendingENDsThread.queueENDs") $ do
             stats <- asks serverStats

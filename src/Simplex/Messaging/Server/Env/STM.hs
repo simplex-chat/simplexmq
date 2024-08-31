@@ -141,6 +141,7 @@ data Server = Server
     ntfSubscribedQ :: TQueue (NotifierId, Client, Subscribed),
     notifiers :: TMap NotifierId Client,
     pendingENDs :: TVar (IntMap (NonEmpty QueueId)),
+    pendingNtfENDs :: TVar (IntMap (NonEmpty NotifierId)),
     savingLock :: Lock
   }
 
@@ -184,8 +185,9 @@ newServer = do
   ntfSubscribedQ <- newTQueueIO
   notifiers <- TM.emptyIO
   pendingENDs <- newTVarIO IM.empty
+  pendingNtfENDs <- newTVarIO IM.empty
   savingLock <- atomically createLock
-  return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, pendingENDs, savingLock}
+  return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, pendingENDs, pendingNtfENDs, savingLock}
 
 newClient :: ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO Client
 newClient clientId qSize thVersion sessionId createdAt = do
