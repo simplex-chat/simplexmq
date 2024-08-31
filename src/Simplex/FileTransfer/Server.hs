@@ -406,7 +406,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
           logAddFile sl sId file ts
           logAddRecipients sl sId rcps
         stats <- asks serverStats
-        atomically $ modifyTVar' (filesCreated stats) (+ 1)
+        lift $ incFileStat filesCreated
         atomically $ modifyTVar' (fileRecipients stats) (+ length rks)
         let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
         pure $ FRSndIds sId rIds
@@ -470,8 +470,8 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
                 stats <- asks serverStats
                 withFileLog $ \sl -> logPutFile sl senderId fPath
                 atomically $ writeTVar filePath (Just fPath)
-                atomically $ modifyTVar' (filesUploaded stats) (+ 1)
-                atomically $ modifyTVar' (filesCount stats) (+ 1)
+                incFileStat filesUploaded
+                incFileStat filesCount
                 atomically $ modifyTVar' (filesSize stats) (+ fromIntegral size)
                 pure FROk
               Left e -> do
@@ -495,7 +495,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
               case LC.cbInit dhSecret cbNonce of
                 Right sbState -> do
                   stats <- asks serverStats
-                  atomically $ modifyTVar' (fileDownloads stats) (+ 1)
+                  incFileStat fileDownloads
                   liftIO $ updatePeriodStats (filesDownloaded stats) senderId
                   pure (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
                 _ -> pure (FRErr INTERNAL, Nothing)
@@ -512,8 +512,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       withFileLog (`logAckFile` rId)
       st <- asks store
       atomically $ deleteRecipient st rId fr
-      stats <- asks serverStats
-      atomically $ modifyTVar' (fileDownloadAcks stats) (+ 1)
+      incFileStat fileDownloadAcks
       pure FROk
 
 deleteServerFile_ :: FileRec -> M (Either XFTPErrorType ())
@@ -525,7 +524,7 @@ deleteServerFile_ FileRec {senderId, fileInfo, filePath} = do
     ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
     st <- asks store
     void $ atomically $ deleteFile st senderId
-    atomically $ modifyTVar' (filesDeleted stats) (+ 1)
+  incFileStat filesDeleted
   where
     deletedStats stats = do
       atomically $ modifyTVar' (filesCount stats) (subtract 1)
@@ -555,8 +554,7 @@ expireServerFiles itemDelay expCfg = do
     delete st sId = do
       withFileLog (`logDeleteFile` sId)
       void . atomically $ deleteFile st sId -- will not update usedStorage if sId isn't in store
-      FileServerStats {filesExpired} <- asks serverStats
-      atomically $ modifyTVar' filesExpired (+ 1)
+      incFileStat filesExpired
 
 randomId :: Int -> M ByteString
 randomId n = atomically . C.randomBytes n =<< asks random
