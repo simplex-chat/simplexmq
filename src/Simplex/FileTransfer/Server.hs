@@ -524,7 +524,7 @@ deleteServerFile_ FileRec {senderId, fileInfo, filePath} = do
     ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
     st <- asks store
     void $ atomically $ deleteFile st senderId
-  incFileStat filesDeleted
+    lift $ incFileStat filesDeleted
   where
     deletedStats stats = do
       atomically $ modifyTVar' (filesCount stats) (subtract 1)
