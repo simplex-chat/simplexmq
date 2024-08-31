@@ -603,7 +603,7 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d -> do
           s <- asks serverStats
-          atomically $ setNtfServerStats s d
+          liftIO $ setNtfServerStats s d
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
         Left e -> do

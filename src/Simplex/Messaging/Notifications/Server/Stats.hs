@@ -68,16 +68,16 @@ getNtfServerStatsData s@NtfServerStats {fromTime} = do
   _activeSubs <- getPeriodStatsData $ activeSubs s
   pure NtfServerStatsData {_fromTime, _tknCreated, _tknVerified, _tknDeleted, _subCreated, _subDeleted, _ntfReceived, _ntfDelivered, _activeTokens, _activeSubs}
 
-setNtfServerStats :: NtfServerStats -> NtfServerStatsData -> STM ()
+setNtfServerStats :: NtfServerStats -> NtfServerStatsData -> IO ()
 setNtfServerStats s@NtfServerStats {fromTime} d@NtfServerStatsData {_fromTime} = do
-  writeTVar fromTime $! _fromTime
-  writeTVar (tknCreated s) $! _tknCreated d
-  writeTVar (tknVerified s) $! _tknVerified d
-  writeTVar (tknDeleted s) $! _tknDeleted d
-  writeTVar (subCreated s) $! _subCreated d
-  writeTVar (subDeleted s) $! _subDeleted d
-  writeTVar (ntfReceived s) $! _ntfReceived d
-  writeTVar (ntfDelivered s) $! _ntfDelivered d
+  atomically $ writeTVar fromTime $! _fromTime
+  atomically $ writeTVar (tknCreated s) $! _tknCreated d
+  atomically $ writeTVar (tknVerified s) $! _tknVerified d
+  atomically $ writeTVar (tknDeleted s) $! _tknDeleted d
+  atomically $ writeTVar (subCreated s) $! _subCreated d
+  atomically $ writeTVar (subDeleted s) $! _subDeleted d
+  atomically $ writeTVar (ntfReceived s) $! _ntfReceived d
+  atomically $ writeTVar (ntfDelivered s) $! _ntfDelivered d
   setPeriodStats (activeTokens s) (_activeTokens d)
   setPeriodStats (activeSubs s) (_activeSubs d)
 

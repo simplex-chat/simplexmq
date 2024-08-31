@@ -324,55 +324,55 @@ getServerStatsData s = do
         _msgCount
       }
 
-setServerStats :: ServerStats -> ServerStatsData -> STM ()
+setServerStats :: ServerStats -> ServerStatsData -> IO ()
 setServerStats s d = do
-  writeTVar (fromTime s) $! _fromTime d
-  writeTVar (qCreated s) $! _qCreated d
-  writeTVar (qSecured s) $! _qSecured d
-  writeTVar (qDeletedAll s) $! _qDeletedAll d
-  writeTVar (qDeletedAllB s) $! _qDeletedAllB d
-  writeTVar (qDeletedNew s) $! _qDeletedNew d
-  writeTVar (qDeletedSecured s) $! _qDeletedSecured d
-  writeTVar (qSub s) $! _qSub d
-  writeTVar (qSubAllB s) $! _qSubAllB d
-  writeTVar (qSubAuth s) $! _qSubAuth d
-  writeTVar (qSubDuplicate s) $! _qSubDuplicate d
-  writeTVar (qSubProhibited s) $! _qSubProhibited d
-  writeTVar (qSubEnd s) $! _qSubEnd d
-  writeTVar (qSubEndB s) $! _qSubEndB d
-  writeTVar (ntfCreated s) $! _ntfCreated d
-  writeTVar (ntfDeleted s) $! _ntfDeleted d
-  writeTVar (ntfDeletedB s) $! _ntfDeletedB d
-  writeTVar (ntfSub s) $! _ntfSub d
-  writeTVar (ntfSubB s) $! _ntfSubB d
-  writeTVar (ntfSubAuth s) $! _ntfSubAuth d
-  writeTVar (ntfSubDuplicate s) $! _ntfSubDuplicate d
-  writeTVar (msgSent s) $! _msgSent d
-  writeTVar (msgSentAuth s) $! _msgSentAuth d
-  writeTVar (msgSentQuota s) $! _msgSentQuota d
-  writeTVar (msgSentLarge s) $! _msgSentLarge d
-  writeTVar (msgRecv s) $! _msgRecv d
-  writeTVar (msgRecvGet s) $! _msgRecvGet d
-  writeTVar (msgGet s) $! _msgGet d
-  writeTVar (msgGetNoMsg s) $! _msgGetNoMsg d
-  writeTVar (msgGetAuth s) $! _msgGetAuth d
-  writeTVar (msgGetDuplicate s) $! _msgGetDuplicate d
-  writeTVar (msgGetProhibited s) $! _msgGetProhibited d
-  writeTVar (msgExpired s) $! _msgExpired d
+  atomically $ writeTVar (fromTime s) $! _fromTime d
+  atomically $ writeTVar (qCreated s) $! _qCreated d
+  atomically $ writeTVar (qSecured s) $! _qSecured d
+  atomically $ writeTVar (qDeletedAll s) $! _qDeletedAll d
+  atomically $ writeTVar (qDeletedAllB s) $! _qDeletedAllB d
+  atomically $ writeTVar (qDeletedNew s) $! _qDeletedNew d
+  atomically $ writeTVar (qDeletedSecured s) $! _qDeletedSecured d
+  atomically $ writeTVar (qSub s) $! _qSub d
+  atomically $ writeTVar (qSubAllB s) $! _qSubAllB d
+  atomically $ writeTVar (qSubAuth s) $! _qSubAuth d
+  atomically $ writeTVar (qSubDuplicate s) $! _qSubDuplicate d
+  atomically $ writeTVar (qSubProhibited s) $! _qSubProhibited d
+  atomically $ writeTVar (qSubEnd s) $! _qSubEnd d
+  atomically $ writeTVar (qSubEndB s) $! _qSubEndB d
+  atomically $ writeTVar (ntfCreated s) $! _ntfCreated d
+  atomically $ writeTVar (ntfDeleted s) $! _ntfDeleted d
+  atomically $ writeTVar (ntfDeletedB s) $! _ntfDeletedB d
+  atomically $ writeTVar (ntfSub s) $! _ntfSub d
+  atomically $ writeTVar (ntfSubB s) $! _ntfSubB d
+  atomically $ writeTVar (ntfSubAuth s) $! _ntfSubAuth d
+  atomically $ writeTVar (ntfSubDuplicate s) $! _ntfSubDuplicate d
+  atomically $ writeTVar (msgSent s) $! _msgSent d
+  atomically $ writeTVar (msgSentAuth s) $! _msgSentAuth d
+  atomically $ writeTVar (msgSentQuota s) $! _msgSentQuota d
+  atomically $ writeTVar (msgSentLarge s) $! _msgSentLarge d
+  atomically $ writeTVar (msgRecv s) $! _msgRecv d
+  atomically $ writeTVar (msgRecvGet s) $! _msgRecvGet d
+  atomically $ writeTVar (msgGet s) $! _msgGet d
+  atomically $ writeTVar (msgGetNoMsg s) $! _msgGetNoMsg d
+  atomically $ writeTVar (msgGetAuth s) $! _msgGetAuth d
+  atomically $ writeTVar (msgGetDuplicate s) $! _msgGetDuplicate d
+  atomically $ writeTVar (msgGetProhibited s) $! _msgGetProhibited d
+  atomically $ writeTVar (msgExpired s) $! _msgExpired d
   setPeriodStats (activeQueues s) (_activeQueues d)
-  writeTVar (msgSentNtf s) $! _msgSentNtf d
-  writeTVar (msgRecvNtf s) $! _msgRecvNtf d
+  atomically $ writeTVar (msgSentNtf s) $! _msgSentNtf d
+  atomically $ writeTVar (msgRecvNtf s) $! _msgRecvNtf d
   setPeriodStats (activeQueuesNtf s) (_activeQueuesNtf d)
-  writeTVar (msgNtfs s) $! _msgNtfs d
-  writeTVar (msgNtfNoSub s) $! _msgNtfNoSub d
-  writeTVar (msgNtfLost s) $! _msgNtfLost d
+  atomically $ writeTVar (msgNtfs s) $! _msgNtfs d
+  atomically $ writeTVar (msgNtfNoSub s) $! _msgNtfNoSub d
+  atomically $ writeTVar (msgNtfLost s) $! _msgNtfLost d
   setProxyStats (pRelays s) $! _pRelays d
   setProxyStats (pRelaysOwn s) $! _pRelaysOwn d
   setProxyStats (pMsgFwds s) $! _pMsgFwds d
   setProxyStats (pMsgFwdsOwn s) $! _pMsgFwdsOwn d
-  writeTVar (pMsgFwdsRecv s) $! _pMsgFwdsRecv d
-  writeTVar (qCount s) $! _qCount d
-  writeTVar (msgCount s) $! _msgCount d
+  atomically $ writeTVar (pMsgFwdsRecv s) $! _pMsgFwdsRecv d
+  atomically $ writeTVar (qCount s) $! _qCount d
+  atomically $ writeTVar (msgCount s) $! _msgCount d
 
 instance StrEncoding ServerStatsData where
   strEncode d =
@@ -580,11 +580,11 @@ getPeriodStatsData s = do
   _month <- readTVarIO $ month s
   pure PeriodStatsData {_day, _week, _month}
 
-setPeriodStats :: PeriodStats a -> PeriodStatsData a -> STM ()
+setPeriodStats :: PeriodStats a -> PeriodStatsData a -> IO ()
 setPeriodStats s d = do
-  writeTVar (day s) $! _day d
-  writeTVar (week s) $! _week d
-  writeTVar (month s) $! _month d
+  atomically $ writeTVar (day s) $! _day d
+  atomically $ writeTVar (week s) $! _week d
+  atomically $ writeTVar (month s) $! _month d
 
 instance (Ord a, StrEncoding a) => StrEncoding (PeriodStatsData a) where
   strEncode PeriodStatsData {_day, _week, _month} =
@@ -661,22 +661,22 @@ getProxyStatsData s = do
   _pErrorsOther <- readTVarIO $ pErrorsOther s
   pure ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther}
 
-getResetProxyStatsData :: ProxyStats -> STM ProxyStatsData
+getResetProxyStatsData :: ProxyStats -> IO ProxyStatsData
 getResetProxyStatsData s = do
-  _pRequests <- swapTVar (pRequests s) 0
-  _pSuccesses <- swapTVar (pSuccesses s) 0
-  _pErrorsConnect <- swapTVar (pErrorsConnect s) 0
-  _pErrorsCompat <- swapTVar (pErrorsCompat s) 0
-  _pErrorsOther <- swapTVar (pErrorsOther s) 0
+  _pRequests <- atomically $ swapTVar (pRequests s) 0
+  _pSuccesses <- atomically $ swapTVar (pSuccesses s) 0
+  _pErrorsConnect <- atomically $ swapTVar (pErrorsConnect s) 0
+  _pErrorsCompat <- atomically $ swapTVar (pErrorsCompat s) 0
+  _pErrorsOther <- atomically $ swapTVar (pErrorsOther s) 0
   pure ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther}
 
-setProxyStats :: ProxyStats -> ProxyStatsData -> STM ()
+setProxyStats :: ProxyStats -> ProxyStatsData -> IO ()
 setProxyStats s d = do
-  writeTVar (pRequests s) $! _pRequests d
-  writeTVar (pSuccesses s) $! _pSuccesses d
-  writeTVar (pErrorsConnect s) $! _pErrorsConnect d
-  writeTVar (pErrorsCompat s) $! _pErrorsCompat d
-  writeTVar (pErrorsOther s) $! _pErrorsOther d
+  atomically $ writeTVar (pRequests s) $! _pRequests d
+  atomically $ writeTVar (pSuccesses s) $! _pSuccesses d
+  atomically $ writeTVar (pErrorsConnect s) $! _pErrorsConnect d
+  atomically $ writeTVar (pErrorsCompat s) $! _pErrorsCompat d
+  atomically $ writeTVar (pErrorsOther s) $! _pErrorsOther d
 
 instance StrEncoding ProxyStatsData where
   strEncode ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther} =

@@ -140,7 +140,7 @@ data Server = Server
     subscribers :: TMap RecipientId Client,
     ntfSubscribedQ :: TQueue (NotifierId, Client, Subscribed),
     notifiers :: TMap NotifierId Client,
-    pendingENDs :: TVar (IntMap (NonEmpty QueueId)),
+    pendingENDs :: TVar (IntMap (NonEmpty RecipientId)),
     pendingNtfENDs :: TVar (IntMap (NonEmpty NotifierId)),
     savingLock :: Lock
   }

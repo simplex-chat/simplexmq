@@ -307,10 +307,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           msgNtfs' <- atomically $ swapTVar (msgNtfs ss) 0
           msgNtfNoSub' <- atomically $ swapTVar (msgNtfNoSub ss) 0
           msgNtfLost' <- atomically $ swapTVar (msgNtfLost ss) 0
-          pRelays' <- atomically $ getResetProxyStatsData pRelays
-          pRelaysOwn' <- atomically $ getResetProxyStatsData pRelaysOwn
-          pMsgFwds' <- atomically $ getResetProxyStatsData pMsgFwds
-          pMsgFwdsOwn' <- atomically $ getResetProxyStatsData pMsgFwdsOwn
+          pRelays' <- getResetProxyStatsData pRelays
+          pRelaysOwn' <- getResetProxyStatsData pRelaysOwn
+          pMsgFwds' <- getResetProxyStatsData pMsgFwds
+          pMsgFwdsOwn' <- getResetProxyStatsData pMsgFwdsOwn
           pMsgFwdsRecv' <- atomically $ swapTVar pMsgFwdsRecv 0
           qCount' <- readTVarIO qCount
           qCount'' <- M.size <$> readTVarIO queues
@@ -1599,7 +1599,7 @@ restoreServerStats expiredWhileRestoring = asks (serverStatsBackupFile . config)
           s <- asks serverStats
           _qCount <- fmap M.size . readTVarIO . queues =<< asks queueStore
           _msgCount <- liftIO . foldM (\(!n) q -> (n +) <$> getQueueSize q) 0 =<< readTVarIO =<< asks msgStore
-          atomically $ setServerStats s d {_qCount, _msgCount, _msgExpired = _msgExpired d + expiredWhileRestoring}
+          liftIO $ setServerStats s d {_qCount, _msgCount, _msgExpired = _msgExpired d + expiredWhileRestoring}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
           when (_qCount /= statsQCount) $ logWarn $ "Queue count differs: stats: " <> tshow statsQCount <> ", store: " <> tshow _qCount

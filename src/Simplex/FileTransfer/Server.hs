@@ -593,7 +593,7 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
           FileStore {files, usedStorage} <- asks store
           _filesCount <- M.size <$> readTVarIO files
           _filesSize <- readTVarIO usedStorage
-          atomically $ setFileServerStats s d {_filesCount, _filesSize}
+          liftIO $ setFileServerStats s d {_filesCount, _filesSize}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
           when (statsFilesCount /= _filesCount) $ logWarn $ "Files count differs: stats: " <> tshow statsFilesCount <> ", store: " <> tshow _filesCount
