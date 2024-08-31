@@ -53,7 +53,6 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
-import Data.IORef
 import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM
 import qualified Data.IntSet as IS
@@ -69,7 +68,6 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
-import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
@@ -137,8 +135,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   expired <- restoreServerMessages
   restoreServerStats expired
   raceAny_
-    ( serverThread s "server subscribedQ" subscribedQ subscribers pendingENDs subscriptions cancelSub
-        : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers pendingNtfENDs ntfSubscriptions (\_ -> pure ())
+    ( serverThread s "server subscribedQ" subscribedQ subscribers subscriptions cancelSub
+        : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubscriptions (\_ -> pure ())
         : sendPendingENDsThread s
         : receiveFromProxyAgent pa
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
@@ -166,17 +164,16 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       String ->
       (Server -> TQueue (QueueId, Client, Subscribed)) ->
       (Server -> TMap QueueId Client) ->
-      (Server -> IORef (IM.IntMap (NonEmpty RecipientId))) ->
       (Client -> TMap QueueId s) ->
       (s -> IO ()) ->
       M ()
-    serverThread s label subQ subs ends clientSubs unsub = do
+    serverThread s label subQ subs clientSubs unsub = do
       labelMyThread label
       cls <- asks clients
-      liftIO . forever $
+      forever $
         (atomically (readTQueue $ subQ s) >>= atomically . updateSubscribers cls)
           $>>= endPreviousSubscriptions
-          >>= mapM_ unsub
+          >>= liftIO . mapM_ unsub
       where
         updateSubscribers :: TVar (IM.IntMap (Maybe Client)) -> (QueueId, Client, Bool) -> STM (Maybe (QueueId, Client))
         updateSubscribers cls (qId, clnt, subscribed) = do
@@ -191,9 +188,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                     yes <- readTVar $ connected c'
                     pure $ if yes then Just (qId, c') else Nothing
           updateSub qId (subs s) $>>= clientToBeNotified
-        endPreviousSubscriptions :: (QueueId, Client) -> IO (Maybe s)
+        endPreviousSubscriptions :: (QueueId, Client) -> M (Maybe s)
         endPreviousSubscriptions (qId, c) = do
-          atomicModifyIORef'_ (ends s) $ IM.alter (Just . maybe [qId] (qId <|)) (clientId c)
+          atomically $ modifyTVar' (pendingENDs s) $ IM.alter (Just . maybe [qId] (qId <|)) (clientId c)
           atomically $ TM.lookupDelete qId (clientSubs c)
 
     sendPendingENDsThread :: Server -> M ()
@@ -202,20 +199,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       cls <- asks clients
       forever $ do
         threadDelay endInt
-        sendPending cls $ pendingENDs s
-        sendPending cls $ pendingNtfENDs s
+        ends <- atomically $ swapTVar (pendingENDs s) IM.empty
+        unless (null ends) $ forM_ (IM.assocs ends) $ \(cId, qIds) ->
+          queueENDs qIds . IM.lookup cId =<< readTVarIO cls
       where
-        sendPending cls ref = do
-          ends <- liftIO $ atomicSwapIORef ref IM.empty
-          unless (null ends) $ forM_ (IM.assocs ends) $ \(cId, qIds) ->
-            queueENDs qIds . IM.lookup cId =<< readTVarIO cls
         queueENDs qIds = \case
           Just (Just c) -> forkClient c ("sendPendingENDsThread.queueENDs") $ do
             stats <- asks serverStats
             atomically $ writeTBQueue (sndQ c) $ L.map (CorrId "",,END) qIds
             let len = L.length qIds
-            liftIO $ atomicModifyIORef'_ (qSubEnd stats) (+ len)
-            liftIO $ atomicModifyIORef'_ (qSubEndB stats) (+ (len `div` 255 + 1)) -- up to 255 ENDs in the batch
+            atomically $ modifyTVar' (qSubEnd stats) (+ len)
+            atomically $ modifyTVar' (qSubEndB stats) (+ (len `div` 255 + 1)) -- up to 255 ENDs in the batch
           _ -> pure ()
 
     receiveFromProxyAgent :: ProxyAgent -> M ()
@@ -248,7 +242,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         forM_ rIds $ \rId -> do
           q <- liftIO $ getMsgQueue ms rId quota
           deleted <- atomically $ deleteExpiredMsgs q old
-          liftIO $ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
+          atomically $ modifyTVar' (msgExpired stats) (+ deleted)
 
     serverStatsThread_ :: ServerConfig -> [M ()]
     serverStatsThread_ ServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -269,55 +263,55 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
           ts <- getCurrentTime
-          fromTime' <- atomicSwapIORef fromTime ts
-          qCreated' <- atomicSwapIORef qCreated 0
-          qSecured' <- atomicSwapIORef qSecured 0
-          qDeletedAll' <- atomicSwapIORef qDeletedAll 0
-          qDeletedAllB' <- atomicSwapIORef qDeletedAllB 0
-          qDeletedNew' <- atomicSwapIORef qDeletedNew 0
-          qDeletedSecured' <- atomicSwapIORef qDeletedSecured 0
-          qSub' <- atomicSwapIORef qSub 0
-          qSubAllB' <- atomicSwapIORef qSubAllB 0
-          qSubAuth' <- atomicSwapIORef qSubAuth 0
-          qSubDuplicate' <- atomicSwapIORef qSubDuplicate 0
-          qSubProhibited' <- atomicSwapIORef qSubProhibited 0
-          qSubEnd' <- atomicSwapIORef qSubEnd 0
-          qSubEndB' <- atomicSwapIORef qSubEndB 0
-          ntfCreated' <- atomicSwapIORef ntfCreated 0
-          ntfDeleted' <- atomicSwapIORef ntfDeleted 0
-          ntfDeletedB' <- atomicSwapIORef ntfDeletedB 0
-          ntfSub' <- atomicSwapIORef ntfSub 0
-          ntfSubB' <- atomicSwapIORef ntfSubB 0
-          ntfSubAuth' <- atomicSwapIORef ntfSubAuth 0
-          ntfSubDuplicate' <- atomicSwapIORef ntfSubDuplicate 0
-          msgSent' <- atomicSwapIORef msgSent 0
-          msgSentAuth' <- atomicSwapIORef msgSentAuth 0
-          msgSentQuota' <- atomicSwapIORef msgSentQuota 0
-          msgSentLarge' <- atomicSwapIORef msgSentLarge 0
-          msgRecv' <- atomicSwapIORef msgRecv 0
-          msgRecvGet' <- atomicSwapIORef msgRecvGet 0
-          msgGet' <- atomicSwapIORef msgGet 0
-          msgGetNoMsg' <- atomicSwapIORef msgGetNoMsg 0
-          msgGetAuth' <- atomicSwapIORef msgGetAuth 0
-          msgGetDuplicate' <- atomicSwapIORef msgGetDuplicate 0
-          msgGetProhibited' <- atomicSwapIORef msgGetProhibited 0
-          msgExpired' <- atomicSwapIORef msgExpired 0
-          ps <- liftIO $ periodStatCounts activeQueues ts
-          msgSentNtf' <- atomicSwapIORef msgSentNtf 0
-          msgRecvNtf' <- atomicSwapIORef msgRecvNtf 0
-          psNtf <- liftIO $ periodStatCounts activeQueuesNtf ts
-          msgNtfs' <- atomicSwapIORef (msgNtfs ss) 0
-          msgNtfNoSub' <- atomicSwapIORef (msgNtfNoSub ss) 0
-          msgNtfLost' <- atomicSwapIORef (msgNtfLost ss) 0
-          pRelays' <- getResetProxyStatsData pRelays
-          pRelaysOwn' <- getResetProxyStatsData pRelaysOwn
-          pMsgFwds' <- getResetProxyStatsData pMsgFwds
-          pMsgFwdsOwn' <- getResetProxyStatsData pMsgFwdsOwn
-          pMsgFwdsRecv' <- atomicSwapIORef pMsgFwdsRecv 0
-          qCount' <- readIORef qCount
+          fromTime' <- atomically $ swapTVar fromTime ts
+          qCreated' <- atomically $ swapTVar qCreated 0
+          qSecured' <- atomically $ swapTVar qSecured 0
+          qDeletedAll' <- atomically $ swapTVar qDeletedAll 0
+          qDeletedAllB' <- atomically $ swapTVar qDeletedAllB 0
+          qDeletedNew' <- atomically $ swapTVar qDeletedNew 0
+          qDeletedSecured' <- atomically $ swapTVar qDeletedSecured 0
+          qSub' <- atomically $ swapTVar qSub 0
+          qSubAllB' <- atomically $ swapTVar qSubAllB 0
+          qSubAuth' <- atomically $ swapTVar qSubAuth 0
+          qSubDuplicate' <- atomically $ swapTVar qSubDuplicate 0
+          qSubProhibited' <- atomically $ swapTVar qSubProhibited 0
+          qSubEnd' <- atomically $ swapTVar qSubEnd 0
+          qSubEndB' <- atomically $ swapTVar qSubEndB 0
+          ntfCreated' <- atomically $ swapTVar ntfCreated 0
+          ntfDeleted' <- atomically $ swapTVar ntfDeleted 0
+          ntfDeletedB' <- atomically $ swapTVar ntfDeletedB 0
+          ntfSub' <- atomically $ swapTVar ntfSub 0
+          ntfSubB' <- atomically $ swapTVar ntfSubB 0
+          ntfSubAuth' <- atomically $ swapTVar ntfSubAuth 0
+          ntfSubDuplicate' <- atomically $ swapTVar ntfSubDuplicate 0
+          msgSent' <- atomically $ swapTVar msgSent 0
+          msgSentAuth' <- atomically $ swapTVar msgSentAuth 0
+          msgSentQuota' <- atomically $ swapTVar msgSentQuota 0
+          msgSentLarge' <- atomically $ swapTVar msgSentLarge 0
+          msgRecv' <- atomically $ swapTVar msgRecv 0
+          msgRecvGet' <- atomically $ swapTVar msgRecvGet 0
+          msgGet' <- atomically $ swapTVar msgGet 0
+          msgGetNoMsg' <- atomically $ swapTVar msgGetNoMsg 0
+          msgGetAuth' <- atomically $ swapTVar msgGetAuth 0
+          msgGetDuplicate' <- atomically $ swapTVar msgGetDuplicate 0
+          msgGetProhibited' <- atomically $ swapTVar msgGetProhibited 0
+          msgExpired' <- atomically $ swapTVar msgExpired 0
+          ps <- atomically $ periodStatCounts activeQueues ts
+          msgSentNtf' <- atomically $ swapTVar msgSentNtf 0
+          msgRecvNtf' <- atomically $ swapTVar msgRecvNtf 0
+          psNtf <- atomically $ periodStatCounts activeQueuesNtf ts
+          msgNtfs' <- atomically $ swapTVar (msgNtfs ss) 0
+          msgNtfNoSub' <- atomically $ swapTVar (msgNtfNoSub ss) 0
+          msgNtfLost' <- atomically $ swapTVar (msgNtfLost ss) 0
+          pRelays' <- atomically $ getResetProxyStatsData pRelays
+          pRelaysOwn' <- atomically $ getResetProxyStatsData pRelaysOwn
+          pMsgFwds' <- atomically $ getResetProxyStatsData pMsgFwds
+          pMsgFwdsOwn' <- atomically $ getResetProxyStatsData pMsgFwdsOwn
+          pMsgFwdsRecv' <- atomically $ swapTVar pMsgFwdsRecv 0
+          qCount' <- readTVarIO qCount
           qCount'' <- M.size <$> readTVarIO queues
           ntfCount' <- M.size <$> readTVarIO notifiers
-          msgCount' <- readIORef msgCount
+          msgCount' <- readTVarIO msgCount
           hPutStrLn h $
             intercalate
               ","
@@ -457,9 +451,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                   hPutStrLn h . B.unpack $ B.intercalate "," [bshow cid, encode sessionId, connected', strEncode createdAt, rcvActiveAt', sndActiveAt', bshow age, subscriptions']
               CPStats -> withUserRole $ do
                 ss <- unliftIO u $ asks serverStats
-                let getStat :: (ServerStats -> IORef a) -> IO a
-                    getStat var = readIORef (var ss)
-                    putStat :: Show a => String -> (ServerStats -> IORef a) -> IO ()
+                let getStat :: (ServerStats -> TVar a) -> IO a
+                    getStat var = readTVarIO (var ss)
+                    putStat :: Show a => String -> (ServerStats -> TVar a) -> IO ()
                     putStat label var = getStat var >>= \v -> hPutStrLn h $ label <> ": " <> show v
                     putProxyStat :: String -> (ServerStats -> ProxyStats) -> IO ()
                     putProxyStat label var = do
@@ -973,7 +967,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
             signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
     transportErr :: TransportError -> ErrorType
     transportErr = PROXY . BROKER . TRANSPORT
-    mkIncProxyStats :: MonadIO m => ProxyStats -> ProxyStats -> OwnServer -> (ProxyStats -> IORef Int) -> m ()
+    mkIncProxyStats :: MonadIO m => ProxyStats -> ProxyStats -> OwnServer -> (ProxyStats -> TVar Int) -> m ()
     mkIncProxyStats ps psOwn own sel = do
       incStat $ sel ps
       when own $ incStat $ sel psOwn
@@ -1221,11 +1215,11 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                 stats <- asks serverStats
                 incStat $ msgRecv stats
                 when isGet $ incStat $ msgRecvGet stats
-                liftIO $ atomicModifyIORef'_ (msgCount stats) (subtract 1)
-                liftIO $ updatePeriodStats (activeQueues stats) entId
+                atomically $ modifyTVar' (msgCount stats) (subtract 1)
+                atomically $ updatePeriodStats (activeQueues stats) entId
                 when (notification msgFlags) $ do
                   incStat $ msgRecvNtf stats
-                  liftIO $ updatePeriodStats (activeQueuesNtf stats) entId
+                  atomically $ updatePeriodStats (activeQueuesNtf stats) entId
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> M (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
@@ -1256,10 +1250,10 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
                           when (notification msgFlags) $ do
                             mapM_ (`trySendNotification` msg) (notifier qr)
                             incStat $ msgSentNtf stats
-                            liftIO $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
+                            atomically $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
                           incStat $ msgSent stats
                           incStat $ msgCount stats
-                          liftIO $ updatePeriodStats (activeQueues stats) (recipientId qr)
+                          atomically $ updatePeriodStats (activeQueues stats) (recipientId qr)
                           pure ok
           where
             THandleParams {thVersion} = thParams'
@@ -1276,7 +1270,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
               deleted <- atomically $ sum <$> mapM (deleteExpiredMsgs q) old
               when (deleted > 0) $ do
                 stats <- asks serverStats
-                liftIO $ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
+                atomically $ modifyTVar' (msgExpired stats) (+ deleted)
 
             -- The condition for delivery of the message is:
             -- - the queue was empty when the message was sent,
@@ -1498,8 +1492,8 @@ updateDeletedStats q = do
   incStat $ qDeletedAll stats
   incStat $ qCount stats
 
-incStat :: MonadIO m => IORef Int -> m ()
-incStat r = liftIO $ atomicModifyIORef'_ r (+ 1)
+incStat :: MonadIO m => TVar Int -> m ()
+incStat v = atomically $ modifyTVar' v (+ 1)
 {-# INLINE incStat #-}
 
 withLog :: (StoreLog 'WriteMode -> IO a) -> M ()
@@ -1601,7 +1595,7 @@ restoreServerStats expiredWhileRestoring = asks (serverStatsBackupFile . config)
           s <- asks serverStats
           _qCount <- fmap M.size . readTVarIO . queues =<< asks queueStore
           _msgCount <- liftIO . foldM (\(!n) q -> (n +) <$> getQueueSize q) 0 =<< readTVarIO =<< asks msgStore
-          liftIO $ setServerStats s d {_qCount, _msgCount, _msgExpired = _msgExpired d + expiredWhileRestoring}
+          atomically $ setServerStats s d {_qCount, _msgCount, _msgExpired = _msgExpired d + expiredWhileRestoring}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
           when (_qCount /= statsQCount) $ logWarn $ "Queue count differs: stats: " <> tshow statsQCount <> ", store: " <> tshow _qCount
