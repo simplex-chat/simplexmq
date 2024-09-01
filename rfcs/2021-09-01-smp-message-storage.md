@@ -12,7 +12,9 @@ Move from ByteString to some other primitive to store messages in memory long te
 
 Pros: the simplest solution that avoids substantial re-engineering of the server.
 
-Cons: not a long term solution, as memory growth still has limits.
+Cons:
+- not a long term solution, as memory growth still has limits.
+- may be ineffective, as it introduces additional copying of bytes.
 
 ### Solution 2: move message storage to hard drive
 
@@ -149,6 +151,10 @@ else
 ```
 
 The above algorithm delegates the problem of compaction and fragmentation management to file system, that is very optimized for such scenarios.
+
+Also, read and write files will grow to almost a constant size, so the space they used may be re-used.
+
+An important consideration is that writes to queue.log and message.log files and queue state modifications have to be sequential, without concurrency - it can be managed with the usual locks.
 
 ##### Queue folders structure
 
