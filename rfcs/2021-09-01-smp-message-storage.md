@@ -2,13 +2,13 @@
 
 ## Problem
 
-Currently SMP servers store all queues in server memory. As the traffic grows, so does the number of undelivered messages. What is worse, Haskell is not avoiding heap fragmentation when messages are allocated and them deallocated - undelivered messages use ByteString and GC cannot move them around, as they use pinned memory.
+Currently SMP servers store all queues in server memory. As the traffic grows, so does the number of undelivered messages. What is worse, Haskell is not avoiding heap fragmentation when messages are allocated and then de-allocated - undelivered messages use ByteString and GC cannot move them around, as they use pinned memory.
 
 ## Possible solutions
 
 ### Solution 1: solve only GC fragmentation problem
 
-Move from ByteString to some other primitive to store messages in memory long term, e.g. ShortByteString, or manage allocation/deallocation of stored messages manually in some other way.
+Move from ByteString to some other primitive to store messages in memory long term, e.g. ShortByteString, or manage allocation/de-allocation of stored messages manually in some other way.
 
 Pros: the simplest solution that avoids substantial re-engineering of the server.
 
@@ -25,13 +25,13 @@ Pros:
 
 Cons:
 - substantial re-engineering costs and risks.
-- metadata privacy. Currently we only save undelivered messasages when server is restarted, with this approach all messages will be stored for some time. this argument is limited, as hosting providers of VMs can make memory snapshots too, on the other hand they are harder to analyse than files. On another hand, with this approach messages will be stored for a shorter time.
+- metadata privacy. Currently we only save undelivered messages when server is restarted, with this approach all messages will be stored for some time. this argument is limited, as hosting providers of VMs can make memory snapshots too, on the other hand they are harder to analyze than files. On another hand, with this approach messages will be stored for a shorter time.
 
 #### RocksDB and other key-value stores
 
 The downside of any key-value stores is that they don't seem to have efficient primitives for sequential delivery. While sequential delivery can be modelled with linked lists, they would require 1 key insert (on send), 3 key updates (1 update to update queue data on send, 1 update of the last message to point to the next, 1 update on delivery or message expiration) and 1 key deletion (on delivery or message expiration) for each delivered message.
 
-This might result in substantial write aplification and compacting costs.
+This might result in substantial write amplification and compacting costs.
 
 In general, tree structures that are efficient for quick lookups and updates, given approximately fixed value size, are inefficient for modelling queues.
 
@@ -158,7 +158,7 @@ So storing all queue folders in one folder won't scale.
 
 To solve this problem we could use recipient queue ID in base64url format not as a folder name, but as a folder path, splitting it to path fragments of some length. The number of fragments can be configurable and migration to a different fragment size can be supported as the number of queues on a given server grows.
 
-Currently, queue ID is 24 bytes random number, thus allowing 2^192 possible queue IDs. If we assume that a server must hold 1b queues, it means that we have ~2^162 possible addressese for each existing queue. 24 bytes in base64 is 32 characters that can be split into say 8 fragments with 4 characters each, so that queue folder path for queue with ID `abcdefghijklmnopqrstuvwxyz012345` would be:
+Currently, queue ID is 24 bytes random number, thus allowing 2^192 possible queue IDs. If we assume that a server must hold 1b queues, it means that we have ~2^162 possible addresses for each existing queue. 24 bytes in base64 is 32 characters that can be split into say 8 fragments with 4 characters each, so that queue folder path for queue with ID `abcdefghijklmnopqrstuvwxyz012345` would be:
 
 `/var/opt/simplex/messages/abcd/efgh/ijkl/mnop/qrst/uvwx/yz01/2345`
 
