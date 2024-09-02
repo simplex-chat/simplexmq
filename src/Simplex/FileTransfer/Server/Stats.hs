@@ -11,7 +11,6 @@ import Data.IORef
 import Data.Int (Int64)
 import Data.Time.Clock (UTCTime)
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (SenderId)
 import Simplex.Messaging.Server.Stats (PeriodStats, PeriodStatsData, getPeriodStatsData, newPeriodStats, setPeriodStats)
 
 data FileServerStats = FileServerStats
@@ -21,7 +20,7 @@ data FileServerStats = FileServerStats
     filesUploaded :: IORef Int,
     filesExpired :: IORef Int,
     filesDeleted :: IORef Int,
-    filesDownloaded :: PeriodStats SenderId,
+    filesDownloaded :: PeriodStats,
     fileDownloads :: IORef Int,
     fileDownloadAcks :: IORef Int,
     filesCount :: IORef Int,
@@ -35,7 +34,7 @@ data FileServerStatsData = FileServerStatsData
     _filesUploaded :: Int,
     _filesExpired :: Int,
     _filesDeleted :: Int,
-    _filesDownloaded :: PeriodStatsData SenderId,
+    _filesDownloaded :: PeriodStatsData,
     _fileDownloads :: Int,
     _fileDownloadAcks :: Int,
     _filesCount :: Int,
