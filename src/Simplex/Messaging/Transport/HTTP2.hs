@@ -2,7 +2,6 @@
 
 module Simplex.Messaging.Transport.HTTP2 where
 
-import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
