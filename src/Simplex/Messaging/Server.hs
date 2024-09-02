@@ -164,7 +164,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       forall s.
       Server ->
       String ->
-      (Server -> TQueue (QueueId, Client, Subscribed)) ->
+      (Server -> TQueue (QueueId, ClientId, Subscribed)) ->
       (Server -> TMap QueueId (TVar Client)) ->
       (Server -> IORef (IM.IntMap (NonEmpty RecipientId))) ->
       (Client -> TMap QueueId s) ->
@@ -178,23 +178,25 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           $>>= endPreviousSubscriptions
           >>= mapM_ unsub
       where
-        updateSubscribers :: TVar (IM.IntMap (Maybe Client)) -> (QueueId, Client, Bool) -> STM (Maybe (QueueId, Client))
-        updateSubscribers cls (qId, clnt, subscribed) = do
-          current <- IM.member (clientId clnt) <$> readTVar cls
-          let updateSub ss
-                | not subscribed = TM.lookupDelete qId ss >>= mapM readTVar
-                | not current = TM.lookup qId ss >>= mapM readTVar -- do not insert client if it is already disconnected, but send END to any other client
-                | otherwise =
+        updateSubscribers :: TVar (IM.IntMap (Maybe Client)) -> (QueueId, ClientId, Bool) -> STM (Maybe (QueueId, Client))
+        updateSubscribers cls (qId, clntId, subscribed) =
+          (readTVar cls >>= updateSub (subs s) . IM.lookup clntId)
+            $>>= clientToBeNotified
+          where
+            updateSub ss = \case
+              Just (Just clnt)
+                | subscribed ->
                     TM.lookup qId ss >>= -- insert subscribed and current client
                       maybe
                         (newTVar clnt >>= \cv -> TM.insert qId cv ss $> Nothing)
                         (\cv -> Just <$> swapTVar cv clnt)
-              clientToBeNotified c'
-                | sameClientId clnt c' = pure Nothing
-                | otherwise = do
-                    yes <- readTVar $ connected c'
-                    pure $ if yes then Just (qId, c') else Nothing
-          updateSub (subs s) $>>= clientToBeNotified
+                | otherwise -> TM.lookupDelete qId ss >>= mapM readTVar
+              _ -> TM.lookup qId ss >>= mapM readTVar -- do not insert client if it is already disconnected, but send END to any other client
+            clientToBeNotified c'
+              | clntId == clientId c' = pure Nothing
+              | otherwise = do
+                  yes <- readTVar $ connected c'
+                  pure $ if yes then Just (qId, c') else Nothing
         endPreviousSubscriptions :: (QueueId, Client) -> IO (Maybe s)
         endPreviousSubscriptions (qId, c) = do
           atomicModifyIORef'_ (ends s) $ IM.alter (Just . maybe [qId] (qId <|)) (clientId c)
@@ -876,7 +878,7 @@ forkClient Client {endThreads, endThreadSeq} label action = do
   mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
 
 client :: THandleParams SMPVersion 'TServer -> Client -> Server -> M ()
-client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, subscribers, notifiers} = do
+client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, subscribers, notifiers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
   forever $
     atomically (readTBQueue rcvQ)
@@ -1078,7 +1080,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           liftIO (deleteQueueNotifier st entId) >>= \case
             Right () -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
-              atomically $ writeTQueue ntfSubscribedQ (entId, clnt, False)
+              atomically $ writeTQueue ntfSubscribedQ (entId, clientId, False)
               incStat . ntfDeleted =<< asks serverStats
               pure ok
             Left e -> pure $ err e
@@ -1105,7 +1107,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           where
             newSub :: M Sub
             newSub = time "SUB newSub" . atomically $ do
-              writeTQueue subscribedQ (rId, clnt, True)
+              writeTQueue subscribedQ (rId, clientId, True)
               sub <- newSubscription NoSub
               TM.insert rId sub subscriptions
               pure sub
@@ -1170,7 +1172,7 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           pure ok
           where
             newSub = do
-              writeTQueue ntfSubscribedQ (entId, clnt, True)
+              writeTQueue ntfSubscribedQ (entId, clientId, True)
               TM.insert entId () ntfSubscriptions
 
         acknowledgeMsg :: QueueRec -> MsgId -> M (Transmission BrokerMsg)
@@ -1443,9 +1445,9 @@ client thParams' clnt@Client {subscriptions, ntfSubscriptions, rcvQ, sndQ, sessi
           liftIO (deleteQueue st entId $>>= \q -> delMsgQueue ms entId $> Right q) >>= \case
             Right q -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
-              atomically $ writeTQueue subscribedQ (entId, clnt, False)
+              atomically $ writeTQueue subscribedQ (entId, clientId, False)
               forM_ (notifierId <$> notifier q) $ \nId ->
-                atomically $ writeTQueue ntfSubscribedQ (nId, clnt, False)
+                atomically $ writeTQueue ntfSubscribedQ (nId, clientId, False)
               updateDeletedStats q
               pure ok
             Left e -> pure $ err e

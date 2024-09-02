@@ -137,9 +137,9 @@ data Env = Env
 type Subscribed = Bool
 
 data Server = Server
-  { subscribedQ :: TQueue (RecipientId, Client, Subscribed),
+  { subscribedQ :: TQueue (RecipientId, ClientId, Subscribed),
     subscribers :: TMap RecipientId (TVar Client),
-    ntfSubscribedQ :: TQueue (NotifierId, Client, Subscribed),
+    ntfSubscribedQ :: TQueue (NotifierId, ClientId, Subscribed),
     notifiers :: TMap NotifierId (TVar Client),
     pendingENDs :: IORef (IntMap (NonEmpty RecipientId)),
     pendingNtfENDs :: IORef (IntMap (NonEmpty NotifierId)),
