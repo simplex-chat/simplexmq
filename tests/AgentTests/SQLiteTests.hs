@@ -556,7 +556,7 @@ mkSndMsgData internalId internalSndId internalHash =
 testCreateSndMsg_ :: DB.Connection -> PrevSndMsgHash -> ConnId -> SndQueue -> SndMsgData -> Expectation
 testCreateSndMsg_ db expectedPrevHash connId sq sndMsgData@SndMsgData {..} = do
   updateSndIds db connId
-    `shouldReturn` (internalId, internalSndId, expectedPrevHash)
+    `shouldReturn` Right (internalId, internalSndId, expectedPrevHash)
   createSndMsg db connId sndMsgData
     `shouldReturn` ()
   createSndMsgDelivery db connId sq internalId

@@ -1343,7 +1343,7 @@ enqueueMessageB c reqs = do
     storeSentMsg db cfg req@(cData@ConnData {connId}, sq :| _, pqEnc_, msgFlags, aMessage) = fmap (first storeError) $ runExceptT $ do
       let AgentConfig {smpAgentVRange, e2eEncryptVRange} = cfg
       internalTs <- liftIO getCurrentTime
-      (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
+      (internalId, internalSndId, prevMsgHash) <- ExceptT $ updateSndIds db connId
       let privHeader = APrivHeader (unSndId internalSndId) prevMsgHash
           agentMsg = AgentMessage privHeader aMessage
           agentMsgStr = smpEncode agentMsg
@@ -2853,7 +2853,7 @@ secureConfirmQueue c cData@ConnData {connId, connAgentVersion, pqSupport} sq srv
       currentE2EVersion <- asks $ maxVersion . e2eEncryptVRange . config
       withStore c $ \db -> runExceptT $ do
         let agentMsgBody = smpEncode aMessage
-        (_, internalSndId, _) <- liftIO $ updateSndIds db connId
+        (_, internalSndId, _) <- ExceptT $ updateSndIds db connId
         liftIO $ updateSndMsgHash db connId internalSndId (C.sha256Hash agentMsgBody)
         let pqEnc = CR.pqSupportToEnc pqSupport
         (encConnInfo, _) <- agentRatchetEncrypt db cData agentMsgBody e2eEncConnInfoLength (Just pqEnc) currentE2EVersion
@@ -2886,7 +2886,7 @@ storeConfirmation c cData@ConnData {connId, pqSupport, connAgentVersion = v} sq 
   currentE2EVersion <- asks $ maxVersion . e2eEncryptVRange . config
   withStore c $ \db -> runExceptT $ do
     internalTs <- liftIO getCurrentTime
-    (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
+    (internalId, internalSndId, prevMsgHash) <- ExceptT $ updateSndIds db connId
     let agentMsgStr = smpEncode agentMsg
         internalHash = C.sha256Hash agentMsgStr
         pqEnc = CR.pqSupportToEnc pqSupport
@@ -2912,7 +2912,7 @@ enqueueRatchetKey c cData@ConnData {connId} sq e2eEncryption = do
     storeRatchetKey :: VersionSMPA -> AM InternalId
     storeRatchetKey agentVersion = withStore c $ \db -> runExceptT $ do
       internalTs <- liftIO getCurrentTime
-      (internalId, internalSndId, prevMsgHash) <- liftIO $ updateSndIds db connId
+      (internalId, internalSndId, prevMsgHash) <- ExceptT $ updateSndIds db connId
       let agentMsg = AgentRatchetInfo ""
           agentMsgStr = smpEncode agentMsg
           internalHash = C.sha256Hash agentMsgStr
