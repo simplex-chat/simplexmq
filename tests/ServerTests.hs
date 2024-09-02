@@ -25,7 +25,8 @@ import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.Set as S
+import Data.Hashable (hash)
+import qualified Data.IntSet as IS
 import Data.Type.Equality
 import GHC.Stack (withFrozenCallStack)
 import SMPClient
@@ -675,9 +676,9 @@ checkStats s qs sent received = do
   _msgSentNtf s `shouldBe` 0
   _msgRecvNtf s `shouldBe` 0
   let PeriodStatsData {_day, _week, _month} = _activeQueues s
-  S.toList _day `shouldBe` qs
-  S.toList _week `shouldBe` qs
-  S.toList _month `shouldBe` qs
+  IS.toList _day `shouldBe` map (hash . unEntityId) qs
+  IS.toList _week `shouldBe` map (hash . unEntityId) qs
+  IS.toList _month `shouldBe` map (hash . unEntityId) qs
 
 testRestoreExpireMessages :: ATransport -> Spec
 testRestoreExpireMessages at@(ATransport t) =

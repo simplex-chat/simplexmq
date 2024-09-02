@@ -10,8 +10,12 @@ module Simplex.Messaging.Server.Stats where
 
 import Control.Applicative (optional, (<|>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Hashable (hash)
 import Data.IORef
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IS
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Time.Calendar.Month (pattern MonthDay)
@@ -19,7 +23,7 @@ import Data.Time.Calendar.OrdinalDate (mondayStartWeek)
 import Data.Time.Clock (UTCTime (..))
 import GHC.IORef (atomicSwapIORef)
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (RecipientId)
+import Simplex.Messaging.Protocol (EntityId (..))
 import Simplex.Messaging.Util (atomicModifyIORef'_, unlessM)
 
 data ServerStats = ServerStats
@@ -57,11 +61,11 @@ data ServerStats = ServerStats
     msgGetDuplicate :: IORef Int,
     msgGetProhibited :: IORef Int,
     msgExpired :: IORef Int,
-    activeQueues :: PeriodStats RecipientId,
-    -- subscribedQueues :: PeriodStats RecipientId, -- this stat uses too much memory
+    activeQueues :: PeriodStats,
+    -- subscribedQueues :: PeriodStats, -- this stat uses too much memory
     msgSentNtf :: IORef Int, -- sent messages with NTF flag
     msgRecvNtf :: IORef Int, -- received messages with NTF flag
-    activeQueuesNtf :: PeriodStats RecipientId,
+    activeQueuesNtf :: PeriodStats,
     msgNtfs :: IORef Int, -- messages notications delivered to NTF server (<= msgSentNtf)
     msgNtfNoSub :: IORef Int, -- no subscriber to notifications (e.g., NTF server not connected)
     msgNtfLost :: IORef Int, -- notification is lost because NTF delivery queue is full
@@ -108,10 +112,10 @@ data ServerStatsData = ServerStatsData
     _msgGetDuplicate :: Int,
     _msgGetProhibited :: Int,
     _msgExpired :: Int,
-    _activeQueues :: PeriodStatsData RecipientId,
+    _activeQueues :: PeriodStatsData,
     _msgSentNtf :: Int,
     _msgRecvNtf :: Int,
-    _activeQueuesNtf :: PeriodStatsData RecipientId,
+    _activeQueuesNtf :: PeriodStatsData,
     _msgNtfs :: Int,
     _msgNtfNoSub :: Int,
     _msgNtfLost :: Int,
@@ -483,7 +487,7 @@ instance StrEncoding ServerStatsData where
           pure PeriodStatsData {_day, _week, _month}
     _subscribedQueues <-
       optional ("subscribedQueues:" <* A.endOfLine) >>= \case
-        Just _ -> newPeriodStatsData <$ (strP @(PeriodStatsData RecipientId) <* optional A.endOfLine)
+        Just _ -> newPeriodStatsData <$ (strP @PeriodStatsData <* optional A.endOfLine)
         _ -> pure newPeriodStatsData
     _activeQueuesNtf <-
       optional ("activeQueuesNtf:" <* A.endOfLine) >>= \case
@@ -552,30 +556,30 @@ instance StrEncoding ServerStatsData where
           Just _ -> strP <* optional A.endOfLine
           _ -> pure newProxyStatsData
 
-data PeriodStats a = PeriodStats
-  { day :: IORef (Set a),
-    week :: IORef (Set a),
-    month :: IORef (Set a)
+data PeriodStats = PeriodStats
+  { day :: IORef IntSet,
+    week :: IORef IntSet,
+    month :: IORef IntSet
   }
 
-newPeriodStats :: IO (PeriodStats a)
+newPeriodStats :: IO PeriodStats
 newPeriodStats = do
-  day <- newIORef S.empty
-  week <- newIORef S.empty
-  month <- newIORef S.empty
+  day <- newIORef IS.empty
+  week <- newIORef IS.empty
+  month <- newIORef IS.empty
   pure PeriodStats {day, week, month}
 
-data PeriodStatsData a = PeriodStatsData
-  { _day :: Set a,
-    _week :: Set a,
-    _month :: Set a
+data PeriodStatsData = PeriodStatsData
+  { _day :: IntSet,
+    _week :: IntSet,
+    _month :: IntSet
   }
   deriving (Show)
 
-newPeriodStatsData :: PeriodStatsData a
-newPeriodStatsData = PeriodStatsData {_day = S.empty, _week = S.empty, _month = S.empty}
+newPeriodStatsData :: PeriodStatsData
+newPeriodStatsData = PeriodStatsData {_day = IS.empty, _week = IS.empty, _month = IS.empty}
 
-getPeriodStatsData :: PeriodStats a -> IO (PeriodStatsData a)
+getPeriodStatsData :: PeriodStats -> IO PeriodStatsData
 getPeriodStatsData s = do
   _day <- readIORef $ day s
   _week <- readIORef $ week s
@@ -583,20 +587,22 @@ getPeriodStatsData s = do
   pure PeriodStatsData {_day, _week, _month}
 
 -- this function is not thread safe, it is used on server start only
-setPeriodStats :: PeriodStats a -> PeriodStatsData a -> IO ()
+setPeriodStats :: PeriodStats -> PeriodStatsData -> IO ()
 setPeriodStats s d = do
   writeIORef (day s) $! _day d
   writeIORef (week s) $! _week d
   writeIORef (month s) $! _month d
 
-instance (Ord a, StrEncoding a) => StrEncoding (PeriodStatsData a) where
+instance StrEncoding PeriodStatsData where
   strEncode PeriodStatsData {_day, _week, _month} =
-    "day=" <> strEncode _day <> "\nweek=" <> strEncode _week <> "\nmonth=" <> strEncode _month
+    "dayHashes=" <> strEncode _day <> "\nweekHashes=" <> strEncode _week <> "\nmonthHashes=" <> strEncode _month
   strP = do
-    _day <- "day=" *> strP <* A.endOfLine
-    _week <- "week=" *> strP <* A.endOfLine
-    _month <- "month=" *> strP
+    _day <- ("day=" *> bsSetP <|> "dayHashes=" *> strP) <* A.endOfLine
+    _week <- ("week=" *> bsSetP <|> "weekHashes=" *> strP) <* A.endOfLine
+    _month <- "month=" *> bsSetP <|> "monthHashes=" *> strP
     pure PeriodStatsData {_day, _week, _month}
+    where
+      bsSetP = S.foldl' (\s -> (`IS.insert` s) . hash) IS.empty <$> strP @(Set ByteString)
 
 data PeriodStatCounts = PeriodStatCounts
   { dayCount :: String,
@@ -604,7 +610,7 @@ data PeriodStatCounts = PeriodStatCounts
     monthCount :: String
   }
 
-periodStatCounts :: forall a. PeriodStats a -> UTCTime -> IO PeriodStatCounts
+periodStatCounts :: PeriodStats -> UTCTime -> IO PeriodStatCounts
 periodStatCounts ps ts = do
   let d = utctDay ts
       (_, wDay) = mondayStartWeek d
@@ -614,17 +620,18 @@ periodStatCounts ps ts = do
   monthCount <- periodCount mDay $ month ps
   pure PeriodStatCounts {dayCount, weekCount, monthCount}
   where
-    periodCount :: Int -> IORef (Set a) -> IO String
-    periodCount 1 ref = show . S.size <$> atomicSwapIORef ref S.empty
+    periodCount :: Int -> IORef IntSet -> IO String
+    periodCount 1 ref = show . IS.size <$> atomicSwapIORef ref IS.empty
     periodCount _ _ = pure ""
 
-updatePeriodStats :: Ord a => PeriodStats a -> a -> IO ()
-updatePeriodStats ps pId = do
+updatePeriodStats :: PeriodStats -> EntityId -> IO ()
+updatePeriodStats ps (EntityId pId) = do
   updatePeriod $ day ps
   updatePeriod $ week ps
   updatePeriod $ month ps
   where
-    updatePeriod ref = unlessM (S.member pId <$> readIORef ref) $ atomicModifyIORef'_ ref $ S.insert pId
+    ph = hash pId
+    updatePeriod ref = unlessM (IS.member ph <$> readIORef ref) $ atomicModifyIORef'_ ref $ IS.insert ph
 
 data ProxyStats = ProxyStats
   { pRequests :: IORef Int,
