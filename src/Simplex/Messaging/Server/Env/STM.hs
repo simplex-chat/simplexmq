@@ -138,9 +138,9 @@ type Subscribed = Bool
 
 data Server = Server
   { subscribedQ :: TQueue (RecipientId, Client, Subscribed),
-    subscribers :: TMap RecipientId Client,
+    subscribers :: TMap RecipientId (TVar Client),
     ntfSubscribedQ :: TQueue (NotifierId, Client, Subscribed),
-    notifiers :: TMap NotifierId Client,
+    notifiers :: TMap NotifierId (TVar Client),
     pendingENDs :: IORef (IntMap (NonEmpty RecipientId)),
     pendingNtfENDs :: IORef (IntMap (NonEmpty NotifierId)),
     savingLock :: Lock
