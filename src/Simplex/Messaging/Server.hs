@@ -62,7 +62,6 @@ import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
-import qualified Data.Set as S
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
@@ -478,7 +477,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                 putStat "qDeletedAllB" qDeletedAllB
                 putStat "qDeletedNew" qDeletedNew
                 putStat "qDeletedSecured" qDeletedSecured
-                getStat (day . activeQueues) >>= \v -> hPutStrLn h $ "daily active queues: " <> show (S.size v)
+                getStat (day . activeQueues) >>= \v -> hPutStrLn h $ "daily active queues: " <> show (IS.size v)
                 -- removed to reduce memory usage
                 -- getStat (day . subscribedQueues) >>= \v -> hPutStrLn h $ "daily subscribed queues: " <> show (S.size v)
                 putStat "qSub" qSub

@@ -10,8 +10,6 @@ import qualified Data.ByteString.Char8 as B
 import Data.IORef
 import Data.Time.Clock (UTCTime)
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Protocol (NtfTokenId)
-import Simplex.Messaging.Protocol (NotifierId)
 import Simplex.Messaging.Server.Stats
 
 data NtfServerStats = NtfServerStats
@@ -23,8 +21,8 @@ data NtfServerStats = NtfServerStats
     subDeleted :: IORef Int,
     ntfReceived :: IORef Int,
     ntfDelivered :: IORef Int,
-    activeTokens :: PeriodStats NtfTokenId,
-    activeSubs :: PeriodStats NotifierId
+    activeTokens :: PeriodStats,
+    activeSubs :: PeriodStats
   }
 
 data NtfServerStatsData = NtfServerStatsData
@@ -36,8 +34,8 @@ data NtfServerStatsData = NtfServerStatsData
     _subDeleted :: Int,
     _ntfReceived :: Int,
     _ntfDelivered :: Int,
-    _activeTokens :: PeriodStatsData NtfTokenId,
-    _activeSubs :: PeriodStatsData NotifierId
+    _activeTokens :: PeriodStatsData,
+    _activeSubs :: PeriodStatsData
   }
 
 newNtfServerStats :: UTCTime -> IO NtfServerStats
