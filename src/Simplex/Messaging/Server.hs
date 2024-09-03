@@ -179,6 +179,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       where
         updateSubscribers :: TVar (IM.IntMap (Maybe Client)) -> (QueueId, ClientId, Bool) -> STM (Maybe (QueueId, Client))
         updateSubscribers cls (qId, clntId, subscribed) =
+          -- Client lookup by ID is in the same STM transaction.
+          -- In case client disconnects during the transaction,
+          -- it will be re-evaluated, and the client won't be stored as subscribed.
           (readTVar cls >>= updateSub (subs s) . IM.lookup clntId)
             $>>= clientToBeNotified
           where
@@ -190,12 +193,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                         (newTVar clnt >>= \cv -> TM.insert qId cv ss $> Nothing)
                         (\cv -> Just <$> swapTVar cv clnt)
                 | otherwise -> TM.lookupDelete qId ss >>= mapM readTVar
+              -- This case catches Just Nothing - it cannot happen here.
+              -- Nothing is there only before client thread is started.
               _ -> TM.lookup qId ss >>= mapM readTVar -- do not insert client if it is already disconnected, but send END to any other client
             clientToBeNotified c'
               | clntId == clientId c' = pure Nothing
-              | otherwise = do
-                  yes <- readTVar $ connected c'
-                  pure $ if yes then Just (qId, c') else Nothing
+              | otherwise = (\yes -> if yes then Just (qId, c') else Nothing) <$> readTVar (connected c')
         endPreviousSubscriptions :: (QueueId, Client) -> IO (Maybe s)
         endPreviousSubscriptions (qId, c) = do
           atomicModifyIORef'_ (ends s) $ IM.alter (Just . maybe [qId] (qId <|)) (clientId c)
@@ -672,6 +675,8 @@ runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessio
 clientDisconnected :: Client -> M ()
 clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, connected, sessionId, endThreads} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disc"
+  -- these can be in separate transactions,
+  -- because the client already disconnected and they won't change
   atomically $ writeTVar connected False
   subs <- atomically $ swapTVar subscriptions M.empty
   ntfSubs <- atomically $ swapTVar ntfSubscriptions M.empty
@@ -685,9 +690,12 @@ clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, connecte
   where
     updateSubscribers :: M.Map QueueId a -> TMap QueueId (TVar Client) -> IO ()
     updateSubscribers subs srvSubs =
-      forM_ (M.keys subs) $ \sub ->
-        TM.lookupIO sub srvSubs >>=
-          mapM_ (\c' -> atomically $ whenM (sameClientId c <$> readTVar c') $ TM.delete sub srvSubs)
+      forM_ (M.keys subs) $ \qId ->
+        -- lookup of the subscribed client TVar can be in separate transaction,
+        -- as long as the client is read in the same transaction -
+        -- it prevents removing the next subscribed client.
+        TM.lookupIO qId srvSubs >>=
+          mapM_ (\c' -> atomically $ whenM (sameClientId c <$> readTVar c') $ TM.delete qId srvSubs)
 
 sameClientId :: Client -> Client -> Bool
 sameClientId Client {clientId} Client {clientId = cId'} = clientId == cId'
@@ -1273,13 +1281,18 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
             -- - nothing was delivered to this subscription (to avoid race conditions with the recipient).
             tryDeliverMessage :: Message -> IO ()
             tryDeliverMessage msg =
+              -- the subscription is checked outside of STM to avoid transaction cost
+              -- in case no client is subscribed.
               whenM (TM.memberIO rId subscribers) $
                 atomically deliverToSub >>= mapM_ forkDeliver
               where
                 rId = recipientId qr
-                -- TODO split to multiple STM transactions, move lookups to IO
                 -- remove tryPeekMsg
                 deliverToSub =
+                  -- lookup has ot be in the same transaction,
+                  -- so that if subscription ends, it re-evalutates
+                  -- and delivery is cancelled -
+                  -- the new client will receive message in response to SUB.
                   (TM.lookup rId subscribers >>= mapM readTVar)
                     $>>= \rc@Client {subscriptions = subs, sndQ = q} -> TM.lookup rId subs
                     $>>= \s@Sub {subThread, delivered} -> case subThread of
@@ -1307,12 +1320,15 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                   where
                     deliverThread = do
                       labelMyThread $ B.unpack ("client $" <> encode sessionId) <> " deliver/SEND"
+                      -- lookup can be outside of STM transaction,
+                      -- as long as the check that it is the same client is inside.
                       TM.lookupIO rId subscribers >>= mapM_ deliverIfSame
                     deliverIfSame rc' = time "deliver" . atomically $
                       whenM (sameClientId rc <$> readTVar rc') $
                         tryTakeTMVar delivered >>= \case
                           Just _ -> pure () -- if a message was already delivered, should not deliver more
                           Nothing -> do
+                            -- a separate thread is needed because it blocks when client sndQ is full.
                             deliver q s
                             writeTVar st NoSub
 
