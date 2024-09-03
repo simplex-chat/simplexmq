@@ -165,7 +165,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       String ->
       (Server -> TQueue (QueueId, ClientId, Subscribed)) ->
       (Server -> TMap QueueId (TVar Client)) ->
-      (Server -> IORef (IM.IntMap (NonEmpty RecipientId))) ->
+      (Server -> TVar (IM.IntMap (NonEmpty RecipientId))) ->
       (Client -> TMap QueueId s) ->
       (s -> IO ()) ->
       M ()
@@ -201,7 +201,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               | otherwise = (\yes -> if yes then Just (qId, c') else Nothing) <$> readTVar (connected c')
         endPreviousSubscriptions :: (QueueId, Client) -> IO (Maybe s)
         endPreviousSubscriptions (qId, c) = do
-          atomicModifyIORef'_ (ends s) $ IM.alter (Just . maybe [qId] (qId <|)) (clientId c)
+          atomically $ modifyTVar' (ends s) $ IM.alter (Just . maybe [qId] (qId <|)) (clientId c)
           atomically $ TM.lookupDelete qId (clientSubs c)
 
     sendPendingENDsThread :: Server -> M ()
@@ -214,17 +214,24 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         sendPending cls $ pendingNtfENDs s
       where
         sendPending cls ref = do
-          ends <- liftIO $ atomicSwapIORef ref IM.empty
+          ends <- atomically $ swapTVar ref IM.empty
           unless (null ends) $ forM_ (IM.assocs ends) $ \(cId, qIds) ->
-            queueENDs qIds . IM.lookup cId =<< readTVarIO cls
-        queueENDs qIds = \case
-          Just (Just c) -> forkClient c ("sendPendingENDsThread.queueENDs") $ do
-            stats <- asks serverStats
-            atomically $ writeTBQueue (sndQ c) $ L.map (CorrId "",,END) qIds
-            let len = L.length qIds
-            liftIO $ atomicModifyIORef'_ (qSubEnd stats) (+ len)
-            liftIO $ atomicModifyIORef'_ (qSubEndB stats) (+ (len `div` 255 + 1)) -- up to 255 ENDs in the batch
-          _ -> pure ()
+            mapM_ (queueENDs qIds) . join . IM.lookup cId =<< readTVarIO cls
+        queueENDs qIds c@Client {connected, sndQ = q} =
+          whenM (readTVarIO connected) $ do
+            sent <- atomically $ ifM (isFullTBQueue q) (pure False) (writeTBQueue q ts $> True)
+            if sent
+              then updateEndStats
+              else -- if queue is full it can block
+                forkClient c ("sendPendingENDsThread.queueENDs") $
+                  atomically (writeTBQueue q ts) >> updateEndStats
+          where
+            ts = L.map (CorrId "",,END) qIds
+            updateEndStats = do
+              stats <- asks serverStats
+              let len = L.length qIds
+              liftIO $ atomicModifyIORef'_ (qSubEnd stats) (+ len)
+              liftIO $ atomicModifyIORef'_ (qSubEndB stats) (+ (len `div` 255 + 1)) -- up to 255 ENDs in the batch
 
     receiveFromProxyAgent :: ProxyAgent -> M ()
     receiveFromProxyAgent ProxyAgent {smpAgent = SMPClientAgent {agentQ}} =
