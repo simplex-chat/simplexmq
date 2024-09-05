@@ -71,7 +71,7 @@ preferAddress RCCtrlAddress {address, interface} addrs =
 startTLSServer :: Maybe Word16 -> TMVar (Maybe N.PortNumber) -> TLS.Credentials -> TLS.ServerHooks -> (Transport.TLS -> IO ()) -> IO (Async ())
 startTLSServer port_ startedOnPort credentials hooks server = async . liftIO $ do
   started <- newEmptyTMVarIO
-  bracketOnError (startTCPServer started $ maybe "0" show port_) (\_e -> setPort Nothing) $ \socket ->
+  bracketOnError (startTCPServer started Nothing $ maybe "0" show port_) (\_e -> setPort Nothing) $ \socket ->
     ifM
       (atomically $ readTMVar started)
       (runServer started socket)

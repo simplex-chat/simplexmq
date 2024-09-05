@@ -65,7 +65,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server
-import Simplex.Messaging.Transport.Server (runTCPServer, tlsServerCredentials)
+import Simplex.Messaging.Transport.Server (runLocalTCPServer, tlsServerCredentials)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Exit (exitFailure)
@@ -249,7 +249,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       u <- askUnliftIO
       liftIO $ do
         labelMyThread "control port server"
-        runTCPServer cpStarted port $ runCPClient u
+        runLocalTCPServer cpStarted port $ runCPClient u
       where
         runCPClient :: UnliftIO (ReaderT XFTPEnv IO) -> Socket -> IO ()
         runCPClient u sock = do
