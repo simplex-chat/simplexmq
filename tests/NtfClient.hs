@@ -158,7 +158,7 @@ ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
       [Right ()] <- tPut h [Right (sig, t')]
       pure ()
     tGet' h = do
-      [(Nothing, _, (CorrId corrId, qId, Right cmd))] <- tGet h
+      [(Nothing, _, (CorrId corrId, EntityId qId, Right cmd))] <- tGet h
       pure (Nothing, corrId, qId, cmd)
 
 ntfTest :: Transport c => TProxy c -> (THandleNTF c 'TClient -> IO ()) -> Expectation

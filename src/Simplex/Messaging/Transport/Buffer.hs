@@ -17,10 +17,10 @@ data TBuffer = TBuffer
     getLock :: TMVar ()
   }
 
-newTBuffer :: STM TBuffer
+newTBuffer :: IO TBuffer
 newTBuffer = do
-  buffer <- newTVar ""
-  getLock <- newTMVar ()
+  buffer <- newTVarIO ""
+  getLock <- newTMVarIO ()
   pure TBuffer {buffer, getLock}
 
 withBufferLock :: TBuffer -> IO a -> IO a

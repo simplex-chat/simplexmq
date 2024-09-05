@@ -51,6 +51,7 @@ module Simplex.Messaging.Agent.Protocol
     -- * SMP agent protocol types
     ConnInfo,
     SndQueueSecured,
+    AEntityId,
     ACommand (..),
     AEvent (..),
     AEvt (..),
@@ -190,7 +191,6 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( AProtocolType,
     BrokerErrorType (..),
-    EntityId,
     ErrorType,
     MsgBody,
     MsgFlags,
@@ -287,9 +287,11 @@ e2eEncAgentMsgLength v = \case
   _ -> 15856
 
 -- | SMP agent event
-type ATransmission = (ACorrId, EntityId, AEvt)
+type ATransmission = (ACorrId, AEntityId, AEvt)
 
 type UserId = Int64
+
+type AEntityId = ByteString
 
 type ACorrId = ByteString
 

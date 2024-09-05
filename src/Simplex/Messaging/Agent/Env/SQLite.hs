@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent.Env.SQLite
   )
 where
 
+import Control.Concurrent (ThreadId)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
@@ -76,8 +77,9 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion, TLS, Transport (..))
 import Simplex.Messaging.Transport.Client (defaultSMPPort)
 import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryAllErrors, tryAllErrors')
+import System.Mem.Weak (Weak)
 import System.Random (StdGen, newStdGen)
-import UnliftIO (Async, SomeException)
+import UnliftIO (SomeException)
 import UnliftIO.STM
 
 type AM' a = ReaderT Env IO a
@@ -162,7 +164,7 @@ defaultReconnectInterval =
   RetryInterval
     { initialInterval = 2_000000,
       increaseAfter = 10_000000,
-      maxInterval = 60_000000
+      maxInterval = 180_000000
     }
 
 defaultMessageRetryInterval :: RetryInterval2
@@ -172,7 +174,7 @@ defaultMessageRetryInterval =
         RetryInterval
           { initialInterval = 2_000000,
             increaseAfter = 10_000000,
-            maxInterval = 60_000000
+            maxInterval = 120_000000
           },
       riSlow =
         RetryInterval
@@ -242,8 +244,8 @@ newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
 newSMPAgentEnv config store = do
   random <- C.newRandom
   randomServer <- newTVarIO =<< liftIO newStdGen
-  ntfSupervisor <- atomically . newNtfSubSupervisor $ tbqSize config
-  xftpAgent <- atomically newXFTPAgent
+  ntfSupervisor <- newNtfSubSupervisor $ tbqSize config
+  xftpAgent <- newXFTPAgent
   multicastSubscribers <- newTMVarIO 0
   pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
 
@@ -260,12 +262,12 @@ data NtfSupervisor = NtfSupervisor
 data NtfSupervisorCommand = NSCCreate | NSCDelete | NSCSmpDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer
   deriving (Show)
 
-newNtfSubSupervisor :: Natural -> STM NtfSupervisor
+newNtfSubSupervisor :: Natural -> IO NtfSupervisor
 newNtfSubSupervisor qSize = do
-  ntfTkn <- newTVar Nothing
-  ntfSubQ <- newTBQueue qSize
-  ntfWorkers <- TM.empty
-  ntfSMPWorkers <- TM.empty
+  ntfTkn <- newTVarIO Nothing
+  ntfSubQ <- newTBQueueIO qSize
+  ntfWorkers <- TM.emptyIO
+  ntfSMPWorkers <- TM.emptyIO
   pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
 
 data XFTPAgent = XFTPAgent
@@ -276,12 +278,12 @@ data XFTPAgent = XFTPAgent
     xftpDelWorkers :: TMap XFTPServer Worker
   }
 
-newXFTPAgent :: STM XFTPAgent
+newXFTPAgent :: IO XFTPAgent
 newXFTPAgent = do
-  xftpWorkDir <- newTVar Nothing
-  xftpRcvWorkers <- TM.empty
-  xftpSndWorkers <- TM.empty
-  xftpDelWorkers <- TM.empty
+  xftpWorkDir <- newTVarIO Nothing
+  xftpRcvWorkers <- TM.emptyIO
+  xftpSndWorkers <- TM.emptyIO
+  xftpDelWorkers <- TM.emptyIO
   pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}
 
 tryAgentError :: AM a -> AM (Either AgentErrorType a)
@@ -312,7 +314,7 @@ mkInternal = INTERNAL . show
 data Worker = Worker
   { workerId :: Int,
     doWork :: TMVar (),
-    action :: TMVar (Maybe (Async ())),
+    action :: TMVar (Maybe (Weak ThreadId)),
     restarts :: TVar RestartCount
   }
 

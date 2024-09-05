@@ -159,6 +159,7 @@ runNtfWorker c srv Worker {doWork} =
           logInfo $ "runNtfWorker, nextSub " <> tshow nextSub
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop -> do
+            liftIO $ waitWhileSuspended c
             liftIO $ waitForUserNetwork c
             processSub nextSub
               `catchAgentError` retryOnError c "NtfWorker" loop (workerInternalError c connId . show)
@@ -243,6 +244,7 @@ runNtfSMPWorker c srv Worker {doWork} = do
           logInfo $ "runNtfSMPWorker, nextSub " <> tshow nextSub
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop -> do
+            liftIO $ waitWhileSuspended c
             liftIO $ waitForUserNetwork c
             processSub nextSub
               `catchAgentError` retryOnError c "NtfSMPWorker" loop (workerInternalError c connId . show)
@@ -295,7 +297,7 @@ retryOnError c name loop done e = do
   where
     retryLoop = do
       atomically $ endAgentOperation c AONtfNetwork
-      atomically $ throwWhenInactive c
+      liftIO $ throwWhenInactive c
       atomically $ beginAgentOperation c AONtfNetwork
       loop
 

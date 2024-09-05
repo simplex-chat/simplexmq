@@ -53,9 +53,9 @@ defaultXFTPClientAgentConfig =
 data XFTPClientAgentError = XFTPClientAgentError XFTPServer XFTPClientError
   deriving (Show, Exception)
 
-newXFTPAgent :: XFTPClientAgentConfig -> STM XFTPClientAgent
+newXFTPAgent :: XFTPClientAgentConfig -> IO XFTPClientAgent
 newXFTPAgent config = do
-  xftpClients <- TM.empty
+  xftpClients <- TM.emptyIO
   pure XFTPClientAgent {xftpClients, config}
 
 type ME a = ExceptT XFTPClientAgentError IO a

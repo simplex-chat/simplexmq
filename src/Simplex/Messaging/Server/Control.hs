@@ -4,9 +4,8 @@
 module Simplex.Messaging.Server.Control where
 
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.ByteString (ByteString)
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (BasicAuth)
+import Simplex.Messaging.Protocol (BasicAuth, SenderId)
 
 data CPClientRole = CPRNone | CPRUser | CPRAdmin
   deriving (Eq)
@@ -22,7 +21,7 @@ data ControlProtocol
   | CPSockets
   | CPSocketThreads
   | CPServerInfo
-  | CPDelete ByteString
+  | CPDelete SenderId
   | CPSave
   | CPHelp
   | CPQuit

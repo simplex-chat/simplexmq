@@ -55,11 +55,11 @@ instance StrEncoding FileRecipient where
   strEncode (FileRecipient rId rKey) = strEncode rId <> ":" <> strEncode rKey
   strP = FileRecipient <$> strP <* A.char ':' <*> strP
 
-newFileStore :: STM FileStore
+newFileStore :: IO FileStore
 newFileStore = do
-  files <- TM.empty
-  recipients <- TM.empty
-  usedStorage <- newTVar 0
+  files <- TM.emptyIO
+  recipients <- TM.emptyIO
+  usedStorage <- newTVarIO 0
   pure FileStore {files, recipients, usedStorage}
 
 addFile :: FileStore -> SenderId -> FileInfo -> SystemTime -> STM (Either XFTPErrorType ())

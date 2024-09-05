@@ -12,7 +12,7 @@ module Simplex.Messaging.Transport.Server
     newSocketState,
     runTransportServer,
     runTransportServerSocket,
-    runTCPServer,
+    runLocalTCPServer,
     runTCPServerSocket,
     startTCPServer,
     loadSupportedTLSServerParams,
@@ -76,16 +76,16 @@ serverTransportConfig TransportServerConfig {logTLSErrors} =
 -- All accepted connections are passed to the passed function.
 runTransportServer :: forall c. Transport c => TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (c -> IO ()) -> IO ()
 runTransportServer started port params cfg server = do
-  ss <- atomically newSocketState
+  ss <- newSocketState
   runTransportServerState ss started port params cfg server
 
 runTransportServerState :: forall c . Transport c => SocketState -> TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (c -> IO ()) -> IO ()
-runTransportServerState ss started port = runTransportServerSocketState ss started (startTCPServer started port) (transportName (TProxy :: TProxy c))
+runTransportServerState ss started port = runTransportServerSocketState ss started (startTCPServer started Nothing port) (transportName (TProxy :: TProxy c))
 
 -- | Run a transport server with provided connection setup and handler.
 runTransportServerSocket :: Transport a => TMVar Bool -> IO Socket -> String -> T.ServerParams -> TransportServerConfig -> (a -> IO ()) -> IO ()
 runTransportServerSocket started getSocket threadLabel serverParams cfg server = do
-  ss <- atomically newSocketState
+  ss <- newSocketState
   runTransportServerSocketState ss started getSocket threadLabel serverParams cfg server
 
 -- | Run a transport server with provided connection setup and handler.
@@ -107,10 +107,10 @@ tlsServerCredentials serverParams = case T.sharedCredentials $ T.serverShared se
   _ -> error "server has more than one key"
 
 -- | Run TCP server without TLS
-runTCPServer :: TMVar Bool -> ServiceName -> (Socket -> IO ()) -> IO ()
-runTCPServer started port server = do
-  ss <- atomically newSocketState
-  runTCPServerSocket ss started (startTCPServer started port) server
+runLocalTCPServer :: TMVar Bool -> ServiceName -> (Socket -> IO ()) -> IO ()
+runLocalTCPServer started port server = do
+  ss <- newSocketState
+  runTCPServerSocket ss started (startTCPServer started (Just "127.0.0.1") port) server
 
 -- | Wrap socket provider in a TCP server bracket.
 runTCPServerSocket :: SocketState -> TMVar Bool -> IO Socket -> (Socket -> IO ()) -> IO ()
@@ -148,8 +148,8 @@ safeAccept sock =
 
 type SocketState = (TVar Int, TVar Int, TVar (IntMap (Weak ThreadId)))
 
-newSocketState :: STM SocketState
-newSocketState = (,,) <$> newTVar 0 <*> newTVar 0 <*> newTVar mempty
+newSocketState :: IO SocketState
+newSocketState = (,,) <$> newTVarIO 0 <*> newTVarIO 0 <*> newTVarIO mempty
 
 closeServer :: TMVar Bool -> TVar (IntMap (Weak ThreadId)) -> Socket -> IO ()
 closeServer started clients sock = do
@@ -157,12 +157,12 @@ closeServer started clients sock = do
   close sock
   void . atomically $ tryPutTMVar started False
 
-startTCPServer :: TMVar Bool -> ServiceName -> IO Socket
-startTCPServer started port = withSocketsDo $ resolve >>= open >>= setStarted
+startTCPServer :: TMVar Bool -> Maybe HostName -> ServiceName -> IO Socket
+startTCPServer started host port = withSocketsDo $ resolve >>= open >>= setStarted
   where
     resolve =
       let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
-       in select <$> getAddrInfo (Just hints) Nothing (Just port)
+       in select <$> getAddrInfo (Just hints) host (Just port)
     select as = fromJust $ family AF_INET6 <|> family AF_INET
       where
         family f = find ((== f) . addrFamily) as

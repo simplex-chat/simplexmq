@@ -283,6 +283,9 @@ functionalAPITests t = do
     testPQMatrix3 t $ runAgentClientContactTestPQ3 True
   it "should support rejecting contact request" $
     withSmpServer t testRejectContactRequest
+  describe "Changing connection user id" $ do
+    it "should change user id for new connections" $ do
+      withSmpServer t testUpdateConnectionUserId
   describe "Establishing connection asynchronously" $ do
     it "should connect with initiating client going offline" $
       withSmpServer t testAsyncInitiatingOffline
@@ -357,6 +360,9 @@ functionalAPITests t = do
     it "should subscribe to multiple connections with pending messages" $
       withSmpServer t $
         testBatchedPendingMessages 10 5
+  describe "Batch send messages" $ do
+    it "should send multiple messages to the same connection" $ withSmpServer t testSendMessagesB
+    it "should send messages to the 2 connections" $ withSmpServer t testSendMessagesB2
   describe "Async agent commands" $ do
     describe "connect using async agent commands" $
       testBasicMatrix2 t testAsyncCommands
@@ -909,6 +915,25 @@ testRejectContactRequest =
     rejectContact alice addrConnId invId
     liftIO $ noMessages bob "nothing delivered to bob"
 
+testUpdateConnectionUserId :: HasCallStack => IO ()
+testUpdateConnectionUserId =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    (connId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+    newUserId <- createUser alice [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
+    _ <- changeConnectionUser alice 1 connId newUserId
+    aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+    (aliceId', sqSecured') <- A.joinConnection bob 1 (Just aliceId) True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    liftIO $ do
+      aliceId' `shouldBe` aliceId
+      sqSecured' `shouldBe` True
+    ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
+    liftIO $ pqSup' `shouldBe` PQSupportOn
+    allowConnection alice connId confId "alice's connInfo"
+    let pqEnc = CR.pqSupportToEnc PQSupportOn
+    get alice ##> ("", connId, A.CON pqEnc)
+    get bob ##> ("", aliceId, A.INFO PQSupportOn "alice's connInfo")
+    get bob ##> ("", aliceId, A.CON pqEnc)
+
 testAsyncInitiatingOffline :: HasCallStack => IO ()
 testAsyncInitiatingOffline =
   withAgent 2 agentCfg initAgentServers testDB2 $ \bob -> runRight_ $ do
@@ -1038,13 +1063,12 @@ testAllowConnectionClientRestart t = do
     threadDelay 250000
 
     alice2 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
+    runRight_ $ subscribeConnection alice2 bobId
+    threadDelay 500000
 
     withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \_ -> do
       runRight $ do
         ("", "", UP _ _) <- nGet bob
-
-        subscribeConnection alice2 bobId
-
         get alice2 ##> ("", bobId, CON)
         get bob ##> ("", aliceId, INFO "alice's connInfo")
         get bob ##> ("", aliceId, CON)
@@ -1810,7 +1834,6 @@ testSuspendingAgentCompleteSending t = withAgentClients2 $ \a b -> do
     get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
     ackMessage b aId 2 Nothing
     pure (aId, bId)
-
   runRight_ $ do
     ("", "", DOWN {}) <- nGet a
     ("", "", DOWN {}) <- nGet b
@@ -1818,15 +1841,17 @@ testSuspendingAgentCompleteSending t = withAgentClients2 $ \a b -> do
     4 <- sendMessage b aId SMP.noMsgFlags "how are you?"
     liftIO $ threadDelay 100000
     liftIO $ suspendAgent b 5000000
-
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ @AgentErrorType $ do
-    pGet b =##> \case ("", c, AEvt SAEConn (SENT 3)) -> c == aId; ("", "", AEvt _ UP {}) -> True; _ -> False
-    pGet b =##> \case ("", c, AEvt SAEConn (SENT 3)) -> c == aId; ("", "", AEvt _ UP {}) -> True; _ -> False
-    pGet b =##> \case ("", c, AEvt SAEConn (SENT 4)) -> c == aId; ("", "", AEvt _ UP {}) -> True; _ -> False
-    ("", "", SUSPENDED) <- nGet b
-
-    pGet a =##> \case ("", c, AEvt _ (Msg "hello too")) -> c == bId; ("", "", AEvt _ UP {}) -> True; _ -> False
-    pGet a =##> \case ("", c, AEvt _ (Msg "hello too")) -> c == bId; ("", "", AEvt _ UP {}) -> True; _ -> False
+    -- there will be no UP event for b, because re-subscriptions are suspended until the agent is in foreground
+    get b =##> \case ("", c, SENT 3) -> c == aId; _ -> False
+    get b =##> \case ("", c, SENT 4) -> c == aId; _ -> False
+    nGet b ##> ("", "", SUSPENDED)
+    liftIO $
+      getInAnyOrder
+        a
+        [ \case ("", c, AEvt _ (Msg "hello too")) -> c == bId; _ -> False,
+          \case ("", "", AEvt _ UP {}) -> True; _ -> False
+        ]
     ackMessage a bId 3 Nothing
     get a =##> \case ("", c, Msg "how are you?") -> c == bId; _ -> False
     ackMessage a bId 4 Nothing
@@ -1931,6 +1956,48 @@ testBatchedPendingMessages nCreate nMsgs =
   where
     withA = withAgent 1 agentCfg initAgentServers testDB
     withB = withAgent 2 agentCfg initAgentServers testDB2
+
+testSendMessagesB :: IO ()
+testSendMessagesB = withAgentClients2 $ \a b -> runRight_ $ do
+  (aId, bId) <- makeConnection a b
+  let msg cId body = Right (cId, PQEncOn, SMP.noMsgFlags, body)
+  [SentB 2, SentB 3, SentB 4] <- sendMessagesB a ([msg bId "msg 1", msg "" "msg 2", msg "" "msg 3"] :: [Either AgentErrorType MsgReq])
+  get a ##> ("", bId, SENT 2)
+  get a ##> ("", bId, SENT 3)
+  get a ##> ("", bId, SENT 4)
+  receiveMsg b aId 2 "msg 1"
+  receiveMsg b aId 3 "msg 2"
+  receiveMsg b aId 4 "msg 3"
+
+testSendMessagesB2 :: IO ()
+testSendMessagesB2 = withAgentClients3 $ \a b c -> runRight_ $ do
+  (abId, bId) <- makeConnection a b
+  (acId, cId) <- makeConnection a c
+  let msg connId body = Right (connId, PQEncOn, SMP.noMsgFlags, body)
+  [SentB 2, SentB 3, SentB 4, SentB 2, SentB 3] <-
+    sendMessagesB a ([msg bId "msg 1", msg "" "msg 2", msg "" "msg 3", msg cId "msg 4", msg "" "msg 5"] :: [Either AgentErrorType MsgReq])
+  liftIO $
+    getInAnyOrder
+      a
+      [ \case ("", cId', AEvt SAEConn (SENT 2)) -> cId' == bId; _ -> False,
+        \case ("", cId', AEvt SAEConn (SENT 3)) -> cId' == bId; _ -> False,
+        \case ("", cId', AEvt SAEConn (SENT 4)) -> cId' == bId; _ -> False,
+        \case ("", cId', AEvt SAEConn (SENT 2)) -> cId' == cId; _ -> False,
+        \case ("", cId', AEvt SAEConn (SENT 3)) -> cId' == cId; _ -> False
+      ]
+  receiveMsg b abId 2 "msg 1"
+  receiveMsg b abId 3 "msg 2"
+  receiveMsg b abId 4 "msg 3"
+  receiveMsg c acId 2 "msg 4"
+  receiveMsg c acId 3 "msg 5"
+
+pattern SentB :: AgentMsgId -> Either AgentErrorType (AgentMsgId, PQEncryption)
+pattern SentB msgId <- Right (msgId, PQEncOn)
+
+receiveMsg :: AgentClient -> ConnId -> AgentMsgId -> MsgBody -> ExceptT AgentErrorType IO ()
+receiveMsg c cId msgId msg  = do
+  get c =##> \case ("", cId', Msg' mId' PQEncOn msg') -> cId' == cId && mId' == msgId && msg' == msg; _ -> False
+  ackMessage c cId msgId Nothing
 
 testAsyncCommands :: SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
 testAsyncCommands sqSecured alice bob baseId =

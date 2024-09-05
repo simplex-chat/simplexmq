@@ -1,10 +1,12 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -15,6 +17,7 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeOperators #-}
@@ -57,6 +60,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getDeletedConns,
     getConnData,
     setConnDeleted,
+    setConnUserId,
     setConnAgentVersion,
     setConnPQSupport,
     getDeletedConnIds,
@@ -110,6 +114,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getSndMsgViaRcpt,
     updateSndMsgRcpt,
     getPendingQueueMsg,
+    getConnectionsForDelivery,
     updatePendingMsgRIState,
     deletePendingMsgs,
     getExpiredSndMessages,
@@ -135,6 +140,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     createCommand,
     getPendingCommandServers,
     getPendingServerCommand,
+    updateCommandServer,
     deleteCommand,
     -- Notification device token persistence
     createNtfToken,
@@ -220,7 +226,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     -- * utilities
     withConnection,
     withTransaction,
-    withTransactionCtx,
+    withTransactionPriority,
     firstRow,
     firstRow',
     maybeFirstRow,
@@ -392,10 +398,10 @@ connectSQLiteStore dbFilePath key keepKey = do
   dbNew <- not <$> doesFileExist dbFilePath
   dbConn <- dbBusyLoop (connectDB dbFilePath key)
   dbConnection <- newMVar dbConn
-  atomically $ do
-    dbKey <- newTVar $! storeKey key keepKey
-    dbClosed <- newTVar False
-    pure SQLiteStore {dbFilePath, dbKey, dbConnection, dbNew, dbClosed}
+  dbKey <- newTVarIO $! storeKey key keepKey
+  dbClosed <- newTVarIO False
+  dbSem <- newTVarIO 0
+  pure SQLiteStore {dbFilePath, dbKey, dbSem, dbConnection, dbNew, dbClosed}
 
 connectDB :: FilePath -> ScrubbedBytes -> IO DB.Connection
 connectDB path key = do
@@ -965,12 +971,12 @@ createRcvMsg db connId rq rcvMsgData@RcvMsgData {msgMeta = MsgMeta {sndMsgId}, i
   insertRcvMsgDetails_ db connId rq rcvMsgData
   updateRcvMsgHash db connId sndMsgId internalRcvId internalHash
 
-updateSndIds :: DB.Connection -> ConnId -> IO (InternalId, InternalSndId, PrevSndMsgHash)
-updateSndIds db connId = do
-  (lastInternalId, lastInternalSndId, prevSndHash) <- retrieveLastIdsAndHashSnd_ db connId
+updateSndIds :: DB.Connection -> ConnId -> IO (Either StoreError (InternalId, InternalSndId, PrevSndMsgHash))
+updateSndIds db connId = runExceptT $ do
+  (lastInternalId, lastInternalSndId, prevSndHash) <- ExceptT $ retrieveLastIdsAndHashSnd_ db connId
   let internalId = InternalId $ unId lastInternalId + 1
       internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
-  updateLastIdsSnd_ db connId internalId internalSndId
+  liftIO $ updateLastIdsSnd_ db connId internalId internalSndId
   pure (internalId, internalSndId, prevSndHash)
 
 createSndMsg :: DB.Connection -> ConnId -> SndMsgData -> IO ()
@@ -1007,6 +1013,10 @@ updateSndMsgRcpt db connId sndMsgId MsgReceipt {agentMsgId, msgRcptStatus} =
     db
     "UPDATE snd_messages SET rcpt_internal_id = ?, rcpt_status = ? WHERE conn_id = ? AND internal_snd_id = ?"
     (agentMsgId, msgRcptStatus, connId, sndMsgId)
+
+getConnectionsForDelivery :: DB.Connection -> IO [ConnId]
+getConnectionsForDelivery db =
+  map fromOnly <$> DB.query_ db "SELECT DISTINCT conn_id FROM snd_message_deliveries WHERE failed = 0"
 
 getPendingQueueMsg :: DB.Connection -> ConnId -> SndQueue -> IO (Either StoreError (Maybe (Maybe RcvQueue, PendingMsgData)))
 getPendingQueueMsg db connId SndQueue {dbQueueId} =
@@ -1317,38 +1327,39 @@ getPendingCommandServers db connId = do
   where
     smpServer (host, port, keyHash) = SMPServer <$> host <*> port <*> keyHash
 
-getPendingServerCommand :: DB.Connection -> Maybe SMPServer -> IO (Either StoreError (Maybe PendingCommand))
-getPendingServerCommand db srv_ = getWorkItem "command" getCmdId getCommand markCommandFailed
+getPendingServerCommand :: DB.Connection -> ConnId -> Maybe SMPServer -> IO (Either StoreError (Maybe PendingCommand))
+getPendingServerCommand db connId srv_ = getWorkItem "command" getCmdId getCommand markCommandFailed
   where
     getCmdId :: IO (Maybe Int64)
     getCmdId =
       maybeFirstRow fromOnly $ case srv_ of
         Nothing ->
-          DB.query_
+          DB.query
             db
             [sql|
               SELECT command_id FROM commands
-              WHERE host IS NULL AND port IS NULL AND failed = 0
+              WHERE conn_id = ? AND host IS NULL AND port IS NULL AND failed = 0
               ORDER BY created_at ASC, command_id ASC
               LIMIT 1
             |]
+            (Only connId)
         Just (SMPServer host port _) ->
           DB.query
             db
             [sql|
               SELECT command_id FROM commands
-              WHERE host = ? AND port = ? AND failed = 0
+              WHERE conn_id = ? AND host = ? AND port = ? AND failed = 0
               ORDER BY created_at ASC, command_id ASC
               LIMIT 1
             |]
-            (host, port)
+            (connId, host, port)
     getCommand :: Int64 -> IO (Either StoreError PendingCommand)
     getCommand cmdId =
       firstRow pendingCommand err $
         DB.query
           db
           [sql|
-            SELECT c.corr_id, cs.user_id, c.conn_id, c.command
+            SELECT c.corr_id, cs.user_id, c.command
             FROM commands c
             JOIN connections cs USING (conn_id)
             WHERE c.command_id = ?
@@ -1356,8 +1367,21 @@ getPendingServerCommand db srv_ = getWorkItem "command" getCmdId getCommand mark
           (Only cmdId)
       where
         err = SEInternal $ "command  " <> bshow cmdId <> " returned []"
-        pendingCommand (corrId, userId, connId, command) = PendingCommand {cmdId, corrId, userId, connId, command}
+        pendingCommand (corrId, userId, command) = PendingCommand {cmdId, corrId, userId, connId, command}
     markCommandFailed cmdId = DB.execute db "UPDATE commands SET failed = 1 WHERE command_id = ?" (Only cmdId)
+
+updateCommandServer :: DB.Connection -> AsyncCmdId -> SMPServer -> IO (Either StoreError ())
+updateCommandServer db cmdId srv@(SMPServer host port _) = runExceptT $ do
+  serverKeyHash_ <- ExceptT $ getServerKeyHash_ db srv
+  liftIO $
+    DB.execute
+      db
+      [sql|
+        UPDATE commands
+        SET host = ?, port = ?, server_key_hash = ?
+        WHERE command_id = ?
+      |]
+      (host, port, serverKeyHash_, cmdId)
 
 deleteCommand :: DB.Connection -> AsyncCmdId -> IO ()
 deleteCommand db cmdId =
@@ -1793,6 +1817,14 @@ instance ToField (Version v) where toField (Version v) = toField v
 
 instance FromField (Version v) where fromField f = Version <$> fromField f
 
+deriving newtype instance ToField EntityId
+
+deriving newtype instance FromField EntityId
+
+deriving newtype instance ToField ChunkReplicaId
+
+deriving newtype instance FromField ChunkReplicaId
+
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x
 listToEither e _ = Left e
@@ -1909,9 +1941,11 @@ newQueueId_ (Only maxId : _) = DBQueueId (maxId + 1)
 
 getConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getConn = getAnyConn False
+{-# INLINE getConn #-}
 
 getDeletedConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getDeletedConn = getAnyConn True
+{-# INLINE getDeletedConn #-}
 
 getAnyConn :: Bool -> DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getAnyConn deleted' dbConn connId =
@@ -1932,9 +1966,11 @@ getAnyConn deleted' dbConn connId =
 
 getConns :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getConns = getAnyConns_ False
+{-# INLINE getConns #-}
 
 getDeletedConns :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getDeletedConns = getAnyConns_ True
+{-# INLINE getDeletedConns #-}
 
 getAnyConns_ :: Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getAnyConns_ deleted' db connIds = forM connIds $ E.handle handleDBError . getAnyConn deleted' db
@@ -1966,6 +2002,10 @@ setConnDeleted db waitDelivery connId
       DB.execute db "UPDATE connections SET deleted_at_wait_delivery = ? WHERE conn_id = ?" (currentTs, connId)
   | otherwise =
       DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
+
+setConnUserId :: DB.Connection -> UserId -> ConnId -> UserId -> IO ()
+setConnUserId db oldUserId connId newUserId = 
+  DB.execute db "UPDATE connections SET user_id = ? WHERE conn_id = ? and user_id = ?" (newUserId, connId, oldUserId)
 
 setConnAgentVersion :: DB.Connection -> ConnId -> VersionSMPA -> IO ()
 setConnAgentVersion db connId aVersion =
@@ -2179,9 +2219,9 @@ updateRcvMsgHash db connId sndMsgId internalRcvId internalHash =
 
 -- * updateSndIds helpers
 
-retrieveLastIdsAndHashSnd_ :: DB.Connection -> ConnId -> IO (InternalId, InternalSndId, PrevSndMsgHash)
+retrieveLastIdsAndHashSnd_ :: DB.Connection -> ConnId -> IO (Either StoreError (InternalId, InternalSndId, PrevSndMsgHash))
 retrieveLastIdsAndHashSnd_ dbConn connId = do
-  [(lastInternalId, lastInternalSndId, lastSndHash)] <-
+  firstRow id SEConnNotFound $
     DB.queryNamed
       dbConn
       [sql|
@@ -2190,7 +2230,6 @@ retrieveLastIdsAndHashSnd_ dbConn connId = do
         WHERE conn_id = :conn_id;
       |]
       [":conn_id" := connId]
-  return (lastInternalId, lastInternalSndId, lastSndHash)
 
 updateLastIdsSnd_ :: DB.Connection -> ConnId -> InternalId -> InternalSndId -> IO ()
 updateLastIdsSnd_ dbConn connId newInternalId newInternalSndId =

@@ -119,6 +119,7 @@ cfg =
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/smp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
+      pendingENDInterval = 500000,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
@@ -222,7 +223,7 @@ smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
       [Right ()] <- tPut h [Right (sig, t')]
       pure ()
     tGet' h = do
-      [(Nothing, _, (CorrId corrId, qId, Right cmd))] <- tGet h
+      [(Nothing, _, (CorrId corrId, EntityId qId, Right cmd))] <- tGet h
       pure (Nothing, corrId, qId, cmd)
 
 smpTest :: (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandleSMP c 'TClient -> IO ()) -> Expectation

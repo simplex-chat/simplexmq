@@ -12,6 +12,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
@@ -82,6 +83,7 @@ module Simplex.Messaging.Agent.Client
     deleteQueues,
     logServer,
     logSecret,
+    logSecret',
     removeSubscription,
     hasActiveSubscription,
     hasPendingSubscription,
@@ -118,7 +120,7 @@ module Simplex.Messaging.Agent.Client
     waitUntilActive,
     UserNetworkInfo (..),
     UserNetworkType (..),
-    getNetworkConfig',
+    getFastNetworkConfig,
     waitForUserNetwork,
     isNetworkOnline,
     isOnline,
@@ -127,6 +129,7 @@ module Simplex.Messaging.Agent.Client
     beginAgentOperation,
     endAgentOperation,
     waitUntilForeground,
+    waitWhileSuspended,
     suspendSendingAndDatabase,
     suspendOperation,
     notifySuspended,
@@ -162,9 +165,9 @@ module Simplex.Messaging.Agent.Client
 where
 
 import Control.Applicative ((<|>))
-import Control.Concurrent (ThreadId, forkIO)
+import Control.Concurrent (ThreadId, killThread)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
-import Control.Concurrent.STM (retry, throwSTM)
+import Control.Concurrent.STM (retry)
 import Control.Exception (AsyncException (..), BlockedIndefinitelyOnSTM (..))
 import Control.Logger.Simple
 import Control.Monad
@@ -227,7 +230,7 @@ import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, parse, sumT
 import Simplex.Messaging.Protocol
   ( AProtocolType (..),
     BrokerMsg,
-    EntityId,
+    EntityId (..),
     ErrorType,
     MsgFlags (..),
     MsgId,
@@ -240,7 +243,6 @@ import Simplex.Messaging.Protocol
     ProtocolServer (..),
     ProtocolType (..),
     ProtocolTypeI (..),
-    QueueId,
     QueueIdsKeys (..),
     RcvMessage (..),
     RcvNtfPublicDhKey,
@@ -254,6 +256,7 @@ import Simplex.Messaging.Protocol
     VersionSMPC,
     XFTPServer,
     XFTPServerWithAuth,
+    pattern NoEntity,
     sameSrvAddr',
   )
 import qualified Simplex.Messaging.Protocol as SMP
@@ -265,10 +268,11 @@ import Simplex.Messaging.Transport (SMPVersion, SessionId, THandleParams (sessio
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
-import System.Mem.Weak (Weak)
+import System.Mem.Weak (Weak, deRefWeak)
 import System.Random (randomR)
 import UnliftIO (mapConcurrently, timeout)
 import UnliftIO.Async (async)
+import UnliftIO.Concurrent (forkIO, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -311,8 +315,7 @@ data AgentClient = AgentClient
     removedSubs :: TMap (UserId, SMPServer, SMP.RecipientId) SMPClientError,
     workerSeq :: TVar Int,
     smpDeliveryWorkers :: TMap SndQAddr (Worker, TMVar ()),
-    asyncCmdWorkers :: TMap (Maybe SMPServer) Worker,
-    connCmdsQueued :: TMap ConnId Bool,
+    asyncCmdWorkers :: TMap (ConnId, Maybe SMPServer) Worker,
     ntfNetworkOp :: TVar AgentOpState,
     rcvNetworkOp :: TVar AgentOpState,
     msgDeliveryOp :: TVar AgentOpState,
@@ -371,13 +374,15 @@ getAgentWorker' toW fromW name hasWork c key ws work = do
           restart <- atomically $ getWorker >>= maybe (pure False) (shouldRestart e_ (toW w) t maxRestarts)
           when restart runWork
         shouldRestart e_ Worker {workerId = wId, doWork, action, restarts} t maxRestarts w'
-          | wId == workerId (toW w') =
-              checkRestarts . updateRestartCount t =<< readTVar restarts
+          | wId == workerId (toW w') = do
+              rc <- readTVar restarts
+              isActive <- readTVar $ active c
+              checkRestarts isActive $ updateRestartCount t rc
           | otherwise =
               pure False -- there is a new worker in the map, no action
           where
-            checkRestarts rc
-              | restartCount rc < maxRestarts = do
+            checkRestarts isActive rc
+              | isActive && restartCount rc < maxRestarts = do
                   writeTVar restarts rc
                   hasWorkToDo' doWork
                   void $ tryPutTMVar action Nothing
@@ -385,7 +390,7 @@ getAgentWorker' toW fromW name hasWork c key ws work = do
                   pure True
               | otherwise = do
                   TM.delete key ws
-                  notifyErr $ CRITICAL True
+                  when isActive $ notifyErr $ CRITICAL True
                   pure False
               where
                 notifyErr err = do
@@ -408,7 +413,7 @@ runWorkerAsync Worker {action} work =
     (atomically . tryPutTMVar action) -- if it was running (or if start crashes), put it back and unlock (don't lock if it was just started)
     (\a -> when (isNothing a) start) -- start worker if it's not running
   where
-    start = atomically . putTMVar action . Just =<< async work
+    start = atomically . putTMVar action . Just =<< mkWeakThreadId =<< forkIO work
 
 data AgentOperation = AONtfNetwork | AORcvNetwork | AOMsgDelivery | AOSndNetwork | AODatabase
   deriving (Eq, Show)
@@ -452,47 +457,46 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Env -> STM AgentClient
+newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Env -> IO AgentClient
 newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
-  acThread <- newTVar Nothing
-  active <- newTVar True
-  subQ <- newTBQueue qSize
-  msgQ <- newTBQueue qSize
-  smpServers <- newTVar $ M.map mkUserServers smp
-  smpClients <- TM.empty
-  smpProxiedRelays <- TM.empty
-  ntfServers <- newTVar ntf
-  ntfClients <- TM.empty
-  xftpServers <- newTVar $ M.map mkUserServers xftp
-  xftpClients <- TM.empty
-  useNetworkConfig <- newTVar (slowNetworkConfig netCfg, netCfg)
-  userNetworkInfo <- newTVar $ UserNetworkInfo UNOther True
-  userNetworkUpdated <- newTVar Nothing
-  subscrConns <- newTVar S.empty
+  acThread <- newTVarIO Nothing
+  active <- newTVarIO True
+  subQ <- newTBQueueIO qSize
+  msgQ <- newTBQueueIO qSize
+  smpServers <- newTVarIO $ M.map mkUserServers smp
+  smpClients <- TM.emptyIO
+  smpProxiedRelays <- TM.emptyIO
+  ntfServers <- newTVarIO ntf
+  ntfClients <- TM.emptyIO
+  xftpServers <- newTVarIO $ M.map mkUserServers xftp
+  xftpClients <- TM.emptyIO
+  useNetworkConfig <- newTVarIO (slowNetworkConfig netCfg, netCfg)
+  userNetworkInfo <- newTVarIO $ UserNetworkInfo UNOther True
+  userNetworkUpdated <- newTVarIO Nothing
+  subscrConns <- newTVarIO S.empty
   activeSubs <- RQ.empty
   pendingSubs <- RQ.empty
-  removedSubs <- TM.empty
-  workerSeq <- newTVar 0
-  smpDeliveryWorkers <- TM.empty
-  asyncCmdWorkers <- TM.empty
-  connCmdsQueued <- TM.empty
-  ntfNetworkOp <- newTVar $ AgentOpState False 0
-  rcvNetworkOp <- newTVar $ AgentOpState False 0
-  msgDeliveryOp <- newTVar $ AgentOpState False 0
-  sndNetworkOp <- newTVar $ AgentOpState False 0
-  databaseOp <- newTVar $ AgentOpState False 0
-  agentState <- newTVar ASForeground
-  getMsgLocks <- TM.empty
-  connLocks <- TM.empty
-  invLocks <- TM.empty
-  deleteLock <- createLock
-  smpSubWorkers <- TM.empty
-  smpServersStats <- TM.empty
-  xftpServersStats <- TM.empty
-  ntfServersStats <- TM.empty
-  srvStatsStartedAt <- newTVar currentTs
+  removedSubs <- TM.emptyIO
+  workerSeq <- newTVarIO 0
+  smpDeliveryWorkers <- TM.emptyIO
+  asyncCmdWorkers <- TM.emptyIO
+  ntfNetworkOp <- newTVarIO $ AgentOpState False 0
+  rcvNetworkOp <- newTVarIO $ AgentOpState False 0
+  msgDeliveryOp <- newTVarIO $ AgentOpState False 0
+  sndNetworkOp <- newTVarIO $ AgentOpState False 0
+  databaseOp <- newTVarIO $ AgentOpState False 0
+  agentState <- newTVarIO ASForeground
+  getMsgLocks <- TM.emptyIO
+  connLocks <- TM.emptyIO
+  invLocks <- TM.emptyIO
+  deleteLock <- atomically createLock
+  smpSubWorkers <- TM.emptyIO
+  smpServersStats <- TM.emptyIO
+  xftpServersStats <- TM.emptyIO
+  ntfServersStats <- TM.emptyIO
+  srvStatsStartedAt <- newTVarIO currentTs
   return
     AgentClient
       { acThread,
@@ -516,7 +520,6 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs a
         workerSeq,
         smpDeliveryWorkers,
         asyncCmdWorkers,
-        connCmdsQueued,
         ntfNetworkOp,
         rcvNetworkOp,
         msgDeliveryOp,
@@ -599,7 +602,7 @@ getSMPServerClient c@AgentClient {active, smpClients, workerSeq} tSess = do
     >>= either newClient (waitForProtocolClient c tSess smpClients)
   where
     newClient v = do
-      prs <- atomically TM.empty
+      prs <- liftIO TM.emptyIO
       smpConnectClient c tSess prs v
 
 getSMPProxyClient :: AgentClient -> Maybe SMPServerWithAuth -> SMPTransportSession -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
@@ -617,11 +620,10 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
       (tSess,auth,) <$> getSessVar workerSeq tSess smpClients ts
     newProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> UTCTime -> SMPClientVar -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
     newProxyClient tSess auth ts v = do
-      (prs, rv) <- atomically $ do
-        prs <- TM.empty
-        -- we do not need to check if it is a new proxied relay session,
-        -- as the client is just created and there are no sessions yet
-        (prs,) . either id id <$> getSessVar workerSeq destSrv prs ts
+      prs <- liftIO TM.emptyIO
+      -- we do not need to check if it is a new proxied relay session,
+      -- as the client is just created and there are no sessions yet
+      rv <- atomically $ either id id <$> getSessVar workerSeq destSrv prs ts
       clnt <- smpConnectClient c tSess prs v
       (clnt,) <$> newProxiedRelay clnt auth rv
     waitForProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> SMPClientVar -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
@@ -647,7 +649,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
             pure $ Left e
     waitForProxiedRelay :: SMPTransportSession -> ProxiedRelayVar -> AM (Either AgentErrorType ProxiedRelay)
     waitForProxiedRelay (_, srv, _) rv = do
-      NetworkConfig {tcpConnectTimeout} <- atomically $ getNetworkConfig c
+      NetworkConfig {tcpConnectTimeout} <- getNetworkConfig c
       sess_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar rv)
       pure $ case sess_ of
         Just (Right sess) -> Right sess
@@ -708,7 +710,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
   where
     getWorkerVar ts =
       ifM
-        (null <$> getPending)
+        (not <$> RQ.hasSessQueues tSess (pendingSubs c))
         (pure Nothing) -- prevent race with cleanup and adding pending queues in another call
         (Just <$> getSessVar workerSeq tSess smpSubWorkers ts)
     newSubWorker v = do
@@ -716,13 +718,14 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
       atomically $ putTMVar (sessionVar v) a
     runSubWorker = do
       ri <- asks $ reconnectInterval . config
-      withRetryInterval ri $ \_ loop -> do
-        pending <- atomically getPending
+      withRetryForeground ri isForeground (isNetworkOnline c) $ \_ loop -> do
+        pending <- liftIO $ RQ.getSessQueues tSess $ pendingSubs c
         forM_ (L.nonEmpty pending) $ \qs -> do
+          liftIO $ waitUntilForeground c
           liftIO $ waitForUserNetwork c
           reconnectSMPClient c tSess qs
           loop
-    getPending = RQ.getSessQueues tSess $ pendingSubs c
+    isForeground = (ASForeground ==) <$> readTVar (agentState c)
     cleanup :: SessionVar (Async ()) -> STM ()
     cleanup v = do
       -- Here we wait until TMVar is not empty to prevent worker cleanup happening before worker is added to TMVar.
@@ -787,7 +790,7 @@ getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq} tSess@(_, srv
     connectClient :: XFTPClientVar -> AM XFTPClient
     connectClient v = do
       cfg <- asks $ xftpCfg . config
-      xftpNetworkConfig <- atomically $ getNetworkConfig c
+      xftpNetworkConfig <- getNetworkConfig c
       liftError' (protocolClientError XFTP $ B.unpack $ strEncode srv) $
         X.getXFTPClient tSess cfg {xftpNetworkConfig} $
           clientDisconnected v
@@ -806,7 +809,7 @@ waitForProtocolClient ::
   ClientVar msg ->
   AM (Client msg)
 waitForProtocolClient c tSess@(_, srv, _) clients v = do
-  NetworkConfig {tcpConnectTimeout} <- atomically $ getNetworkConfig c
+  NetworkConfig {tcpConnectTimeout} <- getNetworkConfig c
   client_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v)
   case client_ of
     Just (Right smpClient) -> pure smpClient
@@ -857,26 +860,26 @@ hostEvent' event = event (AProtocolType $ protocolTypeI @(ProtoType msg)) . clie
 getClientConfig :: AgentClient -> (AgentConfig -> ProtocolClientConfig v) -> AM' (ProtocolClientConfig v)
 getClientConfig c cfgSel = do
   cfg <- asks $ cfgSel . config
-  networkConfig <- atomically $ getNetworkConfig c
+  networkConfig <- getNetworkConfig c
   pure cfg {networkConfig}
 
-getNetworkConfig :: AgentClient -> STM NetworkConfig
+getNetworkConfig :: MonadIO m => AgentClient -> m NetworkConfig
 getNetworkConfig c = do
-  (slowCfg, fastCfg) <- readTVar (useNetworkConfig c)
-  UserNetworkInfo {networkType} <- readTVar $ userNetworkInfo c
+  (slowCfg, fastCfg) <- readTVarIO $ useNetworkConfig c
+  UserNetworkInfo {networkType} <- readTVarIO $ userNetworkInfo c
   pure $ case networkType of
     UNCellular -> slowCfg
     UNNone -> slowCfg
     _ -> fastCfg
 
 -- returns fast network config
-getNetworkConfig' :: AgentClient -> IO NetworkConfig
-getNetworkConfig' = fmap snd . readTVarIO . useNetworkConfig
-{-# INLINE getNetworkConfig' #-}
+getFastNetworkConfig :: AgentClient -> IO NetworkConfig
+getFastNetworkConfig = fmap snd . readTVarIO . useNetworkConfig
+{-# INLINE getFastNetworkConfig #-}
 
 waitForUserNetwork :: AgentClient -> IO ()
 waitForUserNetwork c =
-  unlessM (atomically $ isNetworkOnline c) $ do
+  unlessM (isOnline <$> readTVarIO (userNetworkInfo c)) $ do
     delay <- registerDelay $ userNetworkInterval $ config $ agentEnv c
     atomically $ unlessM (isNetworkOnline c) $ unlessM (readTVar delay) retry
 
@@ -890,7 +893,6 @@ closeAgentClient c = do
   atomically (swapTVar (smpSubWorkers c) M.empty) >>= mapM_ cancelReconnect
   clearWorkers smpDeliveryWorkers >>= mapM_ (cancelWorker . fst)
   clearWorkers asyncCmdWorkers >>= mapM_ cancelWorker
-  clear connCmdsQueued
   atomically . RQ.clear $ activeSubs c
   atomically . RQ.clear $ pendingSubs c
   clear subscrConns
@@ -906,21 +908,20 @@ closeAgentClient c = do
 cancelWorker :: Worker -> IO ()
 cancelWorker Worker {doWork, action} = do
   noWorkToDo doWork
-  atomically (tryTakeTMVar action) >>= mapM_ (mapM_ uninterruptibleCancel)
+  atomically (tryTakeTMVar action) >>= mapM_ (mapM_ $ deRefWeak >=> mapM_ killThread)
 
-waitUntilActive :: AgentClient -> STM ()
-waitUntilActive c = unlessM (readTVar $ active c) retry
-{-# INLINE waitUntilActive #-}
+waitUntilActive :: AgentClient -> IO ()
+waitUntilActive AgentClient {active} = unlessM (readTVarIO active) $ atomically $ unlessM (readTVar active) retry
 
-throwWhenInactive :: AgentClient -> STM ()
-throwWhenInactive c = unlessM (readTVar $ active c) $ throwSTM ThreadKilled
+throwWhenInactive :: AgentClient -> IO ()
+throwWhenInactive c = unlessM (readTVarIO $ active c) $ E.throwIO ThreadKilled
 {-# INLINE throwWhenInactive #-}
 
 -- this function is used to remove workers once delivery is complete, not when it is removed from the map
-throwWhenNoDelivery :: AgentClient -> SndQueue -> STM ()
+throwWhenNoDelivery :: AgentClient -> SndQueue -> IO ()
 throwWhenNoDelivery c sq =
-  unlessM (TM.member (qAddress sq) $ smpDeliveryWorkers c) $
-    throwSTM ThreadKilled
+  unlessM (TM.memberIO (qAddress sq) $ smpDeliveryWorkers c) $
+    E.throwIO ThreadKilled
 
 closeProtocolServerClients :: ProtocolServerClient v err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
 closeProtocolServerClients c clientsSel =
@@ -946,7 +947,7 @@ closeClient c clientSel tSess =
 
 closeClient_ :: ProtocolServerClient v err msg => AgentClient -> ClientVar msg -> IO ()
 closeClient_ c v = do
-  NetworkConfig {tcpConnectTimeout} <- atomically $ getNetworkConfig c
+  NetworkConfig {tcpConnectTimeout} <- getNetworkConfig c
   E.handle (\BlockedIndefinitelyOnSTM -> pure ()) $
     tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v) >>= \case
       Just (Right client) -> closeProtocolServerClient (protocolClient client) `catchAll_` pure ()
@@ -997,7 +998,7 @@ withClient_ c tSess@(_, srv, _) action = do
   where
     logServerError :: AgentErrorType -> AM a
     logServerError e = do
-      logServer "<--" c srv "" $ bshow e
+      logServer "<--" c srv NoEntity $ bshow e
       throwE e
 
 withProxySession :: AgentClient -> Maybe SMPServerWithAuth -> SMPTransportSession -> SMP.SenderId -> ByteString -> ((SMPConnectedClient, ProxiedRelay) -> AM a) -> AM a
@@ -1014,32 +1015,32 @@ withProxySession c proxySrv_ destSess@(_, destSrv, _) entId cmdStr action = do
     proxySrv = showServer . protocolClientServer' . protocolClient
     logServerError :: SMPConnectedClient -> AgentErrorType -> AM a
     logServerError cl e = do
-      logServer ("<-- " <> proxySrv cl <> " <") c destSrv "" $ bshow e
+      logServer ("<-- " <> proxySrv cl <> " <") c destSrv NoEntity $ bshow e
       throwE e
 
-withLogClient_ :: ProtocolServerClient v err msg => AgentClient -> TransportSession msg -> EntityId -> ByteString -> (Client msg -> AM a) -> AM a
+withLogClient_ :: ProtocolServerClient v err msg => AgentClient -> TransportSession msg -> ByteString -> ByteString -> (Client msg -> AM a) -> AM a
 withLogClient_ c tSess@(_, srv, _) entId cmdStr action = do
-  logServer "-->" c srv entId cmdStr
+  logServer' "-->" c srv entId cmdStr
   res <- withClient_ c tSess action
-  logServer "<--" c srv entId "OK"
+  logServer' "<--" c srv entId "OK"
   return res
 
 withClient :: forall v err msg a. ProtocolServerClient v err msg => AgentClient -> TransportSession msg -> (Client msg -> ExceptT (ProtocolClientError err) IO a) -> AM a
 withClient c tSess action = withClient_ c tSess $ \client -> liftClient (clientProtocolError @v @err @msg) (clientServer $ protocolClient client) $ action client
 {-# INLINE withClient #-}
 
-withLogClient :: forall v err msg a. ProtocolServerClient v err msg => AgentClient -> TransportSession msg -> EntityId -> ByteString -> (Client msg -> ExceptT (ProtocolClientError err) IO a) -> AM a
+withLogClient :: forall v err msg a. ProtocolServerClient v err msg => AgentClient -> TransportSession msg -> ByteString -> ByteString -> (Client msg -> ExceptT (ProtocolClientError err) IO a) -> AM a
 withLogClient c tSess entId cmdStr action = withLogClient_ c tSess entId cmdStr $ \client -> liftClient (clientProtocolError @v @err @msg) (clientServer $ protocolClient client) $ action client
 {-# INLINE withLogClient #-}
 
 withSMPClient :: SMPQueueRec q => AgentClient -> q -> ByteString -> (SMPClient -> ExceptT SMPClientError IO a) -> AM a
 withSMPClient c q cmdStr action = do
-  tSess <- liftIO $ mkSMPTransportSession c q
-  withLogClient c tSess (queueId q) cmdStr $ action . connectedClient
+  tSess <- mkSMPTransportSession c q
+  withLogClient c tSess (unEntityId $ queueId q) cmdStr $ action . connectedClient
 
-sendOrProxySMPMessage :: AgentClient -> UserId -> SMPServer -> ByteString -> Maybe SMP.SndPrivateAuthKey -> SMP.SenderId -> MsgFlags -> SMP.MsgBody -> AM (Maybe SMPServer)
-sendOrProxySMPMessage c userId destSrv cmdStr spKey_ senderId msgFlags msg =
-  sendOrProxySMPCommand c userId destSrv cmdStr senderId sendViaProxy sendDirectly
+sendOrProxySMPMessage :: AgentClient -> UserId -> SMPServer -> ConnId -> ByteString -> Maybe SMP.SndPrivateAuthKey -> SMP.SenderId -> MsgFlags -> SMP.MsgBody -> AM (Maybe SMPServer)
+sendOrProxySMPMessage c userId destSrv connId cmdStr spKey_ senderId msgFlags msg =
+  sendOrProxySMPCommand c userId destSrv connId cmdStr senderId sendViaProxy sendDirectly
   where
     sendViaProxy smp proxySess = do
       atomically $ incSMPServerStat c userId destSrv sentViaProxyAttempts
@@ -1053,14 +1054,15 @@ sendOrProxySMPCommand ::
   AgentClient ->
   UserId ->
   SMPServer ->
+  ConnId ->
   ByteString ->
   SMP.SenderId ->
   (SMPClient -> ProxiedRelay -> ExceptT SMPClientError IO (Either ProxyClientError ())) ->
   (SMPClient -> ExceptT SMPClientError IO ()) ->
   AM (Maybe SMPServer)
-sendOrProxySMPCommand c userId destSrv cmdStr senderId sendCmdViaProxy sendCmdDirectly = do
-  sess <- liftIO $ mkTransportSession c userId destSrv senderId
-  ifM (atomically shouldUseProxy) (sendViaProxy Nothing sess) (sendDirectly sess $> Nothing)
+sendOrProxySMPCommand c userId destSrv connId cmdStr senderId sendCmdViaProxy sendCmdDirectly = do
+  tSess <- mkTransportSession c userId destSrv connId
+  ifM shouldUseProxy (sendViaProxy Nothing tSess) (sendDirectly tSess $> Nothing)
   where
     shouldUseProxy = do
       cfg <- getNetworkConfig c
@@ -1077,9 +1079,9 @@ sendOrProxySMPCommand c userId destSrv cmdStr senderId sendCmdViaProxy sendCmdDi
         SPFAllow -> True
         SPFAllowProtected -> ipAddressProtected cfg destSrv
         SPFProhibit -> False
-    unknownServer = maybe True (notElem destSrv . knownSrvs) <$> TM.lookup userId (smpServers c)
+    unknownServer = liftIO $ maybe True (notElem destSrv . knownSrvs) <$> TM.lookupIO userId (smpServers c)
     sendViaProxy :: Maybe SMPServerWithAuth -> SMPTransportSession -> AM (Maybe SMPServer)
-    sendViaProxy proxySrv_ destSess@(_, _, qId) = do
+    sendViaProxy proxySrv_ destSess@(_, _, connId_) = do
       r <- tryAgentError . withProxySession c proxySrv_ destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess@ProxiedRelay {prBasicAuth}) -> do
         r' <- liftClient SMP (clientServer smp) $ sendCmdViaProxy smp proxySess
         let proxySrv = protocolClientServer' smp
@@ -1106,7 +1108,7 @@ sendOrProxySMPCommand c userId destSrv cmdStr senderId sendCmdViaProxy sendCmdDi
               -- checks that the current proxied relay session is the same one that was used to send the message and removes it
               deleteRelaySession =
                 ( TM.lookup destSess (smpProxiedRelays c)
-                    $>>= \(ProtoServerWithAuth srv _) -> tryReadSessVar (userId, srv, qId) (smpClients c)
+                    $>>= \(ProtoServerWithAuth srv _) -> tryReadSessVar (userId, srv, connId_) (smpClients c)
                 )
                   >>= \case
                     Just (Right (SMPConnectedClient smp' prs))
@@ -1123,10 +1125,10 @@ sendOrProxySMPCommand c userId destSrv cmdStr senderId sendCmdViaProxy sendCmdDi
           forM_ r' $ \proxySrv -> atomically $ incSMPServerStat c userId proxySrv sentProxied
           pure r'
         Left e
-          | serverHostError e -> ifM (atomically directAllowed) (sendDirectly destSess $> Nothing) (throwE e)
+          | serverHostError e -> ifM directAllowed (sendDirectly destSess $> Nothing) (throwE e)
           | otherwise -> throwE e
     sendDirectly tSess =
-      withLogClient_ c tSess senderId ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) -> do
+      withLogClient_ c tSess (unEntityId senderId) ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) -> do
         r <- tryAgentError $ liftClient SMP (clientServer smp) $ sendCmdDirectly smp
         case r of
           Right () -> atomically $ incSMPServerStat c userId destSrv sentDirect
@@ -1139,18 +1141,18 @@ ipAddressProtected NetworkConfig {socksProxy, hostMode} (ProtocolServer _ hosts 
     isOnionHost = \case THOnionHost _ -> True; _ -> False
 
 withNtfClient :: AgentClient -> NtfServer -> EntityId -> ByteString -> (NtfClient -> ExceptT NtfClientError IO a) -> AM a
-withNtfClient c srv = withLogClient c (0, srv, Nothing)
+withNtfClient c srv (EntityId entId) = withLogClient c (0, srv, Nothing) entId
 
 withXFTPClient ::
   ProtocolServerClient v err msg =>
   AgentClient ->
-  (UserId, ProtoServer msg, EntityId) ->
+  (UserId, ProtoServer msg, ByteString) ->
   ByteString ->
   (Client msg -> ExceptT (ProtocolClientError err) IO b) ->
   AM b
-withXFTPClient c (userId, srv, entityId) cmdStr action = do
-  tSess <- liftIO $ mkTransportSession c userId srv entityId
-  withLogClient c tSess entityId cmdStr action
+withXFTPClient c (userId, srv, sessEntId) cmdStr action = do
+  tSess <- mkTransportSession c userId srv sessEntId
+  withLogClient c tSess sessEntId cmdStr action
 
 liftClient :: (Show err, Encoding err) => (HostName -> err -> AgentErrorType) -> HostName -> ExceptT (ProtocolClientError err) IO a -> AM a
 liftClient protocolError_ = liftError . protocolClientError protocolError_
@@ -1221,7 +1223,7 @@ runXFTPServerTest :: AgentClient -> UserId -> XFTPServerWithAuth -> AM' (Maybe P
 runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
   cfg <- asks $ xftpCfg . config
   g <- asks random
-  xftpNetworkConfig <- atomically $ getNetworkConfig c
+  xftpNetworkConfig <- getNetworkConfig c
   workDir <- getXFTPWorkPath
   filePath <- getTempFilePath workDir
   rcvPath <- getTempFilePath workDir
@@ -1292,15 +1294,15 @@ getXFTPWorkPath = do
   workDir <- readTVarIO =<< asks (xftpWorkDir . xftpAgent)
   maybe getTemporaryDirectory pure workDir
 
-mkTransportSession :: AgentClient -> UserId -> ProtoServer msg -> EntityId -> IO (TransportSession msg)
-mkTransportSession c userId srv entityId = mkTSession userId srv entityId <$> getSessionMode c
+mkTransportSession :: MonadIO m => AgentClient -> UserId -> ProtoServer msg -> ByteString -> m (TransportSession msg)
+mkTransportSession c userId srv sessEntId = mkTSession userId srv sessEntId <$> getSessionMode c
 {-# INLINE mkTransportSession #-}
 
-mkTSession :: UserId -> ProtoServer msg -> EntityId -> TransportSessionMode -> TransportSession msg
-mkTSession userId srv entityId mode = (userId, srv, if mode == TSMEntity then Just entityId else Nothing)
+mkTSession :: UserId -> ProtoServer msg -> ByteString -> TransportSessionMode -> TransportSession msg
+mkTSession userId srv sessEntId mode = (userId, srv, if mode == TSMEntity then Just sessEntId else Nothing)
 {-# INLINE mkTSession #-}
 
-mkSMPTransportSession :: SMPQueueRec q => AgentClient -> q -> IO SMPTransportSession
+mkSMPTransportSession :: (SMPQueueRec q, MonadIO m) => AgentClient -> q -> m SMPTransportSession
 mkSMPTransportSession c q = mkSMPTSession q <$> getSessionMode c
 {-# INLINE mkSMPTransportSession #-}
 
@@ -1308,8 +1310,8 @@ mkSMPTSession :: SMPQueueRec q => q -> TransportSessionMode -> SMPTransportSessi
 mkSMPTSession q = mkTSession (qUserId q) (qServer q) (qConnId q)
 {-# INLINE mkSMPTSession #-}
 
-getSessionMode :: AgentClient -> IO TransportSessionMode
-getSessionMode = atomically . fmap sessionMode . getNetworkConfig
+getSessionMode :: MonadIO m => AgentClient -> m TransportSessionMode
+getSessionMode = fmap sessionMode . getNetworkConfig
 {-# INLINE getSessionMode #-}
 
 newRcvQueue :: AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SubscriptionMode -> SenderCanSecure -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
@@ -1319,12 +1321,12 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode sender
   rKeys@(_, rcvPrivateKey) <- atomically $ C.generateAuthKeyPair a g
   (dhKey, privDhKey) <- atomically $ C.generateKeyPair g
   (e2eDhKey, e2ePrivKey) <- atomically $ C.generateKeyPair g
-  logServer "-->" c srv "" "NEW"
-  tSess <- liftIO $ mkTransportSession c userId srv connId
+  logServer "-->" c srv NoEntity "NEW"
+  tSess <- mkTransportSession c userId srv connId
   (sessId, QIK {rcvId, sndId, rcvPublicDhKey, sndSecure}) <-
     withClient c tSess $ \(SMPConnectedClient smp _) ->
       (sessionId $ thParams smp,) <$> createSMPQueue smp rKeys dhKey auth subMode senderCanSecure
-  liftIO . logServer "<--" c srv "" $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
+  liftIO . logServer "<--" c srv NoEntity $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue
           { userId,
@@ -1406,7 +1408,7 @@ subscribeQueues c qs = do
   (errs <> rs,) <$> readTVarIO session
   where
     checkQueue rq = do
-      prohibited <- atomically $ hasGetLock c rq
+      prohibited <- liftIO $ hasGetLock c rq
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED "subscribeQueues") else Right rq
     subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses SMPClientError ())
     subscribeQueues_ env session smp qs' = do
@@ -1447,7 +1449,7 @@ sendTSessionBatches statCmd toRQ action c qs =
   where
     batchQueues :: AM' [(SMPTransportSession, NonEmpty q)]
     batchQueues = do
-      mode <- atomically $ sessionMode <$> getNetworkConfig c
+      mode <- getSessionMode c
       pure . M.assocs $ foldl' (batch mode) M.empty qs
       where
         batch mode m q =
@@ -1458,7 +1460,7 @@ sendTSessionBatches statCmd toRQ action c qs =
       tryAgentError' (getSMPServerClient c tSess) >>= \case
         Left e -> pure $ L.map ((,Left e) . toRQ) qs'
         Right (SMPConnectedClient smp _) -> liftIO $ do
-          logServer "-->" c srv (bshow (length qs') <> " queues") statCmd
+          logServer' "-->" c srv (bshow (length qs') <> " queues") statCmd
           L.map agentError <$> action smp qs'
           where
             agentError = second . first $ protocolClientError SMP $ clientServer smp
@@ -1508,36 +1510,43 @@ removeSubscription c connId = do
   RQ.deleteConn connId $ activeSubs c
   RQ.deleteConn connId $ pendingSubs c
 
-getSubscriptions :: AgentClient -> STM (Set ConnId)
-getSubscriptions = readTVar . subscrConns
+getSubscriptions :: AgentClient -> IO (Set ConnId)
+getSubscriptions = readTVarIO . subscrConns
 {-# INLINE getSubscriptions #-}
 
-logServer :: MonadIO m => ByteString -> AgentClient -> ProtocolServer s -> QueueId -> ByteString -> m ()
-logServer dir AgentClient {clientId} srv qId cmdStr =
-  logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret qId, cmdStr]
+logServer :: MonadIO m => ByteString -> AgentClient -> ProtocolServer s -> EntityId -> ByteString -> m ()
+logServer dir c srv = logServer' dir c srv . unEntityId
 {-# INLINE logServer #-}
+
+logServer' :: MonadIO m => ByteString -> AgentClient -> ProtocolServer s -> ByteString -> ByteString -> m ()
+logServer' dir AgentClient {clientId} srv qStr cmdStr =
+  logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret' qStr, cmdStr]
 
 showServer :: ProtocolServer s -> ByteString
 showServer ProtocolServer {host, port} =
   strEncode host <> B.pack (if null port then "" else ':' : port)
 {-# INLINE showServer #-}
 
-logSecret :: ByteString -> ByteString
-logSecret bs = B64.encode $ B.take 3 bs
+logSecret :: EntityId -> ByteString
+logSecret = logSecret' . unEntityId
 {-# INLINE logSecret #-}
 
+logSecret' :: ByteString -> ByteString
+logSecret' = B64.encode . B.take 3
+{-# INLINE logSecret' #-}
+
 sendConfirmation :: AgentClient -> SndQueue -> ByteString -> AM (Maybe SMPServer)
-sendConfirmation c sq@SndQueue {userId, server, sndId, sndSecure, sndPublicKey, sndPrivateKey, e2ePubKey = e2ePubKey@Just {}} agentConfirmation = do
+sendConfirmation c sq@SndQueue {userId, server, connId, sndId, sndSecure, sndPublicKey, sndPrivateKey, e2ePubKey = e2ePubKey@Just {}} agentConfirmation = do
   let (privHdr, spKey) = if sndSecure then (SMP.PHEmpty, Just sndPrivateKey) else (SMP.PHConfirmation sndPublicKey, Nothing)
       clientMsg = SMP.ClientMessage privHdr agentConfirmation
   msg <- agentCbEncrypt sq e2ePubKey $ smpEncode clientMsg
-  sendOrProxySMPMessage c userId server "<CONF>" spKey sndId (MsgFlags {notification = True}) msg
+  sendOrProxySMPMessage c userId server connId "<CONF>" spKey sndId (MsgFlags {notification = True}) msg
 sendConfirmation _ _ _ = throwE $ INTERNAL "sendConfirmation called without snd_queue public key(s) in the database"
 
-sendInvitation :: AgentClient -> UserId -> Compatible SMPQueueInfo -> Compatible VersionSMPA -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> AM (Maybe SMPServer)
-sendInvitation c userId (Compatible (SMPQueueInfo v SMPQueueAddress {smpServer, senderId, dhPublicKey})) (Compatible agentVersion) connReq connInfo = do
+sendInvitation :: AgentClient -> UserId -> ConnId -> Compatible SMPQueueInfo -> Compatible VersionSMPA -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> AM (Maybe SMPServer)
+sendInvitation c userId connId (Compatible (SMPQueueInfo v SMPQueueAddress {smpServer, senderId, dhPublicKey})) (Compatible agentVersion) connReq connInfo = do
   msg <- mkInvitation
-  sendOrProxySMPMessage c userId smpServer "<INV>" Nothing senderId (MsgFlags {notification = True}) msg
+  sendOrProxySMPMessage c userId smpServer connId "<INV>" Nothing senderId (MsgFlags {notification = True}) msg
   where
     mkInvitation :: AM ByteString
     -- this is only encrypted with per-queue E2E, not with double ratchet
@@ -1573,8 +1582,8 @@ secureQueue c rq@RcvQueue {rcvId, rcvPrivateKey} senderKey =
     secureSMPQueue smp rcvPrivateKey rcvId senderKey
 
 secureSndQueue :: AgentClient -> SndQueue -> AM ()
-secureSndQueue c SndQueue {userId, server, sndId, sndPrivateKey, sndPublicKey} =
-  void $ sendOrProxySMPCommand c userId server "SKEY <key>" sndId secureViaProxy secureDirectly
+secureSndQueue c SndQueue {userId, connId, server, sndId, sndPrivateKey, sndPublicKey} =
+  void $ sendOrProxySMPCommand c userId server connId "SKEY <key>" sndId secureViaProxy secureDirectly
   where
     -- TODO track statistics
     secureViaProxy smp proxySess = proxySecureSndSMPQueue smp proxySess sndPrivateKey sndId sndPublicKey
@@ -1604,13 +1613,13 @@ disableQueuesNtfs = sendTSessionBatches "NDEL" id $ sendBatch disableSMPQueuesNt
 
 sendAck :: AgentClient -> RcvQueue -> MsgId -> AM ()
 sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId = do
-  withSMPClient c rq ("ACK:" <> logSecret msgId) $ \smp ->
+  withSMPClient c rq ("ACK:" <> logSecret' msgId) $ \smp ->
     ackSMPMessage smp rcvPrivateKey rcvId msgId
   atomically $ releaseGetLock c rq
 
-hasGetLock :: AgentClient -> RcvQueue -> STM Bool
+hasGetLock :: AgentClient -> RcvQueue -> IO Bool
 hasGetLock c RcvQueue {server, rcvId} =
-  TM.member (server, rcvId) $ getMsgLocks c
+  TM.memberIO (server, rcvId) $ getMsgLocks c
 
 releaseGetLock :: AgentClient -> RcvQueue -> STM ()
 releaseGetLock c RcvQueue {server, rcvId} =
@@ -1638,10 +1647,10 @@ deleteQueues c = sendTSessionBatches "DEL" id deleteQueues_ c
       pure rs
 
 sendAgentMessage :: AgentClient -> SndQueue -> MsgFlags -> ByteString -> AM (Maybe SMPServer)
-sendAgentMessage c sq@SndQueue {userId, server, sndId, sndPrivateKey} msgFlags agentMsg = do
+sendAgentMessage c sq@SndQueue {userId, server, connId, sndId, sndPrivateKey} msgFlags agentMsg = do
   let clientMsg = SMP.ClientMessage SMP.PHEmpty agentMsg
   msg <- agentCbEncrypt sq Nothing $ smpEncode clientMsg
-  sendOrProxySMPMessage c userId server "<MSG>" (Just sndPrivateKey) sndId msgFlags msg
+  sendOrProxySMPMessage c userId server connId "<MSG>" (Just sndPrivateKey) sndId msgFlags msg
 
 data ServerQueueInfo = ServerQueueInfo
   { server :: SMPServer,
@@ -1660,7 +1669,7 @@ getQueueInfo c rq@RcvQueue {server, rcvId, rcvPrivateKey, sndId, status, clientN
     let ntfId = enc . (\ClientNtfCreds {notifierId} -> notifierId) <$> clientNtfCreds
     pure ServerQueueInfo {server, rcvId = enc rcvId, sndId = enc sndId, ntfId, status = serializeQueueStatus status, info}
   where
-    enc = decodeLatin1 . B64.encode
+    enc = decodeLatin1 . B64.encode . unEntityId
 
 agentNtfRegisterToken :: AgentClient -> NtfToken -> NtfPublicAuthKey -> C.PublicKeyX25519 -> AM (NtfTokenId, C.PublicKeyX25519)
 agentNtfRegisterToken c NtfToken {deviceToken, ntfServer, ntfPrivKey} ntfPubKey pubDhKey =
@@ -1708,10 +1717,10 @@ agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize},
   rKeys <- xftpRcvKeys n
   (sndKey, replicaKey) <- atomically . C.generateAuthKeyPair C.SEd25519 =<< asks random
   let fileInfo = FileInfo {sndKey, size = chunkSize, digest = chunkDigest}
-  logServer "-->" c srv "" "FNEW"
-  tSess <- liftIO $ mkTransportSession c userId srv chunkDigest
+  logServer "-->" c srv NoEntity "FNEW"
+  tSess <- mkTransportSession c userId srv chunkDigest
   (sndId, rIds) <- withClient c tSess $ \xftp -> X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth
-  logServer "<--" c srv "" $ B.unwords ["SIDS", logSecret sndId]
+  logServer "<--" c srv NoEntity $ B.unwords ["SIDS", logSecret sndId]
   pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys}
 
 agentXFTPUploadChunk :: AgentClient -> UserId -> FileDigest -> SndFileChunkReplica -> XFTPChunkSpec -> AM ()
@@ -1735,7 +1744,7 @@ xftpRcvKeys n = do
     Just rKeys' -> pure rKeys'
     _ -> throwE $ INTERNAL "non-positive number of recipients"
 
-xftpRcvIdsKeys :: NonEmpty ByteString -> NonEmpty C.AAuthKeyPair -> NonEmpty (ChunkReplicaId, C.APrivateAuthKey)
+xftpRcvIdsKeys :: NonEmpty EntityId -> NonEmpty C.AAuthKeyPair -> NonEmpty (ChunkReplicaId, C.APrivateAuthKey)
 xftpRcvIdsKeys rIds rKeys = L.map ChunkReplicaId rIds `L.zip` L.map snd rKeys
 
 agentCbEncrypt :: SndQueue -> Maybe C.PublicKeyX25519 -> ByteString -> AM ByteString
@@ -1862,16 +1871,28 @@ beginAgentOperation c op = do
   -- unsafeIOToSTM $ putStrLn $ "beginOperation! " <> show op <> " " <> show (opsInProgress s + 1)
   writeTVar opVar $! s {opsInProgress = opsInProgress s + 1}
 
-agentOperationBracket :: MonadUnliftIO m => AgentClient -> AgentOperation -> (AgentClient -> STM ()) -> m a -> m a
+agentOperationBracket :: MonadUnliftIO m => AgentClient -> AgentOperation -> (AgentClient -> IO ()) -> m a -> m a
 agentOperationBracket c op check action =
   E.bracket
-    (atomically (check c) >> atomically (beginAgentOperation c op))
+    (liftIO (check c) >> atomically (beginAgentOperation c op))
     (\_ -> atomically $ endAgentOperation c op)
     (const action)
 
-waitUntilForeground :: AgentClient -> STM ()
-waitUntilForeground c = unlessM ((ASForeground ==) <$> readTVar (agentState c)) retry
-{-# INLINE waitUntilForeground #-}
+waitUntilForeground :: AgentClient -> IO ()
+waitUntilForeground c =
+  unlessM (foreground readTVarIO) $ atomically $ unlessM (foreground readTVar) retry
+  where
+    foreground :: Monad m => (TVar AgentState -> m AgentState) -> m Bool
+    foreground rd = (ASForeground ==) <$> rd (agentState c)
+
+-- This function waits while agent is suspended, but will proceed while it is suspending,
+-- to allow completing in-flight operations.
+waitWhileSuspended :: AgentClient -> IO ()
+waitWhileSuspended c =
+  whenM (suspended readTVarIO) $ atomically $ whenM (suspended readTVar) retry
+  where
+    suspended :: Monad m => (TVar AgentState -> m AgentState) -> m Bool
+    suspended rd = (ASSuspended ==) <$> rd (agentState c)
 
 withStore' :: AgentClient -> (DB.Connection -> IO a) -> AM a
 withStore' c action = withStore c $ fmap Right . action
@@ -1942,7 +1963,7 @@ getNextServer c userId usedSrvs = withUserServers c userId $ \srvs ->
 
 withUserServers :: forall p a. (ProtocolTypeI p, UserProtocol p) => AgentClient -> UserId -> (NonEmpty (ProtoServerWithAuth p) -> AM a) -> AM a
 withUserServers c userId action =
-  atomically (TM.lookup userId $ userServers c) >>= \case
+  liftIO (TM.lookupIO userId $ userServers c) >>= \case
     Just srvs -> action $ enabledSrvs srvs
     _ -> throwE $ INTERNAL "unknown userId - no user servers"
 
@@ -1950,11 +1971,10 @@ withNextSrv :: forall p a. (ProtocolTypeI p, UserProtocol p) => AgentClient -> U
 withNextSrv c userId usedSrvs initUsed action = do
   used <- readTVarIO usedSrvs
   srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId used
-  atomically $ do
-    srvs_ <- TM.lookup userId $ userServers c
-    let unused = maybe [] ((\\ used) . map protoServer . L.toList . enabledSrvs) srvs_
-        used' = if null unused then initUsed else srv : used
-    writeTVar usedSrvs $! used'
+  srvs_ <- liftIO $ TM.lookupIO userId $ userServers c
+  let unused = maybe [] ((\\ used) . map protoServer . L.toList . enabledSrvs) srvs_
+      used' = if null unused then initUsed else srv : used
+  atomically $ writeTVar usedSrvs $! used'
   action srvAuth
 
 incSMPServerStat :: AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int) -> STM ()

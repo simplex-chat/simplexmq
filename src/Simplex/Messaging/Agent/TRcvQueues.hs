@@ -11,6 +11,7 @@ module Simplex.Messaging.Agent.TRcvQueues
     addQueue,
     batchAddQueues,
     deleteQueue,
+    hasSessQueues,
     getSessQueues,
     getDelSessQueues,
   )
@@ -30,7 +31,7 @@ import Simplex.Messaging.Transport
 
 class Queue q where
   connId' :: q -> ConnId
-  qKey :: q -> (UserId, SMPServer, ConnId)
+  qKey :: q -> (UserId, SMPServer, RecipientId)
 
 -- the fields in this record have the same data with swapped keys for lookup efficiency,
 -- and all methods must maintain this invariant.
@@ -39,8 +40,8 @@ data TRcvQueues q = TRcvQueues
     getConnections :: TMap ConnId (NonEmpty (UserId, SMPServer, RecipientId))
   }
 
-empty :: STM (TRcvQueues q)
-empty = TRcvQueues <$> TM.empty <*> TM.empty
+empty :: IO (TRcvQueues q)
+empty = TRcvQueues <$> TM.emptyIO <*> TM.emptyIO
 
 clear :: TRcvQueues q -> STM ()
 clear (TRcvQueues qs cs) = TM.clear qs >> TM.clear cs
@@ -62,7 +63,7 @@ addQueue rq (TRcvQueues qs cs) = do
     addQ = Just . maybe (k :| []) (k <|)
     k = qKey rq
 
--- Save time by aggregating modifyTVar
+-- Save time by aggregating modifyTVar'
 batchAddQueues :: (Foldable t, Queue q) => TRcvQueues q -> t q -> STM ()
 batchAddQueues (TRcvQueues qs cs) rqs = do
   modifyTVar' qs $ \now -> foldl' (\rqs' rq -> M.insert (qKey rq) rq rqs') now rqs
@@ -78,8 +79,11 @@ deleteQueue rq (TRcvQueues qs cs) = do
     delQ = L.nonEmpty . L.filter (/= k)
     k = qKey rq
 
-getSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues RcvQueue -> STM [RcvQueue]
-getSessQueues tSess (TRcvQueues qs _) = M.foldl' addQ [] <$> readTVar qs
+hasSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues RcvQueue -> STM Bool
+hasSessQueues tSess (TRcvQueues qs _) = any (`isSession` tSess) <$> readTVar qs
+
+getSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues RcvQueue -> IO [RcvQueue]
+getSessQueues tSess (TRcvQueues qs _) = M.foldl' addQ [] <$> readTVarIO qs
   where
     addQ qs' rq = if rq `isSession` tSess then rq : qs' else qs'
 
@@ -93,7 +97,7 @@ getDelSessQueues tSess sessId' (TRcvQueues qs cs) = do
     delQ acc@(removed, qs') (sessId, rq)
       | rq `isSession` tSess && sessId == sessId' = (rq : removed, M.delete (qKey rq) qs')
       | otherwise = acc
-    delConn :: ([ConnId], M.Map ConnId (NonEmpty (UserId, SMPServer, ConnId))) -> RcvQueue -> ([ConnId], M.Map ConnId (NonEmpty (UserId, SMPServer, ConnId)))
+    delConn :: ([ConnId], M.Map ConnId (NonEmpty (UserId, SMPServer, RecipientId))) -> RcvQueue -> ([ConnId], M.Map ConnId (NonEmpty (UserId, SMPServer, RecipientId)))
     delConn (removed, cs') rq = M.alterF f cId cs'
       where
         cId = connId rq
@@ -109,7 +113,7 @@ isSession rq (uId, srv, connId_) =
 
 instance Queue RcvQueue where
   connId' = connId
-  qKey rq = (userId rq, server rq, connId rq)
+  qKey rq = (userId rq, server rq, rcvId rq)
 
 instance Queue (SessionId, RcvQueue) where
   connId' = connId . snd

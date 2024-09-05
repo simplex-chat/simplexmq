@@ -7,6 +7,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -19,6 +20,7 @@ import Control.Monad.Reader
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import Data.IORef
 import Data.Int (Int64)
 import Data.List (intercalate, sort)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -30,6 +32,7 @@ import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import GHC.IORef (atomicSwapIORef)
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmission (..))
 import Simplex.Messaging.Client.Agent
@@ -42,7 +45,7 @@ import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Notifications.Transport
-import Simplex.Messaging.Protocol (ErrorType (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, encodeTransmission, tGet, tPut)
+import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, pattern NoEntity, encodeTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Stats
@@ -118,16 +121,16 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
           ts <- getCurrentTime
-          fromTime' <- atomically $ swapTVar fromTime ts
-          tknCreated' <- atomically $ swapTVar tknCreated 0
-          tknVerified' <- atomically $ swapTVar tknVerified 0
-          tknDeleted' <- atomically $ swapTVar tknDeleted 0
-          subCreated' <- atomically $ swapTVar subCreated 0
-          subDeleted' <- atomically $ swapTVar subDeleted 0
-          ntfReceived' <- atomically $ swapTVar ntfReceived 0
-          ntfDelivered' <- atomically $ swapTVar ntfDelivered 0
-          tkn <- atomically $ periodStatCounts activeTokens ts
-          sub <- atomically $ periodStatCounts activeSubs ts
+          fromTime' <- atomicSwapIORef fromTime ts
+          tknCreated' <- atomicSwapIORef tknCreated 0
+          tknVerified' <- atomicSwapIORef tknVerified 0
+          tknDeleted' <- atomicSwapIORef tknDeleted 0
+          subCreated' <- atomicSwapIORef subCreated 0
+          subDeleted' <- atomicSwapIORef subDeleted 0
+          ntfReceived' <- atomicSwapIORef ntfReceived 0
+          ntfDelivered' <- atomicSwapIORef ntfDelivered 0
+          tkn <- liftIO $ periodStatCounts activeTokens ts
+          sub <- liftIO $ periodStatCounts activeSubs ts
           hPutStrLn h $
             intercalate
               ","
@@ -176,10 +179,10 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     getSMPSubscriber :: SMPServer -> M SMPSubscriber
     getSMPSubscriber smpServer =
-      atomically (TM.lookup smpServer smpSubscribers) >>= maybe createSMPSubscriber pure
+      liftIO (TM.lookupIO smpServer smpSubscribers) >>= maybe createSMPSubscriber pure
       where
         createSMPSubscriber = do
-          sub@SMPSubscriber {subThreadId} <- atomically newSMPSubscriber
+          sub@SMPSubscriber {subThreadId} <- liftIO newSMPSubscriber
           atomically $ TM.insert smpServer sub smpSubscribers
           tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber sub)
           atomically . writeTVar subThreadId $ Just tId
@@ -203,7 +206,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
-      ((_, srv, _), _, _, ts) <- atomically $ readTBQueue msgQ
+      ((_, srv, _), _thVersion, sessionId, ts) <- atomically $ readTBQueue msgQ
       forM ts $ \(ntfId, t) -> case t of
         STUnexpectedError e -> logError $ "SMP client unexpected error: " <> tshow e -- uncorrelated response, should not happen
         STResponse {} -> pure () -- it was already reported as timeout error
@@ -215,12 +218,14 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
               st <- asks store
               NtfPushServer {pushQ} <- asks pushServer
               stats <- asks serverStats
-              atomically $ updatePeriodStats (activeSubs stats) ntfId
+              liftIO $ updatePeriodStats (activeSubs stats) ntfId
               atomically $
                 findNtfSubscriptionToken st smpQueue
                   >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
               incNtfStat ntfReceived
-            Right SMP.END -> updateSubStatus smpQueue NSEnd
+            Right SMP.END ->
+              whenM (atomically $ activeClientSession' ca sessionId srv) $
+                updateSubStatus smpQueue NSEnd
             Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
             Right _ -> logError "SMP server unexpected response"
             Left e -> logError $ "SMP client error: " <> tshow e
@@ -297,7 +302,7 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
       void $ deliverNotification pp tkn ntf
     PNMessage {} -> checkActiveTkn status $ do
       stats <- asks serverStats
-      atomically $ updatePeriodStats (activeTokens stats) ntfTknId
+      liftIO $ updatePeriodStats (activeTokens stats) ntfTknId
       void $ deliverNotification pp tkn ntf
       incNtfStat ntfDelivered
   where
@@ -333,7 +338,7 @@ runNtfClientTransport :: Transport c => THandleNTF c 'TServer -> M ()
 runNtfClientTransport th@THandle {params} = do
   qSize <- asks $ clientQSize . config
   ts <- liftIO getSystemTime
-  c <- atomically $ newNtfServerClient qSize params ts
+  c <- liftIO $ newNtfServerClient qSize params ts
   s <- asks subscriber
   ps <- asks pushServer
   expCfg <- asks $ inactiveClientExpiration . config
@@ -444,7 +449,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         atomically $ writeTBQueue pushQ (tkn, PNVerification regCode)
         withNtfLog (`logCreateToken` tkn)
         incNtfStatT token tknCreated
-        pure (corrId, "", NRTknId tknId srvDhPubKey)
+        pure (corrId, NoEntity, NRTknId tknId srvDhPubKey)
       NtfReqCmd SToken (NtfTkn tkn@NtfTknData {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey), tknCronInterval}) (corrId, tknId, cmd) -> do
         status <- readTVarIO tknStatus
         (corrId,tknId,) <$> case cmd of
@@ -507,7 +512,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             | otherwise -> do
                 logDebug "TCRN"
                 atomically $ writeTVar tknCronInterval int
-                atomically (TM.lookup tknId intervalNotifiers) >>= \case
+                liftIO (TM.lookupIO tknId intervalNotifiers) >>= \case
                   Nothing -> runIntervalNotifier int
                   Just IntervalNotifier {interval, action} ->
                     unless (interval == int) $ do
@@ -535,7 +540,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             _ -> pure $ NRErr AUTH
         withNtfLog (`logCreateSubscription` sub)
         incNtfStat subCreated
-        pure (corrId, "", resp)
+        pure (corrId, NoEntity, resp)
       NtfReqCmd SSubscription (NtfSub NtfSubData {smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
         status <- readTVarIO subStatus
         (corrId,subId,) <$> case cmd of
@@ -560,7 +565,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
           PING -> pure NRPong
       NtfReqPing corrId entId -> pure (corrId, entId, NRPong)
     getId :: M NtfEntityId
-    getId = randomBytes =<< asks (subIdBytes . config)
+    getId = fmap EntityId . randomBytes =<< asks (subIdBytes . config)
     getRegCode :: M NtfRegCode
     getRegCode = NtfRegCode <$> (randomBytes =<< asks (regCodeBytes . config))
     randomBytes :: Int -> M ByteString
@@ -573,19 +578,19 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
 withNtfLog :: (StoreLog 'WriteMode -> IO a) -> M ()
 withNtfLog action = liftIO . mapM_ action =<< asks storeLog
 
-incNtfStatT :: DeviceToken -> (NtfServerStats -> TVar Int) -> M ()
+incNtfStatT :: DeviceToken -> (NtfServerStats -> IORef Int) -> M ()
 incNtfStatT (DeviceToken PPApnsNull _) _ = pure ()
 incNtfStatT _ statSel = incNtfStat statSel
 
-incNtfStat :: (NtfServerStats -> TVar Int) -> M ()
+incNtfStat :: (NtfServerStats -> IORef Int) -> M ()
 incNtfStat statSel = do
   stats <- asks serverStats
-  atomically $ modifyTVar' (statSel stats) (+ 1)
+  liftIO $ atomicModifyIORef'_ (statSel stats) (+ 1)
 
 saveServerStats :: M ()
 saveServerStats =
   asks (serverStatsBackupFile . config)
-    >>= mapM_ (\f -> asks serverStats >>= atomically . getNtfServerStatsData >>= liftIO . saveStats f)
+    >>= mapM_ (\f -> asks serverStats >>= liftIO . getNtfServerStatsData >>= liftIO . saveStats f)
   where
     saveStats f stats = do
       logInfo $ "saving server stats to file " <> T.pack f
@@ -600,7 +605,7 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d -> do
           s <- asks serverStats
-          atomically $ setNtfServerStats s d
+          liftIO $ setNtfServerStats s d
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
         Left e -> do

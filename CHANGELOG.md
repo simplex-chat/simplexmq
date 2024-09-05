@@ -1,3 +1,61 @@
+# 6.0.3
+
+Agent:
+- fix possible stuck queue rotation (#1290).
+
+SMP server:
+- batch END responses when subscribed client switches to reduce server and client traffic.
+- reduce STM transactions for better performance.
+- add stats for END events and for SUB/DEL event batches.
+- remove "expensive" stats to save memory.
+
+# 6.0.2
+
+SMP agent:
+- fix stuck connection commands when a server is not responding.
+- store query errors, reduce slow query threshold to 1ms.
+
+Notification server:
+- reduce PING interval to 1 minute.
+- fix subscriptions disabled on race condition (only mark subscriptions with END status when received via the active connection).
+
+# 6.0.1
+
+SMP agent:
+- support changing user of the new connection.
+- do not start delivery workers when there are no messages to deliver.
+- enable notifications for all connections.
+- combine database transactions when subscribing.
+
+SMP server:
+- safe compacting of store log.
+- fix possible race when creating client that might lead to memory leak.
+
+Dependencies: upgrade tls to 1.9
+
+# 6.0.0
+
+Version 6.0.0.8
+
+Agent:
+- enabled fast handshake support.
+- batch-send multiple messages in each connection.
+- resume subscriptions as soon as agent moves to foreground or as network connection resumes.
+- "known" servers to determine whether to use SMP proxy.
+- retry on SMP proxy NO_SESSION error.
+- fixes to notification subscriptions.
+- persistent server statistics.
+- better concurrency.
+
+SMP server:
+- reduce threads usage.
+- additional statistics.
+- improve disabling inactive clients.
+- additional control port commands for monitoring.
+
+Notification server:
+- support onion-only SMP servers.
+
 # 5.8.2
 
 Agent:

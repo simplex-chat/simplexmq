@@ -176,17 +176,17 @@ data PClient v err msg = PClient
     msgQ :: Maybe (TBQueue (ServerTransmissionBatch v err msg))
   }
 
-smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe (THandleAuth 'TClient) -> STM SMPClient
+smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe (THandleAuth 'TClient) -> IO SMPClient
 smpClientStub g sessionId thVersion thAuth = do
   let ts = UTCTime (read "2024-03-31") 0
-  connected <- newTVar False
-  clientCorrId <- C.newRandomDRG g
-  sentCommands <- TM.empty
-  sendPings <- newTVar False
-  lastReceived <- newTVar ts
-  timeoutErrorCount <- newTVar 0
-  sndQ <- newTBQueue 100
-  rcvQ <- newTBQueue 100
+  connected <- newTVarIO False
+  clientCorrId <- atomically $ C.newRandomDRG g
+  sentCommands <- TM.emptyIO
+  sendPings <- newTVarIO False
+  lastReceived <- newTVarIO ts
+  timeoutErrorCount <- newTVarIO 0
+  sndQ <- newTBQueueIO 100
+  rcvQ <- newTBQueueIO 100
   return
     ProtocolClient
       { action = Nothing,
@@ -447,7 +447,8 @@ transportSession' = transportSession . client_
 type UserId = Int64
 
 -- | Transport session key - includes entity ID if `sessionMode = TSMEntity`.
-type TransportSession msg = (UserId, ProtoServer msg, Maybe EntityId)
+-- Please note that for SMP connection ID is used as entity ID, not queue ID.
+type TransportSession msg = (UserId, ProtoServer msg, Maybe ByteString)
 
 -- | Connects to 'ProtocolServer' using passed client configuration
 -- and queue for messages and notifications.
@@ -458,21 +459,21 @@ getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> T
 getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret} msgQ disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
-      (getCurrentTime >>= atomically . mkProtocolClient useHost >>= runClient useTransport useHost)
+      (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
     NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
-    mkProtocolClient :: TransportHost -> UTCTime -> STM (PClient v err msg)
+    mkProtocolClient :: TransportHost -> UTCTime -> IO (PClient v err msg)
     mkProtocolClient transportHost ts = do
-      connected <- newTVar False
-      sendPings <- newTVar False
-      lastReceived <- newTVar ts
-      timeoutErrorCount <- newTVar 0
-      clientCorrId <- C.newRandomDRG g
-      sentCommands <- TM.empty
-      sndQ <- newTBQueue qSize
-      rcvQ <- newTBQueue qSize
+      connected <- newTVarIO False
+      sendPings <- newTVarIO False
+      lastReceived <- newTVarIO ts
+      timeoutErrorCount <- newTVarIO 0
+      clientCorrId <- atomically $ C.newRandomDRG g
+      sentCommands <- TM.emptyIO
+      sndQ <- newTBQueueIO qSize
+      rcvQ <- newTBQueueIO qSize
       return
         PClient
           { connected,
@@ -550,7 +551,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
           if remaining > 1_000_000 -- delay pings only for significant time
             then loop remaining
             else do
-              whenM (readTVarIO sendPings) $ void . runExceptT $ sendProtocolCommand c Nothing "" (protocolPing @v @err @msg)
+              whenM (readTVarIO sendPings) $ void . runExceptT $ sendProtocolCommand c Nothing NoEntity (protocolPing @v @err @msg)
               -- sendProtocolCommand/getResponse updates counter for each command
               cnt <- readTVarIO timeoutErrorCount
               -- drop client when maxCnt of commands have timed out in sequence, but only after some time has passed after last received response
@@ -571,7 +572,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     processMsg ProtocolClient {client_ = PClient {sentCommands}} (_, _, (corrId, entId, respOrErr))
       | B.null $ bs corrId = sendMsg $ STEvent clientResp
       | otherwise =
-          atomically (TM.lookup corrId sentCommands) >>= \case
+          TM.lookupIO corrId sentCommands >>= \case
             Nothing -> sendMsg $ STUnexpectedError unexpected
             Just Request {entityId, command, pending, responseVar} -> do
               wasPending <-
@@ -676,7 +677,7 @@ createSMPQueue ::
   Bool ->
   ExceptT SMPClientError IO QueueIdsKeys
 createSMPQueue c (rKey, rpKey) dhKey auth subMode sndSecure =
-  sendSMPCommand c (Just rpKey) "" (NEW rKey dhKey auth subMode sndSecure) >>= \case
+  sendSMPCommand c (Just rpKey) NoEntity (NEW rKey dhKey auth subMode sndSecure) >>= \case
     IDS qik -> pure qik
     r -> throwE $ unexpectedResponse r
 
@@ -851,7 +852,7 @@ getSMPDataBlob c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}}
     Nothing -> throwE $ PCETransportError TENoServerAuth
     Just THAuthClient {serverPeerPubKey = k} -> pure k
   nonce <- liftIO . atomically $ C.randomCbNonce g
-  let dId = BA.convert $ C.pubKeyBytes $ C.publicKey pk
+  let dId = EntityId $ BA.convert $ C.pubKeyBytes $ C.publicKey pk
   sendProtocolCommand_ c (Just nonce) Nothing Nothing dId (Cmd SSender READ) >>= \case
     DATA encBlob -> decryptDataBlob serverKey pk nonce encBlob
     r -> throwE $ unexpectedResponse r
@@ -859,7 +860,7 @@ getSMPDataBlob c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}}
 proxyGetSMPDataBlob :: SMPClient -> ProxiedRelay -> C.PrivateKeyX25519 -> ExceptT SMPClientError IO (Either ProxyClientError DataBlob)
 proxyGetSMPDataBlob c@ProtocolClient {client_ = PClient {clientCorrId = g}} proxiedRelay@ProxiedRelay {prServerKey} pk = do
   nonce <- liftIO . atomically $ C.randomCbNonce g
-  let dId = BA.convert $ C.pubKeyBytes $ C.publicKey pk
+  let dId = EntityId $ BA.convert $ C.pubKeyBytes $ C.publicKey pk
   encBlob_ <-
     proxySMPCommand_ c (Just nonce) proxiedRelay Nothing dId READ $ \case
       DATA encBlob -> Just encBlob
@@ -877,7 +878,7 @@ decryptDataBlob serverKey pk nonce encBlob = do
 connectSMPProxiedRelay :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO ProxiedRelay
 connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout}} relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth
   | thVersion (thParams c) >= sendingProxySMPVersion =
-      sendProtocolCommand_ c Nothing tOut Nothing "" (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
+      sendProtocolCommand_ c Nothing tOut Nothing NoEntity (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
         PKEY sId vr (chain, key) ->
           case supportedClientSMPRelayVRange `compatibleVersion` vr of
             Nothing -> throwE $ transportErr TEVersion
@@ -985,7 +986,7 @@ proxySMPCommand_ c@ProtocolClient {thParams = proxyThParams, client_ = PClient {
   et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedTLength
   -- proxy interaction errors are wrapped
   let tOut = Just $ 2 * tcpTimeout
-  tryE (sendProtocolCommand_ c (Just nonce) tOut Nothing sessionId (Cmd SProxiedClient (PFWD v cmdPubKey et))) >>= \case
+  tryE (sendProtocolCommand_ c (Just nonce) tOut Nothing (EntityId sessionId) (Cmd SProxiedClient (PFWD v cmdPubKey et))) >>= \case
     Right r -> case r of
       PRES (EncResponse er) -> do
         -- server interaction errors are thrown directly
@@ -1023,7 +1024,7 @@ forwardSMPTransmission c@ProtocolClient {thParams, client_ = PClient {clientCorr
   let fwdT = FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission}
       eft = EncFwdTransmission $ C.cbEncryptNoPad sessSecret nonce (smpEncode fwdT)
   -- send
-  sendProtocolCommand_ c (Just nonce) Nothing Nothing "" (Cmd SSender (RFWD eft)) >>= \case
+  sendProtocolCommand_ c (Just nonce) Nothing Nothing NoEntity (Cmd SSender (RFWD eft)) >>= \case
     RRES (EncFwdResponse efr) -> do
       -- unwrap
       r' <- liftEitherWith PCECryptoError $ C.cbDecryptNoPad sessSecret (C.reverseNonce nonce) efr
@@ -1071,7 +1072,7 @@ sendProtocolCommands c@ProtocolClient {thParams = THandleParams {batch, blockSiz
       | diff == 0 = pure $ L.fromList rs
       | diff > 0 = do
           putStrLn "send error: fewer responses than expected"
-          pure $ L.fromList $ rs <> replicate diff (Response "" $ Left $ PCETransportError TEBadBlock)
+          pure $ L.fromList $ rs <> replicate diff (Response NoEntity $ Left $ PCETransportError TEBadBlock)
       | otherwise = do
           putStrLn "send error: more responses than expected"
           pure $ L.fromList $ take (L.length cs) rs
@@ -1145,13 +1146,13 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentC
   nonce@(C.CbNonce corrId) <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entityId, command)
       auth = authTransmission (thAuth thParams) pKey_ nonce tForAuth
-  r <- atomically $ mkRequest (CorrId corrId)
+  r <- mkRequest (CorrId corrId)
   pure ((,tToSend) <$> auth, r)
   where
-    mkRequest :: CorrId -> STM (Request err msg)
+    mkRequest :: CorrId -> IO (Request err msg)
     mkRequest corrId = do
-      pending <- newTVar True
-      responseVar <- newEmptyTMVar
+      pending <- newTVarIO True
+      responseVar <- newEmptyTMVarIO
       let r =
             Request
               { corrId,
@@ -1160,7 +1161,7 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentC
                 pending,
                 responseVar
               }
-      TM.insert corrId r sentCommands
+      atomically $ TM.insert corrId r sentCommands
       pure r
 
 authTransmission :: Maybe (THandleAuth 'TClient) -> Maybe C.APrivateAuthKey -> C.CbNonce -> ByteString -> Either TransportError (Maybe TransmissionAuth)

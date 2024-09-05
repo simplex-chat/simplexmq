@@ -44,7 +44,7 @@ import Data.List (foldl', sortOn)
 import Data.List.NonEmpty (NonEmpty (..), nonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
-import qualified Data.Map as M
+import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Text as T
 import Data.Word (Word32)
@@ -313,7 +313,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       pure (encPath, fdRcv, fdSnd, chunkSpecs, encSize)
     uploadFile :: TVar ChaChaDRG -> [XFTPChunkSpec] -> TVar [Int64] -> Int64 -> ExceptT CLIError IO [SentFileChunk]
     uploadFile g chunks uploadedChunks encSize = do
-      a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
+      a <- liftIO $ newXFTPAgent defaultXFTPClientAgentConfig
       gen <- newTVarIO =<< liftIO newStdGen
       let xftpSrvs = fromMaybe defaultXFTPServers (nonEmpty xftpServers)
       srvs <- liftIO $ replicateM (length chunks) $ getXFTPServer gen xftpSrvs
@@ -429,7 +429,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
     receive (ValidFileDescription FileDescription {size, digest, key, nonce, chunks}) = do
       encPath <- getEncPath tempPath "xftp"
       createDirectory encPath
-      a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
+      a <- liftIO $ newXFTPAgent defaultXFTPClientAgentConfig
       liftIO $ printNoNewLine "Downloading file..."
       downloadedChunks <- newTVarIO []
       let srv FileChunk {replicas} = case replicas of
@@ -494,7 +494,7 @@ cliDeleteFile DeleteOptions {fileDescription, retryCount, yes} = do
   where
     deleteFile :: ValidFileDescription 'FSender -> ExceptT CLIError IO ()
     deleteFile (ValidFileDescription FileDescription {chunks}) = do
-      a <- atomically $ newXFTPAgent defaultXFTPClientAgentConfig
+      a <- liftIO $ newXFTPAgent defaultXFTPClientAgentConfig
       forM_ chunks $ deleteFileChunk a
       liftIO $ do
         printNoNewLine "File deleted!"

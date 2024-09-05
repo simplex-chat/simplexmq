@@ -37,7 +37,7 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
-import Simplex.Messaging.Protocol (DataBlob (..), EncRcvMsgBody (..), MsgBody, RcvMessage (..), SubscriptionMode (..), e2eEncConfirmationLength, maxMessageLength, noMsgFlags)
+import Simplex.Messaging.Protocol (DataBlob (..), EntityId (..), EncRcvMsgBody (..), MsgBody, RcvMessage (..), SubscriptionMode (..), pattern NoEntity, e2eEncConfirmationLength, maxMessageLength, noMsgFlags)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport
@@ -446,7 +446,7 @@ receiveBlobViaProxy proxyServ relayServ alg origData = do
   (C.PublicKeyX25519 k, pk'@(C.PrivateKeyX25519 pk _)) <- atomically $ C.generateKeyPair @'C.X25519 g
   blobKeys@(_, blobPKey) <- atomically $ C.generateAuthKeyPair alg g
   let kBytes = BA.convert k :: ByteString -- blob ID for "sender" (blob recipient)
-      rBlobId = C.sha256Hash kBytes
+      rBlobId = EntityId $ C.sha256Hash kBytes
       pkBytes = BA.convert pk :: ByteString
       ikm = pkBytes
       salt = "" :: ByteString
@@ -477,14 +477,14 @@ testNoProxy :: IO ()
 testNoProxy = do
   withSmpServerConfigOn (transport @TLS) cfg testPort2 $ \_ -> do
     testSMPClient_ "127.0.0.1" testPort2 proxyVRangeV8 $ \(th :: THandleSMP TLS 'TClient) -> do
-      (_, _, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", "", SMP.PRXY testSMPServer Nothing)
+      (_, _, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", NoEntity, SMP.PRXY testSMPServer Nothing)
       reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
 
 testProxyAuth :: IO ()
 testProxyAuth = do
   withSmpServerConfigOn (transport @TLS) proxyCfgAuth testPort $ \_ -> do
     testSMPClient_ "127.0.0.1" testPort proxyVRangeV8 $ \(th :: THandleSMP TLS 'TClient) -> do
-      (_, _s, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", "", SMP.PRXY testSMPServer2 $ Just "wrong")
+      (_, _s, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", NoEntity, SMP.PRXY testSMPServer2 $ Just "wrong")
       reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
   where
     proxyCfgAuth = proxyCfg {newQueueBasicAuth = Just "correct"}
