@@ -178,7 +178,7 @@ labelMyThread :: MonadIO m => String -> m ()
 labelMyThread label = liftIO $ myThreadId >>= (`labelThread` label)
 
 atomicModifyIORef'_ :: IORef a -> (a -> a) -> IO ()
-atomicModifyIORef'_ r f = atomicModifyIORef' r $ \v -> (f v, ())
+atomicModifyIORef'_ r f = atomicModifyIORef' r (\v -> (f v, ()))
 
 encodeJSON :: ToJSON a => a -> Text
 encodeJSON = safeDecodeUtf8 . LB.toStrict . J.encode
