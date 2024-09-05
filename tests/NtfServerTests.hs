@@ -72,13 +72,13 @@ pattern RespNtf corrId queueId command <- (_, _, (corrId, queueId, Right command
 
 deriving instance Eq NtfResponse
 
-sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c 'TClient -> (Maybe TransmissionAuth, ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
+sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c 'TClient -> (Maybe TransmissionAuth, ByteString, NtfEntityId, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
 sendRecvNtf h@THandle {params} (sgn, corrId, qId, cmd) = do
   let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (sgn, tToSend)
   tGet1 h
 
-signSendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c 'TClient -> C.APrivateAuthKey -> (ByteString, ByteString, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
+signSendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c 'TClient -> C.APrivateAuthKey -> (ByteString, NtfEntityId, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
 signSendRecvNtf h@THandle {params} (C.APrivateAuthKey a pk) (corrId, qId, cmd) = do
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (authorize tForAuth, tToSend)
@@ -110,7 +110,7 @@ testNotificationSubscription (ATransport t) =
           -- create queue
           (sId, rId, rKey, rcvDhSecret) <- createAndSecureQueue rh sPub
           -- register and verify token
-          RespNtf "1" "" (NRTknId tId ntfDh) <- signSendRecvNtf nh tknKey ("1", "", TNEW $ NewNtfTkn tkn tknPub dhPub)
+          RespNtf "1" NoEntity (NRTknId tId ntfDh) <- signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
           APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse = send} <-
             atomically $ readTBQueue apnsQ
           send APNSRespOk
@@ -126,7 +126,7 @@ testNotificationSubscription (ATransport t) =
           let srv = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
               q = SMPQueueNtf srv nId
               rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
-          RespNtf "4" _ (NRSubId _subId) <- signSendRecvNtf nh tknKey ("4", "", SNEW $ NewNtfSub tId q nKey)
+          RespNtf "4" _ (NRSubId _subId) <- signSendRecvNtf nh tknKey ("4", NoEntity, SNEW $ NewNtfSub tId q nKey)
           -- send message
           threadDelay 50000
           Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello")

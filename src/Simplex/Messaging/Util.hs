@@ -15,6 +15,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
+import Data.IORef
 import Data.List (groupBy, sortOn)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -23,7 +24,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
 import Data.Time (NominalDiffTime)
 import GHC.Conc (labelThread, myThreadId, threadDelay)
-import UnliftIO
+import UnliftIO hiding (atomicModifyIORef')
 import qualified UnliftIO.Exception as UE
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
@@ -167,12 +168,17 @@ threadDelay' = loop
 
 diffToMicroseconds :: NominalDiffTime -> Int64
 diffToMicroseconds diff = truncate $ diff * 1000000
+{-# INLINE diffToMicroseconds #-}
 
 diffToMilliseconds :: NominalDiffTime -> Int64
 diffToMilliseconds diff = truncate $ diff * 1000
+{-# INLINE diffToMilliseconds #-}
 
 labelMyThread :: MonadIO m => String -> m ()
 labelMyThread label = liftIO $ myThreadId >>= (`labelThread` label)
+
+atomicModifyIORef'_ :: IORef a -> (a -> a) -> IO ()
+atomicModifyIORef'_ r f = atomicModifyIORef' r (\v -> (f v, ()))
 
 encodeJSON :: ToJSON a => a -> Text
 encodeJSON = safeDecodeUtf8 . LB.toStrict . J.encode

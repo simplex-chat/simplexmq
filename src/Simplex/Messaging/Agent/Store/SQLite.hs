@@ -1,10 +1,12 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -15,6 +17,7 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeOperators #-}
@@ -968,12 +971,12 @@ createRcvMsg db connId rq rcvMsgData@RcvMsgData {msgMeta = MsgMeta {sndMsgId}, i
   insertRcvMsgDetails_ db connId rq rcvMsgData
   updateRcvMsgHash db connId sndMsgId internalRcvId internalHash
 
-updateSndIds :: DB.Connection -> ConnId -> IO (InternalId, InternalSndId, PrevSndMsgHash)
-updateSndIds db connId = do
-  (lastInternalId, lastInternalSndId, prevSndHash) <- retrieveLastIdsAndHashSnd_ db connId
+updateSndIds :: DB.Connection -> ConnId -> IO (Either StoreError (InternalId, InternalSndId, PrevSndMsgHash))
+updateSndIds db connId = runExceptT $ do
+  (lastInternalId, lastInternalSndId, prevSndHash) <- ExceptT $ retrieveLastIdsAndHashSnd_ db connId
   let internalId = InternalId $ unId lastInternalId + 1
       internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
-  updateLastIdsSnd_ db connId internalId internalSndId
+  liftIO $ updateLastIdsSnd_ db connId internalId internalSndId
   pure (internalId, internalSndId, prevSndHash)
 
 createSndMsg :: DB.Connection -> ConnId -> SndMsgData -> IO ()
@@ -1814,6 +1817,14 @@ instance ToField (Version v) where toField (Version v) = toField v
 
 instance FromField (Version v) where fromField f = Version <$> fromField f
 
+deriving newtype instance ToField EntityId
+
+deriving newtype instance FromField EntityId
+
+deriving newtype instance ToField ChunkReplicaId
+
+deriving newtype instance FromField ChunkReplicaId
+
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x
 listToEither e _ = Left e
@@ -2208,9 +2219,9 @@ updateRcvMsgHash db connId sndMsgId internalRcvId internalHash =
 
 -- * updateSndIds helpers
 
-retrieveLastIdsAndHashSnd_ :: DB.Connection -> ConnId -> IO (InternalId, InternalSndId, PrevSndMsgHash)
+retrieveLastIdsAndHashSnd_ :: DB.Connection -> ConnId -> IO (Either StoreError (InternalId, InternalSndId, PrevSndMsgHash))
 retrieveLastIdsAndHashSnd_ dbConn connId = do
-  [(lastInternalId, lastInternalSndId, lastSndHash)] <-
+  firstRow id SEConnNotFound $
     DB.queryNamed
       dbConn
       [sql|
@@ -2219,7 +2230,6 @@ retrieveLastIdsAndHashSnd_ dbConn connId = do
         WHERE conn_id = :conn_id;
       |]
       [":conn_id" := connId]
-  return (lastInternalId, lastInternalSndId, lastSndHash)
 
 updateLastIdsSnd_ :: DB.Connection -> ConnId -> InternalId -> InternalSndId -> IO ()
 updateLastIdsSnd_ dbConn connId newInternalId newInternalSndId =

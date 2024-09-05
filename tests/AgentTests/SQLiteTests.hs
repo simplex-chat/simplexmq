@@ -50,7 +50,7 @@ import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Protocol (SubscriptionMode (..), pattern VersionSMPC)
+import Simplex.Messaging.Protocol (EntityId (..), SubscriptionMode (..), pattern VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
 import System.Random
 import Test.Hspec
@@ -217,12 +217,12 @@ rcvQueue1 =
     { userId = 1,
       connId = "conn1",
       server = smpServer1,
-      rcvId = "1234",
+      rcvId = EntityId "1234",
       rcvPrivateKey = testPrivateAuthKey,
       rcvDhSecret = testDhSecret,
       e2ePrivKey = testPrivDhKey,
       e2eDhSecret = Nothing,
-      sndId = "2345",
+      sndId = EntityId "2345",
       sndSecure = True,
       status = New,
       dbQueueId = DBNewQueue,
@@ -240,7 +240,7 @@ sndQueue1 =
     { userId = 1,
       connId = "conn1",
       server = smpServer1,
-      sndId = "3456",
+      sndId = EntityId "3456",
       sndSecure = True,
       sndPublicKey = testPublicAuthKey,
       sndPrivateKey = testPrivateAuthKey,
@@ -332,7 +332,7 @@ testGetRcvConn :: SpecWith SQLiteStore
 testGetRcvConn =
   it "should get connection using rcv queue id and server" . withStoreTransaction $ \db -> do
     let smpServer = SMPServer "smp.simplex.im" "5223" testKeyHash
-    let recipientId = "1234"
+    let recipientId = EntityId "1234"
     g <- C.newRandom
     Right (_, rq) <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     getRcvConn db smpServer recipientId
@@ -400,7 +400,7 @@ testUpgradeRcvConnToDuplex =
             { userId = 1,
               connId = "conn1",
               server = SMPServer "smp.simplex.im" "5223" testKeyHash,
-              sndId = "2345",
+              sndId = EntityId "2345",
               sndSecure = True,
               sndPublicKey = testPublicAuthKey,
               sndPrivateKey = testPrivateAuthKey,
@@ -429,12 +429,12 @@ testUpgradeSndConnToDuplex =
             { userId = 1,
               connId = "conn1",
               server = SMPServer "smp.simplex.im" "5223" testKeyHash,
-              rcvId = "3456",
+              rcvId = EntityId "3456",
               rcvPrivateKey = testPrivateAuthKey,
               rcvDhSecret = testDhSecret,
               e2ePrivKey = testPrivDhKey,
               e2eDhSecret = Nothing,
-              sndId = "4567",
+              sndId = EntityId "4567",
               sndSecure = True,
               status = New,
               dbQueueId = DBNewQueue,
@@ -556,7 +556,7 @@ mkSndMsgData internalId internalSndId internalHash =
 testCreateSndMsg_ :: DB.Connection -> PrevSndMsgHash -> ConnId -> SndQueue -> SndMsgData -> Expectation
 testCreateSndMsg_ db expectedPrevHash connId sq sndMsgData@SndMsgData {..} = do
   updateSndIds db connId
-    `shouldReturn` (internalId, internalSndId, expectedPrevHash)
+    `shouldReturn` Right (internalId, internalSndId, expectedPrevHash)
   createSndMsg db connId sndMsgData
     `shouldReturn` ()
   createSndMsgDelivery db connId sq internalId
@@ -715,7 +715,7 @@ rcvFileDescr1 =
     }
   where
     defaultChunkSize = FileSize $ mb 8
-    replicaId = ChunkReplicaId "abc"
+    replicaId = ChunkReplicaId $ EntityId "abc"
     chunkDigest = FileDigest "ghi"
 
 testFileSbKey :: C.SbKey
@@ -785,9 +785,9 @@ newSndChunkReplica1 :: NewSndChunkReplica
 newSndChunkReplica1 =
   NewSndChunkReplica
     { server = xftpServer1,
-      replicaId = ChunkReplicaId "abc",
+      replicaId = ChunkReplicaId $ EntityId "abc",
       replicaKey = testFileReplicaKey,
-      rcvIdsKeys = [(ChunkReplicaId "abc", testFileReplicaKey)]
+      rcvIdsKeys = [(ChunkReplicaId $ EntityId "abc", testFileReplicaKey)]
     }
 
 testGetNextSndChunkToUpload :: SQLiteStore -> Expectation
@@ -818,9 +818,9 @@ testGetNextDeletedSndChunkReplica st = do
   withTransaction st $ \db -> do
     Right Nothing <- getNextDeletedSndChunkReplica db xftpServer1 86400
 
-    createDeletedSndChunkReplica db 1 (FileChunkReplica xftpServer1 (ChunkReplicaId "abc") testFileReplicaKey) (FileDigest "ghi")
+    createDeletedSndChunkReplica db 1 (FileChunkReplica xftpServer1 (ChunkReplicaId $ EntityId "abc") testFileReplicaKey) (FileDigest "ghi")
     DB.execute_ db "UPDATE deleted_snd_chunk_replicas SET delay = 'bad' WHERE deleted_snd_chunk_replica_id = 1"
-    createDeletedSndChunkReplica db 1 (FileChunkReplica xftpServer1 (ChunkReplicaId "abc") testFileReplicaKey) (FileDigest "ghi")
+    createDeletedSndChunkReplica db 1 (FileChunkReplica xftpServer1 (ChunkReplicaId $ EntityId "abc") testFileReplicaKey) (FileDigest "ghi")
 
     Left e <- getNextDeletedSndChunkReplica db xftpServer1 86400
     show e `shouldContain` "ConversionFailed"

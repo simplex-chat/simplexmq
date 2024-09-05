@@ -25,9 +25,9 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (XFTPServer)
 import System.FilePath ((</>))
 
-type RcvFileId = ByteString
+type RcvFileId = ByteString -- Agent entity ID
 
-type SndFileId = ByteString
+type SndFileId = ByteString -- Agent entity ID
 
 authTagSize :: Int64
 authTagSize = fromIntegral C.authTagSize

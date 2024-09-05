@@ -1,3 +1,14 @@
+# 6.0.3
+
+Agent:
+- fix possible stuck queue rotation (#1290).
+
+SMP server:
+- batch END responses when subscribed client switches to reduce server and client traffic.
+- reduce STM transactions for better performance.
+- add stats for END events and for SUB/DEL event batches.
+- remove "expensive" stats to save memory.
+
 # 6.0.2
 
 SMP agent:

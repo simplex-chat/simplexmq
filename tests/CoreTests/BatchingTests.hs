@@ -2,6 +2,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -40,6 +41,7 @@ batchingTests = do
       it "should break on large message" testClientBatchWithLargeMessage
     describe "v7 (next)" $ do
       it "should batch with 136 subscriptions per batch" testClientBatchSubscriptionsV7
+      it "should batch with N ENDs per batch" testClientBatchENDs
       it "should break on message that does not fit" testClientBatchWithMessageV7
       it "should break on large message" testClientBatchWithLargeMessageV7
 
@@ -165,6 +167,20 @@ testClientBatchSubscriptionsV7 = do
   (length rs1, length rs2, length rs3) `shouldBe` (28, 136, 136)
   all lenOk [s1, s2, s3] `shouldBe` True
 
+testClientBatchENDs :: IO ()
+testClientBatchENDs = do
+  client <- clientStubV7
+  ends <- replicateM 300 randomENDCmd
+  let ends' = map (\t -> Right (Nothing, encodeTransmission (thParams client) t)) ends
+      batches1 = batchTransmissions False smpBlockSize $ L.fromList ends'
+  all lenOk1 batches1 `shouldBe` True
+  let batches = batchTransmissions True smpBlockSize $ L.fromList ends'
+  length batches `shouldBe` 2
+  [TBTransmissions s1 n1 rs1, TBTransmissions s2 n2 rs2] <- pure batches
+  (n1, n2) `shouldBe` (45, 255)
+  (length rs1, length rs2) `shouldBe` (45, 255)
+  all lenOk [s1, s2] `shouldBe` True
+
 testClientBatchWithMessage :: IO ()
 testClientBatchWithMessage = do
   client <- testClientStub
@@ -285,7 +301,7 @@ randomSUB_ a v sessId = do
   (rKey, rpKey) <- atomically $ C.generateAuthKeyPair a g
   thAuth_ <- testTHandleAuth v g rKey
   let thParams = testTHandleParams v sessId
-      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, rId, Cmd SRecipient SUB)
+      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, EntityId rId, Cmd SRecipient SUB)
   pure $ (,tToSend) <$> authTransmission thAuth_ (Just rpKey) nonce tForAuth
 
 randomSUBCmd :: ProtocolClient SMPVersion ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
@@ -299,7 +315,13 @@ randomSUBCmd_ a c = do
   g <- C.newRandom
   rId <- atomically $ C.randomBytes 24 g
   (_, rpKey) <- atomically $ C.generateAuthKeyPair a g
-  mkTransmission c (Just rpKey, rId, Cmd SRecipient SUB)
+  mkTransmission c (Just rpKey, EntityId rId, Cmd SRecipient SUB)
+
+randomENDCmd :: IO (Transmission BrokerMsg)
+randomENDCmd = do
+  g <- C.newRandom
+  rId <- atomically $ C.randomBytes 24 g
+  pure (CorrId "", EntityId rId, END)
 
 randomSEND :: ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSEND = randomSEND_ C.SEd25519 subModeSMPVersion
@@ -316,7 +338,7 @@ randomSEND_ a v sessId len = do
   thAuth_ <- testTHandleAuth v g sKey
   msg <- atomically $ C.randomBytes len g
   let thParams = testTHandleParams v sessId
-      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, sId, Cmd SSender $ SEND noMsgFlags msg)
+      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, EntityId sId, Cmd SSender $ SEND noMsgFlags msg)
   pure $ (,tToSend) <$> authTransmission thAuth_ (Just spKey) nonce tForAuth
 
 testTHandleParams :: VersionSMP -> ByteString -> THandleParams SMPVersion 'TClient
@@ -355,7 +377,7 @@ randomSENDCmd_ a c len = do
   sId <- atomically $ C.randomBytes 24 g
   (_, rpKey) <- atomically $ C.generateAuthKeyPair a g
   msg <- atomically $ C.randomBytes len g
-  mkTransmission c (Just rpKey, sId, Cmd SSender $ SEND noMsgFlags msg)
+  mkTransmission c (Just rpKey, EntityId sId, Cmd SSender $ SEND noMsgFlags msg)
 
 lenOk :: ByteString -> Bool
 lenOk s = 0 < B.length s && B.length s <= smpBlockSize - 2
