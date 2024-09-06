@@ -11,36 +11,36 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 path_conf_var="/var/opt"
-path_conf_smp="$path_conf_var/simplex"
-path_conf_xftp="$path_conf_var/simplex-xftp"
-path_conf_smp_archive="$path_conf_smp/archive"
-path_conf_xftp_archive="$path_conf_xftp/archive"
 
-path_conf_smp_archive_storelog="$path_conf_smp_archive/queues"
-path_conf_smp_archive_stats="$path_conf_smp_archive/stats"
-path_conf_smp_archive_messages="$path_conf_smp_archive/messages"
+smp_variables() {
+	path_conf_smp="$path_conf_var/simplex"
+	path_conf_smp_archive="$path_conf_smp/archive"
+	path_conf_smp_archive_storelog="$path_conf_smp_archive/queues"
+	path_conf_smp_archive_stats="$path_conf_smp_archive/stats"
+	path_conf_smp_archive_messages="$path_conf_smp_archive/messages"
+	path_conf_storelog_smp="$path_conf_smp/smp-server-store.log"
+	path_conf_storelog_smp_out="$path_conf_smp_archive_storelog/smp-server-store.log.${date:-date-failed}"
 
-path_conf_xftp_archive_storelog="$path_conf_xftp_archive/queues"
-path_conf_xftp_archive_stats="$path_conf_xftp_archive/stats"
+	path_conf_stats_smp="$path_conf_smp/smp-server-stats.log"
+	path_conf_stats_smp_out="$path_conf_smp_archive_stats/smp-server-stats.log.${date:-date-failed}"
 
-# SMP
-# ---
-path_conf_storelog_smp="$path_conf_smp/smp-server-store.log"
-path_conf_storelog_smp_out="$path_conf_smp_archive_storelog/smp-server-store.log"
+	path_conf_messages_smp="$path_conf_smp/smp-server-messages.log"
+	path_conf_messages_smp_out="$path_conf_smp_archive_messages/smp-server-messages.log.${date:-date-failed}"
+}
 
-path_conf_stats_smp="$path_conf_smp/smp-server-stats.log"
-path_conf_stats_smp_out="$path_conf_smp_archive_stats/smp-server-stats.log"
+xftp_variables() {
+	path_conf_xftp="$path_conf_var/simplex-xftp"
+	path_conf_xftp_archive="$path_conf_xftp/archive"
 
-path_conf_messages_smp="$path_conf_smp/smp-server-messages.log"
-path_conf_messages_smp_out="$path_conf_smp_archive_messages/smp-server-messages.log"
+	path_conf_xftp_archive_storelog="$path_conf_xftp_archive/queues"
+	path_conf_xftp_archive_stats="$path_conf_xftp_archive/stats"
 
-# XFTP
-# ----
-path_conf_storelog_xftp="$path_conf_xftp/file-server-store.log"
-path_conf_storelog_xftp_out="$path_conf_xftp_archive_storelog/file-server-store.log"
+	path_conf_storelog_xftp="$path_conf_xftp/file-server-store.log"
+	path_conf_storelog_xftp_out="$path_conf_xftp_archive_storelog/file-server-store.log.${date:-date-failed}"
 
-path_conf_stats_xftp="$path_conf_xftp/file-server-stats.log"
-path_conf_stats_xftp_out="$path_conf_xftp_archive_stats/file-server-stats.log"
+	path_conf_stats_xftp="$path_conf_xftp/file-server-stats.log"
+	path_conf_stats_xftp_out="$path_conf_xftp_archive_stats/file-server-stats.log.${date:-date-failed}"
+}
 
 checks() {
 	result=${SERVICE_RESULT:-exit-code}
@@ -63,130 +63,129 @@ checks() {
 			exit 1
 			;;
 	esac
-	
-	smp_check() {
-		if [ ! -d "$path_conf_smp_archive_storelog" ]; then
-			mkdir -p "$path_conf_smp_archive_storelog"
-		fi
-		if [ ! -d "$path_conf_smp_archive_messages" ]; then
-			mkdir -p "$path_conf_smp_archive_messages"
-		fi
-		if [ ! -d "$path_conf_smp_archive_stats" ]; then
-			mkdir -p "$path_conf_smp_archive_stats"
-		fi
-	}
-	xftp_check() {
-		if [ ! -d "$path_conf_xftp_archive_storelog" ]; then
-			mkdir -p "$path_conf_xftp_archive_storelog"
-		fi
-		if [ ! -d "$path_conf_xftp_archive_stats" ]; then
-			mkdir -p "$path_conf_xftp_archive_stats"
-		fi
-	}
+}
 
-	case "$1" in
-		smp-server)
-			smp_check
-			;;
-		xftp-server)
-			xftp_check
-			;;
-		*)
-			printf "${YLW}Unknown server type.${NC}\n"
-			exit 1
-			;;
-	esac
+smp_check() {
+	if [ ! -d "$path_conf_smp_archive_storelog" ]; then
+		mkdir -p "$path_conf_smp_archive_storelog"
+	fi
+	if [ ! -d "$path_conf_smp_archive_messages" ]; then
+		mkdir -p "$path_conf_smp_archive_messages"
+	fi
+	if [ ! -d "$path_conf_smp_archive_stats" ]; then
+		mkdir -p "$path_conf_smp_archive_stats"
+	fi
+}
+
+xftp_check() {
+	if [ ! -d "$path_conf_xftp_archive_storelog" ]; then
+		mkdir -p "$path_conf_xftp_archive_storelog"
+	fi
+	if [ ! -d "$path_conf_xftp_archive_stats" ]; then
+		mkdir -p "$path_conf_xftp_archive_stats"
+	fi
+}
+
+backup() {
+	file="$1"
+	out="$2"
+	file_type="$3"
+
+	if [ -e "$file" ]; then
+		if cp "$file" "$out"; then
+			printf "${YLW}${file_type}${NC} ${GRN}backup successful:${NC} %s\n" "${out}"
+		else
+			printf "${YLW}${file_type}${NC} ${RED}backup failed!${NC}\n"
+		fi
+	fi
+
+	unset file out file_type
+}
+
+cleanup() {
+	directory="$1"
+	
+	file_type="$2"
+	
+	files_date=$(find "$directory" -type f -exec stat --format="%y" {} + | awk '{print $1}' | sort -nr | uniq | awk 'NR==7')
+	
+	if [ -n "$files_date" ]; then
+		files=$(find "$directory" -type f -not -newermt "$files_date")
+
+		if [ -n "$files" ]; then
+			printf '%s' "$files" | xargs rm -f
+			printf "${YLW}${file_type}${NC} archive files ${GRN}older than the most recent 7 days${NC} has been deleted.\n"
+		fi
+	fi
+
+	older_files_date_range=$(find "$directory" -type f -mtime +14 -exec stat --format="%y" {} + | awk '{print $1}' | sort -nr | uniq)
+
+	if [ -n "$older_files_date_range" ]; then
+		date_newer=$(printf '%s' "$older_files_date_range" | awk 'NR==1')
+		count_files_newer=$(find "$directory" -type f -newermt "$date_newer + 1 day" | wc -l)
+
+		if [ "$count_files_newer" -eq 0 ]; then
+			date_count=$(printf '%s' "$older_files_date_range" | wc -l)
+			
+			if [ "$date_count" -gt 2 ]; then
+				older_files_date=$(printf '%s' "$older_files_date_range" | awk 'NR==2')
+				older_files=$(find "$directory" -type f -not -newermt "$older_files_date")
+
+				if [ -n "$older_files" ]; then
+					printf '%s' "$older_files" | xargs rm -f
+					printf "${YLW}${file_type}${NC} archive files ${GRN}older than two weeks${NC} (keeping the two most recent dates) has been deleted.\n"
+				fi
+			fi
+		else
+			files_old=$(find "$directory" -type f -mtime +14)
+
+			if [ -n "$files_old" ]; then
+				printf '%s' "$files_old" | xargs rm -f
+				printf "${YLW}${file_type}${NC} archive files ${GRN}older than two weeks${NC} has been deleted.\n"
+			fi
+		fi
+	fi
+	
+	unset directory file_type files_date files older_files_date_range date_count date_newer count_files_newer older_files_date older_files fils_old
 }
 
 smp_backup() {
-	if [ -e "$path_conf_storelog_smp" ]; then
-		if cp "$path_conf_storelog_smp" "${path_conf_storelog_smp_out}.${date:-date-failed}"; then
-			printf "${YLW}Storelog${NC} ${GRN}backup successful:${NC} %s\n" "${path_conf_storelog_smp_out}.${date:-date-failed}"
-		else
-			printf "${YLW}Storelog${NC} ${RED}backup failed!${NC}\n"
-		fi
-	fi
-
-	if [ -e "$path_conf_messages_smp" ]; then
-		if cp "$path_conf_messages_smp" "${path_conf_messages_smp_out}.${date:-date-failed}"; then
-			printf "${YLW}Messages${NC} ${GRN}backup successful:${NC} %s\n" "${path_conf_messages_smp_out}.${date:-date-failed}"
-		else
-			printf "${YLW}Messages${NC} ${RED}backup failed!${NC}\n"
-		fi
-	fi
-
-	if [ -e "$path_conf_stats_smp" ]; then
-		if cp "$path_conf_stats_smp" "${path_conf_stats_smp_out}.${date:-date-failed}"; then
-			printf "${YLW}Stats${NC} ${GRN}backup successful:${NC} %s\n" "${path_conf_stats_smp_out}.${date:-date-failed}"
-		else
-			printf "${YLW}Stats${NC} ${RED}backup failed!${NC}\n"
-		fi
-	fi
+	backup "$path_conf_storelog_smp" "$path_conf_storelog_smp_out" 'Storelog'
+	backup "$path_conf_messages_smp" "$path_conf_messages_smp_out" 'Messages'
+	backup "$path_conf_stats_smp" "$path_conf_stats_smp_out" 'Stats'
 }
 
 smp_cleanup() {
-	if (cd "$path_conf_smp_archive_storelog" && ls -t | sed -e '1,10d' | xargs -rd '\n' rm); then
-		printf "${YLW}Storelog archive${NC} ${GRN}clean up successfull${NC}: keeping the latest 10.\n"
-	else
-		printf "${YLW}Storelog archive${NC} ${RED}clean up failed!${NC}\n"
-	fi
-
-	if (cd "$path_conf_smp_archive_messages" && ls -t | sed -e '1,10d' | xargs -rd '\n' rm); then
-		printf "${YLW}Messages archive${NC} ${GRN}clean up successfull${NC}: keeping the latest 10.\n"
-	else
-		printf "${YLW}Messages archive${NC} ${RED}clean up failed!${NC}\n"
-	fi
-
-	if (cd "$path_conf_smp_archive_stats" && ls -t | sed -e '1,10d' | xargs -rd '\n' rm); then
-		printf "${YLW}Stats archive${NC} ${GRN}clean up successfull${NC}: keeping the latest 10.\n"
-	else
-		printf "${YLW}Stats archive${NC} ${RED}clean up failed!${NC}\n"
-	fi
+	cleanup "$path_conf_smp_archive_storelog" 'Storelog'
+	cleanup "$path_conf_smp_archive_stats" 'Stats'
+	cleanup "$path_conf_smp_archive_messages" 'Messages'
 }
 
 xftp_backup() {
-	if [ -e "$path_conf_storelog_xftp" ]; then
-		if cp "$path_conf_storelog_xftp" "${path_conf_storelog_xftp_out}.${date:-date-failed}"; then
-			printf "${YLW}Storelog${NC} ${GRN}backup successful:${NC} %s\n" "${path_conf_storelog_xftp_out}.${date:-date-failed}"
-		else
-			printf "${YLW}Storelog${NC} ${RED}backup failed!${NC}\n"
-		fi
-	fi
-
-	if [ -e "$path_conf_stats_xftp" ]; then
-		if cp "$path_conf_stats_xftp" "${path_conf_stats_xftp_out}.${date:-date-failed}"; then
-			printf "${YLW}Stats${NC} ${GRN}backup successful:${NC} %s\n" "${path_conf_stats_xftp_out}.${date:-date-failed}"
-		else
-			printf "${YLW}Stats${NC} ${RED}backup failed!${NC}\n"
-		fi
-	fi
+	backup "$path_conf_storelog_xftp" "$path_conf_storelog_xftp_out" 'Storelog'
+	backup "$path_conf_stats_xftp" "$path_conf_stats_xftp_out" 'Stats'
 }
 
 xftp_cleanup() {
-	if (cd "$path_conf_xftp_archive_storelog" && ls -t | sed -e '1,10d' | xargs -rd '\n' rm); then
-		printf "${YLW}Storelog archive${NC} ${GRN}clean up successfull${NC}: keeping the latest 10.\n"
-	else
-		printf "${YLW}Storelog archive${NC} ${RED}clean up failed!${NC}\n"
-	fi
-
-	if (cd "$path_conf_xftp_archive_stats" && ls -t | sed -e '1,10d' | xargs -rd '\n' rm); then
-		printf "${YLW}Stats archive${NC} ${GRN}clean up successfull${NC}: keeping the latest 10.\n"
-	else
-		printf "${YLW}Stats archive${NC} ${RED}clean up failed!${NC}\n"
-	fi
+	cleanup "$path_conf_xftp_archive_storelog" 'Storelog'
+	cleanup "$path_conf_xftp_archive_stats" 'Stats'
 }
 
 main() {
 	type="${1:-}"
   
-	checks "$type"
+	checks
 
 	case "$type" in
 		smp-server)
+			smp_variables
+			smp_check
 			smp_backup
 			smp_cleanup
 			;;
 		xftp-server)
+			xftp_variables
+			xftp_check
 			xftp_backup
 			xftp_cleanup
 			;;
