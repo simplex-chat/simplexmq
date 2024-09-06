@@ -107,46 +107,19 @@ cleanup() {
 	
 	file_type="$2"
 	
-	files_date=$(find "$directory" -type f -exec stat --format="%y" {} + | awk '{print $1}' | sort -nr | uniq | awk 'NR==7')
+	files_date=$(find "$directory" -type f -exec stat --format="%y" {} + | awk '{print $1}' | sort -nr | uniq | awk 'NR==2')
 	
 	if [ -n "$files_date" ]; then
 		files=$(find "$directory" -type f -not -newermt "$files_date")
 
 		if [ -n "$files" ]; then
 			printf '%s' "$files" | xargs rm -f
-			printf "${YLW}${file_type}${NC} archive files ${GRN}older than the most recent 7 days${NC} has been deleted.\n"
+			printf "${YLW}Old ${file_type}${NC} files ${GRN}has been deleted:${NC}\n"
+			printf "${YLW}${files}${NC}\n"
 		fi
 	fi
 
-	older_files_date_range=$(find "$directory" -type f -mtime +14 -exec stat --format="%y" {} + | awk '{print $1}' | sort -nr | uniq)
-
-	if [ -n "$older_files_date_range" ]; then
-		date_newer=$(printf '%s' "$older_files_date_range" | awk 'NR==1')
-		count_files_newer=$(find "$directory" -type f -newermt "$date_newer + 1 day" | wc -l)
-
-		if [ "$count_files_newer" -eq 0 ]; then
-			date_count=$(printf '%s' "$older_files_date_range" | wc -l)
-			
-			if [ "$date_count" -gt 2 ]; then
-				older_files_date=$(printf '%s' "$older_files_date_range" | awk 'NR==2')
-				older_files=$(find "$directory" -type f -not -newermt "$older_files_date")
-
-				if [ -n "$older_files" ]; then
-					printf '%s' "$older_files" | xargs rm -f
-					printf "${YLW}${file_type}${NC} archive files ${GRN}older than two weeks${NC} (keeping the two most recent dates) has been deleted.\n"
-				fi
-			fi
-		else
-			files_old=$(find "$directory" -type f -mtime +14)
-
-			if [ -n "$files_old" ]; then
-				printf '%s' "$files_old" | xargs rm -f
-				printf "${YLW}${file_type}${NC} archive files ${GRN}older than two weeks${NC} has been deleted.\n"
-			fi
-		fi
-	fi
-	
-	unset directory file_type files_date files older_files_date_range date_count date_newer count_files_newer older_files_date older_files fils_old
+	unset directory file_type files_date files
 }
 
 smp_backup() {
@@ -156,9 +129,9 @@ smp_backup() {
 }
 
 smp_cleanup() {
-	cleanup "$path_conf_smp_archive_storelog" 'Storelog'
-	cleanup "$path_conf_smp_archive_stats" 'Stats'
-	cleanup "$path_conf_smp_archive_messages" 'Messages'
+	cleanup "$path_conf_smp_archive_storelog" 'storelog'
+	cleanup "$path_conf_smp_archive_stats" 'stats'
+	cleanup "$path_conf_smp_archive_messages" 'messages'
 }
 
 xftp_backup() {
@@ -167,8 +140,8 @@ xftp_backup() {
 }
 
 xftp_cleanup() {
-	cleanup "$path_conf_xftp_archive_storelog" 'Storelog'
-	cleanup "$path_conf_xftp_archive_stats" 'Stats'
+	cleanup "$path_conf_xftp_archive_storelog" 'storelog'
+	cleanup "$path_conf_xftp_archive_stats" 'stats'
 }
 
 main() {
