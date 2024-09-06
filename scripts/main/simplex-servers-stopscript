@@ -7,6 +7,7 @@ date="$(date -u '+%Y-%m-%dT%H:%M:%S')"
 
 GRN='\033[0;32m'
 YLW='\033[1;33m'
+BLU='\033[1;34m'
 RED='\033[0;31m'
 NC='\033[0m'
 
@@ -93,7 +94,7 @@ backup() {
 
 	if [ -e "$file" ]; then
 		if cp "$file" "$out"; then
-			printf "${YLW}${file_type}${NC} ${GRN}backup successful:${NC} %s\n" "${out}"
+			printf "${YLW}${file_type}${NC} ${GRN}backup successful:${NC} ${BLU}%s${NC}\n" "${out}"
 		else
 			printf "${YLW}${file_type}${NC} ${RED}backup failed!${NC}\n"
 		fi
@@ -110,12 +111,13 @@ cleanup() {
 	files_date=$(find "$directory" -type f -exec stat --format="%y" {} + | awk '{print $1}' | sort -nr | uniq | awk 'NR==2')
 	
 	if [ -n "$files_date" ]; then
-		files=$(find "$directory" -type f -not -newermt "$files_date")
+		files=$(find "$directory" -type f -not -newermt "$files_date" -printf "%T@ %Tc %p\n" | sort -n | awk '{print $NF}')
 
 		if [ -n "$files" ]; then
 			printf '%s' "$files" | xargs rm -f
-			printf "${YLW}Old ${file_type}${NC} files ${GRN}has been deleted:${NC}\n"
-			printf "${YLW}${files}${NC}\n"
+			printf "${YLW}Old ${file_type} files${NC}${GRN} has been deleted:${NC}\n"
+			files_colored=$(printf '%s' "$files" | awk '{print "\033[1;34m"$0"\033[0m"}')
+			printf "${files_colored}\n"
 		fi
 	fi
 
