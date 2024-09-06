@@ -14,7 +14,7 @@ path_conf_var="/var/opt"
 
 smp_variables() {
 	path_conf_smp="$path_conf_var/simplex"
-	path_conf_smp_archive="$path_conf_smp/archive"
+	path_conf_smp_archive="$path_conf_smp/backups"
 	path_conf_smp_archive_storelog="$path_conf_smp_archive/queues"
 	path_conf_smp_archive_stats="$path_conf_smp_archive/stats"
 	path_conf_smp_archive_messages="$path_conf_smp_archive/messages"
@@ -30,7 +30,7 @@ smp_variables() {
 
 xftp_variables() {
 	path_conf_xftp="$path_conf_var/simplex-xftp"
-	path_conf_xftp_archive="$path_conf_xftp/archive"
+	path_conf_xftp_archive="$path_conf_xftp/backups"
 
 	path_conf_xftp_archive_storelog="$path_conf_xftp_archive/queues"
 	path_conf_xftp_archive_stats="$path_conf_xftp_archive/stats"
