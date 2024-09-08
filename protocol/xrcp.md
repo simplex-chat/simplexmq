@@ -250,7 +250,7 @@ In pseudo-code:
 ```
 // session 1
 hostHelloSecret(1) = dhSecret(1)
-sessionSecret(1) = sha256(dhSecret(1) || kemSecret(1)) // to encrypt session 1 data, incl. controller hello
+sessionSecret(1) = sha3-256(dhSecret(1) || kemSecret(1)) // to encrypt session 1 data, incl. controller hello
 dhSecret(1) = dh(hostHelloDhKey(1), controllerInvitationDhKey(1))
 kemCiphertext(1) = enc(kemSecret(1), kemEncKey(1))
 // kemEncKey is included in host HELLO, kemCiphertext - in controller HELLO
@@ -262,7 +262,7 @@ dhSecret(n') = dh(hostHelloDhKey(n - 1), controllerDhKey(n))
 
 // session n
 hostHelloSecret(n) = dhSecret(n)
-sessionSecret(n) = sha256(dhSecret(n) || kemSecret(n)) // to encrypt session n data, incl. controller hello
+sessionSecret(n) = sha3-256(dhSecret(n) || kemSecret(n)) // to encrypt session n data, incl. controller hello
 dhSecret(n) = dh(hostHelloDhKey(n), controllerDhKey(n))
 // controllerDhKey(n) is either from invitation or from multicast announcement
 kemCiphertext(n) = enc(kemSecret(n), kemEncKey(n))
