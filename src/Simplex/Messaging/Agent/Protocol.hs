@@ -1338,6 +1338,8 @@ data AgentErrorType
     CMD {cmdErr :: CommandErrorType, errContext :: String}
   | -- | connection errors
     CONN {connErr :: ConnectionErrorType}
+  | -- | user not found in database
+    NO_USER
   | -- | SMP protocol errors forwarded to agent clients
     SMP {serverAddress :: String, smpErr :: ErrorType}
   | -- | NTF protocol errors forwarded to agent clients
