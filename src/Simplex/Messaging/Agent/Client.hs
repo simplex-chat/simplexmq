@@ -1930,6 +1930,7 @@ withStoreBatch' c actions = withStoreBatch c (fmap (fmap Right) . actions)
 storeError :: StoreError -> AgentErrorType
 storeError = \case
   SEConnNotFound -> CONN NOT_FOUND
+  SEUserNotFound -> NO_USER
   SERatchetNotFound -> CONN NOT_FOUND
   SEConnDuplicate -> CONN DUPLICATE
   SEBadConnType CRcv -> CONN SIMPLEX
