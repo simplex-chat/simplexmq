@@ -1182,9 +1182,10 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
         updateQueueDate :: QueueRec -> M ()
         updateQueueDate QueueRec {updatedAt, recipientId = rId} = do
           t <- liftIO getSystemDate
-          when (Just t /= updatedAt) $ withLog $ \s -> logUpdateQueueTime s rId t
-          st <- asks queueStore
-          liftIO $ updateQueueTime st rId t 
+          when (Just t /= updatedAt) $ do
+            withLog $ \s -> logUpdateQueueTime s rId t
+            st <- asks queueStore
+            liftIO $ updateQueueTime st rId t 
 
         subscribeNotifications :: M (Transmission BrokerMsg)
         subscribeNotifications = do
