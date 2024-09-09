@@ -1984,7 +1984,7 @@ deleteNtfToken' :: AgentClient -> DeviceToken -> AM ()
 deleteNtfToken' c deviceToken =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken} -> do
-      when (deviceToken /= savedDeviceToken) . throwE $ CMD PROHIBITED "deleteNtfToken: different token"
+      when (deviceToken /= savedDeviceToken) $ logWarn "deleteNtfToken: different token"
       deleteToken_ c tkn
       deleteNtfSubs c NSCSmpDelete
     _ -> throwE $ CMD PROHIBITED "deleteNtfToken: no token"
