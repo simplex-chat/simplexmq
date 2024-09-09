@@ -62,7 +62,7 @@ timeIt slow sql a = do
     updateQueryErrors :: SomeException -> Maybe SlowQueryStats -> SlowQueryStats
     updateQueryErrors e Nothing = SlowQueryStats 0 0 0 $ M.singleton (tshow e) 1
     updateQueryErrors e (Just stats@SlowQueryStats {errs}) =
-      stats {errs = M.alter (Just . maybe 1 (+ 1)) (tshow e) errs}
+      stats {errs = M.alter (Just . maybe 1 (+ 1) $!) (tshow e) errs}
     updateQueryStats :: Int64 -> Maybe SlowQueryStats -> Maybe SlowQueryStats
     updateQueryStats diff Nothing = Just $ SlowQueryStats 1 diff diff M.empty
     updateQueryStats diff (Just SlowQueryStats {count, timeMax, timeAvg, errs}) =

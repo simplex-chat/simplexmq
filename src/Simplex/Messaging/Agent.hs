@@ -1001,7 +1001,7 @@ subscribeConnections' c connIds = do
       where
         -- collects results by connection ID
         addResult :: Map ConnId QCmdResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QCmdResult
-        addResult rs (RcvQueue {connId, status}, r) = M.alter (combineRes (status, r)) connId rs
+        addResult rs (RcvQueue {connId, status}, r) = M.alter (combineRes (status, r) $!) connId rs
         -- combines two results for one connection, by using only Active queues (if there is at least one Active queue)
         combineRes :: QCmdResult -> Maybe QCmdResult -> Maybe QCmdResult
         combineRes r' (Just r) = Just $ if order r <= order r' then r else r'
@@ -1800,7 +1800,7 @@ deleteConnQueues c waitDelivery ntf rqs = do
       where
         -- collects results by connection ID
         addResult :: Map ConnId QCmdResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QCmdResult
-        addResult rs (RcvQueue {connId, status}, r) = M.alter (combineRes (status, r)) connId rs
+        addResult rs (RcvQueue {connId, status}, r) = M.alter (combineRes (status, r) $!) connId rs
         -- combines two results for one connection, by prioritizing errors in Active queues
         combineRes :: QCmdResult -> Maybe QCmdResult -> Maybe QCmdResult
         combineRes r' (Just r) = Just $ if order r <= order r' then r else r'

@@ -1454,7 +1454,7 @@ sendTSessionBatches statCmd toRQ action c qs =
       where
         batch mode m q =
           let tSess = mkSMPTSession (toRQ q) mode
-           in M.alter (Just . maybe [q] (q <|)) tSess m
+           in M.alter (Just . maybe [q] (q <|) $!) tSess m
     sendClientBatch :: (SMPTransportSession, NonEmpty q) -> AM' (BatchResponses AgentErrorType r)
     sendClientBatch (tSess@(_, srv, _), qs') =
       tryAgentError' (getSMPServerClient c tSess) >>= \case
@@ -2092,7 +2092,7 @@ getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, ntfServ
       subs <- M.foldrWithKey' (addSub incActive) M.empty <$> readTVarIO (getRcvQueues $ activeSubs c)
       M.foldrWithKey' (addSub incPending) subs <$> readTVarIO (getRcvQueues $ pendingSubs c)
       where
-        addSub f (userId, srv, _) _ = M.alter (Just . f . fromMaybe SMPServerSubs {ssActive = 0, ssPending = 0}) (userId, srv)
+        addSub f (userId, srv, _) _ = M.alter (Just . f . fromMaybe SMPServerSubs {ssActive = 0, ssPending = 0} $!) (userId, srv)
         incActive ss = ss {ssActive = ssActive ss + 1}
         incPending ss = ss {ssPending = ssPending ss + 1}
     Env {xftpAgent = XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}} = agentEnv
@@ -2106,7 +2106,7 @@ getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, ntfServ
       where
         addClient !acc ((userId, srv, _), SessionVar {sessionVar}) = do
           c_ <- atomically $ tryReadTMVar sessionVar
-          pure $ M.alter (Just . add c_) (userId, srv) acc
+          pure $ M.alter (Just . add c_ $!) (userId, srv) acc
           where
             add c_ = modifySessions c_ . fromMaybe ServerSessions {ssConnected = 0, ssErrors = 0, ssConnecting = 0}
             modifySessions c_ ss = case c_ of
