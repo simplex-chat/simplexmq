@@ -28,12 +28,16 @@ import Data.Aeson (ToJSON, (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
 import qualified Data.Aeson.TH as JQ
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
+import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import Data.Maybe (isNothing)
 import Data.Text (Text)
@@ -103,10 +107,19 @@ readECPrivateKey f = do
 
 data PushNotification
   = PNVerification NtfRegCode
-  | PNMessage PNMessageData
+  | PNMessage (NonEmpty PNMessageData)
   | -- | PNAlert Text
     PNCheckMessages
   deriving (Show)
+
+-- List of PNMessageData uses semicolon-separated encoding instead of strEncode,
+-- because strEncode of NonEmpty list uses comma for separator,
+-- and encoding of PNMessageData's smpQueue has comma in list of hosts
+strEncodePNMessageList :: NonEmpty PNMessageData -> ByteString
+strEncodePNMessageList = B.intercalate ";" . map strEncode . L.toList
+
+pnMessageListP :: A.Parser (NonEmpty PNMessageData)
+pnMessageListP = L.fromList <$> strP `A.sepBy1` A.char ';'
 
 data PNMessageData = PNMessageData
   { smpQueue :: SMPQueueNtf,
@@ -285,7 +298,7 @@ apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
     encrypt code $ \code' ->
       apn APNSBackground {contentAvailable = 1} . Just $ J.object ["nonce" .= nonce, "verification" .= code']
   PNMessage pnMessageData ->
-    encrypt (strEncode pnMessageData) $ \ntfData ->
+    encrypt (strEncodePNMessageList pnMessageData) $ \ntfData ->
       apn apnMutableContent . Just $ J.object ["nonce" .= nonce, "message" .= ntfData]
   -- PNAlert text -> Right $ apn (apnAlert $ APNSAlertText text) Nothing
   PNCheckMessages -> Right $ apn APNSBackground {contentAvailable = 1} . Just $ J.object ["checkMessages" .= True]
