@@ -741,7 +741,7 @@ testGetNextRcvChunkToDownload st = do
     show e `shouldContain` "ConversionFailed"
     DB.query_ db "SELECT rcv_file_id FROM rcv_files WHERE failed = 1" `shouldReturn` [Only (1 :: Int)]
 
-    Right (Just (RcvFileChunk {rcvFileEntityId}, _)) <- getNextRcvChunkToDownload db xftpServer1 86400
+    Right (Just (RcvFileChunk {rcvFileEntityId}, _, Nothing)) <- getNextRcvChunkToDownload db xftpServer1 86400
     rcvFileEntityId `shouldBe` fId2
 
 testGetNextRcvFileToDecrypt :: SQLiteStore -> Expectation
