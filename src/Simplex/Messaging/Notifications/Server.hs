@@ -221,7 +221,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
               liftIO $ updatePeriodStats (activeSubs stats) ntfId
               atomically $
                 findNtfSubscriptionToken st smpQueue
-                  >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}))
+                  >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage (PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} :| [])))
               incNtfStat ntfReceived
             Right SMP.END ->
               whenM (atomically $ activeClientSession' ca sessionId srv) $

@@ -17,6 +17,7 @@ import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.List.NonEmpty as L
 import Data.Text.Encoding (encodeUtf8)
 import NtfClient
 import SMPClient as SMP
@@ -35,7 +36,6 @@ import ServerTests
 import qualified Simplex.Messaging.Agent.Protocol as AP
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import qualified Simplex.Messaging.Notifications.Server.Push.APNS as APNS
@@ -136,8 +136,8 @@ testNotificationSubscription (ATransport t) =
               Right nonce' = C.cbNonce <$> ntfData' .-> "nonce"
               Right message = ntfData' .-> "message"
               Right ntfDataDecrypted = C.cbDecrypt dhSecret nonce' message
-              Right APNS.PNMessageData {smpQueue = SMPQueueNtf {smpServer, notifierId}, nmsgNonce, encNMsgMeta} =
-                parse strP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted
+              Right pnMsgs1 = parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted
+              APNS.PNMessageData {smpQueue = SMPQueueNtf {smpServer, notifierId}, nmsgNonce, encNMsgMeta} = L.last pnMsgs1
               Right nMsgMeta = C.cbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta
               Right NMsgMeta {msgId, msgTs} = parse smpP (AP.INTERNAL "error parsing NMsgMeta") nMsgMeta
           smpServer `shouldBe` srv
@@ -169,8 +169,8 @@ testNotificationSubscription (ATransport t) =
               Right nonce3 = C.cbNonce <$> ntfData3 .-> "nonce"
               Right message3 = ntfData3 .-> "message"
               Right ntfDataDecrypted3 = C.cbDecrypt dhSecret nonce3 message3
-              Right APNS.PNMessageData {smpQueue = SMPQueueNtf {smpServer = smpServer3, notifierId = notifierId3}} =
-                parse strP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted3
+              Right pnMsgs2 = parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted3
+              APNS.PNMessageData {smpQueue = SMPQueueNtf {smpServer = smpServer3, notifierId = notifierId3}} = L.last pnMsgs2
           smpServer3 `shouldBe` srv
           notifierId3 `shouldBe` nId
           send3 APNSRespOk
