@@ -986,8 +986,8 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
       Cmd SProxiedClient command -> processProxiedCmd (corrId, entId, command)
       Cmd SSender command -> Just <$> case command of
         SKEY sKey -> (corrId,entId,) <$> case qr_ of
-          Just QueueRec {sndSecure, recipientId}
-            | sndSecure -> secureQueue_ "SKEY" recipientId sKey
+          Just qr@QueueRec {sndSecure}
+            | sndSecure -> secureQueue_ "SKEY" qr sKey
             | otherwise -> pure $ ERR AUTH
           Nothing -> pure $ ERR INTERNAL
         SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
@@ -1010,7 +1010,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
           GET -> withQueue getMessage
           ACK msgId -> withQueue (`acknowledgeMsg` msgId)
           KEY sKey -> (corrId,entId,) <$> case qr_ of
-            Just QueueRec {recipientId} -> secureQueue_ "KEY" recipientId sKey
+            Just qr -> secureQueue_ "KEY" qr sKey
             Nothing -> pure $ ERR INTERNAL
           NKEY nKey dhKey -> addQueueNotifier_ st nKey dhKey
           NDEL -> deleteQueueNotifier_ st
@@ -1021,6 +1021,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
         createQueue :: QueueStore -> RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> SenderCanSecure -> M (Transmission BrokerMsg)
         createQueue st recipientKey dhKey subMode sndSecure = time "NEW" $ do
           (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
+          updatedAt <- Just <$> liftIO getSystemDate
           let rcvDhSecret = C.dh' dhKey privDhKey
               qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey, sndSecure}
               qRec (recipientId, senderId) =
@@ -1032,7 +1033,8 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                     senderKey = Nothing,
                     notifier = Nothing,
                     status = QueueActive,
-                    sndSecure
+                    sndSecure,
+                    updatedAt
                   }
           (corrId,entId,) <$> addQueueRetry 3 qik qRec
           where
@@ -1061,9 +1063,10 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               n <- asks $ queueIdBytes . config
               liftM2 (,) (randomId n) (randomId n)
 
-        secureQueue_ :: T.Text -> RecipientId -> SndPublicAuthKey -> M BrokerMsg
-        secureQueue_ name rId sKey = time name $ do
+        secureQueue_ :: T.Text -> QueueRec -> SndPublicAuthKey -> M BrokerMsg
+        secureQueue_ name qr@QueueRec {recipientId = rId} sKey = time name $ do
           withLog $ \s -> logSecureQueue s rId sKey
+          updateQueueDate qr
           st <- asks queueStore
           stats <- asks serverStats
           incStat $ qSecured stats
@@ -1172,7 +1175,17 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               pure r
 
         withQueue :: (QueueRec -> M (Transmission BrokerMsg)) -> M (Transmission BrokerMsg)
-        withQueue action = maybe (pure $ err AUTH) action qr_
+        withQueue action = case qr_ of
+          Just qr -> updateQueueDate qr >> action qr
+          Nothing -> pure $ err INTERNAL
+
+        updateQueueDate :: QueueRec -> M ()
+        updateQueueDate QueueRec {updatedAt, recipientId = rId} = do
+          t <- liftIO getSystemDate
+          when (Just t /= updatedAt) $ do
+            withLog $ \s -> logUpdateQueueTime s rId t
+            st <- asks queueStore
+            liftIO $ updateQueueTime st rId t 
 
         subscribeNotifications :: M (Transmission BrokerMsg)
         subscribeNotifications = do
