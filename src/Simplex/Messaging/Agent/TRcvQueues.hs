@@ -67,7 +67,7 @@ addQueue rq (TRcvQueues qs cs) = do
 batchAddQueues :: (Foldable t, Queue q) => TRcvQueues q -> t q -> STM ()
 batchAddQueues (TRcvQueues qs cs) rqs = do
   modifyTVar' qs $ \now -> foldl' (\rqs' rq -> M.insert (qKey rq) rq rqs') now rqs
-  modifyTVar' cs $ \now -> foldl' (\cs' rq -> M.alter (addQ (qKey rq)) (connId' rq) cs') now rqs
+  modifyTVar' cs $ \now -> foldl' (\cs' rq -> M.alter (addQ $ qKey rq) (connId' rq) cs') now rqs
   where
     addQ k = Just . maybe (k :| []) (k <|)
 
