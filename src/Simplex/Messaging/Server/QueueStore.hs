@@ -39,18 +39,16 @@ instance StrEncoding NtfCreds where
 
 data ServerQueueStatus = QueueActive | QueueOff deriving (Eq, Show)
 
-data RoundedSystemTime = RoundedSystemTime {precision :: Int64, seconds :: Int64}
+newtype RoundedSystemTime = RoundedSystemTime Int64
   deriving (Eq, Ord, Show)
 
 instance StrEncoding RoundedSystemTime where
-  strEncode RoundedSystemTime {precision, seconds} = strEncode (precision, seconds)
-  strP = do
-    (precision, seconds) <- strP
-    pure RoundedSystemTime {precision, seconds}
+  strEncode (RoundedSystemTime t) = strEncode t
+  strP = RoundedSystemTime <$> strP
 
 getRoundedSystemTime :: Int64 -> IO RoundedSystemTime
 getRoundedSystemTime precision =
-  (\t -> RoundedSystemTime precision $ (systemSeconds t `div` precision) * precision) <$> getSystemTime
+  (\t -> RoundedSystemTime $ (systemSeconds t `div` precision) * precision) <$> getSystemTime
 
 getSystemDate :: IO RoundedSystemTime
 getSystemDate = getRoundedSystemTime 86400
