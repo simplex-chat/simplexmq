@@ -874,7 +874,7 @@ messageNotificationData :: HasCallStack => AgentClient -> TBQueue APNSMockReques
 messageNotificationData c apnsQ = do
   (nonce, message) <- messageNotification apnsQ
   NtfToken {ntfDhSecret = Just dhSecret} <- getNtfTokenData c
-  Right (pnMsgData :| _) <- liftEither . first INTERNAL $ Right . parseAll pnMessageListP =<< first show (C.cbDecrypt dhSecret nonce message)
+  Right (pnMsgData :| _) <- liftEither . first INTERNAL $ Right . parseAll pnMessagesP =<< first show (C.cbDecrypt dhSecret nonce message)
   pure pnMsgData
 
 noNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO ()

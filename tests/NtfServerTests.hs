@@ -138,7 +138,7 @@ testNotificationSubscription (ATransport t) =
               Right message = ntfData' .-> "message"
               Right ntfDataDecrypted = C.cbDecrypt dhSecret nonce' message
               Right (APNS.PNMessageData {smpQueue = SMPQueueNtf {smpServer, notifierId}, nmsgNonce, encNMsgMeta} :| _) =
-                parse pnMessageListP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted
+                parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted
               Right nMsgMeta = C.cbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta
               Right NMsgMeta {msgId, msgTs} = parse smpP (AP.INTERNAL "error parsing NMsgMeta") nMsgMeta
           smpServer `shouldBe` srv
@@ -171,7 +171,7 @@ testNotificationSubscription (ATransport t) =
               Right message3 = ntfData3 .-> "message"
               Right ntfDataDecrypted3 = C.cbDecrypt dhSecret nonce3 message3
               Right (APNS.PNMessageData {smpQueue = SMPQueueNtf {smpServer = smpServer3, notifierId = notifierId3}} :| _) =
-                parse pnMessageListP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted3
+                parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted3
           smpServer3 `shouldBe` srv
           notifierId3 `shouldBe` nId
           send3 APNSRespOk

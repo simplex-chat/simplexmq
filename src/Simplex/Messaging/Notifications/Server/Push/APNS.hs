@@ -115,11 +115,11 @@ data PushNotification
 -- List of PNMessageData uses semicolon-separated encoding instead of strEncode,
 -- because strEncode of NonEmpty list uses comma for separator,
 -- and encoding of PNMessageData's smpQueue has comma in list of hosts
-strEncodePNMessageList :: NonEmpty PNMessageData -> ByteString
-strEncodePNMessageList = B.intercalate ";" . map strEncode . L.toList
+encodePNMessages :: NonEmpty PNMessageData -> ByteString
+encodePNMessages = B.intercalate ";" . map strEncode . L.toList
 
-pnMessageListP :: A.Parser (NonEmpty PNMessageData)
-pnMessageListP = L.fromList <$> strP `A.sepBy1` A.char ';'
+pnMessagesP :: A.Parser (NonEmpty PNMessageData)
+pnMessagesP = L.fromList <$> strP `A.sepBy1` A.char ';'
 
 data PNMessageData = PNMessageData
   { smpQueue :: SMPQueueNtf,
@@ -298,7 +298,7 @@ apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
     encrypt code $ \code' ->
       apn APNSBackground {contentAvailable = 1} . Just $ J.object ["nonce" .= nonce, "verification" .= code']
   PNMessage pnMessageData ->
-    encrypt (strEncodePNMessageList pnMessageData) $ \ntfData ->
+    encrypt (encodePNMessages pnMessageData) $ \ntfData ->
       apn apnMutableContent . Just $ J.object ["nonce" .= nonce, "message" .= ntfData]
   -- PNAlert text -> Right $ apn (apnAlert $ APNSAlertText text) Nothing
   PNCheckMessages -> Right $ apn APNSBackground {contentAvailable = 1} . Just $ J.object ["checkMessages" .= True]
