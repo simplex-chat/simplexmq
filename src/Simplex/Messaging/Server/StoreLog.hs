@@ -206,12 +206,11 @@ readQueues f = foldM processLine M.empty . LB.lines =<< LB.readFile f
         procLogRecord :: StoreLogRecord -> Map RecipientId QueueRec
         procLogRecord = \case
           CreateQueue q -> M.insert (recipientId q) q m
-          SecureQueue qId sKey -> adjust' (\q -> q {senderKey = Just sKey}) qId m
-          AddNotifier qId ntfCreds -> adjust' (\q -> q {notifier = Just ntfCreds}) qId m
-          SuspendQueue qId -> adjust' (\q -> q {status = QueueOff}) qId m
+          SecureQueue qId sKey -> M.adjust (\q -> q {senderKey = Just sKey}) qId m
+          AddNotifier qId ntfCreds -> M.adjust (\q -> q {notifier = Just ntfCreds}) qId m
+          SuspendQueue qId -> M.adjust (\q -> q {status = QueueOff}) qId m
           DeleteQueue qId -> M.delete qId m
-          DeleteNotifier qId -> adjust' (\q -> q {notifier = Nothing}) qId m
-          UpdateTime qId t -> adjust' (\q -> q {updatedAt = Just t}) qId m
-        adjust' g k = M.adjust (g $!) k
+          DeleteNotifier qId -> M.adjust (\q -> q {notifier = Nothing}) qId m
+          UpdateTime qId t -> M.adjust (\q -> q {updatedAt = Just t}) qId m
         printError :: String -> IO ()
         printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s

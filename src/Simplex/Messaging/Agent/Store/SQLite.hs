@@ -1272,7 +1272,7 @@ getSkippedMsgKeys db connId =
   skipped <$> DB.query db "SELECT header_key, msg_n, msg_key FROM skipped_messages WHERE conn_id = ?" (Only connId)
   where
     skipped = foldl' addSkippedKey M.empty
-    addSkippedKey smks (hk, msgN, mk) = M.alter (Just . addMsgKey $!) hk smks
+    addSkippedKey smks (hk, msgN, mk) = M.alter (Just . addMsgKey) hk smks
       where
         addMsgKey = maybe (M.singleton msgN mk) (M.insert msgN mk)
 

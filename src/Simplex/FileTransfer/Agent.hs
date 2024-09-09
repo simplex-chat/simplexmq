@@ -598,11 +598,11 @@ runXFTPSndWorker c srv Worker {doWork} = do
             reverseReplicas ch@FileChunk {replicas} = (ch :: FileChunk) {replicas = reverse replicas}
             addRcvChunk :: Map Int (Map Int FileChunk) -> SentRecipientReplica -> Map Int (Map Int FileChunk)
             addRcvChunk m SentRecipientReplica {chunkNo, server, rcvNo, replicaId, replicaKey, digest, chunkSize} =
-              M.alter (Just . addOrChangeRecipient $!) rcvNo m
+              M.alter (Just . addOrChangeRecipient) rcvNo m
               where
                 addOrChangeRecipient :: Maybe (Map Int FileChunk) -> Map Int FileChunk
                 addOrChangeRecipient = \case
-                  Just m' -> M.alter (Just . addOrChangeChunk $!) chunkNo m'
+                  Just m' -> M.alter (Just . addOrChangeChunk) chunkNo m'
                   _ -> M.singleton chunkNo $ FileChunk {chunkNo, digest, chunkSize, replicas = [replica']}
                 addOrChangeChunk :: Maybe FileChunk -> FileChunk
                 addOrChangeChunk = \case

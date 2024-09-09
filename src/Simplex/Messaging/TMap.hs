@@ -75,15 +75,15 @@ lookupDelete k m = stateTVar m $ \mv -> (M.lookup k mv, M.delete k mv)
 {-# INLINE lookupDelete #-}
 
 adjust :: Ord k => (a -> a) -> k -> TMap k a -> STM ()
-adjust f k m = modifyTVar' m $ M.adjust (f $!) k
+adjust f k m = modifyTVar' m $ M.adjust f k
 {-# INLINE adjust #-}
 
 update :: Ord k => (a -> Maybe a) -> k -> TMap k a -> STM ()
-update f k m = modifyTVar' m $ M.update (f $!) k
+update f k m = modifyTVar' m $ M.update f k
 {-# INLINE update #-}
 
 alter :: Ord k => (Maybe a -> Maybe a) -> k -> TMap k a -> STM ()
-alter f k m = modifyTVar' m $ M.alter (f $!) k
+alter f k m = modifyTVar' m $ M.alter f k
 {-# INLINE alter #-}
 
 alterF :: Ord k => (Maybe a -> STM (Maybe a)) -> k -> TMap k a -> STM ()
