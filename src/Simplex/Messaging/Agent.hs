@@ -1065,7 +1065,8 @@ getNotificationMessage' c nonce encNtfInfo = do
   withStore' c getActiveNtfToken >>= \case
     Just NtfToken {ntfDhSecret = Just dhSecret} -> do
       ntfData <- agentCbDecrypt dhSecret nonce encNtfInfo
-      PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} :| _ <- liftEither (parse pnMessagesP (INTERNAL "error parsing PNMessageData") ntfData)
+      ntfMsgs <- liftEither (parse pnMessagesP (INTERNAL "error parsing PNMessageData") ntfData)
+      let PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = L.last ntfMsgs
       (ntfConnId, rcvNtfDhSecret) <- withStore c (`getNtfRcvQueue` smpQueue)
       ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
       msgMeta <- getConnectionMessage' c ntfConnId

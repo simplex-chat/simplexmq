@@ -49,7 +49,7 @@ import Data.Bifunctor (bimap, first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import Data.Text.Encoding (encodeUtf8)
 import Database.SQLite.Simple.QQ (sql)
 import NtfClient
@@ -874,8 +874,8 @@ messageNotificationData :: HasCallStack => AgentClient -> TBQueue APNSMockReques
 messageNotificationData c apnsQ = do
   (nonce, message) <- messageNotification apnsQ
   NtfToken {ntfDhSecret = Just dhSecret} <- getNtfTokenData c
-  Right (pnMsgData :| _) <- liftEither . first INTERNAL $ Right . parseAll pnMessagesP =<< first show (C.cbDecrypt dhSecret nonce message)
-  pure pnMsgData
+  Right pnMsgs <- liftEither . first INTERNAL $ Right . parseAll pnMessagesP =<< first show (C.cbDecrypt dhSecret nonce message)
+  pure $ L.last pnMsgs
 
 noNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO ()
 noNotification apnsQ = do
