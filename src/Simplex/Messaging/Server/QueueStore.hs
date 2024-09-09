@@ -47,8 +47,7 @@ instance StrEncoding RoundedSystemTime where
   strP = RoundedSystemTime <$> strP
 
 getRoundedSystemTime :: Int64 -> IO RoundedSystemTime
-getRoundedSystemTime precision =
-  (\t -> RoundedSystemTime $ (systemSeconds t `div` precision) * precision) <$> getSystemTime
+getRoundedSystemTime prec = (\t -> RoundedSystemTime $ (systemSeconds t `div` prec) * prec) <$> getSystemTime
 
 getSystemDate :: IO RoundedSystemTime
 getSystemDate = getRoundedSystemTime 86400
