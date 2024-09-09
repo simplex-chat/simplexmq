@@ -49,6 +49,7 @@ import Data.Bifunctor (bimap, first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text.Encoding (encodeUtf8)
 import Database.SQLite.Simple.QQ (sql)
 import NtfClient
@@ -66,6 +67,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Types (NtfTknAction (..), NtfToken (..))
+import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), NtfServer, ProtocolServer (..), SMPMsgMeta (..), SubscriptionMode (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
@@ -872,7 +874,7 @@ messageNotificationData :: HasCallStack => AgentClient -> TBQueue APNSMockReques
 messageNotificationData c apnsQ = do
   (nonce, message) <- messageNotification apnsQ
   NtfToken {ntfDhSecret = Just dhSecret} <- getNtfTokenData c
-  Right pnMsgData <- liftEither . first INTERNAL $ Right . strDecode =<< first show (C.cbDecrypt dhSecret nonce message)
+  Right (pnMsgData :| _) <- liftEither . first INTERNAL $ Right . parseAll pnMessagesP =<< first show (C.cbDecrypt dhSecret nonce message)
   pure pnMsgData
 
 noNotification :: TBQueue APNSMockRequest -> ExceptT AgentErrorType IO ()
