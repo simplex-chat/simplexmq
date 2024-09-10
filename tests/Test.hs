@@ -56,7 +56,7 @@ main = do
           describe "Util tests" utilTests
         describe "SMP server via TLS" $ serverTests (transport @TLS)
         describe "SMP server via WebSockets" $ serverTests (transport @WS)
-        fdescribe "Notifications server" $ ntfServerTests (transport @TLS)
+        describe "Notifications server" $ ntfServerTests (transport @TLS)
         describe "SMP client agent" $ agentTests (transport @TLS)
         describe "SMP proxy" smpProxyTests
         describe "XFTP" $ do
