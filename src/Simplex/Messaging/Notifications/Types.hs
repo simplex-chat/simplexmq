@@ -99,8 +99,8 @@ type NtfActionTs = UTCTime
 data NtfSubNTFAction
   = NSACreate
   | NSACheck
-  | NSADelete
-  | NSARotate
+  | NSADelete -- deprecated
+  | NSARotate -- deprecated
   deriving (Show)
 
 instance Encoding NtfSubNTFAction where

@@ -76,13 +76,13 @@ processNtfSub c (connId, cmd) = do
             let newSub = newNtfSubscription userId connId smpServer Nothing ntfServer NASNew
             withStore c $ \db -> createNtfSubscription db newSub $ NSASMP NSASmpKey
             lift . void $ getNtfSMPWorker True c smpServer
-        (Just (sub@NtfSubscription {ntfSubStatus, ntfServer = subNtfServer, smpServer = smpServer', ntfQueueId}, action_)) -> do
+        (Just (sub@NtfSubscription {ntfServer = subNtfServer, smpServer = smpServer', ntfQueueId}, action_)) -> do
           case (clientNtfCreds, ntfQueueId) of
             (Just ClientNtfCreds {notifierId}, Just ntfQueueId')
               | sameSrvAddr smpServer smpServer' && notifierId == ntfQueueId' -> create
-              | otherwise -> rotate
+              | otherwise -> resetSubscription
             (Nothing, Nothing) -> create
-            _ -> rotate
+            _ -> resetSubscription
           where
             create :: AM ()
             create = case action_ of
@@ -90,33 +90,17 @@ processNtfSub c (connId, cmd) = do
               Nothing -> resetSubscription
               Just (action, _)
                 -- subscription was marked for deletion / is being deleted
-                | isDeleteNtfSubAction action -> do
-                    if ntfSubStatus == NASNew || ntfSubStatus == NASOff || ntfSubStatus == NASDeleted
-                      then resetSubscription
-                      else withTokenServer $ \ntfServer -> do
-                        withStore' c $ \db -> supervisorUpdateNtfSub db sub {ntfServer} (NSANtf NSACreate)
-                        lift . void $ getNtfNTFWorker True c ntfServer
+                | isDeleteNtfSubAction action -> resetSubscription
+                -- continue work on subscription (e.g. supervisor was repeatedly tasked with creating a subscription)
                 | otherwise -> case action of
                     NSANtf _ -> lift . void $ getNtfNTFWorker True c subNtfServer
                     NSASMP _ -> lift . void $ getNtfSMPWorker True c smpServer
-            rotate :: AM ()
-            rotate = do
-              withStore' c $ \db -> supervisorUpdateNtfSub db sub (NSANtf NSARotate)
-              lift . void $ getNtfNTFWorker True c subNtfServer
             resetSubscription :: AM ()
             resetSubscription =
               withTokenServer $ \ntfServer -> do
-                let sub' = sub {ntfQueueId = Nothing, ntfServer, ntfSubId = Nothing, ntfSubStatus = NASNew}
+                let sub' = sub {smpServer, ntfQueueId = Nothing, ntfServer, ntfSubId = Nothing, ntfSubStatus = NASNew}
                 withStore' c $ \db -> supervisorUpdateNtfSub db sub' (NSASMP NSASmpKey)
                 lift . void $ getNtfSMPWorker True c smpServer
-    NSCDelete -> do
-      sub_ <- withStore' c $ \db -> do
-        supervisorUpdateNtfAction db connId (NSANtf NSADelete)
-        getNtfSubscription db connId
-      logInfo $ "processNtfSub, NSCDelete - sub_ = " <> tshow sub_
-      case sub_ of
-        (Just (NtfSubscription {ntfServer}, _)) -> lift . void $ getNtfNTFWorker True c ntfServer
-        _ -> pure () -- err "NSCDelete - no subscription"
     NSCSmpDelete -> do
       withStore' c (`getPrimaryRcvQueue` connId) >>= \case
         Right rq@RcvQueue {server = smpServer} -> do
@@ -193,6 +177,7 @@ runNtfWorker c srv Worker {doWork} =
                     atomically $ incNtfServerStat c userId ntfServer ntfChecked
                   Nothing -> workerInternalError c connId "NSACheck - no subscription ID"
               _ -> workerInternalError c connId "NSACheck - no active token"
+          -- NSADelete and NSARotate are deprecated, but their processing is kept for legacy db records
           NSADelete ->
             deleteNtfSub $ do
               let sub' = sub {ntfSubId = Nothing, ntfSubStatus = NASOff}
@@ -205,6 +190,7 @@ runNtfWorker c srv Worker {doWork} =
               ns <- asks ntfSupervisor
               atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCCreate)
       where
+        -- deleteNtfSub is only used in NSADelete and NSARotate, so also deprecated
         deleteNtfSub continue = case ntfSubId of
           Just nSubId ->
             lift getNtfToken >>= \case
