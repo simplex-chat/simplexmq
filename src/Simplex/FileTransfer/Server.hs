@@ -33,7 +33,6 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
-import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Word (Word32)
 import qualified Data.X509 as X
@@ -57,6 +56,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (CorrId (..), EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TransmissionAuth, pattern NoEntity)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, getRoundedSystemTime)
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -399,7 +399,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       r <- runExceptT $ do
         sizes <- asks $ allowedChunkSizes . config
         unless (size file `elem` sizes) $ throwE SIZE
-        ts <- liftIO getSystemTime
+        ts <- liftIO getFileTime
         -- TODO validate body empty
         sId <- ExceptT $ addFileRetry st file 3 ts
         rcps <- mapM (ExceptT . addRecipientRetry st 3 sId) rks
@@ -412,7 +412,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
         pure $ FRSndIds sId rIds
       pure $ either FRErr id r
-    addFileRetry :: FileStore -> FileInfo -> Int -> SystemTime -> M (Either XFTPErrorType XFTPFileId)
+    addFileRetry :: FileStore -> FileInfo -> Int -> RoundedSystemTime -> M (Either XFTPErrorType XFTPFileId)
     addFileRetry st file n ts =
       retryAdd n $ \sId -> runExceptT $ do
         ExceptT $ addFile st sId file ts
@@ -530,6 +530,9 @@ deleteServerFile_ FileRec {senderId, fileInfo, filePath} = do
     deletedStats stats = do
       liftIO $ atomicModifyIORef'_ (filesCount stats) (subtract 1)
       liftIO $ atomicModifyIORef'_ (filesSize stats) (subtract $ fromIntegral $ size fileInfo)
+
+getFileTime :: IO RoundedSystemTime
+getFileTime = getRoundedSystemTime fileTimePrecision
 
 expireServerFiles :: Maybe Int -> ExpirationConfig -> M ()
 expireServerFiles itemDelay expCfg = do
