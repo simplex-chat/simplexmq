@@ -73,15 +73,9 @@ processNtfSub c (connId, cmd) = do
       case a of
         Nothing -> do
           withTokenServer $ \ntfServer -> do
-            case clientNtfCreds of
-              Just ClientNtfCreds {notifierId} -> do
-                let newSub = newNtfSubscription userId connId smpServer (Just notifierId) ntfServer NASKey
-                withStore c $ \db -> createNtfSubscription db newSub $ NSANtf NSACreate
-                lift . void $ getNtfNTFWorker True c ntfServer
-              Nothing -> do
-                let newSub = newNtfSubscription userId connId smpServer Nothing ntfServer NASNew
-                withStore c $ \db -> createNtfSubscription db newSub $ NSASMP NSASmpKey
-                lift . void $ getNtfSMPWorker True c smpServer
+            let newSub = newNtfSubscription userId connId smpServer Nothing ntfServer NASNew
+            withStore c $ \db -> createNtfSubscription db newSub $ NSASMP NSASmpKey
+            lift . void $ getNtfSMPWorker True c smpServer
         (Just (sub@NtfSubscription {ntfSubStatus, ntfServer = subNtfServer, smpServer = smpServer', ntfQueueId}, action_)) -> do
           case (clientNtfCreds, ntfQueueId) of
             (Just ClientNtfCreds {notifierId}, Just ntfQueueId')
