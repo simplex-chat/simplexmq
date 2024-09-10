@@ -484,6 +484,7 @@ data BrokerMsg where
   RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
   PRES :: EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
+  DELD :: BrokerMsg
   INFO :: QueueInfo -> BrokerMsg
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
@@ -705,6 +706,7 @@ data BrokerMsgTag
   | RRES_
   | PRES_
   | END_
+  | DELD_
   | INFO_
   | OK_
   | ERR_
@@ -778,6 +780,7 @@ instance Encoding BrokerMsgTag where
     RRES_ -> "RRES"
     PRES_ -> "PRES"
     END_ -> "END"
+    DELD_ -> "DELD"
     INFO_ -> "INFO"
     OK_ -> "OK"
     ERR_ -> "ERR"
@@ -794,6 +797,7 @@ instance ProtocolMsgTag BrokerMsgTag where
     "RRES" -> Just RRES_
     "PRES" -> Just PRES_
     "END" -> Just END_
+    "DELD" -> Just DELD_
     "INFO" -> Just INFO_
     "OK" -> Just OK_
     "ERR" -> Just ERR_
@@ -1423,6 +1427,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     RRES (EncFwdResponse encBlock) -> e (RRES_, ' ', Tail encBlock)
     PRES (EncResponse encBlock) -> e (PRES_, ' ', Tail encBlock)
     END -> e END_
+    DELD -> e DELD_
     INFO info -> e (INFO_, ' ', info)
     OK -> e OK_
     ERR err -> e (ERR_, ' ', err)
@@ -1448,6 +1453,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     RRES_ -> RRES <$> (EncFwdResponse . unTail <$> _smpP)
     PRES_ -> PRES <$> (EncResponse . unTail <$> _smpP)
     END_ -> pure END
+    DELD_ -> pure DELD
     INFO_ -> INFO <$> _smpP
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
