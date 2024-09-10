@@ -85,12 +85,14 @@ addQueueNotifier QueueStore {queues, notifiers} rId ntfCreds@NtfCreds {notifierI
       TM.insert nId rId notifiers
       pure q'
 
-deleteQueueNotifier :: QueueStore -> RecipientId -> IO (Either ErrorType ())
+deleteQueueNotifier :: QueueStore -> RecipientId -> IO (Either ErrorType (Maybe NotifierId))
 deleteQueueNotifier QueueStore {queues, notifiers} rId =
   withQueue rId queues $ \qVar -> do
     q <- readTVar qVar
-    forM_ (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId notifiers
-    writeTVar qVar $! q {notifier = Nothing}
+    forM (notifier q) $ \NtfCreds {notifierId} -> do
+      TM.delete notifierId notifiers
+      writeTVar qVar $! q {notifier = Nothing}
+      pure notifierId
 
 suspendQueue :: QueueStore -> RecipientId -> IO (Either ErrorType ())
 suspendQueue QueueStore {queues} rId =

@@ -1102,11 +1102,12 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
         deleteQueueNotifier_ st = do
           withLog (`logDeleteNotifier` entId)
           liftIO (deleteQueueNotifier st entId) >>= \case
-            Right () -> do
+            Right (Just nId) -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
-              atomically $ writeTQueue ntfDeletedQ (entId, clientId)
+              atomically $ writeTQueue ntfDeletedQ (nId, clientId)
               incStat . ntfDeleted =<< asks serverStats
               pure ok
+            Right Nothing -> pure ok
             Left e -> pure $ err e
 
         suspendQueue_ :: QueueStore -> M (Transmission BrokerMsg)
