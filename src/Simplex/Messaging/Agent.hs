@@ -2028,8 +2028,9 @@ deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
     withStore' c $ \db -> updateNtfToken db tkn ntfTknStatus ntfTknAction
     atomically $ nsUpdateToken ns tkn {ntfTknStatus, ntfTknAction}
     agentNtfDeleteToken c tknId tkn `catchAgentError` \case
-      NTF _ AUTH -> pure ()
-      e -> throwE e
+      -- NTF _ AUTH -> pure ()
+      -- e -> throwE e
+      _ -> pure ()
   withStore' c $ \db -> removeNtfToken db tkn
   atomically $ nsRemoveNtfToken ns
 
