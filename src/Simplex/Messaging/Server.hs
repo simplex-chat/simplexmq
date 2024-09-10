@@ -992,11 +992,9 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
     processCommand (qr_, (corrId, entId, cmd)) = case cmd of
       Cmd SProxiedClient command -> processProxiedCmd (corrId, entId, command)
       Cmd SSender command -> Just <$> case command of
-        SKEY sKey -> (corrId,entId,) <$> case qr_ of
-          Just qr@QueueRec {sndSecure}
-            | sndSecure -> secureQueue_ "SKEY" qr sKey
-            | otherwise -> pure $ ERR AUTH
-          Nothing -> pure $ ERR INTERNAL
+        SKEY sKey ->
+          withQueue $ \QueueRec {sndSecure, recipientId} ->
+            (corrId,entId,) <$> if sndSecure then secureQueue_ "SKEY" recipientId sKey else pure $ ERR AUTH
         SEND flags msgBody -> withQueue $ \qr -> sendMessage qr flags msgBody
         PING -> pure (corrId, NoEntity, PONG)
         RFWD encBlock -> (corrId, NoEntity,) <$> processForwardedCommand encBlock
@@ -1016,9 +1014,9 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
           SUB -> withQueue (`subscribeQueue` entId)
           GET -> withQueue getMessage
           ACK msgId -> withQueue (`acknowledgeMsg` msgId)
-          KEY sKey -> (corrId,entId,) <$> case qr_ of
-            Just qr -> secureQueue_ "KEY" qr sKey
-            Nothing -> pure $ ERR INTERNAL
+          KEY sKey ->
+            withQueue $ \QueueRec {recipientId} ->
+              (corrId,entId,) <$> secureQueue_ "KEY" recipientId sKey
           NKEY nKey dhKey -> addQueueNotifier_ st nKey dhKey
           NDEL -> deleteQueueNotifier_ st
           OFF -> suspendQueue_ st
@@ -1070,10 +1068,9 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               n <- asks $ queueIdBytes . config
               liftM2 (,) (randomId n) (randomId n)
 
-        secureQueue_ :: T.Text -> QueueRec -> SndPublicAuthKey -> M BrokerMsg
-        secureQueue_ name qr@QueueRec {recipientId = rId} sKey = time name $ do
+        secureQueue_ :: T.Text -> RecipientId -> SndPublicAuthKey -> M BrokerMsg
+        secureQueue_ name rId sKey = time name $ do
           withLog $ \s -> logSecureQueue s rId sKey
-          updateQueueDate qr
           st <- asks queueStore
           stats <- asks serverStats
           incStat $ qSecured stats
