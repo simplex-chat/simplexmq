@@ -443,6 +443,8 @@ data NtfSubStatus
     NSInactive
   | -- | END received
     NSEnd
+  | -- | DELD received (connection was deleted)
+    NSDeleted
   | -- | SMP AUTH error
     NSAuth
   | -- | SMP error other than AUTH
@@ -456,6 +458,7 @@ ntfShouldSubscribe = \case
   NSActive -> True
   NSInactive -> True
   NSEnd -> False
+  NSDeleted -> False
   NSAuth -> False
   NSErr _ -> False
 
@@ -466,6 +469,7 @@ instance Encoding NtfSubStatus where
     NSActive -> "ACTIVE"
     NSInactive -> "INACTIVE"
     NSEnd -> "END"
+    NSDeleted -> "DELETED"
     NSAuth -> "AUTH"
     NSErr err -> "ERR " <> err
   smpP =
@@ -475,6 +479,7 @@ instance Encoding NtfSubStatus where
       "ACTIVE" -> pure NSActive
       "INACTIVE" -> pure NSInactive
       "END" -> pure NSEnd
+      "DELETED" -> pure NSDeleted
       "AUTH" -> pure NSAuth
       "ERR" -> NSErr <$> (A.space *> A.takeByteString)
       _ -> fail "bad NtfSubStatus"

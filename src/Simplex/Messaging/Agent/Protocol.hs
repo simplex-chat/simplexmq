@@ -344,6 +344,7 @@ data AEvent (e :: AEntity) where
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
   CON :: PQEncryption -> AEvent AEConn -- notification that connection is established
   END :: AEvent AEConn
+  DELD :: AEvent AEConn
   CONNECT :: AProtocolType -> TransportHost -> AEvent AENone
   DISCONNECT :: AProtocolType -> TransportHost -> AEvent AENone
   DOWN :: SMPServer -> [ConnId] -> AEvent AENone
@@ -413,6 +414,7 @@ data AEventTag (e :: AEntity) where
   INFO_ :: AEventTag AEConn
   CON_ :: AEventTag AEConn
   END_ :: AEventTag AEConn
+  DELD_ :: AEventTag AEConn
   CONNECT_ :: AEventTag AENone
   DISCONNECT_ :: AEventTag AENone
   DOWN_ :: AEventTag AENone
@@ -466,6 +468,7 @@ aEventTag = \case
   INFO {} -> INFO_
   CON _ -> CON_
   END -> END_
+  DELD -> DELD_
   CONNECT {} -> CONNECT_
   DISCONNECT {} -> DISCONNECT_
   DOWN {} -> DOWN_

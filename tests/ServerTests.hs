@@ -385,6 +385,10 @@ testSwitchSub (ATransport t) =
       Resp "bcda" _ ok3 <- signSendRecv rh2 rKey ("bcda", rId, ACK mId3)
       (ok3, OK) #== "accepts ACK from the 2nd TCP connection"
 
+      Resp "cdab" _ OK <- signSendRecv rh1 rKey ("cdab", rId, DEL)
+      Resp "" rId' DELD <- tGet1 rh2
+      (rId', rId) #== "connection deleted event delivered to subscribed client"
+
       1000 `timeout` tGet @SMPVersion @ErrorType @BrokerMsg rh1 >>= \case
         Nothing -> return ()
         Just _ -> error "nothing else is delivered to the 1st TCP connection"
@@ -839,7 +843,8 @@ testMessageNotifications (ATransport t) =
       Resp "3a" _ OK <- signSendRecv rh rKey ("3a", rId, ACK mId1)
       Resp "" _ (NMSG _ _) <- tGet1 nh1
       Resp "4" _ OK <- signSendRecv nh2 nKey ("4", nId, NSUB)
-      Resp "" _ END <- tGet1 nh1
+      Resp "" nId2 END <- tGet1 nh1
+      nId2 `shouldBe` nId
       Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello again")
       Resp "" _ (Msg mId2 msg2) <- tGet1 rh
       Resp "5a" _ OK <- signSendRecv rh rKey ("5a", rId, ACK mId2)
@@ -849,6 +854,8 @@ testMessageNotifications (ATransport t) =
         Nothing -> pure ()
         Just _ -> error "nothing else should be delivered to the 1st notifier's TCP connection"
       Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, NDEL)
+      Resp "" nId3 DELD <- tGet1 nh2
+      nId3 `shouldBe` nId
       Resp "7" _ OK <- signSendRecv sh sKey ("7", sId, _SEND' "hello there")
       Resp "" _ (Msg mId3 msg3) <- tGet1 rh
       (dec mId3 msg3, Right "hello there") #== "delivered from queue again"

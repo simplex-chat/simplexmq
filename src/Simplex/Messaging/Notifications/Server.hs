@@ -226,6 +226,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
             Right SMP.END ->
               whenM (atomically $ activeClientSession' ca sessionId srv) $
                 updateSubStatus smpQueue NSEnd
+            Right SMP.DELD -> updateSubStatus smpQueue NSDeleted
             Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
             Right _ -> logError "SMP server unexpected response"
             Left e -> logError $ "SMP client error: " <> tshow e
