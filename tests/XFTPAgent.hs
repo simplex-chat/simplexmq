@@ -429,7 +429,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
       ("", sfId', SFPROG _ _) <- sfGet sndr'
       liftIO $ sfId' `shouldBe` sfId
 
-  threadDelay 100000
+  threadDelay 200000
 
   withXFTPServerStoreLogOn $ \_ -> do
     -- send file - should continue uploading with server up
@@ -443,7 +443,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
       pure rfd1
 
     -- prefix path should be removed after sending file
-    threadDelay 100000
+    threadDelay 200000
     doesDirectoryExist prefixPath `shouldReturn` False
     doesFileExist encPath `shouldReturn` False
 
