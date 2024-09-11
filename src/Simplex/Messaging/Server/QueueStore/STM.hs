@@ -74,23 +74,26 @@ secureQueue QueueStore {queues} rId sKey = toResult <$> do
         let !q' = q {senderKey = Just sKey}
          in writeTVar qVar q' $> Just q'
 
-addQueueNotifier :: QueueStore -> RecipientId -> NtfCreds -> IO (Either ErrorType QueueRec)
+addQueueNotifier :: QueueStore -> RecipientId -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
 addQueueNotifier QueueStore {queues, notifiers} rId ntfCreds@NtfCreds {notifierId = nId} = do
-  ifM (TM.memberIO nId notifiers) (pure $ Left DUPLICATE_) $
-    withQueue rId queues $ \qVar -> do
+  TM.lookupIO rId queues >>= \case
+    Just qVar -> atomically $ ifM (TM.member nId notifiers) (pure $ Left DUPLICATE_) $ do
       q <- readTVar qVar
-      forM_ (notifier q) $ (`TM.delete` notifiers) . notifierId
+      nId_ <- forM (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId notifiers $> notifierId
       let !q' = q {notifier = Just ntfCreds}
       writeTVar qVar q'
       TM.insert nId rId notifiers
-      pure q'
+      pure $ Right nId_
+    Nothing -> pure $ Left AUTH
 
-deleteQueueNotifier :: QueueStore -> RecipientId -> IO (Either ErrorType ())
+deleteQueueNotifier :: QueueStore -> RecipientId -> IO (Either ErrorType (Maybe NotifierId))
 deleteQueueNotifier QueueStore {queues, notifiers} rId =
   withQueue rId queues $ \qVar -> do
     q <- readTVar qVar
-    forM_ (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId notifiers
-    writeTVar qVar $! q {notifier = Nothing}
+    forM (notifier q) $ \NtfCreds {notifierId} -> do
+      TM.delete notifierId notifiers
+      writeTVar qVar $! q {notifier = Nothing}
+      pure notifierId
 
 suspendQueue :: QueueStore -> RecipientId -> IO (Either ErrorType ())
 suspendQueue QueueStore {queues} rId =

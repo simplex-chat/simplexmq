@@ -166,7 +166,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
-import Simplex.Messaging.Client (ProtocolClient (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, temporaryClientError, unexpectedResponse)
+import Simplex.Messaging.Client (SMPClientError, ServerTransmission (..), ServerTransmissionBatch, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
@@ -181,7 +181,7 @@ import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), ErrorType (AUTH), MsgBod
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPVersion, THandleParams (sessionId))
+import Simplex.Messaging.Transport (SMPVersion)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import Simplex.RemoteControl.Client
@@ -1984,7 +1984,7 @@ deleteNtfToken' :: AgentClient -> DeviceToken -> AM ()
 deleteNtfToken' c deviceToken =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken} -> do
-      when (deviceToken /= savedDeviceToken) . throwE $ CMD PROHIBITED "deleteNtfToken: different token"
+      when (deviceToken /= savedDeviceToken) $ logWarn "deleteNtfToken: different token"
       deleteToken_ c tkn
       deleteNtfSubs c NSCSmpDelete
     _ -> throwE $ CMD PROHIBITED "deleteNtfToken: no token"
@@ -2021,17 +2021,18 @@ toggleConnectionNtfs' c connId enable = do
           atomically $ sendNtfSubCommand ns (connId, cmd)
 
 deleteToken_ :: AgentClient -> NtfToken -> AM ()
-deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
+deleteToken_ c@AgentClient {subQ} tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
   ns <- asks ntfSupervisor
   forM_ ntfTokenId $ \tknId -> do
     let ntfTknAction = Just NTADelete
     withStore' c $ \db -> updateNtfToken db tkn ntfTknStatus ntfTknAction
     atomically $ nsUpdateToken ns tkn {ntfTknStatus, ntfTknAction}
-    agentNtfDeleteToken c tknId tkn `catchAgentError` \case
-      NTF _ AUTH -> pure ()
-      e -> throwE e
+    agentNtfDeleteToken c tknId tkn `catchAgentError` \e -> notify (ERR e) -- TODO cleanup task
   withStore' c $ \db -> removeNtfToken db tkn
   atomically $ nsRemoveNtfToken ns
+  where
+    notify :: forall e. AEntityI e => AEvent e -> AM ()
+    notify cmd = atomically $ writeTBQueue subQ ("", "", AEvt (sAEntity @e) cmd)
 
 withToken :: AgentClient -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> AM a -> AM NtfTknStatus
 withToken c tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = do
@@ -2450,17 +2451,14 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
               handleNotifyAck :: AM ACKd -> AM ACKd
               handleNotifyAck m = m `catchAgentError` \e -> notify (ERR e) >> ack
           SMP.END ->
-            atomically (TM.lookup tSess (smpClients c) $>>= (tryReadTMVar . sessionVar) >>= processEND)
+            atomically (ifM (activeClientSession c tSess sessId) (removeSubscription c connId $> True) (pure False))
               >>= notifyEnd
             where
-              processEND = \case
-                Just (Right clnt)
-                  | sessId == sessionId (thParams $ connectedClient clnt) ->
-                      removeSubscription c connId $> True
-                _ -> pure False
               notifyEnd removed
                 | removed = notify END >> logServer "<--" c srv rId "END"
                 | otherwise = logServer "<--" c srv rId "END from disconnected client - ignored"
+          -- Possibly, we need to add some flag to connection that it was deleted
+          SMP.DELD -> atomically (removeSubscription c connId) >> notify DELD
           SMP.ERR e -> notify $ ERR $ SMP (B.unpack $ strEncode srv) e
           r -> unexpected r
         where

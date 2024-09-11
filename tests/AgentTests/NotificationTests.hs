@@ -166,7 +166,7 @@ testNtfMatrix t runTest = do
     it "curr servers; curr clients" $ runNtfTestCfg t 1 cfg ntfServerCfg agentCfg agentCfg runTest
     it "curr servers; prev clients" $ runNtfTestCfg t 3 cfg ntfServerCfg agentCfgVPrevPQ agentCfgVPrevPQ runTest
     it "prev servers; prev clients" $ runNtfTestCfg t 3 cfgVPrev ntfServerCfgVPrev agentCfgVPrevPQ agentCfgVPrevPQ runTest
-    it "prev servers; curr clients" $ runNtfTestCfg t 3 cfgVPrev ntfServerCfgVPrev agentCfg agentCfg runTest
+    it "prev servers; curr clients" $ runNtfTestCfg t 1 cfgVPrev ntfServerCfgVPrev agentCfg agentCfg runTest
     -- servers can be upgraded in any order
     it "servers: curr SMP, prev NTF; prev clients" $ runNtfTestCfg t 3 cfg ntfServerCfgVPrev agentCfgVPrevPQ agentCfgVPrevPQ runTest
     it "servers: prev SMP, curr NTF; prev clients" $ runNtfTestCfg t 3 cfgVPrev ntfServerCfg agentCfgVPrevPQ agentCfgVPrevPQ runTest

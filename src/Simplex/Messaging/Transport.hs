@@ -47,6 +47,7 @@ module Simplex.Messaging.Transport
     authCmdsSMPVersion,
     sendingProxySMPVersion,
     sndAuthKeySMPVersion,
+    deletedEventSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -130,6 +131,9 @@ smpBlockSize = 16384
 -- 5 - basic auth for SMP servers (11/12/2022)
 -- 6 - allow creating queues without subscribing (9/10/2023)
 -- 7 - support authenticated encryption to verify senders' commands, imply but do NOT send session ID in signed part (4/30/2024)
+-- 8 - SMP proxy for sender commands
+-- 9 - faster handshake: SKEY command for sender to secure queue
+-- 10 - DELD event to subscriber when queue is deleted via another connnection
 
 data SMPVersion
 
@@ -160,14 +164,17 @@ sendingProxySMPVersion = VersionSMP 8
 sndAuthKeySMPVersion :: VersionSMP
 sndAuthKeySMPVersion = VersionSMP 9
 
+deletedEventSMPVersion :: VersionSMP
+deletedEventSMPVersion = VersionSMP 10
+
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 9
+currentClientSMPRelayVersion = VersionSMP 10
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 9
+currentServerSMPRelayVersion = VersionSMP 10
 
 -- Max SMP protocol version to be used in e2e encrypted
 -- connection between client and server, as defined by SMP proxy.
