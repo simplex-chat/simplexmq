@@ -208,7 +208,7 @@ instance NtfEntityI e => ProtocolEncoding NTFVersion ErrorType (NtfCommand e) wh
   fromProtocolError = fromProtocolError @NTFVersion @ErrorType @NtfResponse
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (auth, _, entityId, _) cmd = case cmd of
+  checkCredentials (auth, _, EntityId entityId, _) cmd = case cmd of
     -- TNEW and SNEW must have signature but NOT token/subscription IDs
     TNEW {} -> sigNoEntity
     SNEW {} -> sigNoEntity
@@ -322,7 +322,7 @@ instance ProtocolEncoding NTFVersion ErrorType NtfResponse where
     PEBlock -> BLOCK
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (_, _, entId, _) cmd = case cmd of
+  checkCredentials (_, _, EntityId entId, _) cmd = case cmd of
     -- IDTKN response must not have queue ID
     NRTknId {} -> noEntity
     -- IDSUB response must not have queue ID
@@ -426,7 +426,7 @@ instance FromJSON DeviceToken where
     t <- encodeUtf8 <$> o .: "token"
     pure $ DeviceToken pp t
 
-type NtfEntityId = ByteString
+type NtfEntityId = EntityId
 
 type NtfSubscriptionId = NtfEntityId
 
@@ -443,6 +443,8 @@ data NtfSubStatus
     NSInactive
   | -- | END received
     NSEnd
+  | -- | DELD received (connection was deleted)
+    NSDeleted
   | -- | SMP AUTH error
     NSAuth
   | -- | SMP error other than AUTH
@@ -456,6 +458,7 @@ ntfShouldSubscribe = \case
   NSActive -> True
   NSInactive -> True
   NSEnd -> False
+  NSDeleted -> False
   NSAuth -> False
   NSErr _ -> False
 
@@ -466,6 +469,7 @@ instance Encoding NtfSubStatus where
     NSActive -> "ACTIVE"
     NSInactive -> "INACTIVE"
     NSEnd -> "END"
+    NSDeleted -> "DELETED"
     NSAuth -> "AUTH"
     NSErr err -> "ERR " <> err
   smpP =
@@ -475,6 +479,7 @@ instance Encoding NtfSubStatus where
       "ACTIVE" -> pure NSActive
       "INACTIVE" -> pure NSInactive
       "END" -> pure NSEnd
+      "DELETED" -> pure NSDeleted
       "AUTH" -> pure NSAuth
       "ERR" -> NSErr <$> (A.space *> A.takeByteString)
       _ -> fail "bad NtfSubStatus"

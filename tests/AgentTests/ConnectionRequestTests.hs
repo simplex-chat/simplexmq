@@ -20,7 +20,7 @@ import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (ProtocolServer (..), currentSMPClientVersion, supportedSMPClientVRange, pattern VersionSMPC)
+import Simplex.Messaging.Protocol (EntityId (..), ProtocolServer (..), currentSMPClientVersion, supportedSMPClientVRange, pattern VersionSMPC)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Version
 import Test.Hspec
@@ -35,7 +35,7 @@ queueAddr :: SMPQueueAddress
 queueAddr =
   SMPQueueAddress
     { smpServer = srv,
-      senderId = "\223\142z\251",
+      senderId = EntityId "\223\142z\251",
       dhPublicKey = testDhKey,
       sndSecure = False
     }

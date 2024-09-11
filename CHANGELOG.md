@@ -1,3 +1,36 @@
+# 6.0.4
+
+SMP server:
+- better performance/memory: fewer map updates on re-subscriptions (#1297), split and reduce STM transactions (#1294)
+- send DELD when subscribed queue is deleted (#1312)
+- add created/updated/used date to queues to manage expiration (#1306)
+
+XFTP server: truncate file creation time to 1 hour (#1310)
+
+Servers:
+- bind control port only to 127.0.0.1 for better security in case of firewall misconfiguration (#1280)
+- reduce memory used for period stats (#1298)
+
+Agent: process last notification from list (#1307)
+- report receive file error with redirected file ID, when redirect is present (#1304)
+- special error when deleted user record is not in database (#1303)
+- fix race when sending a message to the deleted connection (#1296)
+- support for multiple messages in a single notification
+
+Ntf server:
+- only use SOCKS proxy for servers without public address (#1314)
+
+# 6.0.3
+
+Agent:
+- fix possible stuck queue rotation (#1290).
+
+SMP server:
+- batch END responses when subscribed client switches to reduce server and client traffic.
+- reduce STM transactions for better performance.
+- add stats for END events and for SUB/DEL event batches.
+- remove "expensive" stats to save memory.
+
 # 6.0.2
 
 SMP agent:

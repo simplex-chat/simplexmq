@@ -28,18 +28,18 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Time.Clock.System (SystemTime)
 import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (RcvPublicAuthKey, RecipientId, SenderId)
+import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (bshow, whenM)
 import System.Directory (doesFileExist, renameFile)
 import System.IO
 
 data FileStoreLogRecord
-  = AddFile SenderId FileInfo SystemTime
+  = AddFile SenderId FileInfo RoundedSystemTime
   | PutFile SenderId FilePath
   | AddRecipients SenderId (NonEmpty FileRecipient)
   | DeleteFile SenderId
@@ -64,7 +64,7 @@ instance StrEncoding FileStoreLogRecord where
 logFileStoreRecord :: StoreLog 'WriteMode -> FileStoreLogRecord -> IO ()
 logFileStoreRecord = writeStoreLogRecord
 
-logAddFile :: StoreLog 'WriteMode -> SenderId -> FileInfo -> SystemTime -> IO ()
+logAddFile :: StoreLog 'WriteMode -> SenderId -> FileInfo -> RoundedSystemTime -> IO ()
 logAddFile s = logFileStoreRecord s .:. AddFile
 
 logPutFile :: StoreLog 'WriteMode -> SenderId -> FilePath -> IO ()

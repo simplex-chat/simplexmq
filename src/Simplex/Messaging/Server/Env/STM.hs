@@ -76,6 +76,8 @@ data ServerConfig = ServerConfig
     serverStatsLogFile :: FilePath,
     -- | file to save and restore stats
     serverStatsBackupFile :: Maybe FilePath,
+    -- | interval between sending pending END events to unsubscribed clients, seconds
+    pendingENDInterval :: Int,
     -- | CA certificate private key is not needed for initialization
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -134,10 +136,16 @@ data Env = Env
 type Subscribed = Bool
 
 data Server = Server
-  { subscribedQ :: TQueue (RecipientId, Client, Subscribed),
-    subscribers :: TMap RecipientId Client,
-    ntfSubscribedQ :: TQueue (NotifierId, Client, Subscribed),
-    notifiers :: TMap NotifierId Client,
+  { subscribedQ :: TQueue (RecipientId, ClientId),
+    deletedQ :: TQueue (RecipientId, ClientId),
+    subscribers :: TMap RecipientId (TVar Client),
+    ntfSubscribedQ :: TQueue (NotifierId, ClientId),
+    ntfDeletedQ :: TQueue (NotifierId, ClientId),
+    notifiers :: TMap NotifierId (TVar Client),
+    pendingENDs :: TVar (IntMap (NonEmpty RecipientId)),
+    pendingDELDs :: TVar (IntMap (NonEmpty RecipientId)),
+    pendingNtfENDs :: TVar (IntMap (NonEmpty NotifierId)),
+    pendingNtfDELDs :: TVar (IntMap (NonEmpty NotifierId)),
     savingLock :: Lock
   }
 
@@ -177,11 +185,17 @@ data Sub = Sub
 newServer :: IO Server
 newServer = do
   subscribedQ <- newTQueueIO
+  deletedQ <- newTQueueIO
   subscribers <- TM.emptyIO
   ntfSubscribedQ <- newTQueueIO
+  ntfDeletedQ <- newTQueueIO
   notifiers <- TM.emptyIO
+  pendingENDs <- newTVarIO IM.empty
+  pendingDELDs <- newTVarIO IM.empty
+  pendingNtfENDs <- newTVarIO IM.empty
+  pendingNtfDELDs <- newTVarIO IM.empty
   savingLock <- atomically createLock
-  return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, savingLock}
+  return Server {subscribedQ, deletedQ, subscribers, ntfSubscribedQ, ntfDeletedQ, notifiers, pendingENDs, pendingDELDs, pendingNtfENDs, pendingNtfDELDs, savingLock}
 
 newClient :: ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO Client
 newClient clientId qSize thVersion sessionId createdAt = do

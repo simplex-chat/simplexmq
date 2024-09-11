@@ -28,6 +28,8 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlphaNum)
 import Data.Int (Int64)
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IS
 import qualified Data.List.NonEmpty as L
 import Data.Set (Set)
 import qualified Data.Set as S
@@ -39,7 +41,7 @@ import Data.Time.Format.ISO8601
 import Data.Word (Word16, Word32)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Util (bshow, (<$?>))
 
 class TextEncoding a where
   textEncode :: a -> Text
@@ -53,14 +55,20 @@ class StrEncoding a where
   -- Please note - if you only specify strDecode, it will use base64urlP as default parser before decoding the string
   strDecode :: ByteString -> Either String a
   strDecode = parseAll strP
+  {-# INLINE strDecode #-}
+
   strP :: Parser a
   strP = strDecode <$?> base64urlP
+  {-# INLINE strP #-}
 
 -- base64url encoding/decoding of ByteStrings - the parser only allows non-empty strings
 instance StrEncoding ByteString where
   strEncode = U.encode
+  {-# INLINE strEncode #-}
   strDecode = U.decode
+  {-# INLINE strDecode #-}
   strP = base64urlP
+  {-# INLINE strP #-}
 
 base64urlP :: Parser ByteString
 base64urlP = do
@@ -119,15 +127,15 @@ instance StrEncoding Bool where
   {-# INLINE strP #-}
 
 instance StrEncoding Int where
-  strEncode = B.pack . show
+  strEncode = bshow
   {-# INLINE strEncode #-}
-  strP = A.decimal
+  strP = A.signed A.decimal
   {-# INLINE strP #-}
 
 instance StrEncoding Int64 where
-  strEncode = B.pack . show
+  strEncode = bshow
   {-# INLINE strEncode #-}
-  strP = A.decimal
+  strP = A.signed A.decimal
   {-# INLINE strP #-}
 
 instance StrEncoding SystemTime where
@@ -153,6 +161,10 @@ instance StrEncoding a => StrEncoding (L.NonEmpty a) where
 instance (StrEncoding a, Ord a) => StrEncoding (Set a) where
   strEncode = strEncodeList . S.toList
   strP = S.fromList <$> listItem `A.sepBy'` A.char ','
+
+instance StrEncoding IntSet where
+  strEncode = strEncodeList . IS.toList
+  strP = IS.fromList <$> listItem `A.sepBy'` A.char ','
 
 listItem :: StrEncoding a => Parser a
 listItem = parseAll strP <$?> A.takeTill (\c -> c == ',' || c == ' ' || c == '\n')

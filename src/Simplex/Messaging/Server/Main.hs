@@ -289,6 +289,7 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "smp-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log",
+              pendingENDInterval = 15000000, -- 15 seconds
               smpServerVRange = supportedServerSMPRelayVRange,
               transportConfig =
                 defaultTransportServerConfig
@@ -317,11 +318,6 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini,
               information = serverPublicInfo ini
             }
-        textToHostMode :: Text -> HostMode
-        textToHostMode = \case
-          "public" -> HMPublic
-          "onion" -> HMOnionViaSocks
-          s -> error . T.unpack $ "Invalid host_mode: " <> s
         textToOwnServers :: Text -> [ByteString]
         textToOwnServers = map encodeUtf8 . T.words
 
@@ -344,6 +340,12 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
             serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams}
           where
             isOnion = \case THOnionHost _ -> True; _ -> False
+
+textToHostMode :: Text -> HostMode
+textToHostMode = \case
+  "public" -> HMPublic
+  "onion" -> HMOnionViaSocks
+  s -> error . T.unpack $ "Invalid host_mode: " <> s
 
 data EmbeddedWebParams = EmbeddedWebParams
   { webStaticPath :: FilePath,

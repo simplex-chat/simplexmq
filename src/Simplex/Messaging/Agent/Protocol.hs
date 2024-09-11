@@ -51,6 +51,7 @@ module Simplex.Messaging.Agent.Protocol
     -- * SMP agent protocol types
     ConnInfo,
     SndQueueSecured,
+    AEntityId,
     ACommand (..),
     AEvent (..),
     AEvt (..),
@@ -190,7 +191,6 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( AProtocolType,
     BrokerErrorType (..),
-    EntityId,
     ErrorType,
     MsgBody,
     MsgFlags,
@@ -287,9 +287,11 @@ e2eEncAgentMsgLength v = \case
   _ -> 15856
 
 -- | SMP agent event
-type ATransmission = (ACorrId, EntityId, AEvt)
+type ATransmission = (ACorrId, AEntityId, AEvt)
 
 type UserId = Int64
+
+type AEntityId = ByteString
 
 type ACorrId = ByteString
 
@@ -342,6 +344,7 @@ data AEvent (e :: AEntity) where
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
   CON :: PQEncryption -> AEvent AEConn -- notification that connection is established
   END :: AEvent AEConn
+  DELD :: AEvent AEConn
   CONNECT :: AProtocolType -> TransportHost -> AEvent AENone
   DISCONNECT :: AProtocolType -> TransportHost -> AEvent AENone
   DOWN :: SMPServer -> [ConnId] -> AEvent AENone
@@ -411,6 +414,7 @@ data AEventTag (e :: AEntity) where
   INFO_ :: AEventTag AEConn
   CON_ :: AEventTag AEConn
   END_ :: AEventTag AEConn
+  DELD_ :: AEventTag AEConn
   CONNECT_ :: AEventTag AENone
   DISCONNECT_ :: AEventTag AENone
   DOWN_ :: AEventTag AENone
@@ -464,6 +468,7 @@ aEventTag = \case
   INFO {} -> INFO_
   CON _ -> CON_
   END -> END_
+  DELD -> DELD_
   CONNECT {} -> CONNECT_
   DISCONNECT {} -> DISCONNECT_
   DOWN {} -> DOWN_
@@ -1336,6 +1341,8 @@ data AgentErrorType
     CMD {cmdErr :: CommandErrorType, errContext :: String}
   | -- | connection errors
     CONN {connErr :: ConnectionErrorType}
+  | -- | user not found in database
+    NO_USER
   | -- | SMP protocol errors forwarded to agent clients
     SMP {serverAddress :: String, smpErr :: ErrorType}
   | -- | NTF protocol errors forwarded to agent clients

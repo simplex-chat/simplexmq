@@ -29,7 +29,7 @@ import Control.Monad (forM_, when)
 import qualified Data.Aeson.TH as J
 import Data.List (intercalate, sortOn)
 import Data.List.NonEmpty (NonEmpty)
-import qualified Data.Map as M
+import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing, mapMaybe)
 import Data.Text (Text)
 import Data.Text.Encoding (decodeLatin1)

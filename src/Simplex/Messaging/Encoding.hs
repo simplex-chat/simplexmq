@@ -42,10 +42,12 @@ class Encoding a where
   -- | decoding of type (default implementation uses parser)
   smpDecode :: ByteString -> Either String a
   smpDecode = parseAll smpP
+  {-# INLINE smpDecode #-}
 
   -- | protocol parser of type (default implementation parses protocol ByteString encoding)
   smpP :: Parser a
   smpP = smpDecode <$?> smpP
+  {-# INLINE smpP #-}
 
 instance Encoding Char where
   smpEncode = B.singleton

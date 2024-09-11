@@ -1,10 +1,12 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -15,6 +17,7 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeOperators #-}
@@ -968,12 +971,12 @@ createRcvMsg db connId rq rcvMsgData@RcvMsgData {msgMeta = MsgMeta {sndMsgId}, i
   insertRcvMsgDetails_ db connId rq rcvMsgData
   updateRcvMsgHash db connId sndMsgId internalRcvId internalHash
 
-updateSndIds :: DB.Connection -> ConnId -> IO (InternalId, InternalSndId, PrevSndMsgHash)
-updateSndIds db connId = do
-  (lastInternalId, lastInternalSndId, prevSndHash) <- retrieveLastIdsAndHashSnd_ db connId
+updateSndIds :: DB.Connection -> ConnId -> IO (Either StoreError (InternalId, InternalSndId, PrevSndMsgHash))
+updateSndIds db connId = runExceptT $ do
+  (lastInternalId, lastInternalSndId, prevSndHash) <- ExceptT $ retrieveLastIdsAndHashSnd_ db connId
   let internalId = InternalId $ unId lastInternalId + 1
       internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
-  updateLastIdsSnd_ db connId internalId internalSndId
+  liftIO $ updateLastIdsSnd_ db connId internalId internalSndId
   pure (internalId, internalSndId, prevSndHash)
 
 createSndMsg :: DB.Connection -> ConnId -> SndMsgData -> IO ()
@@ -1814,6 +1817,14 @@ instance ToField (Version v) where toField (Version v) = toField v
 
 instance FromField (Version v) where fromField f = Version <$> fromField f
 
+deriving newtype instance ToField EntityId
+
+deriving newtype instance FromField EntityId
+
+deriving newtype instance ToField ChunkReplicaId
+
+deriving newtype instance FromField ChunkReplicaId
+
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x
 listToEither e _ = Left e
@@ -2208,9 +2219,9 @@ updateRcvMsgHash db connId sndMsgId internalRcvId internalHash =
 
 -- * updateSndIds helpers
 
-retrieveLastIdsAndHashSnd_ :: DB.Connection -> ConnId -> IO (InternalId, InternalSndId, PrevSndMsgHash)
+retrieveLastIdsAndHashSnd_ :: DB.Connection -> ConnId -> IO (Either StoreError (InternalId, InternalSndId, PrevSndMsgHash))
 retrieveLastIdsAndHashSnd_ dbConn connId = do
-  [(lastInternalId, lastInternalSndId, lastSndHash)] <-
+  firstRow id SEConnNotFound $
     DB.queryNamed
       dbConn
       [sql|
@@ -2219,7 +2230,6 @@ retrieveLastIdsAndHashSnd_ dbConn connId = do
         WHERE conn_id = :conn_id;
       |]
       [":conn_id" := connId]
-  return (lastInternalId, lastInternalSndId, lastSndHash)
 
 updateLastIdsSnd_ :: DB.Connection -> ConnId -> InternalId -> InternalSndId -> IO ()
 updateLastIdsSnd_ dbConn connId newInternalId newInternalSndId =
@@ -2515,7 +2525,7 @@ deleteRcvFile' :: DB.Connection -> DBRcvFileId -> IO ()
 deleteRcvFile' db rcvFileId =
   DB.execute db "DELETE FROM rcv_files WHERE rcv_file_id = ?" (Only rcvFileId)
 
-getNextRcvChunkToDownload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Either StoreError (Maybe (RcvFileChunk, Bool)))
+getNextRcvChunkToDownload :: DB.Connection -> XFTPServer -> NominalDiffTime -> IO (Either StoreError (Maybe (RcvFileChunk, Bool, Maybe RcvFileId)))
 getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = do
   getWorkItem "rcv_file_download" getReplicaId getChunkData (markRcvFileFailed db . snd)
   where
@@ -2539,7 +2549,7 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = d
             LIMIT 1
           |]
           (host, port, keyHash, RFSReceiving, cutoffTs)
-    getChunkData :: (Int64, DBRcvFileId) -> IO (Either StoreError (RcvFileChunk, Bool))
+    getChunkData :: (Int64, DBRcvFileId) -> IO (Either StoreError (RcvFileChunk, Bool, Maybe RcvFileId))
     getChunkData (rcvFileChunkReplicaId, _fileId) =
       firstRow toChunk SEFileNotFound $
         DB.query
@@ -2548,7 +2558,7 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = d
             SELECT
               f.rcv_file_id, f.rcv_file_entity_id, f.user_id, c.rcv_file_chunk_id, c.chunk_no, c.chunk_size, c.digest, f.tmp_path, c.tmp_path,
               r.rcv_file_chunk_replica_id, r.replica_id, r.replica_key, r.received, r.delay, r.retries,
-              f.approved_relays
+              f.approved_relays, f.redirect_entity_id
             FROM rcv_file_chunk_replicas r
             JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
             JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
@@ -2557,8 +2567,8 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = d
           |]
           (Only rcvFileChunkReplicaId)
       where
-        toChunk :: ((DBRcvFileId, RcvFileId, UserId, Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath) :. (Int64, ChunkReplicaId, C.APrivateAuthKey, Bool, Maybe Int64, Int) :. Only Bool) -> (RcvFileChunk, Bool)
-        toChunk ((rcvFileId, rcvFileEntityId, userId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath) :. (rcvChunkReplicaId, replicaId, replicaKey, received, delay, retries) :. (Only approvedRelays)) =
+        toChunk :: ((DBRcvFileId, RcvFileId, UserId, Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath) :. (Int64, ChunkReplicaId, C.APrivateAuthKey, Bool, Maybe Int64, Int) :. (Bool, Maybe RcvFileId)) -> (RcvFileChunk, Bool, Maybe RcvFileId)
+        toChunk ((rcvFileId, rcvFileEntityId, userId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath) :. (rcvChunkReplicaId, replicaId, replicaKey, received, delay, retries) :. (approvedRelays, redirectEntityId_)) =
           ( RcvFileChunk
               { rcvFileId,
                 rcvFileEntityId,
@@ -2571,7 +2581,8 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = d
                 chunkTmpPath,
                 replicas = [RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, replicaKey, received, delay, retries}]
               },
-            approvedRelays
+            approvedRelays,
+            redirectEntityId_
           )
 
 getNextRcvFileToDecrypt :: DB.Connection -> NominalDiffTime -> IO (Either StoreError (Maybe RcvFile))
