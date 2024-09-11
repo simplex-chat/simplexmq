@@ -4,7 +4,7 @@
 
 module Simplex.Messaging.Crypto.SNTRUP761 where
 
-import Crypto.Hash (Digest, SHA256, hash)
+import Crypto.Hash (Digest, SHA3_256, hash)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
@@ -28,4 +28,4 @@ kcbEncrypt (KEMHybridSecret k) = sbEncrypt_ k
 kemHybridSecret :: PublicKeyX25519 -> PrivateKeyX25519 -> KEMSharedKey -> KEMHybridSecret
 kemHybridSecret k pk (KEMSharedKey kem) =
   let DhSecretX25519 dh = C.dh' k pk
-   in KEMHybridSecret $ BA.convert (hash $ BA.convert dh <> kem :: Digest SHA256)
+   in KEMHybridSecret $ BA.convert (hash $ BA.convert dh <> kem :: Digest SHA3_256)
