@@ -254,7 +254,7 @@ createAgentStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey k
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
-    ntfSubQ :: TBQueue (ConnId, NtfSupervisorCommand),
+    ntfSubQ :: TBQueue (NtfSupervisorCommand, NonEmpty ConnId),
     ntfWorkers :: TMap NtfServer Worker,
     ntfSMPWorkers :: TMap SMPServer Worker
   }

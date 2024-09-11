@@ -23,6 +23,7 @@ import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import Data.Time (UTCTime, addUTCTime, getCurrentTime)
@@ -48,7 +49,7 @@ runNtfSupervisor :: AgentClient -> AM' ()
 runNtfSupervisor c = do
   ns <- asks ntfSupervisor
   forever $ do
-    cmd@(connId, _) <- atomically . readTBQueue $ ntfSubQ ns
+    cmd@(_, connId :| _) <- atomically . readTBQueue $ ntfSubQ ns -- TODO [batch ntf]
     handleErr connId . agentOperationBracket c AONtfNetwork waitUntilActive $
       runExceptT (processNtfSub c cmd) >>= \case
         Left e -> notifyErr connId e
@@ -60,8 +61,8 @@ runNtfSupervisor c = do
       notifyErr connId e
     notifyErr connId e = notifyInternalError c connId $ "runNtfSupervisor error " <> show e
 
-processNtfSub :: AgentClient -> (ConnId, NtfSupervisorCommand) -> AM ()
-processNtfSub c (connId, cmd) = do
+processNtfSub :: AgentClient -> (NtfSupervisorCommand, NonEmpty ConnId) -> AM ()
+processNtfSub c (cmd, connId :| _) = do -- TODO [batch ntf]
   logInfo $ "processNtfSub - connId = " <> tshow connId <> " - cmd = " <> tshow cmd
   case cmd of
     NSCCreate -> do
@@ -194,7 +195,7 @@ runNtfWorker c srv Worker {doWork} =
                         withStore' c $ \db ->
                           updateNtfSubscription db sub {ntfServer, ntfQueueId = Nothing, ntfSubId = Nothing, ntfSubStatus = NASNew} (NSASMP NSASmpKey) ts
                         ns <- asks ntfSupervisor
-                        atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCNtfSMPWorker smpServer)
+                        atomically $ writeTBQueue (ntfSubQ ns) (NSCNtfSMPWorker smpServer, connId :| []) -- TODO [batch ntf]
                       status -> updateSubNextCheck ts status
                     atomically $ incNtfServerStat c userId ntfServer ntfChecked
                   Nothing -> workerInternalError c connId "NSACheck - no subscription ID"
@@ -204,12 +205,12 @@ runNtfWorker c srv Worker {doWork} =
               let sub' = sub {ntfSubId = Nothing, ntfSubStatus = NASOff}
               withStore' c $ \db -> updateNtfSubscription db sub' (NSASMP NSASmpDelete) ts
               ns <- asks ntfSupervisor
-              atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCNtfSMPWorker smpServer)
+              atomically $ writeTBQueue (ntfSubQ ns) (NSCNtfSMPWorker smpServer, connId :| []) -- TODO [batch ntf] loop
           NSARotate ->
             deleteNtfSub $ do
               withStore' c $ \db -> deleteNtfSubscription db connId
               ns <- asks ntfSupervisor
-              atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCCreate)
+              atomically $ writeTBQueue (ntfSubQ ns) (NSCCreate, connId :| []) -- TODO [batch ntf] loop
       where
         deleteNtfSub continue = case ntfSubId of
           Just nSubId ->
@@ -267,7 +268,7 @@ runNtfSMPWorker c srv Worker {doWork} = do
                   setRcvQueueNtfCreds db connId $ Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
                   updateNtfSubscription db sub {ntfQueueId = Just notifierId, ntfSubStatus = NASKey} (NSANtf NSACreate) ts
                 ns <- asks ntfSupervisor
-                atomically $ sendNtfSubCommand ns (connId, NSCNtfWorker ntfServer)
+                atomically $ sendNtfSubCommand ns (NSCNtfWorker ntfServer, connId :| []) -- TODO [batch ntf]
               _ -> workerInternalError c connId "NSASmpKey - no active token"
           NSASmpDelete -> do
             -- TODO should we remove it after successful removal from the server?
@@ -322,7 +323,7 @@ nsUpdateToken ns tkn = writeTVar (ntfTkn ns) $ Just tkn
 nsRemoveNtfToken :: NtfSupervisor -> STM ()
 nsRemoveNtfToken ns = writeTVar (ntfTkn ns) Nothing
 
-sendNtfSubCommand :: NtfSupervisor -> (ConnId, NtfSupervisorCommand) -> STM ()
+sendNtfSubCommand :: NtfSupervisor -> (NtfSupervisorCommand, NonEmpty ConnId) -> STM ()
 sendNtfSubCommand ns cmd = do
   tkn <- readTVar (ntfTkn ns)
   when (instantNotifications tkn) $ writeTBQueue (ntfSubQ ns) cmd
