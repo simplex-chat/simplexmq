@@ -2021,18 +2021,18 @@ toggleConnectionNtfs' c connId enable = do
           atomically $ sendNtfSubCommand ns (connId, cmd)
 
 deleteToken_ :: AgentClient -> NtfToken -> AM ()
-deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
+deleteToken_ c@AgentClient {subQ} tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
   ns <- asks ntfSupervisor
   forM_ ntfTokenId $ \tknId -> do
     let ntfTknAction = Just NTADelete
     withStore' c $ \db -> updateNtfToken db tkn ntfTknStatus ntfTknAction
     atomically $ nsUpdateToken ns tkn {ntfTknStatus, ntfTknAction}
-    agentNtfDeleteToken c tknId tkn `catchAgentError` \case
-      -- NTF _ AUTH -> pure ()
-      -- e -> throwE e
-      _ -> pure ()
+    agentNtfDeleteToken c tknId tkn `catchAgentError` \e -> notify (ERR e) -- TODO cleanup task
   withStore' c $ \db -> removeNtfToken db tkn
   atomically $ nsRemoveNtfToken ns
+  where
+    notify :: forall e. AEntityI e => AEvent e -> AM ()
+    notify cmd = atomically $ writeTBQueue subQ ("", "", AEvt (sAEntity @e) cmd)
 
 withToken :: AgentClient -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> AM a -> AM NtfTknStatus
 withToken c tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = do
