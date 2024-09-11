@@ -1090,9 +1090,10 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               liftIO (addQueueNotifier st entId ntfCreds) >>= \case
                 Left DUPLICATE_ -> addNotifierRetry (n - 1) rcvPublicDhKey rcvNtfDhSecret
                 Left e -> pure $ ERR e
-                Right _ -> do
+                Right nId_ -> do
                   withLog $ \s -> logAddNotifier s entId ntfCreds
                   incStat . ntfCreated =<< asks serverStats
+                  forM_ nId_ $ \nId -> atomically $ writeTQueue ntfDeletedQ (nId, clientId)
                   pure $ NID notifierId rcvPublicDhKey
 
         deleteQueueNotifier_ :: QueueStore -> M (Transmission BrokerMsg)
