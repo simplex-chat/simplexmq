@@ -110,6 +110,7 @@ processNtfSub c (connId, cmd) = do
         _ -> notifyInternalError c connId "NSCSmpDelete - no rcv queue"
     NSCNtfWorker ntfServer -> lift . void $ getNtfNTFWorker True c ntfServer
     NSCNtfSMPWorker smpServer -> lift . void $ getNtfSMPWorker True c smpServer
+    NSCDeleteRecord -> withStore' c $ \db -> deleteNtfSubscription' db connId
 
 getNtfNTFWorker :: Bool -> AgentClient -> NtfServer -> AM' Worker
 getNtfNTFWorker hasWork c server = do

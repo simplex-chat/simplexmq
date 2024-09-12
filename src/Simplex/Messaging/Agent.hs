@@ -1720,7 +1720,7 @@ disableConn :: AgentClient -> ConnId -> AM' ()
 disableConn c connId = do
   atomically $ removeSubscription c connId
   ns <- asks ntfSupervisor
-  atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCSmpDelete)
+  atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCDeleteRecord)
 
 -- Unlike deleteConnectionsAsync, this function does not mark connections as deleted in case of deletion failure.
 deleteConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType ()))

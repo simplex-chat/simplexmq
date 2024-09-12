@@ -158,6 +158,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateNtfSubscription,
     setNullNtfSubscriptionAction,
     deleteNtfSubscription,
+    deleteNtfSubscription',
     getNextNtfSubNTFAction,
     markNtfSubActionNtfFailed_, -- exported for tests
     getNextNtfSubSMPAction,
@@ -1608,7 +1609,11 @@ deleteNtfSubscription db connId = do
             WHERE conn_id = ?
           |]
           (Nothing :: Maybe SMP.NotifierId, Nothing :: Maybe NtfSubscriptionId, NASDeleted, False, updatedAt, connId)
-      else DB.execute db "DELETE FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
+      else deleteNtfSubscription' db connId
+
+deleteNtfSubscription' :: DB.Connection -> ConnId -> IO ()
+deleteNtfSubscription' db connId = do
+  DB.execute db "DELETE FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
 
 getNextNtfSubNTFAction :: DB.Connection -> NtfServer -> IO (Either StoreError (Maybe (NtfSubscription, NtfSubNTFAction, NtfActionTs)))
 getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) =
