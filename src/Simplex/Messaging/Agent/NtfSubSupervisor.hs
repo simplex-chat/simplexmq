@@ -49,17 +49,17 @@ runNtfSupervisor :: AgentClient -> AM' ()
 runNtfSupervisor c = do
   ns <- asks ntfSupervisor
   forever $ do
-    cmd@(_, connId :| _) <- atomically . readTBQueue $ ntfSubQ ns -- TODO [batch ntf]
-    handleErr connId . agentOperationBracket c AONtfNetwork waitUntilActive $
+    cmd <- atomically . readTBQueue $ ntfSubQ ns
+    handleErr . agentOperationBracket c AONtfNetwork waitUntilActive $
       runExceptT (processNtfSub c cmd) >>= \case
-        Left e -> notifyErr connId e
+        Left e -> notifyErr e
         Right _ -> return ()
   where
-    handleErr :: ConnId -> AM' () -> AM' ()
-    handleErr connId = E.handle $ \(e :: E.SomeException) -> do
+    handleErr :: AM' () -> AM' ()
+    handleErr = E.handle $ \(e :: E.SomeException) -> do
       logError $ "runNtfSupervisor error " <> tshow e
-      notifyErr connId e
-    notifyErr connId e = notifyInternalError c connId $ "runNtfSupervisor error " <> show e
+      notifyErr e
+    notifyErr e = notifyInternalError' c $ "runNtfSupervisor error " <> show e
 
 processNtfSub :: AgentClient -> (NtfSupervisorCommand, NonEmpty ConnId) -> AM ()
 processNtfSub c (cmd, connId :| _) = do -- TODO [batch ntf]
@@ -292,6 +292,10 @@ workerInternalError c connId internalErrStr = do
 notifyInternalError :: MonadIO m => AgentClient -> ConnId -> String -> m ()
 notifyInternalError AgentClient {subQ} connId internalErrStr = atomically $ writeTBQueue subQ ("", connId, AEvt SAEConn $ ERR $ INTERNAL internalErrStr)
 {-# INLINE notifyInternalError #-}
+
+notifyInternalError' :: MonadIO m => AgentClient -> String -> m ()
+notifyInternalError' AgentClient {subQ} internalErrStr = atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ INTERNAL internalErrStr)
+{-# INLINE notifyInternalError' #-}
 
 getNtfToken :: AM' (Maybe NtfToken)
 getNtfToken = do

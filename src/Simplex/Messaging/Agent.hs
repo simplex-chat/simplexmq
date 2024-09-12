@@ -133,7 +133,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::), (.::.))
 import Data.Either (isRight, rights)
-import Data.Foldable (foldl', toList)
+import Data.Foldable (foldl', foldr', toList)
 import Data.Functor (($>))
 import Data.Functor.Identity
 import Data.List (find)
@@ -1013,14 +1013,13 @@ subscribeConnections' c connIds = do
         order _ = 4
     sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType ()) -> Map ConnId SomeConn -> AM' ()
     sendNtfCreate ns rcvRs cs = do
-      -- TODO this needs to be batched end to end.
-      -- Currently, the only change is to ignore failed subscriptions.
       let oks = M.keysSet $ M.filter (either temporaryAgentError $ const True) rcvRs
-      forM_ (M.restrictKeys cs oks) $ \case
-        SomeConn _ conn -> do
-          let cmd = if enableNtfs $ toConnData conn then NSCCreate else NSCSmpDelete
-              ConnData {connId} = toConnData conn
-          atomically $ writeTBQueue (ntfSubQ ns) (cmd, connId :| []) -- TODO [batch ntf]
+          cs' = M.restrictKeys cs oks
+          (csCreate, csDelete) = M.partition (\(SomeConn _ conn) -> enableNtfs $ toConnData conn) cs'
+      forM_ (L.nonEmpty $ M.keys csCreate) $ \cids ->
+        atomically $ writeTBQueue (ntfSubQ ns) (NSCCreate, cids)
+      forM_ (L.nonEmpty $ M.keys csDelete) $ \cids ->
+        atomically $ writeTBQueue (ntfSubQ ns) (NSCSmpDelete, cids)
     resumeDelivery :: Map ConnId SomeConn -> AM ()
     resumeDelivery conns = do
       conns' <- M.restrictKeys conns . S.fromList <$> withStore' c getConnectionsForDelivery
@@ -1716,12 +1715,6 @@ connRcvQueues = \case
   SndConnection _ _ -> []
   NewConnection _ -> []
 
-disableConn :: AgentClient -> ConnId -> AM' ()
-disableConn c connId = do
-  atomically $ removeSubscription c connId
-  ns <- asks ntfSupervisor
-  atomically $ writeTBQueue (ntfSubQ ns) (NSCDeleteSub, connId :| []) -- TODO [batch ntf] disableConn
-
 -- Unlike deleteConnectionsAsync, this function does not mark connections as deleted in case of deletion failure.
 deleteConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType ()))
 deleteConnections' = deleteConnections_ getConns False False
@@ -1748,7 +1741,7 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
       (delRs, rcvQs) = M.mapEither rcvQueues cs
       rqs = concat $ M.elems rcvQs
       connIds' = M.keys rcvQs
-  lift . forM_ connIds' $ disableConn c
+  lift $ forM_ (L.nonEmpty connIds') unsubConnIds
   -- ! delRs is not used to notify about the result in any of the calling functions,
   -- ! it is only used to check results count in deleteConnections_;
   -- ! if it was used to notify about the result, it might be necessary to differentiate
@@ -1762,6 +1755,12 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
     rcvQueues (SomeConn _ conn) = case connRcvQueues conn of
       [] -> Left $ Right ()
       rqs -> Right rqs
+    unsubConnIds :: NonEmpty ConnId -> AM' ()
+    unsubConnIds connIds' = do
+      forM_ connIds' $ \connId ->
+        atomically $ removeSubscription c connId
+      ns <- asks ntfSupervisor
+      atomically $ writeTBQueue (ntfSubQ ns) (NSCDeleteSub, connIds')
     notify = atomically . writeTBQueue (subQ c)
 
 deleteConnQueues :: AgentClient -> Bool -> Bool -> [RcvQueue] -> AM' (Map ConnId (Either AgentErrorType ()))
@@ -2067,12 +2066,18 @@ sendNtfConnCommands :: AgentClient -> NtfSupervisorCommand -> AM ()
 sendNtfConnCommands c cmd = do
   ns <- asks ntfSupervisor
   connIds <- liftIO $ getSubscriptions c
-  forM_ connIds $ \connId -> do
-    withStore' c (`getConnData` connId) >>= \case
-      Just (ConnData {enableNtfs}, _) ->
-        when enableNtfs . atomically $ writeTBQueue (ntfSubQ ns) (cmd, connId :| []) -- TODO [batch ntf]
-      _ ->
-        atomically $ writeTBQueue (subQ c) ("", connId, AEvt SAEConn $ ERR $ INTERNAL "no connection data")
+  connIds' <- lift $ enabledNtfConns . rights <$> withStoreBatch' c (\db -> map (getConnData db) (S.toList connIds))
+  forM_ (L.nonEmpty connIds') $ \connIds'' ->
+    atomically $ writeTBQueue (ntfSubQ ns) (cmd, connIds'')
+  where
+    enabledNtfConns :: [Maybe (ConnData, ConnectionMode)] -> [ConnId]
+    enabledNtfConns =
+      foldr'
+        ( \cData_ acc -> case cData_ of
+            Just (ConnData {connId, enableNtfs}, _) -> if enableNtfs then connId : acc else acc
+            Nothing -> acc
+        )
+        []
 
 setNtfServers :: AgentClient -> [NtfServer] -> IO ()
 setNtfServers c = atomically . writeTVar (ntfServers c)
