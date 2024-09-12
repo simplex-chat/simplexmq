@@ -1018,7 +1018,7 @@ subscribeConnections' c connIds = do
       let oks = M.keysSet $ M.filter (either temporaryAgentError $ const True) rcvRs
       forM_ (M.restrictKeys cs oks) $ \case
         SomeConn _ conn -> do
-          let cmd = if enableNtfs $ toConnData conn then NSCCreate else NSCDelete
+          let cmd = if enableNtfs $ toConnData conn then NSCCreate else NSCSmpDelete
               ConnData {connId} = toConnData conn
           atomically $ writeTBQueue (ntfSubQ ns) (connId, cmd)
     resumeDelivery :: Map ConnId SomeConn -> AM ()
@@ -1720,7 +1720,7 @@ disableConn :: AgentClient -> ConnId -> AM' ()
 disableConn c connId = do
   atomically $ removeSubscription c connId
   ns <- asks ntfSupervisor
-  atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCDelete)
+  atomically $ writeTBQueue (ntfSubQ ns) (connId, NSCDeleteSub)
 
 -- Unlike deleteConnectionsAsync, this function does not mark connections as deleted in case of deletion failure.
 deleteConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType ()))
@@ -1902,7 +1902,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
                 cron <- asks $ ntfCron . config
                 agentNtfEnableCron c tknId tkn cron
                 when (suppliedNtfMode == NMInstant) $ initializeNtfSubs c
-                when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ deleteNtfSubs c NSCDelete
+                when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ deleteNtfSubs c NSCSmpDelete
               -- possible improvement: get updated token status from the server, or maybe TCRON could return the current status
               pure ntfTknStatus
           | otherwise -> replaceToken tknId
@@ -2017,7 +2017,7 @@ toggleConnectionNtfs' c connId enable = do
       | otherwise = do
           withStore' c $ \db -> setConnectionNtfs db connId enable
           ns <- asks ntfSupervisor
-          let cmd = if enable then NSCCreate else NSCDelete
+          let cmd = if enable then NSCCreate else NSCSmpDelete
           atomically $ sendNtfSubCommand ns (connId, cmd)
 
 deleteToken_ :: AgentClient -> NtfToken -> AM ()
