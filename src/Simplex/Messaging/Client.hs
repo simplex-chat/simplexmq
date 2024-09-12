@@ -37,6 +37,8 @@ module Simplex.Messaging.Client
     protocolClientServer',
     transportHost',
     transportSession',
+    encryptEntityId,
+    decryptEntityId,
 
     -- * SMP protocol command functions
     createSMPQueue,
@@ -125,6 +127,7 @@ import Data.Maybe (catMaybes, fromMaybe)
 import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
+import Debug.Trace
 import Network.Socket (ServiceName)
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
@@ -143,6 +146,7 @@ import Simplex.Messaging.Util (bshow, diffToMicroseconds, ifM, liftEitherWith, r
 import Simplex.Messaging.Version
 import System.Mem.Weak (Weak, deRefWeak)
 import System.Timeout (timeout)
+import System.IO.Unsafe (unsafePerformIO)
 
 -- | 'SMPClient' is a handle used to send commands to a specific SMP server.
 --
@@ -192,6 +196,7 @@ smpClientStub g sessionId thVersion thAuth = do
               thAuth,
               blockSize = smpBlockSize,
               implySessId = thVersion >= authCmdsSMPVersion,
+              entitySecret = Nothing,
               batch = True
             },
         sessionTs = ts,
@@ -390,7 +395,7 @@ defaultClientConfig clientALPN serverVRange =
 {-# INLINE defaultClientConfig #-}
 
 defaultSMPClientConfig :: ProtocolClientConfig SMPVersion
-defaultSMPClientConfig = defaultClientConfig (Just supportedSMPHandshakes) supportedClientSMPRelayVRange
+defaultSMPClientConfig = (defaultClientConfig (Just supportedSMPHandshakes) supportedClientSMPRelayVRange) {agreeSecret = True}
 {-# INLINE defaultSMPClientConfig #-}
 
 data Request err msg = Request
@@ -563,22 +568,24 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         mapM_ (atomically . writeTBQueue q . serverTransmission c) (L.nonEmpty ts')
 
     processMsg :: ProtocolClient v err msg -> SignedTransmission err msg -> IO (Maybe (EntityId, ServerTransmission err msg))
-    processMsg ProtocolClient {client_ = PClient {sentCommands}} (_, _, (corrId, entId, respOrErr))
+    processMsg ProtocolClient {thParams, client_ = PClient {sentCommands}} (_, _, (corrId, entId, respOrErr))
       | B.null $ bs corrId = sendMsg $ STEvent clientResp
       | otherwise =
           TM.lookupIO corrId sentCommands >>= \case
             Nothing -> sendMsg $ STUnexpectedError unexpected
-            Just Request {entityId, command, pending, responseVar} -> do
-              wasPending <-
-                atomically $ do
-                  TM.delete corrId sentCommands
-                  ifM
-                    (swapTVar pending False)
-                    (True <$ tryPutTMVar responseVar (if entityId == entId then clientResp else Left unexpected))
-                    (pure False)
-              if wasPending
-                then pure Nothing
-                else sendMsg $ if entityId == entId then STResponse command clientResp else STUnexpectedError unexpected
+            Just Request {entityId, command, pending, responseVar} -> case decryptEntityId thParams entityId of
+              Left _ -> sendMsg $ STUnexpectedError unexpected
+              Right entityId' -> do
+                wasPending <-
+                  atomically $ do
+                    TM.delete corrId sentCommands
+                    ifM
+                      (swapTVar pending False)
+                      (True <$ tryPutTMVar responseVar (if entityId' == entId then clientResp else Left unexpected))
+                      (pure False)
+                if wasPending
+                  then pure Nothing
+                  else sendMsg $ if entityId' == entId then STResponse command clientResp else STUnexpectedError unexpected
       where
         unexpected = unexpectedResponse respOrErr
         clientResp = case respOrErr of
@@ -593,6 +600,15 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             Nothing <$ case clientResp of
               Left e -> logError $ "SMP client error: " <> tshow e
               Right _ -> logWarn "SMP client unprocessed event"
+
+decryptEntityId :: THandleParams v p -> EntityId -> Either C.CryptoError EntityId
+decryptEntityId _ NoEntity = Right NoEntity
+decryptEntityId thParams entityId = case entitySecret thParams of
+  Just sessSecret ->
+    let (nonce, encEntId) = B.splitAt 24 $ unEntityId entityId
+        entityId' = EntityId <$> C.cbDecryptNoPad sessSecret (C.cbNonce nonce) encEntId
+     in unsafePerformIO (putStrLn $ "decryptEntityId from: " <> show entityId <> " to " <> show entityId') `seq` entityId'
+  Nothing -> Right entityId
 
 unexpectedResponse :: Show r => r -> ProtocolClientError err
 unexpectedResponse = PCEUnexpectedResponse . B.pack . take 32 . show
@@ -983,13 +999,16 @@ getSMPQueueInfo c pKey qId =
     r -> throwE $ unexpectedResponse r
 
 okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateAuthKey -> QueueId -> ExceptT SMPClientError IO ()
-okSMPCommand cmd c pKey qId =
+okSMPCommand cmd c pKey qId = do
+  liftIO $ putStrLn $ "okSMPCommand " <> show cmd
   sendSMPCommand c (Just pKey) qId cmd >>= \case
     OK -> return ()
     r -> throwE $ unexpectedResponse r
 
 okSMPCommands :: PartyI p => Command p -> SMPClient -> NonEmpty (C.APrivateAuthKey, QueueId) -> IO (NonEmpty (Either SMPClientError ()))
-okSMPCommands cmd c qs = L.map process <$> sendProtocolCommands c cs
+okSMPCommands cmd c qs = do
+  liftIO $ putStrLn $ "okSMPCommands " <> show cmd
+  L.map process <$> sendProtocolCommands c cs
   where
     aCmd = Cmd sParty cmd
     cs = L.map (\(pKey, qId) -> (Just pKey, qId, aCmd)) qs
@@ -1000,7 +1019,9 @@ okSMPCommands cmd c qs = L.map process <$> sendProtocolCommands c cs
 
 -- | Send SMP command
 sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateAuthKey -> QueueId -> Command p -> ExceptT SMPClientError IO BrokerMsg
-sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd)
+sendSMPCommand c pKey qId cmd = do
+  liftIO $ putStrLn $ "sendSMPCommand " <> show cmd
+  sendProtocolCommand c pKey qId (Cmd sParty cmd)
 {-# INLINE sendSMPCommand #-}
 
 type PCTransmission err msg = (Either TransportError SentRawTransmission, Request err msg)
@@ -1088,25 +1109,38 @@ mkTransmission c = mkTransmission_ c Nothing
 mkTransmission_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.CbNonce -> ClientCommand msg -> IO (PCTransmission err msg)
 mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} nonce_ (pKey_, entityId, command) = do
   nonce@(C.CbNonce corrId) <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
-  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entityId, command)
+  putStrLn $ "client encryptEntityId " <> show entityId
+  entityId' <- encryptEntityId clientCorrId thParams entityId
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entityId', command)
       auth = authTransmission (thAuth thParams) pKey_ nonce tForAuth
-  r <- mkRequest (CorrId corrId)
+  r <- mkRequest entityId' (CorrId corrId)
   pure ((,tToSend) <$> auth, r)
   where
-    mkRequest :: CorrId -> IO (Request err msg)
-    mkRequest corrId = do
+    mkRequest :: EntityId -> CorrId -> IO (Request err msg)
+    mkRequest entityId' corrId = do
       pending <- newTVarIO True
       responseVar <- newEmptyTMVarIO
       let r =
             Request
               { corrId,
-                entityId,
+                entityId = entityId',
                 command,
                 pending,
                 responseVar
               }
       atomically $ TM.insert corrId r sentCommands
       pure r
+
+encryptEntityId :: TVar ChaChaDRG -> THandleParams v p -> EntityId -> IO EntityId
+encryptEntityId _ _ NoEntity = pure NoEntity
+encryptEntityId g thParams entityId = case entitySecret thParams of
+  Just sessSecret -> do
+    nonce <- atomically $ C.randomCbNonce g
+    let entityId' = EntityId $ C.unCbNonce nonce <> C.cbEncryptNoPad sessSecret nonce (unEntityId entityId)
+    putStrLn $ "encryptEntityId from: " <> show entityId <> " to: " <> show entityId'
+    putStrLn $ "encryptEntityId from length: " <> show (B.length $ unEntityId entityId) <> " to length: " <> show (B.length $ unEntityId entityId')
+    pure entityId'
+  Nothing -> pure entityId
 
 authTransmission :: Maybe (THandleAuth 'TClient) -> Maybe C.APrivateAuthKey -> C.CbNonce -> ByteString -> Either TransportError (Maybe TransmissionAuth)
 authTransmission thAuth pKey_ nonce t = traverse authenticate pKey_

@@ -48,6 +48,7 @@ module Simplex.Messaging.Transport
     sendingProxySMPVersion,
     sndAuthKeySMPVersion,
     deletedEventSMPVersion,
+    encryptedEntityIdSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -167,14 +168,17 @@ sndAuthKeySMPVersion = VersionSMP 9
 deletedEventSMPVersion :: VersionSMP
 deletedEventSMPVersion = VersionSMP 10
 
+encryptedEntityIdSMPVersion :: VersionSMP
+encryptedEntityIdSMPVersion = VersionSMP 11
+
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 10
+currentClientSMPRelayVersion = VersionSMP 11
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 10
+currentServerSMPRelayVersion = VersionSMP 11
 
 -- Max SMP protocol version to be used in e2e encrypted
 -- connection between client and server, as defined by SMP proxy.
@@ -182,7 +186,7 @@ currentServerSMPRelayVersion = VersionSMP 10
 -- to prevent client version fingerprinting by the
 -- destination relays when clients upgrade at different times.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 9
+proxiedSMPRelayVersion = VersionSMP 10
 
 -- minimal supported protocol version is 4
 -- TODO remove code that supports sending commands without batching
@@ -375,6 +379,8 @@ data THandleParams v p = THandleParams
     -- | do NOT send session ID in transmission, but include it into signed message
     -- based on protocol version
     implySessId :: Bool,
+    -- -- | secret to encrypt entity IDs
+    entitySecret :: Maybe C.DhSecretX25519,
     -- | send multiple transmissions in a single block
     -- based on protocol version
     batch :: Bool
@@ -392,6 +398,11 @@ data THandleAuth (p :: TransportPeer) where
       sessSecret' :: Maybe C.DhSecretX25519 -- session secret (will be used in SMP proxy only)
     } ->
     THandleAuth 'TServer
+
+thSessSecret :: THandleAuth p -> Maybe C.DhSecretX25519
+thSessSecret = \case
+  THAuthClient {sessSecret} -> sessSecret
+  THAuthServer {sessSecret'} -> sessSecret'
 
 -- | TLS-unique channel binding
 type SessionId = ByteString
@@ -563,7 +574,8 @@ smpTHandleClient th v vr pk_ ck_ =
 smpTHandle_ :: forall c p. THandleSMP c p -> VersionSMP -> VersionRangeSMP -> Maybe (THandleAuth p) -> THandleSMP c p
 smpTHandle_ th@THandle {params} v vr thAuth =
   -- TODO drop SMP v6: make thAuth non-optional
-  let params' = params {thVersion = v, thServerVRange = vr, thAuth, implySessId = v >= authCmdsSMPVersion}
+  let entitySecret = if v >= encryptedEntityIdSMPVersion then thAuth >>= thSessSecret else Nothing
+      params' = params {thVersion = v, thServerVRange = vr, thAuth, implySessId = v >= authCmdsSMPVersion, entitySecret}
    in (th :: THandleSMP c p) {params = params'}
 
 {-# INLINE forceCertChain #-}
@@ -595,6 +607,7 @@ smpTHandle c = THandle {connection = c, params}
           thVersion = v,
           thAuth = Nothing,
           implySessId = False,
+          entitySecret = Nothing,
           batch = True
         }
 

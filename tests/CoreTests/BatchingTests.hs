@@ -350,6 +350,7 @@ testTHandleParams v sessionId =
       thServerVRange = supportedServerSMPRelayVRange,
       thAuth = Nothing,
       implySessId = v >= authCmdsSMPVersion,
+      entitySecret = Nothing,
       batch = True
     }
 

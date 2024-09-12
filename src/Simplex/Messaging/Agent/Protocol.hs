@@ -277,14 +277,14 @@ supportedSMPAgentVRange = mkVersionRange minSupportedSMPAgentVersion currentSMPA
 e2eEncConnInfoLength :: VersionSMPA -> PQSupport -> Int
 e2eEncConnInfoLength v = \case
   -- reduced by 3726 (roughly the increase of message ratchet header size + key and ciphertext in reply link)
-  PQSupportOn | v >= pqdrSMPAgentVersion -> 11122
-  _ -> 14848
+  PQSupportOn | v >= pqdrSMPAgentVersion -> 11000
+  _ -> 14800
 
 e2eEncAgentMsgLength :: VersionSMPA -> PQSupport -> Int
 e2eEncAgentMsgLength v = \case
   -- reduced by 2222 (the increase of message ratchet header size)
-  PQSupportOn | v >= pqdrSMPAgentVersion -> 13634
-  _ -> 15856
+  PQSupportOn | v >= pqdrSMPAgentVersion -> 13500
+  _ -> 15800
 
 -- | SMP agent event
 type ATransmission = (ACorrId, AEntityId, AEvt)

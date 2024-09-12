@@ -258,24 +258,24 @@ supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClie
 -- TODO v6.0 remove dependency on version
 maxMessageLength :: VersionSMP -> Int
 maxMessageLength v
-  | v >= sendingProxySMPVersion = 16064 -- max 16067
-  | otherwise = 16088 -- 16064 - always use this size to determine allowed ranges
+  | v >= sendingProxySMPVersion = 16000 -- max 16067
+  | otherwise = 16000 -- 16064 - always use this size to determine allowed ranges
 
 paddedProxiedTLength :: Int
 paddedProxiedTLength = 16242 -- 16241 .. 16243
 
 -- TODO v6.0 change to 16064
-type MaxMessageLen = 16088
+type MaxMessageLen = 16000
 
 -- 16 extra bytes: 8 for timestamp and 8 for flags (7 flags and the space, only 1 flag is currently used)
 type MaxRcvMessageLen = MaxMessageLen + 16 -- 16104, the padded size is 16106
 
 -- it is shorter to allow per-queue e2e encryption DH key in the "public" header
 e2eEncConfirmationLength :: Int
-e2eEncConfirmationLength = 15920 -- 15881 .. 15976
+e2eEncConfirmationLength = 15860 -- 15881 .. 15976
 
 e2eEncMessageLength :: Int
-e2eEncMessageLength = 16016 -- 16004 .. 16021
+e2eEncMessageLength = 15956 -- 16004 .. 16021
 
 -- | SMP protocol clients
 data Party = Recipient | Sender | Notifier | ProxiedClient

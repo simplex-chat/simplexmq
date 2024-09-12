@@ -45,6 +45,7 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Control.Monad.STM (retry)
+import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
 import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Builder as BLD
@@ -74,7 +75,7 @@ import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, forwardSMPTransmission, smpProxyError, temporaryClientError)
+import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, decryptEntityId, encryptEntityId, forwardSMPTransmission, smpProxyError, temporaryClientError)
 import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -679,8 +680,9 @@ runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessio
       s <- asks server
       expCfg <- asks $ inactiveClientExpiration . config
       th <- newMVar h -- put TH under a fair lock to interleave messages and command responses
+      g <- asks random
       labelMyThread . B.unpack $ "client $" <> encode sessionId
-      raceAny_ $ [liftIO $ send th c, liftIO $ sendMsg th c, client thParams c s, receive h c] <> disconnectThread_ c expCfg
+      raceAny_ $ [liftIO $ send g th c, liftIO $ sendMsg g th c, client thParams c s, receive h c] <> disconnectThread_ c expCfg
     disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport h (rcvActiveAt c) (sndActiveAt c) expCfg (noSubscriptions c)]
     disconnectThread_ _ _ = []
     noSubscriptions c = atomically $ (&&) <$> TM.null (ntfSubscriptions c) <*> (not . hasSubs <$> readTVar (subscriptions c))
@@ -723,13 +725,16 @@ cancelSub s = case subThread s of
   ProhibitSub -> pure ()
 
 receive :: Transport c => THandleSMP c 'TServer -> Client -> M ()
-receive h@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
+receive h@THandle {params = params@THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   forever $ do
     ts <- L.toList <$> liftIO (tGet h)
     atomically . (writeTVar rcvActiveAt $!) =<< liftIO getSystemTime
     stats <- asks serverStats
-    (errs, cmds) <- partitionEithers <$> mapM (cmdAction stats) ts
+    let dec = case entitySecret params of
+          Just _ -> decryptEntityId params
+          Nothing -> Right . id
+    (errs, cmds) <- partitionEithers <$> mapM (cmdAction dec stats) ts
     updateBatchStats stats cmds
     write sndQ errs
     write rcvQ cmds
@@ -745,9 +750,10 @@ receive h@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiv
               _ -> Nothing
         mapM_ (\sel -> incStat $ sel stats) sel_
       [] -> pure ()
-    cmdAction :: ServerStats -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
-    cmdAction stats (tAuth, authorized, (corrId, entId, cmdOrError)) =
-      case cmdOrError of
+    cmdAction :: (EntityId -> Either C.CryptoError EntityId) -> ServerStats -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe QueueRec, Transmission Cmd))
+    cmdAction dec stats (tAuth, authorized, (corrId, entityId, cmdOrError)) = case dec entityId of
+      Left _ -> pure $ Left (corrId, entityId, ERR CRYPTO)
+      Right entId -> case cmdOrError of
         Left e -> pure $ Left (corrId, entId, ERR e)
         Right cmd -> verified =<< verifyTransmission ((,C.cbNonce (bs corrId)) <$> thAuth) tAuth authorized entId cmd
           where
@@ -763,20 +769,20 @@ receive h@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiv
                 pure $ Left (corrId, entId, ERR AUTH)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
-send :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> IO ()
-send th c@Client {sndQ, msgQ, sessionId} = do
+send :: Transport c => TVar ChaChaDRG -> MVar (THandleSMP c 'TServer) -> Client -> IO ()
+send g th c@Client {sndQ, msgQ, sessionId} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ atomically (readTBQueue sndQ) >>= sendTransmissions
   where
     sendTransmissions :: NonEmpty (Transmission BrokerMsg) -> IO ()
     sendTransmissions ts
-      | L.length ts <= 2 = tSend th c ts
+      | L.length ts <= 2 = tSend g th c ts
       | otherwise = do
           let (msgs_, ts') = mapAccumR splitMessages [] ts
           -- If the request had batched subscriptions and L.length ts > 2
           -- this will reply OK to all SUBs in the first batched transmission,
           -- to reduce client timeouts.
-          tSend th c ts'
+          tSend g th c ts'
           -- After that all messages will be sent in separate transmissions,
           -- without any client response timeouts, and allowing them to interleave
           -- with other requests responses.
@@ -788,16 +794,21 @@ send th c@Client {sndQ, msgQ, sessionId} = do
           MSG {} -> ((CorrId "", entId, cmd) : msgs, (corrId, entId, OK))
           _ -> (msgs, t)
         
-sendMsg :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> IO ()
-sendMsg th c@Client {msgQ, sessionId} = do
+sendMsg :: Transport c => TVar ChaChaDRG -> MVar (THandleSMP c 'TServer) -> Client -> IO ()
+sendMsg g th c@Client {msgQ, sessionId} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " sendMsg"
-  forever $ atomically (readTBQueue msgQ) >>= mapM_ (\t -> tSend th c [t])
+  forever $ atomically (readTBQueue msgQ) >>= mapM_ (\t -> tSend g th c [t])
 
-tSend :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> NonEmpty (Transmission BrokerMsg) -> IO ()
-tSend th Client {sndActiveAt} ts = do
-  withMVar th $ \h@THandle {params} ->
-    void . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
-  atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
+tSend :: Transport c => TVar ChaChaDRG -> MVar (THandleSMP c 'TServer) -> Client -> NonEmpty (Transmission BrokerMsg) -> IO ()
+tSend g th Client {sndActiveAt} ts = do
+  withMVar th $ \h@THandle {params} -> do
+    let enc t = Right (Nothing, encodeTransmission params t)
+    ts' <- case entitySecret params of
+      Just _ -> do
+        forM ts $ \(corrId, entId, command) -> enc . (corrId,,command) <$> (putStrLn ("server encryptEntityId " <> show entId) >> encryptEntityId g params entId)
+      Nothing -> pure $ L.map enc ts
+    void $ tPut h ts'
+  atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime    
 
 disconnectTransport :: Transport c => THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
 disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
@@ -1048,6 +1059,8 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
             addQueueRetry 0 _ _ = pure $ ERR INTERNAL
             addQueueRetry n qik qRec = do
               ids@(rId, _) <- getIds
+              liftIO $ putStrLn $ "addQueueRetry " <> show rId
+              liftIO $ putStrLn $ "addQueueRetry length " <> show (B.length $ unEntityId rId)
               -- create QueueRec record with these ids and keys
               let qr = qRec ids
               liftIO (addQueue st qr) >>= \case
