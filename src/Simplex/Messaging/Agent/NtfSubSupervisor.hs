@@ -102,12 +102,13 @@ processNtfSub c (connId, cmd) = do
                 withStore' c $ \db -> supervisorUpdateNtfSub db sub' (NSASMP NSASmpKey)
                 lift . void $ getNtfSMPWorker True c smpServer
     NSCSmpDelete -> do
-      withStore' c (`getPrimaryRcvQueue` connId) >>= \case
-        Right rq@RcvQueue {server = smpServer} -> do
-          logInfo $ "processNtfSub, NSCSmpDelete - rq = " <> tshow rq
-          withStore' c $ \db -> supervisorUpdateNtfAction db connId (NSASMP NSASmpDelete)
-          lift . void $ getNtfSMPWorker True c smpServer
-        _ -> notifyInternalError c connId "NSCSmpDelete - no rcv queue"
+      sub_ <- withStore' c $ \db -> do
+        supervisorUpdateNtfAction db connId (NSASMP NSASmpDelete)
+        getNtfSubscription db connId
+      logInfo $ "processNtfSub, NSCSmpDelete - sub_ = " <> tshow sub_
+      case sub_ of
+        (Just (NtfSubscription {smpServer}, _)) -> lift . void $ getNtfSMPWorker True c smpServer
+        _ -> pure () -- err "NSCSmpDelete - no subscription"
     NSCNtfWorker ntfServer -> lift . void $ getNtfNTFWorker True c ntfServer
     NSCNtfSMPWorker smpServer -> lift . void $ getNtfSMPWorker True c smpServer
 
