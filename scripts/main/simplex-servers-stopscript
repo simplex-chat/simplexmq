@@ -1,30 +1,174 @@
 #!/usr/bin/env sh
 set -eu
 
-path_conf_var="/var/opt"
-path_conf_smp="$path_conf_var/simplex"
-path_conf_xftp="$path_conf_var/simplex-xftp"
-path_conf_storelog_smp="$path_conf_smp/smp-server-store.log"
-path_conf_storelog_xftp="$path_conf_xftp/file-server-store.log"
+# Common
+# ------
 date="$(date -u '+%Y-%m-%dT%H:%M:%S')"
 
-backup_smp() {
- if [ -e "$path_conf_storelog_smp" ]; then
-  cp "$path_conf_storelog_smp" "${path_conf_storelog_smp}.${date:-date-failed}"
- fi
+GRN='\033[0;32m'
+YLW='\033[1;33m'
+BLU='\033[1;34m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+path_conf_var="/var/opt"
+
+smp_variables() {
+	path_conf_smp="$path_conf_var/simplex"
+	path_conf_smp_archive="$path_conf_smp/backups"
+	path_conf_smp_archive_storelog="$path_conf_smp_archive/queues"
+	path_conf_smp_archive_stats="$path_conf_smp_archive/stats"
+	path_conf_smp_archive_messages="$path_conf_smp_archive/messages"
+	path_conf_storelog_smp="$path_conf_smp/smp-server-store.log"
+	path_conf_storelog_smp_out="$path_conf_smp_archive_storelog/smp-server-store.log.${date:-date-failed}"
+
+	path_conf_stats_smp="$path_conf_smp/smp-server-stats.log"
+	path_conf_stats_smp_out="$path_conf_smp_archive_stats/smp-server-stats.log.${date:-date-failed}"
+
+	path_conf_messages_smp="$path_conf_smp/smp-server-messages.log"
+	path_conf_messages_smp_out="$path_conf_smp_archive_messages/smp-server-messages.log.${date:-date-failed}"
 }
 
-backup_xftp() {
- if [ -e "$path_conf_storelog_xftp" ]; then
-  cp "$path_conf_storelog_xftp" "${path_conf_storelog_xftp}.${date:-date-failed}"
- fi
+xftp_variables() {
+	path_conf_xftp="$path_conf_var/simplex-xftp"
+	path_conf_xftp_archive="$path_conf_xftp/backups"
+
+	path_conf_xftp_archive_storelog="$path_conf_xftp_archive/queues"
+	path_conf_xftp_archive_stats="$path_conf_xftp_archive/stats"
+
+	path_conf_storelog_xftp="$path_conf_xftp/file-server-store.log"
+	path_conf_storelog_xftp_out="$path_conf_xftp_archive_storelog/file-server-store.log.${date:-date-failed}"
+
+	path_conf_stats_xftp="$path_conf_xftp/file-server-stats.log"
+	path_conf_stats_xftp_out="$path_conf_xftp_archive_stats/file-server-stats.log.${date:-date-failed}"
 }
 
-if [ "$1" = 'smp-server' ]; then
- backup_smp
-elif [ "$1" = 'xftp-server' ]; then
- backup_xftp
-else
- backup_smp
- backup_xftp
-fi
+checks() {
+	result=${SERVICE_RESULT:-exit-code}
+	status=${EXIT_STATUS:-TERM}
+
+	case "$result" in
+		success)
+			case "$status" in
+				TERM)
+					printf "${RED}Refusing to backup files with failed service state${NC}\n"
+					exit 1
+					;;
+				*)
+					:
+					;;
+			esac
+			;;
+		*)
+			printf "${RED}Refusing to backup files with failed service state${NC}\n"
+			exit 1
+			;;
+	esac
+}
+
+smp_check() {
+	if [ ! -d "$path_conf_smp_archive_storelog" ]; then
+		mkdir -p "$path_conf_smp_archive_storelog"
+	fi
+	if [ ! -d "$path_conf_smp_archive_messages" ]; then
+		mkdir -p "$path_conf_smp_archive_messages"
+	fi
+	if [ ! -d "$path_conf_smp_archive_stats" ]; then
+		mkdir -p "$path_conf_smp_archive_stats"
+	fi
+}
+
+xftp_check() {
+	if [ ! -d "$path_conf_xftp_archive_storelog" ]; then
+		mkdir -p "$path_conf_xftp_archive_storelog"
+	fi
+	if [ ! -d "$path_conf_xftp_archive_stats" ]; then
+		mkdir -p "$path_conf_xftp_archive_stats"
+	fi
+}
+
+backup() {
+	file="$1"
+	out="$2"
+	file_type="$3"
+
+	if [ -e "$file" ]; then
+		if cp "$file" "$out"; then
+			printf "${YLW}${file_type}${NC} ${GRN}backup successful:${NC} ${BLU}%s${NC}\n" "${out}"
+		else
+			printf "${YLW}${file_type}${NC} ${RED}backup failed!${NC}\n"
+		fi
+	fi
+
+	unset file out file_type
+}
+
+cleanup() {
+	directory="$1"
+	
+	file_type="$2"
+	
+	files_date=$(find "$directory" -type f -exec stat --format="%y" {} + | awk '{print $1}' | sort -nr | uniq | awk 'NR==2')
+	
+	if [ -n "$files_date" ]; then
+		files=$(find "$directory" -type f -not -newermt "$files_date" -printf "%T@ %Tc %p\n" | sort -n | awk '{print $NF}')
+
+		if [ -n "$files" ]; then
+			printf '%s' "$files" | xargs rm -f
+			printf "${YLW}Old ${file_type} files${NC}${GRN} has been deleted:${NC}\n"
+			files_colored=$(printf '%s' "$files" | awk '{print "\033[1;34m"$0"\033[0m"}')
+			printf "${files_colored}\n"
+		fi
+	fi
+
+	unset directory file_type files_date files
+}
+
+smp_backup() {
+	backup "$path_conf_storelog_smp" "$path_conf_storelog_smp_out" 'Storelog'
+	backup "$path_conf_messages_smp" "$path_conf_messages_smp_out" 'Messages'
+	backup "$path_conf_stats_smp" "$path_conf_stats_smp_out" 'Stats'
+}
+
+smp_cleanup() {
+	cleanup "$path_conf_smp_archive_storelog" 'storelog'
+	cleanup "$path_conf_smp_archive_stats" 'stats'
+	cleanup "$path_conf_smp_archive_messages" 'messages'
+}
+
+xftp_backup() {
+	backup "$path_conf_storelog_xftp" "$path_conf_storelog_xftp_out" 'Storelog'
+	backup "$path_conf_stats_xftp" "$path_conf_stats_xftp_out" 'Stats'
+}
+
+xftp_cleanup() {
+	cleanup "$path_conf_xftp_archive_storelog" 'storelog'
+	cleanup "$path_conf_xftp_archive_stats" 'stats'
+}
+
+main() {
+	type="${1:-}"
+  
+	checks
+
+	case "$type" in
+		smp-server)
+			smp_variables
+			smp_check
+			smp_backup
+			smp_cleanup
+			;;
+		xftp-server)
+			xftp_variables
+			xftp_check
+			xftp_backup
+			xftp_cleanup
+			;;
+		*)
+			printf "${YLW}Unknown server type.${NC}\n"
+			exit 1
+			;;
+	esac 
+}
+
+main "$@"

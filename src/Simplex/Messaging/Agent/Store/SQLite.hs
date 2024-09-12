@@ -158,6 +158,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateNtfSubscription,
     setNullNtfSubscriptionAction,
     deleteNtfSubscription,
+    deleteNtfSubscription',
     getNextNtfSubNTFAction,
     markNtfSubActionNtfFailed_, -- exported for tests
     getNextNtfSubSMPAction,
@@ -1491,7 +1492,7 @@ getNtfSubscription db connId =
       |]
       (Only connId)
   where
-    ntfSubscription ((userId, smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash ) :. (ntfQueueId, ntfSubId, ntfSubStatus, ntfAction_, smpAction_, actionTs_)) =
+    ntfSubscription ((userId, smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash) :. (ntfQueueId, ntfSubId, ntfSubStatus, ntfAction_, smpAction_, actionTs_)) =
       let smpServer = SMPServer smpHost smpPort smpKeyHash
           ntfServer = NtfServer ntfHost ntfPort ntfKeyHash
           action = case (ntfAction_, smpAction_, actionTs_) of
@@ -1521,16 +1522,19 @@ createNtfSubscription db ntfSubscription action = runExceptT $ do
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
 
 supervisorUpdateNtfSub :: DB.Connection -> NtfSubscription -> NtfSubAction -> IO ()
-supervisorUpdateNtfSub db NtfSubscription {connId, ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} action = do
+supervisorUpdateNtfSub db NtfSubscription {connId, smpServer = (SMPServer smpHost smpPort _), ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} action = do
   ts <- getCurrentTime
   DB.execute
     db
     [sql|
       UPDATE ntf_subscriptions
-      SET smp_ntf_id = ?, ntf_host = ?, ntf_port = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
+      SET smp_host = ?, smp_port = ?, smp_ntf_id = ?, ntf_host = ?, ntf_port = ?, ntf_sub_id = ?,
+          ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
       WHERE conn_id = ?
     |]
-    ((ntfQueueId, ntfHost, ntfPort, ntfSubId) :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, ts, True, ts, connId))
+    ( (smpHost, smpPort, ntfQueueId, ntfHost, ntfPort, ntfSubId)
+        :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, ts, True, ts, connId)
+    )
   where
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
 
@@ -1605,7 +1609,11 @@ deleteNtfSubscription db connId = do
             WHERE conn_id = ?
           |]
           (Nothing :: Maybe SMP.NotifierId, Nothing :: Maybe NtfSubscriptionId, NASDeleted, False, updatedAt, connId)
-      else DB.execute db "DELETE FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
+      else deleteNtfSubscription' db connId
+
+deleteNtfSubscription' :: DB.Connection -> ConnId -> IO ()
+deleteNtfSubscription' db connId = do
+  DB.execute db "DELETE FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
 
 getNextNtfSubNTFAction :: DB.Connection -> NtfServer -> IO (Either StoreError (Maybe (NtfSubscription, NtfSubNTFAction, NtfActionTs)))
 getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) =
@@ -2004,7 +2012,7 @@ setConnDeleted db waitDelivery connId
       DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
 
 setConnUserId :: DB.Connection -> UserId -> ConnId -> UserId -> IO ()
-setConnUserId db oldUserId connId newUserId = 
+setConnUserId db oldUserId connId newUserId =
   DB.execute db "UPDATE connections SET user_id = ? WHERE conn_id = ? and user_id = ?" (newUserId, connId, oldUserId)
 
 setConnAgentVersion :: DB.Connection -> ConnId -> VersionSMPA -> IO ()

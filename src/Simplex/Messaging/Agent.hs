@@ -1018,7 +1018,7 @@ subscribeConnections' c connIds = do
       let oks = M.keysSet $ M.filter (either temporaryAgentError $ const True) rcvRs
       forM_ (M.restrictKeys cs oks) $ \case
         SomeConn _ conn -> do
-          let cmd = if enableNtfs $ toConnData conn then NSCCreate else NSCDelete
+          let cmd = if enableNtfs $ toConnData conn then NSCCreate else NSCSmpDelete
               ConnData {connId} = toConnData conn
           atomically $ writeTBQueue (ntfSubQ ns) (cmd, connId :| []) -- TODO [batch ntf]
     resumeDelivery :: Map ConnId SomeConn -> AM ()
@@ -1720,7 +1720,7 @@ disableConn :: AgentClient -> ConnId -> AM' ()
 disableConn c connId = do
   atomically $ removeSubscription c connId
   ns <- asks ntfSupervisor
-  atomically $ writeTBQueue (ntfSubQ ns) (NSCDelete, connId :| [])
+  atomically $ writeTBQueue (ntfSubQ ns) (NSCDeleteSub, connId :| []) -- TODO [batch ntf] disableConn
 
 -- Unlike deleteConnectionsAsync, this function does not mark connections as deleted in case of deletion failure.
 deleteConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType ()))
@@ -1902,7 +1902,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
                 cron <- asks $ ntfCron . config
                 agentNtfEnableCron c tknId tkn cron
                 when (suppliedNtfMode == NMInstant) $ initializeNtfSubs c
-                when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ deleteNtfSubs c NSCDelete
+                when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ deleteNtfSubs c NSCSmpDelete
               -- possible improvement: get updated token status from the server, or maybe TCRON could return the current status
               pure ntfTknStatus
           | otherwise -> replaceToken tknId
@@ -1984,7 +1984,7 @@ deleteNtfToken' :: AgentClient -> DeviceToken -> AM ()
 deleteNtfToken' c deviceToken =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken} -> do
-      when (deviceToken /= savedDeviceToken) . throwE $ CMD PROHIBITED "deleteNtfToken: different token"
+      when (deviceToken /= savedDeviceToken) $ logWarn "deleteNtfToken: different token"
       deleteToken_ c tkn
       deleteNtfSubs c NSCSmpDelete
     _ -> throwE $ CMD PROHIBITED "deleteNtfToken: no token"
@@ -2017,21 +2017,22 @@ toggleConnectionNtfs' c connId enable = do
       | otherwise = do
           withStore' c $ \db -> setConnectionNtfs db connId enable
           ns <- asks ntfSupervisor
-          let cmd = if enable then NSCCreate else NSCDelete
+          let cmd = if enable then NSCCreate else NSCSmpDelete
           atomically $ sendNtfSubCommand ns (cmd, connId :| [])
 
 deleteToken_ :: AgentClient -> NtfToken -> AM ()
-deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
+deleteToken_ c@AgentClient {subQ} tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
   ns <- asks ntfSupervisor
   forM_ ntfTokenId $ \tknId -> do
     let ntfTknAction = Just NTADelete
     withStore' c $ \db -> updateNtfToken db tkn ntfTknStatus ntfTknAction
     atomically $ nsUpdateToken ns tkn {ntfTknStatus, ntfTknAction}
-    agentNtfDeleteToken c tknId tkn `catchAgentError` \case
-      NTF _ AUTH -> pure ()
-      e -> throwE e
+    agentNtfDeleteToken c tknId tkn `catchAgentError` \e -> notify (ERR e) -- TODO cleanup task
   withStore' c $ \db -> removeNtfToken db tkn
   atomically $ nsRemoveNtfToken ns
+  where
+    notify :: forall e. AEntityI e => AEvent e -> AM ()
+    notify cmd = atomically $ writeTBQueue subQ ("", "", AEvt (sAEntity @e) cmd)
 
 withToken :: AgentClient -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> AM a -> AM NtfTknStatus
 withToken c tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = do

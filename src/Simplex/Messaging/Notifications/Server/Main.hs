@@ -16,7 +16,7 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Network.Socket (HostName)
 import Options.Applicative
-import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig)
+import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server (runNtfServer)
@@ -26,6 +26,7 @@ import Simplex.Messaging.Notifications.Transport (supportedNTFHandshakes, suppor
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.Main (textToHostMode)
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
@@ -92,6 +93,10 @@ ntfServerCLI cfgPath logPath =
             <> "websockets: off\n\n\
                \[SUBSCRIBER]\n\
                \# Network configuration for notification server client.\n\
+               \# `host_mode` can be 'public' (default) or 'onion'.\n\
+               \# It defines prefferred hostname for destination servers with multiple hostnames.\n\
+               \# host_mode: public\n\
+               \# required_host_mode: off\n\n\
                \# SOCKS proxy port for subscribing to SMP servers.\n\
                \# You may need a separate instance of SOCKS proxy for incoming single-hop requests.\n\
                \# socks_proxy: localhost:9050\n\n\
@@ -134,6 +139,8 @@ ntfServerCLI cfgPath logPath =
                             defaultNetworkConfig
                               { socksProxy = either error id <$!> strDecodeIni "SUBSCRIBER" "socks_proxy" ini,
                                 socksMode = maybe SMOnion (either error id) $! strDecodeIni "SUBSCRIBER" "socks_mode" ini,
+                                hostMode = either (const HMPublic) textToHostMode $ lookupValue "SUBSCRIBER" "host_mode" ini,
+                                requiredHostMode = fromMaybe False $ iniOnOff "SUBSCRIBER" "required_host_mode" ini,
                                 smpPingInterval = 60_000_000 -- 1 minutes
                               }
                         },
