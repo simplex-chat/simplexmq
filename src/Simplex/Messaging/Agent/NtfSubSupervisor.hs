@@ -125,12 +125,11 @@ processNtfCmd c (cmd, connIds) = do
             decideSubWork (rq, Just (sub, subAction_)) (ns, rs, css, cns) =
               case (clientNtfCreds rq, ntfQueueId sub) of
                 (Just ClientNtfCreds {notifierId}, Just ntfQueueId')
-                  | sameSrvAddr rqSMPServer subSMPServer && notifierId == ntfQueueId' -> contOrReset
+                  | sameSrvAddr (qServer rq) subSMPServer && notifierId == ntfQueueId' -> contOrReset
                   | otherwise -> reset
                 (Nothing, Nothing) -> contOrReset
                 _ -> reset
               where
-                RcvQueue {server = rqSMPServer} = rq
                 NtfSubscription {ntfServer = subNtfServer, smpServer = subSMPServer} = sub
                 contOrReset = case subAction_ of
                   -- action was set to NULL after worker internal error
@@ -140,13 +139,13 @@ processNtfCmd c (cmd, connIds) = do
                     | isDeleteNtfSubAction action -> reset
                     -- continue work on subscription (e.g. supervisor was repeatedly tasked with creating a subscription)
                     | otherwise -> case action of
-                        NSASMP _ -> (ns, rs, rqSMPServer : css, cns)
+                        NSASMP _ -> (ns, rs, qServer rq : css, cns)
                         NSANtf _ -> (ns, rs, css, subNtfServer : cns)
                 reset = (ns, (rq, sub) : rs, css, cns)
     NSCSmpDelete -> do
       rqs <- lift $ rights <$> withStoreBatch c (\db -> map (fmap (first storeError) . getPrimaryRcvQueue db) (L.toList connIds))
       logInfo $ "processNtfCmd, NSCSmpDelete - length rqs = " <> tshow (length rqs)
-      lift $ void $ withStoreBatch' c (\db -> map (\RcvQueue {connId} -> supervisorUpdateNtfAction db connId (NSASMP NSASmpDelete)) rqs)
+      lift $ void $ withStoreBatch' c (\db -> map (\rq -> supervisorUpdateNtfAction db (qConnId rq) (NSASMP NSASmpDelete)) rqs)
       kickSMPWorkers rqs
     NSCNtfWorker ntfServer -> lift . void $ getNtfNTFWorker True c ntfServer
     NSCNtfSMPWorker smpServer -> lift . void $ getNtfSMPWorker True c smpServer
