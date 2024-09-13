@@ -218,7 +218,7 @@ runNtfWorker c srv Worker {doWork} =
                         withStore' c $ \db ->
                           updateNtfSubscription db sub {ntfServer, ntfQueueId = Nothing, ntfSubId = Nothing, ntfSubStatus = NASNew} (NSASMP NSASmpKey) ts
                         ns <- asks ntfSupervisor
-                        atomically $ writeTBQueue (ntfSubQ ns) (NSCNtfSMPWorker smpServer, connId :| [])
+                        atomically $ writeTBQueue (ntfSubQ ns) (NSCNtfSMPWorker smpServer, [connId])
                       status -> updateSubNextCheck ts status
                     atomically $ incNtfServerStat c userId ntfServer ntfChecked
                   Nothing -> workerInternalError c connId "NSACheck - no subscription ID"
@@ -229,12 +229,12 @@ runNtfWorker c srv Worker {doWork} =
               let sub' = sub {ntfSubId = Nothing, ntfSubStatus = NASOff}
               withStore' c $ \db -> updateNtfSubscription db sub' (NSASMP NSASmpDelete) ts
               ns <- asks ntfSupervisor
-              atomically $ writeTBQueue (ntfSubQ ns) (NSCNtfSMPWorker smpServer, connId :| []) -- TODO [batch ntf] loop
+              atomically $ writeTBQueue (ntfSubQ ns) (NSCNtfSMPWorker smpServer, [connId]) -- TODO [batch ntf] loop
           NSARotate ->
             deleteNtfSub $ do
               withStore' c $ \db -> deleteNtfSubscription db connId
               ns <- asks ntfSupervisor
-              atomically $ writeTBQueue (ntfSubQ ns) (NSCCreate, connId :| []) -- TODO [batch ntf] loop
+              atomically $ writeTBQueue (ntfSubQ ns) (NSCCreate, [connId]) -- TODO [batch ntf] loop
       where
         -- deleteNtfSub is only used in NSADelete and NSARotate, so also deprecated
         deleteNtfSub continue = case ntfSubId of
