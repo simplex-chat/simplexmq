@@ -23,7 +23,7 @@ import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
-import Data.Either (rights)
+import Data.Either (partitionEithers)
 import Data.Foldable (foldr')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -66,13 +66,14 @@ runNtfSupervisor c = do
       notifyErr e
     notifyErr e = notifyInternalError' c $ "runNtfSupervisor error " <> show e
 
--- TODO [batch ntf] notify ERRS
+-- TODO [batch ntf] notify ERRS (zip with connIds)
 processNtfCmd :: AgentClient -> (NtfSupervisorCommand, NonEmpty ConnId) -> AM ()
 processNtfCmd c (cmd, connIds) = do
   logInfo $ "processNtfCmd - cmd = " <> tshow cmd
   case cmd of
     NSCCreate -> do
-      rqSubActions <- lift $ rights <$> withStoreBatch c (\db -> map (getQueueSub db) (L.toList connIds))
+      (errs, rqSubActions) <- lift $ partitionEithers <$> withStoreBatch c (\db -> map (getQueueSub db) (L.toList connIds))
+      forM_ errs $ \e -> notifyInternalError' c ("NSCCreate - getQueueSub: " <> show e)
       logInfo $ "processNtfCmd, NSCCreate - length rqSubs = " <> tshow (length rqSubActions)
       let (ns, rs, css, cns) = partitionQueueSubActions rqSubActions
       createNewSubs ns
@@ -93,7 +94,8 @@ processNtfCmd c (cmd, connIds) = do
         createNewSubs rqs = do
           withTokenServer $ \ntfServer -> do
             let newSubs = map (rqToNewSub ntfServer) rqs
-            void $ lift $ withStoreBatch c (\db -> map (storeNewSub db) newSubs)
+            (errs, _) <- lift $ partitionEithers <$> withStoreBatch c (\db -> map (storeNewSub db) newSubs)
+            forM_ errs $ \e -> notifyInternalError' c ("NSCCreate - createNewSubs: " <> show e)
             kickSMPWorkers rqs
           where
             rqToNewSub :: NtfServer -> RcvQueue -> NtfSubscription
@@ -104,7 +106,8 @@ processNtfCmd c (cmd, connIds) = do
         resetSubs rqSubs = do
           withTokenServer $ \ntfServer -> do
             let subsToReset = map (toResetSub ntfServer) rqSubs
-            lift $ void $ withStoreBatch' c (\db -> map (\sub -> supervisorUpdateNtfSub db sub (NSASMP NSASmpKey)) subsToReset)
+            (errs, _) <- lift $ partitionEithers <$> withStoreBatch' c (\db -> map (storeResetSub db) subsToReset)
+            forM_ errs $ \e -> notifyInternalError' c ("NSCCreate - resetSubs: " <> show e)
             let rqs = map fst rqSubs
             kickSMPWorkers rqs
           where
@@ -112,6 +115,8 @@ processNtfCmd c (cmd, connIds) = do
             toResetSub ntfServer (rq, sub) =
               let RcvQueue {server = smpServer} = rq
                in sub {smpServer, ntfQueueId = Nothing, ntfServer, ntfSubId = Nothing, ntfSubStatus = NASNew}
+            storeResetSub :: DB.Connection -> NtfSubscription -> IO ()
+            storeResetSub db sub = supervisorUpdateNtfSub db sub (NSASMP NSASmpKey)
         partitionQueueSubActions ::
           [(RcvQueue, Maybe NtfSupervisorSub)] ->
           ( [RcvQueue], -- new subs
@@ -146,9 +151,10 @@ processNtfCmd c (cmd, connIds) = do
                         NSANtf _ -> (ns, rs, css, subNtfServer : cns)
                 reset = (ns, (rq, sub) : rs, css, cns)
     NSCSmpDelete -> do
-      rqs <- lift $ rights <$> withStoreBatch c (\db -> map (fmap (first storeError) . getPrimaryRcvQueue db) (L.toList connIds))
+      (errs, rqs) <- lift $ partitionEithers <$> withStoreBatch c (\db -> map (fmap (first storeError) . getPrimaryRcvQueue db) (L.toList connIds))
       logInfo $ "processNtfCmd, NSCSmpDelete - length rqs = " <> tshow (length rqs)
-      lift $ void $ withStoreBatch' c (\db -> map (\rq -> supervisorUpdateNtfAction db (qConnId rq) (NSASMP NSASmpDelete)) rqs)
+      (errs', _) <- lift $ partitionEithers <$> withStoreBatch' c (\db -> map (\rq -> supervisorUpdateNtfAction db (qConnId rq) (NSASMP NSASmpDelete)) rqs)
+      forM_ (errs <> errs') $ \e -> notifyInternalError' c ("NSCSmpDelete: " <> show e)
       kickSMPWorkers rqs
     NSCNtfWorker ntfServer -> lift . void $ getNtfNTFWorker True c ntfServer
     NSCNtfSMPWorker smpServer -> lift . void $ getNtfSMPWorker True c smpServer
