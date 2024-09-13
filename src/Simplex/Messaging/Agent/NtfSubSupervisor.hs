@@ -155,7 +155,7 @@ processNtfCmd c (cmd, connIds) = do
     kickSMPWorkers :: [RcvQueue] -> AM ()
     kickSMPWorkers rqs = do
       let smpServers = S.fromList $ map qServer rqs
-      forM_ smpServers $ \srv -> lift $ getNtfSMPWorker True c srv
+      lift $ mapM_ (getNtfSMPWorker True c) smpServers
 
 getNtfNTFWorker :: Bool -> AgentClient -> NtfServer -> AM' Worker
 getNtfNTFWorker hasWork c server = do
