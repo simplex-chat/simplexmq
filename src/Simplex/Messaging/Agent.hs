@@ -2065,18 +2065,26 @@ deleteNtfSubs c deleteCmd = do
 sendNtfConnCommands :: AgentClient -> NtfSupervisorCommand -> AM ()
 sendNtfConnCommands c cmd = do
   ns <- asks ntfSupervisor
-  connIds <- liftIO $ getSubscriptions c
-  connIds' <- lift $ enabledNtfConns <$> withStoreBatch' c (\db -> map (getConnData db) (S.toList connIds))
+  connIds <- liftIO $ S.toList <$> getSubscriptions c
+  rs <- lift $ withStoreBatch' c (\db -> map (getConnData db) connIds)
+  let rsConnIds = zip connIds rs
+      (connIds', errs) = enabledNtfConns rsConnIds
   forM_ (L.nonEmpty connIds') $ \connIds'' ->
     atomically $ writeTBQueue (ntfSubQ ns) (cmd, connIds'')
+  forM_ errs $ \(connId, e) ->
+    atomically $ writeTBQueue (subQ c) ("", connId, AEvt SAEConn $ ERR e)
   where
-    enabledNtfConns :: [Either AgentErrorType (Maybe (ConnData, ConnectionMode))] -> [ConnId]
-    enabledNtfConns = foldr addEnabledConn []
+    enabledNtfConns :: [(ConnId, Either AgentErrorType (Maybe (ConnData, ConnectionMode)))] -> ([ConnId], [(ConnId, AgentErrorType)])
+    enabledNtfConns = foldr addEnabledConn ([], [])
       where
-        addEnabledConn :: Either AgentErrorType (Maybe (ConnData, ConnectionMode)) -> [ConnId] -> [ConnId]
-        addEnabledConn cData_ acc = case cData_ of
-          Right (Just (ConnData {connId, enableNtfs}, _)) -> if enableNtfs then connId : acc else acc
-          _ -> acc
+        addEnabledConn ::
+          (ConnId, Either AgentErrorType (Maybe (ConnData, ConnectionMode))) ->
+          ([ConnId], [(ConnId, AgentErrorType)]) ->
+          ([ConnId], [(ConnId, AgentErrorType)])
+        addEnabledConn cData_ (cIds, errs) = case cData_ of
+          (_, Right (Just (ConnData {connId, enableNtfs}, _))) -> if enableNtfs then (connId : cIds, errs) else (cIds, errs)
+          (connId, Right Nothing) -> (cIds, (connId, INTERNAL "no connection data") : errs)
+          (connId, Left e) -> (cIds, (connId, e) : errs)
 
 setNtfServers :: AgentClient -> [NtfServer] -> IO ()
 setNtfServers c = atomically . writeTVar (ntfServers c)
