@@ -9,7 +9,7 @@
 #include "sntrup761.h"
 
 #if defined(__ANDROID__)
-#include <android/log.h>
+#include <log.h>
 #else
 #include <stdio.h>
 #endif
