@@ -34,7 +34,7 @@ import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Data.Time.Clock (diffUTCTime)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
-import Simplex.Messaging.Agent.Protocol (AEvent (..), AEvt (..), AgentErrorType (..), BrokerErrorType (..), ConnId, NotificationsMode (..), SAEntity (..))
+import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
@@ -43,7 +43,7 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfTknStatus (..), SMPQueueNtf (..))
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Protocol (NtfServer, SMPServer, sameSrvAddr)
+import Simplex.Messaging.Protocol (NtfServer, sameSrvAddr)
 import Simplex.Messaging.Util (diffToMicroseconds, threadDelay', tshow, unlessM)
 import System.Random (randomR)
 import UnliftIO
@@ -154,7 +154,7 @@ processNtfCmd c (cmd, connIds) = do
   where
     kickSMPWorkers :: [RcvQueue] -> AM ()
     kickSMPWorkers rqs = do
-      let smpServers = S.fromList (map (\RcvQueue {server} -> server) rqs)
+      let smpServers = S.fromList $ map qServer rqs
       forM_ smpServers $ \srv -> lift $ getNtfSMPWorker True c srv
 
 getNtfNTFWorker :: Bool -> AgentClient -> NtfServer -> AM' Worker
