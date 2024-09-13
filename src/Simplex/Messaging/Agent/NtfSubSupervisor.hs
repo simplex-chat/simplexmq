@@ -102,9 +102,6 @@ processNtfCmd c (cmd, connIds) = do
             storeNewSub db sub = first storeError <$> createNtfSubscription db sub (NSASMP NSASmpKey)
         resetSubs :: [(RcvQueue, NtfSubscription)] -> AM ()
         resetSubs rqSubs = do
-          -- let sub' = sub {smpServer, ntfQueueId = Nothing, ntfServer, ntfSubId = Nothing, ntfSubStatus = NASNew}
-          -- withStore' c $ \db -> supervisorUpdateNtfSub db sub' (NSASMP NSASmpKey)
-          -- lift . void $ getNtfSMPWorker True c smpServer
           withTokenServer $ \ntfServer -> do
             let subsToReset = map (toResetSub ntfServer) rqSubs
             lift $ void $ withStoreBatch' c (\db -> map (\sub -> supervisorUpdateNtfSub db sub (NSASMP NSASmpKey)) subsToReset)
