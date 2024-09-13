@@ -2070,6 +2070,7 @@ sendNtfConnCommands c cmd = do
   let (connIds', errs) = enabledNtfConns (zip connIds rs)
   forM_ (L.nonEmpty connIds') $ \connIds'' ->
     atomically $ writeTBQueue (ntfSubQ ns) (cmd, connIds'')
+  -- TODO [batch ntf] notify ERRS
   forM_ errs $ \(connId, e) ->
     atomically $ writeTBQueue (subQ c) ("", connId, AEvt SAEConn $ ERR e)
   where
