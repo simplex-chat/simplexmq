@@ -121,9 +121,12 @@ processNtfCmd c (cmd, connIds) = do
           )
         partitionQueueSubActions = foldr' decideSubWork ([], [], [], [])
           where
+            -- sub = Nothing, needs to be created
             decideSubWork (rq, Nothing) (ns, rs, css, cns) = (rq : ns, rs, css, cns)
             decideSubWork (rq, Just (sub, subAction_)) (ns, rs, css, cns) =
               case (clientNtfCreds rq, ntfQueueId sub) of
+                -- notifier ID created on SMP server (on ntf server subscription can be registered or not yet),
+                -- need to clarify action
                 (Just ClientNtfCreds {notifierId}, Just ntfQueueId')
                   | sameSrvAddr (qServer rq) subSMPServer && notifierId == ntfQueueId' -> contOrReset
                   | otherwise -> reset
