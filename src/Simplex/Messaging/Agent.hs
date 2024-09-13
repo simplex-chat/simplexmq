@@ -1758,6 +1758,7 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
     unsubConnIds :: NonEmpty ConnId -> AM' ()
     unsubConnIds connIds' = do
       forM_ connIds' $ \connId ->
+        -- TODO [batch ntf] remove as list / all atomically?
         atomically $ removeSubscription c connId
       ns <- asks ntfSupervisor
       atomically $ writeTBQueue (ntfSubQ ns) (NSCDeleteSub, connIds')

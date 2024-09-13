@@ -151,6 +151,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateNtfToken,
     removeNtfToken,
     -- Notification subscription persistence
+    NtfSupervisorSub,
     getNtfSubscription,
     createNtfSubscription,
     supervisorUpdateNtfSub,
@@ -1476,7 +1477,9 @@ removeNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer 
     |]
     (provider, token, host, port)
 
-getNtfSubscription :: DB.Connection -> ConnId -> IO (Maybe (NtfSubscription, Maybe (NtfSubAction, NtfActionTs)))
+type NtfSupervisorSub = (NtfSubscription, Maybe (NtfSubAction, NtfActionTs))
+
+getNtfSubscription :: DB.Connection -> ConnId -> IO (Maybe NtfSupervisorSub)
 getNtfSubscription db connId =
   maybeFirstRow ntfSubscription $
     DB.query
