@@ -7,14 +7,9 @@
  */
 
 #include "sntrup761.h"
-
-#if defined(__ANDROID__)
-#include <log.h>
-#else
-#include <stdio.h>
-#endif
-
 #include "sha512.h"
+
+#include <stdio.h>
 
 /* from supercop-20201130/crypto_sort/int32/portable4/int32_minmax.inc */
 #define int32_MINMAX(a,b) \
@@ -695,17 +690,9 @@ urandom32 (void *random_ctx, sntrup761_random_func * random)
   unsigned char c[4];
   uint32_t out[4];
 
-#ifdef __ANDROID__
-  __android_log_print(ANDROID_LOG_ERROR, "SimpleX", "LALAL %d", 4);
-#else 
   printf("LALAL 4\n");
-#endif
   random (random_ctx, 4, c);
-#ifdef __ANDROID__
-  __android_log_print(ANDROID_LOG_ERROR, "SimpleX", "LALAL %d", 5);
-#else 
   printf("LALAL 5\n");
-#endif
   out[0] = (uint32_t) c[0];
   out[1] = ((uint32_t) c[1]) << 8;
   out[2] = ((uint32_t) c[2]) << 16;
@@ -904,11 +891,7 @@ static void
 ZKeyGen (unsigned char *pk, unsigned char *sk, void *random_ctx,
          sntrup761_random_func * random)
 {
-#ifdef __ANDROID__
-  __android_log_print(ANDROID_LOG_ERROR, "SimpleX", "LALAL %d", 8);
-#else 
   printf("LALAL 8\n");
-#endif
   Fq h[p];
   small f[p], v[p];
 
@@ -917,11 +900,7 @@ ZKeyGen (unsigned char *pk, unsigned char *sk, void *random_ctx,
   Small_encode (sk, f);
   sk += Small_bytes;
   Small_encode (sk, v);
-#ifdef __ANDROID__
-  __android_log_print(ANDROID_LOG_ERROR, "SimpleX", "LALAL %d", 9);
-#else 
   printf("LALAL 9\n");
-#endif
 }
 
 /* C = ZEncrypt(r,pk) */
@@ -992,31 +971,15 @@ sntrup761_keypair (unsigned char *pk, unsigned char *sk, void *random_ctx,
 {
   int i;
 
-#ifdef __ANDROID__
-  __android_log_print(ANDROID_LOG_ERROR, "SimpleX", "LALAL %d", 0);
-#else 
   printf("LALAL 0\n");
-#endif
   ZKeyGen (pk, sk, random_ctx, random);
-#ifdef __ANDROID__
-  __android_log_print(ANDROID_LOG_ERROR, "SimpleX", "LALAL %d", 1);
-#else 
   printf("LALAL 1\n");
-#endif
   sk += SecretKeys_bytes;
   for (i = 0; i < PublicKeys_bytes; ++i)
     *sk++ = pk[i];
-#ifdef __ANDROID__
-  __android_log_print(ANDROID_LOG_ERROR, "SimpleX", "LALAL %d", 2);
-#else 
   printf("LALAL 2\n");
-#endif
   random (random_ctx, Inputs_bytes, sk);
-#ifdef __ANDROID__
-  __android_log_print(ANDROID_LOG_ERROR, "SimpleX", "LALAL %d", 3);
-#else 
   printf("LALAL 3\n");
-#endif
   sk += Inputs_bytes;
   Hash_prefix (sk, 4, pk, PublicKeys_bytes);
 }
@@ -1037,11 +1000,7 @@ void
 sntrup761_enc (unsigned char *c, unsigned char *k, const unsigned char *pk,
                void *random_ctx, sntrup761_random_func * random)
 {
-#ifdef __ANDROID__
-  __android_log_print(ANDROID_LOG_ERROR, "SimpleX", "LALAL %d", 6);
-#else 
   printf("LALAL 6\n");
-#endif
   Inputs r;
   unsigned char r_enc[Inputs_bytes];
   unsigned char cache[Hash_bytes];
@@ -1050,11 +1009,7 @@ sntrup761_enc (unsigned char *c, unsigned char *k, const unsigned char *pk,
   Inputs_random (r, random_ctx, random);
   Hide (c, r_enc, r, pk, cache);
   HashSession (k, 1, r_enc, c);
-#ifdef __ANDROID__
-  __android_log_print(ANDROID_LOG_ERROR, "SimpleX", "LALAL %d", 7);
-#else 
   printf("LALAL 7\n");
-#endif
 }
 
 /* 0 if matching ciphertext+confirm, else -1 */
