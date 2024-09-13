@@ -78,8 +78,8 @@ processNtfCmd c (cmd, connIds) = do
       createNewSubs ns
       resetSubs rs
       lift $ do
-        forM_ (S.fromList css) $ \srv -> getNtfSMPWorker True c srv
-        forM_ (S.fromList cns) $ \srv -> getNtfNTFWorker True c srv
+        mapM_ (getNtfSMPWorker True c) (S.fromList css)
+        mapM_ (getNtfNTFWorker True c) (S.fromList cns)
       where
         getQueueSub ::
           DB.Connection ->
