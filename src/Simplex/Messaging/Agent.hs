@@ -2067,18 +2067,17 @@ sendNtfConnCommands :: AgentClient -> NtfSupervisorCommand -> AM ()
 sendNtfConnCommands c cmd = do
   ns <- asks ntfSupervisor
   connIds <- liftIO $ getSubscriptions c
-  connIds' <- lift $ enabledNtfConns . rights <$> withStoreBatch' c (\db -> map (getConnData db) (S.toList connIds))
+  connIds' <- lift $ enabledNtfConns <$> withStoreBatch' c (\db -> map (getConnData db) (S.toList connIds))
   forM_ (L.nonEmpty connIds') $ \connIds'' ->
     atomically $ writeTBQueue (ntfSubQ ns) (cmd, connIds'')
   where
-    enabledNtfConns :: [Maybe (ConnData, ConnectionMode)] -> [ConnId]
-    enabledNtfConns =
-      foldr'
-        ( \cData_ acc -> case cData_ of
-            Just (ConnData {connId, enableNtfs}, _) -> if enableNtfs then connId : acc else acc
-            Nothing -> acc
-        )
-        []
+    enabledNtfConns :: [Either AgentErrorType (Maybe (ConnData, ConnectionMode))] -> [ConnId]
+    enabledNtfConns = foldr' addEnabledConn []
+      where
+        addEnabledConn :: Either AgentErrorType (Maybe (ConnData, ConnectionMode)) -> [ConnId] -> [ConnId]
+        addEnabledConn cData_ acc = case cData_ of
+          Right (Just (ConnData {connId, enableNtfs}, _)) -> if enableNtfs then connId : acc else acc
+          _ -> acc
 
 setNtfServers :: AgentClient -> [NtfServer] -> IO ()
 setNtfServers c = atomically . writeTVar (ntfServers c)
