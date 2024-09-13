@@ -122,29 +122,27 @@ processNtfCmd c (cmd, connIds) = do
         partitionQueueSubActions = foldr' decideSubWork ([], [], [], [])
           where
             decideSubWork (rq, Nothing) (ns, rs, css, cns) = (rq : ns, rs, css, cns)
-            decideSubWork
-              ( rq@RcvQueue {server = rqSMPServer},
-                Just (sub@NtfSubscription {ntfServer = subNtfServer, smpServer = subSMPServer}, subAction_)
-                )
-              (ns, rs, css, cns) =
-                case (clientNtfCreds rq, ntfQueueId sub) of
-                  (Just ClientNtfCreds {notifierId}, Just ntfQueueId')
-                    | sameSrvAddr rqSMPServer subSMPServer && notifierId == ntfQueueId' -> contOrReset
-                    | otherwise -> reset
-                  (Nothing, Nothing) -> contOrReset
-                  _ -> reset
-                where
-                  contOrReset = case subAction_ of
-                    -- action was set to NULL after worker internal error
-                    Nothing -> reset
-                    Just (action, _)
-                      -- subscription was marked for deletion / is being deleted
-                      | isDeleteNtfSubAction action -> reset
-                      -- continue work on subscription (e.g. supervisor was repeatedly tasked with creating a subscription)
-                      | otherwise -> case action of
-                          NSASMP _ -> (ns, rs, rqSMPServer : css, cns)
-                          NSANtf _ -> (ns, rs, css, subNtfServer : cns)
-                  reset = (ns, (rq, sub) : rs, css, cns)
+            decideSubWork (rq, Just (sub, subAction_)) (ns, rs, css, cns) =
+              case (clientNtfCreds rq, ntfQueueId sub) of
+                (Just ClientNtfCreds {notifierId}, Just ntfQueueId')
+                  | sameSrvAddr rqSMPServer subSMPServer && notifierId == ntfQueueId' -> contOrReset
+                  | otherwise -> reset
+                (Nothing, Nothing) -> contOrReset
+                _ -> reset
+              where
+                RcvQueue {server = rqSMPServer} = rq
+                NtfSubscription {ntfServer = subNtfServer, smpServer = subSMPServer} = sub
+                contOrReset = case subAction_ of
+                  -- action was set to NULL after worker internal error
+                  Nothing -> reset
+                  Just (action, _)
+                    -- subscription was marked for deletion / is being deleted
+                    | isDeleteNtfSubAction action -> reset
+                    -- continue work on subscription (e.g. supervisor was repeatedly tasked with creating a subscription)
+                    | otherwise -> case action of
+                        NSASMP _ -> (ns, rs, rqSMPServer : css, cns)
+                        NSANtf _ -> (ns, rs, css, subNtfServer : cns)
+                reset = (ns, (rq, sub) : rs, css, cns)
     NSCSmpDelete -> do
       rqs <- lift $ rights <$> withStoreBatch c (\db -> map (fmap (first storeError) . getPrimaryRcvQueue db) (L.toList connIds))
       logInfo $ "processNtfCmd, NSCSmpDelete - length rqs = " <> tshow (length rqs)
