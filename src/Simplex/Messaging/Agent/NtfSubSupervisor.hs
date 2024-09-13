@@ -2,9 +2,9 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Agent.NtfSubSupervisor
@@ -295,7 +295,7 @@ runNtfSMPWorker c srv Worker {doWork} = do
                   setRcvQueueNtfCreds db connId $ Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
                   updateNtfSubscription db sub {ntfQueueId = Just notifierId, ntfSubStatus = NASKey} (NSANtf NSACreate) ts
                 ns <- asks ntfSupervisor
-                atomically $ sendNtfSubCommand ns (NSCNtfWorker ntfServer, connId :| [])
+                atomically $ sendNtfSubCommand ns (NSCNtfWorker ntfServer, [connId])
               _ -> workerInternalError c connId "NSASmpKey - no active token"
           NSASmpDelete -> do
             -- TODO should we remove it after successful removal from the server?
