@@ -133,7 +133,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::), (.::.))
 import Data.Either (isRight, rights)
-import Data.Foldable (foldl', foldr', toList)
+import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
 import Data.Functor.Identity
 import Data.List (find)
@@ -2071,7 +2071,7 @@ sendNtfConnCommands c cmd = do
     atomically $ writeTBQueue (ntfSubQ ns) (cmd, connIds'')
   where
     enabledNtfConns :: [Either AgentErrorType (Maybe (ConnData, ConnectionMode))] -> [ConnId]
-    enabledNtfConns = foldr' addEnabledConn []
+    enabledNtfConns = foldr addEnabledConn []
       where
         addEnabledConn :: Either AgentErrorType (Maybe (ConnData, ConnectionMode)) -> [ConnId] -> [ConnId]
         addEnabledConn cData_ acc = case cData_ of
