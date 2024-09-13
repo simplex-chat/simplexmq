@@ -151,11 +151,16 @@ processNtfCmd c (cmd, connIds) = do
                         NSANtf _ -> (ns, rs, css, subNtfServer : cns)
                 reset = (ns, (rq, sub) : rs, css, cns)
     NSCSmpDelete -> do
-      (errs, rqs) <- lift $ partitionEithers <$> withStoreBatch c (\db -> map (fmap (first storeError) . getPrimaryRcvQueue db) (L.toList connIds))
+      (errs, rqs) <- lift $ partitionEithers <$> withStoreBatch c (\db -> map (getQueue db) (L.toList connIds))
       logInfo $ "processNtfCmd, NSCSmpDelete - length rqs = " <> tshow (length rqs)
-      (errs', _) <- lift $ partitionEithers <$> withStoreBatch' c (\db -> map (\rq -> supervisorUpdateNtfAction db (qConnId rq) (NSASMP NSASmpDelete)) rqs)
+      (errs', _) <- lift $ partitionEithers <$> withStoreBatch' c (\db -> map (updateAction db) rqs)
       forM_ (errs <> errs') $ \e -> notifyInternalError' c ("NSCSmpDelete: " <> show e)
       kickSMPWorkers rqs
+      where
+        getQueue :: DB.Connection -> ConnId -> IO (Either AgentErrorType RcvQueue)
+        getQueue db connId = first storeError <$> getPrimaryRcvQueue db connId
+        updateAction :: DB.Connection -> RcvQueue -> IO ()
+        updateAction db rq = supervisorUpdateNtfAction db (qConnId rq) (NSASMP NSASmpDelete)
     NSCNtfWorker ntfServer -> lift . void $ getNtfNTFWorker True c ntfServer
     NSCNtfSMPWorker smpServer -> lift . void $ getNtfSMPWorker True c smpServer
     NSCDeleteSub -> void $ lift $ withStoreBatch' c $ \db -> map (deleteNtfSubscription' db) (L.toList connIds)
