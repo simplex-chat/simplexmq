@@ -778,7 +778,7 @@ newRcvConnSrv c userId connId enableNtfs cMode clientData pqInitKeys subMode srv
   lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
   when enableNtfs $ do
     ns <- asks ntfSupervisor
-    atomically $ sendNtfSubCommand ns (NSCCreate, connId :| [])
+    atomically $ sendNtfSubCommand ns (NSCCreate, [connId])
   let crData = ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
   case cMode of
     SCMContact -> pure (connId, CRContactUri crData)
@@ -923,7 +923,7 @@ createReplyQueue c ConnData {userId, connId, enableNtfs} SndQueue {smpClientVers
   lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
   when enableNtfs $ do
     ns <- asks ntfSupervisor
-    atomically $ sendNtfSubCommand ns (NSCCreate, connId :| [])
+    atomically $ sendNtfSubCommand ns (NSCCreate, [connId])
   pure qInfo
 
 -- | Approve confirmation (LET command) in Reader monad
@@ -1258,7 +1258,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                     withStore' c $ \db -> deleteConnRcvQueue db rq'
                     when (enableNtfs cData) $ do
                       ns <- asks ntfSupervisor
-                      atomically $ sendNtfSubCommand ns (NSCCreate, connId :| [])
+                      atomically $ sendNtfSubCommand ns (NSCCreate, [connId])
                     let conn' = DuplexConnection cData (rq'' :| rqs') sqs
                     notify $ SWITCH QDRcv SPCompleted $ connectionStats conn'
               _ -> internalErr "ICQDelete: cannot delete the only queue in connection"
@@ -2017,7 +2017,7 @@ toggleConnectionNtfs' c connId enable = do
           withStore' c $ \db -> setConnectionNtfs db connId enable
           ns <- asks ntfSupervisor
           let cmd = if enable then NSCCreate else NSCSmpDelete
-          atomically $ sendNtfSubCommand ns (cmd, connId :| [])
+          atomically $ sendNtfSubCommand ns (cmd, [connId])
 
 deleteToken_ :: AgentClient -> NtfToken -> AM ()
 deleteToken_ c@AgentClient {subQ} tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
