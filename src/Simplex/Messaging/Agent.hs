@@ -1016,10 +1016,10 @@ subscribeConnections' c connIds = do
       let oks = M.keysSet $ M.filter (either temporaryAgentError $ const True) rcvRs
           cs' = M.restrictKeys cs oks
           (csCreate, csDelete) = M.partition (\(SomeConn _ conn) -> enableNtfs $ toConnData conn) cs'
-      forM_ (L.nonEmpty $ M.keys csCreate) $ \cids ->
-        atomically $ writeTBQueue (ntfSubQ ns) (NSCCreate, cids)
-      forM_ (L.nonEmpty $ M.keys csDelete) $ \cids ->
-        atomically $ writeTBQueue (ntfSubQ ns) (NSCSmpDelete, cids)
+      sendNtfCmd NSCCreate csCreate
+      sendNtfCmd NSCSmpDelete csDelete
+      where
+        sendNtfCmd cmd cs' = forM_ (L.nonEmpty $ M.keys cs') $ \cids -> atomically $ writeTBQueue (ntfSubQ ns) (cmd, cids)
     resumeDelivery :: Map ConnId SomeConn -> AM ()
     resumeDelivery conns = do
       conns' <- M.restrictKeys conns . S.fromList <$> withStore' c getConnectionsForDelivery
