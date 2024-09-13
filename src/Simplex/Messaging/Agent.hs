@@ -2067,8 +2067,7 @@ sendNtfConnCommands c cmd = do
   ns <- asks ntfSupervisor
   connIds <- liftIO $ S.toList <$> getSubscriptions c
   rs <- lift $ withStoreBatch' c (\db -> map (getConnData db) connIds)
-  let rsConnIds = zip connIds rs
-      (connIds', errs) = enabledNtfConns rsConnIds
+  let (connIds', errs) = enabledNtfConns (zip connIds rs)
   forM_ (L.nonEmpty connIds') $ \connIds'' ->
     atomically $ writeTBQueue (ntfSubQ ns) (cmd, connIds'')
   forM_ errs $ \(connId, e) ->
