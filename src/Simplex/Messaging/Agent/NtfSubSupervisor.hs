@@ -135,9 +135,12 @@ processNtfCmd c (cmd, connIds) = do
                   _ -> reset
                 where
                   contOrReset = case subAction_ of
+                    -- action was set to NULL after worker internal error
                     Nothing -> reset
                     Just (action, _)
+                      -- subscription was marked for deletion / is being deleted
                       | isDeleteNtfSubAction action -> reset
+                      -- continue work on subscription (e.g. supervisor was repeatedly tasked with creating a subscription)
                       | otherwise -> case action of
                           NSASMP _ -> (ns, rs, rqSMPServer : css, cns)
                           NSANtf _ -> (ns, rs, css, subNtfServer : cns)
