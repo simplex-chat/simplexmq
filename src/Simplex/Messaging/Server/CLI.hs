@@ -6,6 +6,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Server.CLI where
@@ -16,6 +17,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight)
 import Data.Ini (Ini, lookupValue)
+import Data.List ((\\))
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -275,9 +277,15 @@ checkSavedFingerprint cfgPath x509cfg = do
 
 iniTransports :: Ini -> [(String, ATransport)]
 iniTransports ini =
-  let port = T.unpack $ strictIni "TRANSPORT" "port" ini
-      enableWebsockets = (== "on") $ strictIni "TRANSPORT" "websockets" ini
-   in (port, transport @TLS) : [("80", transport @WS) | enableWebsockets]
+  let smpPorts = ports $ strictIni "TRANSPORT" "port" ini
+      ws = strictIni "TRANSPORT" "websockets" ini
+      wsPorts
+        | ws == "off" = []
+        | ws == "on" = ["80"]
+        | otherwise = ports ws \\ smpPorts
+   in map (,transport @TLS) smpPorts <> map (,transport @WS) wsPorts
+  where
+    ports = map T.unpack . T.splitOn ","
 
 printServerConfig :: [(ServiceName, ATransport)] -> Maybe FilePath -> IO ()
 printServerConfig transports logFile = do

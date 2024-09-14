@@ -168,10 +168,12 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                    \# control_port_admin_password:\n\
                    \# control_port_user_password:\n\n\
                    \[TRANSPORT]\n\
-                   \# host is only used to print server address on start\n"
+                   \# Host is only used to print server address on start.\n\
+                   \# You can specify multiple server ports.\n"
                 <> ("host: " <> T.pack host <> "\n")
                 <> ("port: " <> T.pack defaultServerPort <> "\n")
-                <> "log_tls_errors: off\n\
+                <> "log_tls_errors: off\n\\n
+                   \# Use `websockets: 443` to run websockets server in addition to plain TLS.
                    \websockets: off\n\
                    \# control_port: 5224\n\n\
                    \[PROXY]\n\
