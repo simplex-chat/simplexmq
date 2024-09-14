@@ -62,7 +62,7 @@ smpProxyTests = do
     let srv1 = SMPServer testHost testPort testKeyHash
         srv2 = SMPServer testHost testPort2 testKeyHash
     describe "client API" $ do
-      let maxLen = maxMessageLength sendingProxySMPVersion
+      let maxLen = maxMessageLength encryptedBlockSMPVersion
       describe "one server" $ do
         it "deliver via proxy" . oneServer $ do
           deliverMessageViaProxy srv1 srv1 C.SEd448 "hello 1" "hello 2"

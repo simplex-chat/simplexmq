@@ -192,6 +192,7 @@ smpClientStub g sessionId thVersion thAuth = do
               thAuth,
               blockSize = smpBlockSize,
               implySessId = thVersion >= authCmdsSMPVersion,
+              encryptBlock = Nothing,
               batch = True
             },
         sessionTs = ts,
@@ -390,7 +391,7 @@ defaultClientConfig clientALPN serverVRange =
 {-# INLINE defaultClientConfig #-}
 
 defaultSMPClientConfig :: ProtocolClientConfig SMPVersion
-defaultSMPClientConfig = defaultClientConfig (Just supportedSMPHandshakes) supportedClientSMPRelayVRange
+defaultSMPClientConfig = (defaultClientConfig (Just supportedSMPHandshakes) supportedClientSMPRelayVRange) {agreeSecret = True}
 {-# INLINE defaultSMPClientConfig #-}
 
 data Request err msg = Request

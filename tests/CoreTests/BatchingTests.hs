@@ -27,7 +27,7 @@ batchingTests :: Spec
 batchingTests = do
   describe "batchTransmissions" $ do
     describe "SMP v6 (current)" $ do
-      it "should batch with 107 subscriptions per batch" testBatchSubscriptions
+      it "should batch with 106 subscriptions per batch" testBatchSubscriptions
       it "should break on message that does not fit" testBatchWithMessage
       it "should break on large message" testBatchWithLargeMessage
     describe "v7 (next)" $ do
@@ -36,7 +36,7 @@ batchingTests = do
       it "should break on large message" testBatchWithLargeMessageV7
   describe "batchTransmissions'" $ do
     describe "SMP v6 (current)" $ do
-      it "should batch with 107 subscriptions per batch" testClientBatchSubscriptions
+      it "should batch with 106 subscriptions per batch" testClientBatchSubscriptions
       it "should break on message that does not fit" testClientBatchWithMessage
       it "should break on large message" testClientBatchWithLargeMessage
     describe "v7 (next)" $ do
@@ -55,7 +55,7 @@ testBatchSubscriptions = do
   let batches = batchTransmissions True smpBlockSize $ L.fromList subs
   length batches `shouldBe` 3
   [TBTransmissions s1 n1 _, TBTransmissions s2 n2 _, TBTransmissions s3 n3 _] <- pure batches
-  (n1, n2, n3) `shouldBe` (36, 107, 107)
+  (n1, n2, n3) `shouldBe` (38, 106, 106)
   all lenOk [s1, s2, s3] `shouldBe` True
 
 testBatchSubscriptionsV7 :: IO ()
@@ -119,7 +119,7 @@ testBatchWithLargeMessage = do
   let batches = batchTransmissions True smpBlockSize $ L.fromList cmds
   length batches `shouldBe` 4
   [TBTransmissions s1 n1 _, TBError TELargeMsg _, TBTransmissions s2 n2 _, TBTransmissions s3 n3 _] <- pure batches
-  (n1, n2, n3) `shouldBe` (50, 43, 107)
+  (n1, n2, n3) `shouldBe` (50, 44, 106)
   all lenOk [s1, s2, s3] `shouldBe` True
 
 testBatchWithLargeMessageV7 :: IO ()
@@ -150,8 +150,8 @@ testClientBatchSubscriptions = do
   let batches = batchTransmissions' True smpBlockSize $ L.fromList subs
   length batches `shouldBe` 3
   [TBTransmissions s1 n1 rs1, TBTransmissions s2 n2 rs2, TBTransmissions s3 n3 rs3] <- pure batches
-  (n1, n2, n3) `shouldBe` (36, 107, 107)
-  (length rs1, length rs2, length rs3) `shouldBe` (36, 107, 107)
+  (n1, n2, n3) `shouldBe` (38, 106, 106)
+  (length rs1, length rs2, length rs3) `shouldBe` (38, 106, 106)
   all lenOk [s1, s2, s3] `shouldBe` True
 
 testClientBatchSubscriptionsV7 :: IO ()
@@ -232,16 +232,16 @@ testClientBatchWithLargeMessage = do
   let batches = batchTransmissions' True smpBlockSize $ L.fromList cmds
   length batches `shouldBe` 4
   [TBTransmissions s1 n1 rs1, TBError TELargeMsg _, TBTransmissions s2 n2 rs2, TBTransmissions s3 n3 rs3] <- pure batches
-  (n1, n2, n3) `shouldBe` (50, 43, 107)
-  (length rs1, length rs2, length rs3) `shouldBe` (50, 43, 107)
+  (n1, n2, n3) `shouldBe` (50, 44, 106)
+  (length rs1, length rs2, length rs3) `shouldBe` (50, 44, 106)
   all lenOk [s1, s2, s3] `shouldBe` True
   --
   let cmds' = [send] <> subs1 <> subs2
   let batches' = batchTransmissions' True smpBlockSize $ L.fromList cmds'
   length batches' `shouldBe` 3
   [TBError TELargeMsg _, TBTransmissions s1' n1' rs1', TBTransmissions s2' n2' rs2'] <- pure batches'
-  (n1', n2') `shouldBe` (93, 107)
-  (length rs1', length rs2') `shouldBe` (93, 107)
+  (n1', n2') `shouldBe` (94, 106)
+  (length rs1', length rs2') `shouldBe` (94, 106)
   all lenOk [s1', s2'] `shouldBe` True
 
 testClientBatchWithLargeMessageV7 :: IO ()
@@ -350,6 +350,7 @@ testTHandleParams v sessionId =
       thServerVRange = supportedServerSMPRelayVRange,
       thAuth = Nothing,
       implySessId = v >= authCmdsSMPVersion,
+      encryptBlock = Nothing,
       batch = True
     }
 
