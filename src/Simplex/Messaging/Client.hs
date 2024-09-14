@@ -126,6 +126,7 @@ import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket (ServiceName)
+import Network.Socks5 (SocksCredentials (..))
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -136,7 +137,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTransportClient)
+import Simplex.Messaging.Transport.Client (SocksAuth (..), SocksProxyWithAuth (..), TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, diffToMicroseconds, ifM, liftEitherWith, raceAny_, threadDelay', tshow, whenM)
@@ -257,7 +258,7 @@ instance StrEncoding SocksMode where
 -- | network configuration for the client
 data NetworkConfig = NetworkConfig
   { -- | use SOCKS5 proxy
-    socksProxy :: Maybe SocksProxy,
+    socksProxy :: Maybe SocksProxyWithAuth,
     -- | when to use SOCKS proxy
     socksMode :: SocksMode,
     -- | determines critera which host is chosen from the list
@@ -355,11 +356,21 @@ transportClientConfig :: NetworkConfig -> TransportHost -> TransportClientConfig
 transportClientConfig NetworkConfig {socksProxy, socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors} host =
   TransportClientConfig {socksProxy = useSocksProxy socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, alpn = Nothing}
   where
-    useSocksProxy SMAlways = socksProxy
+    socksProxy' = (\(SocksProxyWithAuth _ proxy) -> proxy) <$> socksProxy
+    useSocksProxy SMAlways = socksProxy'
     useSocksProxy SMOnion = case host of
-      THOnionHost _ -> socksProxy
+      THOnionHost _ -> socksProxy'
       _ -> Nothing
 {-# INLINE transportClientConfig #-}
+
+clientSocksCredentials :: NetworkConfig -> ByteString -> Maybe SocksCredentials
+clientSocksCredentials NetworkConfig {socksProxy} sessionUsername = case socksProxy of
+  Just (SocksProxyWithAuth auth _) -> case auth of
+    SocksAuthUsername {username, password} -> Just $ SocksCredentials username password
+    SocksAuthNull -> Nothing
+    SocksIsolateByAuth -> Just $ SocksCredentials sessionUsername ""
+  Nothing -> Nothing
+{-# INLINE clientSocksCredentials #-}
 
 -- | protocol client configuration.
 data ProtocolClientConfig v = ProtocolClientConfig
@@ -489,9 +500,9 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     runClient (port', ATransport t) useHost c = do
       cVar <- newEmptyTMVarIO
       let tcConfig = (transportClientConfig networkConfig useHost) {alpn = clientALPN}
-          username = proxyUsername transportSession
+          socksCreds = clientSocksCredentials networkConfig $ proxyUsername transportSession
       tId <-
-        runTransportClient tcConfig (Just username) useHost port' (Just $ keyHash srv) (client t c cVar)
+        runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar)
           `forkFinally` \_ -> void (atomically . tryPutTMVar cVar $ Left PCENetworkError)
       c_ <- tcpConnectTimeout `timeout` atomically (takeTMVar cVar)
       case c_ of
