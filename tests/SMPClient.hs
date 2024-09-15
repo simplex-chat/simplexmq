@@ -119,6 +119,8 @@ cfg =
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",
+      sharedHttpsCredentials = Nothing,
+      sharedHttpsPort = "",
       smpServerVRange = supportedServerSMPRelayVRange,
       transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedSMPHandshakes},
       controlPort = Nothing,
@@ -164,7 +166,7 @@ withSmpServerStoreLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just tes
 withSmpServerConfigOn :: HasCallStack => ATransport -> ServerConfig -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerConfigOn t cfg' port' =
   serverBracket
-    (\started -> runSMPServerBlocking started cfg' {transports = [(port', t)]})
+    (\started -> runSMPServerBlocking started cfg' {transports = [(port', t)]} Nothing)
     (threadDelay 10000)
 
 withSmpServerThreadOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a

@@ -66,6 +66,7 @@ module Simplex.Messaging.Transport
     connectTLS,
     closeTLS,
     supportedParameters,
+    supportedParametersHTTPS,
     withTlsUnique,
 
     -- * SMP transport
@@ -98,6 +99,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
+import Data.Typeable (Typeable)
 import Data.Version (showVersion)
 import Data.Word (Word16)
 import qualified Data.X509 as X
@@ -212,7 +214,7 @@ data TransportConfig = TransportConfig
     transportTimeout :: Maybe Int
   }
 
-class Transport c where
+class Typeable c => Transport c where
   transport :: ATransport
   transport = ATransport (TProxy @c)
 
@@ -319,9 +321,30 @@ supportedParameters =
           TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256 -- for TLS12
         ],
       T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
-      T.supportedSecureRenegotiation = False,
-      T.supportedGroups = [T.X448, T.X25519]
+      T.supportedGroups = [T.X448, T.X25519],
+      T.supportedSecureRenegotiation = False
     }
+
+-- | A selection of extra parameters to accomodate browser chains
+supportedParametersHTTPS :: T.Supported
+supportedParametersHTTPS = supportedParameters
+  { T.supportedCiphers = T.supportedCiphers supportedParameters <> browserCiphers
+  , T.supportedGroups = T.supportedGroups supportedParameters <> browserGroups
+  , T.supportedHashSignatures = T.supportedHashSignatures supportedParameters <> browserSigs
+  }
+  where
+    browserCiphers =
+      [ TE.cipher_TLS13_AES128CCM8_SHA256
+      , TE.cipher_ECDHE_ECDSA_AES128CCM8_SHA256
+      , TE.cipher_ECDHE_ECDSA_AES256CCM8_SHA256
+      ]
+    browserGroups =
+      [ T.P256
+      ]
+    browserSigs =
+      [ (T.HashSHA256, T.SignatureECDSA),
+        (T.HashSHA384, T.SignatureECDSA)
+      ]
 
 instance Transport TLS where
   transportName _ = "TLS"

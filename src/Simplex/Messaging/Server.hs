@@ -34,6 +34,7 @@ module Simplex.Messaging.Server
     verifyCmdAuthorization,
     dummyVerifyCmd,
     randomId,
+    AttachHTTP,
   )
 where
 
@@ -68,10 +69,12 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
+import Data.Typeable (cast)
 import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
+import qualified Network.TLS as TLS
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, forwardSMPTransmission, smpProxyError, temporaryClientError)
@@ -115,22 +118,23 @@ import GHC.Conc.Sync (threadLabel)
 -- | Runs an SMP server using passed configuration.
 --
 -- See a full server here: https://github.com/simplex-chat/simplexmq/blob/master/apps/smp-server/Main.hs
-runSMPServer :: ServerConfig -> IO ()
-runSMPServer cfg = do
+runSMPServer :: ServerConfig -> Maybe (ServiceName, AttachHTTP) -> IO ()
+runSMPServer cfg sharedHttps = do
   started <- newEmptyTMVarIO
-  runSMPServerBlocking started cfg
+  runSMPServerBlocking started cfg sharedHttps
 
 -- | Runs an SMP server using passed configuration with signalling.
 --
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
-runSMPServerBlocking :: TMVar Bool -> ServerConfig -> IO ()
-runSMPServerBlocking started cfg = newEnv cfg >>= runReaderT (smpServer started cfg)
+runSMPServerBlocking :: TMVar Bool -> ServerConfig -> Maybe (ServiceName, AttachHTTP) -> IO ()
+runSMPServerBlocking started cfg sharedHttps = newEnv cfg >>= runReaderT (smpServer started cfg sharedHttps)
 
 type M a = ReaderT Env IO a
+type AttachHTTP = Socket -> TLS.Context -> IO ()
 
-smpServer :: TMVar Bool -> ServerConfig -> M ()
-smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
+smpServer :: TMVar Bool -> ServerConfig -> Maybe (ServiceName, AttachHTTP) -> M ()
+smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} sharedHttps = do
   s <- asks server
   pa <- asks proxyAgent
   expired <- restoreServerMessages
@@ -149,10 +153,22 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
       serverParams <- asks tlsServerParams
+      sharedParams' <- asks sharedServerParams
       ss <- asks sockets
       serverSignKey <- either fail pure . fromTLSCredentials $ tlsServerCredentials serverParams
       env <- ask
-      liftIO $ runTransportServerState ss started tcpPort serverParams tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
+      liftIO $
+        case (,) <$> sharedHttps <*> sharedParams' of
+          Just ((httpsPort, attachHTTP), sharedParams) | tcpPort == httpsPort ->
+            runTransportServerState_ ss started tcpPort sharedParams tCfg $ \s h ->
+              case cast h of
+                Just TLS {tlsContext} | maybe False (`elem` httpALPN) (getSessionALPN h) -> labelMyThread "https client" >> attachHTTP s tlsContext
+                _ -> runClient serverSignKey t h `runReaderT` env
+          _ -> runTransportServerState ss started tcpPort serverParams tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
+
+    httpALPN :: [ALPN]
+    httpALPN = ["h2", "http/1.1"]
+
     fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
 
     saveServer :: Bool -> M ()

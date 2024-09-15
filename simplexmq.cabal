@@ -419,9 +419,10 @@ executable smp-server
     , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
+    , wai
     , wai-app-static
-    , warp
-    , warp-tls
+    , warp ==3.3.30
+    , warp-tls ==3.4.7
     , websockets ==0.12.*
     , yaml ==0.11.*
     , zstd ==0.1.3.*
