@@ -26,9 +26,6 @@ testPublicHost = "smp.example.com"
 testOnionHost :: TransportHost
 testOnionHost = "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrst.onion"
 
-testSocksProxy :: SocksProxyWithAuth
-testSocksProxy = SocksProxyWithAuth SocksIsolateByAuth defaultSocksProxy
-
 testHostMode :: Spec
 testHostMode = do
   describe "requiredHostMode = False (default)" $ do
@@ -38,32 +35,32 @@ testHostMode = do
       chooseHost HMOnion Nothing [testPublicHost, testOnionHost] `shouldBe` Right testOnionHost
       chooseHost HMPublic Nothing [testPublicHost, testOnionHost] `shouldBe` Right testPublicHost
     it "with socks proxy, should choose onion host with HMOnionViaSocks (default) and HMOnion" $ do
-      chooseTransportHost @ErrorType defaultNetworkConfig {socksProxy = Just testSocksProxy} [testPublicHost, testOnionHost] `shouldBe` Right testOnionHost
-      chooseHost HMOnionViaSocks (Just testSocksProxy) [testPublicHost, testOnionHost] `shouldBe` Right testOnionHost
-      chooseHost HMOnion (Just testSocksProxy) [testPublicHost, testOnionHost] `shouldBe` Right testOnionHost
-      chooseHost HMPublic (Just testSocksProxy) [testPublicHost, testOnionHost] `shouldBe` Right testPublicHost
+      chooseTransportHost @ErrorType defaultNetworkConfig {socksProxy = Just defaultSocksProxyWithAuth} [testPublicHost, testOnionHost] `shouldBe` Right testOnionHost
+      chooseHost HMOnionViaSocks (Just defaultSocksProxyWithAuth) [testPublicHost, testOnionHost] `shouldBe` Right testOnionHost
+      chooseHost HMOnion (Just defaultSocksProxyWithAuth) [testPublicHost, testOnionHost] `shouldBe` Right testOnionHost
+      chooseHost HMPublic (Just defaultSocksProxyWithAuth) [testPublicHost, testOnionHost] `shouldBe` Right testPublicHost
     it "should choose any available host, if preferred not available" $ do
       chooseHost HMOnionViaSocks Nothing [testOnionHost] `shouldBe` Right testOnionHost
       chooseHost HMOnion Nothing [testPublicHost] `shouldBe` Right testPublicHost
       chooseHost HMPublic Nothing [testOnionHost] `shouldBe` Right testOnionHost
-      chooseHost HMOnionViaSocks (Just testSocksProxy) [testPublicHost] `shouldBe` Right testPublicHost
-      chooseHost HMOnion (Just testSocksProxy) [testPublicHost] `shouldBe` Right testPublicHost
-      chooseHost HMPublic (Just testSocksProxy) [testOnionHost] `shouldBe` Right testOnionHost
+      chooseHost HMOnionViaSocks (Just defaultSocksProxyWithAuth) [testPublicHost] `shouldBe` Right testPublicHost
+      chooseHost HMOnion (Just defaultSocksProxyWithAuth) [testPublicHost] `shouldBe` Right testPublicHost
+      chooseHost HMPublic (Just defaultSocksProxyWithAuth) [testOnionHost] `shouldBe` Right testOnionHost
   describe "requiredHostMode = True" $ do
     it "should fail, if preferred host not available" $ do
       testOnionHost `incompatible` (HMOnionViaSocks, Nothing)
       testPublicHost `incompatible` (HMOnion, Nothing)
       testOnionHost `incompatible` (HMPublic, Nothing)
-      testPublicHost `incompatible` (HMOnionViaSocks, Just testSocksProxy)
-      testPublicHost `incompatible` (HMOnion, Just testSocksProxy)
-      testOnionHost `incompatible` (HMPublic, Just testSocksProxy)
+      testPublicHost `incompatible` (HMOnionViaSocks, Just defaultSocksProxyWithAuth)
+      testPublicHost `incompatible` (HMOnion, Just defaultSocksProxyWithAuth)
+      testOnionHost `incompatible` (HMPublic, Just defaultSocksProxyWithAuth)
     it "should choose preferred host, if available" $ do
       testPublicHost `compatible` (HMOnionViaSocks, Nothing)
       testOnionHost `compatible` (HMOnion, Nothing)
       testPublicHost `compatible` (HMPublic, Nothing)
-      testOnionHost `compatible` (HMOnionViaSocks, Just testSocksProxy)
-      testOnionHost `compatible` (HMOnion, Just testSocksProxy)
-      testPublicHost `compatible` (HMPublic, Just testSocksProxy)
+      testOnionHost `compatible` (HMOnionViaSocks, Just defaultSocksProxyWithAuth)
+      testOnionHost `compatible` (HMOnion, Just defaultSocksProxyWithAuth)
+      testPublicHost `compatible` (HMPublic, Just defaultSocksProxyWithAuth)
   where
     chooseHost = chooseHostCfg defaultNetworkConfig
     host `incompatible` (hostMode, socksProxy) =
@@ -84,12 +81,12 @@ testSocksMode = do
     transportSocks Nothing SMOnion testPublicHost `shouldBe` Nothing
     transportSocks Nothing SMOnion testOnionHost `shouldBe` Nothing
   it "should always use SOCKS proxy if specified and (socksMode = SMAlways or (socksMode = SMOnion and onion host))" $ do
-    transportSocksCfg defaultNetworkConfig {socksProxy = Just testSocksProxy} testPublicHost `shouldBe` Just defaultSocksProxy
-    transportSocksCfg defaultNetworkConfig {socksProxy = Just testSocksProxy} testOnionHost `shouldBe` Just defaultSocksProxy
-    transportSocks (Just testSocksProxy) SMAlways testPublicHost `shouldBe` Just defaultSocksProxy
-    transportSocks (Just testSocksProxy) SMAlways testOnionHost `shouldBe` Just defaultSocksProxy
-    transportSocks (Just testSocksProxy) SMOnion testPublicHost `shouldBe` Nothing
-    transportSocks (Just testSocksProxy) SMOnion testOnionHost `shouldBe` Just defaultSocksProxy
+    transportSocksCfg defaultNetworkConfig {socksProxy = Just defaultSocksProxyWithAuth} testPublicHost `shouldBe` Just defaultSocksProxy
+    transportSocksCfg defaultNetworkConfig {socksProxy = Just defaultSocksProxyWithAuth} testOnionHost `shouldBe` Just defaultSocksProxy
+    transportSocks (Just defaultSocksProxyWithAuth) SMAlways testPublicHost `shouldBe` Just defaultSocksProxy
+    transportSocks (Just defaultSocksProxyWithAuth) SMAlways testOnionHost `shouldBe` Just defaultSocksProxy
+    transportSocks (Just defaultSocksProxyWithAuth) SMOnion testPublicHost `shouldBe` Nothing
+    transportSocks (Just defaultSocksProxyWithAuth) SMOnion testOnionHost `shouldBe` Just defaultSocksProxy
   where
     transportSocks proxy socksMode = transportSocksCfg defaultNetworkConfig {socksProxy = proxy, socksMode}
     transportSocksCfg cfg host =

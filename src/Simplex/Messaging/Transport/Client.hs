@@ -13,6 +13,7 @@ module Simplex.Messaging.Transport.Client
     defaultSMPPort,
     defaultTcpConnectTimeout,
     defaultTransportClientConfig,
+    defaultSocksProxyWithAuth,
     defaultSocksProxy,
     defaultSocksHost,
     TransportClientConfig (..),
@@ -206,6 +207,9 @@ connectSocksClient (SocksProxy addr) socksCreds hostAddr _port = do
 
 defaultSocksHost :: (Word8, Word8, Word8, Word8)
 defaultSocksHost = (127, 0, 0, 1)
+
+defaultSocksProxyWithAuth :: SocksProxyWithAuth
+defaultSocksProxyWithAuth = SocksProxyWithAuth SocksIsolateByAuth defaultSocksProxy
 
 defaultSocksProxy :: SocksProxy
 defaultSocksProxy = SocksProxy $ SockAddrInet 9050 $ tupleToHostAddress defaultSocksHost
