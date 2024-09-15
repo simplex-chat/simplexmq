@@ -85,6 +85,7 @@ module Simplex.Messaging.Client
     proxyUsername,
     temporaryClientError,
     smpProxyError,
+    textToHostMode,
     ServerTransmissionBatch,
     ServerTransmission (..),
     ClientCommand,
@@ -123,6 +124,8 @@ import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (catMaybes, fromMaybe)
+import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
@@ -237,6 +240,12 @@ data HostMode
   | -- | prefer (or require) public hosts
     HMPublic
   deriving (Eq, Show)
+
+textToHostMode :: Text -> Either String HostMode
+textToHostMode = \case
+  "public" -> Right HMPublic
+  "onion" -> Right HMOnionViaSocks
+  s -> Left $ T.unpack $ "Invalid host_mode: " <> s
 
 data SocksMode
   = -- | always use SOCKS proxy when enabled
