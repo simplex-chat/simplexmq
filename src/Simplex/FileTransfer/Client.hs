@@ -38,6 +38,7 @@ import Simplex.Messaging.Client
     defaultNetworkConfig,
     proxyUsername,
     transportClientConfig,
+    clientSocksCredentials,
     unexpectedResponse,
   )
 import qualified Simplex.Messaging.Crypto as C
@@ -100,7 +101,7 @@ defaultXFTPClientConfig =
 
 getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
 getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} disconnected = runExceptT $ do
-  let username = proxyUsername transportSession
+  let socksCreds = clientSocksCredentials xftpNetworkConfig $ proxyUsername transportSession
       ProtocolServer _ host port keyHash = srv
   useHost <- liftEither $ chooseTransportHost xftpNetworkConfig host
   let tcConfig = (transportClientConfig xftpNetworkConfig useHost) {alpn = clientALPN}
@@ -108,7 +109,7 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
   clientVar <- newTVarIO Nothing
   let usePort = if null port then "443" else port
       clientDisconnected = readTVarIO clientVar >>= mapM_ disconnected
-  http2Client <- liftError' xftpClientError $ getVerifiedHTTP2Client (Just username) useHost usePort (Just keyHash) Nothing http2Config clientDisconnected
+  http2Client <- liftError' xftpClientError $ getVerifiedHTTP2Client socksCreds useHost usePort (Just keyHash) Nothing http2Config clientDisconnected
   let HTTP2Client {sessionId, sessionALPN} = http2Client
       v = VersionXFTP 1
       thServerVRange = versionToRange v
