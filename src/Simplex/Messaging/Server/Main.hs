@@ -172,8 +172,8 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                    \# You can specify multiple server ports.\n"
                 <> ("host: " <> T.pack host <> "\n")
                 <> ("port: " <> T.pack defaultServerPort <> "\n")
-                <> "log_tls_errors: off\n\\n
-                   \# Use `websockets: 443` to run websockets server in addition to plain TLS.
+                <> "log_tls_errors: off\n\n\
+                   \# Use `websockets: 443` to run websockets server in addition to plain TLS.\n\
                    \websockets: off\n\
                    \# control_port: 5224\n\n\
                    \[PROXY]\n\
