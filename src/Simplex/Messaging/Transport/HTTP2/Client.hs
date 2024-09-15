@@ -92,9 +92,9 @@ getHTTP2Client :: HostName -> ServiceName -> Maybe XS.CertificateStore -> HTTP2C
 getHTTP2Client host port = getVerifiedHTTP2Client Nothing (THDomainName host) port Nothing
 
 getVerifiedHTTP2Client :: Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe XS.CertificateStore -> HTTP2ClientConfig -> IO () -> IO (Either HTTP2ClientError HTTP2Client)
-getVerifiedHTTP2Client socksCreds_ host port keyHash caStore config disconnected = getVerifiedHTTP2ClientWith config host port disconnected setup
+getVerifiedHTTP2Client socksCreds host port keyHash caStore config disconnected = getVerifiedHTTP2ClientWith config host port disconnected setup
   where
-    setup = runHTTP2Client (suportedTLSParams config) caStore (transportConfig config) (bufferSize config) socksCreds_ host port keyHash
+    setup = runHTTP2Client (suportedTLSParams config) caStore (transportConfig config) (bufferSize config) socksCreds host port keyHash
 
 attachHTTP2Client :: HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> Int -> TLS -> IO (Either HTTP2ClientError HTTP2Client)
 attachHTTP2Client config host port disconnected bufferSize tls = getVerifiedHTTP2ClientWith config host port disconnected setup
@@ -179,10 +179,10 @@ http2RequestTimeout :: HTTP2ClientConfig -> Maybe Int -> Int
 http2RequestTimeout HTTP2ClientConfig {connTimeout} = maybe connTimeout (connTimeout +)
 
 runHTTP2Client :: forall a. T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> BufferSize -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (TLS -> H.Client a) -> IO a
-runHTTP2Client tlsParams caStore tcConfig bufferSize socksCreds_ host port keyHash = runHTTP2ClientWith bufferSize host setup
+runHTTP2Client tlsParams caStore tcConfig bufferSize socksCreds host port keyHash = runHTTP2ClientWith bufferSize host setup
   where
     setup :: (TLS -> IO a) -> IO a
-    setup = runTLSTransportClient tlsParams caStore tcConfig socksCreds_ host port keyHash
+    setup = runTLSTransportClient tlsParams caStore tcConfig socksCreds host port keyHash
 
 runHTTP2ClientWith :: forall a. BufferSize -> TransportHost -> ((TLS -> IO a) -> IO a) -> (TLS -> H.Client a) -> IO a
 runHTTP2ClientWith bufferSize host setup client = setup $ \tls -> withHTTP2 bufferSize (run tls) (pure ()) tls

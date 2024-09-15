@@ -80,6 +80,7 @@ module Simplex.Messaging.Client
     defaultSMPClientConfig,
     defaultNetworkConfig,
     transportClientConfig,
+    clientSocksCredentials,
     chooseTransportHost,
     proxyUsername,
     temporaryClientError,
