@@ -125,4 +125,3 @@ testSocksProxyEncoding = do
     strDecode "user:pass@127.0.0.1:9050" `shouldBe` authUser defaultSocksProxy
     strDecode "user:pass@fd12:3456:789a:1::1" `shouldBe` authUser (SocksProxy $ SockAddrInet6 9050 0 (0xfd123456, 0x789a0001, 0, 1) 0)
     strDecode "user:pass@[fd12:3456:789a:1::1]:8080" `shouldBe` authUser (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)
-            
