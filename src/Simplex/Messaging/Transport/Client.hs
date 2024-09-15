@@ -140,12 +140,12 @@ runTransportClient :: Transport c => TransportClientConfig -> Maybe SocksCredent
 runTransportClient = runTLSTransportClient supportedParameters Nothing
 
 runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
-runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, alpn} socksCreds_ host port keyHash client = do
+runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, alpn} socksCreds host port keyHash client = do
   serverCert <- newEmptyTMVarIO
   let hostName = B.unpack $ strEncode host
       clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials alpn serverCert
       connectTCP = case socksProxy of
-        Just proxy -> connectSocksClient proxy socksCreds_ (hostAddr host)
+        Just proxy -> connectSocksClient proxy socksCreds (hostAddr host)
         _ -> connectTCPClient hostName
   c <- do
     sock <- connectTCP port
@@ -194,10 +194,10 @@ defaultSMPPort :: PortNumber
 defaultSMPPort = 5223
 
 connectSocksClient :: SocksProxy -> Maybe SocksCredentials -> SocksHostAddress -> ServiceName -> IO Socket
-connectSocksClient (SocksProxy addr) socksCreds_ hostAddr _port = do
+connectSocksClient (SocksProxy addr) socksCreds hostAddr _port = do
   let port = if null _port then defaultSMPPort else fromMaybe defaultSMPPort $ readMaybe _port
-  fst <$> case socksCreds_ of
-    Just socksCreds -> socksConnectAuth (defaultSocksConf addr) (SocksAddress hostAddr port) socksCreds
+  fst <$> case socksCreds of
+    Just creds -> socksConnectAuth (defaultSocksConf addr) (SocksAddress hostAddr port) creds
     _ -> socksConnect (defaultSocksConf addr) (SocksAddress hostAddr port)
 
 defaultSocksHost :: (Word8, Word8, Word8, Word8)
