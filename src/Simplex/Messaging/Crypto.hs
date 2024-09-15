@@ -185,6 +185,9 @@ module Simplex.Messaging.Crypto
     maxLenBS,
     unsafeMaxLenBS,
     appendMaxLenBS,
+    hsalsa20,
+    secretBox,
+    secretBoxOpen,
   )
 where
 
@@ -195,10 +198,8 @@ import Control.Monad.Except
 import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
-import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
 import Crypto.Hash (Digest, SHA256 (..), SHA512 (..), hash, hashDigestSize)
-import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
 import qualified Crypto.PubKey.Ed25519 as Ed25519
@@ -228,12 +229,15 @@ import Data.X509
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
+import Foreign.C.ConstPtr (ConstPtr (..))
 import GHC.TypeLits (ErrorMessage (..), KnownNat, Nat, TypeError, natVal, type (+))
 import Network.Transport.Internal (decodeWord16, encodeWord16)
+import qualified Simplex.Messaging.Crypto.NaCl.Bindings as NaCl
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
 import Simplex.Messaging.Util ((<$?>))
+import System.IO.Unsafe (unsafePerformIO)
 
 -- | Cryptographic algorithms.
 data Algorithm = Ed25519 | Ed448 | X25519 | X448
@@ -1210,10 +1214,7 @@ cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> B
 cbEncryptMaxLenBS (DhSecretX25519 secret) (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
 
 cryptoBox :: ByteArrayAccess key => key -> ByteString -> ByteString -> ByteString
-cryptoBox secret nonce s = BA.convert tag <> c
-  where
-    (rs, c) = xSalsa20 secret nonce s
-    tag = Poly1305.auth rs c
+cryptoBox secret nonce msg = either error id $! hsalsa20 secret >>= \sk -> secretBox sk nonce msg -- TODO: fuse
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 cbDecrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
@@ -1233,14 +1234,7 @@ sbDecrypt_ secret nonce = unPad <=< sbDecryptNoPad_ secret nonce
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce (without unpadding).
 sbDecryptNoPad_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Either CryptoError ByteString
-sbDecryptNoPad_ secret (CbNonce nonce) packet
-  | B.length packet < 16 = Left CBDecryptError
-  | BA.constEq tag' tag = Right msg
-  | otherwise = Left CBDecryptError
-  where
-    (tag', c) = B.splitAt 16 packet
-    (rs, msg) = xSalsa20 secret nonce c
-    tag = Poly1305.auth rs c
+sbDecryptNoPad_ secret (CbNonce nonce) packet = first (const CBDecryptError) $! hsalsa20 secret >>= \sk -> secretBoxOpen sk nonce packet -- TODO: fuse
 
 -- type for authentication scheme using NaCl @crypto_box@ over the sha512 digest of the message.
 newtype CbAuthenticator = CbAuthenticator ByteString deriving (Eq, Show)
@@ -1334,16 +1328,6 @@ unsafeSbKey s = either error id $ sbKey s
 randomSbKey :: TVar ChaChaDRG -> STM SbKey
 randomSbKey gVar = SecretBoxKey <$> randomBytes 32 gVar
 
-xSalsa20 :: ByteArrayAccess key => key -> ByteString -> ByteString -> (ByteString, ByteString)
-xSalsa20 secret nonce msg = (rs, msg')
-  where
-    zero = B.replicate 16 $ toEnum 0
-    (iv0, iv1) = B.splitAt 8 nonce
-    state0 = XSalsa.initialize 20 secret (zero `B.append` iv0)
-    state1 = XSalsa.derive state0 iv1
-    (rs, state2) = XSalsa.generate state1 32
-    (msg', _) = XSalsa.combine state2 msg
-
 publicToX509 :: PublicKey a -> PubKey
 publicToX509 = \case
   PublicKeyEd25519 k -> PubKeyEd25519 k
@@ -1392,3 +1376,53 @@ keyError :: (a, [ASN1]) -> Either String b
 keyError = \case
   (_, []) -> Left "unknown key algorithm"
   _ -> Left "more than one key"
+
+type NaclDhSecret = BA.ScrubbedBytes
+
+-- type NaclDhSecret = C.DhSecret 'C.X25519h -- hashed DH produced by NaCl "crypto_box_beforenm" and used by secretBox/Open
+
+-- Run salsa20 in a hash mode to make our DH keys match 'c_crypto_box_beforenm' output.
+hsalsa20 :: ByteArrayAccess key => key -> Either String NaclDhSecret
+hsalsa20 key = unsafePerformIO $ do
+  (r, ba :: NaclDhSecret) <- BA.withByteArray c_0 $ \inpPtr ->
+    BA.withByteArray key $ \keyPtr ->
+      BA.withByteArray sigma $ \sigmaPtr ->
+        BA.allocRet 32 $ \outPtr ->
+          NaCl.c_crypto_core_hsalsa20 outPtr (ConstPtr inpPtr) (ConstPtr keyPtr) (ConstPtr sigmaPtr)
+  pure $! if r /= 0 then Left "crypto_core_hsalsa20" else Right ba
+  where
+    -- sigma[16] = "expand 32-byte k";
+    sigma :: ByteString
+    sigma = "expand 32-byte k"
+    c_0 :: ByteString
+    c_0 = B.replicate 16 '\0'
+{-# NOINLINE hsalsa20 #-}
+
+secretBox :: NaclDhSecret -> ByteString -> ByteString -> Either String ByteString
+secretBox sk nonce msg = unsafePerformIO $ do
+  (r, c) <-
+    BA.withByteArray msg0 $ \mPtr ->
+      BA.withByteArray nonce $ \noncePtr ->
+        BA.withByteArray sk $ \skPtr ->
+          BA.allocRet (B.length msg0) $ \cPtr ->
+            NaCl.c_crypto_secretbox cPtr (ConstPtr mPtr) (fromIntegral $ B.length msg0) (ConstPtr noncePtr) (ConstPtr skPtr)
+  pure $! if r /= 0 then Left "crypto_secretbox" else Right (B.drop NaCl.crypto_box_BOXZEROBYTES c)
+  where
+    zeroBytes = B.replicate NaCl.crypto_box_ZEROBYTES '\0'
+    msg0 = zeroBytes <> BA.convert msg
+{-# NOINLINE secretBox #-}
+
+secretBoxOpen :: NaclDhSecret -> ByteString -> ByteString -> Either String ByteString
+secretBoxOpen sk nonce ciphertext = unsafePerformIO $ do
+  (r, m) <-
+    BA.withByteArray ciphertext0 $ \cPtr ->
+      BA.withByteArray nonce $ \noncePtr ->
+        BA.withByteArray sk $ \skPtr ->
+          BA.allocRet cLen $ \mPtr ->
+            NaCl.c_crypto_secretbox_open mPtr (ConstPtr cPtr) (fromIntegral cLen) (ConstPtr noncePtr) (ConstPtr skPtr)
+  pure $! if r /= 0 then Left "crypto_secretbox_open" else Right (B.drop NaCl.crypto_box_ZEROBYTES m)
+  where
+    ciphertext0 = boxZeroBytes <> ciphertext
+    boxZeroBytes = B.replicate NaCl.crypto_box_BOXZEROBYTES '\0'
+    cLen = B.length ciphertext0
+{-# NOINLINE secretBoxOpen #-}
