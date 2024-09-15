@@ -14,8 +14,9 @@ module Simplex.Messaging.Transport.Client
     defaultTcpConnectTimeout,
     defaultTransportClientConfig,
     defaultSocksProxy,
+    defaultSocksHost,
     TransportClientConfig (..),
-    SocksProxy,
+    SocksProxy (..),
     SocksProxyWithAuth (..),
     SocksAuth (..),
     TransportHost (..),
@@ -81,7 +82,7 @@ instance StrEncoding TransportHost where
   strP =
     A.choice
       [ THIPv4 <$> ((,,,) <$> ipNum <*> ipNum <*> ipNum <*> A.decimal),
-        maybe (Left "bad IPv6") (Right . THIPv6 . fromIPv6w) . readMaybe . B.unpack <$?> A.takeWhile1 (\c -> isHexDigit c || c == ':'),
+        maybe (Left "bad IPv6") (Right . THIPv6 . fromIPv6w) . readMaybe . B.unpack <$?> ipv6StrP,
         THOnionHost <$> ((<>) <$> A.takeWhile (\c -> isAsciiLower c || isDigit c) <*> A.string ".onion"),
         THDomainName . B.unpack <$> (notOnion <$?> A.takeWhile1 (A.notInClass ":#,;/ \n\r\t"))
       ]
@@ -89,6 +90,9 @@ instance StrEncoding TransportHost where
       ipNum = validIP <$?> (A.decimal <* A.char '.')
       validIP :: Int -> Either String Word8
       validIP n = if 0 <= n && n <= 255 then Right $ fromIntegral n else Left "invalid IP address"
+      ipv6StrP =
+        A.char '[' *> A.takeWhile1 (/= ']') <* A.char ']'
+          <|> A.takeWhile1 (\c -> isHexDigit c || c == ':')
       notOnion s = if ".onion" `B.isSuffixOf` s then Left "invalid onion host" else Right s
 
 instance ToJSON TransportHost where

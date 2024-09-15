@@ -7,7 +7,9 @@
 
 module CoreTests.SOCKSSettings where
 
+import Network.Socket (SockAddr (..), tupleToHostAddress)
 import Simplex.Messaging.Client
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType)
 import Simplex.Messaging.Transport.Client
 import Test.Hspec
@@ -16,6 +18,7 @@ socksSettingsTests :: Spec
 socksSettingsTests = do
   describe "hostMode and requiredHostMode settings" testHostMode
   describe "socksMode setting, independent of hostMode setting" testSocksMode
+  describe "socks proxy address encoding" testSocksProxyEncoding
 
 testPublicHost :: TransportHost
 testPublicHost = "smp.example.com"
@@ -92,3 +95,37 @@ testSocksMode = do
     transportSocksCfg cfg host =
       let TransportClientConfig {socksProxy} = transportClientConfig cfg host
        in socksProxy
+
+testSocksProxyEncoding :: Spec
+testSocksProxyEncoding = do
+  it "should decode SOCKS proxy with isolate-by-auth mode" $ do
+    let authIsolate proxy = Right $ SocksProxyWithAuth SocksIsolateByAuth proxy
+    strDecode "" `shouldBe` authIsolate defaultSocksProxy
+    strDecode ":9050" `shouldBe` authIsolate defaultSocksProxy
+    strDecode ":8080" `shouldBe` authIsolate (SocksProxy $ SockAddrInet 8080 $ tupleToHostAddress defaultSocksHost)
+    strDecode "127.0.0.1" `shouldBe` authIsolate defaultSocksProxy
+    strDecode "1.1.1.1" `shouldBe` authIsolate (SocksProxy $ SockAddrInet 9050 $ tupleToHostAddress (1, 1, 1, 1))
+    strDecode "::1" `shouldBe` authIsolate (SocksProxy $ SockAddrInet6 9050 0 (0, 0, 0, 1) 0)
+    strDecode "[fd12:3456:789a:1::1]" `shouldBe` authIsolate (SocksProxy $ SockAddrInet6 9050 0 (0xfd123456, 0x789a0001, 0, 1) 0)
+    strDecode "127.0.0.1:9050" `shouldBe` authIsolate defaultSocksProxy
+    strDecode "127.0.0.1:8080" `shouldBe` authIsolate (SocksProxy $ SockAddrInet 8080 $ tupleToHostAddress defaultSocksHost)
+    strDecode "[::1]:9050" `shouldBe` authIsolate (SocksProxy $ SockAddrInet6 9050 0 (0, 0, 0, 1) 0)
+    strDecode "[::1]:8080" `shouldBe` authIsolate (SocksProxy $ SockAddrInet6 8080 0 (0, 0, 0, 1) 0)
+    strDecode "[fd12:3456:789a:1::1]:8080" `shouldBe` authIsolate (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)
+  it "should decode SOCKS proxy without credentials" $ do
+    let authNull proxy = Right $ SocksProxyWithAuth SocksAuthNull proxy
+    strDecode "@" `shouldBe` authNull defaultSocksProxy
+    strDecode "@:9050" `shouldBe` authNull defaultSocksProxy
+    strDecode "@127.0.0.1" `shouldBe` authNull defaultSocksProxy
+    strDecode "@1.1.1.1" `shouldBe` authNull (SocksProxy $ SockAddrInet 9050 $ tupleToHostAddress (1, 1, 1, 1))
+    strDecode "@127.0.0.1:9050" `shouldBe` authNull defaultSocksProxy
+    strDecode "@[fd12:3456:789a:1::1]:8080" `shouldBe` authNull (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)
+  it "should decode SOCKS proxy with credentials" $ do
+    let authUser proxy = Right $ SocksProxyWithAuth SocksAuthUsername {username = "user", password = "pass"} proxy
+    strDecode "user:pass@" `shouldBe` authUser defaultSocksProxy
+    strDecode "user:pass@:9050" `shouldBe` authUser defaultSocksProxy
+    strDecode "user:pass@127.0.0.1" `shouldBe` authUser defaultSocksProxy
+    strDecode "user:pass@127.0.0.1:9050" `shouldBe` authUser defaultSocksProxy
+    strDecode "user:pass@fd12:3456:789a:1::1" `shouldBe` authUser (SocksProxy $ SockAddrInet6 9050 0 (0xfd123456, 0x789a0001, 0, 1) 0)
+    strDecode "user:pass@[fd12:3456:789a:1::1]:8080" `shouldBe` authUser (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)
+            
