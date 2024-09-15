@@ -86,11 +86,13 @@ ntfServerCLI cfgPath logPath =
             <> ("enable: " <> onOff enableStoreLog <> "\n\n")
             <> "log_stats: off\n\n\
                \[TRANSPORT]\n\
-               \# host is only used to print server address on start\n"
+               \# Host is only used to print server address on start.\n\
+               \# You can specify multiple server ports.\n"
             <> ("host: " <> T.pack host <> "\n")
             <> ("port: " <> T.pack defaultServerPort <> "\n")
-            <> "log_tls_errors: off\n"
-            <> "websockets: off\n\n\
+            <> "log_tls_errors: off\n\n\
+               \# Use `websockets: 443` to run websockets server in addition to plain TLS.\n\
+               \websockets: off\n\n\
                \[SUBSCRIBER]\n\
                \# Network configuration for notification server client.\n\
                \# `host_mode` can be 'public' (default) or 'onion'.\n\
