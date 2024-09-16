@@ -109,6 +109,9 @@ testSocksProxyEncoding = do
     strDecode "[::1]:9050" `shouldBe` authIsolate (SocksProxy $ SockAddrInet6 9050 0 (0, 0, 0, 1) 0)
     strDecode "[::1]:8080" `shouldBe` authIsolate (SocksProxy $ SockAddrInet6 8080 0 (0, 0, 0, 1) 0)
     strDecode "[fd12:3456:789a:1::1]:8080" `shouldBe` authIsolate (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)
+    strEncode (SocksProxyWithAuth SocksIsolateByAuth defaultSocksProxy) `shouldBe` "127.0.0.1:9050"
+    strEncode (SocksProxyWithAuth SocksIsolateByAuth (SocksProxy $ SockAddrInet6 9050 0 (0, 0, 0, 1) 0)) `shouldBe` "[::1]:9050"
+    strEncode (SocksProxyWithAuth SocksIsolateByAuth (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)) `shouldBe` "[fd12:3456:789a:1::1]:8080"
   it "should decode SOCKS proxy without credentials" $ do
     let authNull proxy = Right $ SocksProxyWithAuth SocksAuthNull proxy
     strDecode "@" `shouldBe` authNull defaultSocksProxy
@@ -117,11 +120,18 @@ testSocksProxyEncoding = do
     strDecode "@1.1.1.1" `shouldBe` authNull (SocksProxy $ SockAddrInet 9050 $ tupleToHostAddress (1, 1, 1, 1))
     strDecode "@127.0.0.1:9050" `shouldBe` authNull defaultSocksProxy
     strDecode "@[fd12:3456:789a:1::1]:8080" `shouldBe` authNull (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)
+    strEncode (SocksProxyWithAuth SocksAuthNull defaultSocksProxy) `shouldBe` "@127.0.0.1:9050"
+    strEncode (SocksProxyWithAuth SocksAuthNull (SocksProxy $ SockAddrInet6 9050 0 (0, 0, 0, 1) 0)) `shouldBe` "@[::1]:9050"
+    strEncode (SocksProxyWithAuth SocksAuthNull (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)) `shouldBe` "@[fd12:3456:789a:1::1]:8080"
   it "should decode SOCKS proxy with credentials" $ do
-    let authUser proxy = Right $ SocksProxyWithAuth SocksAuthUsername {username = "user", password = "pass"} proxy
+    let auth = SocksAuthUsername {username = "user", password = "pass"}
+        authUser proxy = Right $ SocksProxyWithAuth auth proxy
     strDecode "user:pass@" `shouldBe` authUser defaultSocksProxy
     strDecode "user:pass@:9050" `shouldBe` authUser defaultSocksProxy
     strDecode "user:pass@127.0.0.1" `shouldBe` authUser defaultSocksProxy
     strDecode "user:pass@127.0.0.1:9050" `shouldBe` authUser defaultSocksProxy
     strDecode "user:pass@fd12:3456:789a:1::1" `shouldBe` authUser (SocksProxy $ SockAddrInet6 9050 0 (0xfd123456, 0x789a0001, 0, 1) 0)
     strDecode "user:pass@[fd12:3456:789a:1::1]:8080" `shouldBe` authUser (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)
+    strEncode (SocksProxyWithAuth auth defaultSocksProxy) `shouldBe` "user:pass@127.0.0.1:9050"
+    strEncode (SocksProxyWithAuth auth (SocksProxy $ SockAddrInet6 9050 0 (0, 0, 0, 1) 0)) `shouldBe` "user:pass@[::1]:9050"
+    strEncode (SocksProxyWithAuth auth (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)) `shouldBe` "user:pass@[fd12:3456:789a:1::1]:8080"
