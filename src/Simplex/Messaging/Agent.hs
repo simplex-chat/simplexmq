@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -473,14 +474,14 @@ testProtocolServer c userId srv = withAgentEnv' c $ case protocolTypeI @p of
 
 -- | set SOCKS5 proxy on/off and optionally set TCP timeouts for fast network
 setNetworkConfig :: AgentClient -> NetworkConfig -> IO ()
-setNetworkConfig c@AgentClient {useNetworkConfig} cfg' = do
-  changed <- atomically $ do
+setNetworkConfig c@AgentClient {useNetworkConfig, proxySessTs} cfg' = do
+  (spChanged, changed) <- atomically $ do
     (_, cfg) <- readTVar useNetworkConfig
-    if cfg == cfg'
-      then pure False
-      else
-        let cfgSlow = slowNetworkConfig cfg'
-         in True <$ (cfgSlow `seq` writeTVar useNetworkConfig (cfgSlow, cfg'))
+    let changed = cfg /= cfg'
+        !cfgSlow = slowNetworkConfig cfg'
+    when changed $ writeTVar useNetworkConfig (cfgSlow, cfg')
+    pure (socksProxy cfg /= socksProxy cfg', changed)
+  when spChanged $ getCurrentTime >>= atomically . writeTVar proxySessTs
   when changed $ reconnectAllServers c
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()

@@ -22,6 +22,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
+import Data.Time.Clock (UTCTime)
 import Data.Word (Word32)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
@@ -36,7 +37,6 @@ import Simplex.Messaging.Client
     TransportSession,
     chooseTransportHost,
     defaultNetworkConfig,
-    proxyUsername,
     transportClientConfig,
     clientSocksCredentials,
     unexpectedResponse,
@@ -99,9 +99,9 @@ defaultXFTPClientConfig =
       clientALPN = Just supportedXFTPhandshakes
     }
 
-getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
-getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} disconnected = runExceptT $ do
-  let socksCreds = clientSocksCredentials xftpNetworkConfig $ proxyUsername transportSession
+getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> UTCTime -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
+getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} proxySessTs disconnected = runExceptT $ do
+  let socksCreds = clientSocksCredentials xftpNetworkConfig proxySessTs transportSession
       ProtocolServer _ host port keyHash = srv
   useHost <- liftEither $ chooseTransportHost xftpNetworkConfig host
   let tcConfig = (transportClientConfig xftpNetworkConfig useHost) {alpn = clientALPN}
