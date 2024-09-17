@@ -29,7 +29,7 @@ import qualified Data.Text.IO as T
 import Network.Socket (HostName)
 import Options.Applicative
 import Simplex.Messaging.Agent.Protocol (connReqUriP')
-import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig)
+import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig, textToHostMode)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -168,10 +168,12 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                    \# control_port_admin_password:\n\
                    \# control_port_user_password:\n\n\
                    \[TRANSPORT]\n\
-                   \# host is only used to print server address on start\n"
+                   \# Host is only used to print server address on start.\n\
+                   \# You can specify multiple server ports.\n"
                 <> ("host: " <> T.pack host <> "\n")
                 <> ("port: " <> T.pack defaultServerPort <> "\n")
-                <> "log_tls_errors: off\n\
+                <> "log_tls_errors: off\n\n\
+                   \# Use `websockets: 443` to run websockets server in addition to plain TLS.\n\
                    \websockets: off\n\
                    \# control_port: 5224\n\n\
                    \[PROXY]\n\
@@ -307,7 +309,7 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                             defaultNetworkConfig
                               { socksProxy = either error id <$!> strDecodeIni "PROXY" "socks_proxy" ini,
                                 socksMode = maybe SMOnion (either error id) $! strDecodeIni "PROXY" "socks_mode" ini,
-                                hostMode = either (const HMPublic) textToHostMode $ lookupValue "PROXY" "host_mode" ini,
+                                hostMode = either (const HMPublic) (either error id . textToHostMode) $ lookupValue "PROXY" "host_mode" ini,
                                 requiredHostMode = fromMaybe False $ iniOnOff "PROXY" "required_host_mode" ini
                               }
                         },
@@ -340,12 +342,6 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
             serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams}
           where
             isOnion = \case THOnionHost _ -> True; _ -> False
-
-textToHostMode :: Text -> HostMode
-textToHostMode = \case
-  "public" -> HMPublic
-  "onion" -> HMOnionViaSocks
-  s -> error . T.unpack $ "Invalid host_mode: " <> s
 
 data EmbeddedWebParams = EmbeddedWebParams
   { webStaticPath :: FilePath,

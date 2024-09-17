@@ -12,6 +12,7 @@ import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
 import CoreTests.RetryIntervalTests
+import CoreTests.SOCKSSettings
 import CoreTests.TRcvQueuesTests
 import CoreTests.UtilTests
 import CoreTests.VersionRangeTests
@@ -52,6 +53,7 @@ main = do
           describe "Encryption tests" cryptoTests
           describe "Encrypted files tests" cryptoFileTests
           describe "Retry interval tests" retryIntervalTests
+          describe "SOCKS settings tests" socksSettingsTests
           describe "TRcvQueues tests" tRcvQueuesTests
           describe "Util tests" utilTests
         describe "SMP server via TLS" $ serverTests (transport @TLS)

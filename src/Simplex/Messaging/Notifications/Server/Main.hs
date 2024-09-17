@@ -16,7 +16,7 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Network.Socket (HostName)
 import Options.Applicative
-import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig)
+import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig, textToHostMode)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server (runNtfServer)
@@ -26,7 +26,6 @@ import Simplex.Messaging.Notifications.Transport (supportedNTFHandshakes, suppor
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Server.Main (textToHostMode)
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
@@ -86,11 +85,13 @@ ntfServerCLI cfgPath logPath =
             <> ("enable: " <> onOff enableStoreLog <> "\n\n")
             <> "log_stats: off\n\n\
                \[TRANSPORT]\n\
-               \# host is only used to print server address on start\n"
+               \# Host is only used to print server address on start.\n\
+               \# You can specify multiple server ports.\n"
             <> ("host: " <> T.pack host <> "\n")
             <> ("port: " <> T.pack defaultServerPort <> "\n")
-            <> "log_tls_errors: off\n"
-            <> "websockets: off\n\n\
+            <> "log_tls_errors: off\n\n\
+               \# Use `websockets: 443` to run websockets server in addition to plain TLS.\n\
+               \websockets: off\n\n\
                \[SUBSCRIBER]\n\
                \# Network configuration for notification server client.\n\
                \# `host_mode` can be 'public' (default) or 'onion'.\n\
@@ -139,7 +140,7 @@ ntfServerCLI cfgPath logPath =
                             defaultNetworkConfig
                               { socksProxy = either error id <$!> strDecodeIni "SUBSCRIBER" "socks_proxy" ini,
                                 socksMode = maybe SMOnion (either error id) $! strDecodeIni "SUBSCRIBER" "socks_mode" ini,
-                                hostMode = either (const HMPublic) textToHostMode $ lookupValue "SUBSCRIBER" "host_mode" ini,
+                                hostMode = either (const HMPublic) (either error id . textToHostMode) $ lookupValue "SUBSCRIBER" "host_mode" ini,
                                 requiredHostMode = fromMaybe False $ iniOnOff "SUBSCRIBER" "required_host_mode" ini,
                                 smpPingInterval = 60_000_000 -- 1 minutes
                               }
