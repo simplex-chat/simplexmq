@@ -66,14 +66,22 @@ runNtfSupervisor c = do
       notifyErr e
     notifyErr e = notifyInternalError' c $ "runNtfSupervisor error " <> show e
 
--- TODO [batch ntf] notify ERRS (zip with connIds)
+-- Expects action results rs to be of same size as xs
+correlateErrs :: (a -> ConnId) -> [a] -> AM' [Either AgentErrorType b] -> AM' ([(ConnId, AgentErrorType)], [b])
+correlateErrs getConnId xs action =
+  foldr addResult ([], []) . zip xs <$> action
+  where
+    addResult (_, Right r) (errs, rs) = (errs, r : rs)
+    addResult (x, Left e) (errs, rs) = ((getConnId x, e) : errs, rs)
+
 processNtfCmd :: AgentClient -> (NtfSupervisorCommand, NonEmpty ConnId) -> AM ()
 processNtfCmd c (cmd, connIds) = do
   logInfo $ "processNtfCmd - cmd = " <> tshow cmd
+  let connIds' = L.toList connIds
   case cmd of
     NSCCreate -> do
-      (errs, rqSubActions) <- lift $ partitionEithers <$> withStoreBatch c (\db -> map (getQueueSub db) (L.toList connIds))
-      forM_ errs $ \e -> notifyInternalError' c ("NSCCreate - getQueueSub: " <> show e)
+      (cErrs, rqSubActions) <- lift $ correlateErrs id connIds' (withStoreBatch c (\db -> map (getQueueSub db) connIds'))
+      notifyErrs c cErrs
       logInfo $ "processNtfCmd, NSCCreate - length rqSubs = " <> tshow (length rqSubActions)
       let (ns, rs, css, cns) = partitionQueueSubActions rqSubActions
       createNewSubs ns
@@ -94,8 +102,8 @@ processNtfCmd c (cmd, connIds) = do
         createNewSubs rqs = do
           withTokenServer $ \ntfServer -> do
             let newSubs = map (rqToNewSub ntfServer) rqs
-            (errs, _) <- lift $ partitionEithers <$> withStoreBatch c (\db -> map (storeNewSub db) newSubs)
-            forM_ errs $ \e -> notifyInternalError' c ("NSCCreate - createNewSubs: " <> show e)
+            (cErrs, _) <- lift $ correlateErrs (\NtfSubscription {connId} -> connId) newSubs (withStoreBatch c (\db -> map (storeNewSub db) newSubs))
+            notifyErrs c cErrs
             kickSMPWorkers rqs
           where
             rqToNewSub :: NtfServer -> RcvQueue -> NtfSubscription
@@ -106,8 +114,8 @@ processNtfCmd c (cmd, connIds) = do
         resetSubs rqSubs = do
           withTokenServer $ \ntfServer -> do
             let subsToReset = map (toResetSub ntfServer) rqSubs
-            (errs, _) <- lift $ partitionEithers <$> withStoreBatch' c (\db -> map (storeResetSub db) subsToReset)
-            forM_ errs $ \e -> notifyInternalError' c ("NSCCreate - resetSubs: " <> show e)
+            (cErrs, _) <- lift $ correlateErrs (\NtfSubscription {connId} -> connId) subsToReset (withStoreBatch' c (\db -> map (storeResetSub db) subsToReset))
+            notifyErrs c cErrs
             let rqs = map fst rqSubs
             kickSMPWorkers rqs
           where
@@ -151,10 +159,10 @@ processNtfCmd c (cmd, connIds) = do
                         NSANtf _ -> (ns, rs, css, subNtfServer : cns)
                 reset = (ns, (rq, sub) : rs, css, cns)
     NSCSmpDelete -> do
-      (errs, rqs) <- lift $ partitionEithers <$> withStoreBatch c (\db -> map (getQueue db) (L.toList connIds))
+      (cErrs, rqs) <- lift $ correlateErrs id connIds' (withStoreBatch c (\db -> map (getQueue db) connIds'))
       logInfo $ "processNtfCmd, NSCSmpDelete - length rqs = " <> tshow (length rqs)
-      (errs', _) <- lift $ partitionEithers <$> withStoreBatch' c (\db -> map (updateAction db) rqs)
-      forM_ (errs <> errs') $ \e -> notifyInternalError' c ("NSCSmpDelete: " <> show e)
+      (cErrs', _) <- lift $ correlateErrs qConnId rqs (withStoreBatch' c (\db -> map (updateAction db) rqs))
+      notifyErrs c (cErrs <> cErrs')
       kickSMPWorkers rqs
       where
         getQueue :: DB.Connection -> ConnId -> IO (Either AgentErrorType RcvQueue)
@@ -163,7 +171,7 @@ processNtfCmd c (cmd, connIds) = do
         updateAction db rq = supervisorUpdateNtfAction db (qConnId rq) (NSASMP NSASmpDelete)
     NSCNtfWorker ntfServer -> lift . void $ getNtfNTFWorker True c ntfServer
     NSCNtfSMPWorker smpServer -> lift . void $ getNtfSMPWorker True c smpServer
-    NSCDeleteSub -> void $ lift $ withStoreBatch' c $ \db -> map (deleteNtfSubscription' db) (L.toList connIds)
+    NSCDeleteSub -> void $ lift $ withStoreBatch' c $ \db -> map (deleteNtfSubscription' db) connIds'
   where
     kickSMPWorkers :: [RcvQueue] -> AM ()
     kickSMPWorkers rqs = do
@@ -353,6 +361,10 @@ notifyInternalError AgentClient {subQ} connId internalErrStr = atomically $ writ
 notifyInternalError' :: MonadIO m => AgentClient -> String -> m ()
 notifyInternalError' AgentClient {subQ} internalErrStr = atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ INTERNAL internalErrStr)
 {-# INLINE notifyInternalError' #-}
+
+notifyErrs :: MonadIO m => AgentClient -> [(ConnId, AgentErrorType)] -> m ()
+notifyErrs AgentClient {subQ} connErrs = unless (null connErrs) $ atomically $ writeTBQueue subQ ("", "", AEvt SAENone $ ERRS connErrs)
+{-# INLINE notifyErrs #-}
 
 getNtfToken :: AM' (Maybe NtfToken)
 getNtfToken = do
