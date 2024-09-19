@@ -832,7 +832,7 @@ testGetNextDeletedSndChunkReplica st = do
 testMarkNtfSubActionNtfFailed :: SQLiteStore -> Expectation
 testMarkNtfSubActionNtfFailed st = do
   withTransaction st $ \db -> do
-    markNtfSubActionNtfFailed_ db "abc"
+    markNtfSubActionNtfFailed_ db ["abc"]
 
 testMarkNtfSubActionSMPFailed :: SQLiteStore -> Expectation
 testMarkNtfSubActionSMPFailed st = do

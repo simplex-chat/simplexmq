@@ -178,19 +178,43 @@ runNtfWorker c srv Worker {doWork} =
     waitForWork doWork
     ExceptT $ agentOperationBracket c AONtfNetwork throwWhenInactive $ runExceptT runNtfOperation
   where
+    runNtfOperation' :: AM ()
+    runNtfOperation' =
+      withWork c doWork (`getNextNtfSubNTFActions` srv) $
+        \nextActions -> do
+          logInfo $ "runNtfWorker - length nextActions = " <> tshow (length nextActions)
+          -- withRetryInterval - retry only network errors?
+          -- but: list of actions can differ per retry -> custom retry logic? no retry?
+          liftIO $ waitWhileSuspended c
+          liftIO $ waitForUserNetwork c
+          processSubActions' nextActions
+    processSubActions' :: NonEmpty NtfNTFWorkItem -> AM ()
+    processSubActions' subActions = do
+      ts <- liftIO getCurrentTime
+      let subActions' = L.filter (\(_, _, actionTs) -> actionTs <= ts) subActions
+          (_, _, firstActionTs) = L.head subActions
+      case L.nonEmpty subActions' of
+        Nothing -> lift $ rescheduleWork doWork ts firstActionTs
+        Just subActions'' -> do
+          -- separate by action type
+          -- process each action type actions in order and batched per action type
+          -- mark successes and permanent errors per action type
+          -- collect temporary errors across all actions -> retry with new action list?
+          pure ()
+    -- below - old code
     runNtfOperation :: AM ()
     runNtfOperation =
-      withWork c doWork (`getNextNtfSubNTFAction` srv) $
-        \nextSub@(NtfSubscription {connId}, _, _) -> do
-          logInfo $ "runNtfWorker, nextSub " <> tshow nextSub
+      withWork c doWork (`getNextNtfSubNTFActions` srv) $
+        \nextActions@((NtfSubscription {connId}, _, _) :| _) -> do
+          logInfo $ "runNtfWorker - length nextActions = " <> tshow (length nextActions)
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop -> do
             liftIO $ waitWhileSuspended c
             liftIO $ waitForUserNetwork c
-            processSub nextSub
+            processSubActions nextActions
               `catchAgentError` retryOnError c "NtfWorker" loop (workerInternalError c connId . show)
-    processSub :: (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> AM ()
-    processSub (sub@NtfSubscription {userId, connId, smpServer, ntfSubId}, action, actionTs) = do
+    processSubActions :: NonEmpty NtfNTFWorkItem -> AM ()
+    processSubActions [(sub@NtfSubscription {userId, connId, smpServer, ntfSubId}, action, actionTs)] = do
       ts <- liftIO getCurrentTime
       unlessM (lift $ rescheduleAction doWork ts actionTs) $
         case action of
@@ -257,6 +281,7 @@ runNtfWorker c srv Worker {doWork} =
         updateSub toStatus toAction actionTs' =
           withStore' c $ \db ->
             updateNtfSubscription db sub {ntfSubStatus = toStatus} toAction actionTs'
+    processSubActions _ = pure ()
 
 runNtfSMPWorker :: AgentClient -> SMPServer -> Worker -> AM ()
 runNtfSMPWorker c srv Worker {doWork} = do
@@ -309,11 +334,15 @@ rescheduleAction :: TMVar () -> UTCTime -> UTCTime -> AM' Bool
 rescheduleAction doWork ts actionTs
   | actionTs <= ts = pure False
   | otherwise = do
-      void . atomically $ tryTakeTMVar doWork
-      void . forkIO $ do
-        liftIO $ threadDelay' $ diffToMicroseconds $ diffUTCTime actionTs ts
-        atomically $ hasWorkToDo' doWork
+      rescheduleWork doWork ts actionTs
       pure True
+
+rescheduleWork :: TMVar () -> UTCTime -> UTCTime -> AM' ()
+rescheduleWork doWork ts actionTs = do
+  void . atomically $ tryTakeTMVar doWork
+  void . forkIO $ do
+    liftIO $ threadDelay' $ diffToMicroseconds $ diffUTCTime actionTs ts
+    atomically $ hasWorkToDo' doWork
 
 retryOnError :: AgentClient -> Text -> AM () -> (AgentErrorType -> AM ()) -> AgentErrorType -> AM ()
 retryOnError c name loop done e = do
