@@ -25,6 +25,7 @@ import Control.Monad.Trans.Except
 import Data.Bifunctor (first)
 import Data.Either (rights)
 import Data.Foldable (foldr')
+import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -196,12 +197,21 @@ runNtfWorker c srv Worker {doWork} =
       case L.nonEmpty subActions' of
         Nothing -> lift $ rescheduleWork doWork ts firstActionTs
         Just subActions'' -> do
-          -- separate by action type
+          -- split by action type
+          let (creates, checks, deletes, rotates) = splitActions subActions''
           -- process each action type actions in order and batched per action type
           -- mark successes and permanent errors per action type
           -- collect temporary errors across all actions -> retry with new action list?
           pure ()
-    -- below - old code
+    splitActions :: NonEmpty NtfNTFWorkItem -> ([NtfSubscription], [NtfSubscription], [NtfSubscription], [NtfSubscription])
+    splitActions = foldl' addAction ([], [], [], [])
+      where
+        addAction (creates, checks, deletes, rotates) = \case
+          (sub, NSACreate, _) -> (sub : creates, checks, deletes, rotates)
+          (sub, NSACheck, _) -> (creates, sub : checks, deletes, rotates)
+          (sub, NSADelete, _) -> (creates, checks, sub : deletes, rotates)
+          (sub, NSARotate, _) -> (creates, checks, deletes, sub : rotates)
+    -- -------------------- below - old code --------------------
     runNtfOperation :: AM ()
     runNtfOperation =
       withWork c doWork (`getNextNtfSubNTFActions` srv) $
