@@ -184,7 +184,7 @@ runNtfWorker c srv Worker {doWork} =
         \nextActions -> do
           logInfo $ "runNtfWorker - length nextActions = " <> tshow (length nextActions)
           -- withRetryInterval - retry only network errors?
-          -- but: list of actions can differ per retry -> custom retry logic? no retry?
+          -- but: list of actions can differ per retry -> custom retry logic? no retry (retry via db)?
           liftIO $ waitWhileSuspended c
           liftIO $ waitForUserNetwork c
           processSubActions' nextActions
