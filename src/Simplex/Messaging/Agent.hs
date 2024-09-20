@@ -2067,12 +2067,10 @@ sendNtfConnCommands c cmd = do
   ns <- asks ntfSupervisor
   connIds <- liftIO $ S.toList <$> getSubscriptions c
   rs <- lift $ withStoreBatch' c (\db -> map (getConnData db) connIds)
-  let (connIds', errs) = enabledNtfConns (zip connIds rs)
+  let (connIds', cErrs) = enabledNtfConns (zip connIds rs)
   forM_ (L.nonEmpty connIds') $ \connIds'' ->
     atomically $ writeTBQueue (ntfSubQ ns) (cmd, connIds'')
-  -- TODO [batch ntf] notify ERRS
-  forM_ errs $ \(connId, e) ->
-    atomically $ writeTBQueue (subQ c) ("", connId, AEvt SAEConn $ ERR e)
+  unless (null cErrs) $ atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone $ ERRS cErrs)
   where
     enabledNtfConns :: [(ConnId, Either AgentErrorType (Maybe (ConnData, ConnectionMode)))] -> ([ConnId], [(ConnId, AgentErrorType)])
     enabledNtfConns = foldr addEnabledConn ([], [])

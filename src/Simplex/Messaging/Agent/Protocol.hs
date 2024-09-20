@@ -366,6 +366,7 @@ data AEvent (e :: AEntity) where
   OK :: AEvent AEConn
   JOINED :: SndQueueSecured -> AEvent AEConn
   ERR :: AgentErrorType -> AEvent AEConn
+  ERRS :: [(ConnId, AgentErrorType)] -> AEvent AENone
   SUSPENDED :: AEvent AENone
   RFPROG :: Int64 -> Int64 -> AEvent AERcvFile
   RFDONE :: FilePath -> AEvent AERcvFile
@@ -436,6 +437,7 @@ data AEventTag (e :: AEntity) where
   OK_ :: AEventTag AEConn
   JOINED_ :: AEventTag AEConn
   ERR_ :: AEventTag AEConn
+  ERRS_ :: AEventTag AENone
   SUSPENDED_ :: AEventTag AENone
   -- XFTP commands and responses
   RFDONE_ :: AEventTag AERcvFile
@@ -490,6 +492,7 @@ aEventTag = \case
   OK -> OK_
   JOINED _ -> JOINED_
   ERR _ -> ERR_
+  ERRS _ -> ERRS_
   SUSPENDED -> SUSPENDED_
   RFPROG {} -> RFPROG_
   RFDONE {} -> RFDONE_
