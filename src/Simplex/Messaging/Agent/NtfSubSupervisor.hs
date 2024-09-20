@@ -69,6 +69,7 @@ runNtfSupervisor c = do
 
 partitionErrs :: (a -> ConnId) -> [a] -> [Either AgentErrorType b] -> ([(ConnId, AgentErrorType)], [b])
 partitionErrs f xs = partitionEithers . zipWith (\x -> first (f x,)) xs
+{-# INLINE partitionErrs #-}
 
 processNtfCmd :: AgentClient -> (NtfSupervisorCommand, NonEmpty ConnId) -> AM ()
 processNtfCmd c (cmd, connIds) = do
