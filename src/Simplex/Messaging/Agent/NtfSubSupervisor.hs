@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Agent.NtfSubSupervisor
@@ -66,13 +67,8 @@ runNtfSupervisor c = do
       notifyErr e
     notifyErr e = notifyInternalError' c $ "runNtfSupervisor error " <> show e
 
--- Expects action results rs to be of same size as xs
-correlateErrs :: (a -> ConnId) -> [a] -> AM' [Either AgentErrorType b] -> AM' ([(ConnId, AgentErrorType)], [b])
-correlateErrs getConnId xs action =
-  foldr addResult ([], []) . zip xs <$> action
-  where
-    addResult (_, Right r) (errs, rs) = (errs, r : rs)
-    addResult (x, Left e) (errs, rs) = ((getConnId x, e) : errs, rs)
+partitionErrs :: (a -> ConnId) -> [a] -> [Either AgentErrorType b] -> ([(ConnId, AgentErrorType)], [b])
+partitionErrs f xs = partitionEithers . zipWith (first . (,) . f) xs
 
 processNtfCmd :: AgentClient -> (NtfSupervisorCommand, NonEmpty ConnId) -> AM ()
 processNtfCmd c (cmd, connIds) = do
@@ -80,7 +76,7 @@ processNtfCmd c (cmd, connIds) = do
   let connIds' = L.toList connIds
   case cmd of
     NSCCreate -> do
-      (cErrs, rqSubActions) <- lift $ correlateErrs id connIds' (withStoreBatch c (\db -> map (getQueueSub db) connIds'))
+      (cErrs, rqSubActions) <- lift $ partitionErrs id connIds' <$> (withStoreBatch c $ \db -> map (getQueueSub db) connIds')
       notifyErrs c cErrs
       logInfo $ "processNtfCmd, NSCCreate - length rqSubs = " <> tshow (length rqSubActions)
       let (ns, rs, css, cns) = partitionQueueSubActions rqSubActions
@@ -102,7 +98,7 @@ processNtfCmd c (cmd, connIds) = do
         createNewSubs rqs = do
           withTokenServer $ \ntfServer -> do
             let newSubs = map (rqToNewSub ntfServer) rqs
-            (cErrs, _) <- lift $ correlateErrs (\NtfSubscription {connId} -> connId) newSubs (withStoreBatch c (\db -> map (storeNewSub db) newSubs))
+            (cErrs, _) <- lift $ partitionErrs ntfSubConnId newSubs <$> (withStoreBatch c $ \db -> map (storeNewSub db) newSubs)
             notifyErrs c cErrs
             kickSMPWorkers rqs
           where
@@ -114,7 +110,7 @@ processNtfCmd c (cmd, connIds) = do
         resetSubs rqSubs = do
           withTokenServer $ \ntfServer -> do
             let subsToReset = map (toResetSub ntfServer) rqSubs
-            (cErrs, _) <- lift $ correlateErrs (\NtfSubscription {connId} -> connId) subsToReset (withStoreBatch' c (\db -> map (storeResetSub db) subsToReset))
+            (cErrs, _) <- lift $ partitionErrs ntfSubConnId subsToReset <$> (withStoreBatch' c $ \db -> map (storeResetSub db) subsToReset)
             notifyErrs c cErrs
             let rqs = map fst rqSubs
             kickSMPWorkers rqs
@@ -125,6 +121,7 @@ processNtfCmd c (cmd, connIds) = do
                in sub {smpServer, ntfQueueId = Nothing, ntfServer, ntfSubId = Nothing, ntfSubStatus = NASNew}
             storeResetSub :: DB.Connection -> NtfSubscription -> IO ()
             storeResetSub db sub = supervisorUpdateNtfSub db sub (NSASMP NSASmpKey)
+        ntfSubConnId NtfSubscription {connId} = connId
         partitionQueueSubActions ::
           [(RcvQueue, Maybe NtfSupervisorSub)] ->
           ( [RcvQueue], -- new subs
@@ -159,9 +156,9 @@ processNtfCmd c (cmd, connIds) = do
                         NSANtf _ -> (ns, rs, css, subNtfServer : cns)
                 reset = (ns, (rq, sub) : rs, css, cns)
     NSCSmpDelete -> do
-      (cErrs, rqs) <- lift $ correlateErrs id connIds' (withStoreBatch c (\db -> map (getQueue db) connIds'))
+      (cErrs, rqs) <- lift $ partitionErrs id connIds' <$> (withStoreBatch c $ \db -> map (getQueue db) connIds')
       logInfo $ "processNtfCmd, NSCSmpDelete - length rqs = " <> tshow (length rqs)
-      (cErrs', _) <- lift $ correlateErrs qConnId rqs (withStoreBatch' c (\db -> map (updateAction db) rqs))
+      (cErrs', _) <- lift $ partitionErrs qConnId rqs <$> (withStoreBatch' c $ \db -> map (updateAction db) rqs)
       notifyErrs c (cErrs <> cErrs')
       kickSMPWorkers rqs
       where
