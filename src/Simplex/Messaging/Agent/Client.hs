@@ -333,6 +333,7 @@ data AgentClient = AgentClient
     smpSubWorkers :: TMap SMPTransportSession (SessionVar (Async ())),
     clientId :: Int,
     agentEnv :: Env,
+    proxySessTs :: TVar UTCTime,
     smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
     xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats,
     ntfServersStats :: TMap (UserId, NtfServer) AgentNtfServerStats,
@@ -461,6 +462,7 @@ newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Env -> IO AgentClient
 newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
+  proxySessTs <- newTVarIO =<< getCurrentTime
   acThread <- newTVarIO Nothing
   active <- newTVarIO True
   subQ <- newTBQueueIO qSize
@@ -533,6 +535,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs a
         smpSubWorkers,
         clientId,
         agentEnv,
+        proxySessTs,
         smpServersStats,
         xftpServersStats,
         ntfServersStats,
@@ -657,7 +660,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
         Nothing -> Left $ BROKER (B.unpack $ strEncode srv) TIMEOUT
 
 smpConnectClient :: AgentClient -> SMPTransportSession -> TMap SMPServer ProxiedRelayVar -> SMPClientVar -> AM SMPConnectedClient
-smpConnectClient c@AgentClient {smpClients, msgQ} tSess@(_, srv, _) prs v =
+smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs} tSess@(_, srv, _) prs v =
   newProtocolClient c tSess smpClients connectClient v
     `catchAgentError` \e -> lift (resubscribeSMPSession c tSess) >> throwE e
   where
@@ -667,7 +670,8 @@ smpConnectClient c@AgentClient {smpClients, msgQ} tSess@(_, srv, _) prs v =
       g <- asks random
       env <- ask
       liftError (protocolClientError SMP $ B.unpack $ strEncode srv) $ do
-        smp <- ExceptT $ getProtocolClient g tSess cfg (Just msgQ) $ smpClientDisconnected c tSess env v' prs
+        ts <- readTVarIO proxySessTs
+        smp <- ExceptT $ getProtocolClient g tSess cfg (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
         pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
 
 smpClientDisconnected :: AgentClient -> SMPTransportSession -> Env -> SMPClientVar -> TMap SMPServer ProxiedRelayVar -> SMPClient -> IO ()
@@ -756,7 +760,7 @@ reconnectSMPClient c tSess@(_, srv, _) qs = handleNotify $ do
     notifySub connId cmd = atomically $ writeTBQueue (subQ c) ("", connId, AEvt (sAEntity @e) cmd)
 
 getNtfServerClient :: AgentClient -> NtfTransportSession -> AM NtfClient
-getNtfServerClient c@AgentClient {active, ntfClients, workerSeq} tSess@(_, srv, _) = do
+getNtfServerClient c@AgentClient {active, ntfClients, workerSeq, proxySessTs} tSess@(_, srv, _) = do
   unlessM (readTVarIO active) $ throwE INACTIVE
   ts <- liftIO getCurrentTime
   atomically (getSessVar workerSeq tSess ntfClients ts)
@@ -768,8 +772,9 @@ getNtfServerClient c@AgentClient {active, ntfClients, workerSeq} tSess@(_, srv, 
     connectClient v = do
       cfg <- lift $ getClientConfig c ntfCfg
       g <- asks random
+      ts <- readTVarIO proxySessTs
       liftError' (protocolClientError NTF $ B.unpack $ strEncode srv) $
-        getProtocolClient g tSess cfg Nothing $
+        getProtocolClient g tSess cfg Nothing ts $
           clientDisconnected v
 
     clientDisconnected :: NtfClientVar -> NtfClient -> IO ()
@@ -779,7 +784,7 @@ getNtfServerClient c@AgentClient {active, ntfClients, workerSeq} tSess@(_, srv, 
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
 getXFTPServerClient :: AgentClient -> XFTPTransportSession -> AM XFTPClient
-getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq} tSess@(_, srv, _) = do
+getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq, proxySessTs} tSess@(_, srv, _) = do
   unlessM (readTVarIO active) $ throwE INACTIVE
   ts <- liftIO getCurrentTime
   atomically (getSessVar workerSeq tSess xftpClients ts)
@@ -791,8 +796,9 @@ getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq} tSess@(_, srv
     connectClient v = do
       cfg <- asks $ xftpCfg . config
       xftpNetworkConfig <- getNetworkConfig c
+      ts <- readTVarIO proxySessTs
       liftError' (protocolClientError XFTP $ B.unpack $ strEncode srv) $
-        X.getXFTPClient tSess cfg {xftpNetworkConfig} $
+        X.getXFTPClient tSess cfg {xftpNetworkConfig} ts $
           clientDisconnected v
 
     clientDisconnected :: XFTPClientVar -> XFTPClient -> IO ()
@@ -1199,7 +1205,8 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
   g <- asks random
   liftIO $ do
     let tSess = (userId, srv, Nothing)
-    getProtocolClient g tSess cfg Nothing (\_ -> pure ()) >>= \case
+    ts <- readTVarIO $ proxySessTs c
+    getProtocolClient g tSess cfg Nothing ts (\_ -> pure ()) >>= \case
       Right smp -> do
         rKeys@(_, rpKey) <- atomically $ C.generateAuthKeyPair ra g
         (sKey, spKey) <- atomically $ C.generateAuthKeyPair sa g
@@ -1229,7 +1236,8 @@ runXFTPServerTest c userId (ProtoServerWithAuth srv auth) = do
   rcvPath <- getTempFilePath workDir
   liftIO $ do
     let tSess = (userId, srv, Nothing)
-    X.getXFTPClient tSess cfg {xftpNetworkConfig} (\_ -> pure ()) >>= \case
+    ts <- readTVarIO $ proxySessTs c
+    X.getXFTPClient tSess cfg {xftpNetworkConfig} ts (\_ -> pure ()) >>= \case
       Right xftp -> withTestChunk filePath $ do
         (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
         (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -1273,7 +1281,8 @@ runNTFServerTest c userId (ProtoServerWithAuth srv _) = do
   g <- asks random
   liftIO $ do
     let tSess = (userId, srv, Nothing)
-    getProtocolClient g tSess cfg Nothing (\_ -> pure ()) >>= \case
+    ts <- readTVarIO $ proxySessTs c
+    getProtocolClient g tSess cfg Nothing ts (\_ -> pure ()) >>= \case
       Right ntf -> do
         (nKey, npKey) <- atomically $ C.generateAuthKeyPair a g
         (dhKey, _) <- atomically $ C.generateKeyPair g

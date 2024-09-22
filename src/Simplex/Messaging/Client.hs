@@ -82,7 +82,6 @@ module Simplex.Messaging.Client
     transportClientConfig,
     clientSocksCredentials,
     chooseTransportHost,
-    proxyUsername,
     temporaryClientError,
     smpProxyError,
     textToHostMode,
@@ -118,6 +117,7 @@ import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Base64 as B64
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (find)
@@ -299,7 +299,7 @@ data NetworkConfig = NetworkConfig
   }
   deriving (Eq, Show)
 
-data TransportSessionMode = TSMUser | TSMEntity
+data TransportSessionMode = TSMUser | TSMSession | TSMServer | TSMEntity
   deriving (Eq, Show)
 
 -- SMP proxy mode for sending messages
@@ -349,7 +349,7 @@ defaultNetworkConfig =
       socksMode = SMAlways,
       hostMode = HMOnionViaSocks,
       requiredHostMode = False,
-      sessionMode = TSMUser,
+      sessionMode = TSMSession,
       smpProxyMode = SPMNever,
       smpProxyFallback = SPFAllow,
       tcpConnectTimeout = defaultTcpConnectTimeout,
@@ -371,16 +371,22 @@ transportClientConfig NetworkConfig {socksProxy, socksMode, tcpConnectTimeout, t
     useSocksProxy SMOnion = case host of
       THOnionHost _ -> socksProxy'
       _ -> Nothing
-{-# INLINE transportClientConfig #-}
 
-clientSocksCredentials :: NetworkConfig -> ByteString -> Maybe SocksCredentials
-clientSocksCredentials NetworkConfig {socksProxy} sessionUsername = case socksProxy of
+clientSocksCredentials :: ProtocolTypeI (ProtoType msg) => NetworkConfig -> UTCTime -> TransportSession msg -> Maybe SocksCredentials
+clientSocksCredentials NetworkConfig {socksProxy, sessionMode} proxySessTs (userId, srv, entityId_) = case socksProxy of
   Just (SocksProxyWithAuth auth _) -> case auth of
     SocksAuthUsername {username, password} -> Just $ SocksCredentials username password
     SocksAuthNull -> Nothing
     SocksIsolateByAuth -> Just $ SocksCredentials sessionUsername ""
   Nothing -> Nothing
-{-# INLINE clientSocksCredentials #-}
+  where
+    sessionUsername =
+      B64.encode $ C.sha256Hash $
+        bshow userId <> case sessionMode of
+          TSMUser -> ""
+          TSMSession -> ":" <> bshow proxySessTs
+          TSMServer -> ":" <> bshow proxySessTs <> "@" <> strEncode srv
+          TSMEntity -> ":" <> bshow proxySessTs <> "@" <> strEncode srv <> maybe "" ("/" <>) entityId_
 
 -- | protocol client configuration.
 data ProtocolClientConfig v = ProtocolClientConfig
@@ -470,8 +476,8 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe ByteString)
 --
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
-getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret} msgQ disconnected = do
+getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
+getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret} msgQ proxySessTs disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
@@ -510,7 +516,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     runClient (port', ATransport t) useHost c = do
       cVar <- newEmptyTMVarIO
       let tcConfig = (transportClientConfig networkConfig useHost) {alpn = clientALPN}
-          socksCreds = clientSocksCredentials networkConfig $ proxyUsername transportSession
+          socksCreds = clientSocksCredentials networkConfig proxySessTs transportSession
       tId <-
         runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar)
           `forkFinally` \_ -> void (atomically . tryPutTMVar cVar $ Left PCENetworkError)
@@ -617,10 +623,6 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
 
 unexpectedResponse :: Show r => r -> ProtocolClientError err
 unexpectedResponse = PCEUnexpectedResponse . B.pack . take 32 . show
-
-proxyUsername :: TransportSession msg -> ByteString
-proxyUsername (userId, _, entityId_) = C.sha256Hash $ bshow userId <> maybe "" (":" <>) entityId_
-{-# INLINE proxyUsername #-}
 
 -- | Disconnects client from the server and terminates client threads.
 closeProtocolClient :: ProtocolClient v err msg -> IO ()
