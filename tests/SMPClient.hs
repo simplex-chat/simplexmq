@@ -121,6 +121,7 @@ cfg =
             privateKeyFile = "tests/fixtures/server.key",
             certificateFile = "tests/fixtures/server.crt"
           },
+      httpCredentials = Nothing,
       smpServerVRange = supportedServerSMPRelayVRange,
       transportConfig = defaultTransportServerConfig,
       controlPort = Nothing,
@@ -166,7 +167,7 @@ withSmpServerStoreLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just tes
 withSmpServerConfigOn :: HasCallStack => ATransport -> ServerConfig -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerConfigOn t cfg' port' =
   serverBracket
-    (\started -> runSMPServerBlocking started cfg' {transports = [(port', t)]})
+    (\started -> runSMPServerBlocking started cfg' {transports = [(port', t, False)]} Nothing)
     (threadDelay 10000)
 
 withSmpServerThreadOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a

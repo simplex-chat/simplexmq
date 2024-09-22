@@ -123,9 +123,10 @@ executables:
     dependencies:
       - file-embed
       - simplexmq
+      - wai
       - wai-app-static
-      - warp
-      - warp-tls
+      - warp ==3.3.30 # the last one before http2-5.0
+      - warp-tls ==3.4.7 # extra internals exposed
     ghc-options:
       - -threaded
       - -rtsopts

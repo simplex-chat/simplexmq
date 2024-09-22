@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -41,13 +42,13 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
-import Simplex.Messaging.Transport.Server (ServerCredentials, SocketState, TransportServerConfig, loadFingerprint, loadServerCredential, newSocketState)
+import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, SocketState, TransportServerConfig, loadFingerprint, loadServerCredential, newSocketState)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
 
 data ServerConfig = ServerConfig
-  { transports :: [(ServiceName, ATransport)],
+  { transports :: [(ServiceName, ATransport, AddHTTP)],
     smpHandshakeTimeout :: Int,
     tbqSize :: Natural,
     msgQueueQuota :: Int,
@@ -79,6 +80,7 @@ data ServerConfig = ServerConfig
     -- | interval between sending pending END events to unsubscribed clients, seconds
     pendingENDInterval :: Int,
     smpCredentials :: ServerCredentials,
+    httpCredentials :: Maybe ServerCredentials,
     -- | SMP client-server protocol version range
     smpServerVRange :: VersionRangeSMP,
     -- | TCP transport config
@@ -123,6 +125,7 @@ data Env = Env
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerCreds :: T.Credential,
+    httpServerCreds :: Maybe T.Credential,
     serverStats :: ServerStats,
     sockets :: SocketState,
     clientSeq :: TVar ClientId,
@@ -221,7 +224,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {smpCredentials, storeLogFile, smpAgentCfg, information, messageExpiration} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAgentCfg, information, messageExpiration} = do
   server <- newServer
   queueStore <- newQueueStore
   msgStore <- newMsgStore
@@ -231,6 +234,7 @@ newEnv config@ServerConfig {smpCredentials, storeLogFile, smpAgentCfg, informati
       logInfo $ "restoring queues from file " <> T.pack f
       restoreQueues queueStore f
   tlsServerCreds <- loadServerCredential smpCredentials
+  httpServerCreds <- mapM loadServerCredential httpCredentials
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
@@ -238,7 +242,7 @@ newEnv config@ServerConfig {smpCredentials, storeLogFile, smpAgentCfg, informati
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
-  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
+  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do

@@ -29,7 +29,7 @@ import Options.Applicative
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
 import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
-import Simplex.Messaging.Transport.Server (loadFileFingerprint)
+import Simplex.Messaging.Transport.Server (AddHTTP, loadFileFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (eitherToMaybe, whenM)
 import System.Directory (doesDirectoryExist, listDirectory, removeDirectoryRecursive, removePathForcibly)
@@ -275,7 +275,7 @@ checkSavedFingerprint cfgPath x509cfg = do
   where
     c = combine cfgPath . ($ x509cfg)
 
-iniTransports :: Ini -> [(String, ATransport)]
+iniTransports :: Ini -> [(String, ATransport, AddHTTP)]
 iniTransports ini =
   let smpPorts = ports $ strictIni "TRANSPORT" "port" ini
       ws = strictIni "TRANSPORT" "websockets" ini
@@ -283,16 +283,16 @@ iniTransports ini =
         | ws == "off" = []
         | ws == "on" = ["80"]
         | otherwise = ports ws \\ smpPorts
-   in map (,transport @TLS) smpPorts <> map (,transport @WS) wsPorts
+   in map (,transport @TLS,False) smpPorts <> map (,transport @WS,False) wsPorts
   where
     ports = map T.unpack . T.splitOn ","
 
-printServerConfig :: [(ServiceName, ATransport)] -> Maybe FilePath -> IO ()
+printServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> Maybe FilePath -> IO ()
 printServerConfig transports logFile = do
   putStrLn $ case logFile of
     Just f -> "Store log: " <> f
     _ -> "Store log disabled."
-  forM_ transports $ \(p, ATransport t) ->
+  forM_ transports $ \(p, ATransport t, _addHTTP) ->
     putStrLn $ "Listening on port " <> p <> " (" <> transportName t <> ")..."
 
 deleteDirIfExists :: FilePath -> IO ()
