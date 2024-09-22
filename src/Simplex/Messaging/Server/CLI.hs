@@ -6,6 +6,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -275,7 +276,7 @@ checkSavedFingerprint cfgPath x509cfg = do
   where
     c = combine cfgPath . ($ x509cfg)
 
-iniTransports :: Ini -> [(String, ATransport, AddHTTP)]
+iniTransports :: Ini -> [(ServiceName, ATransport, AddHTTP)]
 iniTransports ini =
   let smpPorts = ports $ strictIni "TRANSPORT" "port" ini
       ws = strictIni "TRANSPORT" "websockets" ini
@@ -283,8 +284,11 @@ iniTransports ini =
         | ws == "off" = []
         | ws == "on" = ["80"]
         | otherwise = ports ws \\ smpPorts
-   in map (,transport @TLS,False) smpPorts <> map (,transport @WS,False) wsPorts
+   in ts (transport @TLS) smpPorts <> ts (transport @WS) wsPorts
   where
+    ts :: ATransport -> [ServiceName] -> [(ServiceName, ATransport, AddHTTP)]
+    ts t = map (\port -> (port, t, webPort == Just port))
+    webPort = read . T.unpack <$> eitherToMaybe (lookupValue "WEB" "https" ini)
     ports = map T.unpack . T.splitOn ","
 
 printServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> Maybe FilePath -> IO ()

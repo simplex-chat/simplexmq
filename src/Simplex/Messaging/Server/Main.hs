@@ -223,7 +223,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       fp <- checkSavedFingerprint cfgPath defaultX509Config
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
-          cfg@ServerConfig {information, transports, storeLogFile, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
+          cfg@ServerConfig {information, storeLogFile, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
           sourceCode' = (\ServerPublicInfo {sourceCode} -> sourceCode) <$> information
           srv = ProtoServerWithAuth (SMPServer [THDomainName host] (if port == "5223" then "" else port) (C.KeyHash fp)) newQueueBasicAuth
       printServiceInfo serverVersion srv
@@ -254,7 +254,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 basicAuthEnabled = isJust newQueueBasicAuth
               }
       case webStaticPath' of
-        Just path | False -> do -- TODO sharedHttpsPort
+        Just path | sharedHTTP -> do -- TODO sharedHttpsPort
           runWebServer path Nothing ServerInformation {config, information}
           attachStaticFiles path $ \attachHTTP -> runSMPServer cfg $ Just attachHTTP
         Just path -> do
@@ -267,9 +267,11 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
+        transports = iniTransports ini
+        sharedHTTP = any (\(_, _, addHTTP) -> addHTTP) transports
         serverConfig =
           ServerConfig
-            { transports = iniTransports ini,
+            { transports,
               smpHandshakeTimeout = 120000000,
               tbqSize = 64,
               msgQueueQuota = 128,
@@ -281,7 +283,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                     privateKeyFile = c serverKeyFile,
                     certificateFile = c serverCrtFile
                   },
-              httpCredentials,
+              httpCredentials = (\WebHttpsParams {key, cert} -> ServerCredentials {caCertificateFile = Nothing, privateKeyFile = key, certificateFile = cert}) <$> webHttpsParams',
               storeLogFile = enableStoreLog $> storeLogFilePath,
               storeMsgsFile =
                 let messagesPath = combine logPath "smp-server-messages.log"
@@ -340,7 +342,6 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             }
         textToOwnServers :: Text -> [ByteString]
         textToOwnServers = map encodeUtf8 . T.words
-        httpCredentials = (\WebHttpsParams {key, cert} -> ServerCredentials {caCertificateFile = Nothing, privateKeyFile = key, certificateFile = cert}) <$> webHttpsParams'
         runWebServer webStaticPath webHttpsParams si = do
           let onionHost =
                 either (const Nothing) (find isOnion) $
