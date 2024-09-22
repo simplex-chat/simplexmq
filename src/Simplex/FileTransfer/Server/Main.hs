@@ -28,7 +28,7 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
-import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (safeDecodeUtf8, tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
@@ -173,9 +173,12 @@ xftpServerCLI cfgPath logPath = do
                     { ttl = readStrictIni "INACTIVE_CLIENTS" "ttl" ini,
                       checkInterval = readStrictIni "INACTIVE_CLIENTS" "check_interval" ini
                     },
-              caCertificateFile = c caCrtFile,
-              privateKeyFile = c serverKeyFile,
-              certificateFile = c serverCrtFile,
+              xftpCredentials =
+                ServerCredentials
+                  { caCertificateFile = Just $ c caCrtFile,
+                    privateKeyFile = c serverKeyFile,
+                    certificateFile = c serverCrtFile
+                  },
               xftpServerVRange = supportedFileServerVRange,
               logStatsInterval = logStats $> 86400, -- seconds
               logStatsStartTime = 0, -- seconds from 00:00 UTC

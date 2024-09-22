@@ -15,7 +15,7 @@ import Numeric.Natural (Natural)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ALPN, SessionId, TLS, closeConnection, tlsALPN, tlsUniq)
 import Simplex.Messaging.Transport.HTTP2
-import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadSupportedTLSServerParams, runTransportServer)
+import Simplex.Messaging.Transport.Server (ServerCredentials, TransportServerConfig (..), loadSupportedTLSServerParams, runTransportServer)
 import Simplex.Messaging.Util (threadDelay')
 import UnliftIO (finally)
 import UnliftIO.Concurrent (forkIO, killThread)
@@ -28,9 +28,7 @@ data HTTP2ServerConfig = HTTP2ServerConfig
     bufferSize :: BufferSize,
     bodyHeadSize :: Int,
     serverSupported :: T.Supported,
-    caCertificateFile :: FilePath,
-    privateKeyFile :: FilePath,
-    certificateFile :: FilePath,
+    https2Credentials :: ServerCredentials,
     transportConfig :: TransportServerConfig
   }
   deriving (Show)
@@ -50,8 +48,8 @@ data HTTP2Server = HTTP2Server
 
 -- This server is for testing only, it processes all requests in a single queue.
 getHTTP2Server :: HTTP2ServerConfig -> IO HTTP2Server
-getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, serverSupported, caCertificateFile, certificateFile, privateKeyFile, transportConfig} = do
-  tlsServerParams <- loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
+getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, serverSupported, https2Credentials, transportConfig} = do
+  tlsServerParams <- loadSupportedTLSServerParams serverSupported https2Credentials (alpn transportConfig)
   started <- newEmptyTMVarIO
   reqQ <- newTBQueueIO qSize
   action <- async $

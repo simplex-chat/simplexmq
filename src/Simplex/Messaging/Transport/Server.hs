@@ -6,6 +6,7 @@
 
 module Simplex.Messaging.Transport.Server
   ( TransportServerConfig (..),
+    ServerCredentials (..),
     defaultTransportServerConfig,
     runTransportServerState,
     SocketState,
@@ -18,6 +19,7 @@ module Simplex.Messaging.Transport.Server
     loadSupportedTLSServerParams,
     loadTLSServerParams,
     loadFingerprint,
+    loadFileFingerprint,
     smpServerHandshake,
     tlsServerCredentials,
   )
@@ -31,7 +33,7 @@ import Data.Default (def)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 import Data.List (find)
-import Data.Maybe (fromJust, fromMaybe)
+import Data.Maybe (fromJust, fromMaybe, maybeToList)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
 import qualified Data.X509.Validation as XV
@@ -56,6 +58,13 @@ data TransportServerConfig = TransportServerConfig
     alpn :: Maybe [ALPN]
   }
   deriving (Eq, Show)
+
+data ServerCredentials = ServerCredentials
+  { caCertificateFile :: Maybe FilePath, -- CA certificate private key is not needed for initialization
+    privateKeyFile :: FilePath,
+    certificateFile :: FilePath
+  }
+  deriving (Show)
 
 defaultTransportServerConfig :: TransportServerConfig
 defaultTransportServerConfig =
@@ -176,17 +185,17 @@ startTCPServer started host port = withSocketsDo $ resolve >>= open >>= setStart
       pure sock
     setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
-loadTLSServerParams :: FilePath -> FilePath -> FilePath -> Maybe [ALPN] -> IO T.ServerParams
+loadTLSServerParams :: ServerCredentials -> Maybe [ALPN] -> IO T.ServerParams
 loadTLSServerParams = loadSupportedTLSServerParams supportedParameters
 
-loadSupportedTLSServerParams :: T.Supported -> FilePath -> FilePath -> FilePath -> Maybe [ALPN] -> IO T.ServerParams
-loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile privateKeyFile alpn_ = do
+loadSupportedTLSServerParams :: T.Supported -> ServerCredentials -> Maybe [ALPN] -> IO T.ServerParams
+loadSupportedTLSServerParams serverSupported ServerCredentials {caCertificateFile, certificateFile, privateKeyFile} alpn_ = do
   tlsServerParams <- fromCredential <$> loadServerCredential
   pure tlsServerParams {T.serverHooks = maybe def alpnHooks alpn_}
   where
     loadServerCredential :: IO T.Credential
     loadServerCredential =
-      T.credentialLoadX509Chain certificateFile [caCertificateFile] privateKeyFile >>= \case
+      T.credentialLoadX509Chain certificateFile (maybeToList caCertificateFile) privateKeyFile >>= \case
         Right credential -> pure credential
         Left _ -> putStrLn "invalid credential" >> exitFailure
     fromCredential :: T.Credential -> T.ServerParams
@@ -199,7 +208,12 @@ loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile p
         }
     alpnHooks supported = def {T.onALPNClientSuggest = Just $ pure . fromMaybe "" . find (`elem` supported)}
 
-loadFingerprint :: FilePath -> IO Fingerprint
-loadFingerprint certificateFile = do
+loadFingerprint :: ServerCredentials -> IO Fingerprint
+loadFingerprint ServerCredentials {caCertificateFile} = case caCertificateFile of
+  Just certificateFile -> loadFileFingerprint certificateFile
+  Nothing -> error "CA file must be used in protocol credentials"
+
+loadFileFingerprint :: FilePath -> IO Fingerprint
+loadFileFingerprint certificateFile = do
   (cert : _) <- SX.readSignedObject certificateFile
   pure $ XV.getFingerprint (cert :: X.SignedExact X.Certificate) X.HashSHA256

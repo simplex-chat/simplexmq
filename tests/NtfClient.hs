@@ -96,10 +96,12 @@ ntfServerCfg =
       subsBatchSize = 900,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       storeLogFile = Nothing,
-      -- CA certificate private key is not needed for initialization
-      caCertificateFile = "tests/fixtures/ca.crt",
-      privateKeyFile = "tests/fixtures/server.key",
-      certificateFile = "tests/fixtures/server.crt",
+      ntfCredentials =
+        ServerCredentials
+          { caCertificateFile = Just "tests/fixtures/ca.crt",
+            privateKeyFile = "tests/fixtures/server.key",
+            certificateFile = "tests/fixtures/server.crt"
+          },
       -- stats config
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
@@ -185,9 +187,12 @@ apnsMockServerConfig =
       bufferSize = 16384,
       bodyHeadSize = 16384,
       serverSupported = http2TLSParams,
-      caCertificateFile = "tests/fixtures/ca.crt",
-      privateKeyFile = "tests/fixtures/server.key",
-      certificateFile = "tests/fixtures/server.crt",
+      https2Credentials =
+        ServerCredentials
+          { caCertificateFile = Just "tests/fixtures/ca.crt",
+            privateKeyFile = "tests/fixtures/server.key",
+            certificateFile = "tests/fixtures/server.crt"
+          },
       transportConfig = defaultTransportServerConfig
     }
 

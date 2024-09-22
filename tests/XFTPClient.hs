@@ -116,9 +116,12 @@ testXFTPServerConfig_ alpn =
       fileExpiration = Just defaultFileExpiration,
       fileTimeout = 10000000,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
-      caCertificateFile = "tests/fixtures/ca.crt",
-      privateKeyFile = "tests/fixtures/server.key",
-      certificateFile = "tests/fixtures/server.crt",
+      xftpCredentials =
+        ServerCredentials
+          { caCertificateFile = Just "tests/fixtures/ca.crt",
+            privateKeyFile = "tests/fixtures/server.key",
+            certificateFile = "tests/fixtures/server.crt"
+          },
       xftpServerVRange = supportedFileServerVRange,
       logStatsInterval = Nothing,
       logStatsStartTime = 0,

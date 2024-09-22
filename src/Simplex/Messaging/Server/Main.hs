@@ -42,7 +42,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Transport (batchCmdsSMPVersion, sendingProxySMPVersion, simplexMQVersion, supportedSMPHandshakes, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
-import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
@@ -260,9 +260,12 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               msgQueueQuota = 128,
               queueIdBytes = 24,
               msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
-              caCertificateFile = c caCrtFile,
-              privateKeyFile = c serverKeyFile,
-              certificateFile = c serverCrtFile,
+              smpCredentials =
+                ServerCredentials
+                  { caCertificateFile = Just $ c caCrtFile,
+                    privateKeyFile = c serverKeyFile,
+                    certificateFile = c serverCrtFile
+                  },
               storeLogFile = enableStoreLog $> storeLogFilePath,
               storeMsgsFile =
                 let messagesPath = combine logPath "smp-server-messages.log"

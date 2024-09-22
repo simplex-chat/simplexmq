@@ -41,7 +41,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
-import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, alpn, loadFingerprint, loadTLSServerParams, newSocketState)
+import Simplex.Messaging.Transport.Server (ServerCredentials, SocketState, TransportServerConfig, alpn, loadFingerprint, loadTLSServerParams, newSocketState)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -78,10 +78,7 @@ data ServerConfig = ServerConfig
     serverStatsBackupFile :: Maybe FilePath,
     -- | interval between sending pending END events to unsubscribed clients, seconds
     pendingENDInterval :: Int,
-    -- | CA certificate private key is not needed for initialization
-    caCertificateFile :: FilePath,
-    privateKeyFile :: FilePath,
-    certificateFile :: FilePath,
+    smpCredentials :: ServerCredentials,
     -- | SMP client-server protocol version range
     smpServerVRange :: VersionRangeSMP,
     -- | TCP transport config
@@ -224,7 +221,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, smpAgentCfg, transportConfig, information, messageExpiration} = do
+newEnv config@ServerConfig {smpCredentials, storeLogFile, smpAgentCfg, transportConfig, information, messageExpiration} = do
   server <- newServer
   queueStore <- newQueueStore
   msgStore <- newMsgStore
@@ -233,8 +230,8 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
     forM storeLogFile $ \f -> do
       logInfo $ "restoring queues from file " <> T.pack f
       restoreQueues queueStore f
-  tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
-  Fingerprint fp <- loadFingerprint caCertificateFile
+  tlsServerParams <- loadTLSServerParams smpCredentials (alpn transportConfig)
+  Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
   sockets <- newSocketState

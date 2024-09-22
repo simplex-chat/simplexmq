@@ -28,7 +28,7 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
-import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
@@ -156,9 +156,12 @@ ntfServerCLI cfgPath logPath =
                       checkInterval = readStrictIni "INACTIVE_CLIENTS" "check_interval" ini
                     },
               storeLogFile = enableStoreLog $> storeLogFilePath,
-              caCertificateFile = c caCrtFile,
-              privateKeyFile = c serverKeyFile,
-              certificateFile = c serverCrtFile,
+              ntfCredentials =
+                ServerCredentials
+                  { caCertificateFile = Just $ c caCrtFile,
+                    privateKeyFile = c serverKeyFile,
+                    certificateFile = c serverCrtFile
+                  },
               logStatsInterval = logStats $> 86400, -- seconds
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "ntf-server-stats.daily.log",
