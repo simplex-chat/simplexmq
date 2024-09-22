@@ -1,14 +1,11 @@
 # Sharing protocol ports with HTTPS
 
-As SimpleX Chat popularity grows, more network ops want to block its protocols.
-Running on a well-known dedicated port is giving an opportunity to cheaply detect and block such traffic.
-And many systems block egress traffic by default, allowing only a tiny subset of ports.
-Since all of the SXC protocols are running over TLS, it is only natural to use port 443 and provide an HTTPS facade for browsers (and probes).
+Some networks block all ports other than web ports, including port 5223 used for SMP protocol by default. Running SMP servers on a common web port 443 would allow them to work on more networks. The servers would need to provide an HTTPS page for browsers (and probes).
 
 ## Problem
 
-Browsers and tools rely on system CA bundles instead of OOB certificate pinning.
-The crypto parameters used by HTTPS are a bit different from what the protocols use.
+Browsers and tools rely on system CA bundles instead of certificate pinning.
+The crypto parameters used by HTTPS are different from what the protocols use.
 Public certificate providers like LetsEncrypt can only sign specific types of keys and Ed25519 isn't one of them.
 
 This means a server should distinguish browser and protocol clients and adjust its behavior to match.
@@ -20,14 +17,14 @@ This means a server should distinguish browser and protocol clients and adjust i
 Since LE certificates are only handed out to domain names, TLS client will be sending the SNI.
 However client transports are constructed over connected sockets and the SNI wouldn't be present unless explicitly requested.
 When a client sends SNI, then it's a browser and a web credentials should be used.
-Otherwise it's a protocol client to be welcomed with the self-signed ca, cert and key.
+Otherwise it's a protocol client to be offered the self-signed ca, cert and key.
 
 When a transport colocated with a HTTPS, its ALPN list should be extended with `h2 http/1.1`.
 The browsers will send it, and it should be checked before running transport client.
-If HTTP ALPN is detected, then the client connection is served with HTTP `Application` instead (e.g. the same "server information" pages or a dummy plug).
+If HTTP ALPN is detected, then the client connection is served with HTTP `Application` instead (the same "server information" page).
 
 If some client connects to server IP, doesn't send SNI and doesn't send ALPN, it will look like a pre-handshake client.
-In that case a server will reveal itself by sending its handshake first.
+In that case a server will send its handshake first.
 This can be mitigated by delaying its handshake and letting the probe to issue its HTTP request.
 
 ## Implementation plan
