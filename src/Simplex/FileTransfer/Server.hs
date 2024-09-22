@@ -60,12 +60,12 @@ import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, getRoundedSystemT
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SessionId, THandleAuth (..), THandleParams (..), TransportPeer (..), defaultSupportedParams)
+import Simplex.Messaging.Transport (ALPN, SessionId, THandleAuth (..), THandleParams (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server
-import Simplex.Messaging.Transport.Server (alpn, runLocalTCPServer)
+import Simplex.Messaging.Transport.Server (runLocalTCPServer)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Exit (exitFailure)
@@ -91,17 +91,17 @@ data XFTPTransportRequest = XFTPTransportRequest
 runXFTPServer :: XFTPServerConfig -> IO ()
 runXFTPServer cfg = do
   started <- newEmptyTMVarIO
-  runXFTPServerBlocking started cfg
+  runXFTPServerBlocking started cfg $ Just supportedXFTPhandshakes
 
-runXFTPServerBlocking :: TMVar Bool -> XFTPServerConfig -> IO ()
-runXFTPServerBlocking started cfg = newXFTPServerEnv cfg >>= runReaderT (xftpServer cfg started)
+runXFTPServerBlocking :: TMVar Bool -> XFTPServerConfig -> Maybe [ALPN] -> IO ()
+runXFTPServerBlocking started cfg alpn_ = newXFTPServerEnv cfg >>= runReaderT (xftpServer cfg started alpn_)
 
 data Handshake
   = HandshakeSent C.PrivateKeyX25519
   | HandshakeAccepted (THandleParams XFTPVersion 'TServer)
 
-xftpServer :: XFTPServerConfig -> TMVar Bool -> M ()
-xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange} started = do
+xftpServer :: XFTPServerConfig -> TMVar Bool -> Maybe [ALPN] -> M ()
+xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange} started alpn_ = do
   mapM_ (expireServerFiles Nothing) fileExpiration
   restoreServerStats
   raceAny_ (runServer : expireFilesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg) `finally` stopServer
@@ -115,7 +115,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       env <- ask
       sessions <- liftIO TM.emptyIO
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
-      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize defaultSupportedParams srvCreds (alpn transportConfig) transportConfig inactiveClientExpiration cleanup $ \sessionId sessionALPN r sendResponse -> do
+      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize defaultSupportedParams srvCreds alpn_ transportConfig inactiveClientExpiration cleanup $ \sessionId sessionALPN r sendResponse -> do
         reqBody <- getHTTP2Body r xftpBlockSize
         let v = VersionXFTP 1
             thServerVRange = versionToRange v

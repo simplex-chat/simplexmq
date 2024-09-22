@@ -47,13 +47,13 @@ data HTTP2Server = HTTP2Server
   }
 
 -- This server is for testing only, it processes all requests in a single queue.
-getHTTP2Server :: HTTP2ServerConfig -> IO HTTP2Server
-getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, serverSupported, https2Credentials, transportConfig} = do
+getHTTP2Server :: HTTP2ServerConfig -> Maybe [ALPN] -> IO HTTP2Server
+getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, serverSupported, https2Credentials, transportConfig} alpn_ = do
   srvCreds <- loadServerCredential https2Credentials
   started <- newEmptyTMVarIO
   reqQ <- newTBQueueIO qSize
   action <- async $
-    runHTTP2Server started http2Port bufferSize serverSupported srvCreds (alpn transportConfig) transportConfig Nothing (const $ pure ()) $ \sessionId sessionALPN r sendResponse -> do
+    runHTTP2Server started http2Port bufferSize serverSupported srvCreds alpn_ transportConfig Nothing (const $ pure ()) $ \sessionId sessionALPN r sendResponse -> do
       reqBody <- getHTTP2Body r bodyHeadSize
       atomically $ writeTBQueue reqQ HTTP2Request {sessionId, sessionALPN, request = r, reqBody, sendResponse}
   void . atomically $ takeTMVar started

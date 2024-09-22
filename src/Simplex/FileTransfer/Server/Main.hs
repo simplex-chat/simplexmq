@@ -19,7 +19,7 @@ import Options.Applicative
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration, supportedXFTPhandshakes)
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration)
 import Simplex.FileTransfer.Transport (supportedFileServerVRange)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -186,8 +186,7 @@ xftpServerCLI cfgPath logPath = do
               serverStatsBackupFile = logStats $> combine logPath "file-server-stats.log",
               transportConfig =
                 defaultTransportServerConfig
-                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini,
-                    alpn = Just supportedXFTPhandshakes
+                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
                   },
               responseDelay = 0
             }

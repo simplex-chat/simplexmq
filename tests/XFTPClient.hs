@@ -52,9 +52,12 @@ withXFTPServerStoreLogOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -
 withXFTPServerStoreLogOn = withXFTPServerCfg testXFTPServerConfig {storeLogFile = Just testXFTPLogFile, serverStatsBackupFile = Just testXFTPStatsBackupFile}
 
 withXFTPServerCfg :: HasCallStack => XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
-withXFTPServerCfg cfg =
+withXFTPServerCfg cfg = withXFTPServerCfgALPN cfg $ Just supportedXFTPhandshakes
+
+withXFTPServerCfgALPN :: HasCallStack => XFTPServerConfig -> Maybe [ALPN] -> (HasCallStack => ThreadId -> IO a) -> IO a
+withXFTPServerCfgALPN cfg alpn_ =
   serverBracket
-    (`runXFTPServerBlocking` cfg)
+    (\started -> runXFTPServerBlocking started cfg alpn_)
     (threadDelay 10000)
 
 withXFTPServerThreadOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
@@ -97,10 +100,7 @@ testXFTPStatsBackupFile :: FilePath
 testXFTPStatsBackupFile = "tests/tmp/xftp-server-stats.log"
 
 testXFTPServerConfig :: XFTPServerConfig
-testXFTPServerConfig = testXFTPServerConfig_ (Just supportedXFTPhandshakes)
-
-testXFTPServerConfig_ :: Maybe [ALPN] -> XFTPServerConfig
-testXFTPServerConfig_ alpn =
+testXFTPServerConfig =
   XFTPServerConfig
     { xftpPort = xftpTestPort,
       controlPort = Nothing,
@@ -127,7 +127,7 @@ testXFTPServerConfig_ alpn =
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/tmp/xftp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
-      transportConfig = defaultTransportServerConfig {alpn},
+      transportConfig = defaultTransportServerConfig,
       responseDelay = 0
     }
 

@@ -54,8 +54,7 @@ import UnliftIO.STM
 data TransportServerConfig = TransportServerConfig
   { logTLSErrors :: Bool,
     tlsSetupTimeout :: Int,
-    transportTimeout :: Int,
-    alpn :: Maybe [ALPN]
+    transportTimeout :: Int
   }
   deriving (Eq, Show)
 
@@ -71,8 +70,7 @@ defaultTransportServerConfig =
   TransportServerConfig
     { logTLSErrors = True,
       tlsSetupTimeout = 60000000,
-      transportTimeout = 40000000,
-      alpn = Nothing
+      transportTimeout = 40000000
     }
 
 serverTransportConfig :: TransportServerConfig -> TransportConfig

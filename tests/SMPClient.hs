@@ -27,7 +27,6 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import qualified Simplex.Messaging.Transport.Client as Client
 import Simplex.Messaging.Transport.Server
-import qualified Simplex.Messaging.Transport.Server as Server
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.Environment (lookupEnv)
@@ -123,7 +122,7 @@ cfg =
             certificateFile = "tests/fixtures/server.crt"
           },
       smpServerVRange = supportedServerSMPRelayVRange,
-      transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedSMPHandshakes},
+      transportConfig = defaultTransportServerConfig,
       controlPort = Nothing,
       smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1}, -- seconds
       allowSMPProxy = False,

@@ -45,7 +45,6 @@ import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2TLSParams)
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Transport.Server
-import qualified Simplex.Messaging.Transport.Server as Server
 import Test.Hspec
 import UnliftIO.Async
 import UnliftIO.Concurrent
@@ -108,7 +107,7 @@ ntfServerCfg =
       serverStatsLogFile = "tests/ntf-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
       ntfServerVRange = supportedServerNTFVRange,
-      transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedNTFHandshakes}
+      transportConfig = defaultTransportServerConfig
     }
 
 ntfServerCfgVPrev :: NtfServerConfig
@@ -224,7 +223,7 @@ deriving instance ToJSON APNSErrorResponse
 
 getAPNSMockServer :: HTTP2ServerConfig -> IO APNSMockServer
 getAPNSMockServer config@HTTP2ServerConfig {qSize} = do
-  http2Server <- getHTTP2Server config
+  http2Server <- getHTTP2Server config Nothing
   apnsQ <- newTBQueueIO qSize
   action <- async $ runAPNSMockServer apnsQ http2Server
   pure APNSMockServer {action, apnsQ, http2Server}
