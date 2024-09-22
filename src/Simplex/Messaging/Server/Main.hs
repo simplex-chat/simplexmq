@@ -222,9 +222,10 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
+          port = T.unpack $ strictIni "TRANSPORT" "port" ini
           cfg@ServerConfig {information, transports, storeLogFile, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
           sourceCode' = (\ServerPublicInfo {sourceCode} -> sourceCode) <$> information
-          srv = ProtoServerWithAuth (SMPServer [THDomainName host] (if transportPort == "5223" then "" else transportPort) (C.KeyHash fp)) newQueueBasicAuth
+          srv = ProtoServerWithAuth (SMPServer [THDomainName host] (if port == "5223" then "" else port) (C.KeyHash fp)) newQueueBasicAuth
       printServiceInfo serverVersion srv
       printSourceCode sourceCode'
       printServerConfig transports storeLogFile
@@ -254,10 +255,10 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               }
       case webStaticPath' of
         Just path | False -> do -- TODO sharedHttpsPort
-          runWebServer path Nothing ini ServerInformation {config, information}
+          runWebServer path Nothing ServerInformation {config, information}
           attachStaticFiles path $ \attachHTTP -> runSMPServer cfg $ Just attachHTTP
         Just path -> do
-          runWebServer path webHttpsParams ini ServerInformation {config, information}
+          runWebServer path webHttpsParams' ServerInformation {config, information}
           runSMPServer cfg Nothing
         Nothing -> do
           logWarn "No server static path set"
@@ -339,25 +340,24 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             }
         textToOwnServers :: Text -> [ByteString]
         textToOwnServers = map encodeUtf8 . T.words
-        transportPort = T.unpack $ strictIni "TRANSPORT" "port" ini
-        httpCredentials = (\WebHttpsParams {key, cert} -> ServerCredentials {caCertificateFile = Nothing, privateKeyFile = key, certificateFile = cert}) <$> webHttpsParams
-        webHttpsParams =
+        httpCredentials = (\WebHttpsParams {key, cert} -> ServerCredentials {caCertificateFile = Nothing, privateKeyFile = key, certificateFile = cert}) <$> webHttpsParams'
+        runWebServer webStaticPath webHttpsParams si = do
+          let onionHost =
+                either (const Nothing) (find isOnion) $
+                  strDecode @(L.NonEmpty TransportHost) . encodeUtf8 =<< lookupValue "TRANSPORT" "host" ini
+              webHttpPort = eitherToMaybe $ read . T.unpack <$> lookupValue "WEB" "http" ini
+          generateSite si onionHost webStaticPath
+          when (isJust webHttpPort || isJust webHttpsParams) $
+            serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams}
+          where
+            isOnion = \case THOnionHost _ -> True; _ -> False
+        webHttpsParams' =
           eitherToMaybe $ do
             port <- read . T.unpack <$> lookupValue "WEB" "https" ini
             cert <- T.unpack <$> lookupValue "WEB" "cert" ini
             key <- T.unpack <$> lookupValue "WEB" "key" ini
             pure WebHttpsParams {port, cert, key}
         webStaticPath' = eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini
-    runWebServer webStaticPath webHttpsParams ini si = do
-      let onionHost =
-            either (const Nothing) (find isOnion) $
-              strDecode @(L.NonEmpty TransportHost) . encodeUtf8 =<< lookupValue "TRANSPORT" "host" ini
-          webHttpPort = eitherToMaybe $ read . T.unpack <$> lookupValue "WEB" "http" ini
-      generateSite si onionHost webStaticPath
-      when (isJust webHttpPort || isJust webHttpsParams) $
-        serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams}
-      where
-        isOnion = \case THOnionHost _ -> True; _ -> False
 
 data EmbeddedWebParams = EmbeddedWebParams
   { webStaticPath :: FilePath,
