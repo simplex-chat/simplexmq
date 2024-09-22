@@ -33,7 +33,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, THandleParams, TransportPeer (..))
-import Simplex.Messaging.Transport.Server (ServerCredentials, TransportServerConfig, alpn, loadFingerprint, loadServerCredential, supportedTLSServerParams)
+import Simplex.Messaging.Transport.Server (ServerCredentials, TransportServerConfig, loadFingerprint, loadServerCredential)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -74,14 +74,13 @@ data NtfEnv = NtfEnv
     store :: NtfStore,
     storeLog :: Maybe (StoreLog 'WriteMode),
     random :: TVar ChaChaDRG,
-    tlsServerCredential :: T.Credential,
-    tlsServerParams :: T.ServerParams,
+    tlsServerCreds :: T.Credential,
     serverIdentity :: C.KeyHash,
     serverStats :: NtfServerStats
   }
 
 newNtfServerEnv :: NtfServerConfig -> IO NtfEnv
-newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, storeLogFile, ntfCredentials, transportConfig} = do
+newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, storeLogFile, ntfCredentials} = do
   random <- C.newRandom
   store <- newNtfStore
   logInfo "restoring subscriptions..."
@@ -89,11 +88,10 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
   logInfo "restored subscriptions"
   subscriber <- newNtfSubscriber subQSize smpAgentCfg random
   pushServer <- newNtfPushServer pushQSize apnsConfig
-  tlsServerCredential <- loadServerCredential ntfCredentials
-  let tlsServerParams = supportedTLSServerParams tlsServerCredential $ alpn transportConfig
+  tlsServerCreds <- loadServerCredential ntfCredentials
   Fingerprint fp <- loadFingerprint ntfCredentials
   serverStats <- newNtfServerStats =<< getCurrentTime
-  pure NtfEnv {config, subscriber, pushServer, store, storeLog, random, tlsServerCredential, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
+  pure NtfEnv {config, subscriber, pushServer, store, storeLog, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriber,

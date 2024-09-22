@@ -50,8 +50,8 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Stats
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..))
-import Simplex.Messaging.Transport.Server (runTransportServer)
+import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..), defaultSupportedParams)
+import Simplex.Messaging.Transport.Server (TransportServerConfig (..), runTransportServer)
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
 import System.IO (BufferMode (..), hPutStrLn, hSetBuffering)
@@ -82,11 +82,10 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
   where
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
-      serverCreds <- asks tlsServerCredential
-      serverParams <- asks tlsServerParams
-      serverSignKey <- either fail pure $ fromTLSCredentials serverCreds
+      srvCreds <- asks tlsServerCreds
+      serverSignKey <- either fail pure $ fromTLSCredentials srvCreds
       env <- ask
-      liftIO $ runTransportServer started tcpPort serverCreds serverParams tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
+      liftIO $ runTransportServer started tcpPort defaultSupportedParams srvCreds (alpn tCfg) tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
     fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
 
     runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()

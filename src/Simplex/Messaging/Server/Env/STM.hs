@@ -41,7 +41,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
-import Simplex.Messaging.Transport.Server (ServerCredentials, SocketState, TransportServerConfig, alpn, loadFingerprint, loadServerCredential, newSocketState, supportedTLSServerParams)
+import Simplex.Messaging.Transport.Server (ServerCredentials, SocketState, TransportServerConfig, loadFingerprint, loadServerCredential, newSocketState)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -122,8 +122,7 @@ data Env = Env
     msgStore :: STMMsgStore,
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
-    tlsServerCredential :: T.Credential,
-    tlsServerParams :: T.ServerParams,
+    tlsServerCreds :: T.Credential,
     serverStats :: ServerStats,
     sockets :: SocketState,
     clientSeq :: TVar ClientId,
@@ -222,7 +221,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {smpCredentials, storeLogFile, smpAgentCfg, transportConfig, information, messageExpiration} = do
+newEnv config@ServerConfig {smpCredentials, storeLogFile, smpAgentCfg, information, messageExpiration} = do
   server <- newServer
   queueStore <- newQueueStore
   msgStore <- newMsgStore
@@ -231,8 +230,7 @@ newEnv config@ServerConfig {smpCredentials, storeLogFile, smpAgentCfg, transport
     forM storeLogFile $ \f -> do
       logInfo $ "restoring queues from file " <> T.pack f
       restoreQueues queueStore f
-  tlsServerCredential <- loadServerCredential smpCredentials
-  let tlsServerParams = supportedTLSServerParams tlsServerCredential $ alpn transportConfig
+  tlsServerCreds <- loadServerCredential smpCredentials
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
@@ -240,7 +238,7 @@ newEnv config@ServerConfig {smpCredentials, storeLogFile, smpAgentCfg, transport
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
-  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerCredential, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
+  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do

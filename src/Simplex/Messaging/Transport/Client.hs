@@ -142,7 +142,7 @@ clientTransportConfig TransportClientConfig {logTLSErrors} =
 
 -- | Connect to passed TCP host:port and pass handle to the client.
 runTransportClient :: Transport c => TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
-runTransportClient = runTLSTransportClient defaultSupportedParameters Nothing
+runTransportClient = runTLSTransportClient defaultSupportedParams Nothing
 
 runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
 runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, alpn} socksCreds host port keyHash client = do

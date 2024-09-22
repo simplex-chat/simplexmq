@@ -23,7 +23,7 @@ import Network.Info (IPv4 (..), NetworkInterface (..), getNetworkInterfaces)
 import qualified Network.Socket as N
 import qualified Network.TLS as TLS
 import qualified Network.UDP as UDP
-import Simplex.Messaging.Transport (defaultSupportedParameters)
+import Simplex.Messaging.Transport (defaultSupportedParams)
 import qualified Simplex.Messaging.Transport as Transport
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (defaultTransportServerConfig, runTransportServerSocket, startTCPServer)
@@ -88,7 +88,7 @@ startTLSServer port_ startedOnPort credentials hooks server = async . liftIO $ d
         { TLS.serverWantClientCert = True,
           TLS.serverShared = def {TLS.sharedCredentials = TLS.Credentials [credentials]},
           TLS.serverHooks = hooks,
-          TLS.serverSupported = defaultSupportedParameters
+          TLS.serverSupported = defaultSupportedParams
         }
 
 withSender :: (UDP.UDPSocket -> IO a) -> IO a

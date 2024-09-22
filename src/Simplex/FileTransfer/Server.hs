@@ -60,12 +60,12 @@ import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, getRoundedSystemT
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SessionId, THandleAuth (..), THandleParams (..), TransportPeer (..))
+import Simplex.Messaging.Transport (SessionId, THandleAuth (..), THandleParams (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server
-import Simplex.Messaging.Transport.Server (runLocalTCPServer)
+import Simplex.Messaging.Transport.Server (alpn, runLocalTCPServer)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Exit (exitFailure)
@@ -108,15 +108,14 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
   where
     runServer :: M ()
     runServer = do
-      serverCreds@(chain, pk) <- asks tlsServerCredential
-      serverParams <- asks tlsServerParams
+      srvCreds@(chain, pk) <- asks tlsServerCreds
       signKey <- liftIO $ case C.x509ToPrivate (pk, []) >>= C.privKey of
         Right pk' -> pure pk'
         Left e -> putStrLn ("servers has no valid key: " <> show e) >> exitFailure
       env <- ask
       sessions <- liftIO TM.emptyIO
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
-      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize serverCreds serverParams transportConfig inactiveClientExpiration cleanup $ \sessionId sessionALPN r sendResponse -> do
+      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize defaultSupportedParams srvCreds (alpn transportConfig) transportConfig inactiveClientExpiration cleanup $ \sessionId sessionALPN r sendResponse -> do
         reqBody <- getHTTP2Body r xftpBlockSize
         let v = VersionXFTP 1
             thServerVRange = versionToRange v
