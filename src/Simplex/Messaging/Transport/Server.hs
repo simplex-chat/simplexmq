@@ -8,6 +8,7 @@ module Simplex.Messaging.Transport.Server
   ( TransportServerConfig (..),
     defaultTransportServerConfig,
     runTransportServerState,
+    runTransportServerState_,
     SocketState,
     newSocketState,
     runTransportServer,
@@ -17,6 +18,7 @@ module Simplex.Messaging.Transport.Server
     startTCPServer,
     loadSupportedTLSServerParams,
     loadTLSServerParams,
+    loadHTTPSServerParams,
     loadFingerprint,
     smpServerHandshake,
     tlsServerCredentials,
@@ -31,7 +33,7 @@ import Data.Default (def)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 import Data.List (find)
-import Data.Maybe (fromJust, fromMaybe)
+import Data.Maybe (fromJust, fromMaybe, maybeToList)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
 import qualified Data.X509.Validation as XV
@@ -80,20 +82,23 @@ runTransportServer started port params cfg server = do
   runTransportServerState ss started port params cfg server
 
 runTransportServerState :: forall c . Transport c => SocketState -> TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (c -> IO ()) -> IO ()
-runTransportServerState ss started port = runTransportServerSocketState ss started (startTCPServer started Nothing port) (transportName (TProxy :: TProxy c))
+runTransportServerState ss started port serverParams cfg server = runTransportServerState_ ss started port serverParams cfg (const server)
+
+runTransportServerState_ :: forall c . Transport c => SocketState -> TMVar Bool -> ServiceName -> T.ServerParams -> TransportServerConfig -> (Socket -> c -> IO ()) -> IO ()
+runTransportServerState_ ss started port = runTransportServerSocketState ss started (startTCPServer started Nothing port) (transportName (TProxy :: TProxy c))
 
 -- | Run a transport server with provided connection setup and handler.
 runTransportServerSocket :: Transport a => TMVar Bool -> IO Socket -> String -> T.ServerParams -> TransportServerConfig -> (a -> IO ()) -> IO ()
 runTransportServerSocket started getSocket threadLabel serverParams cfg server = do
   ss <- newSocketState
-  runTransportServerSocketState ss started getSocket threadLabel serverParams cfg server
+  runTransportServerSocketState ss started getSocket threadLabel serverParams cfg (const server)
 
 -- | Run a transport server with provided connection setup and handler.
-runTransportServerSocketState :: Transport a => SocketState -> TMVar Bool -> IO Socket -> String -> T.ServerParams -> TransportServerConfig -> (a -> IO ()) -> IO ()
+runTransportServerSocketState :: Transport a => SocketState -> TMVar Bool -> IO Socket -> String -> T.ServerParams -> TransportServerConfig -> (Socket -> a -> IO ()) -> IO ()
 runTransportServerSocketState ss started getSocket threadLabel serverParams cfg server = do
   labelMyThread $ "transport server for " <> threadLabel
   runTCPServerSocket ss started getSocket $ \conn ->
-    E.bracket (setup conn >>= maybe (fail "tls setup timeout") pure) closeConnection server
+    E.bracket (setup conn >>= maybe (fail "tls setup timeout") pure) closeConnection (server conn)
   where
     tCfg = serverTransportConfig cfg
     setup conn = timeout (tlsSetupTimeout cfg) $ do
@@ -198,6 +203,33 @@ loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile p
           T.serverSupported = serverSupported
         }
     alpnHooks supported = def {T.onALPNClientSuggest = Just $ pure . fromMaybe "" . find (`elem` supported)}
+
+loadHTTPSServerParams :: T.ServerParams -> Maybe FilePath -> FilePath -> FilePath -> [ALPN] -> IO T.ServerParams
+loadHTTPSServerParams baseParams caCertificateFile certificateFile privateKeyFile alpn = fromCredential <$> loadServerCredential
+  where
+    loadServerCredential :: IO T.Credential
+    loadServerCredential = do
+      T.credentialLoadX509Chain certificateFile (maybeToList caCertificateFile) privateKeyFile >>= \case
+        Right credential -> pure credential
+        Left _ -> putStrLn "invalid web credential" >> exitFailure
+    fromCredential :: T.Credential -> T.ServerParams
+    fromCredential httpCreds =
+      baseParams
+        { T.serverWantClientCert = False,
+          -- T.serverShared = baseShared {T.sharedCredentials = T.Credentials []}, -- should be paired with SNI->Nothing, but breaks TLS handshake entirely
+          T.serverHooks = hooks,
+          T.serverSupported = supportedParametersHTTPS
+        }
+      where
+        hs = T.serverHooks baseParams
+        alpns = "h2" : "http/1.1" : alpn
+        hooks = hs
+          { T.onALPNClientSuggest = Just $ pure . fromMaybe "" . find (`elem` alpns),
+            T.onServerNameIndication = \case
+              Nothing -> pure mempty -- base creds are already there unless suppressed
+              -- Nothing -> pure (T.sharedCredentials baseShared) -- avoid scaring clients with self-signed chains
+              Just _host -> pure (T.Credentials [httpCreds]) -- can be a host->creds map
+          }
 
 loadFingerprint :: FilePath -> IO Fingerprint
 loadFingerprint certificateFile = do

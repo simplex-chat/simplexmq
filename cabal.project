@@ -28,3 +28,17 @@ source-repository-package
     type: git
     location: https://github.com/simplex-chat/sqlcipher-simple.git
     tag: a46bd361a19376c5211f1058908fc0ae6bf42446
+
+-- upstreamable
+source-repository-package
+    type: git
+    location: https://github.com/dpwiz/wai.git
+    tag: b51da581d99e4379c0ecff9a8414c63c4b4a823a
+    subdir: warp-tls
+
+-- backported fork due http-5.0
+source-repository-package
+    type: git
+    location: https://github.com/dpwiz/wai.git
+    tag: 2f6e5aa5f05ba9140ac99e195ee647b4f7d926b0
+    subdir: warp

@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -41,7 +42,8 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
-import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, alpn, loadFingerprint, loadTLSServerParams, newSocketState)
+import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, alpn, loadFingerprint, newSocketState)
+import qualified Simplex.Messaging.Transport.Server as TS
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -82,6 +84,9 @@ data ServerConfig = ServerConfig
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
+    -- | Extra credentials for for HTTP clients
+    sharedHttpsCredentials :: Maybe (FilePath, FilePath),
+    sharedHttpsPort :: ServiceName,
     -- | SMP client-server protocol version range
     smpServerVRange :: VersionRangeSMP,
     -- | TCP transport config
@@ -126,6 +131,7 @@ data Env = Env
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerParams :: T.ServerParams,
+    sharedServerParams :: Maybe T.ServerParams,
     serverStats :: ServerStats,
     sockets :: SocketState,
     clientSeq :: TVar ClientId,
@@ -224,7 +230,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, smpAgentCfg, transportConfig, information, messageExpiration} = do
+newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, sharedHttpsCredentials, storeLogFile, smpAgentCfg, transportConfig, information, messageExpiration} = do
   server <- newServer
   queueStore <- newQueueStore
   msgStore <- newMsgStore
@@ -233,7 +239,9 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
     forM storeLogFile $ \f -> do
       logInfo $ "restoring queues from file " <> T.pack f
       restoreQueues queueStore f
-  tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
+  tlsServerParams <- TS.loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
+  sharedServerParams <- forM ((,) <$> sharedHttpsCredentials <*> alpn transportConfig) $ \((chain, key), alpn) ->
+    TS.loadHTTPSServerParams tlsServerParams Nothing chain key alpn
   Fingerprint fp <- loadFingerprint caCertificateFile
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
@@ -241,7 +249,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
-  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
+  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, sharedServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
