@@ -29,7 +29,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ALPN)
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), loadFingerprint, loadServerCredential, supportedTLSServerParams)
 import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
 import UnliftIO.STM
@@ -82,6 +82,7 @@ data XFTPEnv = XFTPEnv
     storeLog :: Maybe (StoreLog 'WriteMode),
     random :: TVar ChaChaDRG,
     serverIdentity :: C.KeyHash,
+    tlsServerCredential :: T.Credential,
     tlsServerParams :: T.ServerParams,
     serverStats :: FileServerStats
   }
@@ -109,10 +110,11 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, xftpCrede
   forM_ fileSizeQuota $ \quota -> do
     logInfo $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
     when (quota < used) $ logInfo "WARNING: storage quota is less than used storage, no files can be uploaded!"
-  tlsServerParams <- loadTLSServerParams xftpCredentials (alpn transportConfig)
+  tlsServerCredential <- loadServerCredential xftpCredentials
+  let tlsServerParams = supportedTLSServerParams tlsServerCredential $ alpn transportConfig
   Fingerprint fp <- loadFingerprint xftpCredentials
   serverStats <- newFileServerStats =<< getCurrentTime
-  pure XFTPEnv {config, store, storeLog, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
+  pure XFTPEnv {config, store, storeLog, random, tlsServerCredential, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
 
 countUsedStorage :: M.Map k FileRec -> Int64
 countUsedStorage = M.foldl' (\acc FileRec {fileInfo = FileInfo {size}} -> acc + fromIntegral size) 0

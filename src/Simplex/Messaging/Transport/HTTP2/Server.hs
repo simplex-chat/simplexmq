@@ -15,7 +15,7 @@ import Numeric.Natural (Natural)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ALPN, SessionId, TLS, closeConnection, tlsALPN, tlsUniq)
 import Simplex.Messaging.Transport.HTTP2
-import Simplex.Messaging.Transport.Server (ServerCredentials, TransportServerConfig (..), loadSupportedTLSServerParams, runTransportServer)
+import Simplex.Messaging.Transport.Server (ServerCredentials, TransportServerConfig (..), loadServerCredential, supportedTLSServerParams_, runTransportServer)
 import Simplex.Messaging.Util (threadDelay')
 import UnliftIO (finally)
 import UnliftIO.Concurrent (forkIO, killThread)
@@ -49,11 +49,12 @@ data HTTP2Server = HTTP2Server
 -- This server is for testing only, it processes all requests in a single queue.
 getHTTP2Server :: HTTP2ServerConfig -> IO HTTP2Server
 getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, serverSupported, https2Credentials, transportConfig} = do
-  tlsServerParams <- loadSupportedTLSServerParams serverSupported https2Credentials (alpn transportConfig)
+  tlsServerCredential <- loadServerCredential https2Credentials
+  let tlsServerParams = supportedTLSServerParams_ serverSupported tlsServerCredential $ alpn transportConfig
   started <- newEmptyTMVarIO
   reqQ <- newTBQueueIO qSize
   action <- async $
-    runHTTP2Server started http2Port bufferSize tlsServerParams transportConfig Nothing (const $ pure ()) $ \sessionId sessionALPN r sendResponse -> do
+    runHTTP2Server started http2Port bufferSize tlsServerCredential tlsServerParams transportConfig Nothing (const $ pure ()) $ \sessionId sessionALPN r sendResponse -> do
       reqBody <- getHTTP2Body r bodyHeadSize
       atomically $ writeTBQueue reqQ HTTP2Request {sessionId, sessionALPN, request = r, reqBody, sendResponse}
   void . atomically $ takeTMVar started
@@ -62,10 +63,10 @@ getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, se
 closeHTTP2Server :: HTTP2Server -> IO ()
 closeHTTP2Server = uninterruptibleCancel . action
 
-runHTTP2Server :: TMVar Bool -> ServiceName -> BufferSize -> T.ServerParams -> TransportServerConfig -> Maybe ExpirationConfig -> (SessionId -> IO ()) -> HTTP2ServerFunc -> IO ()
-runHTTP2Server started port bufferSize serverParams transportConfig expCfg_ clientFinished = runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup
+runHTTP2Server :: TMVar Bool -> ServiceName -> BufferSize -> T.Credential -> T.ServerParams -> TransportServerConfig -> Maybe ExpirationConfig -> (SessionId -> IO ()) -> HTTP2ServerFunc -> IO ()
+runHTTP2Server started port bufferSize serverCreds serverParams transportConfig expCfg_ clientFinished = runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup
   where
-    setup = runTransportServer started port serverParams transportConfig
+    setup = runTransportServer started port serverCreds serverParams transportConfig
 
 runHTTP2ServerWith :: BufferSize -> ((TLS -> IO ()) -> a) -> HTTP2ServerFunc -> a
 runHTTP2ServerWith = runHTTP2ServerWith_ Nothing (\_sessId -> pure ())

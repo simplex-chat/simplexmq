@@ -53,7 +53,7 @@ import Simplex.Messaging.Protocol
     SenderId,
     pattern NoEntity,
   )
-import Simplex.Messaging.Transport (ALPN, HandshakeError (..), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), supportedParameters)
+import Simplex.Messaging.Transport (ALPN, HandshakeError (..), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), defaultSupportedParameters)
 import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost, alpn)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
@@ -173,7 +173,7 @@ xftpHTTP2Config :: TransportClientConfig -> XFTPClientConfig -> HTTP2ClientConfi
 xftpHTTP2Config transportConfig XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpConnectTimeout}} =
   defaultHTTP2ClientConfig
     { bodyHeadSize = xftpBlockSize,
-      suportedTLSParams = supportedParameters,
+      suportedTLSParams = defaultSupportedParameters,
       connTimeout = tcpConnectTimeout,
       transportConfig
     }

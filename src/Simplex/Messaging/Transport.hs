@@ -65,7 +65,7 @@ module Simplex.Messaging.Transport
     ALPN,
     connectTLS,
     closeTLS,
-    supportedParameters,
+    defaultSupportedParameters,
     withTlsUnique,
 
     -- * SMP transport
@@ -310,8 +310,8 @@ closeTLS ctx =
     `E.finally` T.contextClose ctx
     `catchAll_` pure ()
 
-supportedParameters :: T.Supported
-supportedParameters =
+defaultSupportedParameters :: T.Supported
+defaultSupportedParameters =
   def
     { T.supportedVersions = [T.TLS13, T.TLS12],
       T.supportedCiphers =

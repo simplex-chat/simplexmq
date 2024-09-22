@@ -41,7 +41,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
-import Simplex.Messaging.Transport.Server (ServerCredentials, SocketState, TransportServerConfig, alpn, loadFingerprint, loadTLSServerParams, newSocketState)
+import Simplex.Messaging.Transport.Server (ServerCredentials, SocketState, TransportServerConfig, alpn, loadFingerprint, loadServerCredential, newSocketState, supportedTLSServerParams)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -122,6 +122,7 @@ data Env = Env
     msgStore :: STMMsgStore,
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
+    tlsServerCredential :: T.Credential,
     tlsServerParams :: T.ServerParams,
     serverStats :: ServerStats,
     sockets :: SocketState,
@@ -230,7 +231,8 @@ newEnv config@ServerConfig {smpCredentials, storeLogFile, smpAgentCfg, transport
     forM storeLogFile $ \f -> do
       logInfo $ "restoring queues from file " <> T.pack f
       restoreQueues queueStore f
-  tlsServerParams <- loadTLSServerParams smpCredentials (alpn transportConfig)
+  tlsServerCredential <- loadServerCredential smpCredentials
+  let tlsServerParams = supportedTLSServerParams tlsServerCredential $ alpn transportConfig
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
@@ -238,7 +240,7 @@ newEnv config@ServerConfig {smpCredentials, storeLogFile, smpAgentCfg, transport
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
-  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
+  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerCredential, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do

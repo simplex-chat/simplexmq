@@ -33,7 +33,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, THandleParams, TransportPeer (..))
-import Simplex.Messaging.Transport.Server (ServerCredentials, TransportServerConfig, alpn, loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.Transport.Server (ServerCredentials, TransportServerConfig, alpn, loadFingerprint, loadServerCredential, supportedTLSServerParams)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -74,6 +74,7 @@ data NtfEnv = NtfEnv
     store :: NtfStore,
     storeLog :: Maybe (StoreLog 'WriteMode),
     random :: TVar ChaChaDRG,
+    tlsServerCredential :: T.Credential,
     tlsServerParams :: T.ServerParams,
     serverIdentity :: C.KeyHash,
     serverStats :: NtfServerStats
@@ -88,10 +89,11 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
   logInfo "restored subscriptions"
   subscriber <- newNtfSubscriber subQSize smpAgentCfg random
   pushServer <- newNtfPushServer pushQSize apnsConfig
-  tlsServerParams <- loadTLSServerParams ntfCredentials (alpn transportConfig)
+  tlsServerCredential <- loadServerCredential ntfCredentials
+  let tlsServerParams = supportedTLSServerParams tlsServerCredential $ alpn transportConfig
   Fingerprint fp <- loadFingerprint ntfCredentials
   serverStats <- newNtfServerStats =<< getCurrentTime
-  pure NtfEnv {config, subscriber, pushServer, store, storeLog, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
+  pure NtfEnv {config, subscriber, pushServer, store, storeLog, random, tlsServerCredential, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriber,

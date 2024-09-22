@@ -185,7 +185,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
               }
       pure $ signInvitation (snd sessKeys) idPrivKey inv
 
-genTLSCredentials :: TVar ChaChaDRG -> C.APrivateSignKey -> C.SignedCertificate -> IO TLS.Credentials
+genTLSCredentials :: TVar ChaChaDRG -> C.APrivateSignKey -> C.SignedCertificate -> IO TLS.Credential
 genTLSCredentials drg caKey caCert = do
   let caCreds = (C.signatureKeyPair caKey, caCert)
   leaf <- genCredentials drg (Just caCreds) (0, 24 * 999999) "localhost" -- session-signing cert
@@ -276,10 +276,7 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
       pure RCCClient_ {confirmSession, endSession}
     runClient :: RCCClient_ -> RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCCtrlSession, RCCtrlPairing)) -> ExceptT RCErrorType IO ()
     runClient RCCClient_ {confirmSession, endSession} r = do
-      clientCredentials <-
-        liftIO (genTLSCredentials drg caKey caCert) >>= \case
-          TLS.Credentials (creds : _) -> pure $ Just creds
-          _ -> throwE $ RCEInternal "genTLSCredentials must generate credentials"
+      clientCredentials <- liftIO $ Just <$> genTLSCredentials drg caKey caCert
       let clientConfig = defaultTransportClientConfig {clientCredentials}
       ExceptT . runTransportClient clientConfig Nothing host (show port) (Just ca) $ \tls@TLS {tlsBuffer, tlsContext} -> runExceptT $ do
         -- pump socket to detect connection problems
