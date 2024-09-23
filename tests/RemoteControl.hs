@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -8,6 +9,7 @@ import AgentTests.FunctionalAPITests (runRight)
 import Control.Logger.Simple
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
+import Data.ByteString.Lazy.Char8 as LB
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
@@ -74,7 +76,13 @@ testNewPairing = do
     logNote "c 3"
     Right (sessId, _tls, r') <- atomically $ takeTMVar r
     logNote "c 4"
-    Right (_rcHostSession, _rcHelloBody, _hp') <- atomically $ takeTMVar r'
+    Right (rcHostSession, _rcHelloBody, _hp') <- atomically $ takeTMVar r'
+    let RCHostSession {tls, sessionKeys = HostSessKeys {chainKeys}} = rcHostSession
+    encCmd <- RC.rcEncryptBody chainKeys "command message"
+    RC.sendRCPacket tls $ LB.toStrict encCmd
+    encResp <- RC.receiveRCPacket tls
+    resp <- RC.rcDecryptBody chainKeys $ LB.fromStrict encResp
+    liftIO $ resp `shouldBe` "response message"
     logNote "c 5"
     threadDelay 250000
     logNote "ctrl: ciao"
@@ -93,7 +101,13 @@ testNewPairing = do
     logNote "h 3"
     liftIO $ RC.confirmCtrlSession rcCtrlClient True
     logNote "h 4"
-    Right (_rcCtrlSession, _rcCtrlPairing) <- atomically $ takeTMVar r'
+    Right (rcCtrlSession, _rcCtrlPairing) <- atomically $ takeTMVar r'
+    let RCCtrlSession {tls, sessionKeys = CtrlSessKeys {chainKeys}} = rcCtrlSession
+    encCmd <- RC.receiveRCPacket tls
+    cmd <- RC.rcDecryptBody chainKeys $ LB.fromStrict encCmd
+    liftIO $ cmd `shouldBe` "command message"
+    encResp <- RC.rcEncryptBody chainKeys "response message"
+    RC.sendRCPacket tls $ LB.toStrict encResp
     logNote "h 5"
     threadDelay 250000
     logNote "ctrl: adios"

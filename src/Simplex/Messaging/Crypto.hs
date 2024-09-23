@@ -152,6 +152,11 @@ module Simplex.Messaging.Crypto
     unsafeSbKey,
     randomSbKey,
 
+    -- * secret_box chains
+    SbChainKey,
+    sbcInit,
+    sbcHkdf,
+
     -- * pseudo-random bytes
     randomBytes,
 
@@ -198,6 +203,7 @@ import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
 import Crypto.Hash (Digest, SHA256 (..), SHA512 (..), hash, hashDigestSize)
+import qualified Crypto.KDF.HKDF as H
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
@@ -1333,6 +1339,24 @@ unsafeSbKey s = either error id $ sbKey s
 
 randomSbKey :: TVar ChaChaDRG -> STM SbKey
 randomSbKey gVar = SecretBoxKey <$> randomBytes 32 gVar
+
+newtype SbChainKey = SecretBoxChainKey {unSbChainKey :: ByteString}
+  deriving (Eq, Show)
+
+sbcInit :: ByteArrayAccess secret => ByteString -> secret -> (SbChainKey, SbChainKey)
+sbcInit salt secret = (SecretBoxChainKey ck1, SecretBoxChainKey ck2)
+  where
+    prk = H.extract salt secret :: H.PRK SHA512
+    out = H.expand prk ("SimpleXSbChainInit" :: ByteString) 64
+    (ck1, ck2) = B.splitAt 32 out
+
+sbcHkdf :: SbChainKey -> ((SbKey, CbNonce), SbChainKey)
+sbcHkdf (SecretBoxChainKey ck) = ((SecretBoxKey sk, CryptoBoxNonce nonce), SecretBoxChainKey ck')
+  where
+    prk = H.extract B.empty ck :: H.PRK SHA512
+    out = H.expand prk ("SimpleXSbChain" :: ByteString) 88 -- = 32 (new chain key) + 32 (secret_box key) + 24 (nonce)
+    (ck', rest) = B.splitAt 32 out
+    (sk, nonce) = B.splitAt 32 rest
 
 xSalsa20 :: ByteArrayAccess key => key -> ByteString -> ByteString -> (ByteString, ByteString)
 xSalsa20 secret nonce msg = (rs, msg')

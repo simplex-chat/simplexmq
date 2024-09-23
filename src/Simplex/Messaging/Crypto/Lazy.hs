@@ -17,6 +17,8 @@ module Simplex.Messaging.Crypto.Lazy
     kcbEncryptTailTag,
     sbDecryptTailTag,
     kcbDecryptTailTag,
+    sbEncryptTailTagNoPad,
+    sbDecryptTailTagNoPad,
     fastReplicate,
     secretBox,
     secretBoxTailTag,
@@ -142,6 +144,10 @@ sbEncryptTailTag_ :: ByteArrayAccess key => key -> CbNonce -> LazyByteString -> 
 sbEncryptTailTag_ key (CbNonce nonce) msg len paddedLen =
   LB.fromChunks <$> (secretBoxTailTag sbEncryptChunk key nonce =<< pad msg len paddedLen)
 
+sbEncryptTailTagNoPad :: SbKey -> CbNonce -> LazyByteString -> Either CryptoError LazyByteString
+sbEncryptTailTagNoPad (SbKey key) (CbNonce nonce) msg =
+  LB.fromChunks <$> secretBoxTailTag sbEncryptChunk key nonce msg
+
 -- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce with appended auth tag (more efficient with large files).
 -- paddedLen should NOT include the tag length, it should be the same number that is passed to sbEncrypt / sbEncryptTailTag.
 sbDecryptTailTag :: SbKey -> CbNonce -> Int64 -> LazyByteString -> Either CryptoError (Bool, LazyByteString)
@@ -163,6 +169,15 @@ sbDecryptTailTag_ key (CbNonce nonce) paddedLen packet =
        in (valid,) <$> unPad (LB.fromChunks cs)
     Left e -> Left e
   where
+    (c, tag') = LB.splitAt paddedLen packet
+
+sbDecryptTailTagNoPad :: SbKey -> CbNonce -> Int64 -> LazyByteString -> Either CryptoError (Bool, LazyByteString)
+sbDecryptTailTagNoPad (SbKey key) (CbNonce nonce) paddedLen packet =
+  result <$> secretBox sbDecryptChunk key nonce c
+  where
+    result (tag :| cs) =
+      let valid = LB.length tag' == 16 && BA.constEq (LB.toStrict tag') tag
+       in (valid, LB.fromChunks cs)
     (c, tag') = LB.splitAt paddedLen packet
 
 secretBoxTailTag :: ByteArrayAccess key => (SbState -> ByteString -> (ByteString, SbState)) -> key -> ByteString -> LazyByteString -> Either CryptoError [ByteString]
