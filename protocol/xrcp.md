@@ -184,7 +184,7 @@ The controller decrypts (including the first session) and validates the received
 The controller should reply with with `ctrlHello` or `ctrlError` response:
 
 ```abnf
-ctrlHello = %s"HELLO " kemCiphertext nonce encrypted(unpaddedSize ctrlHelloJSON helloPad) pad
+ctrlHello = %s"HELLO " kemCiphertext encrypted(unpaddedSize ctrlHelloJSON helloPad) pad
 ; ctrlHelloJSON is encrypted with the hybrid secret,
 ; including both previously agreed DH secret and KEM secret from kemCiphertext
 unpaddedSize = largeLength
@@ -206,6 +206,8 @@ JTD schema for the encrypted part of controller HELLO block `ctrlHelloJSON`:
 }
 ```
 
+Controller `hello` block and all subsequent protocol messages are encrypted with the chain keys derived from the hybrid key (see key exchange below) - that is why conntroller hello block does not include nonce. That provides forward secrecy within the XRCP session. Receiving this `hello` block allows host to compute the same hybrid keys and to derive the same chain keys.
+
 Once the controller replies HELLO to the valid host HELLO block, it should stop accepting new TCP connections.
 
 ### Controller/host session operation
@@ -225,8 +227,8 @@ The syntax for encrypted command and response body encoding:
 ```abnf
 commandBody = encBody sessSignature idSignature [attachment]
 responseBody = encBody [attachment] ; counter must match command
-encBody = nonce encLength32 encrypted(tlsunique counter body)
-attachment = %x01 nonce encLength32 encrypted(attachment)
+encBody = encLength32 encrypted(tlsunique counter body)
+attachment = %x01 encLength32 encrypted(attachment)
 noAttachment = %x00
 tlsunique = length 1*OCTET
 counter = 8*8 OCTET ; int64
@@ -272,6 +274,22 @@ kemSecret(n) = dec(kemCiphertext(n), kemDecKey(n))
 If controller fails to store the new host DH key after receiving HELLO block, the encryption will become out of sync and the host won't be able to decrypt the next announcement. To mitigate it, the host should keep the last session DH key and also previous session DH key to try to decrypt the next announcement computing shared secret using both keys (first the new one, and in case it fails - the previous).
 
 To decrypt a multicast announcement, the host should try to decrypt it using the keys of all known (paired) remote controllers.
+
+Once kemSecret is agreed for the session, it is used to derive two chain keys, to receive and to send messages:
+
+```
+host: sndKey, rcvKey = HKDF(kemSecret, "SimpleXSbChainInit", 64)
+controller: rcvKey, sndKey  = HKDF(kemSecret, "SimpleXSbChainInit", 64)
+```
+
+where HKDF is based on SHA512, with empty salt.
+
+Actual keys and nonces to encrypt and decrypt messages are derived from these chain keys:
+
+```
+to send: (sndKey', sk, nonce) = HKDF(sndKey, "SimpleXSbChain", 88)
+to receive: (rcvKey', sk, nonce) = HKDF(rcvKey, "SimpleXSbChain", 88)
+```
 
 ## Threat model
 
