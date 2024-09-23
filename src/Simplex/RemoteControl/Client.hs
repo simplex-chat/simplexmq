@@ -435,16 +435,14 @@ cancelCtrlClient RCCtrlClient {action, client_ = RCCClient_ {endSession}} = do
 
 -- * Session encryption
 
-rcEncryptBody :: TSbChainKeys -> LazyByteString -> ExceptT RCErrorType IO LazyByteString
-rcEncryptBody TSbChainKeys {sndKey} s = do
-  (sk, nonce) <- atomically $ stateTVar sndKey C.sbcHkdf
-  liftEitherWith (const RCEEncrypt) $ LC.sbEncryptTailTagNoPad sk nonce s
+rcEncryptBody :: C.SbKeyNonce -> LazyByteString -> ExceptT RCErrorType IO LazyByteString
+rcEncryptBody keyNonce s = do
+  liftEitherWith (const RCEEncrypt) $ LC.sbEncryptTailTagNoPad keyNonce s
 
-rcDecryptBody :: TSbChainKeys -> LazyByteString -> ExceptT RCErrorType IO LazyByteString
-rcDecryptBody TSbChainKeys {rcvKey} ct = do
-  (sk, nonce) <- atomically $ stateTVar rcvKey C.sbcHkdf
+rcDecryptBody :: C.SbKeyNonce -> LazyByteString -> ExceptT RCErrorType IO LazyByteString
+rcDecryptBody keyNonce ct = do
   let len = LB.length ct - 16
   when (len < 0) $ throwE RCEDecrypt
-  (ok, s) <- liftEitherWith (const RCEDecrypt) $ LC.sbDecryptTailTagNoPad sk nonce len ct
+  (ok, s) <- liftEitherWith (const RCEDecrypt) $ LC.sbDecryptTailTagNoPad keyNonce len ct
   unless ok $ throwE RCEDecrypt
   pure s

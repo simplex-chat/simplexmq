@@ -13,6 +13,7 @@ import Data.ByteString.Lazy.Char8 as LB
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
+import Simplex.Messaging.Transport (TSbChainKeys (..))
 import qualified Simplex.RemoteControl.Client as HC (RCHostClient (action))
 import qualified Simplex.RemoteControl.Client as RC
 import Simplex.RemoteControl.Discovery (mkLastLocalHost, preferAddress)
@@ -78,10 +79,13 @@ testNewPairing = do
     logNote "c 4"
     Right (rcHostSession, _rcHelloBody, _hp') <- atomically $ takeTMVar r'
     let RCHostSession {tls, sessionKeys = HostSessKeys {chainKeys}} = rcHostSession
-    encCmd <- RC.rcEncryptBody chainKeys "command message"
+        TSbChainKeys {rcvKey, sndKey} = chainKeys
+    sndKeyNonce <- atomically $ stateTVar sndKey C.sbcHkdf
+    encCmd <- RC.rcEncryptBody sndKeyNonce "command message"
     RC.sendRCPacket tls $ LB.toStrict encCmd
     encResp <- RC.receiveRCPacket tls
-    resp <- RC.rcDecryptBody chainKeys $ LB.fromStrict encResp
+    rcvKeyNonce <- atomically $ stateTVar rcvKey C.sbcHkdf
+    resp <- RC.rcDecryptBody rcvKeyNonce $ LB.fromStrict encResp
     liftIO $ resp `shouldBe` "response message"
     logNote "c 5"
     threadDelay 250000
@@ -103,10 +107,13 @@ testNewPairing = do
     logNote "h 4"
     Right (rcCtrlSession, _rcCtrlPairing) <- atomically $ takeTMVar r'
     let RCCtrlSession {tls, sessionKeys = CtrlSessKeys {chainKeys}} = rcCtrlSession
+        TSbChainKeys {rcvKey, sndKey} = chainKeys
     encCmd <- RC.receiveRCPacket tls
-    cmd <- RC.rcDecryptBody chainKeys $ LB.fromStrict encCmd
+    rcvKeyNonce <- atomically $ stateTVar rcvKey C.sbcHkdf
+    cmd <- RC.rcDecryptBody rcvKeyNonce $ LB.fromStrict encCmd
     liftIO $ cmd `shouldBe` "command message"
-    encResp <- RC.rcEncryptBody chainKeys "response message"
+    sndKeyNonce <- atomically $ stateTVar sndKey C.sbcHkdf
+    encResp <- RC.rcEncryptBody sndKeyNonce "response message"
     RC.sendRCPacket tls $ LB.toStrict encResp
     logNote "h 5"
     threadDelay 250000

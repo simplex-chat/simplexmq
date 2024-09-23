@@ -51,7 +51,7 @@ import Data.Composition ((.:.))
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Foreign (sizeOf)
-import Simplex.Messaging.Crypto (CbNonce, CryptoError (..), DhSecret (..), DhSecretX25519, SbKey, pattern CbNonce, pattern SbKey)
+import Simplex.Messaging.Crypto (CbNonce, CryptoError (..), DhSecret (..), DhSecretX25519, SbKey, SbKeyNonce, pattern CbNonce, pattern SbKey)
 import Simplex.Messaging.Crypto.SNTRUP761 (KEMHybridSecret (..))
 import Simplex.Messaging.Encoding
 
@@ -144,8 +144,8 @@ sbEncryptTailTag_ :: ByteArrayAccess key => key -> CbNonce -> LazyByteString -> 
 sbEncryptTailTag_ key (CbNonce nonce) msg len paddedLen =
   LB.fromChunks <$> (secretBoxTailTag sbEncryptChunk key nonce =<< pad msg len paddedLen)
 
-sbEncryptTailTagNoPad :: SbKey -> CbNonce -> LazyByteString -> Either CryptoError LazyByteString
-sbEncryptTailTagNoPad (SbKey key) (CbNonce nonce) msg =
+sbEncryptTailTagNoPad :: SbKeyNonce -> LazyByteString -> Either CryptoError LazyByteString
+sbEncryptTailTagNoPad (SbKey key, CbNonce nonce) msg =
   LB.fromChunks <$> secretBoxTailTag sbEncryptChunk key nonce msg
 
 -- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce with appended auth tag (more efficient with large files).
@@ -171,8 +171,8 @@ sbDecryptTailTag_ key (CbNonce nonce) paddedLen packet =
   where
     (c, tag') = LB.splitAt paddedLen packet
 
-sbDecryptTailTagNoPad :: SbKey -> CbNonce -> Int64 -> LazyByteString -> Either CryptoError (Bool, LazyByteString)
-sbDecryptTailTagNoPad (SbKey key) (CbNonce nonce) paddedLen packet =
+sbDecryptTailTagNoPad :: SbKeyNonce -> Int64 -> LazyByteString -> Either CryptoError (Bool, LazyByteString)
+sbDecryptTailTagNoPad (SbKey key, CbNonce nonce) paddedLen packet =
   result <$> secretBox sbDecryptChunk key nonce c
   where
     result (tag :| cs) =
