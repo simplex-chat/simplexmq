@@ -160,19 +160,27 @@ executables:
 
 tests:
   simplexmq-test:
-    source-dirs: tests
+    source-dirs:
+    - tests
+    - apps/smp-server/web
     main: Test.hs
     dependencies:
-      - simplexmq
       - deepseq == 1.4.*
+      - file-embed
       - generic-random == 1.5.*
       - hspec == 2.11.*
       - hspec-core == 2.11.*
       - HUnit == 1.6.*
+      - main-tester == 0.2.*
       - QuickCheck == 2.14.*
       - silently == 1.2.*
-      - main-tester == 0.2.*
+      - simplexmq
       - timeit == 2.0.*
+      - unordered-containers
+      - wai
+      - wai-app-static
+      - warp
+      - warp-tls
     ghc-options:
       - -threaded
       - -rtsopts

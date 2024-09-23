@@ -3,8 +3,10 @@
 
 module CLITests where
 
-import Data.Ini (lookupValue, readIniFile)
+import qualified Data.HashMap.Strict as HM
+import Data.Ini (Ini (..), lookupValue, readIniFile, writeIniFile)
 import Data.List (isPrefixOf)
+import qualified Data.Text as T
 import qualified Data.X509 as X
 import qualified Data.X509.File as XF
 import Simplex.FileTransfer.Server.Main (xftpServerCLI)
@@ -12,7 +14,8 @@ import Simplex.Messaging.Notifications.Server.Main
 import Simplex.Messaging.Server.Main
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Util (catchAll_)
-import System.Directory (doesFileExist)
+import qualified Static
+import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.Environment (withArgs)
 import System.FilePath ((</>))
 import System.IO.Silently (capture_)
@@ -25,6 +28,9 @@ cfgPath = "tests/tmp/cli/etc/opt/simplex"
 
 logPath :: FilePath
 logPath = "tests/tmp/cli/etc/var/simplex"
+
+webPath :: FilePath
+webPath = "tests/tmp/cli/var/www"
 
 ntfCfgPath :: FilePath
 ntfCfgPath = "tests/tmp/cli/etc/opt/simplex-notifications"
@@ -46,6 +52,7 @@ cliTests = do
       it "with store log, random password (default)" $ smpServerTest True True
       it "no store log, no password" $ smpServerTest False False
       it "with store log, no password" $ smpServerTest True False
+      fit "static files" smpServerTestStatic
   describe "Ntf server CLI" $ do
     it "should initialize, start and delete the server (no store log)" $ ntfServerTest False
     it "should initialize, start and delete the server (with store log)" $ ntfServerTest True
@@ -93,6 +100,31 @@ smpServerTest storeLog basicAuth = do
   capture_ (withStdin "Y" . withArgs ["delete"] $ smpServerCLI cfgPath logPath)
     >>= (`shouldSatisfy` ("WARNING: deleting the server will make all queues inaccessible" `isPrefixOf`))
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` False
+
+smpServerTestStatic :: IO ()
+smpServerTestStatic = do
+  let iniFile = cfgPath <> "/smp-server.ini"
+  capture_ (withArgs ["init", "-y", "--no-password", "--web-path", webPath] $ smpServerCLI cfgPath logPath)
+    >>= (`shouldSatisfy` (("Server initialized, please provide additional server information in " <> iniFile) `isPrefixOf`))
+  doesFileExist (cfgPath <> "/ca.key") `shouldReturn` True
+  Right ini <- readIniFile iniFile
+  lookupValue "WEB" "static_path" ini `shouldBe` Right (T.pack webPath)
+  createDirectoryIfMissing True webPath
+  let web = [("http", "8000"), ("https", "4443"), ("cert", "tests/fixtures/ss.crt"), ("key", "tests/fixtures/ss.key")]
+      ini' = ini {iniSections = HM.adjust (<> web) "WEB" (iniSections ini)}
+  writeIniFile iniFile ini'
+  print ini'
+
+  Right ini_ <- readIniFile iniFile
+  lookupValue "WEB" "https" ini_ `shouldBe` Right "4443"
+
+  let smpServerCLI' = smpServerCLI_ Static.generateSite Static.serveStaticFiles Static.attachStaticFiles
+  r' <- lines <$> capture_ (withArgs ["cert"] $ (1000000 `timeout` smpServerCLI' cfgPath logPath) `catchAll_` pure (Just ()))
+  print r'
+  doesFileExist (webPath <> "/index.html") `shouldReturn` True
+  r' `shouldContain` ["Generated static site contents"]
+  r' `shouldContain` ["Serving static site on port 8000"]
+  r' `shouldContain` ["Binding to [::]:4443"] -- from debug logs
 
 ntfServerTest :: Bool -> IO ()
 ntfServerTest storeLog = do
