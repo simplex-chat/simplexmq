@@ -837,4 +837,4 @@ testMarkNtfSubActionNtfFailed st = do
 testMarkNtfSubActionSMPFailed :: SQLiteStore -> Expectation
 testMarkNtfSubActionSMPFailed st = do
   withTransaction st $ \db -> do
-    markNtfSubActionSMPFailed_ db "abc"
+    markNtfSubActionSMPFailed_ db ["abc"]

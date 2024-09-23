@@ -68,6 +68,7 @@ module Simplex.Messaging.Agent.Client
     agentNtfDeleteToken,
     agentNtfEnableCron,
     agentNtfCreateSubscription,
+    agentNtfCreateSubscriptions,
     agentNtfCheckSubscription,
     agentNtfDeleteSubscription,
     agentXFTPDownloadChunk,
@@ -150,6 +151,7 @@ module Simplex.Messaging.Agent.Client
     incXFTPServerStat',
     incXFTPServerSizeStat,
     incNtfServerStat,
+    incNtfServerStat',
     AgentWorkersDetails (..),
     getAgentWorkersDetails,
     AgentWorkersSummary (..),
@@ -1699,6 +1701,21 @@ agentNtfCreateSubscription :: AgentClient -> NtfTokenId -> NtfToken -> SMPQueueN
 agentNtfCreateSubscription c tknId NtfToken {ntfServer, ntfPrivKey} smpQueue nKey =
   withNtfClient c ntfServer tknId "SNEW" $ \ntf -> ntfCreateSubscription ntf ntfPrivKey (NewNtfSub tknId smpQueue nKey)
 
+agentNtfCreateSubscriptions :: AgentClient -> NtfTokenId -> NtfToken -> NonEmpty (NtfSubscription, SMPQueueNtf, SMP.NtfPrivateAuthKey) -> AM' (NonEmpty (NtfSubscription, Either AgentErrorType NtfSubscriptionId))
+agentNtfCreateSubscriptions c tknId NtfToken {ntfServer, ntfPrivKey} nSubsKeys = do
+  let tSess = (0, ntfServer, Nothing)
+  tryAgentError' (getNtfServerClient c tSess) >>= \case
+    Left e -> pure $ L.map ((,Left e) . fst3) nSubsKeys
+    Right ntf -> liftIO $ do
+      logServer' "-->" c ntfServer (bshow (length nSubsKeys) <> " queues") "SNEW"
+      r <- L.zipWith ((,) . fst3) nSubsKeys <$> ntfCreateSubscriptions ntf ntfPrivKey newSubs
+      pure $ L.map agentError r
+      where
+        agentError = second . first $ protocolClientError NTF $ clientServer ntf
+  where
+    fst3 (x, _, _) = x
+    newSubs = L.map (\(_, smpQueue, nKey) -> NewNtfSub tknId smpQueue nKey) nSubsKeys
+
 agentNtfCheckSubscription :: AgentClient -> NtfSubscriptionId -> NtfToken -> AM NtfSubStatus
 agentNtfCheckSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
   withNtfClient c ntfServer subId "SCHK" $ \ntf -> ntfCheckSubscription ntf ntfPrivKey subId
@@ -2001,8 +2018,12 @@ incXFTPServerStat_ = incServerStat (\AgentClient {xftpServersStats = s} -> s) ne
 {-# INLINE incXFTPServerStat_ #-}
 
 incNtfServerStat :: AgentClient -> UserId -> NtfServer -> (AgentNtfServerStats -> TVar Int) -> STM ()
-incNtfServerStat c userId srv sel = incServerStat (\AgentClient {ntfServersStats = s} -> s) newAgentNtfServerStats c userId srv sel 1
+incNtfServerStat c userId srv sel = incNtfServerStat' c userId srv sel 1
 {-# INLINE incNtfServerStat #-}
+
+incNtfServerStat' :: AgentClient -> UserId -> NtfServer -> (AgentNtfServerStats -> TVar Int) -> Int -> STM ()
+incNtfServerStat' = incServerStat (\AgentClient {ntfServersStats = s} -> s) newAgentNtfServerStats
+{-# INLINE incNtfServerStat' #-}
 
 incServerStat :: Num n => (AgentClient -> TMap (UserId, ProtocolServer p) s) -> STM s -> AgentClient -> UserId -> ProtocolServer p -> (s -> TVar n) -> n -> STM ()
 incServerStat statsSel mkNewStats c userId srv sel n = do
