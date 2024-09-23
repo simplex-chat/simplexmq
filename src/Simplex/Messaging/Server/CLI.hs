@@ -288,7 +288,7 @@ iniTransports ini =
   where
     ts :: ATransport -> [ServiceName] -> [(ServiceName, ATransport, AddHTTP)]
     ts t = map (\port -> (port, t, webPort == Just port))
-    webPort = read . T.unpack <$> eitherToMaybe (lookupValue "WEB" "https" ini)
+    webPort = T.unpack <$> eitherToMaybe (lookupValue "WEB" "https" ini)
     ports = map T.unpack . T.splitOn ","
 
 printServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> Maybe FilePath -> IO ()

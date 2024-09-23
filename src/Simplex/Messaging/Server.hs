@@ -159,7 +159,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       env <- ask
       liftIO $ case (httpCreds_, attachHTTP_) of
         (Just httpCreds, Just attachHTTP) | addHTTP ->
-          runTransportServerState_ ss started tcpPort defaultSupportedParams chooseCreds (Just combinedALPNs) tCfg $ \s h ->
+          runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS chooseCreds (Just combinedALPNs) tCfg $ \s h ->
             case cast h of
               Just TLS {tlsContext} | maybe False (`elem` httpALPN) (getSessionALPN h) -> labelMyThread "https client" >> attachHTTP s tlsContext
               _ -> runClient serverSignKey t h `runReaderT` env
@@ -804,7 +804,7 @@ send th c@Client {sndQ, msgQ, sessionId} = do
           -- replace MSG response with OK, accumulating MSG in a separate list.
           MSG {} -> ((CorrId "", entId, cmd) : msgs, (corrId, entId, OK))
           _ -> (msgs, t)
-        
+
 sendMsg :: Transport c => MVar (THandleSMP c 'TServer) -> Client -> IO ()
 sendMsg th c@Client {msgQ, sessionId} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " sendMsg"
@@ -1208,7 +1208,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
           when (Just t /= updatedAt) $ do
             withLog $ \s -> logUpdateQueueTime s rId t
             st <- asks queueStore
-            liftIO $ updateQueueTime st rId t 
+            liftIO $ updateQueueTime st rId t
 
         subscribeNotifications :: M (Transmission BrokerMsg)
         subscribeNotifications = do
