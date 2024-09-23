@@ -47,12 +47,12 @@ attachStaticFiles :: FilePath -> (AttachHTTP -> IO ()) -> IO ()
 attachStaticFiles path action =
   -- Initialize global internal state for http server.
   WI.withII settings $ \ii -> do
-    action $ \socket cxt ->
+    action $ \socket cxt -> do
       -- Initialize internal per-connection resources.
-      withConnection socket cxt $ \(conn, transport) ->
-        withTimeout ii conn $ \th -> do
+      addr <- getPeerName socket
+      withConnection addr cxt $ \(conn, transport) ->
+        withTimeout ii conn $ \th ->
           -- Run Warp connection handler to process HTTP requests for static files.
-          addr <- getPeerName socket
           WI.serveConnection conn ii th addr transport settings app
   where
     app = staticFiles path
