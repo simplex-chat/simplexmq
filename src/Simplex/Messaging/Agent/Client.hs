@@ -1460,7 +1460,7 @@ sendTSessionBatches statCmd toRQ action c qs =
     batchQueues :: AM' [(SMPTransportSession, NonEmpty q)]
     batchQueues = do
       mode <- getSessionMode c
-      pure . M.assocs $ M.map L.reverse $ foldl' (batch mode) M.empty qs
+      pure . M.assocs $ foldl' (batch mode) M.empty qs
       where
         batch mode m q =
           let tSess = mkSMPTSession (toRQ q) mode
