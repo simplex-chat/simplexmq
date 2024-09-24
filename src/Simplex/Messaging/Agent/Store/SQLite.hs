@@ -1063,17 +1063,26 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
 
 getWorkItem :: Show i => ByteString -> IO (Maybe i) -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError (Maybe a))
 getWorkItem itemName getId getItem markFailed =
-  runExceptT $ handleErr "getId" getId >>= mapM tryGetItem
+  runExceptT $ handleWrkErr itemName "getId" getId >>= mapM (tryGetItem itemName getItem markFailed)
+
+getWorkItems :: Show i => ByteString -> IO [i] -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError [Either StoreError a])
+getWorkItems itemName getIds getItem markFailed =
+  runExceptT $ handleWrkErr itemName "getIds" getIds >>= mapM (tryE . tryGetItem itemName getItem markFailed)
+
+tryGetItem :: Show i => ByteString -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> i -> ExceptT StoreError IO a
+tryGetItem itemName getItem markFailed itemId = ExceptT (getItem itemId) `catchStoreError` \e -> mark >> throwE e
   where
-    tryGetItem itemId = ExceptT (getItem itemId) `catchStoreErrors` \e -> mark itemId >> throwE e
-    mark itemId = handleErr ("markFailed ID " <> bshow itemId) $ markFailed itemId
-    catchStoreErrors = catchAllErrors (SEInternal . bshow)
-    -- Errors caught by this function will suspend worker as if there is no more work,
-    handleErr :: ByteString -> IO a -> ExceptT StoreError IO a
-    handleErr opName action = ExceptT $ first mkError <$> E.try action
-      where
-        mkError :: E.SomeException -> StoreError
-        mkError e = SEWorkItemError $ itemName <> " " <> opName <> " error: " <> bshow e
+    mark = handleWrkErr itemName ("markFailed ID " <> bshow itemId) $ markFailed itemId
+
+catchStoreError :: ExceptT StoreError IO a -> (StoreError -> ExceptT StoreError IO a) -> ExceptT StoreError IO a
+catchStoreError = catchAllErrors (SEInternal . bshow)
+
+-- Errors caught by this function will suspend worker as if there is no more work,
+handleWrkErr :: ByteString -> ByteString -> IO a -> ExceptT StoreError IO a
+handleWrkErr itemName opName action = ExceptT $ first mkError <$> E.try action
+  where
+    mkError :: E.SomeException -> StoreError
+    mkError e = SEWorkItemError $ itemName <> " " <> opName <> " error: " <> bshow e
 
 updatePendingMsgRIState :: DB.Connection -> ConnId -> InternalId -> RI2State -> IO ()
 updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
