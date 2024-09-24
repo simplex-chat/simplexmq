@@ -29,11 +29,11 @@ source-repository-package
     location: https://github.com/simplex-chat/sqlcipher-simple.git
     tag: a46bd361a19376c5211f1058908fc0ae6bf42446
 
--- upstreamable
+-- waiting for published warp-tls-3.4.7
 source-repository-package
     type: git
-    location: https://github.com/simplex-chat/wai.git
-    tag: d703909e2f37ec84cb99cefc8b63e119ccd4297e
+    location: https://github.com/yesodweb/wai.git
+    tag: ec5e017d896a78e787a5acea62b37a4e677dec2e
     subdir: warp-tls
 
 -- backported fork due http-5.0
