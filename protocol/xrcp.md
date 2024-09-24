@@ -225,9 +225,11 @@ tlsunique channel binding from TLS session MUST be included in commands (include
 The syntax for encrypted command and response body encoding:
 
 ```abnf
-commandBody = encBody sessSignature idSignature [attachment]
-responseBody = encBody [attachment] ; counter must match command
-encBody = encLength32 encrypted(tlsunique counter body)
+commandBody = counter encBody sessSignature idSignature [attachment]
+responseBody = counter encBody [attachment] ; counter must match command
+; counter is placed outside of encrypted body to allow correlating encryption keys
+; with the chain keys (each command and response are encrypted by different keys)
+encBody = encLength32 encrypted(tlsunique body)
 attachment = %x01 encLength32 encrypted(attachment)
 noAttachment = %x00
 tlsunique = length 1*OCTET
