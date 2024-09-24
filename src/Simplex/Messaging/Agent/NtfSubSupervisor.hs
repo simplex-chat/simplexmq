@@ -29,7 +29,7 @@ import Data.Either (partitionEithers)
 import Data.Foldable (foldr')
 import Data.Functor (($>))
 import Data.List (foldl')
-import Data.List.NonEmpty (NonEmpty (..))
+import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -338,8 +338,7 @@ runNtfSMPWorker c srv Worker {doWork} = do
           ns <- asks ntfSupervisor
           let srvConns = groupBySrv srvsConnIds
           forM_ (M.toList srvConns) $ \(ntfSrv, connIds) ->
-            forM_ (L.nonEmpty connIds) $ \connIds' ->
-              atomically $ writeTBQueue (ntfSubQ ns) (NSCNtfWorker ntfSrv, L.reverse connIds')
+            atomically $ writeTBQueue (ntfSubQ ns) (NSCNtfWorker ntfSrv, connIds)
           workerErrors c (errs1 <> errs2' <> errs3)
           pure ntfSubs'
         _ -> do
@@ -380,10 +379,10 @@ runNtfSMPWorker c srv Worker {doWork} = do
           pure (ntfServer, ntfSubConnId sub)
         nSubConnId :: (NtfSubscription, RcvQueue, C.AAuthKeyPair, SMP.NotifierId, SMP.RcvNtfDhSecret) -> ConnId
         nSubConnId (NtfSubscription {connId}, _, _, _, _) = connId
-        groupBySrv :: [(NtfServer, ConnId)] -> Map NtfServer [ConnId]
-        groupBySrv = foldr' addConn M.empty
+        groupBySrv :: [(NtfServer, ConnId)] -> Map NtfServer (NonEmpty ConnId)
+        groupBySrv = foldl' addConn M.empty
           where
-            addConn (ntfSrv, connId) = M.alter (Just . maybe [connId] (connId :)) ntfSrv
+            addConn m (ntfSrv, connId) = M.alter (Just . maybe [connId] (connId <|)) ntfSrv m
     deleteNotifierKeys :: [NtfSMPWorkItem] -> AM [NtfSMPWorkItem]
     deleteNotifierKeys ntfSubs = do
       (errs1, subRqs) <- lift $ partitionErrs nswiConnId ntfSubs <$> withStoreBatch c (\db -> map (resetCredsGetQueue db) ntfSubs)
