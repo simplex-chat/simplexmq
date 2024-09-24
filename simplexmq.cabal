@@ -668,6 +668,8 @@ test-suite simplexmq-test
     , hourglass ==0.2.*
     , hspec ==2.11.*
     , hspec-core ==2.11.*
+    , http-client
+    , http-client-tls
     , http-types ==0.12.*
     , http2 >=4.2.2 && <4.3
     , ini ==0.4.1

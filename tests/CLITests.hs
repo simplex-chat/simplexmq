@@ -1,27 +1,48 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module CLITests where
 
+import Control.Concurrent.STM
+import Control.Logger.Simple
+-- (defaultTransportClientConfig)
+
+import Control.Monad.Trans.Except (runExceptT)
+import Crypto.PubKey.ECC.Types (CurveName (..))
+import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashMap.Strict as HM
 import Data.Ini (Ini (..), lookupValue, readIniFile, writeIniFile)
 import Data.List (isPrefixOf)
 import qualified Data.Text as T
 import qualified Data.X509 as X
 import qualified Data.X509.File as XF
+import Data.X509.Validation (Fingerprint (..))
+import Network.HTTP.Client as HTTP
+import Network.HTTP.Client.TLS (newTlsManager)
+import SMPClient (testKeyHash, testSMPClient)
 import Simplex.FileTransfer.Server.Main (xftpServerCLI)
+import Simplex.Messaging.Client (defaultClientConfig)
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server.Main
 import Simplex.Messaging.Server.Main
-import Simplex.Messaging.Transport (simplexMQVersion)
-import Simplex.Messaging.Util (catchAll_)
+import Simplex.Messaging.Transport (defaultSupportedParams, defaultSupportedParamsHTTPS, simplexMQVersion, supportedClientSMPRelayVRange, tlsALPN, tlsServerCerts)
+import Simplex.Messaging.Transport.Client
+import Simplex.Messaging.Transport.Client (runTLSTransportClient)
+import Simplex.Messaging.Transport.Server (loadFileFingerprint)
+import Simplex.Messaging.Util (catchAll_, tshow)
 import qualified Static
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Directory (doesFileExist)
 import System.Environment (withArgs)
 import System.FilePath ((</>))
 import System.IO.Silently (capture_)
 import System.Timeout (timeout)
 import Test.Hspec
 import Test.Main (withStdin)
+import UnliftIO (catchAny)
+import UnliftIO.Async
+import UnliftIO.Concurrent
+import UnliftIO.Exception (bracket, handleAny)
 
 cfgPath :: FilePath
 cfgPath = "tests/tmp/cli/etc/opt/simplex"
@@ -101,30 +122,58 @@ smpServerTest storeLog basicAuth = do
     >>= (`shouldSatisfy` ("WARNING: deleting the server will make all queues inaccessible" `isPrefixOf`))
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` False
 
-smpServerTestStatic :: IO ()
+smpServerTestStatic :: HasCallStack => IO ()
 smpServerTestStatic = do
+  setLogLevel LogDebug
   let iniFile = cfgPath <> "/smp-server.ini"
   capture_ (withArgs ["init", "-y", "--no-password", "--web-path", webPath] $ smpServerCLI cfgPath logPath)
     >>= (`shouldSatisfy` (("Server initialized, please provide additional server information in " <> iniFile) `isPrefixOf`))
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` True
   Right ini <- readIniFile iniFile
   lookupValue "WEB" "static_path" ini `shouldBe` Right (T.pack webPath)
-  createDirectoryIfMissing True webPath
-  let web = [("http", "8000"), ("https", "4443"), ("cert", "tests/fixtures/ss.crt"), ("key", "tests/fixtures/ss.key")]
+  let web = [("https", "5223"), ("cert", "tests/fixtures/web.pem"), ("key", "tests/fixtures/web.key")]
       ini' = ini {iniSections = HM.adjust (<> web) "WEB" (iniSections ini)}
   writeIniFile iniFile ini'
-  print ini'
 
   Right ini_ <- readIniFile iniFile
-  lookupValue "WEB" "https" ini_ `shouldBe` Right "4443"
+  lookupValue "WEB" "https" ini_ `shouldBe` Right "5223"
 
   let smpServerCLI' = smpServerCLI_ Static.generateSite Static.serveStaticFiles Static.attachStaticFiles
-  r' <- lines <$> capture_ (withArgs ["cert"] $ (1000000 `timeout` smpServerCLI' cfgPath logPath) `catchAll_` pure (Just ()))
-  print r'
-  doesFileExist (webPath <> "/index.html") `shouldReturn` True
-  r' `shouldContain` ["Generated static site contents"]
-  r' `shouldContain` ["Serving static site on port 8000"]
-  r' `shouldContain` ["Binding to [::]:4443"] -- from debug logs
+  let server = capture_ (withArgs ["start"] $ smpServerCLI' cfgPath logPath `catchAny` print)
+  bracket (async server) cancel $ \_t -> do
+    threadDelay 1000000
+    html <- BL.readFile $ webPath <> "/index.html"
+
+    Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
+    let ca = C.KeyHash fp
+    manager <- newManager defaultManagerSettings
+    HTTP.responseBody <$> HTTP.httpLbs "http://127.0.0.1:8000" manager `shouldReturn` html
+    logDebug "Static site works"
+
+    let cfgHttp = defaultTransportClientConfig {alpn = Just ["http/1.1"], useSNI = True}
+    let getCerts tls =
+          let X.CertificateChain cc = tlsServerCerts tls
+           in map (X.signedObject . X.getSigned) cc
+    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfgHttp Nothing "localhost" "5223" (Just ca) $ \tls -> do
+      tlsALPN tls `shouldBe` Just "http/1.1"
+      case getCerts tls of
+        X.Certificate {X.certPubKey = X.PubKeyEC (X.PubKeyEC_Named {X.pubkeyEC_name})} : _ca -> pubkeyEC_name `shouldBe` SEC_p256r1
+        leaf : _ -> error $ "Unexpected leaf cert: " <> show leaf
+        [] -> error "Empty chain"
+    -- HTTP.responseBody <$> HTTP.httpLbs "https://localhost:5223" manager `shouldReturn` html -- "certificate has unknown CA"
+    logDebug "HTTPS works"
+
+    let cfgSmp = defaultTransportClientConfig {alpn = Just ["smp/1"], useSNI = False}
+    runTLSTransportClient defaultSupportedParams Nothing cfgSmp Nothing "localhost" "5223" Nothing $ \tls -> do
+      tlsALPN tls `shouldBe` Just "smp/1"
+      case getCerts tls of
+        X.Certificate {X.certPubKey = X.PubKeyEd25519 _k} : _ca -> pure ()
+        leaf : _ -> error $ "Unexpected leaf cert: " <> show leaf
+        [] -> error "Empty chain"
+    -- runExceptT (smpClientHandshake tls Nothing ca supportedClientSMPRelayVRange) >>= \case
+    --   Right _th -> pure ()
+    --   Left te -> error (show te)
+    logDebug "SMP works"
 
 ntfServerTest :: Bool -> IO ()
 ntfServerTest storeLog = do

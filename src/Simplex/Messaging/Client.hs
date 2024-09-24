@@ -364,7 +364,7 @@ defaultNetworkConfig =
 
 transportClientConfig :: NetworkConfig -> TransportHost -> TransportClientConfig
 transportClientConfig NetworkConfig {socksProxy, socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors} host =
-  TransportClientConfig {socksProxy = useSocksProxy socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, alpn = Nothing}
+  TransportClientConfig {socksProxy = useSocksProxy socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, alpn = Nothing, useSNI = False}
   where
     socksProxy' = (\(SocksProxyWithAuth _ proxy) -> proxy) <$> socksProxy
     useSocksProxy SMAlways = socksProxy'
