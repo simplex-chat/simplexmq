@@ -435,11 +435,6 @@ runNtfSMPWorker c srv Worker {doWork} = do
         deleteSub db rq = deleteNtfSubscription db (qConnId rq)
     nswiConnId :: NtfSMPWorkItem -> ConnId
     nswiConnId (NtfSubscription {connId}, _, _) = connId
-    tempErr :: AgentErrorType -> Bool
-    tempErr = \case
-      BROKER _ NETWORK -> True
-      BROKER _ TIMEOUT -> True
-      _ -> False
 
 rescheduleAction :: TMVar () -> UTCTime -> UTCTime -> AM' Bool
 rescheduleAction doWork ts actionTs
@@ -458,10 +453,15 @@ rescheduleWork doWork ts actionTs = do
 retryOnError :: AgentClient -> Text -> AM () -> (AgentErrorType -> AM ()) -> AgentErrorType -> AM ()
 retryOnError c name loop done e = do
   logError $ name <> " error: " <> tshow e
-  case e of
-    BROKER _ NETWORK -> retryNetworkLoop c loop
-    BROKER _ TIMEOUT -> retryNetworkLoop c loop
-    _ -> done e
+  if tempErr e
+    then retryNetworkLoop c loop
+    else done e
+
+tempErr :: AgentErrorType -> Bool
+tempErr = \case
+  BROKER _ NETWORK -> True
+  BROKER _ TIMEOUT -> True
+  _ -> False
 
 retryNetworkLoop :: AgentClient -> AM () -> AM ()
 retryNetworkLoop c loop = do
