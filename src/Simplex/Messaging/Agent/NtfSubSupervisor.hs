@@ -440,9 +440,7 @@ runNtfSMPWorker c srv Worker {doWork} = do
 rescheduleAction :: TMVar () -> UTCTime -> UTCTime -> AM' Bool
 rescheduleAction doWork ts actionTs
   | actionTs <= ts = pure False
-  | otherwise = do
-      rescheduleWork doWork ts actionTs
-      pure True
+  | otherwise = rescheduleWork doWork ts actionTs $> True
 
 rescheduleWork :: TMVar () -> UTCTime -> UTCTime -> AM' ()
 rescheduleWork doWork ts actionTs = do
