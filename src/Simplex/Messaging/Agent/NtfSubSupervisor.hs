@@ -27,6 +27,7 @@ import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
 import Data.Either (partitionEithers)
 import Data.Foldable (foldr')
+import Data.Functor (($>))
 import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -292,23 +293,23 @@ runNtfSMPWorker c srv Worker {doWork} = do
     runNtfSMPOperation :: AM ()
     runNtfSMPOperation =
       withWorkItems c doWork (`getNextNtfSubSMPActions` srv) $
-        \actions -> do
-          logInfo $ "runNtfSMPWorker - length actions = " <> tshow (length actions)
-          wis <- newTVarIO actions
+        \nextSubs -> do
+          logInfo $ "runNtfSMPWorker - length nextSubs = " <> tshow (length nextSubs)
+          wis <- newTVarIO nextSubs
           ri <- asks $ reconnectInterval . config
           withRetryInterval ri $ \_ loop -> do
             liftIO $ waitWhileSuspended c
             liftIO $ waitForUserNetwork c
-            retryWIs <- processSubActions wis
+            retryWIs <- processSubActions wis `catchAgentError` \e -> logError ("runNtfSMPWorker error " <> tshow e) $> []
             forM_ (L.nonEmpty retryWIs) $ \retryWIs' -> do
               atomically $ writeTVar wis retryWIs'
               retryNetworkLoop c loop
     processSubActions :: TVar (NonEmpty NtfSMPWorkItem) -> AM [NtfSMPWorkItem]
     processSubActions wis = do
-      actions <- readTVarIO wis
+      nextSubs <- readTVarIO wis
       ts <- liftIO getCurrentTime
-      let subActions' = L.filter (\(_, _, actionTs) -> actionTs <= ts) actions
-          (_, _, firstActionTs) = L.head actions
+      let subActions' = L.filter (\(_, _, actionTs) -> actionTs <= ts) nextSubs
+          (_, _, firstActionTs) = L.head nextSubs
       case L.nonEmpty subActions' of
         Nothing -> do
           lift $ rescheduleWork doWork ts firstActionTs
