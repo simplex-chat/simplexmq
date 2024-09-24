@@ -395,32 +395,32 @@ runNtfSMPWorker c srv Worker {doWork} = do
             addConn (ntfSrv, connId) = M.alter (Just . maybe [connId] (connId :)) ntfSrv
     deleteNotifierKeys :: [NtfSMPWorkItem] -> AM [NtfSMPWorkItem]
     deleteNotifierKeys ntfSubs = do
-      (getErrs, subRqs) <- lift $ partitionErrs nswiConnId ntfSubs <$> withStoreBatch c (\db -> map (resetCredsGetQueue db) ntfSubs)
+      (errs1, subRqs) <- lift $ partitionErrs nswiConnId ntfSubs <$> withStoreBatch c (\db -> map (resetCredsGetQueue db) ntfSubs)
       rs <- lift $ disableQueuesNtfs c subRqs
-      let (dsblTempErrs, dsblErrs, dsblRqs) = splitResults rs
-      (delErrs, _) <- lift $ partitionErrs qConnId dsblRqs <$> withStoreBatch' c (\db -> map (deleteSub db) dsblRqs)
-      workerErrors c (getErrs <> dsblErrs <> delErrs)
-      pure dsblTempErrs
+      let (subRqs', errs2, successes) = splitResults' rs
+          ntfSubs' = map fst subRqs'
+          errs2' = map (first (qConnId . snd)) errs2
+          disabledRqs = map (snd . fst) successes
+      (errs3, _) <- lift $ partitionErrs qConnId disabledRqs <$> withStoreBatch' c (\db -> map (deleteSub db) disabledRqs)
+      workerErrors c $ errs1 <> errs2' <> errs3
+      pure ntfSubs'
       where
         resetCredsGetQueue :: DB.Connection -> NtfSMPWorkItem -> IO (Either AgentErrorType DisableQueueNtfReq)
         resetCredsGetQueue db sub@(NtfSubscription {connId}, _, _) = fmap (first storeError) $ runExceptT $ do
           liftIO $ setRcvQueueNtfCreds db connId Nothing
           rq <- ExceptT $ getPrimaryRcvQueue db connId
           pure (sub, rq)
-        splitResults ::
-          [(DisableQueueNtfReq, Either AgentErrorType ())] ->
-          ( [NtfSMPWorkItem], -- temporary errs
-            [(ConnId, AgentErrorType)], -- other errs
-            [RcvQueue] -- successes
-          )
-        splitResults = foldr' addRes ([], [], [])
-          where
-            addRes ((_, rq), Right ()) (tempErrs, errs, rqs) = (tempErrs, errs, rq : rqs)
-            addRes ((subWI, rq), Left e) (tempErrs, errs, rqs)
-              | tempErr e = (subWI : tempErrs, errs, rqs)
-              | otherwise = (tempErrs, (qConnId rq, e) : errs, rqs)
         deleteSub :: DB.Connection -> RcvQueue -> IO ()
         deleteSub db rq = deleteNtfSubscription db (qConnId rq)
+    --                                                 (temporary errs, other errs, successes)
+    splitResults' :: [(a, Either AgentErrorType r)] -> ([a], [(a, AgentErrorType)], [(a, r)])
+    splitResults' = foldr' addRes ([], [], [])
+      where
+        addRes (a, r_) (as, errs, rs) = case r_ of
+          Right r -> (as, errs, (a, r) : rs)
+          Left e
+            | tempErr e -> (a : as, errs, rs)
+            | otherwise -> (as, (a, e) : errs, rs)
     nswiConnId :: NtfSMPWorkItem -> ConnId
     nswiConnId (NtfSubscription {connId}, _, _) = connId
 
