@@ -29,9 +29,8 @@ import Data.Either (partitionEithers)
 import Data.Foldable (foldr')
 import Data.Functor (($>))
 import Data.List (foldl')
-import Data.List.NonEmpty (NonEmpty (..), (<|))
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -174,8 +173,6 @@ processNtfCmd c (cmd, connIds) = do
         getQueue db connId = first storeError <$> getPrimaryRcvQueue db connId
         updateAction :: DB.Connection -> RcvQueue -> IO ()
         updateAction db rq = supervisorUpdateNtfAction db (qConnId rq) (NSASMP NSASmpDelete)
-    NSCNtfWorker ntfServer -> lift . void $ getNtfNTFWorker True c ntfServer
-    NSCNtfSMPWorker smpServer -> lift . void $ getNtfSMPWorker True c smpServer
     NSCDeleteSub -> void $ lift $ withStoreBatch' c $ \db -> map (deleteNtfSubscription' db) connIds'
   where
     kickSMPWorkers :: [RcvQueue] -> AM ()
@@ -243,8 +240,7 @@ runNtfWorker c srv Worker {doWork} =
                       NSAuth -> do
                         withStore' c $ \db ->
                           updateNtfSubscription db sub {ntfServer, ntfQueueId = Nothing, ntfSubId = Nothing, ntfSubStatus = NASNew} (NSASMP NSASmpKey) ts
-                        ns <- asks ntfSupervisor
-                        atomically $ writeTBQueue (ntfSubQ ns) (NSCNtfSMPWorker smpServer, [connId])
+                        lift . void $ getNtfSMPWorker True c smpServer
                       status -> updateSubNextCheck ts status
                     atomically $ incNtfServerStat c userId ntfServer ntfChecked
                   Nothing -> workerInternalError c connId "NSACheck - no subscription ID"
@@ -254,8 +250,7 @@ runNtfWorker c srv Worker {doWork} =
             deleteNtfSub $ do
               let sub' = sub {ntfSubId = Nothing, ntfSubStatus = NASOff}
               withStore' c $ \db -> updateNtfSubscription db sub' (NSASMP NSASmpDelete) ts
-              ns <- asks ntfSupervisor
-              atomically $ writeTBQueue (ntfSubQ ns) (NSCNtfSMPWorker smpServer, [connId]) -- TODO [batch ntf] loop
+              lift . void $ getNtfSMPWorker True c smpServer
           NSARotate ->
             deleteNtfSub $ do
               withStore' c $ \db -> deleteNtfSubscription db connId
@@ -334,11 +329,8 @@ runNtfSMPWorker c srv Worker {doWork} = do
               errs2' = map (first (qConnId . eqnrRq)) errs2
               nSubIdsKeys = map toSuccess successes
           let subRqIdsSecrets = calcSecrets nSubIdsKeys
-          (errs3, srvsConnIds) <- lift $ partitionErrs nSubConnId subRqIdsSecrets <$> withStoreBatch' c (\db -> map (updateSubNSACreate db) subRqIdsSecrets)
-          ns <- asks ntfSupervisor
-          let srvConns = groupBySrv srvsConnIds
-          forM_ (M.toList srvConns) $ \(ntfSrv, connIds) ->
-            atomically $ writeTBQueue (ntfSubQ ns) (NSCNtfWorker ntfSrv, connIds)
+          (errs3, srvs) <- lift $ partitionErrs nSubConnId subRqIdsSecrets <$> withStoreBatch' c (\db -> map (updateSubNSACreate db) subRqIdsSecrets)
+          lift $ mapM_ (getNtfNTFWorker True c) $ S.fromList srvs
           workerErrors c (errs1 <> errs2' <> errs3)
           pure ntfSubs'
         _ -> do
@@ -372,17 +364,13 @@ runNtfSMPWorker c srv Worker {doWork} = do
             toSubSecret (sub, rq, authKeyPair, (_rcvNtfPubDhKey, rcvNtfPrivDhKey), notifierId, rcvNtfSrvPubDhKey) =
               let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
                in (sub, rq, authKeyPair, notifierId, rcvNtfDhSecret)
-        updateSubNSACreate :: DB.Connection -> (NtfSubscription, RcvQueue, C.AAuthKeyPair, SMP.NotifierId, SMP.RcvNtfDhSecret) -> IO (NtfServer, ConnId)
+        updateSubNSACreate :: DB.Connection -> (NtfSubscription, RcvQueue, C.AAuthKeyPair, SMP.NotifierId, SMP.RcvNtfDhSecret) -> IO NtfServer
         updateSubNSACreate db (sub@NtfSubscription {ntfServer}, _rq, (ntfPublicKey, ntfPrivateKey), notifierId, rcvNtfDhSecret) = do
           setRcvQueueNtfCreds db (ntfSubConnId sub) $ Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
           updateNtfSubscription db sub {ntfQueueId = Just notifierId, ntfSubStatus = NASKey} (NSANtf NSACreate) ts
-          pure (ntfServer, ntfSubConnId sub)
+          pure ntfServer
         nSubConnId :: (NtfSubscription, RcvQueue, C.AAuthKeyPair, SMP.NotifierId, SMP.RcvNtfDhSecret) -> ConnId
         nSubConnId (NtfSubscription {connId}, _, _, _, _) = connId
-        groupBySrv :: [(NtfServer, ConnId)] -> Map NtfServer (NonEmpty ConnId)
-        groupBySrv = foldl' addConn M.empty
-          where
-            addConn m (ntfSrv, connId) = M.alter (Just . maybe [connId] (connId <|)) ntfSrv m
     deleteNotifierKeys :: [NtfSMPWorkItem] -> AM [NtfSMPWorkItem]
     deleteNotifierKeys ntfSubs = do
       (errs1, subRqs) <- lift $ partitionErrs nswiConnId ntfSubs <$> withStoreBatch c (\db -> map (resetCredsGetQueue db) ntfSubs)

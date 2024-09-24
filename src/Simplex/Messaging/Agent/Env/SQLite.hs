@@ -259,7 +259,7 @@ data NtfSupervisor = NtfSupervisor
     ntfSMPWorkers :: TMap SMPServer Worker
   }
 
-data NtfSupervisorCommand = NSCCreate | NSCSmpDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer | NSCDeleteSub
+data NtfSupervisorCommand = NSCCreate | NSCSmpDelete | NSCDeleteSub
   deriving (Show)
 
 newNtfSubSupervisor :: Natural -> IO NtfSupervisor
