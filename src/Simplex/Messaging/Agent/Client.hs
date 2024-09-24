@@ -56,7 +56,7 @@ module Simplex.Messaging.Agent.Client
     secureQueue,
     secureSndQueue,
     enableQueueNotifications,
-    EnableQueueNtfReq,
+    EnableQueueNtfReq (..),
     enableQueuesNtfs,
     disableQueueNotifications,
     DisableQueueNtfReq,
@@ -1608,16 +1608,24 @@ enableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} notifierKey rcvNtf
   withSMPClient c rq "NKEY <nkey>" $ \smp ->
     enableSMPQueueNotifications smp rcvPrivateKey rcvId notifierKey rcvNtfPublicDhKey
 
-type EnableQueueNtfReq = (NtfSMPWorkItem, RcvQueue, C.AAuthKeyPair, C.KeyPairX25519)
+data EnableQueueNtfReq = EnableQueueNtfReq
+  { eqnrWI :: NtfSMPWorkItem,
+    eqnrRq :: RcvQueue,
+    eqnrAuthKeyPair :: C.AAuthKeyPair,
+    eqnrRcvKeyPair :: C.KeyPairX25519
+  }
 
 enableQueuesNtfs :: AgentClient -> [EnableQueueNtfReq] -> AM' [(EnableQueueNtfReq, Either AgentErrorType (SMP.NotifierId, SMP.RcvNtfPublicDhKey))]
-enableQueuesNtfs = sendTSessionBatches "NKEY" toRQ enableQueues_
+enableQueuesNtfs = sendTSessionBatches "NKEY" eqnrRq enableQueues_
   where
-    toRQ (_, x, _, _) = x
     enableQueues_ :: SMPClient -> NonEmpty EnableQueueNtfReq -> IO (NonEmpty (EnableQueueNtfReq, Either (ProtocolClientError ErrorType) (SMP.NotifierId, RcvNtfPublicDhKey)))
     enableQueues_ smp qs' = L.zip qs' <$> enableSMPQueuesNtfs smp (L.map queueCreds qs')
     queueCreds :: EnableQueueNtfReq -> (SMP.RcvPrivateAuthKey, SMP.RecipientId, SMP.NtfPublicAuthKey, SMP.RcvNtfPublicDhKey)
-    queueCreds (_, RcvQueue {rcvPrivateKey, rcvId}, (ntfPublicKey, _), (rcvNtfPubDhKey, _)) = (rcvPrivateKey, rcvId, ntfPublicKey, rcvNtfPubDhKey)
+    queueCreds EnableQueueNtfReq {eqnrRq, eqnrAuthKeyPair, eqnrRcvKeyPair} =
+      let RcvQueue {rcvPrivateKey, rcvId} = eqnrRq
+          (ntfPublicKey, _) = eqnrAuthKeyPair
+          (rcvNtfPubDhKey, _) = eqnrRcvKeyPair
+       in (rcvPrivateKey, rcvId, ntfPublicKey, rcvNtfPubDhKey)
 
 disableQueueNotifications :: AgentClient -> RcvQueue -> AM ()
 disableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} =
