@@ -327,18 +327,21 @@ runNtfSMPWorker c srv Worker {doWork} = do
     createNotifierKeys ts ntfSubs =
       lift getNtfToken >>= \case
         Just NtfToken {ntfTknStatus = NTActive, ntfMode = NMInstant} -> do
-          (prepareErrs, subRqKeys) <- prepareQueueSmpKey ntfSubs
-          nSubIdsKeys_ <- lift $ enableQueuesNtfs c subRqKeys
-          let (enblTempErrs, enblErrs, nSubIdsKeys) = splitResults nSubIdsKeys_
+          (errs1, subRqKeys) <- prepareQueueSmpKey ntfSubs
+          rs <- lift $ enableQueuesNtfs c subRqKeys
+          let (subRqKeys', errs2, successes) = splitResults rs
+              ntfSubs' = map (\(x, _, _, _) -> x) subRqKeys'
+              errs2' = map (first (qConnId . (\(_, x, _, _) -> x))) errs2
+              nSubIdsKeys = map toSuccess successes
           let subRqIdsSecrets = calcSecrets nSubIdsKeys
-          (updateErrs, srvsConnIds) <- lift $ partitionErrs nSubConnId subRqIdsSecrets <$> withStoreBatch' c (\db -> map (updateSubNSACreate db) subRqIdsSecrets)
+          (errs3, srvsConnIds) <- lift $ partitionErrs nSubConnId subRqIdsSecrets <$> withStoreBatch' c (\db -> map (updateSubNSACreate db) subRqIdsSecrets)
           ns <- asks ntfSupervisor
           let srvConns = groupBySrv srvsConnIds
           forM_ (M.toList srvConns) $ \(ntfSrv, connIds) ->
             forM_ (L.nonEmpty connIds) $ \connIds' ->
               atomically $ writeTBQueue (ntfSubQ ns) (NSCNtfWorker ntfSrv, L.reverse connIds')
-          workerErrors c (prepareErrs <> enblErrs <> updateErrs)
-          pure enblTempErrs
+          workerErrors c (errs1 <> errs2' <> errs3)
+          pure ntfSubs'
         _ -> do
           let errs = map (\sub -> (nswiConnId sub, INTERNAL "NSASmpKey - no active token")) ntfSubs
           workerErrors c errs
@@ -356,24 +359,11 @@ runNtfSMPWorker c srv Worker {doWork} = do
               authKeyPair <- atomically $ C.generateAuthKeyPair a g
               rcvNtfKeyPair <- atomically $ C.generateKeyPair g
               pure (sub, rq, authKeyPair, rcvNtfKeyPair)
-        splitResults ::
-          [(EnableQueueNtfReq, Either AgentErrorType (SMP.NotifierId, SMP.RcvNtfPublicDhKey))] ->
-          ( [NtfSMPWorkItem], -- temporary errs
-            [(ConnId, AgentErrorType)], -- other errors
-            [(NtfSubscription, RcvQueue, C.AAuthKeyPair, C.KeyPairX25519, SMP.NotifierId, SMP.RcvNtfPublicDhKey)] -- successes
-          )
-        splitResults = foldr' addRes ([], [], [])
-          where
-            addRes (subRq, Right sIdKey) (tempErrs, errs, sIdsKeys) = (tempErrs, errs, toSuccess subRq sIdKey : sIdsKeys)
-            addRes ((subWI, _, _, _), Left e) (tempErrs, errs, sIdsKeys)
-              | tempErr e = (subWI : tempErrs, errs, sIdsKeys)
-              | otherwise = (tempErrs, (nswiConnId subWI, e) : errs, sIdsKeys)
-            toSuccess ::
-              EnableQueueNtfReq ->
-              (SMP.NotifierId, SMP.RcvNtfPublicDhKey) ->
-              (NtfSubscription, RcvQueue, C.AAuthKeyPair, C.KeyPairX25519, SMP.NotifierId, SMP.RcvNtfPublicDhKey)
-            toSuccess ((sub, _, _), rq, authKeyPair, rcvKeyPair) (notifierId, rcvNtfSrvPubDhKey) =
-              (sub, rq, authKeyPair, rcvKeyPair, notifierId, rcvNtfSrvPubDhKey)
+        toSuccess ::
+          (EnableQueueNtfReq, (SMP.NotifierId, SMP.RcvNtfPublicDhKey)) ->
+          (NtfSubscription, RcvQueue, C.AAuthKeyPair, C.KeyPairX25519, SMP.NotifierId, SMP.RcvNtfPublicDhKey)
+        toSuccess (((sub, _, _), rq, authKeyPair, rcvKeyPair), (notifierId, rcvNtfSrvPubDhKey)) =
+          (sub, rq, authKeyPair, rcvKeyPair, notifierId, rcvNtfSrvPubDhKey)
         calcSecrets ::
           [(NtfSubscription, RcvQueue, C.AAuthKeyPair, C.KeyPairX25519, SMP.NotifierId, SMP.RcvNtfPublicDhKey)] ->
           [(NtfSubscription, RcvQueue, C.AAuthKeyPair, SMP.NotifierId, SMP.RcvNtfDhSecret)]
@@ -397,7 +387,7 @@ runNtfSMPWorker c srv Worker {doWork} = do
     deleteNotifierKeys ntfSubs = do
       (errs1, subRqs) <- lift $ partitionErrs nswiConnId ntfSubs <$> withStoreBatch c (\db -> map (resetCredsGetQueue db) ntfSubs)
       rs <- lift $ disableQueuesNtfs c subRqs
-      let (subRqs', errs2, successes) = splitResults' rs
+      let (subRqs', errs2, successes) = splitResults rs
           ntfSubs' = map fst subRqs'
           errs2' = map (first (qConnId . snd)) errs2
           disabledRqs = map (snd . fst) successes
@@ -413,8 +403,8 @@ runNtfSMPWorker c srv Worker {doWork} = do
         deleteSub :: DB.Connection -> RcvQueue -> IO ()
         deleteSub db rq = deleteNtfSubscription db (qConnId rq)
     --                                                 (temporary errs, other errs, successes)
-    splitResults' :: [(a, Either AgentErrorType r)] -> ([a], [(a, AgentErrorType)], [(a, r)])
-    splitResults' = foldr' addRes ([], [], [])
+    splitResults :: [(a, Either AgentErrorType r)] -> ([a], [(a, AgentErrorType)], [(a, r)])
+    splitResults = foldr' addRes ([], [], [])
       where
         addRes (a, r_) (as, errs, rs) = case r_ of
           Right r -> (as, errs, (a, r) : rs)
