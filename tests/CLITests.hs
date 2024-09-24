@@ -4,11 +4,7 @@
 
 module CLITests where
 
-import Control.Concurrent.STM
 import Control.Logger.Simple
--- (defaultTransportClientConfig)
-
-import Control.Monad.Trans.Except (runExceptT)
 import Crypto.PubKey.ECC.Types (CurveName (..))
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashMap.Strict as HM
@@ -19,18 +15,14 @@ import qualified Data.X509 as X
 import qualified Data.X509.File as XF
 import Data.X509.Validation (Fingerprint (..))
 import Network.HTTP.Client as HTTP
-import Network.HTTP.Client.TLS (newTlsManager)
-import SMPClient (testKeyHash, testSMPClient)
 import Simplex.FileTransfer.Server.Main (xftpServerCLI)
-import Simplex.Messaging.Client (defaultClientConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server.Main
 import Simplex.Messaging.Server.Main
-import Simplex.Messaging.Transport (defaultSupportedParams, defaultSupportedParamsHTTPS, simplexMQVersion, supportedClientSMPRelayVRange, tlsALPN, tlsServerCerts)
+import Simplex.Messaging.Transport (defaultSupportedParams, defaultSupportedParamsHTTPS, simplexMQVersion, tlsALPN, tlsServerCerts)
 import Simplex.Messaging.Transport.Client
-import Simplex.Messaging.Transport.Client (runTLSTransportClient)
 import Simplex.Messaging.Transport.Server (loadFileFingerprint)
-import Simplex.Messaging.Util (catchAll_, tshow)
+import Simplex.Messaging.Util (catchAll_)
 import qualified Static
 import System.Directory (doesFileExist)
 import System.Environment (withArgs)
@@ -40,9 +32,9 @@ import System.Timeout (timeout)
 import Test.Hspec
 import Test.Main (withStdin)
 import UnliftIO (catchAny)
-import UnliftIO.Async
-import UnliftIO.Concurrent
-import UnliftIO.Exception (bracket, handleAny)
+import UnliftIO.Async (async, cancel)
+import UnliftIO.Concurrent (threadDelay)
+import UnliftIO.Exception (bracket)
 
 cfgPath :: FilePath
 cfgPath = "tests/tmp/cli/etc/opt/simplex"
