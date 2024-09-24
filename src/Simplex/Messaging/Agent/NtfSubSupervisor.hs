@@ -328,15 +328,17 @@ runNtfSMPWorker c srv Worker {doWork} = do
       lift getNtfToken >>= \case
         Just NtfToken {ntfTknStatus = NTActive, ntfMode = NMInstant} -> do
           (prepareErrs, subRqKeys) <- prepareQueueSmpKey ntfSubs
-          (sendKeyTempErrs, sendKeyErrs, subRqIdsSecrets) <- sendSmpKeyGetSecret subRqKeys
+          nSubIdsKeys_ <- lift $ enableQueuesNtfs c subRqKeys
+          let (enblTempErrs, enblErrs, nSubIdsKeys) = splitResults nSubIdsKeys_
+          let subRqIdsSecrets = calcSecrets nSubIdsKeys
           (updateErrs, srvsConnIds) <- lift $ partitionErrs nSubConnId subRqIdsSecrets <$> withStoreBatch' c (\db -> map (updateSubNSACreate db) subRqIdsSecrets)
           ns <- asks ntfSupervisor
           let srvConns = groupBySrv srvsConnIds
           forM_ (M.toList srvConns) $ \(ntfSrv, connIds) ->
             forM_ (L.nonEmpty connIds) $ \connIds' ->
               atomically $ writeTBQueue (ntfSubQ ns) (NSCNtfWorker ntfSrv, L.reverse connIds')
-          workerErrors c (prepareErrs <> sendKeyErrs <> updateErrs)
-          pure sendKeyTempErrs
+          workerErrors c (prepareErrs <> enblErrs <> updateErrs)
+          pure enblTempErrs
         _ -> do
           let errs = map (\sub -> (nswiConnId sub, INTERNAL "NSASmpKey - no active token")) ntfSubs
           workerErrors c errs
@@ -354,45 +356,32 @@ runNtfSMPWorker c srv Worker {doWork} = do
               authKeyPair <- atomically $ C.generateAuthKeyPair a g
               rcvNtfKeyPair <- atomically $ C.generateKeyPair g
               pure (sub, rq, authKeyPair, rcvNtfKeyPair)
-        sendSmpKeyGetSecret ::
-          [EnableQueueNtfReq] ->
-          AM
-            ( [NtfSMPWorkItem], -- temporary errs
-              [(ConnId, AgentErrorType)], -- other errors
-              [(NtfSubscription, RcvQueue, C.AAuthKeyPair, SMP.NotifierId, SMP.RcvNtfDhSecret)] -- successes
-            )
-        sendSmpKeyGetSecret subsRqsKeys = do
-          nSubIdsKeys_ <- lift $ enableQueuesNtfs c subsRqsKeys
-          let (nSubTempErrs, nSubErrs, nSubIdsKeys) = splitResults nSubIdsKeys_
-          let nSubIdsSecrets = calcSecrets nSubIdsKeys
-          pure (nSubTempErrs, nSubErrs, nSubIdsSecrets)
+        splitResults ::
+          [(EnableQueueNtfReq, Either AgentErrorType (SMP.NotifierId, SMP.RcvNtfPublicDhKey))] ->
+          ( [NtfSMPWorkItem], -- temporary errs
+            [(ConnId, AgentErrorType)], -- other errors
+            [(NtfSubscription, RcvQueue, C.AAuthKeyPair, C.KeyPairX25519, SMP.NotifierId, SMP.RcvNtfPublicDhKey)] -- successes
+          )
+        splitResults = foldr' addRes ([], [], [])
           where
-            splitResults ::
-              [(EnableQueueNtfReq, Either AgentErrorType (SMP.NotifierId, SMP.RcvNtfPublicDhKey))] ->
-              ( [NtfSMPWorkItem],
-                [(ConnId, AgentErrorType)],
-                [(NtfSubscription, RcvQueue, C.AAuthKeyPair, C.KeyPairX25519, SMP.NotifierId, SMP.RcvNtfPublicDhKey)]
-              )
-            splitResults = foldr' addRes ([], [], [])
-              where
-                addRes (subRq, Right sIdKey) (tempErrs, errs, sIdsKeys) = (tempErrs, errs, toSuccess subRq sIdKey : sIdsKeys)
-                addRes ((subWI, _, _, _), Left e) (tempErrs, errs, sIdsKeys)
-                  | tempErr e = (subWI : tempErrs, errs, sIdsKeys)
-                  | otherwise = (tempErrs, (nswiConnId subWI, e) : errs, sIdsKeys)
-                toSuccess ::
-                  EnableQueueNtfReq ->
-                  (SMP.NotifierId, SMP.RcvNtfPublicDhKey) ->
-                  (NtfSubscription, RcvQueue, C.AAuthKeyPair, C.KeyPairX25519, SMP.NotifierId, SMP.RcvNtfPublicDhKey)
-                toSuccess ((sub, _, _), rq, authKeyPair, rcvKeyPair) (notifierId, rcvNtfSrvPubDhKey) =
-                  (sub, rq, authKeyPair, rcvKeyPair, notifierId, rcvNtfSrvPubDhKey)
-            calcSecrets ::
-              [(NtfSubscription, RcvQueue, C.AAuthKeyPair, C.KeyPairX25519, SMP.NotifierId, SMP.RcvNtfPublicDhKey)] ->
-              [(NtfSubscription, RcvQueue, C.AAuthKeyPair, SMP.NotifierId, SMP.RcvNtfDhSecret)]
-            calcSecrets = map toSubSecret
-              where
-                toSubSecret (sub, rq, authKeyPair, (_rcvNtfPubDhKey, rcvNtfPrivDhKey), notifierId, rcvNtfSrvPubDhKey) =
-                  let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
-                   in (sub, rq, authKeyPair, notifierId, rcvNtfDhSecret)
+            addRes (subRq, Right sIdKey) (tempErrs, errs, sIdsKeys) = (tempErrs, errs, toSuccess subRq sIdKey : sIdsKeys)
+            addRes ((subWI, _, _, _), Left e) (tempErrs, errs, sIdsKeys)
+              | tempErr e = (subWI : tempErrs, errs, sIdsKeys)
+              | otherwise = (tempErrs, (nswiConnId subWI, e) : errs, sIdsKeys)
+            toSuccess ::
+              EnableQueueNtfReq ->
+              (SMP.NotifierId, SMP.RcvNtfPublicDhKey) ->
+              (NtfSubscription, RcvQueue, C.AAuthKeyPair, C.KeyPairX25519, SMP.NotifierId, SMP.RcvNtfPublicDhKey)
+            toSuccess ((sub, _, _), rq, authKeyPair, rcvKeyPair) (notifierId, rcvNtfSrvPubDhKey) =
+              (sub, rq, authKeyPair, rcvKeyPair, notifierId, rcvNtfSrvPubDhKey)
+        calcSecrets ::
+          [(NtfSubscription, RcvQueue, C.AAuthKeyPair, C.KeyPairX25519, SMP.NotifierId, SMP.RcvNtfPublicDhKey)] ->
+          [(NtfSubscription, RcvQueue, C.AAuthKeyPair, SMP.NotifierId, SMP.RcvNtfDhSecret)]
+        calcSecrets = map toSubSecret
+          where
+            toSubSecret (sub, rq, authKeyPair, (_rcvNtfPubDhKey, rcvNtfPrivDhKey), notifierId, rcvNtfSrvPubDhKey) =
+              let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
+               in (sub, rq, authKeyPair, notifierId, rcvNtfDhSecret)
         updateSubNSACreate :: DB.Connection -> (NtfSubscription, RcvQueue, C.AAuthKeyPair, SMP.NotifierId, SMP.RcvNtfDhSecret) -> IO (NtfServer, ConnId)
         updateSubNSACreate db (sub@NtfSubscription {ntfServer}, _rq, (ntfPublicKey, ntfPrivateKey), notifierId, rcvNtfDhSecret) = do
           setRcvQueueNtfCreds db (ntfSubConnId sub) $ Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
