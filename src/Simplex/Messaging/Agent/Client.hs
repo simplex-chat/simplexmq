@@ -56,8 +56,10 @@ module Simplex.Messaging.Agent.Client
     secureQueue,
     secureSndQueue,
     enableQueueNotifications,
+    EnableQueueNtfReq,
     enableQueuesNtfs,
     disableQueueNotifications,
+    DisableQueueNtfReq,
     disableQueuesNtfs,
     sendAgentMessage,
     getQueueInfo,
@@ -215,7 +217,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..), withTransaction)
+import Simplex.Messaging.Agent.Store.SQLite (NtfSMPWorkItem, SQLiteStore (..), withTransaction)
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues (getRcvQueues))
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
@@ -257,8 +259,8 @@ import Simplex.Messaging.Protocol
     VersionSMPC,
     XFTPServer,
     XFTPServerWithAuth,
-    pattern NoEntity,
     sameSrvAddr',
+    pattern NoEntity,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.QueueStore.QueueInfo
@@ -1606,24 +1608,32 @@ enableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} notifierKey rcvNtf
   withSMPClient c rq "NKEY <nkey>" $ \smp ->
     enableSMPQueueNotifications smp rcvPrivateKey rcvId notifierKey rcvNtfPublicDhKey
 
-type RcvQueueNtf = (RcvQueue, SMP.NtfPublicAuthKey, SMP.RcvNtfPublicDhKey)
+type EnableQueueNtfReq = (NtfSMPWorkItem, RcvQueue, C.AAuthKeyPair, C.KeyPairX25519)
 
-enableQueuesNtfs :: AgentClient -> [RcvQueueNtf] -> AM' [(RcvQueueNtf, Either AgentErrorType (SMP.NotifierId, SMP.RcvNtfPublicDhKey))]
-enableQueuesNtfs = sendTSessionBatches "NKEY" fst3 enableQueues_
+enableQueuesNtfs :: AgentClient -> [EnableQueueNtfReq] -> AM' [(EnableQueueNtfReq, Either AgentErrorType (SMP.NotifierId, SMP.RcvNtfPublicDhKey))]
+enableQueuesNtfs = sendTSessionBatches "NKEY" toRQ enableQueues_
   where
-    fst3 (x, _, _) = x
-    enableQueues_ :: SMPClient -> NonEmpty RcvQueueNtf -> IO (NonEmpty (RcvQueueNtf, Either (ProtocolClientError ErrorType) (SMP.NotifierId, RcvNtfPublicDhKey)))
-    enableQueues_ smp qs' = L.zipWith (,) qs' <$> enableSMPQueuesNtfs smp (L.map queueCreds qs')
-    queueCreds :: RcvQueueNtf -> (SMP.RcvPrivateAuthKey, SMP.RecipientId, SMP.NtfPublicAuthKey, SMP.RcvNtfPublicDhKey)
-    queueCreds (RcvQueue {rcvPrivateKey, rcvId}, notifierKey, rcvNtfPublicDhKey) = (rcvPrivateKey, rcvId, notifierKey, rcvNtfPublicDhKey)
+    toRQ (_, x, _, _) = x
+    enableQueues_ :: SMPClient -> NonEmpty EnableQueueNtfReq -> IO (NonEmpty (EnableQueueNtfReq, Either (ProtocolClientError ErrorType) (SMP.NotifierId, RcvNtfPublicDhKey)))
+    enableQueues_ smp qs' = L.zip qs' <$> enableSMPQueuesNtfs smp (L.map queueCreds qs')
+    queueCreds :: EnableQueueNtfReq -> (SMP.RcvPrivateAuthKey, SMP.RecipientId, SMP.NtfPublicAuthKey, SMP.RcvNtfPublicDhKey)
+    queueCreds (_, RcvQueue {rcvPrivateKey, rcvId}, (ntfPublicKey, _ntfPrivateKey), (rcvNtfPubDhKey, _rcvNtfPrivDhKey)) =
+      (rcvPrivateKey, rcvId, ntfPublicKey, rcvNtfPubDhKey)
 
 disableQueueNotifications :: AgentClient -> RcvQueue -> AM ()
 disableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} =
   withSMPClient c rq "NDEL" $ \smp ->
     disableSMPQueueNotifications smp rcvPrivateKey rcvId
 
-disableQueuesNtfs :: AgentClient -> [RcvQueue] -> AM' [(RcvQueue, Either AgentErrorType ())]
-disableQueuesNtfs = sendTSessionBatches "NDEL" id $ sendBatch disableSMPQueuesNtfs
+type DisableQueueNtfReq = (NtfSMPWorkItem, RcvQueue)
+
+disableQueuesNtfs :: AgentClient -> [DisableQueueNtfReq] -> AM' [(DisableQueueNtfReq, Either AgentErrorType ())]
+disableQueuesNtfs = sendTSessionBatches "NDEL" snd disableQueues_
+  where
+    disableQueues_ :: SMPClient -> NonEmpty DisableQueueNtfReq -> IO (NonEmpty (DisableQueueNtfReq, Either (ProtocolClientError ErrorType) ()))
+    disableQueues_ smp qs' = L.zip qs' <$> disableSMPQueuesNtfs smp (L.map queueCreds qs')
+    queueCreds :: DisableQueueNtfReq -> (SMP.RcvPrivateAuthKey, SMP.RecipientId)
+    queueCreds (_, RcvQueue {rcvPrivateKey, rcvId}) = (rcvPrivateKey, rcvId)
 
 sendAck :: AgentClient -> RcvQueue -> MsgId -> AM ()
 sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId = do
@@ -1830,11 +1840,12 @@ withWorkItems c doWork getWork action = do
         Just items' -> action items'
         Nothing -> do
           let criticalErr = find workItemError errs
-          forM_ criticalErr $ \ err -> do
+          forM_ criticalErr $ \err -> do
             notifyErr (CRITICAL False) err
             when (all workItemError errs) noWork
-      unless (null errs) $ atomically $
-        writeTBQueue (subQ c) ("", "", AEvt SAENone $ ERRS $ map (\e -> ("", INTERNAL $ show e)) errs)
+      unless (null errs) $
+        atomically $
+          writeTBQueue (subQ c) ("", "", AEvt SAENone $ ERRS $ map (\e -> ("", INTERNAL $ show e)) errs)
     Left e
       | workItemError e -> noWork >> notifyErr (CRITICAL False) e
       | otherwise -> notifyErr INTERNAL e
