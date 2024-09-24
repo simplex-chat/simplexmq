@@ -162,7 +162,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     deleteNtfSubscription',
     getNextNtfSubNTFAction,
     markNtfSubActionNtfFailed_, -- exported for tests
-    getNextNtfSubSMPAction,
+    NtfSMPWorkItem,
+    getNextNtfSubSMPActions,
     markNtfSubActionSMPFailed_, -- exported for tests
     getActiveNtfToken,
     getNtfRcvQueue,
@@ -1671,14 +1672,16 @@ markNtfSubActionNtfFailed_ :: DB.Connection -> ConnId -> IO ()
 markNtfSubActionNtfFailed_ db connId =
   DB.execute db "UPDATE ntf_subscriptions SET ntf_failed = 1 where conn_id = ?" (Only connId)
 
-getNextNtfSubSMPAction :: DB.Connection -> SMPServer -> IO (Either StoreError (Maybe (NtfSubscription, NtfSubSMPAction, NtfActionTs)))
-getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) =
-  getWorkItem "ntf SMP" getNtfConnId getNtfSubAction (markNtfSubActionSMPFailed_ db)
+type NtfSMPWorkItem = (NtfSubscription, NtfSubSMPAction, NtfActionTs)
+
+getNextNtfSubSMPActions :: DB.Connection -> SMPServer -> IO (Either StoreError [Either StoreError NtfSMPWorkItem])
+getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) =
+  getWorkItems "ntf SMP" getNtfConnIds getNtfSubAction (markNtfSubActionSMPFailed_ db)
   where
-    getNtfConnId :: IO (Maybe ConnId)
-    getNtfConnId =
-      maybeFirstRow fromOnly $
-        DB.query
+    getNtfConnIds :: IO [ConnId]
+    getNtfConnIds =
+      map fromOnly
+        <$> DB.query
           db
           [sql|
             SELECT conn_id
@@ -1686,10 +1689,10 @@ getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) =
             WHERE smp_host = ? AND smp_port = ? AND ntf_sub_smp_action IS NOT NULL AND ntf_sub_action_ts IS NOT NULL
               AND (smp_failed = 0 OR updated_by_supervisor = 1)
             ORDER BY ntf_sub_action_ts ASC
-            LIMIT 1
+            LIMIT 200
           |]
           (smpHost, smpPort)
-    getNtfSubAction :: ConnId -> IO (Either StoreError (NtfSubscription, NtfSubSMPAction, NtfActionTs))
+    getNtfSubAction :: ConnId -> IO (Either StoreError NtfSMPWorkItem)
     getNtfSubAction connId = do
       markUpdatedByWorker db connId
       firstRow ntfSubAction err $
