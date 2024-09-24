@@ -311,9 +311,7 @@ runNtfSMPWorker c srv Worker {doWork} = do
       let subActions' = L.filter (\(_, _, actionTs) -> actionTs <= ts) nextSubs
           (_, _, firstActionTs) = L.head nextSubs
       case L.nonEmpty subActions' of
-        Nothing -> do
-          lift $ rescheduleWork doWork ts firstActionTs
-          pure []
+        Nothing -> lift (rescheduleWork doWork ts firstActionTs) $> []
         Just subActions'' -> do
           let (creates, deletes) = splitActions subActions''
           createWITmpErrs <- createNotifierKeys ts creates
