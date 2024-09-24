@@ -1617,8 +1617,7 @@ enableQueuesNtfs = sendTSessionBatches "NKEY" toRQ enableQueues_
     enableQueues_ :: SMPClient -> NonEmpty EnableQueueNtfReq -> IO (NonEmpty (EnableQueueNtfReq, Either (ProtocolClientError ErrorType) (SMP.NotifierId, RcvNtfPublicDhKey)))
     enableQueues_ smp qs' = L.zip qs' <$> enableSMPQueuesNtfs smp (L.map queueCreds qs')
     queueCreds :: EnableQueueNtfReq -> (SMP.RcvPrivateAuthKey, SMP.RecipientId, SMP.NtfPublicAuthKey, SMP.RcvNtfPublicDhKey)
-    queueCreds (_, RcvQueue {rcvPrivateKey, rcvId}, (ntfPublicKey, _ntfPrivateKey), (rcvNtfPubDhKey, _rcvNtfPrivDhKey)) =
-      (rcvPrivateKey, rcvId, ntfPublicKey, rcvNtfPubDhKey)
+    queueCreds (_, RcvQueue {rcvPrivateKey, rcvId}, (ntfPublicKey, _), (rcvNtfPubDhKey, _)) = (rcvPrivateKey, rcvId, ntfPublicKey, rcvNtfPubDhKey)
 
 disableQueueNotifications :: AgentClient -> RcvQueue -> AM ()
 disableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} =
