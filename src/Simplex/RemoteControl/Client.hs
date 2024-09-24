@@ -23,6 +23,9 @@ module Simplex.RemoteControl.Client
     rcEncryptBody,
     rcDecryptBody,
     xrcpBlockSize,
+    -- for tests only
+    sendRCPacket,
+    receiveRCPacket,
   ) where
 
 import Control.Applicative ((<|>))
@@ -33,6 +36,7 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
+import Data.Bitraversable (bimapM)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as LB
@@ -43,6 +47,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Maybe (isNothing)
 import qualified Data.Text as T
 import Data.Time.Clock.System (getSystemTime)
+import Data.Tuple (swap)
 import Data.Word (Word16)
 import qualified Data.X509 as X509
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
@@ -57,7 +62,7 @@ import Simplex.Messaging.Crypto.SNTRUP761
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Transport (TLS (..), cGet, cPut)
+import Simplex.Messaging.Transport (TSbChainKeys (..), TLS (..), cGet, cPut)
 import Simplex.Messaging.Transport.Buffer (peekBuffered)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTransportClient)
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
@@ -214,15 +219,16 @@ prepareHostSession
     hostHello@RCHostHello {v, ca, kem = kemPubKey} <- liftEitherWith RCESyntax $ J.eitherDecodeStrict helloBody
     unless (ca == tlsHostFingerprint) $ throwE RCEIdentity
     (kemCiphertext, kemSharedKey) <- liftIO $ sntrup761Enc drg kemPubKey
-    let hybridKey = kemHybridSecret dhPubKey dhPrivKey kemSharedKey
+    let KEMHybridSecret hybridKey = kemHybridSecret dhPubKey dhPrivKey kemSharedKey
     unless (isCompatible v supportedRCPVRange) $ throwE RCEVersion
-    let keys = HostSessKeys {hybridKey, idPrivKey, sessPrivKey}
+    (sndKey, rcvKey) <- bimapM newTVarIO newTVarIO $ C.sbcInit "" hybridKey
+    let keys = HostSessKeys {chainKeys = TSbChainKeys {sndKey, rcvKey}, idPrivKey, sessPrivKey}
     knownHost' <- updateKnownHost ca dhPubKey
     let ctrlHello = RCCtrlHello {}
     -- TODO send error response if something fails
-    nonce' <- liftIO . atomically $ C.randomCbNonce drg
-    encBody' <- liftEitherWith (const RCEBlockSize) $ kcbEncrypt hybridKey nonce' (LB.toStrict $ J.encode ctrlHello) helloBlockSize
-    let ctrlEncHello = RCCtrlEncHello {kem = kemCiphertext, nonce = nonce', encBody = encBody'}
+    (sk, nonce') <- atomically $ stateTVar sndKey C.sbcHkdf
+    encBody' <- liftEitherWith (const RCEBlockSize) $ C.sbEncrypt sk nonce' (LB.toStrict $ J.encode ctrlHello) helloBlockSize
+    let ctrlEncHello = RCCtrlEncHello {kem = kemCiphertext, encBody = encBody'}
     pure (ctrlEncHello, keys, hostHello, pairing {knownHost = Just knownHost'})
     where
       updateKnownHost :: C.KeyHash -> C.PublicKeyX25519 -> ExceptT RCErrorType IO KnownHostPairing
@@ -349,13 +355,16 @@ prepareCtrlSession
   RCInvitation {skey, dh = dhPubKey}
   sharedKey
   kemPrivKey = \case
-    RCCtrlEncHello {kem = kemCiphertext, nonce, encBody} -> do
+    RCCtrlEncHello {kem = kemCiphertext, encBody} -> do
       kemSharedKey <- liftIO $ sntrup761Dec kemCiphertext kemPrivKey
-      let hybridKey = kemHybridSecret dhPubKey dhPrivKey kemSharedKey
-      helloBody <- liftEitherWith (const RCEDecrypt) $ kcbDecrypt hybridKey nonce encBody
+      let KEMHybridSecret hybridKey = kemHybridSecret dhPubKey dhPrivKey kemSharedKey
+      -- keys are swapped in controller
+      (sndKey, rcvKey) <- swap <$> bimapM newTVarIO newTVarIO (C.sbcInit "" hybridKey)
+      (sk, nonce) <- atomically $ stateTVar rcvKey C.sbcHkdf
+      helloBody <- liftEitherWith (const RCEDecrypt) $ C.sbDecrypt sk nonce encBody
       logDebug "Decrypted ctrl HELLO"
       RCCtrlHello {} <- liftEitherWith RCESyntax $ J.eitherDecodeStrict helloBody
-      pure CtrlSessKeys {hybridKey, idPubKey, sessPubKey = skey}
+      pure CtrlSessKeys {chainKeys = TSbChainKeys {sndKey, rcvKey}, idPubKey, sessPubKey = skey}
     RCCtrlEncError {nonce, encMessage} -> do
       message <- liftEitherWith (const RCEDecrypt) $ C.cbDecrypt sharedKey nonce encMessage
       throwE $ RCECtrlError $ T.unpack $ safeDecodeUtf8 message
@@ -426,17 +435,14 @@ cancelCtrlClient RCCtrlClient {action, client_ = RCCClient_ {endSession}} = do
 
 -- * Session encryption
 
-rcEncryptBody :: TVar ChaChaDRG -> KEMHybridSecret -> LazyByteString -> ExceptT RCErrorType IO (C.CbNonce, LazyByteString)
-rcEncryptBody drg hybridKey s = do
-  nonce <- atomically $ C.randomCbNonce drg
-  let len = LB.length s
-  ct <- liftEitherWith (const RCEEncrypt) $ LC.kcbEncryptTailTag hybridKey nonce s len (len + 8)
-  pure (nonce, ct)
+rcEncryptBody :: C.SbKeyNonce -> LazyByteString -> ExceptT RCErrorType IO LazyByteString
+rcEncryptBody keyNonce s = do
+  liftEitherWith (const RCEEncrypt) $ LC.sbEncryptTailTagNoPad keyNonce s
 
-rcDecryptBody :: KEMHybridSecret -> C.CbNonce -> LazyByteString -> ExceptT RCErrorType IO LazyByteString
-rcDecryptBody hybridKey nonce ct = do
+rcDecryptBody :: C.SbKeyNonce -> LazyByteString -> ExceptT RCErrorType IO LazyByteString
+rcDecryptBody keyNonce ct = do
   let len = LB.length ct - 16
   when (len < 0) $ throwE RCEDecrypt
-  (ok, s) <- liftEitherWith (const RCEDecrypt) $ LC.kcbDecryptTailTag hybridKey nonce len ct
+  (ok, s) <- liftEitherWith (const RCEDecrypt) $ LC.sbDecryptTailTagNoPad keyNonce len ct
   unless ok $ throwE RCEDecrypt
   pure s
