@@ -327,11 +327,9 @@ runNtfSMPWorker c srv Worker {doWork} = do
           let (subRqKeys', errs2, successes) = splitResults rs
               ntfSubs' = map eqnrWI subRqKeys'
               errs2' = map (first (qConnId . eqnrRq)) errs2
-              subRqIdsSecrets = map toSuccess successes
-          -- let subRqIdsSecrets = map toSubSecret nSubIdsKeys
-          (errs3, srvs) <- lift $ partitionErrs nSubConnId subRqIdsSecrets <$> withStoreBatch' c (\db -> map (updateSubNSACreate db) subRqIdsSecrets)
+          (errs3, srvs) <- lift $ partitionErrs (qConnId . eqnrRq . fst) successes <$> withStoreBatch' c (\db -> map (updateSubNSACreate db) successes)
           lift $ mapM_ (getNtfNTFWorker True c) $ S.fromList srvs
-          workerErrors c (errs1 <> errs2' <> errs3)
+          workerErrors c $ errs1 <> errs2' <> errs3
           pure ntfSubs'
         _ -> do
           let errs = map (\sub -> (nswiConnId sub, INTERNAL "NSASmpKey - no active token")) ntfSubs
@@ -350,19 +348,13 @@ runNtfSMPWorker c srv Worker {doWork} = do
               authKeyPair <- atomically $ C.generateAuthKeyPair a g
               rcvNtfKeyPair <- atomically $ C.generateKeyPair g
               pure (EnableQueueNtfReq sub rq authKeyPair rcvNtfKeyPair)
-        toSuccess ::
-          (EnableQueueNtfReq, (SMP.NotifierId, SMP.RcvNtfPublicDhKey)) ->
-          (NtfSubscription, RcvQueue, C.AAuthKeyPair, SMP.NotifierId, SMP.RcvNtfDhSecret)
-        toSuccess (EnableQueueNtfReq {eqnrWI = (sub, _, _), eqnrRq, eqnrAuthKeyPair, eqnrRcvKeyPair = (_, pk)}, (notifierId, srvPubDhKey)) =
-          let rcvNtfDhSecret = C.dh' srvPubDhKey pk
-           in (sub, eqnrRq, eqnrAuthKeyPair, notifierId, rcvNtfDhSecret)
-        updateSubNSACreate :: DB.Connection -> (NtfSubscription, RcvQueue, C.AAuthKeyPair, SMP.NotifierId, SMP.RcvNtfDhSecret) -> IO NtfServer
-        updateSubNSACreate db (sub@NtfSubscription {ntfServer}, _rq, (ntfPublicKey, ntfPrivateKey), notifierId, rcvNtfDhSecret) = do
+        updateSubNSACreate :: DB.Connection -> (EnableQueueNtfReq, (SMP.NotifierId, SMP.RcvNtfPublicDhKey)) -> IO NtfServer
+        updateSubNSACreate db (EnableQueueNtfReq {eqnrWI, eqnrAuthKeyPair = (ntfPublicKey, ntfPrivateKey), eqnrRcvKeyPair = (_, pk)}, (notifierId, srvPubDhKey)) = do
+          let (sub@NtfSubscription {ntfServer}, _, _) = eqnrWI
+              rcvNtfDhSecret = C.dh' srvPubDhKey pk
           setRcvQueueNtfCreds db (ntfSubConnId sub) $ Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
           updateNtfSubscription db sub {ntfQueueId = Just notifierId, ntfSubStatus = NASKey} (NSANtf NSACreate) ts
           pure ntfServer
-        nSubConnId :: (NtfSubscription, RcvQueue, C.AAuthKeyPair, SMP.NotifierId, SMP.RcvNtfDhSecret) -> ConnId
-        nSubConnId (NtfSubscription {connId}, _, _, _, _) = connId
     deleteNotifierKeys :: [NtfSMPWorkItem] -> AM [NtfSMPWorkItem]
     deleteNotifierKeys ntfSubs = do
       (errs1, subRqs) <- lift $ partitionErrs nswiConnId ntfSubs <$> withStoreBatch c (\db -> map (resetCredsGetQueue db) ntfSubs)
