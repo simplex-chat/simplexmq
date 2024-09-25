@@ -127,8 +127,8 @@ smpServerTestStatic = do
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` True
   Right ini <- readIniFile iniFile
   lookupValue "WEB" "static_path" ini `shouldBe` Right (T.pack webPath)
-  let web = [("https", "5223"), ("cert", "tests/fixtures/web.pem"), ("key", "tests/fixtures/web.key")]
-      ini' = ini {iniSections = HM.adjust (<> web) "WEB" (iniSections ini)}
+  let web = [("http", "8000"), ("https", "5223"), ("cert", "tests/fixtures/web.crt"), ("key", "tests/fixtures/web.key"), ("static_path", T.pack webPath)]
+      ini' = ini {iniSections = HM.insert "WEB" web (iniSections ini)}
   writeIniFile iniFile ini'
 
   Right ini_ <- readIniFile iniFile
@@ -146,6 +146,8 @@ smpServerTestStatic = do
     manager <- H1.newManager H1.defaultManagerSettings
     H1.responseBody <$> H1.httpLbs "http://127.0.0.1:8000" manager `shouldReturn` html
     logDebug "Plain HTTP works"
+
+    threadDelay 2000000
 
     let cfgHttp = defaultTransportClientConfig {alpn = Just ["h2"], useSNI = True}
     runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfgHttp Nothing "localhost" "5223" (Just caHTTP) $ \tls -> do

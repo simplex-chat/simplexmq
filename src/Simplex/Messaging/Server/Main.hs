@@ -83,10 +83,10 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
   where
     iniFile = combine cfgPath "smp-server.ini"
     serverVersion = "SMP server v" <> simplexMQVersion
-    defaultServerPort = "5223"
+    defaultServerPorts = "5223,443"
     executableName = "smp-server"
     storeLogFilePath = combine logPath "smp-server-store.log"
-    httpsCertFile = combine cfgPath "web.cert"
+    httpsCertFile = combine cfgPath "web.crt"
     httpsKeyFile = combine cfgPath "web.key"
     defaultStaticPath = combine logPath "www"
     initializeServer opts@InitOptions {ip, fqdn, sourceCode = src', webStaticPath = sp', disableWeb = noWeb', scripted}
@@ -178,7 +178,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                    \# Host is only used to print server address on start.\n\
                    \# You can specify multiple server ports.\n"
                 <> ("host: " <> T.pack host <> "\n")
-                <> ("port: " <> T.pack defaultServerPort <> "\n")
+                <> ("port: " <> T.pack defaultServerPorts <> "\n")
                 <> "log_tls_errors: off\n\n\
                    \# Use `websockets: 443` to run websockets server in addition to plain TLS.\n\
                    \websockets: off\n\
@@ -214,9 +214,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 <> ((if disableWeb then "# " else "") <> "http: 8000\n\n")
                 <> "# You can run an embedded TLS web server too if you provide port and cert and key files.\n\
                    \# Not required for running relay on onion address.\n\
-                   \# https: 443\n"
-                <> ("# cert: " <> T.pack httpsCertFile <> "\n")
-                <> ("# key: " <> T.pack httpsKeyFile <> "\n")
+                   \https: 443\n"
+                <> ("cert: " <> T.pack httpsCertFile <> "\n")
+                <> ("key: " <> T.pack httpsKeyFile <> "\n")
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
