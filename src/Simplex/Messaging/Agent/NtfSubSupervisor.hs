@@ -277,12 +277,9 @@ runNtfWorker c srv Worker {doWork} =
             updateNtfSubscription db sub {ntfSubStatus = toStatus} toAction actionTs'
 
 runNtfSMPWorker :: AgentClient -> SMPServer -> Worker -> AM ()
-runNtfSMPWorker c srv Worker {doWork} = do
-  env <- ask
-  forever $ do
-    waitForWork doWork
-    ExceptT . liftIO . agentOperationBracket c AONtfNetwork throwWhenInactive $
-      runReaderT (runExceptT runNtfSMPOperation) env
+runNtfSMPWorker c srv Worker {doWork} = forever $ do
+  waitForWork doWork
+  ExceptT $ agentOperationBracket c AONtfNetwork throwWhenInactive $ runExceptT runNtfSMPOperation
   where
     runNtfSMPOperation :: AM ()
     runNtfSMPOperation = do
@@ -298,30 +295,30 @@ runNtfSMPWorker c srv Worker {doWork} = do
         addAction action (creates, deletes) = case action of
           (NSASmpKey, sub) -> (sub : creates, deletes)
           (NSASmpDelete, sub) -> (creates, sub : deletes)
-    retrySubActions :: [NtfSubscription] -> ([NtfSubscription] -> AM [NtfSubscription]) -> AM ()
-    retrySubActions nextSubs action = do
-      subsVar <- newTVarIO nextSubs
+    retrySubActions :: [NtfSubscription] -> ([NtfSubscription] -> AM' [NtfSubscription]) -> AM ()
+    retrySubActions subs action = do
+      v <- newTVarIO subs
       ri <- asks $ reconnectInterval . config
       withRetryInterval ri $ \_ loop -> do
         liftIO $ waitWhileSuspended c
         liftIO $ waitForUserNetwork c
-        nextSubs' <- readTVarIO subsVar
-        retrySubs <- action nextSubs' `catchAgentError` \e -> logError ("runNtfSMPWorker error " <> tshow e) $> []
+        subs' <- readTVarIO v
+        retrySubs <- lift $ action subs'
         unless (null retrySubs) $ do
-          atomically $ writeTVar subsVar retrySubs
+          atomically $ writeTVar v retrySubs
           retryNetworkLoop c loop
-    createNotifierKeys :: [NtfSubscription] -> AM [NtfSubscription]
+    createNotifierKeys :: [NtfSubscription] -> AM' [NtfSubscription]
     createNotifierKeys ntfSubs =
-      lift getNtfToken >>= \case
+      getNtfToken >>= \case
         Just NtfToken {ntfTknStatus = NTActive, ntfMode = NMInstant} -> do
           (errs1, subRqKeys) <- prepareQueueSmpKey ntfSubs
-          rs <- lift $ enableQueuesNtfs c subRqKeys
+          rs <- enableQueuesNtfs c subRqKeys
           let (subRqKeys', errs2, successes) = splitResults rs
               ntfSubs' = map eqnrNtfSub subRqKeys'
               errs2' = map (first (qConnId . eqnrRq)) errs2
           ts <- liftIO getCurrentTime
-          (errs3, srvs) <- lift $ partitionErrs (qConnId . eqnrRq . fst) successes <$> withStoreBatch' c (\db -> map (storeNtfSubCreds db ts) successes)
-          lift $ mapM_ (getNtfNTFWorker True c) $ S.fromList srvs
+          (errs3, srvs) <- partitionErrs (qConnId . eqnrRq . fst) successes <$> withStoreBatch' c (\db -> map (storeNtfSubCreds db ts) successes)
+          mapM_ (getNtfNTFWorker True c) $ S.fromList srvs
           workerErrors c $ errs1 <> errs2' <> errs3
           pure ntfSubs'
         _ -> do
@@ -329,11 +326,11 @@ runNtfSMPWorker c srv Worker {doWork} = do
           workerErrors c errs
           pure []
       where
-        prepareQueueSmpKey :: [NtfSubscription] -> AM ([(ConnId, AgentErrorType)], [EnableQueueNtfReq])
+        prepareQueueSmpKey :: [NtfSubscription] -> AM' ([(ConnId, AgentErrorType)], [EnableQueueNtfReq])
         prepareQueueSmpKey subs = do
           alg <- asks (rcvAuthAlg . config)
           g <- asks random
-          lift $ partitionErrs ntfSubConnId subs <$> withStoreBatch c (\db -> map (getQueue db alg g) subs)
+          partitionErrs ntfSubConnId subs <$> withStoreBatch c (\db -> map (getQueue db alg g) subs)
           where
             getQueue :: DB.Connection -> C.AuthAlg -> TVar ChaChaDRG -> NtfSubscription -> IO (Either AgentErrorType EnableQueueNtfReq)
             getQueue db (C.AuthAlg a) g sub = fmap (first storeError) $ runExceptT $ do
@@ -348,15 +345,15 @@ runNtfSMPWorker c srv Worker {doWork} = do
           setRcvQueueNtfCreds db (ntfSubConnId eqnrNtfSub) $ Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
           updateNtfSubscription db eqnrNtfSub {ntfQueueId = Just notifierId, ntfSubStatus = NASKey} (NSANtf NSACreate) ts
           pure ntfServer
-    deleteNotifierKeys :: [NtfSubscription] -> AM [NtfSubscription]
+    deleteNotifierKeys :: [NtfSubscription] -> AM' [NtfSubscription]
     deleteNotifierKeys ntfSubs = do
-      (errs1, subRqs) <- lift $ partitionErrs ntfSubConnId ntfSubs <$> withStoreBatch c (\db -> map (resetCredsGetQueue db) ntfSubs)
-      rs <- lift $ disableQueuesNtfs c subRqs
+      (errs1, subRqs) <- partitionErrs ntfSubConnId ntfSubs <$> withStoreBatch c (\db -> map (resetCredsGetQueue db) ntfSubs)
+      rs <- disableQueuesNtfs c subRqs
       let (subRqs', errs2, successes) = splitResults rs
           ntfSubs' = map fst subRqs'
           errs2' = map (first (qConnId . snd)) errs2
           disabledRqs = map (snd . fst) successes
-      (errs3, _) <- lift $ partitionErrs qConnId disabledRqs <$> withStoreBatch' c (\db -> map (deleteSub db) disabledRqs)
+      (errs3, _) <- partitionErrs qConnId disabledRqs <$> withStoreBatch' c (\db -> map (deleteSub db) disabledRqs)
       workerErrors c $ errs1 <> errs2' <> errs3
       pure ntfSubs'
       where
@@ -409,10 +406,10 @@ retryNetworkLoop c loop = do
   atomically $ beginAgentOperation c AONtfNetwork
   loop
 
-workerErrors :: AgentClient -> [(ConnId, AgentErrorType)] -> AM ()
+workerErrors :: AgentClient -> [(ConnId, AgentErrorType)] -> AM' ()
 workerErrors c connErrs =
   unless (null connErrs) $ do
-    void $ lift $ withStoreBatch' c (\db -> map (setNullNtfSubscriptionAction db . fst) connErrs)
+    void $ withStoreBatch' c (\db -> map (setNullNtfSubscriptionAction db . fst) connErrs)
     notifyErrs c connErrs
 
 workerInternalError :: AgentClient -> ConnId -> String -> AM ()
