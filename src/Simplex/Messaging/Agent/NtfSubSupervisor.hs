@@ -290,34 +290,33 @@ runNtfSMPWorker c srv Worker {doWork} = do
       withWorkItems c doWork (`getNextNtfSubSMPActions` srv) $
         \nextSubs -> do
           logInfo $ "runNtfSMPWorker - length nextSubs = " <> tshow (length nextSubs)
-          wis <- newTVarIO nextSubs
-          ri <- asks $ reconnectInterval . config
-          withRetryInterval ri $ \_ loop -> do
-            liftIO $ waitWhileSuspended c
-            liftIO $ waitForUserNetwork c
-            retryWIs <- processSubActions wis `catchAgentError` \e -> logError ("runNtfSMPWorker error " <> tshow e) $> []
-            forM_ (L.nonEmpty retryWIs) $ \retryWIs' -> do
-              atomically $ writeTVar wis retryWIs'
-              retryNetworkLoop c loop
-    processSubActions :: TVar (NonEmpty NtfSMPWorkItem) -> AM [NtfSMPWorkItem]
-    processSubActions wis = do
-      nextSubs <- readTVarIO wis
-      ts <- liftIO getCurrentTime
-      let subActions' = L.filter (\(_, _, actionTs) -> actionTs <= ts) nextSubs
-          (_, _, firstActionTs) = L.head nextSubs
-      case L.nonEmpty subActions' of
-        Nothing -> lift (rescheduleWork doWork ts firstActionTs) $> []
-        Just subActions'' -> do
-          let (creates, deletes) = splitActions subActions''
-          createWITmpErrs <- createNotifierKeys ts creates
-          deleteWITmpErrs <- deleteNotifierKeys deletes
-          pure $ createWITmpErrs <> deleteWITmpErrs
+          ts <- liftIO getCurrentTime
+          let subActions' = L.filter (\(_, _, actionTs) -> actionTs <= ts) nextSubs
+              (_, _, firstActionTs) = L.head nextSubs
+          case L.nonEmpty subActions' of
+            Nothing -> lift $ rescheduleWork doWork ts firstActionTs
+            Just subActions'' -> do
+              let (creates, deletes) = splitActions subActions''
+              processSubActionsRetry creates $ createNotifierKeys ts
+              processSubActionsRetry deletes deleteNotifierKeys
     splitActions :: NonEmpty NtfSMPWorkItem -> ([NtfSMPWorkItem], [NtfSMPWorkItem])
     splitActions = foldl' addAction ([], [])
       where
         addAction (creates, deletes) = \case
           sub@(_, NSASmpKey, _) -> (sub : creates, deletes)
           sub@(_, NSASmpDelete, _) -> (creates, sub : deletes)
+    processSubActionsRetry :: [NtfSMPWorkItem] -> ([NtfSMPWorkItem] -> AM [NtfSMPWorkItem]) -> AM ()
+    processSubActionsRetry nextSubs action = do
+      wis <- newTVarIO nextSubs
+      ri <- asks $ reconnectInterval . config
+      withRetryInterval ri $ \_ loop -> do
+        liftIO $ waitWhileSuspended c
+        liftIO $ waitForUserNetwork c
+        nextSubs' <- readTVarIO wis
+        retryWIs <- action nextSubs' `catchAgentError` \e -> logError ("runNtfSMPWorker error " <> tshow e) $> []
+        unless (null retryWIs) $ do
+          atomically $ writeTVar wis retryWIs
+          retryNetworkLoop c loop
     createNotifierKeys :: UTCTime -> [NtfSMPWorkItem] -> AM [NtfSMPWorkItem]
     createNotifierKeys ts ntfSubs =
       lift getNtfToken >>= \case
@@ -374,7 +373,7 @@ runNtfSMPWorker c srv Worker {doWork} = do
           pure (sub, rq)
         deleteSub :: DB.Connection -> RcvQueue -> IO ()
         deleteSub db rq = deleteNtfSubscription db (qConnId rq)
-    --                                                 (temporary errs, other errs, successes)
+    --                                                (temporary errs, other errs, successes)
     splitResults :: [(a, Either AgentErrorType r)] -> ([a], [(a, AgentErrorType)], [(a, r)])
     splitResults = foldr' addRes ([], [], [])
       where
