@@ -217,7 +217,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite (NtfSMPWorkItem, SQLiteStore (..), withTransaction)
+import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..), withTransaction)
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues (getRcvQueues))
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
@@ -1609,7 +1609,7 @@ enableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} notifierKey rcvNtf
     enableSMPQueueNotifications smp rcvPrivateKey rcvId notifierKey rcvNtfPublicDhKey
 
 data EnableQueueNtfReq = EnableQueueNtfReq
-  { eqnrWI :: NtfSMPWorkItem,
+  { eqnrNtfSub :: NtfSubscription,
     eqnrRq :: RcvQueue,
     eqnrAuthKeyPair :: C.AAuthKeyPair,
     eqnrRcvKeyPair :: C.KeyPairX25519
@@ -1632,7 +1632,7 @@ disableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} =
   withSMPClient c rq "NDEL" $ \smp ->
     disableSMPQueueNotifications smp rcvPrivateKey rcvId
 
-type DisableQueueNtfReq = (NtfSMPWorkItem, RcvQueue)
+type DisableQueueNtfReq = (NtfSubscription, RcvQueue)
 
 disableQueuesNtfs :: AgentClient -> [DisableQueueNtfReq] -> AM' [(DisableQueueNtfReq, Either AgentErrorType ())]
 disableQueuesNtfs = sendTSessionBatches "NDEL" snd disableQueues_
