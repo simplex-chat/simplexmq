@@ -308,15 +308,15 @@ runNtfSMPWorker c srv Worker {doWork} = do
           (sub, NSASmpDelete, _) -> (creates, sub : deletes)
     processSubActionsRetry :: [NtfSubscription] -> ([NtfSubscription] -> AM [NtfSubscription]) -> AM ()
     processSubActionsRetry nextSubs action = do
-      wis <- newTVarIO nextSubs
+      subsVar <- newTVarIO nextSubs
       ri <- asks $ reconnectInterval . config
       withRetryInterval ri $ \_ loop -> do
         liftIO $ waitWhileSuspended c
         liftIO $ waitForUserNetwork c
-        nextSubs' <- readTVarIO wis
-        retryWIs <- action nextSubs' `catchAgentError` \e -> logError ("runNtfSMPWorker error " <> tshow e) $> []
-        unless (null retryWIs) $ do
-          atomically $ writeTVar wis retryWIs
+        nextSubs' <- readTVarIO subsVar
+        retrySubs <- action nextSubs' `catchAgentError` \e -> logError ("runNtfSMPWorker error " <> tshow e) $> []
+        unless (null retrySubs) $ do
+          atomically $ writeTVar subsVar retrySubs
           retryNetworkLoop c loop
     createNotifierKeys :: UTCTime -> [NtfSubscription] -> AM [NtfSubscription]
     createNotifierKeys ts ntfSubs =
