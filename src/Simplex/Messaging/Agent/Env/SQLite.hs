@@ -194,7 +194,7 @@ defaultAgentConfig =
       rcvAuthAlg = C.AuthAlg C.SEd25519, -- this will stay as Ed25519
       sndAuthAlg = C.AuthAlg C.SEd25519, -- TODO replace with X25519 when switching to v7
       connIdBytes = 12,
-      tbqSize = 64,
+      tbqSize = 128,
       smpCfg = defaultSMPClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
       ntfCfg = defaultNTFClientConfig {defaultTransport = ("443", transport @TLS)},
       xftpCfg = defaultXFTPClientConfig,
