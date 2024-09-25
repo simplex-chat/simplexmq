@@ -370,7 +370,7 @@ runNtfSMPWorker c srv Worker {doWork} = forever $ do
         addRes (a, r_) (as, errs, rs) = case r_ of
           Right r -> (as, errs, (a, r) : rs)
           Left e
-            | tempErr e -> (a : as, errs, rs)
+            | temporaryOrHostError e -> (a : as, errs, rs)
             | otherwise -> (as, (a, e) : errs, rs)
 
 rescheduleAction :: TMVar () -> UTCTime -> UTCTime -> AM' Bool
@@ -386,15 +386,9 @@ rescheduleAction doWork ts actionTs
 retryOnError :: AgentClient -> Text -> AM () -> (AgentErrorType -> AM ()) -> AgentErrorType -> AM ()
 retryOnError c name loop done e = do
   logError $ name <> " error: " <> tshow e
-  if tempErr e
+  if temporaryOrHostError e
     then retryNetworkLoop c loop
     else done e
-
-tempErr :: AgentErrorType -> Bool
-tempErr = \case
-  BROKER _ NETWORK -> True
-  BROKER _ TIMEOUT -> True
-  _ -> False
 
 retryNetworkLoop :: AgentClient -> AM () -> AM ()
 retryNetworkLoop c loop = do
