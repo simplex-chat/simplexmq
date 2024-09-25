@@ -72,6 +72,7 @@ module Simplex.Messaging.Transport
     THandle (..),
     THandleParams (..),
     THandleAuth (..),
+    TSbChainKeys (..),
     TransportError (..),
     HandshakeError (..),
     smpServerHandshake,
@@ -85,6 +86,7 @@ module Simplex.Messaging.Transport
 where
 
 import Control.Applicative (optional)
+import Control.Concurrent.STM
 import Control.Monad (forM, (<$!>))
 import Control.Monad.Except
 import Control.Monad.Trans.Except (throwE)
@@ -392,6 +394,11 @@ data THandleAuth (p :: TransportPeer) where
       sessSecret' :: Maybe C.DhSecretX25519 -- session secret (will be used in SMP proxy only)
     } ->
     THandleAuth 'TServer
+
+data TSbChainKeys = TSbChainKeys
+  { sndKey :: TVar C.SbChainKey,
+    rcvKey :: TVar C.SbChainKey
+  }
 
 -- | TLS-unique channel binding
 type SessionId = ByteString

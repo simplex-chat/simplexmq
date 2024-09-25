@@ -8,6 +8,7 @@ module XFTPClient where
 
 import Control.Concurrent (ThreadId, threadDelay)
 import Data.String (fromString)
+import Data.Time.Clock (getCurrentTime)
 import Network.Socket (ServiceName)
 import SMPClient (serverBracket)
 import Simplex.FileTransfer.Client
@@ -138,7 +139,8 @@ testXFTPClient :: HasCallStack => (HasCallStack => XFTPClient -> IO a) -> IO a
 testXFTPClient = testXFTPClientWith testXFTPClientConfig
 
 testXFTPClientWith :: HasCallStack => XFTPClientConfig -> (HasCallStack => XFTPClient -> IO a) -> IO a
-testXFTPClientWith cfg client =
-  getXFTPClient (1, testXFTPServer, Nothing) cfg (\_ -> pure ()) >>= \case
+testXFTPClientWith cfg client = do
+  ts <- getCurrentTime
+  getXFTPClient (1, testXFTPServer, Nothing) cfg ts (\_ -> pure ()) >>= \case
     Right c -> client c
     Left e -> error $ show e

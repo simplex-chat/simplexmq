@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -8,9 +9,11 @@ import AgentTests.FunctionalAPITests (runRight)
 import Control.Logger.Simple
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
+import Data.ByteString.Lazy.Char8 as LB
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
+import Simplex.Messaging.Transport (TSbChainKeys (..))
 import qualified Simplex.RemoteControl.Client as HC (RCHostClient (action))
 import qualified Simplex.RemoteControl.Client as RC
 import Simplex.RemoteControl.Discovery (mkLastLocalHost, preferAddress)
@@ -74,7 +77,16 @@ testNewPairing = do
     logNote "c 3"
     Right (sessId, _tls, r') <- atomically $ takeTMVar r
     logNote "c 4"
-    Right (_rcHostSession, _rcHelloBody, _hp') <- atomically $ takeTMVar r'
+    Right (rcHostSession, _rcHelloBody, _hp') <- atomically $ takeTMVar r'
+    let RCHostSession {tls, sessionKeys = HostSessKeys {chainKeys}} = rcHostSession
+        TSbChainKeys {rcvKey, sndKey} = chainKeys
+    sndKeyNonce <- atomically $ stateTVar sndKey C.sbcHkdf
+    encCmd <- RC.rcEncryptBody sndKeyNonce "command message"
+    RC.sendRCPacket tls $ LB.toStrict encCmd
+    encResp <- RC.receiveRCPacket tls
+    rcvKeyNonce <- atomically $ stateTVar rcvKey C.sbcHkdf
+    resp <- RC.rcDecryptBody rcvKeyNonce $ LB.fromStrict encResp
+    liftIO $ resp `shouldBe` "response message"
     logNote "c 5"
     threadDelay 250000
     logNote "ctrl: ciao"
@@ -93,7 +105,16 @@ testNewPairing = do
     logNote "h 3"
     liftIO $ RC.confirmCtrlSession rcCtrlClient True
     logNote "h 4"
-    Right (_rcCtrlSession, _rcCtrlPairing) <- atomically $ takeTMVar r'
+    Right (rcCtrlSession, _rcCtrlPairing) <- atomically $ takeTMVar r'
+    let RCCtrlSession {tls, sessionKeys = CtrlSessKeys {chainKeys}} = rcCtrlSession
+        TSbChainKeys {rcvKey, sndKey} = chainKeys
+    encCmd <- RC.receiveRCPacket tls
+    rcvKeyNonce <- atomically $ stateTVar rcvKey C.sbcHkdf
+    cmd <- RC.rcDecryptBody rcvKeyNonce $ LB.fromStrict encCmd
+    liftIO $ cmd `shouldBe` "command message"
+    sndKeyNonce <- atomically $ stateTVar sndKey C.sbcHkdf
+    encResp <- RC.rcEncryptBody sndKeyNonce "response message"
+    RC.sendRCPacket tls $ LB.toStrict encResp
     logNote "h 5"
     threadDelay 250000
     logNote "ctrl: adios"

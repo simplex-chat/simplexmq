@@ -150,6 +150,7 @@ data AgentConfig = AgentConfig
     xftpMaxRecipientsPerRequest :: Int,
     deleteErrorCount :: Int,
     ntfCron :: Word16,
+    ntfBatchSize :: Int,
     ntfSubCheckInterval :: NominalDiffTime,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -193,7 +194,7 @@ defaultAgentConfig =
       rcvAuthAlg = C.AuthAlg C.SEd25519, -- this will stay as Ed25519
       sndAuthAlg = C.AuthAlg C.SEd25519, -- TODO replace with X25519 when switching to v7
       connIdBytes = 12,
-      tbqSize = 64,
+      tbqSize = 128,
       smpCfg = defaultSMPClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
       ntfCfg = defaultNTFClientConfig {defaultTransport = ("443", transport @TLS)},
       xftpCfg = defaultXFTPClientConfig,
@@ -219,6 +220,7 @@ defaultAgentConfig =
       xftpMaxRecipientsPerRequest = 200,
       deleteErrorCount = 10,
       ntfCron = 20, -- minutes
+      ntfBatchSize = 200,
       ntfSubCheckInterval = nominalDay,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
@@ -259,7 +261,7 @@ data NtfSupervisor = NtfSupervisor
     ntfSMPWorkers :: TMap SMPServer Worker
   }
 
-data NtfSupervisorCommand = NSCCreate | NSCSmpDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer | NSCDeleteSub
+data NtfSupervisorCommand = NSCCreate | NSCSmpDelete | NSCDeleteSub
   deriving (Show)
 
 newNtfSubSupervisor :: Natural -> IO NtfSupervisor

@@ -20,12 +20,11 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.SNTRUP761
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, sumTypeJSON)
-import Simplex.Messaging.Transport (TLS)
+import Simplex.Messaging.Transport (TLS, TSbChainKeys)
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (safeDecodeUtf8)
 import Simplex.Messaging.Version (VersionRange, VersionScope, mkVersionRange)
@@ -180,7 +179,7 @@ data RCHostSession = RCHostSession
   }
 
 data HostSessKeys = HostSessKeys
-  { hybridKey :: KEMHybridSecret,
+  { chainKeys :: TSbChainKeys,
     idPrivKey :: C.PrivateKeyEd25519,
     sessPrivKey :: C.PrivateKeyEd25519
   }
@@ -193,7 +192,7 @@ data RCCtrlSession = RCCtrlSession
   }
 
 data CtrlSessKeys = CtrlSessKeys
-  { hybridKey :: KEMHybridSecret,
+  { chainKeys :: TSbChainKeys,
     idPubKey :: C.PublicKeyEd25519,
     sessPubKey :: C.PublicKeyEd25519
   }
@@ -213,19 +212,19 @@ instance Encoding RCHostEncHello where
     pure RCHostEncHello {dhPubKey, nonce, encBody}
 
 data RCCtrlEncHello
-  = RCCtrlEncHello {kem :: KEMCiphertext, nonce :: C.CbNonce, encBody :: ByteString}
+  = RCCtrlEncHello {kem :: KEMCiphertext, encBody :: ByteString}
   | RCCtrlEncError {nonce :: C.CbNonce, encMessage :: ByteString}
   deriving (Show)
 
 instance Encoding RCCtrlEncHello where
   smpEncode = \case
-    RCCtrlEncHello {kem, nonce, encBody} -> "HELLO " <> smpEncode (kem, nonce, Tail encBody)
+    RCCtrlEncHello {kem, encBody} -> "HELLO " <> smpEncode (kem, Tail encBody)
     RCCtrlEncError {nonce, encMessage} -> "ERROR " <> smpEncode (nonce, Tail encMessage)
   smpP =
     A.takeTill (== ' ') >>= \case
       "HELLO" -> do
-        (kem, nonce, Tail encBody) <- _smpP
-        pure RCCtrlEncHello {kem, nonce, encBody}
+        (kem, Tail encBody) <- _smpP
+        pure RCCtrlEncHello {kem, encBody}
       "ERROR" -> do
         (nonce, Tail encMessage) <- _smpP
         pure RCCtrlEncError {nonce, encMessage}
