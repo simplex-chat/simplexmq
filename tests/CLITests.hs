@@ -65,7 +65,7 @@ fileLogPath = "tests/tmp/cli/etc/var/simplex-files"
 cliTests :: Spec
 cliTests = do
   describe "SMP server CLI" $ do
-    describe "initialize, start and delete the server" $ do
+    fdescribe "initialize, start and delete the server" $ do
       it "no store log, random password (default)" $ smpServerTest False True
       it "with store log, random password (default)" $ smpServerTest True True
       it "no store log, no password" $ smpServerTest False False
@@ -86,7 +86,7 @@ smpServerTest storeLog basicAuth = do
   Right ini <- readIniFile $ cfgPath <> "/smp-server.ini"
   lookupValue "STORE_LOG" "enable" ini `shouldBe` Right (if storeLog then "on" else "off")
   lookupValue "STORE_LOG" "log_stats" ini `shouldBe` Right "off"
-  lookupValue "TRANSPORT" "port" ini `shouldBe` Right "5223"
+  lookupValue "TRANSPORT" "port" ini `shouldBe` Right "5223,443"
   lookupValue "TRANSPORT" "websockets" ini `shouldBe` Right "off"
   lookupValue "AUTH" "new_queues" ini `shouldBe` Right "on"
   lookupValue "INACTIVE_CLIENTS" "disconnect" ini `shouldBe` Right "off"

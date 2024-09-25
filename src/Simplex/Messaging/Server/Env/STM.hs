@@ -16,6 +16,7 @@ import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
+import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -42,7 +43,9 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
-import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, SocketState, TransportServerConfig, loadFingerprint, loadServerCredential, newSocketState)
+import Simplex.Messaging.Transport.Server
+import System.Directory (doesFileExist)
+import System.Exit (exitFailure)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -233,8 +236,8 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
     forM storeLogFile $ \f -> do
       logInfo $ "restoring queues from file " <> T.pack f
       restoreQueues queueStore f
-  tlsServerCreds <- loadServerCredential smpCredentials
-  httpServerCreds <- mapM loadServerCredential httpCredentials
+  tlsServerCreds <- getCredentials "SMP" smpCredentials
+  httpServerCreds <- mapM (getCredentials "HTTPS") httpCredentials
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
@@ -244,6 +247,17 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
   pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
+    getCredentials protocol creds = do
+      files <- missingCreds
+      unless (null files) $ do
+        putStrLn $ "No " <> protocol <> " credentials, terminating: " <> intercalate ", " files
+        exitFailure
+      loadServerCredential creds
+      where
+        missingfile f = (\y -> [f | not y]) <$> doesFileExist f
+        missingCreds = do
+          let files = maybe id (:) (caCertificateFile creds) [certificateFile creds, privateKeyFile creds]
+           in concat <$> mapM missingfile files
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
       (qs, s) <- readWriteStoreLog f
