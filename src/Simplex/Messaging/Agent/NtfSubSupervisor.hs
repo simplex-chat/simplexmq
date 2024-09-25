@@ -27,7 +27,6 @@ import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
 import Data.Either (partitionEithers)
 import Data.Foldable (foldr')
-import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -377,14 +376,12 @@ runNtfSMPWorker c srv Worker {doWork} = forever $ do
 rescheduleAction :: TMVar () -> UTCTime -> UTCTime -> AM' Bool
 rescheduleAction doWork ts actionTs
   | actionTs <= ts = pure False
-  | otherwise = rescheduleWork doWork ts actionTs $> True
-
-rescheduleWork :: TMVar () -> UTCTime -> UTCTime -> AM' ()
-rescheduleWork doWork ts actionTs = do
-  void . atomically $ tryTakeTMVar doWork
-  void . forkIO $ do
-    liftIO $ threadDelay' $ diffToMicroseconds $ diffUTCTime actionTs ts
-    atomically $ hasWorkToDo' doWork
+  | otherwise = do
+      void . atomically $ tryTakeTMVar doWork
+      void . forkIO $ do
+        liftIO $ threadDelay' $ diffToMicroseconds $ diffUTCTime actionTs ts
+        atomically $ hasWorkToDo' doWork
+      pure True
 
 retryOnError :: AgentClient -> Text -> AM () -> (AgentErrorType -> AM ()) -> AgentErrorType -> AM ()
 retryOnError c name loop done e = do
