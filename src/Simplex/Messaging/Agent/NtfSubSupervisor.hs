@@ -28,7 +28,6 @@ import Data.Bifunctor (first)
 import Data.Either (partitionEithers)
 import Data.Foldable (foldr')
 import Data.Functor (($>))
-import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -288,26 +287,19 @@ runNtfSMPWorker c srv Worker {doWork} = do
     runNtfSMPOperation :: AM ()
     runNtfSMPOperation = do
       ntfBatchSize <- asks $ ntfBatchSize . config
-      withWorkItems c doWork (\db -> getNextNtfSubSMPActions db srv ntfBatchSize) $
-        \nextSubs -> do
-          logInfo $ "runNtfSMPWorker - length nextSubs = " <> tshow (length nextSubs)
-          ts <- liftIO getCurrentTime
-          let subActions' = L.filter (\(_, _, actionTs) -> actionTs <= ts) nextSubs
-              (_, _, firstActionTs) = L.head nextSubs
-          case L.nonEmpty subActions' of
-            Nothing -> lift $ rescheduleWork doWork ts firstActionTs
-            Just subActions'' -> do
-              let (creates, deletes) = splitActions subActions''
-              processSubActionsRetry creates $ createNotifierKeys ts
-              processSubActionsRetry deletes deleteNotifierKeys
-    splitActions :: NonEmpty NtfSMPWorkItem -> ([NtfSubscription], [NtfSubscription])
-    splitActions = foldl' addAction ([], [])
+      withWorkItems c doWork (\db -> getNextNtfSubSMPActions db srv ntfBatchSize) $ \nextSubs -> do
+        logInfo $ "runNtfSMPWorker - length nextSubs = " <> tshow (length nextSubs)
+        let (creates, deletes) = splitActions nextSubs
+        retrySubActions creates createNotifierKeys
+        retrySubActions deletes deleteNotifierKeys
+    splitActions :: NonEmpty (NtfSubSMPAction, NtfSubscription) -> ([NtfSubscription], [NtfSubscription])
+    splitActions = foldr addAction ([], [])
       where
-        addAction (creates, deletes) = \case
-          (sub, NSASmpKey, _) -> (sub : creates, deletes)
-          (sub, NSASmpDelete, _) -> (creates, sub : deletes)
-    processSubActionsRetry :: [NtfSubscription] -> ([NtfSubscription] -> AM [NtfSubscription]) -> AM ()
-    processSubActionsRetry nextSubs action = do
+        addAction action (creates, deletes) = case action of
+          (NSASmpKey, sub) -> (sub : creates, deletes)
+          (NSASmpDelete, sub) -> (creates, sub : deletes)
+    retrySubActions :: [NtfSubscription] -> ([NtfSubscription] -> AM [NtfSubscription]) -> AM ()
+    retrySubActions nextSubs action = do
       subsVar <- newTVarIO nextSubs
       ri <- asks $ reconnectInterval . config
       withRetryInterval ri $ \_ loop -> do
@@ -318,8 +310,8 @@ runNtfSMPWorker c srv Worker {doWork} = do
         unless (null retrySubs) $ do
           atomically $ writeTVar subsVar retrySubs
           retryNetworkLoop c loop
-    createNotifierKeys :: UTCTime -> [NtfSubscription] -> AM [NtfSubscription]
-    createNotifierKeys ts ntfSubs =
+    createNotifierKeys :: [NtfSubscription] -> AM [NtfSubscription]
+    createNotifierKeys ntfSubs =
       lift getNtfToken >>= \case
         Just NtfToken {ntfTknStatus = NTActive, ntfMode = NMInstant} -> do
           (errs1, subRqKeys) <- prepareQueueSmpKey ntfSubs
@@ -327,7 +319,8 @@ runNtfSMPWorker c srv Worker {doWork} = do
           let (subRqKeys', errs2, successes) = splitResults rs
               ntfSubs' = map eqnrNtfSub subRqKeys'
               errs2' = map (first (qConnId . eqnrRq)) errs2
-          (errs3, srvs) <- lift $ partitionErrs (qConnId . eqnrRq . fst) successes <$> withStoreBatch' c (\db -> map (storeNtfSubCreds db) successes)
+          ts <- liftIO getCurrentTime
+          (errs3, srvs) <- lift $ partitionErrs (qConnId . eqnrRq . fst) successes <$> withStoreBatch' c (\db -> map (storeNtfSubCreds db ts) successes)
           lift $ mapM_ (getNtfNTFWorker True c) $ S.fromList srvs
           workerErrors c $ errs1 <> errs2' <> errs3
           pure ntfSubs'
@@ -348,8 +341,8 @@ runNtfSMPWorker c srv Worker {doWork} = do
               authKeyPair <- atomically $ C.generateAuthKeyPair a g
               rcvNtfKeyPair <- atomically $ C.generateKeyPair g
               pure (EnableQueueNtfReq sub rq authKeyPair rcvNtfKeyPair)
-        storeNtfSubCreds :: DB.Connection -> (EnableQueueNtfReq, (SMP.NotifierId, SMP.RcvNtfPublicDhKey)) -> IO NtfServer
-        storeNtfSubCreds db (EnableQueueNtfReq {eqnrNtfSub, eqnrAuthKeyPair = (ntfPublicKey, ntfPrivateKey), eqnrRcvKeyPair = (_, pk)}, (notifierId, srvPubDhKey)) = do
+        storeNtfSubCreds :: DB.Connection -> UTCTime -> (EnableQueueNtfReq, (SMP.NotifierId, SMP.RcvNtfPublicDhKey)) -> IO NtfServer
+        storeNtfSubCreds db ts (EnableQueueNtfReq {eqnrNtfSub, eqnrAuthKeyPair = (ntfPublicKey, ntfPrivateKey), eqnrRcvKeyPair = (_, pk)}, (notifierId, srvPubDhKey)) = do
           let NtfSubscription {ntfServer} = eqnrNtfSub
               rcvNtfDhSecret = C.dh' srvPubDhKey pk
           setRcvQueueNtfCreds db (ntfSubConnId eqnrNtfSub) $ Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
