@@ -1674,8 +1674,8 @@ markNtfSubActionNtfFailed_ db connId =
 
 type NtfSMPWorkItem = (NtfSubscription, NtfSubSMPAction, NtfActionTs)
 
-getNextNtfSubSMPActions :: DB.Connection -> SMPServer -> IO (Either StoreError [Either StoreError NtfSMPWorkItem])
-getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) =
+getNextNtfSubSMPActions :: DB.Connection -> SMPServer -> Int -> IO (Either StoreError [Either StoreError NtfSMPWorkItem])
+getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) ntfBatchSize =
   getWorkItems "ntf SMP" getNtfConnIds getNtfSubAction (markNtfSubActionSMPFailed_ db)
   where
     getNtfConnIds :: IO [ConnId]
@@ -1689,9 +1689,9 @@ getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) =
             WHERE smp_host = ? AND smp_port = ? AND ntf_sub_smp_action IS NOT NULL AND ntf_sub_action_ts IS NOT NULL
               AND (smp_failed = 0 OR updated_by_supervisor = 1)
             ORDER BY ntf_sub_action_ts ASC
-            LIMIT 200
+            LIMIT ?
           |]
-          (smpHost, smpPort)
+          (smpHost, smpPort, ntfBatchSize)
     getNtfSubAction :: ConnId -> IO (Either StoreError NtfSMPWorkItem)
     getNtfSubAction connId = do
       markUpdatedByWorker db connId

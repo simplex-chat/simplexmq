@@ -286,8 +286,9 @@ runNtfSMPWorker c srv Worker {doWork} = do
       runReaderT (runExceptT runNtfSMPOperation) env
   where
     runNtfSMPOperation :: AM ()
-    runNtfSMPOperation =
-      withWorkItems c doWork (`getNextNtfSubSMPActions` srv) $
+    runNtfSMPOperation = do
+      ntfBatchSize <- asks $ ntfBatchSize . config
+      withWorkItems c doWork (\db -> getNextNtfSubSMPActions db srv ntfBatchSize) $
         \nextSubs -> do
           logInfo $ "runNtfSMPWorker - length nextSubs = " <> tshow (length nextSubs)
           ts <- liftIO getCurrentTime

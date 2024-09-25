@@ -150,6 +150,7 @@ data AgentConfig = AgentConfig
     xftpMaxRecipientsPerRequest :: Int,
     deleteErrorCount :: Int,
     ntfCron :: Word16,
+    ntfBatchSize :: Int,
     ntfSubCheckInterval :: NominalDiffTime,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -219,6 +220,7 @@ defaultAgentConfig =
       xftpMaxRecipientsPerRequest = 200,
       deleteErrorCount = 10,
       ntfCron = 20, -- minutes
+      ntfBatchSize = 200,
       ntfSubCheckInterval = nominalDay,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
