@@ -67,7 +67,7 @@ The session invitation contains this data:
 - CA TLS certificate fingerprint of the controller - this is part of long term identity of the controller established during the first session, and repeated in the subsequent session announcements.
 - Session Ed25519 public key used to verify the announcement and commands - this mitigates the compromise of the long term signature key, as the controller will have to sign each command with this key first.
 - Long-term Ed25519 public key used to verify the announcement and commands - this is part of the long term controller identity.
-- Session X25519 DH key and SNTRUP761 KEM encapsulation key to agree session encryption (both for multicast announcement and for commands and responses in TLS), as described in https://datatracker.ietf.org/doc/draft-josefsson-ntruprime-hybrid/. The new keys are used for each session, and if client key is already available (from the previous session), the computed shared secret will be used to encrypt the announcement multicast packet. The out-of-band invitation is unencrypted. DH public key and KEM encapsulation key are sent unencrypted. NaCL crypto_box is used for encryption.
+- Session X25519 DH key to agree session encryption (both for multicast announcement and for commands and responses in TLS), as described in https://datatracker.ietf.org/doc/draft-josefsson-ntruprime-hybrid/. The new keys are used for each session, and if client key is already available (from the previous session), the computed shared secret will be used to encrypt the announcement multicast packet. The out-of-band invitation is unencrypted. DH public key and KEM encapsulation key are sent unencrypted. NaCL crypto_box is used for encryption.
 
 Host application decrypts (except the first session) and validates the invitation:
 - Session signature is valid.
@@ -184,7 +184,7 @@ The controller decrypts (including the first session) and validates the received
 The controller should reply with with `ctrlHello` or `ctrlError` response:
 
 ```abnf
-ctrlHello = %s"HELLO " kemCiphertext nonce encrypted(unpaddedSize ctrlHelloJSON helloPad) pad
+ctrlHello = %s"HELLO " kemCiphertext encrypted(unpaddedSize ctrlHelloJSON helloPad) pad
 ; ctrlHelloJSON is encrypted with the hybrid secret,
 ; including both previously agreed DH secret and KEM secret from kemCiphertext
 unpaddedSize = largeLength
@@ -206,6 +206,8 @@ JTD schema for the encrypted part of controller HELLO block `ctrlHelloJSON`:
 }
 ```
 
+Controller `hello` block and all subsequent protocol messages are encrypted with the chain keys derived from the hybrid key (see key exchange below) - that is why conntroller hello block does not include nonce. That provides forward secrecy within the XRCP session. Receiving this `hello` block allows host to compute the same hybrid keys and to derive the same chain keys.
+
 Once the controller replies HELLO to the valid host HELLO block, it should stop accepting new TCP connections.
 
 ### Controller/host session operation
@@ -223,10 +225,12 @@ tlsunique channel binding from TLS session MUST be included in commands (include
 The syntax for encrypted command and response body encoding:
 
 ```abnf
-commandBody = encBody sessSignature idSignature [attachment]
-responseBody = encBody [attachment] ; counter must match command
-encBody = nonce encLength32 encrypted(tlsunique counter body)
-attachment = %x01 nonce encLength32 encrypted(attachment)
+commandBody = counter encBody sessSignature idSignature [attachment]
+responseBody = counter encBody [attachment] ; counter must match command
+; counter is placed outside of encrypted body to allow correlating encryption keys
+; with the chain keys (each command and response are encrypted by different keys)
+encBody = encLength32 encrypted(tlsunique body)
+attachment = %x01 encLength32 encrypted(attachment)
 noAttachment = %x00
 tlsunique = length 1*OCTET
 counter = 8*8 OCTET ; int64
@@ -239,7 +243,7 @@ If the command or response includes attachment, its hash must be included in com
 
 Initial announcement is shared out-of-band (URI with xrcp scheme), and it is not encrypted.
 
-This announcement contains only DH keys, as KEM key is too large to include in QR code, which are used to agree encryption key for host HELLO block. The host HELLO block will contain DH key in plaintext part and KEM encapsulation (public) key in encrypted part, that will be used to determine the shared secret (using SHA256 over concatenated DH shared secret and KEM encapsulated secret) both for controller HELLO response (that contains KEM ciphertext in plaintext part) and subsequent session commands and responses.
+This announcement contains only DH keys, as KEM key is too large to include in QR code, which are used to agree encryption key for host HELLO block. The host HELLO block will contain DH key in plaintext part and KEM encapsulation (public) key in encrypted part, that will be used to determine the shared secret (using SHA3-256 over concatenated DH shared secret and KEM encapsulated secret) to derive keys for controller HELLO response (that contains KEM ciphertext in plaintext part) and subsequent session commands and responses.
 
 During the next session the announcement is sent via encrypted multicast block. The shared key for this announcement and for host HELLO block is determined using the KEM shared secret from the previous session and DH shared secret computed using the host DH key from the previous session and the new controller DH key from the announcement.
 
@@ -272,6 +276,22 @@ kemSecret(n) = dec(kemCiphertext(n), kemDecKey(n))
 If controller fails to store the new host DH key after receiving HELLO block, the encryption will become out of sync and the host won't be able to decrypt the next announcement. To mitigate it, the host should keep the last session DH key and also previous session DH key to try to decrypt the next announcement computing shared secret using both keys (first the new one, and in case it fails - the previous).
 
 To decrypt a multicast announcement, the host should try to decrypt it using the keys of all known (paired) remote controllers.
+
+Once kemSecret is agreed for the session, it is used to derive two chain keys, to receive and to send messages:
+
+```
+host: sndKey, rcvKey = HKDF(kemSecret, "SimpleXSbChainInit", 64)
+controller: rcvKey, sndKey  = HKDF(kemSecret, "SimpleXSbChainInit", 64)
+```
+
+where HKDF is based on SHA512, with empty salt.
+
+Actual keys and nonces to encrypt and decrypt messages are derived from these chain keys:
+
+```
+to send: (sndKey', sk, nonce) = HKDF(sndKey, "SimpleXSbChain", 88)
+to receive: (rcvKey', sk, nonce) = HKDF(rcvKey, "SimpleXSbChain", 88)
+```
 
 ## Threat model
 
