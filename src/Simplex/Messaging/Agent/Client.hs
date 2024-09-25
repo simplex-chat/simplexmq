@@ -115,6 +115,7 @@ module Simplex.Messaging.Agent.Client
     hasWorkToDo,
     hasWorkToDo',
     withWork,
+    withWorkItems,
     agentOperations,
     agentOperationBracket,
     waitUntilActive,
@@ -185,7 +186,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (deleteFirstsBy, foldl', partition, (\\))
+import Data.List (deleteFirstsBy, find, foldl', partition, (\\))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -1813,9 +1814,34 @@ withWork c doWork getWork action =
   withStore' c getWork >>= \case
     Right (Just r) -> action r
     Right Nothing -> noWork
+    -- worker is stopped here (noWork) because the next iteration is likely to produce the same result
     Left e@SEWorkItemError {} -> noWork >> notifyErr (CRITICAL False) e
     Left e -> notifyErr INTERNAL e
   where
+    noWork = liftIO $ noWorkToDo doWork
+    notifyErr err e = atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err $ show e)
+
+withWorkItems :: AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError [Either StoreError a])) -> (NonEmpty a -> AM ()) -> AM ()
+withWorkItems c doWork getWork action = do
+  withStore' c getWork >>= \case
+    Right rs -> do
+      let (errs, items) = partitionEithers rs
+      case L.nonEmpty items of
+        Just items' -> action items'
+        Nothing -> do
+          let criticalErr = find workItemError errs
+          forM_ criticalErr $ \ err -> do
+            notifyErr (CRITICAL False) err
+            when (all workItemError errs) noWork
+      unless (null errs) $ atomically $
+        writeTBQueue (subQ c) ("", "", AEvt SAENone $ ERRS $ map (\e -> ("", INTERNAL $ show e)) errs)
+    Left e
+      | workItemError e -> noWork >> notifyErr (CRITICAL False) e
+      | otherwise -> notifyErr INTERNAL e
+  where
+    workItemError = \case
+      SEWorkItemError {} -> True
+      _ -> False
     noWork = liftIO $ noWorkToDo doWork
     notifyErr err e = atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err $ show e)
 
