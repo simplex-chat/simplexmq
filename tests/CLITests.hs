@@ -4,7 +4,9 @@
 
 module CLITests where
 
+import AgentTests.FunctionalAPITests (runRight_)
 import Control.Logger.Simple
+import Control.Monad
 import Crypto.PubKey.ECC.Types (CurveName (..))
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashMap.Strict as HM
@@ -14,13 +16,16 @@ import qualified Data.Text as T
 import qualified Data.X509 as X
 import qualified Data.X509.File as XF
 import Data.X509.Validation (Fingerprint (..))
-import Network.HTTP.Client as HTTP
+import qualified Network.HTTP.Client as H1
+import qualified Network.HTTP2.Client as H2
 import Simplex.FileTransfer.Server.Main (xftpServerCLI)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server.Main
-import Simplex.Messaging.Server.Main
-import Simplex.Messaging.Transport (defaultSupportedParams, defaultSupportedParamsHTTPS, simplexMQVersion, tlsALPN, tlsServerCerts)
-import Simplex.Messaging.Transport.Client
+import Simplex.Messaging.Server.Main (smpServerCLI, smpServerCLI_)
+import Simplex.Messaging.Transport (TLS (..), defaultSupportedParams, defaultSupportedParamsHTTPS, simplexMQVersion, supportedClientSMPRelayVRange)
+import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTransportClientConfig, runTLSTransportClient, smpClientHandshake)
+import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
+import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (loadFileFingerprint)
 import Simplex.Messaging.Util (catchAll_)
 import qualified Static
@@ -65,7 +70,7 @@ cliTests = do
       it "with store log, random password (default)" $ smpServerTest True True
       it "no store log, no password" $ smpServerTest False False
       it "with store log, no password" $ smpServerTest True False
-      fit "static files" smpServerTestStatic
+      it "static files" smpServerTestStatic
   describe "Ntf server CLI" $ do
     it "should initialize, start and delete the server (no store log)" $ ntfServerTest False
     it "should initialize, start and delete the server (with store log)" $ ntfServerTest True
@@ -116,7 +121,6 @@ smpServerTest storeLog basicAuth = do
 
 smpServerTestStatic :: HasCallStack => IO ()
 smpServerTestStatic = do
-  setLogLevel LogDebug
   let iniFile = cfgPath <> "/smp-server.ini"
   capture_ (withArgs ["init", "-y", "--no-password", "--web-path", webPath] $ smpServerCLI cfgPath logPath)
     >>= (`shouldSatisfy` (("Server initialized, please provide additional server information in " <> iniFile) `isPrefixOf`))
@@ -136,36 +140,45 @@ smpServerTestStatic = do
     threadDelay 1000000
     html <- BL.readFile $ webPath <> "/index.html"
 
-    Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
-    let ca = C.KeyHash fp
-    manager <- newManager defaultManagerSettings
-    HTTP.responseBody <$> HTTP.httpLbs "http://127.0.0.1:8000" manager `shouldReturn` html
-    logDebug "Static site works"
+    -- "external" CA signing HTTP credentials
+    Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/ca.crt"
+    let caHTTP = C.KeyHash fpHTTP
+    manager <- H1.newManager H1.defaultManagerSettings
+    H1.responseBody <$> H1.httpLbs "http://127.0.0.1:8000" manager `shouldReturn` html
+    logDebug "Plain HTTP works"
 
-    let cfgHttp = defaultTransportClientConfig {alpn = Just ["http/1.1"], useSNI = True}
-    let getCerts tls =
-          let X.CertificateChain cc = tlsServerCerts tls
-           in map (X.signedObject . X.getSigned) cc
-    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfgHttp Nothing "localhost" "5223" (Just ca) $ \tls -> do
-      tlsALPN tls `shouldBe` Just "http/1.1"
+    let cfgHttp = defaultTransportClientConfig {alpn = Just ["h2"], useSNI = True}
+    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfgHttp Nothing "localhost" "5223" (Just caHTTP) $ \tls -> do
+      tlsALPN tls `shouldBe` Just "h2"
       case getCerts tls of
         X.Certificate {X.certPubKey = X.PubKeyEC (X.PubKeyEC_Named {X.pubkeyEC_name})} : _ca -> pubkeyEC_name `shouldBe` SEC_p256r1
         leaf : _ -> error $ "Unexpected leaf cert: " <> show leaf
         [] -> error "Empty chain"
-    -- HTTP.responseBody <$> HTTP.httpLbs "https://localhost:5223" manager `shouldReturn` html -- "certificate has unknown CA"
-    logDebug "HTTPS works"
 
+      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 1024 * 1024}
+      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg "localhost" "5223" mempty 65536 tls
+      let req = H2.requestNoBody "GET" "/" []
+      HC.HTTP2Response {HC.respBody = HTTP2Body {bodyHead = shsBody}} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 1000000)
+      BL.fromStrict shsBody `shouldBe` html
+    logDebug "Combined HTTPS works"
+
+    -- "local" CA signing SMP credentials
+    Fingerprint fpSMP <- loadFileFingerprint (cfgPath <> "/ca.crt")
+    let caSMP = C.KeyHash fpSMP
     let cfgSmp = defaultTransportClientConfig {alpn = Just ["smp/1"], useSNI = False}
-    runTLSTransportClient defaultSupportedParams Nothing cfgSmp Nothing "localhost" "5223" Nothing $ \tls -> do
+    runTLSTransportClient defaultSupportedParams Nothing cfgSmp Nothing "localhost" "5223" (Just caSMP) $ \tls -> do
       tlsALPN tls `shouldBe` Just "smp/1"
       case getCerts tls of
-        X.Certificate {X.certPubKey = X.PubKeyEd25519 _k} : _ca -> pure ()
+        X.Certificate {X.certPubKey = X.PubKeyEd25519 _k} : _ca -> print _ca -- pure ()
         leaf : _ -> error $ "Unexpected leaf cert: " <> show leaf
         [] -> error "Empty chain"
-    -- runExceptT (smpClientHandshake tls Nothing ca supportedClientSMPRelayVRange) >>= \case
-    --   Right _th -> pure ()
-    --   Left te -> error (show te)
-    logDebug "SMP works"
+      runRight_ . void $ smpClientHandshake tls Nothing caSMP supportedClientSMPRelayVRange
+    logDebug "Combined SMP works"
+  where
+    getCerts :: TLS -> [X.Certificate]
+    getCerts tls =
+      let X.CertificateChain cc = tlsServerCerts tls
+       in map (X.signedObject . X.getSigned) cc
 
 ntfServerTest :: Bool -> IO ()
 ntfServerTest storeLog = do
