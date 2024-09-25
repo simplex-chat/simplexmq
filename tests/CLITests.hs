@@ -65,7 +65,7 @@ fileLogPath = "tests/tmp/cli/etc/var/simplex-files"
 cliTests :: Spec
 cliTests = do
   describe "SMP server CLI" $ do
-    fdescribe "initialize, start and delete the server" $ do
+    describe "initialize, start and delete the server" $ do
       it "no store log, random password (default)" $ smpServerTest False True
       it "with store log, random password (default)" $ smpServerTest True True
       it "no store log, no password" $ smpServerTest False False
