@@ -90,7 +90,7 @@ testSocksMode = do
   where
     transportSocks proxy socksMode = transportSocksCfg defaultNetworkConfig {socksProxy = proxy, socksMode}
     transportSocksCfg cfg host =
-      let TransportClientConfig {socksProxy} = transportClientConfig cfg host
+      let TransportClientConfig {socksProxy} = transportClientConfig cfg host True
        in socksProxy
 
 testSocksProxyEncoding :: Spec
