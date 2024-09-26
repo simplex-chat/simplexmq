@@ -1748,7 +1748,6 @@ agentNtfCreateSubscriptions c tknId NtfToken {ntfServer, ntfPrivKey} subsCreds =
             agentError = second . first $ protocolClientError NTF $ clientServer ntf
     Nothing -> pure []
   where
-    -- newSubs = L.map toNewSub subsCreds
     toNewSub :: CreateSubNtfReq -> NewNtfEntity 'Subscription
     toNewSub (NtfSubscription {smpServer}, ClientNtfCreds {ntfPrivateKey, notifierId}) =
       NewNtfSub tknId (SMPQueueNtf smpServer notifierId) ntfPrivateKey
