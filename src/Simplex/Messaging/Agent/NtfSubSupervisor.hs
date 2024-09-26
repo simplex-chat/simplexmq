@@ -262,9 +262,7 @@ runNtfWorker c srv Worker {doWork} =
     -- These actions are not batched
     deleteSubs :: [NtfSubscription] -> AM' [NtfSubscription]
     deleteSubs subs = do
-      retrySubs_ <- forM subs $ \sub@NtfSubscription {connId} ->
-        fromRight Nothing
-          <$> runExceptT (deleteSub sub `catchAgentError` \e -> workerInternalError c connId (show e) $> Nothing)
+      retrySubs_ <- mapM (runCatching deleteSub) subs
       pure $ catMaybes retrySubs_
       where
         deleteSub :: NtfSubscription -> AM (Maybe NtfSubscription)
@@ -276,9 +274,7 @@ runNtfWorker c srv Worker {doWork} =
             lift . void $ getNtfSMPWorker True c smpServer
     rotateSubs :: [NtfSubscription] -> AM' [NtfSubscription]
     rotateSubs subs = do
-      retrySubs_ <- forM subs $ \sub@NtfSubscription {connId} ->
-        fromRight Nothing
-          <$> runExceptT (rotateSub sub `catchAgentError` \e -> workerInternalError c connId (show e) $> Nothing)
+      retrySubs_ <- mapM (runCatching rotateSub) subs
       pure $ catMaybes retrySubs_
       where
         rotateSub :: NtfSubscription -> AM (Maybe NtfSubscription)
@@ -287,6 +283,10 @@ runNtfWorker c srv Worker {doWork} =
             withStore' c $ \db -> deleteNtfSubscription db connId
             ns <- asks ntfSupervisor
             atomically $ writeTBQueue (ntfSubQ ns) (NSCCreate, [connId])
+    runCatching :: (NtfSubscription -> AM (Maybe NtfSubscription)) -> NtfSubscription -> AM' (Maybe NtfSubscription)
+    runCatching action sub@NtfSubscription {connId} =
+      fromRight Nothing
+        <$> runExceptT (action sub `catchAgentError` \e -> workerInternalError c connId (show e) $> Nothing)
     -- deleteNtfSub is only used in NSADelete and NSARotate, so also deprecated
     deleteNtfSub :: NtfSubscription -> AM () -> AM (Maybe NtfSubscription)
     deleteNtfSub sub@NtfSubscription {userId, ntfSubId} continue = case ntfSubId of
@@ -294,14 +294,17 @@ runNtfWorker c srv Worker {doWork} =
         lift getNtfToken >>= \case
           Just tkn@NtfToken {ntfServer} -> do
             atomically $ incNtfServerStat c userId ntfServer ntfDelAttempts
-            retrySub <-
-              tryAgentError (agentNtfDeleteSubscription c nSubId tkn) >>= \case
-                Left e | temporaryOrHostError e -> pure $ Just sub
-                _ -> continue $> Nothing
-            atomically $ incNtfServerStat c userId ntfServer ntfDeleted
-            pure retrySub
-          Nothing -> continue $> Nothing
-      _ -> continue $> Nothing
+            tryAgentError (agentNtfDeleteSubscription c nSubId tkn) >>= \case
+              Right _ -> do
+                atomically $ incNtfServerStat c userId ntfServer ntfDeleted
+                continue'
+              Left e
+                | temporaryOrHostError e -> pure $ Just sub -- don't continue, retry
+                | otherwise -> continue'
+          Nothing -> continue'
+      _ -> continue'
+      where
+        continue' = continue $> Nothing -- continue without retry
 
 -- processSub' :: (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> AM ()
 -- processSub' (sub@NtfSubscription {userId, connId, smpServer, ntfSubId}, action, actionTs) = do
