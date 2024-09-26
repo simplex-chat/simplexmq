@@ -254,7 +254,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 basicAuthEnabled = isJust newQueueBasicAuth
               }
       case webStaticPath' of
-        Just path | sharedHTTP -> do -- TODO sharedHttpsPort
+        Just path | sharedHTTP -> do
           runWebServer path Nothing ServerInformation {config, information}
           attachStaticFiles path $ \attachHTTP -> runSMPServer cfg $ Just attachHTTP
         Just path -> do
