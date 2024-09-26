@@ -296,8 +296,10 @@ printServerConfig transports logFile = do
   putStrLn $ case logFile of
     Just f -> "Store log: " <> f
     _ -> "Store log disabled."
-  forM_ transports $ \(p, ATransport t, _addHTTP) ->
-    putStrLn $ "Listening on port " <> p <> " (" <> transportName t <> ")..."
+  forM_ transports $ \(p, ATransport t, addHTTP) -> do
+    let descr = p <> " (" <> transportName t <> ")..."
+    putStrLn $ "Serving SMP protocol on port " <> descr
+    when addHTTP $ putStrLn $ "Serving static site on port " <> descr
 
 deleteDirIfExists :: FilePath -> IO ()
 deleteDirIfExists path = whenM (doesDirectoryExist path) $ removeDirectoryRecursive path
