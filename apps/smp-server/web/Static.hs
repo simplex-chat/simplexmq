@@ -68,7 +68,11 @@ attachStaticFiles path action =
     terminate conn = WI.connClose conn `finally` (readIORef (WI.connWriteBuffer conn) >>= WI.bufFree)
 
 staticFiles :: FilePath -> Application
-staticFiles = S.staticApp . S.defaultFileServerSettings
+staticFiles root = S.staticApp settings
+  where
+    settings = (S.defaultFileServerSettings root)
+      { S.ssListing = Nothing
+      }
 
 generateSite :: ServerInformation -> Maybe TransportHost -> FilePath -> IO ()
 generateSite si onionHost sitePath = do
