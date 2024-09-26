@@ -94,7 +94,7 @@ smpServerTest storeLog basicAuth = do
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` smpServerCLI cfgPath logPath) `catchAll_` pure (Just ()))
   r `shouldContain` ["SMP server v" <> simplexMQVersion]
   r `shouldContain` (if storeLog then ["Store log: " <> logPath <> "/smp-server-store.log"] else ["Store log disabled."])
-  r `shouldContain` ["Listening on port 5223 (TLS)..."]
+  r `shouldContain` ["Serving SMP protocol on port 5223 (TLS)...", "Serving SMP protocol on port 443 (TLS)...", "Serving static site on port 443 (TLS)..."]
   r `shouldContain` ["not expiring inactive clients"]
   r `shouldContain` (if basicAuth then ["creating new queues requires password"] else ["creating new queues allowed"])
   -- cert
@@ -120,7 +120,6 @@ smpServerTest storeLog basicAuth = do
 
 smpServerTestStatic :: HasCallStack => IO ()
 smpServerTestStatic = do
-  setLogLevel LogDebug
   let iniFile = cfgPath <> "/smp-server.ini"
   capture_ (withArgs ["init", "-y", "--no-password", "--web-path", webPath] $ smpServerCLI cfgPath logPath)
     >>= (`shouldSatisfy` (("Server initialized, please provide additional server information in " <> iniFile) `isPrefixOf`))
@@ -196,7 +195,7 @@ ntfServerTest storeLog = do
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` ntfServerCLI ntfCfgPath ntfLogPath) `catchAll_` pure (Just ()))
   r `shouldContain` ["SMP notifications server v" <> simplexMQVersion]
   r `shouldContain` (if storeLog then ["Store log: " <> ntfLogPath <> "/ntf-server-store.log"] else ["Store log disabled."])
-  r `shouldContain` ["Listening on port 443 (TLS)..."]
+  r `shouldContain` ["Serving SMP protocol on port 443 (TLS)..."]
   capture_ (withStdin "Y" . withArgs ["delete"] $ ntfServerCLI ntfCfgPath ntfLogPath)
     >>= (`shouldSatisfy` ("WARNING: deleting the server will make all queues inaccessible" `isPrefixOf`))
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` False
