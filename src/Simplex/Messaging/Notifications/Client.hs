@@ -54,7 +54,7 @@ ntfCreateSubscription c pKey newSub =
     r -> throwE $ unexpectedResponse r
 
 ntfCreateSubscriptions :: NtfClient -> C.APrivateAuthKey -> NonEmpty (NewNtfEntity 'Subscription) -> IO (NonEmpty (Either NtfClientError NtfSubscriptionId))
-ntfCreateSubscriptions c pKey newSubs = L.map process <$> sendProtocolCommands c cs
+ntfCreateSubscriptions c pKey newSubs = L.map process <$> sendProtocolCommands "ntfCreateSubscriptions" c cs
   where
     cs = L.map (\newSub -> (Just pKey, NoEntity, NtfCmd SSubscription $ SNEW newSub)) newSubs
     process (Response _ r) = case r of

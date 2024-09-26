@@ -141,10 +141,10 @@ notificationTests t = do
     it "should resume subscriptions after SMP server is restarted" $
       withAPNSMockServer $ \apns ->
         withNtfServer t $ testNotificationsSMPRestart t apns
-  describe "Notifications after SMP server restart" $
+  fdescribe "Notifications after SMP server restart" $
     it "should resume batched subscriptions after SMP server is restarted" $
       withAPNSMockServer $ \apns ->
-        withNtfServer t $ testNotificationsSMPRestartBatch 100 t apns
+        withNtfServer t $ testNotificationsSMPRestartBatch 150 t apns
   describe "should switch notifications to the new queue" $
     testServerMatrix2 t $ \servers ->
       withAPNSMockServer $ \apns ->
