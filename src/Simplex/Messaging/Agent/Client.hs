@@ -70,6 +70,7 @@ module Simplex.Messaging.Agent.Client
     agentNtfDeleteToken,
     agentNtfEnableCron,
     agentNtfCreateSubscription,
+    agentNtfCreateSubscriptions,
     agentNtfCheckSubscription,
     agentNtfDeleteSubscription,
     agentXFTPDownloadChunk,
@@ -1729,6 +1730,28 @@ agentNtfEnableCron c tknId NtfToken {ntfServer, ntfPrivKey} interval =
 agentNtfCreateSubscription :: AgentClient -> NtfTokenId -> NtfToken -> SMPQueueNtf -> SMP.NtfPrivateAuthKey -> AM NtfSubscriptionId
 agentNtfCreateSubscription c tknId NtfToken {ntfServer, ntfPrivKey} smpQueue nKey =
   withNtfClient c ntfServer tknId "SNEW" $ \ntf -> ntfCreateSubscription ntf ntfPrivKey (NewNtfSub tknId smpQueue nKey)
+
+type CreateSubNtfReq = (NtfSubscription, ClientNtfCreds)
+
+agentNtfCreateSubscriptions :: AgentClient -> NtfTokenId -> NtfToken -> [CreateSubNtfReq] -> AM' [(CreateSubNtfReq, Either AgentErrorType NtfSubscriptionId)]
+agentNtfCreateSubscriptions c tknId NtfToken {ntfServer, ntfPrivKey} subsCreds = do
+  case L.nonEmpty subsCreds of
+    Just subsCreds' -> do
+      let tSess = (0, ntfServer, Nothing)
+      tryAgentError' (getNtfServerClient c tSess) >>= \case
+        Left e -> pure $ L.toList $ L.map (,Left e) subsCreds'
+        Right ntf -> liftIO $ do
+          logServer' "-->" c ntfServer (bshow (length subsCreds') <> " subscriptions") "SNEW"
+          r <- L.zip subsCreds' <$> ntfCreateSubscriptions ntf ntfPrivKey (L.map toNewSub subsCreds')
+          pure $ L.toList $ L.map agentError r
+          where
+            agentError = second . first $ protocolClientError NTF $ clientServer ntf
+    Nothing -> pure []
+  where
+    -- newSubs = L.map toNewSub subsCreds
+    toNewSub :: CreateSubNtfReq -> NewNtfEntity 'Subscription
+    toNewSub (NtfSubscription {smpServer}, ClientNtfCreds {ntfPrivateKey, notifierId}) =
+      NewNtfSub tknId (SMPQueueNtf smpServer notifierId) ntfPrivateKey
 
 agentNtfCheckSubscription :: AgentClient -> NtfSubscriptionId -> NtfToken -> AM NtfSubStatus
 agentNtfCheckSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
