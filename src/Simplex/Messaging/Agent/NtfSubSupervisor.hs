@@ -25,7 +25,7 @@ import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
-import Data.Either (partitionEithers)
+import Data.Either (fromRight, partitionEithers)
 import Data.Foldable (foldr')
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
@@ -207,8 +207,8 @@ runNtfWorker c srv Worker {doWork} =
         let (creates, checks, deletes, rotates) = splitActions nextSubs
         retrySubActions c creates createSubs
         -- retrySubActions c checks checkSubs
-        retrySubActions' c deletes deleteSubs `catchAgentError` \e -> logError $ "runNtfWorker - deleteSubs error: " <> tshow e
-        retrySubActions' c rotates rotateSubs `catchAgentError` \e -> logError $ "runNtfWorker - rotateSubs error: " <> tshow e
+        retrySubActions c deletes deleteSubs
+        retrySubActions c rotates rotateSubs
     splitActions :: NonEmpty (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> ([NtfSubscription], [NtfSubscription], [NtfSubscription], [NtfSubscription])
     splitActions = foldr addAction ([], [], [], [])
       where
@@ -260,23 +260,33 @@ runNtfWorker c srv Worker {doWork} =
         updateSubNSACheck db checkTs (sub, nSubId) = updateNtfSubscription db sub {ntfSubId = Just nSubId, ntfSubStatus = NASCreated NSNew} (NSANtf NSACheck) checkTs
     -- NSADelete and NSARotate are deprecated, but their processing is kept for legacy db records;
     -- These actions are not batched
-    deleteSubs :: [NtfSubscription] -> AM [NtfSubscription]
+    deleteSubs :: [NtfSubscription] -> AM' [NtfSubscription]
     deleteSubs subs = do
-      retrySubs_ <- forM subs $ \sub@NtfSubscription {smpServer} ->
-        deleteNtfSub sub $ do
-          let sub' = sub {ntfSubId = Nothing, ntfSubStatus = NASOff}
-          ts <- liftIO getCurrentTime
-          withStore' c $ \db -> updateNtfSubscription db sub' (NSASMP NSASmpDelete) ts
-          lift . void $ getNtfSMPWorker True c smpServer
+      retrySubs_ <- forM subs $ \sub@NtfSubscription {connId} ->
+        fromRight Nothing
+          <$> runExceptT (deleteSub sub `catchAgentError` \e -> workerInternalError c connId (show e) $> Nothing)
       pure $ catMaybes retrySubs_
-    rotateSubs :: [NtfSubscription] -> AM [NtfSubscription]
+      where
+        deleteSub :: NtfSubscription -> AM (Maybe NtfSubscription)
+        deleteSub sub@NtfSubscription {smpServer} =
+          deleteNtfSub sub $ do
+            let sub' = sub {ntfSubId = Nothing, ntfSubStatus = NASOff}
+            ts <- liftIO getCurrentTime
+            withStore' c $ \db -> updateNtfSubscription db sub' (NSASMP NSASmpDelete) ts
+            lift . void $ getNtfSMPWorker True c smpServer
+    rotateSubs :: [NtfSubscription] -> AM' [NtfSubscription]
     rotateSubs subs = do
       retrySubs_ <- forM subs $ \sub@NtfSubscription {connId} ->
-        deleteNtfSub sub $ do
-          withStore' c $ \db -> deleteNtfSubscription db connId
-          ns <- asks ntfSupervisor
-          atomically $ writeTBQueue (ntfSubQ ns) (NSCCreate, [connId])
+        fromRight Nothing
+          <$> runExceptT (rotateSub sub `catchAgentError` \e -> workerInternalError c connId (show e) $> Nothing)
       pure $ catMaybes retrySubs_
+      where
+        rotateSub :: NtfSubscription -> AM (Maybe NtfSubscription)
+        rotateSub sub@NtfSubscription {connId} =
+          deleteNtfSub sub $ do
+            withStore' c $ \db -> deleteNtfSubscription db connId
+            ns <- asks ntfSupervisor
+            atomically $ writeTBQueue (ntfSubQ ns) (NSCCreate, [connId])
     -- deleteNtfSub is only used in NSADelete and NSARotate, so also deprecated
     deleteNtfSub :: NtfSubscription -> AM () -> AM (Maybe NtfSubscription)
     deleteNtfSub sub@NtfSubscription {userId, ntfSubId} continue = case ntfSubId of
@@ -401,17 +411,14 @@ runNtfSMPWorker c srv Worker {doWork} = forever $ do
         deleteSub db rq = deleteNtfSubscription db (qConnId rq)
 
 retrySubActions :: AgentClient -> [NtfSubscription] -> ([NtfSubscription] -> AM' [NtfSubscription]) -> AM ()
-retrySubActions c subs action = retrySubActions' c subs (lift . action)
-
-retrySubActions' :: AgentClient -> [NtfSubscription] -> ([NtfSubscription] -> AM [NtfSubscription]) -> AM ()
-retrySubActions' c subs action = do
+retrySubActions c subs action = do
   v <- newTVarIO subs
   ri <- asks $ reconnectInterval . config
   withRetryInterval ri $ \_ loop -> do
     liftIO $ waitWhileSuspended c
     liftIO $ waitForUserNetwork c
     subs' <- readTVarIO v
-    retrySubs <- action subs'
+    retrySubs <- lift $ action subs'
     unless (null retrySubs) $ do
       atomically $ writeTVar v retrySubs
       retryNetworkLoop c loop
