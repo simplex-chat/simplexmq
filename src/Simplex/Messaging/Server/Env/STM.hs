@@ -236,8 +236,8 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
     forM storeLogFile $ \f -> do
       logInfo $ "restoring queues from file " <> T.pack f
       restoreQueues queueStore f
-  tlsServerCreds <- getCredentials "SMP" smpCredentials
-  httpServerCreds <- mapM (getCredentials "HTTPS") httpCredentials
+  tlsServerCreds <- getCredentials "SMP" Nothing smpCredentials
+  httpServerCreds <- mapM (getCredentials "HTTPS" letsEncrypt) httpCredentials
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
@@ -247,10 +247,12 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
   pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
-    getCredentials protocol creds = do
+    letsEncrypt = Just "Use Let's Encrypt to generate: certbot certonly --standalone -d yourdomainname --key-type rsa --rsa-key-size 4096"
+    getCredentials protocol advice creds = do
       files <- missingCreds
       unless (null files) $ do
         putStrLn $ "No " <> protocol <> " credentials, terminating: " <> intercalate ", " files
+        mapM_ putStrLn advice
         exitFailure
       loadServerCredential creds
       where

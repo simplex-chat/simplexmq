@@ -102,7 +102,6 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           host' <- withPrompt ("Enter server FQDN or IP address for certificate (" <> host <> "): ") getLine
           sourceCode' <- withPrompt ("Enter server source code URI (" <> maybe simplexmqSource T.unpack src' <> "): ") getServerSourceCode
           staticPath' <- withPrompt ("Enter path to store generated static site with server information (" <> fromMaybe defaultStaticPath sp' <> "): ") getLine
-          enableWeb <- onOffPrompt "Enable built-in web server for static site" (not noWeb')
           initialize
             opts
               { enableStoreLog,
@@ -111,7 +110,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 password,
                 sourceCode = (T.pack <$> sourceCode') <|> src',
                 webStaticPath = if null staticPath' then sp' else Just staticPath',
-                disableWeb = not enableWeb
+                disableWeb = noWeb'
               }
       where
         serverPassword =
@@ -211,12 +210,14 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 <> "# Run an embedded server on this port\n\
                    \# Onion sites can use any port and register it in the hidden service config.\n\
                    \# Running on a port 80 may require setting process capabilities.\n"
-                <> ((if disableWeb then "# " else "") <> "http: 8000\n\n")
+                <> (webDisabled <> "http: 8000\n\n")
                 <> "# You can run an embedded TLS web server too if you provide port and cert and key files.\n\
-                   \# Not required for running relay on onion address.\n\
-                   \https: 443\n"
-                <> ("cert: " <> T.pack httpsCertFile <> "\n")
-                <> ("key: " <> T.pack httpsKeyFile <> "\n")
+                   \# Not required for running relay on onion address.\n"
+                <> (webDisabled <> "https: 443\n")
+                <> (webDisabled <> "cert: " <> T.pack httpsCertFile <> "\n")
+                <> (webDisabled <> "key: " <> T.pack httpsKeyFile <> "\n")
+              where
+                webDisabled = if disableWeb then "# " else ""
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
