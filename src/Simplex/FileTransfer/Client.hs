@@ -104,7 +104,7 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
   let socksCreds = clientSocksCredentials xftpNetworkConfig proxySessTs transportSession
       ProtocolServer _ host port keyHash = srv
   useHost <- liftEither $ chooseTransportHost xftpNetworkConfig host
-  let tcConfig = (transportClientConfig xftpNetworkConfig useHost) {alpn = clientALPN}
+  let tcConfig = (transportClientConfig xftpNetworkConfig useHost True) {alpn = clientALPN}
       http2Config = xftpHTTP2Config tcConfig config
   clientVar <- newTVarIO Nothing
   let usePort = if null port then "443" else port
