@@ -154,6 +154,7 @@ module Simplex.Messaging.Agent.Client
     incXFTPServerStat',
     incXFTPServerSizeStat,
     incNtfServerStat,
+    incNtfServerStat',
     AgentWorkersDetails (..),
     getAgentWorkersDetails,
     AgentWorkersSummary (..),
@@ -2080,8 +2081,12 @@ incXFTPServerStat_ = incServerStat (\AgentClient {xftpServersStats = s} -> s) ne
 {-# INLINE incXFTPServerStat_ #-}
 
 incNtfServerStat :: AgentClient -> UserId -> NtfServer -> (AgentNtfServerStats -> TVar Int) -> STM ()
-incNtfServerStat c userId srv sel = incServerStat (\AgentClient {ntfServersStats = s} -> s) newAgentNtfServerStats c userId srv sel 1
+incNtfServerStat c userId srv sel = incNtfServerStat' c userId srv sel 1
 {-# INLINE incNtfServerStat #-}
+
+incNtfServerStat' :: AgentClient -> UserId -> NtfServer -> (AgentNtfServerStats -> TVar Int) -> Int -> STM ()
+incNtfServerStat' = incServerStat (\AgentClient {ntfServersStats = s} -> s) newAgentNtfServerStats
+{-# INLINE incNtfServerStat' #-}
 
 incServerStat :: Num n => (AgentClient -> TMap (UserId, ProtocolServer p) s) -> STM s -> AgentClient -> UserId -> ProtocolServer p -> (s -> TVar n) -> n -> STM ()
 incServerStat statsSel mkNewStats c userId srv sel n = do
