@@ -207,8 +207,8 @@ runNtfWorker c srv Worker {doWork} =
         let (creates, checks, deletes, rotates) = splitActions nextSubs
         retrySubActions c creates createSubs
         -- retrySubActions c checks checkSubs
-        retrySubActions' c deletes deleteSubs
-        retrySubActions' c rotates rotateSubs
+        retrySubActions' c deletes deleteSubs `catchAgentError` \e -> logError $ "runNtfWorker - deleteSubs error: " <> tshow e
+        retrySubActions' c rotates rotateSubs `catchAgentError` \e -> logError $ "runNtfWorker - rotateSubs error: " <> tshow e
     splitActions :: NonEmpty (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> ([NtfSubscription], [NtfSubscription], [NtfSubscription], [NtfSubscription])
     splitActions = foldr addAction ([], [], [], [])
       where
