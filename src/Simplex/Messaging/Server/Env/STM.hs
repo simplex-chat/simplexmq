@@ -238,8 +238,9 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
     forM storeLogFile $ \f -> do
       logInfo $ "restoring queues from file " <> T.pack f
       restoreQueues queueStore f
-  tlsServerCreds <- getCredentials "SMP" Nothing smpCredentials
-  httpServerCreds <- mapM (getCredentials "HTTPS" letsEncrypt) httpCredentials
+  tlsServerCreds <- getCredentials "SMP" smpCredentials
+  httpServerCreds <- mapM (getCredentials "HTTPS") httpCredentials
+  mapM_ checkHTTPSCredentials httpServerCreds
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
@@ -249,27 +250,26 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
   pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
-    letsEncrypt = Just "Use Let's Encrypt to generate: certbot certonly --standalone -d yourdomainname --key-type rsa --rsa-key-size 4096"
-    getCredentials protocol advice creds = do
+    getCredentials protocol creds = do
       files <- missingCreds
       unless (null files) $ do
-        putStrLn $ "No " <> protocol <> " credentials, terminating: " <> intercalate ", " files
-        mapM_ putStrLn advice
+        putStrLn $ "Error: no " <> protocol <> " credentials: " <> intercalate ", " files
+        when (protocol == "HTTPS") $ putStrLn letsEncrypt
         exitFailure
-      c@(X.CertificateChain cc, _k) <- loadServerCredential creds
-      when (protocol == "HTTPS") $
-        -- LetsEncrypt provides ECDSA with unsafe curve p256
-        case map (X.signedObject . X.getSigned) cc of
-          X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca | RSA.public_size rsa >= 512 -> pure ()
-          _ -> do
-            putStrLn "Unsupported HTTPS credentials: expecting 4096-bit RSA"
-            mapM_ putStrLn advice
-      pure c
+      loadServerCredential creds
       where
         missingfile f = (\y -> [f | not y]) <$> doesFileExist f
         missingCreds = do
           let files = maybe id (:) (caCertificateFile creds) [certificateFile creds, privateKeyFile creds]
            in concat <$> mapM missingfile files
+    checkHTTPSCredentials (X.CertificateChain cc, _k) =
+      -- LetsEncrypt provides ECDSA with insecure curve p256 (https://safecurves.cr.yp.to)
+      case map (X.signedObject . X.getSigned) cc of
+        X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca | RSA.public_size rsa >= 512 -> pure ()
+        _ -> do
+          putStrLn $ "Error: unsupported HTTPS credentials, required 4096-bit RSA\n" <> letsEncrypt
+          exitFailure
+    letsEncrypt = "Use Let's Encrypt to generate: certbot certonly --standalone -d yourdomainname --key-type rsa --rsa-key-size 4096"
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
       (qs, s) <- readWriteStoreLog f
