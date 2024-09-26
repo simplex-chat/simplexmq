@@ -1,5 +1,4 @@
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module CLITests where
@@ -7,7 +6,7 @@ module CLITests where
 import AgentTests.FunctionalAPITests (runRight_)
 import Control.Logger.Simple
 import Control.Monad
-import Crypto.PubKey.ECC.Types (CurveName (..))
+import qualified Crypto.PubKey.RSA as RSA
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashMap.Strict as HM
 import Data.Ini (Ini (..), lookupValue, readIniFile, writeIniFile)
@@ -121,14 +120,16 @@ smpServerTest storeLog basicAuth = do
 
 smpServerTestStatic :: HasCallStack => IO ()
 smpServerTestStatic = do
+  setLogLevel LogDebug
   let iniFile = cfgPath <> "/smp-server.ini"
   capture_ (withArgs ["init", "-y", "--no-password", "--web-path", webPath] $ smpServerCLI cfgPath logPath)
     >>= (`shouldSatisfy` (("Server initialized, please provide additional server information in " <> iniFile) `isPrefixOf`))
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` True
   Right ini <- readIniFile iniFile
   lookupValue "WEB" "static_path" ini `shouldBe` Right (T.pack webPath)
-  let web = [("http", "8000"), ("https", "5223"), ("cert", "tests/fixtures/web.crt"), ("key", "tests/fixtures/web.key"), ("static_path", T.pack webPath)]
-      ini' = ini {iniSections = HM.insert "WEB" web (iniSections ini)}
+  let transport = [("host", "localhost"), ("port", "5223"), ("log_tls_errors", "off"), ("websockets", "off")]
+      web = [("http", "8000"), ("https", "5223"), ("cert", "tests/fixtures/web.crt"), ("key", "tests/fixtures/web.key"), ("static_path", T.pack webPath)]
+      ini' = ini {iniSections = HM.insert "TRANSPORT" transport $ HM.insert "WEB" web (iniSections ini)}
   writeIniFile iniFile ini'
 
   Right ini_ <- readIniFile iniFile
@@ -153,7 +154,7 @@ smpServerTestStatic = do
     runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfgHttp Nothing "localhost" "5223" (Just caHTTP) $ \tls -> do
       tlsALPN tls `shouldBe` Just "h2"
       case getCerts tls of
-        X.Certificate {X.certPubKey = X.PubKeyEC (X.PubKeyEC_Named {X.pubkeyEC_name})} : _ca -> pubkeyEC_name `shouldBe` SEC_p256r1
+        X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca -> RSA.public_size rsa `shouldBe` 512
         leaf : _ -> error $ "Unexpected leaf cert: " <> show leaf
         [] -> error "Empty chain"
 

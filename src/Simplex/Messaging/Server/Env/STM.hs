@@ -11,6 +11,7 @@ module Simplex.Messaging.Server.Env.STM where
 import Control.Concurrent (ThreadId)
 import Control.Logger.Simple
 import Control.Monad
+import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
@@ -24,6 +25,7 @@ import Data.Maybe (isJust, isNothing)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
+import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
@@ -254,7 +256,15 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
         putStrLn $ "No " <> protocol <> " credentials, terminating: " <> intercalate ", " files
         mapM_ putStrLn advice
         exitFailure
-      loadServerCredential creds
+      c@(X.CertificateChain cc, _k) <- loadServerCredential creds
+      when (protocol == "HTTPS") $
+        -- LetsEncrypt provides ECDSA with unsafe curve p256
+        case map (X.signedObject . X.getSigned) cc of
+          X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca | RSA.public_size rsa >= 512 -> pure ()
+          _ -> do
+            putStrLn "Unsupported HTTPS credentials: expecting 4096-bit RSA"
+            mapM_ putStrLn advice
+      pure c
       where
         missingfile f = (\y -> [f | not y]) <$> doesFileExist f
         missingCreds = do
