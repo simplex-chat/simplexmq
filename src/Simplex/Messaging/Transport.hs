@@ -331,18 +331,22 @@ defaultSupportedParams =
 defaultSupportedParamsHTTPS :: T.Supported
 defaultSupportedParamsHTTPS =
   defaultSupportedParams
-    { T.supportedCiphers = T.supportedCiphers defaultSupportedParams <> browserCiphers,
-      T.supportedGroups = T.supportedGroups defaultSupportedParams <> browserGroups,
-      T.supportedHashSignatures = T.supportedHashSignatures defaultSupportedParams <> browserSigs
+    { T.supportedCiphers = TE.ciphersuite_strong,
+      T.supportedGroups = [T.X25519, T.X448, T.FFDHE4096, T.FFDHE6144, T.FFDHE8192, T.P521],
+      T.supportedHashSignatures =
+        [ (T.HashIntrinsic, T.SignatureEd448),
+          (T.HashIntrinsic, T.SignatureEd25519),
+          (T.HashSHA256, T.SignatureECDSA),
+          (T.HashSHA384, T.SignatureECDSA),
+          (T.HashSHA512, T.SignatureECDSA),
+          (T.HashIntrinsic, T.SignatureRSApssRSAeSHA512),
+          (T.HashIntrinsic, T.SignatureRSApssRSAeSHA384),
+          (T.HashIntrinsic, T.SignatureRSApssRSAeSHA256),
+          (T.HashSHA512, T.SignatureRSA),
+          (T.HashSHA384, T.SignatureRSA),
+          (T.HashSHA256, T.SignatureRSA)
+        ]
     }
-  where
-    browserCiphers =
-      [ TE.cipher_TLS13_AES128CCM8_SHA256,
-        TE.cipher_ECDHE_ECDSA_AES128CCM8_SHA256,
-        TE.cipher_ECDHE_ECDSA_AES256CCM8_SHA256
-      ]
-    browserGroups = [T.P256]
-    browserSigs = [(T.HashSHA256, T.SignatureECDSA), (T.HashSHA384, T.SignatureECDSA)]
 
 instance Transport TLS where
   transportName _ = "TLS"
