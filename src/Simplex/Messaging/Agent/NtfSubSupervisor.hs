@@ -44,7 +44,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfSubscriptionId, NtfTknStatus (..))
+import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfSubscriptionId, NtfTknStatus (..), ntfShouldSubscribe)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, sameSrvAddr)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -286,13 +286,14 @@ runNtfWorker c srv Worker {doWork} =
             splitSub sub@NtfSubscription {ntfSubId = Just nSubId} (errs, ss) = (errs, (sub, nSubId) : ss)
             splitSub sub (errs, ss) = ((ntfSubConnId sub, INTERNAL "NSACheck - no subscription ID") : errs, ss)
         updateSub :: DB.Connection -> NtfServer -> UTCTime -> UTCTime -> (NtfSubscription, NtfSubStatus) -> IO (Maybe SMPServer)
-        updateSub db ntfServer ts nextCheckTs (sub@NtfSubscription {smpServer}, status) = case status of
-          NSAuth -> do
-            updateNtfSubscription db sub {ntfServer, ntfQueueId = Nothing, ntfSubId = Nothing, ntfSubStatus = NASNew} (NSASMP NSASmpKey) ts
-            pure $ Just smpServer
-          _ -> do
-            updateNtfSubscription db sub {ntfSubStatus = NASCreated status} (NSANtf NSACheck) nextCheckTs
-            pure Nothing
+        updateSub db ntfServer ts nextCheckTs (sub@NtfSubscription {smpServer}, status)
+          -- ntf server stopped subscribing to this queue
+          | not (ntfShouldSubscribe status) = do
+              updateNtfSubscription db sub {ntfServer, ntfQueueId = Nothing, ntfSubId = Nothing, ntfSubStatus = NASNew} (NSASMP NSASmpKey) ts
+              pure $ Just smpServer
+          | otherwise = do
+              updateNtfSubscription db sub {ntfSubStatus = NASCreated status} (NSANtf NSACheck) nextCheckTs
+              pure Nothing
     incStatByUserId :: NtfServer -> (AgentNtfServerStats -> TVar Int) -> [(NtfSubscription, a)] -> AM' ()
     incStatByUserId ntfServer sel ss =
       forM_ userIdsCounts $ \(userId, count) ->
