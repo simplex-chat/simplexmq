@@ -70,8 +70,11 @@ module Simplex.Messaging.Agent.Client
     agentNtfDeleteToken,
     agentNtfEnableCron,
     agentNtfCreateSubscription,
+    CreateSubNtfReq,
     agentNtfCreateSubscriptions,
     agentNtfCheckSubscription,
+    CheckSubNtfReq,
+    agentNtfCheckSubscriptions,
     agentNtfDeleteSubscription,
     agentXFTPDownloadChunk,
     agentXFTPNewChunk,
@@ -1735,7 +1738,7 @@ agentNtfCreateSubscription c tknId NtfToken {ntfServer, ntfPrivKey} smpQueue nKe
 type CreateSubNtfReq = (NtfSubscription, ClientNtfCreds)
 
 agentNtfCreateSubscriptions :: AgentClient -> NtfTokenId -> NtfToken -> [CreateSubNtfReq] -> AM' [(CreateSubNtfReq, Either AgentErrorType NtfSubscriptionId)]
-agentNtfCreateSubscriptions c tknId NtfToken {ntfServer, ntfPrivKey} subsCreds = do
+agentNtfCreateSubscriptions c tknId NtfToken {ntfServer, ntfPrivKey} subsCreds =
   case L.nonEmpty subsCreds of
     Just subsCreds' -> do
       let tSess = (0, ntfServer, Nothing)
@@ -1753,9 +1756,26 @@ agentNtfCreateSubscriptions c tknId NtfToken {ntfServer, ntfPrivKey} subsCreds =
     toNewSub (NtfSubscription {smpServer}, ClientNtfCreds {ntfPrivateKey, notifierId}) =
       NewNtfSub tknId (SMPQueueNtf smpServer notifierId) ntfPrivateKey
 
-agentNtfCheckSubscription :: AgentClient -> NtfSubscriptionId -> NtfToken -> AM NtfSubStatus
-agentNtfCheckSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
+agentNtfCheckSubscription :: AgentClient -> NtfToken -> NtfSubscriptionId -> AM NtfSubStatus
+agentNtfCheckSubscription c NtfToken {ntfServer, ntfPrivKey} subId =
   withNtfClient c ntfServer subId "SCHK" $ \ntf -> ntfCheckSubscription ntf ntfPrivKey subId
+
+type CheckSubNtfReq = (NtfSubscription, NtfSubscriptionId)
+
+agentNtfCheckSubscriptions :: AgentClient -> NtfToken -> [CheckSubNtfReq] -> AM' [(CheckSubNtfReq, Either AgentErrorType NtfSubStatus)]
+agentNtfCheckSubscriptions c NtfToken {ntfServer, ntfPrivKey} subIds =
+  case L.nonEmpty subIds of
+    Just subIds' -> do
+      let tSess = (0, ntfServer, Nothing)
+      tryAgentError' (getNtfServerClient c tSess) >>= \case
+        Left e -> pure $ L.toList $ L.map (,Left e) subIds'
+        Right ntf -> liftIO $ do
+          logServer' "-->" c ntfServer (bshow (length subIds') <> " subscriptions") "SCHK"
+          r <- L.zip subIds' <$> ntfCheckSubscriptions ntf ntfPrivKey (L.map snd subIds')
+          pure $ L.toList $ L.map agentError r
+          where
+            agentError = second . first $ protocolClientError NTF $ clientServer ntf
+    Nothing -> pure []
 
 agentNtfDeleteSubscription :: AgentClient -> NtfSubscriptionId -> NtfToken -> AM ()
 agentNtfDeleteSubscription c subId NtfToken {ntfServer, ntfPrivKey} =

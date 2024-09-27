@@ -68,6 +68,15 @@ ntfCheckSubscription c pKey subId =
     NRSub stat -> pure stat
     r -> throwE $ unexpectedResponse r
 
+ntfCheckSubscriptions :: NtfClient -> C.APrivateAuthKey -> NonEmpty NtfSubscriptionId -> IO (NonEmpty (Either NtfClientError NtfSubStatus))
+ntfCheckSubscriptions c pKey subIds = L.map process <$> sendProtocolCommands c cs
+  where
+    cs = L.map (\subId -> (Just pKey, subId, NtfCmd SSubscription SCHK)) subIds
+    process (Response _ r) = case r of
+      Right (NRSub stat) -> Right stat
+      Right r' -> Left $ unexpectedResponse r'
+      Left e -> Left e
+
 ntfDeleteSubscription :: NtfClient -> C.APrivateAuthKey -> NtfSubscriptionId -> ExceptT NtfClientError IO ()
 ntfDeleteSubscription = okNtfCommand SDEL
 

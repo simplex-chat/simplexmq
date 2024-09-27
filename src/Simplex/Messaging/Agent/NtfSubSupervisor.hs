@@ -49,7 +49,7 @@ import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfSubscript
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, sameSrvAddr)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (diffToMicroseconds, threadDelay', tshow)
+import Simplex.Messaging.Util (diffToMicroseconds, threadDelay', tshow, unlessM)
 import System.Random (randomR)
 import UnliftIO
 import UnliftIO.Concurrent (forkIO)
@@ -206,7 +206,7 @@ runNtfWorker c srv Worker {doWork} =
         logInfo $ "runNtfWorker - length nextSubs = " <> tshow (length nextSubs)
         let (creates, checks, deletes, rotates) = splitActions nextSubs
         retrySubActions c creates createSubs
-        -- retrySubActions c checks checkSubs
+        retrySubActions c checks checkSubs
         retrySubActions c deletes deleteSubs
         retrySubActions c rotates rotateSubs
     splitActions :: NonEmpty (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> ([NtfSubscription], [NtfSubscription], [NtfSubscription], [NtfSubscription])
@@ -244,25 +244,64 @@ runNtfWorker c srv Worker {doWork} =
       where
         getQueue :: DB.Connection -> NtfSubscription -> IO (Either AgentErrorType RcvQueue)
         getQueue db NtfSubscription {connId} = first storeError <$> getPrimaryRcvQueue db connId
-        splitSubs :: [(NtfSubscription, Either AgentErrorType RcvQueue)] -> ([(ConnId, AgentErrorType)], [(NtfSubscription, ClientNtfCreds)])
+        splitSubs :: [(NtfSubscription, Either AgentErrorType RcvQueue)] -> ([(ConnId, AgentErrorType)], [CreateSubNtfReq])
         splitSubs = foldr splitSub ([], [])
           where
             splitSub (sub, Right RcvQueue {clientNtfCreds = Just creds}) (errs, ss) = (errs, (sub, creds) : ss)
             splitSub (sub, Right _) (errs, ss) = ((ntfSubConnId sub, INTERNAL "NSACreate - no notifier queue credentials") : errs, ss)
             splitSub (sub, Left e) (errs, ss) = ((ntfSubConnId sub, e) : errs, ss)
-        countByUserId :: [(NtfSubscription, a)] -> [(UserId, Int)]
-        countByUserId ss =
-          M.toList $
-            foldr' (\s acc -> M.insertWith (+) (subUserId . fst $ s) 1 acc) M.empty ss
-          where
-            subUserId NtfSubscription {userId} = userId
         updateSubNSACheck :: DB.Connection -> UTCTime -> (NtfSubscription, NtfSubscriptionId) -> IO ()
         updateSubNSACheck db checkTs (sub, nSubId) = updateNtfSubscription db sub {ntfSubId = Just nSubId, ntfSubStatus = NASCreated NSNew} (NSANtf NSACheck) checkTs
+    checkSubs :: [NtfSubscription] -> AM' [NtfSubscription]
+    checkSubs ntfSubs =
+      getNtfToken >>= \case
+        Just tkn@NtfToken {ntfServer, ntfTknStatus = NTActive, ntfMode = NMInstant} -> do
+          let (errs1, subsIds) = splitSubs ntfSubs
+          forM_ (countByUserId subsIds) $ \(userId, count) ->
+            atomically $ incNtfServerStat' c userId ntfServer ntfCheckAttempts count
+          rs <- agentNtfCheckSubscriptions c tkn subsIds
+          let (subsIds', errs2, successes) = splitResults rs
+              ntfSubs' = map fst subsIds'
+              errs2' = map (first (ntfSubConnId . fst)) errs2
+              nSubStatuses = map (first fst) successes
+          forM_ (countByUserId nSubStatuses) $ \(userId, count) ->
+            atomically $ incNtfServerStat' c userId ntfServer ntfChecked count
+          ts <- liftIO getCurrentTime
+          checkInterval <- asks $ ntfSubCheckInterval . config
+          let nextCheckTs = addUTCTime checkInterval ts
+          (errs3, srvs) <- partitionErrs (ntfSubConnId . fst) nSubStatuses <$> withStoreBatch' c (\db -> map (updateSub db ntfServer ts nextCheckTs) nSubStatuses)
+          mapM_ (getNtfSMPWorker True c) $ S.fromList (catMaybes srvs)
+          workerErrors c $ errs1 <> errs2' <> errs3
+          pure ntfSubs'
+        _ -> do
+          let errs = map (\sub -> (ntfSubConnId sub, INTERNAL "NSACheck - no active token")) ntfSubs
+          workerErrors c errs
+          pure []
+      where
+        splitSubs :: [NtfSubscription] -> ([(ConnId, AgentErrorType)], [CheckSubNtfReq])
+        splitSubs = foldr splitSub ([], [])
+          where
+            splitSub sub@NtfSubscription {ntfSubId = Just nSubId} (errs, ss) = (errs, (sub, nSubId) : ss)
+            splitSub sub (errs, ss) = ((ntfSubConnId sub, INTERNAL "NSACheck - no subscription ID") : errs, ss)
+        updateSub :: DB.Connection -> NtfServer -> UTCTime -> UTCTime -> (NtfSubscription, NtfSubStatus) -> IO (Maybe SMPServer)
+        updateSub db ntfServer ts nextCheckTs (sub@NtfSubscription {smpServer}, status) = case status of
+          NSAuth -> do
+            updateNtfSubscription db sub {ntfServer, ntfQueueId = Nothing, ntfSubId = Nothing, ntfSubStatus = NASNew} (NSASMP NSASmpKey) ts
+            pure $ Just smpServer
+          _ -> do
+            updateNtfSubscription db sub {ntfSubStatus = NASCreated status} (NSANtf NSACheck) nextCheckTs
+            pure Nothing
+    countByUserId :: [(NtfSubscription, a)] -> [(UserId, Int)]
+    countByUserId ss =
+      M.toList $
+        foldr' (\s acc -> M.insertWith (+) (subUserId . fst $ s) 1 acc) M.empty ss
+      where
+        subUserId NtfSubscription {userId} = userId
     -- NSADelete and NSARotate are deprecated, but their processing is kept for legacy db records;
     -- These actions are not batched
     deleteSubs :: [NtfSubscription] -> AM' [NtfSubscription]
-    deleteSubs subs = do
-      retrySubs_ <- mapM (runCatching deleteSub) subs
+    deleteSubs ntfSubs = do
+      retrySubs_ <- mapM (runCatching deleteSub) ntfSubs
       pure $ catMaybes retrySubs_
       where
         deleteSub :: NtfSubscription -> AM (Maybe NtfSubscription)
@@ -273,8 +312,8 @@ runNtfWorker c srv Worker {doWork} =
             withStore' c $ \db -> updateNtfSubscription db sub' (NSASMP NSASmpDelete) ts
             lift . void $ getNtfSMPWorker True c smpServer
     rotateSubs :: [NtfSubscription] -> AM' [NtfSubscription]
-    rotateSubs subs = do
-      retrySubs_ <- mapM (runCatching rotateSub) subs
+    rotateSubs ntfSubs = do
+      retrySubs_ <- mapM (runCatching rotateSub) ntfSubs
       pure $ catMaybes retrySubs_
       where
         rotateSub :: NtfSubscription -> AM (Maybe NtfSubscription)
@@ -305,36 +344,6 @@ runNtfWorker c srv Worker {doWork} =
       _ -> continue'
       where
         continue' = continue $> Nothing -- continue without retry
-
--- processSub' :: (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> AM ()
--- processSub' (sub@NtfSubscription {userId, connId, smpServer, ntfSubId}, action, actionTs) = do
---   ts <- liftIO getCurrentTime
---   unlessM (lift $ rescheduleAction doWork ts actionTs) $
---     case action of
---       NSACheck ->
---         lift getNtfToken >>= \case
---           Just tkn@NtfToken {ntfServer} ->
---             case ntfSubId of
---               Just nSubId -> do
---                 atomically $ incNtfServerStat c userId ntfServer ntfCheckAttempts
---                 agentNtfCheckSubscription c nSubId tkn >>= \case
---                   NSAuth -> do
---                     withStore' c $ \db ->
---                       updateNtfSubscription db sub {ntfServer, ntfQueueId = Nothing, ntfSubId = Nothing, ntfSubStatus = NASNew} (NSASMP NSASmpKey) ts
---                     lift . void $ getNtfSMPWorker True c smpServer
---                   status -> updateSubNextCheck ts status
---                 atomically $ incNtfServerStat c userId ntfServer ntfChecked
---               Nothing -> workerInternalError c connId "NSACheck - no subscription ID"
---           _ -> workerInternalError c connId "NSACheck - no active token"
---       _ -> pure ()
---   where
---     updateSubNextCheck ts toStatus = do
---       checkInterval <- asks $ ntfSubCheckInterval . config
---       let nextCheckTs = addUTCTime checkInterval ts
---       updateSub (NASCreated toStatus) (NSANtf NSACheck) nextCheckTs
---     updateSub toStatus toAction actionTs' =
---       withStore' c $ \db ->
---         updateNtfSubscription db sub {ntfSubStatus = toStatus} toAction actionTs'
 
 runNtfSMPWorker :: AgentClient -> SMPServer -> Worker -> AM ()
 runNtfSMPWorker c srv Worker {doWork} = forever $ do
