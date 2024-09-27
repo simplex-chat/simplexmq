@@ -33,7 +33,6 @@ import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
 import qualified Data.Set as S
-import Data.Text (Text)
 import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Data.Time.Clock (diffUTCTime)
 import Simplex.Messaging.Agent.Client
@@ -49,7 +48,7 @@ import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfSubscript
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, sameSrvAddr)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (diffToMicroseconds, threadDelay', tshow, unlessM)
+import Simplex.Messaging.Util (diffToMicroseconds, threadDelay', tshow)
 import System.Random (randomR)
 import UnliftIO
 import UnliftIO.Concurrent (forkIO)
@@ -205,16 +204,22 @@ runNtfWorker c srv Worker {doWork} =
       withWorkItems c doWork (\db -> getNextNtfSubNTFActions db srv ntfBatchSize) $ \nextSubs -> do
         logInfo $ "runNtfWorker - length nextSubs = " <> tshow (length nextSubs)
         let (creates, checks, deletes, rotates) = splitActions nextSubs
-        retrySubActions c creates createSubs
-        retrySubActions c checks checkSubs
-        retrySubActions c deletes deleteSubs
-        retrySubActions c rotates rotateSubs
-    splitActions :: NonEmpty (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> ([NtfSubscription], [NtfSubscription], [NtfSubscription], [NtfSubscription])
+        ts <- liftIO getCurrentTime
+        let checks' = map fst $ filter (\(_, actionTs) -> actionTs <= ts) checks
+            (_, _, firstActionTs) = L.head nextSubs
+        if null creates && null checks' && null deletes && null rotates
+          then lift $ rescheduleWork doWork ts firstActionTs
+          else do
+            retrySubActions c creates createSubs
+            retrySubActions c checks' checkSubs
+            retrySubActions c deletes deleteSubs
+            retrySubActions c rotates rotateSubs
+    splitActions :: NonEmpty (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> ([NtfSubscription], [(NtfSubscription, NtfActionTs)], [NtfSubscription], [NtfSubscription])
     splitActions = foldr addAction ([], [], [], [])
       where
         addAction action (creates, checks, deletes, rotates) = case action of
           (sub, NSACreate, _) -> (sub : creates, checks, deletes, rotates)
-          (sub, NSACheck, _) -> (creates, sub : checks, deletes, rotates)
+          (sub, NSACheck, ts) -> (creates, (sub, ts) : checks, deletes, rotates)
           (sub, NSADelete, _) -> (creates, checks, sub : deletes, rotates)
           (sub, NSARotate, _) -> (creates, checks, deletes, sub : rotates)
     createSubs :: [NtfSubscription] -> AM' [NtfSubscription]
@@ -442,22 +447,12 @@ splitResults = foldr' addRes ([], [], [])
         | temporaryOrHostError e -> (a : as, errs, rs)
         | otherwise -> (as, (a, e) : errs, rs)
 
-rescheduleAction :: TMVar () -> UTCTime -> UTCTime -> AM' Bool
-rescheduleAction doWork ts actionTs
-  | actionTs <= ts = pure False
-  | otherwise = do
-      void . atomically $ tryTakeTMVar doWork
-      void . forkIO $ do
-        liftIO $ threadDelay' $ diffToMicroseconds $ diffUTCTime actionTs ts
-        atomically $ hasWorkToDo' doWork
-      pure True
-
-retryOnError :: AgentClient -> Text -> AM () -> (AgentErrorType -> AM ()) -> AgentErrorType -> AM ()
-retryOnError c name loop done e = do
-  logError $ name <> " error: " <> tshow e
-  if temporaryOrHostError e
-    then retryNetworkLoop c loop
-    else done e
+rescheduleWork :: TMVar () -> UTCTime -> UTCTime -> AM' ()
+rescheduleWork doWork ts actionTs = do
+  void . atomically $ tryTakeTMVar doWork
+  void . forkIO $ do
+    liftIO $ threadDelay' $ diffToMicroseconds $ diffUTCTime actionTs ts
+    atomically $ hasWorkToDo' doWork
 
 retryNetworkLoop :: AgentClient -> AM () -> AM ()
 retryNetworkLoop c loop = do
