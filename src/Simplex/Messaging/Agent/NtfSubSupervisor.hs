@@ -236,7 +236,8 @@ runNtfWorker c srv Worker {doWork} =
               nSubIds = map (first fst) successes
           incStatByUserId ntfServer ntfCreated nSubIds
           ts <- liftIO getCurrentTime
-          let checkTs = addUTCTime 30 ts
+          firstCheckInterval <- asks $ ntfSubFirstCheckInterval . config
+          let checkTs = addUTCTime firstCheckInterval ts
           (errs3, _) <- partitionErrs (ntfSubConnId . fst) nSubIds <$> withStoreBatch' c (\db -> map (updateSubNSACheck db checkTs) nSubIds)
           workerErrors c $ errs1 <> errs2' <> errs3
           pure ntfSubs'

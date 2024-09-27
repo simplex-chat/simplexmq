@@ -151,6 +151,7 @@ data AgentConfig = AgentConfig
     deleteErrorCount :: Int,
     ntfCron :: Word16,
     ntfBatchSize :: Int,
+    ntfSubFirstCheckInterval :: NominalDiffTime,
     ntfSubCheckInterval :: NominalDiffTime,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -221,6 +222,7 @@ defaultAgentConfig =
       deleteErrorCount = 10,
       ntfCron = 20, -- minutes
       ntfBatchSize = 150,
+      ntfSubFirstCheckInterval = nominalDay,
       ntfSubCheckInterval = 3 * nominalDay,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
