@@ -223,15 +223,13 @@ runNtfWorker c srv Worker {doWork} =
         Just tkn@NtfToken {ntfServer, ntfTokenId = Just tknId, ntfTknStatus = NTActive, ntfMode = NMInstant} -> do
           subsRqs_ <- zip ntfSubs <$> withStoreBatch c (\db -> map (getQueue db) ntfSubs)
           let (errs1, subsCreds) = splitSubs subsRqs_
-          forM_ (countByUserId subsCreds) $ \(userId, count) ->
-            atomically $ incNtfServerStat' c userId ntfServer ntfCreateAttempts count
+          incStatByUserId ntfServer ntfCreateAttempts subsCreds
           rs <- agentNtfCreateSubscriptions c tknId tkn subsCreds
           let (subsCreds', errs2, successes) = splitResults rs
               ntfSubs' = map fst subsCreds'
               errs2' = map (first (ntfSubConnId . fst)) errs2
               nSubIds = map (first fst) successes
-          forM_ (countByUserId nSubIds) $ \(userId, count) ->
-            atomically $ incNtfServerStat' c userId ntfServer ntfCreated count
+          incStatByUserId ntfServer ntfCreated nSubIds
           ts <- liftIO getCurrentTime
           let checkTs = addUTCTime 30 ts
           (errs3, _) <- partitionErrs (ntfSubConnId . fst) nSubIds <$> withStoreBatch' c (\db -> map (updateSubNSACheck db checkTs) nSubIds)
@@ -257,15 +255,13 @@ runNtfWorker c srv Worker {doWork} =
       getNtfToken >>= \case
         Just tkn@NtfToken {ntfServer, ntfTknStatus = NTActive, ntfMode = NMInstant} -> do
           let (errs1, subsIds) = splitSubs ntfSubs
-          forM_ (countByUserId subsIds) $ \(userId, count) ->
-            atomically $ incNtfServerStat' c userId ntfServer ntfCheckAttempts count
+          incStatByUserId ntfServer ntfCheckAttempts subsIds
           rs <- agentNtfCheckSubscriptions c tkn subsIds
           let (subsIds', errs2, successes) = splitResults rs
               ntfSubs' = map fst subsIds'
               errs2' = map (first (ntfSubConnId . fst)) errs2
               nSubStatuses = map (first fst) successes
-          forM_ (countByUserId nSubStatuses) $ \(userId, count) ->
-            atomically $ incNtfServerStat' c userId ntfServer ntfChecked count
+          incStatByUserId ntfServer ntfChecked nSubStatuses
           ts <- liftIO getCurrentTime
           checkInterval <- asks $ ntfSubCheckInterval . config
           let nextCheckTs = addUTCTime checkInterval ts
@@ -291,11 +287,12 @@ runNtfWorker c srv Worker {doWork} =
           _ -> do
             updateNtfSubscription db sub {ntfSubStatus = NASCreated status} (NSANtf NSACheck) nextCheckTs
             pure Nothing
-    countByUserId :: [(NtfSubscription, a)] -> [(UserId, Int)]
-    countByUserId ss =
-      M.toList $
-        foldr' (\s acc -> M.insertWith (+) (subUserId . fst $ s) 1 acc) M.empty ss
+    incStatByUserId :: NtfServer -> (AgentNtfServerStats -> TVar Int) -> [(NtfSubscription, a)] -> AM' ()
+    incStatByUserId ntfServer sel ss =
+      forM_ userIdsCounts $ \(userId, count) ->
+        atomically $ incNtfServerStat' c userId ntfServer sel count
       where
+        userIdsCounts = M.toList $ foldr' (\s acc -> M.insertWith (+) (subUserId . fst $ s) 1 acc) M.empty ss
         subUserId NtfSubscription {userId} = userId
     -- NSADelete and NSARotate are deprecated, but their processing is kept for legacy db records;
     -- These actions are not batched
