@@ -221,7 +221,7 @@ defaultAgentConfig =
       deleteErrorCount = 10,
       ntfCron = 20, -- minutes
       ntfBatchSize = 150,
-      ntfSubCheckInterval = nominalDay,
+      ntfSubCheckInterval = 3 * nominalDay,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
