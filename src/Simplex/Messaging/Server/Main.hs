@@ -292,6 +292,7 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               serverStatsLogFile = combine logPath "smp-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log",
               pendingENDInterval = 15000000, -- 15 seconds
+              ntfDeliveryInterval = 3000000, -- 3 seconds
               smpServerVRange = supportedServerSMPRelayVRange,
               transportConfig =
                 defaultTransportServerConfig

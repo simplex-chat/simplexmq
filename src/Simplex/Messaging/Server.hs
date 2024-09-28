@@ -62,6 +62,7 @@ import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
+import qualified Data.Set as S
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
@@ -85,6 +86,7 @@ import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.STM
+import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.QueueStore.STM as QS
@@ -138,6 +140,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   raceAny_
     ( serverThread s "server subscribedQ" subscribedQ subscribers subClients pendingSubEvents subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubClients pendingNtfSubEvents ntfSubscriptions (\_ -> pure ())
+        : deliverNtfsThread s
         : sendPendingEvtsThread s
         : receiveFromProxyAgent pa
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
@@ -213,6 +216,33 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         -- remove client from server's subscribed cients
         removeWhenNoSubs c = whenM (null <$> readTVar (clientSubs c)) $ modifyTVar' (subClnts s) $ IM.delete (clientId c)
 
+    deliverNtfsThread :: Server -> M ()
+    deliverNtfsThread Server {ntfSubClients} = do
+      ntfInt <- asks $ ntfDeliveryInterval . config
+      ns <- asks ntfStore
+      stats <- asks serverStats
+      forever $ do
+        threadDelay ntfInt
+        readTVarIO ntfSubClients >>= mapM (deliverNtfs ns >=> updateNtfStats stats) 
+      where
+        deliverNtfs ns Client {clientId, ntfSubscriptions, sndQ, connected} = do
+          ntfs_ <-
+            whenCurrent readTVarIO $ atomically $ whenCurrent readTVar $ do
+              subs <- M.keysSet <$> readTVar ntfSubscriptions
+              stateTVar ns $ M.partitionWithKey $ \nId _ -> S.member nId subs
+          case ntfs_ of
+            Just (Just ntfs) -> do
+              let ts_ :: [Transmission BrokerMsg] = concatMap (\(nId, ntfs') -> map (\(MsgNtf _ _ nonce encMeta) -> (CorrId "", nId, NMSG nonce encMeta)) $ reverse ntfs') $ M.assocs ntfs
+              mapM_ (atomically . writeTBQueue sndQ) $ L.nonEmpty ts_
+              pure $ length ts_
+            _ -> pure 0
+          where
+            whenCurrent :: Monad m => (forall a. TVar a -> m a) -> m b -> m (Maybe b)
+            whenCurrent rd action = ifM ((&&) <$> rd connected <*> (IM.member clientId <$> rd ntfSubClients)) (Just <$> action) (pure Nothing)
+        updateNtfStats stats len = when (len > 0) $ liftIO $ do
+          atomicModifyIORef'_ (msgNtfs stats) (+ len)
+          atomicModifyIORef'_ (msgNtfsB stats) (+ (len `div` 100 + 1)) -- up to 100 (?) NMSG in the batch
+
     sendPendingEvtsThread :: Server -> M ()
     sendPendingEvtsThread s = do
       endInt <- asks $ pendingENDInterval . config
@@ -242,8 +272,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
             updateEndStats = do
               stats <- asks serverStats
               let len = L.length qEvts
-              liftIO $ atomicModifyIORef'_ (qSubEnd stats) (+ len)
-              liftIO $ atomicModifyIORef'_ (qSubEndB stats) (+ (len `div` 255 + 1)) -- up to 255 ENDs or DELDs in the batch
+              when (len > 0) $ liftIO $ do
+                atomicModifyIORef'_ (qSubEnd stats) (+ len)
+                atomicModifyIORef'_ (qSubEndB stats) (+ (len `div` 255 + 1)) -- up to 255 ENDs or DELDs in the batch
 
     receiveFromProxyAgent :: ProxyAgent -> M ()
     receiveFromProxyAgent ProxyAgent {smpAgent = SMPClientAgent {agentQ}} =
@@ -915,7 +946,7 @@ forkClient Client {endThreads, endThreadSeq} label action = do
   mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
 
 client :: THandleParams SMPVersion 'TServer -> Client -> Server -> M ()
-client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, subscribers, notifiers} = do
+client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, subscribers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
   forever $
     atomically (readTBQueue rcvQ)
@@ -1118,6 +1149,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
           liftIO (deleteQueueNotifier st entId) >>= \case
             Right (Just nId) -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
+              atomically . TM.delete nId =<< asks ntfStore
               atomically $ writeTQueue ntfSubscribedQ (nId, clientId, False)
               incStat . ntfDeleted =<< asks serverStats
               pure ok
@@ -1259,7 +1291,15 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               Message {msgFlags} -> do
                 stats <- asks serverStats
                 incStat $ msgRecv stats
-                when isGet $ incStat $ msgRecvGet stats
+                if isGet
+                  then incStat $ msgRecvGet stats
+                  else -- skip notification delivery for delivered message
+                    pure ()
+                    -- TODO skipping delivery fails tests
+                    -- forM_ (notifierId <$> notifier qr) $ \nId -> do
+                    --   ns <- asks ntfStore
+                    --   atomically $ TM.lookup nId ns >>=
+                    --     mapM_ (\(MsgNtf msgId' _ _ _) -> when (msgId == msgId') $ TM.delete nId ns)
                 liftIO $ atomicModifyIORef'_ (msgCount stats) (subtract 1)
                 liftIO $ updatePeriodStats (activeQueues stats) entId
                 when (notification msgFlags) $ do
@@ -1379,38 +1419,44 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                             writeTVar st NoSub
 
             trySendNotification :: NtfCreds -> Message -> M ()
-            trySendNotification NtfCreds {notifierId, rcvNtfDhSecret} msg = do
-              stats <- asks serverStats
-              liftIO (TM.lookupIO notifierId notifiers) >>= \case
-                Nothing -> do
-                  incStat $ msgNtfNoSub stats
-                  logWarn "No notification subscription"
-                Just ntfClnt -> do
-                  let updateStats True = incStat $ msgNtfs stats
-                      updateStats _ = do
-                        incStat $ msgNtfLost stats
-                        logWarn "Dropped message notification"
-                  writeNtf notifierId msg rcvNtfDhSecret ntfClnt >>= mapM_ updateStats
+            trySendNotification _ MessageQuota {} = pure ()
+            trySendNotification NtfCreds {notifierId, rcvNtfDhSecret} Message {msgId, msgTs} = do
+              -- stats <- asks serverStats
+              ntf <- mkMessageNotification msgId msgTs rcvNtfDhSecret
+              atomically . TM.alter (Just . maybe [ntf] (ntf :)) notifierId =<< asks ntfStore
+              -- no coalescing for now
+              -- when (isJust prevNtf) $ incStat $ msgNtfReplaced stats
+              --
+              -- liftIO (TM.lookupIO notifierId notifiers) >>= \case
+              --   Nothing -> do
+              --     incStat $ msgNtfNoSub stats
+              --     logWarn "No notification subscription"
+              --   Just ntfClnt -> do
+              --     let updateStats True = incStat $ msgNtfs stats
+              --         updateStats _ = do
+              --           incStat $ msgNtfLost stats
+              --           logWarn "Dropped message notification"
+              --     writeNtf notifierId msg rcvNtfDhSecret ntfClnt >>= mapM_ updateStats
 
-            writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> TVar Client -> M (Maybe Bool)
-            writeNtf nId msg rcvNtfDhSecret ntfClnt = case msg of
-              Message {msgId, msgTs} -> Just <$> do
-                (nmsgNonce, encNMsgMeta) <- mkMessageNotification msgId msgTs rcvNtfDhSecret
-                -- must be in one STM transaction to avoid the queue becoming full between the check and writing
-                atomically $ do
-                  Client {sndQ = q} <- readTVar ntfClnt
-                  ifM
-                    (isFullTBQueue q)
-                    (pure $ False)
-                    (True <$ writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)])
-              _ -> pure Nothing
+            -- writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> TVar Client -> M (Maybe Bool)
+            -- writeNtf nId msg rcvNtfDhSecret ntfClnt = case msg of
+            --   Message {msgId, msgTs} -> Just <$> do
+            --     (nmsgNonce, encNMsgMeta) <- mkMessageNotification msgId msgTs rcvNtfDhSecret
+            --     -- must be in one STM transaction to avoid the queue becoming full between the check and writing
+            --     atomically $ do
+            --       Client {sndQ = q} <- readTVar ntfClnt
+            --       ifM
+            --         (isFullTBQueue q)
+            --         (pure $ False)
+            --         (True <$ writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)])
+            --   _ -> pure Nothing
 
-            mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> M (C.CbNonce, EncNMsgMeta)
+            mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> M MsgNtf
             mkMessageNotification msgId msgTs rcvNtfDhSecret = do
               cbNonce <- atomically . C.randomCbNonce =<< asks random
               let msgMeta = NMsgMeta {msgId, msgTs}
                   encNMsgMeta = C.cbEncrypt rcvNtfDhSecret cbNonce (smpEncode msgMeta) 128
-              pure . (cbNonce,) $ fromRight "" encNMsgMeta
+              pure $ MsgNtf msgId msgTs cbNonce $ fromRight "" encNMsgMeta
 
         processForwardedCommand :: EncFwdTransmission -> M BrokerMsg
         processForwardedCommand (EncFwdTransmission s) = fmap (either ERR id) . runExceptT $ do
@@ -1511,9 +1557,10 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                 -- queue is usually deleted by the same client that is currently subscribed,
                 -- we delete subscription here, so the client with no subscriptions can be disconnected.
                 TM.delete entId subscriptions
-              forM_ (notifierId <$> notifier q) $ \nId ->
+              forM_ (notifierId <$> notifier q) $ \nId -> do
                 -- queue is deleted by a different client from the one subscribed to notifications,
                 -- so we don't need to remove subscription from the current client.
+                atomically . TM.delete nId =<< asks ntfStore
                 atomically $ writeTQueue ntfSubscribedQ (nId, clientId, False)
               updateDeletedStats q
               pure ok

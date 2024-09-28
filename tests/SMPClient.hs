@@ -116,6 +116,7 @@ cfg =
       serverStatsLogFile = "tests/smp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
       pendingENDInterval = 500000,
+      ntfDeliveryInterval = 200000,
       caCertificateFile = "tests/fixtures/ca.crt",
       privateKeyFile = "tests/fixtures/server.key",
       certificateFile = "tests/fixtures/server.crt",

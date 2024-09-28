@@ -34,6 +34,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.STM
+import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
@@ -76,6 +77,8 @@ data ServerConfig = ServerConfig
     serverStatsLogFile :: FilePath,
     -- | file to save and restore stats
     serverStatsBackupFile :: Maybe FilePath,
+    -- | notification delivery interval
+    ntfDeliveryInterval :: Int,
     -- | interval between sending pending END events to unsubscribed clients, seconds
     pendingENDInterval :: Int,
     -- | CA certificate private key is not needed for initialization
@@ -123,6 +126,7 @@ data Env = Env
     serverIdentity :: KeyHash,
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
+    ntfStore :: TMap NotifierId [MsgNtf],
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerParams :: T.ServerParams,
@@ -224,6 +228,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   server <- newServer
   queueStore <- newQueueStore
   msgStore <- newMsgStore
+  ntfStore <- TM.emptyIO
   random <- C.newRandom
   storeLog <-
     forM storeLogFile $ \f -> do
@@ -237,7 +242,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
-  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
+  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, ntfStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
