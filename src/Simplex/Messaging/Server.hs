@@ -1426,30 +1426,6 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               atomically . TM.alter (Just . maybe [ntf] (ntf :)) notifierId =<< asks ntfStore
               -- no coalescing for now
               -- when (isJust prevNtf) $ incStat $ msgNtfReplaced stats
-              --
-              -- liftIO (TM.lookupIO notifierId notifiers) >>= \case
-              --   Nothing -> do
-              --     incStat $ msgNtfNoSub stats
-              --     logWarn "No notification subscription"
-              --   Just ntfClnt -> do
-              --     let updateStats True = incStat $ msgNtfs stats
-              --         updateStats _ = do
-              --           incStat $ msgNtfLost stats
-              --           logWarn "Dropped message notification"
-              --     writeNtf notifierId msg rcvNtfDhSecret ntfClnt >>= mapM_ updateStats
-
-            -- writeNtf :: NotifierId -> Message -> RcvNtfDhSecret -> TVar Client -> M (Maybe Bool)
-            -- writeNtf nId msg rcvNtfDhSecret ntfClnt = case msg of
-            --   Message {msgId, msgTs} -> Just <$> do
-            --     (nmsgNonce, encNMsgMeta) <- mkMessageNotification msgId msgTs rcvNtfDhSecret
-            --     -- must be in one STM transaction to avoid the queue becoming full between the check and writing
-            --     atomically $ do
-            --       Client {sndQ = q} <- readTVar ntfClnt
-            --       ifM
-            --         (isFullTBQueue q)
-            --         (pure $ False)
-            --         (True <$ writeTBQueue q [(CorrId "", nId, NMSG nmsgNonce encNMsgMeta)])
-            --   _ -> pure Nothing
 
             mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> M MsgNtf
             mkMessageNotification msgId msgTs rcvNtfDhSecret = do
