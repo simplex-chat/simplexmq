@@ -29,7 +29,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ALPN)
-import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), loadFingerprint, loadServerCredential)
 import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
 import UnliftIO.STM
@@ -57,10 +57,7 @@ data XFTPServerConfig = XFTPServerConfig
     fileTimeout :: Int,
     -- | time after which inactive clients can be disconnected and check interval, seconds
     inactiveClientExpiration :: Maybe ExpirationConfig,
-    -- CA certificate private key is not needed for initialization
-    caCertificateFile :: FilePath,
-    privateKeyFile :: FilePath,
-    certificateFile :: FilePath,
+    xftpCredentials :: ServerCredentials,
     -- | XFTP client-server protocol version range
     xftpServerVRange :: VersionRangeXFTP,
     -- stats config - see SMP server config
@@ -85,7 +82,7 @@ data XFTPEnv = XFTPEnv
     storeLog :: Maybe (StoreLog 'WriteMode),
     random :: TVar ChaChaDRG,
     serverIdentity :: C.KeyHash,
-    tlsServerParams :: T.ServerParams,
+    tlsServerCreds :: T.Credential,
     serverStats :: FileServerStats
   }
 
@@ -103,7 +100,7 @@ supportedXFTPhandshakes :: [ALPN]
 supportedXFTPhandshakes = ["xftp/1"]
 
 newXFTPServerEnv :: XFTPServerConfig -> IO XFTPEnv
-newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertificateFile, certificateFile, privateKeyFile, transportConfig} = do
+newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, xftpCredentials} = do
   random <- C.newRandom
   store <- newFileStore
   storeLog <- mapM (`readWriteFileStore` store) storeLogFile
@@ -112,10 +109,10 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, caCertifi
   forM_ fileSizeQuota $ \quota -> do
     logInfo $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
     when (quota < used) $ logInfo "WARNING: storage quota is less than used storage, no files can be uploaded!"
-  tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
-  Fingerprint fp <- loadFingerprint caCertificateFile
+  tlsServerCreds <- loadServerCredential xftpCredentials
+  Fingerprint fp <- loadFingerprint xftpCredentials
   serverStats <- newFileServerStats =<< getCurrentTime
-  pure XFTPEnv {config, store, storeLog, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
+  pure XFTPEnv {config, store, storeLog, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
 
 countUsedStorage :: M.Map k FileRec -> Int64
 countUsedStorage = M.foldl' (\acc FileRec {fileInfo = FileInfo {size}} -> acc + fromIntegral size) 0

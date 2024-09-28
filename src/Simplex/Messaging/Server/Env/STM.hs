@@ -41,7 +41,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
-import Simplex.Messaging.Transport.Server (SocketState, TransportServerConfig, alpn, loadFingerprint, loadTLSServerParams, newSocketState)
+import Simplex.Messaging.Transport.Server (ServerCredentials, SocketState, TransportServerConfig, loadFingerprint, loadServerCredential, newSocketState)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -78,10 +78,7 @@ data ServerConfig = ServerConfig
     serverStatsBackupFile :: Maybe FilePath,
     -- | interval between sending pending END events to unsubscribed clients, seconds
     pendingENDInterval :: Int,
-    -- | CA certificate private key is not needed for initialization
-    caCertificateFile :: FilePath,
-    privateKeyFile :: FilePath,
-    certificateFile :: FilePath,
+    smpCredentials :: ServerCredentials,
     -- | SMP client-server protocol version range
     smpServerVRange :: VersionRangeSMP,
     -- | TCP transport config
@@ -125,7 +122,7 @@ data Env = Env
     msgStore :: STMMsgStore,
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
-    tlsServerParams :: T.ServerParams,
+    tlsServerCreds :: T.Credential,
     serverStats :: ServerStats,
     sockets :: SocketState,
     clientSeq :: TVar ClientId,
@@ -220,7 +217,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, storeLogFile, smpAgentCfg, transportConfig, information, messageExpiration} = do
+newEnv config@ServerConfig {smpCredentials, storeLogFile, smpAgentCfg, information, messageExpiration} = do
   server <- newServer
   queueStore <- newQueueStore
   msgStore <- newMsgStore
@@ -229,15 +226,15 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
     forM storeLogFile $ \f -> do
       logInfo $ "restoring queues from file " <> T.pack f
       restoreQueues queueStore f
-  tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
-  Fingerprint fp <- loadFingerprint caCertificateFile
+  tlsServerCreds <- loadServerCredential smpCredentials
+  Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
   sockets <- newSocketState
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
-  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerParams, serverStats, sockets, clientSeq, clients, proxyAgent}
+  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do

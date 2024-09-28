@@ -146,11 +146,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   where
     runServer :: (ServiceName, ATransport) -> M ()
     runServer (tcpPort, ATransport t) = do
-      serverParams <- asks tlsServerParams
+      srvCreds <- asks tlsServerCreds
       ss <- asks sockets
-      serverSignKey <- either fail pure . fromTLSCredentials $ tlsServerCredentials serverParams
+      serverSignKey <- either fail pure $ fromTLSCredentials srvCreds
       env <- ask
-      liftIO $ runTransportServerState ss started tcpPort serverParams tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
+      liftIO $ runTransportServerState ss started tcpPort defaultSupportedParams srvCreds (Just supportedSMPHandshakes) tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
     fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
 
     saveServer :: Bool -> M ()

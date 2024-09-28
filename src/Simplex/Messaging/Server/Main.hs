@@ -8,6 +8,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Server.Main where
 
@@ -40,9 +41,9 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defMsgExpirationDays, defaultInactiveClientExpiration, defaultMessageExpiration, defaultProxyClientConcurrency)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Transport (batchCmdsSMPVersion, sendingProxySMPVersion, simplexMQVersion, supportedSMPHandshakes, supportedServerSMPRelayVRange)
+import Simplex.Messaging.Transport (batchCmdsSMPVersion, sendingProxySMPVersion, simplexMQVersion, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
-import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
@@ -260,9 +261,12 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               msgQueueQuota = 128,
               queueIdBytes = 24,
               msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
-              caCertificateFile = c caCrtFile,
-              privateKeyFile = c serverKeyFile,
-              certificateFile = c serverCrtFile,
+              smpCredentials =
+                ServerCredentials
+                  { caCertificateFile = Just $ c caCrtFile,
+                    privateKeyFile = c serverKeyFile,
+                    certificateFile = c serverCrtFile
+                  },
               storeLogFile = enableStoreLog $> storeLogFilePath,
               storeMsgsFile =
                 let messagesPath = combine logPath "smp-server-messages.log"
@@ -295,8 +299,7 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               smpServerVRange = supportedServerSMPRelayVRange,
               transportConfig =
                 defaultTransportServerConfig
-                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini,
-                    alpn = Just supportedSMPHandshakes
+                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
                   },
               controlPort = eitherToMaybe $ T.unpack <$> lookupValue "TRANSPORT" "control_port" ini,
               smpAgentCfg =
