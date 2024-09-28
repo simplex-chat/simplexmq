@@ -153,7 +153,7 @@ testNotificationSubscription (ATransport t) =
           RespNtf "7" tId' NROk <- signSendRecvNtf nh tknKey ("7", tId, TRPL tkn')
           tId `shouldBe` tId'
           APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData2}} <-
-            getMockNotification apns tkn
+            getMockNotification apns tkn'
           let Right verification2 = ntfData2 .-> "verification"
               Right nonce2 = C.cbNonce <$> ntfData2 .-> "nonce"
               Right code2 = NtfRegCode <$> C.cbDecrypt dhSecret nonce2 verification2
@@ -161,7 +161,7 @@ testNotificationSubscription (ATransport t) =
           RespNtf "8a" _ (NRTkn NTActive) <- signSendRecvNtf nh tknKey ("8a", tId, TCHK)
           -- send message
           Resp "9" _ OK <- signSendRecv sh sKey ("9", sId, _SEND' "hello 2")
-          APNSMockRequest {notification = notification3} <- getMockNotification apns tkn
+          APNSMockRequest {notification = notification3} <- getMockNotification apns tkn'
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData3} = notification3
               Right nonce3 = C.cbNonce <$> ntfData3 .-> "nonce"
               Right message3 = ntfData3 .-> "message"
