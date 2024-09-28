@@ -122,10 +122,10 @@ ntfServerCfgVPrev =
     serverVRange' = serverVRange smpCfg'
 
 withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a
-withNtfServerStoreLog t = withNtfServerCfg ntfServerCfg {storeLogFile = Just ntfTestStoreLogFile, transports = [(ntfTestPort, t)]}
+withNtfServerStoreLog t = withNtfServerCfg ntfServerCfg {storeLogFile = Just ntfTestStoreLogFile, transports = [(ntfTestPort, t, False)]}
 
 withNtfServerThreadOn :: ATransport -> ServiceName -> (ThreadId -> IO a) -> IO a
-withNtfServerThreadOn t port' = withNtfServerCfg ntfServerCfg {transports = [(port', t)]}
+withNtfServerThreadOn t port' = withNtfServerCfg ntfServerCfg {transports = [(port', t, False)]}
 
 withNtfServerCfg :: HasCallStack => NtfServerConfig -> (ThreadId -> IO a) -> IO a
 withNtfServerCfg cfg@NtfServerConfig {transports} =

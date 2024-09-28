@@ -178,7 +178,7 @@ runNtfTestCfg :: HasCallStack => ATransport -> AgentMsgId -> ServerConfig -> Ntf
 runNtfTestCfg t baseId smpCfg ntfCfg aCfg bCfg runTest = do
   withSmpServerConfigOn t smpCfg testPort $ \_ ->
     withAPNSMockServer $ \apns ->
-      withNtfServerCfg ntfCfg {transports = [(ntfTestPort, t)]} $ \_ ->
+      withNtfServerCfg ntfCfg {transports = [(ntfTestPort, t, False)]} $ \_ ->
         withAgentClientsCfg2 aCfg bCfg $ runTest apns baseId
   threadDelay 100000
 

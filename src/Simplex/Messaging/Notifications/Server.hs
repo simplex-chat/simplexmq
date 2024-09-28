@@ -51,7 +51,7 @@ import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Stats
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..), defaultSupportedParams)
-import Simplex.Messaging.Transport.Server (runTransportServer)
+import Simplex.Messaging.Transport.Server (AddHTTP, runTransportServer)
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
 import System.IO (BufferMode (..), hPutStrLn, hSetBuffering)
@@ -80,8 +80,8 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
   resubscribe s
   raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports <> serverStatsThread_ cfg) `finally` stopServer
   where
-    runServer :: (ServiceName, ATransport) -> M ()
-    runServer (tcpPort, ATransport t) = do
+    runServer :: (ServiceName, ATransport, AddHTTP) -> M ()
+    runServer (tcpPort, ATransport t, _addHTTP) = do
       srvCreds <- asks tlsServerCreds
       serverSignKey <- either fail pure $ fromTLSCredentials srvCreds
       env <- ask

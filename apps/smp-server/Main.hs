@@ -19,4 +19,4 @@ main = do
   setLogLevel LogDebug
   cfgPath <- getEnvPath "SMP_SERVER_CFG_PATH" defaultCfgPath
   logPath <- getEnvPath "SMP_SERVER_LOG_PATH" defaultLogPath
-  withGlobalLogging logCfg $ smpServerCLI_ Static.generateSite Static.serveStaticFiles cfgPath logPath
+  withGlobalLogging logCfg $ smpServerCLI_ Static.generateSite Static.serveStaticFiles Static.attachStaticFiles cfgPath logPath

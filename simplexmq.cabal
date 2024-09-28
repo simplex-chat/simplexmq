@@ -419,9 +419,10 @@ executable smp-server
     , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
+    , wai
     , wai-app-static
-    , warp
-    , warp-tls
+    , warp ==3.3.30
+    , warp-tls ==3.4.7
     , websockets ==0.12.*
     , yaml ==0.11.*
     , zstd ==0.1.3.*
@@ -627,9 +628,12 @@ test-suite simplexmq-test
       XFTPCLI
       XFTPClient
       XFTPServerTests
+      Static
+      Static.Embedded
       Paths_simplexmq
   hs-source-dirs:
       tests
+      apps/smp-server/web
   default-extensions:
       StrictData
   ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts -with-rtsopts=-A64M -with-rtsopts=-N1
@@ -657,12 +661,15 @@ test-suite simplexmq-test
     , deepseq ==1.4.*
     , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
+    , file-embed
     , filepath ==1.4.*
     , generic-random ==1.5.*
     , hashable ==1.4.*
     , hourglass ==0.2.*
     , hspec ==2.11.*
     , hspec-core ==2.11.*
+    , http-client
+    , http-client-tls
     , http-types ==0.12.*
     , http2 >=4.2.2 && <4.3
     , ini ==0.4.1
@@ -692,6 +699,11 @@ test-suite simplexmq-test
     , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
+    , unordered-containers
+    , wai
+    , wai-app-static
+    , warp
+    , warp-tls
     , websockets ==0.12.*
     , yaml ==0.11.*
     , zstd ==0.1.3.*

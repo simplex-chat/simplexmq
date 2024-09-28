@@ -8,13 +8,18 @@ import Control.Logger.Simple
 import Control.Monad
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
+import Data.IORef (readIORef)
 import Data.Maybe (fromMaybe)
 import Data.String (fromString)
 import Data.Text.Encoding (encodeUtf8)
-import Network.Wai.Application.Static as S
-import Network.Wai.Handler.Warp as W
-import qualified Network.Wai.Handler.WarpTLS as W
+import Network.Socket (getPeerName)
+import Network.Wai (Application)
+import qualified Network.Wai.Application.Static as S
+import qualified Network.Wai.Handler.Warp as W
+import qualified Network.Wai.Handler.Warp.Internal as WI
+import qualified Network.Wai.Handler.WarpTLS as WT
 import Simplex.Messaging.Encoding.String (strEncode)
+import Simplex.Messaging.Server (AttachHTTP)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.Main (EmbeddedWebParams (..), WebHttpsParams (..))
 import Simplex.Messaging.Transport.Client (TransportHost (..))
@@ -23,6 +28,7 @@ import Static.Embedded as E
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath
 import UnliftIO.Concurrent (forkFinally)
+import UnliftIO.Exception (bracket, finally)
 
 serveStaticFiles :: EmbeddedWebParams -> IO ()
 serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} = do
@@ -31,9 +37,42 @@ serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} 
     W.runSettings (mkSettings port) (S.staticApp $ S.defaultFileServerSettings webStaticPath)
   forM_ webHttpsParams $ \WebHttpsParams {port, cert, key} -> flip forkFinally (\e -> logError $ "HTTPS server crashed: " <> tshow e) $ do
     logInfo $ "Serving static site on port " <> tshow port <> " (TLS)"
-    W.runTLS (W.tlsSettings cert key) (mkSettings port) (S.staticApp $ S.defaultFileServerSettings webStaticPath)
+    WT.runTLS (WT.tlsSettings cert key) (mkSettings port) app
   where
-    mkSettings port = setPort port defaultSettings
+    app = staticFiles webStaticPath
+    mkSettings port = W.setPort port W.defaultSettings
+
+-- | Prepare context and prepare HTTP handler for TLS connections that already passed TLS.handshake and ALPN check.
+attachStaticFiles :: FilePath -> (AttachHTTP -> IO ()) -> IO ()
+attachStaticFiles path action =
+  -- Initialize global internal state for http server.
+  WI.withII settings $ \ii -> do
+    action $ \socket cxt -> do
+      -- Initialize internal per-connection resources.
+      addr <- getPeerName socket
+      withConnection addr cxt $ \(conn, transport) ->
+        withTimeout ii conn $ \th ->
+          -- Run Warp connection handler to process HTTP requests for static files.
+          WI.serveConnection conn ii th addr transport settings app
+  where
+    app = staticFiles path
+    settings = W.defaultSettings
+    -- from warp-tls
+    withConnection socket cxt = bracket (WT.attachConn socket cxt) (terminate . fst)
+    -- from warp
+    withTimeout ii conn =
+      bracket
+        (WI.registerKillThread (WI.timeoutManager ii) (WI.connClose conn))
+        WI.cancel
+    -- shared clean up
+    terminate conn = WI.connClose conn `finally` (readIORef (WI.connWriteBuffer conn) >>= WI.bufFree)
+
+staticFiles :: FilePath -> Application
+staticFiles root = S.staticApp settings
+  where
+    settings = (S.defaultFileServerSettings root)
+      { S.ssListing = Nothing
+      }
 
 generateSite :: ServerInformation -> Maybe TransportHost -> FilePath -> IO ()
 generateSite si onionHost sitePath = do

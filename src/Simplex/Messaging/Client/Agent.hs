@@ -76,7 +76,7 @@ data SMPClientAgentConfig = SMPClientAgentConfig
 defaultSMPClientAgentConfig :: SMPClientAgentConfig
 defaultSMPClientAgentConfig =
   SMPClientAgentConfig
-    { smpCfg = defaultSMPClientConfig {defaultTransport = ("5223", transport @TLS)},
+    { smpCfg = defaultSMPClientConfig,
       reconnectInterval =
         RetryInterval
           { initialInterval = second,

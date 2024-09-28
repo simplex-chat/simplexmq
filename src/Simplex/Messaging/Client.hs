@@ -141,7 +141,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Transport.Client (SocksAuth (..), SocksProxyWithAuth (..), TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTransportClient)
+import Simplex.Messaging.Transport.Client (SocksAuth (..), SocksProxyWithAuth (..), TransportClientConfig (..), TransportHost (..), defaultSMPPort, defaultTcpConnectTimeout, runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, diffToMicroseconds, ifM, liftEitherWith, raceAny_, threadDelay', tshow, whenM)
@@ -281,6 +281,8 @@ data NetworkConfig = NetworkConfig
     smpProxyMode :: SMPProxyMode,
     -- | Fallback to direct connection when destination SMP relay does not support SMP proxy protocol extensions
     smpProxyFallback :: SMPProxyFallback,
+    -- | use web port 443 for SMP protocol
+    smpWebPort :: Bool,
     -- | timeout for the initial client TCP/TLS connection (microseconds)
     tcpConnectTimeout :: Int,
     -- | timeout of protocol commands (microseconds)
@@ -352,6 +354,7 @@ defaultNetworkConfig =
       sessionMode = TSMSession,
       smpProxyMode = SPMNever,
       smpProxyFallback = SPFAllow,
+      smpWebPort = False,
       tcpConnectTimeout = defaultTcpConnectTimeout,
       tcpTimeout = 15_000_000,
       tcpTimeoutPerKb = 5_000,
@@ -362,9 +365,9 @@ defaultNetworkConfig =
       logTLSErrors = False
     }
 
-transportClientConfig :: NetworkConfig -> TransportHost -> TransportClientConfig
-transportClientConfig NetworkConfig {socksProxy, socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors} host =
-  TransportClientConfig {socksProxy = useSocksProxy socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, alpn = Nothing}
+transportClientConfig :: NetworkConfig -> TransportHost -> Bool -> TransportClientConfig
+transportClientConfig NetworkConfig {socksProxy, socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors} host useSNI =
+  TransportClientConfig {socksProxy = useSocksProxy socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, alpn = Nothing, useSNI}
   where
     socksProxy' = (\(SocksProxyWithAuth _ proxy) -> proxy) <$> socksProxy
     useSocksProxy SMAlways = socksProxy'
@@ -400,24 +403,29 @@ data ProtocolClientConfig v = ProtocolClientConfig
     -- | client-server protocol version range
     serverVRange :: VersionRange v,
     -- | agree shared session secret (used in SMP proxy for additional encryption layer)
-    agreeSecret :: Bool
+    agreeSecret :: Bool,
+    -- | send SNI to server, False for SMP
+    useSNI :: Bool
   }
 
 -- | Default protocol client configuration.
-defaultClientConfig :: Maybe [ALPN] -> VersionRange v -> ProtocolClientConfig v
-defaultClientConfig clientALPN serverVRange =
+defaultClientConfig :: Maybe [ALPN] -> Bool -> VersionRange v -> ProtocolClientConfig v
+defaultClientConfig clientALPN useSNI serverVRange =
   ProtocolClientConfig
     { qSize = 64,
       defaultTransport = ("443", transport @TLS),
       networkConfig = defaultNetworkConfig,
       clientALPN,
       serverVRange,
-      agreeSecret = False
+      agreeSecret = False,
+      useSNI
     }
 {-# INLINE defaultClientConfig #-}
 
 defaultSMPClientConfig :: ProtocolClientConfig SMPVersion
-defaultSMPClientConfig = defaultClientConfig (Just supportedSMPHandshakes) supportedClientSMPRelayVRange
+defaultSMPClientConfig =
+  (defaultClientConfig (Just supportedSMPHandshakes) False supportedClientSMPRelayVRange)
+    {defaultTransport = (show defaultSMPPort, transport @TLS)}
 {-# INLINE defaultSMPClientConfig #-}
 
 data Request err msg = Request
@@ -477,14 +485,14 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe ByteString)
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret} msgQ proxySessTs disconnected = do
+getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret, useSNI} msgQ proxySessTs disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
-    NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
+    NetworkConfig {smpWebPort, tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
     mkProtocolClient :: TransportHost -> UTCTime -> IO (PClient v err msg)
     mkProtocolClient transportHost ts = do
       connected <- newTVarIO False
@@ -515,7 +523,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     runClient :: (ServiceName, ATransport) -> TransportHost -> PClient v err msg -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
     runClient (port', ATransport t) useHost c = do
       cVar <- newEmptyTMVarIO
-      let tcConfig = (transportClientConfig networkConfig useHost) {alpn = clientALPN}
+      let tcConfig = (transportClientConfig networkConfig useHost useSNI) {alpn = clientALPN}
           socksCreds = clientSocksCredentials networkConfig proxySessTs transportSession
       tId <-
         runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar)
@@ -528,7 +536,9 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
 
     useTransport :: (ServiceName, ATransport)
     useTransport = case port srv of
-      "" -> defaultTransport cfg
+      "" -> case protocolTypeI @(ProtoType msg) of
+        SPSMP | smpWebPort -> ("443", transport @TLS)
+        _ -> defaultTransport cfg
       "80" -> ("80", transport @WS)
       p -> (p, transport @TLS)
 

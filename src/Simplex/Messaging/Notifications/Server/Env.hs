@@ -33,13 +33,13 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, THandleParams, TransportPeer (..))
-import Simplex.Messaging.Transport.Server (ServerCredentials, TransportServerConfig, loadFingerprint, loadServerCredential)
+import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, TransportServerConfig, loadFingerprint, loadServerCredential)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
 
 data NtfServerConfig = NtfServerConfig
-  { transports :: [(ServiceName, ATransport)],
+  { transports :: [(ServiceName, ATransport, AddHTTP)],
     subIdBytes :: Int,
     regCodeBytes :: Int,
     clientQSize :: Natural,

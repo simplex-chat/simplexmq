@@ -7,8 +7,10 @@
 module Simplex.Messaging.Transport.Server
   ( TransportServerConfig (..),
     ServerCredentials (..),
+    AddHTTP,
     defaultTransportServerConfig,
     runTransportServerState,
+    runTransportServerState_,
     SocketState,
     newSocketState,
     runTransportServer,
@@ -65,6 +67,8 @@ data ServerCredentials = ServerCredentials
   }
   deriving (Show)
 
+type AddHTTP = Bool
+
 defaultTransportServerConfig :: TransportServerConfig
 defaultTransportServerConfig =
   TransportServerConfig
@@ -87,32 +91,35 @@ runTransportServer started port srvSupported srvCreds alpn_ cfg server = do
   runTransportServerState ss started port srvSupported srvCreds alpn_ cfg server
 
 runTransportServerState :: forall c . Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> T.Credential -> Maybe [ALPN] -> TransportServerConfig -> (c -> IO ()) -> IO ()
-runTransportServerState ss started port = runTransportServerSocketState ss started (startTCPServer started Nothing port) (transportName (TProxy :: TProxy c))
+runTransportServerState ss started port srvSupported srvCreds alpn_ cfg server = runTransportServerState_ ss started port srvSupported (const srvCreds) alpn_ cfg (const server)
+
+runTransportServerState_ :: forall c . Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> (Maybe HostName -> T.Credential) -> Maybe [ALPN] -> TransportServerConfig -> (Socket -> c -> IO ()) -> IO ()
+runTransportServerState_ ss started port = runTransportServerSocketState ss started (startTCPServer started Nothing port) (transportName (TProxy :: TProxy c))
 
 -- | Run a transport server with provided connection setup and handler.
 runTransportServerSocket :: Transport a => TMVar Bool -> IO Socket -> String -> T.Credential -> T.ServerParams -> TransportServerConfig -> (a -> IO ()) -> IO ()
 runTransportServerSocket started getSocket threadLabel srvCreds srvParams cfg server = do
   ss <- newSocketState
-  runTransportServerSocketState_ ss started getSocket threadLabel srvCreds srvParams cfg server
+  runTransportServerSocketState_ ss started getSocket threadLabel (const srvCreds) srvParams cfg (const server)
 
-runTransportServerSocketState :: Transport a => SocketState -> TMVar Bool -> IO Socket -> String -> T.Supported -> (X.CertificateChain, X.PrivKey) -> Maybe [ALPN] -> TransportServerConfig -> (a -> IO ()) -> IO ()
+runTransportServerSocketState :: Transport a => SocketState -> TMVar Bool -> IO Socket -> String -> T.Supported -> (Maybe HostName -> T.Credential) -> Maybe [ALPN] -> TransportServerConfig -> (Socket -> a -> IO ()) -> IO ()
 runTransportServerSocketState ss started getSocket threadLabel srvSupported srvCreds alpn_ =
   runTransportServerSocketState_ ss started getSocket threadLabel srvCreds srvParams
   where
     srvParams = supportedTLSServerParams_ srvSupported srvCreds alpn_
 
 -- | Run a transport server with provided connection setup and handler.
-runTransportServerSocketState_ :: Transport a => SocketState -> TMVar Bool -> IO Socket -> String -> (X.CertificateChain, X.PrivKey) -> T.ServerParams -> TransportServerConfig -> (a -> IO ()) -> IO ()
+runTransportServerSocketState_ :: Transport a => SocketState -> TMVar Bool -> IO Socket -> String -> (Maybe HostName -> (X.CertificateChain, X.PrivKey)) -> T.ServerParams -> TransportServerConfig -> (Socket -> a -> IO ()) -> IO ()
 runTransportServerSocketState_ ss started getSocket threadLabel srvCreds srvParams cfg server = do
   labelMyThread $ "transport server for " <> threadLabel
   runTCPServerSocket ss started getSocket $ \conn ->
-    E.bracket (setup conn >>= maybe (fail "tls setup timeout") pure) closeConnection server
+    E.bracket (setup conn >>= maybe (fail "tls setup timeout") pure) closeConnection (server conn)
   where
     tCfg = serverTransportConfig cfg
     setup conn = timeout (tlsSetupTimeout cfg) $ do
       labelMyThread $ threadLabel <> "/setup"
       tls <- connectTLS Nothing tCfg srvParams conn
-      getServerConnection tCfg (fst srvCreds) tls
+      getServerConnection tCfg (fst $ srvCreds Nothing) tls
 
 -- | Run TCP server without TLS
 runLocalTCPServer :: TMVar Bool -> ServiceName -> (Socket -> IO ()) -> IO ()
@@ -191,15 +198,15 @@ loadServerCredential ServerCredentials {caCertificateFile, certificateFile, priv
     Left _ -> putStrLn "invalid credential" >> exitFailure
 
 supportedTLSServerParams :: T.Credential -> Maybe [ALPN] -> T.ServerParams
-supportedTLSServerParams = supportedTLSServerParams_ defaultSupportedParams
+supportedTLSServerParams = supportedTLSServerParams_ defaultSupportedParams . const
 
-supportedTLSServerParams_ :: T.Supported -> T.Credential -> Maybe [ALPN] -> T.ServerParams
-supportedTLSServerParams_ serverSupported credential alpn_ =
+supportedTLSServerParams_ :: T.Supported -> (Maybe HostName -> T.Credential) -> Maybe [ALPN] -> T.ServerParams
+supportedTLSServerParams_ serverSupported creds alpn_ =
   def
     { T.serverWantClientCert = False,
       T.serverHooks =
         def
-          { T.onServerNameIndication = \_ -> pure $ T.Credentials [credential],
+          { T.onServerNameIndication = \host_ -> pure $ T.Credentials [creds host_],
             T.onALPNClientSuggest = (\alpn -> pure . fromMaybe "" . find (`elem` alpn)) <$> alpn_
           },
       T.serverSupported = serverSupported

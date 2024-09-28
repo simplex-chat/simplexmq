@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -10,11 +11,13 @@ module Simplex.Messaging.Server.Env.STM where
 import Control.Concurrent (ThreadId)
 import Control.Logger.Simple
 import Control.Monad
+import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
+import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -22,6 +25,7 @@ import Data.Maybe (isJust, isNothing)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
+import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (ServiceName)
 import qualified Network.TLS as T
@@ -41,13 +45,15 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
-import Simplex.Messaging.Transport.Server (ServerCredentials, SocketState, TransportServerConfig, loadFingerprint, loadServerCredential, newSocketState)
+import Simplex.Messaging.Transport.Server
+import System.Directory (doesFileExist)
+import System.Exit (exitFailure)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
 
 data ServerConfig = ServerConfig
-  { transports :: [(ServiceName, ATransport)],
+  { transports :: [(ServiceName, ATransport, AddHTTP)],
     smpHandshakeTimeout :: Int,
     tbqSize :: Natural,
     msgQueueQuota :: Int,
@@ -79,6 +85,7 @@ data ServerConfig = ServerConfig
     -- | interval between sending pending END events to unsubscribed clients, seconds
     pendingENDInterval :: Int,
     smpCredentials :: ServerCredentials,
+    httpCredentials :: Maybe ServerCredentials,
     -- | SMP client-server protocol version range
     smpServerVRange :: VersionRangeSMP,
     -- | TCP transport config
@@ -123,6 +130,7 @@ data Env = Env
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerCreds :: T.Credential,
+    httpServerCreds :: Maybe T.Credential,
     serverStats :: ServerStats,
     sockets :: SocketState,
     clientSeq :: TVar ClientId,
@@ -217,7 +225,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {smpCredentials, storeLogFile, smpAgentCfg, information, messageExpiration} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAgentCfg, information, messageExpiration} = do
   server <- newServer
   queueStore <- newQueueStore
   msgStore <- newMsgStore
@@ -226,7 +234,9 @@ newEnv config@ServerConfig {smpCredentials, storeLogFile, smpAgentCfg, informati
     forM storeLogFile $ \f -> do
       logInfo $ "restoring queues from file " <> T.pack f
       restoreQueues queueStore f
-  tlsServerCreds <- loadServerCredential smpCredentials
+  tlsServerCreds <- getCredentials "SMP" smpCredentials
+  httpServerCreds <- mapM (getCredentials "HTTPS") httpCredentials
+  mapM_ checkHTTPSCredentials httpServerCreds
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
@@ -234,8 +244,28 @@ newEnv config@ServerConfig {smpCredentials, storeLogFile, smpAgentCfg, informati
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
-  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
+  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
+    getCredentials protocol creds = do
+      files <- missingCreds
+      unless (null files) $ do
+        putStrLn $ "Error: no " <> protocol <> " credentials: " <> intercalate ", " files
+        when (protocol == "HTTPS") $ putStrLn letsEncrypt
+        exitFailure
+      loadServerCredential creds
+      where
+        missingfile f = (\y -> [f | not y]) <$> doesFileExist f
+        missingCreds = do
+          let files = maybe id (:) (caCertificateFile creds) [certificateFile creds, privateKeyFile creds]
+           in concat <$> mapM missingfile files
+    checkHTTPSCredentials (X.CertificateChain cc, _k) =
+      -- LetsEncrypt provides ECDSA with insecure curve p256 (https://safecurves.cr.yp.to)
+      case map (X.signedObject . X.getSigned) cc of
+        X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca | RSA.public_size rsa >= 512 -> pure ()
+        _ -> do
+          putStrLn $ "Error: unsupported HTTPS credentials, required 4096-bit RSA\n" <> letsEncrypt
+          exitFailure
+    letsEncrypt = "Use Let's Encrypt to generate: certbot certonly --standalone -d yourdomainname --key-type rsa --rsa-key-size 4096"
     restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
     restoreQueues QueueStore {queues, senders, notifiers} f = do
       (qs, s) <- readWriteStoreLog f
