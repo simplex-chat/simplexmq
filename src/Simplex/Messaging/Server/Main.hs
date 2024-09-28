@@ -37,7 +37,7 @@ import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
 import Simplex.Messaging.Server (runSMPServer)
 import Simplex.Messaging.Server.CLI
-import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defMsgExpirationDays, defaultInactiveClientExpiration, defaultMessageExpiration, defaultProxyClientConcurrency)
+import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Transport (batchCmdsSMPVersion, sendingProxySMPVersion, simplexMQVersion, supportedSMPHandshakes, supportedServerSMPRelayVRange)
@@ -148,7 +148,8 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                 <> "# Undelivered messages are optionally saved and restored when the server restarts,\n\
                    \# they are preserved in the .bak file until the next restart.\n"
                 <> ("restore_messages: " <> onOff enableStoreLog <> "\n")
-                <> ("expire_messages_days: " <> tshow defMsgExpirationDays <> "\n\n")
+                <> ("expire_messages_days: " <> tshow defMsgExpirationDays <> "\n")
+                <> ("expire_ntfs_hours: " <> tshow defNtfExpirationHours <> "\n\n")
                 <> "# Log daily server statistics to CSV file\n"
                 <> ("log_stats: " <> onOff logStats <> "\n\n")
                 <> "[AUTH]\n\
@@ -281,6 +282,10 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                   defaultMessageExpiration
                     { ttl = 86400 * readIniDefault defMsgExpirationDays "STORE_LOG" "expire_messages_days" ini
                     },
+              notificationExpiration =
+                defaultNtfExpiration
+                  { ttl = 3600 * readIniDefault defNtfExpirationHours "STORE_LOG" "expire_ntfs_hours" ini
+                  },
               inactiveClientExpiration =
                 settingIsOn "INACTIVE_CLIENTS" "disconnect" ini
                   $> ExpirationConfig

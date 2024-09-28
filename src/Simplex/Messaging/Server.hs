@@ -62,7 +62,6 @@ import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
-import qualified Data.Set as S
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
@@ -143,6 +142,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
         : deliverNtfsThread s
         : sendPendingEvtsThread s
         : receiveFromProxyAgent pa
+        : expireNtfsThread cfg
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
     `finally` withLock' (savingLock s) "final" (saveServer False >> closeServer)
@@ -221,28 +221,28 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       ntfInt <- asks $ ntfDeliveryInterval . config
       ns <- asks ntfStore
       stats <- asks serverStats
-      forever $ do
+      liftIO $ forever $ do
         threadDelay ntfInt
-        readTVarIO ntfSubClients >>= mapM (deliverNtfs ns >=> updateNtfStats stats) 
+        readTVarIO ntfSubClients >>= mapM_ (deliverNtfs ns stats)
       where
-        deliverNtfs ns Client {clientId, ntfSubscriptions, sndQ, connected} = do
-          ntfs_ <-
-            whenCurrent readTVarIO $ atomically $ whenCurrent readTVar $ do
-              subs <- M.keysSet <$> readTVar ntfSubscriptions
-              stateTVar ns $ M.partitionWithKey $ \nId _ -> S.member nId subs
-          case ntfs_ of
-            Just (Just ntfs) -> do
-              let t nId (MsgNtf _ _ nonce encMeta) = (CorrId "", nId, NMSG nonce encMeta)
-                  ts_ = concatMap (\(nId, ntfs') -> map (t nId) $ reverse ntfs') $ M.assocs ntfs
-              mapM_ (atomically . writeTBQueue sndQ) $ L.nonEmpty ts_
-              pure $ length ts_
-            _ -> pure 0
+        deliverNtfs ns stats Client {clientId, ntfSubscriptions, sndQ, connected} = whenM currentClient $
+          readTVarIO ntfSubscriptions >>= \subs -> do
+            ts_ <- concat <$> foldM (\acc nId -> TM.lookupIO nId ns >>= maybe (pure acc) (addNtfs acc nId)) [] (M.keys subs)
+            mapM_ (atomically . writeTBQueue sndQ) $ L.nonEmpty ts_
+            updateNtfStats $ length ts_
           where
-            whenCurrent :: Monad m => (forall a. TVar a -> m a) -> m b -> m (Maybe b)
-            whenCurrent rd action = ifM ((&&) <$> rd connected <*> (IM.member clientId <$> rd ntfSubClients)) (Just <$> action) (pure Nothing)
-        updateNtfStats stats len = when (len > 0) $ liftIO $ do
-          atomicModifyIORef'_ (msgNtfs stats) (+ len)
-          atomicModifyIORef'_ (msgNtfsB stats) (+ (len `div` 80 + 1)) -- up to 80 NMSG in the batch
+            currentClient = (&&) <$> readTVarIO connected <*> (IM.member clientId <$> readTVarIO ntfSubClients)
+            addNtfs :: [[Transmission BrokerMsg]] -> NotifierId -> TVar [MsgNtf] -> IO [[Transmission BrokerMsg]]
+            addNtfs acc nId v =
+              readTVarIO v >>= \case
+                [] -> pure acc
+                -- if notifications available, atomically swap with empty array and add transmissions.
+                -- `reverse` is needed to send transmission in the order of reception.
+                _ -> (\ntfs -> map (nmsg nId) (reverse ntfs) : acc) <$> atomically (swapTVar v [])
+            nmsg nId (MsgNtf _ _ nonce encMeta) = (CorrId "", nId, NMSG nonce encMeta)
+            updateNtfStats len = when (len > 0) $ liftIO $ do
+              atomicModifyIORef'_ (msgNtfs stats) (+ len)
+              atomicModifyIORef'_ (msgNtfsB stats) (+ (len `div` 80 + 1)) -- up to 80 NMSG in the batch
 
     sendPendingEvtsThread :: Server -> M ()
     sendPendingEvtsThread s = do
@@ -309,6 +309,29 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           deleted <- liftIO $ deleteExpiredMsgs q old
           liftIO $ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
 
+    expireNtfsThread :: ServerConfig -> M ()
+    expireNtfsThread ServerConfig {notificationExpiration = expCfg} = do
+      ns <- asks ntfStore
+      let interval = checkInterval expCfg * 1000000
+      stats <- asks serverStats
+      labelMyThread "expireNtfsThread"
+      liftIO $ forever $ do
+        threadDelay' interval
+        old <- expireBeforeEpoch expCfg
+        nIds <- M.keysSet <$> readTVarIO ns
+        forM_ nIds $ \nId -> TM.lookupIO nId ns >>= mapM_ (explireQueueNtfs stats old)
+      where
+        explireQueueNtfs stats old v = do
+          readTVarIO v >>= \case
+            [] -> pure ()
+            _ -> do
+              expired <- atomically $ do
+                ntfs <- readTVar v
+                let !ntfs' = filter (\(MsgNtf _ ts _ _) -> systemSeconds ts >= old) ntfs
+                writeTVar v ntfs'
+                pure $ length ntfs - length ntfs'
+              atomicModifyIORef'_ (msgNtfExpired stats) (+ expired)
+
     serverStatsThread_ :: ServerConfig -> [M ()]
     serverStatsThread_ ServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
       [logServerStats logStatsStartTime interval serverStatsLogFile]
@@ -366,8 +389,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
           msgRecvNtf' <- atomicSwapIORef msgRecvNtf 0
           psNtf <- liftIO $ periodStatCounts activeQueuesNtf ts
           msgNtfs' <- atomicSwapIORef (msgNtfs ss) 0
+          msgNtfsB' <- atomicSwapIORef (msgNtfsB ss) 0
           msgNtfNoSub' <- atomicSwapIORef (msgNtfNoSub ss) 0
           msgNtfLost' <- atomicSwapIORef (msgNtfLost ss) 0
+          msgNtfExpired' <- atomicSwapIORef (msgNtfExpired ss) 0
           pRelays' <- getResetProxyStatsData pRelays
           pRelaysOwn' <- getResetProxyStatsData pRelaysOwn
           pMsgFwds' <- getResetProxyStatsData pMsgFwds
@@ -439,7 +464,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
                        show qSubEnd',
                        show qSubEndB',
                        show ntfDeletedB',
-                       show ntfSubB'
+                       show ntfSubB',
+                       show msgNtfsB',
+                       show msgNtfExpired'
                      ]
               )
         liftIO $ threadDelay' interval
@@ -1297,6 +1324,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                   else -- skip notification delivery for delivered message
                     pure ()
                     -- TODO skipping delivery fails tests
+                    -- count in msgNtfSkipped
                     -- forM_ (notifierId <$> notifier qr) $ \nId -> do
                     --   ns <- asks ntfStore
                     --   atomically $ TM.lookup nId ns >>=
@@ -1421,13 +1449,16 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
 
             enqueueNotification :: NtfCreds -> Message -> M ()
             enqueueNotification _ MessageQuota {} = pure ()
-            enqueueNotification NtfCreds {notifierId, rcvNtfDhSecret} Message {msgId, msgTs} = do
+            enqueueNotification NtfCreds {notifierId = nId, rcvNtfDhSecret} Message {msgId, msgTs} = do
               -- stats <- asks serverStats
+              ns <- asks ntfStore
               ntf <- mkMessageNotification msgId msgTs rcvNtfDhSecret
-              atomically . TM.alter (Just . maybe [ntf] (ntf :)) notifierId =<< asks ntfStore
+              liftIO $ TM.lookupIO nId ns >>= atomically . maybe (newNtfs ns ntf) (`modifyTVar'` (ntf :))
               -- TODO coalesce messages here once the client is updated to process multiple messages
               -- for single notification.
               -- when (isJust prevNtf) $ incStat $ msgNtfReplaced stats
+              where
+                newNtfs ns ntf = TM.lookup nId ns >>= maybe (TM.insertM nId (newTVar [ntf]) ns) (`modifyTVar'` (ntf :))
 
             mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> M MsgNtf
             mkMessageNotification msgId msgTs rcvNtfDhSecret = do

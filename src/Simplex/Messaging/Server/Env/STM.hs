@@ -65,6 +65,8 @@ data ServerConfig = ServerConfig
     controlPortAdminAuth :: Maybe BasicAuth,
     -- | time after which the messages can be removed from the queues and check interval, seconds
     messageExpiration :: Maybe ExpirationConfig,
+    -- | notification expiration interval (seconds)
+    notificationExpiration :: ExpirationConfig,
     -- | time after which the socket with inactive client can be disconnected (without any messages or commands, incl. PING),
     -- and check interval, seconds
     inactiveClientExpiration :: Maybe ExpirationConfig,
@@ -109,6 +111,16 @@ defaultMessageExpiration =
       checkInterval = 43200 -- seconds, 12 hours
     }
 
+defNtfExpirationHours :: Int64
+defNtfExpirationHours = 24
+
+defaultNtfExpiration :: ExpirationConfig
+defaultNtfExpiration =
+  ExpirationConfig
+    { ttl = defNtfExpirationHours * 3600, -- seconds
+      checkInterval = 3600 -- seconds, 1 hour
+    }
+
 defaultInactiveClientExpiration :: ExpirationConfig
 defaultInactiveClientExpiration =
   ExpirationConfig
@@ -126,7 +138,7 @@ data Env = Env
     serverIdentity :: KeyHash,
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
-    ntfStore :: TMap NotifierId [MsgNtf],
+    ntfStore :: TMap NotifierId (TVar [MsgNtf]),
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerParams :: T.ServerParams,

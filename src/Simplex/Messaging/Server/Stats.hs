@@ -70,8 +70,6 @@ data ServerStats = ServerStats
     msgNtfsB :: IORef Int, -- messages notication batches delivered to NTF server
     msgNtfNoSub :: IORef Int, -- no subscriber to notifications (e.g., NTF server not connected)
     msgNtfLost :: IORef Int, -- notification is lost because NTF delivery queue is full
-    msgNtfReplaced :: IORef Int, -- replaced with newer in the same queue
-    msgNtfSkipped :: IORef Int, -- removed, because the message was delivered
     msgNtfExpired :: IORef Int, -- expired
     pRelays :: ProxyStats,
     pRelaysOwn :: ProxyStats,
@@ -124,8 +122,6 @@ data ServerStatsData = ServerStatsData
     _msgNtfsB :: Int,
     _msgNtfNoSub :: Int,
     _msgNtfLost :: Int,
-    _msgNtfReplaced :: Int,
-    _msgNtfSkipped :: Int,
     _msgNtfExpired :: Int,
     _pRelays :: ProxyStatsData,
     _pRelaysOwn :: ProxyStatsData,
@@ -180,8 +176,6 @@ newServerStats ts = do
   msgNtfsB <- newIORef 0
   msgNtfNoSub <- newIORef 0
   msgNtfLost <- newIORef 0
-  msgNtfReplaced <- newIORef 0
-  msgNtfSkipped <- newIORef 0
   msgNtfExpired <- newIORef 0
   pRelays <- newProxyStats
   pRelaysOwn <- newProxyStats
@@ -233,8 +227,6 @@ newServerStats ts = do
         msgNtfsB,
         msgNtfNoSub,
         msgNtfLost,
-        msgNtfReplaced,
-        msgNtfSkipped,
         msgNtfExpired,
         pRelays,
         pRelaysOwn,
@@ -288,8 +280,6 @@ getServerStatsData s = do
   _msgNtfsB <- readIORef $ msgNtfsB s
   _msgNtfNoSub <- readIORef $ msgNtfNoSub s
   _msgNtfLost <- readIORef $ msgNtfLost s
-  _msgNtfReplaced <- readIORef $ msgNtfReplaced s
-  _msgNtfSkipped <- readIORef $ msgNtfSkipped s
   _msgNtfExpired <- readIORef $ msgNtfExpired s
   _pRelays <- getProxyStatsData $ pRelays s
   _pRelaysOwn <- getProxyStatsData $ pRelaysOwn s
@@ -341,8 +331,6 @@ getServerStatsData s = do
         _msgNtfsB,
         _msgNtfNoSub,
         _msgNtfLost,
-        _msgNtfReplaced,
-        _msgNtfSkipped,
         _msgNtfExpired,
         _pRelays,
         _pRelaysOwn,
@@ -397,8 +385,6 @@ setServerStats s d = do
   writeIORef (msgNtfsB s) $! _msgNtfsB d
   writeIORef (msgNtfNoSub s) $! _msgNtfNoSub d
   writeIORef (msgNtfLost s) $! _msgNtfLost d
-  writeIORef (msgNtfReplaced s) $! _msgNtfReplaced d
-  writeIORef (msgNtfSkipped s) $! _msgNtfSkipped d
   writeIORef (msgNtfExpired s) $! _msgNtfExpired d
   setProxyStats (pRelays s) $! _pRelays d
   setProxyStats (pRelaysOwn s) $! _pRelaysOwn d
@@ -451,8 +437,6 @@ instance StrEncoding ServerStatsData where
         "msgNtfsB=" <> strEncode (_msgNtfsB d),
         "msgNtfNoSub=" <> strEncode (_msgNtfNoSub d),
         "msgNtfLost=" <> strEncode (_msgNtfLost d),
-        "msgNtfReplaced=" <> strEncode (_msgNtfReplaced d),
-        "msgNtfSkipped=" <> strEncode (_msgNtfSkipped d),
         "msgNtfExpired=" <> strEncode (_msgNtfExpired d),
         "activeQueues:",
         strEncode (_activeQueues d),
@@ -510,8 +494,6 @@ instance StrEncoding ServerStatsData where
     _msgNtfsB <- opt "msgNtfsB="
     _msgNtfNoSub <- opt "msgNtfNoSub="
     _msgNtfLost <- opt "msgNtfLost="
-    _msgNtfReplaced <- opt "msgNtfReplaced="
-    _msgNtfSkipped <- opt "msgNtfSkipped="
     _msgNtfExpired <- opt "msgNtfExpired="
     _activeQueues <-
       optional ("activeQueues:" <* A.endOfLine) >>= \case
@@ -575,8 +557,6 @@ instance StrEncoding ServerStatsData where
           _msgNtfsB,
           _msgNtfNoSub,
           _msgNtfLost,
-          _msgNtfReplaced,
-          _msgNtfSkipped,
           _msgNtfExpired,
           _activeQueues,
           _activeQueuesNtf,

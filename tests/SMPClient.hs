@@ -110,6 +110,7 @@ cfg =
       controlPortUserAuth = Nothing,
       controlPortAdminAuth = Nothing,
       messageExpiration = Just defaultMessageExpiration,
+      notificationExpiration = defaultNtfExpiration,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
