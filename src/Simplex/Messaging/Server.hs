@@ -232,7 +232,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
               stateTVar ns $ M.partitionWithKey $ \nId _ -> S.member nId subs
           case ntfs_ of
             Just (Just ntfs) -> do
-              let ts_ :: [Transmission BrokerMsg] = concatMap (\(nId, ntfs') -> map (\(MsgNtf _ _ nonce encMeta) -> (CorrId "", nId, NMSG nonce encMeta)) $ reverse ntfs') $ M.assocs ntfs
+              let t nId (MsgNtf _ _ nonce encMeta) = (CorrId "", nId, NMSG nonce encMeta)
+                  ts_ = concatMap (\(nId, ntfs') -> map (t nId) $ reverse ntfs') $ M.assocs ntfs
               mapM_ (atomically . writeTBQueue sndQ) $ L.nonEmpty ts_
               pure $ length ts_
             _ -> pure 0
@@ -241,7 +242,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
             whenCurrent rd action = ifM ((&&) <$> rd connected <*> (IM.member clientId <$> rd ntfSubClients)) (Just <$> action) (pure Nothing)
         updateNtfStats stats len = when (len > 0) $ liftIO $ do
           atomicModifyIORef'_ (msgNtfs stats) (+ len)
-          atomicModifyIORef'_ (msgNtfsB stats) (+ (len `div` 100 + 1)) -- up to 100 (?) NMSG in the batch
+          atomicModifyIORef'_ (msgNtfsB stats) (+ (len `div` 80 + 1)) -- up to 80 NMSG in the batch
 
     sendPendingEvtsThread :: Server -> M ()
     sendPendingEvtsThread s = do
@@ -1333,7 +1334,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                         Just (msg, wasEmpty) -> time "SEND ok" $ do
                           when wasEmpty $ liftIO $ tryDeliverMessage msg
                           when (notification msgFlags) $ do
-                            mapM_ (`trySendNotification` msg) (notifier qr)
+                            mapM_ (`enqueueNotification` msg) (notifier qr)
                             incStat $ msgSentNtf stats
                             liftIO $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
                           incStat $ msgSent stats
@@ -1418,13 +1419,14 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                             deliver q s
                             writeTVar st NoSub
 
-            trySendNotification :: NtfCreds -> Message -> M ()
-            trySendNotification _ MessageQuota {} = pure ()
-            trySendNotification NtfCreds {notifierId, rcvNtfDhSecret} Message {msgId, msgTs} = do
+            enqueueNotification :: NtfCreds -> Message -> M ()
+            enqueueNotification _ MessageQuota {} = pure ()
+            enqueueNotification NtfCreds {notifierId, rcvNtfDhSecret} Message {msgId, msgTs} = do
               -- stats <- asks serverStats
               ntf <- mkMessageNotification msgId msgTs rcvNtfDhSecret
               atomically . TM.alter (Just . maybe [ntf] (ntf :)) notifierId =<< asks ntfStore
-              -- no coalescing for now
+              -- TODO coalesce messages here once the client is updated to process multiple messages
+              -- for single notification.
               -- when (isJust prevNtf) $ incStat $ msgNtfReplaced stats
 
             mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> M MsgNtf
