@@ -328,10 +328,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
             _ -> do
               expired <- atomically $ do
                 ntfs <- readTVar v
-                let !ntfs' = filter (\(MsgNtf _ ts _ _) -> systemSeconds ts >= old) ntfs
-                writeTVar v ntfs'
-                pure $ length ntfs - length ntfs'
-              atomicModifyIORef'_ (msgNtfExpired stats) (+ expired)
+                case reverse ntfs of
+                  -- check the last message first, it is the earliest
+                  (MsgNtf _ ts _ _) : _ | systemSeconds ts < old -> do
+                    let !ntfs' = filter (\(MsgNtf _ ts' _ _) -> systemSeconds ts' >= old) ntfs
+                    writeTVar v ntfs'
+                    pure $! length ntfs - length ntfs'
+                  _ -> pure 0
+              when (expired > 0) $ atomicModifyIORef'_ (msgNtfExpired stats) (+ expired)
 
     serverStatsThread_ :: ServerConfig -> [M ()]
     serverStatsThread_ ServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
