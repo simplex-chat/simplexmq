@@ -253,6 +253,11 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
+        restoreMessagesFile path = case iniOnOff "STORE_LOG" "restore_messages" ini of
+          Just True -> Just path
+          Just False -> Nothing
+          -- if the setting is not set, it is enabled when store log is enabled
+          _ -> enableStoreLog $> path
         serverConfig =
           ServerConfig
             { transports = iniTransports ini,
@@ -265,13 +270,8 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               privateKeyFile = c serverKeyFile,
               certificateFile = c serverCrtFile,
               storeLogFile = enableStoreLog $> storeLogFilePath,
-              storeMsgsFile =
-                let messagesPath = combine logPath "smp-server-messages.log"
-                 in case iniOnOff "STORE_LOG" "restore_messages" ini of
-                      Just True -> Just messagesPath
-                      Just False -> Nothing
-                      -- if the setting is not set, it is enabled when store log is enabled
-                      _ -> enableStoreLog $> messagesPath,
+              storeMsgsFile = restoreMessagesFile $ combine logPath "smp-server-messages.log",
+              storeNtfsFile = restoreMessagesFile $ combine logPath "smp-server-ntfs.log",
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
               newQueueBasicAuth = either error id <$!> strDecodeIni "AUTH" "create_password" ini,

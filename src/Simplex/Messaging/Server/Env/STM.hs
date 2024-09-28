@@ -56,6 +56,7 @@ data ServerConfig = ServerConfig
     msgIdBytes :: Int,
     storeLogFile :: Maybe FilePath,
     storeMsgsFile :: Maybe FilePath,
+    storeNtfsFile :: Maybe FilePath,
     -- | set to False to prohibit creating new queues
     allowNewQueues :: Bool,
     -- | simple password that the clients need to pass in handshake to be able to create new queues

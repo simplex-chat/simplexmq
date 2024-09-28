@@ -54,7 +54,7 @@ import Data.Text.Encoding (encodeUtf8)
 import Database.SQLite.Simple.QQ (sql)
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testNtfServer, testNtfServer2)
-import SMPClient (cfg, cfgVPrev, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn)
+import SMPClient (cfg, cfgVPrev, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
@@ -134,9 +134,8 @@ notificationTests t = do
           withNtfServer t $ testChangeToken apns
   describe "Notifications server store log" $
     it "should save and restore tokens and subscriptions" $
-      withSmpServer t $
-        withAPNSMockServer $ \apns ->
-          testNotificationsStoreLog t apns
+      withAPNSMockServer $ \apns ->
+        testNotificationsStoreLog t apns
   describe "Notifications after SMP server restart" $
     it "should resume subscriptions after SMP server is restarted" $
       withAPNSMockServer $ \apns ->
@@ -682,27 +681,40 @@ testChangeToken apns = withAgent 1 agentCfg initAgentServers testDB2 $ \bob -> d
 
 testNotificationsStoreLog :: ATransport -> APNSMockServer -> IO ()
 testNotificationsStoreLog t apns = withAgentClients2 $ \alice bob -> do
-  (aliceId, bobId) <- withNtfServerStoreLog t $ \threadId -> runRight $ do
-    (aliceId, bobId) <- makeConnection alice bob
-    _ <- registerTestToken alice "abcd" NMInstant apns
-    liftIO $ threadDelay 250000
-    2 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello"
-    get bob ##> ("", aliceId, SENT 2)
-    void $ messageNotificationData alice apns
-    get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
-    ackMessage alice bobId 2 Nothing
-    liftIO $ killThread threadId
-    pure (aliceId, bobId)
+  withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+    (aliceId, bobId) <- withNtfServerStoreLog t $ \threadId -> runRight $ do
+      (aliceId, bobId) <- makeConnection alice bob
+      _ <- registerTestToken alice "abcd" NMInstant apns
+      liftIO $ threadDelay 250000
+      2 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello"
+      get bob ##> ("", aliceId, SENT 2)
+      void $ messageNotificationData alice apns
+      get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
+      ackMessage alice bobId 2 Nothing
+      liftIO $ killThread threadId
+      pure (aliceId, bobId)
 
-  liftIO $ threadDelay 250000
-
-  withNtfServerStoreLog t $ \threadId -> runRight_ $ do
     liftIO $ threadDelay 250000
-    3 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
-    get bob ##> ("", aliceId, SENT 3)
-    void $ messageNotificationData alice apns
-    get alice =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
-    liftIO $ killThread threadId
+
+    withNtfServerStoreLog t $ \threadId -> runRight_ $ do
+      liftIO $ threadDelay 250000
+      3 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
+      get bob ##> ("", aliceId, SENT 3)
+      void $ messageNotificationData alice apns
+      get alice =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
+      ackMessage alice bobId 3 Nothing
+      liftIO $ killThread threadId
+
+    runRight_ $ do
+      4 <- sendMessage bob aliceId (SMP.MsgFlags True) "message 4"
+      get bob ##> ("", aliceId, SENT 4)
+      get alice =##> \case ("", c, Msg "message 4") -> c == bobId; _ -> False
+      ackMessage alice bobId 4 Nothing
+      noNotifications apns
+
+  withSmpServerStoreMsgLogOn t testPort $ \_ ->
+    withNtfServerStoreLog t $ \_ -> runRight_ $ do
+      void $ messageNotificationData alice apns
 
 testNotificationsSMPRestart :: ATransport -> APNSMockServer -> IO ()
 testNotificationsSMPRestart t apns = withAgentClients2 $ \alice bob -> do

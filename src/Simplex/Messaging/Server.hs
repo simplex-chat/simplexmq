@@ -134,8 +134,9 @@ smpServer :: TMVar Bool -> ServerConfig -> M ()
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
   s <- asks server
   pa <- asks proxyAgent
-  expired <- restoreServerMessages
-  restoreServerStats expired
+  expiredMsgs <- restoreServerMessages
+  expiredNtfs <- restoreServerNtfs
+  restoreServerStats expiredMsgs expiredNtfs
   raceAny_
     ( serverThread s "server subscribedQ" subscribedQ subscribers subClients pendingSubEvents subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubClients pendingNtfSubEvents ntfSubscriptions (\_ -> pure ())
@@ -157,7 +158,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
     fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
 
     saveServer :: Bool -> M ()
-    saveServer keepMsgs = withLog closeStoreLog >> saveServerMessages keepMsgs >> saveServerStats
+    saveServer keepMsgs = withLog closeStoreLog >> saveServerMessages keepMsgs >> saveServerNtfs >> saveServerStats
 
     closeServer :: M ()
     closeServer = asks (smpAgent . proxyAgent) >>= liftIO . closeSMPClientAgent
@@ -1696,6 +1697,52 @@ restoreServerMessages =
             msgErr :: Show e => String -> e -> String
             msgErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
 
+saveServerNtfs :: M ()
+saveServerNtfs = asks (storeNtfsFile . config) >>= mapM_ saveNtfs
+  where
+    saveNtfs f = do
+      logInfo $ "saving notifications to file " <> T.pack f
+      ns <- asks ntfStore
+      liftIO . withFile f WriteMode $ \h ->
+        readTVarIO ns >>= mapM_ (saveQueueNtfs h) . M.assocs
+      logInfo "notifications saved"
+      where
+        saveQueueNtfs h (nId, v) = BLD.hPutBuilder h . encodeNtfs nId =<< readTVarIO v
+        encodeNtfs nId = mconcat . map (\ntf -> BLD.byteString (strEncode $ NLRv1 nId ntf) <> BLD.char8 '\n') . reverse
+
+restoreServerNtfs :: M Int
+restoreServerNtfs =
+  asks (storeNtfsFile . config) >>= \case
+    Just f -> ifM (doesFileExist f) (restoreNtfs f) (pure 0)
+    Nothing -> pure 0
+  where
+    restoreNtfs f = do
+      logInfo $ "restoring notifications from file " <> T.pack f
+      ns <- asks ntfStore
+      old <- asks (notificationExpiration . config) >>= liftIO . expireBeforeEpoch
+      runExceptT (liftIO (LB.readFile f) >>= foldM (restoreNtf ns old) 0 . LB.lines) >>= \case
+        Left e -> do
+          logError . T.pack $ "error restoring notifications: " <> e
+          liftIO exitFailure
+        Right expired -> do
+          renameFile f $ f <> ".bak"
+          logInfo "notifications restored"
+          pure expired
+      where
+        restoreNtf ns old !expired s' = do
+          NLRv1 nId ntf <- liftEither . first (ntfErr "parsing") $ strDecode s
+          addToNtfs nId ntf
+          where
+            s = LB.toStrict s'
+            addToNtfs nId ntf@(MsgNtf _ ntfTs _ _)  = do
+              if systemSeconds ntfTs < old
+                then pure $ expired + 1
+                else do
+                  v <- liftIO $ TM.lookupIO nId ns >>= maybe (atomically $ newTVar [] >>= \v -> TM.insert nId v ns $> v) pure
+                  atomically (modifyTVar' v (ntf :)) $> expired
+            ntfErr :: Show e => String -> e -> String
+            ntfErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
+
 saveServerStats :: M ()
 saveServerStats =
   asks (serverStatsBackupFile . config)
@@ -1706,8 +1753,8 @@ saveServerStats =
       B.writeFile f $ strEncode stats
       logInfo "server stats saved"
 
-restoreServerStats :: Int -> M ()
-restoreServerStats expiredWhileRestoring = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
+restoreServerStats :: Int -> Int -> M ()
+restoreServerStats expiredMsgs expiredNtfs = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
   where
     restoreStats f = whenM (doesFileExist f) $ do
       logInfo $ "restoring server stats from file " <> T.pack f
@@ -1716,7 +1763,7 @@ restoreServerStats expiredWhileRestoring = asks (serverStatsBackupFile . config)
           s <- asks serverStats
           _qCount <- fmap M.size . readTVarIO . queues =<< asks queueStore
           _msgCount <- liftIO . foldM (\(!n) q -> (n +) <$> getQueueSize q) 0 =<< readTVarIO =<< asks msgStore
-          liftIO $ setServerStats s d {_qCount, _msgCount, _msgExpired = _msgExpired d + expiredWhileRestoring}
+          liftIO $ setServerStats s d {_qCount, _msgCount, _msgExpired = _msgExpired d + expiredMsgs, _msgNtfExpired = _msgNtfExpired d + expiredNtfs}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
           when (_qCount /= statsQCount) $ logWarn $ "Queue count differs: stats: " <> tshow statsQCount <> ", store: " <> tshow _qCount
