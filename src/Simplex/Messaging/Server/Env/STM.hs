@@ -139,7 +139,7 @@ data Env = Env
     serverIdentity :: KeyHash,
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
-    ntfStore :: TMap NotifierId (TVar [MsgNtf]),
+    ntfStore :: NtfStore,
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerParams :: T.ServerParams,
@@ -241,7 +241,7 @@ newEnv config@ServerConfig {caCertificateFile, certificateFile, privateKeyFile, 
   server <- newServer
   queueStore <- newQueueStore
   msgStore <- newMsgStore
-  ntfStore <- TM.emptyIO
+  ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
   storeLog <-
     forM storeLogFile $ \f -> do

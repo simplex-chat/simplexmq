@@ -57,7 +57,7 @@ import Data.IORef
 import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM
 import qualified Data.IntSet as IS
-import Data.List (intercalate, mapAccumR)
+import Data.List (foldl', intercalate, mapAccumR)
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -228,19 +228,16 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       where
         deliverNtfs ns stats Client {clientId, ntfSubscriptions, sndQ, connected} = whenM currentClient $
           readTVarIO ntfSubscriptions >>= \subs -> do
-            ts_ <- concat <$> foldM (\acc nId -> TM.lookupIO nId ns >>= maybe (pure acc) (addNtfs acc nId)) [] (M.keys subs)
+            ts_ <- foldM addNtfs [] (M.keys subs)
             mapM_ (atomically . writeTBQueue sndQ) $ L.nonEmpty ts_
             updateNtfStats $ length ts_
           where
             currentClient = (&&) <$> readTVarIO connected <*> (IM.member clientId <$> readTVarIO ntfSubClients)
-            addNtfs :: [[Transmission BrokerMsg]] -> NotifierId -> TVar [MsgNtf] -> IO [[Transmission BrokerMsg]]
-            addNtfs acc nId v =
-              readTVarIO v >>= \case
-                [] -> pure acc
-                -- if notifications available, atomically swap with empty array and add transmissions.
-                -- `reverse` is needed to send transmission in the order of reception.
-                _ -> (\ntfs -> map (nmsg nId) (reverse ntfs) : acc) <$> atomically (swapTVar v [])
-            nmsg nId (MsgNtf _ _ nonce encMeta) = (CorrId "", nId, NMSG nonce encMeta)
+            addNtfs :: [Transmission BrokerMsg] -> NotifierId -> IO [Transmission BrokerMsg]
+            addNtfs acc nId =
+              (foldl' (\acc' ntf -> nmsg nId ntf : acc') acc) -- reverses, to order by time
+                <$> flushNtfs ns nId
+            nmsg nId MsgNtf {ntfNonce, ntfEncMeta} = (CorrId "", nId, NMSG ntfNonce ntfEncMeta)
             updateNtfStats len = when (len > 0) $ liftIO $ do
               atomicModifyIORef'_ (msgNtfs stats) (+ len)
               atomicModifyIORef'_ (msgNtfsB stats) (+ (len `div` 80 + 1)) -- up to 80 NMSG in the batch
@@ -319,23 +316,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} = do
       liftIO $ forever $ do
         threadDelay' interval
         old <- expireBeforeEpoch expCfg
-        nIds <- M.keysSet <$> readTVarIO ns
-        forM_ nIds $ \nId -> TM.lookupIO nId ns >>= mapM_ (explireQueueNtfs stats old)
-      where
-        explireQueueNtfs stats old v = do
-          readTVarIO v >>= \case
-            [] -> pure ()
-            _ -> do
-              expired <- atomically $ do
-                ntfs <- readTVar v
-                case reverse ntfs of
-                  -- check the last message first, it is the earliest
-                  (MsgNtf _ ts _ _) : _ | systemSeconds ts < old -> do
-                    let !ntfs' = filter (\(MsgNtf _ ts' _ _) -> systemSeconds ts' >= old) ntfs
-                    writeTVar v ntfs'
-                    pure $! length ntfs - length ntfs'
-                  _ -> pure 0
-              when (expired > 0) $ atomicModifyIORef'_ (msgNtfExpired stats) (+ expired)
+        expired <- deleteExpiredNtfs ns old
+        when (expired > 0) $ atomicModifyIORef'_ (msgNtfExpired stats) (+ expired)
 
     serverStatsThread_ :: ServerConfig -> [M ()]
     serverStatsThread_ ServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -1182,7 +1164,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
           liftIO (deleteQueueNotifier st entId) >>= \case
             Right (Just nId) -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
-              atomically . TM.delete nId =<< asks ntfStore
+              asks ntfStore >>= liftIO . (`deleteNtfs` nId)
               atomically $ writeTQueue ntfSubscribedQ (nId, clientId, False)
               incStat . ntfDeleted =<< asks serverStats
               pure ok
@@ -1326,14 +1308,12 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                 incStat $ msgRecv stats
                 if isGet
                   then incStat $ msgRecvGet stats
-                  else -- skip notification delivery for delivered message
-                    pure ()
-                    -- TODO skipping delivery fails tests
-                    -- count in msgNtfSkipped
-                    -- forM_ (notifierId <$> notifier qr) $ \nId -> do
-                    --   ns <- asks ntfStore
-                    --   atomically $ TM.lookup nId ns >>=
-                    --     mapM_ (\(MsgNtf msgId' _ _ _) -> when (msgId == msgId') $ TM.delete nId ns)
+                  else pure () -- TODO skip notification delivery for delivered message  
+                  -- skipping delivery fails tests, it should be counted in msgNtfSkipped
+                  -- forM_ (notifierId <$> notifier qr) $ \nId -> do
+                  --   ns <- asks ntfStore
+                  --   atomically $ TM.lookup nId ns >>=
+                  --     mapM_ (\MsgNtf {ntfMsgId} -> when (msgId == msgId') $ TM.delete nId ns)
                 liftIO $ atomicModifyIORef'_ (msgCount stats) (subtract 1)
                 liftIO $ updatePeriodStats (activeQueues stats) entId
                 when (notification msgFlags) $ do
@@ -1458,19 +1438,14 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               -- stats <- asks serverStats
               ns <- asks ntfStore
               ntf <- mkMessageNotification msgId msgTs rcvNtfDhSecret
-              liftIO $ TM.lookupIO nId ns >>= atomically . maybe (newNtfs ns ntf) (`modifyTVar'` (ntf :))
-              -- TODO coalesce messages here once the client is updated to process multiple messages
-              -- for single notification.
-              -- when (isJust prevNtf) $ incStat $ msgNtfReplaced stats
-              where
-                newNtfs ns ntf = TM.lookup nId ns >>= maybe (TM.insertM nId (newTVar [ntf]) ns) (`modifyTVar'` (ntf :))
+              liftIO $ storeNtf ns nId ntf
 
             mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> M MsgNtf
             mkMessageNotification msgId msgTs rcvNtfDhSecret = do
-              cbNonce <- atomically . C.randomCbNonce =<< asks random
+              ntfNonce <- atomically . C.randomCbNonce =<< asks random
               let msgMeta = NMsgMeta {msgId, msgTs}
-                  encNMsgMeta = C.cbEncrypt rcvNtfDhSecret cbNonce (smpEncode msgMeta) 128
-              pure $ MsgNtf msgId msgTs cbNonce $ fromRight "" encNMsgMeta
+                  encNMsgMeta = C.cbEncrypt rcvNtfDhSecret ntfNonce (smpEncode msgMeta) 128
+              pure $ MsgNtf {ntfMsgId = msgId, ntfTs = msgTs, ntfNonce, ntfEncMeta = fromRight "" encNMsgMeta}
 
         processForwardedCommand :: EncFwdTransmission -> M BrokerMsg
         processForwardedCommand (EncFwdTransmission s) = fmap (either ERR id) . runExceptT $ do
@@ -1574,7 +1549,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               forM_ (notifierId <$> notifier q) $ \nId -> do
                 -- queue is deleted by a different client from the one subscribed to notifications,
                 -- so we don't need to remove subscription from the current client.
-                atomically . TM.delete nId =<< asks ntfStore
+                asks ntfStore >>= liftIO . (`deleteNtfs` nId)
                 atomically $ writeTQueue ntfSubscribedQ (nId, clientId, False)
               updateDeletedStats q
               pure ok
@@ -1706,13 +1681,14 @@ saveServerNtfs = asks (storeNtfsFile . config) >>= mapM_ saveNtfs
   where
     saveNtfs f = do
       logInfo $ "saving notifications to file " <> T.pack f
-      ns <- asks ntfStore
+      NtfStore ns <- asks ntfStore
       liftIO . withFile f WriteMode $ \h ->
         readTVarIO ns >>= mapM_ (saveQueueNtfs h) . M.assocs
       logInfo "notifications saved"
       where
-        saveQueueNtfs h (nId, v) = BLD.hPutBuilder h . encodeNtfs nId =<< readTVarIO v
-        encodeNtfs nId = mconcat . map (\ntf -> BLD.byteString (strEncode $ NLRv1 nId ntf) <> BLD.char8 '\n') . reverse
+        -- reverse on save, to save notifications in order, will become reversed again when restoring.
+        saveQueueNtfs h (nId, v) = BLD.hPutBuilder h . encodeNtfs nId . reverse =<< readTVarIO v
+        encodeNtfs nId = mconcat . map (\ntf -> BLD.byteString (strEncode $ NLRv1 nId ntf) <> BLD.char8 '\n')
 
 restoreServerNtfs :: M Int
 restoreServerNtfs =
@@ -1735,15 +1711,12 @@ restoreServerNtfs =
       where
         restoreNtf ns old !expired s' = do
           NLRv1 nId ntf <- liftEither . first (ntfErr "parsing") $ strDecode s
-          addToNtfs nId ntf
+          liftIO $ addToNtfs nId ntf
           where
             s = LB.toStrict s'
-            addToNtfs nId ntf@(MsgNtf _ ntfTs _ _)  = do
-              if systemSeconds ntfTs < old
-                then pure $ expired + 1
-                else do
-                  v <- liftIO $ TM.lookupIO nId ns >>= maybe (atomically $ newTVar [] >>= \v -> TM.insert nId v ns $> v) pure
-                  atomically (modifyTVar' v (ntf :)) $> expired
+            addToNtfs nId ntf@MsgNtf {ntfTs}
+              | systemSeconds ntfTs < old = pure (expired + 1)
+              | otherwise = storeNtf ns nId ntf $> expired
             ntfErr :: Show e => String -> e -> String
             ntfErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
 
