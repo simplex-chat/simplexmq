@@ -1734,28 +1734,30 @@ agentNtfCreateSubscription c tknId NtfToken {ntfServer, ntfPrivKey} smpQueue nKe
   withNtfClient c ntfServer tknId "SNEW" $ \ntf -> ntfCreateSubscription ntf ntfPrivKey (NewNtfSub tknId smpQueue nKey)
 
 agentNtfCreateSubscriptions :: AgentClient -> NtfToken -> NonEmpty (NewNtfEntity 'Subscription) -> AM' (NonEmpty (Either AgentErrorType NtfSubscriptionId))
-agentNtfCreateSubscriptions c NtfToken {ntfServer, ntfPrivKey} newSubs = do
-  let tSess = (0, ntfServer, Nothing)
-  tryAgentError' (getNtfServerClient c tSess) >>= \case
-    Left e -> pure $ L.map (\_ -> Left e) newSubs
-    Right ntf -> liftIO $ do
-      logServer' "-->" c ntfServer (bshow (length newSubs) <> " subscriptions") "SNEW"
-      L.map agentError <$> ntfCreateSubscriptions ntf ntfPrivKey newSubs
-      where
-        agentError = first $ protocolClientError NTF $ clientServer ntf
+agentNtfCreateSubscriptions = withNtfBatch "SNEW" ntfCreateSubscriptions
 
 agentNtfCheckSubscription :: AgentClient -> NtfToken -> NtfSubscriptionId -> AM NtfSubStatus
 agentNtfCheckSubscription c NtfToken {ntfServer, ntfPrivKey} subId =
   withNtfClient c ntfServer subId "SCHK" $ \ntf -> ntfCheckSubscription ntf ntfPrivKey subId
 
 agentNtfCheckSubscriptions :: AgentClient -> NtfToken -> NonEmpty NtfSubscriptionId -> AM' (NonEmpty (Either AgentErrorType NtfSubStatus))
-agentNtfCheckSubscriptions c NtfToken {ntfServer, ntfPrivKey} subIds = do
+agentNtfCheckSubscriptions = withNtfBatch "SCHK" ntfCheckSubscriptions
+
+-- This batch sends all commands to one ntf server (client can only use one server at a time)
+withNtfBatch ::
+  ByteString ->
+  (NtfClient -> C.APrivateAuthKey -> NonEmpty a -> IO (NonEmpty (Either NtfClientError r))) ->
+  AgentClient ->
+  NtfToken ->
+  NonEmpty a ->
+  AM' (NonEmpty (Either AgentErrorType r))
+withNtfBatch cmdStr action c NtfToken {ntfServer, ntfPrivKey} subs = do
   let tSess = (0, ntfServer, Nothing)
   tryAgentError' (getNtfServerClient c tSess) >>= \case
-    Left e -> pure $ L.map (\_ -> Left e) subIds
+    Left e -> pure $ L.map (\_ -> Left e) subs
     Right ntf -> liftIO $ do
-      logServer' "-->" c ntfServer (bshow (length subIds) <> " subscriptions") "SCHK"
-      L.map agentError <$> ntfCheckSubscriptions ntf ntfPrivKey subIds
+      logServer' "-->" c ntfServer (bshow (length subs) <> " subscriptions") cmdStr
+      L.map agentError <$> action ntf ntfPrivKey subs
       where
         agentError = first $ protocolClientError NTF $ clientServer ntf
 
