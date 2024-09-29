@@ -74,8 +74,7 @@ import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth, ProtocolServer, ProtocolType (..), ProtocolTypeI, VersionRangeSMPC, XFTPServer, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPVersion, TLS, Transport (..))
-import Simplex.Messaging.Transport.Client (defaultSMPPort)
+import Simplex.Messaging.Transport (SMPVersion)
 import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryAllErrors, tryAllErrors')
 import System.Mem.Weak (Weak)
 import System.Random (StdGen, newStdGen)
@@ -150,6 +149,7 @@ data AgentConfig = AgentConfig
     xftpMaxRecipientsPerRequest :: Int,
     deleteErrorCount :: Int,
     ntfCron :: Word16,
+    ntfBatchSize :: Int,
     ntfSubCheckInterval :: NominalDiffTime,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -193,9 +193,9 @@ defaultAgentConfig =
       rcvAuthAlg = C.AuthAlg C.SEd25519, -- this will stay as Ed25519
       sndAuthAlg = C.AuthAlg C.SEd25519, -- TODO replace with X25519 when switching to v7
       connIdBytes = 12,
-      tbqSize = 64,
-      smpCfg = defaultSMPClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
-      ntfCfg = defaultNTFClientConfig {defaultTransport = ("443", transport @TLS)},
+      tbqSize = 128,
+      smpCfg = defaultSMPClientConfig,
+      ntfCfg = defaultNTFClientConfig,
       xftpCfg = defaultXFTPClientConfig,
       reconnectInterval = defaultReconnectInterval,
       messageRetryInterval = defaultMessageRetryInterval,
@@ -219,6 +219,7 @@ defaultAgentConfig =
       xftpMaxRecipientsPerRequest = 200,
       deleteErrorCount = 10,
       ntfCron = 20, -- minutes
+      ntfBatchSize = 200,
       ntfSubCheckInterval = nominalDay,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
@@ -254,12 +255,12 @@ createAgentStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey k
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
-    ntfSubQ :: TBQueue (ConnId, NtfSupervisorCommand),
+    ntfSubQ :: TBQueue (NtfSupervisorCommand, NonEmpty ConnId),
     ntfWorkers :: TMap NtfServer Worker,
     ntfSMPWorkers :: TMap SMPServer Worker
   }
 
-data NtfSupervisorCommand = NSCCreate | NSCSmpDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer | NSCDeleteSub
+data NtfSupervisorCommand = NSCCreate | NSCSmpDelete | NSCDeleteSub
   deriving (Show)
 
 newNtfSubSupervisor :: Natural -> IO NtfSupervisor

@@ -22,6 +22,7 @@ import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
+import Data.Time.Clock (getCurrentTime)
 import SMPAgentClient
 import SMPClient
 import ServerTests (decryptMsgV3, sendRecv)
@@ -150,12 +151,13 @@ deliverMessagesViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => SMPServer -> S
 deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   g <- C.newRandom
   -- set up proxy
-  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} Nothing (\_ -> pure ())
+  ts <- getCurrentTime
+  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pc'
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- set up relay
   msgQ <- newTBQueueIO 1024
-  rc' <- getProtocolClient g (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion} (Just msgQ) (\_ -> pure ())
+  rc' <- getProtocolClient g (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion} (Just msgQ) ts (\_ -> pure ())
   rc <- either (fail . show) pure rc'
   -- prepare receiving queue
   (rPub, rPriv) <- atomically $ C.generateAuthKeyPair alg g
@@ -192,7 +194,8 @@ proxyConnectDeadRelay :: Int -> Int -> SMPServer -> IO ()
 proxyConnectDeadRelay n d proxyServ = do
   g <- C.newRandom
   -- set up proxy
-  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} Nothing (\_ -> pure ())
+  ts <- getCurrentTime
+  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pc'
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- get proxy session

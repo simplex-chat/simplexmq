@@ -154,6 +154,7 @@ module Simplex.Messaging.Crypto
 
     -- * secret_box chains
     SbChainKey,
+    SbKeyNonce,
     sbcInit,
     sbcHkdf,
 
@@ -1343,14 +1344,16 @@ randomSbKey gVar = SecretBoxKey <$> randomBytes 32 gVar
 newtype SbChainKey = SecretBoxChainKey {unSbChainKey :: ByteString}
   deriving (Eq, Show)
 
-sbcInit :: ByteString -> DhSecretX25519 -> (SbChainKey, SbChainKey)
-sbcInit salt (DhSecretX25519 secret) = (SecretBoxChainKey ck1, SecretBoxChainKey ck2)
+sbcInit :: ByteArrayAccess secret => ByteString -> secret -> (SbChainKey, SbChainKey)
+sbcInit salt secret = (SecretBoxChainKey ck1, SecretBoxChainKey ck2)
   where
     prk = H.extract salt secret :: H.PRK SHA512
     out = H.expand prk ("SimpleXSbChainInit" :: ByteString) 64
     (ck1, ck2) = B.splitAt 32 out
 
-sbcHkdf :: SbChainKey -> ((SbKey, CbNonce), SbChainKey)
+type SbKeyNonce = (SbKey, CbNonce)
+
+sbcHkdf :: SbChainKey -> (SbKeyNonce, SbChainKey)
 sbcHkdf (SecretBoxChainKey ck) = ((SecretBoxKey sk, CryptoBoxNonce nonce), SecretBoxChainKey ck')
   where
     prk = H.extract B.empty ck :: H.PRK SHA512

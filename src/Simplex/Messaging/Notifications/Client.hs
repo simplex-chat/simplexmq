@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Notifications.Client where
 
@@ -13,13 +14,17 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Transport (NTFVersion, supportedClientNTFVRange, supportedNTFHandshakes)
 import Simplex.Messaging.Protocol (ErrorType, pattern NoEntity)
+import Simplex.Messaging.Transport (TLS, Transport (..))
 
 type NtfClient = ProtocolClient NTFVersion ErrorType NtfResponse
 
 type NtfClientError = ProtocolClientError ErrorType
 
 defaultNTFClientConfig :: ProtocolClientConfig NTFVersion
-defaultNTFClientConfig = defaultClientConfig (Just supportedNTFHandshakes) supportedClientNTFVRange
+defaultNTFClientConfig =
+  (defaultClientConfig (Just supportedNTFHandshakes) True supportedClientNTFVRange)
+    {defaultTransport = ("443", transport @TLS)}
+{-# INLINE defaultNTFClientConfig #-}
 
 ntfRegisterToken :: NtfClient -> C.APrivateAuthKey -> NewNtfEntity 'Token -> ExceptT NtfClientError IO (NtfTokenId, C.PublicKeyX25519)
 ntfRegisterToken c pKey newTkn =

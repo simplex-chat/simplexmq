@@ -1,3 +1,9 @@
+# 6.0.5
+
+SMP agent:
+- support generic SOCKS proxy (without isolate-by-auth).
+- reduce max message sizes
+
 # 6.0.4
 
 SMP server:

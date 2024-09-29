@@ -11,7 +11,6 @@ import Control.Concurrent.Async
 import Control.Exception (IOException, try)
 import qualified Control.Exception as E
 import Control.Monad
-import Data.ByteString.Char8 (ByteString)
 import Data.Functor (($>))
 import Data.Time (UTCTime, getCurrentTime)
 import qualified Data.X509 as X
@@ -20,6 +19,7 @@ import Network.HPACK (BufferSize)
 import Network.HTTP2.Client (ClientConfig (..), Request, Response)
 import qualified Network.HTTP2.Client as H
 import Network.Socket (HostName, ServiceName)
+import Network.Socks5 (SocksCredentials)
 import qualified Network.TLS as T
 import Numeric.Natural (Natural)
 import qualified Simplex.Messaging.Crypto as C
@@ -78,7 +78,8 @@ defaultHTTP2ClientConfig =
             tcpKeepAlive = Nothing,
             logTLSErrors = True,
             clientCredentials = Nothing,
-            alpn = Nothing
+            alpn = Nothing,
+            useSNI = True
           },
       bufferSize = defaultHTTP2BufferSize,
       bodyHeadSize = 16384,
@@ -91,10 +92,10 @@ data HTTP2ClientError = HCResponseTimeout | HCNetworkError | HCIOError IOExcepti
 getHTTP2Client :: HostName -> ServiceName -> Maybe XS.CertificateStore -> HTTP2ClientConfig -> IO () -> IO (Either HTTP2ClientError HTTP2Client)
 getHTTP2Client host port = getVerifiedHTTP2Client Nothing (THDomainName host) port Nothing
 
-getVerifiedHTTP2Client :: Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe XS.CertificateStore -> HTTP2ClientConfig -> IO () -> IO (Either HTTP2ClientError HTTP2Client)
-getVerifiedHTTP2Client proxyUsername host port keyHash caStore config disconnected = getVerifiedHTTP2ClientWith config host port disconnected setup
+getVerifiedHTTP2Client :: Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> Maybe XS.CertificateStore -> HTTP2ClientConfig -> IO () -> IO (Either HTTP2ClientError HTTP2Client)
+getVerifiedHTTP2Client socksCreds host port keyHash caStore config disconnected = getVerifiedHTTP2ClientWith config host port disconnected setup
   where
-    setup = runHTTP2Client (suportedTLSParams config) caStore (transportConfig config) (bufferSize config) proxyUsername host port keyHash
+    setup = runHTTP2Client (suportedTLSParams config) caStore (transportConfig config) (bufferSize config) socksCreds host port keyHash
 
 attachHTTP2Client :: HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> Int -> TLS -> IO (Either HTTP2ClientError HTTP2Client)
 attachHTTP2Client config host port disconnected bufferSize tls = getVerifiedHTTP2ClientWith config host port disconnected setup
@@ -178,11 +179,11 @@ sendRequestDirect HTTP2Client {client_ = HClient {config, disconnected}, sendReq
 http2RequestTimeout :: HTTP2ClientConfig -> Maybe Int -> Int
 http2RequestTimeout HTTP2ClientConfig {connTimeout} = maybe connTimeout (connTimeout +)
 
-runHTTP2Client :: forall a. T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> BufferSize -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (TLS -> H.Client a) -> IO a
-runHTTP2Client tlsParams caStore tcConfig bufferSize proxyUsername host port keyHash = runHTTP2ClientWith bufferSize host setup
+runHTTP2Client :: forall a. T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> BufferSize -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (TLS -> H.Client a) -> IO a
+runHTTP2Client tlsParams caStore tcConfig bufferSize socksCreds host port keyHash = runHTTP2ClientWith bufferSize host setup
   where
     setup :: (TLS -> IO a) -> IO a
-    setup = runTLSTransportClient tlsParams caStore tcConfig proxyUsername host port keyHash
+    setup = runTLSTransportClient tlsParams caStore tcConfig socksCreds host port keyHash
 
 runHTTP2ClientWith :: forall a. BufferSize -> TransportHost -> ((TLS -> IO a) -> IO a) -> (TLS -> H.Client a) -> IO a
 runHTTP2ClientWith bufferSize host setup client = setup $ \tls -> withHTTP2 bufferSize (run tls) (pure ()) tls

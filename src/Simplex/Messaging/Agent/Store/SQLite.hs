@@ -151,6 +151,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateNtfToken,
     removeNtfToken,
     -- Notification subscription persistence
+    NtfSupervisorSub,
     getNtfSubscription,
     createNtfSubscription,
     supervisorUpdateNtfSub,
@@ -161,7 +162,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     deleteNtfSubscription',
     getNextNtfSubNTFAction,
     markNtfSubActionNtfFailed_, -- exported for tests
-    getNextNtfSubSMPAction,
+    getNextNtfSubSMPActions,
     markNtfSubActionSMPFailed_, -- exported for tests
     getActiveNtfToken,
     getNtfRcvQueue,
@@ -1062,17 +1063,26 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
 
 getWorkItem :: Show i => ByteString -> IO (Maybe i) -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError (Maybe a))
 getWorkItem itemName getId getItem markFailed =
-  runExceptT $ handleErr "getId" getId >>= mapM tryGetItem
+  runExceptT $ handleWrkErr itemName "getId" getId >>= mapM (tryGetItem itemName getItem markFailed)
+
+getWorkItems :: Show i => ByteString -> IO [i] -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError [Either StoreError a])
+getWorkItems itemName getIds getItem markFailed =
+  runExceptT $ handleWrkErr itemName "getIds" getIds >>= mapM (tryE . tryGetItem itemName getItem markFailed)
+
+tryGetItem :: Show i => ByteString -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> i -> ExceptT StoreError IO a
+tryGetItem itemName getItem markFailed itemId = ExceptT (getItem itemId) `catchStoreError` \e -> mark >> throwE e
   where
-    tryGetItem itemId = ExceptT (getItem itemId) `catchStoreErrors` \e -> mark itemId >> throwE e
-    mark itemId = handleErr ("markFailed ID " <> bshow itemId) $ markFailed itemId
-    catchStoreErrors = catchAllErrors (SEInternal . bshow)
-    -- Errors caught by this function will suspend worker as if there is no more work,
-    handleErr :: ByteString -> IO a -> ExceptT StoreError IO a
-    handleErr opName action = ExceptT $ first mkError <$> E.try action
-      where
-        mkError :: E.SomeException -> StoreError
-        mkError e = SEWorkItemError $ itemName <> " " <> opName <> " error: " <> bshow e
+    mark = handleWrkErr itemName ("markFailed ID " <> bshow itemId) $ markFailed itemId
+
+catchStoreError :: ExceptT StoreError IO a -> (StoreError -> ExceptT StoreError IO a) -> ExceptT StoreError IO a
+catchStoreError = catchAllErrors (SEInternal . bshow)
+
+-- Errors caught by this function will suspend worker as if there is no more work,
+handleWrkErr :: ByteString -> ByteString -> IO a -> ExceptT StoreError IO a
+handleWrkErr itemName opName action = ExceptT $ first mkError <$> E.try action
+  where
+    mkError :: E.SomeException -> StoreError
+    mkError e = SEWorkItemError $ itemName <> " " <> opName <> " error: " <> bshow e
 
 updatePendingMsgRIState :: DB.Connection -> ConnId -> InternalId -> RI2State -> IO ()
 updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
@@ -1476,7 +1486,9 @@ removeNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer 
     |]
     (provider, token, host, port)
 
-getNtfSubscription :: DB.Connection -> ConnId -> IO (Maybe (NtfSubscription, Maybe (NtfSubAction, NtfActionTs)))
+type NtfSupervisorSub = (NtfSubscription, Maybe (NtfSubAction, NtfActionTs))
+
+getNtfSubscription :: DB.Connection -> ConnId -> IO (Maybe NtfSupervisorSub)
 getNtfSubscription db connId =
   maybeFirstRow ntfSubscription $
     DB.query
@@ -1659,14 +1671,14 @@ markNtfSubActionNtfFailed_ :: DB.Connection -> ConnId -> IO ()
 markNtfSubActionNtfFailed_ db connId =
   DB.execute db "UPDATE ntf_subscriptions SET ntf_failed = 1 where conn_id = ?" (Only connId)
 
-getNextNtfSubSMPAction :: DB.Connection -> SMPServer -> IO (Either StoreError (Maybe (NtfSubscription, NtfSubSMPAction, NtfActionTs)))
-getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) =
-  getWorkItem "ntf SMP" getNtfConnId getNtfSubAction (markNtfSubActionSMPFailed_ db)
+getNextNtfSubSMPActions :: DB.Connection -> SMPServer -> Int -> IO (Either StoreError [Either StoreError (NtfSubSMPAction, NtfSubscription)])
+getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) ntfBatchSize =
+  getWorkItems "ntf SMP" getNtfConnIds getNtfSubAction (markNtfSubActionSMPFailed_ db)
   where
-    getNtfConnId :: IO (Maybe ConnId)
-    getNtfConnId =
-      maybeFirstRow fromOnly $
-        DB.query
+    getNtfConnIds :: IO [ConnId]
+    getNtfConnIds =
+      map fromOnly
+        <$> DB.query
           db
           [sql|
             SELECT conn_id
@@ -1674,10 +1686,10 @@ getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) =
             WHERE smp_host = ? AND smp_port = ? AND ntf_sub_smp_action IS NOT NULL AND ntf_sub_action_ts IS NOT NULL
               AND (smp_failed = 0 OR updated_by_supervisor = 1)
             ORDER BY ntf_sub_action_ts ASC
-            LIMIT 1
+            LIMIT ?
           |]
-          (smpHost, smpPort)
-    getNtfSubAction :: ConnId -> IO (Either StoreError (NtfSubscription, NtfSubSMPAction, NtfActionTs))
+          (smpHost, smpPort, ntfBatchSize)
+    getNtfSubAction :: ConnId -> IO (Either StoreError (NtfSubSMPAction, NtfSubscription))
     getNtfSubAction connId = do
       markUpdatedByWorker db connId
       firstRow ntfSubAction err $
@@ -1685,7 +1697,7 @@ getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) =
           db
           [sql|
             SELECT c.user_id, s.ntf_host, s.ntf_port, s.ntf_key_hash,
-              ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_action_ts, ns.ntf_sub_smp_action
+              ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_smp_action
             FROM ntf_subscriptions ns
             JOIN connections c USING (conn_id)
             JOIN ntf_servers s USING (ntf_host, ntf_port)
@@ -1694,10 +1706,10 @@ getNextNtfSubSMPAction db smpServer@(SMPServer smpHost smpPort _) =
           (Only connId)
       where
         err = SEInternal $ "ntf subscription " <> bshow connId <> " returned []"
-        ntfSubAction (userId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
+        ntfSubAction (userId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, action) =
           let ntfServer = NtfServer ntfHost ntfPort ntfKeyHash
               ntfSubscription = NtfSubscription {userId, connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
-           in (ntfSubscription, action, actionTs)
+           in (action, ntfSubscription)
 
 markNtfSubActionSMPFailed_ :: DB.Connection -> ConnId -> IO ()
 markNtfSubActionSMPFailed_ db connId =

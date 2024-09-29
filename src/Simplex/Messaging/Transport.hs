@@ -66,13 +66,15 @@ module Simplex.Messaging.Transport
     ALPN,
     connectTLS,
     closeTLS,
-    supportedParameters,
+    defaultSupportedParams,
+    defaultSupportedParamsHTTPS,
     withTlsUnique,
 
     -- * SMP transport
     THandle (..),
     THandleParams (..),
     THandleAuth (..),
+    TSbChainKeys (..),
     TransportError (..),
     HandshakeError (..),
     smpServerHandshake,
@@ -102,6 +104,7 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
 import Data.Tuple (swap)
+import Data.Typeable (Typeable)
 import Data.Version (showVersion)
 import Data.Word (Word16)
 import qualified Data.X509 as X
@@ -220,7 +223,7 @@ data TransportConfig = TransportConfig
     transportTimeout :: Maybe Int
   }
 
-class Transport c where
+class Typeable c => Transport c where
   transport :: ATransport
   transport = ATransport (TProxy @c)
 
@@ -318,8 +321,8 @@ closeTLS ctx =
     `E.finally` T.contextClose ctx
     `catchAll_` pure ()
 
-supportedParameters :: T.Supported
-supportedParameters =
+defaultSupportedParams :: T.Supported
+defaultSupportedParams =
   def
     { T.supportedVersions = [T.TLS13, T.TLS12],
       T.supportedCiphers =
@@ -327,8 +330,29 @@ supportedParameters =
           TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256 -- for TLS12
         ],
       T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
-      T.supportedSecureRenegotiation = False,
-      T.supportedGroups = [T.X448, T.X25519]
+      T.supportedGroups = [T.X448, T.X25519],
+      T.supportedSecureRenegotiation = False
+    }
+
+-- | A selection of extra parameters to accomodate browser chains
+defaultSupportedParamsHTTPS :: T.Supported
+defaultSupportedParamsHTTPS =
+  defaultSupportedParams
+    { T.supportedCiphers = TE.ciphersuite_strong,
+      T.supportedGroups = [T.X25519, T.X448, T.FFDHE4096, T.FFDHE6144, T.FFDHE8192, T.P521],
+      T.supportedHashSignatures =
+        [ (T.HashIntrinsic, T.SignatureEd448),
+          (T.HashIntrinsic, T.SignatureEd25519),
+          (T.HashSHA256, T.SignatureECDSA),
+          (T.HashSHA384, T.SignatureECDSA),
+          (T.HashSHA512, T.SignatureECDSA),
+          (T.HashIntrinsic, T.SignatureRSApssRSAeSHA512),
+          (T.HashIntrinsic, T.SignatureRSApssRSAeSHA384),
+          (T.HashIntrinsic, T.SignatureRSApssRSAeSHA256),
+          (T.HashSHA512, T.SignatureRSA),
+          (T.HashSHA384, T.SignatureRSA),
+          (T.HashSHA256, T.SignatureRSA)
+        ]
     }
 
 instance Transport TLS where
@@ -384,7 +408,7 @@ data THandleParams v p = THandleParams
     -- based on protocol version
     implySessId :: Bool,
     -- -- | additional block encryption
-    encryptBlock :: Maybe TBlockEncryption,
+    encryptBlock :: Maybe TSbChainKeys,
     -- | send multiple transmissions in a single block
     -- based on protocol version
     batch :: Bool
@@ -403,7 +427,7 @@ data THandleAuth (p :: TransportPeer) where
     } ->
     THandleAuth 'TServer
 
-data TBlockEncryption = TBlockEncryption
+data TSbChainKeys = TSbChainKeys
   { sndKey :: TVar C.SbChainKey,
     rcvKey :: TVar C.SbChainKey
   }
@@ -512,7 +536,7 @@ instance Encoding TransportError where
 tPutBlock :: Transport c => THandle v c p -> ByteString -> IO (Either TransportError ())
 tPutBlock THandle {connection = c, params = THandleParams {blockSize, encryptBlock}} block = do
   block_ <- case encryptBlock of
-    Just TBlockEncryption {sndKey} -> do
+    Just TSbChainKeys {sndKey} -> do
       (sk, nonce) <- atomically $ stateTVar sndKey C.sbcHkdf
       pure $ C.sbEncrypt sk nonce block (blockSize - 16)
     Nothing -> pure $ C.pad block blockSize
@@ -526,7 +550,7 @@ tGetBlock THandle {connection = c, params = THandleParams {blockSize, encryptBlo
     then
       first (const TELargeMsg) <$>
         case encryptBlock of
-          Just TBlockEncryption {rcvKey} -> do
+          Just TSbChainKeys {rcvKey} -> do
             (sk, nonce) <- atomically $ stateTVar rcvKey C.sbcHkdf
             pure $ C.sbDecrypt sk nonce msg
           Nothing -> pure $ C.unPad msg
@@ -579,14 +603,14 @@ smpTHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> VersionRang
 smpTHandleServer th v vr pk k_ = do
   let thAuth = Just THAuthServer {serverPrivKey = pk, sessSecret' = (`C.dh'` pk) <$!> k_}
   be <- blockEncryption th v thAuth
-  pure $ smpTHandle_ th v vr thAuth $ uncurry TBlockEncryption <$> be
+  pure $ smpTHandle_ th v vr thAuth $ uncurry TSbChainKeys <$> be
 
 smpTHandleClient :: forall c. THandleSMP c 'TClient -> VersionSMP -> VersionRangeSMP -> Maybe C.PrivateKeyX25519 -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> IO (THandleSMP c 'TClient)
 smpTHandleClient th v vr pk_ ck_ = do
   let thAuth = (\(k, ck) -> THAuthClient {serverPeerPubKey = k, serverCertKey = forceCertChain ck, sessSecret = C.dh' k <$!> pk_}) <$!> ck_
   be <- blockEncryption th v thAuth
   -- swap is needed to use client's sndKey as server's rcvKey and vice versa
-  pure $ smpTHandle_ th v vr thAuth $ uncurry TBlockEncryption . swap <$> be
+  pure $ smpTHandle_ th v vr thAuth $ uncurry TSbChainKeys . swap <$> be
 
 blockEncryption :: THandleSMP c p -> VersionSMP -> Maybe (THandleAuth p) -> IO (Maybe (TVar C.SbChainKey, TVar C.SbChainKey))
 blockEncryption THandle {params = THandleParams {sessionId}} v = \case
@@ -596,9 +620,9 @@ blockEncryption THandle {params = THandleParams {sessionId}} v = \case
   _ -> pure Nothing
   where
     be :: Maybe C.DhSecretX25519 -> IO (Maybe (TVar C.SbChainKey, TVar C.SbChainKey))
-    be = mapM $ bimapM newTVarIO newTVarIO . C.sbcInit sessionId
+    be = mapM $ \(C.DhSecretX25519 secret) -> bimapM newTVarIO newTVarIO $ C.sbcInit sessionId secret
 
-smpTHandle_ :: forall c p. THandleSMP c p -> VersionSMP -> VersionRangeSMP -> Maybe (THandleAuth p) -> Maybe TBlockEncryption -> THandleSMP c p
+smpTHandle_ :: forall c p. THandleSMP c p -> VersionSMP -> VersionRangeSMP -> Maybe (THandleAuth p) -> Maybe TSbChainKeys -> THandleSMP c p
 smpTHandle_ th@THandle {params} v vr thAuth encryptBlock =
   -- TODO drop SMP v6: make thAuth non-optional
   let params' = params {thVersion = v, thServerVRange = vr, thAuth, implySessId = v >= authCmdsSMPVersion, encryptBlock}

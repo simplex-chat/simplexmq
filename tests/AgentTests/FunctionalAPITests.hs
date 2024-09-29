@@ -85,7 +85,7 @@ import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
-import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), SMPProxyFallback (..), SMPProxyMode (..), TransportSessionMode (TSMEntity, TSMUser), defaultClientConfig)
+import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), SMPProxyFallback (..), SMPProxyMode (..), TransportSessionMode (..), defaultClientConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
@@ -2869,7 +2869,7 @@ testCreateQueueAuth srvVersion clnt1 clnt2 sqSecured baseId = do
     getClient clientId (clntAuth, clntVersion) db =
       let servers = initAgentServers {smp = userServers' [ProtoServerWithAuth testSMPServer clntAuth]}
           alpn_ = if clntVersion >= authCmdsSMPVersion then Just supportedSMPHandshakes else Nothing
-          smpCfg = defaultClientConfig alpn_ $ V.mkVersionRange (prevVersion basicAuthSMPVersion) clntVersion
+          smpCfg = defaultClientConfig alpn_ False $ V.mkVersionRange (prevVersion basicAuthSMPVersion) clntVersion
           sndAuthAlg = if srvVersion >= authCmdsSMPVersion && clntVersion >= authCmdsSMPVersion then C.AuthAlg C.SX25519 else C.AuthAlg C.SEd25519
        in getSMPAgentClient' clientId agentCfg {smpCfg, sndAuthAlg} servers db
 
@@ -3014,7 +3014,7 @@ testDeliveryReceiptsConcurrent t =
 testTwoUsers :: HasCallStack => IO ()
 testTwoUsers = withAgentClients2 $ \a b -> do
   let nc = netCfg initAgentServers
-  sessionMode nc `shouldBe` TSMUser
+  sessionMode nc `shouldBe` TSMSession
   runRight_ $ do
     (aId1, bId1) <- makeConnectionForUsers a 1 b 1
     exchangeGreetings a bId1 b aId1
