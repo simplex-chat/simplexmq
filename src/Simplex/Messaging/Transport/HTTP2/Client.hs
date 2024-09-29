@@ -78,7 +78,8 @@ defaultHTTP2ClientConfig =
             tcpKeepAlive = Nothing,
             logTLSErrors = True,
             clientCredentials = Nothing,
-            alpn = Nothing
+            alpn = Nothing,
+            useSNI = True
           },
       bufferSize = defaultHTTP2BufferSize,
       bodyHeadSize = 16384,

@@ -65,7 +65,8 @@ module Simplex.Messaging.Transport
     ALPN,
     connectTLS,
     closeTLS,
-    supportedParameters,
+    defaultSupportedParams,
+    defaultSupportedParamsHTTPS,
     withTlsUnique,
 
     -- * SMP transport
@@ -100,6 +101,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
+import Data.Typeable (Typeable)
 import Data.Version (showVersion)
 import Data.Word (Word16)
 import qualified Data.X509 as X
@@ -214,7 +216,7 @@ data TransportConfig = TransportConfig
     transportTimeout :: Maybe Int
   }
 
-class Transport c where
+class Typeable c => Transport c where
   transport :: ATransport
   transport = ATransport (TProxy @c)
 
@@ -312,8 +314,8 @@ closeTLS ctx =
     `E.finally` T.contextClose ctx
     `catchAll_` pure ()
 
-supportedParameters :: T.Supported
-supportedParameters =
+defaultSupportedParams :: T.Supported
+defaultSupportedParams =
   def
     { T.supportedVersions = [T.TLS13, T.TLS12],
       T.supportedCiphers =
@@ -321,8 +323,29 @@ supportedParameters =
           TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256 -- for TLS12
         ],
       T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
-      T.supportedSecureRenegotiation = False,
-      T.supportedGroups = [T.X448, T.X25519]
+      T.supportedGroups = [T.X448, T.X25519],
+      T.supportedSecureRenegotiation = False
+    }
+
+-- | A selection of extra parameters to accomodate browser chains
+defaultSupportedParamsHTTPS :: T.Supported
+defaultSupportedParamsHTTPS =
+  defaultSupportedParams
+    { T.supportedCiphers = TE.ciphersuite_strong,
+      T.supportedGroups = [T.X25519, T.X448, T.FFDHE4096, T.FFDHE6144, T.FFDHE8192, T.P521],
+      T.supportedHashSignatures =
+        [ (T.HashIntrinsic, T.SignatureEd448),
+          (T.HashIntrinsic, T.SignatureEd25519),
+          (T.HashSHA256, T.SignatureECDSA),
+          (T.HashSHA384, T.SignatureECDSA),
+          (T.HashSHA512, T.SignatureECDSA),
+          (T.HashIntrinsic, T.SignatureRSApssRSAeSHA512),
+          (T.HashIntrinsic, T.SignatureRSApssRSAeSHA384),
+          (T.HashIntrinsic, T.SignatureRSApssRSAeSHA256),
+          (T.HashSHA512, T.SignatureRSA),
+          (T.HashSHA384, T.SignatureRSA),
+          (T.HashSHA256, T.SignatureRSA)
+        ]
     }
 
 instance Transport TLS where

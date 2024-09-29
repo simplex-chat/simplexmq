@@ -6,6 +6,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -29,7 +30,7 @@ import Options.Applicative
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
 import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
-import Simplex.Messaging.Transport.Server (loadFingerprint)
+import Simplex.Messaging.Transport.Server (AddHTTP, loadFileFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (eitherToMaybe, whenM)
 import System.Directory (doesDirectoryExist, listDirectory, removeDirectoryRecursive, removePathForcibly)
@@ -139,7 +140,7 @@ createServerX509_ createCA cfgPath x509cfg = do
         )
 
     saveFingerprint = do
-      Fingerprint fp <- loadFingerprint $ c caCrtFile
+      Fingerprint fp <- loadFileFingerprint $ c caCrtFile
       withFile (c fingerprintFile) WriteMode (`B.hPutStrLn` strEncode fp)
       pure fp
 
@@ -268,14 +269,14 @@ settingIsOn section name ini
 checkSavedFingerprint :: FilePath -> X509Config -> IO ByteString
 checkSavedFingerprint cfgPath x509cfg = do
   savedFingerprint <- withFile (c fingerprintFile) ReadMode hGetLine
-  Fingerprint fp <- loadFingerprint (c caCrtFile)
+  Fingerprint fp <- loadFileFingerprint (c caCrtFile)
   when (B.pack savedFingerprint /= strEncode fp) $
     exitError "Stored fingerprint is invalid."
   pure fp
   where
     c = combine cfgPath . ($ x509cfg)
 
-iniTransports :: Ini -> [(String, ATransport)]
+iniTransports :: Ini -> [(ServiceName, ATransport, AddHTTP)]
 iniTransports ini =
   let smpPorts = ports $ strictIni "TRANSPORT" "port" ini
       ws = strictIni "TRANSPORT" "websockets" ini
@@ -283,17 +284,22 @@ iniTransports ini =
         | ws == "off" = []
         | ws == "on" = ["80"]
         | otherwise = ports ws \\ smpPorts
-   in map (,transport @TLS) smpPorts <> map (,transport @WS) wsPorts
+   in ts (transport @TLS) smpPorts <> ts (transport @WS) wsPorts
   where
+    ts :: ATransport -> [ServiceName] -> [(ServiceName, ATransport, AddHTTP)]
+    ts t = map (\port -> (port, t, webPort == Just port))
+    webPort = T.unpack <$> eitherToMaybe (lookupValue "WEB" "https" ini)
     ports = map T.unpack . T.splitOn ","
 
-printServerConfig :: [(ServiceName, ATransport)] -> Maybe FilePath -> IO ()
+printServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> Maybe FilePath -> IO ()
 printServerConfig transports logFile = do
   putStrLn $ case logFile of
     Just f -> "Store log: " <> f
     _ -> "Store log disabled."
-  forM_ transports $ \(p, ATransport t) ->
-    putStrLn $ "Listening on port " <> p <> " (" <> transportName t <> ")..."
+  forM_ transports $ \(p, ATransport t, addHTTP) -> do
+    let descr = p <> " (" <> transportName t <> ")..."
+    putStrLn $ "Serving SMP protocol on port " <> descr
+    when addHTTP $ putStrLn $ "Serving static site on port " <> descr
 
 deleteDirIfExists :: FilePath -> IO ()
 deleteDirIfExists path = whenM (doesDirectoryExist path) $ removeDirectoryRecursive path

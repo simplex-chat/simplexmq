@@ -8,6 +8,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Server.Main where
 
@@ -35,14 +36,14 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
-import Simplex.Messaging.Server (runSMPServer)
+import Simplex.Messaging.Server (AttachHTTP, runSMPServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defMsgExpirationDays, defaultInactiveClientExpiration, defaultMessageExpiration, defaultProxyClientConcurrency)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Transport (batchCmdsSMPVersion, sendingProxySMPVersion, simplexMQVersion, supportedSMPHandshakes, supportedServerSMPRelayVRange)
+import Simplex.Messaging.Transport (batchCmdsSMPVersion, sendingProxySMPVersion, simplexMQVersion, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
-import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
@@ -51,10 +52,16 @@ import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 
 smpServerCLI :: FilePath -> FilePath -> IO ()
-smpServerCLI = smpServerCLI_ (\_ _ _ -> pure ()) (\_ -> pure ())
+smpServerCLI = smpServerCLI_ (\_ _ _ -> pure ()) (\_ -> pure ()) (\_ -> error "attachStaticFiles not available")
 
-smpServerCLI_ :: (ServerInformation -> Maybe TransportHost -> FilePath -> IO ()) -> (EmbeddedWebParams -> IO ()) -> FilePath -> FilePath -> IO ()
-smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
+smpServerCLI_ ::
+  (ServerInformation -> Maybe TransportHost -> FilePath -> IO ()) ->
+  (EmbeddedWebParams -> IO ()) ->
+  (FilePath -> (AttachHTTP -> IO ()) -> IO ()) ->
+  FilePath ->
+  FilePath ->
+  IO ()
+smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
   getCliCommand' (cliCommandP cfgPath logPath iniFile) serverVersion >>= \case
     Init opts ->
       doesFileExist iniFile >>= \case
@@ -76,10 +83,10 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
   where
     iniFile = combine cfgPath "smp-server.ini"
     serverVersion = "SMP server v" <> simplexMQVersion
-    defaultServerPort = "5223"
+    defaultServerPorts = "5223,443"
     executableName = "smp-server"
     storeLogFilePath = combine logPath "smp-server-store.log"
-    httpsCertFile = combine cfgPath "web.cert"
+    httpsCertFile = combine cfgPath "web.crt"
     httpsKeyFile = combine cfgPath "web.key"
     defaultStaticPath = combine logPath "www"
     initializeServer opts@InitOptions {ip, fqdn, sourceCode = src', webStaticPath = sp', disableWeb = noWeb', scripted}
@@ -95,7 +102,6 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
           host' <- withPrompt ("Enter server FQDN or IP address for certificate (" <> host <> "): ") getLine
           sourceCode' <- withPrompt ("Enter server source code URI (" <> maybe simplexmqSource T.unpack src' <> "): ") getServerSourceCode
           staticPath' <- withPrompt ("Enter path to store generated static site with server information (" <> fromMaybe defaultStaticPath sp' <> "): ") getLine
-          enableWeb <- onOffPrompt "Enable built-in web server for static site" (not noWeb')
           initialize
             opts
               { enableStoreLog,
@@ -104,7 +110,7 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                 password,
                 sourceCode = (T.pack <$> sourceCode') <|> src',
                 webStaticPath = if null staticPath' then sp' else Just staticPath',
-                disableWeb = not enableWeb
+                disableWeb = noWeb'
               }
       where
         serverPassword =
@@ -171,7 +177,7 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                    \# Host is only used to print server address on start.\n\
                    \# You can specify multiple server ports.\n"
                 <> ("host: " <> T.pack host <> "\n")
-                <> ("port: " <> T.pack defaultServerPort <> "\n")
+                <> ("port: " <> T.pack defaultServerPorts <> "\n")
                 <> "log_tls_errors: off\n\n\
                    \# Use `websockets: 443` to run websockets server in addition to plain TLS.\n\
                    \websockets: off\n\
@@ -204,19 +210,21 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                 <> "# Run an embedded server on this port\n\
                    \# Onion sites can use any port and register it in the hidden service config.\n\
                    \# Running on a port 80 may require setting process capabilities.\n"
-                <> ((if disableWeb then "# " else "") <> "http: 8000\n\n")
+                <> (webDisabled <> "http: 8000\n\n")
                 <> "# You can run an embedded TLS web server too if you provide port and cert and key files.\n\
-                   \# Not required for running relay on onion address.\n\
-                   \# https: 443\n"
-                <> ("# cert: " <> T.pack httpsCertFile <> "\n")
-                <> ("# key: " <> T.pack httpsKeyFile <> "\n")
+                   \# Not required for running relay on onion address.\n"
+                <> (webDisabled <> "https: 443\n")
+                <> (webDisabled <> "cert: " <> T.pack httpsCertFile <> "\n")
+                <> (webDisabled <> "key: " <> T.pack httpsKeyFile <> "\n")
+              where
+                webDisabled = if disableWeb then "# " else ""
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
-          cfg@ServerConfig {information, transports, storeLogFile, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
+          cfg@ServerConfig {information, storeLogFile, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
           sourceCode' = (\ServerPublicInfo {sourceCode} -> sourceCode) <$> information
           srv = ProtoServerWithAuth (SMPServer [THDomainName host] (if port == "5223" then "" else port) (C.KeyHash fp)) newQueueBasicAuth
       printServiceInfo serverVersion srv
@@ -246,23 +254,37 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
                 newQueuesAllowed = allowNewQueues cfg,
                 basicAuthEnabled = isJust newQueueBasicAuth
               }
-      runWebServer ini ServerInformation {config, information}
-      runSMPServer cfg
+      case webStaticPath' of
+        Just path | sharedHTTP -> do
+          runWebServer path Nothing ServerInformation {config, information}
+          attachStaticFiles path $ \attachHTTP -> runSMPServer cfg $ Just attachHTTP
+        Just path -> do
+          runWebServer path webHttpsParams' ServerInformation {config, information}
+          runSMPServer cfg Nothing
+        Nothing -> do
+          logWarn "No server static path set"
+          runSMPServer cfg Nothing
       where
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
+        transports = iniTransports ini
+        sharedHTTP = any (\(_, _, addHTTP) -> addHTTP) transports
         serverConfig =
           ServerConfig
-            { transports = iniTransports ini,
+            { transports,
               smpHandshakeTimeout = 120000000,
               tbqSize = 128,
               msgQueueQuota = 128,
               queueIdBytes = 24,
               msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
-              caCertificateFile = c caCrtFile,
-              privateKeyFile = c serverKeyFile,
-              certificateFile = c serverCrtFile,
+              smpCredentials =
+                ServerCredentials
+                  { caCertificateFile = Just $ c caCrtFile,
+                    privateKeyFile = c serverKeyFile,
+                    certificateFile = c serverCrtFile
+                  },
+              httpCredentials = (\WebHttpsParams {key, cert} -> ServerCredentials {caCertificateFile = Nothing, privateKeyFile = key, certificateFile = cert}) <$> webHttpsParams',
               storeLogFile = enableStoreLog $> storeLogFilePath,
               storeMsgsFile =
                 let messagesPath = combine logPath "smp-server-messages.log"
@@ -295,8 +317,7 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
               smpServerVRange = supportedServerSMPRelayVRange,
               transportConfig =
                 defaultTransportServerConfig
-                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini,
-                    alpn = Just supportedSMPHandshakes
+                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
                   },
               controlPort = eitherToMaybe $ T.unpack <$> lookupValue "TRANSPORT" "control_port" ini,
               smpAgentCfg =
@@ -322,26 +343,23 @@ smpServerCLI_ generateSite serveStaticFiles cfgPath logPath =
             }
         textToOwnServers :: Text -> [ByteString]
         textToOwnServers = map encodeUtf8 . T.words
-
-    runWebServer ini si =
-      case eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini of
-        Nothing -> logWarn "No server static path set"
-        Just webStaticPath -> do
+        runWebServer webStaticPath webHttpsParams si = do
           let onionHost =
                 either (const Nothing) (find isOnion) $
                   strDecode @(L.NonEmpty TransportHost) . encodeUtf8 =<< lookupValue "TRANSPORT" "host" ini
               webHttpPort = eitherToMaybe $ read . T.unpack <$> lookupValue "WEB" "http" ini
-              webHttpsParams =
-                eitherToMaybe $ do
-                  port <- read . T.unpack <$> lookupValue "WEB" "https" ini
-                  cert <- T.unpack <$> lookupValue "WEB" "cert" ini
-                  key <- T.unpack <$> lookupValue "WEB" "key" ini
-                  pure WebHttpsParams {port, cert, key}
           generateSite si onionHost webStaticPath
           when (isJust webHttpPort || isJust webHttpsParams) $
             serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams}
           where
             isOnion = \case THOnionHost _ -> True; _ -> False
+        webHttpsParams' =
+          eitherToMaybe $ do
+            port <- read . T.unpack <$> lookupValue "WEB" "https" ini
+            cert <- T.unpack <$> lookupValue "WEB" "cert" ini
+            key <- T.unpack <$> lookupValue "WEB" "key" ini
+            pure WebHttpsParams {port, cert, key}
+        webStaticPath' = eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini
 
 data EmbeddedWebParams = EmbeddedWebParams
   { webStaticPath :: FilePath,

@@ -32,8 +32,8 @@ import qualified Time.System as Hourglass
 --   leaf <- genCredentials (Just ca) (0, 1) "Entity" -- session-signing cert
 --   pure $ tlsCredentials (leaf :| [ca])
 -- @
-tlsCredentials :: NonEmpty Credentials -> (C.KeyHash, TLS.Credentials)
-tlsCredentials credentials = (C.KeyHash rootFP, TLS.Credentials [(X509.CertificateChain certs, privateToTls $ snd leafKey)])
+tlsCredentials :: NonEmpty Credentials -> (C.KeyHash, TLS.Credential)
+tlsCredentials credentials = (C.KeyHash rootFP, (X509.CertificateChain certs, privateToTls $ snd leafKey))
   where
     Fingerprint rootFP = getFingerprint root X509.HashSHA256
     leafKey = fst $ L.head credentials

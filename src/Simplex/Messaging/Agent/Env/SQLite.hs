@@ -74,8 +74,7 @@ import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth, ProtocolServer, ProtocolType (..), ProtocolTypeI, VersionRangeSMPC, XFTPServer, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPVersion, TLS, Transport (..))
-import Simplex.Messaging.Transport.Client (defaultSMPPort)
+import Simplex.Messaging.Transport (SMPVersion)
 import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryAllErrors, tryAllErrors')
 import System.Mem.Weak (Weak)
 import System.Random (StdGen, newStdGen)
@@ -196,8 +195,8 @@ defaultAgentConfig =
       sndAuthAlg = C.AuthAlg C.SEd25519, -- TODO replace with X25519 when switching to v7
       connIdBytes = 12,
       tbqSize = 128,
-      smpCfg = defaultSMPClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
-      ntfCfg = defaultNTFClientConfig {defaultTransport = ("443", transport @TLS)},
+      smpCfg = defaultSMPClientConfig,
+      ntfCfg = defaultNTFClientConfig,
       xftpCfg = defaultXFTPClientConfig,
       reconnectInterval = defaultReconnectInterval,
       messageRetryInterval = defaultMessageRetryInterval,
