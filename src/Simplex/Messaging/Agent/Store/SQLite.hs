@@ -1627,7 +1627,7 @@ deleteNtfSubscription' :: DB.Connection -> ConnId -> IO ()
 deleteNtfSubscription' db connId = do
   DB.execute db "DELETE FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
 
-getNextNtfSubNTFActions :: DB.Connection -> NtfServer -> Int -> IO (Either StoreError [Either StoreError (NtfSubscription, NtfSubNTFAction, NtfActionTs)])
+getNextNtfSubNTFActions :: DB.Connection -> NtfServer -> Int -> IO (Either StoreError [Either StoreError (NtfSubNTFAction, NtfSubscription, NtfActionTs)])
 getNextNtfSubNTFActions db ntfServer@(NtfServer ntfHost ntfPort _) ntfBatchSize =
   getWorkItems "ntf NTF" getNtfConnIds getNtfSubAction (markNtfSubActionNtfFailed_ db)
   where
@@ -1645,7 +1645,7 @@ getNextNtfSubNTFActions db ntfServer@(NtfServer ntfHost ntfPort _) ntfBatchSize 
             LIMIT ?
           |]
           (ntfHost, ntfPort, ntfBatchSize)
-    getNtfSubAction :: ConnId -> IO (Either StoreError (NtfSubscription, NtfSubNTFAction, NtfActionTs))
+    getNtfSubAction :: ConnId -> IO (Either StoreError (NtfSubNTFAction, NtfSubscription, NtfActionTs))
     getNtfSubAction connId = do
       markUpdatedByWorker db connId
       firstRow ntfSubAction err $
@@ -1665,7 +1665,7 @@ getNextNtfSubNTFActions db ntfServer@(NtfServer ntfHost ntfPort _) ntfBatchSize 
         ntfSubAction (userId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
           let smpServer = SMPServer smpHost smpPort smpKeyHash
               ntfSubscription = NtfSubscription {userId, connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
-           in (ntfSubscription, action, actionTs)
+           in (action, ntfSubscription, actionTs)
 
 markNtfSubActionNtfFailed_ :: DB.Connection -> ConnId -> IO ()
 markNtfSubActionNtfFailed_ db connId =

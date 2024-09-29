@@ -26,8 +26,8 @@ import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
 import Data.Either (fromRight, partitionEithers)
-import Data.Foldable (foldr')
 import Data.Functor (($>))
+import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -135,7 +135,7 @@ processNtfCmd c (cmd, connIds) = do
             [SMPServer], -- continue work (SMP)
             [NtfServer] -- continue work (Ntf)
           )
-        partitionQueueSubActions = foldr' decideSubWork ([], [], [], [])
+        partitionQueueSubActions = foldr decideSubWork ([], [], [], [])
           where
             -- sub = Nothing, needs to be created
             decideSubWork (rq, Nothing) (ns, rs, css, cns) = (rq : ns, rs, css, cns)
@@ -203,25 +203,27 @@ runNtfWorker c srv Worker {doWork} =
       ntfBatchSize <- asks $ ntfBatchSize . config
       withWorkItems c doWork (\db -> getNextNtfSubNTFActions db srv ntfBatchSize) $ \nextSubs -> do
         logInfo $ "runNtfWorker - length nextSubs = " <> tshow (length nextSubs)
-        let (creates, checks, deletes, rotates) = splitActions nextSubs
-        ts <- liftIO getCurrentTime
-        let checks' = map fst $ filter (\(_, actionTs) -> actionTs <= ts) checks
-            (_, _, firstActionTs) = L.head nextSubs
-        if null creates && null checks' && null deletes && null rotates
-          then lift $ rescheduleWork doWork ts firstActionTs
+        currTs <- liftIO getCurrentTime
+        let (creates, checks, deletes, rotates) = splitActions currTs nextSubs
+        if null creates && null checks && null deletes && null rotates
+          then 
+            let (_, _, firstActionTs) = L.head nextSubs
+             in lift $ rescheduleWork doWork currTs firstActionTs
           else do
             retrySubActions c creates createSubs
-            retrySubActions c checks' checkSubs
+            retrySubActions c checks checkSubs
             retrySubActions c deletes deleteSubs
             retrySubActions c rotates rotateSubs
-    splitActions :: NonEmpty (NtfSubscription, NtfSubNTFAction, NtfActionTs) -> ([NtfSubscription], [(NtfSubscription, NtfActionTs)], [NtfSubscription], [NtfSubscription])
-    splitActions = foldr addAction ([], [], [], [])
+    splitActions :: UTCTime -> NonEmpty (NtfSubNTFAction, NtfSubscription, NtfActionTs) -> ([NtfSubscription], [NtfSubscription], [NtfSubscription], [NtfSubscription])
+    splitActions currTs = foldr addAction ([], [], [], [])
       where
-        addAction action (creates, checks, deletes, rotates) = case action of
-          (sub, NSACreate, _) -> (sub : creates, checks, deletes, rotates)
-          (sub, NSACheck, ts) -> (creates, (sub, ts) : checks, deletes, rotates)
-          (sub, NSADelete, _) -> (creates, checks, sub : deletes, rotates)
-          (sub, NSARotate, _) -> (creates, checks, deletes, sub : rotates)
+        addAction (cmd, sub, ts) acc@(creates, checks, deletes, rotates) = case cmd of
+          NSACreate -> (sub : creates, checks, deletes, rotates)
+          NSACheck
+            | ts <= currTs -> (creates, sub : checks, deletes, rotates)
+            | otherwise -> acc
+          NSADelete -> (creates, checks, sub : deletes, rotates)
+          NSARotate -> (creates, checks, deletes, sub : rotates)
     createSubs :: [NtfSubscription] -> AM' [NtfSubscription]
     createSubs ntfSubs =
       getNtfToken >>= \case
@@ -299,7 +301,7 @@ runNtfWorker c srv Worker {doWork} =
       forM_ userIdsCounts $ \(userId, count) ->
         atomically $ incNtfServerStat' c userId ntfServer sel count
       where
-        userIdsCounts = M.toList $ foldr' (\s acc -> M.insertWith (+) (subUserId . fst $ s) 1 acc) M.empty ss
+        userIdsCounts = M.toList $ foldl' (\acc s -> M.insertWith (+) (subUserId . fst $ s) 1 acc) M.empty ss
         subUserId NtfSubscription {userId} = userId
     -- NSADelete and NSARotate are deprecated, but their processing is kept for legacy db records;
     -- These actions are not batched
@@ -365,9 +367,9 @@ runNtfSMPWorker c srv Worker {doWork} = forever $ do
     splitActions :: NonEmpty (NtfSubSMPAction, NtfSubscription) -> ([NtfSubscription], [NtfSubscription])
     splitActions = foldr addAction ([], [])
       where
-        addAction action (creates, deletes) = case action of
-          (NSASmpKey, sub) -> (sub : creates, deletes)
-          (NSASmpDelete, sub) -> (creates, sub : deletes)
+        addAction (cmd, sub) (creates, deletes) = case cmd of
+          NSASmpKey -> (sub : creates, deletes)
+          NSASmpDelete -> (creates, sub : deletes)
     createNotifierKeys :: [NtfSubscription] -> AM' [NtfSubscription]
     createNotifierKeys ntfSubs =
       getNtfToken >>= \case
@@ -427,6 +429,7 @@ runNtfSMPWorker c srv Worker {doWork} = forever $ do
         deleteSub db rq = deleteNtfSubscription db (qConnId rq)
 
 retrySubActions :: AgentClient -> [NtfSubscription] -> ([NtfSubscription] -> AM' [NtfSubscription]) -> AM ()
+retrySubActions _ [] _ = pure ()
 retrySubActions c subs action = do
   v <- newTVarIO subs
   ri <- asks $ reconnectInterval . config
@@ -441,7 +444,7 @@ retrySubActions c subs action = do
 
 --                                                (temporary errs, other errs, successes)
 splitResults :: [(a, Either AgentErrorType r)] -> ([a], [(a, AgentErrorType)], [(a, r)])
-splitResults = foldr' addRes ([], [], [])
+splitResults = foldr addRes ([], [], [])
   where
     addRes (a, r_) (as, errs, rs) = case r_ of
       Right r -> (as, errs, (a, r) : rs)
