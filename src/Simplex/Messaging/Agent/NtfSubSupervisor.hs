@@ -240,8 +240,8 @@ runNtfWorker c srv Worker {doWork} =
                   errs2' = map (first ntfSubConnId) errs2
               incStatByUserId ntfServer ntfCreated subs'
               ts <- liftIO getCurrentTime
-              firstCheckInterval <- asks $ ntfSubFirstCheckInterval . config
-              let checkTs = addUTCTime firstCheckInterval ts
+              int <- asks $ ntfSubFirstCheckInterval . config
+              let checkTs = addUTCTime int ts
               (errs3, _) <- partitionErrs ntfSubConnId subs' <$> withStoreBatch' c (\db -> map (updateSubNSACheck db checkTs) nSubIds)
               workerErrors c $ errs1 <> errs2' <> errs3
               pure ntfSubs'
@@ -278,8 +278,8 @@ runNtfWorker c srv Worker {doWork} =
                   (errs2', authSubs) = partitionEithers $ map (\case (sub, NTF _ SMP.AUTH) -> Right sub; e -> Left $ first ntfSubConnId e) errs2
               incStatByUserId ntfServer ntfChecked subs'
               ts <- liftIO getCurrentTime
-              checkInterval <- asks $ ntfSubCheckInterval . config
-              let nextCheckTs = addUTCTime checkInterval ts
+              int <- asks $ ntfSubCheckInterval . config
+              let nextCheckTs = addUTCTime int ts
               (errs3, srvs) <- partitionErrs ntfSubConnId subs' <$> withStoreBatch' c (\db -> map (updateSub db ntfServer ts nextCheckTs) nSubStatuses)
               (errs4, srvs') <- partitionErrs ntfSubConnId authSubs <$> withStoreBatch' c (\db -> map (recreateNtfSub db ntfServer ts) authSubs)
               mapM_ (getNtfSMPWorker True c) $ S.fromList (catMaybes srvs <> srvs')
