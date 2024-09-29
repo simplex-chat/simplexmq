@@ -160,7 +160,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     setNullNtfSubscriptionAction,
     deleteNtfSubscription,
     deleteNtfSubscription',
-    getNextNtfSubNTFAction,
+    getNextNtfSubNTFActions,
     markNtfSubActionNtfFailed_, -- exported for tests
     getNextNtfSubSMPActions,
     markNtfSubActionSMPFailed_, -- exported for tests
@@ -1627,14 +1627,14 @@ deleteNtfSubscription' :: DB.Connection -> ConnId -> IO ()
 deleteNtfSubscription' db connId = do
   DB.execute db "DELETE FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
 
-getNextNtfSubNTFAction :: DB.Connection -> NtfServer -> IO (Either StoreError (Maybe (NtfSubscription, NtfSubNTFAction, NtfActionTs)))
-getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) =
-  getWorkItem "ntf NTF" getNtfConnId getNtfSubAction (markNtfSubActionNtfFailed_ db)
+getNextNtfSubNTFActions :: DB.Connection -> NtfServer -> Int -> IO (Either StoreError [Either StoreError (NtfSubNTFAction, NtfSubscription, NtfActionTs)])
+getNextNtfSubNTFActions db ntfServer@(NtfServer ntfHost ntfPort _) ntfBatchSize =
+  getWorkItems "ntf NTF" getNtfConnIds getNtfSubAction (markNtfSubActionNtfFailed_ db)
   where
-    getNtfConnId :: IO (Maybe ConnId)
-    getNtfConnId =
-      maybeFirstRow fromOnly $
-        DB.query
+    getNtfConnIds :: IO [ConnId]
+    getNtfConnIds =
+      map fromOnly
+        <$> DB.query
           db
           [sql|
             SELECT conn_id
@@ -1642,10 +1642,10 @@ getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) =
             WHERE ntf_host = ? AND ntf_port = ? AND ntf_sub_action IS NOT NULL
               AND (ntf_failed = 0 OR updated_by_supervisor = 1)
             ORDER BY ntf_sub_action_ts ASC
-            LIMIT 1
+            LIMIT ?
           |]
-          (ntfHost, ntfPort)
-    getNtfSubAction :: ConnId -> IO (Either StoreError (NtfSubscription, NtfSubNTFAction, NtfActionTs))
+          (ntfHost, ntfPort, ntfBatchSize)
+    getNtfSubAction :: ConnId -> IO (Either StoreError (NtfSubNTFAction, NtfSubscription, NtfActionTs))
     getNtfSubAction connId = do
       markUpdatedByWorker db connId
       firstRow ntfSubAction err $
@@ -1665,7 +1665,7 @@ getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) =
         ntfSubAction (userId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
           let smpServer = SMPServer smpHost smpPort smpKeyHash
               ntfSubscription = NtfSubscription {userId, connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
-           in (ntfSubscription, action, actionTs)
+           in (action, ntfSubscription, actionTs)
 
 markNtfSubActionNtfFailed_ :: DB.Connection -> ConnId -> IO ()
 markNtfSubActionNtfFailed_ db connId =

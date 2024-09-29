@@ -63,11 +63,13 @@ module Simplex.Messaging.Client
     forwardSMPTransmission,
     getSMPQueueInfo,
     sendProtocolCommand,
+    sendProtocolCommands,
 
     -- * Supporting types and client configuration
     ProtocolClientError (..),
     SMPClientError,
     ProxyClientError (..),
+    Response (..),
     unexpectedResponse,
     ProtocolClientConfig (..),
     NetworkConfig (..),

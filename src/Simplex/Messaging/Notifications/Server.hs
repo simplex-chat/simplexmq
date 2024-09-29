@@ -19,6 +19,7 @@ import Control.Monad.Except
 import Control.Monad.Reader
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Either (partitionEithers)
 import Data.Functor (($>))
 import Data.IORef
 import Data.Int (Int64)
@@ -353,27 +354,28 @@ clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connecte
 
 receive :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> M ()
 receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
-  ts <- liftIO $ tGet th
-  forM_ ts $ \t@(_, _, (corrId, entId, cmdOrError)) -> do
-    atomically . writeTVar rcvActiveAt =<< liftIO getSystemTime
-    logDebug "received transmission"
-    case cmdOrError of
-      Left e -> write sndQ (corrId, entId, NRErr e)
-      Right cmd ->
-        verifyNtfTransmission ((,C.cbNonce (SMP.bs corrId)) <$> thAuth) t cmd >>= \case
-          VRVerified req -> write rcvQ req
-          VRFailed -> write sndQ (corrId, entId, NRErr AUTH)
+  ts <- L.toList <$> liftIO (tGet th)
+  atomically . (writeTVar rcvActiveAt $!) =<< liftIO getSystemTime
+  (errs, cmds) <- partitionEithers <$> mapM cmdAction ts
+  write sndQ errs
+  write rcvQ cmds
   where
-    write q t = atomically $ writeTBQueue q t
+    cmdAction t@(_, _, (corrId, entId, cmdOrError)) =
+      case cmdOrError of
+        Left e -> pure $ Left (corrId, entId, NRErr e)
+        Right cmd ->
+          verified <$> verifyNtfTransmission ((,C.cbNonce (SMP.bs corrId)) <$> thAuth) t cmd
+          where
+            verified = \case
+              VRVerified req -> Right req
+              VRFailed -> Left (corrId, entId, NRErr AUTH)
+    write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> IO ()
 send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
-  t <- atomically $ readTBQueue sndQ
-  void . liftIO $ tPut h [Right (Nothing, encodeTransmission params t)]
+  ts <- atomically $ readTBQueue sndQ
+  void . liftIO $ tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
   atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
-
--- instance Show a => Show (TVar a) where
---   show x = unsafePerformIO $ show <$> readTVarIO x
 
 data VerificationResult = VRVerified NtfRequest | VRFailed
 
@@ -432,7 +434,7 @@ client :: NtfServerClient -> NtfSubscriber -> NtfPushServer -> M ()
 client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPushServer {pushQ, intervalNotifiers} =
   forever $
     atomically (readTBQueue rcvQ)
-      >>= processCommand
+      >>= mapM processCommand
       >>= atomically . writeTBQueue sndQ
   where
     processCommand :: NtfRequest -> M (Transmission NtfResponse)
