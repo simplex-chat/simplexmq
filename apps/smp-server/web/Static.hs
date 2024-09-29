@@ -7,7 +7,7 @@ module Static where
 import Control.Logger.Simple
 import Control.Monad
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as B
 import Data.IORef (readIORef)
 import Data.Maybe (fromMaybe)
 import Data.String (fromString)
@@ -22,6 +22,7 @@ import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server (AttachHTTP)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.Main (EmbeddedWebParams (..), WebHttpsParams (..))
+import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Util (tshow)
 import Static.Embedded as E
@@ -117,6 +118,7 @@ serverInformation ServerInformation {config, information} onionHost = render E.i
       where
         basic =
           [ ("sourceCode", Just . encodeUtf8 $ sourceCode spi),
+            ("version", Just $ B.pack simplexMQVersion),
             ("website", encodeUtf8 <$> website spi)
           ]
         conds ServerConditions {conditions, amendments} =
