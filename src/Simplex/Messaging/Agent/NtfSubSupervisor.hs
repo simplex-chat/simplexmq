@@ -275,14 +275,15 @@ runNtfWorker c srv Worker {doWork} =
               rs <- L.zip subs <$> agentNtfCheckSubscriptions c tkn subIds
               let (ntfSubs', errs2, nSubStatuses) = splitResults $ L.toList rs
                   subs' = map fst nSubStatuses
-                  errs2' = map (first ntfSubConnId) errs2
+                  (errs2', authSubs) = partitionEithers $ map (\case (sub, NTF _ SMP.AUTH) -> Right sub; e -> Left $ first ntfSubConnId e) errs2
               incStatByUserId ntfServer ntfChecked subs'
               ts <- liftIO getCurrentTime
               checkInterval <- asks $ ntfSubCheckInterval . config
               let nextCheckTs = addUTCTime checkInterval ts
               (errs3, srvs) <- partitionErrs ntfSubConnId subs' <$> withStoreBatch' c (\db -> map (updateSub db ntfServer ts nextCheckTs) nSubStatuses)
-              mapM_ (getNtfSMPWorker True c) $ S.fromList (catMaybes srvs)
-              workerErrors c $ errs1 <> errs2' <> errs3
+              (errs4, srvs') <- partitionErrs ntfSubConnId authSubs <$> withStoreBatch' c (\db -> map (recreateNtfSub db ntfServer ts) authSubs)
+              mapM_ (getNtfSMPWorker True c) $ S.fromList (catMaybes srvs <> srvs')
+              workerErrors c $ errs1 <> errs2' <> errs3 <> errs4
               pure ntfSubs'
             _ -> workerErrors c errs1 $> []
         _ -> do
@@ -297,14 +298,16 @@ runNtfWorker c srv Worker {doWork} =
               NtfSubscription {ntfSubId = Just subId} -> (errs, sub : subs, subId : subIds)
               _ -> ((ntfSubConnId sub, INTERNAL "NSACheck - no subscription ID") : errs, subs, subIds)
         updateSub :: DB.Connection -> NtfServer -> UTCTime -> UTCTime -> (NtfSubscription, NtfSubStatus) -> IO (Maybe SMPServer)
-        updateSub db ntfServer ts nextCheckTs (sub@NtfSubscription {smpServer}, status)
+        updateSub db ntfServer ts nextCheckTs (sub, status)
           | ntfShouldSubscribe status =
               let sub' = sub {ntfSubStatus = NASCreated status}
                in Nothing <$ updateNtfSubscription db sub' (NSANtf NSACheck) nextCheckTs
           -- ntf server stopped subscribing to this queue
-          | otherwise =
-              let sub' = sub {ntfServer, ntfQueueId = Nothing, ntfSubId = Nothing, ntfSubStatus = NASNew}
-               in Just smpServer <$ updateNtfSubscription db sub' (NSASMP NSASmpKey) ts
+          | otherwise = Just <$> recreateNtfSub db ntfServer ts sub
+        recreateNtfSub :: DB.Connection -> NtfServer -> UTCTime -> NtfSubscription -> IO SMPServer
+        recreateNtfSub db ntfServer ts sub@NtfSubscription {smpServer} =
+          let sub' = sub {ntfServer, ntfQueueId = Nothing, ntfSubId = Nothing, ntfSubStatus = NASNew}
+           in smpServer <$ updateNtfSubscription db sub' (NSASMP NSASmpKey) ts
     incStatByUserId :: NtfServer -> (AgentNtfServerStats -> TVar Int) -> [NtfSubscription] -> AM' ()
     incStatByUserId ntfServer sel ss =
       forM_ (M.assocs userIdsCounts) $ \(userId, count) ->
