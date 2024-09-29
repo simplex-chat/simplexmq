@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
@@ -44,7 +45,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Protocol (NtfSubStatus (..), NtfSubscriptionId, NtfTknStatus (..), ntfShouldSubscribe)
+import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, sameSrvAddr)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -229,20 +230,22 @@ runNtfWorker c srv Worker {doWork} =
       getNtfToken >>= \case
         Just tkn@NtfToken {ntfServer, ntfTokenId = Just tknId, ntfTknStatus = NTActive, ntfMode = NMInstant} -> do
           subsRqs_ <- zip ntfSubs <$> withStoreBatch c (\db -> map (getQueue db) ntfSubs)
-          let (errs1, subsCreds) = splitSubs subsRqs_
-          incStatByUserId ntfServer ntfCreateAttempts subsCreds
-          rs <- agentNtfCreateSubscriptions c tknId tkn subsCreds
-          let (subsCreds', errs2, successes) = splitResults rs
-              ntfSubs' = map fst subsCreds'
-              errs2' = map (first (ntfSubConnId . fst)) errs2
-              nSubIds = map (first fst) successes
-          incStatByUserId ntfServer ntfCreated nSubIds
-          ts <- liftIO getCurrentTime
-          firstCheckInterval <- asks $ ntfSubFirstCheckInterval . config
-          let checkTs = addUTCTime firstCheckInterval ts
-          (errs3, _) <- partitionErrs (ntfSubConnId . fst) nSubIds <$> withStoreBatch' c (\db -> map (updateSubNSACheck db checkTs) nSubIds)
-          workerErrors c $ errs1 <> errs2' <> errs3
-          pure ntfSubs'
+          let (errs1, newSubs_) = splitSubs tknId subsRqs_
+          incStatByUserId ntfServer ntfCreateAttempts newSubs_
+          case L.nonEmpty newSubs_ of
+            Just newSubs -> do
+              rs <- agentNtfCreateSubscriptions c tkn $ L.map snd newSubs
+              let rs' = L.toList $ L.zipWith (\(sub, _) r -> (sub, r)) newSubs rs
+                  (ntfSubs', errs2, nSubIds) = splitResults rs'
+                  errs2' = map (first ntfSubConnId) errs2
+              incStatByUserId ntfServer ntfCreated nSubIds
+              ts <- liftIO getCurrentTime
+              firstCheckInterval <- asks $ ntfSubFirstCheckInterval . config
+              let checkTs = addUTCTime firstCheckInterval ts
+              (errs3, _) <- partitionErrs (ntfSubConnId . fst) nSubIds <$> withStoreBatch' c (\db -> map (updateSubNSACheck db checkTs) nSubIds)
+              workerErrors c $ errs1 <> errs2' <> errs3
+              pure ntfSubs'
+            Nothing -> workerErrors c errs1 $> []
         _ -> do
           let errs = map (\sub -> (ntfSubConnId sub, INTERNAL "NSACreate - no active token")) ntfSubs
           workerErrors c errs
@@ -250,52 +253,58 @@ runNtfWorker c srv Worker {doWork} =
       where
         getQueue :: DB.Connection -> NtfSubscription -> IO (Either AgentErrorType RcvQueue)
         getQueue db NtfSubscription {connId} = first storeError <$> getPrimaryRcvQueue db connId
-        splitSubs :: [(NtfSubscription, Either AgentErrorType RcvQueue)] -> ([(ConnId, AgentErrorType)], [CreateSubNtfReq])
-        splitSubs = foldr splitSub ([], [])
+        splitSubs :: NtfTokenId -> [(NtfSubscription, Either AgentErrorType RcvQueue)] -> ([(ConnId, AgentErrorType)], [(NtfSubscription, NewNtfEntity 'Subscription)])
+        splitSubs tknId = foldr splitSub ([], [])
           where
-            splitSub (sub, Right RcvQueue {clientNtfCreds = Just creds}) (errs, ss) = (errs, (sub, creds) : ss)
-            splitSub (sub, Right _) (errs, ss) = ((ntfSubConnId sub, INTERNAL "NSACreate - no notifier queue credentials") : errs, ss)
-            splitSub (sub, Left e) (errs, ss) = ((ntfSubConnId sub, e) : errs, ss)
+            splitSub (sub, rq) (errs, ss) = case rq of
+              Right RcvQueue {clientNtfCreds = Just creds} -> (errs, (sub, toNewSub sub creds) : ss)
+              Right _ -> ((ntfSubConnId sub, INTERNAL "NSACreate - no notifier queue credentials") : errs, ss)
+              Left e -> ((ntfSubConnId sub, e) : errs, ss)
+            toNewSub NtfSubscription {smpServer} ClientNtfCreds {ntfPrivateKey, notifierId} =
+              NewNtfSub tknId (SMPQueueNtf smpServer notifierId) ntfPrivateKey
         updateSubNSACheck :: DB.Connection -> UTCTime -> (NtfSubscription, NtfSubscriptionId) -> IO ()
         updateSubNSACheck db checkTs (sub, nSubId) = updateNtfSubscription db sub {ntfSubId = Just nSubId, ntfSubStatus = NASCreated NSNew} (NSANtf NSACheck) checkTs
     checkSubs :: [NtfSubscription] -> AM' [NtfSubscription]
     checkSubs ntfSubs =
       getNtfToken >>= \case
         Just tkn@NtfToken {ntfServer, ntfTknStatus = NTActive, ntfMode = NMInstant} -> do
-          let (errs1, subsIds) = splitSubs ntfSubs
-          incStatByUserId ntfServer ntfCheckAttempts subsIds
-          rs <- agentNtfCheckSubscriptions c tkn subsIds
-          let (subsIds', errs2, successes) = splitResults rs
-              ntfSubs' = map fst subsIds'
-              errs2' = map (first (ntfSubConnId . fst)) errs2
-              nSubStatuses = map (first fst) successes
-          incStatByUserId ntfServer ntfChecked nSubStatuses
-          ts <- liftIO getCurrentTime
-          checkInterval <- asks $ ntfSubCheckInterval . config
-          let nextCheckTs = addUTCTime checkInterval ts
-          (errs3, srvs) <- partitionErrs (ntfSubConnId . fst) nSubStatuses <$> withStoreBatch' c (\db -> map (updateSub db ntfServer ts nextCheckTs) nSubStatuses)
-          mapM_ (getNtfSMPWorker True c) $ S.fromList (catMaybes srvs)
-          workerErrors c $ errs1 <> errs2' <> errs3
-          pure ntfSubs'
+          let (errs1, subsIds_) = splitSubs ntfSubs
+          incStatByUserId ntfServer ntfCheckAttempts subsIds_
+          case L.nonEmpty subsIds_ of
+            Just subsIds -> do
+              rs <- agentNtfCheckSubscriptions c tkn $ L.map snd subsIds
+              let rs' = L.toList $ L.zipWith (\(sub, _) r -> (sub, r)) subsIds rs
+                  (ntfSubs', errs2, nSubStatuses) = splitResults rs'
+                  errs2' = map (first ntfSubConnId) errs2
+              incStatByUserId ntfServer ntfChecked nSubStatuses
+              ts <- liftIO getCurrentTime
+              checkInterval <- asks $ ntfSubCheckInterval . config
+              let nextCheckTs = addUTCTime checkInterval ts
+              (errs3, srvs) <- partitionErrs (ntfSubConnId . fst) nSubStatuses <$> withStoreBatch' c (\db -> map (updateSub db ntfServer ts nextCheckTs) nSubStatuses)
+              mapM_ (getNtfSMPWorker True c) $ S.fromList (catMaybes srvs)
+              workerErrors c $ errs1 <> errs2' <> errs3
+              pure ntfSubs'
+            Nothing -> workerErrors c errs1 $> []
         _ -> do
           let errs = map (\sub -> (ntfSubConnId sub, INTERNAL "NSACheck - no active token")) ntfSubs
           workerErrors c errs
           pure []
       where
-        splitSubs :: [NtfSubscription] -> ([(ConnId, AgentErrorType)], [CheckSubNtfReq])
+        splitSubs :: [NtfSubscription] -> ([(ConnId, AgentErrorType)], [(NtfSubscription, NtfSubscriptionId)])
         splitSubs = foldr splitSub ([], [])
           where
-            splitSub sub@NtfSubscription {ntfSubId = Just nSubId} (errs, ss) = (errs, (sub, nSubId) : ss)
-            splitSub sub (errs, ss) = ((ntfSubConnId sub, INTERNAL "NSACheck - no subscription ID") : errs, ss)
+            splitSub sub (errs, ss) = case sub of
+              NtfSubscription {ntfSubId = Just nSubId} -> (errs, (sub, nSubId) : ss)
+              _ -> ((ntfSubConnId sub, INTERNAL "NSACheck - no subscription ID") : errs, ss)
         updateSub :: DB.Connection -> NtfServer -> UTCTime -> UTCTime -> (NtfSubscription, NtfSubStatus) -> IO (Maybe SMPServer)
         updateSub db ntfServer ts nextCheckTs (sub@NtfSubscription {smpServer}, status)
+          | ntfShouldSubscribe status =
+              let sub' = sub {ntfSubStatus = NASCreated status}
+               in Nothing <$ updateNtfSubscription db sub' (NSANtf NSACheck) nextCheckTs
           -- ntf server stopped subscribing to this queue
-          | not (ntfShouldSubscribe status) = do
-              updateNtfSubscription db sub {ntfServer, ntfQueueId = Nothing, ntfSubId = Nothing, ntfSubStatus = NASNew} (NSASMP NSASmpKey) ts
-              pure $ Just smpServer
-          | otherwise = do
-              updateNtfSubscription db sub {ntfSubStatus = NASCreated status} (NSANtf NSACheck) nextCheckTs
-              pure Nothing
+          | otherwise =
+              let sub' = sub {ntfServer, ntfQueueId = Nothing, ntfSubId = Nothing, ntfSubStatus = NASNew}
+               in Just smpServer <$ updateNtfSubscription db sub' (NSASMP NSASmpKey) ts
     incStatByUserId :: NtfServer -> (AgentNtfServerStats -> TVar Int) -> [(NtfSubscription, a)] -> AM' ()
     incStatByUserId ntfServer sel ss =
       forM_ userIdsCounts $ \(userId, count) ->
