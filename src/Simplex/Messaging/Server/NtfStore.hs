@@ -54,11 +54,11 @@ deleteExpiredNtfs (NtfStore ns) old =
     expireQueue nId = TM.lookupIO nId ns >>= maybe (pure 0) expire
     expire v = readTVarIO v >>= \case
       [] -> pure 0
-      _ -> atomically $ do
-        ntfs <- readTVar v
-        case reverse ntfs of
+      _ ->
+        atomically $ readTVar v >>= \case
+          [] -> pure 0
           -- check the last message first, it is the earliest
-          MsgNtf {ntfTs} : _ | systemSeconds ntfTs < old -> do
+          ntfs | systemSeconds (ntfTs $ last $ ntfs) < old -> do
             let !ntfs' = filter (\MsgNtf {ntfTs = ts} -> systemSeconds ts >= old) ntfs
             writeTVar v ntfs'
             pure $! length ntfs - length ntfs'
