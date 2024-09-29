@@ -51,7 +51,6 @@ import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2TLSParams)
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Transport.Server
-import qualified Simplex.Messaging.Transport.Server as Server
 import Test.Hspec
 import UnliftIO.Async
 import UnliftIO.Concurrent
@@ -102,17 +101,19 @@ ntfServerCfg =
       subsBatchSize = 900,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       storeLogFile = Nothing,
-      -- CA certificate private key is not needed for initialization
-      caCertificateFile = "tests/fixtures/ca.crt",
-      privateKeyFile = "tests/fixtures/server.key",
-      certificateFile = "tests/fixtures/server.crt",
+      ntfCredentials =
+        ServerCredentials
+          { caCertificateFile = Just "tests/fixtures/ca.crt",
+            privateKeyFile = "tests/fixtures/server.key",
+            certificateFile = "tests/fixtures/server.crt"
+          },
       -- stats config
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/ntf-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
       ntfServerVRange = supportedServerNTFVRange,
-      transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedNTFHandshakes}
+      transportConfig = defaultTransportServerConfig
     }
 
 ntfServerCfgVPrev :: NtfServerConfig
@@ -127,10 +128,10 @@ ntfServerCfgVPrev =
     serverVRange' = serverVRange smpCfg'
 
 withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a
-withNtfServerStoreLog t = withNtfServerCfg ntfServerCfg {storeLogFile = Just ntfTestStoreLogFile, transports = [(ntfTestPort, t)]}
+withNtfServerStoreLog t = withNtfServerCfg ntfServerCfg {storeLogFile = Just ntfTestStoreLogFile, transports = [(ntfTestPort, t, False)]}
 
 withNtfServerThreadOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withNtfServerThreadOn t port' = withNtfServerCfg ntfServerCfg {transports = [(port', t)]}
+withNtfServerThreadOn t port' = withNtfServerCfg ntfServerCfg {transports = [(port', t, False)]}
 
 withNtfServerCfg :: HasCallStack => NtfServerConfig -> (ThreadId -> IO a) -> IO a
 withNtfServerCfg cfg@NtfServerConfig {transports} =
@@ -190,9 +191,12 @@ apnsMockServerConfig =
       bufferSize = 16384,
       bodyHeadSize = 16384,
       serverSupported = http2TLSParams,
-      caCertificateFile = "tests/fixtures/ca.crt",
-      privateKeyFile = "tests/fixtures/server.key",
-      certificateFile = "tests/fixtures/server.crt",
+      https2Credentials =
+        ServerCredentials
+          { caCertificateFile = Just "tests/fixtures/ca.crt",
+            privateKeyFile = "tests/fixtures/server.key",
+            certificateFile = "tests/fixtures/server.crt"
+          },
       transportConfig = defaultTransportServerConfig
     }
 
@@ -224,7 +228,7 @@ deriving instance ToJSON APNSErrorResponse
 
 getAPNSMockServer :: HTTP2ServerConfig -> IO APNSMockServer
 getAPNSMockServer config@HTTP2ServerConfig {qSize} = do
-  http2Server <- getHTTP2Server config
+  http2Server <- getHTTP2Server config Nothing
   notifications <- TM.emptyIO
   action <- async $ runAPNSMockServer notifications http2Server
   pure APNSMockServer {action, notifications, http2Server}

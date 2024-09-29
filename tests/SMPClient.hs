@@ -27,7 +27,6 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import qualified Simplex.Messaging.Transport.Client as Client
 import Simplex.Messaging.Transport.Server
-import qualified Simplex.Messaging.Transport.Server as Server
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.Environment (lookupEnv)
@@ -125,11 +124,15 @@ cfg =
       serverStatsBackupFile = Nothing,
       pendingENDInterval = 500000,
       ntfDeliveryInterval = 200000,
-      caCertificateFile = "tests/fixtures/ca.crt",
-      privateKeyFile = "tests/fixtures/server.key",
-      certificateFile = "tests/fixtures/server.crt",
+      smpCredentials =
+        ServerCredentials
+          { caCertificateFile = Just "tests/fixtures/ca.crt",
+            privateKeyFile = "tests/fixtures/server.key",
+            certificateFile = "tests/fixtures/server.crt"
+          },
+      httpCredentials = Nothing,
       smpServerVRange = supportedServerSMPRelayVRange,
-      transportConfig = defaultTransportServerConfig {Server.alpn = Just supportedSMPHandshakes},
+      transportConfig = defaultTransportServerConfig,
       controlPort = Nothing,
       smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1}, -- seconds
       allowSMPProxy = False,
@@ -181,7 +184,7 @@ withSmpServerStoreLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just tes
 withSmpServerConfigOn :: HasCallStack => ATransport -> ServerConfig -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerConfigOn t cfg' port' =
   serverBracket
-    (\started -> runSMPServerBlocking started cfg' {transports = [(port', t)]})
+    (\started -> runSMPServerBlocking started cfg' {transports = [(port', t, False)]} Nothing)
     (threadDelay 10000)
 
 withSmpServerThreadOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a

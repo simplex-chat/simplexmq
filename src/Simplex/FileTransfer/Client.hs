@@ -53,7 +53,7 @@ import Simplex.Messaging.Protocol
     SenderId,
     pattern NoEntity,
   )
-import Simplex.Messaging.Transport (ALPN, HandshakeError (..), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), supportedParameters)
+import Simplex.Messaging.Transport (ALPN, HandshakeError (..), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost, alpn)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
@@ -104,7 +104,7 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
   let socksCreds = clientSocksCredentials xftpNetworkConfig proxySessTs transportSession
       ProtocolServer _ host port keyHash = srv
   useHost <- liftEither $ chooseTransportHost xftpNetworkConfig host
-  let tcConfig = (transportClientConfig xftpNetworkConfig useHost) {alpn = clientALPN}
+  let tcConfig = (transportClientConfig xftpNetworkConfig useHost True) {alpn = clientALPN}
       http2Config = xftpHTTP2Config tcConfig config
   clientVar <- newTVarIO Nothing
   let usePort = if null port then "443" else port
@@ -173,7 +173,7 @@ xftpHTTP2Config :: TransportClientConfig -> XFTPClientConfig -> HTTP2ClientConfi
 xftpHTTP2Config transportConfig XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpConnectTimeout}} =
   defaultHTTP2ClientConfig
     { bodyHeadSize = xftpBlockSize,
-      suportedTLSParams = supportedParameters,
+      suportedTLSParams = defaultSupportedParams,
       connTimeout = tcpConnectTimeout,
       transportConfig
     }

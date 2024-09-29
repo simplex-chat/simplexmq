@@ -15,7 +15,7 @@ import Numeric.Natural (Natural)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ALPN, SessionId, TLS, closeConnection, tlsALPN, tlsUniq)
 import Simplex.Messaging.Transport.HTTP2
-import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadSupportedTLSServerParams, runTransportServer)
+import Simplex.Messaging.Transport.Server (ServerCredentials, TransportServerConfig (..), loadServerCredential, runTransportServer)
 import Simplex.Messaging.Util (threadDelay')
 import UnliftIO (finally)
 import UnliftIO.Concurrent (forkIO, killThread)
@@ -28,9 +28,7 @@ data HTTP2ServerConfig = HTTP2ServerConfig
     bufferSize :: BufferSize,
     bodyHeadSize :: Int,
     serverSupported :: T.Supported,
-    caCertificateFile :: FilePath,
-    privateKeyFile :: FilePath,
-    certificateFile :: FilePath,
+    https2Credentials :: ServerCredentials,
     transportConfig :: TransportServerConfig
   }
   deriving (Show)
@@ -49,13 +47,13 @@ data HTTP2Server = HTTP2Server
   }
 
 -- This server is for testing only, it processes all requests in a single queue.
-getHTTP2Server :: HTTP2ServerConfig -> IO HTTP2Server
-getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, serverSupported, caCertificateFile, certificateFile, privateKeyFile, transportConfig} = do
-  tlsServerParams <- loadSupportedTLSServerParams serverSupported caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
+getHTTP2Server :: HTTP2ServerConfig -> Maybe [ALPN] -> IO HTTP2Server
+getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, serverSupported, https2Credentials, transportConfig} alpn_ = do
+  srvCreds <- loadServerCredential https2Credentials
   started <- newEmptyTMVarIO
   reqQ <- newTBQueueIO qSize
   action <- async $
-    runHTTP2Server started http2Port bufferSize tlsServerParams transportConfig Nothing (const $ pure ()) $ \sessionId sessionALPN r sendResponse -> do
+    runHTTP2Server started http2Port bufferSize serverSupported srvCreds alpn_ transportConfig Nothing (const $ pure ()) $ \sessionId sessionALPN r sendResponse -> do
       reqBody <- getHTTP2Body r bodyHeadSize
       atomically $ writeTBQueue reqQ HTTP2Request {sessionId, sessionALPN, request = r, reqBody, sendResponse}
   void . atomically $ takeTMVar started
@@ -64,10 +62,10 @@ getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, se
 closeHTTP2Server :: HTTP2Server -> IO ()
 closeHTTP2Server = uninterruptibleCancel . action
 
-runHTTP2Server :: TMVar Bool -> ServiceName -> BufferSize -> T.ServerParams -> TransportServerConfig -> Maybe ExpirationConfig -> (SessionId -> IO ()) -> HTTP2ServerFunc -> IO ()
-runHTTP2Server started port bufferSize serverParams transportConfig expCfg_ clientFinished = runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup
+runHTTP2Server :: TMVar Bool -> ServiceName -> BufferSize -> T.Supported -> T.Credential -> Maybe [ALPN] -> TransportServerConfig -> Maybe ExpirationConfig -> (SessionId -> IO ()) -> HTTP2ServerFunc -> IO ()
+runHTTP2Server started port bufferSize srvSupported srvCreds alpn_ transportConfig expCfg_ clientFinished = runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup
   where
-    setup = runTransportServer started port serverParams transportConfig
+    setup = runTransportServer started port srvSupported srvCreds alpn_ transportConfig
 
 runHTTP2ServerWith :: BufferSize -> ((TLS -> IO ()) -> a) -> HTTP2ServerFunc -> a
 runHTTP2ServerWith = runHTTP2ServerWith_ Nothing (\_sessId -> pure ())
