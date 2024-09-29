@@ -62,6 +62,12 @@ testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
 testStoreMsgsFile2 :: FilePath
 testStoreMsgsFile2 = "tests/tmp/smp-server-messages.log.2"
 
+testStoreNtfsFile :: FilePath
+testStoreNtfsFile = "tests/tmp/smp-server-ntfs.log"
+
+testStoreNtfsFile2 :: FilePath
+testStoreNtfsFile2 = "tests/tmp/smp-server-ntfs.log.2"
+
 testServerStatsBackupFile :: FilePath
 testServerStatsBackupFile = "tests/tmp/smp-server-stats.log"
 
@@ -104,17 +110,20 @@ cfg =
       msgIdBytes = 24,
       storeLogFile = Nothing,
       storeMsgsFile = Nothing,
+      storeNtfsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
       controlPortUserAuth = Nothing,
       controlPortAdminAuth = Nothing,
       messageExpiration = Just defaultMessageExpiration,
+      notificationExpiration = defaultNtfExpiration,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/smp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
       pendingENDInterval = 500000,
+      ntfDeliveryInterval = 200000,
       smpCredentials =
         ServerCredentials
           { caCertificateFile = Just "tests/fixtures/ca.crt",
@@ -159,7 +168,15 @@ proxyVRangeV8 :: VersionRangeSMP
 proxyVRangeV8 = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerStoreMsgLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
+withSmpServerStoreMsgLogOn t =
+  withSmpServerConfigOn
+    t
+    cfg
+      { storeLogFile = Just testStoreLogFile,
+        storeMsgsFile = Just testStoreMsgsFile,
+        storeNtfsFile = Just testStoreNtfsFile,
+        serverStatsBackupFile = Just testServerStatsBackupFile
+      }
 
 withSmpServerStoreLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, serverStatsBackupFile = Just testServerStatsBackupFile}
