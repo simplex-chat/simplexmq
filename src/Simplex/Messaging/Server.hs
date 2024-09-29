@@ -580,6 +580,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                 hPutStrLn h $ "other GET events (auth, duplicate, prohibited): " <> show gets
                 putStat "msgSentNtf" msgSentNtf
                 putStat "msgRecvNtf" msgRecvNtf
+                putStat "msgNtfs" msgNtfs
+                putStat "msgNtfsB" msgNtfsB
+                putStat "msgNtfExpired" msgNtfExpired
                 putStat "qCount" qCount
                 putStat "msgCount" msgCount
                 putProxyStat "pRelays" pRelays
