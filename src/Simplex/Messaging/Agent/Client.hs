@@ -1865,11 +1865,13 @@ withWork c doWork getWork action =
     noWork = liftIO $ noWorkToDo doWork
     notifyErr err e = atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err $ show e)
 
-withWorkItems :: AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError [Either StoreError a])) -> (NonEmpty a -> AM ()) -> AM ()
-withWorkItems c doWork getWork action = do
+withWorkItems :: String -> AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError [Either StoreError a])) -> (NonEmpty a -> AM ()) -> AM ()
+withWorkItems str c doWork getWork action = do
   withStore' c getWork >>= \case
+    Right [] -> noWork
     Right rs -> do
       let (errs, items) = partitionEithers rs
+      liftIO $ print $ "withWorkItems - " <> str <> " - length items = " <> show (length items) <> ", length errs = " <> show (length errs)
       case L.nonEmpty items of
         Just items' -> action items'
         Nothing -> do

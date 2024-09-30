@@ -59,7 +59,7 @@ runNtfSupervisor :: AgentClient -> AM' ()
 runNtfSupervisor c = do
   ns <- asks ntfSupervisor
   forever $ do
-    logInfo "#################### runNtfSupervisor - in forever loop"
+    liftIO $ print "#################### runNtfSupervisor - in forever loop"
     cmd <- atomically . readTBQueue $ ntfSubQ ns
     handleErr . agentOperationBracket c AONtfNetwork waitUntilActive $
       runExceptT (processNtfCmd c cmd) >>= \case
@@ -197,14 +197,14 @@ withTokenServer action = lift getNtfToken >>= mapM_ (\NtfToken {ntfServer} -> ac
 runNtfWorker :: AgentClient -> NtfServer -> Worker -> AM ()
 runNtfWorker c srv Worker {doWork} =
   forever $ do
-    logInfo "#################### runNtfWorker - in forever loop"
+    liftIO $ print "#################### runNtfWorker - in forever loop"
     waitForWork doWork
     ExceptT $ agentOperationBracket c AONtfNetwork throwWhenInactive $ runExceptT runNtfOperation
   where
     runNtfOperation :: AM ()
     runNtfOperation = do
       ntfBatchSize <- asks $ ntfBatchSize . config
-      withWorkItems c doWork (\db -> getNextNtfSubNTFActions db srv ntfBatchSize) $ \nextSubs -> do
+      withWorkItems "runNtfWorker" c doWork (\db -> getNextNtfSubNTFActions db srv ntfBatchSize) $ \nextSubs -> do
         logInfo $ "runNtfWorker - length nextSubs = " <> tshow (length nextSubs)
         currTs <- liftIO getCurrentTime
         let (creates, checks, deletes, rotates) = splitActions currTs nextSubs
@@ -366,16 +366,18 @@ runNtfWorker c srv Worker {doWork} =
 
 runNtfSMPWorker :: AgentClient -> SMPServer -> Worker -> AM ()
 runNtfSMPWorker c srv Worker {doWork} = forever $ do
-  logInfo "#################### runNtfSMPWorker - in forever loop"
+  ts <- liftIO getCurrentTime
+  liftIO $ print $ "#################### runNtfSMPWorker - in forever loop - ts = " <> show ts
   waitForWork doWork
   ExceptT $ agentOperationBracket c AONtfNetwork throwWhenInactive $ runExceptT runNtfSMPOperation
   where
     runNtfSMPOperation :: AM ()
     runNtfSMPOperation = do
       ntfBatchSize <- asks $ ntfBatchSize . config
-      withWorkItems c doWork (\db -> getNextNtfSubSMPActions db srv ntfBatchSize) $ \nextSubs -> do
+      withWorkItems "runNtfSMPWorker" c doWork (\db -> getNextNtfSubSMPActions db srv ntfBatchSize) $ \nextSubs -> do
         logInfo $ "runNtfSMPWorker - length nextSubs = " <> tshow (length nextSubs)
         let (creates, deletes) = splitActions nextSubs
+        liftIO $ print $ "runNtfSMPWorker - length nextSubs = " <> tshow (length nextSubs) <> ", length creates = " <> tshow (length creates) <> ", length deletes = " <> tshow (length deletes)
         retrySubActions c creates createNotifierKeys
         retrySubActions c deletes deleteNotifierKeys
     splitActions :: NonEmpty (NtfSubSMPAction, NtfSubscription) -> ([NtfSubscription], [NtfSubscription])
