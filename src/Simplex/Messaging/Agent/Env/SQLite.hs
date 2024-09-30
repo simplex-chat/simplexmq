@@ -17,11 +17,14 @@ module Simplex.Messaging.Agent.Env.SQLite
     AgentConfig (..),
     InitialAgentServers (..),
     ServerCfg (..),
+    ServerRoles (..),
+    OperatorId,
     UserServers (..),
     NetworkConfig (..),
     presetServerCfg,
     enabledServerCfg,
     mkUserServers,
+    serverHosts,
     defaultAgentConfig,
     defaultReconnectInterval,
     tryAgentError,
@@ -54,6 +57,8 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import Data.Maybe (fromMaybe)
+import Data.Set (Set)
+import qualified Data.Set as S
 import Data.Time.Clock (NominalDiffTime, nominalDay)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16)
@@ -71,10 +76,11 @@ import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (defaultJSON)
-import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth, ProtocolServer, ProtocolType (..), ProtocolTypeI, VersionRangeSMPC, XFTPServer, supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth (..), ProtocolServer (..), ProtocolType (..), ProtocolTypeI, VersionRangeSMPC, XFTPServer, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion)
+import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryAllErrors, tryAllErrors')
 import System.Mem.Weak (Weak)
 import System.Random (StdGen, newStdGen)
@@ -94,29 +100,45 @@ data InitialAgentServers = InitialAgentServers
 
 data ServerCfg p = ServerCfg
   { server :: ProtoServerWithAuth p,
+    operator :: OperatorId,
     preset :: Bool,
     tested :: Maybe Bool,
-    enabled :: Bool
+    enabled :: Bool,
+    roles :: ServerRoles
   }
   deriving (Show)
 
-enabledServerCfg :: ProtoServerWithAuth p -> ServerCfg p
-enabledServerCfg server = ServerCfg {server, preset = False, tested = Nothing, enabled = True}
+data ServerRoles = ServerRoles
+  { storage :: Bool,
+    proxy :: Bool
+  }
+  deriving (Show)
 
-presetServerCfg :: Bool -> ProtoServerWithAuth p -> ServerCfg p
-presetServerCfg enabled server = ServerCfg {server, preset = True, tested = Nothing, enabled}
+enabledServerCfg :: OperatorId -> ProtoServerWithAuth p -> ServerCfg p
+enabledServerCfg operator server =
+  ServerCfg {server, operator, preset = False, tested = Nothing, enabled = True, roles = ServerRoles True True}
+
+presetServerCfg :: Bool -> ServerRoles -> OperatorId -> ProtoServerWithAuth p -> ServerCfg p
+presetServerCfg enabled roles operator server =
+  ServerCfg {server, operator, preset = True, tested = Nothing, enabled, roles}
 
 data UserServers p = UserServers
-  { enabledSrvs :: NonEmpty (ProtoServerWithAuth p),
-    knownSrvs :: NonEmpty (ProtocolServer p)
+  { storageSrvs :: NonEmpty (OperatorId, ProtoServerWithAuth p),
+    proxySrvs :: NonEmpty (OperatorId, ProtoServerWithAuth p),
+    knownHosts :: Set TransportHost
   }
+
+type OperatorId = Int64
 
 -- This function sets all servers as enabled in case all passed servers are disabled.
 mkUserServers :: NonEmpty (ServerCfg p) -> UserServers p
-mkUserServers srvs = UserServers {enabledSrvs, knownSrvs}
+mkUserServers srvs = UserServers {storageSrvs = filterSrvs storage, proxySrvs = filterSrvs proxy, knownHosts}
   where
-    enabledSrvs = L.map (\ServerCfg {server} -> server) $ fromMaybe srvs $ L.nonEmpty $ L.filter (\ServerCfg {enabled} -> enabled) srvs
-    knownSrvs = L.map (\ServerCfg {server = ProtoServerWithAuth srv _} -> srv) srvs
+    filterSrvs role = L.map (\ServerCfg {operator, server} -> (operator, server)) $ fromMaybe srvs $ L.nonEmpty $ L.filter (\ServerCfg {enabled, roles} -> enabled && role roles) srvs
+    knownHosts = S.unions $ L.map (\ServerCfg {server = ProtoServerWithAuth srv _} -> serverHosts srv) srvs
+
+serverHosts :: ProtocolServer p -> Set TransportHost
+serverHosts ProtocolServer {host} = S.fromList $ L.toList host
 
 data AgentConfig = AgentConfig
   { tcpPort :: Maybe ServiceName,
@@ -332,6 +354,8 @@ updateRestartCount t (RestartCount minute count) = do
    in RestartCount min' $ if minute == min' then count + 1 else 1
 
 $(pure [])
+
+$(JQ.deriveJSON defaultJSON ''ServerRoles)
 
 instance ProtocolTypeI p => ToJSON (ServerCfg p) where
   toEncoding = $(JQ.mkToEncoding defaultJSON ''ServerCfg)

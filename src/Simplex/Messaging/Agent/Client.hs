@@ -147,7 +147,6 @@ module Simplex.Messaging.Agent.Client
     userServers,
     pickServer,
     getNextServer,
-    withUserServers,
     withNextSrv,
     incSMPServerStat,
     incSMPServerStat',
@@ -191,12 +190,12 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (deleteFirstsBy, find, foldl', partition, (\\))
+import Data.List (find, foldl', partition)
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -262,7 +261,6 @@ import Simplex.Messaging.Protocol
     VersionSMPC,
     XFTPServer,
     XFTPServerWithAuth,
-    sameSrvAddr',
     pattern NoEntity,
   )
 import qualified Simplex.Messaging.Protocol as SMP
@@ -617,7 +615,7 @@ getSMPServerClient c@AgentClient {active, smpClients, workerSeq} tSess = do
 getSMPProxyClient :: AgentClient -> Maybe SMPServerWithAuth -> SMPTransportSession -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
 getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq} proxySrv_ destSess@(userId, destSrv, qId) = do
   unlessM (readTVarIO active) $ throwE INACTIVE
-  proxySrv <- maybe (getNextServer c userId [destSrv]) pure proxySrv_
+  proxySrv <- maybe (getNextServer c userId proxySrvs [destSrv]) pure proxySrv_
   ts <- liftIO getCurrentTime
   atomically (getClientVar proxySrv ts) >>= \(tSess, auth, v) ->
     either (newProxyClient tSess auth ts) (waitForProxyClient tSess auth) v
@@ -1072,7 +1070,7 @@ sendOrProxySMPCommand ::
   (SMPClient -> ProxiedRelay -> ExceptT SMPClientError IO (Either ProxyClientError ())) ->
   (SMPClient -> ExceptT SMPClientError IO ()) ->
   AM (Maybe SMPServer)
-sendOrProxySMPCommand c userId destSrv connId cmdStr senderId sendCmdViaProxy sendCmdDirectly = do
+sendOrProxySMPCommand c userId destSrv@ProtocolServer {host = destHosts} connId cmdStr senderId sendCmdViaProxy sendCmdDirectly = do
   tSess <- mkTransportSession c userId destSrv connId
   ifM shouldUseProxy (sendViaProxy Nothing tSess) (sendDirectly tSess $> Nothing)
   where
@@ -1091,7 +1089,7 @@ sendOrProxySMPCommand c userId destSrv connId cmdStr senderId sendCmdViaProxy se
         SPFAllow -> True
         SPFAllowProtected -> ipAddressProtected cfg destSrv
         SPFProhibit -> False
-    unknownServer = liftIO $ maybe True (notElem destSrv . knownSrvs) <$> TM.lookupIO userId (smpServers c)
+    unknownServer = liftIO $ maybe True (\srvs -> all (`S.notMember` knownHosts srvs) destHosts) <$> TM.lookupIO userId (smpServers c)
     sendViaProxy :: Maybe SMPServerWithAuth -> SMPTransportSession -> AM (Maybe SMPServer)
     sendViaProxy proxySrv_ destSess@(_, _, connId_) = do
       r <- tryAgentError . withProxySession c proxySrv_ destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess@ProxiedRelay {prBasicAuth}) -> do
@@ -2033,33 +2031,82 @@ userServers c = case protocolTypeI @p of
   SPXFTP -> xftpServers c
 {-# INLINE userServers #-}
 
-pickServer :: forall p. NonEmpty (ProtoServerWithAuth p) -> AM (ProtoServerWithAuth p)
+pickServer :: NonEmpty (OperatorId, ProtoServerWithAuth p) -> AM (ProtoServerWithAuth p)
 pickServer = \case
-  srv :| [] -> pure srv
+  (_, srv) :| [] -> pure srv
   servers -> do
     gen <- asks randomServer
-    atomically $ (servers L.!!) <$> stateTVar gen (randomR (0, L.length servers - 1))
+    atomically $ snd . (servers L.!!) <$> stateTVar gen (randomR (0, L.length servers - 1))
 
-getNextServer :: forall p. (ProtocolTypeI p, UserProtocol p) => AgentClient -> UserId -> [ProtocolServer p] -> AM (ProtoServerWithAuth p)
-getNextServer c userId usedSrvs = withUserServers c userId $ \srvs ->
-  case L.nonEmpty $ deleteFirstsBy sameSrvAddr' (L.toList srvs) (map noAuthSrv usedSrvs) of
-    Just srvs' -> pickServer srvs'
-    _ -> pickServer srvs
+getNextServer ::
+  (ProtocolTypeI p, UserProtocol p) =>
+  AgentClient ->
+  UserId -> 
+  (UserServers p -> NonEmpty (OperatorId, ProtoServerWithAuth p)) ->
+  [ProtocolServer p] ->
+  AM (ProtoServerWithAuth p)
+getNextServer c userId srvsSel usedSrvs = do
+  srvs <- getUserServers_ c userId srvsSel
+  snd <$> getNextServer_ srvs (usedOperatorsHosts srvs usedSrvs)
 
-withUserServers :: forall p a. (ProtocolTypeI p, UserProtocol p) => AgentClient -> UserId -> (NonEmpty (ProtoServerWithAuth p) -> AM a) -> AM a
-withUserServers c userId action =
+usedOperatorsHosts :: NonEmpty (OperatorId, ProtoServerWithAuth p) -> [ProtocolServer p] -> (Set OperatorId, Set TransportHost)
+usedOperatorsHosts srvs usedSrvs = (usedOperators, usedHosts)
+  where
+    usedHosts = S.unions $ map serverHosts usedSrvs
+    usedOperators = S.fromList $ mapMaybe usedOp $ L.toList srvs
+    usedOp (op, srv) = if hasUsedHost srv then Just op else Nothing
+    hasUsedHost (ProtoServerWithAuth srv _) = any (`S.member` usedHosts) $ serverHosts srv
+
+getNextServer_ ::
+  (ProtocolTypeI p, UserProtocol p) =>
+  NonEmpty (OperatorId, ProtoServerWithAuth p) ->
+  (Set OperatorId, Set TransportHost) ->
+  AM (NonEmpty (OperatorId, ProtoServerWithAuth p), ProtoServerWithAuth p)
+getNextServer_ servers (usedOperators, usedHosts) = do
+  -- choose from servers of unused operators, when possible
+  let otherOpsSrvs = filterOrAll ((`S.notMember` usedOperators) . fst) servers
+      -- choose from servers with unused hosts when possible
+      unusedSrvs = filterOrAll (isUnusedServer usedHosts) otherOpsSrvs
+  (otherOpsSrvs,) <$> pickServer unusedSrvs
+  where
+    filterOrAll p srvs = fromMaybe srvs $ L.nonEmpty $ L.filter p srvs
+
+isUnusedServer :: Set TransportHost -> (OperatorId, ProtoServerWithAuth p) -> Bool
+isUnusedServer usedHosts (_, ProtoServerWithAuth ProtocolServer {host} _) = all (`S.notMember` usedHosts) host
+
+getUserServers_ ::
+  (ProtocolTypeI p, UserProtocol p) =>
+  AgentClient ->
+  UserId ->
+  (UserServers p -> NonEmpty (OperatorId, ProtoServerWithAuth p)) ->
+  AM (NonEmpty (OperatorId, ProtoServerWithAuth p))
+getUserServers_ c userId srvsSel =
   liftIO (TM.lookupIO userId $ userServers c) >>= \case
-    Just srvs -> action $ enabledSrvs srvs
+    Just srvs -> pure $ srvsSel srvs
     _ -> throwE $ INTERNAL "unknown userId - no user servers"
 
-withNextSrv :: forall p a. (ProtocolTypeI p, UserProtocol p) => AgentClient -> UserId -> TVar [ProtocolServer p] -> [ProtocolServer p] -> (ProtoServerWithAuth p -> AM a) -> AM a
-withNextSrv c userId usedSrvs initUsed action = do
-  used <- readTVarIO usedSrvs
-  srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId used
-  srvs_ <- liftIO $ TM.lookupIO userId $ userServers c
-  let unused = maybe [] ((\\ used) . map protoServer . L.toList . enabledSrvs) srvs_
-      used' = if null unused then initUsed else srv : used
-  atomically $ writeTVar usedSrvs $! used'
+-- This function checks used servers and operators every time to allow
+-- changing configuration while retry look is executing.
+-- This function is not thread safe.
+withNextSrv ::
+  (ProtocolTypeI p, UserProtocol p) =>
+  AgentClient ->
+  UserId ->
+  (UserServers p -> NonEmpty (OperatorId, ProtoServerWithAuth p)) ->
+  TVar (Set TransportHost) ->
+  [ProtocolServer p] -> 
+  (ProtoServerWithAuth p -> AM a) ->
+  AM a
+withNextSrv c userId srvsSel triedHosts usedSrvs action = do
+  srvs <- getUserServers_ c userId srvsSel
+  let (usedOperators, usedHosts) = usedOperatorsHosts srvs usedSrvs
+  tried <- readTVarIO triedHosts
+  let triedOrUsed = S.union tried usedHosts
+  (otherOpsSrvs, srvAuth@(ProtoServerWithAuth srv _)) <- getNextServer_ srvs (usedOperators, triedOrUsed)
+  let newHosts = serverHosts srv
+      unusedSrvs = L.filter (isUnusedServer $ S.union triedOrUsed newHosts) otherOpsSrvs
+      !tried' = if null unusedSrvs then S.empty else S.union tried newHosts
+  atomically $ writeTVar triedHosts tried'
   action srvAuth
 
 incSMPServerStat :: AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int) -> STM ()

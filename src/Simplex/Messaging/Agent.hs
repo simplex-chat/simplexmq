@@ -811,8 +811,8 @@ joinConn :: AgentClient -> UserId -> ConnId -> Bool -> Bool -> ConnectionRequest
 joinConn c userId connId hasNewConn enableNtfs cReq cInfo pqSupport subMode = do
   srv <- case cReq of
     CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _ ->
-      getNextServer c userId [qServer q]
-    _ -> getSMPServer c userId
+      getNextSMPServer c userId [qServer q]
+    _ -> getSMPServer c userId -- TODO when connecting to contact address, also try gettings a different operator/server
   joinConnSrv c userId connId hasNewConn enableNtfs cReq cInfo pqSupport subMode srv
 
 startJoinInvitation :: UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM (ConnData, NewSndQueue, C.PublicKeyX25519, CR.Ratchet 'C.X448, CR.SndE2ERatchetParams 'C.X448)
@@ -1169,14 +1169,13 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
     processCmd ri PendingCommand {cmdId, corrId, userId, command} pendingCmds = case command of
       AClientCommand cmd -> case cmd of
         NEW enableNtfs (ACM cMode) pqEnc subMode -> noServer $ do
-          usedSrvs <- newTVarIO ([] :: [SMPServer])
-          tryCommand . withNextSrv c userId usedSrvs [] $ \srv -> do
+          triedHosts <- newTVarIO S.empty
+          tryCommand . withNextSrv c userId storageSrvs triedHosts [] $ \srv -> do
             (_, cReq) <- newRcvConnSrv c userId connId enableNtfs cMode Nothing pqEnc subMode srv
             notify $ INV (ACR cMode cReq)
         JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc subMode connInfo -> noServer $ do
-          let initUsed = [qServer q]
-          usedSrvs <- newTVarIO initUsed
-          tryCommand . withNextSrv c userId usedSrvs initUsed $ \srv -> do
+          triedHosts <- newTVarIO S.empty
+          tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv -> do
             sqSecured <- joinConnSrvAsync c userId connId enableNtfs cReq connInfo pqEnc subMode srv
             notify $ JOINED sqSecured
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
@@ -1624,8 +1623,8 @@ switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs s
   checkRQSwchStatus rq RSSwitchStarted
   clientVRange <- asks $ smpClientVRange . config
   -- try to get the server that is different from all queues, or at least from the primary rcv queue
-  srvAuth@(ProtoServerWithAuth srv _) <- getNextServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
-  srv' <- if srv == server then getNextServer c userId [server] else pure srvAuth
+  srvAuth@(ProtoServerWithAuth srv _) <- getNextSMPServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
+  srv' <- if srv == server then getNextSMPServer c userId [server] else pure srvAuth
   (q, qUri, tSess, sessId) <- newRcvQueue c userId connId srv' clientVRange SMSubscribe False
   let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
   rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq'
@@ -2144,8 +2143,12 @@ debugAgentLocks AgentClient {connLocks = cs, invLocks = is, deleteLock = d} = do
     getLocks ls = atomically $ M.mapKeys (B.unpack . strEncode) . M.mapMaybe id <$> (mapM tryReadTMVar =<< readTVar ls)
 
 getSMPServer :: AgentClient -> UserId -> AM SMPServerWithAuth
-getSMPServer c userId = withUserServers c userId pickServer
+getSMPServer c userId = getNextSMPServer c userId []
 {-# INLINE getSMPServer #-}
+
+getNextSMPServer :: AgentClient -> UserId -> [SMPServer] -> AM SMPServerWithAuth
+getNextSMPServer c userId = getNextServer c userId storageSrvs
+{-# INLINE getNextSMPServer #-}
 
 subscriber :: AgentClient -> AM' ()
 subscriber c@AgentClient {msgQ} = forever $ do
