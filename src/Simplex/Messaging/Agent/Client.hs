@@ -1868,6 +1868,7 @@ withWork c doWork getWork action =
 withWorkItems :: AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError [Either StoreError a])) -> (NonEmpty a -> AM ()) -> AM ()
 withWorkItems c doWork getWork action = do
   withStore' c getWork >>= \case
+    Right [] -> noWork
     Right rs -> do
       let (errs, items) = partitionEithers rs
       case L.nonEmpty items of
