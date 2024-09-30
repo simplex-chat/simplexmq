@@ -60,7 +60,6 @@ runNtfSupervisor c = do
   ns <- asks ntfSupervisor
   forever $ do
     logInfo "#################### runNtfSupervisor - in forever loop"
-    notifyInternalError' c "#################### runNtfSupervisor - in forever loop"
     cmd <- atomically . readTBQueue $ ntfSubQ ns
     handleErr . agentOperationBracket c AONtfNetwork waitUntilActive $
       runExceptT (processNtfCmd c cmd) >>= \case
@@ -199,7 +198,6 @@ runNtfWorker :: AgentClient -> NtfServer -> Worker -> AM ()
 runNtfWorker c srv Worker {doWork} =
   forever $ do
     logInfo "#################### runNtfWorker - in forever loop"
-    notifyInternalError' c "#################### runNtfWorker - in forever loop"
     waitForWork doWork
     ExceptT $ agentOperationBracket c AONtfNetwork throwWhenInactive $ runExceptT runNtfOperation
   where
@@ -369,7 +367,6 @@ runNtfWorker c srv Worker {doWork} =
 runNtfSMPWorker :: AgentClient -> SMPServer -> Worker -> AM ()
 runNtfSMPWorker c srv Worker {doWork} = forever $ do
   logInfo "#################### runNtfSMPWorker - in forever loop"
-  notifyInternalError' c "#################### runNtfSMPWorker - in forever loop"
   waitForWork doWork
   ExceptT $ agentOperationBracket c AONtfNetwork throwWhenInactive $ runExceptT runNtfSMPOperation
   where
