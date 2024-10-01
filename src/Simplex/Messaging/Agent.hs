@@ -2030,7 +2030,7 @@ deleteToken_ c@AgentClient {subQ} tkn@NtfToken {ntfServer, ntfTokenId, ntfPrivKe
     agentNtfDeleteToken c ntfServer ntfPrivKey tknId `catchAgentError` \case
       e | temporaryOrHostError e -> do
         withStore' c $ \db -> addNtfTokenToDelete db ntfServer ntfPrivKey tknId
-        notify (ERR e)
+        void $ lift $ getNtfTknDelWorker True c ntfServer
       e -> notify (ERR e)
   withStore' c $ \db -> removeNtfToken db tkn
   atomically $ nsRemoveNtfToken ns

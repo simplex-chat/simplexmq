@@ -15,6 +15,7 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
     nsRemoveNtfToken,
     sendNtfSubCommand,
     instantNotifications,
+    getNtfTknDelWorker,
     closeNtfSupervisor,
     getNtfServer,
   )
