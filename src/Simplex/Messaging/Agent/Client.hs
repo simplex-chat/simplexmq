@@ -2032,7 +2032,7 @@ userServers c = case protocolTypeI @p of
   SPXFTP -> xftpServers c
 {-# INLINE userServers #-}
 
-pickServer :: NonEmpty (OperatorId, ProtoServerWithAuth p) -> AM (ProtoServerWithAuth p)
+pickServer :: NonEmpty (Maybe OperatorId, ProtoServerWithAuth p) -> AM (ProtoServerWithAuth p)
 pickServer = \case
   (_, srv) :| [] -> pure srv
   servers -> do
@@ -2043,14 +2043,14 @@ getNextServer ::
   (ProtocolTypeI p, UserProtocol p) =>
   AgentClient ->
   UserId -> 
-  (UserServers p -> NonEmpty (OperatorId, ProtoServerWithAuth p)) ->
+  (UserServers p -> NonEmpty (Maybe OperatorId, ProtoServerWithAuth p)) ->
   [ProtocolServer p] ->
   AM (ProtoServerWithAuth p)
 getNextServer c userId srvsSel usedSrvs = do
   srvs <- getUserServers_ c userId srvsSel
   snd <$> getNextServer_ srvs (usedOperatorsHosts srvs usedSrvs)
 
-usedOperatorsHosts :: NonEmpty (OperatorId, ProtoServerWithAuth p) -> [ProtocolServer p] -> (Set OperatorId, Set TransportHost)
+usedOperatorsHosts :: NonEmpty (Maybe OperatorId, ProtoServerWithAuth p) -> [ProtocolServer p] -> (Set (Maybe OperatorId), Set TransportHost)
 usedOperatorsHosts srvs usedSrvs = (usedOperators, usedHosts)
   where
     usedHosts = S.unions $ map serverHosts usedSrvs
@@ -2060,9 +2060,9 @@ usedOperatorsHosts srvs usedSrvs = (usedOperators, usedHosts)
 
 getNextServer_ ::
   (ProtocolTypeI p, UserProtocol p) =>
-  NonEmpty (OperatorId, ProtoServerWithAuth p) ->
-  (Set OperatorId, Set TransportHost) ->
-  AM (NonEmpty (OperatorId, ProtoServerWithAuth p), ProtoServerWithAuth p)
+  NonEmpty (Maybe OperatorId, ProtoServerWithAuth p) ->
+  (Set (Maybe OperatorId), Set TransportHost) ->
+  AM (NonEmpty (Maybe OperatorId, ProtoServerWithAuth p), ProtoServerWithAuth p)
 getNextServer_ servers (usedOperators, usedHosts) = do
   -- choose from servers of unused operators, when possible
   let otherOpsSrvs = filterOrAll ((`S.notMember` usedOperators) . fst) servers
@@ -2072,15 +2072,15 @@ getNextServer_ servers (usedOperators, usedHosts) = do
   where
     filterOrAll p srvs = fromMaybe srvs $ L.nonEmpty $ L.filter p srvs
 
-isUnusedServer :: Set TransportHost -> (OperatorId, ProtoServerWithAuth p) -> Bool
+isUnusedServer :: Set TransportHost -> (Maybe OperatorId, ProtoServerWithAuth p) -> Bool
 isUnusedServer usedHosts (_, ProtoServerWithAuth ProtocolServer {host} _) = all (`S.notMember` usedHosts) host
 
 getUserServers_ ::
   (ProtocolTypeI p, UserProtocol p) =>
   AgentClient ->
   UserId ->
-  (UserServers p -> NonEmpty (OperatorId, ProtoServerWithAuth p)) ->
-  AM (NonEmpty (OperatorId, ProtoServerWithAuth p))
+  (UserServers p -> NonEmpty (Maybe OperatorId, ProtoServerWithAuth p)) ->
+  AM (NonEmpty (Maybe OperatorId, ProtoServerWithAuth p))
 getUserServers_ c userId srvsSel =
   liftIO (TM.lookupIO userId $ userServers c) >>= \case
     Just srvs -> pure $ srvsSel srvs
@@ -2093,7 +2093,7 @@ withNextSrv ::
   (ProtocolTypeI p, UserProtocol p) =>
   AgentClient ->
   UserId ->
-  (UserServers p -> NonEmpty (OperatorId, ProtoServerWithAuth p)) ->
+  (UserServers p -> NonEmpty (Maybe OperatorId, ProtoServerWithAuth p)) ->
   TVar (Set TransportHost) ->
   [ProtocolServer p] -> 
   (ProtoServerWithAuth p -> AM a) ->

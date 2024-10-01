@@ -100,7 +100,7 @@ data InitialAgentServers = InitialAgentServers
 
 data ServerCfg p = ServerCfg
   { server :: ProtoServerWithAuth p,
-    operator :: OperatorId,
+    operator :: Maybe OperatorId,
     preset :: Bool,
     tested :: Maybe Bool,
     enabled :: Bool,
@@ -114,17 +114,17 @@ data ServerRoles = ServerRoles
   }
   deriving (Show)
 
-enabledServerCfg :: OperatorId -> ProtoServerWithAuth p -> ServerCfg p
-enabledServerCfg operator server =
-  ServerCfg {server, operator, preset = False, tested = Nothing, enabled = True, roles = ServerRoles True True}
+enabledServerCfg :: ProtoServerWithAuth p -> ServerCfg p
+enabledServerCfg server =
+  ServerCfg {server, operator = Nothing, preset = False, tested = Nothing, enabled = True, roles = ServerRoles True True}
 
-presetServerCfg :: Bool -> ServerRoles -> OperatorId -> ProtoServerWithAuth p -> ServerCfg p
+presetServerCfg :: Bool -> ServerRoles -> Maybe OperatorId -> ProtoServerWithAuth p -> ServerCfg p
 presetServerCfg enabled roles operator server =
   ServerCfg {server, operator, preset = True, tested = Nothing, enabled, roles}
 
 data UserServers p = UserServers
-  { storageSrvs :: NonEmpty (OperatorId, ProtoServerWithAuth p),
-    proxySrvs :: NonEmpty (OperatorId, ProtoServerWithAuth p),
+  { storageSrvs :: NonEmpty (Maybe OperatorId, ProtoServerWithAuth p),
+    proxySrvs :: NonEmpty (Maybe OperatorId, ProtoServerWithAuth p),
     knownHosts :: Set TransportHost
   }
 
