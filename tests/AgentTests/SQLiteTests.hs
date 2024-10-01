@@ -141,6 +141,7 @@ storeTests = do
         it "should getNextDeletedSndChunkReplica" testGetNextDeletedSndChunkReplica
         it "should markNtfSubActionNtfFailed_" testMarkNtfSubActionNtfFailed
         it "should markNtfSubActionSMPFailed_" testMarkNtfSubActionSMPFailed
+        it "should markNtfTokenToDeleteFailed_" testMarkNtfTokenToDeleteFailed
   describe "open/close store" $ do
     it "should close and re-open" testCloseReopenStore
     it "should close and re-open encrypted store" testCloseReopenEncryptedStore
@@ -838,3 +839,8 @@ testMarkNtfSubActionSMPFailed :: SQLiteStore -> Expectation
 testMarkNtfSubActionSMPFailed st = do
   withTransaction st $ \db -> do
     markNtfSubActionSMPFailed_ db "abc"
+
+testMarkNtfTokenToDeleteFailed :: SQLiteStore -> Expectation
+testMarkNtfTokenToDeleteFailed st = do
+  withTransaction st $ \db -> do
+    markNtfTokenToDeleteFailed_ db 1

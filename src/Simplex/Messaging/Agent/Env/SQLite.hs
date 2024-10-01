@@ -259,7 +259,8 @@ data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
     ntfSubQ :: TBQueue (NtfSupervisorCommand, NonEmpty ConnId),
     ntfWorkers :: TMap NtfServer Worker,
-    ntfSMPWorkers :: TMap SMPServer Worker
+    ntfSMPWorkers :: TMap SMPServer Worker,
+    ntfTknDelWorkers :: TMap NtfServer Worker
   }
 
 data NtfSupervisorCommand = NSCCreate | NSCSmpDelete | NSCDeleteSub
@@ -271,7 +272,8 @@ newNtfSubSupervisor qSize = do
   ntfSubQ <- newTBQueueIO qSize
   ntfWorkers <- TM.emptyIO
   ntfSMPWorkers <- TM.emptyIO
-  pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
+  ntfTknDelWorkers <- TM.emptyIO
+  pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers, ntfTknDelWorkers}
 
 data XFTPAgent = XFTPAgent
   { -- if set, XFTP file paths will be considered as relative to this directory

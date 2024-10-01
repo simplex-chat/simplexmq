@@ -1721,8 +1721,8 @@ agentNtfReplaceToken :: AgentClient -> NtfTokenId -> NtfToken -> DeviceToken -> 
 agentNtfReplaceToken c tknId NtfToken {ntfServer, ntfPrivKey} token =
   withNtfClient c ntfServer tknId "TRPL" $ \ntf -> ntfReplaceToken ntf ntfPrivKey tknId token
 
-agentNtfDeleteToken :: AgentClient -> NtfTokenId -> NtfToken -> AM ()
-agentNtfDeleteToken c tknId NtfToken {ntfServer, ntfPrivKey} =
+agentNtfDeleteToken :: AgentClient -> NtfServer -> C.APrivateAuthKey -> NtfTokenId -> AM ()
+agentNtfDeleteToken c ntfServer ntfPrivKey tknId =
   withNtfClient c ntfServer tknId "TDEL" $ \ntf -> ntfDeleteToken ntf ntfPrivKey tknId
 
 agentNtfEnableCron :: AgentClient -> NtfTokenId -> NtfToken -> Word16 -> AM ()

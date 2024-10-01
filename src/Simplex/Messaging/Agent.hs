@@ -1880,7 +1880,7 @@ checkUserServers name srvs =
 registerNtfToken' :: AgentClient -> DeviceToken -> NotificationsMode -> AM NtfTknStatus
 registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
   withStore' c getSavedNtfToken >>= \case
-    Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId, ntfTknStatus, ntfTknAction, ntfMode = savedNtfMode} -> do
+    Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfServer, ntfTokenId, ntfPrivKey, ntfTknStatus, ntfTknAction, ntfMode = savedNtfMode} -> do
       status <- case (ntfTokenId, ntfTknAction) of
         (Nothing, Just NTARegister) -> do
           when (savedDeviceToken /= suppliedDeviceToken) $ withStore' c $ \db -> updateDeviceToken db tkn suppliedDeviceToken
@@ -1907,7 +1907,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
               pure ntfTknStatus
           | otherwise -> replaceToken tknId
         (Just tknId, Just NTADelete) -> do
-          agentNtfDeleteToken c tknId tkn
+          agentNtfDeleteToken c ntfServer ntfPrivKey tknId
           withStore' c (`removeNtfToken` tkn)
           ns <- asks ntfSupervisor
           atomically $ nsRemoveNtfToken ns
@@ -2021,13 +2021,17 @@ toggleConnectionNtfs' c connId enable = do
           atomically $ sendNtfSubCommand ns (cmd, [connId])
 
 deleteToken_ :: AgentClient -> NtfToken -> AM ()
-deleteToken_ c@AgentClient {subQ} tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
+deleteToken_ c@AgentClient {subQ} tkn@NtfToken {ntfServer, ntfTokenId, ntfPrivKey, ntfTknStatus} = do
   ns <- asks ntfSupervisor
   forM_ ntfTokenId $ \tknId -> do
     let ntfTknAction = Just NTADelete
     withStore' c $ \db -> updateNtfToken db tkn ntfTknStatus ntfTknAction
     atomically $ nsUpdateToken ns tkn {ntfTknStatus, ntfTknAction}
-    agentNtfDeleteToken c tknId tkn `catchAgentError` \e -> notify (ERR e) -- TODO cleanup task
+    agentNtfDeleteToken c ntfServer ntfPrivKey tknId `catchAgentError` \case
+      e | temporaryOrHostError e -> do
+        withStore' c $ \db -> addNtfTokenToDelete db ntfServer ntfPrivKey tknId
+        notify (ERR e)
+      e -> notify (ERR e)
   withStore' c $ \db -> removeNtfToken db tkn
   atomically $ nsRemoveNtfToken ns
   where
@@ -2164,6 +2168,7 @@ cleanupManager c@AgentClient {subQ} = do
     run ERR $ withStore' c (`deleteRcvMsgHashesExpired` ttl)
     run ERR $ withStore' c (`deleteSndMsgsExpired` ttl)
     run ERR $ withStore' c (`deleteRatchetKeyHashesExpired` ttl)
+    run ERR $ withStore' c (`deleteExpiredNtfTokensToDelete` ttl)
     run RFERR deleteRcvFilesExpired
     run RFERR deleteRcvFilesDeleted
     run RFERR deleteRcvFilesTmpPaths
