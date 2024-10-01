@@ -50,6 +50,7 @@ data NtfStoreLogRecord
   | CreateSubscription NtfSubRec
   | SubscriptionStatus NtfSubscriptionId NtfSubStatus
   | DeleteSubscription NtfSubscriptionId
+  deriving (Show)
 
 data NtfTknRec = NtfTknRec
   { ntfTknId :: NtfTokenId,
@@ -61,6 +62,7 @@ data NtfTknRec = NtfTknRec
     tknRegCode :: NtfRegCode,
     tknCronInterval :: Word16
   }
+  deriving (Show)
 
 mkTknData :: NtfTknRec -> STM NtfTknData
 mkTknData NtfTknRec {ntfTknId, token, tknStatus = status, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval = cronInt} = do
@@ -81,6 +83,7 @@ data NtfSubRec = NtfSubRec
     tokenId :: NtfTokenId,
     subStatus :: NtfSubStatus
   }
+  deriving (Show)
 
 mkSubData :: NtfSubRec -> STM NtfSubData
 mkSubData NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus = status} = do

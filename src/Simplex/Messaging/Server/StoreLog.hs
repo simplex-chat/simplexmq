@@ -55,6 +55,7 @@ data StoreLogRecord
   | DeleteQueue QueueId
   | DeleteNotifier QueueId
   | UpdateTime QueueId RoundedSystemTime
+  deriving (Show)
 
 data SLRTag
   = CreateQueue_
@@ -74,10 +75,11 @@ instance StrEncoding QueueRec where
         "sid=" <> strEncode senderId,
         "sk=" <> strEncode senderKey
       ]
-      <> if sndSecure then " sndSecure=" <> strEncode sndSecure else ""
+      <> sndSecureStr
       <> maybe "" notifierStr notifier
       <> maybe "" updatedAtStr updatedAt
     where
+      sndSecureStr = if sndSecure then " sndSecure=" <> strEncode sndSecure else ""
       notifierStr ntfCreds = " notifier=" <> strEncode ntfCreds
       updatedAtStr t = " updated_at=" <> strEncode t
 
