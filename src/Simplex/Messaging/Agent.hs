@@ -1906,12 +1906,8 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
               -- possible improvement: get updated token status from the server, or maybe TCRON could return the current status
               pure ntfTknStatus
           | otherwise -> replaceToken tknId
-        (Just tknId, Just NTADelete) -> do
-          agentNtfDeleteToken c tknId tkn
-          withStore' c (`removeNtfToken` tkn)
-          ns <- asks ntfSupervisor
-          atomically $ nsRemoveNtfToken ns
-          pure NTExpired
+        -- deprecated
+        (Just _tknId, Just NTADelete) -> deleteToken c tkn $> NTExpired
         _ -> pure ntfTknStatus
       withStore' c $ \db -> updateNtfMode db tkn suppliedNtfMode
       pure status
@@ -1985,7 +1981,7 @@ deleteNtfToken' c deviceToken =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken} -> do
       when (deviceToken /= savedDeviceToken) $ logWarn "deleteNtfToken: different token"
-      deleteToken_ c tkn
+      deleteToken c tkn
       deleteNtfSubs c NSCSmpDelete
     _ -> throwE $ CMD PROHIBITED "deleteNtfToken: no token"
 
@@ -2019,20 +2015,6 @@ toggleConnectionNtfs' c connId enable = do
           ns <- asks ntfSupervisor
           let cmd = if enable then NSCCreate else NSCSmpDelete
           atomically $ sendNtfSubCommand ns (cmd, [connId])
-
-deleteToken_ :: AgentClient -> NtfToken -> AM ()
-deleteToken_ c@AgentClient {subQ} tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
-  ns <- asks ntfSupervisor
-  forM_ ntfTokenId $ \tknId -> do
-    let ntfTknAction = Just NTADelete
-    withStore' c $ \db -> updateNtfToken db tkn ntfTknStatus ntfTknAction
-    atomically $ nsUpdateToken ns tkn {ntfTknStatus, ntfTknAction}
-    agentNtfDeleteToken c tknId tkn `catchAgentError` \e -> notify (ERR e) -- TODO cleanup task
-  withStore' c $ \db -> removeNtfToken db tkn
-  atomically $ nsRemoveNtfToken ns
-  where
-    notify :: forall e. AEntityI e => AEvent e -> AM ()
-    notify cmd = atomically $ writeTBQueue subQ ("", "", AEvt (sAEntity @e) cmd)
 
 withToken :: AgentClient -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> AM a -> AM NtfTknStatus
 withToken c tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = do
@@ -2164,6 +2146,7 @@ cleanupManager c@AgentClient {subQ} = do
     run ERR $ withStore' c (`deleteRcvMsgHashesExpired` ttl)
     run ERR $ withStore' c (`deleteSndMsgsExpired` ttl)
     run ERR $ withStore' c (`deleteRatchetKeyHashesExpired` ttl)
+    run ERR $ withStore' c (`deleteExpiredNtfTokensToDelete` ttl)
     run RFERR deleteRcvFilesExpired
     run RFERR deleteRcvFilesDeleted
     run RFERR deleteRcvFilesTmpPaths
