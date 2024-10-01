@@ -1880,7 +1880,7 @@ checkUserServers name srvs =
 registerNtfToken' :: AgentClient -> DeviceToken -> NotificationsMode -> AM NtfTknStatus
 registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
   withStore' c getSavedNtfToken >>= \case
-    Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfServer, ntfTokenId, ntfPrivKey, ntfTknStatus, ntfTknAction, ntfMode = savedNtfMode} -> do
+    Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId, ntfTknStatus, ntfTknAction, ntfMode = savedNtfMode} -> do
       status <- case (ntfTokenId, ntfTknAction) of
         (Nothing, Just NTARegister) -> do
           when (savedDeviceToken /= suppliedDeviceToken) $ withStore' c $ \db -> updateDeviceToken db tkn suppliedDeviceToken
@@ -1907,7 +1907,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
               pure ntfTknStatus
           | otherwise -> replaceToken tknId
         (Just tknId, Just NTADelete) -> do
-          agentNtfDeleteToken c ntfServer ntfPrivKey tknId
+          addTknToDelete c tkn tknId
           withStore' c (`removeNtfToken` tkn)
           ns <- asks ntfSupervisor
           atomically $ nsRemoveNtfToken ns
@@ -2021,22 +2021,15 @@ toggleConnectionNtfs' c connId enable = do
           atomically $ sendNtfSubCommand ns (cmd, [connId])
 
 deleteToken_ :: AgentClient -> NtfToken -> AM ()
-deleteToken_ c@AgentClient {subQ} tkn@NtfToken {ntfServer, ntfTokenId, ntfPrivKey, ntfTknStatus} = do
+deleteToken_ c tkn@NtfToken {ntfTokenId, ntfTknStatus} = do
   ns <- asks ntfSupervisor
   forM_ ntfTokenId $ \tknId -> do
     let ntfTknAction = Just NTADelete
     withStore' c $ \db -> updateNtfToken db tkn ntfTknStatus ntfTknAction
     atomically $ nsUpdateToken ns tkn {ntfTknStatus, ntfTknAction}
-    agentNtfDeleteToken c ntfServer ntfPrivKey tknId `catchAgentError` \case
-      e | temporaryOrHostError e -> do
-        withStore' c $ \db -> addNtfTokenToDelete db ntfServer ntfPrivKey tknId
-        void $ lift $ getNtfTknDelWorker True c ntfServer
-      e -> notify (ERR e)
+    addTknToDelete c tkn tknId
   withStore' c $ \db -> removeNtfToken db tkn
   atomically $ nsRemoveNtfToken ns
-  where
-    notify :: forall e. AEntityI e => AEvent e -> AM ()
-    notify cmd = atomically $ writeTBQueue subQ ("", "", AEvt (sAEntity @e) cmd)
 
 withToken :: AgentClient -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> AM a -> AM NtfTknStatus
 withToken c tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = do

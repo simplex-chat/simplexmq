@@ -15,7 +15,7 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
     nsRemoveNtfToken,
     sendNtfSubCommand,
     instantNotifications,
-    getNtfTknDelWorker,
+    addTknToDelete,
     closeNtfSupervisor,
     getNtfServer,
   )
@@ -534,6 +534,11 @@ instantNotifications :: Maybe NtfToken -> Bool
 instantNotifications = \case
   Just NtfToken {ntfTknStatus = NTActive, ntfMode = NMInstant} -> True
   _ -> False
+
+addTknToDelete :: AgentClient -> NtfToken -> NtfTokenId -> AM ()
+addTknToDelete c NtfToken {ntfServer, ntfPrivKey} tknId = do
+  withStore' c $ \db -> addNtfTokenToDelete db ntfServer ntfPrivKey tknId
+  void $ lift $ getNtfTknDelWorker True c ntfServer
 
 runNtfTknDelWorker :: AgentClient -> NtfServer -> Worker -> AM ()
 runNtfTknDelWorker c srv Worker {doWork} =
