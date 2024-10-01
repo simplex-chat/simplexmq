@@ -23,6 +23,7 @@ module Simplex.Messaging.Agent.Env.SQLite
     NetworkConfig (..),
     presetServerCfg,
     enabledServerCfg,
+    allRoles,
     mkUserServers,
     serverHosts,
     defaultAgentConfig,
@@ -114,9 +115,12 @@ data ServerRoles = ServerRoles
   }
   deriving (Show)
 
+allRoles :: ServerRoles
+allRoles = ServerRoles True True
+
 enabledServerCfg :: ProtoServerWithAuth p -> ServerCfg p
 enabledServerCfg server =
-  ServerCfg {server, operator = Nothing, preset = False, tested = Nothing, enabled = True, roles = ServerRoles True True}
+  ServerCfg {server, operator = Nothing, preset = False, tested = Nothing, enabled = True, roles = allRoles}
 
 presetServerCfg :: Bool -> ServerRoles -> Maybe OperatorId -> ProtoServerWithAuth p -> ServerCfg p
 presetServerCfg enabled roles operator server =
