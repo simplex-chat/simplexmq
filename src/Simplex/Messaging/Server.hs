@@ -248,12 +248,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
           logDebug $ "NOTIFICATIONS: checking client " <> tshow clientId
           whenM currentClient $
             readTVarIO ntfSubscriptions >>= \subs -> do
-              logDebug $ "NOTIFICATIONS: client " <> tshow clientId <> " is current with " <> tshow (M.size subs)
               ts_ <- foldM addNtfs [] (M.keys subs)
-              let len = length ts_
-              logDebug $ "NOTIFICATIONS: will deliver " <> tshow len <> " ntfs"
-              mapM_ (atomically . writeTBQueue sndQ) $ L.nonEmpty ts_
-              logDebug $ "NOTIFICATIONS: delivered " <> tshow len <> " ntfs"
+              logDebug $ "NOTIFICATIONS: client " <> tshow clientId <> " is current with " <> tshow (M.size subs) <> " subs and " <> tshow (length ts_)
+              forM_ (L.nonEmpty ts_) $ \ts -> do
+                atomically $ writeTBQueue sndQ ts
+                logDebug $ "NOTIFICATIONS: delivered " <> tshow (L.length ts) <> " ntfs"
               updateNtfStats $ length ts_
           where
             currentClient = (&&) <$> readTVarIO connected <*> (IM.member clientId <$> readTVarIO ntfSubClients)
@@ -603,6 +602,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                 hPutStrLn h $ "notifiers: " <> show notifierCount
                 putStat "msgCount" msgCount
                 putStat "ntfCount" ntfCount
+                readTVarIO role >>= \case
+                  CPRAdmin -> do
+                    NtfStore ns <- unliftIO u $ asks ntfStore
+                    ntfCount2 <- liftIO . foldM (\(!n) q -> (n +) . length <$> readTVarIO q) 0 =<< readTVarIO ns
+                    hPutStrLn h $ "ntfCount 2: " <> show ntfCount2
+                  _ -> pure ()
                 putProxyStat "pRelays" pRelays
                 putProxyStat "pRelaysOwn" pRelaysOwn
                 putProxyStat "pMsgFwds" pMsgFwds
