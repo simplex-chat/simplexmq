@@ -673,24 +673,24 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                     hPutStrLn h $ "Ntf subscriptions (via clients): " <> show ntfSubCnt
                     hPutStrLn h $ "Ntf subscribed clients (via clients): " <> show ntfClCnt
                     hPutStrLn h $ "Ntf subscribed clients queues (via clients, rcvQ, sndQ, msgQ): " <> show ntfClQs
-                  putActiveClientsInfo "SMP" subscribers
-                  putActiveClientsInfo "Ntf" notifiers
-                  putSubscribedClients "SMP" subClients
-                  putSubscribedClients "Ntf" ntfSubClients
+                  putActiveClientsInfo "SMP" subscribers False
+                  putActiveClientsInfo "Ntf" notifiers True
+                  putSubscribedClients "SMP" subClients False
+                  putSubscribedClients "Ntf" ntfSubClients True
                   where
-                    putActiveClientsInfo :: String -> TMap QueueId (TVar Client) -> IO ()
-                    putActiveClientsInfo protoName clients = do
+                    putActiveClientsInfo :: String -> TMap QueueId (TVar Client) -> Bool -> IO ()
+                    putActiveClientsInfo protoName clients showIds = do
                       activeSubs <- readTVarIO clients
                       hPutStrLn h $ protoName <> " subscriptions: " <> show (M.size activeSubs)
-                      clCnt <- IS.size <$> countSubClients activeSubs
-                      hPutStrLn h $ protoName <> " subscribed clients: " <> show clCnt
+                      clnts <- countSubClients activeSubs
+                      hPutStrLn h $ protoName <> " subscribed clients: " <> show (IS.size clnts) <> (if showIds then " " <> show (IS.toList clnts) else "")
                       where
                         countSubClients :: M.Map QueueId (TVar Client) -> IO IS.IntSet
                         countSubClients = foldM (\ !s c -> (`IS.insert` s) . clientId <$> readTVarIO c) IS.empty
-                    putSubscribedClients :: String -> TVar (IM.IntMap Client) -> IO ()
-                    putSubscribedClients protoName subClnts = do
+                    putSubscribedClients :: String -> TVar (IM.IntMap Client) -> Bool -> IO ()
+                    putSubscribedClients protoName subClnts showIds = do
                       clnts <- readTVarIO subClnts
-                      hPutStrLn h $ protoName <> " subscribed clients count:" <> show (IM.size clnts)
+                      hPutStrLn h $ protoName <> " subscribed clients count 2: " <> show (IM.size clnts) <> (if showIds then " " <> show (IM.keys clnts) else "")
                     countClientSubs :: (Client -> TMap QueueId a) -> Maybe (M.Map QueueId a -> IO (Int, Int, Int, Int)) -> IM.IntMap (Maybe Client) -> IO (Int, (Int, Int, Int, Int), Int, (Natural, Natural, Natural))
                     countClientSubs subSel countSubs_ = foldM addSubs (0, (0, 0, 0, 0), 0, (0, 0, 0))
                       where
