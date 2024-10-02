@@ -385,7 +385,7 @@ getConnectionMessage c = withAgentEnv c . getConnectionMessage' c
 {-# INLINE getConnectionMessage #-}
 
 -- | Get connection message for received notification
-getNotificationMessage :: AgentClient -> C.CbNonce -> ByteString -> AE (NotificationInfo, Maybe SMPMsgMeta)
+getNotificationMessage :: AgentClient -> C.CbNonce -> ByteString -> AE (NonEmpty (NotificationInfo, Maybe SMPMsgMeta))
 getNotificationMessage c = withAgentEnv c .: getNotificationMessage' c
 {-# INLINE getNotificationMessage #-}
 
@@ -1060,18 +1060,23 @@ getConnectionMessage' c connId = do
     SndConnection _ _ -> throwE $ CONN SIMPLEX
     NewConnection _ -> throwE $ CMD PROHIBITED "getConnectionMessage: NewConnection"
 
-getNotificationMessage' :: AgentClient -> C.CbNonce -> ByteString -> AM (NotificationInfo, Maybe SMPMsgMeta)
+getNotificationMessage' :: AgentClient -> C.CbNonce -> ByteString -> AM (NonEmpty (NotificationInfo, Maybe SMPMsgMeta))
 getNotificationMessage' c nonce encNtfInfo = do
   withStore' c getActiveNtfToken >>= \case
     Just NtfToken {ntfDhSecret = Just dhSecret} -> do
       ntfData <- agentCbDecrypt dhSecret nonce encNtfInfo
       pnMsgs <- liftEither (parse pnMessagesP (INTERNAL "error parsing PNMessageData") ntfData)
-      let PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = L.last pnMsgs
+      -- [ntf get many]
+      -- - catch error on getMsg
+      mapM getMsg pnMsgs
+    _ -> throwE $ CMD PROHIBITED "getNotificationMessage"
+  where
+    getMsg :: PNMessageData -> AM (NotificationInfo, Maybe SMPMsgMeta)
+    getMsg PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = do
       (ntfConnId, rcvNtfDhSecret) <- withStore c (`getNtfRcvQueue` smpQueue)
       ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
       msgMeta <- getConnectionMessage' c ntfConnId
       pure (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}, msgMeta)
-    _ -> throwE $ CMD PROHIBITED "getNotificationMessage"
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: AgentClient -> ConnId -> PQEncryption -> MsgFlags -> MsgBody -> AM (AgentMsgId, PQEncryption)
