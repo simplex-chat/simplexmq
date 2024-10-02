@@ -38,7 +38,7 @@ import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
 import Simplex.Messaging.Server (AttachHTTP, runSMPServer)
 import Simplex.Messaging.Server.CLI
-import Simplex.Messaging.Server.Env.STM (ServerConfig (..), defMsgExpirationDays, defaultInactiveClientExpiration, defaultMessageExpiration, defaultProxyClientConcurrency)
+import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Transport (batchCmdsSMPVersion, sendingProxySMPVersion, simplexMQVersion, supportedServerSMPRelayVRange)
@@ -154,7 +154,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 <> "# Undelivered messages are optionally saved and restored when the server restarts,\n\
                    \# they are preserved in the .bak file until the next restart.\n"
                 <> ("restore_messages: " <> onOff enableStoreLog <> "\n")
-                <> ("expire_messages_days: " <> tshow defMsgExpirationDays <> "\n\n")
+                <> ("expire_messages_days: " <> tshow defMsgExpirationDays <> "\n")
+                <> ("expire_ntfs_hours: " <> tshow defNtfExpirationHours <> "\n\n")
                 <> "# Log daily server statistics to CSV file\n"
                 <> ("log_stats: " <> onOff logStats <> "\n\n")
                 <> "[AUTH]\n\
@@ -268,6 +269,11 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
+        restoreMessagesFile path = case iniOnOff "STORE_LOG" "restore_messages" ini of
+          Just True -> Just path
+          Just False -> Nothing
+          -- if the setting is not set, it is enabled when store log is enabled
+          _ -> enableStoreLog $> path
         transports = iniTransports ini
         sharedHTTP = any (\(_, _, addHTTP) -> addHTTP) transports
         serverConfig =
@@ -286,13 +292,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   },
               httpCredentials = (\WebHttpsParams {key, cert} -> ServerCredentials {caCertificateFile = Nothing, privateKeyFile = key, certificateFile = cert}) <$> webHttpsParams',
               storeLogFile = enableStoreLog $> storeLogFilePath,
-              storeMsgsFile =
-                let messagesPath = combine logPath "smp-server-messages.log"
-                 in case iniOnOff "STORE_LOG" "restore_messages" ini of
-                      Just True -> Just messagesPath
-                      Just False -> Nothing
-                      -- if the setting is not set, it is enabled when store log is enabled
-                      _ -> enableStoreLog $> messagesPath,
+              storeMsgsFile = restoreMessagesFile $ combine logPath "smp-server-messages.log",
+              storeNtfsFile = restoreMessagesFile $ combine logPath "smp-server-ntfs.log",
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
               newQueueBasicAuth = either error id <$!> strDecodeIni "AUTH" "create_password" ini,
@@ -303,6 +304,10 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   defaultMessageExpiration
                     { ttl = 86400 * readIniDefault defMsgExpirationDays "STORE_LOG" "expire_messages_days" ini
                     },
+              notificationExpiration =
+                defaultNtfExpiration
+                  { ttl = 3600 * readIniDefault defNtfExpirationHours "STORE_LOG" "expire_ntfs_hours" ini
+                  },
               inactiveClientExpiration =
                 settingIsOn "INACTIVE_CLIENTS" "disconnect" ini
                   $> ExpirationConfig
@@ -314,6 +319,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               serverStatsLogFile = combine logPath "smp-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log",
               pendingENDInterval = 15000000, -- 15 seconds
+              ntfDeliveryInterval = 3000000, -- 3 seconds
               smpServerVRange = supportedServerSMPRelayVRange,
               transportConfig =
                 defaultTransportServerConfig
