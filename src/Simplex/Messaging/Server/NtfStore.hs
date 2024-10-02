@@ -6,7 +6,8 @@
 module Simplex.Messaging.Server.NtfStore where
 
 import Control.Concurrent.STM
-import Control.Monad (foldM)
+import Control.Monad (foldM, when)
+import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (SystemTime (..))
@@ -16,7 +17,7 @@ import Simplex.Messaging.Protocol (EncNMsgMeta, MsgId, NotifierId)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 
-newtype NtfStore = NtfStore (TMap NotifierId (TVar [MsgNtf]))
+newtype NtfStore = NtfStore (TMap NotifierId (TVar (Maybe MsgNtf)))
 
 data MsgNtf = MsgNtf
   { ntfMsgId :: MsgId,
@@ -27,42 +28,48 @@ data MsgNtf = MsgNtf
 
 storeNtf :: NtfStore -> NotifierId -> MsgNtf -> IO ()
 storeNtf (NtfStore ns) nId ntf = do
-  TM.lookupIO nId ns >>= atomically . maybe newNtfs (`modifyTVar'` (ntf :))
-  -- TODO coalesce messages here once the client is updated to process multiple messages
-  -- for single notification.
+  ntfVar_ <- TM.lookupIO nId ns
+  prevNtf <- atomically $ case ntfVar_ of
+    Just v -> swapTVar v (Just ntf)
+    Nothing -> newNtfs
+  -- todo fix cyclic dependency
   -- when (isJust prevNtf) $ incStat $ msgNtfReplaced stats
+  pure ()
   where
-    newNtfs = TM.lookup nId ns >>= maybe (TM.insertM nId (newTVar [ntf]) ns) (`modifyTVar'` (ntf :))
+    newNtfs = do
+      TM.lookup nId ns >>= \case
+        Just v -> swapTVar v (Just ntf)
+        Nothing -> TM.insertM nId (newTVar (Just ntf)) ns $> Nothing
 
 deleteNtfs :: NtfStore -> NotifierId -> IO ()
 deleteNtfs (NtfStore ns) nId = atomically $ TM.delete nId ns
 
-flushNtfs :: NtfStore -> NotifierId -> IO [MsgNtf]
+flushNtfs :: NtfStore -> NotifierId -> IO (Maybe MsgNtf)
 flushNtfs (NtfStore ns) nId = do
-  TM.lookupIO nId ns >>= maybe (pure []) swapNtfs
+  TM.lookupIO nId ns >>= maybe (pure Nothing) swapNtfs
   where
     swapNtfs v =
       readTVarIO v >>= \case
-        [] -> pure []
+        Nothing -> pure Nothing
         -- if notifications available, atomically swap with empty array
-        _ -> atomically (swapTVar v [])
+        _ -> atomically (swapTVar v Nothing)
 
 deleteExpiredNtfs :: NtfStore -> Int64 -> IO Int
 deleteExpiredNtfs (NtfStore ns) old =
   foldM (\expired -> fmap (expired +) . expireQueue) 0 . M.keys =<< readTVarIO ns
   where
     expireQueue nId = TM.lookupIO nId ns >>= maybe (pure 0) expire
-    expire v = readTVarIO v >>= \case
-      [] -> pure 0
-      _ ->
-        atomically $ readTVar v >>= \case
-          [] -> pure 0
-          -- check the last message first, it is the earliest
-          ntfs | systemSeconds (ntfTs $ last $ ntfs) < old -> do
-            let !ntfs' = filter (\MsgNtf {ntfTs = ts} -> systemSeconds ts >= old) ntfs
-            writeTVar v ntfs'
-            pure $! length ntfs - length ntfs'
-          _ -> pure 0
+    expire v =
+      readTVarIO v >>= \case
+        Nothing -> pure 0
+        _ ->
+          atomically $
+            readTVar v >>= \case
+              Nothing -> pure 0
+              Just ntf | systemSeconds (ntfTs ntf) < old -> do
+                writeTVar v Nothing
+                pure 1
+              _ -> pure 0
 
 data NtfLogRecord = NLRv1 NotifierId MsgNtf
 
