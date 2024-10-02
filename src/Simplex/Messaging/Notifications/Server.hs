@@ -414,6 +414,7 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
               if not (ntfShouldSubscribe status)
                 then do
                   t_ <- atomically $ getActiveNtfToken st tknId
+                  -- todo should update subscription token
                   verifyToken' t_ $ verifiedSubCmd s c
                 else pure $ maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
     NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
