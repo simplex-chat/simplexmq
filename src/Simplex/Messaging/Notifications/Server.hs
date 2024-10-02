@@ -400,23 +400,22 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
     NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId smpQueue _)) -> do
       s_ <- atomically $ findNtfSubscription st smpQueue
       case s_ of
-        Nothing -> do
-          t_ <- atomically $ getActiveNtfToken st tknId
-          verifyToken' t_ $ VRVerified (NtfReqNew corrId (ANE SSubscription sub))
+        Nothing -> newSub
         Just s@NtfSubData {subStatus, tokenId = subTknId}
           | subTknId == tknId -> do
               t_ <- atomically $ getActiveNtfToken st subTknId
               verifyToken' t_ $ verifiedSubCmd s c
           | otherwise -> do
               status <- readTVarIO subStatus
-              -- if client didn't receive the response with subscription id from server,
-              -- and then changed token, server allows repeat SNEW if subscription is in one of failed states
+              -- if client didn't receive the response with subscription id from server, and then changed token,
+              -- server allows repeat SNEW if subscription is in one of failed states
               if not (ntfShouldSubscribe status)
-                then do
-                  t_ <- atomically $ getActiveNtfToken st tknId
-                  -- todo should update subscription token
-                  verifyToken' t_ $ verifiedSubCmd s c
+                then newSub
                 else pure $ maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
+      where
+        newSub = do
+          t_ <- atomically $ getActiveNtfToken st tknId
+          verifyToken' t_ $ VRVerified (NtfReqNew corrId (ANE SSubscription sub))
     NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
     NtfCmd SSubscription c -> do
       s_ <- atomically $ getNtfSubscription st entId
