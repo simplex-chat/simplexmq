@@ -241,13 +241,20 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       stats <- asks serverStats
       liftIO $ forever $ do
         threadDelay ntfInt
+        logDebug "NOTIFICATIONS: delivering..."
         readTVarIO ntfSubClients >>= mapM_ (deliverNtfs ns stats)
       where
-        deliverNtfs ns stats Client {clientId, ntfSubscriptions, sndQ, connected} = whenM currentClient $
-          readTVarIO ntfSubscriptions >>= \subs -> do
-            ts_ <- foldM addNtfs [] (M.keys subs)
-            mapM_ (atomically . writeTBQueue sndQ) $ L.nonEmpty ts_
-            updateNtfStats $ length ts_
+        deliverNtfs ns stats Client {clientId, ntfSubscriptions, sndQ, connected} = do
+          logDebug $ "NOTIFICATIONS: checking client " <> tshow clientId
+          whenM currentClient $
+            readTVarIO ntfSubscriptions >>= \subs -> do
+              logDebug $ "NOTIFICATIONS: client " <> tshow clientId <> " is current with " <> tshow (M.size subs)
+              ts_ <- foldM addNtfs [] (M.keys subs)
+              let len = length ts_
+              logDebug $ "NOTIFICATIONS: will deliver " <> tshow len <> " ntfs"
+              mapM_ (atomically . writeTBQueue sndQ) $ L.nonEmpty ts_
+              logDebug $ "NOTIFICATIONS: delivered " <> tshow len <> " ntfs"
+              updateNtfStats $ length ts_
           where
             currentClient = (&&) <$> readTVarIO connected <*> (IM.member clientId <$> readTVarIO ntfSubClients)
             addNtfs :: [Transmission BrokerMsg] -> NotifierId -> IO [Transmission BrokerMsg]
@@ -256,6 +263,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                 <$> flushNtfs ns nId
             nmsg nId MsgNtf {ntfNonce, ntfEncMeta} = (CorrId "", nId, NMSG ntfNonce ntfEncMeta)
             updateNtfStats len = when (len > 0) $ liftIO $ do
+              atomicModifyIORef'_ (ntfCount stats) (subtract len)
               atomicModifyIORef'_ (msgNtfs stats) (+ len)
               atomicModifyIORef'_ (msgNtfsB stats) (+ (len `div` 80 + 1)) -- up to 80 NMSG in the batch
 
@@ -334,7 +342,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         threadDelay' interval
         old <- expireBeforeEpoch expCfg
         expired <- deleteExpiredNtfs ns old
-        when (expired > 0) $ atomicModifyIORef'_ (msgNtfExpired stats) (+ expired)
+        when (expired > 0) $ do
+          atomicModifyIORef'_ (msgNtfExpired stats) (+ expired)
+          atomicModifyIORef'_ (ntfCount stats) (subtract expired)
 
     serverStatsThread_ :: ServerConfig -> [M ()]
     serverStatsThread_ ServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -347,7 +357,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv}
+      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv}
         <- asks serverStats
       QueueStore {queues, notifiers} <- asks queueStore
       let interval = 1000000 * logInterval
@@ -404,8 +414,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
           pMsgFwdsRecv' <- atomicSwapIORef pMsgFwdsRecv 0
           qCount' <- readIORef qCount
           qCount'' <- M.size <$> readTVarIO queues
-          ntfCount' <- M.size <$> readTVarIO notifiers
+          notifierCount' <- M.size <$> readTVarIO notifiers
           msgCount' <- readIORef msgCount
+          ntfCount' <- readIORef ntfCount
           hPutStrLn h $
             intercalate
               ","
@@ -462,7 +473,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                        show ntfSub',
                        show ntfSubAuth',
                        show ntfSubDuplicate',
-                       show ntfCount',
+                       show notifierCount',
                        show qDeletedAllB',
                        show qSubAllB',
                        show qSubEnd',
@@ -470,7 +481,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                        show ntfDeletedB',
                        show ntfSubB',
                        show msgNtfsB',
-                       show msgNtfExpired'
+                       show msgNtfExpired',
+                       show ntfCount'
                      ]
               )
         liftIO $ threadDelay' interval
@@ -547,6 +559,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                   hPutStrLn h . B.unpack $ B.intercalate "," [bshow cid, encode sessionId, connected', strEncode createdAt, rcvActiveAt', sndActiveAt', bshow age, subscriptions']
               CPStats -> withUserRole $ do
                 ss <- unliftIO u $ asks serverStats
+                QueueStore {queues, notifiers} <- unliftIO u $ asks queueStore
                 let getStat :: (ServerStats -> IORef a) -> IO a
                     getStat var = readIORef (var ss)
                     putStat :: Show a => String -> (ServerStats -> IORef a) -> IO ()
@@ -584,7 +597,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                 putStat "msgNtfsB" msgNtfsB
                 putStat "msgNtfExpired" msgNtfExpired
                 putStat "qCount" qCount
+                qCount2 <- M.size <$> readTVarIO queues
+                hPutStrLn h $ "qCount 2: " <> show qCount2
+                notifierCount <- M.size <$> readTVarIO notifiers
+                hPutStrLn h $ "notifiers: " <> show notifierCount
                 putStat "msgCount" msgCount
+                putStat "ntfCount" ntfCount
                 putProxyStat "pRelays" pRelays
                 putProxyStat "pRelaysOwn" pRelaysOwn
                 putProxyStat "pMsgFwds" pMsgFwds
@@ -1184,9 +1202,11 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
           liftIO (deleteQueueNotifier st entId) >>= \case
             Right (Just nId) -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
-              asks ntfStore >>= liftIO . (`deleteNtfs` nId)
+              stats <- asks serverStats
+              deleted <- asks ntfStore >>= liftIO . (`deleteNtfs` nId)
+              when (deleted > 0) $ liftIO $ atomicModifyIORef'_ (ntfCount stats) (subtract deleted)
               atomically $ writeTQueue ntfSubscribedQ (nId, clientId, False)
-              incStat . ntfDeleted =<< asks serverStats
+              incStat $ ntfDeleted stats
               pure ok
             Right Nothing -> pure ok
             Left e -> pure $ err e
@@ -1459,6 +1479,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               ns <- asks ntfStore
               ntf <- mkMessageNotification msgId msgTs rcvNtfDhSecret
               liftIO $ storeNtf ns nId ntf
+              incStat . ntfCount =<< asks serverStats
 
             mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> M MsgNtf
             mkMessageNotification msgId msgTs rcvNtfDhSecret = do
@@ -1569,7 +1590,9 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               forM_ (notifierId <$> notifier q) $ \nId -> do
                 -- queue is deleted by a different client from the one subscribed to notifications,
                 -- so we don't need to remove subscription from the current client.
-                asks ntfStore >>= liftIO . (`deleteNtfs` nId)
+                stats <- asks serverStats
+                deleted <- asks ntfStore >>= liftIO . (`deleteNtfs` nId)
+                when (deleted > 0) $ liftIO $ atomicModifyIORef'_ (ntfCount stats) (subtract deleted)
                 atomically $ writeTQueue ntfSubscribedQ (nId, clientId, False)
               updateDeletedStats q
               pure ok
@@ -1760,7 +1783,9 @@ restoreServerStats expiredMsgs expiredNtfs = asks (serverStatsBackupFile . confi
           s <- asks serverStats
           _qCount <- fmap M.size . readTVarIO . queues =<< asks queueStore
           _msgCount <- liftIO . foldM (\(!n) q -> (n +) <$> getQueueSize q) 0 =<< readTVarIO =<< asks msgStore
-          liftIO $ setServerStats s d {_qCount, _msgCount, _msgExpired = _msgExpired d + expiredMsgs, _msgNtfExpired = _msgNtfExpired d + expiredNtfs}
+          NtfStore ns <- asks ntfStore
+          _ntfCount <- liftIO . foldM (\(!n) q -> (n +) . length <$> readTVarIO q) 0 =<< readTVarIO ns
+          liftIO $ setServerStats s d {_qCount, _msgCount, _ntfCount, _msgExpired = _msgExpired d + expiredMsgs, _msgNtfExpired = _msgNtfExpired d + expiredNtfs}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
           when (_qCount /= statsQCount) $ logWarn $ "Queue count differs: stats: " <> tshow statsQCount <> ", store: " <> tshow _qCount

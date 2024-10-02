@@ -34,8 +34,8 @@ storeNtf (NtfStore ns) nId ntf = do
   where
     newNtfs = TM.lookup nId ns >>= maybe (TM.insertM nId (newTVar [ntf]) ns) (`modifyTVar'` (ntf :))
 
-deleteNtfs :: NtfStore -> NotifierId -> IO ()
-deleteNtfs (NtfStore ns) nId = atomically $ TM.delete nId ns
+deleteNtfs :: NtfStore -> NotifierId -> IO Int
+deleteNtfs (NtfStore ns) nId = atomically (TM.lookupDelete nId ns) >>= maybe (pure 0) (fmap length . readTVarIO)
 
 flushNtfs :: NtfStore -> NotifierId -> IO [MsgNtf]
 flushNtfs (NtfStore ns) nId = do
