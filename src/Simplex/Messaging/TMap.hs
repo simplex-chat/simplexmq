@@ -9,7 +9,6 @@ module Simplex.Messaging.TMap
     member,
     memberIO,
     insert,
-    insertM,
     delete,
     lookupInsert,
     lookupDelete,
@@ -62,10 +61,6 @@ memberIO k m = M.member k <$> readTVarIO m
 insert :: Ord k => k -> a -> TMap k a -> STM ()
 insert k v m = modifyTVar' m $ M.insert k v
 {-# INLINE insert #-}
-
-insertM :: Ord k => k -> STM a -> TMap k a -> STM ()
-insertM k f m = modifyTVar' m . M.insert k =<< f
-{-# INLINE insertM #-}
 
 delete :: Ord k => k -> TMap k a -> STM ()
 delete k m = modifyTVar' m $ M.delete k

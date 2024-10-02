@@ -67,10 +67,8 @@ data ServerStats = ServerStats
     msgRecvNtf :: IORef Int, -- received messages with NTF flag
     activeQueuesNtf :: PeriodStats,
     msgNtfs :: IORef Int, -- messages notications delivered to NTF server (<= msgSentNtf)
-    msgNtfsB :: IORef Int, -- messages notication batches delivered to NTF server
     msgNtfNoSub :: IORef Int, -- no subscriber to notifications (e.g., NTF server not connected)
     msgNtfLost :: IORef Int, -- notification is lost because NTF delivery queue is full
-    msgNtfExpired :: IORef Int, -- expired
     pRelays :: ProxyStats,
     pRelaysOwn :: ProxyStats,
     pMsgFwds :: ProxyStats,
@@ -119,10 +117,8 @@ data ServerStatsData = ServerStatsData
     _msgRecvNtf :: Int,
     _activeQueuesNtf :: PeriodStatsData,
     _msgNtfs :: Int,
-    _msgNtfsB :: Int,
     _msgNtfNoSub :: Int,
     _msgNtfLost :: Int,
-    _msgNtfExpired :: Int,
     _pRelays :: ProxyStatsData,
     _pRelaysOwn :: ProxyStatsData,
     _pMsgFwds :: ProxyStatsData,
@@ -173,10 +169,8 @@ newServerStats ts = do
   msgRecvNtf <- newIORef 0
   activeQueuesNtf <- newPeriodStats
   msgNtfs <- newIORef 0
-  msgNtfsB <- newIORef 0
   msgNtfNoSub <- newIORef 0
   msgNtfLost <- newIORef 0
-  msgNtfExpired <- newIORef 0
   pRelays <- newProxyStats
   pRelaysOwn <- newProxyStats
   pMsgFwds <- newProxyStats
@@ -224,10 +218,8 @@ newServerStats ts = do
         msgRecvNtf,
         activeQueuesNtf,
         msgNtfs,
-        msgNtfsB,
         msgNtfNoSub,
         msgNtfLost,
-        msgNtfExpired,
         pRelays,
         pRelaysOwn,
         pMsgFwds,
@@ -277,10 +269,8 @@ getServerStatsData s = do
   _msgRecvNtf <- readIORef $ msgRecvNtf s
   _activeQueuesNtf <- getPeriodStatsData $ activeQueuesNtf s
   _msgNtfs <- readIORef $ msgNtfs s
-  _msgNtfsB <- readIORef $ msgNtfsB s
   _msgNtfNoSub <- readIORef $ msgNtfNoSub s
   _msgNtfLost <- readIORef $ msgNtfLost s
-  _msgNtfExpired <- readIORef $ msgNtfExpired s
   _pRelays <- getProxyStatsData $ pRelays s
   _pRelaysOwn <- getProxyStatsData $ pRelaysOwn s
   _pMsgFwds <- getProxyStatsData $ pMsgFwds s
@@ -328,10 +318,8 @@ getServerStatsData s = do
         _msgRecvNtf,
         _activeQueuesNtf,
         _msgNtfs,
-        _msgNtfsB,
         _msgNtfNoSub,
         _msgNtfLost,
-        _msgNtfExpired,
         _pRelays,
         _pRelaysOwn,
         _pMsgFwds,
@@ -382,10 +370,8 @@ setServerStats s d = do
   writeIORef (msgRecvNtf s) $! _msgRecvNtf d
   setPeriodStats (activeQueuesNtf s) (_activeQueuesNtf d)
   writeIORef (msgNtfs s) $! _msgNtfs d
-  writeIORef (msgNtfsB s) $! _msgNtfsB d
   writeIORef (msgNtfNoSub s) $! _msgNtfNoSub d
   writeIORef (msgNtfLost s) $! _msgNtfLost d
-  writeIORef (msgNtfExpired s) $! _msgNtfExpired d
   setProxyStats (pRelays s) $! _pRelays d
   setProxyStats (pRelaysOwn s) $! _pRelaysOwn d
   setProxyStats (pMsgFwds s) $! _pMsgFwds d
@@ -434,10 +420,8 @@ instance StrEncoding ServerStatsData where
         "msgSentNtf=" <> strEncode (_msgSentNtf d),
         "msgRecvNtf=" <> strEncode (_msgRecvNtf d),
         "msgNtfs=" <> strEncode (_msgNtfs d),
-        "msgNtfsB=" <> strEncode (_msgNtfsB d),
         "msgNtfNoSub=" <> strEncode (_msgNtfNoSub d),
         "msgNtfLost=" <> strEncode (_msgNtfLost d),
-        "msgNtfExpired=" <> strEncode (_msgNtfExpired d),
         "activeQueues:",
         strEncode (_activeQueues d),
         "activeQueuesNtf:",
@@ -491,10 +475,8 @@ instance StrEncoding ServerStatsData where
     _msgSentNtf <- opt "msgSentNtf="
     _msgRecvNtf <- opt "msgRecvNtf="
     _msgNtfs <- opt "msgNtfs="
-    _msgNtfsB <- opt "msgNtfsB="
     _msgNtfNoSub <- opt "msgNtfNoSub="
     _msgNtfLost <- opt "msgNtfLost="
-    _msgNtfExpired <- opt "msgNtfExpired="
     _activeQueues <-
       optional ("activeQueues:" <* A.endOfLine) >>= \case
         Just _ -> strP <* optional A.endOfLine
@@ -554,10 +536,8 @@ instance StrEncoding ServerStatsData where
           _msgSentNtf,
           _msgRecvNtf,
           _msgNtfs,
-          _msgNtfsB,
           _msgNtfNoSub,
           _msgNtfLost,
-          _msgNtfExpired,
           _activeQueues,
           _activeQueuesNtf,
           _pRelays,

@@ -104,15 +104,16 @@ testNotificationSubscription (ATransport t) =
     (tknPub, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
     let tkn = DeviceToken PPApnsTest "abcd"
-    withAPNSMockServer $ \apns ->
+    withAPNSMockServer $ \APNSMockServer {apnsQ} ->
       smpTest2 t $ \rh sh ->
         ntfTest t $ \nh -> do
           -- create queue
           (sId, rId, rKey, rcvDhSecret) <- createAndSecureQueue rh sPub
           -- register and verify token
           RespNtf "1" NoEntity (NRTknId tId ntfDh) <- signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
-          APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
-            getMockNotification apns tkn
+          APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}, sendApnsResponse = send} <-
+            atomically $ readTBQueue apnsQ
+          send APNSRespOk
           let dhSecret = C.dh' ntfDh dhPriv
               Right verification = ntfData .-> "verification"
               Right nonce = C.cbNonce <$> ntfData .-> "nonce"
@@ -130,7 +131,7 @@ testNotificationSubscription (ATransport t) =
           threadDelay 50000
           Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello")
           -- receive notification
-          APNSMockRequest {notification} <- getMockNotification apns tkn
+          APNSMockRequest {notification, sendApnsResponse = send'} <- atomically $ readTBQueue apnsQ
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'} = notification
               Right nonce' = C.cbNonce <$> ntfData' .-> "nonce"
               Right message = ntfData' .-> "message"
@@ -141,6 +142,7 @@ testNotificationSubscription (ATransport t) =
               Right NMsgMeta {msgId, msgTs} = parse smpP (AP.INTERNAL "error parsing NMsgMeta") nMsgMeta
           smpServer `shouldBe` srv
           notifierId `shouldBe` nId
+          send' APNSRespOk
           -- receive message
           Resp "" _ (MSG RcvMessage {msgId = mId1, msgBody = EncRcvMsgBody body}) <- tGet1 rh
           Right ClientRcvMsgBody {msgTs = mTs, msgBody} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.cbNonce mId1) body)
@@ -152,8 +154,9 @@ testNotificationSubscription (ATransport t) =
           let tkn' = DeviceToken PPApnsTest "efgh"
           RespNtf "7" tId' NROk <- signSendRecvNtf nh tknKey ("7", tId, TRPL tkn')
           tId `shouldBe` tId'
-          APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData2}} <-
-            getMockNotification apns tkn'
+          APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData2}, sendApnsResponse = send2} <-
+            atomically $ readTBQueue apnsQ
+          send2 APNSRespOk
           let Right verification2 = ntfData2 .-> "verification"
               Right nonce2 = C.cbNonce <$> ntfData2 .-> "nonce"
               Right code2 = NtfRegCode <$> C.cbDecrypt dhSecret nonce2 verification2
@@ -161,7 +164,7 @@ testNotificationSubscription (ATransport t) =
           RespNtf "8a" _ (NRTkn NTActive) <- signSendRecvNtf nh tknKey ("8a", tId, TCHK)
           -- send message
           Resp "9" _ OK <- signSendRecv sh sKey ("9", sId, _SEND' "hello 2")
-          APNSMockRequest {notification = notification3} <- getMockNotification apns tkn'
+          APNSMockRequest {notification = notification3, sendApnsResponse = send3} <- atomically $ readTBQueue apnsQ
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData3} = notification3
               Right nonce3 = C.cbNonce <$> ntfData3 .-> "nonce"
               Right message3 = ntfData3 .-> "message"
@@ -170,3 +173,4 @@ testNotificationSubscription (ATransport t) =
               APNS.PNMessageData {smpQueue = SMPQueueNtf {smpServer = smpServer3, notifierId = notifierId3}} = L.last pnMsgs2
           smpServer3 `shouldBe` srv
           notifierId3 `shouldBe` nId
+          send3 APNSRespOk
