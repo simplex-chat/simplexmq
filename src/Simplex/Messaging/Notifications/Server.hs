@@ -46,7 +46,7 @@ import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Notifications.Transport
-import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, pattern NoEntity, encodeTransmission, tGet, tPut)
+import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, encodeTransmission, tGet, tPut, pattern NoEntity)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Stats
@@ -403,12 +403,19 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
         Nothing -> do
           t_ <- atomically $ getActiveNtfToken st tknId
           verifyToken' t_ $ VRVerified (NtfReqNew corrId (ANE SSubscription sub))
-        Just s@NtfSubData {tokenId = subTknId} ->
-          if subTknId == tknId
-            then do
+        Just s@NtfSubData {subStatus, tokenId = subTknId}
+          | subTknId == tknId -> do
               t_ <- atomically $ getActiveNtfToken st subTknId
               verifyToken' t_ $ verifiedSubCmd s c
-            else pure $ maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
+          | otherwise -> do
+              status <- readTVarIO subStatus
+              -- if client didn't receive the response with subscription id from server,
+              -- and then changed token, server allows repeat SNEW if subscription is in one of failed states
+              if not (ntfShouldSubscribe status)
+                then do
+                  t_ <- atomically $ getActiveNtfToken st tknId
+                  verifyToken' t_ $ verifiedSubCmd s c
+                else pure $ maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
     NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
     NtfCmd SSubscription c -> do
       s_ <- atomically $ getNtfSubscription st entId
