@@ -545,7 +545,7 @@ testNotificationSubscriptionNewConnection apns baseId alice bob =
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     when (baseId == 3) $ void $ messageNotificationData alice apns
     get alice ##> ("", bobId, CON)
-    when (baseId == 3) $ void $ messageNotificationData bob apns
+    -- when (baseId == 3) $ void $ messageNotificationData bob apns -- coalesced
     get bob ##> ("", aliceId, CON)
     -- bob sends message
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
