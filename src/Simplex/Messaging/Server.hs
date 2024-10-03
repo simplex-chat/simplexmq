@@ -1706,9 +1706,10 @@ saveServerNtfs = asks (storeNtfsFile . config) >>= mapM_ saveNtfs
         readTVarIO ns >>= mapM_ (saveQueueNtfs h) . M.assocs
       logInfo "notifications saved"
       where
-        -- reverse on save, to save notifications in order, will become reversed again when restoring.
-        saveQueueNtfs h (nId, v) = BLD.hPutBuilder h . encodeNtfs nId . reverse =<< readTVarIO v
-        encodeNtfs nId = mconcat . map (\ntf -> BLD.byteString (strEncode $ NLRv1 nId ntf) <> BLD.char8 '\n')
+        saveQueueNtfs h (nId, v) = do
+          ntf_ <- readTVarIO v
+          forM_ ntf_ $ \ntf -> BLD.hPutBuilder h $ encodeNtf nId ntf
+        encodeNtf nId ntf = BLD.byteString (strEncode $ NLRv1 nId ntf) <> BLD.char8 '\n'
 
 restoreServerNtfs :: M Int
 restoreServerNtfs =
