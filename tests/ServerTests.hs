@@ -652,7 +652,7 @@ testRestoreMessages at@(ATransport t) =
 
     logSize testStoreLogFile `shouldReturn` 1
     logSize testStoreMsgsFile `shouldReturn` 0
-    logSize testServerStatsBackupFile `shouldReturn` 74
+    logSize testServerStatsBackupFile `shouldReturn` 75
     Right stats3 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats3 [rId] 5 5
 
