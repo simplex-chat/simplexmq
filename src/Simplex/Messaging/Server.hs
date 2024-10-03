@@ -1707,10 +1707,10 @@ saveServerNtfs = asks (storeNtfsFile . config) >>= mapM_ saveNtfs
       logInfo $ "saving notifications to file " <> T.pack f
       NtfStore ns <- asks ntfStore
       liftIO . withFile f WriteMode $ \h ->
-        readTVarIO ns >>= mapM_ (saveQueueNtfs h) . M.assocs
+        readTVarIO ns >>= mapM_ (saveQueueNtf h) . M.assocs
       logInfo "notifications saved"
       where
-        saveQueueNtfs h (nId, v) = do
+        saveQueueNtf h (nId, v) = do
           ntf_ <- readTVarIO v
           forM_ ntf_ $ \ntf -> BLD.hPutBuilder h $ encodeNtf nId ntf
         encodeNtf nId ntf = BLD.byteString (strEncode $ NLRv1 nId ntf) <> BLD.char8 '\n'
