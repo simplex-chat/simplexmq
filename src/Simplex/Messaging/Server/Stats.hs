@@ -71,6 +71,7 @@ data ServerStats = ServerStats
     msgNtfNoSub :: IORef Int, -- no subscriber to notifications (e.g., NTF server not connected)
     msgNtfLost :: IORef Int, -- notification is lost because NTF delivery queue is full
     msgNtfExpired :: IORef Int, -- expired
+    msgNtfReplaced :: IORef Int, -- replaced
     pRelays :: ProxyStats,
     pRelaysOwn :: ProxyStats,
     pMsgFwds :: ProxyStats,
@@ -123,6 +124,7 @@ data ServerStatsData = ServerStatsData
     _msgNtfNoSub :: Int,
     _msgNtfLost :: Int,
     _msgNtfExpired :: Int,
+    _msgNtfReplaced :: Int,
     _pRelays :: ProxyStatsData,
     _pRelaysOwn :: ProxyStatsData,
     _pMsgFwds :: ProxyStatsData,
@@ -177,6 +179,7 @@ newServerStats ts = do
   msgNtfNoSub <- newIORef 0
   msgNtfLost <- newIORef 0
   msgNtfExpired <- newIORef 0
+  msgNtfReplaced <- newIORef 0
   pRelays <- newProxyStats
   pRelaysOwn <- newProxyStats
   pMsgFwds <- newProxyStats
@@ -228,6 +231,7 @@ newServerStats ts = do
         msgNtfNoSub,
         msgNtfLost,
         msgNtfExpired,
+        msgNtfReplaced,
         pRelays,
         pRelaysOwn,
         pMsgFwds,
@@ -281,6 +285,7 @@ getServerStatsData s = do
   _msgNtfNoSub <- readIORef $ msgNtfNoSub s
   _msgNtfLost <- readIORef $ msgNtfLost s
   _msgNtfExpired <- readIORef $ msgNtfExpired s
+  _msgNtfReplaced <- readIORef $ msgNtfReplaced s
   _pRelays <- getProxyStatsData $ pRelays s
   _pRelaysOwn <- getProxyStatsData $ pRelaysOwn s
   _pMsgFwds <- getProxyStatsData $ pMsgFwds s
@@ -332,6 +337,7 @@ getServerStatsData s = do
         _msgNtfNoSub,
         _msgNtfLost,
         _msgNtfExpired,
+        _msgNtfReplaced,
         _pRelays,
         _pRelaysOwn,
         _pMsgFwds,
@@ -386,6 +392,7 @@ setServerStats s d = do
   writeIORef (msgNtfNoSub s) $! _msgNtfNoSub d
   writeIORef (msgNtfLost s) $! _msgNtfLost d
   writeIORef (msgNtfExpired s) $! _msgNtfExpired d
+  writeIORef (msgNtfReplaced s) $! _msgNtfReplaced d
   setProxyStats (pRelays s) $! _pRelays d
   setProxyStats (pRelaysOwn s) $! _pRelaysOwn d
   setProxyStats (pMsgFwds s) $! _pMsgFwds d
@@ -438,6 +445,7 @@ instance StrEncoding ServerStatsData where
         "msgNtfNoSub=" <> strEncode (_msgNtfNoSub d),
         "msgNtfLost=" <> strEncode (_msgNtfLost d),
         "msgNtfExpired=" <> strEncode (_msgNtfExpired d),
+        "msgNtfReplaced=" <> strEncode (_msgNtfReplaced d),
         "activeQueues:",
         strEncode (_activeQueues d),
         "activeQueuesNtf:",
@@ -495,6 +503,7 @@ instance StrEncoding ServerStatsData where
     _msgNtfNoSub <- opt "msgNtfNoSub="
     _msgNtfLost <- opt "msgNtfLost="
     _msgNtfExpired <- opt "msgNtfExpired="
+    _msgNtfReplaced <- opt "msgNtfReplaced="
     _activeQueues <-
       optional ("activeQueues:" <* A.endOfLine) >>= \case
         Just _ -> strP <* optional A.endOfLine
@@ -558,6 +567,7 @@ instance StrEncoding ServerStatsData where
           _msgNtfNoSub,
           _msgNtfLost,
           _msgNtfExpired,
+          _msgNtfReplaced,
           _activeQueues,
           _activeQueuesNtf,
           _pRelays,

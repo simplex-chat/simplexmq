@@ -6,10 +6,11 @@
 module Simplex.Messaging.Server.NtfStore where
 
 import Control.Concurrent.STM
-import Control.Monad (foldM, when)
+import Control.Monad (foldM)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
+import Data.Maybe (isJust)
 import Data.Time.Clock.System (SystemTime (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -26,15 +27,13 @@ data MsgNtf = MsgNtf
     ntfEncMeta :: EncNMsgMeta
   }
 
-storeNtf :: NtfStore -> NotifierId -> MsgNtf -> IO ()
+storeNtf :: NtfStore -> NotifierId -> MsgNtf -> IO Bool
 storeNtf (NtfStore ns) nId ntf = do
   ntfVar_ <- TM.lookupIO nId ns
   prevNtf <- atomically $ case ntfVar_ of
     Just v -> swapTVar v (Just ntf)
     Nothing -> newNtfs
-  -- todo fix cyclic dependency
-  -- when (isJust prevNtf) $ incStat $ msgNtfReplaced stats
-  pure ()
+  pure $ isJust prevNtf
   where
     newNtfs = do
       TM.lookup nId ns >>= \case

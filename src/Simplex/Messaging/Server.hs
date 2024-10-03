@@ -397,6 +397,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
           msgNtfNoSub' <- atomicSwapIORef (msgNtfNoSub ss) 0
           msgNtfLost' <- atomicSwapIORef (msgNtfLost ss) 0
           msgNtfExpired' <- atomicSwapIORef (msgNtfExpired ss) 0
+          msgNtfReplaced' <- atomicSwapIORef (msgNtfReplaced ss) 0
           pRelays' <- getResetProxyStatsData pRelays
           pRelaysOwn' <- getResetProxyStatsData pRelaysOwn
           pMsgFwds' <- getResetProxyStatsData pMsgFwds
@@ -470,7 +471,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                        show ntfDeletedB',
                        show ntfSubB',
                        show msgNtfsB',
-                       show msgNtfExpired'
+                       show msgNtfExpired',
+                       show msgNtfReplaced'
                      ]
               )
         liftIO $ threadDelay' interval
@@ -583,6 +585,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                 putStat "msgNtfs" msgNtfs
                 putStat "msgNtfsB" msgNtfsB
                 putStat "msgNtfExpired" msgNtfExpired
+                putStat "msgNtfReplaced" msgNtfReplaced
                 putStat "qCount" qCount
                 putStat "msgCount" msgCount
                 putProxyStat "pRelays" pRelays
@@ -1455,10 +1458,11 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
             enqueueNotification :: NtfCreds -> Message -> M ()
             enqueueNotification _ MessageQuota {} = pure ()
             enqueueNotification NtfCreds {notifierId = nId, rcvNtfDhSecret} Message {msgId, msgTs} = do
-              -- stats <- asks serverStats
               ns <- asks ntfStore
               ntf <- mkMessageNotification msgId msgTs rcvNtfDhSecret
-              liftIO $ storeNtf ns nId ntf
+              hadPrevNtf <- liftIO $ storeNtf ns nId ntf
+              stats <- asks serverStats
+              when hadPrevNtf $ incStat $ msgNtfReplaced stats
 
             mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> M MsgNtf
             mkMessageNotification msgId msgTs rcvNtfDhSecret = do
@@ -1732,12 +1736,16 @@ restoreServerNtfs =
       where
         restoreNtf ns old !expired s' = do
           NLRv1 nId ntf <- liftEither . first (ntfErr "parsing") $ strDecode s
-          liftIO $ addToNtfs nId ntf
+          addToNtfs nId ntf
           where
             s = LB.toStrict s'
             addToNtfs nId ntf@MsgNtf {ntfTs}
               | systemSeconds ntfTs < old = pure (expired + 1)
-              | otherwise = storeNtf ns nId ntf $> expired
+              | otherwise = do
+                hadPrevNtf <- liftIO $ storeNtf ns nId ntf
+                stats <- asks serverStats
+                when hadPrevNtf $ incStat $ msgNtfReplaced stats
+                pure expired
             ntfErr :: Show e => String -> e -> String
             ntfErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
 
