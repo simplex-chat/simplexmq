@@ -85,6 +85,10 @@ ntfServerCLI cfgPath logPath =
           \# Log is compacted on start (deleted objects are removed).\n"
             <> ("enable: " <> onOff enableStoreLog <> "\n\n")
             <> "log_stats: off\n\n\
+               \[AUTH]\n\
+               \# control_port_admin_password:\n\
+               \# control_port_user_password:\n\
+               \\n\
                \[TRANSPORT]\n\
                \# Host is only used to print server address on start.\n\
                \# You can specify multiple server ports.\n"
@@ -93,6 +97,8 @@ ntfServerCLI cfgPath logPath =
             <> "log_tls_errors: off\n\n\
                \# Use `websockets: 443` to run websockets server in addition to plain TLS.\n\
                \websockets: off\n\n\
+               \# control_port: 5227\n\
+               \\n\
                \[SUBSCRIBER]\n\
                \# Network configuration for notification server client.\n\
                \# `host_mode` can be 'public' (default) or 'onion'.\n\
@@ -128,6 +134,9 @@ ntfServerCLI cfgPath logPath =
         serverConfig =
           NtfServerConfig
             { transports = iniTransports ini,
+              controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini,
+              controlPortAdminAuth = either error id <$!> strDecodeIni "AUTH" "control_port_admin_password" ini,
+              controlPortUserAuth = either error id <$!> strDecodeIni "AUTH" "control_port_user_password" ini,
               subIdBytes = 24,
               regCodeBytes = 32,
               clientQSize = 64,

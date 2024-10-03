@@ -8,8 +8,6 @@ import Simplex.FileTransfer.Protocol (XFTPFileId)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth)
 
-data CPClientRole = CPRNone | CPRUser | CPRAdmin
-
 data ControlProtocol
   = CPAuth BasicAuth
   | CPStatsRTS
