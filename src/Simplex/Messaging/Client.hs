@@ -714,8 +714,8 @@ createSMPQueue c (rKey, rpKey) dhKey auth subMode sndSecure =
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue
 subscribeSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO ()
-subscribeSMPQueue c@ProtocolClient {client_ = PClient {sendPings}} rpKey rId = do
-  liftIO . atomically $ writeTVar sendPings True
+subscribeSMPQueue c rpKey rId = do
+  liftIO $ enablePings c
   sendSMPCommand c (Just rpKey) rId SUB >>= \case
     OK -> pure ()
     cmd@MSG {} -> liftIO $ writeSMPMessage c rId cmd
@@ -723,8 +723,8 @@ subscribeSMPQueue c@ProtocolClient {client_ = PClient {sendPings}} rpKey rId = d
 
 -- | Subscribe to multiple SMP queues batching commands if supported.
 subscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
-subscribeSMPQueues c@ProtocolClient {client_ = PClient {sendPings}} qs = do
-  atomically $ writeTVar sendPings True
+subscribeSMPQueues c qs = do
+  liftIO $ enablePings c
   sendProtocolCommands c cs >>= mapM (processSUBResponse c)
   where
     cs = L.map (\(rpKey, rId) -> (Just rpKey, rId, Cmd SRecipient SUB)) qs
@@ -763,13 +763,21 @@ getSMPMessage c rpKey rId =
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue-notifications
 subscribeSMPQueueNotifications :: SMPClient -> NtfPrivateAuthKey -> NotifierId -> ExceptT SMPClientError IO ()
-subscribeSMPQueueNotifications = okSMPCommand NSUB
+subscribeSMPQueueNotifications c npKey nId = do
+  liftIO $ enablePings c
+  okSMPCommand NSUB c npKey nId
 {-# INLINE subscribeSMPQueueNotifications #-}
 
 -- | Subscribe to multiple SMP queues notifications batching commands if supported.
 subscribeSMPQueuesNtfs :: SMPClient -> NonEmpty (NtfPrivateAuthKey, NotifierId) -> IO (NonEmpty (Either SMPClientError ()))
-subscribeSMPQueuesNtfs = okSMPCommands NSUB
+subscribeSMPQueuesNtfs c qs = do
+  liftIO $ enablePings c
+  okSMPCommands NSUB c qs
 {-# INLINE subscribeSMPQueuesNtfs #-}
+
+enablePings :: SMPClient -> IO ()
+enablePings ProtocolClient {client_ = PClient {sendPings}} = atomically $ writeTVar sendPings True
+{-# INLINE enablePings #-}
 
 -- | Secure the SMP queue by adding a sender public key.
 --

@@ -143,7 +143,7 @@ ntfServerCLI cfgPath logPath =
                                 socksMode = maybe SMOnion (either error id) $! strDecodeIni "SUBSCRIBER" "socks_mode" ini,
                                 hostMode = either (const HMPublic) (either error id . textToHostMode) $ lookupValue "SUBSCRIBER" "host_mode" ini,
                                 requiredHostMode = fromMaybe False $ iniOnOff "SUBSCRIBER" "required_host_mode" ini,
-                                smpPingInterval = 60_000_000 -- 1 minutes
+                                smpPingInterval = 60_000_000 -- 1 minute
                               }
                         },
                     persistErrorInterval = 0 -- seconds
