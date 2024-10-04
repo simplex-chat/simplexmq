@@ -223,18 +223,18 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 <> "\n\n\
                    \[INACTIVE_CLIENTS]\n\
                    \# TTL and interval to check inactive clients\n\
-                   \disconnect: off\n"
-                <> ("# ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
-                <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration))
+                   \disconnect: on\n"
+                <> ("ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
+                <> ("check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration))
                 <> "\n\n\
                    \[WEB]\n\
                    \# Set path to generate static mini-site for server information and qr codes/links\n"
                 <> ("static_path: " <> T.pack (fromMaybe defaultStaticPath webStaticPath) <> "\n\n")
                 <> "# Run an embedded server on this port\n\
                    \# Onion sites can use any port and register it in the hidden service config.\n\
-                   \# Running on a port 80 may require setting process capabilities.\n"
-                <> (webDisabled <> "http: 8000\n\n")
-                <> "# You can run an embedded TLS web server too if you provide port and cert and key files.\n\
+                   \# Running on a port 80 may require setting process capabilities.\n\
+                   \# http: 8000\n\n\
+                   \# You can run an embedded TLS web server too if you provide port and cert and key files.\n\
                    \# Not required for running relay on onion address.\n"
                 <> (webDisabled <> "https: 443\n")
                 <> (webDisabled <> "cert: " <> T.pack httpsCertFile <> "\n")

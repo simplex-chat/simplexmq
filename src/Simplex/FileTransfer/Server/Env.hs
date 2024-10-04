@@ -72,7 +72,7 @@ data XFTPServerConfig = XFTPServerConfig
 defaultInactiveClientExpiration :: ExpirationConfig
 defaultInactiveClientExpiration =
   ExpirationConfig
-    { ttl = 43200, -- seconds, 12 hours
+    { ttl = 21600, -- seconds, 6 hours
       checkInterval = 3600 -- seconds, 1 hours
     }
 
