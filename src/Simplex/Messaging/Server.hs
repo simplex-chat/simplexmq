@@ -575,7 +575,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                 putStat "msgRecv" msgRecv
                 putStat "msgRecvGet" msgRecvGet
                 putStat "msgGet" msgGet
-                putStat "msgGetNoMsg" msgGet
+                putStat "msgGetNoMsg" msgGetNoMsg
                 gets <- (,,) <$> getStat msgGetAuth <*> getStat msgGetDuplicate <*> getStat msgGetProhibited
                 hPutStrLn h $ "other GET events (auth, duplicate, prohibited): " <> show gets
                 putStat "msgSentNtf" msgSentNtf
