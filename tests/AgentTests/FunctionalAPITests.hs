@@ -1707,7 +1707,7 @@ getMsg c cId action = do
   liftIO $ noMessages c "nothing should be delivered before GET"
   Just _ <- getConnectionMessage c cId
   r <- action
-  get c =##> \case ("", cId', MSGNTF _) -> cId == cId'; _ -> False
+  get c =##> \case ("", cId', MSGNTF {}) -> cId == cId'; _ -> False
   pure r
 
 testOnlyCreatePull :: IO ()

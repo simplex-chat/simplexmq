@@ -82,6 +82,7 @@ module Simplex.Messaging.Agent.Client
     agentCbDecrypt,
     cryptoError,
     sendAck,
+    releaseGetLock,
     suspendQueue,
     deleteQueue,
     deleteQueues,
@@ -1649,7 +1650,6 @@ sendAck :: AgentClient -> RcvQueue -> MsgId -> AM ()
 sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId = do
   withSMPClient c rq ("ACK:" <> logSecret' msgId) $ \smp ->
     ackSMPMessage smp rcvPrivateKey rcvId msgId
-  atomically $ releaseGetLock c rq
 
 hasGetLock :: AgentClient -> RcvQueue -> IO Bool
 hasGetLock c RcvQueue {server, rcvId} =
