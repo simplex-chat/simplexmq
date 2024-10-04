@@ -135,7 +135,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                     Just "Error: passing --hosting-country requires passing --hosting"
                 | otherwise = Nothing
           forM_ err_ $ \err -> putStrLn err >> exitFailure
-        initialize opts'@InitOptions {enableStoreLog, logStats, signAlgorithm, password, sourceCode, webStaticPath, disableWeb} = do
+        initialize opts'@InitOptions {enableStoreLog, logStats, signAlgorithm, password, controlPort, socksProxy, ownDomains, sourceCode, webStaticPath, disableWeb} = do
           checkInitOptions opts'
           clearDirIfExists cfgPath
           clearDirIfExists logPath
@@ -144,9 +144,10 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           let x509cfg = defaultX509Config {commonName = fromMaybe ip fqdn, signAlgorithm}
           fp <- createServerX509 cfgPath x509cfg
           basicAuth <- mapM createServerPassword password
+          controlPortPwds <- forM controlPort $ \_ -> let pwd = decodeLatin1 <$> randomBase64 18 in (,) <$> pwd <*> pwd
           let host = fromMaybe (if ip == "127.0.0.1" then "<hostnames>" else ip) fqdn
               srv = ProtoServerWithAuth (SMPServer [THDomainName host] "" (C.KeyHash fp)) basicAuth
-          T.writeFile iniFile $ iniFileContent host basicAuth
+          T.writeFile iniFile $ iniFileContent host basicAuth controlPortPwds
           putStrLn $ "Server initialized, please provide additional server information in " <> iniFile <> "."
           putStrLn $ "Run `" <> executableName <> " start` to start server."
           warnCAPrivateKeyFile cfgPath x509cfg
@@ -155,8 +156,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           where
             createServerPassword = \case
               ServerPassword s -> pure s
-              SPRandom -> BasicAuth . strEncode <$> (atomically . C.randomBytes 32 =<< C.newRandom)
-            iniFileContent host basicAuth =
+              SPRandom -> BasicAuth <$> randomBase64 33
+            randomBase64 n = strEncode <$> (atomically . C.randomBytes n =<< C.newRandom)
+            iniFileContent host basicAuth controlPortPwds =
               informationIniContent opts'
                 <> "[STORE_LOG]\n\
                    \# The server uses STM memory for persistence,\n\
@@ -181,13 +183,13 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                    \# smp://fingerprint:password@host1,host2\n\
                    \# The password will not be shared with the connecting contacts, you must share it only\n\
                    \# with the users who you want to allow creating messaging queues on your server.\n"
-                <> ( case basicAuth of
-                      Just auth -> "create_password: " <> safeDecodeUtf8 (strEncode auth)
-                      _ -> "# create_password: password to create new queues (any printable ASCII characters without whitespace, '@', ':' and '/')"
+                <> ( let noPassword = "password to create new queues and forward messages (any printable ASCII characters without whitespace, '@', ':' and '/')"
+                      in optDisabled basicAuth <> "create_password: " <> maybe noPassword (safeDecodeUtf8 . strEncode) basicAuth
                    )
-                <> "\n\n\
-                   \# control_port_admin_password:\n\
-                   \# control_port_user_password:\n\n\
+                <> "\n\n"
+                <> (optDisabled controlPortPwds <> "control_port_admin_password: " <> maybe "" fst controlPortPwds <> "\n")
+                <> (optDisabled controlPortPwds <> "control_port_user_password: " <> maybe "" snd controlPortPwds <> "\n")
+                <> "\n\
                    \[TRANSPORT]\n\
                    \# Host is only used to print server address on start.\n\
                    \# You can specify multiple server ports.\n"
@@ -195,29 +197,35 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 <> ("port: " <> T.pack defaultServerPorts <> "\n")
                 <> "log_tls_errors: off\n\n\
                    \# Use `websockets: 443` to run websockets server in addition to plain TLS.\n\
+                   \# This option is deprecated and should be used for testing only.\n\
+                   \# , port 443 should be specified in port above\n\
                    \websockets: off\n"
-                <> ("# control_port: " <> tshow defaultControlPort <> "\n\n")
-                <> "[PROXY]\n\
+                <> (optDisabled controlPort <> "control_port: " <> tshow (fromMaybe defaultControlPort controlPort))
+                <> "\n\n\
+                   \[PROXY]\n\
                    \# Network configuration for SMP proxy client.\n\
                    \# `host_mode` can be 'public' (default) or 'onion'.\n\
                    \# It defines prefferred hostname for destination servers with multiple hostnames.\n\
                    \# host_mode: public\n\
                    \# required_host_mode: off\n\n\
-                   \# The domain suffixes of the relays you operate (space-separated) to count as separate proxy statistics.\n\
-                   \# own_server_domains: \n\n\
+                   \# The domain suffixes of the relays you operate (space-separated) to count as separate proxy statistics.\n"
+                <> (optDisabled ownDomains <> "own_server_domains: " <> maybe "" (safeDecodeUtf8 . strEncode) ownDomains)
+                <> "\n\n\
                    \# SOCKS proxy port for forwarding messages to destination servers.\n\
-                   \# You may need a separate instance of SOCKS proxy for incoming single-hop requests.\n\
-                   \# socks_proxy: localhost:9050\n\n\
+                   \# You may need a separate instance of SOCKS proxy for incoming single-hop requests.\n"
+                <> (optDisabled socksProxy <> "socks_proxy: " <> maybe "localhost:9050" (safeDecodeUtf8 . strEncode) socksProxy)
+                <> "\n\n\
                    \# `socks_mode` can be 'onion' for SOCKS proxy to be used for .onion destination hosts only (default)\n\
                    \# or 'always' to be used for all destination hosts (can be used if it is an .onion server).\n\
                    \# socks_mode: onion\n\n\
                    \# Limit number of threads a client can spawn to process proxy commands in parrallel.\n"
-                <> ("# client_concurrency: " <> tshow defaultProxyClientConcurrency <> "\n\n")
-                <> "[INACTIVE_CLIENTS]\n\
+                <> ("# client_concurrency: " <> tshow defaultProxyClientConcurrency)
+                <> "\n\n\
+                   \[INACTIVE_CLIENTS]\n\
                    \# TTL and interval to check inactive clients\n\
                    \disconnect: off\n"
                 <> ("# ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
-                <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
+                <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration))
                 <> "\n\n\
                    \[WEB]\n\
                    \# Set path to generate static mini-site for server information and qr codes/links\n"
@@ -414,8 +422,9 @@ informationIniContent InitOptions {sourceCode, serverInfo} =
   \# LICENSE: https://github.com/simplex-chat/simplexmq/blob/stable/LICENSE\n\
   \# Include correct source code URI in case the server source code is modified in any way.\n\
   \# If any other information fields are present, source code property also MUST be present.\n\n"
-    <> (maybe "# source_code: URI" ("source_code: " <>) sourceCode <> "\n\n")
-    <> "# Declaring all below information is optional, any of these fields can be omitted.\n\
+    <> (optDisabled sourceCode <> "source_code: " <> fromMaybe "URI" sourceCode)
+    <> "\n\n\
+       \# Declaring all below information is optional, any of these fields can be omitted.\n\
        \\n\
        \# Server usage conditions and amendments.\n\
        \# It is recommended to use standard conditions with any amendments in a separate document.\n\
@@ -423,16 +432,10 @@ informationIniContent InitOptions {sourceCode, serverInfo} =
        \# condition_amendments: link\n\
        \\n\
        \# Server location and operator.\n"
-    <> (maybe "# server_country: ISO-3166 2-letter code" ("server_country: " <>) serverCountry <> "\n")
-    <> ( let noCountry = "# operator_country: ISO-3166 2-letter code"
-          in maybe
-               ("# operator: entity (organization or person name)\n" <> noCountry)
-               (\Entity {name, country} -> "operator: " <> name <> "\n" <> maybe noCountry ("operator_country: " <>) country)
-               operator
-       )
-    <> "\n"
-    <> (maybe "# website:" ("website: " <>) website <> "\n")
-    <> "\n\
+    <> countryStr "server" serverCountry
+    <> enitiyStrs "operator" operator
+    <> (optDisabled website <> "website: " <> fromMaybe "" website)
+    <> "\n\n\
        \# Administrative contacts.\n\
        \# admin_simplex: SimpleX address\n\
        \# admin_email:\n\
@@ -446,17 +449,19 @@ informationIniContent InitOptions {sourceCode, serverInfo} =
        \# complaints_pgp_fingerprint:\n\
        \\n\
        \# Hosting provider.\n"
-    <> ( let noCountry = "# hosting_country: ISO-3166 2-letter code"
-          in maybe
-               ("# hosting: entity (organization or person name)\n" <> noCountry)
-               (\Entity {name, country} -> "hosting: " <> name <> "\n" <> maybe noCountry ("hosting_country: " <>) country)
-               hosting
-       )    
-    <> "\n\n\
+    <> enitiyStrs "hosting" hosting
+    <> "\n\
        \# Hosting type can be `virtual`, `dedicated`, `colocation`, `owned`\n"
-    <> (maybe "# hosting_type: virtual" (("hosting_type: " <>) . decodeLatin1 . strEncode) hostingType <> "\n\n")
+    <> ("hosting_type: " <> maybe "virtual" (decodeLatin1 . strEncode) hostingType <> "\n\n")
   where
     ServerPublicInfo {operator, website, hosting, hostingType, serverCountry}= serverInfo
+    countryStr optName country = optDisabled country <> optName <> "_country: " <> fromMaybe "ISO-3166 2-letter code" country <> "\n"
+    enitiyStrs optName entity =
+      optDisabled entity
+        <> optName <> ": "
+        <> maybe ("entity (organization or person name)") name entity
+        <> "\n"
+        <> countryStr optName (country =<< entity)
 
 serverPublicInfo :: Ini -> Maybe ServerPublicInfo
 serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
@@ -490,6 +495,9 @@ serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
             (Nothing, Nothing, _, Nothing) -> Nothing
             (_, _, pkURI, pkFingerprint) -> Just ServerContactAddress {simplex, email, pgp = PGPKey <$> pkURI <*> pkFingerprint}
 
+optDisabled :: Maybe a -> Text
+optDisabled p = if isNothing p then "# " else ""
+
 validCountryValue :: String -> String -> Either String Text
 validCountryValue field s
   | length s == 2 && all (\c -> isAscii c && isAlpha c) s = Right $ T.pack $ map toUpper s
@@ -517,7 +525,7 @@ data InitOptions = InitOptions
     password :: Maybe ServerPassword,
     controlPort :: Maybe Int,
     socksProxy :: Maybe SocksProxy,
-    ownDomains :: [ByteString],
+    ownDomains :: Maybe (L.NonEmpty TransportHost),
     sourceCode :: Maybe Text,
     serverInfo :: ServerPublicInfo,
     operatorCountry :: Maybe Text,
@@ -658,7 +666,7 @@ cliCommandP cfgPath logPath iniFile =
             password,
             controlPort,
             socksProxy,
-            ownDomains = map strEncode $ maybe [] L.toList ownDomains,
+            ownDomains,
             sourceCode = T.pack <$> sourceCode,
             serverInfo =
               ServerPublicInfo
