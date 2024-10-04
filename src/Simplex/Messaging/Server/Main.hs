@@ -156,7 +156,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           where
             createServerPassword = \case
               ServerPassword s -> pure s
-              SPRandom -> BasicAuth <$> randomBase64 33
+              SPRandom -> BasicAuth <$> randomBase64 32
             randomBase64 n = strEncode <$> (atomically . C.randomBytes n =<< C.newRandom)
             iniFileContent host basicAuth controlPortPwds =
               informationIniContent opts'
