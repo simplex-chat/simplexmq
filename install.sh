@@ -2,9 +2,6 @@
 set -eu
 
 # Links to scripts/configs
-bin="https://github.com/simplex-chat/simplexmq/releases/latest/download"
-remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest | grep -i "tag_name" | awk -F \" '{print $4}')"
-
 scripts="https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/scripts/main"
 scripts_systemd_smp="$scripts/smp-server.service"
 scripts_systemd_xftp="$scripts/xftp-server.service"
@@ -57,7 +54,7 @@ ${GRN}1.${NC} Install latest binaries from GitHub releases:
 ${GRN}2.${NC} Create server directories:
     - smp: ${YLW}${path_conf_smp}${NC}
     - xftp: ${YLW}${path_conf_xftp}${NC}
-${GRN}3.${NC} Setup user for each server:
+${GRN}3.${NC} Setup user for server:
     - xmp: ${YLW}${user_smp}${NC}
     - xftp: ${YLW}${user_xftp}${NC}
 ${GRN}4.${NC} Create systemd services:
@@ -67,9 +64,8 @@ ${GRN}5.${NC} Install stopscript (systemd), update and uninstallation script:
     - all: ${YLW}${path_bin_update}${NC}, ${YLW}${path_bin_uninstall}${NC}, ${YLW}${path_bin_stopscript}${NC}
 
 Press:
-  - ${GRN}ENTER${NC} to continue installing both xftp and smp servers
-  - ${GRN}1${NC} to install only smp server
-  - ${GRN}2${NC} to install only xftp server
+  - ${GRN}1${NC} to install smp server
+  - ${GRN}2${NC} to install xftp server
   - ${RED}Ctrl+C${NC} to cancel installation
   
 Selection: "
@@ -82,6 +78,21 @@ Please checkout our server guides:
 
 To uninstall with full clean-up, simply run: ${YLW}sudo /usr/local/bin/simplex-servers-uninstall${NC}
 "
+
+set_version() {
+  ver="${VER:-latest}"
+
+  case "$ver" in 
+    latest)
+      bin="https://github.com/simplex-chat/simplexmq/releases/latest/download"
+      remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest | grep -i "tag_name" | awk -F \" '{print $4}')"
+      ;;
+    *)
+      bin="https://github.com/simplex-chat/simplexmq/releases/download/${ver}"
+      remote_version="${ver}"
+      ;;
+  esac
+}
 
 os_test() {
  . /etc/os-release
@@ -155,6 +166,7 @@ checks() {
   exit 1
  fi
  
+ set_version
  os_test
 
  mkdir -p $path_conf_info  
@@ -166,13 +178,11 @@ main() {
  printf "%b\n%b" "${BLU}$logo${NC}" "$welcome"
  read ans
 
- if [ "$ans" = '1' ]; then
-  setup='smp'
- elif [ "$ans" = '2' ]; then
-  setup='xftp'
- else
-  setup='smp xftp'
- fi
+ case "$ans" in
+  1) setup='smp' ;;
+  2) setup='xftp' ;;
+  *) printf 'Installation aborted.\n' && exit 0 ;;
+ esac
 
  printf "Installing binaries..."
  
