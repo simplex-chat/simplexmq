@@ -1686,9 +1686,9 @@ ackQueueMessage c rq@RcvQueue {userId, connId, server} srvMsgId = do
   tryAgentError (sendAck c rq srvMsgId) >>= \case
     Right _ -> do
       whenM (liftIO $ hasGetLock c rq) $ do
+        releaseLock
         brokerTs_ <- (Just <$> withStore c (\db -> getRcvMsgBrokerTs db connId srvMsgId)) `catchAgentError` \_ -> pure Nothing
         notify ("", connId, AEvt SAEConn $ MSGNTF srvMsgId brokerTs_)
-      releaseLock
       atomically $ incSMPServerStat c userId server ackMsgs
     Left (SMP _ SMP.NO_MSG) -> do
       releaseLock
