@@ -262,7 +262,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
                                 | ownServer = (ownCount + cnt, otherCnt)
                                 | otherwise = (ownCount, otherCnt + cnt)
                               ownByServer'
-                                | r == CPRAdmin && ownServer = M.alter (Just . maybe cnt (+ cnt)) srv ownByServer
+                                | r == CPRAdmin && ownServer && cnt > 0 = M.alter (Just . maybe cnt (+ cnt)) srv ownByServer
                                 | otherwise = ownByServer
                           pure (totalCnt', ownCount', otherCnt', ownByServer')
                     putSMPWorkers :: SMPClientAgent -> String -> TMap SMPServer a -> IO ()
