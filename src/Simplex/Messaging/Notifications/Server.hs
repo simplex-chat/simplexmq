@@ -250,7 +250,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
                       hPutStrLn h $ name <> " on own servers: " <> show ownCount
                       when (r == CPRAdmin && not (null ownByServer)) $
                         forM_ (M.assocs ownByServer) $ \(SMPServer (host :| _) _ _, cnt) ->
-                          hPutStrLn h $ name <> " on " <> show host <> ": " <> show cnt
+                          hPutStrLn h $ name <> " on " <> B.unpack (strEncode host) <> ": " <> show cnt
                       hPutStrLn h $ name <> " on other servers: " <> show otherCnt
                       where
                         countSubs :: (Int, Int, Int, M.Map SMPServer Int) -> (SMPServer, TMap SMPSub a) -> IO (Int, Int, Int, M.Map SMPServer Int)
@@ -262,7 +262,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
                                 | ownServer = (ownCount + cnt, otherCnt)
                                 | otherwise = (ownCount, otherCnt + cnt)
                               ownByServer'
-                                | r == CPRAdmin && ownServer = M.alter (Just . maybe 1 (+ 1)) srv ownByServer
+                                | r == CPRAdmin && ownServer = M.alter (Just . maybe cnt (+ cnt)) srv ownByServer
                                 | otherwise = ownByServer
                           pure (totalCnt', ownCount', otherCnt', ownByServer')
                     putSMPWorkers :: SMPClientAgent -> String -> TMap SMPServer a -> IO ()
@@ -271,7 +271,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
                     showServers a name srvs = do
                       let (ownSrvs, otherSrvs) = partition (isOwnServer a) srvs
                       hPutStrLn h $ name <> " own servers count: " <> show (length ownSrvs)
-                      when (r == CPRAdmin) $ hPutStrLn h $ name <> " own servers: " <> show (map (\(SMPServer (host :| _) _ _) -> host) ownSrvs)
+                      when (r == CPRAdmin) $ hPutStrLn h $ name <> " own servers: " <> intercalate "," (map (\(SMPServer (host :| _) _ _) -> B.unpack $ strEncode host) ownSrvs)
                       hPutStrLn h $ name <> " other servers count: " <> show (length otherSrvs)
               CPHelp -> hPutStrLn h "commands: stats, stats-rts, server-info, help, quit"
               CPQuit -> pure ()
