@@ -52,6 +52,7 @@ import qualified Data.ByteString.Builder as BLD
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.Dynamic (toDyn)
 import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.IORef
@@ -70,6 +71,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
 import Data.Typeable (cast)
+import GHC.Conc.Signal
 import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
@@ -141,8 +143,15 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
   expiredMsgs <- restoreServerMessages
   expiredNtfs <- restoreServerNtfs
   restoreServerStats expiredMsgs expiredNtfs
+
+  flagINT <- newEmptyTMVarIO
+  let sigINT = 2
+      sigIntAction = \_ptr -> atomically . void $ tryPutTMVar flagINT ()
+      sigIntHandler = Just (sigIntAction, toDyn ())
+  _oldInt <- liftIO (setHandler sigINT sigIntHandler)
   raceAny_
-    ( serverThread s "server subscribedQ" subscribedQ subscribers subClients pendingSubEvents subscriptions cancelSub
+    ( liftIO (atomically (readTMVar flagINT) >> logNote "Got SIGINT, shutting down.")
+        : serverThread s "server subscribedQ" subscribedQ subscribers subClients pendingSubEvents subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubClients pendingNtfSubEvents ntfSubscriptions (\_ -> pure ())
         : deliverNtfsThread s
         : sendPendingEvtsThread s
@@ -150,7 +159,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         : expireNtfsThread cfg
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
-    `finally` withLock' (savingLock s) "final" (saveServer False >> closeServer)
+    `finally` (logInfo "Stopping server." >> withLock' (savingLock s) "final" (saveServer False >> closeServer) >> logInfo "Server finished.")
   where
     runServer :: (ServiceName, ATransport, AddHTTP) -> M ()
     runServer (tcpPort, ATransport t, addHTTP) = do
