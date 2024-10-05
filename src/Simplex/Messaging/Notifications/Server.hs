@@ -244,8 +244,8 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
                     putSMPSubs :: SMPClientAgent -> String -> TMap SMPServer (TMap SMPSub a) -> IO ()
                     putSMPSubs a name v = do
                       subs <- readTVarIO v
-                      showServers a name $ M.keys subs
-                      (totalCnt, ownCount, otherCnt, ownByServer) <- foldM countSubs (0, 0, 0, M.empty) $ M.assocs subs
+                      (totalCnt, ownCount, otherCnt, servers, ownByServer) <- foldM countSubs (0, 0, 0, [], M.empty) $ M.assocs subs
+                      showServers a name servers
                       hPutStrLn h $ name <> " total: " <> show totalCnt
                       hPutStrLn h $ name <> " on own servers: " <> show ownCount
                       when (r == CPRAdmin && not (null ownByServer)) $
@@ -253,25 +253,26 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
                           hPutStrLn h $ name <> " on " <> B.unpack (strEncode host) <> ": " <> show cnt
                       hPutStrLn h $ name <> " on other servers: " <> show otherCnt
                       where
-                        countSubs :: (Int, Int, Int, M.Map SMPServer Int) -> (SMPServer, TMap SMPSub a) -> IO (Int, Int, Int, M.Map SMPServer Int)
-                        countSubs (!totalCnt, !ownCount, !otherCnt, !ownByServer) (srv, srvSubs) = do
+                        countSubs :: (Int, Int, Int, [SMPServer], M.Map SMPServer Int) -> (SMPServer, TMap SMPSub a) -> IO (Int, Int, Int, [SMPServer], M.Map SMPServer Int)
+                        countSubs (!totalCnt, !ownCount, !otherCnt, !servers, !ownByServer) (srv, srvSubs) = do
                           cnt <- M.size <$> readTVarIO srvSubs
                           let totalCnt' = totalCnt + cnt
                               ownServer = isOwnServer a srv
                               (ownCount', otherCnt')
                                 | ownServer = (ownCount + cnt, otherCnt)
                                 | otherwise = (ownCount, otherCnt + cnt)
+                              servers' = if cnt > 0 then srv : servers else servers
                               ownByServer'
                                 | r == CPRAdmin && ownServer && cnt > 0 = M.alter (Just . maybe cnt (+ cnt)) srv ownByServer
                                 | otherwise = ownByServer
-                          pure (totalCnt', ownCount', otherCnt', ownByServer')
+                          pure (totalCnt', ownCount', otherCnt', servers', ownByServer')
                     putSMPWorkers :: SMPClientAgent -> String -> TMap SMPServer a -> IO ()
                     putSMPWorkers a name v = readTVarIO v >>= showServers a name . M.keys
                     showServers :: SMPClientAgent -> String -> [SMPServer] -> IO ()
                     showServers a name srvs = do
                       let (ownSrvs, otherSrvs) = partition (isOwnServer a) srvs
                       hPutStrLn h $ name <> " own servers count: " <> show (length ownSrvs)
-                      when (r == CPRAdmin) $ hPutStrLn h $ name <> " own servers: " <> intercalate "," (map (\(SMPServer (host :| _) _ _) -> B.unpack $ strEncode host) ownSrvs)
+                      when (r == CPRAdmin) $ hPutStrLn h $ name <> " own servers: " <> intercalate "," (sort $ map (\(SMPServer (host :| _) _ _) -> B.unpack $ strEncode host) ownSrvs)
                       hPutStrLn h $ name <> " other servers count: " <> show (length otherSrvs)
               CPHelp -> hPutStrLn h "commands: stats, stats-rts, server-info, help, quit"
               CPQuit -> pure ()
