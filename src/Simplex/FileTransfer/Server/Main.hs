@@ -101,6 +101,7 @@ xftpServerCLI cfgPath logPath = do
                \\n\
                \# control_port_admin_password:\n\
                \# control_port_user_password:\n\
+               \\n\
                \[TRANSPORT]\n\
                \# host is only used to print server address on start\n"
             <> ("host: " <> T.pack host <> "\n")

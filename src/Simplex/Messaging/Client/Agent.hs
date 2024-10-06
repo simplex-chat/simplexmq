@@ -84,8 +84,8 @@ defaultSMPClientAgentConfig =
             maxInterval = 10 * second
           },
       persistErrorInterval = 30, -- seconds
-      msgQSize = 1024,
-      agentQSize = 1024,
+      msgQSize = 2048,
+      agentQSize = 2048,
       agentSubsBatchSize = 1360,
       ownServerDomains = []
     }

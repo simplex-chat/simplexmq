@@ -87,6 +87,9 @@ ntfServerCfg :: NtfServerConfig
 ntfServerCfg =
   NtfServerConfig
     { transports = [],
+      controlPort = Nothing,
+      controlPortUserAuth = Nothing,
+      controlPortAdminAuth = Nothing,
       subIdBytes = 24,
       regCodeBytes = 32,
       clientQSize = 2,
