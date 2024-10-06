@@ -36,7 +36,6 @@ import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
-import GHC.Conc (listThreads)
 import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
 import Network.Socket (ServiceName, Socket, socketToHandle)
@@ -71,6 +70,9 @@ import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.STM
+#if MIN_VERSION_base(4,18,0)
+import GHC.Conc (listThreads)
+#endif
 
 runNtfServer :: NtfServerConfig -> IO ()
 runNtfServer cfg = do
