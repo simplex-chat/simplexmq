@@ -615,6 +615,7 @@ test-suite simplexmq-test
       CoreTests.EncodingTests
       CoreTests.RetryIntervalTests
       CoreTests.SOCKSSettings
+      CoreTests.StoreLogTests
       CoreTests.TRcvQueuesTests
       CoreTests.UtilTests
       CoreTests.VersionRangeTests
