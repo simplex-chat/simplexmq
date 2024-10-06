@@ -122,6 +122,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getRcvMsg,
     getLastMsg,
     checkRcvMsgHashExists,
+    getRcvMsgBrokerTs,
     deleteMsg,
     deleteDeliveredSndMsg,
     deleteSndMsgDelivery,
@@ -1184,6 +1185,11 @@ checkRcvMsgHashExists db connId hash = do
           "SELECT 1 FROM encrypted_rcv_message_hashes WHERE conn_id = ? AND hash = ? LIMIT 1"
           (connId, hash)
       )
+
+getRcvMsgBrokerTs :: DB.Connection -> ConnId -> SMP.MsgId -> IO (Either StoreError BrokerTs)
+getRcvMsgBrokerTs db connId msgId =
+  firstRow fromOnly SEMsgNotFound $
+    DB.query db "SELECT broker_ts FROM rcv_messages WHERE conn_id = ? AND broker_id = ?" (connId, msgId)
 
 deleteMsg :: DB.Connection -> ConnId -> InternalId -> IO ()
 deleteMsg db connId msgId =

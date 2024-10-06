@@ -198,7 +198,6 @@ import Simplex.Messaging.Protocol
     NMsgMeta,
     ProtocolServer (..),
     SMPClientVersion,
-    SMPMsgMeta,
     SMPServer,
     SMPServerWithAuth,
     SndPublicAuthKey,
@@ -356,7 +355,7 @@ data AEvent (e :: AEntity) where
   MERR :: AgentMsgId -> AgentErrorType -> AEvent AEConn
   MERRS :: NonEmpty AgentMsgId -> AgentErrorType -> AEvent AEConn
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> AEvent AEConn
-  MSGNTF :: SMPMsgMeta -> AEvent AEConn
+  MSGNTF :: MsgId -> Maybe UTCTime -> AEvent AEConn
   RCVD :: MsgMeta -> NonEmpty MsgReceipt -> AEvent AEConn
   QCONT :: AEvent AEConn
   DEL_RCVQ :: SMPServer -> SMP.RecipientId -> Maybe AgentErrorType -> AEvent AEConn
