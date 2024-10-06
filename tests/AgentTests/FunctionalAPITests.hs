@@ -1681,34 +1681,45 @@ testOnlyCreatePullSlowHandshake = withAgentClientsCfg2 agentProxyCfgV8 agentProx
   (aliceId, sqSecured) <- joinConnection bob 1 True qInfo "bob's connInfo" SMOnlyCreate
   liftIO $ sqSecured `shouldBe` False
   Just ("", _, CONF confId _ "bob's connInfo") <- getMsg alice bobId $ timeout 5_000000 $ get alice
+  getMSGNTF alice bobId
   allowConnection alice bobId confId "alice's connInfo"
   liftIO $ threadDelay 1_000000
   getMsg bob aliceId $
     get bob ##> ("", aliceId, INFO "alice's connInfo")
+  getMSGNTF bob aliceId
   liftIO $ threadDelay 1_000000
   getMsg alice bobId $ pure ()
-  get alice ##> ("", bobId, CON)
+  inAnyOrder
+    (get alice)
+    [ \case ("", c, CON) -> c == bobId; _ -> False,
+      \case ("", c, MSGNTF {}) -> c == bobId; _ -> False
+    ]
   getMsg bob aliceId $
     get bob ##> ("", aliceId, CON)
+  getMSGNTF bob aliceId
   -- exchange messages
   4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
   get alice ##> ("", bobId, SENT 4)
   getMsg bob aliceId $
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
   ackMessage bob aliceId 4 Nothing
+  getMSGNTF bob aliceId
   5 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
   get bob ##> ("", aliceId, SENT 5)
   getMsg alice bobId $
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
   ackMessage alice bobId 5 Nothing
+  getMSGNTF alice bobId
 
 getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO a -> ExceptT AgentErrorType IO a
 getMsg c cId action = do
   liftIO $ noMessages c "nothing should be delivered before GET"
   Just _ <- getConnectionMessage c cId
-  r <- action
-  get c =##> \case ("", cId', MSGNTF _) -> cId == cId'; _ -> False
-  pure r
+  action
+
+getMSGNTF :: AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
+getMSGNTF c cId =
+  get c =##> \case ("", c', MSGNTF {}) -> c' == cId; _ -> False
 
 testOnlyCreatePull :: IO ()
 testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
@@ -1716,11 +1727,13 @@ testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
   (aliceId, sqSecured) <- joinConnection bob 1 True qInfo "bob's connInfo" SMOnlyCreate
   liftIO $ sqSecured `shouldBe` True
   Just ("", _, CONF confId _ "bob's connInfo") <- getMsg alice bobId $ timeout 5_000000 $ get alice
+  getMSGNTF alice bobId
   allowConnection alice bobId confId "alice's connInfo"
   liftIO $ threadDelay 1_000000
   getMsg bob aliceId $ do
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
+  getMSGNTF bob aliceId
   liftIO $ threadDelay 1_000000
   get alice ##> ("", bobId, CON) -- sent to initiating party after sending confirmation
   -- exchange messages
@@ -1729,11 +1742,13 @@ testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
   getMsg bob aliceId $
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
   ackMessage bob aliceId 2 Nothing
+  getMSGNTF bob aliceId
   3 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
   get bob ##> ("", aliceId, SENT 3)
   getMsg alice bobId $
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
   ackMessage alice bobId 3 Nothing
+  getMSGNTF alice bobId
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection = makeConnection_ PQSupportOn True

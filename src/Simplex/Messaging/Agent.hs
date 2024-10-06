@@ -1681,10 +1681,14 @@ synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchroni
     _ -> throwE $ CMD PROHIBITED "synchronizeRatchet: not duplex"
 
 ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM ()
-ackQueueMessage c rq@RcvQueue {userId, server} srvMsgId = do
+ackQueueMessage c rq@RcvQueue {userId, connId, server} srvMsgId = do
   atomically $ incSMPServerStat c userId server ackAttempts
   tryAgentError (sendAck c rq srvMsgId) >>= \case
-    Right _ -> atomically $ incSMPServerStat c userId server ackMsgs
+    Right _ -> do
+      atomically $ incSMPServerStat c userId server ackMsgs
+      whenM (liftIO $ hasGetLock c rq) $ do
+        brokerTs_ <- (Just <$> withStore c (\db -> getRcvMsgBrokerTs db connId srvMsgId)) `catchAgentError` \_ -> pure Nothing
+        atomically $ writeTBQueue (subQ c) ("", connId, AEvt SAEConn $ MSGNTF srvMsgId brokerTs_)
     Left (SMP _ SMP.NO_MSG) -> atomically $ incSMPServerStat c userId server ackNoMsgErrs
     Left e -> do
       unless (temporaryOrHostError e) $ atomically $ incSMPServerStat c userId server ackOtherErrs
@@ -2285,12 +2289,9 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
             atomically $ incSMPServerStat c userId srv recvMsgs
             void . handleNotifyAck $ do
               msg' <- decryptSMPMessage rq msg
-              ack' <- handleNotifyAck $ case msg' of
+              handleNotifyAck $ case msg' of
                 SMP.ClientRcvMsgBody {msgTs = srvTs, msgFlags, msgBody} -> processClientMsg srvTs msgFlags msgBody
                 SMP.ClientRcvMsgQuota {} -> queueDrained >> ack
-              whenM (liftIO $ hasGetLock c rq) $
-                notify (MSGNTF $ SMP.rcvMessageMeta srvMsgId msg')
-              pure ack'
             where
               queueDrained = case conn of
                 DuplexConnection _ _ sqs -> void $ enqueueMessages c cData sqs SMP.noMsgFlags $ A_QCONT (sndAddress rq)
