@@ -28,7 +28,7 @@ import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Notifications.Transport (NTFVersion, VersionRangeNTF)
-import Simplex.Messaging.Protocol (CorrId, SMPServer, Transmission)
+import Simplex.Messaging.Protocol (BasicAuth, CorrId, SMPServer, Transmission)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -40,6 +40,9 @@ import UnliftIO.STM
 
 data NtfServerConfig = NtfServerConfig
   { transports :: [(ServiceName, ATransport, AddHTTP)],
+    controlPort :: Maybe ServiceName,
+    controlPortUserAuth :: Maybe BasicAuth,
+    controlPortAdminAuth :: Maybe BasicAuth,
     subIdBytes :: Int,
     regCodeBytes :: Int,
     clientQSize :: Natural,
@@ -155,8 +158,8 @@ data NtfRequest
   | NtfReqPing CorrId NtfEntityId
 
 data NtfServerClient = NtfServerClient
-  { rcvQ :: TBQueue NtfRequest,
-    sndQ :: TBQueue (Transmission NtfResponse),
+  { rcvQ :: TBQueue (NonEmpty NtfRequest),
+    sndQ :: TBQueue (NonEmpty (Transmission NtfResponse)),
     ntfThParams :: THandleParams NTFVersion 'TServer,
     connected :: TVar Bool,
     rcvActiveAt :: TVar SystemTime,

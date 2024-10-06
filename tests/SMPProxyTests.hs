@@ -375,11 +375,11 @@ agentViaProxyRetryOffline = do
             ackMessage alice bobId (baseId + 4) Nothing
   where
     withServer :: (ThreadId -> IO a) -> IO a
-    withServer = withServer_ testStoreLogFile testStoreMsgsFile testPort
+    withServer = withServer_ testStoreLogFile testStoreMsgsFile testStoreNtfsFile testPort
     withServer2 :: (ThreadId -> IO a) -> IO a
-    withServer2 = withServer_ testStoreLogFile2 testStoreMsgsFile2 testPort2
-    withServer_ storeLog storeMsgs port =
-      withSmpServerConfigOn (transport @TLS) proxyCfg {storeLogFile = Just storeLog, storeMsgsFile = Just storeMsgs} port
+    withServer2 = withServer_ testStoreLogFile2 testStoreMsgsFile2 testStoreNtfsFile2 testPort2
+    withServer_ storeLog storeMsgs storeNtfs port =
+      withSmpServerConfigOn (transport @TLS) proxyCfg {storeLogFile = Just storeLog, storeMsgsFile = Just storeMsgs, storeNtfsFile = Just storeNtfs} port
     a `up` cId = nGet a =##> \case ("", "", UP _ [c]) -> c == cId; _ -> False
     a `down` cId = nGet a =##> \case ("", "", DOWN _ [c]) -> c == cId; _ -> False
     aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}

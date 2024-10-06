@@ -150,6 +150,7 @@ data AgentConfig = AgentConfig
     deleteErrorCount :: Int,
     ntfCron :: Word16,
     ntfBatchSize :: Int,
+    ntfSubFirstCheckInterval :: NominalDiffTime,
     ntfSubCheckInterval :: NominalDiffTime,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -219,8 +220,9 @@ defaultAgentConfig =
       xftpMaxRecipientsPerRequest = 200,
       deleteErrorCount = 10,
       ntfCron = 20, -- minutes
-      ntfBatchSize = 200,
-      ntfSubCheckInterval = nominalDay,
+      ntfBatchSize = 150,
+      ntfSubFirstCheckInterval = nominalDay,
+      ntfSubCheckInterval = 3 * nominalDay,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
@@ -257,7 +259,8 @@ data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
     ntfSubQ :: TBQueue (NtfSupervisorCommand, NonEmpty ConnId),
     ntfWorkers :: TMap NtfServer Worker,
-    ntfSMPWorkers :: TMap SMPServer Worker
+    ntfSMPWorkers :: TMap SMPServer Worker,
+    ntfTknDelWorkers :: TMap NtfServer Worker
   }
 
 data NtfSupervisorCommand = NSCCreate | NSCSmpDelete | NSCDeleteSub
@@ -269,7 +272,8 @@ newNtfSubSupervisor qSize = do
   ntfSubQ <- newTBQueueIO qSize
   ntfWorkers <- TM.emptyIO
   ntfSMPWorkers <- TM.emptyIO
-  pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
+  ntfTknDelWorkers <- TM.emptyIO
+  pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers, ntfTknDelWorkers}
 
 data XFTPAgent = XFTPAgent
   { -- if set, XFTP file paths will be considered as relative to this directory

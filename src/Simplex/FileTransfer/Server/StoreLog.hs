@@ -44,6 +44,7 @@ data FileStoreLogRecord
   | AddRecipients SenderId (NonEmpty FileRecipient)
   | DeleteFile SenderId
   | AckFile RecipientId
+  deriving (Show)
 
 instance StrEncoding FileStoreLogRecord where
   strEncode = \case

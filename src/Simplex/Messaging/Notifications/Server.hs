@@ -1,3 +1,5 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -19,10 +21,12 @@ import Control.Monad.Except
 import Control.Monad.Reader
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Either (partitionEithers)
 import Data.Functor (($>))
 import Data.IORef
 import Data.Int (Int64)
-import Data.List (intercalate, sort)
+import qualified Data.IntSet as IS
+import Data.List (intercalate, partition, sort)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -33,34 +37,42 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import GHC.IORef (atomicSwapIORef)
-import Network.Socket (ServiceName)
+import GHC.Stats (getRTSStats)
+import Network.Socket (ServiceName, Socket, socketToHandle)
 import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmission (..))
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Notifications.Server.Control
 import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..), PushNotification (..), PushProviderError (..))
 import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Notifications.Transport
-import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, pattern NoEntity, encodeTransmission, tGet, tPut)
+import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, pattern NoEntity, pattern SMPServer, encodeTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
-import Simplex.Messaging.Server.Stats
+import Simplex.Messaging.Server.Control (CPClientRole (..))
+import Simplex.Messaging.Server.Stats (PeriodStats (..), PeriodStatCounts (..), periodStatCounts, updatePeriodStats)
+import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..), defaultSupportedParams)
-import Simplex.Messaging.Transport.Server (AddHTTP, runTransportServer)
+import Simplex.Messaging.Transport.Buffer (trimCR)
+import Simplex.Messaging.Transport.Server (AddHTTP, runTransportServer, runLocalTCPServer)
 import Simplex.Messaging.Util
 import System.Exit (exitFailure)
-import System.IO (BufferMode (..), hPutStrLn, hSetBuffering)
+import System.IO (BufferMode (..), hClose, hPrint, hPutStrLn, hSetBuffering, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
-import UnliftIO (IOMode (..), async, uninterruptibleCancel, withFile)
+import UnliftIO (IOMode (..), UnliftIO, askUnliftIO, async, uninterruptibleCancel, unliftIO, withFile)
 import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.STM
+#if MIN_VERSION_base(4,18,0)
+import GHC.Conc (listThreads)
+#endif
 
 runNtfServer :: NtfServerConfig -> IO ()
 runNtfServer cfg = do
@@ -78,7 +90,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
   s <- asks subscriber
   ps <- asks pushServer
   resubscribe s
-  raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports <> serverStatsThread_ cfg) `finally` stopServer
+  raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports <> serverStatsThread_ cfg <> controlPortThread_ cfg) `finally` stopServer
   where
     runServer :: (ServiceName, ATransport, AddHTTP) -> M ()
     runServer (tcpPort, ATransport t, _addHTTP) = do
@@ -151,6 +163,131 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
               ]
         liftIO $ threadDelay' interval
 
+    controlPortThread_ :: NtfServerConfig -> [M ()]
+    controlPortThread_ NtfServerConfig {controlPort = Just port} = [runCPServer port]
+    controlPortThread_ _ = []
+
+    runCPServer :: ServiceName -> M ()
+    runCPServer port = do
+      cpStarted <- newEmptyTMVarIO
+      u <- askUnliftIO
+      liftIO $ do
+        labelMyThread "control port server"
+        runLocalTCPServer cpStarted port $ runCPClient u
+      where
+        runCPClient :: UnliftIO (ReaderT NtfEnv IO) -> Socket -> IO ()
+        runCPClient u sock = do
+          labelMyThread "control port client"
+          h <- socketToHandle sock ReadWriteMode
+          hSetBuffering h LineBuffering
+          hSetNewlineMode h universalNewlineMode
+          hPutStrLn h "Ntf server control port\n'help' for supported commands"
+          role <- newTVarIO CPRNone
+          cpLoop h role
+          where
+            cpLoop h role = do
+              s <- trimCR <$> B.hGetLine h
+              case strDecode s of
+                Right CPQuit -> hClose h
+                Right cmd -> logCmd s cmd >> processCP h role cmd >> cpLoop h role
+                Left err -> hPutStrLn h ("error: " <> err) >> cpLoop h role
+            logCmd s cmd = when shouldLog $ logWarn $ "ControlPort: " <> tshow s
+              where
+                shouldLog = case cmd of
+                  CPAuth _ -> False
+                  CPHelp -> False
+                  CPQuit -> False
+                  CPSkip -> False
+                  _ -> True
+            processCP h role = \case
+              CPAuth auth -> atomically $ writeTVar role $! newRole cfg
+                where
+                  newRole NtfServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin}
+                    | Just auth == admin = CPRAdmin
+                    | Just auth == user = CPRUser
+                    | otherwise = CPRNone
+              CPStats -> withUserRole $ do
+                ss <- unliftIO u $ asks serverStats
+                let getStat :: (NtfServerStats -> IORef a) -> IO a
+                    getStat var = readIORef (var ss)
+                    putStat :: Show a => String -> (NtfServerStats -> IORef a) -> IO ()
+                    putStat label var = getStat var >>= \v -> hPutStrLn h $ label <> ": " <> show v
+                putStat "fromTime" fromTime
+                putStat "tknCreated" tknCreated
+                putStat "tknVerified" tknVerified
+                putStat "tknDeleted" tknDeleted
+                putStat "subCreated" subCreated
+                putStat "subDeleted" subDeleted
+                putStat "ntfReceived" ntfReceived
+                getStat (day . activeTokens) >>= \v -> hPutStrLn h $ "daily active tokens: " <> show (IS.size v)
+                getStat (day . activeSubs) >>= \v -> hPutStrLn h $ "daily active subscriptions: " <> show (IS.size v)
+              CPStatsRTS -> tryAny getRTSStats >>= either (hPrint h) (hPrint h)
+              CPServerInfo -> readTVarIO role >>= \case
+                CPRNone -> do
+                  logError "Unauthorized control port command"
+                  hPutStrLn h "AUTH"
+                r -> do
+#if MIN_VERSION_base(4,18,0)
+                  threads <- liftIO listThreads
+                  hPutStrLn h $ "Threads: " <> show (length threads)
+#else
+                  hPutStrLn h "Threads: not available on GHC 8.10"
+#endif
+                  NtfSubscriber {smpSubscribers, smpAgent = a} <- unliftIO u $ asks subscriber
+                  putSMPWorkers a "SMP subcscribers" smpSubscribers
+                  let SMPClientAgent {smpClients, smpSessions, srvSubs, pendingSrvSubs, smpSubWorkers} = a
+                  putSMPWorkers a "SMP clients" smpClients
+                  putSMPWorkers a "SMP subscription workers" smpSubWorkers
+                  sessions <- readTVarIO smpSessions
+                  hPutStrLn h $ "SMP sessions count: " <> show (M.size sessions)
+                  putSMPSubs a "SMP subscriptions" srvSubs
+                  putSMPSubs a "Pending SMP subscriptions" pendingSrvSubs
+                  where
+                    putSMPSubs :: SMPClientAgent -> String -> TMap SMPServer (TMap SMPSub a) -> IO ()
+                    putSMPSubs a name v = do
+                      subs <- readTVarIO v
+                      (totalCnt, ownCount, otherCnt, servers, ownByServer) <- foldM countSubs (0, 0, 0, [], M.empty) $ M.assocs subs
+                      showServers a name servers
+                      hPutStrLn h $ name <> " total: " <> show totalCnt
+                      hPutStrLn h $ name <> " on own servers: " <> show ownCount
+                      when (r == CPRAdmin && not (null ownByServer)) $
+                        forM_ (M.assocs ownByServer) $ \(SMPServer (host :| _) _ _, cnt) ->
+                          hPutStrLn h $ name <> " on " <> B.unpack (strEncode host) <> ": " <> show cnt
+                      hPutStrLn h $ name <> " on other servers: " <> show otherCnt
+                      where
+                        countSubs :: (Int, Int, Int, [SMPServer], M.Map SMPServer Int) -> (SMPServer, TMap SMPSub a) -> IO (Int, Int, Int, [SMPServer], M.Map SMPServer Int)
+                        countSubs (!totalCnt, !ownCount, !otherCnt, !servers, !ownByServer) (srv, srvSubs) = do
+                          cnt <- M.size <$> readTVarIO srvSubs
+                          let totalCnt' = totalCnt + cnt
+                              ownServer = isOwnServer a srv
+                              (ownCount', otherCnt')
+                                | ownServer = (ownCount + cnt, otherCnt)
+                                | otherwise = (ownCount, otherCnt + cnt)
+                              servers' = if cnt > 0 then srv : servers else servers
+                              ownByServer'
+                                | r == CPRAdmin && ownServer && cnt > 0 = M.alter (Just . maybe cnt (+ cnt)) srv ownByServer
+                                | otherwise = ownByServer
+                          pure (totalCnt', ownCount', otherCnt', servers', ownByServer')
+                    putSMPWorkers :: SMPClientAgent -> String -> TMap SMPServer a -> IO ()
+                    putSMPWorkers a name v = readTVarIO v >>= showServers a name . M.keys
+                    showServers :: SMPClientAgent -> String -> [SMPServer] -> IO ()
+                    showServers a name srvs = do
+                      let (ownSrvs, otherSrvs) = partition (isOwnServer a) srvs
+                      hPutStrLn h $ name <> " own servers count: " <> show (length ownSrvs)
+                      when (r == CPRAdmin) $ hPutStrLn h $ name <> " own servers: " <> intercalate "," (sort $ map (\(SMPServer (host :| _) _ _) -> B.unpack $ strEncode host) ownSrvs)
+                      hPutStrLn h $ name <> " other servers count: " <> show (length otherSrvs)
+              CPHelp -> hPutStrLn h "commands: stats, stats-rts, server-info, help, quit"
+              CPQuit -> pure ()
+              CPSkip -> pure ()
+              where
+                withUserRole action =
+                  readTVarIO role >>= \case
+                    CPRAdmin -> action
+                    CPRUser -> action
+                    _ -> do
+                      logError "Unauthorized control port command"
+                      hPutStrLn h "AUTH"
+
 resubscribe :: NtfSubscriber -> M ()
 resubscribe NtfSubscriber {newSubQ} = do
   logInfo "Preparing SMP resubscriptions..."
@@ -219,9 +356,8 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
               NtfPushServer {pushQ} <- asks pushServer
               stats <- asks serverStats
               liftIO $ updatePeriodStats (activeSubs stats) ntfId
-              atomically $
-                findNtfSubscriptionToken st smpQueue
-                  >>= mapM_ (\tkn -> writeTBQueue pushQ (tkn, PNMessage (PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} :| [])))
+              atomically (findNtfSubscriptionToken st smpQueue)
+                >>= mapM_ (\tkn -> atomically (writeTBQueue pushQ (tkn, PNMessage (PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} :| []))))
               incNtfStat ntfReceived
             Right SMP.END ->
               whenM (atomically $ activeClientSession' ca sessionId srv) $
@@ -354,27 +490,28 @@ clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connecte
 
 receive :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> M ()
 receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
-  ts <- liftIO $ tGet th
-  forM_ ts $ \t@(_, _, (corrId, entId, cmdOrError)) -> do
-    atomically . writeTVar rcvActiveAt =<< liftIO getSystemTime
-    logDebug "received transmission"
-    case cmdOrError of
-      Left e -> write sndQ (corrId, entId, NRErr e)
-      Right cmd ->
-        verifyNtfTransmission ((,C.cbNonce (SMP.bs corrId)) <$> thAuth) t cmd >>= \case
-          VRVerified req -> write rcvQ req
-          VRFailed -> write sndQ (corrId, entId, NRErr AUTH)
+  ts <- L.toList <$> liftIO (tGet th)
+  atomically . (writeTVar rcvActiveAt $!) =<< liftIO getSystemTime
+  (errs, cmds) <- partitionEithers <$> mapM cmdAction ts
+  write sndQ errs
+  write rcvQ cmds
   where
-    write q t = atomically $ writeTBQueue q t
+    cmdAction t@(_, _, (corrId, entId, cmdOrError)) =
+      case cmdOrError of
+        Left e -> pure $ Left (corrId, entId, NRErr e)
+        Right cmd ->
+          verified <$> verifyNtfTransmission ((,C.cbNonce (SMP.bs corrId)) <$> thAuth) t cmd
+          where
+            verified = \case
+              VRVerified req -> Right req
+              VRFailed -> Left (corrId, entId, NRErr AUTH)
+    write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> IO ()
 send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
-  t <- atomically $ readTBQueue sndQ
-  void . liftIO $ tPut h [Right (Nothing, encodeTransmission params t)]
+  ts <- atomically $ readTBQueue sndQ
+  void . liftIO $ tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
   atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
-
--- instance Show a => Show (TVar a) where
---   show x = unsafePerformIO $ show <$> readTVarIO x
 
 data VerificationResult = VRVerified NtfRequest | VRFailed
 
@@ -433,7 +570,7 @@ client :: NtfServerClient -> NtfSubscriber -> NtfPushServer -> M ()
 client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPushServer {pushQ, intervalNotifiers} =
   forever $
     atomically (readTBQueue rcvQ)
-      >>= processCommand
+      >>= mapM processCommand
       >>= atomically . writeTBQueue sndQ
   where
     processCommand :: NtfRequest -> M (Transmission NtfResponse)

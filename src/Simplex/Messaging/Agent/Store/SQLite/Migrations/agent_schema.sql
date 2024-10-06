@@ -403,6 +403,16 @@ CREATE TABLE servers_stats(
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
 );
+CREATE TABLE ntf_tokens_to_delete(
+  ntf_token_to_delete_id INTEGER PRIMARY KEY,
+  ntf_host TEXT NOT NULL,
+  ntf_port TEXT NOT NULL,
+  ntf_key_hash BLOB NOT NULL,
+  tkn_id BLOB NOT NULL, -- token ID assigned by notifications server
+  tkn_priv_key BLOB NOT NULL, -- client's private key to sign token commands,
+del_failed INTEGER DEFAULT 0,
+created_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);
 CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);
 CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(conn_id, snd_queue_id);

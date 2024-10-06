@@ -38,6 +38,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.STM
+import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
@@ -61,6 +62,7 @@ data ServerConfig = ServerConfig
     msgIdBytes :: Int,
     storeLogFile :: Maybe FilePath,
     storeMsgsFile :: Maybe FilePath,
+    storeNtfsFile :: Maybe FilePath,
     -- | set to False to prohibit creating new queues
     allowNewQueues :: Bool,
     -- | simple password that the clients need to pass in handshake to be able to create new queues
@@ -70,6 +72,8 @@ data ServerConfig = ServerConfig
     controlPortAdminAuth :: Maybe BasicAuth,
     -- | time after which the messages can be removed from the queues and check interval, seconds
     messageExpiration :: Maybe ExpirationConfig,
+    -- | notification expiration interval (seconds)
+    notificationExpiration :: ExpirationConfig,
     -- | time after which the socket with inactive client can be disconnected (without any messages or commands, incl. PING),
     -- and check interval, seconds
     inactiveClientExpiration :: Maybe ExpirationConfig,
@@ -82,6 +86,8 @@ data ServerConfig = ServerConfig
     serverStatsLogFile :: FilePath,
     -- | file to save and restore stats
     serverStatsBackupFile :: Maybe FilePath,
+    -- | notification delivery interval
+    ntfDeliveryInterval :: Int,
     -- | interval between sending pending END events to unsubscribed clients, seconds
     pendingENDInterval :: Int,
     smpCredentials :: ServerCredentials,
@@ -110,6 +116,16 @@ defaultMessageExpiration =
       checkInterval = 43200 -- seconds, 12 hours
     }
 
+defNtfExpirationHours :: Int64
+defNtfExpirationHours = 24
+
+defaultNtfExpiration :: ExpirationConfig
+defaultNtfExpiration =
+  ExpirationConfig
+    { ttl = defNtfExpirationHours * 3600, -- seconds
+      checkInterval = 3600 -- seconds, 1 hour
+    }
+
 defaultInactiveClientExpiration :: ExpirationConfig
 defaultInactiveClientExpiration =
   ExpirationConfig
@@ -127,6 +143,7 @@ data Env = Env
     serverIdentity :: KeyHash,
     queueStore :: QueueStore,
     msgStore :: STMMsgStore,
+    ntfStore :: NtfStore,
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerCreds :: T.Credential,
@@ -229,6 +246,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
   server <- newServer
   queueStore <- newQueueStore
   msgStore <- newMsgStore
+  ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
   storeLog <-
     forM storeLogFile $ \f -> do
@@ -244,7 +262,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
-  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, random, storeLog, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
+  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, ntfStore, random, storeLog, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     getCredentials protocol creds = do
       files <- missingCreds

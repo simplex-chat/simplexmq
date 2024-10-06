@@ -70,7 +70,9 @@ module Simplex.Messaging.Agent.Client
     agentNtfDeleteToken,
     agentNtfEnableCron,
     agentNtfCreateSubscription,
+    agentNtfCreateSubscriptions,
     agentNtfCheckSubscription,
+    agentNtfCheckSubscriptions,
     agentNtfDeleteSubscription,
     agentXFTPDownloadChunk,
     agentXFTPNewChunk,
@@ -153,6 +155,7 @@ module Simplex.Messaging.Agent.Client
     incXFTPServerStat',
     incXFTPServerSizeStat,
     incNtfServerStat,
+    incNtfServerStat',
     AgentWorkersDetails (..),
     getAgentWorkersDetails,
     AgentWorkersSummary (..),
@@ -1718,8 +1721,8 @@ agentNtfReplaceToken :: AgentClient -> NtfTokenId -> NtfToken -> DeviceToken -> 
 agentNtfReplaceToken c tknId NtfToken {ntfServer, ntfPrivKey} token =
   withNtfClient c ntfServer tknId "TRPL" $ \ntf -> ntfReplaceToken ntf ntfPrivKey tknId token
 
-agentNtfDeleteToken :: AgentClient -> NtfTokenId -> NtfToken -> AM ()
-agentNtfDeleteToken c tknId NtfToken {ntfServer, ntfPrivKey} =
+agentNtfDeleteToken :: AgentClient -> NtfServer -> C.APrivateAuthKey -> NtfTokenId -> AM ()
+agentNtfDeleteToken c ntfServer ntfPrivKey tknId =
   withNtfClient c ntfServer tknId "TDEL" $ \ntf -> ntfDeleteToken ntf ntfPrivKey tknId
 
 agentNtfEnableCron :: AgentClient -> NtfTokenId -> NtfToken -> Word16 -> AM ()
@@ -1730,9 +1733,33 @@ agentNtfCreateSubscription :: AgentClient -> NtfTokenId -> NtfToken -> SMPQueueN
 agentNtfCreateSubscription c tknId NtfToken {ntfServer, ntfPrivKey} smpQueue nKey =
   withNtfClient c ntfServer tknId "SNEW" $ \ntf -> ntfCreateSubscription ntf ntfPrivKey (NewNtfSub tknId smpQueue nKey)
 
-agentNtfCheckSubscription :: AgentClient -> NtfSubscriptionId -> NtfToken -> AM NtfSubStatus
-agentNtfCheckSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
+agentNtfCreateSubscriptions :: AgentClient -> NtfToken -> NonEmpty (NewNtfEntity 'Subscription) -> AM' (NonEmpty (Either AgentErrorType NtfSubscriptionId))
+agentNtfCreateSubscriptions = withNtfBatch "SNEW" ntfCreateSubscriptions
+
+agentNtfCheckSubscription :: AgentClient -> NtfToken -> NtfSubscriptionId -> AM NtfSubStatus
+agentNtfCheckSubscription c NtfToken {ntfServer, ntfPrivKey} subId =
   withNtfClient c ntfServer subId "SCHK" $ \ntf -> ntfCheckSubscription ntf ntfPrivKey subId
+
+agentNtfCheckSubscriptions :: AgentClient -> NtfToken -> NonEmpty NtfSubscriptionId -> AM' (NonEmpty (Either AgentErrorType NtfSubStatus))
+agentNtfCheckSubscriptions = withNtfBatch "SCHK" ntfCheckSubscriptions
+
+-- This batch sends all commands to one ntf server (client can only use one server at a time)
+withNtfBatch ::
+  ByteString ->
+  (NtfClient -> C.APrivateAuthKey -> NonEmpty a -> IO (NonEmpty (Either NtfClientError r))) ->
+  AgentClient ->
+  NtfToken ->
+  NonEmpty a ->
+  AM' (NonEmpty (Either AgentErrorType r))
+withNtfBatch cmdStr action c NtfToken {ntfServer, ntfPrivKey} subs = do
+  let tSess = (0, ntfServer, Nothing)
+  tryAgentError' (getNtfServerClient c tSess) >>= \case
+    Left e -> pure $ L.map (\_ -> Left e) subs
+    Right ntf -> liftIO $ do
+      logServer' "-->" c ntfServer (bshow (length subs) <> " subscriptions") cmdStr
+      L.map agentError <$> action ntf ntfPrivKey subs
+      where
+        agentError = first $ protocolClientError NTF $ clientServer ntf
 
 agentNtfDeleteSubscription :: AgentClient -> NtfSubscriptionId -> NtfToken -> AM ()
 agentNtfDeleteSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
@@ -1841,6 +1868,7 @@ withWork c doWork getWork action =
 withWorkItems :: AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError [Either StoreError a])) -> (NonEmpty a -> AM ()) -> AM ()
 withWorkItems c doWork getWork action = do
   withStore' c getWork >>= \case
+    Right [] -> noWork
     Right rs -> do
       let (errs, items) = partitionEithers rs
       case L.nonEmpty items of
@@ -2058,8 +2086,12 @@ incXFTPServerStat_ = incServerStat (\AgentClient {xftpServersStats = s} -> s) ne
 {-# INLINE incXFTPServerStat_ #-}
 
 incNtfServerStat :: AgentClient -> UserId -> NtfServer -> (AgentNtfServerStats -> TVar Int) -> STM ()
-incNtfServerStat c userId srv sel = incServerStat (\AgentClient {ntfServersStats = s} -> s) newAgentNtfServerStats c userId srv sel 1
+incNtfServerStat c userId srv sel = incNtfServerStat' c userId srv sel 1
 {-# INLINE incNtfServerStat #-}
+
+incNtfServerStat' :: AgentClient -> UserId -> NtfServer -> (AgentNtfServerStats -> TVar Int) -> Int -> STM ()
+incNtfServerStat' = incServerStat (\AgentClient {ntfServersStats = s} -> s) newAgentNtfServerStats
+{-# INLINE incNtfServerStat' #-}
 
 incServerStat :: Num n => (AgentClient -> TMap (UserId, ProtocolServer p) s) -> STM s -> AgentClient -> UserId -> ProtocolServer p -> (s -> TVar n) -> n -> STM ()
 incServerStat statsSel mkNewStats c userId srv sel n = do

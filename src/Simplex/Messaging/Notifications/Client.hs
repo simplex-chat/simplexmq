@@ -8,6 +8,8 @@ module Simplex.Messaging.Notifications.Client where
 
 import Control.Monad.Except
 import Control.Monad.Trans.Except
+import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import Data.Word (Word16)
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
@@ -56,11 +58,29 @@ ntfCreateSubscription c pKey newSub =
     NRSubId subId -> pure subId
     r -> throwE $ unexpectedResponse r
 
+ntfCreateSubscriptions :: NtfClient -> C.APrivateAuthKey -> NonEmpty (NewNtfEntity 'Subscription) -> IO (NonEmpty (Either NtfClientError NtfSubscriptionId))
+ntfCreateSubscriptions c pKey newSubs = L.map process <$> sendProtocolCommands c cs
+  where
+    cs = L.map (\newSub -> (Just pKey, NoEntity, NtfCmd SSubscription $ SNEW newSub)) newSubs
+    process (Response _ r) = case r of
+      Right (NRSubId subId) -> Right subId
+      Right r' -> Left $ unexpectedResponse r'
+      Left e -> Left e
+
 ntfCheckSubscription :: NtfClient -> C.APrivateAuthKey -> NtfSubscriptionId -> ExceptT NtfClientError IO NtfSubStatus
 ntfCheckSubscription c pKey subId =
   sendNtfCommand c (Just pKey) subId SCHK >>= \case
     NRSub stat -> pure stat
     r -> throwE $ unexpectedResponse r
+
+ntfCheckSubscriptions :: NtfClient -> C.APrivateAuthKey -> NonEmpty NtfSubscriptionId -> IO (NonEmpty (Either NtfClientError NtfSubStatus))
+ntfCheckSubscriptions c pKey subIds = L.map process <$> sendProtocolCommands c cs
+  where
+    cs = L.map (\subId -> (Just pKey, subId, NtfCmd SSubscription SCHK)) subIds
+    process (Response _ r) = case r of
+      Right (NRSub stat) -> Right stat
+      Right r' -> Left $ unexpectedResponse r'
+      Left e -> Left e
 
 ntfDeleteSubscription :: NtfClient -> C.APrivateAuthKey -> NtfSubscriptionId -> ExceptT NtfClientError IO ()
 ntfDeleteSubscription = okNtfCommand SDEL

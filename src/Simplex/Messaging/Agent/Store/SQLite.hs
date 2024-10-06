@@ -150,6 +150,13 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateNtfMode,
     updateNtfToken,
     removeNtfToken,
+    addNtfTokenToDelete,
+    deleteExpiredNtfTokensToDelete,
+    NtfTokenToDelete,
+    getNextNtfTokenToDelete,
+    markNtfTokenToDeleteFailed_, -- exported for tests
+    getPendingDelTknServers,
+    deleteNtfTokenToDelete,
     -- Notification subscription persistence
     NtfSupervisorSub,
     getNtfSubscription,
@@ -160,7 +167,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     setNullNtfSubscriptionAction,
     deleteNtfSubscription,
     deleteNtfSubscription',
-    getNextNtfSubNTFAction,
+    getNextNtfSubNTFActions,
     markNtfSubActionNtfFailed_, -- exported for tests
     getNextNtfSubSMPActions,
     markNtfSubActionSMPFailed_, -- exported for tests
@@ -1486,6 +1493,70 @@ removeNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer 
     |]
     (provider, token, host, port)
 
+addNtfTokenToDelete :: DB.Connection -> NtfServer -> C.APrivateAuthKey -> NtfTokenId -> IO ()
+addNtfTokenToDelete db ProtocolServer {host, port, keyHash} ntfPrivKey tknId =
+  DB.execute db "INSERT INTO ntf_tokens_to_delete (ntf_host, ntf_port, ntf_key_hash, tkn_id, tkn_priv_key) VALUES (?,?,?,?,?)" (host, port, keyHash, tknId, ntfPrivKey)
+
+deleteExpiredNtfTokensToDelete :: DB.Connection -> NominalDiffTime -> IO ()
+deleteExpiredNtfTokensToDelete db ttl = do
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
+  DB.execute db "DELETE FROM ntf_tokens_to_delete WHERE created_at < ?" (Only cutoffTs)
+
+type NtfTokenToDelete = (Int64, C.APrivateAuthKey, NtfTokenId)
+
+getNextNtfTokenToDelete :: DB.Connection -> NtfServer -> IO (Either StoreError (Maybe NtfTokenToDelete))
+getNextNtfTokenToDelete db (NtfServer ntfHost ntfPort _) =
+  getWorkItem "ntf tkn del" getNtfTknDbId getNtfTknToDelete (markNtfTokenToDeleteFailed_ db)
+  where
+    getNtfTknDbId :: IO (Maybe Int64)
+    getNtfTknDbId =
+      maybeFirstRow fromOnly $
+        DB.query
+          db
+          [sql|
+            SELECT ntf_token_to_delete_id
+            FROM ntf_tokens_to_delete
+            WHERE ntf_host = ? AND ntf_port = ?
+              AND del_failed = 0
+            ORDER BY created_at ASC
+            LIMIT 1
+          |]
+          (ntfHost, ntfPort)
+    getNtfTknToDelete :: Int64 -> IO (Either StoreError NtfTokenToDelete)
+    getNtfTknToDelete tknDbId =
+      firstRow ntfTokenToDelete err $
+        DB.query
+          db
+          [sql|
+            SELECT tkn_priv_key, tkn_id
+            FROM ntf_tokens_to_delete
+            WHERE ntf_token_to_delete_id = ?
+          |]
+          (Only tknDbId)
+      where
+        err = SEInternal $ "ntf token to delete " <> bshow tknDbId <> " returned []"
+        ntfTokenToDelete (tknPrivKey, tknId) = (tknDbId, tknPrivKey, tknId)
+
+markNtfTokenToDeleteFailed_ :: DB.Connection -> Int64 -> IO ()
+markNtfTokenToDeleteFailed_ db tknDbId =
+  DB.execute db "UPDATE ntf_tokens_to_delete SET del_failed = 1 where ntf_token_to_delete_id = ?" (Only tknDbId)
+
+getPendingDelTknServers :: DB.Connection -> IO [NtfServer]
+getPendingDelTknServers db =
+  map toNtfServer
+    <$> DB.query_
+      db
+      [sql|
+        SELECT DISTINCT ntf_host, ntf_port, ntf_key_hash
+        FROM ntf_tokens_to_delete
+      |]
+  where
+    toNtfServer (host, port, keyHash) = NtfServer host port keyHash
+
+deleteNtfTokenToDelete :: DB.Connection -> Int64 -> IO ()
+deleteNtfTokenToDelete db tknDbId =
+  DB.execute db "DELETE FROM ntf_tokens_to_delete WHERE ntf_token_to_delete_id = ?" (Only tknDbId)
+
 type NtfSupervisorSub = (NtfSubscription, Maybe (NtfSubAction, NtfActionTs))
 
 getNtfSubscription :: DB.Connection -> ConnId -> IO (Maybe NtfSupervisorSub)
@@ -1627,14 +1698,14 @@ deleteNtfSubscription' :: DB.Connection -> ConnId -> IO ()
 deleteNtfSubscription' db connId = do
   DB.execute db "DELETE FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
 
-getNextNtfSubNTFAction :: DB.Connection -> NtfServer -> IO (Either StoreError (Maybe (NtfSubscription, NtfSubNTFAction, NtfActionTs)))
-getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) =
-  getWorkItem "ntf NTF" getNtfConnId getNtfSubAction (markNtfSubActionNtfFailed_ db)
+getNextNtfSubNTFActions :: DB.Connection -> NtfServer -> Int -> IO (Either StoreError [Either StoreError (NtfSubNTFAction, NtfSubscription, NtfActionTs)])
+getNextNtfSubNTFActions db ntfServer@(NtfServer ntfHost ntfPort _) ntfBatchSize =
+  getWorkItems "ntf NTF" getNtfConnIds getNtfSubAction (markNtfSubActionNtfFailed_ db)
   where
-    getNtfConnId :: IO (Maybe ConnId)
-    getNtfConnId =
-      maybeFirstRow fromOnly $
-        DB.query
+    getNtfConnIds :: IO [ConnId]
+    getNtfConnIds =
+      map fromOnly
+        <$> DB.query
           db
           [sql|
             SELECT conn_id
@@ -1642,10 +1713,10 @@ getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) =
             WHERE ntf_host = ? AND ntf_port = ? AND ntf_sub_action IS NOT NULL
               AND (ntf_failed = 0 OR updated_by_supervisor = 1)
             ORDER BY ntf_sub_action_ts ASC
-            LIMIT 1
+            LIMIT ?
           |]
-          (ntfHost, ntfPort)
-    getNtfSubAction :: ConnId -> IO (Either StoreError (NtfSubscription, NtfSubNTFAction, NtfActionTs))
+          (ntfHost, ntfPort, ntfBatchSize)
+    getNtfSubAction :: ConnId -> IO (Either StoreError (NtfSubNTFAction, NtfSubscription, NtfActionTs))
     getNtfSubAction connId = do
       markUpdatedByWorker db connId
       firstRow ntfSubAction err $
@@ -1665,7 +1736,7 @@ getNextNtfSubNTFAction db ntfServer@(NtfServer ntfHost ntfPort _) =
         ntfSubAction (userId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
           let smpServer = SMPServer smpHost smpPort smpKeyHash
               ntfSubscription = NtfSubscription {userId, connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
-           in (ntfSubscription, action, actionTs)
+           in (action, ntfSubscription, actionTs)
 
 markNtfSubActionNtfFailed_ :: DB.Connection -> ConnId -> IO ()
 markNtfSubActionNtfFailed_ db connId =
