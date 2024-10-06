@@ -244,18 +244,18 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         threadDelay ntfInt
         readTVarIO ntfSubClients >>= mapM_ (deliverNtfs ns stats)
       where
-        deliverNtfs ns stats Client {clientId, ntfSubscriptions, sndQ, connected} = do
-          whenM (currentClient readTVarIO) $
-            readTVarIO ntfSubscriptions >>= \subs -> do
-              logDebug $ "NOTIFICATIONS: client #" <> tshow clientId <> " is current with " <> tshow (M.size subs) <> " subs"
-              tryAny (atomically $ flushSubscribedNtfs subs) >>= \case
-                Right len -> updateNtfStats len
-                Left e -> logDebug $ "NOTIFICATIONS: cancelled for client #" <> tshow clientId <> ", reason: " <> tshow e
+        deliverNtfs ns stats Client {clientId, ntfSubscriptions, sndQ, connected} =
+          whenM (currentClient readTVarIO) $ do
+            subs <- readTVarIO ntfSubscriptions
+            logDebug $ "NOTIFICATIONS: client #" <> tshow clientId <> " is current with " <> tshow (M.size subs) <> " subs"
+            ntfQs <- M.assocs . M.filterWithKey (\nId _ -> M.member nId subs) <$> readTVarIO ns
+            tryAny (atomically $ flushSubscribedNtfs ntfQs) >>= \case
+              Right len -> updateNtfStats len
+              Left e -> logDebug $ "NOTIFICATIONS: cancelled for client #" <> tshow clientId <> ", reason: " <> tshow e
           where
-            flushSubscribedNtfs :: M.Map NotifierId () -> STM Int
-            flushSubscribedNtfs subs = do
-              qs <- M.assocs . M.filterWithKey (\nId _ -> M.member nId subs) <$> readTVar ns
-              ts_ <- foldM addNtfs [] qs
+            flushSubscribedNtfs :: [(NotifierId, TVar [MsgNtf])] -> STM Int
+            flushSubscribedNtfs ntfQs = do
+              ts_ <- foldM addNtfs [] ntfQs
               forM_ (L.nonEmpty ts_) $ \ts -> do
                 let cancelNtfs s = throwSTM $ userError $ s <> ", " <> show (length ts_) <> " ntfs kept"
                 unlessM (currentClient readTVar) $ cancelNtfs "not current client"
@@ -266,8 +266,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
             currentClient rd = (&&) <$> rd connected <*> (IM.member clientId <$> rd ntfSubClients)
             addNtfs :: [Transmission BrokerMsg] -> (NotifierId, TVar [MsgNtf]) -> STM [Transmission BrokerMsg]
             addNtfs acc (nId, v) =
-              (foldl' (\acc' ntf -> nmsg nId ntf : acc') acc) -- reverses, to order by time
-                <$> swapTVar v []
+              readTVar v >>= \case
+                [] -> pure acc
+                ntfs -> do
+                  writeTVar v []
+                  pure $ foldl' (\acc' ntf -> nmsg nId ntf : acc') acc ntfs -- reverses, to order by time
             nmsg nId MsgNtf {ntfNonce, ntfEncMeta} = (CorrId "", nId, NMSG ntfNonce ntfEncMeta)
             updateNtfStats 0 = logDebug $ "NOTIFICATIONS: no ntfs for client #" <> tshow clientId
             updateNtfStats len = liftIO $ do

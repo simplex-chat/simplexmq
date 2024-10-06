@@ -37,16 +37,6 @@ storeNtf (NtfStore ns) nId ntf = do
 deleteNtfs :: NtfStore -> NotifierId -> IO Int
 deleteNtfs (NtfStore ns) nId = atomically (TM.lookupDelete nId ns) >>= maybe (pure 0) (fmap length . readTVarIO)
 
-flushNtfs :: NtfStore -> NotifierId -> IO [MsgNtf]
-flushNtfs (NtfStore ns) nId = do
-  TM.lookupIO nId ns >>= maybe (pure []) swapNtfs
-  where
-    swapNtfs v =
-      readTVarIO v >>= \case
-        [] -> pure []
-        -- if notifications available, atomically swap with empty array
-        _ -> atomically (swapTVar v [])
-
 deleteExpiredNtfs :: NtfStore -> Int64 -> IO Int
 deleteExpiredNtfs (NtfStore ns) old =
   foldM (\expired -> fmap (expired +) . expireQueue) 0 . M.keys =<< readTVarIO ns
