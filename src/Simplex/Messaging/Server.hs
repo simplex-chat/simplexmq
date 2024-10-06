@@ -38,6 +38,7 @@ module Simplex.Messaging.Server
   )
 where
 
+import Control.Concurrent.STM (throwSTM)
 import Control.Concurrent.STM.TQueue (flushTQueue)
 import Control.Logger.Simple
 import Control.Monad
@@ -237,7 +238,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
     deliverNtfsThread :: Server -> M ()
     deliverNtfsThread Server {ntfSubClients} = do
       ntfInt <- asks $ ntfDeliveryInterval . config
-      ns <- asks ntfStore
+      NtfStore ns <- asks ntfStore
       stats <- asks serverStats
       liftIO $ forever $ do
         threadDelay ntfInt
@@ -245,37 +246,36 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         readTVarIO ntfSubClients >>= mapM_ (deliverNtfs ns stats)
       where
         deliverNtfs ns stats Client {clientId, ntfSubscriptions, sndQ, connected} = do
-          logDebug $ "NOTIFICATIONS: checking client " <> tshow clientId
+          logDebug $ "NOTIFICATIONS: checking client #" <> tshow clientId
           whenM (currentClient readTVarIO) $
             readTVarIO ntfSubscriptions >>= \subs -> do
-              ts_ <- foldM addNtfs [] (M.keys subs)
-              logDebug $ "NOTIFICATIONS: client " <> tshow clientId <> " is current with " <> tshow (M.size subs) <> " subs and " <> tshow (length ts_)
-              delivered <-
-                forM (L.nonEmpty ts_) $ \ts -> atomically $
-                  ifM
-                    ((&&) <$> currentClient readTVar <*> (not <$> isFullTBQueue sndQ))
-                    (True <$ writeTBQueue sndQ ts)
-                    (pure False)
-              updateNtfStats delivered $ length ts_
+              logDebug $ "NOTIFICATIONS: client #" <> tshow clientId <> " is current with " <> tshow (M.size subs) <> " subs"
+              tryAny (atomically $ flushSubscribedNtfs subs) >>= \case
+                Right len -> updateNtfStats len
+                Left e -> logDebug $ "NOTIFICATIONS: cancelled for client #" <> tshow clientId <> ", error: " <> tshow e
           where
+            flushSubscribedNtfs :: M.Map NotifierId () -> STM Int
+            flushSubscribedNtfs subs = do
+              qs <- M.assocs . M.filterWithKey (\nId _ -> M.member nId subs) <$> readTVar ns
+              ts_ <- foldM addNtfs [] qs
+              forM_ (L.nonEmpty ts_) $ \ts -> do
+                let cancelNtfs s = throwSTM $ userError $ s <> ", " <> show (length ts_) <> " ntfs kept"
+                unlessM (currentClient readTVar) $ cancelNtfs "not current client"
+                whenM (isFullTBQueue sndQ) $ cancelNtfs "sending queue full"
+                writeTBQueue sndQ ts
+              pure $ length ts_
             currentClient :: Monad m => (forall a. TVar a -> m a) -> m Bool
             currentClient rd = (&&) <$> rd connected <*> (IM.member clientId <$> rd ntfSubClients)
-            addNtfs :: [Transmission BrokerMsg] -> NotifierId -> IO [Transmission BrokerMsg]
-            addNtfs acc nId =
+            addNtfs :: [Transmission BrokerMsg] -> (NotifierId, TVar [MsgNtf]) -> STM [Transmission BrokerMsg]
+            addNtfs acc (nId, v) =
               (foldl' (\acc' ntf -> nmsg nId ntf : acc') acc) -- reverses, to order by time
-                <$> flushNtfs ns nId
+                <$> swapTVar v []
             nmsg nId MsgNtf {ntfNonce, ntfEncMeta} = (CorrId "", nId, NMSG ntfNonce ntfEncMeta)
-            updateNtfStats Nothing _ = pure ()
-            updateNtfStats (Just delivered) len = when (len > 0) $ liftIO $ do
+            updateNtfStats len = when (len > 0) $ liftIO $ do
               atomicModifyIORef'_ (ntfCount stats) (subtract len)
-              if delivered
-                then do
-                  atomicModifyIORef'_ (msgNtfs stats) (+ len)
-                  atomicModifyIORef'_ (msgNtfsB stats) (+ (len `div` 80 + 1)) -- up to 80 NMSG in the batch
-                  logDebug $ "NOTIFICATIONS: delivered " <> tshow len <> " ntfs"
-                else do
-                  atomicModifyIORef'_ (msgNtfLost stats) (+ len)
-                  logDebug $ "NOTIFICATIONS: dropped " <> tshow len <> " ntfs"
+              atomicModifyIORef'_ (msgNtfs stats) (+ len)
+              atomicModifyIORef'_ (msgNtfsB stats) (+ (len `div` 80 + 1)) -- up to 80 NMSG in the batch
+              logDebug $ "NOTIFICATIONS: delivered to client #" <> tshow clientId <> " " <> tshow len <> " ntfs"
 
     sendPendingEvtsThread :: Server -> M ()
     sendPendingEvtsThread s = do
