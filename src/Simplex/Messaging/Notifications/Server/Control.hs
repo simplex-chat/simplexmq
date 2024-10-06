@@ -1,17 +1,17 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.FileTransfer.Server.Control where
+module Simplex.Messaging.Notifications.Server.Control where
 
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Simplex.FileTransfer.Protocol (XFTPFileId)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth)
 
 data ControlProtocol
   = CPAuth BasicAuth
+  | CPStats
   | CPStatsRTS
-  | CPDelete XFTPFileId
+  | CPServerInfo
   | CPHelp
   | CPQuit
   | CPSkip
@@ -19,16 +19,18 @@ data ControlProtocol
 instance StrEncoding ControlProtocol where
   strEncode = \case
     CPAuth tok -> "auth " <> strEncode tok
+    CPStats -> "stats"
     CPStatsRTS -> "stats-rts"
-    CPDelete fId -> strEncode (Str "delete", fId)
+    CPServerInfo -> "server-info"
     CPHelp -> "help"
     CPQuit -> "quit"
     CPSkip -> ""
   strP =
     A.takeTill (== ' ') >>= \case
       "auth" -> CPAuth <$> _strP
+      "stats" -> pure CPStats
       "stats-rts" -> pure CPStatsRTS
-      "delete" -> CPDelete <$> _strP
+      "server-info" -> pure CPServerInfo
       "help" -> pure CPHelp
       "quit" -> pure CPQuit
       "" -> pure CPSkip
