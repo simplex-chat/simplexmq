@@ -1682,24 +1682,19 @@ synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchroni
 
 ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM ()
 ackQueueMessage c rq@RcvQueue {userId, connId, server} srvMsgId = do
-  atomically $ incSMPServerStat c userId server ackAttempts
+  incStat ackAttempts
   tryAgentError (sendAck c rq srvMsgId) >>= \case
     Right _ -> do
       whenM (liftIO $ hasGetLock c rq) $ do
-        releaseLock
         brokerTs_ <- (Just <$> withStore c (\db -> getRcvMsgBrokerTs db connId srvMsgId)) `catchAgentError` \_ -> pure Nothing
-        notify ("", connId, AEvt SAEConn $ MSGNTF srvMsgId brokerTs_)
-      atomically $ incSMPServerStat c userId server ackMsgs
-    Left (SMP _ SMP.NO_MSG) -> do
-      releaseLock
-      atomically $ incSMPServerStat c userId server ackNoMsgErrs
+        atomically $ writeTBQueue (subQ c) ("", connId, AEvt SAEConn $ MSGNTF srvMsgId brokerTs_)
+      incStat ackMsgs
+    Left (SMP _ SMP.NO_MSG) -> incStat ackNoMsgErrs
     Left e -> do
-      releaseLock
-      unless (temporaryOrHostError e) $ atomically $ incSMPServerStat c userId server ackOtherErrs
+      unless (temporaryOrHostError e) $ incStat ackOtherErrs
       throwE e
   where
-    notify = atomically . writeTBQueue (subQ c)
-    releaseLock = atomically $ releaseGetLock c rq
+    incStat = atomically . incSMPServerStat c userId server
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentClient -> ConnId -> AM ()
