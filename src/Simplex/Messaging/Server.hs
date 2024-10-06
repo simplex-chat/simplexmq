@@ -242,17 +242,15 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       stats <- asks serverStats
       liftIO $ forever $ do
         threadDelay ntfInt
-        logDebug "NOTIFICATIONS: delivering..."
         readTVarIO ntfSubClients >>= mapM_ (deliverNtfs ns stats)
       where
         deliverNtfs ns stats Client {clientId, ntfSubscriptions, sndQ, connected} = do
-          logDebug $ "NOTIFICATIONS: checking client #" <> tshow clientId
           whenM (currentClient readTVarIO) $
             readTVarIO ntfSubscriptions >>= \subs -> do
               logDebug $ "NOTIFICATIONS: client #" <> tshow clientId <> " is current with " <> tshow (M.size subs) <> " subs"
               tryAny (atomically $ flushSubscribedNtfs subs) >>= \case
                 Right len -> updateNtfStats len
-                Left e -> logDebug $ "NOTIFICATIONS: cancelled for client #" <> tshow clientId <> ", error: " <> tshow e
+                Left e -> logDebug $ "NOTIFICATIONS: cancelled for client #" <> tshow clientId <> ", reason: " <> tshow e
           where
             flushSubscribedNtfs :: M.Map NotifierId () -> STM Int
             flushSubscribedNtfs subs = do
@@ -271,7 +269,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
               (foldl' (\acc' ntf -> nmsg nId ntf : acc') acc) -- reverses, to order by time
                 <$> swapTVar v []
             nmsg nId MsgNtf {ntfNonce, ntfEncMeta} = (CorrId "", nId, NMSG ntfNonce ntfEncMeta)
-            updateNtfStats len = when (len > 0) $ liftIO $ do
+            updateNtfStats 0 = logDebug $ "NOTIFICATIONS: no ntfs for client #" <> tshow clientId
+            updateNtfStats len = liftIO $ do
               atomicModifyIORef'_ (ntfCount stats) (subtract len)
               atomicModifyIORef'_ (msgNtfs stats) (+ len)
               atomicModifyIORef'_ (msgNtfsB stats) (+ (len `div` 80 + 1)) -- up to 80 NMSG in the batch
