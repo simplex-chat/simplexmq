@@ -41,12 +41,16 @@ testNewQueueRec g sndSecure = do
       updatedAt = Nothing
     }
 
-testNtfCreds :: NtfCreds
-testNtfCreds = NtfCreds
-  { notifierId = EntityId "ijkl",
-    notifierKey = testPublicAuthKey,
-    rcvNtfDhSecret = testDhSecret
-  }
+testNtfCreds :: TVar ChaChaDRG -> IO NtfCreds
+testNtfCreds g = do
+  (notifierKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
+  (k, pk) <- atomically $ C.generateKeyPair @'C.X25519 g
+  pure
+    NtfCreds
+      { notifierId = EntityId "ijkl",
+        notifierKey,
+        rcvNtfDhSecret = C.dh' k pk
+      }
 
 data StoreLogTestCase r s = SLTC {name :: String, saved :: [r], state :: s, compacted :: [r]}
 
@@ -61,9 +65,9 @@ deriving instance Eq NtfCreds
 storeLogTests :: Spec
 storeLogTests =
   forM_ [False, True] $ \sndSecure -> do
-    qr <- runIO $ do
+    (qr, ntfCreds, date) <- runIO $ do
       g <- C.newRandom
-      testNewQueueRec g sndSecure
+      (,,) <$> testNewQueueRec g sndSecure <*> testNtfCreds g <*> getSystemDate
     testSMPStoreLog ("SMP server store log, sndSecure = " <> show sndSecure)
       [ SLTC
           { name = "create new queue",
@@ -72,6 +76,12 @@ storeLogTests =
             state = M.fromList [(recipientId qr, qr)]
           },
         SLTC
+          { name = "secure queue",
+            saved = [CreateQueue qr, SecureQueue (recipientId qr) testPublicAuthKey],
+            compacted = [CreateQueue qr {senderKey = Just testPublicAuthKey}],
+            state = M.fromList [(recipientId qr, qr {senderKey = Just testPublicAuthKey})]
+          },          
+        SLTC
           { name = "create and delete queue",
             saved = [CreateQueue qr, DeleteQueue $ recipientId qr],
             compacted = [],
@@ -79,10 +89,22 @@ storeLogTests =
           },
         SLTC
           { name = "create queue and add notifier",
-            saved = [CreateQueue qr, AddNotifier (recipientId qr) testNtfCreds],
-            compacted = [CreateQueue $ qr {notifier = Just testNtfCreds}],
-            state = M.fromList [(recipientId qr, qr {notifier = Just testNtfCreds})]
-          }
+            saved = [CreateQueue qr, AddNotifier (recipientId qr) ntfCreds],
+            compacted = [CreateQueue $ qr {notifier = Just ntfCreds}],
+            state = M.fromList [(recipientId qr, qr {notifier = Just ntfCreds})]
+          },
+        SLTC
+          { name = "delete notifier",
+            saved = [CreateQueue qr, AddNotifier (recipientId qr) ntfCreds, DeleteNotifier (recipientId qr)],
+            compacted = [CreateQueue qr],
+            state = M.fromList [(recipientId qr, qr)]
+          },
+        SLTC
+          { name = "update time",
+            saved = [CreateQueue qr, UpdateTime (recipientId qr) date],
+            compacted = [CreateQueue qr {updatedAt = Just date}],
+            state = M.fromList [(recipientId qr, qr {updatedAt = Just date})]
+          }          
       ]
 
 testSMPStoreLog :: String -> [SMPStoreLogTestCase] -> Spec
