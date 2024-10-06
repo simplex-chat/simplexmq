@@ -199,6 +199,7 @@ smpClientStub g sessionId thVersion thAuth = do
               thAuth,
               blockSize = smpBlockSize,
               implySessId = thVersion >= authCmdsSMPVersion,
+              encryptBlock = Nothing,
               batch = True
             },
         sessionTs = ts,
@@ -427,7 +428,9 @@ defaultClientConfig clientALPN useSNI serverVRange =
 defaultSMPClientConfig :: ProtocolClientConfig SMPVersion
 defaultSMPClientConfig =
   (defaultClientConfig (Just supportedSMPHandshakes) False supportedClientSMPRelayVRange)
-    {defaultTransport = (show defaultSMPPort, transport @TLS)}
+    { defaultTransport = (show defaultSMPPort, transport @TLS),
+      agreeSecret = True
+    }
 {-# INLINE defaultSMPClientConfig #-}
 
 data Request err msg = Request
