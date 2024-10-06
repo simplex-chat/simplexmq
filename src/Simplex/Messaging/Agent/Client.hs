@@ -82,7 +82,6 @@ module Simplex.Messaging.Agent.Client
     agentCbDecrypt,
     cryptoError,
     sendAck,
-    releaseGetLock,
     suspendQueue,
     deleteQueue,
     deleteQueues,
