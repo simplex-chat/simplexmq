@@ -88,14 +88,14 @@ smpServerTest storeLog basicAuth = do
   lookupValue "TRANSPORT" "port" ini `shouldBe` Right "5223,443"
   lookupValue "TRANSPORT" "websockets" ini `shouldBe` Right "off"
   lookupValue "AUTH" "new_queues" ini `shouldBe` Right "on"
-  lookupValue "INACTIVE_CLIENTS" "disconnect" ini `shouldBe` Right "off"
+  lookupValue "INACTIVE_CLIENTS" "disconnect" ini `shouldBe` Right "on"
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` True
   -- start
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` smpServerCLI cfgPath logPath) `catchAll_` pure (Just ()))
   r `shouldContain` ["SMP server v" <> simplexMQVersion]
   r `shouldContain` (if storeLog then ["Store log: " <> logPath <> "/smp-server-store.log"] else ["Store log disabled."])
   r `shouldContain` ["Serving SMP protocol on port 5223 (TLS)...", "Serving SMP protocol on port 443 (TLS)...", "Serving static site on port 443 (TLS)..."]
-  r `shouldContain` ["not expiring inactive clients"]
+  r `shouldContain` ["expiring clients inactive for 21600 seconds every 3600 seconds"]
   r `shouldContain` (if basicAuth then ["creating new queues requires password"] else ["creating new queues allowed"])
   -- cert
   let certPath = cfgPath </> "server.crt"

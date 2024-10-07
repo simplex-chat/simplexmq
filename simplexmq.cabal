@@ -154,6 +154,7 @@ library
       Simplex.Messaging.Notifications.Client
       Simplex.Messaging.Notifications.Protocol
       Simplex.Messaging.Notifications.Server
+      Simplex.Messaging.Notifications.Server.Control
       Simplex.Messaging.Notifications.Server.Env
       Simplex.Messaging.Notifications.Server.Main
       Simplex.Messaging.Notifications.Server.Push.APNS
@@ -614,6 +615,7 @@ test-suite simplexmq-test
       CoreTests.EncodingTests
       CoreTests.RetryIntervalTests
       CoreTests.SOCKSSettings
+      CoreTests.StoreLogTests
       CoreTests.TRcvQueuesTests
       CoreTests.UtilTests
       CoreTests.VersionRangeTests
