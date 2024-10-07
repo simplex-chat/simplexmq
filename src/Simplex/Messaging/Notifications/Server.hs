@@ -46,7 +46,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Control
 import Simplex.Messaging.Notifications.Server.Env
-import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..), PushNotification (..), PushProviderError (..))
+import Simplex.Messaging.Notifications.Server.Push.APNS (PushNotification (..), PushProviderError (..))
 import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.StoreLog
@@ -356,8 +356,13 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
               NtfPushServer {pushQ} <- asks pushServer
               stats <- asks serverStats
               liftIO $ updatePeriodStats (activeSubs stats) ntfId
-              atomically (findNtfSubscriptionToken st smpQueue)
-                >>= mapM_ (\tkn -> atomically (writeTBQueue pushQ (tkn, PNMessage (PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} :| []))))
+              tkn_ <- atomically (findNtfSubscriptionToken st smpQueue)
+              forM_ tkn_ $ \tkn -> do
+                lastNtfsVar <- atomically (getTokenLastNtfsVar st (ntfTknId tkn))
+                lastNtfs <- readTVarIO lastNtfsVar
+                let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
+                atomically (writeTBQueue pushQ (tkn, PNMessage (newNtf :| lastNtfs)))
+                atomically $ addTokenLastNtf lastNtfsVar newNtf
               incNtfStat ntfReceived
             Right SMP.END ->
               whenM (atomically $ activeClientSession' ca sessionId srv) $

@@ -30,7 +30,8 @@ data NtfStore = NtfStore
     tokenRegistrations :: TMap DeviceToken (TMap ByteString NtfTokenId),
     subscriptions :: TMap NtfSubscriptionId NtfSubData,
     tokenSubscriptions :: TMap NtfTokenId (TVar (Set NtfSubscriptionId)),
-    subscriptionLookup :: TMap SMPQueueNtf NtfSubscriptionId
+    subscriptionLookup :: TMap SMPQueueNtf NtfSubscriptionId,
+    tokenLastNtfs :: TMap NtfTokenId (TVar [PNMessageData])
   }
 
 newNtfStore :: IO NtfStore
@@ -40,7 +41,8 @@ newNtfStore = do
   subscriptions <- TM.emptyIO
   tokenSubscriptions <- TM.emptyIO
   subscriptionLookup <- TM.emptyIO
-  pure NtfStore {tokens, tokenRegistrations, subscriptions, tokenSubscriptions, subscriptionLookup}
+  tokenLastNtfs <- TM.emptyIO
+  pure NtfStore {tokens, tokenRegistrations, subscriptions, tokenSubscriptions, subscriptionLookup, tokenLastNtfs}
 
 data NtfTknData = NtfTknData
   { ntfTknId :: NtfTokenId,
@@ -196,3 +198,20 @@ deleteNtfSubscription st subId = do
           ts_ <- TM.lookup tokenId (tokenSubscriptions st)
           forM_ ts_ $ \ts -> modifyTVar' ts $ S.delete subId
       )
+
+getTokenLastNtfsVar :: NtfStore -> NtfTokenId -> STM (TVar [PNMessageData])
+getTokenLastNtfsVar st tknId =
+  TM.lookup tknId (tokenLastNtfs st) >>= maybe newTokenLastNtfs pure
+  where
+    newTokenLastNtfs = do
+      v <- newTVar []
+      TM.insert tknId v $ tokenLastNtfs st
+      pure v
+
+addTokenLastNtf :: TVar [PNMessageData] -> PNMessageData -> STM ()
+addTokenLastNtf v newNtf = do
+  -- [ntf get many]
+  -- if ntf for queue already exists (find by smpQueue :: SMPQueueNtf), replace it
+  -- otherwise, add newNtf and remove oldest (last in list) if size exceeds limit
+  -- list is small, so search is fine
+  modifyTVar' v (newNtf :)

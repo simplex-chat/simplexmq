@@ -136,6 +136,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240624_snd_secure
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240702_servers_stats
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240930_ntf_tokens_to_delete
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
