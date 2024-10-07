@@ -144,23 +144,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
   expiredMsgs <- restoreServerMessages
   expiredNtfs <- restoreServerNtfs
   restoreServerStats expiredMsgs expiredNtfs
-
-  flagINT <- newEmptyTMVarIO
-  let sigINT = 2
-      sigIntAction = \_ptr -> atomically . void $ tryPutTMVar flagINT ()
-      sigIntHandler = Just (sigIntAction, toDyn ())
-  _oldInt <- liftIO (setHandler sigINT sigIntHandler)
   raceAny_
-    ( liftIO (atomically (readTMVar flagINT) >> logNote "Got SIGINT, shutting down.")
-        : serverThread s "server subscribedQ" subscribedQ subscribers subClients pendingSubEvents subscriptions cancelSub
+    ( serverThread s "server subscribedQ" subscribedQ subscribers subClients pendingSubEvents subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubClients pendingNtfSubEvents ntfSubscriptions (\_ -> pure ())
         : deliverNtfsThread s
         : sendPendingEvtsThread s
         : receiveFromProxyAgent pa
         : expireNtfsThread cfg
+        : sigIntHandlerThread
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
-    `finally` (logInfo "Stopping server." >> withLock' (savingLock s) "final" (saveServer False >> closeServer) >> logInfo "Server finished.")
+    `finally` stopServer s
   where
     runServer :: (ServiceName, ATransport, AddHTTP) -> M ()
     runServer (tcpPort, ATransport t, addHTTP) = do
@@ -183,6 +177,22 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         _ ->
           runTransportServerState ss started tcpPort defaultSupportedParams smpCreds (Just supportedSMPHandshakes) tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
     fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
+
+    sigIntHandlerThread :: M ()
+    sigIntHandlerThread = do
+      flagINT <- newEmptyTMVarIO
+      let sigINT = 2 -- CONST_SIGINT value
+          sigIntAction = \_ptr -> atomically $ void $ tryPutTMVar flagINT ()
+          sigIntHandler = Just (sigIntAction, toDyn ())
+      void $ liftIO $ setHandler sigINT sigIntHandler
+      atomically $ readTMVar flagINT
+      logInfo "Received SIGINT, stopping server..."
+
+    stopServer :: Server -> M ()
+    stopServer s = do
+      logInfo "Saving server state..."
+      withLock' (savingLock s) "final" $ saveServer False >> closeServer
+      logInfo "Server stopped"
 
     saveServer :: Bool -> M ()
     saveServer keepMsgs = withLog closeStoreLog >> saveServerMessages keepMsgs >> saveServerNtfs >> saveServerStats

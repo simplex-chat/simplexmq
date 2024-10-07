@@ -283,14 +283,14 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           runWebServer path Nothing ServerInformation {config, information}
           attachStaticFiles path $ \attachHTTP -> do
             logDebug "Allocated web server resources"
-            runSMPServer cfg (Just attachHTTP) `finally` logDebug "Releasing web server resources"
+            runSMPServer cfg (Just attachHTTP) `finally` logDebug "Releasing web server resources..."
         Just path -> do
           runWebServer path webHttpsParams' ServerInformation {config, information}
           runSMPServer cfg Nothing
         Nothing -> do
           logWarn "No server static path set"
           runSMPServer cfg Nothing
-      logDebug "Bye."
+      logDebug "Bye"
       where
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
