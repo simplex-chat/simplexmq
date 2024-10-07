@@ -1684,18 +1684,16 @@ ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM ()
 ackQueueMessage c rq@RcvQueue {userId, connId, server} srvMsgId = do
   atomically $ incSMPServerStat c userId server ackAttempts
   tryAgentError (sendAck c rq srvMsgId) >>= \case
-    Right _ -> do
-      atomically $ incSMPServerStat c userId server ackMsgs
-      sendMsgNtf
-    Left (SMP _ SMP.NO_MSG) -> do
-      atomically $ incSMPServerStat c userId server ackNoMsgErrs
-      sendMsgNtf
+    Right _ -> sendMsgNtf ackMsgs
+    Left (SMP _ SMP.NO_MSG) -> sendMsgNtf ackNoMsgErrs
     Left e -> do
       unless (temporaryOrHostError e) $ atomically $ incSMPServerStat c userId server ackOtherErrs
       throwE e
   where
-    sendMsgNtf =
+    sendMsgNtf stat = do
+      atomically $ incSMPServerStat c userId server stat
       whenM (liftIO $ hasGetLock c rq) $ do
+        atomically $ releaseGetLock c rq
         brokerTs_ <- eitherToMaybe <$> tryAgentError (withStore c $ \db -> getRcvMsgBrokerTs db connId srvMsgId)
         atomically $ writeTBQueue (subQ c) ("", connId, AEvt SAEConn $ MSGNTF srvMsgId brokerTs_)
 

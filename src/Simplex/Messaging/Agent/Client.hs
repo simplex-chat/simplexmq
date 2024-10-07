@@ -92,6 +92,7 @@ module Simplex.Messaging.Agent.Client
     hasActiveSubscription,
     hasPendingSubscription,
     hasGetLock,
+    releaseGetLock,
     activeClientSession,
     agentClientStore,
     agentDRG,
@@ -1647,14 +1648,8 @@ disableQueuesNtfs = sendTSessionBatches "NDEL" snd disableQueues_
 
 sendAck :: AgentClient -> RcvQueue -> MsgId -> AM ()
 sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId =
-  ack `catchAgentError` \case
-    e@(SMP _ SMP.NO_MSG) -> atomically (releaseGetLock c rq) >> throwE e
-    e -> throwE e
-  where
-    ack = do
-      withSMPClient c rq ("ACK:" <> logSecret' msgId) $ \smp ->
-        ackSMPMessage smp rcvPrivateKey rcvId msgId
-      atomically $ releaseGetLock c rq
+  withSMPClient c rq ("ACK:" <> logSecret' msgId) $ \smp ->
+    ackSMPMessage smp rcvPrivateKey rcvId msgId      
 
 hasGetLock :: AgentClient -> RcvQueue -> IO Bool
 hasGetLock c RcvQueue {server, rcvId} =
