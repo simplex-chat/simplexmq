@@ -8,6 +8,7 @@ import Control.Logger.Simple
 import Control.Monad
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Char (toUpper)
 import Data.IORef (readIORef)
 import Data.Maybe (fromMaybe)
 import Data.String (fromString)
@@ -152,7 +153,8 @@ serverInformation ServerInformation {config, information} onionHost = render E.i
             ("hostingCountry", encodeUtf8 <$> country)
           ]
         server =
-          [ ("serverCountry", fmap encodeUtf8 $ serverCountry =<< information)
+          [ ("serverCountry", encodeUtf8 <$> serverCountry spi),
+            ("hostingType",  (\s -> maybe s (\(c, rest) -> toUpper c `B.cons` rest) $ B.uncons s) . strEncode <$> hostingType spi)
           ]
 
 -- Copy-pasted from simplex-chat Simplex.Chat.Types.Preferences

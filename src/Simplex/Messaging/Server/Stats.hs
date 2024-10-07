@@ -77,7 +77,8 @@ data ServerStats = ServerStats
     pMsgFwdsOwn :: ProxyStats,
     pMsgFwdsRecv :: IORef Int,
     qCount :: IORef Int,
-    msgCount :: IORef Int
+    msgCount :: IORef Int,
+    ntfCount :: IORef Int
   }
 
 data ServerStatsData = ServerStatsData
@@ -129,7 +130,8 @@ data ServerStatsData = ServerStatsData
     _pMsgFwdsOwn :: ProxyStatsData,
     _pMsgFwdsRecv :: Int,
     _qCount :: Int,
-    _msgCount :: Int
+    _msgCount :: Int,
+    _ntfCount :: Int
   }
   deriving (Show)
 
@@ -184,6 +186,7 @@ newServerStats ts = do
   pMsgFwdsRecv <- newIORef 0
   qCount <- newIORef 0
   msgCount <- newIORef 0
+  ntfCount <- newIORef 0
   pure
     ServerStats
       { fromTime,
@@ -234,7 +237,8 @@ newServerStats ts = do
         pMsgFwdsOwn,
         pMsgFwdsRecv,
         qCount,
-        msgCount
+        msgCount,
+        ntfCount
       }
 
 getServerStatsData :: ServerStats -> IO ServerStatsData
@@ -288,6 +292,7 @@ getServerStatsData s = do
   _pMsgFwdsRecv <- readIORef $ pMsgFwdsRecv s
   _qCount <- readIORef $ qCount s
   _msgCount <- readIORef $ msgCount s
+  _ntfCount <- readIORef $ ntfCount s
   pure
     ServerStatsData
       { _fromTime,
@@ -338,7 +343,8 @@ getServerStatsData s = do
         _pMsgFwdsOwn,
         _pMsgFwdsRecv,
         _qCount,
-        _msgCount
+        _msgCount,
+        _ntfCount
       }
 
 -- this function is not thread safe, it is used on server start only
@@ -393,6 +399,7 @@ setServerStats s d = do
   writeIORef (pMsgFwdsRecv s) $! _pMsgFwdsRecv d
   writeIORef (qCount s) $! _qCount d
   writeIORef (msgCount s) $! _msgCount d
+  writeIORef (ntfCount s) $! _ntfCount d
 
 instance StrEncoding ServerStatsData where
   strEncode d =
@@ -566,7 +573,8 @@ instance StrEncoding ServerStatsData where
           _pMsgFwdsOwn,
           _pMsgFwdsRecv,
           _qCount,
-          _msgCount = 0
+          _msgCount = 0,
+          _ntfCount = 0
         }
     where
       opt s = A.string s *> strP <* A.endOfLine <|> pure 0

@@ -9,6 +9,7 @@
 
 module Simplex.Messaging.Server.StoreLog
   ( StoreLog, -- constructors are not exported
+    StoreLogRecord (..), -- used in tests
     openWriteStoreLog,
     openReadStoreLog,
     storeLogFilePath,

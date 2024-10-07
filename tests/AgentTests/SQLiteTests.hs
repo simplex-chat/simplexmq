@@ -13,7 +13,7 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
-module AgentTests.SQLiteTests (storeTests) where
+module AgentTests.SQLiteTests where
 
 import AgentTests.EqInstances ()
 import Control.Concurrent.Async (concurrently_)
