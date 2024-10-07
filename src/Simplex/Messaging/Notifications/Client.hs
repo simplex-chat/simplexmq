@@ -24,7 +24,7 @@ type NtfClientError = ProtocolClientError ErrorType
 
 defaultNTFClientConfig :: ProtocolClientConfig NTFVersion
 defaultNTFClientConfig =
-  (defaultClientConfig (Just supportedNTFHandshakes) True supportedClientNTFVRange)
+  (defaultClientConfig (Just supportedNTFHandshakes) False supportedClientNTFVRange)
     {defaultTransport = ("443", transport @TLS)}
 {-# INLINE defaultNTFClientConfig #-}
 
