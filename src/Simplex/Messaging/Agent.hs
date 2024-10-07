@@ -175,8 +175,7 @@ import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern P
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId)
-import Simplex.Messaging.Notifications.Server.Push.APNS (PNMessageData (..), pnMessagesP)
+import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, PNMessageData (..), pnMessagesP)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
 import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolType (..), ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC, sndAuthKeySMPClientVersion)
@@ -1073,6 +1072,11 @@ getNotificationMessage' c nonce encNtfInfo = do
     getMsg PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = do
       (ntfConnId, rcvNtfDhSecret) <- withStore c (`getNtfRcvQueue` smpQueue)
       ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
+      -- [ntf get many]
+      -- compare ntfMsgMeta msgTs (it's SMP server's msg ts) with last received message ts,
+      -- only getConnectionMessage if it's newer;
+      -- as last message can be acknowledged/deleted, rcv_messages broker_ts should also
+      -- be remembered on rcv_queues (read it in getNtfRcvQueue above)
       msgMeta <- getConnectionMessage' c ntfConnId
       pure (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}, msgMeta)
 

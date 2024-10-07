@@ -977,6 +977,8 @@ updateRcvIds db connId = do
 
 createRcvMsg :: DB.Connection -> ConnId -> RcvQueue -> RcvMsgData -> IO ()
 createRcvMsg db connId rq rcvMsgData@RcvMsgData {msgMeta = MsgMeta {sndMsgId}, internalRcvId, internalHash} = do
+  -- [ntf get many]
+  -- update last_broker_ts on rcq_queues
   insertRcvMsgBase_ db connId rcvMsgData
   insertRcvMsgDetails_ db connId rq rcvMsgData
   updateRcvMsgHash db connId sndMsgId internalRcvId internalHash

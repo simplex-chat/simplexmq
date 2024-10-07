@@ -20,8 +20,11 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Kind
+import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import Data.Maybe (isNothing)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Data.Time.Clock.System
 import Data.Type.Equality
 import Data.Word (Word16)
 import Database.SQLite.Simple.FromField (FromField (..))
@@ -425,6 +428,30 @@ instance FromJSON DeviceToken where
     pp <- strDecode . encodeUtf8 <$?> o .: "pushProvider"
     t <- encodeUtf8 <$> o .: "token"
     pure $ DeviceToken pp t
+
+-- List of PNMessageData uses semicolon-separated encoding instead of strEncode,
+-- because strEncode of NonEmpty list uses comma for separator,
+-- and encoding of PNMessageData's smpQueue has comma in list of hosts
+encodePNMessages :: NonEmpty PNMessageData -> ByteString
+encodePNMessages = B.intercalate ";" . map strEncode . L.toList
+
+pnMessagesP :: A.Parser (NonEmpty PNMessageData)
+pnMessagesP = L.fromList <$> strP `A.sepBy1` A.char ';'
+
+data PNMessageData = PNMessageData
+  { smpQueue :: SMPQueueNtf,
+    ntfTs :: SystemTime,
+    nmsgNonce :: C.CbNonce,
+    encNMsgMeta :: EncNMsgMeta
+  }
+  deriving (Show)
+
+instance StrEncoding PNMessageData where
+  strEncode PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} =
+    strEncode (smpQueue, ntfTs, nmsgNonce, encNMsgMeta)
+  strP = do
+    (smpQueue, ntfTs, nmsgNonce, encNMsgMeta) <- strP
+    pure PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
 
 type NtfEntityId = EntityId
 
