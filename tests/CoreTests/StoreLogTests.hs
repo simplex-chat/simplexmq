@@ -109,7 +109,7 @@ storeLogTests =
 
 testSMPStoreLog :: String -> [SMPStoreLogTestCase] -> Spec
 testSMPStoreLog testSuite tests =
-  fdescribe testSuite $ forM_ tests $ \t@SLTC {name, saved} -> it name $ do
+  describe testSuite $ forM_ tests $ \t@SLTC {name, saved} -> it name $ do
     l <- openWriteStoreLog testStoreLogFile
     mapM_ (writeStoreLogRecord l) saved
     closeStoreLog l
