@@ -4,6 +4,7 @@
 module AgentTests.SchemaDump where
 
 import Control.DeepSeq
+import Control.Exception (bracket_)
 import Control.Monad (unless, void)
 import Data.List (dropWhileEnd)
 import Data.Maybe (fromJust, isJust)
@@ -14,7 +15,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration (..), MigrationsToRun (..), toDownMigration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Util (ifM)
-import System.Directory (doesFileExist, removeFile)
+import System.Directory (createDirectoryIfMissing, doesFileExist, removeDirectoryRecursive, removeFile)
 import System.Process (readCreateProcess, shell)
 import Test.Hspec
 
@@ -39,7 +40,7 @@ testSchema = "tests/tmp/test_agent_schema.sql"
 schemaDumpTest :: Spec
 schemaDumpTest = do
   it "verify and overwrite schema dump" testVerifySchemaDump
-  fit "verify .lint fkey-indexes" testVerifyLintFKeyIndexes
+  it "verify .lint fkey-indexes" testVerifyLintFKeyIndexes
   it "verify schema down migrations" testSchemaMigrations
   it "should NOT create user record for new database" testUsersMigrationNew
   it "should create user record for old database" testUsersMigrationOld
