@@ -56,6 +56,7 @@ module Simplex.Messaging.Agent
     createConnection,
     changeConnectionUser,
     prepareConnectionToJoin,
+    prepareConnectionToAccept,
     joinConnection,
     allowConnection,
     acceptContact,
@@ -347,6 +348,10 @@ changeConnectionUser c oldUserId connId newUserId = withAgentEnv c $ changeConne
 -- "link deleted" (SMP AUTH) interactively, so this approach is simpler overall.
 prepareConnectionToJoin :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> PQSupport -> AE ConnId
 prepareConnectionToJoin c userId enableNtfs = withAgentEnv c .: newConnToJoin c userId "" enableNtfs
+
+-- | Create SMP agent connection without queue (to be joined with acceptContact passing invitation ID).
+prepareConnectionToAccept :: AgentClient -> Bool -> ConfirmationId -> PQSupport -> AE ConnId
+prepareConnectionToAccept c enableNtfs = withAgentEnv c .: newConnToAccept c "" enableNtfs
 
 -- | Join SMP agent connection (JOIN command).
 joinConnection :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE (ConnId, SndQueueSecured)
@@ -806,6 +811,14 @@ newConnToJoin c userId connId enableNtfs cReq pqSup = case cReq of
           cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
       withStore c $ \db -> createNewConn db g cData SCMInvitation
 
+newConnToAccept :: AgentClient -> ConnId -> Bool -> ConfirmationId -> PQSupport -> AM ConnId
+newConnToAccept c connId enableNtfs invId pqSup = do
+  Invitation {connReq, contactConnId} <- withStore c (`getInvitation` invId)
+  withStore c (`getConn` contactConnId) >>= \case
+    SomeConn _ (ContactConnection ConnData {userId} _) ->
+      newConnToJoin c userId connId enableNtfs connReq pqSup
+    _ -> throwE $ CMD PROHIBITED "newConnToAccept"
+
 joinConn :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM (ConnId, SndQueueSecured)
 joinConn c userId connId enableNtfs cReq cInfo pqSupport subMode = do
   srv <- case cReq of
@@ -814,8 +827,8 @@ joinConn c userId connId enableNtfs cReq cInfo pqSupport subMode = do
     _ -> getSMPServer c userId
   joinConnSrv c userId connId enableNtfs cReq cInfo pqSupport subMode srv
 
-startJoinInvitation :: UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM (ConnData, NewSndQueue, C.PublicKeyX25519, CR.Ratchet 'C.X448, CR.SndE2ERatchetParams 'C.X448)
-startJoinInvitation userId connId sq_ enableNtfs cReqUri pqSup =
+startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM (ConnData, SndQueue, CR.SndE2ERatchetParams 'C.X448)
+startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
   lift (compatibleInvitationUri cReqUri) >>= \case
     Just (qInfo, Compatible e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_), Compatible connAgentVersion) -> do
       g <- asks random
@@ -828,11 +841,14 @@ startJoinInvitation userId connId sq_ enableNtfs cReqUri pqSup =
           rc = CR.initSndRatchet rcVs rcDHRr rcDHRs rcParams
       -- this case avoids re-generating queue keys and subsequent failure of SKEY that timed out
       -- e2ePubKey is always present, it's Maybe historically
-      (q, e2ePubKey) <- case sq_ of
-        Just sq@SndQueue {e2ePubKey = Just k} -> pure ((sq :: SndQueue) {dbQueueId = DBNewQueue}, k)
-        _ -> lift $ newSndQueue userId "" qInfo
+      q <- case sq_ of
+        Just sq@SndQueue {e2ePubKey = Just _k} -> pure (sq :: SndQueue) {dbQueueId = DBNewQueue}
+        _ -> lift $ fst <$> newSndQueue userId "" qInfo
       let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
-      pure (cData, q, e2ePubKey, rc, e2eSndParams)
+      sq' <- withStore c $ \db -> runExceptT $ do
+        liftIO $ createRatchet db connId rc
+        maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
+      pure (cData, sq', e2eSndParams)
     Nothing -> throwE $ AGENT A_VERSION
 
 connRequestPQSupport :: AgentClient -> PQSupport -> ConnectionRequestUri c -> IO (Maybe (VersionSMPA, PQSupport))
@@ -866,30 +882,19 @@ versionPQSupport_ agentV e2eV_ = PQSupport $ agentV >= pqdrSMPAgentVersion && ma
 {-# INLINE versionPQSupport_ #-}
 
 joinConnSrv :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM (ConnId, SndQueueSecured)
-joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMode srv = do
-  -- TODO conn prepare
-  -- similar logic to joinConnSrvAsync:
-  -- getConn by connId
-  -- pass sq_ (Maybe SndQueue) to startJoinInvitation
+joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMode srv =
   withInvLock c (strEncode inv) "joinConnSrv" $ do
-    (cData, q, _, rc, e2eSndParams) <- startJoinInvitation userId connId Nothing enableNtfs inv pqSup
-    (connId', sq) <- withStore c $ \db -> runExceptT $ do
-      r@(connId', _) <- (connId,) <$> ExceptT (updateNewConnSnd db connId q)
-      liftIO $ createRatchet db connId' rc
-      pure r
-    let cData' = (cData :: ConnData) {connId = connId'}
-    -- joinConnSrv is only used on user interaction, and its failure is permanent,
-    -- otherwise we would need to manage retries here to avoid SndQueue recreated with a different key,
-    -- similar to how joinConnAsync does that.
-    tryError (secureConfirmQueue c cData' sq srv cInfo (Just e2eSndParams) subMode) >>= \case
-      Right sqSecured -> pure (connId', sqSecured)
-      Left e -> do
-        -- TODO conn prepare
-        -- don't delete connection
-        -- - always or based on error?
-        -- - if latter, also differentiate in chat whether to delete record?
-        void $ withStore' c $ \db -> deleteConn db Nothing connId'
-        throwE e
+    SomeConn cType conn <- withStore c (`getConn` connId)
+    case conn of
+      NewConnection _ -> doJoin Nothing
+      SndConnection _ sq -> doJoin $ Just sq
+      _ -> throwE $ CMD PROHIBITED $ "joinConnSrv: bad connection " <> show cType
+  where
+    doJoin :: Maybe SndQueue -> AM (ConnId, SndQueueSecured)
+    doJoin sq_ = do
+      (cData, sq, e2eSndParams) <- startJoinInvitation c userId connId sq_ enableNtfs inv pqSup
+      sqSecured <- secureConfirmQueue c cData sq srv cInfo (Just e2eSndParams) subMode
+      pure (connId, sqSecured)
 joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode srv =
   lift (compatibleContactUri cReqUri) >>= \case
     Just (qInfo, vrsn) -> do
@@ -908,11 +913,8 @@ joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSuppo
   where
     doJoin :: Maybe SndQueue -> AM SndQueueSecured
     doJoin sq_ = do
-      (cData, sq, _, rc, e2eSndParams) <- startJoinInvitation userId connId sq_ enableNtfs inv pqSupport
-      sq' <- withStore c $ \db -> runExceptT $ do
-        liftIO $ createRatchet db connId rc
-        maybe (ExceptT $ updateNewConnSnd db connId sq) pure sq_
-      secureConfirmQueueAsync c cData sq' srv cInfo (Just e2eSndParams) subMode
+      (cData, sq, e2eSndParams) <- startJoinInvitation c userId connId sq_ enableNtfs inv pqSupport
+      secureConfirmQueueAsync c cData sq srv cInfo (Just e2eSndParams) subMode
 joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode _pqSupport _srv = do
   throwE $ CMD PROHIBITED "joinConnSrvAsync"
 
