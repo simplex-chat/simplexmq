@@ -211,7 +211,7 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
     withAgent 2 aCfg (servers bTestCfg) testDB2 $ \bob -> runRight_ $ do
       (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
       aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-      (_, sqSecured) <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      sqSecured <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
       ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
       liftIO $ pqSup' `shouldBe` PQSupportOn
@@ -267,7 +267,7 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
     prePair alice bob = do
       (bobId, qInfo) <- runExceptT' $ A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
       aliceId <- runExceptT' $ A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-      (_, sqSecured) <- runExceptT' $ A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      sqSecured <- runExceptT' $ A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
       confId <-
         get alice >>= \case
@@ -338,7 +338,7 @@ agentViaProxyRetryOffline = do
         (aliceId, bobId) <- withServer2 $ \_ -> runRight $ do
           (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
           aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-          (_, sqSecured) <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+          sqSecured <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
           liftIO $ sqSecured `shouldBe` True
           ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
           liftIO $ pqSup' `shouldBe` PQSupportOn
