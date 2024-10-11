@@ -51,6 +51,9 @@ serverTests t@(ATransport t') = do
   describe "SMP syntax" $ syntaxTests t
   describe "SMP queues" $ do
     describe "NEW and KEY commands, SEND messages" $ testCreateSecure t
+    describe "NEW and SKEY commands" $ do
+      testCreateSndSecure t
+      testSndSecureProhibited t
     describe "NEW, OFF and DEL commands, SEND messages" $ testCreateDelete t
     describe "Stress test" $ stressTest t
     describe "allowNewQueues setting" $ testAllowNewQueues t'
@@ -192,6 +195,68 @@ testCreateSecure (ATransport t) =
       let biggerMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion + 1) '-'
       Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv s sKey ("bcda", sId, _SEND biggerMessage)
       pure ()
+
+testCreateSndSecure :: ATransport -> Spec
+testCreateSndSecure (ATransport t) =
+  it "should create (NEW) and secure (SKEY) queue by sender" $
+    smpTest2 t $ \r s -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv r rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe True)
+      let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
+      (rId1, NoEntity) #== "creates queue"
+
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+      Resp "bcda" _ err2 <- sendRecv s (sampleSig, "bcda", sId, SKEY sPub)
+      (err2, ERR AUTH) #== "rejects SKEY with wrong signature"
+
+      Resp "cdab" _ err3 <- signSendRecv s sKey ("cdab", rId, SKEY sPub)
+      (err3, ERR AUTH) #== "rejects SKEY with recipients's ID"
+
+      Resp "dabc" sId2 OK <- signSendRecv s sKey ("dabc", sId, SKEY sPub)
+      (sId2, sId) #== "secures queue, same queue ID in response"
+
+      (sPub', _) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+      Resp "abcd" _ err4 <- signSendRecv s sKey ("abcd", sId, SKEY sPub')
+      (err4, ERR AUTH) #== "rejects if secured with different key"
+      Resp "abcd" _ OK <- signSendRecv s sKey ("abcd", sId, SKEY sPub)
+
+      Resp "bcda" _ ok3 <- signSendRecv s sKey ("bcda", sId, _SEND "hello")
+      (ok3, OK) #== "accepts signed SEND"
+
+      Resp "" _ (Msg mId2 msg2) <- tGet1 r
+      (dec mId2 msg2, Right "hello") #== "delivers message"
+
+      Resp "cdab" _ ok5 <- signSendRecv r rKey ("cdab", rId, ACK mId2)
+      (ok5, OK) #== "replies OK when message acknowledged"
+
+      Resp "dabc" _ err5 <- sendRecv s ("", "dabc", sId, _SEND "hello")
+      (err5, ERR AUTH) #== "rejects unsigned SEND"
+
+      let maxAllowedMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion) '-'
+      Resp "bcda" _ OK <- signSendRecv s sKey ("bcda", sId, _SEND maxAllowedMessage)
+      Resp "" _ (Msg mId3 msg3) <- tGet1 r
+      (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
+
+      let biggerMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion + 1) '-'
+      Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv s sKey ("bcda", sId, _SEND biggerMessage)
+      pure ()
+
+testSndSecureProhibited :: ATransport -> Spec
+testSndSecureProhibited (ATransport t) =
+  it "should create (NEW) without allowing sndSecure and fail to and secure queue by sender (SKEY)" $
+    smpTest2 t $ \r s -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+      (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "abcd" rId1 (Ids _rId sId _srvDh) <- signSendRecv r rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
+      (rId1, NoEntity) #== "creates queue"
+
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+      Resp "dabc" sId2 err <- signSendRecv s sKey ("dabc", sId, SKEY sPub)
+      (sId2, sId) #== "secures queue, same queue ID in response"
+      (err, ERR AUTH) #== "rejects SKEY when not allowed in NEW command"
 
 testCreateDelete :: ATransport -> Spec
 testCreateDelete (ATransport t) =
