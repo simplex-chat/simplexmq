@@ -14,6 +14,7 @@
 module Simplex.Messaging.Server.Main where
 
 import Control.Concurrent.STM
+import Control.Exception (finally)
 import Control.Logger.Simple
 import Control.Monad
 import Data.ByteString.Char8 (ByteString)
@@ -280,13 +281,16 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       case webStaticPath' of
         Just path | sharedHTTP -> do
           runWebServer path Nothing ServerInformation {config, information}
-          attachStaticFiles path $ \attachHTTP -> runSMPServer cfg $ Just attachHTTP
+          attachStaticFiles path $ \attachHTTP -> do
+            logDebug "Allocated web server resources"
+            runSMPServer cfg (Just attachHTTP) `finally` logDebug "Releasing web server resources..."
         Just path -> do
           runWebServer path webHttpsParams' ServerInformation {config, information}
           runSMPServer cfg Nothing
         Nothing -> do
           logWarn "No server static path set"
           runSMPServer cfg Nothing
+      logDebug "Bye"
       where
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
