@@ -152,7 +152,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         : receiveFromProxyAgent pa
         : expireNtfsThread cfg
         : sigIntHandlerThread
-        : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
+        : map runServer transports
+            <> expireMessagesThread_ cfg
+            <> serverStatsThread_ cfg
+            <> controlPortThread_ cfg
+            <> majorGCThread_ cfg
     )
     `finally` stopServer s
   where
@@ -794,6 +798,16 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                   _ -> do
                     logError "Unauthorized control port command"
                     hPutStrLn h "AUTH"
+
+    majorGCThread_ :: ServerConfig -> [M ()]
+    majorGCThread_ ServerConfig {majorGCInterval = Just int} = [majorGCThread]
+      where
+        majorGCThread = forever $ do
+          threadDelay int
+          logInto "Starting major GC..."
+          performBlockingMajorGC
+          logInto "Completed major GC"
+    majorGCThread_ _ = []
 
 runClientTransport :: Transport c => THandleSMP c 'TServer -> M ()
 runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessionId}} = do

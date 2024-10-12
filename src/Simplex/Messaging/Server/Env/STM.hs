@@ -90,6 +90,8 @@ data ServerConfig = ServerConfig
     ntfDeliveryInterval :: Int,
     -- | interval between sending pending END events to unsubscribed clients, seconds
     pendingENDInterval :: Int,
+    -- | interval between major GC (seconds)
+    majorGCInterval :: Maybe Int,
     smpCredentials :: ServerCredentials,
     httpCredentials :: Maybe ServerCredentials,
     -- | SMP client-server protocol version range
