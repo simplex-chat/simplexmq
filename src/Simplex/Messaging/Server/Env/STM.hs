@@ -1,10 +1,14 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Simplex.Messaging.Server.Env.STM where
 
@@ -14,6 +18,7 @@ import Control.Monad
 import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
+import Data.Kind
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -38,6 +43,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.STM
+import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
@@ -142,7 +148,7 @@ data Env = Env
     server :: Server,
     serverIdentity :: KeyHash,
     queueStore :: QueueStore,
-    msgStore :: STMMsgStore,
+    msgStore :: AMsgStore,
     ntfStore :: NtfStore,
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
@@ -154,6 +160,32 @@ data Env = Env
     clients :: TVar (IntMap (Maybe Client)),
     proxyAgent :: ProxyAgent -- senders served on this proxy
   }
+
+type family MsgStore s where
+  MsgStore MSMemory = STMMsgStore
+
+type family MsgQueue s where
+  MsgQueue MSMemory = STMMsgQueue
+
+data AMsgStore = forall s. MsgStoreClass (MsgStore s) => AMS (SMSType s) (MsgStore s)
+
+data AMsgQueue = forall s. MsgQueueClass (MsgQueue s) => AMQ (SMSType s) (MsgQueue s)
+
+instance MsgStoreClass AMsgStore where
+  type MessageQueue AMsgStore = AMsgQueue
+  getMsgQueueIds (AMS _ s) = getMsgQueueIds s
+  getMsgQueue (AMS SMSMemory s) rId quota = AMQ SMSMemory <$> getMsgQueue s rId quota
+  getMsgQueue _ _ _ = error "not implemented"
+  delMsgQueue (AMS _ s) = delMsgQueue s
+  delMsgQueueSize (AMS _ s) = delMsgQueueSize s
+
+instance MsgQueueClass AMsgQueue where 
+  writeMsg (AMQ _ q) = writeMsg q
+  tryPeekMsg (AMQ _ q) = tryPeekMsg q
+  tryDelMsg (AMQ _ q) = tryDelMsg q
+  tryDelPeekMsg (AMQ _ q) = tryDelPeekMsg q
+  deleteExpiredMsgs (AMQ _ q) = deleteExpiredMsgs q
+  getQueueSize (AMQ _ q) = getQueueSize q
 
 type Subscribed = Bool
 
@@ -245,7 +277,7 @@ newEnv :: ServerConfig -> IO Env
 newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAgentCfg, information, messageExpiration} = do
   server <- newServer
   queueStore <- newQueueStore
-  msgStore <- newMsgStore
+  msgStore <- AMS SMSMemory <$> newMsgStore
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
   storeLog <-

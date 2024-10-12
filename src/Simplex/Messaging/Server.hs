@@ -91,6 +91,7 @@ import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.STM
+import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
@@ -357,7 +358,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       forever $ do
         liftIO $ threadDelay' interval
         old <- liftIO $ expireBeforeEpoch expCfg
-        rIds <- M.keysSet <$> readTVarIO ms
+        rIds <- liftIO $ getMsgQueueIds ms
         forM_ rIds $ \rId -> do
           q <- liftIO $ getMsgQueue ms rId quota
           deleted <- liftIO $ deleteExpiredMsgs q old
@@ -1437,7 +1438,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               msgTs <- liftIO getSystemTime
               pure $! Message msgId msgTs msgFlags body
 
-            expireMessages :: MsgQueue -> M ()
+            expireMessages :: AMsgQueue -> M ()
             expireMessages q = do
               msgExp <- asks $ messageExpiration . config
               old <- liftIO $ mapM expireBeforeEpoch msgExp
@@ -1604,7 +1605,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
         setDelivered :: Sub -> Message -> STM Bool
         setDelivered s msg = tryPutTMVar (delivered s) $! messageId msg
 
-        getStoreMsgQueue :: T.Text -> RecipientId -> M MsgQueue
+        getStoreMsgQueue :: T.Text -> RecipientId -> M AMsgQueue
         getStoreMsgQueue name rId = time (name <> " getMsgQueue") $ do
           ms <- asks msgStore
           quota <- asks $ msgQueueQuota . config
@@ -1702,12 +1703,15 @@ randomId = fmap EntityId . randomId'
 saveServerMessages :: Bool -> M ()
 saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessages
   where
-    saveMessages f = do
-      logInfo $ "saving messages to file " <> T.pack f
-      ms <- asks msgStore
-      liftIO . withFile f WriteMode $ \h ->
-        readTVarIO ms >>= mapM_ (saveQueueMsgs h) . M.assocs
-      logInfo "messages saved"
+    saveMessages :: FilePath -> M ()
+    saveMessages f =
+      asks msgStore >>= \case
+        AMS SMSMemory ms -> do
+          logInfo $ "saving messages to file " <> T.pack f
+          liftIO . withFile f WriteMode $ \h ->
+            readTVarIO ms >>= mapM_ (saveQueueMsgs h) . M.assocs
+          logInfo "messages saved"
+        _ -> pure ()
       where
         saveQueueMsgs h (rId, q) = BLD.hPutBuilder h . encodeMessages rId =<< atomically (getMessages $ msgQueue q)
         getMessages = if keepMsgs then snapshotTQueue else flushTQueue
@@ -1817,7 +1821,10 @@ restoreServerStats expiredMsgs expiredNtfs = asks (serverStatsBackupFile . confi
         Right d@ServerStatsData {_qCount = statsQCount} -> do
           s <- asks serverStats
           _qCount <- fmap M.size . readTVarIO . queues =<< asks queueStore
-          _msgCount <- liftIO . foldM (\(!n) q -> (n +) <$> getQueueSize q) 0 =<< readTVarIO =<< asks msgStore
+          _msgCount <-
+            asks msgStore >>= \case
+              AMS SMSMemory ms -> liftIO $ readTVarIO ms >>= foldM (\(!n) q -> (n +) <$> getQueueSize q) 0
+              _ -> pure 0
           NtfStore ns <- asks ntfStore
           _ntfCount <- liftIO . foldM (\(!n) q -> (n +) . length <$> readTVarIO q) 0 =<< readTVarIO ns
           liftIO $ setServerStats s d {_qCount, _msgCount, _ntfCount, _msgExpired = _msgExpired d + expiredMsgs, _msgNtfExpired = _msgNtfExpired d + expiredNtfs}

@@ -175,6 +175,7 @@ library
       Simplex.Messaging.Server.Main
       Simplex.Messaging.Server.MsgStore
       Simplex.Messaging.Server.MsgStore.STM
+      Simplex.Messaging.Server.MsgStore.Types
       Simplex.Messaging.Server.NtfStore
       Simplex.Messaging.Server.QueueStore
       Simplex.Messaging.Server.QueueStore.QueueInfo
