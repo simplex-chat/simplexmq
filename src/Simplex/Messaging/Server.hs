@@ -1277,7 +1277,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
             deliver :: Bool -> Sub -> M (Transmission BrokerMsg)
             deliver inc sub = do
               q <- getStoreMsgQueue "SUB" rId
-              msg_ <- liftIO $ tryPeekMsgIO q
+              msg_ <- liftIO $ tryPeekMsg q
               when (inc && isJust msg_) $
                 incStat . qSub =<< asks serverStats
               deliverMessage "SUB" qr rId sub msg_
@@ -1313,13 +1313,11 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               q <- getStoreMsgQueue "GET" entId
               stats <- asks serverStats
               (statCnt, r) <-
-                -- TODO split STM, use tryPeekMsgIO
-                atomically $
-                  tryPeekMsg q >>= \case
+                  liftIO (tryPeekMsg q) >>= \case
                     Just msg ->
                       let encMsg = encryptMsg qr msg
                           cnt = if isJust delivered_ then msgGetDuplicate else msgGet
-                       in setDelivered s msg $> (cnt, (corrId, entId, MSG encMsg))
+                       in atomically $ setDelivered s msg $> (cnt, (corrId, entId, MSG encMsg))
                     _ -> pure (msgGetNoMsg, (corrId, entId, OK))
               incStat $ statCnt stats
               pure r
@@ -1640,7 +1638,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
           q <- getStoreMsgQueue "getQueueInfo" entId
           qiSub <- liftIO $ TM.lookupIO entId subscriptions >>= mapM mkQSub
           qiSize <- liftIO $ getQueueSize q
-          qiMsg <- liftIO $ toMsgInfo <$$> tryPeekMsgIO q
+          qiMsg <- liftIO $ toMsgInfo <$$> tryPeekMsg q
           let info = QueueInfo {qiSnd = isJust senderKey, qiNtf = isJust notifier, qiSub, qiSize, qiMsg}
           pure (corrId, entId, INFO info)
           where

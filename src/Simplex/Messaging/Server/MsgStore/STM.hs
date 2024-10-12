@@ -16,7 +16,6 @@ module Simplex.Messaging.Server.MsgStore.STM
     delMsgQueueSize,
     writeMsg,
     tryPeekMsg,
-    tryPeekMsgIO,
     tryDelMsg,
     tryDelPeekMsg,
     deleteExpiredMsgs,
@@ -83,18 +82,18 @@ writeMsg MsgQueue {msgQueue = q, quota, canWrite, size} !msg = atomically $ do
   where
     msgQuota = MessageQuota {msgId = msgId msg, msgTs = msgTs msg}
 
-tryPeekMsgIO :: MsgQueue -> IO (Maybe Message)
-tryPeekMsgIO = atomically . tryPeekTQueue . msgQueue
-{-# INLINE tryPeekMsgIO #-}
+tryPeekMsg :: MsgQueue -> IO (Maybe Message)
+tryPeekMsg = atomically . tryPeekTQueue . msgQueue
+{-# INLINE tryPeekMsg #-}
 
 -- TODO remove once deliverToSub is split
-tryPeekMsg :: MsgQueue -> STM (Maybe Message)
-tryPeekMsg = tryPeekTQueue . msgQueue
-{-# INLINE tryPeekMsg #-}
+tryPeekMsg_ :: MsgQueue -> STM (Maybe Message)
+tryPeekMsg_ = tryPeekTQueue . msgQueue
+{-# INLINE tryPeekMsg_ #-}
 
 tryDelMsg :: MsgQueue -> MsgId -> IO (Maybe Message)
 tryDelMsg mq msgId' = atomically $
-  tryPeekMsg mq >>= \case
+  tryPeekMsg_ mq >>= \case
     msg_@(Just msg)
       | msgId msg == msgId' || B.null msgId' -> tryDeleteMsg_ mq >> pure msg_
       | otherwise -> pure Nothing
@@ -103,9 +102,9 @@ tryDelMsg mq msgId' = atomically $
 -- atomic delete (== read) last and peek next message if available
 tryDelPeekMsg :: MsgQueue -> MsgId -> IO (Maybe Message, Maybe Message)
 tryDelPeekMsg mq msgId' = atomically $
-  tryPeekMsg mq >>= \case
+  tryPeekMsg_ mq >>= \case
     msg_@(Just msg)
-      | msgId msg == msgId' || B.null msgId' -> (msg_,) <$> (tryDeleteMsg_ mq >> tryPeekMsg mq)
+      | msgId msg == msgId' || B.null msgId' -> (msg_,) <$> (tryDeleteMsg_ mq >> tryPeekMsg_ mq)
       | otherwise -> pure (Nothing, msg_)
     _ -> pure (Nothing, Nothing)
 
@@ -113,7 +112,7 @@ deleteExpiredMsgs :: MsgQueue -> Int64 -> IO Int
 deleteExpiredMsgs mq old = atomically $ loop 0
   where
     loop dc =
-      tryPeekMsg mq >>= \case
+      tryPeekMsg_ mq >>= \case
         Just Message {msgTs}
           | systemSeconds msgTs < old ->
               tryDeleteMsg_ mq >> loop (dc + 1)
