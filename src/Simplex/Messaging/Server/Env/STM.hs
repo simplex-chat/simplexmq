@@ -41,6 +41,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
+import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -162,19 +163,16 @@ data Env = Env
 
 type family MsgStore s where
   MsgStore 'MSMemory = STMMsgStore
-
-type family MsgQueue s where
-  MsgQueue 'MSMemory = STMMsgQueue
+  MsgStore 'MSJournal = JournalMsgStore
 
 data AMsgStore = forall s. MsgStoreClass (MsgStore s) => AMS (SMSType s) (MsgStore s)
 
-data AMsgQueue = forall s. MsgQueueClass (MsgQueue s) => AMQ (SMSType s) (MsgQueue s)
+data AMsgQueue = forall s. MsgStoreClass (MsgStore s) => AMQ (SMSType s) (MessageQueue (MsgStore s))
 
 instance MsgStoreClass AMsgStore where
   type MessageQueue AMsgStore = AMsgQueue
   getMsgQueueIds (AMS _ s) = getMsgQueueIds s
-  getMsgQueue (AMS SMSMemory s) rId quota = AMQ SMSMemory <$> getMsgQueue s rId quota
-  getMsgQueue _ _ _ = error "not implemented"
+  getMsgQueue (AMS t s) rId quota = AMQ t <$> getMsgQueue s rId quota
   delMsgQueue (AMS _ s) = delMsgQueue s
   delMsgQueueSize (AMS _ s) = delMsgQueueSize s
 
@@ -243,7 +241,7 @@ newServer = do
   ntfSubClients <- newTVarIO IM.empty
   pendingSubEvents <- newTVarIO IM.empty
   pendingNtfSubEvents <- newTVarIO IM.empty
-  savingLock <- atomically createLock
+  savingLock <- createLockIO
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, subClients, ntfSubClients, pendingSubEvents, pendingNtfSubEvents, savingLock}
 
 newClient :: ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO Client

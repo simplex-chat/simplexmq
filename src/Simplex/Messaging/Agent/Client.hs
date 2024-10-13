@@ -500,7 +500,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs a
   getMsgLocks <- TM.emptyIO
   connLocks <- TM.emptyIO
   invLocks <- TM.emptyIO
-  deleteLock <- atomically createLock
+  deleteLock <- createLockIO
   smpSubWorkers <- TM.emptyIO
   smpServersStats <- TM.emptyIO
   xftpServersStats <- TM.emptyIO

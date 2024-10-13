@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
 
@@ -9,7 +10,7 @@ import Data.Kind
 import Data.Set (Set)
 import Simplex.Messaging.Protocol (Message (..), MsgId, RecipientId)
 
-class MsgStoreClass s where
+class MsgQueueClass (MessageQueue s) => MsgStoreClass s where
   type MessageQueue s = q | q -> s
   getMsgQueueIds :: s -> IO (Set RecipientId)
   getMsgQueue :: s -> RecipientId -> Int -> IO (MessageQueue s)
