@@ -91,9 +91,8 @@ instance MsgQueueClass STMMsgQueue where
   tryDelMsg :: STMMsgQueue -> MsgId -> IO (Maybe Message)
   tryDelMsg mq msgId' = atomically $
     tryPeekMsg_ mq >>= \case
-      msg_@(Just msg)
-        | msgId msg == msgId' || B.null msgId' -> tryDeleteMsg_ mq >> pure msg_
-        | otherwise -> pure Nothing
+      msg_@(Just msg) | msgId msg == msgId' || B.null msgId' ->
+        tryDeleteMsg_ mq >> pure msg_
       _ -> pure Nothing
 
   -- atomic delete (== read) last and peek next message if available

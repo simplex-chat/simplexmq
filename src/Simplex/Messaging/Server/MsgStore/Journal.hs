@@ -75,13 +75,13 @@ newJournalMsgStore storePath pathParts random = do
   msgQueues <- TM.emptyIO
   pure JournalMsgStore {storePath, pathParts, random, msgQueues}
 
-emptyMsgQueueState :: ByteString -> MsgQueueState
-emptyMsgQueueState journalId =
-  let st = emptyJournalState journalId
+newMsgQueueState :: ByteString -> MsgQueueState
+newMsgQueueState journalId =
+  let st = newJournalState journalId
    in MsgQueueState {writeState = st, readState = st, canWrite = True, size = 0}
 
-emptyJournalState :: ByteString -> JournalState
-emptyJournalState journalId = JournalState {journalId, msgPos = 0, msgCount = 0, bytePos = 0}
+newJournalState :: ByteString -> JournalState
+newJournalState journalId = JournalState {journalId, msgPos = 0, msgCount = 0, bytePos = 0}
 
 journalFilePath :: FilePath -> ByteString -> FilePath
 journalFilePath dir journalId = dir </> (msgLogFileName <> "." <> B.unpack journalId <> logFileExt)
@@ -160,7 +160,7 @@ instance MsgStoreClass JournalMsgStore where
             sh <- openFile statePath AppendMode
             B.hPutStr sh ""
             (journalId, rh) <- createNewJournal g dir
-            pure (emptyMsgQueueState journalId, sh, (rh, Nothing))
+            pure (newMsgQueueState journalId, sh, (rh, Nothing))
           mkJournalQueue :: FilePath -> FilePath -> (MsgQueueState, Handle, (Handle, Maybe Handle)) -> IO JournalMsgQueue
           mkJournalQueue dir statePath (st, stateHandle, hs) = do
             state <- newTVarIO st
@@ -201,7 +201,7 @@ instance MsgQueueClass JournalMsgQueue where
         else pure Nothing
     where
       msgQuota = MessageQuota {msgId = msgId msg, msgTs = msgTs msg}
-      writeToJournal st@MsgQueueState {writeState, readState, canWrite, size} canWrt' msg' = do
+      writeToJournal st@MsgQueueState {writeState, readState = rs, canWrite, size} canWrt' msg' = do
         let msgStr = strEncode msg' `B.snoc` '\n'
             msgLen = B.length msgStr
         hs <- readTVarIO handles
@@ -210,34 +210,27 @@ instance MsgQueueClass JournalMsgQueue where
             g <- C.newRandom -- TODO get from store
             (journalId, wh) <- createNewJournal g queueDirectory
             atomically $ writeTVar handles $! (h, Just wh)
-            pure (emptyJournalState journalId, wh)
+            pure (newJournalState journalId, wh)
           (h, wh_) -> pure (writeState, fromMaybe h wh_)
-        let !ws' = ws {msgPos = msgPos ws + 1, msgCount = msgCount ws + 1, bytePos = bytePos ws + msgLen}
-            !st' = st {writeState = ws', canWrite = canWrt', size = size + 1}
+        let !msgCount' = msgCount ws + 1
+            !ws' = ws {msgPos = msgPos ws + 1, msgCount = msgCount', bytePos = bytePos ws + msgLen}
+            !rs' = if journalId ws == journalId rs then rs {msgCount = msgCount'} else rs
+            !st' = st {writeState = ws', readState = rs', canWrite = canWrt', size = size + 1}
         atomically $ writeTVar state st'
         hAppend wh msgStr
         B.hPutStr sh $ strEncode st' `B.snoc` '\n'
 
-    -- if write_msg >= max_file_messages: // queue file rotation
-    --     create messages.efgh.log // efgh is some random string
-    --     update queue state: write_file=efgh write_msg=0 // read file remains the same as it was
-    --     append updated queue state to queue.log
-    --     copy queue.log to queue.timestamp.log
-    --     // `old` needs to be defined to limit the number and storage duration,
-    --     // preserving not more than N files, and not more than M days files, "and then some"
-    --     // (that is if the queue has high churn, we have file from M days before in any case, for any debugging).
-    --     delete `old` `queue.timestamp.log` files
-    --     write one line queue state to queue.log // compaction
-
-    -- add message to write_file
-    -- update queue state: write_msg += 1
-    -- append updated queue state to queue.log
-
+  -- TODO optimize by having the message ready (set when journal is opened)
   tryPeekMsg :: JournalMsgQueue -> IO (Maybe Message)
-  tryPeekMsg mq = undefined
+  tryPeekMsg mq = withLock' (queueLock mq) "tryPeekMsg" $ tryPeekMsg_ mq
 
   tryDelMsg :: JournalMsgQueue -> MsgId -> IO (Maybe Message)
-  tryDelMsg mq msgId' = undefined
+  tryDelMsg mq msgId' =
+    withLock' (queueLock mq) "tryDelMsg" $
+      tryPeekMsg_ mq >>= \case
+        msg_@(Just msg) | msgId msg == msgId' || B.null msgId' ->
+          tryDeleteMsg_ mq >> pure msg_
+        _ -> pure Nothing
 
   tryDelPeekMsg :: JournalMsgQueue -> MsgId -> IO (Maybe Message, Maybe Message)
   tryDelPeekMsg mq msgId' = undefined
@@ -296,8 +289,37 @@ readWriteQueueState dir statePath = undefined
 --     -- TODO remove old logs, possibly when validating storage
 --     pure emptyState
 
+tryPeekMsg_ :: JournalMsgQueue -> IO (Maybe Message)
+tryPeekMsg_ JournalMsgQueue {state, handles} = do
+  MsgQueueState {readState = JournalState {bytePos}} <- readTVarIO state
+  (h, _) <- readTVarIO handles
+  s <- hGetLineAt h bytePos -- won't be needed when message is cached
+  -- TODO handle errors
+  Right msg <- pure $ strDecode s
+  pure msg
+
+tryDeleteMsg_ :: JournalMsgQueue -> IO ()
+tryDeleteMsg_ JournalMsgQueue {stateHandle = sh, state, handles} = do
+  st@MsgQueueState {readState = rs, writeState = ws, size} <- readTVarIO state
+  let JournalState {msgPos, bytePos} = rs
+  (h, wh_) <- readTVarIO handles
+  s <- hGetLineAt h bytePos -- won't be needed when message is cached
+  let !msgPos' = msgPos + 1
+  !rs' <- case wh_ of
+    Just wh | msgPos' == msgCount rs && journalId rs /= journalId ws -> do
+      -- switch to reading from write journal
+      atomically $ writeTVar handles $! (wh, Nothing)
+      pure (newJournalState $ journalId ws) {msgCount = msgCount ws}
+    _ -> pure rs {msgPos = msgPos', bytePos = bytePos + B.length s + 1} -- 1 is for newline
+  let !st' = st {readState = rs', size = size - 1}
+  atomically $ writeTVar state st'
+  B.hPutStr sh $ strEncode st' `B.snoc` '\n'
+    
 hAppend :: Handle -> ByteString -> IO ()
 hAppend h s = IO.hSeek h SeekFromEnd 0 >> B.hPutStr h s
+
+hGetLineAt :: Handle -> Int -> IO ByteString
+hGetLineAt h pos = IO.hSeek h AbsoluteSeek (fromIntegral pos) >> B.hGetLine h
 
 openFile :: FilePath -> IOMode -> IO Handle
 openFile f mode = do

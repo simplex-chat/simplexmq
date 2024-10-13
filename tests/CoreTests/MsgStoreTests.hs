@@ -19,7 +19,7 @@ import Test.Hspec
 
 msgStoreTests :: Spec
 msgStoreTests = do
-  around withSTMStore $ describe "STM message store" $ someMsgStoreTests
+  around withSTMStore $ fdescribe "STM message store" $ someMsgStoreTests
   around withJournalStore $ fdescribe "Journal message store" $ someMsgStoreTests
   where
     someMsgStoreTests :: SpecWith AMsgStore
@@ -47,8 +47,19 @@ testGetQueue st = do
   g <- C.newRandom
   rId <- atomically $ C.randomBytes 24 g
   q <- getMsgQueue st (EntityId rId) 128
-  Just (Message {}, True) <- writeMsg q =<< testMessage "message 1"
-  Just (Message {}, False) <- writeMsg q =<< testMessage "message 2"
-  Just (Message {}, False) <- writeMsg q =<< testMessage "message 3"
-  threadDelay 100000000
+  msg1 <- testMessage "message 1"
+  Just (Message {msgId = mId1}, True) <- writeMsg q msg1
+  msg2 <- testMessage "message 2"
+  Just (Message {msgId = mId2}, False) <- writeMsg q msg2
+  msg3 <- testMessage "message 3"
+  Just (Message {msgId = mId3}, False) <- writeMsg q msg3
+  Just Message {msgBody = C.MaxLenBS "message 1"} <- tryPeekMsg q
+  Just Message {msgBody = C.MaxLenBS "message 1"} <- tryPeekMsg q
+  Nothing <- tryDelMsg q mId2
+  Just Message {msgBody = C.MaxLenBS "message 1"} <- tryDelMsg q mId1
+  Nothing <- tryDelMsg q mId1
+  Just Message {msgBody = C.MaxLenBS "message 2"} <- tryPeekMsg q
+  Nothing <- tryDelMsg q mId1
+  Just Message {msgBody = C.MaxLenBS "message 2"} <- tryDelMsg q mId2
+  Nothing <- tryDelMsg q mId2
   pure ()
