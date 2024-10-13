@@ -559,11 +559,13 @@ In current implementation of XFTP protocol in SimpleX Chat clients don't use FAC
 
  - perform traffic correlation attacks against senders and recipients and correlate senders and recipients within the monitored set, frustrated by the number of users on the servers.
 
- - observe how much traffic is being sent, and make guesses as to its purpose
+ - observe how much traffic is being sent, and make guesses as to its purpose.
 
-*cannot, even in case of a compromised transport protocol:*
+ - in case of a compromised transport protocol, correlate file senders and receivers.
 
- - perform traffic correlation attacks with any increase in efficiency over a non-compromised transport protocol
+*cannot, in case of a non-compromised transport protocol:*
+
+ - perform traffic correlation attacks.
 
 #### XFTP server
 
