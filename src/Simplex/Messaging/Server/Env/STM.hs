@@ -18,7 +18,6 @@ import Control.Monad
 import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
-import Data.Kind
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -162,10 +161,10 @@ data Env = Env
   }
 
 type family MsgStore s where
-  MsgStore MSMemory = STMMsgStore
+  MsgStore 'MSMemory = STMMsgStore
 
 type family MsgQueue s where
-  MsgQueue MSMemory = STMMsgQueue
+  MsgQueue 'MSMemory = STMMsgQueue
 
 data AMsgStore = forall s. MsgStoreClass (MsgStore s) => AMS (SMSType s) (MsgStore s)
 

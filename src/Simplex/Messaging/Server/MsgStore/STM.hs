@@ -16,6 +16,7 @@ module Simplex.Messaging.Server.MsgStore.STM
   )
 where
 
+import Control.Concurrent.STM
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -26,7 +27,6 @@ import Simplex.Messaging.Protocol (Message (..), MsgId, RecipientId)
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import UnliftIO.STM
 
 data STMMsgQueue = STMMsgQueue
   { msgQueue :: TQueue Message,
@@ -43,7 +43,7 @@ newMsgStore = TM.emptyIO
 instance MsgStoreClass STMMsgStore where
   type MessageQueue STMMsgStore = STMMsgQueue
   getMsgQueueIds :: STMMsgStore -> IO (Set RecipientId)
-  getMsgQueueIds st = M.keysSet <$> readTVarIO st
+  getMsgQueueIds = fmap M.keysSet . readTVarIO
 
   -- The reason for double lookup is that majority of messaging queues exist,
   -- because multiple messages are sent to the same queue,
