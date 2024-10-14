@@ -53,6 +53,7 @@ import qualified Data.ByteString.Builder as BLD
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.Dynamic (toDyn)
 import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.IORef
@@ -71,6 +72,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
 import Data.Typeable (cast)
+import GHC.Conc.Signal
 import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
@@ -149,9 +151,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         : sendPendingEvtsThread s
         : receiveFromProxyAgent pa
         : expireNtfsThread cfg
+        : sigIntHandlerThread
         : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
     )
-    `finally` withLock' (savingLock s) "final" (saveServer False >> closeServer)
+    `finally` stopServer s
   where
     runServer :: (ServiceName, ATransport, AddHTTP) -> M ()
     runServer (tcpPort, ATransport t, addHTTP) = do
@@ -174,6 +177,22 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         _ ->
           runTransportServerState ss started tcpPort defaultSupportedParams smpCreds (Just supportedSMPHandshakes) tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
     fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
+
+    sigIntHandlerThread :: M ()
+    sigIntHandlerThread = do
+      flagINT <- newEmptyTMVarIO
+      let sigINT = 2 -- CONST_SIGINT value
+          sigIntAction = \_ptr -> atomically $ void $ tryPutTMVar flagINT ()
+          sigIntHandler = Just (sigIntAction, toDyn ())
+      void $ liftIO $ setHandler sigINT sigIntHandler
+      atomically $ readTMVar flagINT
+      logInfo "Received SIGINT, stopping server..."
+
+    stopServer :: Server -> M ()
+    stopServer s = do
+      logInfo "Saving server state..."
+      withLock' (savingLock s) "final" $ saveServer False >> closeServer
+      logInfo "Server stopped"
 
     saveServer :: Bool -> M ()
     saveServer keepMsgs = withLog closeStoreLog >> saveServerMessages keepMsgs >> saveServerNtfs >> saveServerStats
@@ -944,7 +963,7 @@ verifyTransmission auth_ tAuth authorized queueId cmd =
     Cmd SRecipient (NEW k _ _ _ _) -> pure $ Nothing `verifiedWith` k
     Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWith` recipientKey q) <$> get SRecipient
     -- SEND will be accepted without authorization before the queue is secured with KEY or SKEY command
-    Cmd SSender (SKEY k) -> verifyQueue (\q -> Just q `verifiedWith` k) <$> get SSender
+    Cmd SSender (SKEY k) -> verifyQueue (\q -> if maybe True (k ==) (senderKey q) then Just q `verifiedWith` k else dummyVerify) <$> get SSender
     Cmd SSender SEND {} -> verifyQueue (\q -> Just q `verified` maybe (isNothing tAuth) verify (senderKey q)) <$> get SSender
     Cmd SSender PING -> pure $ VRVerified Nothing
     Cmd SSender RFWD {} -> pure $ VRVerified Nothing

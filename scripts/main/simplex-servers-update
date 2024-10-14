@@ -2,8 +2,6 @@
 set -eu
 
 # Links to scripts/configs
-bin="https://github.com/simplex-chat/simplexmq/releases/latest/download"
-
 scripts="https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/scripts/main"
 scripts_systemd_smp="$scripts/smp-server.service"
 scripts_systemd_xftp="$scripts/xftp-server.service"
@@ -76,6 +74,21 @@ installed_test() {
   set -u
 }
 
+set_version() {
+  ver="${VER:-latest}"
+
+  case "$ver" in 
+    latest)
+      bin="https://github.com/simplex-chat/simplexmq/releases/latest/download"
+      remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest | grep -i "tag_name" | awk -F \" '{print $4}')"
+      ;;
+    *)
+      bin="https://github.com/simplex-chat/simplexmq/releases/download/${ver}"
+      remote_version="${ver}"
+      ;;
+  esac
+}
+
 update_scripts() {
   curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_update" -o "$path_tmp_bin_update" && chmod +x "$path_tmp_bin_update"
   curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_uninstall" -o "$path_tmp_bin_uninstall" && chmod +x "$path_tmp_bin_uninstall"
@@ -137,8 +150,6 @@ update_bins() {
   eval "bin=\$bin_${1}"
   eval "path_bin=\$path_bin_${1}"
 
-  remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest | grep -i "tag_name" | awk -F \" '{print $4}')"
-
   set_ver() {
     local_version='unset'
     sed -i -- "s/local_version_${1}=.*/local_version_${1}='${remote_version}'/" "$path_conf_info/release"
@@ -192,6 +203,7 @@ checks() {
     exit 1
   fi
 
+  set_version
   os_test
   installed_test
 
