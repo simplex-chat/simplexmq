@@ -1063,20 +1063,26 @@ getNotificationMessage' c nonce encNtfInfo = do
     Just NtfToken {ntfDhSecret = Just dhSecret} -> do
       ntfData <- agentCbDecrypt dhSecret nonce encNtfInfo
       pnMsgs <- liftEither (parse pnMessagesP (INTERNAL "error parsing PNMessageData") ntfData)
-      -- [ntf get many]
-      -- - catch error on getMsg
-      mapM getMsg pnMsgs
+      let (initNtfs, lastNtf) = (L.init pnMsgs, L.last pnMsgs)
+      initNtfMsgs <- catMaybes <$> forM initNtfs (\initNtf -> getInitNtfMsg initNtf `catchAgentError` \_ -> pure Nothing)
+      lastNtfMsg <- getLastNtfMsg lastNtf
+      pure $ L.fromList $ initNtfMsgs <> [lastNtfMsg]
     _ -> throwE $ CMD PROHIBITED "getNotificationMessage"
   where
-    getMsg :: PNMessageData -> AM (NotificationInfo, Maybe SMPMsgMeta)
-    getMsg PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = do
-      (ntfConnId, rcvNtfDhSecret) <- withStore c (`getNtfRcvQueue` smpQueue)
+    getInitNtfMsg :: PNMessageData -> AM (Maybe (NotificationInfo, Maybe SMPMsgMeta))
+    getInitNtfMsg PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = do
+      (ntfConnId, rcvNtfDhSecret, lastBrokerTs_) <- withStore c (`getNtfRcvQueue` smpQueue)
       ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
-      -- [ntf get many]
-      -- compare ntfMsgMeta msgTs (it's SMP server's msg ts) with last received message ts,
-      -- only getConnectionMessage if it's newer (except for the latest notification - always get it);
-      -- as last message can be acknowledged/deleted, rcv_messages broker_ts should also
-      -- be remembered on rcv_queues (read it in getNtfRcvQueue above)
+      case (ntfMsgMeta, lastBrokerTs_) of
+        (Just SMP.NMsgMeta {msgTs}, Just lastBrokerTs)
+          | systemToUTCTime msgTs > lastBrokerTs -> do
+              msgMeta <- getConnectionMessage' c ntfConnId
+              pure $ Just (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}, msgMeta)
+        _ -> pure Nothing
+    getLastNtfMsg :: PNMessageData -> AM (NotificationInfo, Maybe SMPMsgMeta)
+    getLastNtfMsg PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = do
+      (ntfConnId, rcvNtfDhSecret, _) <- withStore c (`getNtfRcvQueue` smpQueue)
+      ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
       msgMeta <- getConnectionMessage' c ntfConnId
       pure (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}, msgMeta)
 
