@@ -4,6 +4,7 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Notifications.Server.Store where
@@ -12,6 +13,8 @@ import Control.Concurrent.STM
 import Control.Monad
 import Data.ByteString.Char8 (ByteString)
 import Data.Functor (($>))
+import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
 import Data.Set (Set)
@@ -31,7 +34,7 @@ data NtfStore = NtfStore
     subscriptions :: TMap NtfSubscriptionId NtfSubData,
     tokenSubscriptions :: TMap NtfTokenId (TVar (Set NtfSubscriptionId)),
     subscriptionLookup :: TMap SMPQueueNtf NtfSubscriptionId,
-    tokenLastNtfs :: TMap NtfTokenId (TVar [PNMessageData])
+    tokenLastNtfs :: TMap NtfTokenId (TVar (NonEmpty PNMessageData))
   }
 
 newNtfStore :: IO NtfStore
@@ -199,19 +202,24 @@ deleteNtfSubscription st subId = do
           forM_ ts_ $ \ts -> modifyTVar' ts $ S.delete subId
       )
 
-getTokenLastNtfsVar :: NtfStore -> NtfTokenId -> STM (TVar [PNMessageData])
-getTokenLastNtfsVar st tknId =
-  TM.lookup tknId (tokenLastNtfs st) >>= maybe newTokenLastNtfs pure
+addTokenLastNtf :: NtfStore -> NtfTokenId -> PNMessageData -> STM (NonEmpty PNMessageData)
+addTokenLastNtf st tknId newNtf =
+  TM.lookup tknId (tokenLastNtfs st) >>= maybe newTokenLastNtfs addNtf
   where
     newTokenLastNtfs = do
-      v <- newTVar []
+      v <- newTVar [newNtf]
       TM.insert tknId v $ tokenLastNtfs st
-      pure v
-
-addTokenLastNtf :: TVar [PNMessageData] -> PNMessageData -> STM ()
-addTokenLastNtf v newNtf = do
-  -- [ntf get many]
-  -- if ntf for queue already exists (find by smpQueue :: SMPQueueNtf), replace it
-  -- otherwise, add newNtf and remove oldest (last in list) if size exceeds limit
-  -- list is small, so search is fine
-  modifyTVar' v (newNtf :)
+      pure [newNtf]
+    addNtf v = do
+      lastNtfs <- readTVar v
+      let lastNtfs' = rebuildList lastNtfs
+      writeTVar v lastNtfs'
+      pure lastNtfs'
+      where
+        rebuildList :: NonEmpty PNMessageData -> NonEmpty PNMessageData
+        rebuildList lastNtfs = do
+          let filtered = L.filter (\PNMessageData {smpQueue} -> smpQueue /= newNtfQ) lastNtfs
+              lastNtfs' = filtered <> [newNtf]
+          L.fromList $ drop (length lastNtfs' - maxNtfs) lastNtfs'
+        PNMessageData {smpQueue = newNtfQ} = newNtf
+        maxNtfs = 6 -- APNS max payload size is 4096 bytes; paddedNtfLength = 512, plus reserve for envelope

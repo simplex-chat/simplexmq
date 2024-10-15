@@ -358,13 +358,9 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
               liftIO $ updatePeriodStats (activeSubs stats) ntfId
               tkn_ <- atomically (findNtfSubscriptionToken st smpQueue)
               forM_ tkn_ $ \tkn -> do
-                lastNtfsVar <- atomically (getTokenLastNtfsVar st (ntfTknId tkn))
-                lastNtfs <- readTVarIO lastNtfsVar
                 let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
-                -- [ntf get many]
-                -- notifications have to be sent in order
-                atomically (writeTBQueue pushQ (tkn, PNMessage (newNtf :| lastNtfs)))
-                atomically $ addTokenLastNtf lastNtfsVar newNtf
+                lastNtfs <- atomically $ addTokenLastNtf st (ntfTknId tkn) newNtf
+                atomically (writeTBQueue pushQ (tkn, PNMessage lastNtfs))
               incNtfStat ntfReceived
             Right SMP.END ->
               whenM (atomically $ activeClientSession' ca sessionId srv) $
