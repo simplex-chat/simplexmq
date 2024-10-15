@@ -10,20 +10,18 @@ import Data.Kind
 import Data.Set (Set)
 import Simplex.Messaging.Protocol (Message (..), MsgId, RecipientId)
 
-class MsgQueueClass (MessageQueue s) => MsgStoreClass s where
-  type MessageQueue s = q | q -> s
+class MsgStoreClass s where
+  type MsgQueue s = q | q -> s
   getMsgQueueIds :: s -> IO (Set RecipientId)
-  getMsgQueue :: s -> RecipientId -> Int -> IO (MessageQueue s)
+  getMsgQueue :: s -> RecipientId -> Int -> IO (MsgQueue s)
   delMsgQueue :: s -> RecipientId -> IO ()
   delMsgQueueSize :: s -> RecipientId -> IO Int
-
-class MsgQueueClass q where 
-  writeMsg :: q -> Message -> IO (Maybe (Message, Bool))
-  tryPeekMsg :: q -> IO (Maybe Message)
-  tryDelMsg :: q -> MsgId -> IO (Maybe Message)
-  tryDelPeekMsg :: q -> MsgId -> IO (Maybe Message, Maybe Message)
-  deleteExpiredMsgs :: q -> Int64 -> IO Int
-  getQueueSize :: q -> IO Int
+  writeMsg :: MsgQueue s -> Message -> IO (Maybe (Message, Bool))
+  tryPeekMsg :: MsgQueue s -> IO (Maybe Message)
+  tryDelMsg :: MsgQueue s -> MsgId -> IO (Maybe Message)
+  tryDelPeekMsg :: MsgQueue s -> MsgId -> IO (Maybe Message, Maybe Message)
+  deleteExpiredMsgs :: MsgQueue s -> Int64 -> IO Int
+  getQueueSize :: MsgQueue s -> IO Int
 
 data MSType = MSMemory | MSJournal
 

@@ -167,16 +167,14 @@ type family MsgStore s where
 
 data AMsgStore = forall s. MsgStoreClass (MsgStore s) => AMS (SMSType s) (MsgStore s)
 
-data AMsgQueue = forall s. MsgStoreClass (MsgStore s) => AMQ (SMSType s) (MessageQueue (MsgStore s))
+data AMsgQueue = forall s. MsgStoreClass (MsgStore s) => AMQ (SMSType s) (MsgQueue (MsgStore s))
 
 instance MsgStoreClass AMsgStore where
-  type MessageQueue AMsgStore = AMsgQueue
+  type MsgQueue AMsgStore = AMsgQueue
   getMsgQueueIds (AMS _ s) = getMsgQueueIds s
   getMsgQueue (AMS t s) rId quota = AMQ t <$> getMsgQueue s rId quota
   delMsgQueue (AMS _ s) = delMsgQueue s
   delMsgQueueSize (AMS _ s) = delMsgQueueSize s
-
-instance MsgQueueClass AMsgQueue where 
   writeMsg (AMQ _ q) = writeMsg q
   tryPeekMsg (AMQ _ q) = tryPeekMsg q
   tryDelMsg (AMQ _ q) = tryDelMsg q

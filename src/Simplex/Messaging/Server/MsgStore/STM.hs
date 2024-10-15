@@ -41,7 +41,7 @@ newMsgStore :: IO STMMsgStore
 newMsgStore = TM.emptyIO
 
 instance MsgStoreClass STMMsgStore where
-  type MessageQueue STMMsgStore = STMMsgQueue
+  type MsgQueue STMMsgStore = STMMsgQueue
   getMsgQueueIds :: STMMsgStore -> IO (Set RecipientId)
   getMsgQueueIds = fmap M.keysSet . readTVarIO
 
@@ -67,7 +67,6 @@ instance MsgStoreClass STMMsgStore where
   delMsgQueueSize :: STMMsgStore -> RecipientId -> IO Int
   delMsgQueueSize st rId = atomically (TM.lookupDelete rId st) >>= maybe (pure 0) (\STMMsgQueue {size} -> readTVarIO size)
 
-instance MsgQueueClass STMMsgQueue where
   writeMsg :: STMMsgQueue -> Message -> IO (Maybe (Message, Bool))
   writeMsg STMMsgQueue {msgQueue = q, quota, canWrite, size} !msg = atomically $ do
     canWrt <- readTVar canWrite

@@ -1,14 +1,16 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 
 module CoreTests.MsgStoreTests where
 
-import Control.Concurrent (threadDelay)
+-- import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Data.ByteString.Char8 (ByteString)
 import Data.Time.Clock.System (getSystemTime)
+import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), Message (..), noMsgFlags)
 import Simplex.Messaging.Server.Env.STM
@@ -42,24 +44,33 @@ testMessage body = do
   msgId <- atomically $ C.randomBytes 24 g
   pure Message {msgId, msgTs, msgFlags = noMsgFlags, msgBody = C.unsafeMaxLenBS body}
 
+pattern Msg :: ByteString -> Maybe Message
+pattern Msg s <- Just Message {msgBody = MaxLenBS s}
+
 testGetQueue :: AMsgStore -> IO ()
 testGetQueue st = do
   g <- C.newRandom
-  rId <- atomically $ C.randomBytes 24 g
-  q <- getMsgQueue st (EntityId rId) 128
+  rId <- EntityId <$> atomically (C.randomBytes 24 g)
+  q <- getMsgQueue st rId 128
   msg1 <- testMessage "message 1"
   Just (Message {msgId = mId1}, True) <- writeMsg q msg1
   msg2 <- testMessage "message 2"
   Just (Message {msgId = mId2}, False) <- writeMsg q msg2
   msg3 <- testMessage "message 3"
   Just (Message {msgId = mId3}, False) <- writeMsg q msg3
-  Just Message {msgBody = C.MaxLenBS "message 1"} <- tryPeekMsg q
-  Just Message {msgBody = C.MaxLenBS "message 1"} <- tryPeekMsg q
+  Msg "message 1" <- tryPeekMsg q
+  Msg "message 1" <- tryPeekMsg q
   Nothing <- tryDelMsg q mId2
-  Just Message {msgBody = C.MaxLenBS "message 1"} <- tryDelMsg q mId1
+  Msg "message 1" <- tryDelMsg q mId1
   Nothing <- tryDelMsg q mId1
-  Just Message {msgBody = C.MaxLenBS "message 2"} <- tryPeekMsg q
+  Msg "message 2" <- tryPeekMsg q
   Nothing <- tryDelMsg q mId1
-  Just Message {msgBody = C.MaxLenBS "message 2"} <- tryDelMsg q mId2
+  (Nothing, Msg "message 2") <- tryDelPeekMsg q mId1
+  (Msg "message 2", Msg "message 3") <- tryDelPeekMsg q mId2
+  (Nothing, Msg "message 3") <- tryDelPeekMsg q mId2
+  Msg "message 3" <- tryPeekMsg q
+  (Msg "message 3", Nothing) <- tryDelPeekMsg q mId3
   Nothing <- tryDelMsg q mId2
-  pure ()
+  Nothing <- tryDelMsg q mId3
+  Nothing <- tryPeekMsg q
+  delMsgQueue st rId

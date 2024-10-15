@@ -30,6 +30,7 @@ module Simplex.Messaging.Agent.Client
     withConnLocks,
     withInvLock,
     withLockMap,
+    getMapLock,
     ipAddressProtected,
     closeAgentClient,
     closeProtocolServerClients,
