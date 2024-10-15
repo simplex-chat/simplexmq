@@ -359,7 +359,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
               tkn_ <- atomically (findNtfSubscriptionToken st smpQueue)
               forM_ tkn_ $ \tkn -> do
                 let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
-                lastNtfs <- atomically $ addTokenLastNtf st (ntfTknId tkn) newNtf
+                lastNtfs <- liftIO $ addTokenLastNtf st (ntfTknId tkn) newNtf
                 atomically (writeTBQueue pushQ (tkn, PNMessage lastNtfs))
               incNtfStat ntfReceived
             Right SMP.END ->
