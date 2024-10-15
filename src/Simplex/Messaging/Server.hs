@@ -350,7 +350,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
 
     expireMessagesThread :: ExpirationConfig -> M ()
     expireMessagesThread expCfg = do
-      ms <- asks msgStore
+      AMS _ ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
       let interval = checkInterval expCfg * 1000000
       stats <- asks serverStats
@@ -763,7 +763,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                           ProhibitSub -> pure (c1, c2, c3, c4 + 1)
               CPDelete queueId' -> withUserRole $ unliftIO u $ do
                 st <- asks queueStore
-                ms <- asks msgStore
+                AMS _ ms <- asks msgStore
                 queueId <- liftIO (getQueue st SSender queueId') >>= \case
                   Left _ -> pure queueId' -- fallback to using as recipientId directly
                   Right QueueRec {recipientId} -> pure recipientId
@@ -1277,7 +1277,8 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               pure sub
             deliver :: Bool -> Sub -> M (Transmission BrokerMsg)
             deliver inc sub = do
-              q <- getStoreMsgQueue "SUB" rId
+              AMS _ ms <- asks msgStore
+              q <- getStoreMsgQueue "SUB" ms rId
               msg_ <- liftIO $ tryPeekMsg q
               when (inc && isJust msg_) $
                 incStat . qSub =<< asks serverStats
@@ -1311,7 +1312,8 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               pure s
             getMessage_ :: Sub -> Maybe MsgId -> M (Transmission BrokerMsg)
             getMessage_ s delivered_ = do
-              q <- getStoreMsgQueue "GET" entId
+              AMS _ ms <- asks msgStore
+              q <- getStoreMsgQueue "GET" ms entId
               stats <- asks serverStats
               (statCnt, r) <-
                   liftIO (tryPeekMsg q) >>= \case
@@ -1358,7 +1360,8 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
             Just sub ->
               atomically (getDelivered sub) >>= \case
                 Just st -> do
-                  q <- getStoreMsgQueue "ACK" entId
+                  AMS _ ms <- asks msgStore
+                  q <- getStoreMsgQueue "ACK" ms entId
                   case st of
                     ProhibitSub -> do
                       deletedMsg_ <- liftIO $ tryDelMsg q msgId
@@ -1413,7 +1416,8 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                     Left _ -> pure $ err LARGE_MSG
                     Right body -> do
                       msg_ <- time "SEND" $ do
-                        q <- getStoreMsgQueue "SEND" $ recipientId qr
+                        AMS _ ms <- asks msgStore
+                        q <- getStoreMsgQueue "SEND" ms $ recipientId qr
                         expireMessages q
                         liftIO . writeMsg q =<< mkMessage body
                       case msg_ of
@@ -1438,7 +1442,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               msgTs <- liftIO getSystemTime
               pure $! Message msgId msgTs msgFlags body
 
-            expireMessages :: AMsgQueue -> M ()
+            expireMessages :: MsgStoreClass s => MsgQueue s -> M ()
             expireMessages q = do
               msgExp <- asks $ messageExpiration . config
               old <- liftIO $ mapM expireBeforeEpoch msgExp
@@ -1605,16 +1609,15 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
         setDelivered :: Sub -> Message -> STM Bool
         setDelivered s msg = tryPutTMVar (delivered s) $! messageId msg
 
-        getStoreMsgQueue :: T.Text -> RecipientId -> M AMsgQueue
-        getStoreMsgQueue name rId = time (name <> " getMsgQueue") $ do
-          ms <- asks msgStore
+        getStoreMsgQueue :: MsgStoreClass s => T.Text -> s -> RecipientId -> M (MsgQueue s)
+        getStoreMsgQueue name ms rId = time (name <> " getMsgQueue") $ do
           quota <- asks $ msgQueueQuota . config
           liftIO $ getMsgQueue ms rId quota
 
         delQueueAndMsgs :: QueueStore -> M (Transmission BrokerMsg)
         delQueueAndMsgs st = do
           withLog (`logDeleteQueue` entId)
-          ms <- asks msgStore
+          AMS _ ms <- asks msgStore
           liftIO (deleteQueue st entId $>>= \q -> delMsgQueue ms entId $> Right q) >>= \case
             Right q -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
@@ -1636,7 +1639,8 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
 
         getQueueInfo :: QueueRec -> M (Transmission BrokerMsg)
         getQueueInfo QueueRec {senderKey, notifier} = do
-          q <- getStoreMsgQueue "getQueueInfo" entId
+          AMS _ ms <- asks msgStore
+          q <- getStoreMsgQueue "getQueueInfo" ms entId
           qiSub <- liftIO $ TM.lookupIO entId subscriptions >>= mapM mkQSub
           qiSize <- liftIO $ getQueueSize q
           qiMsg <- liftIO $ toMsgInfo <$$> tryPeekMsg q
@@ -1729,7 +1733,7 @@ restoreServerMessages =
   where
     restoreMessages f = do
       logInfo $ "restoring messages from file " <> T.pack f
-      ms <- asks msgStore
+      AMS _ ms <- asks msgStore
       quota <- asks $ msgQueueQuota . config
       old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
       runExceptT (liftIO (LB.readFile f) >>= foldM (\expired -> restoreMsg expired ms quota old_) 0 . LB.lines) >>= \case

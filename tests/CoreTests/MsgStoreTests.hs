@@ -13,7 +13,6 @@ import Data.Time.Clock.System (getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), Message (..), noMsgFlags)
-import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
@@ -24,17 +23,17 @@ msgStoreTests = do
   around withSTMStore $ fdescribe "STM message store" $ someMsgStoreTests
   around withJournalStore $ fdescribe "Journal message store" $ someMsgStoreTests
   where
-    someMsgStoreTests :: SpecWith AMsgStore
+    someMsgStoreTests :: MsgStoreClass s => SpecWith s
     someMsgStoreTests = do
       it "should get queue" testGetQueue
 
-withSTMStore :: (AMsgStore -> IO ()) -> IO ()
-withSTMStore = bracket (AMS SMSMemory <$> newMsgStore) (\_ -> pure ())
+withSTMStore :: (STMMsgStore -> IO ()) -> IO ()
+withSTMStore = bracket newMsgStore (\_ -> pure ())
 
-withJournalStore :: (AMsgStore -> IO ()) -> IO ()
+withJournalStore :: (JournalMsgStore -> IO ()) -> IO ()
 withJournalStore =
   bracket
-    (AMS SMSJournal <$> (newJournalMsgStore "tests/tmp/messages" 5 =<< C.newRandom))
+    (newJournalMsgStore "tests/tmp/messages" 5 =<< C.newRandom)
     (\_st -> pure ()) -- close all handles
 
 testMessage :: ByteString -> IO Message
@@ -47,7 +46,7 @@ testMessage body = do
 pattern Msg :: ByteString -> Maybe Message
 pattern Msg s <- Just Message {msgBody = MaxLenBS s}
 
-testGetQueue :: AMsgStore -> IO ()
+testGetQueue :: MsgStoreClass s => s -> IO ()
 testGetQueue st = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
