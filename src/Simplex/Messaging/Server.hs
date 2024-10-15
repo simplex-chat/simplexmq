@@ -1699,17 +1699,17 @@ randomId = fmap EntityId . randomId'
 {-# INLINE randomId #-}
 
 saveServerMessages :: Bool -> M ()
-saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessages
+saveServerMessages keepMsgs =
+  asks msgStore >>= \case
+    AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath = Just f}} -> saveMessages ms f
+    _ -> pure ()
   where
-    saveMessages :: FilePath -> M ()
-    saveMessages f =
-      asks msgStore >>= \case
-        AMS SMSMemory ms -> do
-          logInfo $ "saving messages to file " <> T.pack f
-          liftIO . withFile f WriteMode $ \h ->
-            readTVarIO (msgQueues ms) >>= mapM_ (saveQueueMsgs h) . M.assocs
-          logInfo "messages saved"
-        _ -> pure ()
+    saveMessages :: STMMsgStore -> FilePath -> M ()
+    saveMessages ms f = do
+      logInfo $ "saving messages to file " <> T.pack f
+      liftIO . withFile f WriteMode $ \h ->
+        readTVarIO (msgQueues ms) >>= mapM_ (saveQueueMsgs h) . M.assocs
+      logInfo "messages saved"
       where
         saveQueueMsgs h (rId, q) = BLD.hPutBuilder h . encodeMessages rId =<< atomically (getMessages $ msgQueue q)
         getMessages = if keepMsgs then snapshotTQueue else flushTQueue
@@ -1721,15 +1721,15 @@ saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessag
 
 restoreServerMessages :: M Int
 restoreServerMessages =
-  asks (storeMsgsFile . config) >>= \case
-    Just f -> ifM (doesFileExist f) (restoreMessages f) (pure 0)
-    Nothing -> pure 0
+  asks msgStore >>= \case
+    AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath = Just f}} ->
+      ifM (doesFileExist f) (restoreMessages ms f) (pure 0)
+    _ -> pure 0
   where
-    restoreMessages f = do
+    restoreMessages ms f = do
       logInfo $ "restoring messages from file " <> T.pack f
-      AMS _ ms <- asks msgStore
       old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
-      runExceptT (liftIO (LB.readFile f) >>= foldM (\expired -> restoreMsg expired ms old_) 0 . LB.lines) >>= \case
+      runExceptT (liftIO (LB.readFile f) >>= foldM (\expired -> restoreMsg expired old_) 0 . LB.lines) >>= \case
         Left e -> do
           logError . T.pack $ "error restoring messages: " <> e
           liftIO exitFailure
@@ -1738,7 +1738,7 @@ restoreServerMessages =
           logInfo "messages restored"
           pure expired
       where
-        restoreMsg !expired ms old_ s' = do
+        restoreMsg !expired old_ s' = do
           MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
           addToMsgQueue rId msg
           where

@@ -11,7 +11,7 @@
 {-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Server.MsgStore.STM
-  ( STMMsgStore (msgQueues),
+  ( STMMsgStore (..),
     STMMsgQueue (msgQueue),
     STMStoreConfig (..),
   )
@@ -34,12 +34,13 @@ data STMMsgQueue = STMMsgQueue
   }
 
 data STMMsgStore = STMMsgStore
-  { config :: STMStoreConfig,
+  { storeConfig :: STMStoreConfig,
     msgQueues :: TMap RecipientId STMMsgQueue
   }
 
 data STMStoreConfig = STMStoreConfig
-  { quota :: Int
+  { storePath :: Maybe FilePath,
+    quota :: Int
   }
 
 instance MsgStoreClass STMMsgStore where
@@ -48,9 +49,9 @@ instance MsgStoreClass STMMsgStore where
   type MsgStoreConfig STMMsgStore = STMStoreConfig
 
   newMsgStore :: STMStoreConfig -> IO STMMsgStore
-  newMsgStore config = do
+  newMsgStore storeConfig = do
     msgQueues <- TM.emptyIO
-    pure STMMsgStore {config, msgQueues}
+    pure STMMsgStore {storeConfig, msgQueues}
 
   getMsgQueueIds :: STMMsgStore -> IO (Set RecipientId)
   getMsgQueueIds = fmap M.keysSet . readTVarIO . msgQueues
@@ -60,7 +61,7 @@ instance MsgStoreClass STMMsgStore where
   -- so the first lookup without STM transaction will return the queue faster.
   -- In case the queue does not exist, it needs to be looked-up again inside transaction.
   getMsgQueue :: STMMsgStore -> RecipientId -> IO STMMsgQueue
-  getMsgQueue STMMsgStore {msgQueues = qs, config = STMStoreConfig {quota}} rId =
+  getMsgQueue STMMsgStore {msgQueues = qs, storeConfig = STMStoreConfig {quota}} rId =
     TM.lookupIO rId qs >>= maybe (atomically maybeNewQ) pure
     where
       maybeNewQ = TM.lookup rId qs >>= maybe newQ pure

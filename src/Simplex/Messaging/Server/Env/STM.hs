@@ -63,6 +63,7 @@ data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport, AddHTTP)],
     smpHandshakeTimeout :: Int,
     tbqSize :: Natural,
+    msgStoreType :: AMSType,
     msgQueueQuota :: Int,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
@@ -169,6 +170,12 @@ data AMsgStore = forall s. MsgStoreClass (MsgStore s) => AMS (SMSType s) (MsgSto
 
 data AMsgQueue = forall s. MsgStoreClass (MsgStore s) => AMQ (SMSType s) (MsgQueue (MsgStore s))
 
+data AMsgStoreCfg = forall s. MsgStoreClass (MsgStore s) => AMSC (SMSType s) (MsgStoreConfig (MsgStore s))
+
+msgPersistence :: AMsgStoreCfg -> Bool
+msgPersistence (AMSC SMSMemory (STMStoreConfig {storePath})) = isJust storePath
+msgPersistence (AMSC SMSJournal _) = True
+
 type Subscribed = Bool
 
 data Server = Server
@@ -256,10 +263,14 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAgentCfg, information, messageExpiration, msgQueueQuota} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgStoreType, storeMsgsFile, smpAgentCfg, information, messageExpiration, msgQueueQuota} = do
   server <- newServer
   queueStore <- newQueueStore
-  msgStore <- AMS SMSMemory <$> newMsgStore STMStoreConfig {quota = msgQueueQuota}
+  msgStore <- case msgStoreType of
+    AMSType SMSMemory -> AMS SMSMemory <$> newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
+    AMSType SMSJournal -> case storeMsgsFile of
+      Just storePath -> AMS SMSJournal <$> newMsgStore JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = 5, maxMsgCount = 1024}
+      Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
   storeLog <-
@@ -326,7 +337,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
       where
         persistence
           | isNothing storeLogFile = SPMMemoryOnly
-          | isJust (storeMsgsFile config) = SPMMessages
+          | isJust storeMsgsFile = SPMMessages
           | otherwise = SPMQueues
 
 newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO ProxyAgent

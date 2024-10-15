@@ -23,6 +23,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
+import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import qualified Simplex.Messaging.Transport.Client as Client
@@ -105,6 +106,7 @@ cfg =
     { transports = [],
       smpHandshakeTimeout = 60000000,
       tbqSize = 1,
+      msgStoreType = AMSType SMSMemory,
       msgQueueQuota = 4,
       queueIdBytes = 24,
       msgIdBytes = 24,

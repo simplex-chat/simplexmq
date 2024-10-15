@@ -248,7 +248,7 @@ instance MsgStoreClass JournalMsgStore where
         B.hPutStr sh $ strEncode st' `B.snoc` '\n'
 
   getQueueSize :: JournalMsgQueue -> IO Int
-  getQueueSize mq = undefined
+  getQueueSize JournalMsgQueue {state} = size <$> readTVarIO state
 
   -- TODO optimize by having the message ready (set when journal is opened)
   tryPeekMsg_ :: JournalMsgQueue -> NonAtomicIO (Maybe Message)

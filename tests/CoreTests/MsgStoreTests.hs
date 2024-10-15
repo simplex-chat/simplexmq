@@ -32,7 +32,7 @@ msgStoreTests = do
 withSTMStore :: (STMMsgStore -> IO ()) -> IO ()
 withSTMStore =
   bracket
-    (newMsgStore STMStoreConfig {quota = 128})
+    (newMsgStore STMStoreConfig {storePath = Nothing, quota = 128})
     (\_ -> pure ())
 
 withJournalStore :: (JournalMsgStore -> IO ()) -> IO ()

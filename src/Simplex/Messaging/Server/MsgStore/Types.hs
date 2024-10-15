@@ -36,11 +36,7 @@ data SMSType :: MSType -> Type where
   SMSMemory :: SMSType 'MSMemory
   SMSJournal :: SMSType 'MSJournal
 
-data MsgStorePath :: MSType -> Type where
-  MSPMemory :: Maybe FilePath -> MsgStorePath 'MSMemory
-  MSPJournal :: FilePath -> MsgStorePath 'MSJournal
-
-data AMsgStorePath = forall s. AMSP (SMSType s) (MsgStorePath s)
+data AMSType = forall s. AMSType (SMSType s)
 
 tryPeekMsg :: MsgStoreClass s => MsgQueue s -> IO (Maybe Message)
 tryPeekMsg mq = atomicQueue mq $ tryPeekMsg_ mq
