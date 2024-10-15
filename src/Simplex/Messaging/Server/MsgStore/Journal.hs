@@ -1,7 +1,9 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -9,7 +11,12 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Simplex.Messaging.Server.MsgStore.Journal where
+module Simplex.Messaging.Server.MsgStore.Journal
+  ( JournalMsgStore (msgQueues),
+    JournalMsgQueue,
+    JournalStoreConfig (..),
+  )
+where
 
 import Control.Concurrent.STM
 import Control.Logger.Simple
@@ -19,7 +26,6 @@ import Data.Bifunctor (second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
-import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
 import Data.Set (Set)
@@ -28,7 +34,7 @@ import GHC.IO (catchAny)
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Agent.Client (getMapLock, withLockMap)
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (Message (..), MsgId, RecipientId)
+import Simplex.Messaging.Protocol (Message (..), RecipientId)
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -130,7 +136,11 @@ msgLogFileName = "messages"
 logFileExt :: String
 logFileExt = ".log"
 
+newtype NonAtomicIO a = NonAtomicIO (IO a)
+  deriving newtype (Functor, Applicative, Monad)
+
 instance MsgStoreClass JournalMsgStore where
+  type StoreMonad JournalMsgStore = NonAtomicIO
   type MsgQueue JournalMsgStore = JournalMsgQueue
   type MsgStoreConfig JournalMsgStore = JournalStoreConfig
 
@@ -205,7 +215,7 @@ instance MsgStoreClass JournalMsgStore where
     pure sz
 
   writeMsg :: JournalMsgQueue -> Message -> IO (Maybe (Message, Bool))
-  writeMsg mq@JournalMsgQueue {queueDirectory, queueLock, stateHandle = sh, state, handles, config, random} !msg =
+  writeMsg JournalMsgQueue {queueDirectory, queueLock, stateHandle = sh, state, handles, config, random} !msg =
     withLock' queueLock "writeMsg" $ do
       st@MsgQueueState {canWrite, size} <- readTVarIO state
       let empty = size == 0
@@ -219,7 +229,7 @@ instance MsgStoreClass JournalMsgStore where
     where
       JournalStoreConfig {quota, maxMsgCount} = config
       msgQuota = MessageQuota {msgId = msgId msg, msgTs = msgTs msg}
-      writeToJournal st@MsgQueueState {writeState, readState = rs, canWrite, size} canWrt' msg' = do
+      writeToJournal st@MsgQueueState {writeState, readState = rs, size} canWrt' msg' = do
         let msgStr = strEncode msg' `B.snoc` '\n'
             msgLen = B.length msgStr
         hs <- readTVarIO handles
@@ -237,32 +247,41 @@ instance MsgStoreClass JournalMsgStore where
         hAppend wh msgStr
         B.hPutStr sh $ strEncode st' `B.snoc` '\n'
 
-  -- TODO optimize by having the message ready (set when journal is opened)
-  tryPeekMsg :: JournalMsgQueue -> IO (Maybe Message)
-  tryPeekMsg mq = withLock' (queueLock mq) "tryPeekMsg" $ tryPeekMsg_ mq
-
-  -- TODO potentially, define it as polymorphic outside of class,
-  -- instead defining tryPeekMsg_ and tryDeleteMsg_ as part of the class.
-  tryDelMsg :: JournalMsgQueue -> MsgId -> IO (Maybe Message)
-  tryDelMsg mq msgId' = withLock' (queueLock mq) "tryDelMsg" $
-    tryPeekMsg_ mq >>= \case
-      msg_@(Just msg) | msgId msg == msgId' || B.null msgId' ->
-        tryDeleteMsg_ mq >> pure msg_
-      _ -> pure Nothing
-
-  tryDelPeekMsg :: JournalMsgQueue -> MsgId -> IO (Maybe Message, Maybe Message)
-  tryDelPeekMsg mq msgId' = withLock' (queueLock mq) "tryDelPeekMsg" $
-    tryPeekMsg_ mq >>= \case
-      msg_@(Just msg)
-        | msgId msg == msgId' || B.null msgId' -> (msg_,) <$> (tryDeleteMsg_ mq >> tryPeekMsg_ mq)
-        | otherwise -> pure (Nothing, msg_)
-      _ -> pure (Nothing, Nothing)
-
-  deleteExpiredMsgs :: JournalMsgQueue -> Int64 -> IO Int
-  deleteExpiredMsgs mq old = undefined
-
   getQueueSize :: JournalMsgQueue -> IO Int
   getQueueSize mq = undefined
+
+  -- TODO optimize by having the message ready (set when journal is opened)
+  tryPeekMsg_ :: JournalMsgQueue -> NonAtomicIO (Maybe Message)
+  tryPeekMsg_ JournalMsgQueue {state, handles} = NonAtomicIO $ do
+    MsgQueueState {writeState = ws, readState = rs} <- readTVarIO state
+    if journalId rs == journalId ws && bytePos rs == bytePos ws
+      then pure Nothing
+      else do
+        (h, _) <- readTVarIO handles
+        s <- hGetLineAt h (bytePos rs) -- won't be needed when message is cached
+        -- TODO handle errors
+        Right msg <- pure $ strDecode s
+        pure $ Just msg
+
+  tryDeleteMsg_ :: JournalMsgQueue -> NonAtomicIO ()
+  tryDeleteMsg_ JournalMsgQueue {stateHandle = sh, state, handles} = NonAtomicIO $ do
+    st@MsgQueueState {readState = rs, writeState = ws, size} <- readTVarIO state
+    let JournalState {msgPos, bytePos} = rs
+    (h, wh_) <- readTVarIO handles
+    s <- hGetLineAt h bytePos -- won't be needed when message is cached
+    let !msgPos' = msgPos + 1
+    !rs' <- case wh_ of
+      Just wh | msgPos' == msgCount rs && journalId rs /= journalId ws -> do
+        -- switch to reading from write journal
+        atomically $ writeTVar handles $! (wh, Nothing)
+        pure (newJournalState $ journalId ws) {msgCount = msgCount ws}
+      _ -> pure rs {msgPos = msgPos', bytePos = bytePos + B.length s + 1} -- 1 is for newline
+    let !st' = st {readState = rs', size = size - 1}
+    atomically $ writeTVar state st'
+    B.hPutStr sh $ strEncode st' `B.snoc` '\n'
+
+  atomicQueue :: JournalMsgQueue -> NonAtomicIO a -> IO a
+  atomicQueue mq (NonAtomicIO a) = withLock' (queueLock mq) "atomicQueue" a
 
 msgQueueDirectory :: JournalMsgStore -> RecipientId -> FilePath
 msgQueueDirectory JournalMsgStore {config = JournalStoreConfig {storePath, pathParts}} rId =
@@ -326,35 +345,6 @@ removeQueueDirectory :: JournalMsgStore -> RecipientId -> IO ()
 removeQueueDirectory st rId =
   let dir = msgQueueDirectory st rId
    in removePathForcibly dir `catchAny` (\e -> logError $ "Error removing queue directory " <> T.pack dir <> ": " <> tshow e)
-
-tryPeekMsg_ :: JournalMsgQueue -> IO (Maybe Message)
-tryPeekMsg_ JournalMsgQueue {state, handles} = do
-  MsgQueueState {writeState = ws, readState = rs} <- readTVarIO state
-  if journalId rs == journalId ws && bytePos rs == bytePos ws
-    then pure Nothing
-    else do
-      (h, _) <- readTVarIO handles
-      s <- hGetLineAt h (bytePos rs) -- won't be needed when message is cached
-      -- TODO handle errors
-      Right msg <- pure $ strDecode s
-      pure $ Just msg
-
-tryDeleteMsg_ :: JournalMsgQueue -> IO ()
-tryDeleteMsg_ JournalMsgQueue {stateHandle = sh, state, handles} = do
-  st@MsgQueueState {readState = rs, writeState = ws, size} <- readTVarIO state
-  let JournalState {msgPos, bytePos} = rs
-  (h, wh_) <- readTVarIO handles
-  s <- hGetLineAt h bytePos -- won't be needed when message is cached
-  let !msgPos' = msgPos + 1
-  !rs' <- case wh_ of
-    Just wh | msgPos' == msgCount rs && journalId rs /= journalId ws -> do
-      -- switch to reading from write journal
-      atomically $ writeTVar handles $! (wh, Nothing)
-      pure (newJournalState $ journalId ws) {msgCount = msgCount ws}
-    _ -> pure rs {msgPos = msgPos', bytePos = bytePos + B.length s + 1} -- 1 is for newline
-  let !st' = st {readState = rs', size = size - 1}
-  atomically $ writeTVar state st'
-  B.hPutStr sh $ strEncode st' `B.snoc` '\n'
     
 hAppend :: Handle -> ByteString -> IO ()
 hAppend h s = IO.hSeek h SeekFromEnd 0 >> B.hPutStr h s

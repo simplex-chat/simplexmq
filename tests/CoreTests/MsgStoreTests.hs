@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
@@ -21,8 +22,8 @@ import Test.Hspec
 
 msgStoreTests :: Spec
 msgStoreTests = do
-  around withSTMStore $ fdescribe "STM message store" $ someMsgStoreTests
-  around withJournalStore $ fdescribe "Journal message store" $ someMsgStoreTests
+  around withSTMStore $ describe "STM message store" $ someMsgStoreTests
+  around withJournalStore $ describe "Journal message store" $ someMsgStoreTests
   where
     someMsgStoreTests :: MsgStoreClass s => SpecWith s
     someMsgStoreTests = do
