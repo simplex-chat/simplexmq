@@ -202,10 +202,11 @@ deleteNtfSubscription st subId = do
           forM_ ts_ $ \ts -> modifyTVar' ts $ S.delete subId
       )
 
-addTokenLastNtf :: NtfStore -> NtfTokenId -> PNMessageData -> STM (NonEmpty PNMessageData)
+addTokenLastNtf :: NtfStore -> NtfTokenId -> PNMessageData -> IO (NonEmpty PNMessageData)
 addTokenLastNtf st tknId newNtf =
-  TM.lookup tknId (tokenLastNtfs st) >>= maybe newTokenLastNtfs addNtf
+  TM.lookupIO tknId (tokenLastNtfs st) >>= maybe (atomically maybeNewTokenLastNtfs) (atomically . addNtf)
   where
+    maybeNewTokenLastNtfs = TM.lookup tknId (tokenLastNtfs st) >>= maybe newTokenLastNtfs addNtf
     newTokenLastNtfs = do
       v <- newTVar [newNtf]
       TM.insert tknId v $ tokenLastNtfs st
