@@ -14,7 +14,6 @@ module Simplex.Messaging.Server.MsgStore.Journal where
 import Control.Concurrent.STM
 import Control.Logger.Simple
 import Control.Monad
-import Crypto.Random (ChaChaDRG)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (second)
 import Data.ByteString.Char8 (ByteString)
@@ -28,7 +27,6 @@ import qualified Data.Text as T
 import GHC.IO (catchAny)
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Agent.Client (getMapLock, withLockMap)
-import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (Message (..), MsgId, RecipientId)
 import Simplex.Messaging.Server.MsgStore.Types
@@ -39,17 +37,28 @@ import System.Directory
 import System.FilePath ((</>))
 import System.IO (BufferMode (..), Handle, IOMode (..), SeekMode (..))
 import qualified System.IO as IO
+import System.Random (StdGen, genByteString, newStdGen)
 
 data JournalMsgStore = JournalMsgStore
-  { storePath :: FilePath,
-    pathParts :: Int,
-    random :: TVar ChaChaDRG,
+  { config :: JournalStoreConfig,
+    random :: TVar StdGen,
     queueLocks :: TMap RecipientId Lock,
     msgQueues :: TMap RecipientId JournalMsgQueue
   }
 
+data JournalStoreConfig = JournalStoreConfig
+  { storePath :: FilePath,
+    pathParts :: Int,
+    quota :: Int,
+    -- Max number of messages per journal file - ignored in STM store.
+    -- When this limit is reached, the file will be changed.
+    -- This number should be set bigger than queue quota.
+    maxMsgCount :: Int
+  }
+
 data JournalMsgQueue = JournalMsgQueue
-  { queueDirectory :: FilePath,
+  { config :: JournalStoreConfig,
+    queueDirectory :: FilePath,
     queueLock :: Lock,
     -- path and handle queue state log file,
     -- it rotates and removes old backups when server is restarted
@@ -59,7 +68,7 @@ data JournalMsgQueue = JournalMsgQueue
     -- second handle is optional,
     -- it is used when write file is different from read file
     handles :: TVar (Handle, Maybe Handle),
-    quota :: Int
+    random :: TVar StdGen
   }
 
 data MsgQueueState = MsgQueueState
@@ -75,12 +84,6 @@ data JournalState = JournalState
     msgCount :: Int,
     bytePos :: Int
   }
-
-newJournalMsgStore :: FilePath -> Int -> TVar ChaChaDRG -> IO JournalMsgStore
-newJournalMsgStore storePath pathParts random = do
-  queueLocks <- TM.emptyIO
-  msgQueues <- TM.emptyIO
-  pure JournalMsgStore {storePath, pathParts, random, queueLocks, msgQueues}
 
 newMsgQueueState :: ByteString -> MsgQueueState
 newMsgQueueState journalId =
@@ -127,21 +130,27 @@ msgLogFileName = "messages"
 logFileExt :: String
 logFileExt = ".log"
 
-maxMsgCount :: Int
-maxMsgCount = 1024
-
 instance MsgStoreClass JournalMsgStore where
   type MsgQueue JournalMsgStore = JournalMsgQueue
+  type MsgStoreConfig JournalMsgStore = JournalStoreConfig
+
+  newMsgStore :: JournalStoreConfig -> IO JournalMsgStore
+  newMsgStore config = do
+    random <- newTVarIO =<< newStdGen
+    queueLocks <- TM.emptyIO
+    msgQueues <- TM.emptyIO
+    pure JournalMsgStore {config, random, queueLocks, msgQueues}
+
   getMsgQueueIds :: JournalMsgStore -> IO (Set RecipientId)
   getMsgQueueIds = fmap M.keysSet . readTVarIO . msgQueues
 
-  getMsgQueue :: JournalMsgStore -> RecipientId -> Int -> IO JournalMsgQueue
-  getMsgQueue st@JournalMsgStore {queueLocks, msgQueues, random = g} rId quota =
+  getMsgQueue :: JournalMsgStore -> RecipientId -> IO JournalMsgQueue
+  getMsgQueue store@JournalMsgStore {queueLocks, msgQueues, random, config} rId =
     withLockMap queueLocks rId "getMsgQueue" $
       TM.lookupIO rId msgQueues >>= maybe newQ pure
     where
       newQ = do
-        let dir = msgQueueDirectory st rId
+        let dir = msgQueueDirectory store rId
             sp = dir </> (queueLogFileName <> logFileExt)
         q <- mkJournalQueue dir sp =<< ifM (doesDirectoryExist dir) (openQ dir sp) (createQ dir sp)
         atomically $ TM.insert rId q msgQueues
@@ -163,7 +172,7 @@ instance MsgStoreClass JournalMsgStore where
             createDirectoryIfMissing True dir
             sh <- openFile statePath AppendMode
             B.hPutStr sh ""
-            (journalId, rh) <- createNewJournal g dir
+            (journalId, rh) <- createNewJournal random dir
             pure (newMsgQueueState journalId, sh, (rh, Nothing))
           mkJournalQueue :: FilePath -> FilePath -> (MsgQueueState, Handle, (Handle, Maybe Handle)) -> IO JournalMsgQueue
           mkJournalQueue dir statePath (st, stateHandle, hs) = do
@@ -173,13 +182,14 @@ instance MsgStoreClass JournalMsgStore where
             queueLock <- atomically $ getMapLock queueLocks rId
             pure
               JournalMsgQueue
-                { queueDirectory = dir,
+                { config,
+                  queueDirectory = dir,
                   queueLock,
                   statePath,
                   stateHandle,
                   state,
                   handles,
-                  quota
+                  random
                 }
 
   delMsgQueue :: JournalMsgStore -> RecipientId -> IO ()
@@ -195,7 +205,7 @@ instance MsgStoreClass JournalMsgStore where
     pure sz
 
   writeMsg :: JournalMsgQueue -> Message -> IO (Maybe (Message, Bool))
-  writeMsg mq@JournalMsgQueue {queueDirectory, queueLock, stateHandle = sh, state, handles, quota} !msg =
+  writeMsg mq@JournalMsgQueue {queueDirectory, queueLock, stateHandle = sh, state, handles, config, random} !msg =
     withLock' queueLock "writeMsg" $ do
       st@MsgQueueState {canWrite, size} <- readTVarIO state
       let empty = size == 0
@@ -207,6 +217,7 @@ instance MsgStoreClass JournalMsgStore where
             else writeToJournal st canWrt' msgQuota $> Nothing
         else pure Nothing
     where
+      JournalStoreConfig {quota, maxMsgCount} = config
       msgQuota = MessageQuota {msgId = msgId msg, msgTs = msgTs msg}
       writeToJournal st@MsgQueueState {writeState, readState = rs, canWrite, size} canWrt' msg' = do
         let msgStr = strEncode msg' `B.snoc` '\n'
@@ -214,8 +225,7 @@ instance MsgStoreClass JournalMsgStore where
         hs <- readTVarIO handles
         (ws, wh) <- case hs of
           (h, Nothing) | msgCount writeState >= maxMsgCount -> do
-            g <- C.newRandom -- TODO get from store
-            (journalId, wh) <- createNewJournal g queueDirectory
+            (journalId, wh) <- createNewJournal random queueDirectory
             atomically $ writeTVar handles $! (h, Just wh)
             pure (newJournalState journalId, wh)
           (h, wh_) -> pure (writeState, fromMaybe h wh_)
@@ -255,7 +265,7 @@ instance MsgStoreClass JournalMsgStore where
   getQueueSize mq = undefined
 
 msgQueueDirectory :: JournalMsgStore -> RecipientId -> FilePath
-msgQueueDirectory JournalMsgStore {storePath, pathParts} rId =
+msgQueueDirectory JournalMsgStore {config = JournalStoreConfig {storePath, pathParts}} rId =
   storePath </> B.unpack (B.intercalate "/" $ splitSegments pathParts $ strEncode rId)
   where
     splitSegments _ "" = []
@@ -264,9 +274,9 @@ msgQueueDirectory JournalMsgStore {storePath, pathParts} rId =
       let (seg, s') = B.splitAt 2 s
        in seg : splitSegments (n - 1) s'
 
-createNewJournal :: TVar ChaChaDRG -> FilePath -> IO (ByteString, Handle)
+createNewJournal :: TVar StdGen -> FilePath -> IO (ByteString, Handle)
 createNewJournal g dir = do
-  journalId <- strEncode <$> atomically (C.randomBytes 12 g)
+  journalId <- strEncode <$> atomically (stateTVar g $ genByteString 12)
   let path = journalFilePath dir journalId -- TODO retry if file exists
   h <- openFile path ReadWriteMode
   B.hPutStr h ""

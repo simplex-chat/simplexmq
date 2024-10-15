@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
@@ -28,13 +29,25 @@ msgStoreTests = do
       it "should get queue" testGetQueue
 
 withSTMStore :: (STMMsgStore -> IO ()) -> IO ()
-withSTMStore = bracket newMsgStore (\_ -> pure ())
+withSTMStore =
+  bracket
+    (newMsgStore STMStoreConfig {quota = 128})
+    (\_ -> pure ())
 
 withJournalStore :: (JournalMsgStore -> IO ()) -> IO ()
 withJournalStore =
   bracket
-    (newJournalMsgStore "tests/tmp/messages" 5 =<< C.newRandom)
+    (newMsgStore testJournalStoreCfg)
     (\_st -> pure ()) -- close all handles
+
+testJournalStoreCfg :: JournalStoreConfig
+testJournalStoreCfg =
+  JournalStoreConfig
+    { storePath = "tests/tmp/messages",
+      pathParts = 5,
+      quota = 128,
+      maxMsgCount = 1024
+    }
 
 testMessage :: ByteString -> IO Message
 testMessage body = do
@@ -50,7 +63,7 @@ testGetQueue :: MsgStoreClass s => s -> IO ()
 testGetQueue st = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
-  q <- getMsgQueue st rId 128
+  q <- getMsgQueue st rId
   msg1 <- testMessage "message 1"
   Just (Message {msgId = mId1}, True) <- writeMsg q msg1
   msg2 <- testMessage "message 2"

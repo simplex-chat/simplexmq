@@ -1,5 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE InstanceSigs #-}
@@ -10,8 +11,9 @@
 {-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Server.MsgStore.STM
-  ( STMMsgStore,
+  ( STMMsgStore (msgQueues),
     STMMsgQueue (msgQueue),
+    STMStoreConfig (..),
     newMsgStore,
   )
 where
@@ -35,37 +37,49 @@ data STMMsgQueue = STMMsgQueue
     size :: TVar Int
   }
 
-type STMMsgStore = TMap RecipientId STMMsgQueue
+data STMMsgStore = STMMsgStore
+  { config :: STMStoreConfig,
+    msgQueues :: TMap RecipientId STMMsgQueue
+  }
 
-newMsgStore :: IO STMMsgStore
-newMsgStore = TM.emptyIO
+data STMStoreConfig = STMStoreConfig
+  { quota :: Int
+  }
 
 instance MsgStoreClass STMMsgStore where
   type MsgQueue STMMsgStore = STMMsgQueue
+  type MsgStoreConfig STMMsgStore = STMStoreConfig
+
+  newMsgStore :: STMStoreConfig -> IO STMMsgStore
+  newMsgStore config = do
+    msgQueues <- TM.emptyIO
+    pure STMMsgStore {config, msgQueues}
+
   getMsgQueueIds :: STMMsgStore -> IO (Set RecipientId)
-  getMsgQueueIds = fmap M.keysSet . readTVarIO
+  getMsgQueueIds = fmap M.keysSet . readTVarIO . msgQueues
 
   -- The reason for double lookup is that majority of messaging queues exist,
   -- because multiple messages are sent to the same queue,
   -- so the first lookup without STM transaction will return the queue faster.
   -- In case the queue does not exist, it needs to be looked-up again inside transaction.
-  getMsgQueue :: STMMsgStore -> RecipientId -> Int -> IO STMMsgQueue
-  getMsgQueue st rId quota = TM.lookupIO rId st >>= maybe (atomically maybeNewQ) pure
+  getMsgQueue :: STMMsgStore -> RecipientId -> IO STMMsgQueue
+  getMsgQueue STMMsgStore {msgQueues = qs, config = STMStoreConfig {quota}} rId =
+    TM.lookupIO rId qs >>= maybe (atomically maybeNewQ) pure
     where
-      maybeNewQ = TM.lookup rId st >>= maybe newQ pure
+      maybeNewQ = TM.lookup rId qs >>= maybe newQ pure
       newQ = do
         msgQueue <- newTQueue
         canWrite <- newTVar True
         size <- newTVar 0
         let q = STMMsgQueue {msgQueue, quota, canWrite, size}
-        TM.insert rId q st
+        TM.insert rId q qs
         pure q
 
   delMsgQueue :: STMMsgStore -> RecipientId -> IO ()
-  delMsgQueue st rId = atomically $ TM.delete rId st
+  delMsgQueue st rId = atomically $ TM.delete rId $ msgQueues st
 
   delMsgQueueSize :: STMMsgStore -> RecipientId -> IO Int
-  delMsgQueueSize st rId = atomically (TM.lookupDelete rId st) >>= maybe (pure 0) (\STMMsgQueue {size} -> readTVarIO size)
+  delMsgQueueSize st rId = atomically (TM.lookupDelete rId $ msgQueues st) >>= maybe (pure 0) (\STMMsgQueue {size} -> readTVarIO size)
 
   writeMsg :: STMMsgQueue -> Message -> IO (Maybe (Message, Bool))
   writeMsg STMMsgQueue {msgQueue = q, quota, canWrite, size} !msg = atomically $ do

@@ -11,9 +11,11 @@ import Data.Set (Set)
 import Simplex.Messaging.Protocol (Message (..), MsgId, RecipientId)
 
 class MsgStoreClass s where
+  type MsgStoreConfig s = c | c -> s
   type MsgQueue s = q | q -> s
+  newMsgStore :: MsgStoreConfig s -> IO s
   getMsgQueueIds :: s -> IO (Set RecipientId)
-  getMsgQueue :: s -> RecipientId -> Int -> IO (MsgQueue s)
+  getMsgQueue :: s -> RecipientId -> IO (MsgQueue s)
   delMsgQueue :: s -> RecipientId -> IO ()
   delMsgQueueSize :: s -> RecipientId -> IO Int
   writeMsg :: MsgQueue s -> Message -> IO (Maybe (Message, Bool))

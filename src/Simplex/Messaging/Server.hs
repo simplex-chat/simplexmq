@@ -351,7 +351,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
     expireMessagesThread :: ExpirationConfig -> M ()
     expireMessagesThread expCfg = do
       AMS _ ms <- asks msgStore
-      quota <- asks $ msgQueueQuota . config
       let interval = checkInterval expCfg * 1000000
       stats <- asks serverStats
       labelMyThread "expireMessagesThread"
@@ -360,7 +359,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         old <- liftIO $ expireBeforeEpoch expCfg
         rIds <- liftIO $ getMsgQueueIds ms
         forM_ rIds $ \rId -> do
-          q <- liftIO $ getMsgQueue ms rId quota
+          q <- liftIO $ getMsgQueue ms rId
           deleted <- liftIO $ deleteExpiredMsgs q old
           liftIO $ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
 
@@ -1278,7 +1277,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
             deliver :: Bool -> Sub -> M (Transmission BrokerMsg)
             deliver inc sub = do
               AMS _ ms <- asks msgStore
-              q <- getStoreMsgQueue "SUB" ms rId
+              q <- liftIO $ getMsgQueue ms rId
               msg_ <- liftIO $ tryPeekMsg q
               when (inc && isJust msg_) $
                 incStat . qSub =<< asks serverStats
@@ -1313,7 +1312,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
             getMessage_ :: Sub -> Maybe MsgId -> M (Transmission BrokerMsg)
             getMessage_ s delivered_ = do
               AMS _ ms <- asks msgStore
-              q <- getStoreMsgQueue "GET" ms entId
+              q <- liftIO $ getMsgQueue ms entId
               stats <- asks serverStats
               (statCnt, r) <-
                   liftIO (tryPeekMsg q) >>= \case
@@ -1361,7 +1360,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               atomically (getDelivered sub) >>= \case
                 Just st -> do
                   AMS _ ms <- asks msgStore
-                  q <- getStoreMsgQueue "ACK" ms entId
+                  q <- liftIO $ getMsgQueue ms entId
                   case st of
                     ProhibitSub -> do
                       deletedMsg_ <- liftIO $ tryDelMsg q msgId
@@ -1417,7 +1416,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                     Right body -> do
                       msg_ <- time "SEND" $ do
                         AMS _ ms <- asks msgStore
-                        q <- getStoreMsgQueue "SEND" ms $ recipientId qr
+                        q <- liftIO $ getMsgQueue ms $ recipientId qr
                         expireMessages q
                         liftIO . writeMsg q =<< mkMessage body
                       case msg_ of
@@ -1609,11 +1608,6 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
         setDelivered :: Sub -> Message -> STM Bool
         setDelivered s msg = tryPutTMVar (delivered s) $! messageId msg
 
-        getStoreMsgQueue :: MsgStoreClass s => T.Text -> s -> RecipientId -> M (MsgQueue s)
-        getStoreMsgQueue name ms rId = time (name <> " getMsgQueue") $ do
-          quota <- asks $ msgQueueQuota . config
-          liftIO $ getMsgQueue ms rId quota
-
         delQueueAndMsgs :: QueueStore -> M (Transmission BrokerMsg)
         delQueueAndMsgs st = do
           withLog (`logDeleteQueue` entId)
@@ -1640,7 +1634,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
         getQueueInfo :: QueueRec -> M (Transmission BrokerMsg)
         getQueueInfo QueueRec {senderKey, notifier} = do
           AMS _ ms <- asks msgStore
-          q <- getStoreMsgQueue "getQueueInfo" ms entId
+          q <- liftIO $ getMsgQueue ms entId
           qiSub <- liftIO $ TM.lookupIO entId subscriptions >>= mapM mkQSub
           qiSize <- liftIO $ getQueueSize q
           qiMsg <- liftIO $ toMsgInfo <$$> tryPeekMsg q
@@ -1713,7 +1707,7 @@ saveServerMessages keepMsgs = asks (storeMsgsFile . config) >>= mapM_ saveMessag
         AMS SMSMemory ms -> do
           logInfo $ "saving messages to file " <> T.pack f
           liftIO . withFile f WriteMode $ \h ->
-            readTVarIO ms >>= mapM_ (saveQueueMsgs h) . M.assocs
+            readTVarIO (msgQueues ms) >>= mapM_ (saveQueueMsgs h) . M.assocs
           logInfo "messages saved"
         _ -> pure ()
       where
@@ -1734,9 +1728,8 @@ restoreServerMessages =
     restoreMessages f = do
       logInfo $ "restoring messages from file " <> T.pack f
       AMS _ ms <- asks msgStore
-      quota <- asks $ msgQueueQuota . config
       old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
-      runExceptT (liftIO (LB.readFile f) >>= foldM (\expired -> restoreMsg expired ms quota old_) 0 . LB.lines) >>= \case
+      runExceptT (liftIO (LB.readFile f) >>= foldM (\expired -> restoreMsg expired ms old_) 0 . LB.lines) >>= \case
         Left e -> do
           logError . T.pack $ "error restoring messages: " <> e
           liftIO exitFailure
@@ -1745,13 +1738,13 @@ restoreServerMessages =
           logInfo "messages restored"
           pure expired
       where
-        restoreMsg !expired ms quota old_ s' = do
+        restoreMsg !expired ms old_ s' = do
           MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
           addToMsgQueue rId msg
           where
             s = LB.toStrict s'
             addToMsgQueue rId msg = do
-              q <- liftIO $ getMsgQueue ms rId quota
+              q <- liftIO $ getMsgQueue ms rId
               (isExpired, logFull) <- liftIO $ case msg of
                 Message {msgTs}
                   | maybe True (systemSeconds msgTs >=) old_ -> (False,) . isNothing <$> writeMsg q msg
@@ -1827,7 +1820,7 @@ restoreServerStats expiredMsgs expiredNtfs = asks (serverStatsBackupFile . confi
           _qCount <- fmap M.size . readTVarIO . queues =<< asks queueStore
           _msgCount <-
             asks msgStore >>= \case
-              AMS SMSMemory ms -> liftIO $ readTVarIO ms >>= foldM (\(!n) q -> (n +) <$> getQueueSize q) 0
+              AMS SMSMemory ms -> liftIO $ readTVarIO (msgQueues ms) >>= foldM (\(!n) q -> (n +) <$> getQueueSize q) 0
               _ -> pure 0
           NtfStore ns <- asks ntfStore
           _ntfCount <- liftIO . foldM (\(!n) q -> (n +) . length <$> readTVarIO q) 0 =<< readTVarIO ns

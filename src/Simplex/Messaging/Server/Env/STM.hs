@@ -256,10 +256,10 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAgentCfg, information, messageExpiration} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAgentCfg, information, messageExpiration, msgQueueQuota} = do
   server <- newServer
   queueStore <- newQueueStore
-  msgStore <- AMS SMSMemory <$> newMsgStore
+  msgStore <- AMS SMSMemory <$> newMsgStore STMStoreConfig {quota = msgQueueQuota}
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
   storeLog <-
