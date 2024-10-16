@@ -1044,7 +1044,8 @@ forkClient Client {endThreads, endThreadSeq} label action = do
 client :: THandleParams SMPVersion 'TServer -> Client -> Server -> M ()
 client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, subscribers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
-  whileM (asks serverActive >>= readTVarIO) $
+  sa <- asks serverActive
+  whileM (readTVarIO sa) $
     atomically (readTBQueue rcvQ)
       >>= mapM processCommand
       >>= mapM_ reply . L.nonEmpty . catMaybes . L.toList
