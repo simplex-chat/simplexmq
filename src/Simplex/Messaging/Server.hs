@@ -868,8 +868,10 @@ cancelSub s = case subThread s of
 receive :: Transport c => THandleSMP c 'TServer -> Client -> M ()
 receive h@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
+  sa <- asks serverActive
   forever $ do
     ts <- L.toList <$> liftIO (tGet h)
+    unlessM (readTVarIO sa) $ throwIO $ userError "server stopped"
     atomically . (writeTVar rcvActiveAt $!) =<< liftIO getSystemTime
     stats <- asks serverStats
     (errs, cmds) <- partitionEithers <$> mapM (cmdAction stats) ts
@@ -1044,15 +1046,11 @@ forkClient Client {endThreads, endThreadSeq} label action = do
 client :: THandleParams SMPVersion 'TServer -> Client -> Server -> M ()
 client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} Server {subscribedQ, ntfSubscribedQ, subscribers} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
-  sa <- asks serverActive
-  whileM (readTVarIO sa) $
+  forever $
     atomically (readTBQueue rcvQ)
       >>= mapM processCommand
       >>= mapM_ reply . L.nonEmpty . catMaybes . L.toList
   where
-    whileM :: Monad m => m Bool -> m a -> m ()
-    whileM c a = let a' = whenM c (a *> a') in a'
-    {-# INLINE whileM #-}
     reply :: MonadIO m => NonEmpty (Transmission BrokerMsg) -> m ()
     reply = atomically . writeTBQueue sndQ
     processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M (Maybe (Transmission BrokerMsg))
