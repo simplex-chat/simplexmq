@@ -168,8 +168,8 @@ newSocketState = (,,) <$> newTVarIO 0 <*> newTVarIO 0 <*> newTVarIO mempty
 
 closeServer :: TMVar Bool -> TVar (IntMap (Weak ThreadId)) -> Socket -> IO ()
 closeServer started clients sock = do
-  readTVarIO clients >>= mapM_ (deRefWeak >=> mapM_ killThread)
   close sock
+  readTVarIO clients >>= mapM_ (deRefWeak >=> mapM_ killThread)
   void . atomically $ tryPutTMVar started False
 
 startTCPServer :: TMVar Bool -> Maybe HostName -> ServiceName -> IO Socket
