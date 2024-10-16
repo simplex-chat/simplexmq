@@ -106,6 +106,7 @@ import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Exit (exitFailure)
 import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
+import System.Mem (performMajorGC)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (timeout)
 import UnliftIO.Concurrent
@@ -152,7 +153,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         : receiveFromProxyAgent pa
         : expireNtfsThread cfg
         : sigIntHandlerThread
-        : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
+        : map runServer transports
+            <> expireMessagesThread_ cfg
+            <> serverStatsThread_ cfg
+            <> controlPortThread_ cfg
+            <> majorGCThread_ cfg
     )
     `finally` stopServer s
   where
@@ -794,6 +799,15 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                   _ -> do
                     logError "Unauthorized control port command"
                     hPutStrLn h "AUTH"
+
+    majorGCThread_ :: ServerConfig -> [M ()]
+    majorGCThread_ ServerConfig {majorGCInterval = Just interval} = [majorGCThread $ interval * 1000000]
+      where
+        majorGCThread int = forever $ do
+          threadDelay int
+          logInfo "Starting major GC"
+          liftIO performMajorGC
+    majorGCThread_ _ = []
 
 runClientTransport :: Transport c => THandleSMP c 'TServer -> M ()
 runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessionId}} = do

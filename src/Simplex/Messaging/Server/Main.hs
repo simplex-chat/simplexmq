@@ -228,6 +228,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 <> ("ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
                 <> ("check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration))
                 <> "\n\n\
+                   \[SERVER]\n\
+                   \# Trigger major garbage collection every 10 seconds.\n\
+                   \# major_gc_interval: 10\n\n\
                    \[WEB]\n\
                    \# Set path to generate static mini-site for server information and qr codes/links\n"
                 <> ("static_path: " <> T.pack (fromMaybe defaultStaticPath webStaticPath) <> "\n\n")
@@ -346,6 +349,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log",
               pendingENDInterval = 15000000, -- 15 seconds
               ntfDeliveryInterval = 3000000, -- 3 seconds
+              majorGCInterval = either error id <$!> strDecodeIni "SERVER" "major_gc_interval" ini,
               smpServerVRange = supportedServerSMPRelayVRange,
               transportConfig =
                 defaultTransportServerConfig
