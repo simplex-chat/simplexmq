@@ -223,4 +223,4 @@ addTokenLastNtf st tknId newNtf =
               lastNtfs' = filtered <> [newNtf]
           L.fromList $ drop (length lastNtfs' - maxNtfs) lastNtfs'
         PNMessageData {smpQueue = newNtfQ} = newNtf
-        maxNtfs = 6 -- APNS max payload size is 4096 bytes; paddedNtfLength = 512, plus reserve for envelope
+        maxNtfs = 6 -- APNS max payload size is 4096 bytes; paddedNtfLength = 3072 (512 * 6), plus reserve for envelope
