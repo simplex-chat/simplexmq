@@ -1069,10 +1069,14 @@ getNotificationMessage' c nonce encNtfInfo = do
       pure $ L.fromList $ initNtfMsgs <> [lastNtfMsg]
     _ -> throwE $ CMD PROHIBITED "getNotificationMessage"
   where
-    getInitNtfMsg :: PNMessageData -> AM (Maybe (NotificationInfo, Maybe SMPMsgMeta))
-    getInitNtfMsg PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = do
+    getNtfMeta :: PNMessageData -> AM (ConnId, Maybe UTCTime, Maybe SMP.NMsgMeta)
+    getNtfMeta PNMessageData {smpQueue, nmsgNonce, encNMsgMeta} = do
       (ntfConnId, rcvNtfDhSecret, lastBrokerTs_) <- withStore c (`getNtfRcvQueue` smpQueue)
       ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
+      pure (ntfConnId, lastBrokerTs_, ntfMsgMeta)
+    getInitNtfMsg :: PNMessageData -> AM (Maybe (NotificationInfo, Maybe SMPMsgMeta))
+    getInitNtfMsg msgData@PNMessageData {ntfTs} = do
+      (ntfConnId, lastBrokerTs_, ntfMsgMeta) <- getNtfMeta msgData
       case (ntfMsgMeta, lastBrokerTs_) of
         (Just SMP.NMsgMeta {msgTs}, Just lastBrokerTs)
           | systemToUTCTime msgTs > lastBrokerTs -> do
@@ -1080,9 +1084,8 @@ getNotificationMessage' c nonce encNtfInfo = do
               pure $ Just (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}, msgMeta)
         _ -> pure Nothing
     getLastNtfMsg :: PNMessageData -> AM (NotificationInfo, Maybe SMPMsgMeta)
-    getLastNtfMsg PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = do
-      (ntfConnId, rcvNtfDhSecret, _) <- withStore c (`getNtfRcvQueue` smpQueue)
-      ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
+    getLastNtfMsg msgData@PNMessageData {ntfTs} = do
+      (ntfConnId, _, ntfMsgMeta) <- getNtfMeta msgData
       msgMeta <- getConnectionMessage' c ntfConnId
       pure (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}, msgMeta)
 
