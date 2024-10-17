@@ -132,7 +132,7 @@ runTCPServerSocket :: SocketState -> TMVar Bool -> IO Socket -> (Socket -> IO ()
 runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket server =
   E.bracket getSocket (closeServer started clients) $ \sock ->
     forever . E.bracketOnError (safeAccept sock) (close . fst) $ \(conn, _peer) -> do
-      cId <- atomically $ stateTVar accepted $ \cId -> let cId' = cId + 1 in cId `seq` (cId', cId')
+      cId <- atomically $ stateTVar accepted $ \cId -> let cId' = cId + 1 in cId' `seq` (cId', cId')
       let closeConn _ = do
             atomically $ modifyTVar' clients $ IM.delete cId
             gracefulClose conn 5000 `catchAll_` pure () -- catchAll_ is needed here in case the connection was closed earlier
@@ -168,8 +168,8 @@ newSocketState = (,,) <$> newTVarIO 0 <*> newTVarIO 0 <*> newTVarIO mempty
 
 closeServer :: TMVar Bool -> TVar (IntMap (Weak ThreadId)) -> Socket -> IO ()
 closeServer started clients sock = do
-  readTVarIO clients >>= mapM_ (deRefWeak >=> mapM_ killThread)
   close sock
+  readTVarIO clients >>= mapM_ (deRefWeak >=> mapM_ killThread)
   void . atomically $ tryPutTMVar started False
 
 startTCPServer :: TMVar Bool -> Maybe HostName -> ServiceName -> IO Socket
