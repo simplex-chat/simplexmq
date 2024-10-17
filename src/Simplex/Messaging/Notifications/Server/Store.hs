@@ -118,6 +118,7 @@ removeInactiveTokenRegistrations st NtfTknData {ntfTknId = tId, token} =
       forM_ tIds $ \(regKey, tId') -> do
         TM.delete regKey tknRegs
         TM.delete tId' $ tokens st
+        TM.delete tId' $ tokenLastNtfs st
         void $ deleteTokenSubs st tId'
       pure $ map snd tIds
 
@@ -137,6 +138,7 @@ deleteNtfToken st tknId = do
       TM.lookup token regs $>>= \tIds ->
         TM.delete (regKey tknVerifyKey) tIds
           >> whenM (TM.null tIds) (TM.delete token regs) $> Just ()
+  TM.delete tknId $ tokenLastNtfs st
   deleteTokenSubs st tknId
   where
     regs = tokenRegistrations st
