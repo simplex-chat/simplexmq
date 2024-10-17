@@ -1,10 +1,14 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Simplex.Messaging.Server.Env.STM where
 
@@ -37,7 +41,9 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
+import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
+import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
@@ -57,6 +63,7 @@ data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport, AddHTTP)],
     smpHandshakeTimeout :: Int,
     tbqSize :: Natural,
+    msgStoreType :: AMSType,
     msgQueueQuota :: Int,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
@@ -142,7 +149,7 @@ data Env = Env
     server :: Server,
     serverIdentity :: KeyHash,
     queueStore :: QueueStore,
-    msgStore :: STMMsgStore,
+    msgStore :: AMsgStore,
     ntfStore :: NtfStore,
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
@@ -154,6 +161,20 @@ data Env = Env
     clients :: TVar (IntMap (Maybe Client)),
     proxyAgent :: ProxyAgent -- senders served on this proxy
   }
+
+type family MsgStore s where
+  MsgStore 'MSMemory = STMMsgStore
+  MsgStore 'MSJournal = JournalMsgStore
+
+data AMsgStore = forall s. MsgStoreClass (MsgStore s) => AMS (SMSType s) (MsgStore s)
+
+data AMsgQueue = forall s. MsgStoreClass (MsgStore s) => AMQ (SMSType s) (MsgQueue (MsgStore s))
+
+data AMsgStoreCfg = forall s. MsgStoreClass (MsgStore s) => AMSC (SMSType s) (MsgStoreConfig (MsgStore s))
+
+msgPersistence :: AMsgStoreCfg -> Bool
+msgPersistence (AMSC SMSMemory (STMStoreConfig {storePath})) = isJust storePath
+msgPersistence (AMSC SMSJournal _) = True
 
 type Subscribed = Bool
 
@@ -212,7 +233,7 @@ newServer = do
   ntfSubClients <- newTVarIO IM.empty
   pendingSubEvents <- newTVarIO IM.empty
   pendingNtfSubEvents <- newTVarIO IM.empty
-  savingLock <- atomically createLock
+  savingLock <- createLockIO
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, subClients, ntfSubClients, pendingSubEvents, pendingNtfSubEvents, savingLock}
 
 newClient :: ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO Client
@@ -242,10 +263,14 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAgentCfg, information, messageExpiration} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgStoreType, storeMsgsFile, smpAgentCfg, information, messageExpiration, msgQueueQuota} = do
   server <- newServer
   queueStore <- newQueueStore
-  msgStore <- newMsgStore
+  msgStore <- case msgStoreType of
+    AMSType SMSMemory -> AMS SMSMemory <$> newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
+    AMSType SMSJournal -> case storeMsgsFile of
+      Just storePath -> AMS SMSJournal <$> newMsgStore JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = 5, maxMsgCount = msgQueueQuota + 1}
+      Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
   storeLog <-
@@ -312,7 +337,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
       where
         persistence
           | isNothing storeLogFile = SPMMemoryOnly
-          | isJust (storeMsgsFile config) = SPMMessages
+          | isJust storeMsgsFile = SPMMessages
           | otherwise = SPMQueues
 
 newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO ProxyAgent

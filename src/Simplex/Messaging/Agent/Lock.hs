@@ -1,6 +1,7 @@
 module Simplex.Messaging.Agent.Lock
   ( Lock,
     createLock,
+    createLockIO,
     withLock,
     withLock',
     withGetLock,
@@ -23,6 +24,10 @@ type Lock = TMVar String
 createLock :: STM Lock
 createLock = newEmptyTMVar
 {-# INLINE createLock #-}
+
+createLockIO :: IO Lock
+createLockIO = newEmptyTMVarIO
+{-# INLINE createLockIO #-}
 
 withLock :: MonadUnliftIO m => Lock -> String -> ExceptT e m a -> ExceptT e m a
 withLock lock name = ExceptT . withLock' lock name . runExceptT

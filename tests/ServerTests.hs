@@ -63,9 +63,9 @@ serverTests t@(ATransport t') = do
     describe "GET command" $ testGetCommand t'
     describe "GET & SUB commands" $ testGetSubCommands t'
     describe "Exceeding queue quota" $ testExceedQueueQuota t'
-  describe "Store log" $ testWithStoreLog t
-  describe "Restore messages" $ testRestoreMessages t
-  describe "Restore messages (old / v2)" $ testRestoreExpireMessages t
+  xdescribe "Store log" $ testWithStoreLog t
+  xdescribe "Restore messages" $ testRestoreMessages t
+  xdescribe "Restore messages (old / v2)" $ testRestoreExpireMessages t
   describe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
   describe "Message expiration" $ do

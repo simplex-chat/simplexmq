@@ -43,6 +43,7 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
+import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..))
 import Simplex.Messaging.Transport (batchCmdsSMPVersion, sendingProxySMPVersion, simplexMQVersion, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
@@ -307,6 +308,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             { transports,
               smpHandshakeTimeout = 120000000,
               tbqSize = 128,
+              msgStoreType = AMSType SMSMemory,
               msgQueueQuota = 128,
               queueIdBytes = 24,
               msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
