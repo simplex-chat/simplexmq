@@ -8,7 +8,6 @@
 
 module Simplex.Messaging.Server.MsgStore.Types where
 
-import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.Kind
 import Data.Set (Set)
@@ -20,6 +19,7 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   type MsgStoreConfig s = c | c -> s
   type MsgQueue s = q | q -> s
   newMsgStore :: MsgStoreConfig s -> IO s
+  closeMsgStore :: s -> IO ()
   getMsgQueueIds :: s -> IO (Set RecipientId)
   getMsgQueue :: s -> RecipientId -> IO (MsgQueue s)
   delMsgQueue :: s -> RecipientId -> IO ()
@@ -43,20 +43,23 @@ tryPeekMsg mq = atomicQueue mq $ tryPeekMsg_ mq
 {-# INLINE tryPeekMsg #-}
 
 tryDelMsg :: MsgStoreClass s => MsgQueue s -> MsgId -> IO (Maybe Message)
-tryDelMsg mq msgId' = atomicQueue mq $
-  tryPeekMsg_ mq >>= \case
-    msg_@(Just msg) | msgId msg == msgId' || B.null msgId' ->
-      tryDeleteMsg_ mq >> pure msg_
-    _ -> pure Nothing
+tryDelMsg mq msgId' =
+  atomicQueue mq $
+    tryPeekMsg_ mq >>= \case
+      msg_@(Just msg)
+        | msgId msg == msgId' ->
+            tryDeleteMsg_ mq >> pure msg_
+      _ -> pure Nothing
 
 -- atomic delete (== read) last and peek next message if available
 tryDelPeekMsg :: MsgStoreClass s => MsgQueue s -> MsgId -> IO (Maybe Message, Maybe Message)
-tryDelPeekMsg mq msgId' = atomicQueue mq $
-  tryPeekMsg_ mq >>= \case
-    msg_@(Just msg)
-      | msgId msg == msgId' || B.null msgId' -> (msg_,) <$> (tryDeleteMsg_ mq >> tryPeekMsg_ mq)
-      | otherwise -> pure (Nothing, msg_)
-    _ -> pure (Nothing, Nothing)
+tryDelPeekMsg mq msgId' =
+  atomicQueue mq $
+    tryPeekMsg_ mq >>= \case
+      msg_@(Just msg)
+        | msgId msg == msgId' -> (msg_,) <$> (tryDeleteMsg_ mq >> tryPeekMsg_ mq)
+        | otherwise -> pure (Nothing, msg_)
+      _ -> pure (Nothing, Nothing)
 
 deleteExpiredMsgs :: MsgStoreClass s => MsgQueue s -> Int64 -> IO Int
 deleteExpiredMsgs mq old = atomicQueue mq $ loop 0

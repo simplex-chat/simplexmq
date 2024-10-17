@@ -7,7 +7,6 @@
 
 module CoreTests.MsgStoreTests where
 
--- import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Data.ByteString.Char8 (ByteString)
@@ -22,17 +21,18 @@ import Test.Hspec
 
 msgStoreTests :: Spec
 msgStoreTests = do
-  around withSTMStore $ describe "STM message store" $ someMsgStoreTests
-  around withJournalStore $ describe "Journal message store" $ someMsgStoreTests
+  around withSTMStore $ describe "STM message store" someMsgStoreTests
+  around withJournalStore $ describe "Journal message store" someMsgStoreTests
   where
     someMsgStoreTests :: MsgStoreClass s => SpecWith s
     someMsgStoreTests = do
-      it "should get queue" testGetQueue
+      it "should get queue and store/read messages" testGetQueue
+      it "should not fail on EOF when changing read journal" testChangeReadJournal
 
 withSTMStore :: (STMMsgStore -> IO ()) -> IO ()
 withSTMStore =
   bracket
-    (newMsgStore STMStoreConfig {storePath = Nothing, quota = 128})
+    (newMsgStore STMStoreConfig {storePath = Nothing, quota = 3})
     (\_ -> pure ())
 
 withJournalStore :: (JournalMsgStore -> IO ()) -> IO ()
@@ -45,9 +45,9 @@ testJournalStoreCfg :: JournalStoreConfig
 testJournalStoreCfg =
   JournalStoreConfig
     { storePath = "tests/tmp/messages",
-      pathParts = 5,
-      quota = 128,
-      maxMsgCount = 1024
+      pathParts = 4,
+      quota = 3,
+      maxMsgCount = 4
     }
 
 testMessage :: ByteString -> IO Message
@@ -65,12 +65,9 @@ testGetQueue st = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
   q <- getMsgQueue st rId
-  msg1 <- testMessage "message 1"
-  Just (Message {msgId = mId1}, True) <- writeMsg q msg1
-  msg2 <- testMessage "message 2"
-  Just (Message {msgId = mId2}, False) <- writeMsg q msg2
-  msg3 <- testMessage "message 3"
-  Just (Message {msgId = mId3}, False) <- writeMsg q msg3
+  Just (Message {msgId = mId1}, True) <- writeMsg q =<< testMessage "message 1"
+  Just (Message {msgId = mId2}, False) <- writeMsg q =<< testMessage "message 2"
+  Just (Message {msgId = mId3}, False) <- writeMsg q =<< testMessage "message 3"
   Msg "message 1" <- tryPeekMsg q
   Msg "message 1" <- tryPeekMsg q
   Nothing <- tryDelMsg q mId2
@@ -86,4 +83,36 @@ testGetQueue st = do
   Nothing <- tryDelMsg q mId2
   Nothing <- tryDelMsg q mId3
   Nothing <- tryPeekMsg q
+  Just (Message {msgId = mId4}, True) <- writeMsg q =<< testMessage "message 4"
+  Msg "message 4" <- tryPeekMsg q
+  Just (Message {msgId = mId5}, False) <- writeMsg q =<< testMessage "message 5"
+  (Nothing, Msg "message 4") <- tryDelPeekMsg q mId3
+  (Msg "message 4", Msg "message 5") <- tryDelPeekMsg q mId4
+  Just (Message {msgId = mId6}, False) <- writeMsg q =<< testMessage "message 6"
+  Just (Message {msgId = mId7}, False) <- writeMsg q =<< testMessage "message 7"
+  Nothing <- writeMsg q =<< testMessage "message 8"
+  Msg "message 5" <- tryPeekMsg q
+  (Nothing, Msg "message 5") <- tryDelPeekMsg q mId4
+  (Msg "message 5", Msg "message 6") <- tryDelPeekMsg q mId5
+  (Msg "message 6", Msg "message 7") <- tryDelPeekMsg q mId6
+  (Msg "message 7", Just MessageQuota {msgId = mId8}) <- tryDelPeekMsg q mId7
+  (Just MessageQuota {}, Nothing) <- tryDelPeekMsg q mId8
+  (Nothing, Nothing) <- tryDelPeekMsg q mId8
+  delMsgQueue st rId
+
+testChangeReadJournal :: MsgStoreClass s => s -> IO ()
+testChangeReadJournal st = do
+  g <- C.newRandom
+  rId <- EntityId <$> atomically (C.randomBytes 24 g)
+  q <- getMsgQueue st rId
+  Just (Message {msgId = mId1}, True) <- writeMsg q =<< testMessage "message 1"
+  (Msg "message 1", Nothing) <- tryDelPeekMsg q mId1
+  Just (Message {msgId = mId2}, True) <- writeMsg q =<< testMessage "message 2"
+  (Msg "message 2", Nothing) <- tryDelPeekMsg q mId2
+  Just (Message {msgId = mId3}, True) <- writeMsg q =<< testMessage "message 3"
+  (Msg "message 3", Nothing) <- tryDelPeekMsg q mId3
+  Just (Message {msgId = mId4}, True) <- writeMsg q =<< testMessage "message 4"
+  (Msg "message 4", Nothing) <- tryDelPeekMsg q mId4
+  Just (Message {msgId = mId5}, True) <- writeMsg q =<< testMessage "message 5"
+  (Msg "message 5", Nothing) <- tryDelPeekMsg q mId5
   delMsgQueue st rId

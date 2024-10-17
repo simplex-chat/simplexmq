@@ -63,6 +63,12 @@ testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
 testStoreMsgsFile2 :: FilePath
 testStoreMsgsFile2 = "tests/tmp/smp-server-messages.log.2"
 
+testStoreMsgsDir :: FilePath
+testStoreMsgsDir = "tests/tmp/messages"
+
+testStoreMsgsDir2 :: FilePath
+testStoreMsgsDir2 = "tests/tmp/messages.2"
+
 testStoreNtfsFile :: FilePath
 testStoreNtfsFile = "tests/tmp/smp-server-ntfs.log"
 
@@ -106,12 +112,12 @@ cfg =
     { transports = [],
       smpHandshakeTimeout = 60000000,
       tbqSize = 1,
-      msgStoreType = AMSType SMSMemory,
+      msgStoreType = AMSType SMSJournal,
       msgQueueQuota = 4,
       queueIdBytes = 24,
       msgIdBytes = 24,
-      storeLogFile = Nothing,
-      storeMsgsFile = Nothing,
+      storeLogFile = Just testStoreLogFile,
+      storeMsgsFile = Just testStoreMsgsDir,
       storeNtfsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
@@ -175,7 +181,7 @@ withSmpServerStoreMsgLogOn t =
     t
     cfg
       { storeLogFile = Just testStoreLogFile,
-        storeMsgsFile = Just testStoreMsgsFile,
+        storeMsgsFile = Just testStoreMsgsDir,
         storeNtfsFile = Just testStoreNtfsFile,
         serverStatsBackupFile = Just testServerStatsBackupFile
       }

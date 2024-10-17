@@ -269,7 +269,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
   msgStore <- case msgStoreType of
     AMSType SMSMemory -> AMS SMSMemory <$> newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
     AMSType SMSJournal -> case storeMsgsFile of
-      Just storePath -> AMS SMSJournal <$> newMsgStore JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = 5, maxMsgCount = 1024}
+      Just storePath -> AMS SMSJournal <$> newMsgStore JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = 5, maxMsgCount = msgQueueQuota + 1}
       Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom

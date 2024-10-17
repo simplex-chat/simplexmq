@@ -196,7 +196,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       logInfo "Server stopped"
 
     saveServer :: Bool -> M ()
-    saveServer keepMsgs = withLog closeStoreLog >> saveServerMessages keepMsgs >> saveServerNtfs >> saveServerStats
+    saveServer keepMsgs = do
+      withLog closeStoreLog
+      AMS _ ms <- asks msgStore
+      liftIO $ closeMsgStore ms
+      saveServerMessages keepMsgs
+      saveServerNtfs
+      saveServerStats
 
     closeServer :: M ()
     closeServer = asks (smpAgent . proxyAgent) >>= liftIO . closeSMPClientAgent
@@ -1254,7 +1260,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
           okResp <$> liftIO (suspendQueue st entId)
 
         subscribeQueue :: QueueRec -> RecipientId -> M (Transmission BrokerMsg)
-        subscribeQueue qr rId = do
+        subscribeQueue qr rId =
           atomically (TM.lookup rId subscriptions) >>= \case
             Nothing -> newSub >>= deliver True
             Just s@Sub {subThread} -> do
@@ -1315,12 +1321,12 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               q <- liftIO $ getMsgQueue ms entId
               stats <- asks serverStats
               (statCnt, r) <-
-                  liftIO (tryPeekMsg q) >>= \case
-                    Just msg ->
-                      let encMsg = encryptMsg qr msg
-                          cnt = if isJust delivered_ then msgGetDuplicate else msgGet
-                       in atomically $ setDelivered s msg $> (cnt, (corrId, entId, MSG encMsg))
-                    _ -> pure (msgGetNoMsg, (corrId, entId, OK))
+                liftIO (tryPeekMsg q) >>= \case
+                  Just msg ->
+                    let encMsg = encryptMsg qr msg
+                        cnt = if isJust delivered_ then msgGetDuplicate else msgGet
+                     in atomically $ setDelivered s msg $> (cnt, (corrId, entId, MSG encMsg))
+                  _ -> pure (msgGetNoMsg, (corrId, entId, OK))
               incStat $ statCnt stats
               pure r
 
@@ -1367,7 +1373,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                       mapM_ (updateStats True) deletedMsg_
                       pure ok
                     _ -> do
-                      (deletedMsg_, msg_) <- liftIO $ tryDelPeekMsg q msgId
+                      (deletedMsg_, msg_) <- liftIO $ tryDelPeekMsg q msgId `catchAny` (\e -> print e >> throwIO e)
                       mapM_ (updateStats False) deletedMsg_
                       deliverMessage "ACK" qr entId sub msg_
                 _ -> pure $ err NO_MSG
@@ -1466,7 +1472,6 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                 atomically deliverToSub >>= mapM_ forkDeliver
               where
                 rId = recipientId qr
-                -- remove tryPeekMsg
                 deliverToSub =
                   -- lookup has ot be in the same transaction,
                   -- so that if subscription ends, it re-evalutates

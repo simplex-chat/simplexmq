@@ -8,7 +8,6 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Server.MsgStore.STM
   ( STMMsgStore (..),
@@ -52,6 +51,9 @@ instance MsgStoreClass STMMsgStore where
   newMsgStore storeConfig = do
     msgQueues <- TM.emptyIO
     pure STMMsgStore {storeConfig, msgQueues}
+
+  closeMsgStore :: STMMsgStore -> IO ()
+  closeMsgStore _ = pure ()
 
   getMsgQueueIds :: STMMsgStore -> IO (Set RecipientId)
   getMsgQueueIds = fmap M.keysSet . readTVarIO . msgQueues
