@@ -104,6 +104,7 @@ ntfServerCfg =
       subsBatchSize = 900,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       storeLogFile = Nothing,
+      storeLastNtfsFile = Nothing,
       ntfCredentials =
         ServerCredentials
           { caCertificateFile = Just "tests/fixtures/ca.crt",

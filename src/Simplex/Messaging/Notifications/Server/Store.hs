@@ -5,6 +5,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Notifications.Server.Store where
@@ -13,7 +14,7 @@ import Control.Concurrent.STM
 import Control.Monad
 import Data.ByteString.Char8 (ByteString)
 import Data.Functor (($>))
-import Data.List.NonEmpty (NonEmpty (..))
+import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
@@ -21,6 +22,7 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Protocol (NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer)
 import Simplex.Messaging.TMap (TMap)
@@ -224,3 +226,15 @@ addTokenLastNtf st tknId newNtf =
           L.fromList $ drop (length lastNtfs' - maxNtfs) lastNtfs'
         PNMessageData {smpQueue = newNtfQ} = newNtf
         maxNtfs = 6
+
+storeTokenLastNtf :: NtfStore -> NtfTokenId -> PNMessageData -> IO ()
+storeTokenLastNtf (NtfStore {tokenLastNtfs}) tknId ntf = do
+  TM.lookupIO tknId tokenLastNtfs >>= atomically . maybe newTokenLastNtfs (`modifyTVar'` (ntf <|))
+  where
+    newTokenLastNtfs = TM.lookup tknId tokenLastNtfs >>= maybe (TM.insertM tknId (newTVar [ntf]) tokenLastNtfs) (`modifyTVar'` (ntf <|))
+
+data TokenNtfMessageRecord = TNMRv1 NtfTokenId PNMessageData
+
+instance StrEncoding TokenNtfMessageRecord where
+  strEncode (TNMRv1 tknId ntf) = strEncode (Str "v1", tknId, ntf)
+  strP = "v1 " *> (TNMRv1 <$> strP_ <*> strP)

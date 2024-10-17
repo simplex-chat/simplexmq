@@ -19,8 +19,11 @@ import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
+import Data.Bifunctor (first)
+import qualified Data.ByteString.Builder as BLD
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (partitionEithers)
 import Data.Functor (($>))
 import Data.IORef
@@ -86,6 +89,7 @@ type M a = ReaderT NtfEnv IO a
 
 ntfServer :: NtfServerConfig -> TMVar Bool -> M ()
 ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
+  restoreServerLastNtfs
   restoreServerStats
   s <- asks subscriber
   ps <- asks pushServer
@@ -111,11 +115,13 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
 
     stopServer :: M ()
     stopServer = do
-      withNtfLog closeStoreLog
-      saveServerStats
+      saveServer
       NtfSubscriber {smpSubscribers, smpAgent} <- asks subscriber
       liftIO $ readTVarIO smpSubscribers >>= mapM_ (\SMPSubscriber {subThreadId} -> readTVarIO subThreadId >>= mapM_ (deRefWeak >=> mapM_ killThread))
       liftIO $ closeSMPClientAgent smpAgent
+
+    saveServer :: M ()
+    saveServer = withNtfLog closeStoreLog >> saveServerLastNtfs >> saveServerStats
 
     serverStatsThread_ :: NtfServerConfig -> [M ()]
     serverStatsThread_ NtfServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -727,6 +733,44 @@ incNtfStat :: (NtfServerStats -> IORef Int) -> M ()
 incNtfStat statSel = do
   stats <- asks serverStats
   liftIO $ atomicModifyIORef'_ (statSel stats) (+ 1)
+
+saveServerLastNtfs :: M ()
+saveServerLastNtfs = asks (storeLastNtfsFile . config) >>= mapM_ saveLastNtfs
+  where
+    saveLastNtfs f = do
+      logInfo $ "saving last notifications to file " <> T.pack f
+      NtfStore {tokenLastNtfs} <- asks store
+      liftIO . withFile f WriteMode $ \h ->
+        readTVarIO tokenLastNtfs >>= mapM_ (saveTokenLastNtfs h) . M.assocs
+      logInfo "notifications saved"
+      where
+        -- reverse on save, to save notifications in order, will become reversed again when restoring.
+        saveTokenLastNtfs h (tknId, v) = BLD.hPutBuilder h . encodeLastNtfs tknId . L.reverse =<< readTVarIO v
+        encodeLastNtfs tknId = mconcat . L.toList . L.map (\ntf -> BLD.byteString (strEncode $ TNMRv1 tknId ntf) <> BLD.char8 '\n')
+
+restoreServerLastNtfs :: M ()
+restoreServerLastNtfs =
+  asks (storeLastNtfsFile . config) >>= mapM_ restoreLastNtfs
+  where
+    restoreLastNtfs f =
+      whenM (doesFileExist f) $ do
+        logInfo $ "restoring last notifications from file " <> T.pack f
+        st <- asks store
+        runExceptT (liftIO (LB.readFile f) >>= mapM (restoreNtf st) . LB.lines) >>= \case
+          Left e -> do
+            logError . T.pack $ "error restoring last notifications: " <> e
+            liftIO exitFailure
+          Right _ -> do
+            renameFile f $ f <> ".bak"
+            logInfo "last notifications restored"
+      where
+        restoreNtf st s' = do
+          TNMRv1 tknId ntf <- liftEither . first (ntfErr "parsing") $ strDecode s
+          liftIO $ storeTokenLastNtf st tknId ntf
+          where
+            s = LB.toStrict s'
+            ntfErr :: Show e => String -> e -> String
+            ntfErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
 
 saveServerStats :: M ()
 saveServerStats =
