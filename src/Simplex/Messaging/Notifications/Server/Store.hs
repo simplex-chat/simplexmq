@@ -229,11 +229,16 @@ addTokenLastNtf st tknId newNtf =
         PNMessageData {smpQueue = newNtfQ} = newNtf
         maxNtfs = 6
 
+-- This function is expected to be called after store log is read,
+-- as it checks for token existence when adding last notification.
 storeTokenLastNtf :: NtfStore -> NtfTokenId -> PNMessageData -> IO ()
-storeTokenLastNtf (NtfStore {tokenLastNtfs}) tknId ntf = do
+storeTokenLastNtf (NtfStore {tokens, tokenLastNtfs}) tknId ntf = do
   TM.lookupIO tknId tokenLastNtfs >>= atomically . maybe newTokenLastNtfs (`modifyTVar'` (ntf <|))
   where
-    newTokenLastNtfs = TM.lookup tknId tokenLastNtfs >>= maybe (TM.insertM tknId (newTVar [ntf]) tokenLastNtfs) (`modifyTVar'` (ntf <|))
+    newTokenLastNtfs = TM.lookup tknId tokenLastNtfs >>= maybe insertForExistingToken (`modifyTVar'` (ntf <|))
+    insertForExistingToken =
+      whenM (TM.member tknId tokens) $
+        TM.insertM tknId (newTVar [ntf]) tokenLastNtfs
 
 data TokenNtfMessageRecord = TNMRv1 NtfTokenId PNMessageData
 
