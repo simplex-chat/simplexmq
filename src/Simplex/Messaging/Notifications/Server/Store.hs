@@ -224,8 +224,8 @@ addTokenLastNtf st tknId newNtf =
         rebuildList = foldr keepPrevNtf [newNtf]
           where
             PNMessageData {smpQueue = newNtfQ} = newNtf
-            keepPrevNtf PNMessageData {smpQueue} ntfs
-              | smpQueue /= newNtfQ && length ntfs < maxNtfs = ntf : ntfs
+            keepPrevNtf ntf@PNMessageData {smpQueue} ntfs
+              | smpQueue /= newNtfQ && length ntfs < maxNtfs = ntf <| ntfs
               | otherwise = ntfs
         maxNtfs = 6
 
