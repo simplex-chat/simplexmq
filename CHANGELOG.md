@@ -1,4 +1,12 @@
+# 6.1.1
+
+SMP:
+- stop server faster (#1371)
+- add STORE error (#1372)
+
 # 6.1.0
+
+Version 6.1.0.7
 
 SMP server and client:
 - transport block encryption (#1317).
