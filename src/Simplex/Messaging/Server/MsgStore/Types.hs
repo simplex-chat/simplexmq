@@ -10,6 +10,7 @@ module Simplex.Messaging.Server.MsgStore.Types where
 
 import Data.Int (Int64)
 import Data.Kind
+import Data.Map (Map)
 import Data.Set (Set)
 import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Simplex.Messaging.Protocol (Message (..), MsgId, RecipientId)
@@ -20,6 +21,7 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   type MsgQueue s = q | q -> s
   newMsgStore :: MsgStoreConfig s -> IO s
   closeMsgStore :: s -> IO ()
+  getMsgQueues :: s -> IO (Map RecipientId (MsgQueue s))
   getMsgQueueIds :: s -> IO (Set RecipientId)
   getMsgQueue :: s -> RecipientId -> IO (MsgQueue s)
   delMsgQueue :: s -> RecipientId -> IO ()

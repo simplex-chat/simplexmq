@@ -26,6 +26,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
+import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
 import Data.Set (Set)
@@ -161,6 +162,9 @@ instance MsgStoreClass JournalMsgStore where
 
   closeMsgStore :: JournalMsgStore -> IO ()
   closeMsgStore st = readTVarIO (msgQueues st) >>= mapM_ closeMsgQueue_
+
+  getMsgQueues :: JournalMsgStore -> IO (Map RecipientId JournalMsgQueue)
+  getMsgQueues = readTVarIO . msgQueues
 
   getMsgQueueIds :: JournalMsgStore -> IO (Set RecipientId)
   getMsgQueueIds = fmap M.keysSet . readTVarIO . msgQueues

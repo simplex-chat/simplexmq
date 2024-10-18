@@ -1714,59 +1714,63 @@ randomId = fmap EntityId . randomId'
 saveServerMessages :: Bool -> M ()
 saveServerMessages keepMsgs =
   asks msgStore >>= \case
-    AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath = Just f}} -> saveMessages ms f
+    AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath = Just f}} ->
+      liftIO $ exportMessages ms f getMessages
     _ -> pure ()
   where
-    saveMessages :: STMMsgStore -> FilePath -> M ()
-    saveMessages ms f = do
-      logInfo $ "saving messages to file " <> T.pack f
-      liftIO . withFile f WriteMode $ \h ->
-        readTVarIO (msgQueues ms) >>= mapM_ (saveQueueMsgs h) . M.assocs
-      logInfo "messages saved"
-      where
-        saveQueueMsgs h (rId, q) = BLD.hPutBuilder h . encodeMessages rId =<< atomically (getMessages $ msgQueue q)
-        getMessages = if keepMsgs then snapshotTQueue else flushTQueue
-        snapshotTQueue q = do
-          msgs <- flushTQueue q
-          mapM_ (writeTQueue q) msgs
-          pure msgs
-        encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
+    getMessages :: STMMsgQueue -> IO [Message]
+    getMessages = atomically . (if keepMsgs then snapshotTQueue else flushTQueue) . msgQueue
+    snapshotTQueue q = do
+      msgs <- flushTQueue q
+      mapM_ (writeTQueue q) msgs
+      pure msgs
+
+exportMessages :: MsgStoreClass s => s -> FilePath -> (MsgQueue s -> IO [Message]) -> IO ()
+exportMessages ms f getMessages = do
+  logInfo $ "saving messages to file " <> T.pack f
+  liftIO . withFile f WriteMode $ \h ->
+    getMsgQueues ms >>= mapM_ (saveQueueMsgs h) . M.assocs
+  logInfo "messages saved"
+  where
+    saveQueueMsgs h (rId, q) = BLD.hPutBuilder h . encodeMessages rId =<< getMessages q
+    encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
 
 restoreServerMessages :: M Int
 restoreServerMessages =
   asks msgStore >>= \case
-    AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath = Just f}} ->
-      ifM (doesFileExist f) (restoreMessages ms f) (pure 0)
-    _ -> pure 0
-  where
-    restoreMessages ms f = do
-      logInfo $ "restoring messages from file " <> T.pack f
+    AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath = Just f}} -> do
       old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
-      runExceptT (liftIO (LB.readFile f) >>= foldM (\expired -> restoreMsg expired old_) 0 . LB.lines) >>= \case
-        Left e -> do
-          logError . T.pack $ "error restoring messages: " <> e
-          liftIO exitFailure
-        Right expired -> do
-          renameFile f $ f <> ".bak"
-          logInfo "messages restored"
-          pure expired
+      liftIO $ ifM (doesFileExist f) (importMessages ms f old_) (pure 0)
+    _ -> pure 0
+
+importMessages :: MsgStoreClass s => s -> FilePath -> Maybe Int64 -> IO Int
+importMessages ms f old_ = do
+  logInfo $ "restoring messages from file " <> T.pack f
+  LB.readFile f >>= runExceptT . foldM restoreMsg 0 . LB.lines >>= \case
+    Left e -> do
+      logError . T.pack $ "error restoring messages: " <> e
+      liftIO exitFailure
+    Right expired -> do
+      renameFile f $ f <> ".bak"
+      logInfo "messages restored"
+      pure expired
+  where
+    restoreMsg !expired s' = do
+      MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
+      addToMsgQueue rId msg
       where
-        restoreMsg !expired old_ s' = do
-          MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
-          addToMsgQueue rId msg
-          where
-            s = LB.toStrict s'
-            addToMsgQueue rId msg = do
-              q <- liftIO $ getMsgQueue ms rId
-              (isExpired, logFull) <- liftIO $ case msg of
-                Message {msgTs}
-                  | maybe True (systemSeconds msgTs >=) old_ -> (False,) . isNothing <$> writeMsg q msg
-                  | otherwise -> pure (True, False)
-                MessageQuota {} -> writeMsg q msg $> (False, False)
-              when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
-              pure $ if isExpired then expired + 1 else expired
-            msgErr :: Show e => String -> e -> String
-            msgErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
+        s = LB.toStrict s'
+        addToMsgQueue rId msg = do
+          q <- liftIO $ getMsgQueue ms rId
+          (isExpired, logFull) <- liftIO $ case msg of
+            Message {msgTs}
+              | maybe True (systemSeconds msgTs >=) old_ -> (False,) . isNothing <$> writeMsg q msg
+              | otherwise -> pure (True, False)
+            MessageQuota {} -> writeMsg q msg $> (False, False)
+          when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
+          pure $ if isExpired then expired + 1 else expired
+        msgErr :: Show e => String -> e -> String
+        msgErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
 
 saveServerNtfs :: M ()
 saveServerNtfs = asks (storeNtfsFile . config) >>= mapM_ saveNtfs

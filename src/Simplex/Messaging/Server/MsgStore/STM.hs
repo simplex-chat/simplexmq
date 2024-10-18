@@ -18,6 +18,7 @@ where
 
 import Control.Concurrent.STM
 import Data.Functor (($>))
+import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Set (Set)
 import Simplex.Messaging.Protocol (Message (..), RecipientId)
@@ -54,6 +55,9 @@ instance MsgStoreClass STMMsgStore where
 
   closeMsgStore :: STMMsgStore -> IO ()
   closeMsgStore _ = pure ()
+
+  getMsgQueues :: STMMsgStore -> IO (Map RecipientId STMMsgQueue)
+  getMsgQueues = readTVarIO . msgQueues
 
   getMsgQueueIds :: STMMsgStore -> IO (Set RecipientId)
   getMsgQueueIds = fmap M.keysSet . readTVarIO . msgQueues
