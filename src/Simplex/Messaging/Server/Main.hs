@@ -1,6 +1,6 @@
 {-# LANGUAGE ApplicativeDo #-}
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
@@ -20,6 +20,7 @@ import Control.Monad
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAlpha, isAscii, toUpper)
+import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
 import Data.List (find, isPrefixOf)
@@ -27,7 +28,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8, decodeLatin1)
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import qualified Data.Text.IO as T
 import Network.Socket (HostName)
 import Options.Applicative
@@ -49,7 +50,7 @@ import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), defau
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
@@ -71,25 +72,42 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `" <> executableName <> " start`."
         _ -> initializeServer opts
-    OnlineCert certOpts ->
-      doesFileExist iniFile >>= \case
-        True -> genOnline cfgPath certOpts
-        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
-    Start ->
-      doesFileExist iniFile >>= \case
-        True -> readIniFile iniFile >>= either exitError runServer
-        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
+    OnlineCert certOpts -> withIniFile $ \_ -> genOnline cfgPath certOpts
+    Start -> withIniFile runServer
     Delete -> do
       confirmOrExit "WARNING: deleting the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
       deleteDirIfExists cfgPath
       deleteDirIfExists logPath
       putStrLn "Deleted configuration and log files"
+    Migrate mode -> withIniFile $ \ini -> do
+      msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
+      msgsFileExists <- doesFileExist storeMsgsFilePath
+      case mode of
+        _ | msgsFileExists && msgsDirExists -> do
+          putStrLn $ "Error: both " <> storeMsgsFilePath <> " file and " <> storeMsgsJournalDir <> " directory are present."
+          putStrLn "Configure memory storage."
+          exitFailure
+        AMSType SMSJournal
+          | msgsDirExists -> putStrLn (storeMsgsJournalDir <> " directory already exists.") >> exitFailure
+          | otherwise -> do
+              confirmOrExit "WARNING: message storage will be migrated to `journal` type"
+        AMSType SMSMemory
+          | msgsFileExists -> putStrLn (storeMsgsFilePath <> " directory already exists.") >> exitFailure
+          | otherwise -> do
+              confirmOrExit "WARNING: message storage will be migrated to `memory` type"
   where
+    withIniFile a =
+      doesFileExist iniFile >>= \case
+        True -> readIniFile iniFile >>= either exitError a
+        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     iniFile = combine cfgPath "smp-server.ini"
     serverVersion = "SMP server v" <> simplexMQVersion
     defaultServerPorts = "5223,443"
     executableName = "smp-server"
     storeLogFilePath = combine logPath "smp-server-store.log"
+    storeMsgsFilePath = combine logPath "smp-server-messages.log"
+    storeMsgsJournalDir = combine logPath "messages"
+    storeNtfsFilePath = combine logPath "smp-server-ntfs.log"
     httpsCertFile = combine cfgPath "web.crt"
     httpsKeyFile = combine cfgPath "web.key"
     defaultStaticPath = combine logPath "www"
@@ -129,7 +147,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 _ -> putStrLn "Invalid password. Only latin letters, digits and symbols other than '@' and ':' are allowed" >> serverPassword
         checkInitOptions InitOptions {sourceCode, serverInfo, operatorCountry, hostingCountry} = do
           let err_
-                | isNothing sourceCode && hasServerInfo serverInfo = 
+                | isNothing sourceCode && hasServerInfo serverInfo =
                     Just "Error: passing any server information requires passing --source-code"
                 | isNothing (operator serverInfo) && isJust operatorCountry =
                     Just "Error: passing --operator-country requires passing --operator"
@@ -169,9 +187,12 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                    \# and restoring it when the server is started.\n\
                    \# Log is compacted on start (deleted objects are removed).\n"
                 <> ("enable: " <> onOff enableStoreLog <> "\n\n")
-                <> "# Undelivered messages are optionally saved and restored when the server restarts,\n\
-                   \# they are preserved in the .bak file until the next restart.\n"
-                <> ("restore_messages: " <> onOff enableStoreLog <> "\n")
+                <> "# Message storage mode: `memory` or `journal`.\n\
+                   \store_messages: memory\n\n\
+                   \# When store_messages is `memory`, undelivered messages are optionally saved and restored\n\
+                   \# when the server restarts, they are preserved in the .bak file until the next restart.\n"
+                <> ("restore_messages: " <> onOff enableStoreLog <> "\n\n")
+                <> "# Messages and notifications expiration periods.\n"
                 <> ("expire_messages_days: " <> tshow defMsgExpirationDays <> "\n")
                 <> ("expire_ntfs_hours: " <> tshow defNtfExpirationHours <> "\n\n")
                 <> "# Log daily server statistics to CSV file\n"
@@ -249,12 +270,13 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       fp <- checkSavedFingerprint cfgPath defaultX509Config
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
-          cfg@ServerConfig {information, storeLogFile, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
+          cfg@ServerConfig {information, storeLogFile, msgStoreType, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
           sourceCode' = (\ServerPublicInfo {sourceCode} -> sourceCode) <$> information
           srv = ProtoServerWithAuth (SMPServer [THDomainName host] (if port == "5223" then "" else port) (C.KeyHash fp)) newQueueBasicAuth
       printServiceInfo serverVersion srv
       printSourceCode sourceCode'
       printServerConfig transports storeLogFile
+      checkMsgStoreMode msgStoreType
       putStrLn $ case messageExpiration of
         Just ExpirationConfig {ttl} -> "expiring messages after " <> showTTL ttl
         _ -> "not expiring messages"
@@ -308,7 +330,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             { transports,
               smpHandshakeTimeout = 120000000,
               tbqSize = 128,
-              msgStoreType = AMSType SMSMemory,
+              msgStoreType = either error id $! textToMsgStoreType $ fromRight "memory" $ lookupValue "STORE_LOG" "store_messages" ini,
               msgQueueQuota = 128,
               queueIdBytes = 24,
               msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
@@ -320,8 +342,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   },
               httpCredentials = (\WebHttpsParams {key, cert} -> ServerCredentials {caCertificateFile = Nothing, privateKeyFile = key, certificateFile = cert}) <$> webHttpsParams',
               storeLogFile = enableStoreLog $> storeLogFilePath,
-              storeMsgsFile = restoreMessagesFile $ combine logPath "smp-server-messages.log",
-              storeNtfsFile = restoreMessagesFile $ combine logPath "smp-server-ntfs.log",
+              storeMsgsFile = restoreMessagesFile storeMsgsFilePath,
+              storeNtfsFile = restoreMessagesFile storeNtfsFilePath,
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
               newQueueBasicAuth = either error id <$!> strDecodeIni "AUTH" "create_password" ini,
@@ -375,6 +397,11 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini,
               information = serverPublicInfo ini
             }
+        textToMsgStoreType :: Text -> Either String AMSType
+        textToMsgStoreType = \case
+          "memory" -> Right $ AMSType SMSMemory
+          "journal" -> Right $ AMSType SMSJournal
+          s -> Left $ "invalid store_messages: " <> T.unpack s
         textToOwnServers :: Text -> [ByteString]
         textToOwnServers = map encodeUtf8 . T.words
         runWebServer webStaticPath webHttpsParams si = do
@@ -394,6 +421,29 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             key <- T.unpack <$> lookupValue "WEB" "key" ini
             pure WebHttpsParams {port, cert, key}
         webStaticPath' = eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini
+
+    checkMsgStoreMode :: AMSType -> IO ()
+    checkMsgStoreMode mode = do
+      msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
+      msgsFileExists <- doesFileExist storeMsgsFilePath
+      case mode of
+        _ | msgsFileExists && msgsDirExists -> do
+          putStrLn $ "Error: both " <> storeMsgsFilePath <> " file and " <> storeMsgsJournalDir <> " directory are present."
+          putStrLn "Configure memory storage."
+          exitFailure
+        AMSType SMSJournal
+          | msgsFileExists -> do
+              putStrLn $ "Error: store_messages is `journal` with " <> storeMsgsFilePath <> " file present."
+              putStrLn "Set store_messages to `memory` or use `smp-server migrate journal` to migrate."
+              exitFailure
+          | not msgsDirExists ->
+              putStrLn $ "store_messages is `journal`, " <> storeMsgsJournalDir <> " directory will be created."
+        AMSType SMSMemory
+          | msgsDirExists -> do
+              putStrLn $ "Error: store_messages is `memory` with " <> storeMsgsJournalDir <> " directory present."
+              putStrLn "Set store_messages to `journal` or use `smp-server migrate journal` to migrate."
+              exitFailure
+        _ -> pure ()
 
 data EmbeddedWebParams = EmbeddedWebParams
   { webStaticPath :: FilePath,
@@ -460,12 +510,13 @@ informationIniContent InitOptions {sourceCode, serverInfo} =
        \# Hosting type can be `virtual`, `dedicated`, `colocation`, `owned`\n"
     <> ("hosting_type: " <> maybe "virtual" (decodeLatin1 . strEncode) hostingType <> "\n\n")
   where
-    ServerPublicInfo {operator, website, hosting, hostingType, serverCountry}= serverInfo
+    ServerPublicInfo {operator, website, hosting, hostingType, serverCountry} = serverInfo
     countryStr optName country = optDisabled country <> optName <> "_country: " <> fromMaybe "ISO-3166 2-letter code" country <> "\n"
     enitiyStrs optName entity =
       optDisabled entity
-        <> optName <> ": "
-        <> maybe ("entity (organization or person name)") name entity
+        <> optName
+        <> ": "
+        <> maybe "entity (organization or person name)" name entity
         <> "\n"
         <> countryStr optName (country =<< entity)
 
@@ -521,6 +572,7 @@ data CliCommand
   | OnlineCert CertOptions
   | Start
   | Delete
+  | Migrate AMSType
 
 data InitOptions = InitOptions
   { enableStoreLog :: Bool,
@@ -552,6 +604,7 @@ cliCommandP cfgPath logPath iniFile =
         <> command "cert" (info (OnlineCert <$> certOptionsP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
         <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
+        <> command "migrate" (info (Migrate <$> migrateP) (progDesc "Migrate message storage to `journal` or `memory` mode"))
     )
   where
     initP :: Parser InitOptions
@@ -609,22 +662,21 @@ cliCommandP cfgPath logPath iniFile =
           <|> option strParse (long "control-port" <> help "Enable control port" <> metavar "PORT" <> value Nothing)
       socksProxy <-
         flag' (Just defaultSocksProxy) (long "socks-proxy" <> help "Outgoing SOCKS proxy on port 9050")
-          <|>
-            option
-              strParse
-              ( long "socks-proxy"
-                  <> metavar "PROXY"
-                  <> help "Outgoing SOCKS proxy to forward messages to onion-only servers"
-                  <> value Nothing
-              )
+          <|> option
+            strParse
+            ( long "socks-proxy"
+                <> metavar "PROXY"
+                <> help "Outgoing SOCKS proxy to forward messages to onion-only servers"
+                <> value Nothing
+            )
       ownDomains :: Maybe (L.NonEmpty TransportHost) <-
         option
           strParse
-            ( long "own-domains"
-                <> metavar "DOMAINS"
-                <> help "Own server domain names (comma-separated)"
-                <> value Nothing
-            )
+          ( long "own-domains"
+              <> metavar "DOMAINS"
+              <> help "Own server domain names (comma-separated)"
+              <> value Nothing
+          )
       sourceCode <-
         flag' (Just simplexmqSource) (long "source-code" <> help ("Server source code (default: " <> simplexmqSource <> ")"))
           <|> (optional . strOption) (long "source-code" <> metavar "URI" <> help "Server source code")
@@ -692,6 +744,12 @@ cliCommandP cfgPath logPath iniFile =
             disableWeb,
             scripted
           }
+    migrateP :: Parser AMSType
+    migrateP =
+      hsubparser
+        ( command "memory" (info (pure $ AMSType SMSMemory) (progDesc "Migrate to `memory` message storage mode"))
+            <> command "journal" (info (pure $ AMSType SMSJournal) (progDesc "Migrate to `journal` message storage mode"))
+        )
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
     entityP :: String -> String -> String -> Parser (Maybe Entity, Maybe Text)
