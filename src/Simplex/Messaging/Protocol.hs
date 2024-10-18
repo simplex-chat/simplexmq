@@ -1198,6 +1198,8 @@ data ErrorType
     CRYPTO
   | -- | SMP queue capacity is exceeded on the server
     QUOTA
+  | -- | SMP server storage error
+    STORE {storeErr :: String}
   | -- | ACK command is sent without message to be acknowledged
     NO_MSG
   | -- | sent message is too large (> maxMessageLength = 16088 bytes)
@@ -1513,6 +1515,7 @@ instance Encoding ErrorType where
     AUTH -> "AUTH"
     CRYPTO -> "CRYPTO"
     QUOTA -> "QUOTA"
+    STORE err -> "STORE " <> smpEncode err
     EXPIRED -> "EXPIRED"
     NO_MSG -> "NO_MSG"
     LARGE_MSG -> "LARGE_MSG"
@@ -1528,6 +1531,7 @@ instance Encoding ErrorType where
       "AUTH" -> pure AUTH
       "CRYPTO" -> pure CRYPTO
       "QUOTA" -> pure QUOTA
+      "STORE" -> STORE <$> _smpP
       "EXPIRED" -> pure EXPIRED
       "NO_MSG" -> pure NO_MSG
       "LARGE_MSG" -> pure LARGE_MSG
