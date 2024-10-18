@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
@@ -210,23 +211,22 @@ addTokenLastNtf :: NtfStore -> NtfTokenId -> PNMessageData -> IO (NonEmpty PNMes
 addTokenLastNtf st tknId newNtf =
   TM.lookupIO tknId (tokenLastNtfs st) >>= maybe (atomically maybeNewTokenLastNtfs) (atomically . addNtf)
   where
-    maybeNewTokenLastNtfs = TM.lookup tknId (tokenLastNtfs st) >>= maybe newTokenLastNtfs addNtf
+    maybeNewTokenLastNtfs =
+      TM.lookup tknId (tokenLastNtfs st) >>= maybe newTokenLastNtfs addNtf
     newTokenLastNtfs = do
       v <- newTVar [newNtf]
       TM.insert tknId v $ tokenLastNtfs st
       pure [newNtf]
-    addNtf v = do
-      lastNtfs <- readTVar v
-      let lastNtfs' = rebuildList lastNtfs
-      writeTVar v lastNtfs'
-      pure lastNtfs'
+    addNtf v =
+      stateTVar v $ \ntfs -> let !ntfs' = rebuildList ntfs in (ntfs', ntfs')
       where
         rebuildList :: NonEmpty PNMessageData -> NonEmpty PNMessageData
-        rebuildList lastNtfs = do
-          let filtered = L.filter (\PNMessageData {smpQueue} -> smpQueue /= newNtfQ) lastNtfs
-              lastNtfs' = filtered <> [newNtf]
-          L.fromList $ drop (length lastNtfs' - maxNtfs) lastNtfs'
-        PNMessageData {smpQueue = newNtfQ} = newNtf
+        rebuildList = foldr keepPrevNtf [newNtf]
+          where
+            PNMessageData {smpQueue = newNtfQ} = newNtf
+            keepPrevNtf PNMessageData {smpQueue} ntfs
+              | smpQueue /= newNtfQ && length ntfs < maxNtfs = ntf : ntfs
+              | otherwise = ntfs
         maxNtfs = 6
 
 -- This function is expected to be called after store log is read,
