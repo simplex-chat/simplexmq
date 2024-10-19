@@ -82,35 +82,36 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       deleteDirIfExists cfgPath
       deleteDirIfExists logPath
       putStrLn "Deleted configuration and log files"
-    JournalImport -> withIniFile $ \_ini -> do
+    Journal cmd -> withIniFile $ \_ini -> do
       msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
       msgsFileExists <- doesFileExist storeMsgsFilePath
       when (msgsFileExists && msgsDirExists) exitConfigureMsgStorage
-      when msgsDirExists $ do
-        putStrLn $ storeMsgsJournalDir <> " directory already exists."
-        exitFailure
-      unless msgsFileExists $ do
-        putStrLn $ storeMsgsFilePath <> " file does not exists."
-        exitFailure
-      confirmOrExit
-        ("WARNING: message log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir)
-        "Messages not imported"
-      ms <- newJournalMsgStore
-      void $ importMessages ms storeMsgsFilePath Nothing -- no expiration
-      putStrLn "Import completed"
-    JournalExport -> withIniFile $ \_ini -> do
-      msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
-      msgsFileExists <- doesFileExist storeMsgsFilePath
-      when (msgsFileExists && msgsDirExists) exitConfigureMsgStorage
-      when msgsFileExists $ do
-        putStrLn $ storeMsgsFilePath <> " file already exists."
-        exitFailure
-      confirmOrExit
-        ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
-        "Journal not exported"
-      ms <- newJournalMsgStore
-      exportMessages ms storeMsgsFilePath $ getQueueMessages False
-      putStrLn "Export completed"
+      case cmd of
+        JCImport
+          | msgsDirExists -> do
+              putStrLn $ storeMsgsJournalDir <> " directory already exists."
+              exitFailure
+          | not msgsFileExists -> do
+              putStrLn $ storeMsgsFilePath <> " file does not exists."
+              exitFailure
+          | otherwise -> do
+              confirmOrExit
+                ("WARNING: message log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir)
+                "Messages not imported"
+              ms <- newJournalMsgStore
+              void $ importMessages ms storeMsgsFilePath Nothing -- no expiration
+              putStrLn "Import completed"
+        JCExport
+          | msgsFileExists -> do
+              putStrLn $ storeMsgsFilePath <> " file already exists."
+              exitFailure
+          | otherwise -> do
+              confirmOrExit
+                ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
+                "Journal not exported"
+              ms <- newJournalMsgStore
+              exportMessages ms storeMsgsFilePath $ getQueueMessages False
+              putStrLn "Export completed"
   where
     withIniFile a =
       doesFileExist iniFile >>= \case
@@ -592,8 +593,9 @@ data CliCommand
   | OnlineCert CertOptions
   | Start
   | Delete
-  | JournalImport
-  | JournalExport
+  | Journal JournalCmd
+
+data JournalCmd = JCImport | JCExport
 
 data InitOptions = InitOptions
   { enableStoreLog :: Bool,
@@ -625,8 +627,7 @@ cliCommandP cfgPath logPath iniFile =
         <> command "cert" (info (OnlineCert <$> certOptionsP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
         <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
-        <> command "journal import" (info (pure JournalImport) (progDesc "Import message log file into a new journal storage"))
-        <> command "journal export" (info (pure JournalExport) (progDesc "Export journal storage to message log file"))
+        <> command "journal" (info (Journal <$> journalCmdP) (progDesc "Import/export messages to/from journal storage"))
     )
   where
     initP :: Parser InitOptions
@@ -766,6 +767,12 @@ cliCommandP cfgPath logPath iniFile =
             disableWeb,
             scripted
           }
+    journalCmdP =
+      hsubparser
+        ( command "import" (info (pure JCImport) (progDesc "Import message log file into a new journal storage"))
+            <> command "export" (info (pure JCExport) (progDesc "Export journal storage to message log file"))
+        )
+
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
     entityP :: String -> String -> String -> Parser (Maybe Entity, Maybe Text)
