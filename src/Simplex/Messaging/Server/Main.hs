@@ -76,11 +76,13 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
     OnlineCert certOpts -> withIniFile $ \_ -> genOnline cfgPath certOpts
     Start -> withIniFile runServer
     Delete -> do
-      confirmOrExit "WARNING: deleting the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
+      confirmOrExit
+        "WARNING: deleting the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
+        "Server NOT deleted"
       deleteDirIfExists cfgPath
       deleteDirIfExists logPath
       putStrLn "Deleted configuration and log files"
-    JournalImport -> withIniFile $ \ini -> do
+    JournalImport -> withIniFile $ \_ini -> do
       msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
       msgsFileExists <- doesFileExist storeMsgsFilePath
       when (msgsFileExists && msgsDirExists) exitConfigureMsgStorage
@@ -90,24 +92,31 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       unless msgsFileExists $ do
         putStrLn $ storeMsgsFilePath <> " file does not exists."
         exitFailure
-      confirmOrExit $ "WARNING: message log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir
-      ms <- newMsgStore JournalStoreConfig {storePath = storeMsgsJournalDir, pathParts = journalMsgStoreDepth, quota = defaultMsgQueueQuota, maxMsgCount = defaultMaxJournalMsgCount}
+      confirmOrExit
+        ("WARNING: message log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir)
+        "Messages not imported"
+      ms <- newJournalMsgStore
       void $ importMessages ms storeMsgsFilePath Nothing -- no expiration
-    JournalExport -> withIniFile $ \ini -> do
+      putStrLn "Import completed"
+    JournalExport -> withIniFile $ \_ini -> do
       msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
       msgsFileExists <- doesFileExist storeMsgsFilePath
       when (msgsFileExists && msgsDirExists) exitConfigureMsgStorage
       when msgsFileExists $ do
         putStrLn $ storeMsgsFilePath <> " file already exists."
         exitFailure
-      confirmOrExit $ "WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath
-      ms <- newMsgStore JournalStoreConfig {storePath = storeMsgsJournalDir, pathParts = journalMsgStoreDepth, quota = defaultMsgQueueQuota, maxMsgCount = defaultMaxJournalMsgCount}
-      exportMessages ms storeMsgsFilePath getQueueMessages
+      confirmOrExit
+        ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
+        "Journal not exported"
+      ms <- newJournalMsgStore
+      exportMessages ms storeMsgsFilePath $ getQueueMessages False
+      putStrLn "Export completed"
   where
     withIniFile a =
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError a
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
+    newJournalMsgStore = newMsgStore JournalStoreConfig {storePath = storeMsgsJournalDir, pathParts = journalMsgStoreDepth, quota = defaultMsgQueueQuota, maxMsgCount = defaultMaxJournalMsgCount, maxStateLines = journalMaxStateLines}
     iniFile = combine cfgPath "smp-server.ini"
     serverVersion = "SMP server v" <> simplexMQVersion
     defaultServerPorts = "5223,443"

@@ -36,7 +36,7 @@ import GHC.IO (catchAny)
 import Simplex.Messaging.Agent.Client (getMapLock, withLockMap)
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (Message (..), RecipientId, messageId)
+import Simplex.Messaging.Protocol (Message (..), RecipientId)
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -61,7 +61,8 @@ data JournalStoreConfig = JournalStoreConfig
     -- Max number of messages per journal file - ignored in STM store.
     -- When this limit is reached, the file will be changed.
     -- This number should be set bigger than queue quota.
-    maxMsgCount :: Int
+    maxMsgCount :: Int,
+    maxStateLines :: Int
   }
 
 data JournalMsgQueue = JournalMsgQueue
@@ -168,7 +169,7 @@ instance MsgStoreClass JournalMsgStore where
   -- This function opens and closes all queues.
   -- It is used to export storage to a single file, not during normal server execution.
   withAllMsgQueues :: JournalMsgStore -> (RecipientId -> JournalMsgQueue -> IO ()) -> IO ()
-  withAllMsgQueues st@JournalMsgStore {config = JournalStoreConfig {storePath, pathParts}} action = do
+  withAllMsgQueues st@JournalMsgStore {config} action = do
     closeMsgStore st
     lock <- createLockIO -- the same lock is used for all queues
     dirs <- listQueueDirs 0 ("", storePath)
@@ -179,6 +180,7 @@ instance MsgStoreClass JournalMsgStore where
         Left e -> putStrLn $ "Error: message queue directory " <> dir <> " is invalid: " <> e
       closeMsgQueue_ q
     where
+      JournalStoreConfig {storePath, pathParts} = config
       listQueueDirs depth (queueId, path)
         | depth == pathParts - 1 = listDirs
         | otherwise = fmap concat . mapM (listQueueDirs (depth + 1)) =<< listDirs
@@ -222,10 +224,23 @@ instance MsgStoreClass JournalMsgStore where
     removeQueueDirectory st rId
     pure sz
 
+  getQueueMessages :: Bool -> JournalMsgQueue -> IO [Message]
+  getQueueMessages drainMsgs q = readTVarIO (handles q) >>= maybe (pure []) (getMsg [])
+    where
+      getMsg ms hs = chooseReadJournal q drainMsgs hs >>= maybe (pure ms) readMsg
+        where
+          readMsg (rs, h) = do
+            -- TODO handle errors
+            s <- hGetLineAt h $ bytePos rs
+            -- TODO handle errors
+            Right msg <- pure $ strDecode s
+            updateReadPos q drainMsgs (B.length s + 1) hs -- 1 is to account for new line
+            (msg :) <$> getMsg ms hs
+
   writeMsg :: JournalMsgQueue -> Message -> IO (Maybe (Message, Bool))
-  writeMsg JournalMsgQueue {queueDirectory, queueLock, state, tipMsg, handles, config, random} !msg =
-    withLock' queueLock "writeMsg" $ do
-      st@MsgQueueState {canWrite, size} <- readTVarIO state
+  writeMsg q@JournalMsgQueue {queueDirectory, handles, config, random} !msg =
+    withLock' (queueLock q) "writeMsg" $ do
+      st@MsgQueueState {canWrite, size} <- readTVarIO (state q)
       let empty = size == 0
       if canWrite || empty
         then do
@@ -248,10 +263,9 @@ instance MsgStoreClass JournalMsgStore where
             ws' = ws {msgPos = msgPos ws + 1, msgCount = msgCount', bytePos = bytePos ws + msgLen}
             rs' = if journalId ws == journalId rs then rs {msgCount = msgCount'} else rs
             !st' = st {writeState = ws', readState = rs', canWrite = canWrt', size = size + 1}
-        atomically $ writeTVar state st'
-        when (size == 0) $ atomically $ writeTVar tipMsg $ Just (Just (msg, msgLen))
+        when (size == 0) $ atomically $ writeTVar (tipMsg q) $ Just (Just (msg, msgLen))
         hAppend wh msgStr
-        B.hPutStr (stateHandle hs) $ strEncode st' `B.snoc` '\n'
+        updateQueueState q True hs st'
         where
           createQueueDir = do
             createDirectoryIfMissing True queueDirectory
@@ -271,25 +285,10 @@ instance MsgStoreClass JournalMsgStore where
   getQueueSize :: JournalMsgQueue -> IO Int
   getQueueSize JournalMsgQueue {state} = size <$> readTVarIO state
 
-  -- TODO optimize by having the message ready (set when journal is opened)
   tryPeekMsg_ :: JournalMsgQueue -> NonAtomicIO (Maybe Message)
-  tryPeekMsg_ JournalMsgQueue {queueDirectory, state, tipMsg, handles} =
-    NonAtomicIO $ readTVarIO handles $>>= chooseReadJournal $>>= peekMsg
+  tryPeekMsg_ q@JournalMsgQueue {tipMsg, handles} =
+    NonAtomicIO $ readTVarIO handles $>>= chooseReadJournal q True $>>= peekMsg
     where
-      chooseReadJournal hs = do
-        st@MsgQueueState {writeState = ws, readState = rs} <- readTVarIO state
-        case writeHandle hs of
-          Just wh | msgPos rs >= msgCount rs && journalId rs /= journalId ws -> do
-            -- switching to write journal
-            atomically $ writeTVar handles $ Just hs {readHandle = wh, writeHandle = Nothing}
-            hClose $ readHandle hs
-            removeJournal queueDirectory rs
-            let !rs' = (newJournalState $ journalId ws) {msgCount = msgCount ws}
-                !st' = st {readState = rs'}
-            atomically $ writeTVar state st'
-            pure $ Just (rs', wh)
-          _ | msgPos rs >= msgCount rs && journalId rs == journalId ws -> pure Nothing
-          _ -> pure $ Just (rs, readHandle hs)
       peekMsg (rs, h) = readTVarIO tipMsg >>= maybe readMsg (pure . fmap fst)
         where
           readMsg = do
@@ -301,22 +300,12 @@ instance MsgStoreClass JournalMsgStore where
             pure $ Just msg
 
   tryDeleteMsg_ :: JournalMsgQueue -> NonAtomicIO ()
-  tryDeleteMsg_ JournalMsgQueue {state, tipMsg, handles} = NonAtomicIO $ do
+  tryDeleteMsg_ q@JournalMsgQueue {tipMsg, handles} = NonAtomicIO $
     void $
       readTVarIO tipMsg -- if there is no cached tipMsg, do nothing
         $>>= (pure . fmap snd)
-        $>>= \len -> readTVarIO handles $>>= delMsg len
-    where
-      delMsg len hs =
-        Just () <$ do
-          st@MsgQueueState {readState = rs, size} <- readTVarIO state
-          let JournalState {msgPos, bytePos} = rs
-          let msgPos' = msgPos + 1
-              rs' = rs {msgPos = msgPos', bytePos = bytePos + len}
-              st' = st {readState = rs', size = size - 1}
-          atomically $ writeTVar state $! st'
-          B.hPutStr (stateHandle hs) $ strEncode st' `B.snoc` '\n'
-          atomically $ writeTVar tipMsg Nothing
+        $>>= \len -> readTVarIO handles
+        $>>= \hs -> updateReadPos q True len hs $> Just ()
 
   atomicQueue :: JournalMsgQueue -> NonAtomicIO a -> IO a
   atomicQueue mq (NonAtomicIO a) = withLock' (queueLock mq) "atomicQueue" a
@@ -352,12 +341,36 @@ mkJournalQueue JournalMsgStore {random, config} dir queueLock (st, hs_) = do
         random
       }
 
--- TODO optimize
-getQueueMessages :: JournalMsgQueue -> IO [Message]
-getQueueMessages q = getMsg []
-  where
-    getMsg ms = tryPeekMsg q >>= maybe (pure ms) (nextMsg ms)
-    nextMsg ms msg = tryDelMsg q (messageId msg) >> (msg :) <$> getMsg ms
+chooseReadJournal :: JournalMsgQueue -> Bool -> MsgQueueHandles -> IO (Maybe (JournalState, Handle))
+chooseReadJournal q log' hs = do
+  st@MsgQueueState {writeState = ws, readState = rs} <- readTVarIO (state q)
+  case writeHandle hs of
+    Just wh | msgPos rs >= msgCount rs && journalId rs /= journalId ws -> do
+      -- switching to write journal
+      atomically $ writeTVar (handles q) $ Just hs {readHandle = wh, writeHandle = Nothing}
+      hClose $ readHandle hs
+      removeJournal (queueDirectory q) rs
+      let !rs' = (newJournalState $ journalId ws) {msgCount = msgCount ws}
+          !st' = st {readState = rs'}
+      updateQueueState q log' hs st'
+      pure $ Just (rs', wh)
+    _ | msgPos rs >= msgCount rs && journalId rs == journalId ws -> pure Nothing
+    _ -> pure $ Just (rs, readHandle hs)
+
+updateQueueState :: JournalMsgQueue -> Bool -> MsgQueueHandles -> MsgQueueState -> IO ()
+updateQueueState q log' hs st' = do
+  atomically $ writeTVar (state q) st'
+  when log' $ B.hPutStr (stateHandle hs) $ strEncode st' `B.snoc` '\n'
+
+updateReadPos :: JournalMsgQueue -> Bool -> Int -> MsgQueueHandles -> IO ()
+updateReadPos q log' len hs = do
+  st@MsgQueueState {readState = rs, size} <- readTVarIO (state q)
+  let JournalState {msgPos, bytePos} = rs
+  let msgPos' = msgPos + 1
+      rs' = rs {msgPos = msgPos', bytePos = bytePos + len}
+      st' = st {readState = rs', size = size - 1}
+  updateQueueState q log' hs st'              
+  atomically $ writeTVar (tipMsg q) Nothing
 
 msgQueueDirectory :: JournalMsgStore -> RecipientId -> FilePath
 msgQueueDirectory JournalMsgStore {config = JournalStoreConfig {storePath, pathParts}} rId =
@@ -393,26 +406,21 @@ removeJournal dir JournalState {journalId} = do
   removeFile path `catchAny` (\e -> logError $ "Error removing file " <> T.pack path <> ": " <> tshow e)
 
 readWriteQueueState :: JournalMsgStore -> FilePath -> FilePath -> IO (MsgQueueState, Handle)
-readWriteQueueState JournalMsgStore {random} dir statePath = do
+readWriteQueueState JournalMsgStore {random, config} dir statePath = do
   ls <- LB.lines <$> LB.readFile statePath `catchAny` (\e -> print e >> E.throwIO e)
   case ls of
     [] -> do
       putStrLn $ "Warning: empty queue state in " <> statePath <> ", initialized"
       st <- newMsgQueueState <$> newJournalId random
       writeQueueState st
-    [l] -> case strDecode $ LB.toStrict l of
-      Right st -> do
-        sh <- openFile statePath AppendMode
-        pure (st, sh)
-      Left e -> do
-        putStrLn $ "Warning: invalid queue state in " <> statePath <> ", backed up and initialized: " <> show e
-        backupState
-        st <- newMsgQueueState <$> newJournalId random
-        writeQueueState st
     _ -> case strDecode $ LB.toStrict $ last ls of
-      Right st -> do
-        backupState
-        writeQueueState st
+      Right st
+        | length ls > maxStateLines config -> do
+            backupState
+            writeQueueState st
+        | otherwise -> do
+            sh <- openFile statePath AppendMode
+            pure (st, sh)
       Left e -> do
         -- TODO take previous line
         putStrLn $ "Warning: invalid queue state in " <> statePath <> ", backed up and initialized: " <> show e
@@ -449,8 +457,8 @@ readWriteQueueState JournalMsgStore {random} dir statePath = do
 --     pure emptyState
 
 closeMsgQueue :: JournalMsgStore -> RecipientId -> IO (Maybe (TVar MsgQueueState))
-closeMsgQueue JournalMsgStore {msgQueues} rId =
-  atomically (TM.lookupDelete rId msgQueues)
+closeMsgQueue st rId =
+  atomically (TM.lookupDelete rId (msgQueues st))
     >>= mapM (\q -> closeMsgQueue_ q $> state q)
 
 closeMsgQueue_ :: JournalMsgQueue -> IO ()

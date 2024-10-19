@@ -147,8 +147,11 @@ defaultProxyClientConcurrency = 32
 journalMsgStoreDepth :: Int
 journalMsgStoreDepth = 5
 
+journalMaxStateLines :: Int
+journalMaxStateLines = 16
+
 defaultMaxJournalMsgCount :: Int
-defaultMaxJournalMsgCount = 5
+defaultMaxJournalMsgCount = 512
 
 defaultMsgQueueQuota :: Int
 defaultMsgQueueQuota = 128
@@ -281,7 +284,9 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
   msgStore <- case msgStoreType of
     AMSType SMSMemory -> AMS SMSMemory <$> newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
     AMSType SMSJournal -> case storeMsgsFile of
-      Just storePath -> AMS SMSJournal <$> newMsgStore JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount}
+      Just storePath -> 
+        let cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount, maxStateLines = journalMaxStateLines}
+         in AMS SMSJournal <$> newMsgStore cfg
       Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom

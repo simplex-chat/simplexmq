@@ -4,50 +4,52 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module CoreTests.MsgStoreTests where
 
 import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.Time.Clock.System (getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), Message (..), noMsgFlags)
+import Simplex.Messaging.Server (exportMessages, importMessages)
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
+import SMPClient (testStoreMsgsDir, testStoreMsgsDir2, testStoreMsgsFile, testStoreMsgsFile2)
+import System.Directory (listDirectory)
 import Test.Hspec
 
 msgStoreTests :: Spec
 msgStoreTests = do
-  around withSTMStore $ describe "STM message store" someMsgStoreTests
-  around withJournalStore $ describe "Journal message store" someMsgStoreTests
+  around (withMsgStore testSMTStoreConfig) $ describe "STM message store" someMsgStoreTests
+  around (withMsgStore testJournalStoreCfg) $ describe "Journal message store" $ do
+    someMsgStoreTests
+    it "should export and import journal store" testExportImportStore
   where
     someMsgStoreTests :: MsgStoreClass s => SpecWith s
     someMsgStoreTests = do
       it "should get queue and store/read messages" testGetQueue
       it "should not fail on EOF when changing read journal" testChangeReadJournal
 
-withSTMStore :: (STMMsgStore -> IO ()) -> IO ()
-withSTMStore =
-  bracket
-    (newMsgStore STMStoreConfig {storePath = Nothing, quota = 3})
-    (\_ -> pure ())
+withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
+withMsgStore cfg = bracket (newMsgStore cfg) closeMsgStore
 
-withJournalStore :: (JournalMsgStore -> IO ()) -> IO ()
-withJournalStore =
-  bracket
-    (newMsgStore testJournalStoreCfg)
-    (\_st -> pure ()) -- close all handles
+testSMTStoreConfig :: STMStoreConfig
+testSMTStoreConfig = STMStoreConfig {storePath = Nothing, quota = 3}
 
 testJournalStoreCfg :: JournalStoreConfig
 testJournalStoreCfg =
   JournalStoreConfig
-    { storePath = "tests/tmp/messages",
+    { storePath = testStoreMsgsDir,
       pathParts = 4,
       quota = 3,
-      maxMsgCount = 4
+      maxMsgCount = 4,
+      maxStateLines = 2
     }
 
 testMessage :: ByteString -> IO Message
@@ -116,3 +118,31 @@ testChangeReadJournal st = do
   Just (Message {msgId = mId5}, True) <- writeMsg q =<< testMessage "message 5"
   (Msg "message 5", Nothing) <- tryDelPeekMsg q mId5
   delMsgQueue st rId
+
+testExportImportStore :: JournalMsgStore -> IO ()
+testExportImportStore st = do
+  g <- C.newRandom
+  rId1 <- EntityId <$> atomically (C.randomBytes 24 g)
+  q1 <- getMsgQueue st rId1
+  Just (Message {}, True) <- writeMsg q1 =<< testMessage "message 1"
+  Just (Message {}, False) <- writeMsg q1 =<< testMessage "message 2"
+  rId2 <- EntityId <$> atomically (C.randomBytes 24 g)
+  q2 <- getMsgQueue st rId2
+  Just (Message {}, True) <- writeMsg q2 =<< testMessage "message 3"
+  Just (Message {}, False) <- writeMsg q2 =<< testMessage "message 4"
+  Just (Message {}, False) <- writeMsg q2 =<< testMessage "message 5"
+  Nothing <- writeMsg q2 =<< testMessage "message 6"
+  length <$> listDirectory (msgQueueDirectory st rId1) `shouldReturn` 2
+  length <$> listDirectory (msgQueueDirectory st rId2) `shouldReturn` 2
+  exportMessages st testStoreMsgsFile $ getQueueMessages False
+  let cfg = (testJournalStoreCfg :: JournalStoreConfig) {storePath = testStoreMsgsDir2}
+  st' <- newMsgStore cfg
+  0 <- importMessages st' testStoreMsgsFile Nothing
+  length <$> listDirectory (msgQueueDirectory st rId1) `shouldReturn` 2
+  length <$> listDirectory (msgQueueDirectory st rId2) `shouldReturn` 3 -- state file is backed up
+  exportMessages st' testStoreMsgsFile2 $ getQueueMessages False
+  (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
+  stmStore <- newMsgStore testSMTStoreConfig
+  0 <- importMessages stmStore testStoreMsgsFile2 Nothing
+  exportMessages stmStore testStoreMsgsFile $ getQueueMessages False
+  (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))

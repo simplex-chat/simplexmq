@@ -41,7 +41,6 @@ module Simplex.Messaging.Server
 where
 
 import Control.Concurrent.STM (throwSTM)
-import Control.Concurrent.STM.TQueue (flushTQueue)
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -196,15 +195,15 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
     stopServer s = do
       asks serverActive >>= atomically . (`writeTVar` False)
       logInfo "Saving server state..."
-      withLock' (savingLock s) "final" $ saveServer False >> closeServer
+      withLock' (savingLock s) "final" $ saveServer True >> closeServer
       logInfo "Server stopped"
 
     saveServer :: Bool -> M ()
-    saveServer keepMsgs = do
+    saveServer drainMsgs = do
       withLog closeStoreLog
       AMS _ ms <- asks msgStore
       liftIO $ closeMsgStore ms
-      saveServerMessages keepMsgs
+      saveServerMessages drainMsgs
       saveServerNtfs
       saveServerStats
 
@@ -788,7 +787,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                     liftIO . hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
               CPSave -> withAdminRole $ withLock' (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
-                unliftIO u $ saveServer True
+                unliftIO u $ saveServer False
                 hPutStrLn h "server state saved!"
               CPHelp -> hPutStrLn h "commands: stats, stats-rts, clients, sockets, socket-threads, threads, server-info, delete, save, help, quit"
               CPQuit -> pure ()
@@ -1712,18 +1711,11 @@ randomId = fmap EntityId . randomId'
 {-# INLINE randomId #-}
 
 saveServerMessages :: Bool -> M ()
-saveServerMessages keepMsgs =
+saveServerMessages drainMsgs =
   asks msgStore >>= \case
     AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath = Just f}} ->
-      liftIO $ exportMessages ms f getMessages
+      liftIO $ exportMessages ms f $ getQueueMessages drainMsgs
     _ -> pure ()
-  where
-    getMessages :: STMMsgQueue -> IO [Message]
-    getMessages = atomically . (if keepMsgs then snapshotTQueue else flushTQueue) . msgQueue
-    snapshotTQueue q = do
-      msgs <- flushTQueue q
-      mapM_ (writeTQueue q) msgs
-      pure msgs
 
 exportMessages :: MsgStoreClass s => s -> FilePath -> (MsgQueue s -> IO [Message]) -> IO ()
 exportMessages ms f getMessages = do

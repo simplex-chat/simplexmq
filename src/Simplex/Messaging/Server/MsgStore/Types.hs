@@ -27,6 +27,7 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   getMsgQueue :: s -> RecipientId -> IO (MsgQueue s)
   delMsgQueue :: s -> RecipientId -> IO ()
   delMsgQueueSize :: s -> RecipientId -> IO Int
+  getQueueMessages :: Bool -> MsgQueue s -> IO [Message]
   writeMsg :: MsgQueue s -> Message -> IO (Maybe (Message, Bool))
   getQueueSize :: MsgQueue s -> IO Int
   tryPeekMsg_ :: MsgQueue s -> StoreMonad s (Maybe Message)

@@ -81,6 +81,14 @@ instance MsgStoreClass STMMsgStore where
   delMsgQueueSize :: STMMsgStore -> RecipientId -> IO Int
   delMsgQueueSize st rId = atomically (TM.lookupDelete rId $ msgQueues st) >>= maybe (pure 0) (\STMMsgQueue {size} -> readTVarIO size)
 
+  getQueueMessages :: Bool -> STMMsgQueue -> IO [Message]
+  getQueueMessages drainMsgs = atomically . (if drainMsgs then flushTQueue else snapshotTQueue) . msgQueue
+    where
+      snapshotTQueue q = do
+        msgs <- flushTQueue q
+        mapM_ (writeTQueue q) msgs
+        pure msgs
+
   writeMsg :: STMMsgQueue -> Message -> IO (Maybe (Message, Bool))
   writeMsg STMMsgQueue {msgQueue = q, quota, canWrite, size} !msg = atomically $ do
     canWrt <- readTVar canWrite
