@@ -7,6 +7,7 @@
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module Simplex.Messaging.Server.MsgStore.Journal
@@ -43,7 +44,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM, tshow, ($>>=))
 import System.Directory
 import System.FilePath ((</>))
-import System.IO (BufferMode (..), Handle, IOMode (..), SeekMode (..))
+import System.IO (BufferMode (..), Handle, IOMode (..), SeekMode (..), stdout)
 import qualified System.IO as IO
 import System.Random (StdGen, genByteString, newStdGen)
 
@@ -172,15 +173,19 @@ instance MsgStoreClass JournalMsgStore where
   withAllMsgQueues st@JournalMsgStore {config} action = do
     closeMsgStore st
     lock <- createLockIO -- the same lock is used for all queues
-    dirs <- listQueueDirs 0 ("", storePath)
-    forM_ dirs $ \(queueId, dir) -> do
+    dirs <- zip [1..] <$> listQueueDirs 0 ("", storePath)
+    let count = length dirs
+    forM_ dirs $ \(i :: Int, (queueId, dir)) -> do
       q <- openMsgQueue st dir lock
       case strDecode $ B.pack queueId of
         Right rId -> action rId q
         Left e -> putStrLn $ "Error: message queue directory " <> dir <> " is invalid: " <> e
       closeMsgQueue_ q
+      progress i count
+    putStrLn ""
     where
       JournalStoreConfig {storePath, pathParts} = config
+      progress i count = putStr ("Processed: " <> show i <> "/" <> show count <> " queues\r") >> IO.hFlush stdout
       listQueueDirs depth (queueId, path)
         | depth == pathParts - 1 = listDirs
         | otherwise = fmap concat . mapM (listQueueDirs (depth + 1)) =<< listDirs

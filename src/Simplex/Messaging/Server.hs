@@ -1737,7 +1737,9 @@ restoreServerMessages =
 importMessages :: MsgStoreClass s => s -> FilePath -> Maybe Int64 -> IO Int
 importMessages ms f old_ = do
   logInfo $ "restoring messages from file " <> T.pack f
-  LB.readFile f >>= runExceptT . foldM restoreMsg 0 . LB.lines >>= \case
+  expired_ <- LB.readFile f >>= runExceptT . foldM restoreMsg 0 . zip [1..] . LB.lines
+  liftIO $ putStrLn ""
+  case expired_ of
     Left e -> do
       logError . T.pack $ "error restoring messages: " <> e
       liftIO exitFailure
@@ -1746,9 +1748,12 @@ importMessages ms f old_ = do
       logInfo "messages restored"
       pure expired
   where
-    restoreMsg !expired s' = do
+    restoreMsg !expired (i :: Int, s') = do
       MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
-      addToMsgQueue rId msg
+      r <- addToMsgQueue rId msg
+      liftIO $ putStr $ "Processed: " <> show i <> " messages\r"
+      hFlush stdout
+      pure r
       where
         s = LB.toStrict s'
         addToMsgQueue rId msg = do
