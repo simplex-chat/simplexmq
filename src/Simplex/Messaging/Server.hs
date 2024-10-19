@@ -30,6 +30,8 @@
 module Simplex.Messaging.Server
   ( runSMPServer,
     runSMPServerBlocking,
+    importMessages,
+    exportMessages,
     disconnectTransport,
     verifyCmdAuthorization,
     dummyVerifyCmd,
@@ -362,14 +364,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       let interval = checkInterval expCfg * 1000000
       stats <- asks serverStats
       labelMyThread "expireMessagesThread"
-      forever $ do
-        liftIO $ threadDelay' interval
-        old <- liftIO $ expireBeforeEpoch expCfg
-        rIds <- liftIO $ getMsgQueueIds ms
-        forM_ rIds $ \rId -> do
-          q <- liftIO $ getMsgQueue ms rId
-          deleted <- liftIO $ deleteExpiredMsgs q old
-          liftIO $ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
+      liftIO $ forever $ do
+        threadDelay' interval
+        old <- expireBeforeEpoch expCfg
+        withActiveMsgQueues ms $ \_ q -> do
+          deleted <- deleteExpiredMsgs q old
+          atomicModifyIORef'_ (msgExpired stats) (+ deleted)
 
     expireNtfsThread :: ServerConfig -> M ()
     expireNtfsThread ServerConfig {notificationExpiration = expCfg} = do
@@ -1728,11 +1728,10 @@ saveServerMessages keepMsgs =
 exportMessages :: MsgStoreClass s => s -> FilePath -> (MsgQueue s -> IO [Message]) -> IO ()
 exportMessages ms f getMessages = do
   logInfo $ "saving messages to file " <> T.pack f
-  liftIO . withFile f WriteMode $ \h ->
-    getMsgQueues ms >>= mapM_ (saveQueueMsgs h) . M.assocs
+  liftIO $ withFile f WriteMode $ withAllMsgQueues ms . saveQueueMsgs
   logInfo "messages saved"
   where
-    saveQueueMsgs h (rId, q) = BLD.hPutBuilder h . encodeMessages rId =<< getMessages q
+    saveQueueMsgs h rId q = BLD.hPutBuilder h . encodeMessages rId =<< getMessages q
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
 
 restoreServerMessages :: M Int

@@ -65,6 +65,7 @@ data ServerConfig = ServerConfig
     tbqSize :: Natural,
     msgStoreType :: AMSType,
     msgQueueQuota :: Int,
+    maxJournalMsgCount :: Int,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLogFile :: Maybe FilePath,
@@ -142,6 +143,15 @@ defaultInactiveClientExpiration =
 
 defaultProxyClientConcurrency :: Int
 defaultProxyClientConcurrency = 32
+
+journalMsgStoreDepth :: Int
+journalMsgStoreDepth = 5
+
+defaultMaxJournalMsgCount :: Int
+defaultMaxJournalMsgCount = 5
+
+defaultMsgQueueQuota :: Int
+defaultMsgQueueQuota = 128
 
 data Env = Env
   { config :: ServerConfig,
@@ -264,14 +274,14 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgStoreType, storeMsgsFile, smpAgentCfg, information, messageExpiration, msgQueueQuota} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgStoreType, storeMsgsFile, smpAgentCfg, information, messageExpiration, msgQueueQuota, maxJournalMsgCount} = do
   serverActive <- newTVarIO True
   server <- newServer
   queueStore <- newQueueStore
   msgStore <- case msgStoreType of
     AMSType SMSMemory -> AMS SMSMemory <$> newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
     AMSType SMSJournal -> case storeMsgsFile of
-      Just storePath -> AMS SMSJournal <$> newMsgStore JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = 5, maxMsgCount = msgQueueQuota + 1}
+      Just storePath -> AMS SMSJournal <$> newMsgStore JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount}
       Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom

@@ -39,12 +39,13 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
-import Simplex.Messaging.Server (AttachHTTP, runSMPServer)
+import Simplex.Messaging.Server (AttachHTTP, exportMessages, importMessages, runSMPServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..))
+import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..), getQueueMessages)
+import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Transport (batchCmdsSMPVersion, sendingProxySMPVersion, simplexMQVersion, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
@@ -79,22 +80,29 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       deleteDirIfExists cfgPath
       deleteDirIfExists logPath
       putStrLn "Deleted configuration and log files"
-    Migrate mode -> withIniFile $ \ini -> do
+    JournalImport -> withIniFile $ \ini -> do
       msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
       msgsFileExists <- doesFileExist storeMsgsFilePath
-      case mode of
-        _ | msgsFileExists && msgsDirExists -> do
-          putStrLn $ "Error: both " <> storeMsgsFilePath <> " file and " <> storeMsgsJournalDir <> " directory are present."
-          putStrLn "Configure memory storage."
-          exitFailure
-        AMSType SMSJournal
-          | msgsDirExists -> putStrLn (storeMsgsJournalDir <> " directory already exists.") >> exitFailure
-          | otherwise -> do
-              confirmOrExit "WARNING: message storage will be migrated to `journal` type"
-        AMSType SMSMemory
-          | msgsFileExists -> putStrLn (storeMsgsFilePath <> " directory already exists.") >> exitFailure
-          | otherwise -> do
-              confirmOrExit "WARNING: message storage will be migrated to `memory` type"
+      when (msgsFileExists && msgsDirExists) exitConfigureMsgStorage
+      when msgsDirExists $ do
+        putStrLn $ storeMsgsJournalDir <> " directory already exists."
+        exitFailure
+      unless msgsFileExists $ do
+        putStrLn $ storeMsgsFilePath <> " file does not exists."
+        exitFailure
+      confirmOrExit $ "WARNING: message log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir
+      ms <- newMsgStore JournalStoreConfig {storePath = storeMsgsJournalDir, pathParts = journalMsgStoreDepth, quota = defaultMsgQueueQuota, maxMsgCount = defaultMaxJournalMsgCount}
+      void $ importMessages ms storeMsgsFilePath Nothing -- no expiration
+    JournalExport -> withIniFile $ \ini -> do
+      msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
+      msgsFileExists <- doesFileExist storeMsgsFilePath
+      when (msgsFileExists && msgsDirExists) exitConfigureMsgStorage
+      when msgsFileExists $ do
+        putStrLn $ storeMsgsFilePath <> " file already exists."
+        exitFailure
+      confirmOrExit $ "WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath
+      ms <- newMsgStore JournalStoreConfig {storePath = storeMsgsJournalDir, pathParts = journalMsgStoreDepth, quota = defaultMsgQueueQuota, maxMsgCount = defaultMaxJournalMsgCount}
+      exportMessages ms storeMsgsFilePath getQueueMessages
   where
     withIniFile a =
       doesFileExist iniFile >>= \case
@@ -331,7 +339,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               smpHandshakeTimeout = 120000000,
               tbqSize = 128,
               msgStoreType = either error id $! textToMsgStoreType $ fromRight "memory" $ lookupValue "STORE_LOG" "store_messages" ini,
-              msgQueueQuota = 128,
+              msgQueueQuota = defaultMsgQueueQuota,
+              maxJournalMsgCount = defaultMaxJournalMsgCount,
               queueIdBytes = 24,
               msgIdBytes = 24, -- must be at least 24 bytes, it is used as 192-bit nonce for XSalsa20
               smpCredentials =
@@ -427,10 +436,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
       msgsFileExists <- doesFileExist storeMsgsFilePath
       case mode of
-        _ | msgsFileExists && msgsDirExists -> do
-          putStrLn $ "Error: both " <> storeMsgsFilePath <> " file and " <> storeMsgsJournalDir <> " directory are present."
-          putStrLn "Configure memory storage."
-          exitFailure
+        _ | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
         AMSType SMSJournal
           | msgsFileExists -> do
               putStrLn $ "Error: store_messages is `journal` with " <> storeMsgsFilePath <> " file present."
@@ -444,6 +450,11 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               putStrLn "Set store_messages to `journal` or use `smp-server migrate journal` to migrate."
               exitFailure
         _ -> pure ()
+
+    exitConfigureMsgStorage = do
+      putStrLn $ "Error: both " <> storeMsgsFilePath <> " file and " <> storeMsgsJournalDir <> " directory are present."
+      putStrLn "Configure memory storage."
+      exitFailure
 
 data EmbeddedWebParams = EmbeddedWebParams
   { webStaticPath :: FilePath,
@@ -572,7 +583,8 @@ data CliCommand
   | OnlineCert CertOptions
   | Start
   | Delete
-  | Migrate AMSType
+  | JournalImport
+  | JournalExport
 
 data InitOptions = InitOptions
   { enableStoreLog :: Bool,
@@ -604,7 +616,8 @@ cliCommandP cfgPath logPath iniFile =
         <> command "cert" (info (OnlineCert <$> certOptionsP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
         <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
-        <> command "migrate" (info (Migrate <$> migrateP) (progDesc "Migrate message storage to `journal` or `memory` mode"))
+        <> command "journal import" (info (pure JournalImport) (progDesc "Import message log file into a new journal storage"))
+        <> command "journal export" (info (pure JournalExport) (progDesc "Export journal storage to message log file"))
     )
   where
     initP :: Parser InitOptions
@@ -744,12 +757,6 @@ cliCommandP cfgPath logPath iniFile =
             disableWeb,
             scripted
           }
-    migrateP :: Parser AMSType
-    migrateP =
-      hsubparser
-        ( command "memory" (info (pure $ AMSType SMSMemory) (progDesc "Migrate to `memory` message storage mode"))
-            <> command "journal" (info (pure $ AMSType SMSJournal) (progDesc "Migrate to `journal` message storage mode"))
-        )
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
     entityP :: String -> String -> String -> Parser (Maybe Entity, Maybe Text)

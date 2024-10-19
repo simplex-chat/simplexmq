@@ -1432,7 +1432,7 @@ withUP a bId p =
       ]
 
 testExpireMessageQuota :: HasCallStack => ATransport -> IO ()
-testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testPort $ \_ -> do
+testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1, maxJournalMsgCount = 2} testPort $ \_ -> do
   a <- getSMPAgentClient' 1 agentCfg {quotaExceededTimeout = 1, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aId, bId) <- runRight $ do
@@ -1458,7 +1458,7 @@ testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testP
   disposeAgentClient a
 
 testExpireManyMessagesQuota :: ATransport -> IO ()
-testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testPort $ \_ -> do
+testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1, maxJournalMsgCount = 2} testPort $ \_ -> do
   a <- getSMPAgentClient' 1 agentCfg {quotaExceededTimeout = 2, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aId, bId) <- runRight $ do
@@ -2977,7 +2977,7 @@ testDeliveryReceiptsVersion t = do
 
 testDeliveryReceiptsConcurrent :: HasCallStack => ATransport -> IO ()
 testDeliveryReceiptsConcurrent t =
-  withSmpServerConfigOn t cfg {msgQueueQuota = 256} testPort $ \_ -> do
+  withSmpServerConfigOn t cfg {msgQueueQuota = 256, maxJournalMsgCount = 512} testPort $ \_ -> do
     withAgentClients2 $ \a b -> do
       (aId, bId) <- runRight $ makeConnection a b
       t1 <- liftIO getCurrentTime

@@ -135,11 +135,11 @@ smpProxyTests = do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "25 agents, 300 pairs, 17 messages" . oneServer . withNumCapabilities 4 $ deliver 25 17
   where
-    oneServer = withSmpServerConfigOn (transport @TLS) proxyCfg {msgQueueQuota = 128} testPort . const
+    oneServer = withSmpServerConfigOn (transport @TLS) proxyCfg {msgQueueQuota = 128, maxJournalMsgCount = 256} testPort . const
     twoServers = twoServers_ proxyCfg proxyCfg
-    twoServersFirstProxy = twoServers_ proxyCfg cfgV8 {msgQueueQuota = 128}
-    twoServersMoreConc = twoServers_ proxyCfg {serverClientConcurrency = 128} cfgV8 {msgQueueQuota = 128}
-    twoServersNoConc = twoServers_ proxyCfg {serverClientConcurrency = 1} cfgV8 {msgQueueQuota = 128}
+    twoServersFirstProxy = twoServers_ proxyCfg cfgV8 {msgQueueQuota = 128, maxJournalMsgCount = 256}
+    twoServersMoreConc = twoServers_ proxyCfg {serverClientConcurrency = 128} cfgV8 {msgQueueQuota = 128, maxJournalMsgCount = 256}
+    twoServersNoConc = twoServers_ proxyCfg {serverClientConcurrency = 1} cfgV8 {msgQueueQuota = 128, maxJournalMsgCount = 256}
     twoServers_ cfg1 cfg2 runTest =
       withSmpServerConfigOn (transport @TLS) cfg1 testPort $ \_ ->
         let cfg2' = cfg2 {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2}

@@ -114,6 +114,7 @@ cfg =
       tbqSize = 1,
       msgStoreType = AMSType SMSJournal,
       msgQueueQuota = 4,
+      maxJournalMsgCount = 5,
       queueIdBytes = 24,
       msgIdBytes = 24,
       storeLogFile = Just testStoreLogFile,
