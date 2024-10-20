@@ -169,23 +169,29 @@ instance MsgStoreClass JournalMsgStore where
 
   -- This function opens and closes all queues.
   -- It is used to export storage to a single file, not during normal server execution.
-  withAllMsgQueues :: JournalMsgStore -> (RecipientId -> JournalMsgQueue -> IO ()) -> IO ()
+  withAllMsgQueues :: JournalMsgStore -> (RecipientId -> JournalMsgQueue -> IO Int) -> IO Int
   withAllMsgQueues st@JournalMsgStore {config} action = do
     closeMsgStore st
     lock <- createLockIO -- the same lock is used for all queues
-    dirs <- zip [1..] <$> listQueueDirs 0 ("", storePath)
+    dirs <- zip [0..] <$> listQueueDirs 0 ("", storePath)
     let count = length dirs
-    forM_ dirs $ \(i :: Int, (queueId, dir)) -> do
-      q <- openMsgQueue st dir lock
-      case strDecode $ B.pack queueId of
-        Right rId -> action rId q
-        Left e -> putStrLn $ "Error: message queue directory " <> dir <> " is invalid: " <> e
-      closeMsgQueue_ q
-      progress i count
+    total <- foldM (processQueue lock count) 0 dirs
+    progress count count
     putStrLn ""
+    pure total
     where
       JournalStoreConfig {storePath, pathParts} = config
-      progress i count = putStr ("Processed: " <> show i <> "/" <> show count <> " queues\r") >> IO.hFlush stdout
+      processQueue lock count !total (i :: Int, (queueId, dir)) = do
+        when (i `mod` 100 == 0) $ progress i count
+        q <- openMsgQueue st dir lock
+        total' <- case strDecode $ B.pack queueId of
+          Right rId -> (total +) <$> action rId q
+          Left e -> total <$ putStrLn ("Error: message queue directory " <> dir <> " is invalid: " <> e)
+        closeMsgQueue_ q
+        pure total'
+      progress i count = do
+        putStr $ "Processed: " <> show i <> "/" <> show count <> " queues\r"
+        IO.hFlush stdout
       listQueueDirs depth (queueId, path)
         | depth == pathParts - 1 = listDirs
         | otherwise = fmap concat . mapM (listQueueDirs (depth + 1)) =<< listDirs

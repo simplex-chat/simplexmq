@@ -366,9 +366,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       liftIO $ forever $ do
         threadDelay' interval
         old <- expireBeforeEpoch expCfg
-        withActiveMsgQueues ms $ \_ q -> do
+        void $ withActiveMsgQueues ms $ \_ q -> do
           deleted <- deleteExpiredMsgs q old
           atomicModifyIORef'_ (msgExpired stats) (+ deleted)
+          pure deleted
 
     expireNtfsThread :: ServerConfig -> M ()
     expireNtfsThread ServerConfig {notificationExpiration = expCfg} = do
@@ -1720,10 +1721,10 @@ saveServerMessages drainMsgs =
 exportMessages :: MsgStoreClass s => s -> FilePath -> (MsgQueue s -> IO [Message]) -> IO ()
 exportMessages ms f getMessages = do
   logInfo $ "saving messages to file " <> T.pack f
-  liftIO $ withFile f WriteMode $ withAllMsgQueues ms . saveQueueMsgs
-  logInfo "messages saved"
+  total <- liftIO $ withFile f WriteMode $ withAllMsgQueues ms . saveQueueMsgs
+  logInfo $ "messages saved: " <> tshow total
   where
-    saveQueueMsgs h rId q = BLD.hPutBuilder h . encodeMessages rId =<< getMessages q
+    saveQueueMsgs h rId q = getMessages q >>= \msgs -> length msgs <$ BLD.hPutBuilder h (encodeMessages rId msgs)
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
 
 restoreServerMessages :: M Int
@@ -1737,23 +1738,26 @@ restoreServerMessages =
 importMessages :: MsgStoreClass s => s -> FilePath -> Maybe Int64 -> IO Int
 importMessages ms f old_ = do
   logInfo $ "restoring messages from file " <> T.pack f
-  expired_ <- LB.readFile f >>= runExceptT . foldM restoreMsg 0 . zip [1..] . LB.lines
-  liftIO $ putStrLn ""
-  case expired_ of
+  LB.readFile f >>= runExceptT . foldM restoreMsg (0, 0, 0) . zip [0..] . LB.lines >>= \case
     Left e -> do
+      putStrLn ""
       logError . T.pack $ "error restoring messages: " <> e
       liftIO exitFailure
-    Right expired -> do
+    Right (count, total, expired) -> do
+      putStrLn ""
       renameFile f $ f <> ".bak"
-      logInfo "messages restored"
+      qCount <- M.size <$> readTVarIO (activeMsgQueues ms)
+      logInfo $ "Processed " <> tshow count <> " lines, imported " <> tshow total <> " messages into " <> tshow qCount <> " queues, expired " <> tshow expired <> " messages"
       pure expired
   where
-    restoreMsg !expired (i :: Int, s') = do
-      MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
-      r <- addToMsgQueue rId msg
-      liftIO $ putStr $ "Processed: " <> show i <> " messages\r"
+    progress i = do
+      liftIO $ putStr $ "Processed " <> show i <> " lines\r"
       hFlush stdout
-      pure r
+    restoreMsg :: (Int, Int, Int) -> (Int, LB.ByteString) -> ExceptT String IO (Int, Int, Int)
+    restoreMsg (!count, !total, !expired) (i, s') = do
+      when (i `mod` 1000 == 0) $ progress i
+      MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
+      addToMsgQueue rId msg
       where
         s = LB.toStrict s'
         addToMsgQueue rId msg = do
@@ -1764,7 +1768,9 @@ importMessages ms f old_ = do
               | otherwise -> pure (True, False)
             MessageQuota {} -> writeMsg q msg $> (False, False)
           when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
-          pure $ if isExpired then expired + 1 else expired
+          let total' = if logFull then total else total + 1
+              expired' = if isExpired then expired + 1 else expired
+          pure (count + 1, total', expired')
         msgErr :: Show e => String -> e -> String
         msgErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
 

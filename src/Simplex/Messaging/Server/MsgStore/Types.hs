@@ -11,10 +11,10 @@ module Simplex.Messaging.Server.MsgStore.Types where
 import Control.Concurrent.STM
 import Data.Int (Int64)
 import Data.Kind
+import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Simplex.Messaging.Protocol (Message (..), MsgId, RecipientId)
 import Simplex.Messaging.TMap (TMap)
-import Simplex.Messaging.Util (traverseWithKey_)
 
 class Monad (StoreMonad s) => MsgStoreClass s where
   type StoreMonad s = (m :: Type -> Type) | m -> s
@@ -23,7 +23,7 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   newMsgStore :: MsgStoreConfig s -> IO s
   closeMsgStore :: s -> IO ()
   activeMsgQueues :: s -> TMap RecipientId (MsgQueue s)
-  withAllMsgQueues :: s -> (RecipientId -> MsgQueue s -> IO ()) -> IO ()
+  withAllMsgQueues :: s -> (RecipientId -> MsgQueue s -> IO Int) -> IO Int
   getMsgQueue :: s -> RecipientId -> IO (MsgQueue s)
   delMsgQueue :: s -> RecipientId -> IO ()
   delMsgQueueSize :: s -> RecipientId -> IO Int
@@ -42,8 +42,8 @@ data SMSType :: MSType -> Type where
 
 data AMSType = forall s. AMSType (SMSType s)
 
-withActiveMsgQueues :: MsgStoreClass s => s -> (RecipientId -> MsgQueue s -> IO ()) -> IO ()
-withActiveMsgQueues st f = readTVarIO (activeMsgQueues st) >>= traverseWithKey_ f
+withActiveMsgQueues :: MsgStoreClass s => s -> (RecipientId -> MsgQueue s -> IO Int) -> IO Int
+withActiveMsgQueues st f = readTVarIO (activeMsgQueues st) >>= M.foldrWithKey (\k v -> ((+) <$> f k v <*>)) (pure 0)
 
 tryPeekMsg :: MsgStoreClass s => MsgQueue s -> IO (Maybe Message)
 tryPeekMsg mq = atomicQueue mq $ tryPeekMsg_ mq
