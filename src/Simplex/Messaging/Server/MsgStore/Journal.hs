@@ -5,17 +5,27 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module Simplex.Messaging.Server.MsgStore.Journal
-  ( JournalMsgStore (msgQueues),
+  ( JournalMsgStore (msgQueues, random),
     JournalMsgQueue,
     JournalStoreConfig (..),
     getQueueMessages,
+    -- below are exported for tests
+    MsgQueueState (..),
+    JournalState (..),
     msgQueueDirectory,
+    readWriteQueueState,
+    newMsgQueueState,
+    newJournalId,
+    logQueueState,
+    queueLogFileName,
+    logFileExt,
   )
 where
 
@@ -339,7 +349,7 @@ tryStore op a =
 openMsgQueue :: JournalMsgStore -> FilePath -> Lock -> IO JournalMsgQueue
 openMsgQueue store dir queueLock = do
   let statePath = dir </> (queueLogFileName <> logFileExt)
-  (st@MsgQueueState {readState, writeState}, sh) <- readWriteQueueState store dir statePath
+  (st@MsgQueueState {readState, writeState}, sh) <- readWriteQueueState store statePath
   (rs', rh) <- openJournal dir readState
   (ws', wh_) <-
     if journalId readState == journalId writeState
@@ -432,58 +442,59 @@ openJournal dir st@JournalState {journalId} = do
 removeJournal :: FilePath -> JournalState -> IO ()
 removeJournal dir JournalState {journalId} = do
   let path = journalFilePath dir journalId
-  removeFile path `catchAny` (\e -> logError $ "Error removing file " <> T.pack path <> ": " <> tshow e)
+  removeFile path `catchAny` (\e -> logError $ "STORE ERROR removing file " <> T.pack path <> ": " <> tshow e)
 
-readWriteQueueState :: JournalMsgStore -> FilePath -> FilePath -> IO (MsgQueueState, Handle)
-readWriteQueueState JournalMsgStore {random, config} dir statePath = do
-  ls <- LB.lines <$> LB.readFile statePath `catchAny` (\e -> print e >> E.throwIO e)
-  case ls of
-    [] -> do
-      putStrLn $ "Warning: empty queue state in " <> statePath <> ", initialized"
+-- This function is supposed to be resilient to crashes while updating state files,
+-- and also resilient to crashes during its execution.
+readWriteQueueState :: JournalMsgStore -> FilePath -> IO (MsgQueueState, Handle)
+readWriteQueueState JournalMsgStore {random, config} statePath =
+  ifM
+    (doesFileExist tempBackup)
+    (renameFile tempBackup statePath >> readQueueState)
+    (ifM (doesFileExist statePath) readQueueState writeNewQueueState)
+  where
+    tempBackup = statePath <> ".bak"
+    readQueueState = do
+      ls <- LB.lines <$> LB.readFile statePath
+      case ls of
+        [] -> writeNewQueueState
+        _ -> useLastLine (length ls) True ls
+    writeNewQueueState = do
+      logWarn $ "STORE WARNING: empty queue state in " <> T.pack statePath <> ", initialized"
       st <- newMsgQueueState <$> newJournalId random
       writeQueueState st
-    _ -> case strDecode $ LB.toStrict $ last ls of
+    useLastLine len isLastLine ls = case strDecode $ LB.toStrict $ last ls of
       Right st
-        | length ls > maxStateLines config -> do
-            backupState
-            writeQueueState st
+        | len > maxStateLines config || not isLastLine ->
+            backupWriteQueueState st
         | otherwise -> do
+            -- when state file has fewer than maxStateLines, we don't compact it
             sh <- openFile statePath AppendMode
             pure (st, sh)
-      Left e -> do
-        -- TODO take previous line
-        putStrLn $ "Warning: invalid queue state in " <> statePath <> ", backed up and initialized: " <> show e
-        backupState
-        st <- newMsgQueueState <$> newJournalId random
-        writeQueueState st
-  where
+      Left e -- if the last line failed to parse
+        | isLastLine -> case init ls of -- or use the previous line
+            [] -> do
+              logWarn $ "STORE WARNING: invalid 1-line queue state " <> T.pack statePath <> ", initialized"
+              st <- newMsgQueueState <$> newJournalId random
+              backupWriteQueueState st
+            ls' -> do
+              logWarn $ "STORE WARNING: invalid last line in queue state " <> T.pack statePath <> ", using the previous line"
+              useLastLine len False ls'
+        | otherwise -> do
+            logError $ "STORE ERROR: invalid queue state in " <> T.pack statePath <> ": " <> tshow e
+            E.throwIO $ userError "Error reading queue state"
+    backupWriteQueueState st = do
+      -- State backup is made in two steps to mitigate the crash during the backup.
+      -- Temporary backup file will be used when it is present.
+      renameFile statePath tempBackup -- 1) temp backup
+      r <- writeQueueState st -- 2) save state
+      ts <- getCurrentTime
+      renameFile tempBackup (statePath <> "." <> iso8601Show ts <> ".bak") -- 3) timed backup
+      pure r
     writeQueueState st = do
       sh <- openFile statePath AppendMode
       logQueueState sh st
       pure (st, sh)
-    backupState = do
-      ts <- getCurrentTime
-      renameFile statePath $ dir </> (queueLogFileName <> "." <> iso8601Show ts <> logFileExt)
-
--- TODO this function should read the last queue state, ignoring the last line if it's broken,
--- write it to the new file,
--- make backup of the old file (with timestamp),
--- remove "old" backups (maybe only during storage validation?)
---
--- state_ <- withFile statePath ReadMode $ \h -> getLastState Nothing h
--- (state, stateHandle) <- case state_ of
---   Nothing -> (emptyState,) <$> openFile statePath AppendMode -- no or empty state file
---   Just (Right state) -> do
---     ts <- getCurrentTime
---     renameFile statePath $ dir </> (queueLogFileName <> "." <> show ts <> logFileExt)
---     -- TODO remove old logs, possibly when validating storage
---     (state,) <$> openFile statePath AppendMode
---   Just (Left e) -> do
---     logError $ "Error restoring msg queue state: "
---     ts <- getCurrentTime
---     renameFile statePath $ dir </> (queueLogFileName <> "." <> show ts <> logFileExt)
---     -- TODO remove old logs, possibly when validating storage
---     pure emptyState
 
 closeMsgQueue :: JournalMsgStore -> RecipientId -> IO (Maybe (TVar MsgQueueState))
 closeMsgQueue st rId =

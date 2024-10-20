@@ -66,6 +66,7 @@ data ServerConfig = ServerConfig
     msgStoreType :: AMSType,
     msgQueueQuota :: Int,
     maxJournalMsgCount :: Int,
+    maxJournalStateLines :: Int,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLogFile :: Maybe FilePath,
@@ -147,11 +148,11 @@ defaultProxyClientConcurrency = 32
 journalMsgStoreDepth :: Int
 journalMsgStoreDepth = 5
 
-journalMaxStateLines :: Int
-journalMaxStateLines = 16
+defaultMaxJournalStateLines :: Int
+defaultMaxJournalStateLines = 16
 
 defaultMaxJournalMsgCount :: Int
-defaultMaxJournalMsgCount = 512
+defaultMaxJournalMsgCount = 256
 
 defaultMsgQueueQuota :: Int
 defaultMsgQueueQuota = 128
@@ -277,7 +278,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgStoreType, storeMsgsFile, smpAgentCfg, information, messageExpiration, msgQueueQuota, maxJournalMsgCount} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgStoreType, storeMsgsFile, smpAgentCfg, information, messageExpiration, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines} = do
   serverActive <- newTVarIO True
   server <- newServer
   queueStore <- newQueueStore
@@ -285,7 +286,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
     AMSType SMSMemory -> AMS SMSMemory <$> newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
     AMSType SMSJournal -> case storeMsgsFile of
       Just storePath -> 
-        let cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount, maxStateLines = journalMaxStateLines}
+        let cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines}
          in AMS SMSJournal <$> newMsgStore cfg
       Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
   ntfStore <- NtfStore <$> TM.emptyIO

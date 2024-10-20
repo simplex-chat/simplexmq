@@ -115,6 +115,7 @@ cfg =
       msgStoreType = AMSType SMSJournal,
       msgQueueQuota = 4,
       maxJournalMsgCount = 5,
+      maxJournalStateLines = 2,
       queueIdBytes = 24,
       msgIdBytes = 24,
       storeLogFile = Just testStoreLogFile,
