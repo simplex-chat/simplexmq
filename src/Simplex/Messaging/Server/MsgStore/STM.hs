@@ -58,6 +58,8 @@ instance MsgStoreClass STMMsgStore where
   withAllMsgQueues = withActiveMsgQueues
   {-# INLINE withAllMsgQueues #-}
 
+  logQueueStates _ = pure ()
+
   -- The reason for double lookup is that majority of messaging queues exist,
   -- because multiple messages are sent to the same queue,
   -- so the first lookup without STM transaction will return the queue faster.
@@ -89,8 +91,8 @@ instance MsgStoreClass STMMsgStore where
         mapM_ (writeTQueue q) msgs
         pure msgs
 
-  writeMsg :: STMMsgQueue -> Message -> IO (Maybe (Message, Bool))
-  writeMsg STMMsgQueue {msgQueue = q, quota, canWrite, size} !msg = atomically $ do
+  writeMsg :: STMMsgQueue -> Bool -> Message -> IO (Maybe (Message, Bool))
+  writeMsg STMMsgQueue {msgQueue = q, quota, canWrite, size} _logState !msg = atomically $ do
     canWrt <- readTVar canWrite
     empty <- isEmptyTQueue q
     if canWrt || empty

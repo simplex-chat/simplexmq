@@ -1432,7 +1432,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                         AMS _ ms <- asks msgStore
                         q <- liftIO $ getMsgQueue ms $ recipientId qr
                         expireMessages q
-                        liftIO . writeMsg q =<< mkMessage body
+                        liftIO . writeMsg q True =<< mkMessage body
                       case msg_ of
                         Nothing -> do
                           incStat $ msgSentQuota stats
@@ -1746,6 +1746,7 @@ importMessages ms f old_ = do
     Right (count, total, expired) -> do
       putStrLn ""
       renameFile f $ f <> ".bak"
+      logQueueStates ms
       qCount <- M.size <$> readTVarIO (activeMsgQueues ms)
       logInfo $ "Processed " <> tshow count <> " lines, imported " <> tshow total <> " messages into " <> tshow qCount <> " queues, expired " <> tshow expired <> " messages"
       pure expired
@@ -1764,9 +1765,9 @@ importMessages ms f old_ = do
           q <- liftIO $ getMsgQueue ms rId
           (isExpired, logFull) <- liftIO $ case msg of
             Message {msgTs}
-              | maybe True (systemSeconds msgTs >=) old_ -> (False,) . isNothing <$> writeMsg q msg
+              | maybe True (systemSeconds msgTs >=) old_ -> (False,) . isNothing <$> writeMsg q False msg
               | otherwise -> pure (True, False)
-            MessageQuota {} -> writeMsg q msg $> (False, False)
+            MessageQuota {} -> writeMsg q False msg $> (False, False)
           when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
           let total' = if logFull then total else total + 1
               expired' = if isExpired then expired + 1 else expired

@@ -24,11 +24,12 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   closeMsgStore :: s -> IO ()
   activeMsgQueues :: s -> TMap RecipientId (MsgQueue s)
   withAllMsgQueues :: s -> (RecipientId -> MsgQueue s -> IO Int) -> IO Int
+  logQueueStates :: s -> IO ()
   getMsgQueue :: s -> RecipientId -> IO (MsgQueue s)
   delMsgQueue :: s -> RecipientId -> IO ()
   delMsgQueueSize :: s -> RecipientId -> IO Int
   getQueueMessages :: Bool -> MsgQueue s -> IO [Message]
-  writeMsg :: MsgQueue s -> Message -> IO (Maybe (Message, Bool))
+  writeMsg :: MsgQueue s -> Bool -> Message -> IO (Maybe (Message, Bool))
   getQueueSize :: MsgQueue s -> IO Int
   tryPeekMsg_ :: MsgQueue s -> StoreMonad s (Maybe Message)
   tryDeleteMsg_ :: MsgQueue s -> StoreMonad s ()

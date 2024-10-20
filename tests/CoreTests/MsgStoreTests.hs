@@ -67,9 +67,9 @@ testGetQueue st = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
   q <- getMsgQueue st rId
-  Just (Message {msgId = mId1}, True) <- writeMsg q =<< testMessage "message 1"
-  Just (Message {msgId = mId2}, False) <- writeMsg q =<< testMessage "message 2"
-  Just (Message {msgId = mId3}, False) <- writeMsg q =<< testMessage "message 3"
+  Just (Message {msgId = mId1}, True) <- writeMsg q True =<< testMessage "message 1"
+  Just (Message {msgId = mId2}, False) <- writeMsg q True =<< testMessage "message 2"
+  Just (Message {msgId = mId3}, False) <- writeMsg q True =<< testMessage "message 3"
   Msg "message 1" <- tryPeekMsg q
   Msg "message 1" <- tryPeekMsg q
   Nothing <- tryDelMsg q mId2
@@ -85,14 +85,14 @@ testGetQueue st = do
   Nothing <- tryDelMsg q mId2
   Nothing <- tryDelMsg q mId3
   Nothing <- tryPeekMsg q
-  Just (Message {msgId = mId4}, True) <- writeMsg q =<< testMessage "message 4"
+  Just (Message {msgId = mId4}, True) <- writeMsg q True =<< testMessage "message 4"
   Msg "message 4" <- tryPeekMsg q
-  Just (Message {msgId = mId5}, False) <- writeMsg q =<< testMessage "message 5"
+  Just (Message {msgId = mId5}, False) <- writeMsg q True =<< testMessage "message 5"
   (Nothing, Msg "message 4") <- tryDelPeekMsg q mId3
   (Msg "message 4", Msg "message 5") <- tryDelPeekMsg q mId4
-  Just (Message {msgId = mId6}, False) <- writeMsg q =<< testMessage "message 6"
-  Just (Message {msgId = mId7}, False) <- writeMsg q =<< testMessage "message 7"
-  Nothing <- writeMsg q =<< testMessage "message 8"
+  Just (Message {msgId = mId6}, False) <- writeMsg q True =<< testMessage "message 6"
+  Just (Message {msgId = mId7}, False) <- writeMsg q True =<< testMessage "message 7"
+  Nothing <- writeMsg q True =<< testMessage "message 8"
   Msg "message 5" <- tryPeekMsg q
   (Nothing, Msg "message 5") <- tryDelPeekMsg q mId4
   (Msg "message 5", Msg "message 6") <- tryDelPeekMsg q mId5
@@ -107,15 +107,15 @@ testChangeReadJournal st = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
   q <- getMsgQueue st rId
-  Just (Message {msgId = mId1}, True) <- writeMsg q =<< testMessage "message 1"
+  Just (Message {msgId = mId1}, True) <- writeMsg q True =<< testMessage "message 1"
   (Msg "message 1", Nothing) <- tryDelPeekMsg q mId1
-  Just (Message {msgId = mId2}, True) <- writeMsg q =<< testMessage "message 2"
+  Just (Message {msgId = mId2}, True) <- writeMsg q True =<< testMessage "message 2"
   (Msg "message 2", Nothing) <- tryDelPeekMsg q mId2
-  Just (Message {msgId = mId3}, True) <- writeMsg q =<< testMessage "message 3"
+  Just (Message {msgId = mId3}, True) <- writeMsg q True =<< testMessage "message 3"
   (Msg "message 3", Nothing) <- tryDelPeekMsg q mId3
-  Just (Message {msgId = mId4}, True) <- writeMsg q =<< testMessage "message 4"
+  Just (Message {msgId = mId4}, True) <- writeMsg q True =<< testMessage "message 4"
   (Msg "message 4", Nothing) <- tryDelPeekMsg q mId4
-  Just (Message {msgId = mId5}, True) <- writeMsg q =<< testMessage "message 5"
+  Just (Message {msgId = mId5}, True) <- writeMsg q True =<< testMessage "message 5"
   (Msg "message 5", Nothing) <- tryDelPeekMsg q mId5
   delMsgQueue st rId
 
@@ -124,14 +124,14 @@ testExportImportStore st = do
   g <- C.newRandom
   rId1 <- EntityId <$> atomically (C.randomBytes 24 g)
   q1 <- getMsgQueue st rId1
-  Just (Message {}, True) <- writeMsg q1 =<< testMessage "message 1"
-  Just (Message {}, False) <- writeMsg q1 =<< testMessage "message 2"
+  Just (Message {}, True) <- writeMsg q1 True =<< testMessage "message 1"
+  Just (Message {}, False) <- writeMsg q1 True =<< testMessage "message 2"
   rId2 <- EntityId <$> atomically (C.randomBytes 24 g)
   q2 <- getMsgQueue st rId2
-  Just (Message {}, True) <- writeMsg q2 =<< testMessage "message 3"
-  Just (Message {}, False) <- writeMsg q2 =<< testMessage "message 4"
-  Just (Message {}, False) <- writeMsg q2 =<< testMessage "message 5"
-  Nothing <- writeMsg q2 =<< testMessage "message 6"
+  Just (Message {}, True) <- writeMsg q2 True =<< testMessage "message 3"
+  Just (Message {}, False) <- writeMsg q2 True =<< testMessage "message 4"
+  Just (Message {}, False) <- writeMsg q2 True =<< testMessage "message 5"
+  Nothing <- writeMsg q2 True =<< testMessage "message 6"
   length <$> listDirectory (msgQueueDirectory st rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory st rId2) `shouldReturn` 2
   exportMessages st testStoreMsgsFile $ getQueueMessages False

@@ -204,6 +204,13 @@ instance MsgStoreClass JournalMsgStore where
               (pure $ Just (queueId <> dir, path'))
               (Nothing <$ putStrLn ("Error: path " <> path' <> " is not a directory, skipping"))
 
+  logQueueStates :: JournalMsgStore -> IO ()
+  logQueueStates st =
+    void $ withActiveMsgQueues st $ \_ q ->
+      readTVarIO (handles q)
+        >>= maybe (pure ()) (\hs -> readTVarIO (state q) >>= logQueueState (stateHandle hs))
+        >> pure 0
+
   getMsgQueue :: JournalMsgStore -> RecipientId -> IO JournalMsgQueue
   getMsgQueue store@JournalMsgStore {queueLocks, msgQueues, random} rId =
     withLockMap queueLocks rId "getMsgQueue" $
@@ -248,8 +255,8 @@ instance MsgStoreClass JournalMsgStore where
             updateReadPos q drainMsgs (B.length s + 1) hs -- 1 is to account for new line
             (msg :) <$> getMsg ms hs
 
-  writeMsg :: JournalMsgQueue -> Message -> IO (Maybe (Message, Bool))
-  writeMsg q@JournalMsgQueue {queueDirectory, handles, config, random} !msg =
+  writeMsg :: JournalMsgQueue -> Bool -> Message -> IO (Maybe (Message, Bool))
+  writeMsg q@JournalMsgQueue {queueDirectory, handles, config, random} logState !msg =
     withLock' (queueLock q) "writeMsg" $ do
       st@MsgQueueState {canWrite, size} <- readTVarIO (state q)
       let empty = size == 0
@@ -276,7 +283,7 @@ instance MsgStoreClass JournalMsgStore where
             !st' = st {writeState = ws', readState = rs', canWrite = canWrt', size = size + 1}
         when (size == 0) $ atomically $ writeTVar (tipMsg q) $ Just (Just (msg, msgLen))
         hAppend wh msgStr
-        updateQueueState q True hs st'
+        updateQueueState q logState hs st'
         where
           createQueueDir = do
             createDirectoryIfMissing True queueDirectory
@@ -369,9 +376,12 @@ chooseReadJournal q log' hs = do
     _ -> pure $ Just (rs, readHandle hs)
 
 updateQueueState :: JournalMsgQueue -> Bool -> MsgQueueHandles -> MsgQueueState -> IO ()
-updateQueueState q log' hs st' = do
-  atomically $ writeTVar (state q) st'
-  when log' $ B.hPutStr (stateHandle hs) $ strEncode st' `B.snoc` '\n'
+updateQueueState q log' hs st = do
+  atomically $ writeTVar (state q) st
+  when log' $ logQueueState (stateHandle hs) st
+
+logQueueState :: Handle -> MsgQueueState -> IO ()
+logQueueState h st = B.hPutStr h $ strEncode st `B.snoc` '\n'
 
 updateReadPos :: JournalMsgQueue -> Bool -> Int -> MsgQueueHandles -> IO ()
 updateReadPos q log' len hs = do
@@ -441,7 +451,7 @@ readWriteQueueState JournalMsgStore {random, config} dir statePath = do
   where
     writeQueueState st = do
       sh <- openFile statePath AppendMode
-      B.hPutStr sh $ strEncode st `B.snoc` '\n'
+      logQueueState sh st
       pure (st, sh)
     backupState = do
       ts <- getCurrentTime
