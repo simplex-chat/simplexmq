@@ -82,7 +82,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       deleteDirIfExists cfgPath
       deleteDirIfExists logPath
       putStrLn "Deleted configuration and log files"
-    Journal cmd -> withIniFile $ \_ini -> do
+    Journal cmd -> withIniFile $ \ini -> do
       msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
       msgsFileExists <- doesFileExist storeMsgsFilePath
       when (msgsFileExists && msgsDirExists) exitConfigureMsgStorage
@@ -101,6 +101,10 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               ms <- newJournalMsgStore
               void $ importMessages ms storeMsgsFilePath Nothing -- no expiration
               putStrLn "Import completed"
+              putStrLn $ case readMsgStoreType ini of
+                Right (AMSType SMSMemory) -> "store_messages set to `memory`, update it to `journal` in INI file"
+                Right (AMSType SMSJournal) -> "store_messages set to `journal`"
+                Left e -> e <> ", update it to `journal` in INI file"
         JCExport
           | msgsFileExists -> do
               putStrLn $ storeMsgsFilePath <> " file already exists."
@@ -112,6 +116,10 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               ms <- newJournalMsgStore
               exportMessages ms storeMsgsFilePath $ getQueueMessages False
               putStrLn "Export completed"
+              putStrLn $ case readMsgStoreType ini of
+                Right (AMSType SMSMemory) -> "store_messages set to `memory`"
+                Right (AMSType SMSJournal) -> "store_messages set to `journal`, update it to `memory` in INI file"
+                Left e -> e <> ", update it to `memory` in INI file"
   where
     withIniFile a =
       doesFileExist iniFile >>= \case
@@ -126,6 +134,12 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
     storeMsgsFilePath = combine logPath "smp-server-messages.log"
     storeMsgsJournalDir = combine logPath "messages"
     storeNtfsFilePath = combine logPath "smp-server-ntfs.log"
+    readMsgStoreType :: Ini -> Either String AMSType
+    readMsgStoreType = textToMsgStoreType . fromRight "memory" . lookupValue "STORE_LOG" "store_messages"
+    textToMsgStoreType = \case
+      "memory" -> Right $ AMSType SMSMemory
+      "journal" -> Right $ AMSType SMSJournal
+      s -> Left $ "invalid store_messages: " <> T.unpack s
     httpsCertFile = combine cfgPath "web.crt"
     httpsKeyFile = combine cfgPath "web.key"
     defaultStaticPath = combine logPath "www"
@@ -348,7 +362,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             { transports,
               smpHandshakeTimeout = 120000000,
               tbqSize = 128,
-              msgStoreType = either error id $! textToMsgStoreType $ fromRight "memory" $ lookupValue "STORE_LOG" "store_messages" ini,
+              msgStoreType = either error id $! readMsgStoreType ini,
               msgQueueQuota = defaultMsgQueueQuota,
               maxJournalMsgCount = defaultMaxJournalMsgCount,
               queueIdBytes = 24,
@@ -416,11 +430,6 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini,
               information = serverPublicInfo ini
             }
-        textToMsgStoreType :: Text -> Either String AMSType
-        textToMsgStoreType = \case
-          "memory" -> Right $ AMSType SMSMemory
-          "journal" -> Right $ AMSType SMSJournal
-          s -> Left $ "invalid store_messages: " <> T.unpack s
         textToOwnServers :: Text -> [ByteString]
         textToOwnServers = map encodeUtf8 . T.words
         runWebServer webStaticPath webHttpsParams si = do
@@ -450,14 +459,14 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
         AMSType SMSJournal
           | msgsFileExists -> do
               putStrLn $ "Error: store_messages is `journal` with " <> storeMsgsFilePath <> " file present."
-              putStrLn "Set store_messages to `memory` or use `smp-server migrate journal` to migrate."
+              putStrLn "Set store_messages to `memory` or use `smp-server journal export` to migrate."
               exitFailure
           | not msgsDirExists ->
               putStrLn $ "store_messages is `journal`, " <> storeMsgsJournalDir <> " directory will be created."
         AMSType SMSMemory
           | msgsDirExists -> do
               putStrLn $ "Error: store_messages is `memory` with " <> storeMsgsJournalDir <> " directory present."
-              putStrLn "Set store_messages to `journal` or use `smp-server migrate journal` to migrate."
+              putStrLn "Set store_messages to `journal` or use `smp-server journal import` to migrate."
               exitFailure
         _ -> pure ()
 

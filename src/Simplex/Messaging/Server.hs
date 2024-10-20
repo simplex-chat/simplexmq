@@ -1714,9 +1714,10 @@ randomId = fmap EntityId . randomId'
 saveServerMessages :: Bool -> M ()
 saveServerMessages drainMsgs =
   asks msgStore >>= \case
-    AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath = Just f}} ->
-      liftIO $ exportMessages ms f $ getQueueMessages drainMsgs
-    _ -> pure ()
+    AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
+      Just f -> liftIO $ exportMessages ms f $ getQueueMessages drainMsgs
+      Nothing -> logInfo "undelivered messages are not saved"
+    AMS SMSJournal _ -> logInfo "closed journal message storage"
 
 exportMessages :: MsgStoreClass s => s -> FilePath -> (MsgQueue s -> IO [Message]) -> IO ()
 exportMessages ms f getMessages = do
@@ -1733,7 +1734,7 @@ restoreServerMessages =
     AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath = Just f}} -> do
       old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
       liftIO $ ifM (doesFileExist f) (importMessages ms f old_) (pure 0)
-    _ -> pure 0
+    _ -> logInfo "using journal message storage" $> 0
 
 importMessages :: MsgStoreClass s => s -> FilePath -> Maybe Int64 -> IO Int
 importMessages ms f old_ = do
