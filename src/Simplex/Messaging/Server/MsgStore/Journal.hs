@@ -5,6 +5,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -35,7 +36,6 @@ import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Trans.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -349,13 +349,8 @@ tryStore op a =
 openMsgQueue :: JournalMsgStore -> FilePath -> Lock -> IO JournalMsgQueue
 openMsgQueue store dir queueLock = do
   let statePath = dir </> (queueLogFileName <> logFileExt)
-  (st@MsgQueueState {readState, writeState}, sh) <- readWriteQueueState store statePath
-  (rs', rh) <- openJournal dir readState
-  (ws', wh_) <-
-    if journalId readState == journalId writeState
-      then pure (writeState, Nothing)
-      else second Just <$> openJournal dir writeState
-  let st' = st {readState = rs', writeState = ws'}
+  (st, sh) <- readWriteQueueState store statePath
+  (st', rh, wh_) <- openJournals dir st
   let hs = MsgQueueHandles {stateHandle = sh, readHandle = rh, writeHandle = wh_}
   mkJournalQueue store dir queueLock (st', Just hs)
 
@@ -431,13 +426,44 @@ createNewJournal dir journalId = do
 newJournalId :: TVar StdGen -> IO ByteString
 newJournalId g = strEncode <$> atomically (stateTVar g $ genByteString 12)
 
-openJournal :: FilePath -> JournalState -> IO (JournalState, Handle)
-openJournal dir st@JournalState {journalId} = do
-  let path = journalFilePath dir journalId
+openJournals :: FilePath -> MsgQueueState -> IO (MsgQueueState, Handle, Maybe Handle)
+openJournals dir st@MsgQueueState {readState = rs, writeState = ws} = do
   -- TODO verify that file exists, what to do if it's not, or if its state diverges
   -- TODO check current position matches state, fix if not
-  h <- openFile path ReadWriteMode
-  pure (st, h)
+  let rjId = journalId rs
+      wjId = journalId ws
+  openJournal rs >>= \case
+    Left path -> do
+      logError $ "STORE ERROR no read file " <> T.pack path <> ", creating new file"
+      rh <- createNewJournal dir rjId
+      let st' = newMsgQueueState rjId
+      pure (st', rh, Nothing)
+    Right rh
+      | rjId == wjId -> do
+          st' <- fixWriteFileSize rh
+          pure (st', rh, Nothing)
+      | otherwise ->
+          openJournal ws >>= \case
+            Left path -> do
+              logError $ "STORE ERROR no write file " <> T.pack path <> ", creating new file"
+              wh <- createNewJournal dir wjId
+              let size' = msgCount rs + msgPos rs
+                  st' = st {writeState = newJournalState wjId, size = size'} -- we don't amend canWrite to trigger QCONT
+              pure (st', rh, Just wh)
+            Right wh -> do
+              st' <- fixWriteFileSize wh
+              pure (st', rh, Just wh)
+  where
+    openJournal JournalState {journalId} =
+      let path = journalFilePath dir journalId
+       in ifM (doesFileExist path) (Right <$> openFile path ReadWriteMode) (pure $ Left path)
+    fixWriteFileSize h = do
+      let sz = fromIntegral $ bytePos ws
+      sz' <- IO.hFileSize h
+      if
+        | sz' > sz -> logWarn "STORE WARNING" >> IO.hSetFileSize h sz $> st
+        | sz' == sz -> pure st
+        | otherwise -> pure st -- TODO re-read file to recover what is possible ???
 
 removeJournal :: FilePath -> JournalState -> IO ()
 removeJournal dir JournalState {journalId} = do
@@ -481,8 +507,8 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
               logWarn $ "STORE WARNING: invalid last line in queue state " <> T.pack statePath <> ", using the previous line"
               useLastLine len False ls'
         | otherwise -> do
-            logError $ "STORE ERROR: invalid queue state in " <> T.pack statePath <> ": " <> tshow e
-            E.throwIO $ userError "Error reading queue state"
+            logError $ "STORE ERROR invalid queue state in " <> T.pack statePath <> ": " <> tshow e
+            E.throwIO $ userError $ "Error reading queue state " <> statePath <> ": " <> show e
     backupWriteQueueState st = do
       -- State backup is made in two steps to mitigate the crash during the backup.
       -- Temporary backup file will be used when it is present.
