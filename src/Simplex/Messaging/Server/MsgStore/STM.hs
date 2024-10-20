@@ -17,8 +17,10 @@ module Simplex.Messaging.Server.MsgStore.STM
 where
 
 import Control.Concurrent.STM
+import Control.Monad.IO.Class
+import Control.Monad.Trans.Except
 import Data.Functor (($>))
-import Simplex.Messaging.Protocol (Message (..), RecipientId)
+import Simplex.Messaging.Protocol (ErrorType, Message (..), RecipientId)
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -64,9 +66,9 @@ instance MsgStoreClass STMMsgStore where
   -- because multiple messages are sent to the same queue,
   -- so the first lookup without STM transaction will return the queue faster.
   -- In case the queue does not exist, it needs to be looked-up again inside transaction.
-  getMsgQueue :: STMMsgStore -> RecipientId -> IO STMMsgQueue
+  getMsgQueue :: STMMsgStore -> RecipientId -> ExceptT ErrorType IO STMMsgQueue
   getMsgQueue STMMsgStore {msgQueues = qs, storeConfig = STMStoreConfig {quota}} rId =
-    TM.lookupIO rId qs >>= maybe (atomically maybeNewQ) pure
+    liftIO $ TM.lookupIO rId qs >>= maybe (atomically maybeNewQ) pure
     where
       maybeNewQ = TM.lookup rId qs >>= maybe newQ pure
       newQ = do
@@ -91,8 +93,8 @@ instance MsgStoreClass STMMsgStore where
         mapM_ (writeTQueue q) msgs
         pure msgs
 
-  writeMsg :: STMMsgQueue -> Bool -> Message -> IO (Maybe (Message, Bool))
-  writeMsg STMMsgQueue {msgQueue = q, quota, canWrite, size} _logState !msg = atomically $ do
+  writeMsg :: STMMsgQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
+  writeMsg STMMsgQueue {msgQueue = q, quota, canWrite, size} _logState !msg = liftIO $ atomically $ do
     canWrt <- readTVar canWrite
     empty <- isEmptyTQueue q
     if canWrt || empty
@@ -120,5 +122,5 @@ instance MsgStoreClass STMMsgStore where
       Just _ -> modifyTVar' size (subtract 1)
       _ -> pure ()
 
-  atomicQueue :: STMMsgQueue -> STM a -> IO a
-  atomicQueue _ = atomically
+  atomicQueue :: STMMsgQueue -> String -> STM a -> ExceptT ErrorType IO a
+  atomicQueue _ _ = liftIO . atomically

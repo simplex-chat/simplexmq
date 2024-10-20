@@ -8,8 +8,10 @@
 
 module CoreTests.MsgStoreTests where
 
+import AgentTests.FunctionalAPITests (runRight_)
 import Control.Concurrent.STM
 import Control.Exception (bracket)
+import Control.Monad.IO.Class
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Time.Clock.System (getSystemTime)
@@ -52,8 +54,8 @@ testJournalStoreCfg =
       maxStateLines = 2
     }
 
-testMessage :: ByteString -> IO Message
-testMessage body = do
+testMessage :: MonadIO m => ByteString -> m Message
+testMessage body = liftIO $ do
   g <- C.newRandom
   msgTs <- getSystemTime
   msgId <- atomically $ C.randomBytes 24 g
@@ -66,72 +68,78 @@ testGetQueue :: MsgStoreClass s => s -> IO ()
 testGetQueue st = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
-  q <- getMsgQueue st rId
-  Just (Message {msgId = mId1}, True) <- writeMsg q True =<< testMessage "message 1"
-  Just (Message {msgId = mId2}, False) <- writeMsg q True =<< testMessage "message 2"
-  Just (Message {msgId = mId3}, False) <- writeMsg q True =<< testMessage "message 3"
-  Msg "message 1" <- tryPeekMsg q
-  Msg "message 1" <- tryPeekMsg q
-  Nothing <- tryDelMsg q mId2
-  Msg "message 1" <- tryDelMsg q mId1
-  Nothing <- tryDelMsg q mId1
-  Msg "message 2" <- tryPeekMsg q
-  Nothing <- tryDelMsg q mId1
-  (Nothing, Msg "message 2") <- tryDelPeekMsg q mId1
-  (Msg "message 2", Msg "message 3") <- tryDelPeekMsg q mId2
-  (Nothing, Msg "message 3") <- tryDelPeekMsg q mId2
-  Msg "message 3" <- tryPeekMsg q
-  (Msg "message 3", Nothing) <- tryDelPeekMsg q mId3
-  Nothing <- tryDelMsg q mId2
-  Nothing <- tryDelMsg q mId3
-  Nothing <- tryPeekMsg q
-  Just (Message {msgId = mId4}, True) <- writeMsg q True =<< testMessage "message 4"
-  Msg "message 4" <- tryPeekMsg q
-  Just (Message {msgId = mId5}, False) <- writeMsg q True =<< testMessage "message 5"
-  (Nothing, Msg "message 4") <- tryDelPeekMsg q mId3
-  (Msg "message 4", Msg "message 5") <- tryDelPeekMsg q mId4
-  Just (Message {msgId = mId6}, False) <- writeMsg q True =<< testMessage "message 6"
-  Just (Message {msgId = mId7}, False) <- writeMsg q True =<< testMessage "message 7"
-  Nothing <- writeMsg q True =<< testMessage "message 8"
-  Msg "message 5" <- tryPeekMsg q
-  (Nothing, Msg "message 5") <- tryDelPeekMsg q mId4
-  (Msg "message 5", Msg "message 6") <- tryDelPeekMsg q mId5
-  (Msg "message 6", Msg "message 7") <- tryDelPeekMsg q mId6
-  (Msg "message 7", Just MessageQuota {msgId = mId8}) <- tryDelPeekMsg q mId7
-  (Just MessageQuota {}, Nothing) <- tryDelPeekMsg q mId8
-  (Nothing, Nothing) <- tryDelPeekMsg q mId8
+  runRight_ $ do
+    q <- getMsgQueue st rId
+    Just (Message {msgId = mId1}, True) <- writeMsg q True =<< testMessage "message 1"
+    Just (Message {msgId = mId2}, False) <- writeMsg q True =<< testMessage "message 2"
+    Just (Message {msgId = mId3}, False) <- writeMsg q True =<< testMessage "message 3"
+    Msg "message 1" <- tryPeekMsg q
+    Msg "message 1" <- tryPeekMsg q
+    Nothing <- tryDelMsg q mId2
+    Msg "message 1" <- tryDelMsg q mId1
+    Nothing <- tryDelMsg q mId1
+    Msg "message 2" <- tryPeekMsg q
+    Nothing <- tryDelMsg q mId1
+    (Nothing, Msg "message 2") <- tryDelPeekMsg q mId1
+    (Msg "message 2", Msg "message 3") <- tryDelPeekMsg q mId2
+    (Nothing, Msg "message 3") <- tryDelPeekMsg q mId2
+    Msg "message 3" <- tryPeekMsg q
+    (Msg "message 3", Nothing) <- tryDelPeekMsg q mId3
+    Nothing <- tryDelMsg q mId2
+    Nothing <- tryDelMsg q mId3
+    Nothing <- tryPeekMsg q
+    Just (Message {msgId = mId4}, True) <- writeMsg q True =<< testMessage "message 4"
+    Msg "message 4" <- tryPeekMsg q
+    Just (Message {msgId = mId5}, False) <- writeMsg q True =<< testMessage "message 5"
+    (Nothing, Msg "message 4") <- tryDelPeekMsg q mId3
+    (Msg "message 4", Msg "message 5") <- tryDelPeekMsg q mId4
+    Just (Message {msgId = mId6}, False) <- writeMsg q True =<< testMessage "message 6"
+    Just (Message {msgId = mId7}, False) <- writeMsg q True =<< testMessage "message 7"
+    Nothing <- writeMsg q True =<< testMessage "message 8"
+    Msg "message 5" <- tryPeekMsg q
+    (Nothing, Msg "message 5") <- tryDelPeekMsg q mId4
+    (Msg "message 5", Msg "message 6") <- tryDelPeekMsg q mId5
+    (Msg "message 6", Msg "message 7") <- tryDelPeekMsg q mId6
+    (Msg "message 7", Just MessageQuota {msgId = mId8}) <- tryDelPeekMsg q mId7
+    (Just MessageQuota {}, Nothing) <- tryDelPeekMsg q mId8
+    (Nothing, Nothing) <- tryDelPeekMsg q mId8
+    pure ()
   delMsgQueue st rId
 
 testChangeReadJournal :: MsgStoreClass s => s -> IO ()
 testChangeReadJournal st = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
-  q <- getMsgQueue st rId
-  Just (Message {msgId = mId1}, True) <- writeMsg q True =<< testMessage "message 1"
-  (Msg "message 1", Nothing) <- tryDelPeekMsg q mId1
-  Just (Message {msgId = mId2}, True) <- writeMsg q True =<< testMessage "message 2"
-  (Msg "message 2", Nothing) <- tryDelPeekMsg q mId2
-  Just (Message {msgId = mId3}, True) <- writeMsg q True =<< testMessage "message 3"
-  (Msg "message 3", Nothing) <- tryDelPeekMsg q mId3
-  Just (Message {msgId = mId4}, True) <- writeMsg q True =<< testMessage "message 4"
-  (Msg "message 4", Nothing) <- tryDelPeekMsg q mId4
-  Just (Message {msgId = mId5}, True) <- writeMsg q True =<< testMessage "message 5"
-  (Msg "message 5", Nothing) <- tryDelPeekMsg q mId5
+  runRight_ $ do
+    q <- getMsgQueue st rId
+    Just (Message {msgId = mId1}, True) <- writeMsg q True =<< testMessage "message 1"
+    (Msg "message 1", Nothing) <- tryDelPeekMsg q mId1
+    Just (Message {msgId = mId2}, True) <- writeMsg q True =<< testMessage "message 2"
+    (Msg "message 2", Nothing) <- tryDelPeekMsg q mId2
+    Just (Message {msgId = mId3}, True) <- writeMsg q True =<< testMessage "message 3"
+    (Msg "message 3", Nothing) <- tryDelPeekMsg q mId3
+    Just (Message {msgId = mId4}, True) <- writeMsg q True =<< testMessage "message 4"
+    (Msg "message 4", Nothing) <- tryDelPeekMsg q mId4
+    Just (Message {msgId = mId5}, True) <- writeMsg q True =<< testMessage "message 5"
+    (Msg "message 5", Nothing) <- tryDelPeekMsg q mId5
+    pure ()
   delMsgQueue st rId
 
 testExportImportStore :: JournalMsgStore -> IO ()
 testExportImportStore st = do
   g <- C.newRandom
   rId1 <- EntityId <$> atomically (C.randomBytes 24 g)
-  q1 <- getMsgQueue st rId1
-  Just (Message {}, True) <- writeMsg q1 True =<< testMessage "message 1"
-  Just (Message {}, False) <- writeMsg q1 True =<< testMessage "message 2"
   rId2 <- EntityId <$> atomically (C.randomBytes 24 g)
-  q2 <- getMsgQueue st rId2
-  Just (Message {}, True) <- writeMsg q2 True =<< testMessage "message 3"
-  Just (Message {}, False) <- writeMsg q2 True =<< testMessage "message 4"
-  Just (Message {}, False) <- writeMsg q2 True =<< testMessage "message 5"
-  Nothing <- writeMsg q2 True =<< testMessage "message 6"
+  runRight_ $ do
+    q1 <- getMsgQueue st rId1
+    Just (Message {}, True) <- writeMsg q1 True =<< testMessage "message 1"
+    Just (Message {}, False) <- writeMsg q1 True =<< testMessage "message 2"
+    q2 <- getMsgQueue st rId2
+    Just (Message {}, True) <- writeMsg q2 True =<< testMessage "message 3"
+    Just (Message {}, False) <- writeMsg q2 True =<< testMessage "message 4"
+    Just (Message {}, False) <- writeMsg q2 True =<< testMessage "message 5"
+    Nothing <- writeMsg q2 True =<< testMessage "message 6"
+    pure ()
   length <$> listDirectory (msgQueueDirectory st rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory st rId2) `shouldReturn` 2
   exportMessages st testStoreMsgsFile $ getQueueMessages False

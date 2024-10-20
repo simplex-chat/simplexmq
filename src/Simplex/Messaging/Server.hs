@@ -367,9 +367,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         threadDelay' interval
         old <- expireBeforeEpoch expCfg
         void $ withActiveMsgQueues ms $ \_ q -> do
-          deleted <- deleteExpiredMsgs q old
-          atomicModifyIORef'_ (msgExpired stats) (+ deleted)
-          pure deleted
+          runExceptT (deleteExpiredMsgs q old) >>= \case
+            Right deleted -> deleted <$ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
+            Left _ -> pure 0
 
     expireNtfsThread :: ServerConfig -> M ()
     expireNtfsThread ServerConfig {notificationExpiration = expCfg} = do
@@ -1172,7 +1172,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
           NDEL -> deleteQueueNotifier_ st
           OFF -> suspendQueue_ st
           DEL -> delQueueAndMsgs st
-          QUE -> withQueue getQueueInfo
+          QUE -> withQueue $ fmap (corrId,entId,) . getQueueInfo
       where
         createQueue :: QueueStore -> RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> SenderCanSecure -> M (Transmission BrokerMsg)
         createQueue st recipientKey dhKey subMode sndSecure = time "NEW" $ do
@@ -1291,11 +1291,12 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
             deliver :: Bool -> Sub -> M (Transmission BrokerMsg)
             deliver inc sub = do
               AMS _ ms <- asks msgStore
-              q <- liftIO $ getMsgQueue ms rId
-              msg_ <- liftIO $ tryPeekMsg q
-              when (inc && isJust msg_) $
-                incStat . qSub =<< asks serverStats
-              deliverMessage "SUB" qr rId sub msg_
+              stats <- asks serverStats
+              fmap (either (\e -> (corrId, rId, ERR e)) id) $ liftIO $ runExceptT $ do
+                q <- getMsgQueue ms rId
+                msg_ <- tryPeekMsg q
+                liftIO $ when (inc && isJust msg_) $ incStat (qSub stats)
+                liftIO $ deliverMessage "SUB" qr rId sub msg_
 
         -- clients that use GET are not added to server subscribers
         getMessage :: QueueRec -> M (Transmission BrokerMsg)
@@ -1312,7 +1313,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                 _ -> do
                   stats <- asks serverStats
                   incStat $ msgGetProhibited stats
-                  pure (corrId, entId, ERR $ CMD PROHIBITED)
+                  pure $ err $ CMD PROHIBITED
           where
             newSub :: STM Sub
             newSub = do
@@ -1326,17 +1327,15 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
             getMessage_ :: Sub -> Maybe MsgId -> M (Transmission BrokerMsg)
             getMessage_ s delivered_ = do
               AMS _ ms <- asks msgStore
-              q <- liftIO $ getMsgQueue ms entId
               stats <- asks serverStats
-              (statCnt, r) <-
-                liftIO (tryPeekMsg q) >>= \case
-                  Just msg ->
+              fmap (either err id) $ liftIO $ runExceptT $ do
+                q <- getMsgQueue ms entId
+                tryPeekMsg q >>= \case
+                  Just msg -> do
                     let encMsg = encryptMsg qr msg
-                        cnt = if isJust delivered_ then msgGetDuplicate else msgGet
-                     in atomically $ setDelivered s msg $> (cnt, (corrId, entId, MSG encMsg))
-                  _ -> pure (msgGetNoMsg, (corrId, entId, OK))
-              incStat $ statCnt stats
-              pure r
+                    incStat $ (if isJust delivered_ then msgGetDuplicate else msgGet) stats
+                    atomically $ setDelivered s msg $> (corrId, entId, MSG encMsg)
+                  Nothing -> incStat (msgGetNoMsg stats) $> ok
 
         withQueue :: (QueueRec -> M (Transmission BrokerMsg)) -> M (Transmission BrokerMsg)
         withQueue action = case qr_ of
@@ -1374,16 +1373,18 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               atomically (getDelivered sub) >>= \case
                 Just st -> do
                   AMS _ ms <- asks msgStore
-                  q <- liftIO $ getMsgQueue ms entId
-                  case st of
-                    ProhibitSub -> do
-                      deletedMsg_ <- liftIO $ tryDelMsg q msgId
-                      mapM_ (updateStats True) deletedMsg_
-                      pure ok
-                    _ -> do
-                      (deletedMsg_, msg_) <- liftIO $ tryDelPeekMsg q msgId `catchAny` (\e -> print e >> throwIO e)
-                      mapM_ (updateStats False) deletedMsg_
-                      deliverMessage "ACK" qr entId sub msg_
+                  stats <- asks serverStats
+                  fmap (either err id) $ liftIO $ runExceptT $ do
+                    q <- getMsgQueue ms entId
+                    case st of
+                      ProhibitSub -> do
+                        deletedMsg_ <- tryDelMsg q msgId
+                        liftIO $ mapM_ (updateStats stats True) deletedMsg_
+                        pure ok
+                      _ -> do
+                        (deletedMsg_, msg_) <- tryDelPeekMsg q msgId
+                        liftIO $ mapM_ (updateStats stats False) deletedMsg_
+                        liftIO $ deliverMessage "ACK" qr entId sub msg_
                 _ -> pure $ err NO_MSG
           where
             getDelivered :: Sub -> STM (Maybe ServerSub)
@@ -1392,11 +1393,10 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                 if msgId == msgId' || B.null msgId
                   then pure $ Just subThread
                   else putTMVar delivered msgId' $> Nothing
-            updateStats :: Bool -> Message -> M ()
-            updateStats isGet = \case
+            updateStats :: ServerStats -> Bool -> Message -> IO ()
+            updateStats stats isGet = \case
               MessageQuota {} -> pure ()
               Message {msgFlags} -> do
-                stats <- asks serverStats
                 incStat $ msgRecv stats
                 if isGet
                   then incStat $ msgRecvGet stats
@@ -1406,11 +1406,11 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                   --   ns <- asks ntfStore
                   --   atomically $ TM.lookup nId ns >>=
                   --     mapM_ (\MsgNtf {ntfMsgId} -> when (msgId == msgId') $ TM.delete nId ns)
-                liftIO $ atomicModifyIORef'_ (msgCount stats) (subtract 1)
-                liftIO $ updatePeriodStats (activeQueues stats) entId
+                atomicModifyIORef'_ (msgCount stats) (subtract 1)
+                updatePeriodStats (activeQueues stats) entId
                 when (notification msgFlags) $ do
                   incStat $ msgRecvNtf stats
-                  liftIO $ updatePeriodStats (activeQueuesNtf stats) entId
+                  updatePeriodStats (activeQueuesNtf stats) entId
 
         sendMessage :: QueueRec -> MsgFlags -> MsgBody -> M (Transmission BrokerMsg)
         sendMessage qr msgFlags msgBody
@@ -1428,16 +1428,20 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                   case C.maxLenBS msgBody of
                     Left _ -> pure $ err LARGE_MSG
                     Right body -> do
-                      msg_ <- time "SEND" $ do
-                        AMS _ ms <- asks msgStore
-                        q <- liftIO $ getMsgQueue ms $ recipientId qr
-                        expireMessages q
-                        liftIO . writeMsg q True =<< mkMessage body
+                      AMS _ ms <- asks msgStore
+                      ServerConfig {messageExpiration, msgIdBytes} <- asks config
+                      msgId <- randomId' msgIdBytes
+                      msg_ <- liftIO $ time "SEND" $ runExceptT $ do
+                        q <- getMsgQueue ms $ recipientId qr
+                        expireMessages q messageExpiration stats
+                        msg <- liftIO $ mkMessage msgId body
+                        writeMsg q True msg
                       case msg_ of
-                        Nothing -> do
+                        Left e -> pure $ err e
+                        Right Nothing -> do
                           incStat $ msgSentQuota stats
                           pure $ err QUOTA
-                        Just (msg, wasEmpty) -> time "SEND ok" $ do
+                        Right (Just (msg, wasEmpty)) -> time "SEND ok" $ do
                           when wasEmpty $ liftIO $ tryDeliverMessage msg
                           when (notification msgFlags) $ do
                             mapM_ (`enqueueNotification` msg) (notifier qr)
@@ -1449,20 +1453,15 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                           pure ok
           where
             THandleParams {thVersion} = thParams'
-            mkMessage :: C.MaxLenBS MaxMessageLen -> M Message
-            mkMessage body = do
-              msgId <- randomId' =<< asks (msgIdBytes . config)
-              msgTs <- liftIO getSystemTime
+            mkMessage :: MsgId -> C.MaxLenBS MaxMessageLen -> IO Message
+            mkMessage msgId body = do
+              msgTs <- getSystemTime
               pure $! Message msgId msgTs msgFlags body
 
-            expireMessages :: MsgStoreClass s => MsgQueue s -> M ()
-            expireMessages q = do
-              msgExp <- asks $ messageExpiration . config
-              old <- liftIO $ mapM expireBeforeEpoch msgExp
-              deleted <- liftIO $ sum <$> mapM (deleteExpiredMsgs q) old
-              when (deleted > 0) $ do
-                stats <- asks serverStats
-                liftIO $ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
+            expireMessages :: MsgStoreClass s => MsgQueue s -> Maybe ExpirationConfig -> ServerStats -> ExceptT ErrorType IO ()
+            expireMessages q msgExp stats = do
+              deleted <- maybe (pure 0) (deleteExpiredMsgs q <=< liftIO . expireBeforeEpoch) msgExp
+              liftIO $ when (deleted > 0) $ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
 
             -- The condition for delivery of the message is:
             -- - the queue was empty when the message was sent,
@@ -1593,7 +1592,7 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
                     verified = \case
                       VRVerified qr -> Right (qr, (corrId', entId', cmd'))
                       VRFailed -> Left (corrId', entId', ERR AUTH)
-        deliverMessage :: T.Text -> QueueRec -> RecipientId -> Sub -> Maybe Message -> M (Transmission BrokerMsg)
+        deliverMessage :: T.Text -> QueueRec -> RecipientId -> Sub -> Maybe Message -> IO (Transmission BrokerMsg)
         deliverMessage name qr rId s@Sub {subThread} msg_ = time (name <> " deliver") . atomically $
           case subThread of
             ProhibitSub -> pure resp
@@ -1644,15 +1643,16 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
               pure ok
             Left e -> pure $ err e
 
-        getQueueInfo :: QueueRec -> M (Transmission BrokerMsg)
+        getQueueInfo :: QueueRec -> M BrokerMsg
         getQueueInfo QueueRec {senderKey, notifier} = do
           AMS _ ms <- asks msgStore
-          q <- liftIO $ getMsgQueue ms entId
-          qiSub <- liftIO $ TM.lookupIO entId subscriptions >>= mapM mkQSub
-          qiSize <- liftIO $ getQueueSize q
-          qiMsg <- liftIO $ toMsgInfo <$$> tryPeekMsg q
-          let info = QueueInfo {qiSnd = isJust senderKey, qiNtf = isJust notifier, qiSub, qiSize, qiMsg}
-          pure (corrId, entId, INFO info)
+          fmap (either ERR id) $ liftIO $ runExceptT $ do
+            q <- getMsgQueue ms entId
+            qiSub <- liftIO $ TM.lookupIO entId subscriptions >>= mapM mkQSub
+            qiSize <- liftIO $ getQueueSize q
+            qiMsg <- toMsgInfo <$$> tryPeekMsg q
+            let info = QueueInfo {qiSnd = isJust senderKey, qiNtf = isJust notifier, qiSub, qiSize, qiMsg}
+            pure $ INFO info
           where
             mkQSub Sub {subThread, delivered} = do
               qSubThread <- case subThread of
@@ -1759,12 +1759,12 @@ importMessages ms f old_ = do
     restoreMsg (!count, !total, !expired) (i, s') = do
       when (i `mod` 1000 == 0) $ progress i
       MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
-      addToMsgQueue rId msg
+      liftError show $ addToMsgQueue rId msg
       where
         s = LB.toStrict s'
         addToMsgQueue rId msg = do
-          q <- liftIO $ getMsgQueue ms rId
-          (isExpired, logFull) <- liftIO $ case msg of
+          q <- getMsgQueue ms rId
+          (isExpired, logFull) <- case msg of
             Message {msgTs}
               | maybe True (systemSeconds msgTs >=) old_ -> (False,) . isNothing <$> writeMsg q False msg
               | otherwise -> pure (True, False)

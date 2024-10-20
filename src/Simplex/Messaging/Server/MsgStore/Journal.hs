@@ -23,6 +23,7 @@ import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
+import Control.Monad.Trans.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (second)
 import Data.ByteString.Char8 (ByteString)
@@ -37,7 +38,7 @@ import GHC.IO (catchAny)
 import Simplex.Messaging.Agent.Client (getMapLock, withLockMap)
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (Message (..), RecipientId)
+import Simplex.Messaging.Protocol (ErrorType (..), Message (..), RecipientId)
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -211,9 +212,9 @@ instance MsgStoreClass JournalMsgStore where
         >>= maybe (pure ()) (\hs -> readTVarIO (state q) >>= logQueueState (stateHandle hs))
         >> pure 0
 
-  getMsgQueue :: JournalMsgStore -> RecipientId -> IO JournalMsgQueue
+  getMsgQueue :: JournalMsgStore -> RecipientId -> ExceptT ErrorType IO JournalMsgQueue
   getMsgQueue store@JournalMsgStore {queueLocks, msgQueues, random} rId =
-    withLockMap queueLocks rId "getMsgQueue" $
+    tryStore "getMsgQueue" $ withLockMap queueLocks rId "getMsgQueue" $
       TM.lookupIO rId msgQueues >>= maybe newQ pure
     where
       newQ = do
@@ -255,9 +256,9 @@ instance MsgStoreClass JournalMsgStore where
             updateReadPos q drainMsgs (B.length s + 1) hs -- 1 is to account for new line
             (msg :) <$> getMsg ms hs
 
-  writeMsg :: JournalMsgQueue -> Bool -> Message -> IO (Maybe (Message, Bool))
+  writeMsg :: JournalMsgQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
   writeMsg q@JournalMsgQueue {queueDirectory, handles, config, random} logState !msg =
-    withLock' (queueLock q) "writeMsg" $ do
+    tryStore "writeMsg" $ withLock' (queueLock q) "writeMsg" $ do
       st@MsgQueueState {canWrite, size} <- readTVarIO (state q)
       let empty = size == 0
       if canWrite || empty
@@ -325,8 +326,15 @@ instance MsgStoreClass JournalMsgStore where
         $>>= \len -> readTVarIO handles
         $>>= \hs -> updateReadPos q True len hs $> Just ()
 
-  atomicQueue :: JournalMsgQueue -> NonAtomicIO a -> IO a
-  atomicQueue mq (NonAtomicIO a) = withLock' (queueLock mq) "atomicQueue" a
+  atomicQueue :: JournalMsgQueue -> String -> NonAtomicIO a -> ExceptT ErrorType IO a
+  atomicQueue mq op (NonAtomicIO a) = tryStore op $ withLock' (queueLock mq) op $ a
+
+tryStore :: String -> IO a -> ExceptT ErrorType IO a
+tryStore op a =
+  ExceptT $
+    (Right <$> a) `catchAny` \e ->
+      let e' = op <> " " <> show e
+       in logError ("STORE ERROR " <> T.pack e') $> Left (STORE e')
 
 openMsgQueue :: JournalMsgStore -> FilePath -> Lock -> IO JournalMsgQueue
 openMsgQueue store dir queueLock = do
@@ -493,7 +501,7 @@ closeMsgQueue_ q = readTVarIO (handles q) >>= mapM_ closeHandles
 removeQueueDirectory :: JournalMsgStore -> RecipientId -> IO ()
 removeQueueDirectory st rId =
   let dir = msgQueueDirectory st rId
-   in removePathForcibly dir `catchAny` (\e -> logError $ "Error removing queue directory " <> T.pack dir <> ": " <> tshow e)
+   in removePathForcibly dir `catchAny` (\e -> logError $ "STORE ERROR removeQueueDirectory " <> T.pack dir <> ": " <> tshow e)
 
 hAppend :: Handle -> ByteString -> IO ()
 hAppend h s = IO.hSeek h SeekFromEnd 0 >> B.hPutStr h s
