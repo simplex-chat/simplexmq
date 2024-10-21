@@ -24,17 +24,17 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   newMsgStore :: MsgStoreConfig s -> IO s
   closeMsgStore :: s -> IO ()
   activeMsgQueues :: s -> TMap RecipientId (MsgQueue s)
-  withAllMsgQueues :: s -> (RecipientId -> MsgQueue s -> IO Int) -> IO Int
+  withAllMsgQueues :: s -> (RecipientId -> MsgQueue s -> a -> IO a) -> a -> IO a
   logQueueStates :: s -> IO ()
   getMsgQueue :: s -> RecipientId -> ExceptT ErrorType IO (MsgQueue s)
   delMsgQueue :: s -> RecipientId -> IO ()
   delMsgQueueSize :: s -> RecipientId -> IO Int
   getQueueMessages :: Bool -> MsgQueue s -> IO [Message]
-  writeMsg :: MsgQueue s -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
+  writeMsg :: s -> MsgQueue s -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
   getQueueSize :: MsgQueue s -> IO Int
   tryPeekMsg_ :: MsgQueue s -> StoreMonad s (Maybe Message)
   tryDeleteMsg_ :: MsgQueue s -> StoreMonad s ()
-  atomicQueue :: MsgQueue s -> String -> StoreMonad s a -> ExceptT ErrorType IO a
+  isolateQueue :: MsgQueue s -> String -> StoreMonad s a -> ExceptT ErrorType IO a
 
 data MSType = MSMemory | MSJournal
 
@@ -44,16 +44,16 @@ data SMSType :: MSType -> Type where
 
 data AMSType = forall s. AMSType (SMSType s)
 
-withActiveMsgQueues :: MsgStoreClass s => s -> (RecipientId -> MsgQueue s -> IO Int) -> IO Int
-withActiveMsgQueues st f = readTVarIO (activeMsgQueues st) >>= M.foldrWithKey (\k v -> ((+) <$> f k v <*>)) (pure 0)
+withActiveMsgQueues :: MsgStoreClass s => s -> (RecipientId -> MsgQueue s -> a -> IO a) -> a -> IO a
+withActiveMsgQueues st f a = readTVarIO (activeMsgQueues st) >>= M.foldrWithKey (\k v -> (>>= f k v)) (pure a)
 
 tryPeekMsg :: MsgStoreClass s => MsgQueue s -> ExceptT ErrorType IO (Maybe Message)
-tryPeekMsg mq = atomicQueue mq "tryPeekMsg" $ tryPeekMsg_ mq
+tryPeekMsg mq = isolateQueue mq "tryPeekMsg" $ tryPeekMsg_ mq
 {-# INLINE tryPeekMsg #-}
 
 tryDelMsg :: MsgStoreClass s => MsgQueue s -> MsgId -> ExceptT ErrorType IO (Maybe Message)
 tryDelMsg mq msgId' =
-  atomicQueue mq "tryDelMsg" $
+  isolateQueue mq "tryDelMsg" $
     tryPeekMsg_ mq >>= \case
       msg_@(Just msg)
         | msgId msg == msgId' ->
@@ -63,7 +63,7 @@ tryDelMsg mq msgId' =
 -- atomic delete (== read) last and peek next message if available
 tryDelPeekMsg :: MsgStoreClass s => MsgQueue s -> MsgId -> ExceptT ErrorType IO (Maybe Message, Maybe Message)
 tryDelPeekMsg mq msgId' =
-  atomicQueue mq "tryDelPeekMsg" $
+  isolateQueue mq "tryDelPeekMsg" $
     tryPeekMsg_ mq >>= \case
       msg_@(Just msg)
         | msgId msg == msgId' -> (msg_,) <$> (tryDeleteMsg_ mq >> tryPeekMsg_ mq)
@@ -71,7 +71,7 @@ tryDelPeekMsg mq msgId' =
       _ -> pure (Nothing, Nothing)
 
 deleteExpiredMsgs :: MsgStoreClass s => MsgQueue s -> Int64 -> ExceptT ErrorType IO Int
-deleteExpiredMsgs mq old = atomicQueue mq "deleteExpiredMsgs" $ loop 0
+deleteExpiredMsgs mq old = isolateQueue mq "deleteExpiredMsgs" $ loop 0
   where
     loop dc =
       tryPeekMsg_ mq >>= \case
