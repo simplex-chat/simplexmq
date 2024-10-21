@@ -322,11 +322,12 @@ instance MsgStoreClass JournalMsgStore where
           Nothing | msgCount writeState >= maxMsgCount -> switchWriteJournal hs
           wh_ -> pure (writeState, fromMaybe (readHandle hs) wh_)
         let msgCount' = msgCount ws + 1
-            ws' = ws {msgPos = msgPos ws + 1, msgCount = msgCount', bytePos = bytePos ws + msgLen}
-            rs' = if journalId ws == journalId rs then rs {msgCount = msgCount'} else rs
+            bytePos' = bytePos ws + msgLen
+            ws' = ws {msgPos = msgPos ws + 1, msgCount = msgCount', bytePos = bytePos', byteCount = bytePos'}
+            rs' = if journalId ws == journalId rs then rs {msgCount = msgCount', byteCount = bytePos'} else rs
             !st' = st {writeState = ws', readState = rs', canWrite = canWrt', size = size + 1}
         when (size == 0) $ atomically $ writeTVar (tipMsg q) $ Just (Just (msg, msgLen))
-        hAppend wh msgStr
+        hAppend wh (bytePos ws) msgStr
         updateQueueState q logState hs st'
         where
           createQueueDir = do
@@ -412,7 +413,7 @@ chooseReadJournal q log' hs = do
       atomically $ writeTVar (handles q) $ Just hs {readHandle = wh, writeHandle = Nothing}
       hClose $ readHandle hs
       removeJournal (queueDirectory q) rs
-      let !rs' = (newJournalState $ journalId ws) {msgCount = msgCount ws}
+      let !rs' = (newJournalState $ journalId ws) {msgCount = msgCount ws, byteCount = byteCount ws}
           !st' = st {readState = rs'}
       updateQueueState q log' hs st'
       pure $ Just (rs', wh)
@@ -471,32 +472,40 @@ openJournals dir st@MsgQueueState {readState = rs, writeState = ws} = do
       pure (st', rh, Nothing)
     Right rh
       | rjId == wjId -> do
-          st' <- fixWriteFileSize rh
-          pure (st', rh, Nothing)
-      | otherwise ->
+          fixFileSize rh $ bytePos ws
+          pure (st, rh, Nothing)
+      | otherwise -> do
+          fixFileSize rh $ byteCount rs
           openJournal ws >>= \case
             Left path -> do
               logError $ "STORE ERROR no write file " <> T.pack path <> ", creating new file"
               wh <- createNewJournal dir wjId
-              let size' = msgCount rs + msgPos rs
+              let size' = msgCount rs - msgPos rs
                   st' = st {writeState = newJournalState wjId, size = size'} -- we don't amend canWrite to trigger QCONT
               pure (st', rh, Just wh)
             Right wh -> do
-              st' <- fixWriteFileSize wh
-              pure (st', rh, Just wh)
+              fixFileSize wh (bytePos ws)
+              pure (st, rh, Just wh)
   where
     openJournal :: JournalState t -> IO (Either FilePath Handle)
     openJournal JournalState {journalId} =
       let path = journalFilePath dir journalId
        in ifM (doesFileExist path) (Right <$> openFile path ReadWriteMode) (pure $ Left path)
     -- do that for all append operations
-    fixWriteFileSize h = do
-      let sz = fromIntegral $ bytePos ws
-      sz' <- IO.hFileSize h
-      if
-        | sz' > sz -> logWarn "STORE WARNING" >> IO.hSetFileSize h sz $> st
-        | sz' == sz -> pure st
-        | otherwise -> pure st -- TODO re-read file to recover what is possible ???
+
+fixFileSize :: Handle -> Int -> IO ()
+fixFileSize h pos = do
+  let pos' = fromIntegral pos
+  size <- IO.hFileSize h
+  if
+    | size > pos' -> do
+        logWarn $ "STORE WARNING truncating file size from " <> tshow size <> " to " <> tshow pos
+        IO.hSetFileSize h pos'
+    | size < pos' ->
+        -- From code logic this can't happen.
+        -- TODO consider throwing exception here.
+        logError $ "STORE ERROR file size " <> tshow size <> " is smaller than position " <> tshow pos
+    | otherwise -> pure ()
 
 removeJournal :: FilePath -> JournalState t -> IO ()
 removeJournal dir JournalState {journalId} = do
@@ -517,7 +526,27 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
       ls <- LB.lines <$> LB.readFile statePath
       case ls of
         [] -> writeNewQueueState
-        _ -> useLastLine (length ls) True ls
+        _ -> do
+          r@(st, _) <- useLastLine (length ls) True ls
+          unless (validQState st) $ E.throwIO $ userError $ "invalid queue state: " <> show st
+          pure r
+    validQState MsgQueueState {readState = rs, writeState = ws, size}
+      | journalId rs == journalId ws =
+          alwaysValid
+            && msgPos rs <= msgPos ws
+            && msgCount rs == msgCount ws
+            && bytePos rs <= bytePos ws
+            && byteCount rs == byteCount ws
+            && size == msgCount rs - msgPos rs
+      | otherwise =
+          alwaysValid
+            && size == msgCount ws + msgCount rs - msgPos rs
+      where
+        alwaysValid =
+          msgPos rs <= msgCount rs
+            && bytePos rs <= byteCount rs
+            && msgPos ws == msgCount ws
+            && bytePos ws == byteCount ws      
     writeNewQueueState = do
       logWarn $ "STORE WARNING: empty queue state in " <> T.pack statePath <> ", initialized"
       st <- newMsgQueueState <$> newJournalId random
@@ -539,9 +568,7 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
             ls' -> do
               logWarn $ "STORE WARNING: invalid last line in queue state " <> T.pack statePath <> ", using the previous line"
               useLastLine len False ls'
-        | otherwise -> do
-            logError $ "STORE ERROR invalid queue state in " <> T.pack statePath <> ": " <> tshow e
-            E.throwIO $ userError $ "Error reading queue state " <> statePath <> ": " <> show e
+        | otherwise -> E.throwIO $ userError $ "reading queue state " <> statePath <> ": " <> show e
     backupWriteQueueState st = do
       -- State backup is made in two steps to mitigate the crash during the backup.
       -- Temporary backup file will be used when it is present.
@@ -573,8 +600,11 @@ removeQueueDirectory st rId =
   let dir = msgQueueDirectory st rId
    in removePathForcibly dir `catchAny` (\e -> logError $ "STORE ERROR removeQueueDirectory " <> T.pack dir <> ": " <> tshow e)
 
-hAppend :: Handle -> ByteString -> IO ()
-hAppend h s = IO.hSeek h SeekFromEnd 0 >> B.hPutStr h s
+hAppend :: Handle -> Int -> ByteString -> IO ()
+hAppend h pos s = do
+  fixFileSize h pos
+  IO.hSeek h SeekFromEnd 0
+  B.hPutStr h s
 
 hGetLineAt :: Handle -> Int -> IO ByteString
 hGetLineAt h pos = IO.hSeek h AbsoluteSeek (fromIntegral pos) >> B.hGetLine h

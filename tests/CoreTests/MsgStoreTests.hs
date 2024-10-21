@@ -186,13 +186,23 @@ testQueueState ms = do
   readQueueState statePath `shouldReturn` state
   length <$> listDirectory dir `shouldReturn` 1 -- no backup
 
-  let state1 = state {size = 1, writeState = (writeState state) {msgPos = 1, msgCount = 1, bytePos = 100}}
+  let state1 =
+        state
+          { size = 1,
+            readState = (readState state) {msgCount = 1, byteCount = 100},
+            writeState = (writeState state) {msgPos = 1, msgCount = 1, bytePos = 100, byteCount = 100}
+          }
   withFile statePath AppendMode (`logQueueState` state1)
   length . lines <$> readFile statePath `shouldReturn` 2
   readQueueState statePath `shouldReturn` state1
   length <$> listDirectory dir `shouldReturn` 1 -- no backup
 
-  let state2 = state {size = 2, writeState = (writeState state) {msgPos = 2, msgCount = 2, bytePos = 200}}
+  let state2 =
+        state
+          { size = 2,
+            readState = (readState state) {msgCount = 2, byteCount = 200},
+            writeState = (writeState state) {msgPos = 2, msgCount = 2, bytePos = 200, byteCount = 200}
+          }
   withFile statePath AppendMode (`logQueueState` state2)
   length . lines <$> readFile statePath `shouldReturn` 3
   copyFile statePath (statePath <> ".2")
