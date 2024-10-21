@@ -10,6 +10,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module Simplex.Messaging.Server.MsgStore.Journal
@@ -20,6 +21,7 @@ module Simplex.Messaging.Server.MsgStore.Journal
     -- below are exported for tests
     MsgQueueState (..),
     JournalState (..),
+    SJournalType (..),
     msgQueueDirectory,
     readWriteQueueState,
     newMsgQueueState,
@@ -82,17 +84,17 @@ data JournalMsgQueue = JournalMsgQueue
   { queueDirectory :: FilePath,
     queueLock :: Lock,
     state :: TVar MsgQueueState,
-    -- Last message and length incl. newline
+    -- tipMsg contains last message and length incl. newline
     -- Nothing - unknown, Just Nothing - empty queue.
-    -- This optimization  prevents reading each message at least twice,
-    -- or reading it after it was just written.
+    -- It  prevents reading each message twice,
+    -- and reading it after it was just written.
     tipMsg :: TVar (Maybe (Maybe (Message, Int))),
     handles :: TVar (Maybe MsgQueueHandles)
   }
 
 data MsgQueueState = MsgQueueState
-  { readState :: JournalState,
-    writeState :: JournalState,
+  { readState :: JournalState 'JTRead,
+    writeState :: JournalState 'JTWrite,
     canWrite :: Bool,
     size :: Int
   }
@@ -104,21 +106,49 @@ data MsgQueueHandles = MsgQueueHandles
     writeHandle :: Maybe Handle -- optional, used when write file is different from read file
   }
 
-data JournalState = JournalState
-  { journalId :: ByteString,
+data JournalState t = JournalState
+  { journalType :: SJournalType t,
+    journalId :: ByteString,
     msgPos :: Int,
     msgCount :: Int,
-    bytePos :: Int
+    bytePos :: Int,
+    byteCount :: Int
   }
   deriving (Show)
 
+data JournalType = JTRead | JTWrite
+
+data SJournalType (t :: JournalType) where
+  SJTRead :: SJournalType 'JTRead
+  SJTWrite :: SJournalType 'JTWrite
+
+class JournalTypeI t where sJournalType :: SJournalType t
+
+instance JournalTypeI 'JTRead where sJournalType = SJTRead
+
+instance JournalTypeI 'JTWrite where sJournalType = SJTWrite
+
+deriving instance Show (SJournalType t)
+
 newMsgQueueState :: ByteString -> MsgQueueState
 newMsgQueueState journalId =
-  let st = newJournalState journalId
-   in MsgQueueState {writeState = st, readState = st, canWrite = True, size = 0}
+  MsgQueueState
+    { writeState = newJournalState journalId,
+      readState = newJournalState journalId,
+      canWrite = True,
+      size = 0
+    }
 
-newJournalState :: ByteString -> JournalState
-newJournalState journalId = JournalState {journalId, msgPos = 0, msgCount = 0, bytePos = 0}
+newJournalState :: JournalTypeI t => ByteString -> JournalState t
+newJournalState journalId =
+  JournalState
+    { journalType = sJournalType,
+      journalId,
+      msgPos = 0,
+      msgCount = 0,
+      bytePos = 0,
+      byteCount = 0
+    }
 
 journalFilePath :: FilePath -> ByteString -> FilePath
 journalFilePath dir journalId = dir </> (msgLogFileName <> "." <> B.unpack journalId <> logFileExt)
@@ -138,15 +168,15 @@ instance StrEncoding MsgQueueState where
     size <- " size=" *> strP
     pure MsgQueueState {writeState, readState, canWrite, size}
 
-instance StrEncoding JournalState where
-  strEncode JournalState {journalId, msgPos, msgCount, bytePos} =
-    B.intercalate "," [journalId, strEncode msgPos, strEncode msgCount, strEncode bytePos]
+instance JournalTypeI t => StrEncoding (JournalState t) where
+  strEncode JournalState {journalId, msgPos, msgCount, bytePos, byteCount} =
+    B.concat [journalId, ",", strEncodeList [msgPos, msgCount, bytePos, byteCount]]
   strP = do
     journalId <- A.takeTill (== ',')
-    msgPos <- A.char ',' *> strP
-    msgCount <- A.char ',' *> strP
-    bytePos <- A.char ',' *> strP
-    pure JournalState {journalId, msgPos, msgCount, bytePos}
+    A.char ',' *> strListP >>= \case
+      [msgPos, msgCount, bytePos, byteCount] ->
+        pure JournalState {journalType = sJournalType, journalId, msgPos, msgCount, bytePos, byteCount}
+      _ -> fail "bad JournalState"
 
 queueLogFileName :: String
 queueLogFileName = "queue_state"
@@ -371,7 +401,7 @@ mkJournalQueue dir queueLock (st, hs_) = do
         handles
       }
 
-chooseReadJournal :: JournalMsgQueue -> Bool -> MsgQueueHandles -> IO (Maybe (JournalState, Handle))
+chooseReadJournal :: JournalMsgQueue -> Bool -> MsgQueueHandles -> IO (Maybe (JournalState 'JTRead, Handle))
 chooseReadJournal q log' hs = do
   st@MsgQueueState {writeState = ws, readState = rs} <- readTVarIO (state q)
   case writeHandle hs of
@@ -402,7 +432,6 @@ updateReadPos q log' len hs = do
   let msgPos' = msgPos + 1
       rs' = rs {msgPos = msgPos', bytePos = bytePos + len}
       st' = st {readState = rs', size = size - 1}
-  -- TODO update STM state after writing
   updateQueueState q log' hs st'              
   atomically $ writeTVar (tipMsg q) Nothing
 
@@ -454,6 +483,7 @@ openJournals dir st@MsgQueueState {readState = rs, writeState = ws} = do
               st' <- fixWriteFileSize wh
               pure (st', rh, Just wh)
   where
+    openJournal :: JournalState t -> IO (Either FilePath Handle)
     openJournal JournalState {journalId} =
       let path = journalFilePath dir journalId
        in ifM (doesFileExist path) (Right <$> openFile path ReadWriteMode) (pure $ Left path)
@@ -466,7 +496,7 @@ openJournals dir st@MsgQueueState {readState = rs, writeState = ws} = do
         | sz' == sz -> pure st
         | otherwise -> pure st -- TODO re-read file to recover what is possible ???
 
-removeJournal :: FilePath -> JournalState -> IO ()
+removeJournal :: FilePath -> JournalState t -> IO ()
 removeJournal dir JournalState {journalId} = do
   let path = journalFilePath dir journalId
   removeFile path `catchAny` (\e -> logError $ "STORE ERROR removing file " <> T.pack path <> ": " <> tshow e)

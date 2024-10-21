@@ -73,17 +73,20 @@ pattern Msg s <- Just Message {msgBody = MaxLenBS s}
 
 deriving instance Eq MsgQueueState
 
-deriving instance Eq JournalState
+deriving instance Eq (JournalState t)
+
+deriving instance Eq (SJournalType t)
 
 testGetQueue :: MsgStoreClass s => s -> IO ()
-testGetQueue st = do
+testGetQueue ms = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
   runRight_ $ do
-    q <- getMsgQueue st rId
-    Just (Message {msgId = mId1}, True) <- writeMsg q True =<< mkMessage "message 1"
-    Just (Message {msgId = mId2}, False) <- writeMsg q True =<< mkMessage "message 2"
-    Just (Message {msgId = mId3}, False) <- writeMsg q True =<< mkMessage "message 3"
+    q <- getMsgQueue ms rId
+    let write s = writeMsg ms q True =<< mkMessage s
+    Just (Message {msgId = mId1}, True) <- write "message 1"
+    Just (Message {msgId = mId2}, False) <- write "message 2"
+    Just (Message {msgId = mId3}, False) <- write "message 3"
     Msg "message 1" <- tryPeekMsg q
     Msg "message 1" <- tryPeekMsg q
     Nothing <- tryDelMsg q mId2
@@ -99,14 +102,14 @@ testGetQueue st = do
     Nothing <- tryDelMsg q mId2
     Nothing <- tryDelMsg q mId3
     Nothing <- tryPeekMsg q
-    Just (Message {msgId = mId4}, True) <- writeMsg q True =<< mkMessage "message 4"
+    Just (Message {msgId = mId4}, True) <- write "message 4"
     Msg "message 4" <- tryPeekMsg q
-    Just (Message {msgId = mId5}, False) <- writeMsg q True =<< mkMessage "message 5"
+    Just (Message {msgId = mId5}, False) <- write "message 5"
     (Nothing, Msg "message 4") <- tryDelPeekMsg q mId3
     (Msg "message 4", Msg "message 5") <- tryDelPeekMsg q mId4
-    Just (Message {msgId = mId6}, False) <- writeMsg q True =<< mkMessage "message 6"
-    Just (Message {msgId = mId7}, False) <- writeMsg q True =<< mkMessage "message 7"
-    Nothing <- writeMsg q True =<< mkMessage "message 8"
+    Just (Message {msgId = mId6}, False) <- write "message 6"
+    Just (Message {msgId = mId7}, False) <- write "message 7"
+    Nothing <- write "message 8"
     Msg "message 5" <- tryPeekMsg q
     (Nothing, Msg "message 5") <- tryDelPeekMsg q mId4
     (Msg "message 5", Msg "message 6") <- tryDelPeekMsg q mId5
@@ -115,51 +118,53 @@ testGetQueue st = do
     (Just MessageQuota {}, Nothing) <- tryDelPeekMsg q mId8
     (Nothing, Nothing) <- tryDelPeekMsg q mId8
     pure ()
-  delMsgQueue st rId
+  delMsgQueue ms rId
 
 testChangeReadJournal :: MsgStoreClass s => s -> IO ()
-testChangeReadJournal st = do
+testChangeReadJournal ms = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
   runRight_ $ do
-    q <- getMsgQueue st rId
-    Just (Message {msgId = mId1}, True) <- writeMsg q True =<< mkMessage "message 1"
+    q <- getMsgQueue ms rId
+    let write s = writeMsg ms q True =<< mkMessage s
+    Just (Message {msgId = mId1}, True) <- write "message 1"
     (Msg "message 1", Nothing) <- tryDelPeekMsg q mId1
-    Just (Message {msgId = mId2}, True) <- writeMsg q True =<< mkMessage "message 2"
+    Just (Message {msgId = mId2}, True) <- write "message 2"
     (Msg "message 2", Nothing) <- tryDelPeekMsg q mId2
-    Just (Message {msgId = mId3}, True) <- writeMsg q True =<< mkMessage "message 3"
+    Just (Message {msgId = mId3}, True) <- write "message 3"
     (Msg "message 3", Nothing) <- tryDelPeekMsg q mId3
-    Just (Message {msgId = mId4}, True) <- writeMsg q True =<< mkMessage "message 4"
+    Just (Message {msgId = mId4}, True) <- write "message 4"
     (Msg "message 4", Nothing) <- tryDelPeekMsg q mId4
-    Just (Message {msgId = mId5}, True) <- writeMsg q True =<< mkMessage "message 5"
+    Just (Message {msgId = mId5}, True) <- write "message 5"
     (Msg "message 5", Nothing) <- tryDelPeekMsg q mId5
     pure ()
-  delMsgQueue st rId
+  delMsgQueue ms rId
 
 testExportImportStore :: JournalMsgStore -> IO ()
-testExportImportStore st = do
+testExportImportStore ms = do
   g <- C.newRandom
   rId1 <- EntityId <$> atomically (C.randomBytes 24 g)
   rId2 <- EntityId <$> atomically (C.randomBytes 24 g)
   runRight_ $ do
-    q1 <- getMsgQueue st rId1
-    Just (Message {}, True) <- writeMsg q1 True =<< mkMessage "message 1"
-    Just (Message {}, False) <- writeMsg q1 True =<< mkMessage "message 2"
-    q2 <- getMsgQueue st rId2
-    Just (Message {}, True) <- writeMsg q2 True =<< mkMessage "message 3"
-    Just (Message {}, False) <- writeMsg q2 True =<< mkMessage "message 4"
-    Just (Message {}, False) <- writeMsg q2 True =<< mkMessage "message 5"
-    Nothing <- writeMsg q2 True =<< mkMessage "message 6"
+    let write q s = writeMsg ms q True =<< mkMessage s
+    q1 <- getMsgQueue ms rId1
+    Just (Message {}, True) <- write q1 "message 1"
+    Just (Message {}, False) <- write q1 "message 2"
+    q2 <- getMsgQueue ms rId2
+    Just (Message {}, True) <- write q2 "message 3"
+    Just (Message {}, False) <- write q2 "message 4"
+    Just (Message {}, False) <- write q2 "message 5"
+    Nothing <- write q2 "message 6"
     pure ()
-  length <$> listDirectory (msgQueueDirectory st rId1) `shouldReturn` 2
-  length <$> listDirectory (msgQueueDirectory st rId2) `shouldReturn` 2
-  exportMessages st testStoreMsgsFile $ getQueueMessages False
+  length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
+  length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 2
+  exportMessages ms testStoreMsgsFile $ getQueueMessages False
   let cfg = (testJournalStoreCfg :: JournalStoreConfig) {storePath = testStoreMsgsDir2}
-  st' <- newMsgStore cfg
-  0 <- importMessages st' testStoreMsgsFile Nothing
-  length <$> listDirectory (msgQueueDirectory st rId1) `shouldReturn` 2
-  length <$> listDirectory (msgQueueDirectory st rId2) `shouldReturn` 3 -- state file is backed up
-  exportMessages st' testStoreMsgsFile2 $ getQueueMessages False
+  ms' <- newMsgStore cfg
+  0 <- importMessages ms' testStoreMsgsFile Nothing
+  length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
+  length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3 -- state file is backed up
+  exportMessages ms' testStoreMsgsFile2 $ getQueueMessages False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
   0 <- importMessages stmStore testStoreMsgsFile2 Nothing
@@ -167,13 +172,13 @@ testExportImportStore st = do
   (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))
 
 testQueueState :: JournalMsgStore -> IO ()
-testQueueState st = do
+testQueueState ms = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
-  let dir = msgQueueDirectory st rId
+  let dir = msgQueueDirectory ms rId
       statePath = dir </> (queueLogFileName <> logFileExt)
   createDirectoryIfMissing True dir
-  state <- newMsgQueueState <$> newJournalId (random st)
+  state <- newMsgQueueState <$> newJournalId (random ms)
   withFile statePath WriteMode (`logQueueState` state)
   length . lines <$> readFile statePath `shouldReturn` 1
   readQueueState statePath `shouldReturn` state
@@ -208,7 +213,7 @@ testQueueState st = do
   length . lines <$> readFile statePath `shouldReturn` 1
   where
     readQueueState statePath = do
-      (state, h) <- readWriteQueueState st statePath
+      (state, h) <- readWriteQueueState ms statePath
       hClose h
       pure state
     corruptFile f = do
