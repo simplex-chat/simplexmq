@@ -1885,20 +1885,19 @@ restoreServerStats msgStats ntfStats = asks (serverStatsBackupFile . config) >>=
     restoreStats f = whenM (doesFileExist f) $ do
       logInfo $ "restoring server stats from file " <> T.pack f
       liftIO (strDecode <$> B.readFile f) >>= \case
-        Right d@ServerStatsData {_qCount = statsQCount} -> do
+        Right d@ServerStatsData {_qCount = statsQCount, _msgCount = statsMsgCount, _ntfCount = statsNtfCount} -> do
           s <- asks serverStats
           _qCount <- fmap M.size . readTVarIO . queues =<< asks queueStore
-          _msgCount <-
-            asks msgStore >>= \case
-              AMS SMSMemory ms -> liftIO $ readTVarIO (msgQueues ms) >>= foldM (\(!n) q -> (n +) <$> getQueueSize q) 0
-              _ -> pure 0
-          NtfStore ns <- asks ntfStore
-          _ntfCount <- liftIO . foldM (\(!n) q -> (n +) . length <$> readTVarIO q) 0 =<< readTVarIO ns
+          let _msgCount = storedMsgsCount msgStats
+              _ntfCount = storedMsgsCount ntfStats
           liftIO $ setServerStats s d {_qCount, _msgCount, _ntfCount, _msgExpired = _msgExpired d + expiredMsgsCount msgStats, _msgNtfExpired = _msgNtfExpired d + expiredMsgsCount ntfStats}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
-          when (_qCount /= statsQCount) $ logWarn $ "Queue count differs: stats: " <> tshow statsQCount <> ", store: " <> tshow _qCount
-          logInfo $ "There are " <> tshow _msgCount <> " messages in " <> tshow _qCount <> " queues"
+          compareCounts "Queue" statsQCount _qCount
+          compareCounts "Message" statsMsgCount _msgCount
+          compareCounts "Notification" statsNtfCount _ntfCount
         Left e -> do
           logInfo $ "error restoring server stats: " <> T.pack e
           liftIO exitFailure
+    compareCounts name statsCnt storeCnt =
+      when (statsCnt /= storeCnt) $ logWarn $ name <> " count differs: stats: " <> tshow statsCnt <> ", store: " <> tshow storeCnt
