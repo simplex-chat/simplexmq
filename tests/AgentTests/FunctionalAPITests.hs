@@ -1042,7 +1042,7 @@ testAllowConnectionClientRestart t = do
   bob <- getSMPAgentClient' 2 agentCfg initAgentServersSrv2 testDB2
   withSmpServerStoreLogOn t testPort $ \_ -> do
     (aliceId, bobId, confId) <-
-      withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \_ -> do
+      withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \_ -> do
         runRight $ do
           (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
           (aliceId, sqSecured) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
@@ -1064,8 +1064,7 @@ testAllowConnectionClientRestart t = do
     alice2 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
     runRight_ $ subscribeConnection alice2 bobId
     threadDelay 500000
-
-    withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \_ -> do
+    withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \_ -> do
       runRight $ do
         ("", "", UP _ _) <- nGet bob
         get alice2 ##> ("", bobId, CON)

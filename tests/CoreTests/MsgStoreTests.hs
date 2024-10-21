@@ -21,7 +21,7 @@ import Data.Time.Clock.System (getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), Message (..), noMsgFlags)
-import Simplex.Messaging.Server (exportMessages, importMessages)
+import Simplex.Messaging.Server (MessageStats (..), exportMessages, importMessages)
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
@@ -161,13 +161,15 @@ testExportImportStore ms = do
   exportMessages ms testStoreMsgsFile $ getQueueMessages False
   let cfg = (testJournalStoreCfg :: JournalStoreConfig) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
-  0 <- importMessages ms' testStoreMsgsFile Nothing
+  MessageStats {storedMsgsCount = 6, expiredMsgsCount = 0, storedQueues = 2} <-
+    importMessages ms' testStoreMsgsFile Nothing
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3 -- state file is backed up
   exportMessages ms' testStoreMsgsFile2 $ getQueueMessages False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
-  0 <- importMessages stmStore testStoreMsgsFile2 Nothing
+  MessageStats {storedMsgsCount = 6, expiredMsgsCount = 0, storedQueues = 2} <-
+    importMessages stmStore testStoreMsgsFile2 Nothing
   exportMessages stmStore testStoreMsgsFile $ getQueueMessages False
   (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))
 

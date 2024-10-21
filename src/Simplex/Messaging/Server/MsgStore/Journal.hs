@@ -18,6 +18,7 @@ module Simplex.Messaging.Server.MsgStore.Journal
     JournalMsgQueue (queueDirectory),
     JournalStoreConfig (..),
     getQueueMessages,
+    closeMsgQueue,
     -- below are exported for tests
     MsgQueueState (..),
     JournalState (..),
@@ -202,7 +203,7 @@ instance MsgStoreClass JournalMsgStore where
     msgQueues <- TM.emptyIO
     pure JournalMsgStore {config, random, queueLocks, msgQueues}
 
-  closeMsgStore st = readTVarIO (msgQueues st) >>= mapM_ closeMsgQueue_
+  closeMsgStore st = readTVarIO (msgQueues st) >>= mapM_ closeMsgQueue
 
   activeMsgQueues = msgQueues
   {-# INLINE activeMsgQueues #-}
@@ -210,16 +211,17 @@ instance MsgStoreClass JournalMsgStore where
   -- This function is a "foldr" that opens and closes all queues, processes them as defined by action and accumulates the result.
   -- It is used to export storage to a single file and also to expire messages and validate all queues when server is started.
   withAllMsgQueues :: JournalMsgStore -> (RecipientId -> JournalMsgQueue -> a -> IO a) -> a -> IO a
-  withAllMsgQueues ms@JournalMsgStore {config} action res = do
-    closeMsgStore ms
-    lock <- createLockIO -- the same lock is used for all queues
-    dirs <- zip [0..] <$> listQueueDirs 0 ("", storePath)
-    let count = length dirs
-    total <- foldM (processQueue lock count) res dirs
-    progress count count
-    putStrLn ""
-    pure total
+  withAllMsgQueues ms@JournalMsgStore {config} action res = ifM (doesDirectoryExist storePath) processStore (pure res)
     where
+      processStore = do
+        closeMsgStore ms
+        lock <- createLockIO -- the same lock is used for all queues
+        dirs <- zip [0..] <$> listQueueDirs 0 ("", storePath)
+        let count = length dirs
+        res' <- foldM (processQueue lock count) res dirs
+        progress count count
+        putStrLn ""
+        pure res'
       JournalStoreConfig {storePath, pathParts} = config
       processQueue lock count acc (i :: Int, (queueId, dir)) = do
         when (i `mod` 100 == 0) $ progress i count
@@ -229,7 +231,7 @@ instance MsgStoreClass JournalMsgStore where
           Left e -> do
             putStrLn ("Error: message queue directory " <> dir <> " is invalid: " <> e)
             exitFailure
-        closeMsgQueue_ q
+        closeMsgQueue q
         pure acc'
       progress i count = do
         putStr $ "Processed: " <> show i <> "/" <> show count <> " queues\r"
@@ -274,12 +276,12 @@ instance MsgStoreClass JournalMsgStore where
 
   delMsgQueue :: JournalMsgStore -> RecipientId -> IO ()
   delMsgQueue ms rId = withLockMap (queueLocks ms) rId "delMsgQueue" $ do
-    void $ closeMsgQueue ms rId
+    void $ deleteMsgQueue_ ms rId
     removeQueueDirectory ms rId
 
   delMsgQueueSize :: JournalMsgStore -> RecipientId -> IO Int
   delMsgQueueSize ms rId = withLockMap (queueLocks ms) rId "delMsgQueue" $ do
-    state_ <- closeMsgQueue ms rId
+    state_ <- deleteMsgQueue_ ms rId
     sz <- maybe (pure $ -1) (fmap size . readTVarIO) state_
     removeQueueDirectory ms rId
     pure sz
@@ -553,13 +555,13 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
       logQueueState sh st
       pure (st, sh)
 
-closeMsgQueue :: JournalMsgStore -> RecipientId -> IO (Maybe (TVar MsgQueueState))
-closeMsgQueue st rId =
+deleteMsgQueue_ :: JournalMsgStore -> RecipientId -> IO (Maybe (TVar MsgQueueState))
+deleteMsgQueue_ st rId =
   atomically (TM.lookupDelete rId (msgQueues st))
-    >>= mapM (\q -> closeMsgQueue_ q $> state q)
+    >>= mapM (\q -> closeMsgQueue q $> state q)
 
-closeMsgQueue_ :: JournalMsgQueue -> IO ()
-closeMsgQueue_ q = readTVarIO (handles q) >>= mapM_ closeHandles
+closeMsgQueue :: JournalMsgQueue -> IO ()
+closeMsgQueue q = readTVarIO (handles q) >>= mapM_ closeHandles
   where
     closeHandles (MsgQueueHandles sh rh wh_) = do
       hClose sh

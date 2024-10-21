@@ -32,11 +32,13 @@ module Simplex.Messaging.Server
     runSMPServerBlocking,
     importMessages,
     exportMessages,
+    printMessageStats,
     disconnectTransport,
     verifyCmdAuthorization,
     dummyVerifyCmd,
     randomId,
     AttachHTTP,
+    MessageStats (..),
   )
 where
 
@@ -91,7 +93,7 @@ import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgQueue (..))
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgQueue (..), closeMsgQueue)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -140,14 +142,24 @@ runSMPServerBlocking started cfg attachHTTP_ = newEnv cfg >>= runReaderT (smpSer
 type M a = ReaderT Env IO a
 type AttachHTTP = Socket -> TLS.Context -> IO ()
 
+data MessageStats = MessageStats
+  { storedMsgsCount :: Int,
+    expiredMsgsCount :: Int,
+    storedQueues :: Int
+  }
+
+newMessageStats :: MessageStats
+newMessageStats = MessageStats 0 0 0
+
 smpServer :: TMVar Bool -> ServerConfig -> Maybe AttachHTTP -> M ()
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHTTP_ = do
   s <- asks server
   pa <- asks proxyAgent
-  expiredMsgs <- restoreServerMessages
-  logInfo $ "expired " <> tshow expiredMsgs <> " messages"
-  expiredNtfs <- restoreServerNtfs
-  restoreServerStats expiredMsgs expiredNtfs
+  msgStats <- restoreServerMessages
+  ntfStats <- restoreServerNtfs
+  liftIO $ printMessageStats "messages" msgStats
+  liftIO $ printMessageStats "notifications" ntfStats
+  restoreServerStats msgStats ntfStats
   raceAny_
     ( serverThread s "server subscribedQ" subscribedQ subscribers subClients pendingSubEvents subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubClients pendingNtfSubEvents ntfSubscriptions (\_ -> pure ())
@@ -1732,32 +1744,41 @@ exportMessages ms f getMessages = do
     saveQueueMsgs h rId q acc = getMessages q >>= \msgs -> (acc + length msgs) <$ BLD.hPutBuilder h (encodeMessages rId msgs)
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
 
-restoreServerMessages :: M Int
+restoreServerMessages :: M MessageStats
 restoreServerMessages = do
   old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
   asks msgStore >>= liftIO . processMessages old_
     where
-      processMessages :: Maybe Int64 -> AMsgStore -> IO Int
+      processMessages :: Maybe Int64 -> AMsgStore -> IO MessageStats
       processMessages old_ = \case
         AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-          Just f -> ifM (doesFileExist f) (importMessages ms f old_) (pure 0)
-          Nothing -> pure 0
+          Just f -> ifM (doesFileExist f) (importMessages ms f old_) (pure newMessageStats)
+          Nothing -> pure newMessageStats
         AMS SMSJournal ms -> case old_ of
           Just old -> do
             logInfo "expiring journal store messages..."
-            withAllMsgQueues ms (\_ -> processQueue old) 0
+            (storedMsgsCount, expiredMsgsCount, storedQueues) <- withAllMsgQueues ms (\_ -> processExpireQueue old) (0, 0, 0)
+            pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues}
           Nothing -> do
             logInfo "validating journal store messages..."
-            pure 0
+            (storedMsgsCount, storedQueues) <- withAllMsgQueues ms (\_ -> processValidateQueue) (0, 0)
+            pure MessageStats {storedMsgsCount, expiredMsgsCount = 0, storedQueues}
         where
-          processQueue old q acc =
-            runExceptT (deleteExpiredMsgs q old) >>= \case
-              Right deleted -> pure $ acc + deleted
+          processExpireQueue old q (!stored, !expired, !qCount) =
+            runExceptT expireQueue >>= \case
+              Right (stored', expired') -> pure (stored + stored', expired + expired', qCount + 1)
               Left e -> do
                 logInfo $ "failed expiring messages in queue " <> T.pack (queueDirectory q) <> ": " <> tshow e
                 exitFailure
-    
-importMessages :: MsgStoreClass s => s -> FilePath -> Maybe Int64 -> IO Int
+            where
+              expireQueue = do
+                expired'' <- deleteExpiredMsgs q old
+                stored'' <- liftIO $ getQueueSize q
+                liftIO $ closeMsgQueue q
+                pure (stored'', expired'')
+          processValidateQueue q (!stored, !qCount) = getQueueSize q >>= \stored' -> pure (stored + stored', qCount + 1)
+
+importMessages :: MsgStoreClass s => s -> FilePath -> Maybe Int64 -> IO MessageStats
 importMessages ms f old_ = do
   logInfo $ "restoring messages from file " <> T.pack f
   LB.readFile f >>= runExceptT . foldM restoreMsg (0, 0, 0) . zip [0..] . LB.lines >>= \case
@@ -1765,19 +1786,18 @@ importMessages ms f old_ = do
       putStrLn ""
       logError . T.pack $ "error restoring messages: " <> e
       liftIO exitFailure
-    Right (count, total, expired) -> do
-      putStrLn ""
+    Right (lineCount, storedMsgsCount, expiredMsgsCount) -> do
+      putStrLn $ "Processed " <> show lineCount <> " lines"
       renameFile f $ f <> ".bak"
       logQueueStates ms
-      qCount <- M.size <$> readTVarIO (activeMsgQueues ms)
-      logInfo $ "Processed " <> tshow count <> " lines, imported " <> tshow total <> " messages into " <> tshow qCount <> " queues, expired " <> tshow expired <> " messages"
-      pure expired
+      storedQueues <- M.size <$> readTVarIO (activeMsgQueues ms)
+      pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues}
   where
     progress i = do
       liftIO $ putStr $ "Processed " <> show i <> " lines\r"
       hFlush stdout
     restoreMsg :: (Int, Int, Int) -> (Int, LB.ByteString) -> ExceptT String IO (Int, Int, Int)
-    restoreMsg (!count, !total, !expired) (i, s') = do
+    restoreMsg (!lineCount, !stored, !expired) (i, s') = do
       when (i `mod` 1000 == 0) $ progress i
       MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
       liftError show $ addToMsgQueue rId msg
@@ -1791,11 +1811,15 @@ importMessages ms f old_ = do
               | otherwise -> pure (True, False)
             MessageQuota {} -> writeMsg ms q False msg $> (False, False)
           when logFull . logError . decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
-          let total' = if logFull then total else total + 1
-              expired' = if isExpired then expired + 1 else expired
-          pure (count + 1, total', expired')
+          let !stored' = if logFull || isExpired then stored else stored + 1
+              !expired' = if isExpired then expired + 1 else expired
+          pure (lineCount + 1, stored', expired')
         msgErr :: Show e => String -> e -> String
         msgErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
+
+printMessageStats :: T.Text -> MessageStats -> IO ()
+printMessageStats name MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues} =
+  logInfo $ name <> " stored: " <> tshow storedMsgsCount <> ", expired: " <> tshow expiredMsgsCount <> ", queues: " <> tshow storedQueues
 
 saveServerNtfs :: M ()
 saveServerNtfs = asks (storeNtfsFile . config) >>= mapM_ saveNtfs
@@ -1811,33 +1835,37 @@ saveServerNtfs = asks (storeNtfsFile . config) >>= mapM_ saveNtfs
         saveQueueNtfs h (nId, v) = BLD.hPutBuilder h . encodeNtfs nId . reverse =<< readTVarIO v
         encodeNtfs nId = mconcat . map (\ntf -> BLD.byteString (strEncode $ NLRv1 nId ntf) <> BLD.char8 '\n')
 
-restoreServerNtfs :: M Int
+restoreServerNtfs :: M MessageStats
 restoreServerNtfs =
   asks (storeNtfsFile . config) >>= \case
-    Just f -> ifM (doesFileExist f) (restoreNtfs f) (pure 0)
-    Nothing -> pure 0
+    Just f -> ifM (doesFileExist f) (restoreNtfs f) (pure newMessageStats)
+    Nothing -> pure newMessageStats
   where
     restoreNtfs f = do
       logInfo $ "restoring notifications from file " <> T.pack f
       ns <- asks ntfStore
       old <- asks (notificationExpiration . config) >>= liftIO . expireBeforeEpoch
-      runExceptT (liftIO (LB.readFile f) >>= foldM (restoreNtf ns old) 0 . LB.lines) >>= \case
-        Left e -> do
-          logError . T.pack $ "error restoring notifications: " <> e
-          liftIO exitFailure
-        Right expired -> do
-          renameFile f $ f <> ".bak"
-          logInfo "notifications restored"
-          pure expired
+      liftIO $
+        LB.readFile f >>= runExceptT . foldM (restoreNtf ns old) (0, 0, 0) . LB.lines >>= \case
+          Left e -> do
+            logError . T.pack $ "error restoring notifications: " <> e
+            liftIO exitFailure
+          Right (lineCount, storedMsgsCount, expiredMsgsCount) -> do
+            renameFile f $ f <> ".bak"
+            let NtfStore ns' = ns
+            storedQueues <- M.size <$> readTVarIO ns'
+            logInfo $ "notifications restored, " <> tshow lineCount <> " lines processed" 
+            pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues}
       where
-        restoreNtf ns old !expired s' = do
+        restoreNtf :: NtfStore -> Int64 -> (Int, Int, Int) -> LB.ByteString -> ExceptT String IO (Int, Int, Int)
+        restoreNtf ns old (!lineCount, !stored, !expired) s' = do
           NLRv1 nId ntf <- liftEither . first (ntfErr "parsing") $ strDecode s
           liftIO $ addToNtfs nId ntf
           where
             s = LB.toStrict s'
             addToNtfs nId ntf@MsgNtf {ntfTs}
-              | systemSeconds ntfTs < old = pure (expired + 1)
-              | otherwise = storeNtf ns nId ntf $> expired
+              | systemSeconds ntfTs < old = pure (lineCount + 1, stored, expired + 1)
+              | otherwise = storeNtf ns nId ntf $> (lineCount + 1, stored + 1, expired)
             ntfErr :: Show e => String -> e -> String
             ntfErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
 
@@ -1851,8 +1879,8 @@ saveServerStats =
       B.writeFile f $ strEncode stats
       logInfo "server stats saved"
 
-restoreServerStats :: Int -> Int -> M ()
-restoreServerStats expiredMsgs expiredNtfs = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
+restoreServerStats :: MessageStats -> MessageStats -> M ()
+restoreServerStats msgStats ntfStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
   where
     restoreStats f = whenM (doesFileExist f) $ do
       logInfo $ "restoring server stats from file " <> T.pack f
@@ -1866,7 +1894,7 @@ restoreServerStats expiredMsgs expiredNtfs = asks (serverStatsBackupFile . confi
               _ -> pure 0
           NtfStore ns <- asks ntfStore
           _ntfCount <- liftIO . foldM (\(!n) q -> (n +) . length <$> readTVarIO q) 0 =<< readTVarIO ns
-          liftIO $ setServerStats s d {_qCount, _msgCount, _ntfCount, _msgExpired = _msgExpired d + expiredMsgs, _msgNtfExpired = _msgNtfExpired d + expiredNtfs}
+          liftIO $ setServerStats s d {_qCount, _msgCount, _ntfCount, _msgExpired = _msgExpired d + expiredMsgsCount msgStats, _msgNtfExpired = _msgNtfExpired d + expiredMsgsCount ntfStats}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
           when (_qCount /= statsQCount) $ logWarn $ "Queue count differs: stats: " <> tshow statsQCount <> ", store: " <> tshow _qCount
