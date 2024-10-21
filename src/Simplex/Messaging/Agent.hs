@@ -385,7 +385,7 @@ subscribeConnections c = withAgentEnv c . subscribeConnections' c
 {-# INLINE subscribeConnections #-}
 
 -- | Get connection messages (GET commands for multiple connections)
-getConnectionMessages :: AgentClient -> [ConnId] -> AE [(ConnId, SMPMsgMeta)]
+getConnectionMessages :: AgentClient -> NonEmpty ConnId -> AE [(ConnId, SMPMsgMeta)]
 getConnectionMessages c = withAgentEnv c . getConnectionMessages' c
 {-# INLINE getConnectionMessages #-}
 
@@ -1058,10 +1058,10 @@ resubscribeConnections' c connIds = do
   -- union is left-biased, so results returned by subscribeConnections' take precedence
   (`M.union` r) <$> subscribeConnections' c connIds'
 
-getConnectionMessages' :: AgentClient -> [ConnId] -> AM [(ConnId, SMPMsgMeta)]
+getConnectionMessages' :: AgentClient -> NonEmpty ConnId -> AM [(ConnId, SMPMsgMeta)]
 getConnectionMessages' c connIds = do
-  msgs <- zip connIds <$> forM connIds (\connId -> getConnectionMessage' c connId `catchAgentError` \_ -> pure Nothing)
-  pure $ mapMaybe (\(x, y) -> (x,) <$> y) msgs
+  msgs <- L.zip connIds <$> forM connIds (\connId -> getConnectionMessage' c connId `catchAgentError` \_ -> pure Nothing)
+  pure $ mapMaybe (\(x, y) -> (x,) <$> y) $ L.toList msgs
 
 getConnectionMessage' :: AgentClient -> ConnId -> AM (Maybe SMPMsgMeta)
 getConnectionMessage' c connId = do
