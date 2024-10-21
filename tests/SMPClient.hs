@@ -23,6 +23,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
+import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import qualified Simplex.Messaging.Transport.Client as Client
@@ -61,6 +62,12 @@ testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
 
 testStoreMsgsFile2 :: FilePath
 testStoreMsgsFile2 = "tests/tmp/smp-server-messages.log.2"
+
+testStoreMsgsDir :: FilePath
+testStoreMsgsDir = "tests/tmp/messages"
+
+testStoreMsgsDir2 :: FilePath
+testStoreMsgsDir2 = "tests/tmp/messages.2"
 
 testStoreNtfsFile :: FilePath
 testStoreNtfsFile = "tests/tmp/smp-server-ntfs.log"
@@ -105,11 +112,14 @@ cfg =
     { transports = [],
       smpHandshakeTimeout = 60000000,
       tbqSize = 1,
+      msgStoreType = AMSType SMSJournal,
       msgQueueQuota = 4,
+      maxJournalMsgCount = 5,
+      maxJournalStateLines = 2,
       queueIdBytes = 24,
       msgIdBytes = 24,
-      storeLogFile = Nothing,
-      storeMsgsFile = Nothing,
+      storeLogFile = Just testStoreLogFile,
+      storeMsgsFile = Just testStoreMsgsDir,
       storeNtfsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
@@ -173,7 +183,7 @@ withSmpServerStoreMsgLogOn t =
     t
     cfg
       { storeLogFile = Just testStoreLogFile,
-        storeMsgsFile = Just testStoreMsgsFile,
+        storeMsgsFile = Just testStoreMsgsDir,
         storeNtfsFile = Just testStoreNtfsFile,
         serverStatsBackupFile = Just testServerStatsBackupFile
       }

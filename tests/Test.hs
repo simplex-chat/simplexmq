@@ -11,6 +11,7 @@ import CoreTests.BatchingTests
 import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
+import CoreTests.MsgStoreTests
 import CoreTests.RetryIntervalTests
 import CoreTests.SOCKSSettings
 import CoreTests.StoreLogTests
@@ -53,6 +54,7 @@ main = do
           describe "Version range" versionRangeTests
           describe "Encryption tests" cryptoTests
           describe "Encrypted files tests" cryptoFileTests
+          describe "Message store tests" msgStoreTests
           describe "Retry interval tests" retryIntervalTests
           describe "SOCKS settings tests" socksSettingsTests
           describe "Store log tests" storeLogTests
