@@ -93,8 +93,8 @@ instance MsgStoreClass STMMsgStore where
         mapM_ (writeTQueue q) msgs
         pure msgs
 
-  writeMsg :: STMMsgQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
-  writeMsg STMMsgQueue {msgQueue = q, quota, canWrite, size} _logState !msg = liftIO $ atomically $ do
+  writeMsg :: STMMsgStore -> STMMsgQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
+  writeMsg _ STMMsgQueue {msgQueue = q, quota, canWrite, size} _logState !msg = liftIO $ atomically $ do
     canWrt <- readTVar canWrite
     empty <- isEmptyTQueue q
     if canWrt || empty
@@ -122,5 +122,5 @@ instance MsgStoreClass STMMsgStore where
       Just _ -> modifyTVar' size (subtract 1)
       _ -> pure ()
 
-  atomicQueue :: STMMsgQueue -> String -> STM a -> ExceptT ErrorType IO a
-  atomicQueue _ _ = liftIO . atomically
+  isolateQueue :: STMMsgQueue -> String -> STM a -> ExceptT ErrorType IO a
+  isolateQueue _ _ = liftIO . atomically

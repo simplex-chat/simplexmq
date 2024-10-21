@@ -39,7 +39,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
-import Simplex.Messaging.Server (AttachHTTP, exportMessages, importMessages, runSMPServer)
+import Simplex.Messaging.Server (AttachHTTP, exportMessages, importMessages, printMessageStats, runSMPServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
@@ -99,8 +99,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 ("WARNING: message log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir)
                 "Messages not imported"
               ms <- newJournalMsgStore
-              void $ importMessages ms storeMsgsFilePath Nothing -- no expiration
+              msgStats <- importMessages ms storeMsgsFilePath Nothing -- no expiration
               putStrLn "Import completed"
+              printMessageStats "Messages" msgStats
               putStrLn $ case readMsgStoreType ini of
                 Right (AMSType SMSMemory) -> "store_messages set to `memory`, update it to `journal` in INI file"
                 Right (AMSType SMSJournal) -> "store_messages set to `journal`"
