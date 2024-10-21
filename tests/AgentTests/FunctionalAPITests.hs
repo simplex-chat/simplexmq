@@ -1946,7 +1946,7 @@ testBatchedSubscriptions nCreate nDel t =
     runServers :: ExceptT AgentErrorType IO a -> IO a
     runServers a = do
       withSmpServerStoreLogOn t testPort $ \t1 -> do
-        res <- withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \t2 ->
+        res <- withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \t2 ->
           runRight a `finally` killThread t2
         killThread t1
         pure res

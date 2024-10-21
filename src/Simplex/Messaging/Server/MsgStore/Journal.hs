@@ -44,6 +44,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
@@ -95,7 +96,7 @@ data JournalMsgQueue = JournalMsgQueue
     -- Nothing - unknown, Just Nothing - empty queue.
     -- It  prevents reading each message twice,
     -- and reading it after it was just written.
-    tipMsg :: TVar (Maybe (Maybe (Message, Int))),
+    tipMsg :: TVar (Maybe (Maybe (Message, Int64))),
     handles :: TVar (Maybe MsgQueueHandles)
   }
 
@@ -118,8 +119,8 @@ data JournalState t = JournalState
     journalId :: ByteString,
     msgPos :: Int,
     msgCount :: Int,
-    bytePos :: Int,
-    byteCount :: Int
+    bytePos :: Int64,
+    byteCount :: Int64
   }
   deriving (Show)
 
@@ -147,15 +148,7 @@ newMsgQueueState journalId =
     }
 
 newJournalState :: JournalTypeI t => ByteString -> JournalState t
-newJournalState journalId =
-  JournalState
-    { journalType = sJournalType,
-      journalId,
-      msgPos = 0,
-      msgCount = 0,
-      bytePos = 0,
-      byteCount = 0
-    }
+newJournalState journalId = JournalState sJournalType journalId 0 0 0 0
 
 journalFilePath :: FilePath -> ByteString -> FilePath
 journalFilePath dir journalId = dir </> (msgLogFileName <> "." <> B.unpack journalId <> logFileExt)
@@ -177,13 +170,16 @@ instance StrEncoding MsgQueueState where
 
 instance JournalTypeI t => StrEncoding (JournalState t) where
   strEncode JournalState {journalId, msgPos, msgCount, bytePos, byteCount} =
-    B.concat [journalId, ",", strEncodeList [msgPos, msgCount, bytePos, byteCount]]
+    B.intercalate "," [journalId, e msgPos, e msgCount, e bytePos, e byteCount]
+    where
+      e :: StrEncoding a => a -> ByteString
+      e = strEncode
   strP = do
     journalId <- A.takeTill (== ',')
-    A.char ',' *> strListP >>= \case
-      [msgPos, msgCount, bytePos, byteCount] ->
-        pure JournalState {journalType = sJournalType, journalId, msgPos, msgCount, bytePos, byteCount}
-      _ -> fail "bad JournalState"
+    JournalState sJournalType journalId <$> i <*> i <*> i <*> i
+    where
+      i :: Integral a => A.Parser a
+      i = A.char ',' *> A.decimal
 
 queueLogFileName :: String
 queueLogFileName = "queue_state"
@@ -304,11 +300,8 @@ instance MsgStoreClass JournalMsgStore where
       getMsg msgs hs = chooseReadJournal q drainMsgs hs >>= maybe (pure msgs) readMsg
         where
           readMsg (rs, h) = do
-            -- TODO handle errors
-            s <- hGetLineAt h $ bytePos rs
-            -- TODO handle errors
-            Right msg <- pure $ strDecode s
-            updateReadPos q drainMsgs (B.length s + 1) hs -- 1 is to account for new line
+            (msg, len) <- hGetMsgAt h $ bytePos rs
+            updateReadPos q drainMsgs len hs -- 1 is to account for new line
             (msg :) <$> getMsg msgs hs
 
   writeMsg :: JournalMsgStore -> JournalMsgQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
@@ -328,7 +321,7 @@ instance MsgStoreClass JournalMsgStore where
       msgQuota = MessageQuota {msgId = msgId msg, msgTs = msgTs msg}
       writeToJournal st@MsgQueueState {writeState, readState = rs, size} canWrt' msg' = do
         let msgStr = strEncode msg' `B.snoc` '\n'
-            msgLen = B.length msgStr
+            msgLen = fromIntegral $ B.length msgStr
         hs <- maybe createQueueDir pure =<< readTVarIO handles
         (ws, wh) <- case writeHandle hs of
           Nothing | msgCount writeState >= maxMsgCount -> switchWriteJournal hs
@@ -366,11 +359,8 @@ instance MsgStoreClass JournalMsgStore where
       peekMsg (rs, h) = readTVarIO tipMsg >>= maybe readMsg (pure . fmap fst)
         where
           readMsg = do
-            -- TODO handle errors
-            s <- hGetLineAt h $ bytePos rs
-            -- TODO handle errors
-            Right msg <- pure $ strDecode s
-            atomically $ writeTVar tipMsg $ Just (Just (msg, B.length s + 1)) -- 1 is to account for new line
+            ml@(msg, _) <- hGetMsgAt h $ bytePos rs
+            atomically $ writeTVar tipMsg $ Just (Just ml) -- 1 is to account for new line
             pure $ Just msg
 
   tryDeleteMsg_ :: JournalMsgQueue -> StoreIO ()
@@ -432,7 +422,7 @@ updateQueueState q log' hs st = do
 logQueueState :: Handle -> MsgQueueState -> IO ()
 logQueueState h st = B.hPutStr h $ strEncode st `B.snoc` '\n'
 
-updateReadPos :: JournalMsgQueue -> Bool -> Int -> MsgQueueHandles -> IO ()
+updateReadPos :: JournalMsgQueue -> Bool -> Int64 -> MsgQueueHandles -> IO ()
 updateReadPos q log' len hs = do
   st@MsgQueueState {readState = rs, size} <- readTVarIO (state q)
   let JournalState {msgPos, bytePos} = rs
@@ -497,7 +487,7 @@ openJournals dir st@MsgQueueState {readState = rs, writeState = ws} = do
        in ifM (doesFileExist path) (Right <$> openFile path ReadWriteMode) (pure $ Left path)
     -- do that for all append operations
 
-fixFileSize :: Handle -> Int -> IO ()
+fixFileSize :: Handle -> Int64 -> IO ()
 fixFileSize h pos = do
   let pos' = fromIntegral pos
   size <- IO.hFileSize h
@@ -606,14 +596,21 @@ removeQueueDirectory st rId =
   let dir = msgQueueDirectory st rId
    in removePathForcibly dir `catchAny` (\e -> logError $ "STORE ERROR removeQueueDirectory " <> T.pack dir <> ": " <> tshow e)
 
-hAppend :: Handle -> Int -> ByteString -> IO ()
+hAppend :: Handle -> Int64 -> ByteString -> IO ()
 hAppend h pos s = do
   fixFileSize h pos
   IO.hSeek h SeekFromEnd 0
   B.hPutStr h s
 
-hGetLineAt :: Handle -> Int -> IO ByteString
-hGetLineAt h pos = IO.hSeek h AbsoluteSeek (fromIntegral pos) >> B.hGetLine h
+hGetMsgAt :: Handle -> Int64 -> IO (Message, Int64)
+hGetMsgAt h pos = do
+  IO.hSeek h AbsoluteSeek $ fromIntegral pos
+  s <- B.hGetLine h
+  case strDecode s of
+    Right !msg ->
+      let !len = fromIntegral (B.length s) + 1
+       in pure (msg, len)
+    Left e -> E.throwIO $ userError $ "Error parsing message: " <> e
 
 openFile :: FilePath -> IOMode -> IO Handle
 openFile f mode = do
