@@ -13,7 +13,6 @@ import Control.Monad.Trans.Except
 import Data.Int (Int64)
 import Data.Kind
 import qualified Data.Map.Strict as M
-import Data.Text (Text)
 import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Simplex.Messaging.Protocol (ErrorType, Message (..), MsgId, RecipientId)
 import Simplex.Messaging.TMap (TMap)

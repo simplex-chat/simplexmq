@@ -357,12 +357,13 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           _ -> enableStoreLog $> path
         transports = iniTransports ini
         sharedHTTP = any (\(_, _, addHTTP) -> addHTTP) transports
+        iniMsgStoreType = either error id $! readMsgStoreType ini
         serverConfig =
           ServerConfig
             { transports,
               smpHandshakeTimeout = 120000000,
               tbqSize = 128,
-              msgStoreType = either error id $! readMsgStoreType ini,
+              msgStoreType = iniMsgStoreType,
               msgQueueQuota = defaultMsgQueueQuota,
               maxJournalMsgCount = defaultMaxJournalMsgCount,
               maxJournalStateLines = defaultMaxJournalStateLines,
@@ -376,7 +377,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   },
               httpCredentials = (\WebHttpsParams {key, cert} -> ServerCredentials {caCertificateFile = Nothing, privateKeyFile = key, certificateFile = cert}) <$> webHttpsParams',
               storeLogFile = enableStoreLog $> storeLogFilePath,
-              storeMsgsFile = restoreMessagesFile storeMsgsFilePath,
+              storeMsgsFile = case iniMsgStoreType of
+                AMSType SMSMemory -> restoreMessagesFile storeMsgsFilePath
+                AMSType SMSJournal -> Just storeMsgsJournalDir,
               storeNtfsFile = restoreMessagesFile storeNtfsFilePath,
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
