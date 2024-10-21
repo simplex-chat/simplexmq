@@ -522,7 +522,7 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
         [] -> writeNewQueueState
         _ -> do
           r@(st, _) <- useLastLine (length ls) True ls
-          unless (validQueueState st) $ E.throwIO $ userError $ "read invalid invalid: " <> show st
+          unless (validQueueState st) $ E.throwIO $ userError $ "read invalid state: " <> show st
           pure r
     writeNewQueueState = do
       logWarn $ "STORE WARNING: empty queue state in " <> T.pack statePath <> ", initialized"
