@@ -93,7 +93,7 @@ import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgQueue (..), closeMsgQueue)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgQueue (..), JMQueue (..), closeMsgQueue)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -1768,7 +1768,7 @@ restoreServerMessages = do
             runExceptT expireQueue >>= \case
               Right (stored', expired') -> pure (stored + stored', expired + expired', qCount + 1)
               Left e -> do
-                logInfo $ "failed expiring messages in queue " <> T.pack (queueDirectory q) <> ": " <> tshow e
+                logInfo $ "failed expiring messages in queue " <> T.pack (queueDirectory $ queue q) <> ": " <> tshow e
                 exitFailure
             where
               expireQueue = do
