@@ -249,7 +249,7 @@ instance MsgStoreClass JournalMsgStore where
               (Nothing <$ putStrLn ("Error: path " <> path' <> " is not a directory, skipping"))
 
   logQueueStates :: JournalMsgStore -> IO ()
-  logQueueStates st = void $ withActiveMsgQueues st (\_ q !_ -> logState q $> True) True
+  logQueueStates st = withActiveMsgQueues st (\_ q _ -> logState q) ()
     where
       logState q =
         readTVarIO (handles q)
