@@ -318,7 +318,7 @@ instance MsgStoreClass JournalMsgStore where
         else pure Nothing
     where
       JournalStoreConfig {quota, maxMsgCount} = config ms
-      msgQuota = MessageQuota {msgId = msgId msg, msgTs = msgTs msg}
+      !msgQuota = MessageQuota {msgId = msgId msg, msgTs = msgTs msg}
       writeToJournal st@MsgQueueState {writeState, readState = rs, size} canWrt' msg' = do
         let msgStr = strEncode msg' `B.snoc` '\n'
             msgLen = fromIntegral $ B.length msgStr

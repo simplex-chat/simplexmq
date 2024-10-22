@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
@@ -107,19 +108,24 @@ testSMPClient_ host port vr client = do
       | otherwise = Nothing
 
 cfg :: ServerConfig
-cfg =
+cfg = cfgMS (AMSType SMSJournal)
+
+cfgMS :: AMSType -> ServerConfig
+cfgMS msType =
   ServerConfig
     { transports = [],
       smpHandshakeTimeout = 60000000,
       tbqSize = 1,
-      msgStoreType = AMSType SMSJournal,
+      msgStoreType = msType,
       msgQueueQuota = 4,
       maxJournalMsgCount = 5,
       maxJournalStateLines = 2,
       queueIdBytes = 24,
       msgIdBytes = 24,
       storeLogFile = Just testStoreLogFile,
-      storeMsgsFile = Just testStoreMsgsDir,
+      storeMsgsFile = Just $ case msType of
+        AMSType SMSJournal -> testStoreMsgsDir
+        AMSType SMSMemory -> testStoreMsgsFile,
       storeNtfsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
@@ -178,18 +184,17 @@ proxyVRangeV8 :: VersionRangeSMP
 proxyVRangeV8 = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerStoreMsgLogOn t =
-  withSmpServerConfigOn
-    t
-    cfg
-      { storeLogFile = Just testStoreLogFile,
-        storeMsgsFile = Just testStoreMsgsDir,
-        storeNtfsFile = Just testStoreNtfsFile,
-        serverStatsBackupFile = Just testServerStatsBackupFile
-      }
+withSmpServerStoreMsgLogOn = (`withSmpServerStoreMsgLogOnMS` AMSType SMSJournal)
+
+withSmpServerStoreMsgLogOnMS :: HasCallStack => ATransport -> AMSType -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
+withSmpServerStoreMsgLogOnMS t msType =
+  withSmpServerConfigOn t (cfgMS msType) {storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
 
 withSmpServerStoreLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerStoreLogOn t = withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile, serverStatsBackupFile = Just testServerStatsBackupFile}
+withSmpServerStoreLogOn = (`withSmpServerStoreLogOnMS` AMSType SMSJournal)
+
+withSmpServerStoreLogOnMS :: HasCallStack => ATransport -> AMSType -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
+withSmpServerStoreLogOnMS t msType = withSmpServerConfigOn t (cfgMS msType) {serverStatsBackupFile = Just testServerStatsBackupFile}
 
 withSmpServerConfigOn :: HasCallStack => ATransport -> ServerConfig -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerConfigOn t cfg' port' =
@@ -222,11 +227,11 @@ withSmpServer t = withSmpServerOn t testPort
 withSmpServerProxy :: HasCallStack => ATransport -> IO a -> IO a
 withSmpServerProxy t = withSmpServerConfigOn t proxyCfg testPort . const
 
-runSmpTest :: forall c a. (HasCallStack, Transport c) => (HasCallStack => THandleSMP c 'TClient -> IO a) -> IO a
-runSmpTest test = withSmpServer (transport @c) $ testSMPClient test
+runSmpTest :: forall c a. (HasCallStack, Transport c) => AMSType -> (HasCallStack => THandleSMP c 'TClient -> IO a) -> IO a
+runSmpTest msType test = withSmpServerConfigOn (transport @c) (cfgMS msType) testPort $ \_ -> testSMPClient test
 
-runSmpTestN :: forall c a. (HasCallStack, Transport c) => Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO a) -> IO a
-runSmpTestN = runSmpTestNCfg cfg supportedClientSMPRelayVRange
+runSmpTestN :: forall c a. (HasCallStack, Transport c) => AMSType -> Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO a) -> IO a
+runSmpTestN msType = runSmpTestNCfg (cfgMS msType) supportedClientSMPRelayVRange
 
 runSmpTestNCfg :: forall c a. (HasCallStack, Transport c) => ServerConfig -> VersionRangeSMP -> Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO a) -> IO a
 runSmpTestNCfg srvCfg clntVR nClients test = withSmpServerConfigOn (transport @c) srvCfg testPort $ \_ -> run nClients []
@@ -241,7 +246,7 @@ smpServerTest ::
   TProxy c ->
   (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
   IO (Maybe TransmissionAuth, ByteString, ByteString, BrokerMsg)
-smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
+smpServerTest _ t = runSmpTest (AMSType SMSJournal) $ \h -> tPut' h t >> tGet' h
   where
     tPut' :: THandleSMP c 'TClient -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
     tPut' h@THandle {params = THandleParams {sessionId, implySessId}} (sig, corrId, queueId, smp) = do
@@ -252,14 +257,17 @@ smpServerTest _ t = runSmpTest $ \h -> tPut' h t >> tGet' h
       [(Nothing, _, (CorrId corrId, EntityId qId, Right cmd))] <- tGet h
       pure (Nothing, corrId, qId, cmd)
 
-smpTest :: (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandleSMP c 'TClient -> IO ()) -> Expectation
-smpTest _ test' = runSmpTest test' `shouldReturn` ()
+smpTest :: (HasCallStack, Transport c) => TProxy c -> AMSType -> (HasCallStack => THandleSMP c 'TClient -> IO ()) -> Expectation
+smpTest _ msType test' = runSmpTest msType test' `shouldReturn` ()
 
-smpTestN :: (HasCallStack, Transport c) => Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO ()) -> Expectation
-smpTestN n test' = runSmpTestN n test' `shouldReturn` ()
+smpTestN :: (HasCallStack, Transport c) => AMSType -> Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO ()) -> Expectation
+smpTestN msType n test' = runSmpTestN msType n test' `shouldReturn` ()
 
-smpTest2 :: forall c. (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
-smpTest2 = smpTest2Cfg cfg supportedClientSMPRelayVRange
+smpTest2' :: forall c. (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
+smpTest2' = (`smpTest2` AMSType SMSJournal)
+
+smpTest2 :: forall c. (HasCallStack, Transport c) => TProxy c -> AMSType -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
+smpTest2 t msType = smpTest2Cfg (cfgMS msType) supportedClientSMPRelayVRange t
 
 smpTest2Cfg :: forall c. (HasCallStack, Transport c) => ServerConfig -> VersionRangeSMP -> TProxy c -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
 smpTest2Cfg srvCfg clntVR _ test' = runSmpTestNCfg srvCfg clntVR 2 _test `shouldReturn` ()
@@ -268,15 +276,15 @@ smpTest2Cfg srvCfg clntVR _ test' = runSmpTestNCfg srvCfg clntVR 2 _test `should
     _test [h1, h2] = test' h1 h2
     _test _ = error "expected 2 handles"
 
-smpTest3 :: forall c. (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
-smpTest3 _ test' = smpTestN 3 _test
+smpTest3 :: forall c. (HasCallStack, Transport c) => TProxy c -> AMSType -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
+smpTest3 _ msType test' = smpTestN msType 3 _test
   where
     _test :: HasCallStack => [THandleSMP c 'TClient] -> IO ()
     _test [h1, h2, h3] = test' h1 h2 h3
     _test _ = error "expected 3 handles"
 
-smpTest4 :: forall c. (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
-smpTest4 _ test' = smpTestN 4 _test
+smpTest4 :: forall c. (HasCallStack, Transport c) => TProxy c -> AMSType -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
+smpTest4 _ msType test' = smpTestN msType 4 _test
   where
     _test :: HasCallStack => [THandleSMP c 'TClient] -> IO ()
     _test [h1, h2, h3, h4] = test' h1 h2 h3 h4

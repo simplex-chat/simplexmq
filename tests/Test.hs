@@ -25,8 +25,9 @@ import NtfServerTests (ntfServerTests)
 import RemoteControl (remoteControlTests)
 import SMPProxyTests (smpProxyTests)
 import ServerTests
+import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..))
 import Simplex.Messaging.Transport (TLS, Transport (..))
-import Simplex.Messaging.Transport.WebSockets (WS)
+-- import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Environment (setEnv)
 import Test.Hspec
@@ -60,8 +61,14 @@ main = do
           describe "Store log tests" storeLogTests
           describe "TRcvQueues tests" tRcvQueuesTests
           describe "Util tests" utilTests
-        describe "SMP server via TLS" $ serverTests (transport @TLS)
-        xdescribe "SMP server via WebSockets" $ serverTests (transport @WS)
+        describe "SMP server via TLS, jornal message store" $ do
+          describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
+          before (pure (transport @TLS, AMSType SMSJournal)) serverTests
+        describe "SMP server via TLS, memory message store" $
+          before (pure (transport @TLS, AMSType SMSMemory)) serverTests
+        -- xdescribe "SMP server via WebSockets" $ do
+        --   describe "SMP syntax" $ serverSyntaxTests (transport @WS)
+        --   before (pure (transport @WS, AMSType SMSJournal)) serverTests
         describe "Notifications server" $ ntfServerTests (transport @TLS)
         describe "SMP client agent" $ agentTests (transport @TLS)
         describe "SMP proxy" smpProxyTests
