@@ -301,7 +301,7 @@ instance MsgStoreClass JournalMsgStore where
         where
           readMsg (rs, h) = do
             (msg, len) <- hGetMsgAt h $ bytePos rs
-            updateReadPos q drainMsgs len hs -- 1 is to account for new line
+            updateReadPos q drainMsgs len hs
             (msg :) <$> getMsg msgs hs
 
   writeMsg :: JournalMsgStore -> JournalMsgQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
@@ -360,7 +360,7 @@ instance MsgStoreClass JournalMsgStore where
         where
           readMsg = do
             ml@(msg, _) <- hGetMsgAt h $ bytePos rs
-            atomically $ writeTVar tipMsg $ Just (Just ml) -- 1 is to account for new line
+            atomically $ writeTVar tipMsg $ Just (Just ml)
             pure $ Just msg
 
   tryDeleteMsg_ :: JournalMsgQueue -> StoreIO ()
@@ -497,8 +497,7 @@ fixFileSize h pos = do
         IO.hSetFileSize h pos'
     | size < pos' ->
         -- From code logic this can't happen.
-        -- TODO consider throwing exception here.
-        logError $ "STORE ERROR file size " <> tshow size <> " is smaller than position " <> tshow pos
+        IO.throwIO $ userError "file size " <> tshow size <> " is smaller than position " <> tshow pos
     | otherwise -> pure ()
 
 removeJournal :: FilePath -> JournalState t -> IO ()
@@ -522,7 +521,7 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
         [] -> writeNewQueueState
         _ -> do
           r@(st, _) <- useLastLine (length ls) True ls
-          unless (validQueueState st) $ E.throwIO $ userError $ "read invalid state: " <> show st
+          unless (validQueueState st) $ E.throwIO $ userError $ "read invalid invalid: " <> show st
           pure r
     writeNewQueueState = do
       logWarn $ "STORE WARNING: empty queue state in " <> T.pack statePath <> ", initialized"

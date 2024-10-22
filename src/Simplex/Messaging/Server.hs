@@ -1731,17 +1731,17 @@ saveServerMessages :: Bool -> M ()
 saveServerMessages drainMsgs =
   asks msgStore >>= \case
     AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-      Just f -> liftIO $ exportMessages ms f $ getQueueMessages drainMsgs
+      Just f -> liftIO $ exportMessages ms f drainMsgs
       Nothing -> logInfo "undelivered messages are not saved"
     AMS SMSJournal _ -> logInfo "closed journal message storage"
 
-exportMessages :: MsgStoreClass s => s -> FilePath -> (MsgQueue s -> IO [Message]) -> IO ()
-exportMessages ms f getMessages = do
+exportMessages :: MsgStoreClass s => s -> FilePath -> Bool -> IO ()
+exportMessages ms f drainMsgs = do
   logInfo $ "saving messages to file " <> T.pack f
   total <- liftIO $ withFile f WriteMode $ \h -> withAllMsgQueues ms (saveQueueMsgs h) 0
   logInfo $ "messages saved: " <> tshow total
   where
-    saveQueueMsgs h rId q acc = getMessages q >>= \msgs -> (acc + length msgs) <$ BLD.hPutBuilder h (encodeMessages rId msgs)
+    saveQueueMsgs h rId q acc = getQueueMessages drainMsgs q >>= \msgs -> (acc + length msgs) <$ BLD.hPutBuilder h (encodeMessages rId msgs)
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
 
 restoreServerMessages :: M MessageStats
