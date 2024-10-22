@@ -44,7 +44,7 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..), getQueueMessages)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Transport (batchCmdsSMPVersion, sendingProxySMPVersion, simplexMQVersion, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), defaultSocksProxy)
@@ -115,7 +115,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
                 "Journal not exported"
               ms <- newJournalMsgStore
-              exportMessages ms storeMsgsFilePath $ getQueueMessages False
+              exportMessages ms storeMsgsFilePath False
               putStrLn "Export completed"
               putStrLn $ case readMsgStoreType ini of
                 Right (AMSType SMSMemory) -> "store_messages set to `memory`"

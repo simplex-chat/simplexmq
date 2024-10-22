@@ -1,5 +1,6 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
@@ -22,6 +23,7 @@ import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), Message (..), noMsgFlags)
 import Simplex.Messaging.Server (MessageStats (..), exportMessages, importMessages)
+import Simplex.Messaging.Server.Env.STM (journalMsgStoreDepth)
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
@@ -55,7 +57,7 @@ testJournalStoreCfg :: JournalStoreConfig
 testJournalStoreCfg =
   JournalStoreConfig
     { storePath = testStoreMsgsDir,
-      pathParts = 4,
+      pathParts = journalMsgStoreDepth,
       quota = 3,
       maxMsgCount = 4,
       maxStateLines = 2
@@ -158,19 +160,19 @@ testExportImportStore ms = do
     pure ()
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 2
-  exportMessages ms testStoreMsgsFile $ getQueueMessages False
+  exportMessages ms testStoreMsgsFile False
   let cfg = (testJournalStoreCfg :: JournalStoreConfig) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
   MessageStats {storedMsgsCount = 6, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages ms' testStoreMsgsFile Nothing
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3 -- state file is backed up
-  exportMessages ms' testStoreMsgsFile2 $ getQueueMessages False
+  exportMessages ms' testStoreMsgsFile2 False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
   MessageStats {storedMsgsCount = 6, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages stmStore testStoreMsgsFile2 Nothing
-  exportMessages stmStore testStoreMsgsFile $ getQueueMessages False
+  exportMessages stmStore testStoreMsgsFile False
   (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))
 
 testQueueState :: JournalMsgStore -> IO ()
@@ -186,13 +188,23 @@ testQueueState ms = do
   readQueueState statePath `shouldReturn` state
   length <$> listDirectory dir `shouldReturn` 1 -- no backup
 
-  let state1 = state {size = 1, writeState = (writeState state) {msgPos = 1, msgCount = 1, bytePos = 100}}
+  let state1 =
+        state
+          { size = 1,
+            readState = (readState state) {msgCount = 1, byteCount = 100},
+            writeState = (writeState state) {msgPos = 1, msgCount = 1, bytePos = 100, byteCount = 100}
+          }
   withFile statePath AppendMode (`logQueueState` state1)
   length . lines <$> readFile statePath `shouldReturn` 2
   readQueueState statePath `shouldReturn` state1
   length <$> listDirectory dir `shouldReturn` 1 -- no backup
 
-  let state2 = state {size = 2, writeState = (writeState state) {msgPos = 2, msgCount = 2, bytePos = 200}}
+  let state2 =
+        state
+          { size = 2,
+            readState = (readState state) {msgCount = 2, byteCount = 200},
+            writeState = (writeState state) {msgPos = 2, msgCount = 2, bytePos = 200, byteCount = 200}
+          }
   withFile statePath AppendMode (`logQueueState` state2)
   length . lines <$> readFile statePath `shouldReturn` 3
   copyFile statePath (statePath <> ".2")

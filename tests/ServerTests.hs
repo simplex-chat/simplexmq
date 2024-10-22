@@ -16,6 +16,7 @@
 module ServerTests where
 
 import AgentTests.NotificationTests (removeFileIfExists)
+import CoreTests.MsgStoreTests (testJournalStoreCfg)
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
@@ -35,9 +36,11 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server (exportMessages)
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..))
+import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..))
+import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (whenM)
@@ -66,8 +69,8 @@ serverTests t@(ATransport t') = do
     describe "GET & SUB commands" $ testGetSubCommands t'
     describe "Exceeding queue quota" $ testExceedQueueQuota t'
   describe "Store log" $ testWithStoreLog t
-  xdescribe "Restore messages" $ testRestoreMessages t
-  xdescribe "Restore messages (old / v2)" $ testRestoreExpireMessages t
+  describe "Restore messages" $ testRestoreMessages t
+  describe "Restore messages (old / v2)" $ testRestoreExpireMessages t
   describe "Timing of AUTH error" $ testTiming t
   describe "Message notifications" $ testMessageNotifications t
   describe "Message expiration" $ do
@@ -780,6 +783,7 @@ testRestoreExpireMessages at@(ATransport t) =
       pure ()
 
     logSize testStoreLogFile `shouldReturn` 2
+    exportStoreMessages
     msgs <- B.readFile testStoreMsgsFile
     length (B.lines msgs) `shouldBe` 4
 
@@ -788,6 +792,7 @@ testRestoreExpireMessages at@(ATransport t) =
     withSmpServerConfigOn at cfg1 testPort . runTest t $ \_ -> pure ()
 
     logSize testStoreLogFile `shouldReturn` 1
+    exportStoreMessages
     msgs' <- B.readFile testStoreMsgsFile
     msgs' `shouldBe` msgs
 
@@ -797,12 +802,17 @@ testRestoreExpireMessages at@(ATransport t) =
 
     logSize testStoreLogFile `shouldReturn` 1
     -- two messages expired
-    -- msgs'' <- B.readFile testStoreMsgsFile
-    -- length (B.lines msgs'') `shouldBe` 2
-    -- B.lines msgs'' `shouldBe` drop 2 (B.lines msgs)
+    exportStoreMessages
+    msgs'' <- B.readFile testStoreMsgsFile
+    length (B.lines msgs'') `shouldBe` 2
+    B.lines msgs'' `shouldBe` drop 2 (B.lines msgs)
     Right ServerStatsData {_msgExpired} <- strDecode <$> B.readFile testServerStatsBackupFile
     _msgExpired `shouldBe` 2
   where
+    exportStoreMessages = do
+      ms <- newMsgStore testJournalStoreCfg {quota = 4}
+      removeFileIfExists testStoreMsgsFile
+      exportMessages ms testStoreMsgsFile False
     runTest :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
