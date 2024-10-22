@@ -1,9 +1,12 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Notifications.Server.Store where
@@ -12,12 +15,15 @@ import Control.Concurrent.STM
 import Control.Monad
 import Data.ByteString.Char8 (ByteString)
 import Data.Functor (($>))
+import Data.List.NonEmpty (NonEmpty (..), (<|))
+import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Protocol (NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer)
 import Simplex.Messaging.TMap (TMap)
@@ -30,7 +36,8 @@ data NtfStore = NtfStore
     tokenRegistrations :: TMap DeviceToken (TMap ByteString NtfTokenId),
     subscriptions :: TMap NtfSubscriptionId NtfSubData,
     tokenSubscriptions :: TMap NtfTokenId (TVar (Set NtfSubscriptionId)),
-    subscriptionLookup :: TMap SMPQueueNtf NtfSubscriptionId
+    subscriptionLookup :: TMap SMPQueueNtf NtfSubscriptionId,
+    tokenLastNtfs :: TMap NtfTokenId (TVar (NonEmpty PNMessageData))
   }
 
 newNtfStore :: IO NtfStore
@@ -40,7 +47,8 @@ newNtfStore = do
   subscriptions <- TM.emptyIO
   tokenSubscriptions <- TM.emptyIO
   subscriptionLookup <- TM.emptyIO
-  pure NtfStore {tokens, tokenRegistrations, subscriptions, tokenSubscriptions, subscriptionLookup}
+  tokenLastNtfs <- TM.emptyIO
+  pure NtfStore {tokens, tokenRegistrations, subscriptions, tokenSubscriptions, subscriptionLookup, tokenLastNtfs}
 
 data NtfTknData = NtfTknData
   { ntfTknId :: NtfTokenId,
@@ -111,6 +119,7 @@ removeInactiveTokenRegistrations st NtfTknData {ntfTknId = tId, token} =
       forM_ tIds $ \(regKey, tId') -> do
         TM.delete regKey tknRegs
         TM.delete tId' $ tokens st
+        TM.delete tId' $ tokenLastNtfs st
         void $ deleteTokenSubs st tId'
       pure $ map snd tIds
 
@@ -130,6 +139,7 @@ deleteNtfToken st tknId = do
       TM.lookup token regs $>>= \tIds ->
         TM.delete (regKey tknVerifyKey) tIds
           >> whenM (TM.null tIds) (TM.delete token regs) $> Just ()
+  TM.delete tknId $ tokenLastNtfs st
   deleteTokenSubs st tknId
   where
     regs = tokenRegistrations st
@@ -196,3 +206,42 @@ deleteNtfSubscription st subId = do
           ts_ <- TM.lookup tokenId (tokenSubscriptions st)
           forM_ ts_ $ \ts -> modifyTVar' ts $ S.delete subId
       )
+
+addTokenLastNtf :: NtfStore -> NtfTokenId -> PNMessageData -> IO (NonEmpty PNMessageData)
+addTokenLastNtf st tknId newNtf =
+  TM.lookupIO tknId (tokenLastNtfs st) >>= maybe (atomically maybeNewTokenLastNtfs) (atomically . addNtf)
+  where
+    maybeNewTokenLastNtfs =
+      TM.lookup tknId (tokenLastNtfs st) >>= maybe newTokenLastNtfs addNtf
+    newTokenLastNtfs = do
+      v <- newTVar [newNtf]
+      TM.insert tknId v $ tokenLastNtfs st
+      pure [newNtf]
+    addNtf v =
+      stateTVar v $ \ntfs -> let !ntfs' = rebuildList ntfs in (ntfs', ntfs')
+      where
+        rebuildList :: NonEmpty PNMessageData -> NonEmpty PNMessageData
+        rebuildList = foldr keepPrevNtf [newNtf]
+          where
+            PNMessageData {smpQueue = newNtfQ} = newNtf
+            keepPrevNtf ntf@PNMessageData {smpQueue} ntfs
+              | smpQueue /= newNtfQ && length ntfs < maxNtfs = ntf <| ntfs
+              | otherwise = ntfs
+        maxNtfs = 6
+
+-- This function is expected to be called after store log is read,
+-- as it checks for token existence when adding last notification.
+storeTokenLastNtf :: NtfStore -> NtfTokenId -> PNMessageData -> IO ()
+storeTokenLastNtf (NtfStore {tokens, tokenLastNtfs}) tknId ntf = do
+  TM.lookupIO tknId tokenLastNtfs >>= atomically . maybe newTokenLastNtfs (`modifyTVar'` (ntf <|))
+  where
+    newTokenLastNtfs = TM.lookup tknId tokenLastNtfs >>= maybe insertForExistingToken (`modifyTVar'` (ntf <|))
+    insertForExistingToken =
+      whenM (TM.member tknId tokens) $
+        TM.insertM tknId (newTVar [ntf]) tokenLastNtfs
+
+data TokenNtfMessageRecord = TNMRv1 NtfTokenId PNMessageData
+
+instance StrEncoding TokenNtfMessageRecord where
+  strEncode (TNMRv1 tknId ntf) = strEncode (Str "v1", tknId, ntf)
+  strP = "v1 " *> (TNMRv1 <$> strP_ <*> strP)

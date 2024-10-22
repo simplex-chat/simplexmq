@@ -38,7 +38,6 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
-import qualified Simplex.Messaging.Notifications.Server.Push.APNS as APNS
 import Simplex.Messaging.Notifications.Transport (THandleNTF)
 import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
@@ -136,7 +135,7 @@ testNotificationSubscription (ATransport t) =
               Right message = ntfData' .-> "message"
               Right ntfDataDecrypted = C.cbDecrypt dhSecret nonce' message
               Right pnMsgs1 = parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted
-              APNS.PNMessageData {smpQueue = SMPQueueNtf {smpServer, notifierId}, nmsgNonce, encNMsgMeta} = L.last pnMsgs1
+              PNMessageData {smpQueue = SMPQueueNtf {smpServer, notifierId}, nmsgNonce, encNMsgMeta} = L.last pnMsgs1
               Right nMsgMeta = C.cbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta
               Right NMsgMeta {msgId, msgTs} = parse smpP (AP.INTERNAL "error parsing NMsgMeta") nMsgMeta
           smpServer `shouldBe` srv
@@ -167,6 +166,6 @@ testNotificationSubscription (ATransport t) =
               Right message3 = ntfData3 .-> "message"
               Right ntfDataDecrypted3 = C.cbDecrypt dhSecret nonce3 message3
               Right pnMsgs2 = parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted3
-              APNS.PNMessageData {smpQueue = SMPQueueNtf {smpServer = smpServer3, notifierId = notifierId3}} = L.last pnMsgs2
+              PNMessageData {smpQueue = SMPQueueNtf {smpServer = smpServer3, notifierId = notifierId3}} = L.last pnMsgs2
           smpServer3 `shouldBe` srv
           notifierId3 `shouldBe` nId
