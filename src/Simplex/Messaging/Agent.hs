@@ -1089,7 +1089,7 @@ getNotificationConns' c nonce encNtfInfo =
       (ntfConnId, lastBrokerTs_, ntfMsgMeta) <- getNtfMeta msgData
       case (ntfMsgMeta, lastBrokerTs_) of
         (Just SMP.NMsgMeta {msgTs}, Just lastBrokerTs)
-          | systemToUTCTime msgTs > lastBrokerTs -> do
+          | systemToUTCTime msgTs > lastBrokerTs ->
               pure $ Just $ NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}
         _ -> pure Nothing
     getLastNtfConn :: PNMessageData -> AM NotificationInfo
