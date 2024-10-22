@@ -497,7 +497,7 @@ fixFileSize h pos = do
         IO.hSetFileSize h pos'
     | size < pos' ->
         -- From code logic this can't happen.
-        IO.throwIO $ userError "file size " <> tshow size <> " is smaller than position " <> tshow pos
+        E.throwIO $ userError $ "file size " <> show size <> " is smaller than position " <> show pos
     | otherwise -> pure ()
 
 removeJournal :: FilePath -> JournalState t -> IO ()
