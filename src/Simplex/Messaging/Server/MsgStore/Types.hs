@@ -26,14 +26,16 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   activeMsgQueues :: s -> TMap RecipientId (MsgQueue s)
   withAllMsgQueues :: s -> (RecipientId -> MsgQueue s -> a -> IO a) -> a -> IO a
   logQueueStates :: s -> IO ()
+  logQueueState :: MsgQueue s -> IO ()
   getMsgQueue :: s -> RecipientId -> ExceptT ErrorType IO (MsgQueue s)
   delMsgQueue :: s -> RecipientId -> IO ()
   delMsgQueueSize :: s -> RecipientId -> IO Int
   getQueueMessages :: Bool -> MsgQueue s -> IO [Message]
   writeMsg :: s -> MsgQueue s -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
+  setOverQuota_ :: MsgQueue s -> IO () -- can ONLY be used while restoring messages, not while server running
   getQueueSize :: MsgQueue s -> IO Int
   tryPeekMsg_ :: MsgQueue s -> StoreMonad s (Maybe Message)
-  tryDeleteMsg_ :: MsgQueue s -> StoreMonad s ()
+  tryDeleteMsg_ :: MsgQueue s -> Bool -> StoreMonad s ()
   isolateQueue :: MsgQueue s -> String -> StoreMonad s a -> ExceptT ErrorType IO a
 
 data MSType = MSMemory | MSJournal
@@ -57,7 +59,7 @@ tryDelMsg mq msgId' =
     tryPeekMsg_ mq >>= \case
       msg_@(Just msg)
         | msgId msg == msgId' ->
-            tryDeleteMsg_ mq >> pure msg_
+            tryDeleteMsg_ mq True >> pure msg_
       _ -> pure Nothing
 
 -- atomic delete (== read) last and peek next message if available
@@ -66,16 +68,16 @@ tryDelPeekMsg mq msgId' =
   isolateQueue mq "tryDelPeekMsg" $
     tryPeekMsg_ mq >>= \case
       msg_@(Just msg)
-        | msgId msg == msgId' -> (msg_,) <$> (tryDeleteMsg_ mq >> tryPeekMsg_ mq)
+        | msgId msg == msgId' -> (msg_,) <$> (tryDeleteMsg_ mq True >> tryPeekMsg_ mq)
         | otherwise -> pure (Nothing, msg_)
       _ -> pure (Nothing, Nothing)
 
-deleteExpiredMsgs :: MsgStoreClass s => MsgQueue s -> Int64 -> ExceptT ErrorType IO Int
-deleteExpiredMsgs mq old = isolateQueue mq "deleteExpiredMsgs" $ loop 0
+deleteExpiredMsgs :: MsgStoreClass s => MsgQueue s -> Bool -> Int64 -> ExceptT ErrorType IO Int
+deleteExpiredMsgs mq logState old = isolateQueue mq "deleteExpiredMsgs" $ loop 0
   where
     loop dc =
       tryPeekMsg_ mq >>= \case
         Just Message {msgTs}
           | systemSeconds msgTs < old ->
-              tryDeleteMsg_ mq >> loop (dc + 1)
+              tryDeleteMsg_ mq logState >> loop (dc + 1)
         _ -> pure dc

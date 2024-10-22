@@ -183,7 +183,7 @@ testQueueState ms = do
       statePath = dir </> (queueLogFileName <> logFileExt)
   createDirectoryIfMissing True dir
   state <- newMsgQueueState <$> newJournalId (random ms)
-  withFile statePath WriteMode (`logQueueState` state)
+  withFile statePath WriteMode (`appendState` state)
   length . lines <$> readFile statePath `shouldReturn` 1
   readQueueState statePath `shouldReturn` state
   length <$> listDirectory dir `shouldReturn` 1 -- no backup
@@ -194,7 +194,7 @@ testQueueState ms = do
             readState = (readState state) {msgCount = 1, byteCount = 100},
             writeState = (writeState state) {msgPos = 1, msgCount = 1, bytePos = 100, byteCount = 100}
           }
-  withFile statePath AppendMode (`logQueueState` state1)
+  withFile statePath AppendMode (`appendState` state1)
   length . lines <$> readFile statePath `shouldReturn` 2
   readQueueState statePath `shouldReturn` state1
   length <$> listDirectory dir `shouldReturn` 1 -- no backup
@@ -205,7 +205,7 @@ testQueueState ms = do
             readState = (readState state) {msgCount = 2, byteCount = 200},
             writeState = (writeState state) {msgPos = 2, msgCount = 2, bytePos = 200, byteCount = 200}
           }
-  withFile statePath AppendMode (`logQueueState` state2)
+  withFile statePath AppendMode (`appendState` state2)
   length . lines <$> readFile statePath `shouldReturn` 3
   copyFile statePath (statePath <> ".2")
   readQueueState statePath `shouldReturn` state2

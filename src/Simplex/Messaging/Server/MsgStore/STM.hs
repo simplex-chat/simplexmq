@@ -62,6 +62,8 @@ instance MsgStoreClass STMMsgStore where
 
   logQueueStates _ = pure ()
 
+  logQueueState _ = pure ()
+
   -- The reason for double lookup is that majority of messaging queues exist,
   -- because multiple messages are sent to the same queue,
   -- so the first lookup without STM transaction will return the queue faster.
@@ -109,6 +111,9 @@ instance MsgStoreClass STMMsgStore where
     where
       !msgQuota = MessageQuota {msgId = msgId msg, msgTs = msgTs msg}
 
+  setOverQuota_ :: STMMsgQueue -> IO ()
+  setOverQuota_ q = atomically $ writeTVar (canWrite q) False
+
   getQueueSize :: STMMsgQueue -> IO Int
   getQueueSize STMMsgQueue {size} = readTVarIO size
 
@@ -116,8 +121,8 @@ instance MsgStoreClass STMMsgStore where
   tryPeekMsg_ = tryPeekTQueue . msgQueue
   {-# INLINE tryPeekMsg_ #-}
 
-  tryDeleteMsg_ :: STMMsgQueue -> STM ()
-  tryDeleteMsg_ STMMsgQueue {msgQueue = q, size} =
+  tryDeleteMsg_ :: STMMsgQueue -> Bool -> STM ()
+  tryDeleteMsg_ STMMsgQueue {msgQueue = q, size} _logState =
     tryReadTQueue q >>= \case
       Just _ -> modifyTVar' size (subtract 1)
       _ -> pure ()

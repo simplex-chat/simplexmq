@@ -28,7 +28,7 @@ module Simplex.Messaging.Server.MsgStore.Journal
     readWriteQueueState,
     newMsgQueueState,
     newJournalId,
-    logQueueState,
+    appendState,
     queueLogFileName,
     logFileExt,
   )
@@ -255,11 +255,12 @@ instance MsgStoreClass JournalMsgStore where
               (Nothing <$ putStrLn ("Error: path " <> path' <> " is not a directory, skipping"))
 
   logQueueStates :: JournalMsgStore -> IO ()
-  logQueueStates st = withActiveMsgQueues st (\_ q _ -> logState q) ()
-    where
-      logState q =
-        readTVarIO (handles q)
-          >>= maybe (pure ()) (\hs -> readTVarIO (state q) >>= logQueueState (stateHandle hs))
+  logQueueStates ms = withActiveMsgQueues ms (\_ q _ -> logQueueState q) ()
+
+  logQueueState :: JournalMsgQueue -> IO ()
+  logQueueState q = 
+    readTVarIO (handles q)
+      >>= maybe (pure ()) (\hs -> readTVarIO (state q) >>= appendState (stateHandle hs))
 
   getMsgQueue :: JournalMsgStore -> RecipientId -> ExceptT ErrorType IO JournalMsgQueue
   getMsgQueue ms@JournalMsgStore {queueLocks, msgQueues, random} rId =
@@ -349,6 +350,10 @@ instance MsgStoreClass JournalMsgStore where
             atomically $ writeTVar handles $ Just $ hs {writeHandle = Just wh}
             pure (newJournalState journalId, wh)
 
+  -- can ONLY be used while restoring messages, not while server running
+  setOverQuota_ :: JournalMsgQueue -> IO ()
+  setOverQuota_ JournalMsgQueue {state} = atomically $ modifyTVar' state $ \st -> st {canWrite = False}
+
   getQueueSize :: JournalMsgQueue -> IO Int
   getQueueSize JournalMsgQueue {state} = size <$> readTVarIO state
 
@@ -363,13 +368,13 @@ instance MsgStoreClass JournalMsgStore where
             atomically $ writeTVar tipMsg $ Just (Just ml)
             pure $ Just msg
 
-  tryDeleteMsg_ :: JournalMsgQueue -> StoreIO ()
-  tryDeleteMsg_ q@JournalMsgQueue {tipMsg, handles} = StoreIO $
+  tryDeleteMsg_ :: JournalMsgQueue -> Bool -> StoreIO ()
+  tryDeleteMsg_ q@JournalMsgQueue {tipMsg, handles} logState = StoreIO $
     void $
       readTVarIO tipMsg -- if there is no cached tipMsg, do nothing
         $>>= (pure . fmap snd)
         $>>= \len -> readTVarIO handles
-        $>>= \hs -> updateReadPos q True len hs $> Just ()
+        $>>= \hs -> updateReadPos q logState len hs $> Just ()
 
   isolateQueue :: JournalMsgQueue -> String -> StoreIO a -> ExceptT ErrorType IO a
   isolateQueue q op (StoreIO a) = tryStore op $ withLock' (queueLock $ queue q) op $ a
@@ -416,11 +421,11 @@ chooseReadJournal q log' hs = do
 updateQueueState :: JournalMsgQueue -> Bool -> MsgQueueHandles -> MsgQueueState -> IO ()
 updateQueueState q log' hs st = do
   unless (validQueueState st) $ E.throwIO $ userError $ "updating to invalid state: " <> show st
-  when log' $ logQueueState (stateHandle hs) st
+  when log' $ appendState (stateHandle hs) st
   atomically $ writeTVar (state q) st
 
-logQueueState :: Handle -> MsgQueueState -> IO ()
-logQueueState h st = B.hPutStr h $ strEncode st `B.snoc` '\n'
+appendState :: Handle -> MsgQueueState -> IO ()
+appendState h st = B.hPutStr h $ strEncode st `B.snoc` '\n'
 
 updateReadPos :: JournalMsgQueue -> Bool -> Int64 -> MsgQueueHandles -> IO ()
 updateReadPos q log' len hs = do
@@ -555,7 +560,7 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
       pure r
     writeQueueState st = do
       sh <- openFile statePath AppendMode
-      logQueueState sh st
+      appendState sh st
       pure (st, sh)
 
 validQueueState :: MsgQueueState -> Bool
