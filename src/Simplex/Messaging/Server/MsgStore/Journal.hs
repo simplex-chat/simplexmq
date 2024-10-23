@@ -214,28 +214,28 @@ instance MsgStoreClass JournalMsgStore where
   -- It is used to export storage to a single file and also to expire messages and validate all queues when server is started.
   -- TODO this function requires case-sensitive file system, because it uses queue directory as recipient ID.
   -- It can be made to support case-insensite FS by supporting more than one queue per directory, by getting recipient ID from state file name.
-  withAllMsgQueues :: JournalMsgStore -> (RecipientId -> JournalMsgQueue -> a -> IO a) -> a -> IO a
-  withAllMsgQueues ms@JournalMsgStore {config} action res = ifM (doesDirectoryExist storePath) processStore (pure res)
+  withAllMsgQueues :: Monoid a => JournalMsgStore -> (RecipientId -> JournalMsgQueue -> IO a) -> IO a
+  withAllMsgQueues ms@JournalMsgStore {config} action = ifM (doesDirectoryExist storePath) processStore (pure mempty)
     where
       processStore = do
         closeMsgStore ms
         lock <- createLockIO -- the same lock is used for all queues
-        (!count, !res') <- foldQueues 0 (processQueue lock) (0, res) ("", storePath)
+        (!count, !res) <- foldQueues 0 (processQueue lock) (0, mempty) ("", storePath)
         progress count
         putStrLn ""
-        pure res'
+        pure res
       JournalStoreConfig {storePath, pathParts} = config
-      processQueue queueLock (!i :: Int, !acc) (queueId, dir) = do
+      processQueue queueLock (!i :: Int, !r) (queueId, dir) = do
         when (i `mod` 100 == 0) $ progress i
         let statePath = msgQueueStatePath dir queueId
         q <- openMsgQueue ms JMQueue {queueDirectory = dir, queueLock, statePath}
-        acc' <- case strDecode $ B.pack queueId of
-          Right rId -> action rId q acc
+        r' <- case strDecode $ B.pack queueId of
+          Right rId -> action rId q
           Left e -> do
             putStrLn ("Error: message queue directory " <> dir <> " is invalid: " <> e)
             exitFailure
         closeMsgQueue q
-        pure (i + 1, acc')
+        pure (i + 1, r <> r')
       progress i = do
         putStr $ "Processed: " <> show i <> " queues\r"
         IO.hFlush stdout
@@ -253,7 +253,7 @@ instance MsgStoreClass JournalMsgStore where
               (Nothing <$ putStrLn ("Error: path " <> path' <> " is not a directory, skipping"))
 
   logQueueStates :: JournalMsgStore -> IO ()
-  logQueueStates ms = withActiveMsgQueues ms (\_ q _ -> logQueueState q) ()
+  logQueueStates ms = withActiveMsgQueues ms $ \_ -> logQueueState
 
   logQueueState :: JournalMsgQueue -> IO ()
   logQueueState q = 
