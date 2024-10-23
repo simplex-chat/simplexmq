@@ -378,9 +378,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       liftIO $ forever $ do
         threadDelay' interval
         old <- expireBeforeEpoch expCfg
-        void $ withActiveMsgQueues ms (\_ -> expireQueueMsgs stats old) 0
+        deleted <- withActiveMsgQueues ms (\_ -> expireQueueMsgs stats old) 0
+        logInfo $ "STORE: expireMessagesThread, expired " <> tshow deleted <> " messages"
       where
-        expireQueueMsgs stats old q acc =
+        expireQueueMsgs stats old q !acc =
           runExceptT (deleteExpiredMsgs q True old) >>= \case
             Right deleted -> (acc + deleted) <$ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
             Left _ -> pure 0
@@ -1741,7 +1742,7 @@ exportMessages ms f drainMsgs = do
   total <- liftIO $ withFile f WriteMode $ \h -> withAllMsgQueues ms (saveQueueMsgs h) 0
   logInfo $ "messages saved: " <> tshow total
   where
-    saveQueueMsgs h rId q acc = getQueueMessages drainMsgs q >>= \msgs -> (acc + length msgs) <$ BLD.hPutBuilder h (encodeMessages rId msgs)
+    saveQueueMsgs h rId q !acc = getQueueMessages drainMsgs q >>= \msgs -> (acc + length msgs) <$ BLD.hPutBuilder h (encodeMessages rId msgs)
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
 
 processServerMessages :: M MessageStats

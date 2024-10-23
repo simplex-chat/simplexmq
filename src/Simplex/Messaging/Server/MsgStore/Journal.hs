@@ -220,31 +220,28 @@ instance MsgStoreClass JournalMsgStore where
       processStore = do
         closeMsgStore ms
         lock <- createLockIO -- the same lock is used for all queues
-        dirs <- zip [0..] <$> listQueueDirs 0 ("", storePath)
-        let count = length dirs
-        res' <- foldM (processQueue lock count) res dirs
-        progress count count
+        (!count, !res') <- foldQueues 0 (processQueue lock) (0, res) ("", storePath)
+        progress count
         putStrLn ""
         pure res'
       JournalStoreConfig {storePath, pathParts} = config
-      processQueue queueLock count acc (i :: Int, (queueId, dir)) = do
-        when (i `mod` 100 == 0) $ progress i count
-        let statePath = dir </> queueLogFileName <> "." <> queueId <> logFileExt
-            queue = JMQueue {queueDirectory = dir, queueLock, statePath}
-        q <- openMsgQueue ms queue
+      processQueue queueLock (!i :: Int, !acc) (queueId, dir) = do
+        when (i `mod` 100 == 0) $ progress i
+        let statePath = msgQueueStatePath dir queueId
+        q <- openMsgQueue ms JMQueue {queueDirectory = dir, queueLock, statePath}
         acc' <- case strDecode $ B.pack queueId of
           Right rId -> action rId q acc
           Left e -> do
             putStrLn ("Error: message queue directory " <> dir <> " is invalid: " <> e)
             exitFailure
         closeMsgQueue q
-        pure acc'
-      progress i count = do
-        putStr $ "Processed: " <> show i <> "/" <> show count <> " queues\r"
+        pure (i + 1, acc')
+      progress i = do
+        putStr $ "Processed: " <> show i <> " queues\r"
         IO.hFlush stdout
-      listQueueDirs depth (queueId, path)
-        | depth == pathParts - 1 = listDirs
-        | otherwise = fmap concat . mapM (listQueueDirs (depth + 1)) =<< listDirs
+      foldQueues depth f acc (queueId, path) = do
+        let f' = if depth == pathParts - 1 then f else foldQueues (depth + 1) f
+        listDirs >>= foldM f' acc
         where
           listDirs = fmap catMaybes . mapM queuePath =<< listDirectory path
           queuePath dir = do
@@ -271,7 +268,7 @@ instance MsgStoreClass JournalMsgStore where
       newQ = do
         queueLock <- atomically $ getMapLock queueLocks rId
         let dir = msgQueueDirectory ms rId
-            statePath = dir </> (queueLogFileName <> "." <> B.unpack (strEncode rId) <> logFileExt)
+            statePath = msgQueueStatePath dir $ B.unpack (strEncode rId)
             queue = JMQueue {queueDirectory = dir, queueLock, statePath}
         q <- ifM (doesDirectoryExist dir) (openMsgQueue ms queue) (createQ queue)
         atomically $ TM.insert rId q msgQueues
@@ -447,6 +444,9 @@ msgQueueDirectory JournalMsgStore {config = JournalStoreConfig {storePath, pathP
     splitSegments n s =
       let (seg, s') = B.splitAt 2 s
        in seg : splitSegments (n - 1) s'
+
+msgQueueStatePath :: FilePath -> String -> FilePath
+msgQueueStatePath dir queueId = dir </> (queueLogFileName <> "." <> queueId <> logFileExt)
 
 createNewJournal :: FilePath -> ByteString -> IO Handle
 createNewJournal dir journalId = do
