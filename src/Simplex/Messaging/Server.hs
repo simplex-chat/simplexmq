@@ -1748,7 +1748,7 @@ saveServerMessages drainMsgs =
 exportMessages :: MsgStoreClass s => s -> FilePath -> Bool -> IO ()
 exportMessages ms f drainMsgs = do
   logInfo $ "saving messages to file " <> T.pack f
-  Sum total <- liftIO $ withFile f WriteMode $ withAllMsgQueues 1 ms . saveQueueMsgs
+  Sum total <- liftIO $ withFile f WriteMode $ withAllMsgQueues ms . saveQueueMsgs
   logInfo $ "messages saved: " <> tshow total
   where
     saveQueueMsgs h rId q = getQueueMessages drainMsgs q >>= \msgs -> Sum (length msgs) <$ BLD.hPutBuilder h (encodeMessages rId msgs)
@@ -1764,15 +1764,13 @@ processServerMessages = do
         AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
           Just f -> ifM (doesFileExist f) (importMessages ms f old_) (pure newMessageStats)
           Nothing -> pure newMessageStats
-        AMS SMSJournal ms -> do
-          n <- getNumCapabilities
-          case old_ of
-            Just old -> do
-              logInfo "expiring journal store messages..."
-              withAllMsgQueues n ms $ \_ -> processExpireQueue old
-            Nothing -> do
-              logInfo "validating journal store messages..."
-              withAllMsgQueues n ms $ \_ -> processValidateQueue
+        AMS SMSJournal ms -> case old_ of
+          Just old -> do
+            logInfo "expiring journal store messages..."
+            withAllMsgQueues ms $ \_ -> processExpireQueue old
+          Nothing -> do
+            logInfo "validating journal store messages..."
+            withAllMsgQueues ms $ \_ -> processValidateQueue
         where
           processExpireQueue old q =
             runExceptT expireQueue >>= \case

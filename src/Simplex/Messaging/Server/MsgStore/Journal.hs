@@ -64,7 +64,6 @@ import System.FilePath ((</>))
 import System.IO (BufferMode (..), Handle, IOMode (..), SeekMode (..), stdout)
 import qualified System.IO as IO
 import System.Random (StdGen, genByteString, newStdGen)
-import UnliftIO.Internals.Async (pooledMapConcurrentlyIO)
 
 data JournalMsgStore = JournalMsgStore
   { config :: JournalStoreConfig,
@@ -215,43 +214,36 @@ instance MsgStoreClass JournalMsgStore where
   -- It is used to export storage to a single file and also to expire messages and validate all queues when server is started.
   -- TODO this function requires case-sensitive file system, because it uses queue directory as recipient ID.
   -- It can be made to support case-insensite FS by supporting more than one queue per directory, by getting recipient ID from state file name.
-  withAllMsgQueues :: Monoid a => Int -> JournalMsgStore -> (RecipientId -> JournalMsgQueue -> IO a) -> IO a
-  withAllMsgQueues concurrency ms@JournalMsgStore {config} action = ifM (doesDirectoryExist storePath) processStore (pure mempty)
+  withAllMsgQueues :: Monoid a => JournalMsgStore -> (RecipientId -> JournalMsgQueue -> IO a) -> IO a
+  withAllMsgQueues ms@JournalMsgStore {config} action = ifM (doesDirectoryExist storePath) processStore (pure mempty)
     where
       processStore = do
         closeMsgStore ms
         lock <- createLockIO -- the same lock is used for all queues
-        count <- newTVarIO (0 :: Int)
-        !r <- foldQueues 0 (processQueue lock count) ("", storePath)
-        progress =<< readTVarIO count
+        (!count, !res) <- foldQueues 0 (processQueue lock) (0, mempty) ("", storePath)
+        progress count
         putStrLn ""
-        pure r
+        pure res
       JournalStoreConfig {storePath, pathParts} = config
-      processQueue queueLock count (queueId, dir) = do
-        i <- atomically $ stateTVar count $ \i -> (i, i + 1)
+      processQueue queueLock (!i :: Int, !r) (queueId, dir) = do
         when (i `mod` 100 == 0) $ progress i
         let statePath = msgQueueStatePath dir queueId
         q <- openMsgQueue ms JMQueue {queueDirectory = dir, queueLock, statePath}
-        !r <- case strDecode $ B.pack queueId of
+        r' <- case strDecode $ B.pack queueId of
           Right rId -> action rId q
           Left e -> do
             putStrLn ("Error: message queue directory " <> dir <> " is invalid: " <> e)
             exitFailure
         closeMsgQueue q
-        pure r
+        pure (i + 1, r <> r')
       progress i = do
         putStr $ "Processed: " <> show i <> " queues\r"
         IO.hFlush stdout
-      mapM' :: (a -> IO b) -> [a] -> IO [b]
-      mapM' 
-        | concurrency == 1 = mapM
-        | otherwise = pooledMapConcurrentlyIO concurrency
-      foldQueues depth f (queueId, path) = do
+      foldQueues depth f acc (queueId, path) = do
         let f' = if depth == pathParts - 1 then f else foldQueues (depth + 1) f
-        !r <- fmap mconcat . mapM' f' =<< listDirs
-        pure r
+        listDirs >>= foldM f' acc
         where
-          listDirs = fmap catMaybes . mapM' queuePath =<< listDirectory path
+          listDirs = fmap catMaybes . mapM queuePath =<< listDirectory path
           queuePath dir = do
             let !path' = path </> dir
                 !queueId' = queueId <> dir
