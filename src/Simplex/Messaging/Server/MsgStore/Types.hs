@@ -10,6 +10,7 @@
 module Simplex.Messaging.Server.MsgStore.Types where
 
 import Control.Concurrent.STM
+import Control.Monad (foldM)
 import Control.Monad.Trans.Except
 import Data.Int (Int64)
 import Data.Kind
@@ -48,12 +49,11 @@ data SMSType :: MSType -> Type where
 data AMSType = forall s. AMSType (SMSType s)
 
 withActiveMsgQueues :: (MsgStoreClass s, Monoid a) => s -> (RecipientId -> MsgQueue s -> IO a) -> IO a
-withActiveMsgQueues st f = readTVarIO (activeMsgQueues st) >>= M.foldrWithKey run (pure mempty)
+withActiveMsgQueues st f = readTVarIO (activeMsgQueues st) >>= foldM run mempty . M.assocs
   where
-    run k v acc = do
-      !r <- acc
-      !r' <- f k v
-      pure $! r <> r'
+    run !acc (k, v) = do
+      r <- f k v
+      pure $ acc <> r
 
 tryPeekMsg :: MsgStoreClass s => MsgQueue s -> ExceptT ErrorType IO (Maybe Message)
 tryPeekMsg mq = isolateQueue mq "tryPeekMsg" $ tryPeekMsg_ mq

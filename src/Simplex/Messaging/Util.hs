@@ -19,8 +19,6 @@ import Data.Int (Int64)
 import Data.List (groupBy, sortOn)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
@@ -187,7 +185,3 @@ encodeJSON = safeDecodeUtf8 . LB.toStrict . J.encode
 
 decodeJSON :: FromJSON a => Text -> Maybe a
 decodeJSON = J.decode . LB.fromStrict . encodeUtf8
-
-traverseWithKey_ :: Monad m => (k -> v -> m ()) -> Map k v -> m ()
-traverseWithKey_ f = M.foldrWithKey (\k v -> (f k v >>)) (pure ())
-{-# INLINE traverseWithKey_ #-}
