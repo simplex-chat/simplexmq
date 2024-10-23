@@ -492,8 +492,11 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     (nonce, message) <- messageNotification apns tkn
     pure (bobId, aliceId, nonce, message)
 
-  -- alice client already has subscription for the connection
-  Left (CMD PROHIBITED _) <- runExceptT $ getNotificationConns alice nonce message
+  Right [NotificationInfo {ntfConnId = cId}] <- runExceptT $ getNotificationConns alice nonce message
+  cId `shouldBe` bobId
+  -- alice client already has subscription for the connection,
+  -- so get fails with CMD PROHIBITED (transformed into Nothing in catch)
+  Right [Nothing] <- runExceptT $ getConnectionMessages alice [cId]
 
   threadDelay 500000
   suspendAgent alice 0
@@ -503,8 +506,6 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
   withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> runRight_ $ do
-    NotificationInfo {ntfConnId = cId} :| _ <- getNotificationConns aliceNtf nonce message
-    liftIO $ cId `shouldBe` bobId
     (Just SMPMsgMeta {msgFlags = MsgFlags True}) :| _ <- getConnectionMessages aliceNtf [cId]
     pure ()
 
