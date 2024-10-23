@@ -22,7 +22,7 @@ import Data.Time.Clock.System (getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), Message (..), noMsgFlags)
-import Simplex.Messaging.Server (MessageStats (..), exportMessages, importMessages)
+import Simplex.Messaging.Server (MessageStats (..), exportMessages, importMessages, printMessageStats)
 import Simplex.Messaging.Server.Env.STM (journalMsgStoreDepth)
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
@@ -163,14 +163,15 @@ testExportImportStore ms = do
   exportMessages ms testStoreMsgsFile False
   let cfg = (testJournalStoreCfg :: JournalStoreConfig) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
-  MessageStats {storedMsgsCount = 6, expiredMsgsCount = 0, storedQueues = 2} <-
+  stats@MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages ms' testStoreMsgsFile Nothing
+  printMessageStats "Messages" stats
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3 -- state file is backed up
   exportMessages ms' testStoreMsgsFile2 False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
-  MessageStats {storedMsgsCount = 6, expiredMsgsCount = 0, storedQueues = 2} <-
+  MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages stmStore testStoreMsgsFile2 Nothing
   exportMessages stmStore testStoreMsgsFile False
   (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))
@@ -183,7 +184,7 @@ testQueueState ms = do
       statePath = dir </> (queueLogFileName <> logFileExt)
   createDirectoryIfMissing True dir
   state <- newMsgQueueState <$> newJournalId (random ms)
-  withFile statePath WriteMode (`logQueueState` state)
+  withFile statePath WriteMode (`appendState` state)
   length . lines <$> readFile statePath `shouldReturn` 1
   readQueueState statePath `shouldReturn` state
   length <$> listDirectory dir `shouldReturn` 1 -- no backup
@@ -194,7 +195,7 @@ testQueueState ms = do
             readState = (readState state) {msgCount = 1, byteCount = 100},
             writeState = (writeState state) {msgPos = 1, msgCount = 1, bytePos = 100, byteCount = 100}
           }
-  withFile statePath AppendMode (`logQueueState` state1)
+  withFile statePath AppendMode (`appendState` state1)
   length . lines <$> readFile statePath `shouldReturn` 2
   readQueueState statePath `shouldReturn` state1
   length <$> listDirectory dir `shouldReturn` 1 -- no backup
@@ -205,7 +206,7 @@ testQueueState ms = do
             readState = (readState state) {msgCount = 2, byteCount = 200},
             writeState = (writeState state) {msgPos = 2, msgCount = 2, bytePos = 200, byteCount = 200}
           }
-  withFile statePath AppendMode (`logQueueState` state2)
+  withFile statePath AppendMode (`appendState` state2)
   length . lines <$> readFile statePath `shouldReturn` 3
   copyFile statePath (statePath <> ".2")
   readQueueState statePath `shouldReturn` state2
