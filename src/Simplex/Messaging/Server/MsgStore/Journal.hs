@@ -45,6 +45,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
 import Data.Int (Int64)
+import Data.List (intercalate)
 import Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
@@ -262,7 +263,7 @@ instance MsgStoreClass JournalMsgStore where
 
   getMsgQueue :: JournalMsgStore -> RecipientId -> ExceptT ErrorType IO JournalMsgQueue
   getMsgQueue ms@JournalMsgStore {queueLocks, msgQueues, random} rId =
-    tryStore "getMsgQueue" $ withLockMap queueLocks rId "getMsgQueue" $
+    tryStore "getMsgQueue" (B.unpack $ strEncode rId) $ withLockMap queueLocks rId "getMsgQueue" $
       TM.lookupIO rId msgQueues >>= maybe newQ pure
     where
       newQ = do
@@ -304,8 +305,8 @@ instance MsgStoreClass JournalMsgStore where
             (msg :) <$> getMsg msgs hs
 
   writeMsg :: JournalMsgStore -> JournalMsgQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
-  writeMsg ms q@JournalMsgQueue {queue = JMQueue {queueDirectory, queueLock, statePath}, handles} logState msg =
-    tryStore "writeMsg" $ withLock' queueLock "writeMsg" $ do
+  writeMsg ms q@JournalMsgQueue {queue = JMQueue {queueDirectory, statePath}, handles} logState msg =
+    isolateQueue q "writeMsg" $ StoreIO $ do
       st@MsgQueueState {canWrite, size} <- readTVarIO (state q)
       let empty = size == 0
       if canWrite || empty
@@ -375,13 +376,14 @@ instance MsgStoreClass JournalMsgStore where
         $>>= \hs -> updateReadPos q logState len hs $> Just ()
 
   isolateQueue :: JournalMsgQueue -> String -> StoreIO a -> ExceptT ErrorType IO a
-  isolateQueue q op (StoreIO a) = tryStore op $ withLock' (queueLock $ queue q) op $ a
+  isolateQueue JournalMsgQueue {queue = q} op (StoreIO a) =
+    tryStore op (queueDirectory q) $ withLock' (queueLock q) op $ a
 
-tryStore :: String -> IO a -> ExceptT ErrorType IO a
-tryStore op a =
+tryStore :: String -> String -> IO a -> ExceptT ErrorType IO a
+tryStore op qId a =
   ExceptT $
     (Right <$> a) `catchAny` \e ->
-      let e' = op <> " " <> show e
+      let e' = intercalate ", " [op, qId, show e]
        in logError ("STORE: " <> T.pack e') $> Left (STORE e')
 
 openMsgQueue :: JournalMsgStore -> JMQueue -> IO JournalMsgQueue
@@ -418,7 +420,7 @@ chooseReadJournal q log' hs = do
 
 updateQueueState :: JournalMsgQueue -> Bool -> MsgQueueHandles -> MsgQueueState -> IO ()
 updateQueueState q log' hs st = do
-  unless (validQueueState st) $ E.throwIO $ userError $ "updateQueueState, updating to invalid state, " <> show st
+  unless (validQueueState st) $ E.throwIO $ userError $ "updateQueueState invalid state: " <> show st
   when log' $ appendState (stateHandle hs) st
   atomically $ writeTVar (state q) st
 
@@ -498,12 +500,12 @@ fixFileSize h pos = do
   if
     | size > pos' -> do
         name <- IO.hShow h
-        logWarn $ "STORE: fixFileSize, file size " <> tshow size <> " is bigger than position " <> tshow pos <> " - truncating, " <> T.pack name
+        logWarn $ "STORE: fixFileSize, size " <> tshow size <> " > pos " <> tshow pos <> " - truncating, " <> T.pack name
         IO.hSetFileSize h pos'
     | size < pos' -> do
         -- From code logic this can't happen.
         name <- IO.hShow h
-        E.throwIO $ userError $ "fixFileSize, file size " <> show size <> " is smaller than position " <> show pos <> " - aborting, " <> name
+        E.throwIO $ userError $ "fixFileSize size " <> show size <> " < pos " <> show pos <> " - aborting: " <> name
     | otherwise -> pure ()
 
 removeJournal :: FilePath -> JournalState t -> IO ()
@@ -527,7 +529,7 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
         [] -> writeNewQueueState
         _ -> do
           r@(st, _) <- useLastLine (length ls) True ls
-          unless (validQueueState st) $ E.throwIO $ userError $ "readWriteQueueState, inconsistent queue state, " <> show st
+          unless (validQueueState st) $ E.throwIO $ userError $ "readWriteQueueState inconsistent state: " <> show st
           pure r
     writeNewQueueState = do
       logWarn $ "STORE: readWriteQueueState, empty queue state - initialized, " <> T.pack statePath
@@ -550,7 +552,7 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
             ls' -> do
               logWarn $ "STORE: readWriteQueueState, invalid last line in queue state - using the previous line, " <> T.pack statePath
               useLastLine len False ls'
-        | otherwise -> E.throwIO $ userError $ "readWriteQueueState, invalid queue state, " <> statePath <> ": " <> show e
+        | otherwise -> E.throwIO $ userError $ "readWriteQueueState invalid state " <> statePath <> ": " <> show e
     backupWriteQueueState st = do
       -- State backup is made in two steps to mitigate the crash during the backup.
       -- Temporary backup file will be used when it is present.
@@ -615,7 +617,7 @@ hGetMsgAt h pos = do
     Right !msg ->
       let !len = fromIntegral (B.length s) + 1
        in pure (msg, len)
-    Left e -> E.throwIO $ userError $ "hGetMsgAt, invalid message, " <> e
+    Left e -> E.throwIO $ userError $ "hGetMsgAt invalid message: " <> e
 
 openFile :: FilePath -> IOMode -> IO Handle
 openFile f mode = do
