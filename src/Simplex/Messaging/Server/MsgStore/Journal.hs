@@ -40,6 +40,7 @@ import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Trans.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Bitraversable (bimapM)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -380,11 +381,12 @@ instance MsgStoreClass JournalMsgStore where
     tryStore op (queueDirectory q) $ withLock' (queueLock q) op $ a
 
 tryStore :: String -> String -> IO a -> ExceptT ErrorType IO a
-tryStore op qId a =
-  ExceptT $
-    (Right <$> E.mask_ a) `catchAny` \e ->
+tryStore op qId a = ExceptT $ E.try (E.mask_ a) >>= bimapM storeErr pure
+  where
+    storeErr :: E.SomeException -> IO ErrorType
+    storeErr e =
       let e' = intercalate ", " [op, qId, show e]
-       in logError ("STORE: " <> T.pack e') $> Left (STORE e')
+       in logError ("STORE: " <> T.pack e') $> STORE e'
 
 openMsgQueue :: JournalMsgStore -> JMQueue -> IO JournalMsgQueue
 openMsgQueue ms q@JMQueue {queueDirectory = dir, statePath} = do
