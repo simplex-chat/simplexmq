@@ -459,8 +459,6 @@ newJournalId g = strEncode <$> atomically (stateTVar g $ genByteString 12)
 
 openJournals :: FilePath -> MsgQueueState -> IO (MsgQueueState, Handle, Maybe Handle)
 openJournals dir st@MsgQueueState {readState = rs, writeState = ws} = do
-  -- TODO verify that file exists, what to do if it's not, or if its state diverges
-  -- TODO check current position matches state, fix if not
   let rjId = journalId rs
       wjId = journalId ws
   openJournal rs >>= \case
