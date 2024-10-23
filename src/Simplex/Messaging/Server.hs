@@ -1765,7 +1765,7 @@ processServerMessages = do
           Just f -> ifM (doesFileExist f) (importMessages ms f old_) (pure newMessageStats)
           Nothing -> pure newMessageStats
         AMS SMSJournal ms -> do
-          n <- (8 *) <$> getNumCapabilities
+          n <- getNumCapabilities
           case old_ of
             Just old -> do
               logInfo "expiring journal store messages..."
