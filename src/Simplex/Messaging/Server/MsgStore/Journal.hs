@@ -382,7 +382,7 @@ instance MsgStoreClass JournalMsgStore where
 tryStore :: String -> String -> IO a -> ExceptT ErrorType IO a
 tryStore op qId a =
   ExceptT $
-    (Right <$> a) `catchAny` \e ->
+    (Right <$> E.mask_ a) `catchAny` \e ->
       let e' = intercalate ", " [op, qId, show e]
        in logError ("STORE: " <> T.pack e') $> Left (STORE e')
 
