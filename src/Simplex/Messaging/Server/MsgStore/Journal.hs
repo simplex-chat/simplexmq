@@ -496,11 +496,13 @@ fixFileSize h pos = do
   size <- IO.hFileSize h
   if
     | size > pos' -> do
-        logWarn $ "STORE: fixFileSize, file is bigger - truncating, from " <> tshow size <> " to " <> tshow pos
+        name <- IO.hShow h
+        logWarn $ "STORE: fixFileSize, file size " <> tshow size <> " is bigger than position " <> tshow pos <> " - truncating, " <> T.pack name
         IO.hSetFileSize h pos'
-    | size < pos' ->
+    | size < pos' -> do
         -- From code logic this can't happen.
-        E.throwIO $ userError $ "fixFileSize, file is smaller, size " <> show size <> " position " <> show pos
+        name <- IO.hShow h
+        E.throwIO $ userError $ "fixFileSize, file size " <> show size <> " is smaller than position " <> show pos <> " - aborting, " <> name
     | otherwise -> pure ()
 
 removeJournal :: FilePath -> JournalState t -> IO ()
