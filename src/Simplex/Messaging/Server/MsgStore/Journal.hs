@@ -384,7 +384,7 @@ tryStore op a =
   ExceptT $
     (Right <$> a) `catchAny` \e ->
       let e' = op <> " " <> show e
-       in logError ("STORE " <> T.pack e') $> Left (STORE e')
+       in logError ("STORE: " <> T.pack e') $> Left (STORE e')
 
 openMsgQueue :: JournalMsgStore -> JMQueue -> IO JournalMsgQueue
 openMsgQueue ms q@JMQueue {queueDirectory = dir, statePath} = do
@@ -465,7 +465,7 @@ openJournals dir st@MsgQueueState {readState = rs, writeState = ws} = do
       wjId = journalId ws
   openJournal rs >>= \case
     Left path -> do
-      logError $ "STORE openJournals, no read file " <> T.pack path <> ", creating new file"
+      logError $ "STORE: openJournals, no read file " <> T.pack path <> ", creating new file"
       rh <- createNewJournal dir rjId
       let st' = newMsgQueueState rjId
       pure (st', rh, Nothing)
@@ -477,7 +477,7 @@ openJournals dir st@MsgQueueState {readState = rs, writeState = ws} = do
           fixFileSize rh $ byteCount rs
           openJournal ws >>= \case
             Left path -> do
-              logError $ "STORE openJournals, no write file " <> T.pack path <> ", creating new file"
+              logError $ "STORE: openJournals, no write file " <> T.pack path <> ", creating new file"
               wh <- createNewJournal dir wjId
               let size' = msgCount rs - msgPos rs
                   st' = st {writeState = newJournalState wjId, size = size'} -- we don't amend canWrite to trigger QCONT
@@ -498,7 +498,7 @@ fixFileSize h pos = do
   size <- IO.hFileSize h
   if
     | size > pos' -> do
-        logWarn $ "STORE fixFileSize, truncating from " <> tshow size <> " to " <> tshow pos
+        logWarn $ "STORE: fixFileSize, truncating from " <> tshow size <> " to " <> tshow pos
         IO.hSetFileSize h pos'
     | size < pos' ->
         -- From code logic this can't happen.
@@ -508,7 +508,7 @@ fixFileSize h pos = do
 removeJournal :: FilePath -> JournalState t -> IO ()
 removeJournal dir JournalState {journalId} = do
   let path = journalFilePath dir journalId
-  removeFile path `catchAny` (\e -> logError $ "STORE removeJournal, " <> T.pack path <> ", " <> tshow e)
+  removeFile path `catchAny` (\e -> logError $ "STORE: removeJournal, " <> T.pack path <> ", " <> tshow e)
 
 -- This function is supposed to be resilient to crashes while updating state files,
 -- and also resilient to crashes during its execution.
@@ -529,7 +529,7 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
           unless (validQueueState st) $ E.throwIO $ userError $ "readWriteQueueState, read invalid invalid, " <> show st
           pure r
     writeNewQueueState = do
-      logWarn $ "STORE readWriteQueueState, empty queue state in " <> T.pack statePath <> ", initialized"
+      logWarn $ "STORE: readWriteQueueState, empty queue state in " <> T.pack statePath <> ", initialized"
       st <- newMsgQueueState <$> newJournalId random
       writeQueueState st
     useLastLine len isLastLine ls = case strDecode $ LB.toStrict $ last ls of
@@ -543,11 +543,11 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
       Left e -- if the last line failed to parse
         | isLastLine -> case init ls of -- or use the previous line
             [] -> do
-              logWarn $ "STORE readWriteQueueState, invalid 1-line queue state " <> T.pack statePath <> ", initialized"
+              logWarn $ "STORE: readWriteQueueState, invalid 1-line queue state " <> T.pack statePath <> ", initialized"
               st <- newMsgQueueState <$> newJournalId random
               backupWriteQueueState st
             ls' -> do
-              logWarn $ "STORE readWriteQueueState, invalid last line in queue state " <> T.pack statePath <> ", using the previous line"
+              logWarn $ "STORE: readWriteQueueState, invalid last line in queue state " <> T.pack statePath <> ", using the previous line"
               useLastLine len False ls'
         | otherwise -> E.throwIO $ userError $ "readWriteQueueState, reading queue state " <> statePath <> ", " <> show e
     backupWriteQueueState st = do
@@ -598,7 +598,7 @@ closeMsgQueue q = readTVarIO (handles q) >>= mapM_ closeHandles
 removeQueueDirectory :: JournalMsgStore -> RecipientId -> IO ()
 removeQueueDirectory st rId =
   let dir = msgQueueDirectory st rId
-   in removePathForcibly dir `catchAny` (\e -> logError $ "STORE removeQueueDirectory, " <> T.pack dir <> ", " <> tshow e)
+   in removePathForcibly dir `catchAny` (\e -> logError $ "STORE: removeQueueDirectory, " <> T.pack dir <> ", " <> tshow e)
 
 hAppend :: Handle -> Int64 -> ByteString -> IO ()
 hAppend h pos s = do
