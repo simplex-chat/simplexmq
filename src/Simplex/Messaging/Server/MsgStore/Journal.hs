@@ -248,10 +248,11 @@ instance MsgStoreClass JournalMsgStore where
         where
           listDirs = fmap catMaybes . mapM queuePath =<< listDirectory path
           queuePath dir = do
-            let path' = path </> dir
+            let !path' = path </> dir
+                !queueId' = queueId <> dir
             ifM
               (doesDirectoryExist path')
-              (pure $ Just (queueId <> dir, path'))
+              (pure $ Just (queueId', path'))
               (Nothing <$ putStrLn ("Error: path " <> path' <> " is not a directory, skipping"))
 
   logQueueStates :: JournalMsgStore -> IO ()
