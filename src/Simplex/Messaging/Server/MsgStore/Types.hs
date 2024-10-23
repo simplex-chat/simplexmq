@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
@@ -24,7 +25,7 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   newMsgStore :: MsgStoreConfig s -> IO s
   closeMsgStore :: s -> IO ()
   activeMsgQueues :: s -> TMap RecipientId (MsgQueue s)
-  withAllMsgQueues :: Monoid a => s -> (RecipientId -> MsgQueue s -> IO a) -> IO a
+  withAllMsgQueues :: Monoid a => Int -> s -> (RecipientId -> MsgQueue s -> IO a) -> IO a
   logQueueStates :: s -> IO ()
   logQueueState :: MsgQueue s -> IO ()
   getMsgQueue :: s -> RecipientId -> ExceptT ErrorType IO (MsgQueue s)
@@ -47,7 +48,12 @@ data SMSType :: MSType -> Type where
 data AMSType = forall s. AMSType (SMSType s)
 
 withActiveMsgQueues :: (MsgStoreClass s, Monoid a) => s -> (RecipientId -> MsgQueue s -> IO a) -> IO a
-withActiveMsgQueues st f = readTVarIO (activeMsgQueues st) >>= M.foldrWithKey (\k v -> (>>= \r -> r `seq` (r <>) <$> f k v)) (pure mempty)
+withActiveMsgQueues st f = readTVarIO (activeMsgQueues st) >>= M.foldrWithKey run (pure mempty)
+  where
+    run k v acc = do
+      !r <- acc
+      !r' <- f k v
+      pure $! r <> r'
 
 tryPeekMsg :: MsgStoreClass s => MsgQueue s -> ExceptT ErrorType IO (Maybe Message)
 tryPeekMsg mq = isolateQueue mq "tryPeekMsg" $ tryPeekMsg_ mq
