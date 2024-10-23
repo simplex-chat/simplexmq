@@ -165,7 +165,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
     runServer (tcpPort, ATransport t, addHTTP) = do
       smpCreds <- asks tlsServerCreds
       httpCreds_ <- asks httpServerCreds
-      ss <- asks sockets
+      ss <- liftIO newSocketState
+      asks sockets >>= atomically . (`modifyTVar'` ((tcpPort, ss) :))
       serverSignKey <- either fail pure $ fromTLSCredentials smpCreds
       env <- ask
       liftIO $ case (httpCreds_, attachHTTP_) of
@@ -195,6 +196,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
 
     stopServer :: Server -> M ()
     stopServer s = do
+      asks serverActive >>= atomically . (`writeTVar` False)
       logInfo "Saving server state..."
       withLock' (savingLock s) "final" $ saveServer False >> closeServer
       logInfo "Server stopped"
@@ -662,25 +664,28 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
 #else
                 hPutStrLn h "Not available on GHC 8.10"
 #endif
-              CPSockets -> withUserRole $ do
-                (accepted', closed', active') <- unliftIO u $ asks sockets
-                (accepted, closed, active) <- (,,) <$> readTVarIO accepted' <*> readTVarIO closed' <*> readTVarIO active'
-                hPutStrLn h "Sockets: "
-                hPutStrLn h $ "accepted: " <> show accepted
-                hPutStrLn h $ "closed: " <> show closed
-                hPutStrLn h $ "active: " <> show (IM.size active)
-                hPutStrLn h $ "leaked: " <> show (accepted - closed - IM.size active)
+              CPSockets -> withUserRole $ unliftIO u (asks sockets) >>= readTVarIO >>= mapM_ putSockets
+                where
+                  putSockets (tcpPort, (accepted', closed', active')) = do
+                    (accepted, closed, active) <- (,,) <$> readTVarIO accepted' <*> readTVarIO closed' <*> readTVarIO active'
+                    hPutStrLn h $ "Sockets for port " <> tcpPort <> ":"
+                    hPutStrLn h $ "accepted: " <> show accepted
+                    hPutStrLn h $ "closed: " <> show closed
+                    hPutStrLn h $ "active: " <> show (IM.size active)
+                    hPutStrLn h $ "leaked: " <> show (accepted - closed - IM.size active)
               CPSocketThreads -> withAdminRole $ do
 #if MIN_VERSION_base(4,18,0)
-                (_, _, active') <- unliftIO u $ asks sockets
-                active <- readTVarIO active'
-                forM_ (IM.toList active) $ \(sid, tid') ->
-                  deRefWeak tid' >>= \case
-                    Nothing -> hPutStrLn h $ intercalate "," [show sid, "", "gone", ""]
-                    Just tid -> do
-                      label <- threadLabel tid
-                      status <- threadStatus tid
-                      hPutStrLn h $ intercalate "," [show sid, show tid, show status, fromMaybe "" label]
+                unliftIO u (asks sockets) >>= readTVarIO >>= mapM_ putSocketThreads
+                where
+                  putSocketThreads (tcpPort, (_, _, active')) = do
+                    active <- readTVarIO active'
+                    forM_ (IM.toList active) $ \(sid, tid') ->
+                      deRefWeak tid' >>= \case
+                        Nothing -> hPutStrLn h $ intercalate "," [tcpPort, show sid, "", "gone", ""]
+                        Just tid -> do
+                          label <- threadLabel tid
+                          status <- threadStatus tid
+                          hPutStrLn h $ intercalate "," [tcpPort, show sid, show tid, show status, fromMaybe "" label]
 #else
                 hPutStrLn h "Not available on GHC 8.10"
 #endif
@@ -844,12 +849,13 @@ clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, connecte
   subs <- atomically $ swapTVar subscriptions M.empty
   ntfSubs <- atomically $ swapTVar ntfSubscriptions M.empty
   liftIO $ mapM_ cancelSub subs
-  Server {subscribers, notifiers, subClients, ntfSubClients} <- asks server
-  liftIO $ updateSubscribers subs subscribers
-  liftIO $ updateSubscribers ntfSubs notifiers
-  asks clients >>= atomically . (`modifyTVar'` IM.delete clientId)
-  atomically $ modifyTVar' subClients $ IM.delete clientId
-  atomically $ modifyTVar' ntfSubClients $ IM.delete clientId
+  whenM (asks serverActive >>= readTVarIO) $ do
+    Server {subscribers, notifiers, subClients, ntfSubClients} <- asks server
+    liftIO $ updateSubscribers subs subscribers
+    liftIO $ updateSubscribers ntfSubs notifiers
+    asks clients >>= atomically . (`modifyTVar'` IM.delete clientId)
+    atomically $ modifyTVar' subClients $ IM.delete clientId
+    atomically $ modifyTVar' ntfSubClients $ IM.delete clientId
   tIds <- atomically $ swapTVar endThreads IM.empty
   liftIO $ mapM_ (mapM_ killThread <=< deRefWeak) tIds
   where
@@ -876,8 +882,10 @@ cancelSub s = case subThread s of
 receive :: Transport c => THandleSMP c 'TServer -> Client -> M ()
 receive h@THandle {params = THandleParams {thAuth}} Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
+  sa <- asks serverActive
   forever $ do
     ts <- L.toList <$> liftIO (tGet h)
+    unlessM (readTVarIO sa) $ throwIO $ userError "server stopped"
     atomically . (writeTVar rcvActiveAt $!) =<< liftIO getSystemTime
     stats <- asks serverStats
     (errs, cmds) <- partitionEithers <$> mapM (cmdAction stats) ts

@@ -140,6 +140,7 @@ defaultProxyClientConcurrency = 32
 
 data Env = Env
   { config :: ServerConfig,
+    serverActive :: TVar Bool,
     serverInfo :: ServerInformation,
     server :: Server,
     serverIdentity :: KeyHash,
@@ -151,7 +152,7 @@ data Env = Env
     tlsServerCreds :: T.Credential,
     httpServerCreds :: Maybe T.Credential,
     serverStats :: ServerStats,
-    sockets :: SocketState,
+    sockets :: TVar [(ServiceName, SocketState)],
     clientSeq :: TVar ClientId,
     clients :: TVar (IntMap (Maybe Client)),
     proxyAgent :: ProxyAgent -- senders served on this proxy
@@ -245,6 +246,7 @@ newProhibitedSub = do
 
 newEnv :: ServerConfig -> IO Env
 newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAgentCfg, information, messageExpiration} = do
+  serverActive <- newTVarIO True
   server <- newServer
   queueStore <- newQueueStore
   msgStore <- newMsgStore
@@ -260,11 +262,11 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
-  sockets <- newSocketState
+  sockets <- newTVarIO []
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
-  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, ntfStore, random, storeLog, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
+  pure Env {serverActive, config, serverInfo, server, serverIdentity, queueStore, msgStore, ntfStore, random, storeLog, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     getCredentials protocol creds = do
       files <- missingCreds

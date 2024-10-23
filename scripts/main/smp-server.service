@@ -9,7 +9,9 @@ ExecStart=/usr/local/bin/smp-server start +RTS -N -RTS
 ExecStopPost=/usr/local/bin/simplex-servers-stopscript smp-server
 LimitNOFILE=65535
 KillSignal=SIGINT
+TimeoutStartSec=infinity
 TimeoutStopSec=infinity
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
