@@ -465,7 +465,7 @@ openJournals dir st@MsgQueueState {readState = rs, writeState = ws} = do
       wjId = journalId ws
   openJournal rs >>= \case
     Left path -> do
-      logError $ "STORE: openJournals, no read file " <> T.pack path <> ", creating new file"
+      logError $ "STORE: openJournals, no read file - creating new file," <> T.pack path
       rh <- createNewJournal dir rjId
       let st' = newMsgQueueState rjId
       pure (st', rh, Nothing)
@@ -477,7 +477,7 @@ openJournals dir st@MsgQueueState {readState = rs, writeState = ws} = do
           fixFileSize rh $ byteCount rs
           openJournal ws >>= \case
             Left path -> do
-              logError $ "STORE: openJournals, no write file " <> T.pack path <> ", creating new file"
+              logError $ "STORE: openJournals, no write file - creating new file, " <> T.pack path
               wh <- createNewJournal dir wjId
               let size' = msgCount rs - msgPos rs
                   st' = st {writeState = newJournalState wjId, size = size'} -- we don't amend canWrite to trigger QCONT
@@ -498,11 +498,11 @@ fixFileSize h pos = do
   size <- IO.hFileSize h
   if
     | size > pos' -> do
-        logWarn $ "STORE: fixFileSize, truncating from " <> tshow size <> " to " <> tshow pos
+        logWarn $ "STORE: fixFileSize, file is bigger - truncating, from " <> tshow size <> " to " <> tshow pos
         IO.hSetFileSize h pos'
     | size < pos' ->
         -- From code logic this can't happen.
-        E.throwIO $ userError $ "fixFileSize, file size " <> show size <> " is smaller than position " <> show pos
+        E.throwIO $ userError $ "fixFileSize, file is smaller, size " <> show size <> " position " <> show pos
     | otherwise -> pure ()
 
 removeJournal :: FilePath -> JournalState t -> IO ()
@@ -526,10 +526,10 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
         [] -> writeNewQueueState
         _ -> do
           r@(st, _) <- useLastLine (length ls) True ls
-          unless (validQueueState st) $ E.throwIO $ userError $ "readWriteQueueState, read invalid invalid, " <> show st
+          unless (validQueueState st) $ E.throwIO $ userError $ "readWriteQueueState, inconsistent queue state, " <> show st
           pure r
     writeNewQueueState = do
-      logWarn $ "STORE: readWriteQueueState, empty queue state in " <> T.pack statePath <> ", initialized"
+      logWarn $ "STORE: readWriteQueueState, empty queue state - initialized, " <> T.pack statePath
       st <- newMsgQueueState <$> newJournalId random
       writeQueueState st
     useLastLine len isLastLine ls = case strDecode $ LB.toStrict $ last ls of
@@ -543,13 +543,13 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
       Left e -- if the last line failed to parse
         | isLastLine -> case init ls of -- or use the previous line
             [] -> do
-              logWarn $ "STORE: readWriteQueueState, invalid 1-line queue state " <> T.pack statePath <> ", initialized"
+              logWarn $ "STORE: readWriteQueueState, invalid 1-line queue state - initialized, " <> T.pack statePath
               st <- newMsgQueueState <$> newJournalId random
               backupWriteQueueState st
             ls' -> do
-              logWarn $ "STORE: readWriteQueueState, invalid last line in queue state " <> T.pack statePath <> ", using the previous line"
+              logWarn $ "STORE: readWriteQueueState, invalid last line in queue state - using the previous line, " <> T.pack statePath
               useLastLine len False ls'
-        | otherwise -> E.throwIO $ userError $ "readWriteQueueState, reading queue state " <> statePath <> ", " <> show e
+        | otherwise -> E.throwIO $ userError $ "readWriteQueueState, invalid queue state, " <> statePath <> ": " <> show e
     backupWriteQueueState st = do
       -- State backup is made in two steps to mitigate the crash during the backup.
       -- Temporary backup file will be used when it is present.
@@ -614,7 +614,7 @@ hGetMsgAt h pos = do
     Right !msg ->
       let !len = fromIntegral (B.length s) + 1
        in pure (msg, len)
-    Left e -> E.throwIO $ userError $ "hGetMsgAt, error parsing message, " <> e
+    Left e -> E.throwIO $ userError $ "hGetMsgAt, invalid message, " <> e
 
 openFile :: FilePath -> IOMode -> IO Handle
 openFile f mode = do
@@ -623,4 +623,4 @@ openFile f mode = do
   pure h
 
 hClose :: Handle -> IO ()
-hClose h = IO.hClose h `catchAny` (\e -> logError $ "Error closing file" <> tshow e)
+hClose h = IO.hClose h `catchAny` (\e -> logError $ "STORE: hClose, error closing file, " <> tshow e)
