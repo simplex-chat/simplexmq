@@ -63,8 +63,8 @@ module Simplex.Messaging.Agent
     rejectContact,
     subscribeConnection,
     subscribeConnections,
-    getConnectionMessage,
-    getNotificationMessage,
+    getConnectionMessages,
+    getNotificationConns,
     resubscribeConnection,
     resubscribeConnections,
     sendMessage,
@@ -382,15 +382,15 @@ subscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either AgentE
 subscribeConnections c = withAgentEnv c . subscribeConnections' c
 {-# INLINE subscribeConnections #-}
 
--- | Get connection message (GET command)
-getConnectionMessage :: AgentClient -> ConnId -> AE (Maybe SMPMsgMeta)
-getConnectionMessage c = withAgentEnv c . getConnectionMessage' c
-{-# INLINE getConnectionMessage #-}
+-- | Get messages for connections (GET commands)
+getConnectionMessages :: AgentClient -> NonEmpty ConnId -> AE (NonEmpty (Maybe SMPMsgMeta))
+getConnectionMessages c = withAgentEnv c . getConnectionMessages' c
+{-# INLINE getConnectionMessages #-}
 
--- | Get connection message for received notification
-getNotificationMessage :: AgentClient -> C.CbNonce -> ByteString -> AE (NonEmpty (NotificationInfo, Maybe SMPMsgMeta))
-getNotificationMessage c = withAgentEnv c .: getNotificationMessage' c
-{-# INLINE getNotificationMessage #-}
+-- | Get connections for received notification
+getNotificationConns :: AgentClient -> C.CbNonce -> ByteString -> AE (NonEmpty NotificationInfo)
+getNotificationConns c = withAgentEnv c .: getNotificationConns' c
+{-# INLINE getNotificationConns #-}
 
 resubscribeConnection :: AgentClient -> ConnId -> AE ()
 resubscribeConnection c = withAgentEnv c . resubscribeConnection' c
@@ -1046,48 +1046,50 @@ resubscribeConnections' c connIds = do
   -- union is left-biased, so results returned by subscribeConnections' take precedence
   (`M.union` r) <$> subscribeConnections' c connIds'
 
-getConnectionMessage' :: AgentClient -> ConnId -> AM (Maybe SMPMsgMeta)
-getConnectionMessage' c connId = do
-  whenM (atomically $ hasActiveSubscription c connId) . throwE $ CMD PROHIBITED "getConnectionMessage: subscribed"
-  SomeConn _ conn <- withStore c (`getConn` connId)
-  case conn of
-    DuplexConnection _ (rq :| _) _ -> getQueueMessage c rq
-    RcvConnection _ rq -> getQueueMessage c rq
-    ContactConnection _ rq -> getQueueMessage c rq
-    SndConnection _ _ -> throwE $ CONN SIMPLEX
-    NewConnection _ -> throwE $ CMD PROHIBITED "getConnectionMessage: NewConnection"
+getConnectionMessages' :: AgentClient -> NonEmpty ConnId -> AM (NonEmpty (Maybe SMPMsgMeta))
+getConnectionMessages' c connIds =
+  forM connIds (\connId -> getConnectionMessage connId `catchAgentError` \_ -> pure Nothing)
+  where
+    getConnectionMessage :: ConnId -> AM (Maybe SMPMsgMeta)
+    getConnectionMessage connId = do
+      whenM (atomically $ hasActiveSubscription c connId) . throwE $ CMD PROHIBITED "getConnectionMessage: subscribed"
+      SomeConn _ conn <- withStore c (`getConn` connId)
+      case conn of
+        DuplexConnection _ (rq :| _) _ -> getQueueMessage c rq
+        RcvConnection _ rq -> getQueueMessage c rq
+        ContactConnection _ rq -> getQueueMessage c rq
+        SndConnection _ _ -> throwE $ CONN SIMPLEX
+        NewConnection _ -> throwE $ CMD PROHIBITED "getConnectionMessage: NewConnection"
 
-getNotificationMessage' :: AgentClient -> C.CbNonce -> ByteString -> AM (NonEmpty (NotificationInfo, Maybe SMPMsgMeta))
-getNotificationMessage' c nonce encNtfInfo = do
+getNotificationConns' :: AgentClient -> C.CbNonce -> ByteString -> AM (NonEmpty NotificationInfo)
+getNotificationConns' c nonce encNtfInfo =
   withStore' c getActiveNtfToken >>= \case
     Just NtfToken {ntfDhSecret = Just dhSecret} -> do
       ntfData <- agentCbDecrypt dhSecret nonce encNtfInfo
       pnMsgs <- liftEither (parse pnMessagesP (INTERNAL "error parsing PNMessageData") ntfData)
       let (initNtfs, lastNtf) = (L.init pnMsgs, L.last pnMsgs)
-      initNtfMsgs <- catMaybes <$> forM initNtfs (\initNtf -> getInitNtfMsg initNtf `catchAgentError` \_ -> pure Nothing)
-      lastNtfMsg <- getLastNtfMsg lastNtf
-      pure $ L.fromList $ initNtfMsgs <> [lastNtfMsg]
-    _ -> throwE $ CMD PROHIBITED "getNotificationMessage"
+      initNtfConns <- catMaybes <$> forM initNtfs (\initNtf -> getInitNtfConn initNtf `catchAgentError` \_ -> pure Nothing)
+      lastNtfConns <- getLastNtfConn lastNtf
+      pure $ L.fromList $ initNtfConns <> [lastNtfConns]
+    _ -> throwE $ CMD PROHIBITED "getNotificationConns"
   where
     getNtfMeta :: PNMessageData -> AM (ConnId, Maybe UTCTime, Maybe SMP.NMsgMeta)
     getNtfMeta PNMessageData {smpQueue, nmsgNonce, encNMsgMeta} = do
       (ntfConnId, rcvNtfDhSecret, lastBrokerTs_) <- withStore c (`getNtfRcvQueue` smpQueue)
       ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
       pure (ntfConnId, lastBrokerTs_, ntfMsgMeta)
-    getInitNtfMsg :: PNMessageData -> AM (Maybe (NotificationInfo, Maybe SMPMsgMeta))
-    getInitNtfMsg msgData@PNMessageData {ntfTs} = do
+    getInitNtfConn :: PNMessageData -> AM (Maybe NotificationInfo)
+    getInitNtfConn msgData@PNMessageData {ntfTs} = do
       (ntfConnId, lastBrokerTs_, ntfMsgMeta) <- getNtfMeta msgData
       case (ntfMsgMeta, lastBrokerTs_) of
         (Just SMP.NMsgMeta {msgTs}, Just lastBrokerTs)
-          | systemToUTCTime msgTs > lastBrokerTs -> do
-              msgMeta <- getConnectionMessage' c ntfConnId
-              pure $ Just (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}, msgMeta)
+          | systemToUTCTime msgTs > lastBrokerTs ->
+              pure $ Just $ NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}
         _ -> pure Nothing
-    getLastNtfMsg :: PNMessageData -> AM (NotificationInfo, Maybe SMPMsgMeta)
-    getLastNtfMsg msgData@PNMessageData {ntfTs} = do
+    getLastNtfConn :: PNMessageData -> AM NotificationInfo
+    getLastNtfConn msgData@PNMessageData {ntfTs} = do
       (ntfConnId, _, ntfMsgMeta) <- getNtfMeta msgData
-      msgMeta <- getConnectionMessage' c ntfConnId
-      pure (NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}, msgMeta)
+      pure NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: AgentClient -> ConnId -> PQEncryption -> MsgFlags -> MsgBody -> AM (AgentMsgId, PQEncryption)
