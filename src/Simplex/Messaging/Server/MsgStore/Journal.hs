@@ -465,7 +465,7 @@ openJournals dir st@MsgQueueState {readState = rs, writeState = ws} = do
       wjId = journalId ws
   openJournal rs >>= \case
     Left path -> do
-      logError $ "STORE: openJournals, no read file - creating new file," <> T.pack path
+      logError $ "STORE: openJournals, no read file - creating new file, " <> T.pack path
       rh <- createNewJournal dir rjId
       let st' = newMsgQueueState rjId
       pure (st', rh, Nothing)
