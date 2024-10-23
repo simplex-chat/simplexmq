@@ -124,6 +124,7 @@ cfg =
       serverStatsBackupFile = Nothing,
       pendingENDInterval = 500000,
       ntfDeliveryInterval = 200000,
+      majorGCInterval = Nothing,
       smpCredentials =
         ServerCredentials
           { caCertificateFile = Just "tests/fixtures/ca.crt",
