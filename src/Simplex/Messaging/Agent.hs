@@ -64,7 +64,6 @@ module Simplex.Messaging.Agent
     subscribeConnection,
     subscribeConnections,
     getConnectionMessages,
-    getConnectionMessage,
     getNotificationConns,
     resubscribeConnection,
     resubscribeConnections,
@@ -383,15 +382,10 @@ subscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either AgentE
 subscribeConnections c = withAgentEnv c . subscribeConnections' c
 {-# INLINE subscribeConnections #-}
 
--- | Get connection messages (GET commands for multiple connections)
+-- | Get messages for connections (GET commands)
 getConnectionMessages :: AgentClient -> NonEmpty ConnId -> AE (NonEmpty (Maybe SMPMsgMeta))
 getConnectionMessages c = withAgentEnv c . getConnectionMessages' c
 {-# INLINE getConnectionMessages #-}
-
--- | Get connection message (GET command)
-getConnectionMessage :: AgentClient -> ConnId -> AE (Maybe SMPMsgMeta)
-getConnectionMessage c = withAgentEnv c . getConnectionMessage' c
-{-# INLINE getConnectionMessage #-}
 
 -- | Get connections for received notification
 getNotificationConns :: AgentClient -> C.CbNonce -> ByteString -> AE (NonEmpty NotificationInfo)
@@ -1054,18 +1048,18 @@ resubscribeConnections' c connIds = do
 
 getConnectionMessages' :: AgentClient -> NonEmpty ConnId -> AM (NonEmpty (Maybe SMPMsgMeta))
 getConnectionMessages' c connIds =
-  forM connIds (\connId -> getConnectionMessage' c connId `catchAgentError` \_ -> pure Nothing)
-
-getConnectionMessage' :: AgentClient -> ConnId -> AM (Maybe SMPMsgMeta)
-getConnectionMessage' c connId = do
-  whenM (atomically $ hasActiveSubscription c connId) . throwE $ CMD PROHIBITED "getConnectionMessage: subscribed"
-  SomeConn _ conn <- withStore c (`getConn` connId)
-  case conn of
-    DuplexConnection _ (rq :| _) _ -> getQueueMessage c rq
-    RcvConnection _ rq -> getQueueMessage c rq
-    ContactConnection _ rq -> getQueueMessage c rq
-    SndConnection _ _ -> throwE $ CONN SIMPLEX
-    NewConnection _ -> throwE $ CMD PROHIBITED "getConnectionMessage: NewConnection"
+  forM connIds (\connId -> getConnectionMessage connId `catchAgentError` \_ -> pure Nothing)
+  where
+    getConnectionMessage :: ConnId -> AM (Maybe SMPMsgMeta)
+    getConnectionMessage connId = do
+      whenM (atomically $ hasActiveSubscription c connId) . throwE $ CMD PROHIBITED "getConnectionMessage: subscribed"
+      SomeConn _ conn <- withStore c (`getConn` connId)
+      case conn of
+        DuplexConnection _ (rq :| _) _ -> getQueueMessage c rq
+        RcvConnection _ rq -> getQueueMessage c rq
+        ContactConnection _ rq -> getQueueMessage c rq
+        SndConnection _ _ -> throwE $ CONN SIMPLEX
+        NewConnection _ -> throwE $ CMD PROHIBITED "getConnectionMessage: NewConnection"
 
 getNotificationConns' :: AgentClient -> C.CbNonce -> ByteString -> AM (NonEmpty NotificationInfo)
 getNotificationConns' c nonce encNtfInfo =
