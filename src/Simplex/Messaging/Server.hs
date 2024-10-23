@@ -1772,7 +1772,7 @@ processServerMessages = do
                       storedQueues = storedQueues + 1
                     }
               Left e -> do
-                logInfo $ "failed expiring messages in queue " <> T.pack (queueDirectory $ queue q) <> ": " <> tshow e
+                logError $ "failed expiring messages in queue " <> T.pack (queueDirectory $ queue q) <> ": " <> tshow e
                 exitFailure
             where
               expireQueue = do
