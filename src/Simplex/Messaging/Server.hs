@@ -1748,8 +1748,12 @@ saveServerMessages drainMsgs =
 exportMessages :: MsgStoreClass s => s -> FilePath -> Bool -> IO ()
 exportMessages ms f drainMsgs = do
   logInfo $ "saving messages to file " <> T.pack f
-  Sum total <- liftIO $ withFile f WriteMode $ withAllMsgQueues ms . saveQueueMsgs
-  logInfo $ "messages saved: " <> tshow total
+  liftIO $ withFile f WriteMode $ \h ->
+    tryAny (withAllMsgQueues ms $ saveQueueMsgs h) >>= \case
+      Right (Sum total) -> logInfo $ "messages saved: " <> tshow total
+      Left e -> do
+        logError $ "error exporting messages: " <> tshow e
+        exitFailure
   where
     saveQueueMsgs h rId q = getQueueMessages drainMsgs q >>= \msgs -> Sum (length msgs) <$ BLD.hPutBuilder h (encodeMessages rId msgs)
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')

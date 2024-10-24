@@ -297,14 +297,15 @@ instance MsgStoreClass JournalMsgStore where
     pure sz
 
   getQueueMessages :: Bool -> JournalMsgQueue -> IO [Message]
-  getQueueMessages drainMsgs q = readTVarIO (handles q) >>= maybe (pure []) (getMsg [])
+  getQueueMessages drainMsgs q = run []
     where
+      run msgs = readTVarIO (handles q) >>= maybe (pure []) (getMsg msgs)
       getMsg msgs hs = chooseReadJournal q drainMsgs hs >>= maybe (pure msgs) readMsg
         where
           readMsg (rs, h) = do
             (msg, len) <- hGetMsgAt h $ bytePos rs
             updateReadPos q drainMsgs len hs
-            (msg :) <$> getMsg msgs hs
+            (msg :) <$> run msgs
 
   writeMsg :: JournalMsgStore -> JournalMsgQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
   writeMsg ms q@JournalMsgQueue {queue = JMQueue {queueDirectory, statePath}, handles} logState msg =
@@ -413,7 +414,7 @@ chooseReadJournal q log' hs = do
       -- switching to write journal
       atomically $ writeTVar (handles q) $ Just hs {readHandle = wh, writeHandle = Nothing}
       hClose $ readHandle hs
-      removeJournal (queueDirectory $ queue q) rs
+      when log' $ removeJournal (queueDirectory $ queue q) rs
       let !rs' = (newJournalState $ journalId ws) {msgCount = msgCount ws, byteCount = byteCount ws}
           !st' = st {readState = rs'}
       updateQueueState q log' hs st' $ pure ()
