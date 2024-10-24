@@ -192,7 +192,7 @@ msgLogFileName = "messages"
 logFileExt :: String
 logFileExt = ".log"
 
-newtype StoreIO a = StoreIO (IO a)
+newtype StoreIO a = StoreIO {unStoreIO :: IO a}
   deriving newtype (Functor, Applicative, Monad)
 
 instance MsgStoreClass JournalMsgStore where
@@ -260,7 +260,7 @@ instance MsgStoreClass JournalMsgStore where
   logQueueState :: JournalMsgQueue -> IO ()
   logQueueState q = 
     readTVarIO (handles q)
-      >>= maybe (pure ()) (\hs -> readTVarIO (state q) >>= appendState (stateHandle hs))
+      >>= maybe (pure ()) (\hs -> readTVarIO (state q) >>= E.mask_ . appendState (stateHandle hs))
 
   getMsgQueue :: JournalMsgStore -> RecipientId -> ExceptT ErrorType IO JournalMsgQueue
   getMsgQueue ms@JournalMsgStore {queueLocks, msgQueues, random} rId =
@@ -332,9 +332,9 @@ instance MsgStoreClass JournalMsgStore where
             ws' = ws {msgPos = msgPos', msgCount = msgPos', bytePos = bytePos', byteCount = bytePos'}
             rs' = if journalId ws == journalId rs then rs {msgCount = msgPos', byteCount = bytePos'} else rs
             !st' = st {writeState = ws', readState = rs', canWrite = canWrt', size = size + 1}
-        when (size == 0) $ atomically $ writeTVar (tipMsg q) $ Just (Just (msg, msgLen))
         hAppend wh (bytePos ws) msgStr
-        updateQueueState q logState hs st'
+        updateQueueState q logState hs st' $
+          when (size == 0) $ writeTVar (tipMsg q) $ Just (Just (msg, msgLen))
         where
           createQueueDir = do
             createDirectoryIfMissing True queueDirectory
@@ -377,11 +377,11 @@ instance MsgStoreClass JournalMsgStore where
         $>>= \hs -> updateReadPos q logState len hs $> Just ()
 
   isolateQueue :: JournalMsgQueue -> String -> StoreIO a -> ExceptT ErrorType IO a
-  isolateQueue JournalMsgQueue {queue = q} op (StoreIO a) =
-    tryStore op (queueDirectory q) $ withLock' (queueLock q) op $ a
+  isolateQueue JournalMsgQueue {queue = q} op =
+    tryStore op (queueDirectory q) . withLock' (queueLock q) op . unStoreIO
 
 tryStore :: String -> String -> IO a -> ExceptT ErrorType IO a
-tryStore op qId a = ExceptT $ E.try (E.mask_ a) >>= bimapM storeErr pure
+tryStore op qId a = ExceptT $ E.mask_ $ E.try a >>= bimapM storeErr pure
   where
     storeErr :: E.SomeException -> IO ErrorType
     storeErr e =
@@ -391,7 +391,7 @@ tryStore op qId a = ExceptT $ E.try (E.mask_ a) >>= bimapM storeErr pure
 openMsgQueue :: JournalMsgStore -> JMQueue -> IO JournalMsgQueue
 openMsgQueue ms q@JMQueue {queueDirectory = dir, statePath} = do
   (st, sh) <- readWriteQueueState ms statePath
-  (st', rh, wh_) <- openJournals dir st
+  (st', rh, wh_) <- openJournals dir st sh `E.onException` hClose sh
   let hs = MsgQueueHandles {stateHandle = sh, readHandle = rh, writeHandle = wh_}
   mkJournalQueue q (st', Just hs)
 
@@ -415,16 +415,16 @@ chooseReadJournal q log' hs = do
       removeJournal (queueDirectory $ queue q) rs
       let !rs' = (newJournalState $ journalId ws) {msgCount = msgCount ws, byteCount = byteCount ws}
           !st' = st {readState = rs'}
-      updateQueueState q log' hs st'
+      updateQueueState q log' hs st' $ pure ()
       pure $ Just (rs', wh)
     _ | msgPos rs >= msgCount rs && journalId rs == journalId ws -> pure Nothing
     _ -> pure $ Just (rs, readHandle hs)
 
-updateQueueState :: JournalMsgQueue -> Bool -> MsgQueueHandles -> MsgQueueState -> IO ()
-updateQueueState q log' hs st = do
+updateQueueState :: JournalMsgQueue -> Bool -> MsgQueueHandles -> MsgQueueState -> STM () -> IO ()
+updateQueueState q log' hs st a = do
   unless (validQueueState st) $ E.throwIO $ userError $ "updateQueueState invalid state: " <> show st
   when log' $ appendState (stateHandle hs) st
-  atomically $ writeTVar (state q) st
+  atomically $ writeTVar (state q) st >> a
 
 appendState :: Handle -> MsgQueueState -> IO ()
 appendState h st = B.hPutStr h $ strEncode st `B.snoc` '\n'
@@ -436,8 +436,7 @@ updateReadPos q log' len hs = do
   let msgPos' = msgPos + 1
       rs' = rs {msgPos = msgPos', bytePos = bytePos + len}
       st' = st {readState = rs', size = size - 1}
-  updateQueueState q log' hs st'              
-  atomically $ writeTVar (tipMsg q) Nothing
+  updateQueueState q log' hs st' $ writeTVar (tipMsg q) Nothing
 
 msgQueueDirectory :: JournalMsgStore -> RecipientId -> FilePath
 msgQueueDirectory JournalMsgStore {config = JournalStoreConfig {storePath, pathParts}} rId =
@@ -462,8 +461,8 @@ createNewJournal dir journalId = do
 newJournalId :: TVar StdGen -> IO ByteString
 newJournalId g = strEncode <$> atomically (stateTVar g $ genByteString 12)
 
-openJournals :: FilePath -> MsgQueueState -> IO (MsgQueueState, Handle, Maybe Handle)
-openJournals dir st@MsgQueueState {readState = rs, writeState = ws} = do
+openJournals :: FilePath -> MsgQueueState -> Handle -> IO (MsgQueueState, Handle, Maybe Handle)
+openJournals dir st@MsgQueueState {readState = rs, writeState = ws} sh = do
   let rjId = journalId rs
       wjId = journalId ws
   openJournal rs >>= \case
@@ -471,12 +470,13 @@ openJournals dir st@MsgQueueState {readState = rs, writeState = ws} = do
       logError $ "STORE: openJournals, no read file - creating new file, " <> T.pack path
       rh <- createNewJournal dir rjId
       let st' = newMsgQueueState rjId
+      appendState sh st' `E.onException` hClose rh
       pure (st', rh, Nothing)
     Right rh
       | rjId == wjId -> do
-          fixFileSize rh $ bytePos ws
+          fixFileSize rh (bytePos ws) `E.onException` hClose rh
           pure (st, rh, Nothing)
-      | otherwise -> do
+      | otherwise -> flip E.onException (hClose rh) $ do
           fixFileSize rh $ byteCount rs
           openJournal ws >>= \case
             Left path -> do
@@ -484,9 +484,10 @@ openJournals dir st@MsgQueueState {readState = rs, writeState = ws} = do
               wh <- createNewJournal dir wjId
               let size' = msgCount rs - msgPos rs
                   st' = st {writeState = newJournalState wjId, size = size'} -- we don't amend canWrite to trigger QCONT
+              appendState sh st' `E.onException` hClose wh
               pure (st', rh, Just wh)
             Right wh -> do
-              fixFileSize wh $ bytePos ws
+              fixFileSize wh (bytePos ws) `E.onException` hClose wh
               pure (st, rh, Just wh)
   where
     openJournal :: JournalState t -> IO (Either FilePath Handle)
@@ -565,7 +566,7 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
       pure r
     writeQueueState st = do
       sh <- openFile statePath AppendMode
-      appendState sh st
+      appendState sh st `E.onException` hClose sh
       pure (st, sh)
 
 validQueueState :: MsgQueueState -> Bool
