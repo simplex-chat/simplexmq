@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
@@ -201,7 +202,7 @@ readQueues :: FilePath -> IO (Map RecipientId QueueRec)
 readQueues f = foldM processLine M.empty . LB.lines =<< LB.readFile f
   where
     processLine :: Map RecipientId QueueRec -> LB.ByteString -> IO (Map RecipientId QueueRec)
-    processLine m s' = case strDecode $ trimCR s of
+    processLine !m s' = case strDecode $ trimCR s of
       Right r -> pure $ procLogRecord r
       Left e -> printError e $> m
       where
