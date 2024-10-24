@@ -216,7 +216,7 @@ instance MsgStoreClass JournalMsgStore where
   -- It is used to export storage to a single file and also to expire messages and validate all queues when server is started.
   -- TODO this function requires case-sensitive file system, because it uses queue directory as recipient ID.
   -- It can be made to support case-insensite FS by supporting more than one queue per directory, by getting recipient ID from state file name.
-  withAllMsgQueues :: Monoid a => JournalMsgStore -> (RecipientId -> JournalMsgQueue -> IO a) -> IO a
+  withAllMsgQueues :: forall a. Monoid a => JournalMsgStore -> (RecipientId -> JournalMsgQueue -> IO a) -> IO a
   withAllMsgQueues ms@JournalMsgStore {config} action = ifM (doesDirectoryExist storePath) processStore (pure mempty)
     where
       processStore = do
@@ -227,7 +227,8 @@ instance MsgStoreClass JournalMsgStore where
         putStrLn ""
         pure res
       JournalStoreConfig {storePath, pathParts} = config
-      processQueue queueLock (!i :: Int, !r) (queueId, dir) = do
+      processQueue :: Lock -> (Int, a) -> (String, FilePath) -> IO (Int, a)
+      processQueue queueLock (!i, !r) (queueId, dir) = do
         when (i `mod` 100 == 0) $ progress i
         let statePath = msgQueueStatePath dir queueId
         q <- openMsgQueue ms JMQueue {queueDirectory = dir, queueLock, statePath}
