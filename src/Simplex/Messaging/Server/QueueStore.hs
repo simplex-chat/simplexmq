@@ -3,6 +3,7 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Server.QueueStore where
 
@@ -10,6 +11,21 @@ import Data.Int (Int64)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import qualified Database.RocksDB as R
+
+testRocksDBFun :: IO ()
+testRocksDBFun = do
+  R.withDB "/tmp/rocks.db" conf $ \db ->
+    R.put db "k" "v"
+  where
+    conf = R.Config
+      { R.createIfMissing = True,
+        R.errorIfExists = False,
+        R.paranoidChecks = True,
+        R.maxFiles = Nothing,
+        R.prefixLength = Nothing,
+        R.bloomFilter = False
+      }
 
 data QueueRec = QueueRec
   { recipientId :: !RecipientId,
