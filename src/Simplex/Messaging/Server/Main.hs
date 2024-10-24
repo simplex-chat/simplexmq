@@ -85,9 +85,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
     Journal cmd -> withIniFile $ \ini -> do
       msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
       msgsFileExists <- doesFileExist storeMsgsFilePath
-      when (msgsFileExists && msgsDirExists) exitConfigureMsgStorage
       case cmd of
         JCImport
+          | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
           | msgsDirExists -> do
               putStrLn $ storeMsgsJournalDir <> " directory already exists."
               exitFailure
@@ -107,6 +107,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 Right (AMSType SMSJournal) -> "store_messages set to `journal`"
                 Left e -> e <> ", update it to `journal` in INI file"
         JCExport
+          | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
           | msgsFileExists -> do
               putStrLn $ storeMsgsFilePath <> " file already exists."
               exitFailure
@@ -121,6 +122,16 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 Right (AMSType SMSMemory) -> "store_messages set to `memory`"
                 Right (AMSType SMSJournal) -> "store_messages set to `journal`, update it to `memory` in INI file"
                 Left e -> e <> ", update it to `memory` in INI file"
+        JCDelete
+          | not msgsDirExists -> do
+              putStrLn $ storeMsgsJournalDir <> " directory does not exists."
+              exitFailure
+          | otherwise -> do
+              confirmOrExit
+                ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be permanently deleted.\nTHIS CANNOT BE UNDONE!")
+                "Messages NOT deleted"
+              deleteDirIfExists storeMsgsJournalDir
+              putStrLn $ "Deleted all messages in journal " <> storeMsgsJournalDir
   where
     withIniFile a =
       doesFileExist iniFile >>= \case
@@ -609,7 +620,7 @@ data CliCommand
   | Delete
   | Journal JournalCmd
 
-data JournalCmd = JCImport | JCExport
+data JournalCmd = JCImport | JCExport | JCDelete
 
 data InitOptions = InitOptions
   { enableStoreLog :: Bool,
@@ -785,6 +796,7 @@ cliCommandP cfgPath logPath iniFile =
       hsubparser
         ( command "import" (info (pure JCImport) (progDesc "Import message log file into a new journal storage"))
             <> command "export" (info (pure JCExport) (progDesc "Export journal storage to message log file"))
+            <> command "delete" (info (pure JCDelete) (progDesc "Delete journal storage"))
         )
 
     parseBasicAuth :: ReadM ServerPassword
