@@ -391,7 +391,7 @@ tryStore op qId a = ExceptT $ E.mask_ $ E.try a >>= bimapM storeErr pure
 openMsgQueue :: JournalMsgStore -> JMQueue -> IO JournalMsgQueue
 openMsgQueue ms q@JMQueue {queueDirectory = dir, statePath} = do
   (st, sh) <- readWriteQueueState ms statePath
-  (st', rh, wh_) <- openJournals dir st sh `E.onException` hClose sh
+  (st', rh, wh_) <- closeOnException sh $ openJournals dir st sh
   let hs = MsgQueueHandles {stateHandle = sh, readHandle = rh, writeHandle = wh_}
   mkJournalQueue q (st', Just hs)
 
@@ -470,13 +470,13 @@ openJournals dir st@MsgQueueState {readState = rs, writeState = ws} sh = do
       logError $ "STORE: openJournals, no read file - creating new file, " <> T.pack path
       rh <- createNewJournal dir rjId
       let st' = newMsgQueueState rjId
-      appendState sh st' `E.onException` hClose rh
+      closeOnException rh $ appendState sh st'
       pure (st', rh, Nothing)
     Right rh
       | rjId == wjId -> do
-          fixFileSize rh (bytePos ws) `E.onException` hClose rh
+          closeOnException rh $ fixFileSize rh $ bytePos ws
           pure (st, rh, Nothing)
-      | otherwise -> flip E.onException (hClose rh) $ do
+      | otherwise -> closeOnException rh $ do
           fixFileSize rh $ byteCount rs
           openJournal ws >>= \case
             Left path -> do
@@ -484,10 +484,10 @@ openJournals dir st@MsgQueueState {readState = rs, writeState = ws} sh = do
               wh <- createNewJournal dir wjId
               let size' = msgCount rs - msgPos rs
                   st' = st {writeState = newJournalState wjId, size = size'} -- we don't amend canWrite to trigger QCONT
-              appendState sh st' `E.onException` hClose wh
+              closeOnException wh $ appendState sh st'
               pure (st', rh, Just wh)
             Right wh -> do
-              fixFileSize wh (bytePos ws) `E.onException` hClose wh
+              closeOnException wh $ fixFileSize wh $ bytePos ws
               pure (st, rh, Just wh)
   where
     openJournal :: JournalState t -> IO (Either FilePath Handle)
@@ -566,7 +566,7 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
       pure r
     writeQueueState st = do
       sh <- openFile statePath AppendMode
-      appendState sh st `E.onException` hClose sh
+      closeOnException sh $ appendState sh st
       pure (st, sh)
 
 validQueueState :: MsgQueueState -> Bool
@@ -630,3 +630,6 @@ openFile f mode = do
 
 hClose :: Handle -> IO ()
 hClose h = IO.hClose h `catchAny` (\e -> logError $ "STORE: hClose, error closing file, " <> tshow e)
+
+closeOnException :: Handle -> IO a -> IO a
+closeOnException h a = a `E.onException` hClose h
