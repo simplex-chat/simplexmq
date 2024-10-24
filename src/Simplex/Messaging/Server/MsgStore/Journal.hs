@@ -260,7 +260,7 @@ instance MsgStoreClass JournalMsgStore where
   logQueueState :: JournalMsgQueue -> IO ()
   logQueueState q = 
     readTVarIO (handles q)
-      >>= maybe (pure ()) (\hs -> readTVarIO (state q) >>= E.mask_ . appendState (stateHandle hs))
+      >>= maybe (pure ()) (\hs -> readTVarIO (state q) >>= appendState (stateHandle hs))
 
   getMsgQueue :: JournalMsgStore -> RecipientId -> ExceptT ErrorType IO JournalMsgQueue
   getMsgQueue ms@JournalMsgStore {queueLocks, msgQueues, random} rId =
@@ -427,7 +427,7 @@ updateQueueState q log' hs st a = do
   atomically $ writeTVar (state q) st >> a
 
 appendState :: Handle -> MsgQueueState -> IO ()
-appendState h st = B.hPutStr h $ strEncode st `B.snoc` '\n'
+appendState h st = E.uninterruptibleMask_ $ B.hPutStr h $ strEncode st `B.snoc` '\n'
 
 updateReadPos :: JournalMsgQueue -> Bool -> Int64 -> MsgQueueHandles -> IO ()
 updateReadPos q log' len hs = do
