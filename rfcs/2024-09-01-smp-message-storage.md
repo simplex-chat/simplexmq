@@ -96,7 +96,7 @@ else if write_msg = max_queue_messages:
     add quota_exceeded message to write_file
     update queue state: write_msg += 1
     append updated queue state to queue.log
-else ]
+else
     // It is required that `max_queue_messages < max_file_messages`,
     // so that we never need more than one additional write file.
     if write_msg >= max_file_messages: // queue file rotation

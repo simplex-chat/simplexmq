@@ -77,7 +77,7 @@ import Data.Word (Word16)
 import qualified Database.SQLite.Simple as SQL
 import GHC.Stack (withFrozenCallStack)
 import SMPAgentClient
-import SMPClient (cfg, prevRange, prevVersion, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerProxy, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfg, prevRange, prevVersion, testPort, testPort2, testStoreLogFile2, testStoreMsgsDir2, withSmpServer, withSmpServerConfigOn, withSmpServerProxy, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), waitForUserNetwork)
@@ -96,6 +96,7 @@ import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolS
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Transport (ATransport (..), SMPVersion, VersionSMP, authCmdsSMPVersion, basicAuthSMPVersion, batchCmdsSMPVersion, currentServerSMPRelayVersion, sndAuthKeySMPVersion, supportedSMPHandshakes)
 import Simplex.Messaging.Util (bshow, diffToMicroseconds)
@@ -530,7 +531,7 @@ testRatchetMatrix2 t runTest = do
 testServerMatrix2 :: HasCallStack => ATransport -> (InitialAgentServers -> IO ()) -> Spec
 testServerMatrix2 t runTest = do
   it "1 server" $ withSmpServer t $ runTest initAgentServers
-  it "2 servers" $ withSmpServer t . withSmpServerOn t testPort2 $ runTest initAgentServers2
+  it "2 servers" $ withSmpServer t $ withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \_ -> runTest initAgentServers2
 
 testPQMatrix2 :: HasCallStack => ATransport -> (HasCallStack => (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()) -> Spec
 testPQMatrix2 = pqMatrix2_ True
@@ -1041,7 +1042,7 @@ testAllowConnectionClientRestart t = do
   bob <- getSMPAgentClient' 2 agentCfg initAgentServersSrv2 testDB2
   withSmpServerStoreLogOn t testPort $ \_ -> do
     (aliceId, bobId, confId) <-
-      withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \_ -> do
+      withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \_ -> do
         runRight $ do
           (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
           (aliceId, sqSecured) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
@@ -1063,8 +1064,7 @@ testAllowConnectionClientRestart t = do
     alice2 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
     runRight_ $ subscribeConnection alice2 bobId
     threadDelay 500000
-
-    withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \_ -> do
+    withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \_ -> do
       runRight $ do
         ("", "", UP _ _) <- nGet bob
         get alice2 ##> ("", bobId, CON)
@@ -1282,7 +1282,7 @@ testSkippedMessages :: HasCallStack => ATransport -> IO ()
 testSkippedMessages t = do
   alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
   bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
-  (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> do
+  (aliceId, bobId) <- withSmpServerConfigOn t cfg' testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ makeConnection alice bob
     runRight_ $ do
       2 <- sendMessage alice bobId SMP.noMsgFlags "hello"
@@ -1310,7 +1310,7 @@ testSkippedMessages t = do
   alice2 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
   bob2 <- getSMPAgentClient' 4 agentCfg initAgentServers testDB2
 
-  withSmpServerStoreLogOn t testPort $ \_ -> do
+  withSmpServerConfigOn t cfg' testPort $ \_ -> do
     runRight_ $ do
       subscribeConnection bob2 aliceId
       subscribeConnection alice2 bobId
@@ -1326,6 +1326,8 @@ testSkippedMessages t = do
       ackMessage bob2 aliceId 4 Nothing
   disposeAgentClient alice2
   disposeAgentClient bob2
+  where
+    cfg' = cfg {msgStoreType = AMSType SMSMemory, storeMsgsFile = Nothing}
 
 testDeliveryAfterSubscriptionError :: HasCallStack => ATransport -> IO ()
 testDeliveryAfterSubscriptionError t = do
@@ -1429,7 +1431,7 @@ withUP a bId p =
       ]
 
 testExpireMessageQuota :: HasCallStack => ATransport -> IO ()
-testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testPort $ \_ -> do
+testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1, maxJournalMsgCount = 2} testPort $ \_ -> do
   a <- getSMPAgentClient' 1 agentCfg {quotaExceededTimeout = 1, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aId, bId) <- runRight $ do
@@ -1455,7 +1457,7 @@ testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testP
   disposeAgentClient a
 
 testExpireManyMessagesQuota :: ATransport -> IO ()
-testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testPort $ \_ -> do
+testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1, maxJournalMsgCount = 2} testPort $ \_ -> do
   a <- getSMPAgentClient' 1 agentCfg {quotaExceededTimeout = 2, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aId, bId) <- runRight $ do
@@ -1944,7 +1946,7 @@ testBatchedSubscriptions nCreate nDel t =
     runServers :: ExceptT AgentErrorType IO a -> IO a
     runServers a = do
       withSmpServerStoreLogOn t testPort $ \t1 -> do
-        res <- withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \t2 ->
+        res <- withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \t2 ->
           runRight a `finally` killThread t2
         killThread t1
         pure res
@@ -2356,7 +2358,7 @@ testJoinConnectionAsyncReplyErrorV8 t = do
         ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
         pure (aId, bId)
       nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
-      withSmpServerOn t testPort2 $ do
+      withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \_ -> do
         get b =##> \case ("2", c, JOINED sqSecured) -> c == aId && not sqSecured; _ -> False
         confId <- withSmpServerStoreLogOn t testPort $ \_ -> do
           pGet a >>= \case
@@ -2395,7 +2397,7 @@ testJoinConnectionAsyncReplyError t = do
         ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
         pure (aId, bId)
       nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
-      withSmpServerOn t testPort2 $ do
+      withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \_ -> do
         confId <- withSmpServerStoreLogOn t testPort $ \_ -> do
           -- both servers need to be online for connection to progress because of SKEY
           get b =##> \case ("2", c, JOINED sqSecured) -> c == aId && sqSecured; _ -> False
@@ -2974,7 +2976,7 @@ testDeliveryReceiptsVersion t = do
 
 testDeliveryReceiptsConcurrent :: HasCallStack => ATransport -> IO ()
 testDeliveryReceiptsConcurrent t =
-  withSmpServerConfigOn t cfg {msgQueueQuota = 256} testPort $ \_ -> do
+  withSmpServerConfigOn t cfg {msgQueueQuota = 256, maxJournalMsgCount = 512} testPort $ \_ -> do
     withAgentClients2 $ \a b -> do
       (aId, bId) <- runRight $ makeConnection a b
       t1 <- liftIO getCurrentTime

@@ -105,7 +105,7 @@ testNotificationSubscription (ATransport t) =
     (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
     let tkn = DeviceToken PPApnsTest "abcd"
     withAPNSMockServer $ \apns ->
-      smpTest2 t $ \rh sh ->
+      smpTest2' t $ \rh sh ->
         ntfTest t $ \nh -> do
           -- create queue
           (sId, rId, rKey, rcvDhSecret) <- createAndSecureQueue rh sPub
