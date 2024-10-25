@@ -49,8 +49,7 @@ newQueueStore = do
 addQueue :: QueueStore -> QueueRec -> IO (Either ErrorType ())
 addQueue QueueStore {queues, senders} q@QueueRec {recipientId = rId, senderId = sId} = atomically $ do
   ifM hasId (pure $ Left DUPLICATE_) $ do
-    qVar <- newTVar q
-    TM.insert rId qVar queues
+    TM.insertM rId (newTVar q) queues
     TM.insert sId rId senders
     pure $ Right ()
   where

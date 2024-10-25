@@ -37,8 +37,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Protocol (NtfPrivateAuthKey)
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Util (safeDecodeUtf8, whenM)
-import System.Directory (doesFileExist, renameFile)
+import Simplex.Messaging.Util (safeDecodeUtf8)
 import System.IO
 
 data NtfStoreLogRecord
@@ -186,13 +185,7 @@ logDeleteSubscription :: StoreLog 'WriteMode -> NtfSubscriptionId -> IO ()
 logDeleteSubscription s subId = logNtfStoreRecord s $ DeleteSubscription subId
 
 readWriteNtfStore :: FilePath -> NtfStore -> IO (StoreLog 'WriteMode)
-readWriteNtfStore f st = do
-  whenM (doesFileExist f) $ do
-    readNtfStore f st
-    renameFile f $ f <> ".bak"
-  s <- openWriteStoreLog f
-  writeNtfStore s st
-  pure s
+readWriteNtfStore = readWriteStoreLog readNtfStore writeNtfStore
 
 readNtfStore :: FilePath -> NtfStore -> IO ()
 readNtfStore f st = mapM_ (addNtfLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f

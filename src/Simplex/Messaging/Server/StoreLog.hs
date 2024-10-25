@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
@@ -22,23 +23,27 @@ module Simplex.Messaging.Server.StoreLog
     logDeleteQueue,
     logDeleteNotifier,
     logUpdateQueueTime,
+    readWriteQueueStore,
     readWriteStoreLog,
   )
 where
 
 import Control.Applicative (optional, (<|>))
-import Control.Monad (foldM, unless, when)
+import Control.Concurrent.STM
+import Control.Logger.Simple
+import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
-import Data.Functor (($>))
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as M
+import qualified Data.ByteString.Base64.URL as B64
+import qualified Data.Text as T
+import Data.Time.Clock (getCurrentTime)
+import Data.Time.Format.ISO8601 (iso8601Show)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.Transport.Buffer (trimCR)
-import Simplex.Messaging.Util (ifM)
+import Simplex.Messaging.Server.QueueStore.STM
+import Simplex.Messaging.Util (bshow, ifM, unlessM, whenM)
 import System.Directory (doesFileExist, renameFile)
 import System.IO
 
@@ -144,7 +149,7 @@ openWriteStoreLog f = do
 
 openReadStoreLog :: FilePath -> IO (StoreLog 'ReadMode)
 openReadStoreLog f = do
-  doesFileExist f >>= (`unless` writeFile f "")
+  unlessM (doesFileExist f) (writeFile f "")
   ReadStoreLog f <$> openFile f ReadMode
 
 storeLogFilePath :: StoreLog a -> FilePath
@@ -183,37 +188,69 @@ logDeleteNotifier s = writeStoreLogRecord s . DeleteNotifier
 logUpdateQueueTime :: StoreLog 'WriteMode -> QueueId -> RoundedSystemTime -> IO ()
 logUpdateQueueTime s qId t = writeStoreLogRecord s $ UpdateTime qId t
 
-readWriteStoreLog :: FilePath -> IO (Map RecipientId QueueRec, StoreLog 'WriteMode)
-readWriteStoreLog f = do
-  qs <- ifM (doesFileExist f) readQS (pure M.empty)
-  s <- openWriteStoreLog f
-  writeQueues s qs
-  pure (qs, s)
-  where
-    readQS = readQueues f <* renameFile f (f <> ".bak")
+readWriteQueueStore :: FilePath -> QueueStore -> IO (StoreLog 'WriteMode)
+readWriteQueueStore = readWriteStoreLog readQueues writeQueues
 
-writeQueues :: StoreLog 'WriteMode -> Map RecipientId QueueRec -> IO ()
-writeQueues s = mapM_ $ \q -> when (active q) $ logCreateQueue s q
+readWriteStoreLog :: (FilePath -> s -> IO ()) -> (StoreLog 'WriteMode -> s -> IO ()) -> FilePath -> s -> IO (StoreLog 'WriteMode)
+readWriteStoreLog readStore writeStore f st =
+  ifM
+    (doesFileExist tempBackup)
+    (useTempBackup >> readWriteLog)
+    (ifM (doesFileExist f) readWriteLog (writeLog "creating store log..."))
   where
+    f' = T.pack f
+    tempBackup = f <> ".start"
+    useTempBackup = do
+      -- preserve current file, use temp backup
+      logWarn $ "Server terminated abnormally on last start, restoring state from " <> T.pack tempBackup
+      whenM (doesFileExist f) $ do
+        renameFile f (f <> ".bak")
+        logInfo $ "preserved incomplete state " <> f' <> " as " <> (f' <> ".bak")
+      renameFile tempBackup f
+    readWriteLog = do
+      -- log backup is made in two steps to mitigate the crash during the compacting.
+      -- Temporary backup file .start will be used when it is present.
+      readStore f st
+      renameFile f tempBackup -- 1) make temp backup
+      s <- writeLog "compacting store log (do not terminate)..." -- 2) save state
+      renameBackup -- 3) timed backup
+      pure s
+    writeLog msg = do
+      s <- openWriteStoreLog f
+      logInfo msg
+      writeStore s st
+      pure s
+    renameBackup = do
+      ts <- getCurrentTime
+      let timedBackup = f <> "." <> iso8601Show ts
+      renameFile tempBackup timedBackup
+      logInfo $ "original state preserved as " <> T.pack timedBackup
+
+writeQueues :: StoreLog 'WriteMode -> QueueStore -> IO ()
+writeQueues s st = readTVarIO (queues st) >>= mapM_ writeQueue
+  where
+    writeQueue v = readTVarIO v >>= \q -> when (active q) $ logCreateQueue s q
     active QueueRec {status} = status == QueueActive
 
-readQueues :: FilePath -> IO (Map RecipientId QueueRec)
-readQueues f = foldM processLine M.empty . LB.lines =<< LB.readFile f
+readQueues :: FilePath -> QueueStore -> IO ()
+readQueues f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . LB.lines
   where
-    processLine :: Map RecipientId QueueRec -> LB.ByteString -> IO (Map RecipientId QueueRec)
-    processLine m s' = case strDecode $ trimCR s of
-      Right r -> pure $ procLogRecord r
-      Left e -> printError e $> m
+    processLine :: LB.ByteString -> IO ()
+    processLine s' = either printError procLogRecord (strDecode s)
       where
         s = LB.toStrict s'
-        procLogRecord :: StoreLogRecord -> Map RecipientId QueueRec
+        procLogRecord :: StoreLogRecord -> IO ()
         procLogRecord = \case
-          CreateQueue q -> M.insert (recipientId q) q m
-          SecureQueue qId sKey -> M.adjust (\q -> q {senderKey = Just sKey}) qId m
-          AddNotifier qId ntfCreds -> M.adjust (\q -> q {notifier = Just ntfCreds}) qId m
-          SuspendQueue qId -> M.adjust (\q -> q {status = QueueOff}) qId m
-          DeleteQueue qId -> M.delete qId m
-          DeleteNotifier qId -> M.adjust (\q -> q {notifier = Nothing}) qId m
-          UpdateTime qId t -> M.adjust (\q -> q {updatedAt = Just t}) qId m
+          CreateQueue q -> addQueue st q >>= qError (recipientId q)
+          SecureQueue qId sKey -> secureQueue st qId sKey >>= qError qId
+          AddNotifier qId ntfCreds -> addQueueNotifier st qId ntfCreds >>= qError qId
+          SuspendQueue qId -> suspendQueue st qId >>= qError qId
+          DeleteQueue qId -> deleteQueue st qId >>= qError qId
+          DeleteNotifier qId -> deleteQueueNotifier st qId >>= qError qId
+          UpdateTime qId t -> updateQueueTime st qId t
         printError :: String -> IO ()
         printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
+        qError :: RecipientId -> Either ErrorType a -> IO ()
+        qError (EntityId qId) = \case
+          Left e -> B.putStrLn $ "stored queue " <> B64.encode qId <> " error: " <> bshow e
+          Right _ -> pure ()

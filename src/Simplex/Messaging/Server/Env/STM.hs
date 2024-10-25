@@ -19,8 +19,6 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as M
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
@@ -39,7 +37,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.NtfStore
-import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
+import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
@@ -253,7 +251,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
   storeLog <-
     forM storeLogFile $ \f -> do
       logInfo $ "restoring queues from file " <> T.pack f
-      restoreQueues queueStore f
+      readWriteQueueStore f queueStore
   tlsServerCreds <- getCredentials "SMP" smpCredentials
   httpServerCreds <- mapM (getCredentials "HTTPS") httpCredentials
   mapM_ checkHTTPSCredentials httpServerCreds
@@ -286,19 +284,6 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
           putStrLn $ "Error: unsupported HTTPS credentials, required 4096-bit RSA\n" <> letsEncrypt
           exitFailure
     letsEncrypt = "Use Let's Encrypt to generate: certbot certonly --standalone -d yourdomainname --key-type rsa --rsa-key-size 4096"
-    restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
-    restoreQueues QueueStore {queues, senders, notifiers} f = do
-      (qs, s) <- readWriteStoreLog f
-      atomically . writeTVar queues =<< mapM newTVarIO qs
-      atomically $ writeTVar senders $! M.foldr' addSender M.empty qs
-      atomically $ writeTVar notifiers $! M.foldr' addNotifier M.empty qs
-      pure s
-    addSender :: QueueRec -> Map SenderId RecipientId -> Map SenderId RecipientId
-    addSender q = M.insert (senderId q) (recipientId q)
-    addNotifier :: QueueRec -> Map NotifierId RecipientId -> Map NotifierId RecipientId
-    addNotifier q = case notifier q of
-      Nothing -> id
-      Just NtfCreds {notifierId} -> M.insert notifierId (recipientId q)
     serverInfo =
       ServerInformation
         { information,
