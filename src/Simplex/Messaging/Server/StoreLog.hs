@@ -36,7 +36,6 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.ByteString.Base64.URL as B64
-import Data.Functor (($>))
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
@@ -193,21 +192,11 @@ readWriteQueueStore :: FilePath -> QueueStore -> IO (StoreLog 'WriteMode)
 readWriteQueueStore = readWriteStoreLog readQueues writeQueues
 
 readWriteStoreLog :: (FilePath -> s -> IO ()) -> (StoreLog 'WriteMode -> s -> IO ()) -> FilePath -> s -> IO (StoreLog 'WriteMode)
-readWriteStoreLog readStore writeStore f st = do
-  -- log backup is made in two steps to mitigate the crash during the compacting.
-  -- Temporary backup file .start will be used when it is present.
-  hasLog <- ifM (doesFileExist tempBackup) (useTempBackup $> True) (doesFileExist f)
-  when hasLog $ do -- 1) read + make temp backup
-    readStore f st
-    renameFile f tempBackup
-  s <- openWriteStoreLog f
-  logInfo "compacting state..."
-  writeStore s st -- 2) save state
-  ts <- getCurrentTime
-  let timedBackup = f <> "." <> iso8601Show ts <> ".bak"
-  renameFile tempBackup timedBackup -- 3) timed backup
-  logInfo $ "original state preserved as " <> T.pack timedBackup
-  pure s
+readWriteStoreLog readStore writeStore f st =
+  ifM
+    (doesFileExist tempBackup)
+    (useTempBackup >> readWriteLog)
+    (ifM (doesFileExist f) readWriteLog (writeLog "creating store log..."))
   where
     f' = T.pack f
     tempBackup = f <> ".start"
@@ -218,6 +207,26 @@ readWriteStoreLog readStore writeStore f st = do
         renameFile f (f <> ".bak")
         logInfo $ "preserved incomplete state " <> f' <> " as " <> (f' <> ".bak")
       renameFile tempBackup f
+    readWriteLog = do
+      -- log backup is made in two steps to mitigate the crash during the compacting.
+      -- Temporary backup file .start will be used when it is present.
+      readLog -- 1) read + make temp backup
+      s <- writeLog "compacting store log..." -- 2) save state
+      renameBackup -- 3) timed backup
+      pure s
+    readLog = do
+      readStore f st
+      renameFile f tempBackup
+    writeLog msg = do
+      s <- openWriteStoreLog f
+      logInfo msg
+      writeStore s st
+      pure s
+    renameBackup = do
+      ts <- getCurrentTime
+      let timedBackup = f <> "." <> iso8601Show ts <> ".bak"
+      renameFile tempBackup timedBackup
+      logInfo $ "original state preserved as " <> T.pack timedBackup
 
 writeQueues :: StoreLog 'WriteMode -> QueueStore -> IO ()
 writeQueues s st = readTVarIO (queues st) >>= mapM_ writeQueue
