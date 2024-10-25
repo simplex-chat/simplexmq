@@ -496,7 +496,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
   cId `shouldBe` bobId
   -- alice client already has subscription for the connection,
   -- so get fails with CMD PROHIBITED (transformed into Nothing in catch)
-  Right [Nothing] <- runExceptT $ getConnectionMessages alice [cId]
+  [Nothing] <- getConnectionMessages alice [cId]
 
   threadDelay 500000
   suspendAgent alice 0
@@ -505,7 +505,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
   putStrLn "before opening the database from another agent"
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
-  withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> runRight_ $ do
+  withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> do
     (Just SMPMsgMeta {msgFlags = MsgFlags True}) :| _ <- getConnectionMessages aliceNtf [cId]
     pure ()
 
