@@ -80,6 +80,7 @@ module Simplex.Messaging.Agent.Client
     agentXFTPAddRecipients,
     agentXFTPDeleteChunk,
     agentCbDecrypt,
+    agentCbDecrypt',
     cryptoError,
     sendAck,
     suspendQueue,
@@ -1832,7 +1833,11 @@ agentCbEncryptOnce clientVersion dhRcvPubKey msg = do
 -- and per-queue E2E encrypted messages from the sender that were inside.
 agentCbDecrypt :: C.DhSecretX25519 -> C.CbNonce -> ByteString -> AM ByteString
 agentCbDecrypt dhSecret nonce msg =
-  liftEither . first cryptoError $
+  liftEither $ agentCbDecrypt' dhSecret nonce msg
+
+agentCbDecrypt' :: C.DhSecretX25519 -> C.CbNonce -> ByteString -> Either AgentErrorType ByteString
+agentCbDecrypt' dhSecret nonce msg =
+  first cryptoError $
     C.cbDecrypt dhSecret nonce msg
 
 cryptoError :: C.CryptoError -> AgentErrorType

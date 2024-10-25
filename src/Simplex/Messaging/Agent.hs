@@ -1067,29 +1067,28 @@ getNotificationConns' c nonce encNtfInfo =
     Just NtfToken {ntfDhSecret = Just dhSecret} -> do
       ntfData <- agentCbDecrypt dhSecret nonce encNtfInfo
       pnMsgs <- liftEither (parse pnMessagesP (INTERNAL "error parsing PNMessageData") ntfData)
-      let (initNtfs, lastNtf) = (L.init pnMsgs, L.last pnMsgs)
-      initNtfConns <- catMaybes <$> forM initNtfs (\initNtf -> getInitNtfConn initNtf `catchAgentError` \_ -> pure Nothing)
-      lastNtfConns <- getLastNtfConn lastNtf
-      pure $ L.fromList $ initNtfConns <> [lastNtfConns]
+      let pnMsgsMarked = markLast $ L.toList pnMsgs
+      ntfInfos <- lift $ catMaybes . rights <$> withStoreBatch c (\db -> map (getNtfInfo db) pnMsgsMarked)
+      case L.nonEmpty ntfInfos of
+        Just ntfInfos' -> pure ntfInfos'
+        Nothing -> throwE $ INTERNAL "getNotificationConns: couldn't get conn info"
     _ -> throwE $ CMD PROHIBITED "getNotificationConns"
   where
-    getNtfMeta :: PNMessageData -> AM (ConnId, Maybe UTCTime, Maybe SMP.NMsgMeta)
-    getNtfMeta PNMessageData {smpQueue, nmsgNonce, encNMsgMeta} = do
-      (ntfConnId, rcvNtfDhSecret, lastBrokerTs_) <- withStore c (`getNtfRcvQueue` smpQueue)
-      ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
-      pure (ntfConnId, lastBrokerTs_, ntfMsgMeta)
-    getInitNtfConn :: PNMessageData -> AM (Maybe NotificationInfo)
-    getInitNtfConn msgData@PNMessageData {ntfTs} = do
-      (ntfConnId, lastBrokerTs_, ntfMsgMeta) <- getNtfMeta msgData
-      case (ntfMsgMeta, lastBrokerTs_) of
-        (Just SMP.NMsgMeta {msgTs}, Just lastBrokerTs)
-          | systemToUTCTime msgTs > lastBrokerTs ->
-              pure $ Just $ NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}
-        _ -> pure Nothing
-    getLastNtfConn :: PNMessageData -> AM NotificationInfo
-    getLastNtfConn msgData@PNMessageData {ntfTs} = do
-      (ntfConnId, _, ntfMsgMeta) <- getNtfMeta msgData
-      pure NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}
+    markLast :: [a] -> [(a, Bool)]
+    markLast xs = zip xs (replicate (length xs - 1) False <> [True])
+    getNtfInfo :: DB.Connection -> (PNMessageData, Bool) -> IO (Either AgentErrorType (Maybe NotificationInfo))
+    getNtfInfo db (PNMessageData {smpQueue, nmsgNonce, encNMsgMeta, ntfTs}, lastNtf) = do
+      (first storeError <$> getNtfRcvQueue db smpQueue)
+        $>>= \(ntfConnId, rcvNtfDhSecret, lastBrokerTs_) -> do
+          let ntfMsgMeta = eitherToMaybe . smpDecode =<< eitherToMaybe (agentCbDecrypt' rcvNtfDhSecret nmsgNonce encNMsgMeta)
+          pure . Right $
+            if lastNtf
+              then Just NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}
+              else case (ntfMsgMeta, lastBrokerTs_) of
+                (Just SMP.NMsgMeta {msgTs}, Just lastBrokerTs)
+                  | systemToUTCTime msgTs > lastBrokerTs ->
+                      Just NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}
+                _ -> Nothing
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: AgentClient -> ConnId -> PQEncryption -> MsgFlags -> MsgBody -> AM (AgentMsgId, PQEncryption)
