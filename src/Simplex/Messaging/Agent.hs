@@ -1047,9 +1047,13 @@ resubscribeConnections' c connIds = do
   (`M.union` r) <$> subscribeConnections' c connIds'
 
 getConnectionMessages' :: AgentClient -> NonEmpty ConnId -> AM (NonEmpty (Maybe SMPMsgMeta))
-getConnectionMessages' c connIds =
-  forM connIds (\connId -> getConnectionMessage connId `catchAgentError` \_ -> pure Nothing)
+getConnectionMessages' c = mapM getMsg
   where
+    getMsg :: ConnId -> AM (Maybe SMPMsgMeta)
+    getMsg connId =
+      getConnectionMessage connId `catchAgentError` \e -> do
+        logError $ "Error loading message: " <> tshow e
+        pure Nothing
     getConnectionMessage :: ConnId -> AM (Maybe SMPMsgMeta)
     getConnectionMessage connId = do
       whenM (atomically $ hasActiveSubscription c connId) . throwE $ CMD PROHIBITED "getConnectionMessage: subscribed"
