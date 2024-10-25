@@ -75,6 +75,9 @@ testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 ntfTestStoreLogFile :: FilePath
 ntfTestStoreLogFile = "tests/tmp/ntf-server-store.log"
 
+ntfTestStoreLastNtfsFile :: FilePath
+ntfTestStoreLastNtfsFile = "tests/tmp/ntf-server-last-notifications.log"
+
 testNtfClient :: Transport c => (THandleNTF c 'TClient -> IO a) -> IO a
 testNtfClient client = do
   Right host <- pure $ chooseTransportHost defaultNetworkConfig testHost
@@ -104,6 +107,7 @@ ntfServerCfg =
       subsBatchSize = 900,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       storeLogFile = Nothing,
+      storeLastNtfsFile = Nothing,
       ntfCredentials =
         ServerCredentials
           { caCertificateFile = Just "tests/fixtures/ca.crt",
@@ -131,7 +135,7 @@ ntfServerCfgVPrev =
     serverVRange' = serverVRange smpCfg'
 
 withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a
-withNtfServerStoreLog t = withNtfServerCfg ntfServerCfg {storeLogFile = Just ntfTestStoreLogFile, transports = [(ntfTestPort, t, False)]}
+withNtfServerStoreLog t = withNtfServerCfg ntfServerCfg {storeLogFile = Just ntfTestStoreLogFile, storeLastNtfsFile = Just ntfTestStoreLastNtfsFile, transports = [(ntfTestPort, t, False)]}
 
 withNtfServerThreadOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withNtfServerThreadOn t port' = withNtfServerCfg ntfServerCfg {transports = [(port', t, False)]}

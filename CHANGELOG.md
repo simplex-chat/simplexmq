@@ -1,3 +1,13 @@
+# 6.1.2
+
+Servers: more reliable restoring of state.
+
+SMP server: reduced memory usage and faster start.
+
+Notifications: compensate for iOS notifications being droppted by Apple while device is offline (#1378):
+- Ntf server: send multiple SMP notifications in one iOS notification.
+- Agent: get multiple messages for one iOS notification.
+
 # 6.1.1
 
 SMP:
