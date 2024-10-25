@@ -1590,7 +1590,7 @@ getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do
 
 decryptSMPMessage :: RcvQueue -> SMP.RcvMessage -> AM SMP.ClientRcvMsgBody
 decryptSMPMessage rq SMP.RcvMessage {msgId, msgBody = SMP.EncRcvMsgBody body} =
-  liftEither . parse SMP.clientRcvMsgBodyP (AGENT A_MESSAGE) =<< decrypt body
+  liftEither $ parse SMP.clientRcvMsgBodyP (AGENT A_MESSAGE) =<< decrypt body
   where
     decrypt = agentCbDecrypt (rcvDhSecret rq) (C.cbNonce msgId)
 
@@ -1830,9 +1830,9 @@ agentCbEncryptOnce clientVersion dhRcvPubKey msg = do
 
 -- | NaCl crypto-box decrypt - both for messages received from the server
 -- and per-queue E2E encrypted messages from the sender that were inside.
-agentCbDecrypt :: C.DhSecretX25519 -> C.CbNonce -> ByteString -> AM ByteString
+agentCbDecrypt :: C.DhSecretX25519 -> C.CbNonce -> ByteString -> Either AgentErrorType ByteString
 agentCbDecrypt dhSecret nonce msg =
-  liftEither . first cryptoError $
+  first cryptoError $
     C.cbDecrypt dhSecret nonce msg
 
 cryptoError :: C.CryptoError -> AgentErrorType

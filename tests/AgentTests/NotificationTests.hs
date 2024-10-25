@@ -3,6 +3,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE QuasiQuotes #-}
@@ -49,6 +50,7 @@ import Data.Bifunctor (bimap, first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Text.Encoding (encodeUtf8)
 import Database.SQLite.Simple.QQ (sql)
@@ -490,8 +492,11 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     (nonce, message) <- messageNotification apns tkn
     pure (bobId, aliceId, nonce, message)
 
-  -- alice client already has subscription for the connection
-  Left (CMD PROHIBITED _) <- runExceptT $ getNotificationMessage alice nonce message
+  Right [NotificationInfo {ntfConnId = cId}] <- runExceptT $ getNotificationConns alice nonce message
+  cId `shouldBe` bobId
+  -- alice client already has subscription for the connection,
+  -- so get fails with CMD PROHIBITED (transformed into Nothing in catch)
+  [Nothing] <- getConnectionMessages alice [cId]
 
   threadDelay 500000
   suspendAgent alice 0
@@ -500,8 +505,8 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
   putStrLn "before opening the database from another agent"
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
-  withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> runRight_ $ do
-    (_, Just SMPMsgMeta {msgFlags = MsgFlags True}) <- getNotificationMessage aliceNtf nonce message
+  withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> do
+    (Just SMPMsgMeta {msgFlags = MsgFlags True}) :| _ <- getConnectionMessages aliceNtf [cId]
     pure ()
 
   threadDelay 1000000
