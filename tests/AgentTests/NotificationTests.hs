@@ -3,6 +3,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE QuasiQuotes #-}
@@ -491,8 +492,11 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     (nonce, message) <- messageNotification apns tkn
     pure (bobId, aliceId, nonce, message)
 
-  -- alice client already has subscription for the connection
-  Left (CMD PROHIBITED _) <- runExceptT $ getNotificationMessage alice nonce message
+  Right [NotificationInfo {ntfConnId = cId}] <- runExceptT $ getNotificationConns alice nonce message
+  cId `shouldBe` bobId
+  -- alice client already has subscription for the connection,
+  -- so get fails with CMD PROHIBITED (transformed into Nothing in catch)
+  [Nothing] <- getConnectionMessages alice [cId]
 
   threadDelay 500000
   suspendAgent alice 0
@@ -501,8 +505,8 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
   putStrLn "before opening the database from another agent"
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
-  withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> runRight_ $ do
-    (_, Just SMPMsgMeta {msgFlags = MsgFlags True}) :| _ <- getNotificationMessage aliceNtf nonce message
+  withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> do
+    (Just SMPMsgMeta {msgFlags = MsgFlags True}) :| _ <- getConnectionMessages aliceNtf [cId]
     pure ()
 
   threadDelay 1000000
