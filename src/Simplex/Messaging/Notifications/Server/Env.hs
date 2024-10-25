@@ -53,6 +53,7 @@ data NtfServerConfig = NtfServerConfig
     subsBatchSize :: Int,
     inactiveClientExpiration :: Maybe ExpirationConfig,
     storeLogFile :: Maybe FilePath,
+    storeLastNtfsFile :: Maybe FilePath,
     ntfCredentials :: ServerCredentials,
     -- stats config - see SMP server config
     logStatsInterval :: Maybe Int64,
