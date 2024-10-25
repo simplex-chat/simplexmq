@@ -153,21 +153,29 @@ testExportImportStore ms = do
     Just (Message {}, True) <- write q1 "message 1"
     Just (Message {}, False) <- write q1 "message 2"
     q2 <- getMsgQueue ms rId2
-    Just (Message {}, True) <- write q2 "message 3"
-    Just (Message {}, False) <- write q2 "message 4"
-    Just (Message {}, False) <- write q2 "message 5"
-    Nothing <- write q2 "message 6"
+    Just (Message {msgId = mId3}, True) <- write q2 "message 3"
+    Just (Message {msgId = mId4}, False) <- write q2 "message 4"
+    (Msg "message 3", Msg "message 4") <- tryDelPeekMsg q2 mId3
+    (Msg "message 4", Nothing) <- tryDelPeekMsg q2 mId4
+    Just (Message {}, True) <- write q2 "message 5"
+    Just (Message {}, False) <- write q2 "message 6"
+    Just (Message {}, False) <- write q2 "message 7"
+    Nothing <- write q2 "message 8"
     pure ()
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
-  length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 2
+  length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3
   exportMessages ms testStoreMsgsFile False
+  renameFile testStoreMsgsFile (testStoreMsgsFile <> ".copy")
+  closeMsgStore ms
+  exportMessages ms testStoreMsgsFile False
+  (B.readFile testStoreMsgsFile `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".copy")
   let cfg = (testJournalStoreCfg :: JournalStoreConfig) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
   stats@MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages ms' testStoreMsgsFile Nothing
   printMessageStats "Messages" stats
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
-  length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3 -- state file is backed up
+  length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 4 -- state file is backed up, 2 message files
   exportMessages ms' testStoreMsgsFile2 False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
