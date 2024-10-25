@@ -1077,12 +1077,12 @@ getNotificationConns' c nonce encNtfInfo =
       pure $ L.fromList $ initNtfConns <> [lastNtfConns]
     _ -> throwE $ CMD PROHIBITED "getNotificationConns"
   where
-    getNtfMeta :: PNMessageData -> AM (ConnId, Maybe UTCTime, Maybe SMP.NMsgMeta)
-    getNtfMeta PNMessageData {smpQueue, nmsgNonce, encNMsgMeta} = do
-      (ntfConnId, rcvNtfDhSecret, lastBrokerTs_) <- withStore c (`getNtfRcvQueue` smpQueue)
+    getNtfMeta :: DB.Connection -> PNMessageData -> IO (Either AgentErrorType (ConnId, Maybe UTCTime, Maybe SMP.NMsgMeta))
+    getNtfMeta db PNMessageData {smpQueue, nmsgNonce, encNMsgMeta} = do
+      (ntfConnId, rcvNtfDhSecret, lastBrokerTs_) <- getNtfRcvQueue db smpQueue
       ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
       pure (ntfConnId, lastBrokerTs_, ntfMsgMeta)
-    getInitNtfConn :: PNMessageData -> AM (Maybe NotificationInfo)
+    getInitNtfConn :: PNMessageData -> IO (Either AgentErrorType (Maybe NotificationInfo))
     getInitNtfConn msgData@PNMessageData {ntfTs} = do
       (ntfConnId, lastBrokerTs_, ntfMsgMeta) <- getNtfMeta msgData
       case (ntfMsgMeta, lastBrokerTs_) of
@@ -1090,7 +1090,7 @@ getNotificationConns' c nonce encNtfInfo =
           | systemToUTCTime msgTs > lastBrokerTs ->
               pure $ Just $ NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}
         _ -> pure Nothing
-    getLastNtfConn :: PNMessageData -> AM NotificationInfo
+    getLastNtfConn :: PNMessageData -> IO (Either AgentErrorType NotificationInfo)
     getLastNtfConn msgData@PNMessageData {ntfTs} = do
       (ntfConnId, _, ntfMsgMeta) <- getNtfMeta msgData
       pure NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}
