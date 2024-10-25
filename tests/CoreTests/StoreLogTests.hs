@@ -21,6 +21,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Server.QueueStore.STM (QueueStore (..), newQueueStore)
 import Test.Hspec
 
 testNewQueueRec :: TVar ChaChaDRG -> Bool -> IO QueueRec
@@ -116,8 +117,11 @@ testSMPStoreLog testSuite tests =
     replicateM_ 3 $ testReadWrite t
   where
     testReadWrite SLTC {compacted, state} = do
-      (state', l) <- readWriteStoreLog testStoreLogFile
-      state' `shouldBe` state
+      st <- newQueueStore
+      l <- readWriteQueueStore testStoreLogFile st
+      storeState st `shouldReturn` state
       closeStoreLog l
       ([], compacted') <- partitionEithers . map strDecode . B.lines <$> B.readFile testStoreLogFile
       compacted' `shouldBe` compacted
+    storeState :: QueueStore -> IO (M.Map RecipientId QueueRec)
+    storeState st = readTVarIO (queues st) >>= mapM readTVarIO
