@@ -252,5 +252,5 @@ readQueues f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . 
         printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
         qError :: B.ByteString -> RecipientId -> Either ErrorType a -> IO ()
         qError name (EntityId qId) = \case
-          Left e -> B.putStrLn $ name <> "stored queue " <> B64.encode qId <> " error: " <> bshow e
+          Left e -> B.putStrLn $ name <> " stored queue " <> B64.encode qId <> " error: " <> bshow e
           Right _ -> pure ()
