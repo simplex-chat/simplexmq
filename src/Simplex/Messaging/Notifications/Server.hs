@@ -676,6 +676,11 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
                   intervalNotifier delay = forever $ do
                     liftIO $ threadDelay' delay
                     atomically $ writeTBQueue pushQ (tkn, PNCheckMessages)
+      -- [ntf] should process forwarded commands
+      -- SNEW, SDEL
+      -- should process pushed messages (outside of subscription mechanism) - NMSG
+      -- - find token by notifier id sent by smp server
+      -- - push last ntfs to apns for token (PNMessageData - NMSG data, notifier id)
       NtfReqNew corrId (ANE SSubscription newSub) -> do
         logDebug "SNEW - new subscription"
         st <- asks store

@@ -771,10 +771,12 @@ newRcvConnSrv c userId connId enableNtfs cMode clientData pqInitKeys subMode srv
     _ -> pure ()
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
   let sndSecure = case cMode of SCMInvitation -> True; SCMContact -> False
+  -- [ntf] enableNtfs to newRcvQueue
   (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srvWithAuth smpClientVRange subMode sndSecure `catchAgentError` \e -> liftIO (print e) >> throwE e
   atomically $ incSMPServerStat c userId srv connCreated
   rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
   lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
+  -- [ntf] don't create subscription in client
   when enableNtfs $ do
     ns <- asks ntfSupervisor
     atomically $ sendNtfSubCommand ns (NSCCreate, [connId])
@@ -2083,6 +2085,7 @@ sendNtfConnCommands c cmd = do
   connIds <- liftIO $ S.toList <$> getSubscriptions c
   rs <- lift $ withStoreBatch' c (\db -> map (getConnData db) connIds)
   let (connIds', cErrs) = enabledNtfConns (zip connIds rs)
+  -- [ntf] send NKEY to smp servers instead of creating via smp supervisor
   forM_ (L.nonEmpty connIds') $ \connIds'' ->
     atomically $ writeTBQueue (ntfSubQ ns) (cmd, connIds'')
   unless (null cErrs) $ atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone $ ERRS cErrs)

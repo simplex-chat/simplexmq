@@ -1339,6 +1339,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode sender
   (e2eDhKey, e2ePrivKey) <- atomically $ C.generateKeyPair g
   logServer "-->" c srv NoEntity "NEW"
   tSess <- mkTransportSession c userId srv connId
+  -- [ntf] generate notifier id (if enableNtfs), other data from token
   (sessId, QIK {rcvId, sndId, rcvPublicDhKey, sndSecure}) <-
     withClient c tSess $ \(SMPConnectedClient smp _) ->
       (sessionId $ thParams smp,) <$> createSMPQueue smp rKeys dhKey auth subMode senderCanSecure
