@@ -224,7 +224,7 @@ readWriteStoreLog readStore writeStore f st =
       pure s
     renameBackup = do
       ts <- getCurrentTime
-      let timedBackup = f <> "." <> iso8601Show ts <> ".bak"
+      let timedBackup = f <> "." <> iso8601Show ts
       renameFile tempBackup timedBackup
       logInfo $ "original state preserved as " <> T.pack timedBackup
 
