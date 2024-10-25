@@ -210,13 +210,11 @@ readWriteStoreLog readStore writeStore f st =
     readWriteLog = do
       -- log backup is made in two steps to mitigate the crash during the compacting.
       -- Temporary backup file .start will be used when it is present.
-      readLog -- 1) read + make temp backup
+      readStore f st
+      renameFile f tempBackup -- 1) make temp backup
       s <- writeLog "compacting store log (do not terminate)..." -- 2) save state
       renameBackup -- 3) timed backup
       pure s
-    readLog = do
-      readStore f st
-      renameFile f tempBackup
     writeLog msg = do
       s <- openWriteStoreLog f
       logInfo msg
