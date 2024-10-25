@@ -134,7 +134,7 @@ import Data.Bifunctor (bimap, first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::), (.::.))
-import Data.Either (isRight, rights)
+import Data.Either (isRight, partitionEithers, rights)
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
 import Data.Functor.Identity
@@ -1069,31 +1069,34 @@ getNotificationConns' :: AgentClient -> C.CbNonce -> ByteString -> AM (NonEmpty 
 getNotificationConns' c nonce encNtfInfo =
   withStore' c getActiveNtfToken >>= \case
     Just NtfToken {ntfDhSecret = Just dhSecret} -> do
-      ntfData <- agentCbDecrypt dhSecret nonce encNtfInfo
+      ntfData <- liftEither $ agentCbDecrypt dhSecret nonce encNtfInfo
       pnMsgs <- liftEither (parse pnMessagesP (INTERNAL "error parsing PNMessageData") ntfData)
       let (initNtfs, lastNtf) = (L.init pnMsgs, L.last pnMsgs)
-      initNtfConns <- catMaybes <$> forM initNtfs (\initNtf -> getInitNtfConn initNtf `catchAgentError` \_ -> pure Nothing)
-      lastNtfConns <- getLastNtfConn lastNtf
-      pure $ L.fromList $ initNtfConns <> [lastNtfConns]
+      rs <-
+        lift $ withStoreBatch c $ \db ->
+          let initNtfInfos = map (getInitNtfInfo db) initNtfs
+              lastNtfInfo = Just . fst <$$> getNtfInfo db lastNtf
+           in initNtfInfos <> [lastNtfInfo]
+      let (errs, ntfInfos_) = partitionEithers rs
+      logError $ "Error(s) loading notifications: " <> tshow errs
+      case L.nonEmpty $ catMaybes ntfInfos_ of
+        Just r -> pure r
+        Nothing -> throwE $ INTERNAL "getNotificationConns: couldn't get conn info"
     _ -> throwE $ CMD PROHIBITED "getNotificationConns"
   where
-    getNtfMeta :: PNMessageData -> AM (ConnId, Maybe UTCTime, Maybe SMP.NMsgMeta)
-    getNtfMeta PNMessageData {smpQueue, nmsgNonce, encNMsgMeta} = do
-      (ntfConnId, rcvNtfDhSecret, lastBrokerTs_) <- withStore c (`getNtfRcvQueue` smpQueue)
-      ntfMsgMeta <- (eitherToMaybe . smpDecode <$> agentCbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta) `catchAgentError` \_ -> pure Nothing
-      pure (ntfConnId, lastBrokerTs_, ntfMsgMeta)
-    getInitNtfConn :: PNMessageData -> AM (Maybe NotificationInfo)
-    getInitNtfConn msgData@PNMessageData {ntfTs} = do
-      (ntfConnId, lastBrokerTs_, ntfMsgMeta) <- getNtfMeta msgData
-      case (ntfMsgMeta, lastBrokerTs_) of
+    getNtfInfo :: DB.Connection -> PNMessageData -> IO (Either AgentErrorType (NotificationInfo, Maybe UTCTime))
+    getNtfInfo db PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = runExceptT $ do
+      (ntfConnId, rcvNtfDhSecret, lastBrokerTs_) <- liftError' storeError $ getNtfRcvQueue db smpQueue
+      let ntfMsgMeta = eitherToMaybe $ smpDecode =<< first show (C.cbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta)
+          ntfInfo = NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}
+      pure (ntfInfo, lastBrokerTs_)
+    getInitNtfInfo :: DB.Connection -> PNMessageData -> IO (Either AgentErrorType (Maybe NotificationInfo))
+    getInitNtfInfo db msgData = runExceptT $ do
+      (nftInfo, lastBrokerTs_) <- ExceptT $ getNtfInfo db msgData
+      pure $ case (ntfMsgMeta nftInfo, lastBrokerTs_) of
         (Just SMP.NMsgMeta {msgTs}, Just lastBrokerTs)
-          | systemToUTCTime msgTs > lastBrokerTs ->
-              pure $ Just $ NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}
-        _ -> pure Nothing
-    getLastNtfConn :: PNMessageData -> AM NotificationInfo
-    getLastNtfConn msgData@PNMessageData {ntfTs} = do
-      (ntfConnId, _, ntfMsgMeta) <- getNtfMeta msgData
-      pure NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}
+          | systemToUTCTime msgTs > lastBrokerTs -> Just nftInfo
+        _ -> Nothing
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: AgentClient -> ConnId -> PQEncryption -> MsgFlags -> MsgBody -> AM (AgentMsgId, PQEncryption)
@@ -2503,7 +2506,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
 
           decryptClientMessage :: C.DhSecretX25519 -> SMP.ClientMsgEnvelope -> AM (SMP.PrivHeader, AgentMsgEnvelope)
           decryptClientMessage e2eDh SMP.ClientMsgEnvelope {cmNonce, cmEncBody} = do
-            clientMsg <- agentCbDecrypt e2eDh cmNonce cmEncBody
+            clientMsg <- liftEither $ agentCbDecrypt e2eDh cmNonce cmEncBody
             SMP.ClientMessage privHeader clientBody <- parseMessage clientMsg
             agentEnvelope <- parseMessage clientBody
             -- Version check is removed here, because when connecting via v1 contact address the agent still sends v2 message,
