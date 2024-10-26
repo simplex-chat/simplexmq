@@ -1739,17 +1739,17 @@ saveServerMessages :: Bool -> M ()
 saveServerMessages drainMsgs =
   asks msgStore >>= \case
     AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-      Just f -> liftIO $ exportMessages ms f drainMsgs
+      Just f -> liftIO $ exportMessages False ms f drainMsgs
       Nothing -> logInfo "undelivered messages are not saved"
     AMS SMSJournal ms -> do
       liftIO $ closeMsgStore ms
       logInfo "closed journal message storage"
 
-exportMessages :: MsgStoreClass s => s -> FilePath -> Bool -> IO ()
-exportMessages ms f drainMsgs = do
+exportMessages :: MsgStoreClass s => Bool -> s -> FilePath -> Bool -> IO ()
+exportMessages tty ms f drainMsgs = do
   logInfo $ "saving messages to file " <> T.pack f
   liftIO $ withFile f WriteMode $ \h ->
-    tryAny (withAllMsgQueues ms $ saveQueueMsgs h) >>= \case
+    tryAny (withAllMsgQueues tty ms $ saveQueueMsgs h) >>= \case
       Right (Sum total) -> logInfo $ "messages saved: " <> tshow total
       Left e -> do
         logError $ "error exporting messages: " <> tshow e
@@ -1766,15 +1766,15 @@ processServerMessages = do
       processMessages :: Maybe Int64 -> AMsgStore -> IO MessageStats
       processMessages old_ = \case
         AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-          Just f -> ifM (doesFileExist f) (importMessages ms f old_) (pure newMessageStats)
+          Just f -> ifM (doesFileExist f) (importMessages False ms f old_) (pure newMessageStats)
           Nothing -> pure newMessageStats
         AMS SMSJournal ms -> case old_ of
           Just old -> do
             logInfo "expiring journal store messages..."
-            withAllMsgQueues ms $ \_ -> processExpireQueue old
+            withAllMsgQueues False ms $ \_ -> processExpireQueue old
           Nothing -> do
             logInfo "validating journal store messages..."
-            withAllMsgQueues ms $ \_ -> processValidateQueue
+            withAllMsgQueues False ms $ \_ -> processValidateQueue
         where
           processExpireQueue old q =
             runExceptT expireQueue >>= \case
@@ -1793,8 +1793,8 @@ processServerMessages = do
           processValidateQueue q =
             getQueueSize q >>= \storedMsgsCount -> pure mempty {storedMsgsCount, storedQueues = 1}
 
-importMessages :: forall s. MsgStoreClass s => s -> FilePath -> Maybe Int64 -> IO MessageStats
-importMessages ms f old_ = do
+importMessages :: forall s. MsgStoreClass s => Bool -> s -> FilePath -> Maybe Int64 -> IO MessageStats
+importMessages tty ms f old_ = do
   logInfo $ "restoring messages from file " <> T.pack f
   LB.readFile f >>= runExceptT . foldM restoreMsg (0, Nothing, (0, 0, M.empty)) . zip [0..] . LB.lines >>= \case
     Left e -> do
@@ -1802,19 +1802,17 @@ importMessages ms f old_ = do
       logError . T.pack $ "error restoring messages: " <> e
       liftIO exitFailure
     Right (lineCount, _, (storedMsgsCount, expiredMsgsCount, overQuota)) -> do
-      putStrLn $ "Processed " <> show lineCount <> " lines"
+      putStrLn $ progress lineCount
       renameFile f $ f <> ".bak"
       mapM_ setOverQuota_ overQuota
       logQueueStates ms
       storedQueues <- M.size <$> readTVarIO (activeMsgQueues ms)
       pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues}
   where
-    progress i = do
-      liftIO $ putStr $ "Processed " <> show i <> " lines\r"
-      hFlush stdout
+    progress i = "Processed " <> show i <> " lines"
     restoreMsg :: (Int, Maybe (RecipientId, MsgQueue s), (Int, Int, M.Map RecipientId (MsgQueue s))) -> (Int, LB.ByteString) -> ExceptT String IO (Int, Maybe (RecipientId, MsgQueue s), (Int, Int, M.Map RecipientId (MsgQueue s)))
     restoreMsg (!lineCount, q_, (!stored, !expired, !overQuota)) (i, s') = do
-      when (i `mod` 1000 == 0) $ progress i
+      when (tty && i `mod` 1000 == 0) $ liftIO $ putStr (progress i <> "\r")
       MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
       liftError show $ addToMsgQueue rId msg
       where

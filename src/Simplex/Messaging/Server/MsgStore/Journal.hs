@@ -216,20 +216,19 @@ instance MsgStoreClass JournalMsgStore where
   -- It is used to export storage to a single file and also to expire messages and validate all queues when server is started.
   -- TODO this function requires case-sensitive file system, because it uses queue directory as recipient ID.
   -- It can be made to support case-insensite FS by supporting more than one queue per directory, by getting recipient ID from state file name.
-  withAllMsgQueues :: forall a. Monoid a => JournalMsgStore -> (RecipientId -> JournalMsgQueue -> IO a) -> IO a
-  withAllMsgQueues ms@JournalMsgStore {config} action = ifM (doesDirectoryExist storePath) processStore (pure mempty)
+  withAllMsgQueues :: forall a. Monoid a => Bool -> JournalMsgStore -> (RecipientId -> JournalMsgQueue -> IO a) -> IO a
+  withAllMsgQueues tty ms@JournalMsgStore {config} action = ifM (doesDirectoryExist storePath) processStore (pure mempty)
     where
       processStore = do
         closeMsgStore ms
         lock <- createLockIO -- the same lock is used for all queues
         (!count, !res) <- foldQueues 0 (processQueue lock) (0, mempty) ("", storePath)
-        progress count
-        putStrLn ""
+        putStrLn $ progress count
         pure res
       JournalStoreConfig {storePath, pathParts} = config
       processQueue :: Lock -> (Int, a) -> (String, FilePath) -> IO (Int, a)
       processQueue queueLock (!i, !r) (queueId, dir) = do
-        when (i `mod` 100 == 0) $ progress i
+        when (tty && i `mod` 100 == 0) $ putStr (progress i <> "\r") >> IO.hFlush stdout
         let statePath = msgQueueStatePath dir queueId
         q <- openMsgQueue ms JMQueue {queueDirectory = dir, queueLock, statePath}
         r' <- case strDecode $ B.pack queueId of
@@ -239,9 +238,7 @@ instance MsgStoreClass JournalMsgStore where
             exitFailure
         closeMsgQueue q
         pure (i + 1, r <> r')
-      progress i = do
-        putStr $ "Processed: " <> show i <> " queues\r"
-        IO.hFlush stdout
+      progress i = "Processed: " <> show i <> " queues"
       foldQueues depth f acc (queueId, path) = do
         let f' = if depth == pathParts - 1 then f else foldQueues (depth + 1) f
         listDirs >>= foldM f' acc

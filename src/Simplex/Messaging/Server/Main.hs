@@ -99,7 +99,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 ("WARNING: message log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir)
                 "Messages not imported"
               ms <- newJournalMsgStore
-              msgStats <- importMessages ms storeMsgsFilePath Nothing -- no expiration
+              msgStats <- importMessages True ms storeMsgsFilePath Nothing -- no expiration
               putStrLn "Import completed"
               printMessageStats "Messages" msgStats
               putStrLn $ case readMsgStoreType ini of
@@ -116,7 +116,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
                 "Journal not exported"
               ms <- newJournalMsgStore
-              exportMessages ms storeMsgsFilePath False
+              exportMessages True ms storeMsgsFilePath False
               putStrLn "Export completed"
               putStrLn $ case readMsgStoreType ini of
                 Right (AMSType SMSMemory) -> "store_messages set to `memory`"
