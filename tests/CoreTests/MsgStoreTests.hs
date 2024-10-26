@@ -164,24 +164,24 @@ testExportImportStore ms = do
     pure ()
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3
-  exportMessages ms testStoreMsgsFile False
+  exportMessages False ms testStoreMsgsFile False
   renameFile testStoreMsgsFile (testStoreMsgsFile <> ".copy")
   closeMsgStore ms
-  exportMessages ms testStoreMsgsFile False
+  exportMessages False ms testStoreMsgsFile False
   (B.readFile testStoreMsgsFile `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".copy")
   let cfg = (testJournalStoreCfg :: JournalStoreConfig) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
   stats@MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
-    importMessages ms' testStoreMsgsFile Nothing
+    importMessages False ms' testStoreMsgsFile Nothing
   printMessageStats "Messages" stats
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 4 -- state file is backed up, 2 message files
-  exportMessages ms' testStoreMsgsFile2 False
+  exportMessages False ms' testStoreMsgsFile2 False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
   MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
-    importMessages stmStore testStoreMsgsFile2 Nothing
-  exportMessages stmStore testStoreMsgsFile False
+    importMessages False stmStore testStoreMsgsFile2 Nothing
+  exportMessages False stmStore testStoreMsgsFile False
   (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))
 
 testQueueState :: JournalMsgStore -> IO ()

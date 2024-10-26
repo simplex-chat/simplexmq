@@ -57,7 +57,7 @@ instance MsgStoreClass STMMsgStore where
   activeMsgQueues = msgQueues
   {-# INLINE activeMsgQueues #-}
 
-  withAllMsgQueues = withActiveMsgQueues
+  withAllMsgQueues _ = withActiveMsgQueues
   {-# INLINE withAllMsgQueues #-}
 
   logQueueStates _ = pure ()

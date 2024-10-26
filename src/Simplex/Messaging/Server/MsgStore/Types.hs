@@ -26,7 +26,7 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   newMsgStore :: MsgStoreConfig s -> IO s
   closeMsgStore :: s -> IO ()
   activeMsgQueues :: s -> TMap RecipientId (MsgQueue s)
-  withAllMsgQueues :: Monoid a => s -> (RecipientId -> MsgQueue s -> IO a) -> IO a
+  withAllMsgQueues :: Monoid a => Bool -> s -> (RecipientId -> MsgQueue s -> IO a) -> IO a
   logQueueStates :: s -> IO ()
   logQueueState :: MsgQueue s -> IO ()
   getMsgQueue :: s -> RecipientId -> ExceptT ErrorType IO (MsgQueue s)
