@@ -813,7 +813,7 @@ testRestoreExpireMessages =
       AMSType SMSJournal -> do
         ms <- newMsgStore testJournalStoreCfg {quota = 4}
         removeFileIfExists testStoreMsgsFile
-        exportMessages ms testStoreMsgsFile False
+        exportMessages False ms testStoreMsgsFile False
       AMSType SMSMemory -> pure ()
     runTest :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
