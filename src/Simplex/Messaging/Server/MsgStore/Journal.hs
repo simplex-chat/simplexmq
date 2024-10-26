@@ -291,9 +291,11 @@ instance MsgStoreClass JournalMsgStore where
 
   delMsgQueueSize :: JournalMsgStore -> RecipientId -> IO Int
   delMsgQueueSize ms rId = withLockMap (queueLocks ms) rId "delMsgQueue" $ do
-    sz <- closeMsgQueueSize ms rId
+    st_ <-
+      atomically (TM.lookupDelete rId (msgQueues ms))
+        >>= mapM (\q -> closeMsgQueueHandles q >> readTVarIO (state q))
     removeQueueDirectory ms rId
-    pure sz
+    pure $ maybe (-1) size st_
 
   getQueueMessages :: Bool -> JournalMsgQueue -> IO [Message]
   getQueueMessages drainMsgs q = run []
@@ -590,15 +592,9 @@ validQueueState MsgQueueState {readState = rs, writeState = ws, size}
         && bytePos ws == byteCount ws
 
 closeMsgQueue :: JournalMsgStore -> RecipientId -> IO ()
-closeMsgQueue st rId = atomically (TM.lookupDelete rId (msgQueues st)) >>= mapM_ closeMsgQueueHandles
-
-closeMsgQueueSize :: JournalMsgStore -> RecipientId -> IO Int
-closeMsgQueueSize st rId =
-  atomically (TM.lookupDelete rId (msgQueues st)) >>= \case
-    Just q -> do
-      closeMsgQueueHandles q
-      size <$> readTVarIO (state q)
-    Nothing -> pure (-1)
+closeMsgQueue ms rId =
+  atomically (TM.lookupDelete rId (msgQueues ms))
+    >>= mapM_ closeMsgQueueHandles
 
 closeMsgQueueHandles :: JournalMsgQueue -> IO ()
 closeMsgQueueHandles q = readTVarIO (handles q) >>= mapM_ closeHandles
