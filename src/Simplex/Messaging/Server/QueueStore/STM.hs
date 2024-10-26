@@ -47,10 +47,11 @@ newQueueStore = do
   pure QueueStore {queues, senders, notifiers}
 
 addQueue :: QueueStore -> QueueRec -> IO (Either ErrorType ())
-addQueue QueueStore {queues, senders} q@QueueRec {recipientId = rId, senderId = sId} = atomically $ do
+addQueue QueueStore {queues, senders, notifiers} q@QueueRec {recipientId = rId, senderId = sId, notifier} = atomically $ do
   ifM hasId (pure $ Left DUPLICATE_) $ do
     TM.insertM rId (newTVar q) queues
     TM.insert sId rId senders
+    forM_ notifier $ \NtfCreds {notifierId} -> TM.insert notifierId rId notifiers
     pure $ Right ()
   where
     hasId = (||) <$> TM.member rId queues <*> TM.member sId senders
