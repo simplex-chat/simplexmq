@@ -1,3 +1,7 @@
+# 6.1.3
+
+SMP server: fix restoring notification credentials.
+
 # 6.1.2
 
 Servers: more reliable restoring of state.
