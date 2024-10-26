@@ -175,7 +175,9 @@ library
       Simplex.Messaging.Server.Information
       Simplex.Messaging.Server.Main
       Simplex.Messaging.Server.MsgStore
+      Simplex.Messaging.Server.MsgStore.Journal
       Simplex.Messaging.Server.MsgStore.STM
+      Simplex.Messaging.Server.MsgStore.Types
       Simplex.Messaging.Server.NtfStore
       Simplex.Messaging.Server.QueueStore
       Simplex.Messaging.Server.QueueStore.QueueInfo
@@ -614,6 +616,7 @@ test-suite simplexmq-test
       CoreTests.CryptoFileTests
       CoreTests.CryptoTests
       CoreTests.EncodingTests
+      CoreTests.MsgStoreTests
       CoreTests.RetryIntervalTests
       CoreTests.SOCKSSettings
       CoreTests.StoreLogTests

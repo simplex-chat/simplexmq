@@ -56,7 +56,7 @@ import Data.Text.Encoding (encodeUtf8)
 import Database.SQLite.Simple.QQ (sql)
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testNtfServer, testNtfServer2)
-import SMPClient (cfg, cfgVPrev, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfg, cfgVPrev, testPort, testPort2, testStoreLogFile2, testStoreMsgsDir2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
@@ -790,7 +790,7 @@ testNotificationsSMPRestartBatch n t apns =
     runServers :: ExceptT AgentErrorType IO a -> IO a
     runServers a = do
       withSmpServerStoreLogOn t testPort $ \t1 -> do
-        res <- withSmpServerConfigOn t (cfg :: ServerConfig) {storeLogFile = Just testStoreLogFile2} testPort2 $ \t2 ->
+        res <- withSmpServerConfigOn t (cfg :: ServerConfig) {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \t2 ->
           runRight a `finally` killThread t2
         killThread t1
         pure res

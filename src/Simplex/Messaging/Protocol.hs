@@ -399,8 +399,6 @@ data Command (p :: Party) where
   NKEY :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> Command Recipient
   NDEL :: Command Recipient
   GET :: Command Recipient
-  -- ACK v1 has to be supported for encoding/decoding
-  -- ACK :: Command Recipient
   ACK :: MsgId -> Command Recipient
   OFF :: Command Recipient
   DEL :: Command Recipient
