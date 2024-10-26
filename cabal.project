@@ -4,6 +4,14 @@ packages: .
 -- packages: . ../http2
 -- packages: . ../network-transport
 
+-- package *
+   -- coverage: True
+   -- library-coverage: True
+
+-- package attoparsec
+   -- coverage: False
+   -- library-coverage: False
+
 index-state: 2023-12-12T00:00:00Z
 
 package cryptostore

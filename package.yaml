@@ -188,6 +188,7 @@ tests:
       - -rtsopts
       - -with-rtsopts=-A64M
       - -with-rtsopts=-N1
+      # - -fhpc
 
 ghc-options:
   # - -haddock

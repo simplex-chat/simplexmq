@@ -5,19 +5,21 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module CoreTests.MsgStoreTests where
 
-import AgentTests.FunctionalAPITests (runRight_)
+import AgentTests.FunctionalAPITests (runRight, runRight_)
 import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Base64.URL as B64
 import Data.Time.Clock.System (getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
@@ -41,6 +43,7 @@ msgStoreTests = do
     it "should export and import journal store" testExportImportStore
     describe "queue state" $ do
       it "should restore queue state from the last line" testQueueState
+      it "should recover when message is written and state is not" testMessageState
   where
     someMsgStoreTests :: MsgStoreClass s => SpecWith s
     someMsgStoreTests = do
@@ -189,7 +192,7 @@ testQueueState ms = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
   let dir = msgQueueDirectory ms rId
-      statePath = dir </> (queueLogFileName <> logFileExt)
+      statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
   createDirectoryIfMissing True dir
   state <- newMsgQueueState <$> newJournalId (random ms)
   withFile statePath WriteMode (`appendState` state)
@@ -248,3 +251,28 @@ testQueueState ms = do
       forM_ names $ \name ->
         let f = dir </> name
          in unless (f == keep) $ removeFile f
+
+testMessageState :: JournalMsgStore -> IO ()
+testMessageState ms = do
+  g <- C.newRandom
+  rId <- EntityId <$> atomically (C.randomBytes 24 g)
+  let dir = msgQueueDirectory ms rId
+      statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
+      write q s = writeMsg ms q True =<< mkMessage s
+
+  mId1 <- runRight $ do
+    q <- getMsgQueue ms rId
+    Just (Message {msgId = mId1}, True) <- write q "message 1"
+    Just (Message {}, False) <- write q "message 2"
+    liftIO $ closeMsgQueue ms rId
+    pure mId1
+
+  ls <- B.lines <$> B.readFile statePath
+  B.writeFile statePath $ B.unlines $ take (length ls - 1) ls
+
+  runRight_ $ do
+    q <- getMsgQueue ms rId
+    Just (Message {msgId = mId3}, False) <- write q "message 3"
+    (Msg "message 1", Msg "message 3") <- tryDelPeekMsg q mId1
+    (Msg "message 3", Nothing) <- tryDelPeekMsg q mId3
+    liftIO $ closeMsgQueueHandles q

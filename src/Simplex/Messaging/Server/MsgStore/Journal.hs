@@ -20,11 +20,13 @@ module Simplex.Messaging.Server.MsgStore.Journal
     JournalStoreConfig (..),
     getQueueMessages,
     closeMsgQueue,
+    closeMsgQueueHandles,
     -- below are exported for tests
     MsgQueueState (..),
     JournalState (..),
     SJournalType (..),
     msgQueueDirectory,
+    msgQueueStatePath,
     readWriteQueueState,
     newMsgQueueState,
     newJournalId,
@@ -47,6 +49,7 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (intercalate)
+import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
@@ -207,7 +210,7 @@ instance MsgStoreClass JournalMsgStore where
     msgQueues <- TM.emptyIO
     pure JournalMsgStore {config, random, queueLocks, msgQueues}
 
-  closeMsgStore st = readTVarIO (msgQueues st) >>= mapM_ closeMsgQueue
+  closeMsgStore st = atomically (swapTVar (msgQueues st) M.empty) >>= mapM_ closeMsgQueueHandles
 
   activeMsgQueues = msgQueues
   {-# INLINE activeMsgQueues #-}
@@ -236,7 +239,7 @@ instance MsgStoreClass JournalMsgStore where
           Left e -> do
             putStrLn ("Error: message queue directory " <> dir <> " is invalid: " <> e)
             exitFailure
-        closeMsgQueue q
+        closeMsgQueueHandles q
         pure (i + 1, r <> r')
       progress i = "Processed: " <> show i <> " queues"
       foldQueues depth f acc (queueId, path) = do
@@ -283,15 +286,16 @@ instance MsgStoreClass JournalMsgStore where
 
   delMsgQueue :: JournalMsgStore -> RecipientId -> IO ()
   delMsgQueue ms rId = withLockMap (queueLocks ms) rId "delMsgQueue" $ do
-    void $ deleteMsgQueue_ ms rId
+    closeMsgQueue ms rId
     removeQueueDirectory ms rId
 
   delMsgQueueSize :: JournalMsgStore -> RecipientId -> IO Int
   delMsgQueueSize ms rId = withLockMap (queueLocks ms) rId "delMsgQueue" $ do
-    state_ <- deleteMsgQueue_ ms rId
-    sz <- maybe (pure $ -1) (fmap size . readTVarIO) state_
+    st_ <-
+      atomically (TM.lookupDelete rId (msgQueues ms))
+        >>= mapM (\q -> closeMsgQueueHandles q >> readTVarIO (state q))
     removeQueueDirectory ms rId
-    pure sz
+    pure $ maybe (-1) size st_
 
   getQueueMessages :: Bool -> JournalMsgQueue -> IO [Message]
   getQueueMessages drainMsgs q = run []
@@ -587,13 +591,13 @@ validQueueState MsgQueueState {readState = rs, writeState = ws, size}
         && msgPos ws == msgCount ws
         && bytePos ws == byteCount ws
 
-deleteMsgQueue_ :: JournalMsgStore -> RecipientId -> IO (Maybe (TVar MsgQueueState))
-deleteMsgQueue_ st rId =
-  atomically (TM.lookupDelete rId (msgQueues st))
-    >>= mapM (\q -> closeMsgQueue q $> state q)
+closeMsgQueue :: JournalMsgStore -> RecipientId -> IO ()
+closeMsgQueue ms rId =
+  atomically (TM.lookupDelete rId (msgQueues ms))
+    >>= mapM_ closeMsgQueueHandles
 
-closeMsgQueue :: JournalMsgQueue -> IO ()
-closeMsgQueue q = readTVarIO (handles q) >>= mapM_ closeHandles
+closeMsgQueueHandles :: JournalMsgQueue -> IO ()
+closeMsgQueueHandles q = readTVarIO (handles q) >>= mapM_ closeHandles
   where
     closeHandles (MsgQueueHandles sh rh wh_) = do
       hClose sh
