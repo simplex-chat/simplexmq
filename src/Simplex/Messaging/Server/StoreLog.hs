@@ -241,16 +241,16 @@ readQueues f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . 
         s = LB.toStrict s'
         procLogRecord :: StoreLogRecord -> IO ()
         procLogRecord = \case
-          CreateQueue q -> addQueue st q >>= qError (recipientId q)
-          SecureQueue qId sKey -> secureQueue st qId sKey >>= qError qId
-          AddNotifier qId ntfCreds -> addQueueNotifier st qId ntfCreds >>= qError qId
-          SuspendQueue qId -> suspendQueue st qId >>= qError qId
-          DeleteQueue qId -> deleteQueue st qId >>= qError qId
-          DeleteNotifier qId -> deleteQueueNotifier st qId >>= qError qId
+          CreateQueue q -> addQueue st q >>= qError "create" (recipientId q)
+          SecureQueue qId sKey -> secureQueue st qId sKey >>= qError "secure" qId
+          AddNotifier qId ntfCreds -> addQueueNotifier st qId ntfCreds >>= qError "addNotifier" qId
+          SuspendQueue qId -> suspendQueue st qId >>= qError "suspend" qId
+          DeleteQueue qId -> deleteQueue st qId >>= qError "delete" qId
+          DeleteNotifier qId -> deleteQueueNotifier st qId >>= qError "deleteNotifier" qId
           UpdateTime qId t -> updateQueueTime st qId t
         printError :: String -> IO ()
         printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
-        qError :: RecipientId -> Either ErrorType a -> IO ()
-        qError (EntityId qId) = \case
-          Left e -> B.putStrLn $ "stored queue " <> B64.encode qId <> " error: " <> bshow e
+        qError :: B.ByteString -> RecipientId -> Either ErrorType a -> IO ()
+        qError op (EntityId qId) = \case
+          Left e -> B.putStrLn $ op <> " stored queue " <> B64.encode qId <> " error: " <> bshow e
           Right _ -> pure ()
