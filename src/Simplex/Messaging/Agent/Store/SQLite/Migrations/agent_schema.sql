@@ -56,6 +56,7 @@ CREATE TABLE rcv_queues(
   switch_status TEXT,
   deleted INTEGER NOT NULL DEFAULT 0,
   snd_secure INTEGER NOT NULL DEFAULT 0,
+  last_broker_ts TEXT,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,

@@ -68,6 +68,7 @@ import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
+import Data.Semigroup (Sum (..))
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
@@ -93,7 +94,7 @@ import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgQueue (..), JMQueue (..), closeMsgQueue)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgQueue (..), JMQueue (..), closeMsgQueueHandles)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -147,6 +148,14 @@ data MessageStats = MessageStats
     expiredMsgsCount :: Int,
     storedQueues :: Int
   }
+
+instance Monoid MessageStats where
+  mempty = MessageStats 0 0 0
+  {-# INLINE mempty #-}
+
+instance Semigroup MessageStats where
+  MessageStats a b c <> MessageStats x y z = MessageStats (a + x) (b + y) (c + z)
+  {-# INLINE (<>) #-}
 
 newMessageStats :: MessageStats
 newMessageStats = MessageStats 0 0 0
@@ -378,11 +387,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       liftIO $ forever $ do
         threadDelay' interval
         old <- expireBeforeEpoch expCfg
-        void $ withActiveMsgQueues ms (\_ -> expireQueueMsgs stats old) 0
+        Sum deleted <- withActiveMsgQueues ms $ \_ -> expireQueueMsgs stats old
+        logInfo $ "STORE: expireMessagesThread, expired " <> tshow deleted <> " messages"
       where
-        expireQueueMsgs stats old q acc =
+        expireQueueMsgs stats old q =
           runExceptT (deleteExpiredMsgs q True old) >>= \case
-            Right deleted -> (acc + deleted) <$ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
+            Right deleted -> Sum deleted <$ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
             Left _ -> pure 0
 
     expireNtfsThread :: ServerConfig -> M ()
@@ -1729,19 +1739,23 @@ saveServerMessages :: Bool -> M ()
 saveServerMessages drainMsgs =
   asks msgStore >>= \case
     AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-      Just f -> liftIO $ exportMessages ms f drainMsgs
+      Just f -> liftIO $ exportMessages False ms f drainMsgs
       Nothing -> logInfo "undelivered messages are not saved"
     AMS SMSJournal ms -> do
       liftIO $ closeMsgStore ms
       logInfo "closed journal message storage"
 
-exportMessages :: MsgStoreClass s => s -> FilePath -> Bool -> IO ()
-exportMessages ms f drainMsgs = do
+exportMessages :: MsgStoreClass s => Bool -> s -> FilePath -> Bool -> IO ()
+exportMessages tty ms f drainMsgs = do
   logInfo $ "saving messages to file " <> T.pack f
-  total <- liftIO $ withFile f WriteMode $ \h -> withAllMsgQueues ms (saveQueueMsgs h) 0
-  logInfo $ "messages saved: " <> tshow total
+  liftIO $ withFile f WriteMode $ \h ->
+    tryAny (withAllMsgQueues tty ms $ saveQueueMsgs h) >>= \case
+      Right (Sum total) -> logInfo $ "messages saved: " <> tshow total
+      Left e -> do
+        logError $ "error exporting messages: " <> tshow e
+        exitFailure
   where
-    saveQueueMsgs h rId q acc = getQueueMessages drainMsgs q >>= \msgs -> (acc + length msgs) <$ BLD.hPutBuilder h (encodeMessages rId msgs)
+    saveQueueMsgs h rId q = getQueueMessages drainMsgs q >>= \msgs -> Sum (length msgs) <$ BLD.hPutBuilder h (encodeMessages rId msgs)
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
 
 processServerMessages :: M MessageStats
@@ -1752,35 +1766,35 @@ processServerMessages = do
       processMessages :: Maybe Int64 -> AMsgStore -> IO MessageStats
       processMessages old_ = \case
         AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-          Just f -> ifM (doesFileExist f) (importMessages ms f old_) (pure newMessageStats)
+          Just f -> ifM (doesFileExist f) (importMessages False ms f old_) (pure newMessageStats)
           Nothing -> pure newMessageStats
         AMS SMSJournal ms -> case old_ of
           Just old -> do
             logInfo "expiring journal store messages..."
-            (storedMsgsCount, expiredMsgsCount, storedQueues) <- withAllMsgQueues ms (\_ -> processExpireQueue old) (0, 0, 0)
-            pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues}
+            withAllMsgQueues False ms $ \_ -> processExpireQueue old
           Nothing -> do
             logInfo "validating journal store messages..."
-            (storedMsgsCount, storedQueues) <- withAllMsgQueues ms (\_ -> processValidateQueue) (0, 0)
-            pure MessageStats {storedMsgsCount, expiredMsgsCount = 0, storedQueues}
+            withAllMsgQueues False ms $ \_ -> processValidateQueue
         where
-          processExpireQueue old q (!stored, !expired, !qCount) =
+          processExpireQueue old q =
             runExceptT expireQueue >>= \case
-              Right (stored', expired') -> pure (stored + stored', expired + expired', qCount + 1)
+              Right (storedMsgsCount, expiredMsgsCount) ->
+                pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues = 1}
               Left e -> do
-                logInfo $ "failed expiring messages in queue " <> T.pack (queueDirectory $ queue q) <> ": " <> tshow e
+                logError $ "failed expiring messages in queue " <> T.pack (queueDirectory $ queue q) <> ": " <> tshow e
                 exitFailure
             where
               expireQueue = do
                 expired'' <- deleteExpiredMsgs q False old
                 stored'' <- liftIO $ getQueueSize q
                 liftIO $ logQueueState q
-                liftIO $ closeMsgQueue q
+                liftIO $ closeMsgQueueHandles q
                 pure (stored'', expired'')
-          processValidateQueue q (!stored, !qCount) = getQueueSize q >>= \stored' -> pure (stored + stored', qCount + 1)
+          processValidateQueue q =
+            getQueueSize q >>= \storedMsgsCount -> pure mempty {storedMsgsCount, storedQueues = 1}
 
-importMessages :: forall s. MsgStoreClass s => s -> FilePath -> Maybe Int64 -> IO MessageStats
-importMessages ms f old_ = do
+importMessages :: forall s. MsgStoreClass s => Bool -> s -> FilePath -> Maybe Int64 -> IO MessageStats
+importMessages tty ms f old_ = do
   logInfo $ "restoring messages from file " <> T.pack f
   LB.readFile f >>= runExceptT . foldM restoreMsg (0, Nothing, (0, 0, M.empty)) . zip [0..] . LB.lines >>= \case
     Left e -> do
@@ -1788,19 +1802,17 @@ importMessages ms f old_ = do
       logError . T.pack $ "error restoring messages: " <> e
       liftIO exitFailure
     Right (lineCount, _, (storedMsgsCount, expiredMsgsCount, overQuota)) -> do
-      putStrLn $ "Processed " <> show lineCount <> " lines"
+      putStrLn $ progress lineCount
       renameFile f $ f <> ".bak"
       mapM_ setOverQuota_ overQuota
       logQueueStates ms
       storedQueues <- M.size <$> readTVarIO (activeMsgQueues ms)
       pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues}
   where
-    progress i = do
-      liftIO $ putStr $ "Processed " <> show i <> " lines\r"
-      hFlush stdout
+    progress i = "Processed " <> show i <> " lines"
     restoreMsg :: (Int, Maybe (RecipientId, MsgQueue s), (Int, Int, M.Map RecipientId (MsgQueue s))) -> (Int, LB.ByteString) -> ExceptT String IO (Int, Maybe (RecipientId, MsgQueue s), (Int, Int, M.Map RecipientId (MsgQueue s)))
     restoreMsg (!lineCount, q_, (!stored, !expired, !overQuota)) (i, s') = do
-      when (i `mod` 1000 == 0) $ progress i
+      when (tty && i `mod` 1000 == 0) $ liftIO $ putStr (progress i <> "\r")
       MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
       liftError show $ addToMsgQueue rId msg
       where

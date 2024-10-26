@@ -5,19 +5,21 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module CoreTests.MsgStoreTests where
 
-import AgentTests.FunctionalAPITests (runRight_)
+import AgentTests.FunctionalAPITests (runRight, runRight_)
 import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Base64.URL as B64
 import Data.Time.Clock.System (getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
@@ -41,6 +43,7 @@ msgStoreTests = do
     it "should export and import journal store" testExportImportStore
     describe "queue state" $ do
       it "should restore queue state from the last line" testQueueState
+      it "should recover when message is written and state is not" testMessageState
   where
     someMsgStoreTests :: MsgStoreClass s => SpecWith s
     someMsgStoreTests = do
@@ -153,27 +156,35 @@ testExportImportStore ms = do
     Just (Message {}, True) <- write q1 "message 1"
     Just (Message {}, False) <- write q1 "message 2"
     q2 <- getMsgQueue ms rId2
-    Just (Message {}, True) <- write q2 "message 3"
-    Just (Message {}, False) <- write q2 "message 4"
-    Just (Message {}, False) <- write q2 "message 5"
-    Nothing <- write q2 "message 6"
+    Just (Message {msgId = mId3}, True) <- write q2 "message 3"
+    Just (Message {msgId = mId4}, False) <- write q2 "message 4"
+    (Msg "message 3", Msg "message 4") <- tryDelPeekMsg q2 mId3
+    (Msg "message 4", Nothing) <- tryDelPeekMsg q2 mId4
+    Just (Message {}, True) <- write q2 "message 5"
+    Just (Message {}, False) <- write q2 "message 6"
+    Just (Message {}, False) <- write q2 "message 7"
+    Nothing <- write q2 "message 8"
     pure ()
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
-  length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 2
-  exportMessages ms testStoreMsgsFile False
+  length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3
+  exportMessages False ms testStoreMsgsFile False
+  renameFile testStoreMsgsFile (testStoreMsgsFile <> ".copy")
+  closeMsgStore ms
+  exportMessages False ms testStoreMsgsFile False
+  (B.readFile testStoreMsgsFile `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".copy")
   let cfg = (testJournalStoreCfg :: JournalStoreConfig) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
   stats@MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
-    importMessages ms' testStoreMsgsFile Nothing
+    importMessages False ms' testStoreMsgsFile Nothing
   printMessageStats "Messages" stats
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
-  length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3 -- state file is backed up
-  exportMessages ms' testStoreMsgsFile2 False
+  length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 4 -- state file is backed up, 2 message files
+  exportMessages False ms' testStoreMsgsFile2 False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
   MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
-    importMessages stmStore testStoreMsgsFile2 Nothing
-  exportMessages stmStore testStoreMsgsFile False
+    importMessages False stmStore testStoreMsgsFile2 Nothing
+  exportMessages False stmStore testStoreMsgsFile False
   (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))
 
 testQueueState :: JournalMsgStore -> IO ()
@@ -181,7 +192,7 @@ testQueueState ms = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
   let dir = msgQueueDirectory ms rId
-      statePath = dir </> (queueLogFileName <> logFileExt)
+      statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
   createDirectoryIfMissing True dir
   state <- newMsgQueueState <$> newJournalId (random ms)
   withFile statePath WriteMode (`appendState` state)
@@ -240,3 +251,28 @@ testQueueState ms = do
       forM_ names $ \name ->
         let f = dir </> name
          in unless (f == keep) $ removeFile f
+
+testMessageState :: JournalMsgStore -> IO ()
+testMessageState ms = do
+  g <- C.newRandom
+  rId <- EntityId <$> atomically (C.randomBytes 24 g)
+  let dir = msgQueueDirectory ms rId
+      statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
+      write q s = writeMsg ms q True =<< mkMessage s
+
+  mId1 <- runRight $ do
+    q <- getMsgQueue ms rId
+    Just (Message {msgId = mId1}, True) <- write q "message 1"
+    Just (Message {}, False) <- write q "message 2"
+    liftIO $ closeMsgQueue ms rId
+    pure mId1
+
+  ls <- B.lines <$> B.readFile statePath
+  B.writeFile statePath $ B.unlines $ take (length ls - 1) ls
+
+  runRight_ $ do
+    q <- getMsgQueue ms rId
+    Just (Message {msgId = mId3}, False) <- write q "message 3"
+    (Msg "message 1", Msg "message 3") <- tryDelPeekMsg q mId1
+    (Msg "message 3", Nothing) <- tryDelPeekMsg q mId3
+    liftIO $ closeMsgQueueHandles q

@@ -57,7 +57,7 @@ instance MsgStoreClass STMMsgStore where
   activeMsgQueues = msgQueues
   {-# INLINE activeMsgQueues #-}
 
-  withAllMsgQueues = withActiveMsgQueues
+  withAllMsgQueues _ = withActiveMsgQueues
   {-# INLINE withAllMsgQueues #-}
 
   logQueueStates _ = pure ()
@@ -96,7 +96,7 @@ instance MsgStoreClass STMMsgStore where
         pure msgs
 
   writeMsg :: STMMsgStore -> STMMsgQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
-  writeMsg _ STMMsgQueue {msgQueue = q, quota, canWrite, size} _logState !msg = liftIO $ atomically $ do
+  writeMsg _ STMMsgQueue {msgQueue = q, quota, canWrite, size} _logState msg = liftIO $ atomically $ do
     canWrt <- readTVar canWrite
     empty <- isEmptyTQueue q
     if canWrt || empty
@@ -105,11 +105,11 @@ instance MsgStoreClass STMMsgStore where
         writeTVar canWrite $! canWrt'
         modifyTVar' size (+ 1)
         if canWrt'
-          then writeTQueue q msg $> Just (msg, empty)
-          else writeTQueue q msgQuota $> Nothing
+          then (writeTQueue q $! msg) $> Just (msg, empty)
+          else (writeTQueue q $! msgQuota) $> Nothing
       else pure Nothing
     where
-      !msgQuota = MessageQuota {msgId = msgId msg, msgTs = msgTs msg}
+      msgQuota = MessageQuota {msgId = msgId msg, msgTs = msgTs msg}
 
   setOverQuota_ :: STMMsgQueue -> IO ()
   setOverQuota_ q = atomically $ writeTVar (canWrite q) False

@@ -5,7 +5,7 @@ cabal-version: 1.12
 -- see: https://github.com/sol/hpack
 
 name:           simplexmq
-version:        6.1.1.0
+version:        6.1.3.0
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -136,6 +136,7 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240624_snd_secure
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240702_servers_stats
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240930_ntf_tokens_to_delete
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent

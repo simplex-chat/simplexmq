@@ -1,5 +1,5 @@
 name: simplexmq
-version: 6.1.1.0
+version: 6.1.3.0
 synopsis: SimpleXMQ message broker
 description: |
   This package includes <./docs/Simplex-Messaging-Server.html server>,
@@ -189,6 +189,7 @@ tests:
       - -rtsopts
       - -with-rtsopts=-A64M
       - -with-rtsopts=-N1
+      # - -fhpc
 
 ghc-options:
   # - -haddock

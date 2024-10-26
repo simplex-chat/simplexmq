@@ -87,6 +87,9 @@ ntfServerCLI cfgPath logPath =
           \# and restoring it when the server is started.\n\
           \# Log is compacted on start (deleted objects are removed).\n"
             <> ("enable: " <> onOff enableStoreLog <> "\n\n")
+            <> "# Last notifications are optionally saved and restored when the server restarts,\n\
+               \# they are preserved in the .bak file until the next restart.\n"
+            <> ("restore_last_notifications: " <> onOff enableStoreLog <> "\n\n")
             <> "log_stats: off\n\n\
                \[AUTH]\n\
                \# control_port_admin_password:\n\
@@ -136,6 +139,11 @@ ntfServerCLI cfgPath logPath =
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
+        restoreLastNtfsFile path = case iniOnOff "STORE_LOG" "restore_last_notifications" ini of
+          Just True -> Just path
+          Just False -> Nothing
+          -- if the setting is not set, it is enabled when store log is enabled
+          _ -> enableStoreLog $> path
         serverConfig =
           NtfServerConfig
             { transports = iniTransports ini,
@@ -172,6 +180,7 @@ ntfServerCLI cfgPath logPath =
                       checkInterval = readStrictIni "INACTIVE_CLIENTS" "check_interval" ini
                     },
               storeLogFile = enableStoreLog $> storeLogFilePath,
+              storeLastNtfsFile = restoreLastNtfsFile $ combine logPath "ntf-server-last-notifications.log",
               ntfCredentials =
                 ServerCredentials
                   { caCertificateFile = Just $ c caCrtFile,
