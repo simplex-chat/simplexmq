@@ -1,10 +1,14 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Simplex.Messaging.Server.Env.STM where
 
@@ -19,8 +23,6 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as M
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
@@ -37,9 +39,11 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
+import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
+import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
-import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..))
+import Simplex.Messaging.Server.QueueStore (QueueRec (..))
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
@@ -57,7 +61,10 @@ data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport, AddHTTP)],
     smpHandshakeTimeout :: Int,
     tbqSize :: Natural,
+    msgStoreType :: AMSType,
     msgQueueQuota :: Int,
+    maxJournalMsgCount :: Int,
+    maxJournalStateLines :: Int,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     storeLogFile :: Maybe FilePath,
@@ -136,24 +143,51 @@ defaultInactiveClientExpiration =
 defaultProxyClientConcurrency :: Int
 defaultProxyClientConcurrency = 32
 
+journalMsgStoreDepth :: Int
+journalMsgStoreDepth = 5
+
+defaultMaxJournalStateLines :: Int
+defaultMaxJournalStateLines = 16
+
+defaultMaxJournalMsgCount :: Int
+defaultMaxJournalMsgCount = 256
+
+defaultMsgQueueQuota :: Int
+defaultMsgQueueQuota = 128
+
 data Env = Env
   { config :: ServerConfig,
+    serverActive :: TVar Bool,
     serverInfo :: ServerInformation,
     server :: Server,
     serverIdentity :: KeyHash,
     queueStore :: QueueStore,
-    msgStore :: STMMsgStore,
+    msgStore :: AMsgStore,
     ntfStore :: NtfStore,
     random :: TVar ChaChaDRG,
     storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerCreds :: T.Credential,
     httpServerCreds :: Maybe T.Credential,
     serverStats :: ServerStats,
-    sockets :: SocketState,
+    sockets :: TVar [(ServiceName, SocketState)],
     clientSeq :: TVar ClientId,
     clients :: TVar (IntMap (Maybe Client)),
     proxyAgent :: ProxyAgent -- senders served on this proxy
   }
+
+type family MsgStore s where
+  MsgStore 'MSMemory = STMMsgStore
+  MsgStore 'MSJournal = JournalMsgStore
+
+data AMsgStore = forall s. MsgStoreClass (MsgStore s) => AMS (SMSType s) (MsgStore s)
+
+data AMsgQueue = forall s. MsgStoreClass (MsgStore s) => AMQ (SMSType s) (MsgQueue (MsgStore s))
+
+data AMsgStoreCfg = forall s. MsgStoreClass (MsgStore s) => AMSC (SMSType s) (MsgStoreConfig (MsgStore s))
+
+msgPersistence :: AMsgStoreCfg -> Bool
+msgPersistence (AMSC SMSMemory (STMStoreConfig {storePath})) = isJust storePath
+msgPersistence (AMSC SMSJournal _) = True
 
 type Subscribed = Bool
 
@@ -212,7 +246,7 @@ newServer = do
   ntfSubClients <- newTVarIO IM.empty
   pendingSubEvents <- newTVarIO IM.empty
   pendingNtfSubEvents <- newTVarIO IM.empty
-  savingLock <- atomically createLock
+  savingLock <- createLockIO
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, subClients, ntfSubClients, pendingSubEvents, pendingNtfSubEvents, savingLock}
 
 newClient :: ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO Client
@@ -242,27 +276,34 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAgentCfg, information, messageExpiration} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgStoreType, storeMsgsFile, smpAgentCfg, information, messageExpiration, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines} = do
+  serverActive <- newTVarIO True
   server <- newServer
   queueStore <- newQueueStore
-  msgStore <- newMsgStore
+  msgStore <- case msgStoreType of
+    AMSType SMSMemory -> AMS SMSMemory <$> newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
+    AMSType SMSJournal -> case storeMsgsFile of
+      Just storePath -> 
+        let cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines}
+         in AMS SMSJournal <$> newMsgStore cfg
+      Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
   storeLog <-
     forM storeLogFile $ \f -> do
       logInfo $ "restoring queues from file " <> T.pack f
-      restoreQueues queueStore f
+      readWriteQueueStore f queueStore
   tlsServerCreds <- getCredentials "SMP" smpCredentials
   httpServerCreds <- mapM (getCredentials "HTTPS") httpCredentials
   mapM_ checkHTTPSCredentials httpServerCreds
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
-  sockets <- newSocketState
+  sockets <- newTVarIO []
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
-  pure Env {config, serverInfo, server, serverIdentity, queueStore, msgStore, ntfStore, random, storeLog, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
+  pure Env {serverActive, config, serverInfo, server, serverIdentity, queueStore, msgStore, ntfStore, random, storeLog, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     getCredentials protocol creds = do
       files <- missingCreds
@@ -284,19 +325,6 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
           putStrLn $ "Error: unsupported HTTPS credentials, required 4096-bit RSA\n" <> letsEncrypt
           exitFailure
     letsEncrypt = "Use Let's Encrypt to generate: certbot certonly --standalone -d yourdomainname --key-type rsa --rsa-key-size 4096"
-    restoreQueues :: QueueStore -> FilePath -> IO (StoreLog 'WriteMode)
-    restoreQueues QueueStore {queues, senders, notifiers} f = do
-      (qs, s) <- readWriteStoreLog f
-      atomically . writeTVar queues =<< mapM newTVarIO qs
-      atomically $ writeTVar senders $! M.foldr' addSender M.empty qs
-      atomically $ writeTVar notifiers $! M.foldr' addNotifier M.empty qs
-      pure s
-    addSender :: QueueRec -> Map SenderId RecipientId -> Map SenderId RecipientId
-    addSender q = M.insert (senderId q) (recipientId q)
-    addNotifier :: QueueRec -> Map NotifierId RecipientId -> Map NotifierId RecipientId
-    addNotifier q = case notifier q of
-      Nothing -> id
-      Just NtfCreds {notifierId} -> M.insert notifierId (recipientId q)
     serverInfo =
       ServerInformation
         { information,
@@ -312,7 +340,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, smpAg
       where
         persistence
           | isNothing storeLogFile = SPMMemoryOnly
-          | isJust (storeMsgsFile config) = SPMMessages
+          | isJust storeMsgsFile = SPMMessages
           | otherwise = SPMQueues
 
 newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO ProxyAgent

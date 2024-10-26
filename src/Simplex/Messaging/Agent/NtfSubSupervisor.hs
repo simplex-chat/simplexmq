@@ -15,6 +15,7 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
     nsRemoveNtfToken,
     sendNtfSubCommand,
     instantNotifications,
+    deleteToken,
     closeNtfSupervisor,
     getNtfServer,
   )
@@ -58,6 +59,9 @@ import qualified UnliftIO.Exception as E
 runNtfSupervisor :: AgentClient -> AM' ()
 runNtfSupervisor c = do
   ns <- asks ntfSupervisor
+  runExceptT startTknDelete >>= \case
+    Left e -> notifyErr e
+    Right _ -> pure ()
   forever $ do
     cmd <- atomically . readTBQueue $ ntfSubQ ns
     handleErr . agentOperationBracket c AONtfNetwork waitUntilActive $
@@ -65,6 +69,10 @@ runNtfSupervisor c = do
         Left e -> notifyErr e
         Right _ -> return ()
   where
+    startTknDelete :: AM ()
+    startTknDelete = do
+      pendingDelServers <- withStore' c getPendingDelTknServers
+      lift . forM_ pendingDelServers $ getNtfTknDelWorker True c
     handleErr :: AM' () -> AM' ()
     handleErr = E.handle $ \(e :: E.SomeException) -> do
       logError $ "runNtfSupervisor error " <> tshow e
@@ -190,6 +198,11 @@ getNtfSMPWorker hasWork c server = do
   ws <- asks $ ntfSMPWorkers . ntfSupervisor
   getAgentWorker "ntf_smp" hasWork c server ws $ runNtfSMPWorker c server
 
+getNtfTknDelWorker :: Bool -> AgentClient -> NtfServer -> AM' Worker
+getNtfTknDelWorker hasWork c server = do
+  ws <- asks $ ntfTknDelWorkers . ntfSupervisor
+  getAgentWorker "ntf_tkn_del" hasWork c server ws $ runNtfTknDelWorker c server
+
 withTokenServer :: (NtfServer -> AM ()) -> AM ()
 withTokenServer action = lift getNtfToken >>= mapM_ (\NtfToken {ntfServer} -> action ntfServer)
 
@@ -207,7 +220,7 @@ runNtfWorker c srv Worker {doWork} =
         currTs <- liftIO getCurrentTime
         let (creates, checks, deletes, rotates) = splitActions currTs nextSubs
         if null creates && null checks && null deletes && null rotates
-          then 
+          then
             let (_, _, firstActionTs) = L.head nextSubs
              in lift $ rescheduleWork doWork currTs firstActionTs
           else do
@@ -522,10 +535,51 @@ instantNotifications = \case
   Just NtfToken {ntfTknStatus = NTActive, ntfMode = NMInstant} -> True
   _ -> False
 
+deleteToken :: AgentClient -> NtfToken -> AM ()
+deleteToken c tkn@NtfToken {ntfServer, ntfTokenId, ntfPrivKey} = do
+  setToDelete <- withStore' c $ \db -> do
+    removeNtfToken db tkn
+    case ntfTokenId of
+      Just tknId -> addNtfTokenToDelete db ntfServer ntfPrivKey tknId $> True
+      Nothing -> pure False
+  ns <- asks ntfSupervisor
+  atomically $ nsRemoveNtfToken ns
+  when setToDelete $ void $ lift $ getNtfTknDelWorker True c ntfServer
+
+runNtfTknDelWorker :: AgentClient -> NtfServer -> Worker -> AM ()
+runNtfTknDelWorker c srv Worker {doWork} =
+  forever $ do
+    waitForWork doWork
+    ExceptT $ agentOperationBracket c AONtfNetwork throwWhenInactive $ runExceptT runNtfOperation
+  where
+    runNtfOperation :: AM ()
+    runNtfOperation =
+      withWork c doWork (`getNextNtfTokenToDelete` srv) $
+        \nextTknToDelete -> do
+          logInfo $ "runNtfTknDelWorker, nextTknToDelete " <> tshow nextTknToDelete
+          ri <- asks $ reconnectInterval . config
+          withRetryInterval ri $ \_ loop -> do
+            liftIO $ waitWhileSuspended c
+            liftIO $ waitForUserNetwork c
+            processTknToDelete nextTknToDelete `catchAgentError` retryTmpError loop nextTknToDelete
+    retryTmpError :: AM () -> NtfTokenToDelete -> AgentErrorType -> AM ()
+    retryTmpError loop (tknDbId, _, _) e = do
+      logError $ "ntf tkn del error: " <> tshow e
+      if temporaryOrHostError e
+        then retryNetworkLoop c loop
+        else do
+          withStore' c $ \db -> deleteNtfTokenToDelete db tknDbId
+          notifyInternalError' c (show e)
+    processTknToDelete :: NtfTokenToDelete -> AM ()
+    processTknToDelete (tknDbId, ntfPrivKey, tknId) = do
+      agentNtfDeleteToken c srv ntfPrivKey tknId
+      withStore' c $ \db -> deleteNtfTokenToDelete db tknDbId
+
 closeNtfSupervisor :: NtfSupervisor -> IO ()
 closeNtfSupervisor ns = do
   stopWorkers $ ntfWorkers ns
   stopWorkers $ ntfSMPWorkers ns
+  stopWorkers $ ntfTknDelWorkers ns
   where
     stopWorkers workers = atomically (swapTVar workers M.empty) >>= mapM_ (liftIO . cancelWorker)
 

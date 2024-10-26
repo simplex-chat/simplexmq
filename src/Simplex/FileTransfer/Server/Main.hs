@@ -51,7 +51,9 @@ xftpServerCLI cfgPath logPath = do
         True -> readIniFile iniFile >>= either exitError runServer
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     Delete -> do
-      confirmOrExit "WARNING: deleting the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
+      confirmOrExit
+        "WARNING: deleting the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
+        "Server NOT deleted"
       deleteDirIfExists cfgPath
       deleteDirIfExists logPath
       putStrLn "Deleted configuration and log files"
@@ -101,6 +103,7 @@ xftpServerCLI cfgPath logPath = do
                \\n\
                \# control_port_admin_password:\n\
                \# control_port_user_password:\n\
+               \\n\
                \[TRANSPORT]\n\
                \# host is only used to print server address on start\n"
             <> ("host: " <> T.pack host <> "\n")

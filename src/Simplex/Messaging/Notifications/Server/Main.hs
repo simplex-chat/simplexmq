@@ -14,6 +14,7 @@ import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.IO as T
 import Network.Socket (HostName)
 import Options.Applicative
@@ -52,7 +53,9 @@ ntfServerCLI cfgPath logPath =
         True -> readIniFile iniFile >>= either exitError runServer
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     Delete -> do
-      confirmOrExit "WARNING: deleting the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
+      confirmOrExit
+        "WARNING: deleting the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
+        "Server NOT deleted"
       deleteDirIfExists cfgPath
       deleteDirIfExists logPath
       putStrLn "Deleted configuration and log files"
@@ -84,7 +87,14 @@ ntfServerCLI cfgPath logPath =
           \# and restoring it when the server is started.\n\
           \# Log is compacted on start (deleted objects are removed).\n"
             <> ("enable: " <> onOff enableStoreLog <> "\n\n")
+            <> "# Last notifications are optionally saved and restored when the server restarts,\n\
+               \# they are preserved in the .bak file until the next restart.\n"
+            <> ("restore_last_notifications: " <> onOff enableStoreLog <> "\n\n")
             <> "log_stats: off\n\n\
+               \[AUTH]\n\
+               \# control_port_admin_password:\n\
+               \# control_port_user_password:\n\
+               \\n\
                \[TRANSPORT]\n\
                \# Host is only used to print server address on start.\n\
                \# You can specify multiple server ports.\n"
@@ -93,6 +103,8 @@ ntfServerCLI cfgPath logPath =
             <> "log_tls_errors: off\n\n\
                \# Use `websockets: 443` to run websockets server in addition to plain TLS.\n\
                \websockets: off\n\n\
+               \# control_port: 5227\n\
+               \\n\
                \[SUBSCRIBER]\n\
                \# Network configuration for notification server client.\n\
                \# `host_mode` can be 'public' (default) or 'onion'.\n\
@@ -105,6 +117,8 @@ ntfServerCLI cfgPath logPath =
                \# `socks_mode` can be 'onion' for SOCKS proxy to be used for .onion destination hosts only (default)\n\
                \# or 'always' to be used for all destination hosts (can be used if it is an .onion server).\n\
                \# socks_mode: onion\n\n\
+               \# The domain suffixes of the relays you operate (space-separated) to count as separate proxy statistics.\n\
+               \# own_server_domains: \n\n\
                \[INACTIVE_CLIENTS]\n\
                \# TTL and interval to check inactive clients\n\
                \disconnect: off\n"
@@ -125,9 +139,17 @@ ntfServerCLI cfgPath logPath =
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
+        restoreLastNtfsFile path = case iniOnOff "STORE_LOG" "restore_last_notifications" ini of
+          Just True -> Just path
+          Just False -> Nothing
+          -- if the setting is not set, it is enabled when store log is enabled
+          _ -> enableStoreLog $> path
         serverConfig =
           NtfServerConfig
             { transports = iniTransports ini,
+              controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini,
+              controlPortAdminAuth = either error id <$!> strDecodeIni "AUTH" "control_port_admin_password" ini,
+              controlPortUserAuth = either error id <$!> strDecodeIni "AUTH" "control_port_user_password" ini,
               subIdBytes = 24,
               regCodeBytes = 32,
               clientQSize = 64,
@@ -143,9 +165,10 @@ ntfServerCLI cfgPath logPath =
                                 socksMode = maybe SMOnion (either error id) $! strDecodeIni "SUBSCRIBER" "socks_mode" ini,
                                 hostMode = either (const HMPublic) (either error id . textToHostMode) $ lookupValue "SUBSCRIBER" "host_mode" ini,
                                 requiredHostMode = fromMaybe False $ iniOnOff "SUBSCRIBER" "required_host_mode" ini,
-                                smpPingInterval = 60_000_000 -- 1 minutes
+                                smpPingInterval = 60_000_000 -- 1 minute
                               }
                         },
+                    ownServerDomains = either (const []) (map encodeUtf8 . T.words) $ lookupValue "SUBSCRIBER" "own_server_domains" ini,
                     persistErrorInterval = 0 -- seconds
                   },
               apnsConfig = defaultAPNSPushClientConfig,
@@ -157,6 +180,7 @@ ntfServerCLI cfgPath logPath =
                       checkInterval = readStrictIni "INACTIVE_CLIENTS" "check_interval" ini
                     },
               storeLogFile = enableStoreLog $> storeLogFilePath,
+              storeLastNtfsFile = restoreLastNtfsFile $ combine logPath "ntf-server-last-notifications.log",
               ntfCredentials =
                 ServerCredentials
                   { caCertificateFile = Just $ c caCrtFile,

@@ -1,3 +1,54 @@
+# 6.1.3
+
+SMP server: fix restoring notification credentials.
+
+# 6.1.2
+
+Servers: more reliable restoring of state.
+
+SMP server: reduced memory usage and faster start.
+
+Notifications: compensate for iOS notifications being droppted by Apple while device is offline (#1378):
+- Ntf server: send multiple SMP notifications in one iOS notification.
+- Agent: get multiple messages for one iOS notification.
+
+# 6.1.1
+
+SMP:
+- stop server faster (#1371)
+- add STORE error (#1372)
+
+# 6.1.0
+
+Version 6.1.0.7
+
+SMP server and client:
+- transport block encryption (#1317).
+
+Agent:
+- batch and optimize iOS notifications processing (#1308, #1311, #1313, #1316, #1330, #1331, #1333, #1337, #1346).
+- allow receiving multiple messages from single iOS notification (#1355, #1362).
+- prepare connection to accept to avoid race condition with events (#1365).
+- transport isolation mode "Session" (default) to use new SOCKS credentials when client restarts or SOCKS proxy configuration changes (#1321).
+
+Ntf server:
+- control port (#1354).
+- enable pings on ntf subscriptions, to resubscribe on reconnection (#1353).
+
+SMP server:
+- support multiple server ports (#1319).
+- support serving HTTPS and SMP transport on the same port (#1326, #1327).
+- persist iOS notifications to avoid losing them when Ntf server is offline (#1336, #1339, #1350).
+- fix lost notification subscriptions (#1347).
+- reject SKEY with different key earlier, at verification step (#1366).
+- pass server information via CLI during server initialization (#1356).
+- show version on server page (#1341).
+- explicit graceful shutdown on SIGINT (#1360).
+
+XRCP (remote access protocol):
+- use SHA3-256 in hybrid key agreement (#1302).
+- session encryption with forward secrecy (#1328).
+
 # 6.0.5
 
 SMP agent:

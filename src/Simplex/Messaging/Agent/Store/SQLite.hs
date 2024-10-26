@@ -122,6 +122,7 @@ module Simplex.Messaging.Agent.Store.SQLite
     getRcvMsg,
     getLastMsg,
     checkRcvMsgHashExists,
+    getRcvMsgBrokerTs,
     deleteMsg,
     deleteDeliveredSndMsg,
     deleteSndMsgDelivery,
@@ -150,6 +151,13 @@ module Simplex.Messaging.Agent.Store.SQLite
     updateNtfMode,
     updateNtfToken,
     removeNtfToken,
+    addNtfTokenToDelete,
+    deleteExpiredNtfTokensToDelete,
+    NtfTokenToDelete,
+    getNextNtfTokenToDelete,
+    markNtfTokenToDeleteFailed_, -- exported for tests
+    getPendingDelTknServers,
+    deleteNtfTokenToDelete,
     -- Notification subscription persistence
     NtfSupervisorSub,
     getNtfSubscription,
@@ -968,10 +976,11 @@ updateRcvIds db connId = do
   pure (internalId, internalRcvId, lastExternalSndId, lastRcvHash)
 
 createRcvMsg :: DB.Connection -> ConnId -> RcvQueue -> RcvMsgData -> IO ()
-createRcvMsg db connId rq rcvMsgData@RcvMsgData {msgMeta = MsgMeta {sndMsgId}, internalRcvId, internalHash} = do
+createRcvMsg db connId rq@RcvQueue {dbQueueId} rcvMsgData@RcvMsgData {msgMeta = MsgMeta {sndMsgId, broker = (_, brokerTs)}, internalRcvId, internalHash} = do
   insertRcvMsgBase_ db connId rcvMsgData
   insertRcvMsgDetails_ db connId rq rcvMsgData
   updateRcvMsgHash db connId sndMsgId internalRcvId internalHash
+  DB.execute db "UPDATE rcv_queues SET last_broker_ts = ? WHERE conn_id = ? AND rcv_queue_id = ?" (brokerTs, connId, dbQueueId)
 
 updateSndIds :: DB.Connection -> ConnId -> IO (Either StoreError (InternalId, InternalSndId, PrevSndMsgHash))
 updateSndIds db connId = runExceptT $ do
@@ -1177,6 +1186,11 @@ checkRcvMsgHashExists db connId hash = do
           "SELECT 1 FROM encrypted_rcv_message_hashes WHERE conn_id = ? AND hash = ? LIMIT 1"
           (connId, hash)
       )
+
+getRcvMsgBrokerTs :: DB.Connection -> ConnId -> SMP.MsgId -> IO (Either StoreError BrokerTs)
+getRcvMsgBrokerTs db connId msgId =
+  firstRow fromOnly SEMsgNotFound $
+    DB.query db "SELECT broker_ts FROM rcv_messages WHERE conn_id = ? AND broker_id = ?" (connId, msgId)
 
 deleteMsg :: DB.Connection -> ConnId -> InternalId -> IO ()
 deleteMsg db connId msgId =
@@ -1486,6 +1500,70 @@ removeNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer 
     |]
     (provider, token, host, port)
 
+addNtfTokenToDelete :: DB.Connection -> NtfServer -> C.APrivateAuthKey -> NtfTokenId -> IO ()
+addNtfTokenToDelete db ProtocolServer {host, port, keyHash} ntfPrivKey tknId =
+  DB.execute db "INSERT INTO ntf_tokens_to_delete (ntf_host, ntf_port, ntf_key_hash, tkn_id, tkn_priv_key) VALUES (?,?,?,?,?)" (host, port, keyHash, tknId, ntfPrivKey)
+
+deleteExpiredNtfTokensToDelete :: DB.Connection -> NominalDiffTime -> IO ()
+deleteExpiredNtfTokensToDelete db ttl = do
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
+  DB.execute db "DELETE FROM ntf_tokens_to_delete WHERE created_at < ?" (Only cutoffTs)
+
+type NtfTokenToDelete = (Int64, C.APrivateAuthKey, NtfTokenId)
+
+getNextNtfTokenToDelete :: DB.Connection -> NtfServer -> IO (Either StoreError (Maybe NtfTokenToDelete))
+getNextNtfTokenToDelete db (NtfServer ntfHost ntfPort _) =
+  getWorkItem "ntf tkn del" getNtfTknDbId getNtfTknToDelete (markNtfTokenToDeleteFailed_ db)
+  where
+    getNtfTknDbId :: IO (Maybe Int64)
+    getNtfTknDbId =
+      maybeFirstRow fromOnly $
+        DB.query
+          db
+          [sql|
+            SELECT ntf_token_to_delete_id
+            FROM ntf_tokens_to_delete
+            WHERE ntf_host = ? AND ntf_port = ?
+              AND del_failed = 0
+            ORDER BY created_at ASC
+            LIMIT 1
+          |]
+          (ntfHost, ntfPort)
+    getNtfTknToDelete :: Int64 -> IO (Either StoreError NtfTokenToDelete)
+    getNtfTknToDelete tknDbId =
+      firstRow ntfTokenToDelete err $
+        DB.query
+          db
+          [sql|
+            SELECT tkn_priv_key, tkn_id
+            FROM ntf_tokens_to_delete
+            WHERE ntf_token_to_delete_id = ?
+          |]
+          (Only tknDbId)
+      where
+        err = SEInternal $ "ntf token to delete " <> bshow tknDbId <> " returned []"
+        ntfTokenToDelete (tknPrivKey, tknId) = (tknDbId, tknPrivKey, tknId)
+
+markNtfTokenToDeleteFailed_ :: DB.Connection -> Int64 -> IO ()
+markNtfTokenToDeleteFailed_ db tknDbId =
+  DB.execute db "UPDATE ntf_tokens_to_delete SET del_failed = 1 where ntf_token_to_delete_id = ?" (Only tknDbId)
+
+getPendingDelTknServers :: DB.Connection -> IO [NtfServer]
+getPendingDelTknServers db =
+  map toNtfServer
+    <$> DB.query_
+      db
+      [sql|
+        SELECT DISTINCT ntf_host, ntf_port, ntf_key_hash
+        FROM ntf_tokens_to_delete
+      |]
+  where
+    toNtfServer (host, port, keyHash) = NtfServer host port keyHash
+
+deleteNtfTokenToDelete :: DB.Connection -> Int64 -> IO ()
+deleteNtfTokenToDelete db tknDbId =
+  DB.execute db "DELETE FROM ntf_tokens_to_delete WHERE ntf_token_to_delete_id = ?" (Only tknDbId)
+
 type NtfSupervisorSub = (NtfSubscription, Maybe (NtfSubAction, NtfActionTs))
 
 getNtfSubscription :: DB.Connection -> ConnId -> IO (Maybe NtfSupervisorSub)
@@ -1740,19 +1818,19 @@ getActiveNtfToken db =
           ntfMode = fromMaybe NMPeriodic ntfMode_
        in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction, ntfMode}
 
-getNtfRcvQueue :: DB.Connection -> SMPQueueNtf -> IO (Either StoreError (ConnId, RcvNtfDhSecret))
+getNtfRcvQueue :: DB.Connection -> SMPQueueNtf -> IO (Either StoreError (ConnId, RcvNtfDhSecret, Maybe UTCTime))
 getNtfRcvQueue db SMPQueueNtf {smpServer = (SMPServer host port _), notifierId} =
   firstRow' res SEConnNotFound $
     DB.query
       db
       [sql|
-        SELECT conn_id, rcv_ntf_dh_secret
+        SELECT conn_id, rcv_ntf_dh_secret, last_broker_ts
         FROM rcv_queues
         WHERE host = ? AND port = ? AND ntf_id = ? AND deleted = 0
       |]
       (host, port, notifierId)
   where
-    res (connId, Just rcvNtfDhSecret) = Right (connId, rcvNtfDhSecret)
+    res (connId, Just rcvNtfDhSecret, lastBrokerTs_) = Right (connId, rcvNtfDhSecret, lastBrokerTs_)
     res _ = Left SEConnNotFound
 
 setConnectionNtfs :: DB.Connection -> ConnId -> Bool -> IO ()

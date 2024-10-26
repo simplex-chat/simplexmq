@@ -8,6 +8,7 @@ import Control.Logger.Simple
 import Control.Monad
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Char (toUpper)
 import Data.IORef (readIORef)
 import Data.Maybe (fromMaybe)
 import Data.String (fromString)
@@ -41,23 +42,22 @@ serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} 
     WT.runTLS (WT.tlsSettings cert key) (mkSettings port) app
   where
     app = staticFiles webStaticPath
-    mkSettings port = W.setPort port W.defaultSettings
+    mkSettings port = W.setPort port warpSettings
 
 -- | Prepare context and prepare HTTP handler for TLS connections that already passed TLS.handshake and ALPN check.
 attachStaticFiles :: FilePath -> (AttachHTTP -> IO ()) -> IO ()
 attachStaticFiles path action =
   -- Initialize global internal state for http server.
-  WI.withII settings $ \ii -> do
+  WI.withII warpSettings $ \ii -> do
     action $ \socket cxt -> do
       -- Initialize internal per-connection resources.
       addr <- getPeerName socket
       withConnection addr cxt $ \(conn, transport) ->
         withTimeout ii conn $ \th ->
           -- Run Warp connection handler to process HTTP requests for static files.
-          WI.serveConnection conn ii th addr transport settings app
+          WI.serveConnection conn ii th addr transport warpSettings app
   where
     app = staticFiles path
-    settings = W.defaultSettings
     -- from warp-tls
     withConnection socket cxt = bracket (WT.attachConn socket cxt) (terminate . fst)
     -- from warp
@@ -67,6 +67,9 @@ attachStaticFiles path action =
         WI.cancel
     -- shared clean up
     terminate conn = WI.connClose conn `finally` (readIORef (WI.connWriteBuffer conn) >>= WI.bufFree)
+
+warpSettings :: W.Settings
+warpSettings = W.setGracefulShutdownTimeout (Just 1) W.defaultSettings
 
 staticFiles :: FilePath -> Application
 staticFiles root = S.staticApp settings
@@ -150,7 +153,8 @@ serverInformation ServerInformation {config, information} onionHost = render E.i
             ("hostingCountry", encodeUtf8 <$> country)
           ]
         server =
-          [ ("serverCountry", fmap encodeUtf8 $ serverCountry =<< information)
+          [ ("serverCountry", encodeUtf8 <$> serverCountry spi),
+            ("hostingType",  (\s -> maybe s (\(c, rest) -> toUpper c `B.cons` rest) $ B.uncons s) . strEncode <$> hostingType spi)
           ]
 
 -- Copy-pasted from simplex-chat Simplex.Chat.Types.Preferences

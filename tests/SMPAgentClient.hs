@@ -92,7 +92,7 @@ userServers :: NonEmpty (ProtocolServer p) -> Map UserId (NonEmpty (ServerCfg p)
 userServers = userServers' . L.map noAuthSrv
 
 userServers' :: NonEmpty (ProtoServerWithAuth p) -> Map UserId (NonEmpty (ServerCfg p))
-userServers' srvs = M.fromList [(1, L.map (presetServerCfg True (ServerRoles True True) 1) srvs)]
+userServers' srvs = M.fromList [(1, L.map (presetServerCfg True (ServerRoles True True) (Just 1)) srvs)]
 
 noAuthSrvCfg :: ProtocolServer p -> ServerCfg p
-noAuthSrvCfg = presetServerCfg True (ServerRoles True True) 1 . noAuthSrv
+noAuthSrvCfg = presetServerCfg True (ServerRoles True True) (Just 1) . noAuthSrv

@@ -258,13 +258,14 @@ supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClie
 -- TODO v6.0 remove dependency on version
 maxMessageLength :: VersionSMP -> Int
 maxMessageLength v
+  | v >= encryptedBlockSMPVersion = 16048 -- max 16051
   | v >= sendingProxySMPVersion = 16064 -- max 16067
-  | otherwise = 16088 -- 16064 - always use this size to determine allowed ranges
+  | otherwise = 16088 -- 16048 - always use this size to determine allowed ranges
 
 paddedProxiedTLength :: Int
-paddedProxiedTLength = 16242 -- 16241 .. 16243
+paddedProxiedTLength = 16226 -- 16225 .. 16227
 
--- TODO v6.0 change to 16064
+-- TODO v7.0 change to 16048
 type MaxMessageLen = 16088
 
 -- 16 extra bytes: 8 for timestamp and 8 for flags (7 flags and the space, only 1 flag is currently used)
@@ -272,10 +273,10 @@ type MaxRcvMessageLen = MaxMessageLen + 16 -- 16104, the padded size is 16106
 
 -- it is shorter to allow per-queue e2e encryption DH key in the "public" header
 e2eEncConfirmationLength :: Int
-e2eEncConfirmationLength = 15920 -- 15881 .. 15976
+e2eEncConfirmationLength = 15904 -- 15865 .. 15960
 
 e2eEncMessageLength :: Int
-e2eEncMessageLength = 16016 -- 16004 .. 16021
+e2eEncMessageLength = 16000 -- 15988 .. 16005
 
 -- | SMP protocol clients
 data Party = Recipient | Sender | Notifier | ProxiedClient
@@ -398,8 +399,6 @@ data Command (p :: Party) where
   NKEY :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> Command Recipient
   NDEL :: Command Recipient
   GET :: Command Recipient
-  -- ACK v1 has to be supported for encoding/decoding
-  -- ACK :: Command Recipient
   ACK :: MsgId -> Command Recipient
   OFF :: Command Recipient
   DEL :: Command Recipient
@@ -1197,6 +1196,8 @@ data ErrorType
     CRYPTO
   | -- | SMP queue capacity is exceeded on the server
     QUOTA
+  | -- | SMP server storage error
+    STORE {storeErr :: String}
   | -- | ACK command is sent without message to be acknowledged
     NO_MSG
   | -- | sent message is too large (> maxMessageLength = 16088 bytes)
@@ -1512,6 +1513,7 @@ instance Encoding ErrorType where
     AUTH -> "AUTH"
     CRYPTO -> "CRYPTO"
     QUOTA -> "QUOTA"
+    STORE err -> "STORE " <> smpEncode err
     EXPIRED -> "EXPIRED"
     NO_MSG -> "NO_MSG"
     LARGE_MSG -> "LARGE_MSG"
@@ -1527,6 +1529,7 @@ instance Encoding ErrorType where
       "AUTH" -> pure AUTH
       "CRYPTO" -> pure CRYPTO
       "QUOTA" -> pure QUOTA
+      "STORE" -> STORE <$> _smpP
       "EXPIRED" -> pure EXPIRED
       "NO_MSG" -> pure NO_MSG
       "LARGE_MSG" -> pure LARGE_MSG
@@ -1663,8 +1666,8 @@ batchTransmissions' batch bSize ts
 batchTransmissions_ :: Int -> NonEmpty (Either TransportError ByteString, r) -> [TransportBatch r]
 batchTransmissions_ bSize = addBatch . foldr addTransmission ([], 0, 0, [], [])
   where
-    -- 3 = 2 bytes reserved for pad size + 1 for transmission count
-    bSize' = bSize - 3
+    -- 19 = 2 bytes reserved for pad size + 1 for transmission count + 16 auth tag from block encryption
+    bSize' = bSize - 19
     addTransmission :: (Either TransportError ByteString, r) -> ([TransportBatch r], Int, Int, [ByteString], [r]) -> ([TransportBatch r], Int, Int, [ByteString], [r])
     addTransmission (t_, r) acc@(bs, !len, !n, ss, rs) = case t_ of
       Left e -> (TBError e r : addBatch acc, 0, 0, [], [])

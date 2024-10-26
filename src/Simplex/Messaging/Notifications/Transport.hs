@@ -169,5 +169,6 @@ ntfTHandle c = THandle {connection = c, params}
           thServerVRange = versionToRange v,
           thAuth = Nothing,
           implySessId = False,
+          encryptBlock = Nothing,
           batch = False
         }

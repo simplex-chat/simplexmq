@@ -54,6 +54,7 @@ fileTimePrecision :: Int64
 fileTimePrecision = 3600 -- truncate creation time to 1 hour
 
 data FileRecipient = FileRecipient RecipientId RcvPublicAuthKey
+  deriving (Show)
 
 instance StrEncoding FileRecipient where
   strEncode (FileRecipient rId rKey) = strEncode rId <> ":" <> strEncode rKey

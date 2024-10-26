@@ -30,6 +30,7 @@ module Simplex.Messaging.Agent.Client
     withConnLocks,
     withInvLock,
     withLockMap,
+    getMapLock,
     ipAddressProtected,
     closeAgentClient,
     closeProtocolServerClients,
@@ -92,6 +93,7 @@ module Simplex.Messaging.Agent.Client
     hasActiveSubscription,
     hasPendingSubscription,
     hasGetLock,
+    releaseGetLock,
     activeClientSession,
     agentClientStore,
     agentDRG,
@@ -497,7 +499,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg} currentTs a
   getMsgLocks <- TM.emptyIO
   connLocks <- TM.emptyIO
   invLocks <- TM.emptyIO
-  deleteLock <- atomically createLock
+  deleteLock <- createLockIO
   smpSubWorkers <- TM.emptyIO
   smpServersStats <- TM.emptyIO
   xftpServersStats <- TM.emptyIO
@@ -1587,7 +1589,7 @@ getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do
 
 decryptSMPMessage :: RcvQueue -> SMP.RcvMessage -> AM SMP.ClientRcvMsgBody
 decryptSMPMessage rq SMP.RcvMessage {msgId, msgBody = SMP.EncRcvMsgBody body} =
-  liftEither . parse SMP.clientRcvMsgBodyP (AGENT A_MESSAGE) =<< decrypt body
+  liftEither $ parse SMP.clientRcvMsgBodyP (AGENT A_MESSAGE) =<< decrypt body
   where
     decrypt = agentCbDecrypt (rcvDhSecret rq) (C.cbNonce msgId)
 
@@ -1644,10 +1646,9 @@ disableQueuesNtfs = sendTSessionBatches "NDEL" snd disableQueues_
     queueCreds (_, RcvQueue {rcvPrivateKey, rcvId}) = (rcvPrivateKey, rcvId)
 
 sendAck :: AgentClient -> RcvQueue -> MsgId -> AM ()
-sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId = do
+sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId =
   withSMPClient c rq ("ACK:" <> logSecret' msgId) $ \smp ->
-    ackSMPMessage smp rcvPrivateKey rcvId msgId
-  atomically $ releaseGetLock c rq
+    ackSMPMessage smp rcvPrivateKey rcvId msgId      
 
 hasGetLock :: AgentClient -> RcvQueue -> IO Bool
 hasGetLock c RcvQueue {server, rcvId} =
@@ -1719,8 +1720,8 @@ agentNtfReplaceToken :: AgentClient -> NtfTokenId -> NtfToken -> DeviceToken -> 
 agentNtfReplaceToken c tknId NtfToken {ntfServer, ntfPrivKey} token =
   withNtfClient c ntfServer tknId "TRPL" $ \ntf -> ntfReplaceToken ntf ntfPrivKey tknId token
 
-agentNtfDeleteToken :: AgentClient -> NtfTokenId -> NtfToken -> AM ()
-agentNtfDeleteToken c tknId NtfToken {ntfServer, ntfPrivKey} =
+agentNtfDeleteToken :: AgentClient -> NtfServer -> C.APrivateAuthKey -> NtfTokenId -> AM ()
+agentNtfDeleteToken c ntfServer ntfPrivKey tknId =
   withNtfClient c ntfServer tknId "TDEL" $ \ntf -> ntfDeleteToken ntf ntfPrivKey tknId
 
 agentNtfEnableCron :: AgentClient -> NtfTokenId -> NtfToken -> Word16 -> AM ()
@@ -1828,9 +1829,9 @@ agentCbEncryptOnce clientVersion dhRcvPubKey msg = do
 
 -- | NaCl crypto-box decrypt - both for messages received from the server
 -- and per-queue E2E encrypted messages from the sender that were inside.
-agentCbDecrypt :: C.DhSecretX25519 -> C.CbNonce -> ByteString -> AM ByteString
+agentCbDecrypt :: C.DhSecretX25519 -> C.CbNonce -> ByteString -> Either AgentErrorType ByteString
 agentCbDecrypt dhSecret nonce msg =
-  liftEither . first cryptoError $
+  first cryptoError $
     C.cbDecrypt dhSecret nonce msg
 
 cryptoError :: C.CryptoError -> AgentErrorType

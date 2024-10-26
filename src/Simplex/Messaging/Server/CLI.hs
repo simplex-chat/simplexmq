@@ -44,11 +44,11 @@ import Text.Read (readMaybe)
 exitError :: String -> IO a
 exitError msg = putStrLn msg >> exitFailure
 
-confirmOrExit :: String -> IO ()
-confirmOrExit s =
+confirmOrExit :: String -> String -> IO ()
+confirmOrExit s no =
   withPrompt (s <> "\nContinue (Y/n): ") $ do
     ok <- getLine
-    when (ok /= "Y") $ putStrLn "Server NOT deleted" >> exitFailure
+    when (ok /= "Y") $ putStrLn no >> exitFailure
 
 data SignAlgorithm = ED448 | ED25519
   deriving (Read, Show)

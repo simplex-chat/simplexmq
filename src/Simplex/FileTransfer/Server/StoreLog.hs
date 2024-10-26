@@ -34,8 +34,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (RcvPublicAuthKey, RecipientId, SenderId)
 import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Util (bshow, whenM)
-import System.Directory (doesFileExist, renameFile)
+import Simplex.Messaging.Util (bshow)
 import System.IO
 
 data FileStoreLogRecord
@@ -44,6 +43,7 @@ data FileStoreLogRecord
   | AddRecipients SenderId (NonEmpty FileRecipient)
   | DeleteFile SenderId
   | AckFile RecipientId
+  deriving (Show)
 
 instance StrEncoding FileStoreLogRecord where
   strEncode = \case
@@ -80,13 +80,7 @@ logAckFile :: StoreLog 'WriteMode -> RecipientId -> IO ()
 logAckFile s = logFileStoreRecord s . AckFile
 
 readWriteFileStore :: FilePath -> FileStore -> IO (StoreLog 'WriteMode)
-readWriteFileStore f st = do
-  whenM (doesFileExist f) $ do
-    readFileStore f st
-    renameFile f $ f <> ".bak"
-  s <- openWriteStoreLog f
-  writeFileStore s st
-  pure s
+readWriteFileStore = readWriteStoreLog readFileStore writeFileStore
 
 readFileStore :: FilePath -> FileStore -> IO ()
 readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f
