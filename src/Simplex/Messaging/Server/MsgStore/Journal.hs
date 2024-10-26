@@ -333,7 +333,6 @@ instance MsgStoreClass JournalMsgStore where
             ws' = ws {msgPos = msgPos', msgCount = msgPos', bytePos = bytePos', byteCount = bytePos'}
             rs' = if journalId ws == journalId rs then rs {msgCount = msgPos', byteCount = bytePos'} else rs
             !st' = st {writeState = ws', readState = rs', canWrite = canWrt', size = size + 1}
-        print wh
         hAppend wh (bytePos ws) msgStr
         updateQueueState q logState hs st' $
           when (size == 0) $ writeTVar (tipMsg q) $ Just (Just (msg, msgLen))
