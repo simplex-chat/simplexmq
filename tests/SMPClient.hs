@@ -43,6 +43,9 @@ import Util
 testHost :: NonEmpty TransportHost
 testHost = "localhost"
 
+testHost2 :: NonEmpty TransportHost
+testHost2 = "127.0.0.1"
+
 testPort :: ServiceName
 testPort = "5001"
 

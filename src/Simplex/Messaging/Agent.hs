@@ -120,6 +120,8 @@ module Simplex.Messaging.Agent
     debugAgentLocks,
     getAgentSubscriptions,
     logConnection,
+    -- for tests
+    withAgentEnv,
   )
 where
 

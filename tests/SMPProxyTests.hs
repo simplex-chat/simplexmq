@@ -61,7 +61,7 @@ smpProxyTests = do
     xit "batching proxy requests" todo
   describe "deliver message via SMP proxy" $ do
     let srv1 = SMPServer testHost testPort testKeyHash
-        srv2 = SMPServer testHost testPort2 testKeyHash
+        srv2 = SMPServer testHost2 testPort2 testKeyHash
     describe "client API" $ do
       let maxLen = maxMessageLength encryptedBlockSMPVersion
       describe "one server" $ do
@@ -316,7 +316,7 @@ agentViaProxyVersionError :: IO ()
 agentViaProxyVersionError =
   withAgent 1 agentCfg (servers [SMPServer testHost testPort testKeyHash]) testDB $ \alice -> do
     Left (A.BROKER _ (TRANSPORT TEVersion)) <-
-      withAgent 2 agentCfg (servers [SMPServer testHost testPort2 testKeyHash]) testDB2 $ \bob -> runExceptT $ do
+      withAgent 2 agentCfg (servers [SMPServer testHost2 testPort2 testKeyHash]) testDB2 $ \bob -> runExceptT $ do
         (_bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
         aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
         A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
