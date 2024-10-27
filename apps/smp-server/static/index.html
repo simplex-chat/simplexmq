@@ -222,6 +222,10 @@
             </h2>
             <table id="public-info">
               <tr class="text-grey-black dark:text-white text-base">
+                <td>Server version:</td>
+                <td>${version}</td>
+              </tr>
+              <tr class="text-grey-black dark:text-white text-base">
                 <td>Source code:</td>
                 <td><a href="${sourceCode}" target="_blank">${sourceCode}</a></td>
               </tr>
@@ -291,6 +295,12 @@
                   <td>${hostingEntity} (${hostingCountry})</td>
                 </tr>
               </x-hosting>
+              <x-hostingType>
+                <tr class="text-grey-black dark:text-white text-base">
+                  <td>Hosting type:</td>
+                  <td>${hostingType}</td>
+                </tr>
+              </x-hostingType>
               <x-serverCountry>
                 <tr class="text-grey-black dark:text-white text-base">
                   <td>Server country:</td>

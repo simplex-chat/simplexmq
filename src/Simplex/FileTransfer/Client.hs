@@ -22,6 +22,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
+import Data.Time.Clock (UTCTime)
 import Data.Word (Word32)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
@@ -36,8 +37,8 @@ import Simplex.Messaging.Client
     TransportSession,
     chooseTransportHost,
     defaultNetworkConfig,
-    proxyUsername,
     transportClientConfig,
+    clientSocksCredentials,
     unexpectedResponse,
   )
 import qualified Simplex.Messaging.Crypto as C
@@ -50,8 +51,9 @@ import Simplex.Messaging.Protocol
     ProtocolServer (..),
     RecipientId,
     SenderId,
+    pattern NoEntity,
   )
-import Simplex.Messaging.Transport (ALPN, HandshakeError (..), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), supportedParameters)
+import Simplex.Messaging.Transport (ALPN, HandshakeError (..), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost, alpn)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
@@ -97,21 +99,21 @@ defaultXFTPClientConfig =
       clientALPN = Just supportedXFTPhandshakes
     }
 
-getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
-getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} disconnected = runExceptT $ do
-  let username = proxyUsername transportSession
+getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> UTCTime -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
+getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} proxySessTs disconnected = runExceptT $ do
+  let socksCreds = clientSocksCredentials xftpNetworkConfig proxySessTs transportSession
       ProtocolServer _ host port keyHash = srv
   useHost <- liftEither $ chooseTransportHost xftpNetworkConfig host
-  let tcConfig = (transportClientConfig xftpNetworkConfig useHost) {alpn = clientALPN}
+  let tcConfig = (transportClientConfig xftpNetworkConfig useHost False) {alpn = clientALPN}
       http2Config = xftpHTTP2Config tcConfig config
   clientVar <- newTVarIO Nothing
   let usePort = if null port then "443" else port
       clientDisconnected = readTVarIO clientVar >>= mapM_ disconnected
-  http2Client <- liftError' xftpClientError $ getVerifiedHTTP2Client (Just username) useHost usePort (Just keyHash) Nothing http2Config clientDisconnected
+  http2Client <- liftError' xftpClientError $ getVerifiedHTTP2Client socksCreds useHost usePort (Just keyHash) Nothing http2Config clientDisconnected
   let HTTP2Client {sessionId, sessionALPN} = http2Client
       v = VersionXFTP 1
       thServerVRange = versionToRange v
-      thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, batch = True}
+      thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, batch = True}
   logDebug $ "Client negotiated handshake protocol: " <> tshow sessionALPN
   thParams@THandleParams {thVersion} <- case sessionALPN of
     Just "xftp/1" -> xftpClientHandshakeV1 serverVRange keyHash http2Client thParams0
@@ -171,7 +173,7 @@ xftpHTTP2Config :: TransportClientConfig -> XFTPClientConfig -> HTTP2ClientConfi
 xftpHTTP2Config transportConfig XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpConnectTimeout}} =
   defaultHTTP2ClientConfig
     { bodyHeadSize = xftpBlockSize,
-      suportedTLSParams = supportedParameters,
+      suportedTLSParams = defaultSupportedParams,
       connTimeout = tcpConnectTimeout,
       transportConfig
     }
@@ -222,7 +224,7 @@ createXFTPChunk ::
   Maybe BasicAuth ->
   ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId)
 createXFTPChunk c spKey file rcps auth_ =
-  sendXFTPCommand c spKey "" (FNEW file rcps auth_) Nothing >>= \case
+  sendXFTPCommand c spKey NoEntity (FNEW file rcps auth_) Nothing >>= \case
     (FRSndIds sId rIds, body) -> noFile body (sId, rIds)
     (r, _) -> throwE $ unexpectedResponse r
 
@@ -278,7 +280,7 @@ pingXFTP :: XFTPClient -> ExceptT XFTPClientError IO ()
 pingXFTP c@XFTPClient {thParams} = do
   t <-
     liftEither . first PCETransportError $
-      xftpEncodeTransmission thParams ("", "", FileCmd SFRecipient PING)
+      xftpEncodeTransmission thParams ("", NoEntity, FileCmd SFRecipient PING)
   (r, _) <- sendXFTPTransmission c t Nothing
   case r of
     FRPong -> pure ()

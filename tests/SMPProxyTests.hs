@@ -22,6 +22,7 @@ import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
+import Data.Time.Clock (getCurrentTime)
 import SMPAgentClient
 import SMPClient
 import ServerTests (decryptMsgV3, sendRecv)
@@ -34,7 +35,7 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
-import Simplex.Messaging.Protocol (EncRcvMsgBody (..), MsgBody, RcvMessage (..), SubscriptionMode (..), maxMessageLength, noMsgFlags)
+import Simplex.Messaging.Protocol (EncRcvMsgBody (..), MsgBody, RcvMessage (..), SubscriptionMode (..), maxMessageLength, noMsgFlags, pattern NoEntity)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport
@@ -62,7 +63,7 @@ smpProxyTests = do
     let srv1 = SMPServer testHost testPort testKeyHash
         srv2 = SMPServer testHost testPort2 testKeyHash
     describe "client API" $ do
-      let maxLen = maxMessageLength sendingProxySMPVersion
+      let maxLen = maxMessageLength encryptedBlockSMPVersion
       describe "one server" $ do
         it "deliver via proxy" . oneServer $ do
           deliverMessageViaProxy srv1 srv1 C.SEd448 "hello 1" "hello 2"
@@ -134,14 +135,15 @@ smpProxyTests = do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "25 agents, 300 pairs, 17 messages" . oneServer . withNumCapabilities 4 $ deliver 25 17
   where
-    oneServer = withSmpServerConfigOn (transport @TLS) proxyCfg {msgQueueQuota = 128} testPort . const
+    oneServer = withSmpServerConfigOn (transport @TLS) proxyCfg {msgQueueQuota = 128, maxJournalMsgCount = 256} testPort . const
     twoServers = twoServers_ proxyCfg proxyCfg
-    twoServersFirstProxy = twoServers_ proxyCfg cfgV8 {msgQueueQuota = 128}
-    twoServersMoreConc = twoServers_ proxyCfg {serverClientConcurrency = 128} cfgV8 {msgQueueQuota = 128}
-    twoServersNoConc = twoServers_ proxyCfg {serverClientConcurrency = 1} cfgV8 {msgQueueQuota = 128}
+    twoServersFirstProxy = twoServers_ proxyCfg cfgV8 {msgQueueQuota = 128, maxJournalMsgCount = 256}
+    twoServersMoreConc = twoServers_ proxyCfg {serverClientConcurrency = 128} cfgV8 {msgQueueQuota = 128, maxJournalMsgCount = 256}
+    twoServersNoConc = twoServers_ proxyCfg {serverClientConcurrency = 1} cfgV8 {msgQueueQuota = 128, maxJournalMsgCount = 256}
     twoServers_ cfg1 cfg2 runTest =
       withSmpServerConfigOn (transport @TLS) cfg1 testPort $ \_ ->
-        withSmpServerConfigOn (transport @TLS) cfg2 testPort2 $ const runTest
+        let cfg2' = cfg2 {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2}
+         in withSmpServerConfigOn (transport @TLS) cfg2' testPort2 $ const runTest
 
 deliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => SMPServer -> SMPServer -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
 deliverMessageViaProxy proxyServ relayServ alg msg msg' = deliverMessagesViaProxy proxyServ relayServ alg [msg] [msg']
@@ -150,12 +152,13 @@ deliverMessagesViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => SMPServer -> S
 deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   g <- C.newRandom
   -- set up proxy
-  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} Nothing (\_ -> pure ())
+  ts <- getCurrentTime
+  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pc'
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- set up relay
   msgQ <- newTBQueueIO 1024
-  rc' <- getProtocolClient g (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion} (Just msgQ) (\_ -> pure ())
+  rc' <- getProtocolClient g (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion} (Just msgQ) ts (\_ -> pure ())
   rc <- either (fail . show) pure rc'
   -- prepare receiving queue
   (rPub, rPriv) <- atomically $ C.generateAuthKeyPair alg g
@@ -192,7 +195,8 @@ proxyConnectDeadRelay :: Int -> Int -> SMPServer -> IO ()
 proxyConnectDeadRelay n d proxyServ = do
   g <- C.newRandom
   -- set up proxy
-  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} Nothing (\_ -> pure ())
+  ts <- getCurrentTime
+  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pc'
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- get proxy session
@@ -207,7 +211,8 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
   withAgent 1 aCfg (servers aTestCfg) testDB $ \alice ->
     withAgent 2 aCfg (servers bTestCfg) testDB2 $ \bob -> runRight_ $ do
       (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
-      (aliceId, sqSecured) <- A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+      sqSecured <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
       ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
       liftIO $ pqSup' `shouldBe` PQSupportOn
@@ -262,7 +267,8 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
     -- otherwise the CONF messages would get mixed with MSG
     prePair alice bob = do
       (bobId, qInfo) <- runExceptT' $ A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
-      (aliceId, sqSecured) <- runExceptT' $ A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      aliceId <- runExceptT' $ A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+      sqSecured <- runExceptT' $ A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
       confId <-
         get alice >>= \case
@@ -312,7 +318,8 @@ agentViaProxyVersionError =
     Left (A.BROKER _ (TRANSPORT TEVersion)) <-
       withAgent 2 agentCfg (servers [SMPServer testHost testPort2 testKeyHash]) testDB2 $ \bob -> runExceptT $ do
         (_bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
-        A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+        aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+        A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     pure ()
   where
     servers srvs = (initAgentServersProxy SPMUnknown SPFProhibit) {smp = userServers srvs}
@@ -331,7 +338,8 @@ agentViaProxyRetryOffline = do
       withServer $ \_ -> do
         (aliceId, bobId) <- withServer2 $ \_ -> runRight $ do
           (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
-          (aliceId, sqSecured) <- A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+          aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+          sqSecured <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
           liftIO $ sqSecured `shouldBe` True
           ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
           liftIO $ pqSup' `shouldBe` PQSupportOn
@@ -372,11 +380,11 @@ agentViaProxyRetryOffline = do
             ackMessage alice bobId (baseId + 4) Nothing
   where
     withServer :: (ThreadId -> IO a) -> IO a
-    withServer = withServer_ testStoreLogFile testStoreMsgsFile testPort
+    withServer = withServer_ testStoreLogFile testStoreMsgsDir testStoreNtfsFile testPort
     withServer2 :: (ThreadId -> IO a) -> IO a
-    withServer2 = withServer_ testStoreLogFile2 testStoreMsgsFile2 testPort2
-    withServer_ storeLog storeMsgs port =
-      withSmpServerConfigOn (transport @TLS) proxyCfg {storeLogFile = Just storeLog, storeMsgsFile = Just storeMsgs} port
+    withServer2 = withServer_ testStoreLogFile2 testStoreMsgsDir2 testStoreNtfsFile2 testPort2
+    withServer_ storeLog storeMsgs storeNtfs =
+      withSmpServerConfigOn (transport @TLS) proxyCfg {storeLogFile = Just storeLog, storeMsgsFile = Just storeMsgs, storeNtfsFile = Just storeNtfs}
     a `up` cId = nGet a =##> \case ("", "", UP _ [c]) -> c == cId; _ -> False
     a `down` cId = nGet a =##> \case ("", "", DOWN _ [c]) -> c == cId; _ -> False
     aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
@@ -408,14 +416,14 @@ testNoProxy :: IO ()
 testNoProxy = do
   withSmpServerConfigOn (transport @TLS) cfg testPort2 $ \_ -> do
     testSMPClient_ "127.0.0.1" testPort2 proxyVRangeV8 $ \(th :: THandleSMP TLS 'TClient) -> do
-      (_, _, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", "", SMP.PRXY testSMPServer Nothing)
+      (_, _, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", NoEntity, SMP.PRXY testSMPServer Nothing)
       reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
 
 testProxyAuth :: IO ()
 testProxyAuth = do
   withSmpServerConfigOn (transport @TLS) proxyCfgAuth testPort $ \_ -> do
     testSMPClient_ "127.0.0.1" testPort proxyVRangeV8 $ \(th :: THandleSMP TLS 'TClient) -> do
-      (_, _s, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", "", SMP.PRXY testSMPServer2 $ Just "wrong")
+      (_, _s, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", NoEntity, SMP.PRXY testSMPServer2 $ Just "wrong")
       reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
   where
     proxyCfgAuth = proxyCfg {newQueueBasicAuth = Just "correct"}

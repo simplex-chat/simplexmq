@@ -12,6 +12,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
@@ -76,7 +77,7 @@ import Data.Word (Word16)
 import qualified Database.SQLite.Simple as SQL
 import GHC.Stack (withFrozenCallStack)
 import SMPAgentClient
-import SMPClient (cfg, prevRange, prevVersion, testPort, testPort2, testStoreLogFile2, withSmpServer, withSmpServerConfigOn, withSmpServerOn, withSmpServerProxy, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfg, prevRange, prevVersion, testPort, testPort2, testStoreLogFile2, testStoreMsgsDir2, withSmpServer, withSmpServerConfigOn, withSmpServerProxy, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), waitForUserNetwork)
@@ -85,7 +86,7 @@ import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), SQLiteStore (dbNew))
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
-import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), SMPProxyFallback (..), SMPProxyMode (..), TransportSessionMode (TSMEntity, TSMUser), defaultClientConfig)
+import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), SMPProxyFallback (..), SMPProxyMode (..), TransportSessionMode (..), defaultClientConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
@@ -95,6 +96,7 @@ import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolS
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Transport (ATransport (..), SMPVersion, VersionSMP, authCmdsSMPVersion, basicAuthSMPVersion, batchCmdsSMPVersion, currentServerSMPRelayVersion, sndAuthKeySMPVersion, supportedSMPHandshakes)
 import Simplex.Messaging.Util (bshow, diffToMicroseconds)
@@ -246,7 +248,9 @@ createConnection :: AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe 
 createConnection c userId enableNtfs cMode clientData = A.createConnection c userId enableNtfs cMode clientData (IKNoPQ PQSupportOn)
 
 joinConnection :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> AE (ConnId, SndQueueSecured)
-joinConnection c userId enableNtfs cReq connInfo = A.joinConnection c userId Nothing enableNtfs cReq connInfo PQSupportOn
+joinConnection c userId enableNtfs cReq connInfo subMode = do
+  connId <- A.prepareConnectionToJoin c userId enableNtfs cReq PQSupportOn
+  (connId,) <$> A.joinConnection c userId connId enableNtfs cReq connInfo PQSupportOn subMode
 
 sendMessage :: AgentClient -> ConnId -> SMP.MsgFlags -> MsgBody -> AE AgentMsgId
 sendMessage c connId msgFlags msgBody = do
@@ -283,6 +287,9 @@ functionalAPITests t = do
     testPQMatrix3 t $ runAgentClientContactTestPQ3 True
   it "should support rejecting contact request" $
     withSmpServer t testRejectContactRequest
+  describe "Changing connection user id" $ do
+    it "should change user id for new connections" $ do
+      withSmpServer t testUpdateConnectionUserId
   describe "Establishing connection asynchronously" $ do
     it "should connect with initiating client going offline" $
       withSmpServer t testAsyncInitiatingOffline
@@ -524,7 +531,7 @@ testRatchetMatrix2 t runTest = do
 testServerMatrix2 :: HasCallStack => ATransport -> (InitialAgentServers -> IO ()) -> Spec
 testServerMatrix2 t runTest = do
   it "1 server" $ withSmpServer t $ runTest initAgentServers
-  it "2 servers" $ withSmpServer t . withSmpServerOn t testPort2 $ runTest initAgentServers2
+  it "2 servers" $ withSmpServer t $ withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \_ -> runTest initAgentServers2
 
 testPQMatrix2 :: HasCallStack => ATransport -> (HasCallStack => (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()) -> Spec
 testPQMatrix2 = pqMatrix2_ True
@@ -602,7 +609,8 @@ runAgentClientTestPQ :: HasCallStack => SndQueueSecured -> Bool -> (AgentClient,
 runAgentClientTestPQ sqSecured viaProxy (alice, aPQ) (bob, bPQ) baseId =
   runRight_ $ do
     (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing aPQ SMSubscribe
-    (aliceId, sqSecured') <- A.joinConnection bob 1 Nothing True qInfo "bob's connInfo" bPQ SMSubscribe
+    aliceId <- A.prepareConnectionToJoin bob 1 True qInfo bPQ
+    sqSecured' <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" bPQ SMSubscribe
     liftIO $ sqSecured' `shouldBe` sqSecured
     ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` CR.connPQEncryption aPQ
@@ -804,13 +812,12 @@ runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, b
   runRight_ $ do
     (_, qInfo) <- A.createConnection alice 1 True SCMContact Nothing aPQ SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo bPQ
-    (aliceId', sqSecuredJoin) <- A.joinConnection bob 1 (Just aliceId) True qInfo "bob's connInfo" bPQ SMSubscribe
-    liftIO $ do
-      aliceId' `shouldBe` aliceId
-      sqSecuredJoin `shouldBe` False -- joining via contact address connection
+    sqSecuredJoin <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" bPQ SMSubscribe
+    liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
     ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` reqPQSupport
-    (bobId, sqSecured') <- acceptContact alice True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
+    bobId <- A.prepareConnectionToAccept alice True invId (CR.connPQEncryption aPQ)
+    sqSecured' <- acceptContact alice bobId True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
     liftIO $ sqSecured' `shouldBe` sqSecured
     ("", _, A.CONF confId pqSup'' _ "alice's connInfo") <- get bob
     liftIO $ pqSup'' `shouldBe` bPQ
@@ -856,13 +863,12 @@ runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId 
     msgId = subtract baseId . fst
     connectViaContact b pq qInfo = do
       aId <- A.prepareConnectionToJoin b 1 True qInfo pq
-      (aId', sqSecuredJoin) <- A.joinConnection b 1 (Just aId) True qInfo "bob's connInfo" pq SMSubscribe
-      liftIO $ do
-        aId' `shouldBe` aId
-        sqSecuredJoin `shouldBe` False -- joining via contact address connection
+      sqSecuredJoin <- A.joinConnection b 1 aId True qInfo "bob's connInfo" pq SMSubscribe
+      liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
       ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
       liftIO $ pqSup' `shouldBe` PQSupportOn
-      (bId, sqSecuredAccept) <- acceptContact alice True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
+      bId <- A.prepareConnectionToAccept alice True invId (CR.connPQEncryption aPQ)
+      sqSecuredAccept <- acceptContact alice bId True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
       liftIO $ sqSecuredAccept `shouldBe` False -- agent cfg is v8
       ("", _, A.CONF confId pqSup'' _ "alice's connInfo") <- get b
       liftIO $ pqSup'' `shouldBe` pq
@@ -903,14 +909,29 @@ testRejectContactRequest =
   withAgentClients2 $ \alice bob -> runRight_ $ do
     (addrConnId, qInfo) <- A.createConnection alice 1 True SCMContact Nothing IKPQOn SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-    (aliceId', sqSecured) <- A.joinConnection bob 1 (Just aliceId) True qInfo "bob's connInfo" PQSupportOn SMSubscribe
-    liftIO $ do
-      aliceId' `shouldBe` aliceId
-      sqSecured `shouldBe` False -- joining via contact address connection
+    sqSecured <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    liftIO $ sqSecured `shouldBe` False -- joining via contact address connection
     ("", _, A.REQ invId PQSupportOn _ "bob's connInfo") <- get alice
     liftIO $ runExceptT (rejectContact alice "abcd" invId) `shouldReturn` Left (CONN NOT_FOUND)
     rejectContact alice addrConnId invId
     liftIO $ noMessages bob "nothing delivered to bob"
+
+testUpdateConnectionUserId :: HasCallStack => IO ()
+testUpdateConnectionUserId =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    (connId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+    newUserId <- createUser alice [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
+    _ <- changeConnectionUser alice 1 connId newUserId
+    aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+    sqSecured' <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    liftIO $ sqSecured' `shouldBe` True
+    ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
+    liftIO $ pqSup' `shouldBe` PQSupportOn
+    allowConnection alice connId confId "alice's connInfo"
+    let pqEnc = CR.pqSupportToEnc PQSupportOn
+    get alice ##> ("", connId, A.CON pqEnc)
+    get bob ##> ("", aliceId, A.INFO PQSupportOn "alice's connInfo")
+    get bob ##> ("", aliceId, A.CON pqEnc)
 
 testAsyncInitiatingOffline :: HasCallStack => IO ()
 testAsyncInitiatingOffline =
@@ -1021,7 +1042,7 @@ testAllowConnectionClientRestart t = do
   bob <- getSMPAgentClient' 2 agentCfg initAgentServersSrv2 testDB2
   withSmpServerStoreLogOn t testPort $ \_ -> do
     (aliceId, bobId, confId) <-
-      withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \_ -> do
+      withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \_ -> do
         runRight $ do
           (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
           (aliceId, sqSecured) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
@@ -1041,13 +1062,11 @@ testAllowConnectionClientRestart t = do
     threadDelay 250000
 
     alice2 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
-
-    withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \_ -> do
+    runRight_ $ subscribeConnection alice2 bobId
+    threadDelay 500000
+    withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \_ -> do
       runRight $ do
         ("", "", UP _ _) <- nGet bob
-
-        subscribeConnection alice2 bobId
-
         get alice2 ##> ("", bobId, CON)
         get bob ##> ("", aliceId, INFO "alice's connInfo")
         get bob ##> ("", aliceId, CON)
@@ -1263,7 +1282,7 @@ testSkippedMessages :: HasCallStack => ATransport -> IO ()
 testSkippedMessages t = do
   alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
   bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
-  (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \_ -> do
+  (aliceId, bobId) <- withSmpServerConfigOn t cfg' testPort $ \_ -> do
     (aliceId, bobId) <- runRight $ makeConnection alice bob
     runRight_ $ do
       2 <- sendMessage alice bobId SMP.noMsgFlags "hello"
@@ -1291,7 +1310,7 @@ testSkippedMessages t = do
   alice2 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
   bob2 <- getSMPAgentClient' 4 agentCfg initAgentServers testDB2
 
-  withSmpServerStoreLogOn t testPort $ \_ -> do
+  withSmpServerConfigOn t cfg' testPort $ \_ -> do
     runRight_ $ do
       subscribeConnection bob2 aliceId
       subscribeConnection alice2 bobId
@@ -1307,6 +1326,8 @@ testSkippedMessages t = do
       ackMessage bob2 aliceId 4 Nothing
   disposeAgentClient alice2
   disposeAgentClient bob2
+  where
+    cfg' = cfg {msgStoreType = AMSType SMSMemory, storeMsgsFile = Nothing}
 
 testDeliveryAfterSubscriptionError :: HasCallStack => ATransport -> IO ()
 testDeliveryAfterSubscriptionError t = do
@@ -1410,7 +1431,7 @@ withUP a bId p =
       ]
 
 testExpireMessageQuota :: HasCallStack => ATransport -> IO ()
-testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testPort $ \_ -> do
+testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1, maxJournalMsgCount = 2} testPort $ \_ -> do
   a <- getSMPAgentClient' 1 agentCfg {quotaExceededTimeout = 1, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aId, bId) <- runRight $ do
@@ -1436,7 +1457,7 @@ testExpireMessageQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testP
   disposeAgentClient a
 
 testExpireManyMessagesQuota :: ATransport -> IO ()
-testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1} testPort $ \_ -> do
+testExpireManyMessagesQuota t = withSmpServerConfigOn t cfg {msgQueueQuota = 1, maxJournalMsgCount = 2} testPort $ \_ -> do
   a <- getSMPAgentClient' 1 agentCfg {quotaExceededTimeout = 2, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aId, bId) <- runRight $ do
@@ -1660,34 +1681,45 @@ testOnlyCreatePullSlowHandshake = withAgentClientsCfg2 agentProxyCfgV8 agentProx
   (aliceId, sqSecured) <- joinConnection bob 1 True qInfo "bob's connInfo" SMOnlyCreate
   liftIO $ sqSecured `shouldBe` False
   Just ("", _, CONF confId _ "bob's connInfo") <- getMsg alice bobId $ timeout 5_000000 $ get alice
+  getMSGNTF alice bobId
   allowConnection alice bobId confId "alice's connInfo"
   liftIO $ threadDelay 1_000000
   getMsg bob aliceId $
     get bob ##> ("", aliceId, INFO "alice's connInfo")
+  getMSGNTF bob aliceId
   liftIO $ threadDelay 1_000000
   getMsg alice bobId $ pure ()
-  get alice ##> ("", bobId, CON)
+  inAnyOrder
+    (get alice)
+    [ \case ("", c, CON) -> c == bobId; _ -> False,
+      \case ("", c, MSGNTF {}) -> c == bobId; _ -> False
+    ]
   getMsg bob aliceId $
     get bob ##> ("", aliceId, CON)
+  getMSGNTF bob aliceId
   -- exchange messages
   4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
   get alice ##> ("", bobId, SENT 4)
   getMsg bob aliceId $
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
   ackMessage bob aliceId 4 Nothing
+  getMSGNTF bob aliceId
   5 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
   get bob ##> ("", aliceId, SENT 5)
   getMsg alice bobId $
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
   ackMessage alice bobId 5 Nothing
+  getMSGNTF alice bobId
 
 getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO a -> ExceptT AgentErrorType IO a
 getMsg c cId action = do
   liftIO $ noMessages c "nothing should be delivered before GET"
-  Just _ <- getConnectionMessage c cId
-  r <- action
-  get c =##> \case ("", cId', MSGNTF _) -> cId == cId'; _ -> False
-  pure r
+  [Just _] <- lift $ getConnectionMessages c [cId]
+  action
+
+getMSGNTF :: AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
+getMSGNTF c cId =
+  get c =##> \case ("", c', MSGNTF {}) -> c' == cId; _ -> False
 
 testOnlyCreatePull :: IO ()
 testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
@@ -1695,11 +1727,13 @@ testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
   (aliceId, sqSecured) <- joinConnection bob 1 True qInfo "bob's connInfo" SMOnlyCreate
   liftIO $ sqSecured `shouldBe` True
   Just ("", _, CONF confId _ "bob's connInfo") <- getMsg alice bobId $ timeout 5_000000 $ get alice
+  getMSGNTF alice bobId
   allowConnection alice bobId confId "alice's connInfo"
   liftIO $ threadDelay 1_000000
   getMsg bob aliceId $ do
     get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
+  getMSGNTF bob aliceId
   liftIO $ threadDelay 1_000000
   get alice ##> ("", bobId, CON) -- sent to initiating party after sending confirmation
   -- exchange messages
@@ -1708,11 +1742,13 @@ testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
   getMsg bob aliceId $
     get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
   ackMessage bob aliceId 2 Nothing
+  getMSGNTF bob aliceId
   3 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
   get bob ##> ("", aliceId, SENT 3)
   getMsg alice bobId $
     get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
   ackMessage alice bobId 3 Nothing
+  getMSGNTF alice bobId
 
 makeConnection :: AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnection = makeConnection_ PQSupportOn True
@@ -1727,10 +1763,8 @@ makeConnectionForUsers_ :: HasCallStack => PQSupport -> SndQueueSecured -> Agent
 makeConnectionForUsers_ pqSupport sqSecured alice aliceUserId bob bobUserId = do
   (bobId, qInfo) <- A.createConnection alice aliceUserId True SCMInvitation Nothing (CR.IKNoPQ pqSupport) SMSubscribe
   aliceId <- A.prepareConnectionToJoin bob bobUserId True qInfo pqSupport
-  (aliceId', sqSecured') <- A.joinConnection bob bobUserId (Just aliceId) True qInfo "bob's connInfo" pqSupport SMSubscribe
-  liftIO $ do
-    aliceId' `shouldBe` aliceId
-    sqSecured' `shouldBe` sqSecured
+  sqSecured' <- A.joinConnection bob bobUserId aliceId True qInfo "bob's connInfo" pqSupport SMSubscribe
+  liftIO $ sqSecured' `shouldBe` sqSecured
   ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
   liftIO $ pqSup' `shouldBe` pqSupport
   allowConnection alice bobId confId "alice's connInfo"
@@ -1912,7 +1946,7 @@ testBatchedSubscriptions nCreate nDel t =
     runServers :: ExceptT AgentErrorType IO a -> IO a
     runServers a = do
       withSmpServerStoreLogOn t testPort $ \t1 -> do
-        res <- withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2} testPort2 $ \t2 ->
+        res <- withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \t2 ->
           runRight a `finally` killThread t2
         killThread t1
         pure res
@@ -1974,7 +2008,7 @@ pattern SentB :: AgentMsgId -> Either AgentErrorType (AgentMsgId, PQEncryption)
 pattern SentB msgId <- Right (msgId, PQEncOn)
 
 receiveMsg :: AgentClient -> ConnId -> AgentMsgId -> MsgBody -> ExceptT AgentErrorType IO ()
-receiveMsg c cId msgId msg  = do
+receiveMsg c cId msgId msg = do
   get c =##> \case ("", cId', Msg' mId' PQEncOn msg') -> cId' == cId && mId' == msgId && msg' == msg; _ -> False
   ackMessage c cId msgId Nothing
 
@@ -2324,7 +2358,7 @@ testJoinConnectionAsyncReplyErrorV8 t = do
         ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
         pure (aId, bId)
       nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
-      withSmpServerOn t testPort2 $ do
+      withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \_ -> do
         get b =##> \case ("2", c, JOINED sqSecured) -> c == aId && not sqSecured; _ -> False
         confId <- withSmpServerStoreLogOn t testPort $ \_ -> do
           pGet a >>= \case
@@ -2363,7 +2397,7 @@ testJoinConnectionAsyncReplyError t = do
         ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
         pure (aId, bId)
       nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
-      withSmpServerOn t testPort2 $ do
+      withSmpServerConfigOn t cfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2} testPort2 $ \_ -> do
         confId <- withSmpServerStoreLogOn t testPort $ \_ -> do
           -- both servers need to be online for connection to progress because of SKEY
           get b =##> \case ("2", c, JOINED sqSecured) -> c == aId && sqSecured; _ -> False
@@ -2848,7 +2882,7 @@ testCreateQueueAuth srvVersion clnt1 clnt2 sqSecured baseId = do
     getClient clientId (clntAuth, clntVersion) db =
       let servers = initAgentServers {smp = userServers' [ProtoServerWithAuth testSMPServer clntAuth]}
           alpn_ = if clntVersion >= authCmdsSMPVersion then Just supportedSMPHandshakes else Nothing
-          smpCfg = defaultClientConfig alpn_ $ V.mkVersionRange (prevVersion basicAuthSMPVersion) clntVersion
+          smpCfg = defaultClientConfig alpn_ False $ V.mkVersionRange (prevVersion basicAuthSMPVersion) clntVersion
           sndAuthAlg = if srvVersion >= authCmdsSMPVersion && clntVersion >= authCmdsSMPVersion then C.AuthAlg C.SX25519 else C.AuthAlg C.SEd25519
        in getSMPAgentClient' clientId agentCfg {smpCfg, sndAuthAlg} servers db
 
@@ -2942,7 +2976,7 @@ testDeliveryReceiptsVersion t = do
 
 testDeliveryReceiptsConcurrent :: HasCallStack => ATransport -> IO ()
 testDeliveryReceiptsConcurrent t =
-  withSmpServerConfigOn t cfg {msgQueueQuota = 256} testPort $ \_ -> do
+  withSmpServerConfigOn t cfg {msgQueueQuota = 256, maxJournalMsgCount = 512} testPort $ \_ -> do
     withAgentClients2 $ \a b -> do
       (aId, bId) <- runRight $ makeConnection a b
       t1 <- liftIO getCurrentTime
@@ -2993,7 +3027,7 @@ testDeliveryReceiptsConcurrent t =
 testTwoUsers :: HasCallStack => IO ()
 testTwoUsers = withAgentClients2 $ \a b -> do
   let nc = netCfg initAgentServers
-  sessionMode nc `shouldBe` TSMUser
+  sessionMode nc `shouldBe` TSMSession
   runRight_ $ do
     (aId1, bId1) <- makeConnectionForUsers a 1 b 1
     exchangeGreetings a bId1 b aId1

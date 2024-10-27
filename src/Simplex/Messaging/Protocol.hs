@@ -2,11 +2,13 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
@@ -99,7 +101,8 @@ module Simplex.Messaging.Protocol
     BasicAuth (..),
     SrvLoc (..),
     CorrId (..),
-    EntityId,
+    EntityId (..),
+    pattern NoEntity,
     QueueId,
     RecipientId,
     SenderId,
@@ -255,13 +258,14 @@ supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClie
 -- TODO v6.0 remove dependency on version
 maxMessageLength :: VersionSMP -> Int
 maxMessageLength v
+  | v >= encryptedBlockSMPVersion = 16048 -- max 16051
   | v >= sendingProxySMPVersion = 16064 -- max 16067
-  | otherwise = 16088 -- 16064 - always use this size to determine allowed ranges
+  | otherwise = 16088 -- 16048 - always use this size to determine allowed ranges
 
 paddedProxiedTLength :: Int
-paddedProxiedTLength = 16242 -- 16241 .. 16243
+paddedProxiedTLength = 16226 -- 16225 .. 16227
 
--- TODO v6.0 change to 16064
+-- TODO v7.0 change to 16048
 type MaxMessageLen = 16088
 
 -- 16 extra bytes: 8 for timestamp and 8 for flags (7 flags and the space, only 1 flag is currently used)
@@ -269,10 +273,10 @@ type MaxRcvMessageLen = MaxMessageLen + 16 -- 16104, the padded size is 16106
 
 -- it is shorter to allow per-queue e2e encryption DH key in the "public" header
 e2eEncConfirmationLength :: Int
-e2eEncConfirmationLength = 15920 -- 15881 .. 15976
+e2eEncConfirmationLength = 15904 -- 15865 .. 15960
 
 e2eEncMessageLength :: Int
-e2eEncMessageLength = 16016 -- 16004 .. 16021
+e2eEncMessageLength = 16000 -- 15988 .. 16005
 
 -- | SMP protocol clients
 data Party = Recipient | Sender | Notifier | ProxiedClient
@@ -329,8 +333,8 @@ data RawTransmission = RawTransmission
   { authenticator :: ByteString, -- signature or encrypted transmission hash
     authorized :: ByteString, -- authorized transmission
     sessId :: SessionId,
-    corrId :: ByteString,
-    entityId :: ByteString,
+    corrId :: CorrId,
+    entityId :: EntityId,
     command :: ByteString
   }
   deriving (Show)
@@ -357,7 +361,7 @@ instance IsString (Maybe TransmissionAuth) where
   fromString = parseString $ B64.decode >=> C.decodeSignature >=> pure . fmap TASignature
 
 -- | unparsed sent SMP transmission with signature, without session ID.
-type SignedRawTransmission = (Maybe TransmissionAuth, SessionId, ByteString, ByteString)
+type SignedRawTransmission = (Maybe TransmissionAuth, CorrId, EntityId, ByteString)
 
 -- | unparsed sent SMP transmission with signature.
 type SentRawTransmission = (Maybe TransmissionAuth, ByteString)
@@ -374,7 +378,13 @@ type NotifierId = QueueId
 -- | SMP queue ID on the server.
 type QueueId = EntityId
 
-type EntityId = ByteString
+-- this type is used for server entities only
+newtype EntityId = EntityId {unEntityId :: ByteString}
+  deriving (Eq, Ord, Show)
+  deriving newtype (Encoding, StrEncoding)
+
+pattern NoEntity :: EntityId
+pattern NoEntity = EntityId ""
 
 -- | Parameterized type for SMP protocol commands from all clients.
 data Command (p :: Party) where
@@ -389,8 +399,6 @@ data Command (p :: Party) where
   NKEY :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> Command Recipient
   NDEL :: Command Recipient
   GET :: Command Recipient
-  -- ACK v1 has to be supported for encoding/decoding
-  -- ACK :: Command Recipient
   ACK :: MsgId -> Command Recipient
   OFF :: Command Recipient
   DEL :: Command Recipient
@@ -475,6 +483,7 @@ data BrokerMsg where
   RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
   PRES :: EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
+  DELD :: BrokerMsg
   INFO :: QueueInfo -> BrokerMsg
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
@@ -696,6 +705,7 @@ data BrokerMsgTag
   | RRES_
   | PRES_
   | END_
+  | DELD_
   | INFO_
   | OK_
   | ERR_
@@ -769,6 +779,7 @@ instance Encoding BrokerMsgTag where
     RRES_ -> "RRES"
     PRES_ -> "PRES"
     END_ -> "END"
+    DELD_ -> "DELD"
     INFO_ -> "INFO"
     OK_ -> "OK"
     ERR_ -> "ERR"
@@ -785,6 +796,7 @@ instance ProtocolMsgTag BrokerMsgTag where
     "RRES" -> Just RRES_
     "PRES" -> Just PRES_
     "END" -> Just END_
+    "DELD" -> Just DELD_
     "INFO" -> Just INFO_
     "OK" -> Just OK_
     "ERR" -> Just ERR_
@@ -1097,10 +1109,13 @@ serverStrP = do
     portP = show <$> (A.char ':' *> (A.decimal :: Parser Int))
 
 -- | Transmission correlation ID.
-newtype CorrId = CorrId {bs :: ByteString} deriving (Eq, Ord, Show)
+newtype CorrId = CorrId {bs :: ByteString}
+  deriving (Eq, Ord, Show)
+  deriving newtype (Encoding)
 
 instance IsString CorrId where
   fromString = CorrId . fromString
+  {-# INLINE fromString #-}
 
 instance StrEncoding CorrId where
   strEncode (CorrId cId) = strEncode cId
@@ -1181,6 +1196,8 @@ data ErrorType
     CRYPTO
   | -- | SMP queue capacity is exceeded on the server
     QUOTA
+  | -- | SMP server storage error
+    STORE {storeErr :: String}
   | -- | ACK command is sent without message to be acknowledged
     NO_MSG
   | -- | sent message is too large (> maxMessageLength = 16088 bytes)
@@ -1262,7 +1279,7 @@ transmissionP THandleParams {sessionId, implySessId} = do
       command <- A.takeByteString
       pure RawTransmission {authenticator, authorized = authorized', sessId, corrId, entityId, command}
 
-class (ProtocolEncoding v err msg, ProtocolEncoding v err (ProtoCommand msg), Show err, Show msg) => Protocol v err msg | msg -> v, msg -> err where
+class (ProtocolTypeI (ProtoType msg), ProtocolEncoding v err msg, ProtocolEncoding v err (ProtoCommand msg), Show err, Show msg) => Protocol v err msg | msg -> v, msg -> err where
   type ProtoCommand msg = cmd | cmd -> msg
   type ProtoType msg = (sch :: ProtocolType) | sch -> msg
   protocolClientHandshake :: forall c. Transport c => c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> ExceptT TransportError IO (THandle v c 'TClient)
@@ -1323,7 +1340,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (auth, _, entId, _) cmd = case cmd of
+  checkCredentials (auth, _, EntityId entId, _) cmd = case cmd of
     -- NEW must have signature but NOT queue ID
     NEW {}
       | isNothing auth -> Left $ CMD NO_AUTH
@@ -1411,6 +1428,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     RRES (EncFwdResponse encBlock) -> e (RRES_, ' ', Tail encBlock)
     PRES (EncResponse encBlock) -> e (PRES_, ' ', Tail encBlock)
     END -> e END_
+    DELD
+      | v >= deletedEventSMPVersion -> e DELD_
+      | otherwise -> e END_
     INFO info -> e (INFO_, ' ', info)
     OK -> e OK_
     ERR err -> e (ERR_, ' ', err)
@@ -1436,6 +1456,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     RRES_ -> RRES <$> (EncFwdResponse . unTail <$> _smpP)
     PRES_ -> PRES <$> (EncResponse . unTail <$> _smpP)
     END_ -> pure END
+    DELD_ -> pure DELD
     INFO_ -> INFO <$> _smpP
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
@@ -1448,7 +1469,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PEBlock -> BLOCK
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (_, _, entId, _) cmd = case cmd of
+  checkCredentials (_, _, EntityId entId, _) cmd = case cmd of
     -- IDS response should not have queue ID
     IDS _ -> Right cmd
     -- ERR response does not always have queue ID
@@ -1492,6 +1513,7 @@ instance Encoding ErrorType where
     AUTH -> "AUTH"
     CRYPTO -> "CRYPTO"
     QUOTA -> "QUOTA"
+    STORE err -> "STORE " <> smpEncode err
     EXPIRED -> "EXPIRED"
     NO_MSG -> "NO_MSG"
     LARGE_MSG -> "LARGE_MSG"
@@ -1507,6 +1529,7 @@ instance Encoding ErrorType where
       "AUTH" -> pure AUTH
       "CRYPTO" -> pure CRYPTO
       "QUOTA" -> pure QUOTA
+      "STORE" -> STORE <$> _smpP
       "EXPIRED" -> pure EXPIRED
       "NO_MSG" -> pure NO_MSG
       "LARGE_MSG" -> pure LARGE_MSG
@@ -1643,8 +1666,8 @@ batchTransmissions' batch bSize ts
 batchTransmissions_ :: Int -> NonEmpty (Either TransportError ByteString, r) -> [TransportBatch r]
 batchTransmissions_ bSize = addBatch . foldr addTransmission ([], 0, 0, [], [])
   where
-    -- 3 = 2 bytes reserved for pad size + 1 for transmission count
-    bSize' = bSize - 3
+    -- 19 = 2 bytes reserved for pad size + 1 for transmission count + 16 auth tag from block encryption
+    bSize' = bSize - 19
     addTransmission :: (Either TransportError ByteString, r) -> ([TransportBatch r], Int, Int, [ByteString], [r]) -> ([TransportBatch r], Int, Int, [ByteString], [r])
     addTransmission (t_, r) acc@(bs, !len, !n, ss, rs) = case t_ of
       Left e -> (TBError e r : addBatch acc, 0, 0, [], [])
@@ -1721,16 +1744,16 @@ tDecodeParseValidate THandleParams {sessionId, thVersion = v, implySessId} = \ca
     | implySessId || sessId == sessionId ->
         let decodedTransmission = (,corrId,entityId,command) <$> decodeTAuthBytes authenticator
          in either (const $ tError corrId) (tParseValidate authorized) decodedTransmission
-    | otherwise -> (Nothing, "", (CorrId corrId, "", Left $ fromProtocolError @v @err @cmd PESession))
+    | otherwise -> (Nothing, "", (corrId, NoEntity, Left $ fromProtocolError @v @err @cmd PESession))
   Left _ -> tError ""
   where
-    tError :: ByteString -> SignedTransmission err cmd
-    tError corrId = (Nothing, "", (CorrId corrId, "", Left $ fromProtocolError @v @err @cmd PEBlock))
+    tError :: CorrId -> SignedTransmission err cmd
+    tError corrId = (Nothing, "", (corrId, NoEntity, Left $ fromProtocolError @v @err @cmd PEBlock))
 
     tParseValidate :: ByteString -> SignedRawTransmission -> SignedTransmission err cmd
     tParseValidate signed t@(sig, corrId, entityId, command) =
       let cmd = parseProtocol @v @err @cmd v command >>= checkCredentials t
-       in (sig, signed, (CorrId corrId, entityId, cmd))
+       in (sig, signed, (corrId, entityId, cmd))
 
 $(J.deriveJSON defaultJSON ''MsgFlags)
 

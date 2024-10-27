@@ -9,6 +9,7 @@ ExecStart=/usr/local/bin/xftp-server start +RTS -N -RTS
 ExecStopPost=/usr/local/bin/simplex-servers-stopscript xftp-server
 LimitNOFILE=65535
 KillSignal=SIGINT
+TimeoutStartSec=infinity
 TimeoutStopSec=infinity
 AmbientCapabilities=CAP_NET_BIND_SERVICE
    

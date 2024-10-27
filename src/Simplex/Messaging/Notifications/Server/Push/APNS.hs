@@ -34,6 +34,7 @@ import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict (Map)
 import Data.Maybe (isNothing)
 import Data.Text (Text)
@@ -47,12 +48,10 @@ import Network.HTTP2.Client (Request)
 import qualified Network.HTTP2.Client as H
 import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
 import Simplex.Messaging.Notifications.Server.Store (NtfTknData (..))
 import Simplex.Messaging.Parsers (defaultJSON)
-import Simplex.Messaging.Protocol (EncNMsgMeta)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Util (safeDecodeUtf8, tshow)
@@ -103,25 +102,10 @@ readECPrivateKey f = do
 
 data PushNotification
   = PNVerification NtfRegCode
-  | PNMessage PNMessageData
+  | PNMessage (NonEmpty PNMessageData)
   | -- | PNAlert Text
     PNCheckMessages
   deriving (Show)
-
-data PNMessageData = PNMessageData
-  { smpQueue :: SMPQueueNtf,
-    ntfTs :: SystemTime,
-    nmsgNonce :: C.CbNonce,
-    encNMsgMeta :: EncNMsgMeta
-  }
-  deriving (Show)
-
-instance StrEncoding PNMessageData where
-  strEncode PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} =
-    strEncode (smpQueue, ntfTs, nmsgNonce, encNMsgMeta)
-  strP = do
-    (smpQueue, ntfTs, nmsgNonce, encNMsgMeta) <- strP
-    pure PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
 
 data APNSNotification = APNSNotification {aps :: APNSNotificationBody, notificationData :: Maybe J.Value}
   deriving (Show)
@@ -208,7 +192,7 @@ defaultAPNSPushClientConfig =
       authKeyFileEnv = "APNS_KEY_FILE", -- the environment variables APNS_KEY_FILE and APNS_KEY_ID must be set, or the server would fail to start
       authKeyAlg = "ES256",
       authKeyIdEnv = "APNS_KEY_ID",
-      paddedNtfLength = 512,
+      paddedNtfLength = 3072,
       appName = "chat.simplex.app",
       appTeamId = "5NN7GUYB6T",
       apnsPort = "443",
@@ -285,7 +269,7 @@ apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
     encrypt code $ \code' ->
       apn APNSBackground {contentAvailable = 1} . Just $ J.object ["nonce" .= nonce, "verification" .= code']
   PNMessage pnMessageData ->
-    encrypt (strEncode pnMessageData) $ \ntfData ->
+    encrypt (encodePNMessages pnMessageData) $ \ntfData ->
       apn apnMutableContent . Just $ J.object ["nonce" .= nonce, "message" .= ntfData]
   -- PNAlert text -> Right $ apn (apnAlert $ APNSAlertText text) Nothing
   PNCheckMessages -> Right $ apn APNSBackground {contentAvailable = 1} . Just $ J.object ["checkMessages" .= True]

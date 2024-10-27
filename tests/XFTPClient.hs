@@ -8,6 +8,7 @@ module XFTPClient where
 
 import Control.Concurrent (ThreadId, threadDelay)
 import Data.String (fromString)
+import Data.Time.Clock (getCurrentTime)
 import Network.Socket (ServiceName)
 import SMPClient (serverBracket)
 import Simplex.FileTransfer.Client
@@ -52,9 +53,12 @@ withXFTPServerStoreLogOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -
 withXFTPServerStoreLogOn = withXFTPServerCfg testXFTPServerConfig {storeLogFile = Just testXFTPLogFile, serverStatsBackupFile = Just testXFTPStatsBackupFile}
 
 withXFTPServerCfg :: HasCallStack => XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
-withXFTPServerCfg cfg =
+withXFTPServerCfg cfg = withXFTPServerCfgALPN cfg $ Just supportedXFTPhandshakes
+
+withXFTPServerCfgALPN :: HasCallStack => XFTPServerConfig -> Maybe [ALPN] -> (HasCallStack => ThreadId -> IO a) -> IO a
+withXFTPServerCfgALPN cfg alpn_ =
   serverBracket
-    (`runXFTPServerBlocking` cfg)
+    (\started -> runXFTPServerBlocking started cfg alpn_)
     (threadDelay 10000)
 
 withXFTPServerThreadOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
@@ -97,10 +101,7 @@ testXFTPStatsBackupFile :: FilePath
 testXFTPStatsBackupFile = "tests/tmp/xftp-server-stats.log"
 
 testXFTPServerConfig :: XFTPServerConfig
-testXFTPServerConfig = testXFTPServerConfig_ (Just supportedXFTPhandshakes)
-
-testXFTPServerConfig_ :: Maybe [ALPN] -> XFTPServerConfig
-testXFTPServerConfig_ alpn =
+testXFTPServerConfig =
   XFTPServerConfig
     { xftpPort = xftpTestPort,
       controlPort = Nothing,
@@ -116,15 +117,18 @@ testXFTPServerConfig_ alpn =
       fileExpiration = Just defaultFileExpiration,
       fileTimeout = 10000000,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
-      caCertificateFile = "tests/fixtures/ca.crt",
-      privateKeyFile = "tests/fixtures/server.key",
-      certificateFile = "tests/fixtures/server.crt",
+      xftpCredentials =
+        ServerCredentials
+          { caCertificateFile = Just "tests/fixtures/ca.crt",
+            privateKeyFile = "tests/fixtures/server.key",
+            certificateFile = "tests/fixtures/server.crt"
+          },
       xftpServerVRange = supportedFileServerVRange,
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/tmp/xftp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
-      transportConfig = defaultTransportServerConfig {alpn},
+      transportConfig = defaultTransportServerConfig,
       responseDelay = 0
     }
 
@@ -135,7 +139,8 @@ testXFTPClient :: HasCallStack => (HasCallStack => XFTPClient -> IO a) -> IO a
 testXFTPClient = testXFTPClientWith testXFTPClientConfig
 
 testXFTPClientWith :: HasCallStack => XFTPClientConfig -> (HasCallStack => XFTPClient -> IO a) -> IO a
-testXFTPClientWith cfg client =
-  getXFTPClient (1, testXFTPServer, Nothing) cfg (\_ -> pure ()) >>= \case
+testXFTPClientWith cfg client = do
+  ts <- getCurrentTime
+  getXFTPClient (1, testXFTPServer, Nothing) cfg ts (\_ -> pure ()) >>= \case
     Right c -> client c
     Left e -> error $ show e

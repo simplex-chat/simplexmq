@@ -76,7 +76,7 @@ data SMPClientAgentConfig = SMPClientAgentConfig
 defaultSMPClientAgentConfig :: SMPClientAgentConfig
 defaultSMPClientAgentConfig =
   SMPClientAgentConfig
-    { smpCfg = defaultSMPClientConfig {defaultTransport = ("5223", transport @TLS)},
+    { smpCfg = defaultSMPClientConfig,
       reconnectInterval =
         RetryInterval
           { initialInterval = second,
@@ -84,8 +84,8 @@ defaultSMPClientAgentConfig =
             maxInterval = 10 * second
           },
       persistErrorInterval = 30, -- seconds
-      msgQSize = 1024,
-      agentQSize = 1024,
+      msgQSize = 2048,
+      agentQSize = 2048,
       agentSubsBatchSize = 1360,
       ownServerDomains = []
     }
@@ -95,6 +95,7 @@ defaultSMPClientAgentConfig =
 data SMPClientAgent = SMPClientAgent
   { agentCfg :: SMPClientAgentConfig,
     active :: TVar Bool,
+    startedAt :: UTCTime,
     msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
     agentQ :: TBQueue SMPClientAgentEvent,
     randomDrg :: TVar ChaChaDRG,
@@ -111,6 +112,7 @@ type OwnServer = Bool
 newSMPClientAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO SMPClientAgent
 newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg = do
   active <- newTVarIO True
+  startedAt <- getCurrentTime
   msgQ <- newTBQueueIO msgQSize
   agentQ <- newTBQueueIO agentQSize
   smpClients <- TM.emptyIO
@@ -123,6 +125,7 @@ newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg
     SMPClientAgent
       { agentCfg,
         active,
+        startedAt,
         msgQ,
         agentQ,
         randomDrg,
@@ -194,8 +197,8 @@ isOwnServer SMPClientAgent {agentCfg} ProtocolServer {host} =
 
 -- | Run an SMP client for SMPClientVar
 connectClient :: SMPClientAgent -> SMPServer -> SMPClientVar -> IO (Either SMPClientError SMPClient)
-connectClient ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, randomDrg} srv v =
-  getProtocolClient randomDrg (1, srv, Nothing) (smpCfg agentCfg) (Just msgQ) clientDisconnected
+connectClient ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, randomDrg, startedAt} srv v =
+  getProtocolClient randomDrg (1, srv, Nothing) (smpCfg agentCfg) (Just msgQ) startedAt clientDisconnected
   where
     clientDisconnected :: SMPClient -> IO ()
     clientDisconnected smp = do
@@ -372,13 +375,15 @@ smpSubscribeQueues party ca smp srv subs = do
     notify_ :: (SMPServer -> SMPSubParty -> NonEmpty a -> SMPClientAgentEvent) -> [a] -> IO ()
     notify_ evt qs = mapM_ (notify ca . evt srv party) $ L.nonEmpty qs
 
-activeClientSession :: SMPClientAgent -> SMPClient -> SMPServer -> STM Bool
-activeClientSession ca smp srv = sameSess <$> tryReadSessVar srv (smpClients ca)
+activeClientSession' :: SMPClientAgent -> SessionId -> SMPServer -> STM Bool
+activeClientSession' ca sessId srv = sameSess <$> tryReadSessVar srv (smpClients ca)
   where
-    sessId = sessionId . thParams
     sameSess = \case
-      Just (Right (_, smp')) -> sessId smp == sessId smp'
+      Just (Right (_, smp')) -> sessId == sessionId (thParams smp')
       _ -> False
+
+activeClientSession :: SMPClientAgent -> SMPClient -> SMPServer -> STM Bool
+activeClientSession ca = activeClientSession' ca . sessionId . thParams
 
 showServer :: SMPServer -> ByteString
 showServer ProtocolServer {host, port} =

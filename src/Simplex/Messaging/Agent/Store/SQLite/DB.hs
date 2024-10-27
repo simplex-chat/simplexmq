@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -20,15 +21,19 @@ where
 
 import Control.Concurrent.STM
 import Control.Monad (when)
+import Control.Exception
 import qualified Data.Aeson.TH as J
 import Data.Int (Int64)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
+import Data.Text (Text)
 import Data.Time (diffUTCTime, getCurrentTime)
 import Database.SQLite.Simple (FromRow, NamedParam, Query, ToRow)
 import qualified Database.SQLite.Simple as SQL
 import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (diffToMilliseconds)
+import Simplex.Messaging.Util (diffToMilliseconds, tshow)
 
 data Connection = Connection
   { conn :: SQL.Connection,
@@ -38,27 +43,35 @@ data Connection = Connection
 data SlowQueryStats = SlowQueryStats
   { count :: Int64,
     timeMax :: Int64,
-    timeAvg :: Int64
+    timeAvg :: Int64,
+    errs :: Map Text Int
   }
   deriving (Show)
 
 timeIt :: TMap Query SlowQueryStats -> Query -> IO a -> IO a
 timeIt slow sql a = do
   t <- getCurrentTime
-  r <- a
+  r <- a `catch` \e -> do
+    atomically $ TM.alter (Just . updateQueryErrors e) sql slow
+    throwIO e
   t' <- getCurrentTime
   let diff = diffToMilliseconds $ diffUTCTime t' t
-  atomically $ when (diff > 5) $ TM.alter (updateQueryStats diff) sql slow
+  when (diff > 1) $ atomically $ TM.alter (updateQueryStats diff) sql slow
   pure r
   where
+    updateQueryErrors :: SomeException -> Maybe SlowQueryStats -> SlowQueryStats
+    updateQueryErrors e Nothing = SlowQueryStats 0 0 0 $ M.singleton (tshow e) 1
+    updateQueryErrors e (Just stats@SlowQueryStats {errs}) =
+      stats {errs = M.alter (Just . maybe 1 (+ 1)) (tshow e) errs}
     updateQueryStats :: Int64 -> Maybe SlowQueryStats -> Maybe SlowQueryStats
-    updateQueryStats diff Nothing = Just $ SlowQueryStats 1 diff diff
-    updateQueryStats diff (Just SlowQueryStats {count, timeMax, timeAvg}) =
+    updateQueryStats diff Nothing = Just $ SlowQueryStats 1 diff diff M.empty
+    updateQueryStats diff (Just SlowQueryStats {count, timeMax, timeAvg, errs}) =
       Just $
         SlowQueryStats
           { count = count + 1,
             timeMax = max timeMax diff,
-            timeAvg = (timeAvg * count + diff) `div` (count + 1)
+            timeAvg = (timeAvg * count + diff) `div` (count + 1),
+            errs
           }
 
 open :: String -> IO Connection

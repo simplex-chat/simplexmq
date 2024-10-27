@@ -47,6 +47,8 @@ module Simplex.Messaging.Transport
     authCmdsSMPVersion,
     sendingProxySMPVersion,
     sndAuthKeySMPVersion,
+    deletedEventSMPVersion,
+    encryptedBlockSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -64,13 +66,15 @@ module Simplex.Messaging.Transport
     ALPN,
     connectTLS,
     closeTLS,
-    supportedParameters,
+    defaultSupportedParams,
+    defaultSupportedParamsHTTPS,
     withTlsUnique,
 
     -- * SMP transport
     THandle (..),
     THandleParams (..),
     THandleAuth (..),
+    TSbChainKeys (..),
     TransportError (..),
     HandshakeError (..),
     smpServerHandshake,
@@ -84,8 +88,10 @@ module Simplex.Messaging.Transport
 where
 
 import Control.Applicative (optional)
+import Control.Concurrent.STM
 import Control.Monad (forM, (<$!>))
 import Control.Monad.Except
+import Control.Monad.IO.Class
 import Control.Monad.Trans.Except (throwE)
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
@@ -97,6 +103,8 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
+import Data.Tuple (swap)
+import Data.Typeable (Typeable)
 import Data.Version (showVersion)
 import Data.Word (Word16)
 import qualified Data.X509 as X
@@ -116,7 +124,6 @@ import Simplex.Messaging.Version.Internal
 import System.IO.Error (isEOFError)
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
-import UnliftIO.STM
 
 -- * Transport parameters
 
@@ -131,6 +138,10 @@ smpBlockSize = 16384
 -- 5 - basic auth for SMP servers (11/12/2022)
 -- 6 - allow creating queues without subscribing (9/10/2023)
 -- 7 - support authenticated encryption to verify senders' commands, imply but do NOT send session ID in signed part (4/30/2024)
+-- 8 - SMP proxy for sender commands
+-- 9 - faster handshake: SKEY command for sender to secure queue
+-- 10 - DELD event to subscriber when queue is deleted via another connnection
+-- 11 - additional encryption of transport blocks with forward secrecy (9/14/2024)
 
 data SMPVersion
 
@@ -161,14 +172,20 @@ sendingProxySMPVersion = VersionSMP 8
 sndAuthKeySMPVersion :: VersionSMP
 sndAuthKeySMPVersion = VersionSMP 9
 
+deletedEventSMPVersion :: VersionSMP
+deletedEventSMPVersion = VersionSMP 10
+
+encryptedBlockSMPVersion :: VersionSMP
+encryptedBlockSMPVersion = VersionSMP 11
+
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 9
+currentClientSMPRelayVersion = VersionSMP 11
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 9
+currentServerSMPRelayVersion = VersionSMP 11
 
 -- Max SMP protocol version to be used in e2e encrypted
 -- connection between client and server, as defined by SMP proxy.
@@ -206,7 +223,7 @@ data TransportConfig = TransportConfig
     transportTimeout :: Maybe Int
   }
 
-class Transport c where
+class Typeable c => Transport c where
   transport :: ATransport
   transport = ATransport (TProxy @c)
 
@@ -304,8 +321,8 @@ closeTLS ctx =
     `E.finally` T.contextClose ctx
     `catchAll_` pure ()
 
-supportedParameters :: T.Supported
-supportedParameters =
+defaultSupportedParams :: T.Supported
+defaultSupportedParams =
   def
     { T.supportedVersions = [T.TLS13, T.TLS12],
       T.supportedCiphers =
@@ -313,8 +330,29 @@ supportedParameters =
           TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256 -- for TLS12
         ],
       T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
-      T.supportedSecureRenegotiation = False,
-      T.supportedGroups = [T.X448, T.X25519]
+      T.supportedGroups = [T.X448, T.X25519],
+      T.supportedSecureRenegotiation = False
+    }
+
+-- | A selection of extra parameters to accomodate browser chains
+defaultSupportedParamsHTTPS :: T.Supported
+defaultSupportedParamsHTTPS =
+  defaultSupportedParams
+    { T.supportedCiphers = TE.ciphersuite_strong,
+      T.supportedGroups = [T.X25519, T.X448, T.FFDHE4096, T.FFDHE6144, T.FFDHE8192, T.P521],
+      T.supportedHashSignatures =
+        [ (T.HashIntrinsic, T.SignatureEd448),
+          (T.HashIntrinsic, T.SignatureEd25519),
+          (T.HashSHA256, T.SignatureECDSA),
+          (T.HashSHA384, T.SignatureECDSA),
+          (T.HashSHA512, T.SignatureECDSA),
+          (T.HashIntrinsic, T.SignatureRSApssRSAeSHA512),
+          (T.HashIntrinsic, T.SignatureRSApssRSAeSHA384),
+          (T.HashIntrinsic, T.SignatureRSApssRSAeSHA256),
+          (T.HashSHA512, T.SignatureRSA),
+          (T.HashSHA384, T.SignatureRSA),
+          (T.HashSHA256, T.SignatureRSA)
+        ]
     }
 
 instance Transport TLS where
@@ -369,6 +407,8 @@ data THandleParams v p = THandleParams
     -- | do NOT send session ID in transmission, but include it into signed message
     -- based on protocol version
     implySessId :: Bool,
+    -- -- | additional block encryption
+    encryptBlock :: Maybe TSbChainKeys,
     -- | send multiple transmissions in a single block
     -- based on protocol version
     batch :: Bool
@@ -386,6 +426,11 @@ data THandleAuth (p :: TransportPeer) where
       sessSecret' :: Maybe C.DhSecretX25519 -- session secret (will be used in SMP proxy only)
     } ->
     THandleAuth 'TServer
+
+data TSbChainKeys = TSbChainKeys
+  { sndKey :: TVar C.SbChainKey,
+    rcvKey :: TVar C.SbChainKey
+  }
 
 -- | TLS-unique channel binding
 type SessionId = ByteString
@@ -489,16 +534,26 @@ instance Encoding TransportError where
 
 -- | Pad and send block to SMP transport.
 tPutBlock :: Transport c => THandle v c p -> ByteString -> IO (Either TransportError ())
-tPutBlock THandle {connection = c, params = THandleParams {blockSize}} block =
-  bimapM (const $ pure TELargeMsg) (cPut c) $
-    C.pad block blockSize
+tPutBlock THandle {connection = c, params = THandleParams {blockSize, encryptBlock}} block = do
+  block_ <- case encryptBlock of
+    Just TSbChainKeys {sndKey} -> do
+      (sk, nonce) <- atomically $ stateTVar sndKey C.sbcHkdf
+      pure $ C.sbEncrypt sk nonce block (blockSize - 16)
+    Nothing -> pure $ C.pad block blockSize
+  bimapM (const $ pure TELargeMsg) (cPut c) block_
 
 -- | Receive block from SMP transport.
 tGetBlock :: Transport c => THandle v c p -> IO (Either TransportError ByteString)
-tGetBlock THandle {connection = c, params = THandleParams {blockSize}} = do
+tGetBlock THandle {connection = c, params = THandleParams {blockSize, encryptBlock}} = do
   msg <- cGet c blockSize
   if B.length msg == blockSize
-    then pure . first (const TELargeMsg) $ C.unPad msg
+    then
+      first (const TELargeMsg) <$>
+        case encryptBlock of
+          Just TSbChainKeys {rcvKey} -> do
+            (sk, nonce) <- atomically $ stateTVar rcvKey C.sbcHkdf
+            pure $ C.sbDecrypt sk nonce msg
+          Nothing -> pure $ C.unPad msg
     else ioe_EOF
 
 -- | Server SMP transport handshake.
@@ -517,7 +572,7 @@ smpServerHandshake serverSignKey c (k, pk) kh smpVRange = do
           throwE $ TEHandshake IDENTITY
       | otherwise ->
           case compatibleVRange' smpVersionRange v of
-            Just (Compatible vr) -> pure $ smpTHandleServer th v vr pk k'
+            Just (Compatible vr) -> liftIO $ smpTHandleServer th v vr pk k'
             Nothing -> throwE TEVersion
 
 -- | Client SMP transport handshake.
@@ -541,23 +596,36 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) smpVRange = do
             (,certKey) <$> (C.x509ToPublic (pubKey, []) >>= C.pubKey)
         let v = maxVersion vr
         sendHandshake th $ ClientHandshake {smpVersion = v, keyHash, authPubKey = fst <$> ks_}
-        pure $ smpTHandleClient th v vr (snd <$> ks_) ck_
+        liftIO $ smpTHandleClient th v vr (snd <$> ks_) ck_
       Nothing -> throwE TEVersion
 
-smpTHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> VersionRangeSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> THandleSMP c 'TServer
-smpTHandleServer th v vr pk k_ =
-  let thAuth = THAuthServer {serverPrivKey = pk, sessSecret' = (`C.dh'` pk) <$!> k_}
-   in smpTHandle_ th v vr (Just thAuth)
+smpTHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> VersionRangeSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> IO (THandleSMP c 'TServer)
+smpTHandleServer th v vr pk k_ = do
+  let thAuth = Just THAuthServer {serverPrivKey = pk, sessSecret' = (`C.dh'` pk) <$!> k_}
+  be <- blockEncryption th v thAuth
+  pure $ smpTHandle_ th v vr thAuth $ uncurry TSbChainKeys <$> be
 
-smpTHandleClient :: forall c. THandleSMP c 'TClient -> VersionSMP -> VersionRangeSMP -> Maybe C.PrivateKeyX25519 -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> THandleSMP c 'TClient
-smpTHandleClient th v vr pk_ ck_ =
+smpTHandleClient :: forall c. THandleSMP c 'TClient -> VersionSMP -> VersionRangeSMP -> Maybe C.PrivateKeyX25519 -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> IO (THandleSMP c 'TClient)
+smpTHandleClient th v vr pk_ ck_ = do
   let thAuth = (\(k, ck) -> THAuthClient {serverPeerPubKey = k, serverCertKey = forceCertChain ck, sessSecret = C.dh' k <$!> pk_}) <$!> ck_
-   in smpTHandle_ th v vr thAuth
+  be <- blockEncryption th v thAuth
+  -- swap is needed to use client's sndKey as server's rcvKey and vice versa
+  pure $ smpTHandle_ th v vr thAuth $ uncurry TSbChainKeys . swap <$> be
 
-smpTHandle_ :: forall c p. THandleSMP c p -> VersionSMP -> VersionRangeSMP -> Maybe (THandleAuth p) -> THandleSMP c p
-smpTHandle_ th@THandle {params} v vr thAuth =
+blockEncryption :: THandleSMP c p -> VersionSMP -> Maybe (THandleAuth p) -> IO (Maybe (TVar C.SbChainKey, TVar C.SbChainKey))
+blockEncryption THandle {params = THandleParams {sessionId}} v = \case
+  Just thAuth | v >= encryptedBlockSMPVersion -> case thAuth of
+    THAuthClient {sessSecret} -> be sessSecret
+    THAuthServer {sessSecret'} -> be sessSecret'
+  _ -> pure Nothing
+  where
+    be :: Maybe C.DhSecretX25519 -> IO (Maybe (TVar C.SbChainKey, TVar C.SbChainKey))
+    be = mapM $ \(C.DhSecretX25519 secret) -> bimapM newTVarIO newTVarIO $ C.sbcInit sessionId secret
+
+smpTHandle_ :: forall c p. THandleSMP c p -> VersionSMP -> VersionRangeSMP -> Maybe (THandleAuth p) -> Maybe TSbChainKeys -> THandleSMP c p
+smpTHandle_ th@THandle {params} v vr thAuth encryptBlock =
   -- TODO drop SMP v6: make thAuth non-optional
-  let params' = params {thVersion = v, thServerVRange = vr, thAuth, implySessId = v >= authCmdsSMPVersion}
+  let params' = params {thVersion = v, thServerVRange = vr, thAuth, implySessId = v >= authCmdsSMPVersion, encryptBlock}
    in (th :: THandleSMP c p) {params = params'}
 
 {-# INLINE forceCertChain #-}
@@ -589,6 +657,7 @@ smpTHandle c = THandle {connection = c, params}
           thVersion = v,
           thAuth = Nothing,
           implySessId = False,
+          encryptBlock = Nothing,
           batch = True
         }
 

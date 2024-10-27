@@ -19,7 +19,7 @@ import Options.Applicative
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration, supportedXFTPhandshakes)
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration)
 import Simplex.FileTransfer.Transport (supportedFileServerVRange)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -28,7 +28,7 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
-import Simplex.Messaging.Transport.Server (TransportServerConfig (..), defaultTransportServerConfig)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (safeDecodeUtf8, tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
@@ -51,7 +51,9 @@ xftpServerCLI cfgPath logPath = do
         True -> readIniFile iniFile >>= either exitError runServer
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     Delete -> do
-      confirmOrExit "WARNING: deleting the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
+      confirmOrExit
+        "WARNING: deleting the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
+        "Server NOT deleted"
       deleteDirIfExists cfgPath
       deleteDirIfExists logPath
       putStrLn "Deleted configuration and log files"
@@ -101,6 +103,7 @@ xftpServerCLI cfgPath logPath = do
                \\n\
                \# control_port_admin_password:\n\
                \# control_port_user_password:\n\
+               \\n\
                \[TRANSPORT]\n\
                \# host is only used to print server address on start\n"
             <> ("host: " <> T.pack host <> "\n")
@@ -173,9 +176,12 @@ xftpServerCLI cfgPath logPath = do
                     { ttl = readStrictIni "INACTIVE_CLIENTS" "ttl" ini,
                       checkInterval = readStrictIni "INACTIVE_CLIENTS" "check_interval" ini
                     },
-              caCertificateFile = c caCrtFile,
-              privateKeyFile = c serverKeyFile,
-              certificateFile = c serverCrtFile,
+              xftpCredentials =
+                ServerCredentials
+                  { caCertificateFile = Just $ c caCrtFile,
+                    privateKeyFile = c serverKeyFile,
+                    certificateFile = c serverCrtFile
+                  },
               xftpServerVRange = supportedFileServerVRange,
               logStatsInterval = logStats $> 86400, -- seconds
               logStatsStartTime = 0, -- seconds from 00:00 UTC
@@ -183,8 +189,7 @@ xftpServerCLI cfgPath logPath = do
               serverStatsBackupFile = logStats $> combine logPath "file-server-stats.log",
               transportConfig =
                 defaultTransportServerConfig
-                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini,
-                    alpn = Just supportedXFTPhandshakes
+                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
                   },
               responseDelay = 0
             }

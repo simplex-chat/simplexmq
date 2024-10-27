@@ -149,8 +149,15 @@ On Linux, you can deploy smp and xftp server using Docker. This will download im
 You can install and setup servers automatically using our script:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/install.sh -o simplex-server-install.sh \
-&& if echo 'b8cf2be103f21f9461d9a500bcd3db06ab7d01d68871b07f4bd245195cbead1d simplex-server-install.sh' | sha256sum -c; then chmod +x ./simplex-server-install.sh && ./simplex-server-install.sh; rm ./simplex-server-install.sh; else echo "SHA-256 checksum is incorrect!" && rm ./simplex-server-install.sh; fi
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/install.sh -o simplex-server-install.sh &&\
+if echo '53fcdb4ceab324316e2c4cda7e84dbbb344f32550a65975a7895425e5a1be757 simplex-server-install.sh' | sha256sum -c; then
+  chmod +x ./simplex-server-install.sh
+  ./simplex-server-install.sh
+  rm ./simplex-server-install.sh
+else
+  echo "SHA-256 checksum is incorrect!"
+  rm ./simplex-server-install.sh
+fi
 ```
 
 ### Build from source

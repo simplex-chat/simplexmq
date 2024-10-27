@@ -14,16 +14,19 @@ import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.IORef
 import Data.Int (Int64)
 import Data.List (groupBy, sortOn)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
 import Data.Time (NominalDiffTime)
 import GHC.Conc (labelThread, myThreadId, threadDelay)
-import UnliftIO
+import UnliftIO hiding (atomicModifyIORef')
 import qualified UnliftIO.Exception as UE
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
@@ -166,16 +169,25 @@ threadDelay' = loop
           loop $ time - maxWait
 
 diffToMicroseconds :: NominalDiffTime -> Int64
-diffToMicroseconds diff = fromIntegral ((truncate $ diff * 1000000) :: Integer)
+diffToMicroseconds diff = truncate $ diff * 1000000
+{-# INLINE diffToMicroseconds #-}
 
 diffToMilliseconds :: NominalDiffTime -> Int64
-diffToMilliseconds diff = fromIntegral ((truncate $ diff * 1000) :: Integer)
+diffToMilliseconds diff = truncate $ diff * 1000
+{-# INLINE diffToMilliseconds #-}
 
 labelMyThread :: MonadIO m => String -> m ()
 labelMyThread label = liftIO $ myThreadId >>= (`labelThread` label)
+
+atomicModifyIORef'_ :: IORef a -> (a -> a) -> IO ()
+atomicModifyIORef'_ r f = atomicModifyIORef' r (\v -> (f v, ()))
 
 encodeJSON :: ToJSON a => a -> Text
 encodeJSON = safeDecodeUtf8 . LB.toStrict . J.encode
 
 decodeJSON :: FromJSON a => Text -> Maybe a
 decodeJSON = J.decode . LB.fromStrict . encodeUtf8
+
+traverseWithKey_ :: Monad m => (k -> v -> m ()) -> Map k v -> m ()
+traverseWithKey_ f = M.foldrWithKey (\k v -> (f k v >>)) (pure ())
+{-# INLINE traverseWithKey_ #-}

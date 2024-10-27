@@ -51,6 +51,7 @@ module Simplex.Messaging.Agent.Protocol
     -- * SMP agent protocol types
     ConnInfo,
     SndQueueSecured,
+    AEntityId,
     ACommand (..),
     AEvent (..),
     AEvt (..),
@@ -190,7 +191,6 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( AProtocolType,
     BrokerErrorType (..),
-    EntityId,
     ErrorType,
     MsgBody,
     MsgFlags,
@@ -198,7 +198,6 @@ import Simplex.Messaging.Protocol
     NMsgMeta,
     ProtocolServer (..),
     SMPClientVersion,
-    SMPMsgMeta,
     SMPServer,
     SMPServerWithAuth,
     SndPublicAuthKey,
@@ -277,19 +276,21 @@ supportedSMPAgentVRange = mkVersionRange minSupportedSMPAgentVersion currentSMPA
 e2eEncConnInfoLength :: VersionSMPA -> PQSupport -> Int
 e2eEncConnInfoLength v = \case
   -- reduced by 3726 (roughly the increase of message ratchet header size + key and ciphertext in reply link)
-  PQSupportOn | v >= pqdrSMPAgentVersion -> 11122
-  _ -> 14848
+  PQSupportOn | v >= pqdrSMPAgentVersion -> 11106
+  _ -> 14832
 
 e2eEncAgentMsgLength :: VersionSMPA -> PQSupport -> Int
 e2eEncAgentMsgLength v = \case
   -- reduced by 2222 (the increase of message ratchet header size)
-  PQSupportOn | v >= pqdrSMPAgentVersion -> 13634
-  _ -> 15856
+  PQSupportOn | v >= pqdrSMPAgentVersion -> 13618
+  _ -> 15840
 
 -- | SMP agent event
-type ATransmission = (ACorrId, EntityId, AEvt)
+type ATransmission = (ACorrId, AEntityId, AEvt)
 
 type UserId = Int64
+
+type AEntityId = ByteString
 
 type ACorrId = ByteString
 
@@ -342,6 +343,7 @@ data AEvent (e :: AEntity) where
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
   CON :: PQEncryption -> AEvent AEConn -- notification that connection is established
   END :: AEvent AEConn
+  DELD :: AEvent AEConn
   CONNECT :: AProtocolType -> TransportHost -> AEvent AENone
   DISCONNECT :: AProtocolType -> TransportHost -> AEvent AENone
   DOWN :: SMPServer -> [ConnId] -> AEvent AENone
@@ -353,7 +355,7 @@ data AEvent (e :: AEntity) where
   MERR :: AgentMsgId -> AgentErrorType -> AEvent AEConn
   MERRS :: NonEmpty AgentMsgId -> AgentErrorType -> AEvent AEConn
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> AEvent AEConn
-  MSGNTF :: SMPMsgMeta -> AEvent AEConn
+  MSGNTF :: MsgId -> Maybe UTCTime -> AEvent AEConn
   RCVD :: MsgMeta -> NonEmpty MsgReceipt -> AEvent AEConn
   QCONT :: AEvent AEConn
   DEL_RCVQ :: SMPServer -> SMP.RecipientId -> Maybe AgentErrorType -> AEvent AEConn
@@ -363,6 +365,7 @@ data AEvent (e :: AEntity) where
   OK :: AEvent AEConn
   JOINED :: SndQueueSecured -> AEvent AEConn
   ERR :: AgentErrorType -> AEvent AEConn
+  ERRS :: [(ConnId, AgentErrorType)] -> AEvent AENone
   SUSPENDED :: AEvent AENone
   RFPROG :: Int64 -> Int64 -> AEvent AERcvFile
   RFDONE :: FilePath -> AEvent AERcvFile
@@ -411,6 +414,7 @@ data AEventTag (e :: AEntity) where
   INFO_ :: AEventTag AEConn
   CON_ :: AEventTag AEConn
   END_ :: AEventTag AEConn
+  DELD_ :: AEventTag AEConn
   CONNECT_ :: AEventTag AENone
   DISCONNECT_ :: AEventTag AENone
   DOWN_ :: AEventTag AENone
@@ -432,6 +436,7 @@ data AEventTag (e :: AEntity) where
   OK_ :: AEventTag AEConn
   JOINED_ :: AEventTag AEConn
   ERR_ :: AEventTag AEConn
+  ERRS_ :: AEventTag AENone
   SUSPENDED_ :: AEventTag AENone
   -- XFTP commands and responses
   RFDONE_ :: AEventTag AERcvFile
@@ -464,6 +469,7 @@ aEventTag = \case
   INFO {} -> INFO_
   CON _ -> CON_
   END -> END_
+  DELD -> DELD_
   CONNECT {} -> CONNECT_
   DISCONNECT {} -> DISCONNECT_
   DOWN {} -> DOWN_
@@ -485,6 +491,7 @@ aEventTag = \case
   OK -> OK_
   JOINED _ -> JOINED_
   ERR _ -> ERR_
+  ERRS _ -> ERRS_
   SUSPENDED -> SUSPENDED_
   RFPROG {} -> RFPROG_
   RFDONE {} -> RFDONE_
@@ -1336,6 +1343,8 @@ data AgentErrorType
     CMD {cmdErr :: CommandErrorType, errContext :: String}
   | -- | connection errors
     CONN {connErr :: ConnectionErrorType}
+  | -- | user not found in database
+    NO_USER
   | -- | SMP protocol errors forwarded to agent clients
     SMP {serverAddress :: String, smpErr :: ErrorType}
   | -- | NTF protocol errors forwarded to agent clients

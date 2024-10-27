@@ -24,7 +24,7 @@ import SMPClient (xit'')
 import Simplex.FileTransfer.Client (XFTPClientConfig (..))
 import Simplex.FileTransfer.Description (FileChunk (..), FileDescription (..), FileDescriptionURI (..), ValidFileDescription, fileDescriptionURI, kb, mb, qrSizeLimit, pattern ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), supportedXFTPhandshakes)
 import Simplex.FileTransfer.Transport (XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
 import Simplex.Messaging.Agent (AgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendDescription, xftpSendFile, xftpStartWorkers)
@@ -37,6 +37,7 @@ import qualified Simplex.Messaging.Crypto.File as CF
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (BasicAuth, ProtoServerWithAuth (..), ProtocolServer (..), XFTPServerWithAuth)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
+import Simplex.Messaging.Transport (ALPN)
 import Simplex.Messaging.Util (tshow)
 import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
 import System.FilePath ((</>))
@@ -257,11 +258,11 @@ testXFTPAgentSendReceiveMatrix = do
   where
     oldClient = agentCfg {xftpCfg = (xftpCfg agentCfg) {clientALPN = Nothing}}
     newClient = agentCfg
-    oldServer = testXFTPServerConfig_ Nothing
-    newServer = testXFTPServerConfig
-    run :: HasCallStack => XFTPServerConfig -> AgentConfig -> AgentConfig -> IO ()
-    run server sender receiver =
-      withXFTPServerCfg server $ \_t -> do
+    oldServer = Nothing
+    newServer = Just supportedXFTPhandshakes
+    run :: HasCallStack => Maybe [ALPN] -> AgentConfig -> AgentConfig -> IO ()
+    run alpn sender receiver =
+      withXFTPServerCfgALPN testXFTPServerConfig alpn $ \_t -> do
         filePath <- createRandomFile_ (kb 319 :: Integer) "testfile"
         rfd <- withAgent 1 sender initAgentServers testDB $ \sndr -> do
           (sfId, _, rfd1, _) <- runRight $ testSendCF' sndr (CF.plain filePath) (kb 320)
@@ -429,7 +430,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
       ("", sfId', SFPROG _ _) <- sfGet sndr'
       liftIO $ sfId' `shouldBe` sfId
 
-  threadDelay 100000
+  threadDelay 200000
 
   withXFTPServerStoreLogOn $ \_ -> do
     -- send file - should continue uploading with server up
@@ -443,7 +444,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
       pure rfd1
 
     -- prefix path should be removed after sending file
-    threadDelay 100000
+    threadDelay 200000
     doesDirectoryExist prefixPath `shouldReturn` False
     doesFileExist encPath `shouldReturn` False
 

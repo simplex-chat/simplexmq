@@ -31,7 +31,7 @@ import Simplex.Messaging.Transport
 
 class Queue q where
   connId' :: q -> ConnId
-  qKey :: q -> (UserId, SMPServer, ConnId)
+  qKey :: q -> (UserId, SMPServer, RecipientId)
 
 -- the fields in this record have the same data with swapped keys for lookup efficiency,
 -- and all methods must maintain this invariant.
@@ -63,7 +63,7 @@ addQueue rq (TRcvQueues qs cs) = do
     addQ = Just . maybe (k :| []) (k <|)
     k = qKey rq
 
--- Save time by aggregating modifyTVar
+-- Save time by aggregating modifyTVar'
 batchAddQueues :: (Foldable t, Queue q) => TRcvQueues q -> t q -> STM ()
 batchAddQueues (TRcvQueues qs cs) rqs = do
   modifyTVar' qs $ \now -> foldl' (\rqs' rq -> M.insert (qKey rq) rq rqs') now rqs
@@ -97,7 +97,7 @@ getDelSessQueues tSess sessId' (TRcvQueues qs cs) = do
     delQ acc@(removed, qs') (sessId, rq)
       | rq `isSession` tSess && sessId == sessId' = (rq : removed, M.delete (qKey rq) qs')
       | otherwise = acc
-    delConn :: ([ConnId], M.Map ConnId (NonEmpty (UserId, SMPServer, ConnId))) -> RcvQueue -> ([ConnId], M.Map ConnId (NonEmpty (UserId, SMPServer, ConnId)))
+    delConn :: ([ConnId], M.Map ConnId (NonEmpty (UserId, SMPServer, RecipientId))) -> RcvQueue -> ([ConnId], M.Map ConnId (NonEmpty (UserId, SMPServer, RecipientId)))
     delConn (removed, cs') rq = M.alterF f cId cs'
       where
         cId = connId rq
@@ -113,7 +113,7 @@ isSession rq (uId, srv, connId_) =
 
 instance Queue RcvQueue where
   connId' = connId
-  qKey rq = (userId rq, server rq, connId rq)
+  qKey rq = (userId rq, server rq, rcvId rq)
 
 instance Queue (SessionId, RcvQueue) where
   connId' = connId . snd

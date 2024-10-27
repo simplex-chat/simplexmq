@@ -1,5 +1,5 @@
 name: simplexmq
-version: 6.0.0.8
+version: 6.1.3.0
 synopsis: SimpleXMQ message broker
 description: |
   This package includes <./docs/Simplex-Messaging-Server.html server>,
@@ -47,6 +47,7 @@ dependencies:
   - direct-sqlcipher == 2.3.*
   - directory == 1.3.*
   - filepath == 1.4.*
+  - hashable == 1.4.*
   - hourglass == 0.2.*
   - http-types == 0.12.*
   - http2 >= 4.2.2 && < 4.3
@@ -122,9 +123,10 @@ executables:
     dependencies:
       - file-embed
       - simplexmq
+      - wai
       - wai-app-static
-      - warp
-      - warp-tls
+      - warp ==3.3.30 # the last one before http2-5.0
+      - warp-tls ==3.4.7 # extra internals exposed
     ghc-options:
       - -threaded
       - -rtsopts
@@ -158,24 +160,35 @@ executables:
 
 tests:
   simplexmq-test:
-    source-dirs: tests
+    source-dirs:
+    - tests
+    - apps/smp-server/web
     main: Test.hs
     dependencies:
-      - simplexmq
       - deepseq == 1.4.*
+      - file-embed
       - generic-random == 1.5.*
       - hspec == 2.11.*
       - hspec-core == 2.11.*
+      - http-client
+      - http-client-tls
       - HUnit == 1.6.*
+      - main-tester == 0.2.*
       - QuickCheck == 2.14.*
       - silently == 1.2.*
-      - main-tester == 0.2.*
+      - simplexmq
       - timeit == 2.0.*
+      - unordered-containers
+      - wai
+      - wai-app-static
+      - warp
+      - warp-tls
     ghc-options:
       - -threaded
       - -rtsopts
       - -with-rtsopts=-A64M
       - -with-rtsopts=-N1
+      # - -fhpc
 
 ghc-options:
   # - -haddock

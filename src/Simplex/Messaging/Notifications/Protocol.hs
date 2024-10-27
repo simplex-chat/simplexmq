@@ -20,8 +20,11 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Kind
+import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import Data.Maybe (isNothing)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Data.Time.Clock.System
 import Data.Type.Equality
 import Data.Word (Word16)
 import Database.SQLite.Simple.FromField (FromField (..))
@@ -208,7 +211,7 @@ instance NtfEntityI e => ProtocolEncoding NTFVersion ErrorType (NtfCommand e) wh
   fromProtocolError = fromProtocolError @NTFVersion @ErrorType @NtfResponse
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (auth, _, entityId, _) cmd = case cmd of
+  checkCredentials (auth, _, EntityId entityId, _) cmd = case cmd of
     -- TNEW and SNEW must have signature but NOT token/subscription IDs
     TNEW {} -> sigNoEntity
     SNEW {} -> sigNoEntity
@@ -322,7 +325,7 @@ instance ProtocolEncoding NTFVersion ErrorType NtfResponse where
     PEBlock -> BLOCK
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (_, _, entId, _) cmd = case cmd of
+  checkCredentials (_, _, EntityId entId, _) cmd = case cmd of
     -- IDTKN response must not have queue ID
     NRTknId {} -> noEntity
     -- IDSUB response must not have queue ID
@@ -426,7 +429,31 @@ instance FromJSON DeviceToken where
     t <- encodeUtf8 <$> o .: "token"
     pure $ DeviceToken pp t
 
-type NtfEntityId = ByteString
+-- List of PNMessageData uses semicolon-separated encoding instead of strEncode,
+-- because strEncode of NonEmpty list uses comma for separator,
+-- and encoding of PNMessageData's smpQueue has comma in list of hosts
+encodePNMessages :: NonEmpty PNMessageData -> ByteString
+encodePNMessages = B.intercalate ";" . map strEncode . L.toList
+
+pnMessagesP :: A.Parser (NonEmpty PNMessageData)
+pnMessagesP = L.fromList <$> strP `A.sepBy1` A.char ';'
+
+data PNMessageData = PNMessageData
+  { smpQueue :: SMPQueueNtf,
+    ntfTs :: SystemTime,
+    nmsgNonce :: C.CbNonce,
+    encNMsgMeta :: EncNMsgMeta
+  }
+  deriving (Show)
+
+instance StrEncoding PNMessageData where
+  strEncode PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} =
+    strEncode (smpQueue, ntfTs, nmsgNonce, encNMsgMeta)
+  strP = do
+    (smpQueue, ntfTs, nmsgNonce, encNMsgMeta) <- strP
+    pure PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
+
+type NtfEntityId = EntityId
 
 type NtfSubscriptionId = NtfEntityId
 
@@ -443,6 +470,8 @@ data NtfSubStatus
     NSInactive
   | -- | END received
     NSEnd
+  | -- | DELD received (connection was deleted)
+    NSDeleted
   | -- | SMP AUTH error
     NSAuth
   | -- | SMP error other than AUTH
@@ -456,6 +485,7 @@ ntfShouldSubscribe = \case
   NSActive -> True
   NSInactive -> True
   NSEnd -> False
+  NSDeleted -> False
   NSAuth -> False
   NSErr _ -> False
 
@@ -466,6 +496,7 @@ instance Encoding NtfSubStatus where
     NSActive -> "ACTIVE"
     NSInactive -> "INACTIVE"
     NSEnd -> "END"
+    NSDeleted -> "DELETED"
     NSAuth -> "AUTH"
     NSErr err -> "ERR " <> err
   smpP =
@@ -475,6 +506,7 @@ instance Encoding NtfSubStatus where
       "ACTIVE" -> pure NSActive
       "INACTIVE" -> pure NSInactive
       "END" -> pure NSEnd
+      "DELETED" -> pure NSDeleted
       "AUTH" -> pure NSAuth
       "ERR" -> NSErr <$> (A.space *> A.takeByteString)
       _ -> fail "bad NtfSubStatus"

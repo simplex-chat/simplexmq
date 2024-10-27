@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent.Env.SQLite
   )
 where
 
+import Control.Concurrent (ThreadId)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
@@ -73,11 +74,11 @@ import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth, ProtocolServer, ProtocolType (..), ProtocolTypeI, VersionRangeSMPC, XFTPServer, supportedSMPClientVRange)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPVersion, TLS, Transport (..))
-import Simplex.Messaging.Transport.Client (defaultSMPPort)
+import Simplex.Messaging.Transport (SMPVersion)
 import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryAllErrors, tryAllErrors')
+import System.Mem.Weak (Weak)
 import System.Random (StdGen, newStdGen)
-import UnliftIO (Async, SomeException)
+import UnliftIO (SomeException)
 import UnliftIO.STM
 
 type AM' a = ReaderT Env IO a
@@ -148,6 +149,8 @@ data AgentConfig = AgentConfig
     xftpMaxRecipientsPerRequest :: Int,
     deleteErrorCount :: Int,
     ntfCron :: Word16,
+    ntfBatchSize :: Int,
+    ntfSubFirstCheckInterval :: NominalDiffTime,
     ntfSubCheckInterval :: NominalDiffTime,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
@@ -191,9 +194,9 @@ defaultAgentConfig =
       rcvAuthAlg = C.AuthAlg C.SEd25519, -- this will stay as Ed25519
       sndAuthAlg = C.AuthAlg C.SEd25519, -- TODO replace with X25519 when switching to v7
       connIdBytes = 12,
-      tbqSize = 64,
-      smpCfg = defaultSMPClientConfig {defaultTransport = (show defaultSMPPort, transport @TLS)},
-      ntfCfg = defaultNTFClientConfig {defaultTransport = ("443", transport @TLS)},
+      tbqSize = 128,
+      smpCfg = defaultSMPClientConfig,
+      ntfCfg = defaultNTFClientConfig,
       xftpCfg = defaultXFTPClientConfig,
       reconnectInterval = defaultReconnectInterval,
       messageRetryInterval = defaultMessageRetryInterval,
@@ -217,7 +220,9 @@ defaultAgentConfig =
       xftpMaxRecipientsPerRequest = 200,
       deleteErrorCount = 10,
       ntfCron = 20, -- minutes
-      ntfSubCheckInterval = nominalDay,
+      ntfBatchSize = 150,
+      ntfSubFirstCheckInterval = nominalDay,
+      ntfSubCheckInterval = 3 * nominalDay,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
@@ -252,12 +257,13 @@ createAgentStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey k
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
-    ntfSubQ :: TBQueue (ConnId, NtfSupervisorCommand),
+    ntfSubQ :: TBQueue (NtfSupervisorCommand, NonEmpty ConnId),
     ntfWorkers :: TMap NtfServer Worker,
-    ntfSMPWorkers :: TMap SMPServer Worker
+    ntfSMPWorkers :: TMap SMPServer Worker,
+    ntfTknDelWorkers :: TMap NtfServer Worker
   }
 
-data NtfSupervisorCommand = NSCCreate | NSCDelete | NSCSmpDelete | NSCNtfWorker NtfServer | NSCNtfSMPWorker SMPServer
+data NtfSupervisorCommand = NSCCreate | NSCSmpDelete | NSCDeleteSub
   deriving (Show)
 
 newNtfSubSupervisor :: Natural -> IO NtfSupervisor
@@ -266,7 +272,8 @@ newNtfSubSupervisor qSize = do
   ntfSubQ <- newTBQueueIO qSize
   ntfWorkers <- TM.emptyIO
   ntfSMPWorkers <- TM.emptyIO
-  pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers}
+  ntfTknDelWorkers <- TM.emptyIO
+  pure NtfSupervisor {ntfTkn, ntfSubQ, ntfWorkers, ntfSMPWorkers, ntfTknDelWorkers}
 
 data XFTPAgent = XFTPAgent
   { -- if set, XFTP file paths will be considered as relative to this directory
@@ -312,7 +319,7 @@ mkInternal = INTERNAL . show
 data Worker = Worker
   { workerId :: Int,
     doWork :: TMVar (),
-    action :: TMVar (Maybe (Async ())),
+    action :: TMVar (Maybe (Weak ThreadId)),
     restarts :: TVar RestartCount
   }
 

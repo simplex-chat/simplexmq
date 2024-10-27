@@ -63,11 +63,13 @@ module Simplex.Messaging.Client
     forwardSMPTransmission,
     getSMPQueueInfo,
     sendProtocolCommand,
+    sendProtocolCommands,
 
     -- * Supporting types and client configuration
     ProtocolClientError (..),
     SMPClientError,
     ProxyClientError (..),
+    Response (..),
     unexpectedResponse,
     ProtocolClientConfig (..),
     NetworkConfig (..),
@@ -80,10 +82,11 @@ module Simplex.Messaging.Client
     defaultSMPClientConfig,
     defaultNetworkConfig,
     transportClientConfig,
+    clientSocksCredentials,
     chooseTransportHost,
-    proxyUsername,
     temporaryClientError,
     smpProxyError,
+    textToHostMode,
     ServerTransmissionBatch,
     ServerTransmission (..),
     ClientCommand,
@@ -116,16 +119,20 @@ import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Base64 as B64
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (catMaybes, fromMaybe)
+import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket (ServiceName)
+import Network.Socks5 (SocksCredentials (..))
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -136,7 +143,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Transport.Client (SocksProxy, TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTransportClient)
+import Simplex.Messaging.Transport.Client (SocksAuth (..), SocksProxyWithAuth (..), TransportClientConfig (..), TransportHost (..), defaultSMPPort, defaultTcpConnectTimeout, runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, diffToMicroseconds, ifM, liftEitherWith, raceAny_, threadDelay', tshow, whenM)
@@ -192,6 +199,7 @@ smpClientStub g sessionId thVersion thAuth = do
               thAuth,
               blockSize = smpBlockSize,
               implySessId = thVersion >= authCmdsSMPVersion,
+              encryptBlock = Nothing,
               batch = True
             },
         sessionTs = ts,
@@ -236,6 +244,12 @@ data HostMode
     HMPublic
   deriving (Eq, Show)
 
+textToHostMode :: Text -> Either String HostMode
+textToHostMode = \case
+  "public" -> Right HMPublic
+  "onion" -> Right HMOnionViaSocks
+  s -> Left $ T.unpack $ "Invalid host_mode: " <> s
+
 data SocksMode
   = -- | always use SOCKS proxy when enabled
     SMAlways
@@ -257,7 +271,7 @@ instance StrEncoding SocksMode where
 -- | network configuration for the client
 data NetworkConfig = NetworkConfig
   { -- | use SOCKS5 proxy
-    socksProxy :: Maybe SocksProxy,
+    socksProxy :: Maybe SocksProxyWithAuth,
     -- | when to use SOCKS proxy
     socksMode :: SocksMode,
     -- | determines critera which host is chosen from the list
@@ -270,6 +284,8 @@ data NetworkConfig = NetworkConfig
     smpProxyMode :: SMPProxyMode,
     -- | Fallback to direct connection when destination SMP relay does not support SMP proxy protocol extensions
     smpProxyFallback :: SMPProxyFallback,
+    -- | use web port 443 for SMP protocol
+    smpWebPort :: Bool,
     -- | timeout for the initial client TCP/TLS connection (microseconds)
     tcpConnectTimeout :: Int,
     -- | timeout of protocol commands (microseconds)
@@ -288,7 +304,7 @@ data NetworkConfig = NetworkConfig
   }
   deriving (Eq, Show)
 
-data TransportSessionMode = TSMUser | TSMEntity
+data TransportSessionMode = TSMUser | TSMSession | TSMServer | TSMEntity
   deriving (Eq, Show)
 
 -- SMP proxy mode for sending messages
@@ -338,9 +354,10 @@ defaultNetworkConfig =
       socksMode = SMAlways,
       hostMode = HMOnionViaSocks,
       requiredHostMode = False,
-      sessionMode = TSMUser,
+      sessionMode = TSMSession,
       smpProxyMode = SPMNever,
       smpProxyFallback = SPFAllow,
+      smpWebPort = False,
       tcpConnectTimeout = defaultTcpConnectTimeout,
       tcpTimeout = 15_000_000,
       tcpTimeoutPerKb = 5_000,
@@ -351,15 +368,31 @@ defaultNetworkConfig =
       logTLSErrors = False
     }
 
-transportClientConfig :: NetworkConfig -> TransportHost -> TransportClientConfig
-transportClientConfig NetworkConfig {socksProxy, socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors} host =
-  TransportClientConfig {socksProxy = useSocksProxy socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, alpn = Nothing}
+transportClientConfig :: NetworkConfig -> TransportHost -> Bool -> TransportClientConfig
+transportClientConfig NetworkConfig {socksProxy, socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors} host useSNI =
+  TransportClientConfig {socksProxy = useSocksProxy socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, alpn = Nothing, useSNI}
   where
-    useSocksProxy SMAlways = socksProxy
+    socksProxy' = (\(SocksProxyWithAuth _ proxy) -> proxy) <$> socksProxy
+    useSocksProxy SMAlways = socksProxy'
     useSocksProxy SMOnion = case host of
-      THOnionHost _ -> socksProxy
+      THOnionHost _ -> socksProxy'
       _ -> Nothing
-{-# INLINE transportClientConfig #-}
+
+clientSocksCredentials :: ProtocolTypeI (ProtoType msg) => NetworkConfig -> UTCTime -> TransportSession msg -> Maybe SocksCredentials
+clientSocksCredentials NetworkConfig {socksProxy, sessionMode} proxySessTs (userId, srv, entityId_) = case socksProxy of
+  Just (SocksProxyWithAuth auth _) -> case auth of
+    SocksAuthUsername {username, password} -> Just $ SocksCredentials username password
+    SocksAuthNull -> Nothing
+    SocksIsolateByAuth -> Just $ SocksCredentials sessionUsername ""
+  Nothing -> Nothing
+  where
+    sessionUsername =
+      B64.encode $ C.sha256Hash $
+        bshow userId <> case sessionMode of
+          TSMUser -> ""
+          TSMSession -> ":" <> bshow proxySessTs
+          TSMServer -> ":" <> bshow proxySessTs <> "@" <> strEncode srv
+          TSMEntity -> ":" <> bshow proxySessTs <> "@" <> strEncode srv <> maybe "" ("/" <>) entityId_
 
 -- | protocol client configuration.
 data ProtocolClientConfig v = ProtocolClientConfig
@@ -373,24 +406,31 @@ data ProtocolClientConfig v = ProtocolClientConfig
     -- | client-server protocol version range
     serverVRange :: VersionRange v,
     -- | agree shared session secret (used in SMP proxy for additional encryption layer)
-    agreeSecret :: Bool
+    agreeSecret :: Bool,
+    -- | send SNI to server, False for SMP
+    useSNI :: Bool
   }
 
 -- | Default protocol client configuration.
-defaultClientConfig :: Maybe [ALPN] -> VersionRange v -> ProtocolClientConfig v
-defaultClientConfig clientALPN serverVRange =
+defaultClientConfig :: Maybe [ALPN] -> Bool -> VersionRange v -> ProtocolClientConfig v
+defaultClientConfig clientALPN useSNI serverVRange =
   ProtocolClientConfig
     { qSize = 64,
       defaultTransport = ("443", transport @TLS),
       networkConfig = defaultNetworkConfig,
       clientALPN,
       serverVRange,
-      agreeSecret = False
+      agreeSecret = False,
+      useSNI
     }
 {-# INLINE defaultClientConfig #-}
 
 defaultSMPClientConfig :: ProtocolClientConfig SMPVersion
-defaultSMPClientConfig = defaultClientConfig (Just supportedSMPHandshakes) supportedClientSMPRelayVRange
+defaultSMPClientConfig =
+  (defaultClientConfig (Just supportedSMPHandshakes) False supportedClientSMPRelayVRange)
+    { defaultTransport = (show defaultSMPPort, transport @TLS),
+      agreeSecret = True
+    }
 {-# INLINE defaultSMPClientConfig #-}
 
 data Request err msg = Request
@@ -441,22 +481,23 @@ transportSession' = transportSession . client_
 type UserId = Int64
 
 -- | Transport session key - includes entity ID if `sessionMode = TSMEntity`.
-type TransportSession msg = (UserId, ProtoServer msg, Maybe EntityId)
+-- Please note that for SMP connection ID is used as entity ID, not queue ID.
+type TransportSession msg = (UserId, ProtoServer msg, Maybe ByteString)
 
 -- | Connects to 'ProtocolServer' using passed client configuration
 -- and queue for messages and notifications.
 --
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
-getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret} msgQ disconnected = do
+getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
+getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret, useSNI} msgQ proxySessTs disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
-    NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
+    NetworkConfig {smpWebPort, tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
     mkProtocolClient :: TransportHost -> UTCTime -> IO (PClient v err msg)
     mkProtocolClient transportHost ts = do
       connected <- newTVarIO False
@@ -487,10 +528,10 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     runClient :: (ServiceName, ATransport) -> TransportHost -> PClient v err msg -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
     runClient (port', ATransport t) useHost c = do
       cVar <- newEmptyTMVarIO
-      let tcConfig = (transportClientConfig networkConfig useHost) {alpn = clientALPN}
-          username = proxyUsername transportSession
+      let tcConfig = (transportClientConfig networkConfig useHost useSNI) {alpn = clientALPN}
+          socksCreds = clientSocksCredentials networkConfig proxySessTs transportSession
       tId <-
-        runTransportClient tcConfig (Just username) useHost port' (Just $ keyHash srv) (client t c cVar)
+        runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar)
           `forkFinally` \_ -> void (atomically . tryPutTMVar cVar $ Left PCENetworkError)
       c_ <- tcpConnectTimeout `timeout` atomically (takeTMVar cVar)
       case c_ of
@@ -500,7 +541,9 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
 
     useTransport :: (ServiceName, ATransport)
     useTransport = case port srv of
-      "" -> defaultTransport cfg
+      "" -> case protocolTypeI @(ProtoType msg) of
+        SPSMP | smpWebPort -> ("443", transport @TLS)
+        _ -> defaultTransport cfg
       "80" -> ("80", transport @WS)
       p -> (p, transport @TLS)
 
@@ -544,7 +587,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
           if remaining > 1_000_000 -- delay pings only for significant time
             then loop remaining
             else do
-              whenM (readTVarIO sendPings) $ void . runExceptT $ sendProtocolCommand c Nothing "" (protocolPing @v @err @msg)
+              whenM (readTVarIO sendPings) $ void . runExceptT $ sendProtocolCommand c Nothing NoEntity (protocolPing @v @err @msg)
               -- sendProtocolCommand/getResponse updates counter for each command
               cnt <- readTVarIO timeoutErrorCount
               -- drop client when maxCnt of commands have timed out in sequence, but only after some time has passed after last received response
@@ -595,10 +638,6 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
 
 unexpectedResponse :: Show r => r -> ProtocolClientError err
 unexpectedResponse = PCEUnexpectedResponse . B.pack . take 32 . show
-
-proxyUsername :: TransportSession msg -> ByteString
-proxyUsername (userId, _, entityId_) = C.sha256Hash $ bshow userId <> maybe "" (":" <>) entityId_
-{-# INLINE proxyUsername #-}
 
 -- | Disconnects client from the server and terminates client threads.
 closeProtocolClient :: ProtocolClient v err msg -> IO ()
@@ -670,7 +709,7 @@ createSMPQueue ::
   Bool ->
   ExceptT SMPClientError IO QueueIdsKeys
 createSMPQueue c (rKey, rpKey) dhKey auth subMode sndSecure =
-  sendSMPCommand c (Just rpKey) "" (NEW rKey dhKey auth subMode sndSecure) >>= \case
+  sendSMPCommand c (Just rpKey) NoEntity (NEW rKey dhKey auth subMode sndSecure) >>= \case
     IDS qik -> pure qik
     r -> throwE $ unexpectedResponse r
 
@@ -678,8 +717,8 @@ createSMPQueue c (rKey, rpKey) dhKey auth subMode sndSecure =
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue
 subscribeSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO ()
-subscribeSMPQueue c@ProtocolClient {client_ = PClient {sendPings}} rpKey rId = do
-  liftIO . atomically $ writeTVar sendPings True
+subscribeSMPQueue c rpKey rId = do
+  liftIO $ enablePings c
   sendSMPCommand c (Just rpKey) rId SUB >>= \case
     OK -> pure ()
     cmd@MSG {} -> liftIO $ writeSMPMessage c rId cmd
@@ -687,8 +726,8 @@ subscribeSMPQueue c@ProtocolClient {client_ = PClient {sendPings}} rpKey rId = d
 
 -- | Subscribe to multiple SMP queues batching commands if supported.
 subscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
-subscribeSMPQueues c@ProtocolClient {client_ = PClient {sendPings}} qs = do
-  atomically $ writeTVar sendPings True
+subscribeSMPQueues c qs = do
+  liftIO $ enablePings c
   sendProtocolCommands c cs >>= mapM (processSUBResponse c)
   where
     cs = L.map (\(rpKey, rId) -> (Just rpKey, rId, Cmd SRecipient SUB)) qs
@@ -727,13 +766,21 @@ getSMPMessage c rpKey rId =
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#subscribe-to-queue-notifications
 subscribeSMPQueueNotifications :: SMPClient -> NtfPrivateAuthKey -> NotifierId -> ExceptT SMPClientError IO ()
-subscribeSMPQueueNotifications = okSMPCommand NSUB
+subscribeSMPQueueNotifications c npKey nId = do
+  liftIO $ enablePings c
+  okSMPCommand NSUB c npKey nId
 {-# INLINE subscribeSMPQueueNotifications #-}
 
 -- | Subscribe to multiple SMP queues notifications batching commands if supported.
 subscribeSMPQueuesNtfs :: SMPClient -> NonEmpty (NtfPrivateAuthKey, NotifierId) -> IO (NonEmpty (Either SMPClientError ()))
-subscribeSMPQueuesNtfs = okSMPCommands NSUB
+subscribeSMPQueuesNtfs c qs = do
+  liftIO $ enablePings c
+  okSMPCommands NSUB c qs
 {-# INLINE subscribeSMPQueuesNtfs #-}
+
+enablePings :: SMPClient -> IO ()
+enablePings ProtocolClient {client_ = PClient {sendPings}} = atomically $ writeTVar sendPings True
+{-# INLINE enablePings #-}
 
 -- | Secure the SMP queue by adding a sender public key.
 --
@@ -829,7 +876,7 @@ deleteSMPQueues = okSMPCommands DEL
 connectSMPProxiedRelay :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO ProxiedRelay
 connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout}} relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth
   | thVersion (thParams c) >= sendingProxySMPVersion =
-      sendProtocolCommand_ c Nothing tOut Nothing "" (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
+      sendProtocolCommand_ c Nothing tOut Nothing NoEntity (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
         PKEY sId vr (chain, key) ->
           case supportedClientSMPRelayVRange `compatibleVersion` vr of
             Nothing -> throwE $ transportErr TEVersion
@@ -931,7 +978,7 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
   et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedTLength
   -- proxy interaction errors are wrapped
   let tOut = Just $ 2 * tcpTimeout
-  tryE (sendProtocolCommand_ c (Just nonce) tOut Nothing sessionId (Cmd SProxiedClient (PFWD v cmdPubKey et))) >>= \case
+  tryE (sendProtocolCommand_ c (Just nonce) tOut Nothing (EntityId sessionId) (Cmd SProxiedClient (PFWD v cmdPubKey et))) >>= \case
     Right r -> case r of
       PRES (EncResponse er) -> do
         -- server interaction errors are thrown directly
@@ -967,7 +1014,7 @@ forwardSMPTransmission c@ProtocolClient {thParams, client_ = PClient {clientCorr
   let fwdT = FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission}
       eft = EncFwdTransmission $ C.cbEncryptNoPad sessSecret nonce (smpEncode fwdT)
   -- send
-  sendProtocolCommand_ c (Just nonce) Nothing Nothing "" (Cmd SSender (RFWD eft)) >>= \case
+  sendProtocolCommand_ c (Just nonce) Nothing Nothing NoEntity (Cmd SSender (RFWD eft)) >>= \case
     RRES (EncFwdResponse efr) -> do
       -- unwrap
       r' <- liftEitherWith PCECryptoError $ C.cbDecryptNoPad sessSecret (C.reverseNonce nonce) efr
@@ -1015,7 +1062,7 @@ sendProtocolCommands c@ProtocolClient {thParams = THandleParams {batch, blockSiz
       | diff == 0 = pure $ L.fromList rs
       | diff > 0 = do
           putStrLn "send error: fewer responses than expected"
-          pure $ L.fromList $ rs <> replicate diff (Response "" $ Left $ PCETransportError TEBadBlock)
+          pure $ L.fromList $ rs <> replicate diff (Response NoEntity $ Left $ PCETransportError TEBadBlock)
       | otherwise = do
           putStrLn "send error: more responses than expected"
           pure $ L.fromList $ take (L.length cs) rs

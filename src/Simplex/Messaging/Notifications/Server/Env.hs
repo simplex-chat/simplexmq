@@ -28,18 +28,21 @@ import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Notifications.Transport (NTFVersion, VersionRangeNTF)
-import Simplex.Messaging.Protocol (CorrId, SMPServer, Transmission)
+import Simplex.Messaging.Protocol (BasicAuth, CorrId, SMPServer, Transmission)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, THandleParams, TransportPeer (..))
-import Simplex.Messaging.Transport.Server (TransportServerConfig, alpn, loadFingerprint, loadTLSServerParams)
+import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, TransportServerConfig, loadFingerprint, loadServerCredential)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
 
 data NtfServerConfig = NtfServerConfig
-  { transports :: [(ServiceName, ATransport)],
+  { transports :: [(ServiceName, ATransport, AddHTTP)],
+    controlPort :: Maybe ServiceName,
+    controlPortUserAuth :: Maybe BasicAuth,
+    controlPortAdminAuth :: Maybe BasicAuth,
     subIdBytes :: Int,
     regCodeBytes :: Int,
     clientQSize :: Natural,
@@ -50,10 +53,8 @@ data NtfServerConfig = NtfServerConfig
     subsBatchSize :: Int,
     inactiveClientExpiration :: Maybe ExpirationConfig,
     storeLogFile :: Maybe FilePath,
-    -- CA certificate private key is not needed for initialization
-    caCertificateFile :: FilePath,
-    privateKeyFile :: FilePath,
-    certificateFile :: FilePath,
+    storeLastNtfsFile :: Maybe FilePath,
+    ntfCredentials :: ServerCredentials,
     -- stats config - see SMP server config
     logStatsInterval :: Maybe Int64,
     logStatsStartTime :: Int64,
@@ -77,13 +78,13 @@ data NtfEnv = NtfEnv
     store :: NtfStore,
     storeLog :: Maybe (StoreLog 'WriteMode),
     random :: TVar ChaChaDRG,
-    tlsServerParams :: T.ServerParams,
+    tlsServerCreds :: T.Credential,
     serverIdentity :: C.KeyHash,
     serverStats :: NtfServerStats
   }
 
 newNtfServerEnv :: NtfServerConfig -> IO NtfEnv
-newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, storeLogFile, caCertificateFile, certificateFile, privateKeyFile, transportConfig} = do
+newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, storeLogFile, ntfCredentials} = do
   random <- C.newRandom
   store <- newNtfStore
   logInfo "restoring subscriptions..."
@@ -91,10 +92,10 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
   logInfo "restored subscriptions"
   subscriber <- newNtfSubscriber subQSize smpAgentCfg random
   pushServer <- newNtfPushServer pushQSize apnsConfig
-  tlsServerParams <- loadTLSServerParams caCertificateFile certificateFile privateKeyFile (alpn transportConfig)
-  Fingerprint fp <- loadFingerprint caCertificateFile
+  tlsServerCreds <- loadServerCredential ntfCredentials
+  Fingerprint fp <- loadFingerprint ntfCredentials
   serverStats <- newNtfServerStats =<< getCurrentTime
-  pure NtfEnv {config, subscriber, pushServer, store, storeLog, random, tlsServerParams, serverIdentity = C.KeyHash fp, serverStats}
+  pure NtfEnv {config, subscriber, pushServer, store, storeLog, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriber,
@@ -158,8 +159,8 @@ data NtfRequest
   | NtfReqPing CorrId NtfEntityId
 
 data NtfServerClient = NtfServerClient
-  { rcvQ :: TBQueue NtfRequest,
-    sndQ :: TBQueue (Transmission NtfResponse),
+  { rcvQ :: TBQueue (NonEmpty NtfRequest),
+    sndQ :: TBQueue (NonEmpty (Transmission NtfResponse)),
     ntfThParams :: THandleParams NTFVersion 'TServer,
     connected :: TVar Bool,
     rcvActiveAt :: TVar SystemTime,

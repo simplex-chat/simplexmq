@@ -41,6 +41,7 @@ import Simplex.Messaging.Protocol
     ProtocolType (..),
     RcvPublicAuthKey,
     RcvPublicDhKey,
+    EntityId (..),
     RecipientId,
     SenderId,
     SentRawTransmission,
@@ -170,7 +171,7 @@ data FileInfo = FileInfo
   }
   deriving (Show)
 
-type XFTPFileId = ByteString
+type XFTPFileId = EntityId
 
 instance FilePartyI p => ProtocolEncoding XFTPVersion XFTPErrorType (FileCommand p) where
   type Tag (FileCommand p) = FileCommandTag p
@@ -191,7 +192,7 @@ instance FilePartyI p => ProtocolEncoding XFTPVersion XFTPErrorType (FileCommand
   fromProtocolError = fromProtocolError @XFTPVersion @XFTPErrorType @FileResponse
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (auth, _, fileId, _) cmd = case cmd of
+  checkCredentials (auth, _, EntityId fileId, _) cmd = case cmd of
     -- FNEW must not have signature and chunk ID
     FNEW {}
       | isNothing auth -> Left $ CMD NO_AUTH
@@ -301,7 +302,7 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileResponse where
     PEBlock -> BLOCK
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (_, _, entId, _) cmd = case cmd of
+  checkCredentials (_, _, EntityId entId, _) cmd = case cmd of
     FRSndIds {} -> noEntity
     -- ERR response does not always have entity ID
     FRErr _ -> Right cmd

@@ -29,7 +29,7 @@ import Control.Monad (forM_, when)
 import qualified Data.Aeson.TH as J
 import Data.List (intercalate, sortOn)
 import Data.List.NonEmpty (NonEmpty)
-import qualified Data.Map as M
+import qualified Data.Map.Strict as M
 import Data.Maybe (isNothing, mapMaybe)
 import Data.Text (Text)
 import Data.Text.Encoding (decodeLatin1)
@@ -74,6 +74,8 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240225_ratchet_kem
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240417_rcv_files_approved_relays
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240624_snd_secure
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240702_servers_stats
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240930_ntf_tokens_to_delete
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport.Client (TransportHost)
@@ -116,7 +118,9 @@ schemaMigrations =
     ("m20240225_ratchet_kem", m20240225_ratchet_kem, Just down_m20240225_ratchet_kem),
     ("m20240417_rcv_files_approved_relays", m20240417_rcv_files_approved_relays, Just down_m20240417_rcv_files_approved_relays),
     ("m20240624_snd_secure", m20240624_snd_secure, Just down_m20240624_snd_secure),
-    ("m20240702_servers_stats", m20240702_servers_stats, Just down_m20240702_servers_stats)
+    ("m20240702_servers_stats", m20240702_servers_stats, Just down_m20240702_servers_stats),
+    ("m20240930_ntf_tokens_to_delete", m20240930_ntf_tokens_to_delete, Just down_m20240930_ntf_tokens_to_delete),
+    ("m20241007_rcv_queues_last_broker_ts", m20241007_rcv_queues_last_broker_ts, Just down_m20241007_rcv_queues_last_broker_ts)
   ]
 
 -- | The list of migrations in ascending order by date
