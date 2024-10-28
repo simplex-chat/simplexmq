@@ -296,58 +296,14 @@ executable ntf-server
       StrictData
   ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
-      aeson ==2.2.*
-    , ansi-terminal >=0.10 && <0.12
-    , asn1-encoding ==0.9.*
-    , asn1-types ==0.3.*
-    , async ==2.2.*
-    , attoparsec ==0.14.*
-    , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
-    , case-insensitive ==1.2.*
-    , composition ==1.0.*
-    , constraints >=0.12 && <0.14
-    , containers ==0.6.*
-    , crypton ==0.34.*
-    , crypton-x509 ==1.7.*
-    , crypton-x509-store ==1.6.*
-    , crypton-x509-validation ==1.6.*
-    , cryptostore ==0.3.*
-    , data-default ==0.7.*
-    , direct-sqlcipher ==2.3.*
+      base >=4.14 && <5
     , directory ==1.3.*
     , filepath ==1.4.*
-    , hashable ==1.4.*
-    , hourglass ==0.2.*
-    , http-types ==0.12.*
-    , http2 >=4.2.2 && <4.3
-    , ini ==0.4.1
-    , iproute ==1.7.*
-    , iso8601-time ==0.1.*
-    , memory ==0.18.*
-    , mtl >=2.3.1 && <3.0
     , network >=3.1.2.7 && <3.2
-    , network-info ==0.2.*
-    , network-transport ==0.5.6
-    , network-udp ==0.0.*
-    , optparse-applicative >=0.15 && <0.17
-    , process ==1.6.*
-    , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , simplexmq
-    , socks ==0.6.*
-    , sqlcipher-simple ==0.4.*
-    , stm ==2.5.*
-    , temporary ==1.3.*
-    , time ==1.12.*
-    , time-manager ==0.0.*
-    , tls >=1.9.0 && <1.10
-    , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
-    , websockets ==0.12.*
-    , yaml ==0.11.*
-    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -375,63 +331,19 @@ executable smp-server
       StrictData
   ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
-      aeson ==2.2.*
-    , ansi-terminal >=0.10 && <0.12
-    , asn1-encoding ==0.9.*
-    , asn1-types ==0.3.*
-    , async ==2.2.*
-    , attoparsec ==0.14.*
-    , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
-    , case-insensitive ==1.2.*
-    , composition ==1.0.*
-    , constraints >=0.12 && <0.14
-    , containers ==0.6.*
-    , crypton ==0.34.*
-    , crypton-x509 ==1.7.*
-    , crypton-x509-store ==1.6.*
-    , crypton-x509-validation ==1.6.*
-    , cryptostore ==0.3.*
-    , data-default ==0.7.*
-    , direct-sqlcipher ==2.3.*
+      base >=4.14 && <5
     , directory ==1.3.*
     , file-embed
     , filepath ==1.4.*
-    , hashable ==1.4.*
-    , hourglass ==0.2.*
-    , http-types ==0.12.*
-    , http2 >=4.2.2 && <4.3
-    , ini ==0.4.1
-    , iproute ==1.7.*
-    , iso8601-time ==0.1.*
-    , memory ==0.18.*
-    , mtl >=2.3.1 && <3.0
     , network >=3.1.2.7 && <3.2
-    , network-info ==0.2.*
-    , network-transport ==0.5.6
-    , network-udp ==0.0.*
-    , optparse-applicative >=0.15 && <0.17
-    , process ==1.6.*
-    , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , simplexmq
-    , socks ==0.6.*
-    , sqlcipher-simple ==0.4.*
-    , stm ==2.5.*
-    , temporary ==1.3.*
-    , time ==1.12.*
-    , time-manager ==0.0.*
-    , tls >=1.9.0 && <1.10
-    , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , wai
     , wai-app-static
     , warp ==3.3.30
     , warp-tls ==3.4.7
-    , websockets ==0.12.*
-    , yaml ==0.11.*
-    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -456,58 +368,14 @@ executable xftp
       StrictData
   ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
-      aeson ==2.2.*
-    , ansi-terminal >=0.10 && <0.12
-    , asn1-encoding ==0.9.*
-    , asn1-types ==0.3.*
-    , async ==2.2.*
-    , attoparsec ==0.14.*
-    , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
-    , case-insensitive ==1.2.*
-    , composition ==1.0.*
-    , constraints >=0.12 && <0.14
-    , containers ==0.6.*
-    , crypton ==0.34.*
-    , crypton-x509 ==1.7.*
-    , crypton-x509-store ==1.6.*
-    , crypton-x509-validation ==1.6.*
-    , cryptostore ==0.3.*
-    , data-default ==0.7.*
-    , direct-sqlcipher ==2.3.*
+      base >=4.14 && <5
     , directory ==1.3.*
     , filepath ==1.4.*
-    , hashable ==1.4.*
-    , hourglass ==0.2.*
-    , http-types ==0.12.*
-    , http2 >=4.2.2 && <4.3
-    , ini ==0.4.1
-    , iproute ==1.7.*
-    , iso8601-time ==0.1.*
-    , memory ==0.18.*
-    , mtl >=2.3.1 && <3.0
     , network >=3.1.2.7 && <3.2
-    , network-info ==0.2.*
-    , network-transport ==0.5.6
-    , network-udp ==0.0.*
-    , optparse-applicative >=0.15 && <0.17
-    , process ==1.6.*
-    , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , simplexmq
-    , socks ==0.6.*
-    , sqlcipher-simple ==0.4.*
-    , stm ==2.5.*
-    , temporary ==1.3.*
-    , time ==1.12.*
-    , time-manager ==0.0.*
-    , tls >=1.9.0 && <1.10
-    , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
-    , websockets ==0.12.*
-    , yaml ==0.11.*
-    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -532,58 +400,14 @@ executable xftp-server
       StrictData
   ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
-      aeson ==2.2.*
-    , ansi-terminal >=0.10 && <0.12
-    , asn1-encoding ==0.9.*
-    , asn1-types ==0.3.*
-    , async ==2.2.*
-    , attoparsec ==0.14.*
-    , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
-    , case-insensitive ==1.2.*
-    , composition ==1.0.*
-    , constraints >=0.12 && <0.14
-    , containers ==0.6.*
-    , crypton ==0.34.*
-    , crypton-x509 ==1.7.*
-    , crypton-x509-store ==1.6.*
-    , crypton-x509-validation ==1.6.*
-    , cryptostore ==0.3.*
-    , data-default ==0.7.*
-    , direct-sqlcipher ==2.3.*
+      base >=4.14 && <5
     , directory ==1.3.*
     , filepath ==1.4.*
-    , hashable ==1.4.*
-    , hourglass ==0.2.*
-    , http-types ==0.12.*
-    , http2 >=4.2.2 && <4.3
-    , ini ==0.4.1
-    , iproute ==1.7.*
-    , iso8601-time ==0.1.*
-    , memory ==0.18.*
-    , mtl >=2.3.1 && <3.0
     , network >=3.1.2.7 && <3.2
-    , network-info ==0.2.*
-    , network-transport ==0.5.6
-    , network-udp ==0.0.*
-    , optparse-applicative >=0.15 && <0.17
-    , process ==1.6.*
-    , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , simplexmq
-    , socks ==0.6.*
-    , sqlcipher-simple ==0.4.*
-    , stm ==2.5.*
-    , temporary ==1.3.*
-    , time ==1.12.*
-    , time-manager ==0.0.*
-    , tls >=1.9.0 && <1.10
-    , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
-    , websockets ==0.12.*
-    , yaml ==0.11.*
-    , zstd ==0.1.3.*
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
@@ -648,63 +472,43 @@ test-suite simplexmq-test
   build-depends:
       HUnit ==1.6.*
     , QuickCheck ==2.14.*
-    , aeson ==2.2.*
-    , ansi-terminal >=0.10 && <0.12
-    , asn1-encoding ==0.9.*
-    , asn1-types ==0.3.*
-    , async ==2.2.*
-    , attoparsec ==0.14.*
+    , aeson
+    , async
     , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
-    , case-insensitive ==1.2.*
-    , composition ==1.0.*
-    , constraints >=0.12 && <0.14
-    , containers ==0.6.*
-    , crypton ==0.34.*
-    , crypton-x509 ==1.7.*
-    , crypton-x509-store ==1.6.*
-    , crypton-x509-validation ==1.6.*
-    , cryptostore ==0.3.*
-    , data-default ==0.7.*
+    , base64-bytestring
+    , containers
+    , crypton
+    , crypton-x509
+    , crypton-x509-store
+    , crypton-x509-validation
     , deepseq ==1.4.*
-    , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , file-embed
     , filepath ==1.4.*
     , generic-random ==1.5.*
-    , hashable ==1.4.*
-    , hourglass ==0.2.*
+    , hashable
     , hspec ==2.11.*
     , hspec-core ==2.11.*
     , http-client
     , http-client-tls
-    , http-types ==0.12.*
-    , http2 >=4.2.2 && <4.3
-    , ini ==0.4.1
-    , iproute ==1.7.*
-    , iso8601-time ==0.1.*
+    , http-types
+    , http2
+    , ini
+    , iso8601-time
     , main-tester ==0.2.*
-    , memory ==0.18.*
-    , mtl >=2.3.1 && <3.0
+    , memory
+    , mtl
     , network >=3.1.2.7 && <3.2
-    , network-info ==0.2.*
-    , network-transport ==0.5.6
-    , network-udp ==0.0.*
-    , optparse-applicative >=0.15 && <0.17
-    , process ==1.6.*
-    , random >=1.1 && <1.3
+    , process
+    , random
     , silently ==1.2.*
     , simple-logger ==0.1.*
     , simplexmq
-    , socks ==0.6.*
-    , sqlcipher-simple ==0.4.*
-    , stm ==2.5.*
-    , temporary ==1.3.*
-    , time ==1.12.*
-    , time-manager ==0.0.*
+    , sqlcipher-simple
+    , stm
+    , time
     , timeit ==2.0.*
-    , tls >=1.9.0 && <1.10
-    , transformers ==0.6.*
+    , transformers
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
     , unordered-containers
@@ -712,9 +516,7 @@ test-suite simplexmq-test
     , wai-app-static
     , warp
     , warp-tls
-    , websockets ==0.12.*
-    , yaml ==0.11.*
-    , zstd ==0.1.3.*
+    , yaml
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
