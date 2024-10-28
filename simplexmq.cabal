@@ -1,4 +1,4 @@
-cabal-version: 1.12
+cabal-version: 3.4
 
 name:           simplexmq
 version:        6.2.0.0
@@ -15,8 +15,8 @@ category:       Chat, Network, Web, System, Cryptography
 homepage:       https://github.com/simplex-chat/simplexmq#readme
 author:         simplex.chat
 maintainer:     chat@simplex.chat
-copyright:      2020-2022 simplex.chat
-license:        AGPL-3
+copyright:      2020-2024 simplex.chat
+license:        AGPL-3.0-only
 license-file:   LICENSE
 build-type:     Simple
 extra-source-files:
@@ -62,7 +62,41 @@ flag use_crypton
   manual: True
   default: True
 
+common defs
+  default-language: Haskell2010
+  default-extensions:
+      StrictData
+  ghc-options:
+      -O2
+      -Wcompat
+      -Werror=incomplete-patterns
+      -Werror=incomplete-record-updates
+      -Werror=incomplete-uni-patterns
+      -Werror=missing-methods
+      -Werror=tabs
+      -Werror=unused-packages
+      -Weverything
+      -Wincomplete-record-updates
+      -Wno-all-missed-specialisations
+      -Wno-implicit-prelude
+      -Wno-missed-specialisations
+      -Wno-missing-deriving-strategies
+      -Wno-missing-export-lists
+      -Wno-missing-exported-signatures
+      -Wno-missing-import-lists
+      -Wno-missing-kind-signatures
+      -Wno-missing-local-signatures
+      -Wno-missing-safe-haskell-mode
+      -Wno-monomorphism-restriction
+      -Wno-partial-fields
+      -Wno-prepositive-qualified-module
+      -Wno-safe
+      -Wno-unsafe
+      -Wredundant-constraints
+      -Wunused-type-patterns
+
 library
+  import: defs
   exposed-modules:
       Simplex.FileTransfer.Agent
       Simplex.FileTransfer.Chunks
@@ -206,9 +240,6 @@ library
       Paths_simplexmq
   hs-source-dirs:
       src
-  default-extensions:
-      StrictData
-  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2
   include-dirs:
       cbits
   c-sources:
@@ -218,7 +249,6 @@ library
       crypto
   build-depends:
       aeson ==2.2.*
-    , ansi-terminal >=0.10 && <0.12
     , asn1-encoding ==0.9.*
     , asn1-types ==0.3.*
     , async ==2.2.*
@@ -268,157 +298,73 @@ library
     , websockets ==0.12.*
     , yaml ==0.11.*
     , zstd ==0.1.3.*
-  default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
   if impl(ghc >= 9.6.2)
     build-depends:
         bytestring ==0.11.*
-      , template-haskell ==2.20.*
       , text >=2.0.1 && <2.2
   if impl(ghc < 9.6.2)
     build-depends:
         bytestring ==0.10.*
-      , template-haskell ==2.16.*
       , text >=1.2.3.0 && <1.3
 
 executable ntf-server
+  import: defs
   main-is: Main.hs
-  other-modules:
-      Paths_simplexmq
   hs-source-dirs:
       apps/ntf-server
-  default-extensions:
-      StrictData
-  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
-      base >=4.14 && <5
-    , directory ==1.3.*
-    , filepath ==1.4.*
-    , network >=3.1.2.7 && <3.2
-    , simple-logger ==0.1.*
+      base
+    , simple-logger
     , simplexmq
-    , unliftio ==0.2.*
-    , unliftio-core ==0.2.*
-  default-language: Haskell2010
-  if flag(swift)
-    cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
-    build-depends:
-        bytestring ==0.11.*
-      , template-haskell ==2.20.*
-      , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
-    build-depends:
-        bytestring ==0.10.*
-      , template-haskell ==2.16.*
-      , text >=1.2.3.0 && <1.3
 
 executable smp-server
+  import: defs
   main-is: Main.hs
   other-modules:
       Static
       Static.Embedded
-      Paths_simplexmq
   hs-source-dirs:
       apps/smp-server
       apps/smp-server/web
-  default-extensions:
-      StrictData
-  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       base >=4.14 && <5
-    , directory ==1.3.*
+    , bytestring
+    , directory
     , file-embed
-    , filepath ==1.4.*
-    , network >=3.1.2.7 && <3.2
-    , simple-logger ==0.1.*
+    , filepath
+    , network
+    , simple-logger
     , simplexmq
-    , unliftio ==0.2.*
-    , unliftio-core ==0.2.*
+    , text
+    , unliftio
     , wai
     , wai-app-static
     , warp ==3.3.30
     , warp-tls ==3.4.7
-  default-language: Haskell2010
-  if flag(swift)
-    cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
-    build-depends:
-        bytestring ==0.11.*
-      , template-haskell ==2.20.*
-      , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
-    build-depends:
-        bytestring ==0.10.*
-      , template-haskell ==2.16.*
-      , text >=1.2.3.0 && <1.3
 
 executable xftp
+  import: defs
   main-is: Main.hs
-  other-modules:
-      Paths_simplexmq
   hs-source-dirs:
       apps/xftp
-  default-extensions:
-      StrictData
-  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
-      base >=4.14 && <5
-    , directory ==1.3.*
-    , filepath ==1.4.*
-    , network >=3.1.2.7 && <3.2
-    , simple-logger ==0.1.*
+      base
     , simplexmq
-    , unliftio ==0.2.*
-    , unliftio-core ==0.2.*
-  default-language: Haskell2010
-  if flag(swift)
-    cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
-    build-depends:
-        bytestring ==0.11.*
-      , template-haskell ==2.20.*
-      , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
-    build-depends:
-        bytestring ==0.10.*
-      , template-haskell ==2.16.*
-      , text >=1.2.3.0 && <1.3
 
 executable xftp-server
+  import: defs
   main-is: Main.hs
-  other-modules:
-      Paths_simplexmq
   hs-source-dirs:
       apps/xftp-server
-  default-extensions:
-      StrictData
-  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
-      base >=4.14 && <5
-    , directory ==1.3.*
-    , filepath ==1.4.*
-    , network >=3.1.2.7 && <3.2
-    , simple-logger ==0.1.*
+      base
+    , simple-logger
     , simplexmq
-    , unliftio ==0.2.*
-    , unliftio-core ==0.2.*
-  default-language: Haskell2010
-  if flag(swift)
-    cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
-    build-depends:
-        bytestring ==0.11.*
-      , template-haskell ==2.20.*
-      , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
-    build-depends:
-        bytestring ==0.10.*
-      , template-haskell ==2.16.*
-      , text >=1.2.3.0 && <1.3
 
 test-suite simplexmq-test
+  import: defs
   type: exitcode-stdio-1.0
   main-is: Test.hs
   other-modules:
@@ -458,71 +404,54 @@ test-suite simplexmq-test
       XFTPServerTests
       Static
       Static.Embedded
-      Paths_simplexmq
   hs-source-dirs:
       tests
       apps/smp-server/web
-  default-extensions:
-      StrictData
-  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts -with-rtsopts=-A64M -with-rtsopts=-N1
   build-depends:
-      HUnit ==1.6.*
-    , QuickCheck ==2.14.*
+      base
     , aeson
     , async
-    , base >=4.14 && <5
     , base64-bytestring
+    , bytestring
     , containers
     , crypton
     , crypton-x509
     , crypton-x509-store
     , crypton-x509-validation
     , deepseq ==1.4.*
-    , directory ==1.3.*
+    , directory
     , file-embed
-    , filepath ==1.4.*
+    , filepath
     , generic-random ==1.5.*
     , hashable
     , hspec ==2.11.*
-    , hspec-core ==2.11.*
     , http-client
-    , http-client-tls
     , http-types
     , http2
+    , HUnit ==1.6.*
     , ini
     , iso8601-time
     , main-tester ==0.2.*
     , memory
     , mtl
-    , network >=3.1.2.7 && <3.2
+    , network
     , process
+    , QuickCheck ==2.14.*
     , random
     , silently ==1.2.*
-    , simple-logger ==0.1.*
+    , simple-logger
     , simplexmq
     , sqlcipher-simple
     , stm
+    , text
     , time
     , timeit ==2.0.*
     , transformers
-    , unliftio ==0.2.*
-    , unliftio-core ==0.2.*
+    , unliftio
+    , unliftio-core
     , unordered-containers
     , wai
     , wai-app-static
     , warp
     , warp-tls
     , yaml
-  default-language: Haskell2010
-  if flag(swift)
-    cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
-    build-depends:
-        bytestring ==0.11.*
-      , template-haskell ==2.20.*
-      , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
-    build-depends:
-        bytestring ==0.10.*
-      , template-haskell ==2.16.*
-      , text >=1.2.3.0 && <1.3
