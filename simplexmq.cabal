@@ -375,6 +375,9 @@ executable xftp-server
 test-suite simplexmq-test
   import: defs
   import: exe
+  ghc-options:
+      -with-rtsopts=-A64M
+      -with-rtsopts=-N1
   type: exitcode-stdio-1.0
   main-is: Test.hs
   other-modules:
