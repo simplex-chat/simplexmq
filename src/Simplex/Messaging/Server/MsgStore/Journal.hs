@@ -632,7 +632,10 @@ openFile f mode = do
   pure h
 
 hClose :: Handle -> IO ()
-hClose h = IO.hClose h `catchAny` (\e -> logError $ "STORE: hClose, error closing file, " <> tshow e)
+hClose h =
+  IO.hClose h `catchAny` \e -> do
+    name <- IO.hShow h
+    logError $ "STORE: hClose, " <> T.pack name <> ", " <> tshow e
 
 closeOnException :: Handle -> IO a -> IO a
 closeOnException h a = a `E.onException` hClose h
