@@ -95,6 +95,11 @@ common defs
       -Wredundant-constraints
       -Wunused-type-patterns
 
+common exe
+  ghc-options:
+      -threaded
+      -rtsopts
+
 library
   import: defs
   exposed-modules:
@@ -311,6 +316,7 @@ library
 
 executable ntf-server
   import: defs
+  import: exe
   main-is: Main.hs
   hs-source-dirs:
       apps/ntf-server
@@ -321,6 +327,7 @@ executable ntf-server
 
 executable smp-server
   import: defs
+  import: exe
   main-is: Main.hs
   other-modules:
       Static
@@ -346,6 +353,7 @@ executable smp-server
 
 executable xftp
   import: defs
+  import: exe
   main-is: Main.hs
   hs-source-dirs:
       apps/xftp
@@ -355,6 +363,7 @@ executable xftp
 
 executable xftp-server
   import: defs
+  import: exe
   main-is: Main.hs
   hs-source-dirs:
       apps/xftp-server
@@ -365,6 +374,7 @@ executable xftp-server
 
 test-suite simplexmq-test
   import: defs
+  import: exe
   type: exitcode-stdio-1.0
   main-is: Test.hs
   other-modules:
