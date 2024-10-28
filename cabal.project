@@ -12,7 +12,7 @@ packages: .
    -- coverage: False
    -- library-coverage: False
 
-index-state: 2023-12-12T00:00:00Z
+index-state: 2024-06-01T00:00:00Z
 
 package cryptostore
     flags: +use_crypton
