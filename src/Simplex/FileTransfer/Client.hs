@@ -29,7 +29,6 @@ import qualified Data.X509.Validation as XV
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
 import Simplex.FileTransfer.Protocol
-import Simplex.FileTransfer.Server.Env (supportedXFTPhandshakes)
 import Simplex.FileTransfer.Transport
 import Simplex.Messaging.Client
   ( NetworkConfig (..),
