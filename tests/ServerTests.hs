@@ -42,6 +42,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
+import Simplex.Messaging.Server.StoreLog (closeStoreLog, readWriteQueueStore)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (whenM)
 import Simplex.Messaging.Version (mkVersionRange)
@@ -812,6 +813,7 @@ testRestoreExpireMessages =
     exportStoreMessages = \case
       AMSType SMSJournal -> do
         ms <- newMsgStore testJournalStoreCfg {quota = 4}
+        readWriteQueueStore testStoreLogFile ms >>= closeStoreLog
         removeFileIfExists testStoreMsgsFile
         exportMessages False ms testStoreMsgsFile False
       AMSType SMSMemory -> pure ()

@@ -32,6 +32,7 @@ import Control.Applicative (optional, (<|>))
 import Control.Concurrent.STM
 import Control.Logger.Simple
 import Control.Monad
+import Control.Monad.Trans.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -41,8 +42,8 @@ import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Util (bshow, ifM, unlessM, whenM)
 import System.Directory (doesFileExist, renameFile)
 import System.IO
@@ -188,7 +189,7 @@ logDeleteNotifier s = writeStoreLogRecord s . DeleteNotifier
 logUpdateQueueTime :: StoreLog 'WriteMode -> QueueId -> RoundedSystemTime -> IO ()
 logUpdateQueueTime s qId t = writeStoreLogRecord s $ UpdateTime qId t
 
-readWriteQueueStore :: FilePath -> QueueStore -> IO (StoreLog 'WriteMode)
+readWriteQueueStore :: MsgStoreClass s => FilePath -> s -> IO (StoreLog 'WriteMode)
 readWriteQueueStore = readWriteStoreLog readQueues writeQueues
 
 readWriteStoreLog :: (FilePath -> s -> IO ()) -> (StoreLog 'WriteMode -> s -> IO ()) -> FilePath -> s -> IO (StoreLog 'WriteMode)
@@ -226,13 +227,13 @@ readWriteStoreLog readStore writeStore f st =
       renameFile tempBackup timedBackup
       logInfo $ "original state preserved as " <> T.pack timedBackup
 
-writeQueues :: StoreLog 'WriteMode -> QueueStore -> IO ()
-writeQueues s st = readTVarIO (queues st) >>= mapM_ writeQueue
+writeQueues :: MsgStoreClass s => StoreLog 'WriteMode -> s -> IO ()
+writeQueues s = readTVarIO . activeMsgQueues >=> mapM_ writeQueue
   where
-    writeQueue v = readTVarIO v >>= \q -> when (active q) $ logCreateQueue s q
+    writeQueue q = readTVarIO (queueRec' q) >>= \q' -> when (active q') $ logCreateQueue s q'
     active QueueRec {status} = status == QueueActive
 
-readQueues :: FilePath -> QueueStore -> IO ()
+readQueues :: MsgStoreClass s => FilePath -> s -> IO ()
 readQueues f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . LB.lines
   where
     processLine :: LB.ByteString -> IO ()
@@ -245,7 +246,7 @@ readQueues f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . 
           SecureQueue qId sKey -> secureQueue st qId sKey >>= qError "secure" qId
           AddNotifier qId ntfCreds -> addQueueNotifier st qId ntfCreds >>= qError "addNotifier" qId
           SuspendQueue qId -> suspendQueue st qId >>= qError "suspend" qId
-          DeleteQueue qId -> deleteQueue st qId >>= qError "delete" qId
+          DeleteQueue qId -> runExceptT (deleteQueue st qId) >>= qError "delete" qId
           DeleteNotifier qId -> deleteQueueNotifier st qId >>= qError "deleteNotifier" qId
           UpdateTime qId t -> updateQueueTime st qId t
         printError :: String -> IO ()

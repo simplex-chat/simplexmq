@@ -16,31 +16,15 @@ import Data.Either (partitionEithers)
 import qualified Data.Map.Strict as M
 import SMPClient
 import AgentTests.SQLiteTests
+import CoreTests.MsgStoreTests
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.StoreLog
+import Simplex.Messaging.Server.MsgStore.Journal
+import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.Server.QueueStore.STM (QueueStore (..), newQueueStore)
+import Simplex.Messaging.Server.StoreLog
 import Test.Hspec
-
-testNewQueueRec :: TVar ChaChaDRG -> Bool -> IO QueueRec
-testNewQueueRec g sndSecure = do
-  recipientId <- atomically $ EntityId <$> C.randomBytes 24 g
-  senderId <- atomically $ EntityId <$> C.randomBytes 24 g
-  (recipientKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
-  (k, pk) <- atomically $ C.generateKeyPair @'C.X25519 g
-  pure QueueRec
-    { recipientId,
-      recipientKey,
-      rcvDhSecret = C.dh' k pk,
-      senderId,
-      senderKey = Nothing,
-      sndSecure,
-      notifier = Nothing,
-      status = QueueActive,
-      updatedAt = Nothing
-    }
 
 testNtfCreds :: TVar ChaChaDRG -> IO NtfCreds
 testNtfCreds g = do
@@ -66,7 +50,7 @@ deriving instance Eq NtfCreds
 storeLogTests :: Spec
 storeLogTests =
   forM_ [False, True] $ \sndSecure -> do
-    (qr, ntfCreds, date) <- runIO $ do
+    ((rId, qr), ntfCreds, date) <- runIO $ do
       g <- C.newRandom
       (,,) <$> testNewQueueRec g sndSecure <*> testNtfCreds g <*> getSystemDate
     testSMPStoreLog ("SMP server store log, sndSecure = " <> show sndSecure)
@@ -74,37 +58,37 @@ storeLogTests =
           { name = "create new queue",
             saved = [CreateQueue qr],
             compacted = [CreateQueue qr],
-            state = M.fromList [(recipientId qr, qr)]
+            state = M.fromList [(rId, qr)]
           },
         SLTC
           { name = "secure queue",
-            saved = [CreateQueue qr, SecureQueue (recipientId qr) testPublicAuthKey],
+            saved = [CreateQueue qr, SecureQueue rId testPublicAuthKey],
             compacted = [CreateQueue qr {senderKey = Just testPublicAuthKey}],
-            state = M.fromList [(recipientId qr, qr {senderKey = Just testPublicAuthKey})]
+            state = M.fromList [(rId, qr {senderKey = Just testPublicAuthKey})]
           },          
         SLTC
           { name = "create and delete queue",
-            saved = [CreateQueue qr, DeleteQueue $ recipientId qr],
+            saved = [CreateQueue qr, DeleteQueue rId],
             compacted = [],
             state = M.fromList []
           },
         SLTC
           { name = "create queue and add notifier",
-            saved = [CreateQueue qr, AddNotifier (recipientId qr) ntfCreds],
+            saved = [CreateQueue qr, AddNotifier rId ntfCreds],
             compacted = [CreateQueue $ qr {notifier = Just ntfCreds}],
-            state = M.fromList [(recipientId qr, qr {notifier = Just ntfCreds})]
+            state = M.fromList [(rId, qr {notifier = Just ntfCreds})]
           },
         SLTC
           { name = "delete notifier",
-            saved = [CreateQueue qr, AddNotifier (recipientId qr) ntfCreds, DeleteNotifier (recipientId qr)],
+            saved = [CreateQueue qr, AddNotifier rId ntfCreds, DeleteNotifier rId],
             compacted = [CreateQueue qr],
-            state = M.fromList [(recipientId qr, qr)]
+            state = M.fromList [(rId, qr)]
           },
         SLTC
           { name = "update time",
-            saved = [CreateQueue qr, UpdateTime (recipientId qr) date],
+            saved = [CreateQueue qr, UpdateTime rId date],
             compacted = [CreateQueue qr {updatedAt = Just date}],
-            state = M.fromList [(recipientId qr, qr {updatedAt = Just date})]
+            state = M.fromList [(rId, qr {updatedAt = Just date})]
           }          
       ]
 
@@ -117,11 +101,11 @@ testSMPStoreLog testSuite tests =
     replicateM_ 3 $ testReadWrite t
   where
     testReadWrite SLTC {compacted, state} = do
-      st <- newQueueStore
+      st <- newMsgStore testJournalStoreCfg
       l <- readWriteQueueStore testStoreLogFile st
       storeState st `shouldReturn` state
       closeStoreLog l
       ([], compacted') <- partitionEithers . map strDecode . B.lines <$> B.readFile testStoreLogFile
       compacted' `shouldBe` compacted
-    storeState :: QueueStore -> IO (M.Map RecipientId QueueRec)
-    storeState st = readTVarIO (queues st) >>= mapM readTVarIO
+    storeState :: JournalMsgStore -> IO (M.Map RecipientId QueueRec)
+    storeState st = readTVarIO (queues st) >>= mapM (readTVarIO . queueRec')
