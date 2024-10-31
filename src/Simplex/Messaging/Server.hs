@@ -51,7 +51,6 @@ import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Control.Monad.STM (retry)
 import Data.Bifunctor (first)
-import Data.Bitraversable (bimapM)
 import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Builder as BLD
 import Data.ByteString.Char8 (ByteString)
@@ -101,7 +100,6 @@ import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
-import Simplex.Messaging.Server.QueueStore.STM as QS
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
@@ -424,7 +422,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv}
         <- asks serverStats
       AMS _ st <- asks msgStore
-      let (queues, notifiers) = queuesAndNotifiers st  
+      let queues = activeMsgQueues st
+          notifiers = queueNotifiers st
           interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -625,7 +624,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
               CPStats -> withUserRole $ do
                 ss <- unliftIO u $ asks serverStats
                 AMS _ st <- unliftIO u $ asks msgStore
-                let (queues, notifiers) = queuesAndNotifiers st
+                let queues = activeMsgQueues st
+                    notifiers = queueNotifiers st
                     getStat :: (ServerStats -> IORef a) -> IO a
                     getStat var = readIORef (var ss)
                     putStat :: Show a => String -> (ServerStats -> IORef a) -> IO ()
@@ -798,17 +798,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                               SubPending -> (c1, c2 + 1, c3, c4)
                               SubThread _ -> (c1, c2, c3 + 1, c4)
                           ProhibitSub -> pure (c1, c2, c3, c4 + 1)
-              CPDelete queueId' -> withUserRole $ unliftIO u $ do
+              CPDelete qId -> withUserRole $ unliftIO u $ do
                 AMS _ st <- asks msgStore
-                queueId <- liftIO (getQueue st SSender queueId') >>= \case
-                  Left _ -> pure queueId' -- fallback to using as recipientId directly
-                  Right sq -> recipientId <$> readTVarIO (queueRec' sq)
-                liftIO (runExceptT $ deleteQueueSize st queueId) >>= \case
-                  Left e -> liftIO . hPutStrLn h $ "error: " <> show e
-                  Right (q, numDeleted) -> do
-                    withLog (`logDeleteQueue` queueId)
-                    updateDeletedStats q
-                    liftIO . hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
+                r <- liftIO $ runExceptT $ do
+                  (q, qr) <- ExceptT (getQueueRec st SSender qId) `catchE` \_ -> ExceptT (getQueueRec st SRecipient qId)
+                  ExceptT $ deleteQueueSize st (recipientId qr) q
+                case r of
+                  Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
+                  Right (qr, numDeleted) -> do
+                    withLog (`logDeleteQueue` recipientId qr)
+                    updateDeletedStats qr
+                    liftIO $ hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
               CPSave -> withAdminRole $ withLock' (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer False
@@ -911,7 +911,7 @@ receive h@THandle {params = THandleParams {thAuth}} ms Client {rcvQ, sndQ, rcvAc
     write sndQ errs
     write rcvQ cmds
   where
-    updateBatchStats :: ServerStats -> [(Maybe (StoreQueue s), Transmission Cmd)] -> M ()
+    updateBatchStats :: ServerStats -> [(Maybe (StoreQueue s, QueueRec), Transmission Cmd)] -> M ()
     updateBatchStats stats = \case
       (_, (_, _, (Cmd _ cmd))) : _ -> do
         let sel_ = case cmd of
@@ -922,7 +922,7 @@ receive h@THandle {params = THandleParams {thAuth}} ms Client {rcvQ, sndQ, rcvAc
               _ -> Nothing
         mapM_ (\sel -> incStat $ sel stats) sel_
       [] -> pure ()
-    cmdAction :: ServerStats -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe (StoreQueue s), Transmission Cmd))
+    cmdAction :: ServerStats -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe (StoreQueue s, QueueRec), Transmission Cmd))
     cmdAction stats (tAuth, authorized, (corrId, entId, cmdOrError)) =
       case cmdOrError of
         Left e -> pure $ Left (corrId, entId, ERR e)
@@ -989,7 +989,7 @@ disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcv
       ts <- max <$> readTVarIO rcvActiveAt <*> readTVarIO sndActiveAt
       if systemSeconds ts < old then closeConnection connection else loop
 
-data VerificationResult s = VRVerified (Maybe (StoreQueue s)) | VRFailed
+data VerificationResult s = VRVerified (Maybe (StoreQueue s, QueueRec)) | VRFailed
 
 -- This function verifies queue command authorization, with the objective to have constant time between the three AUTH error scenarios:
 -- - the queue and party key exist, and the provided authorization has type matching queue key, but it is made with the different key.
@@ -1001,14 +1001,14 @@ verifyTransmission :: forall s. MsgStoreClass s => s -> Maybe (THandleAuth 'TSer
 verifyTransmission ms auth_ tAuth authorized queueId cmd =
   case cmd of
     Cmd SRecipient (NEW k _ _ _ _) -> pure $ Nothing `verifiedWith` k
-    Cmd SRecipient _ -> verifyQueue (\(q, qr) -> Just q `verifiedWith` recipientKey qr) <$> get SRecipient
+    Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWith` recipientKey (snd q)) <$> get SRecipient
     -- SEND will be accepted without authorization before the queue is secured with KEY or SKEY command
-    Cmd SSender (SKEY k) -> verifyQueue (\(q, qr) -> if maybe True (k ==) (senderKey qr) then Just q `verifiedWith` k else dummyVerify) <$> get SSender
-    Cmd SSender SEND {} -> verifyQueue (\(q, qr) -> Just q `verified` maybe (isNothing tAuth) verify (senderKey qr)) <$> get SSender
+    Cmd SSender (SKEY k) -> verifyQueue (\q -> if maybe True (k ==) (senderKey $ snd q) then Just q `verifiedWith` k else dummyVerify) <$> get SSender
+    Cmd SSender SEND {} -> verifyQueue (\q -> Just q `verified` maybe (isNothing tAuth) verify (senderKey $ snd q)) <$> get SSender
     Cmd SSender PING -> pure $ VRVerified Nothing
     Cmd SSender RFWD {} -> pure $ VRVerified Nothing
     -- NSUB will not be accepted without authorization
-    Cmd SNotifier NSUB -> verifyQueue (\(q, qr) -> maybe dummyVerify (\n -> Just q `verifiedWith` notifierKey n) (notifier qr)) <$> get SNotifier
+    Cmd SNotifier NSUB -> verifyQueue (\q -> maybe dummyVerify (\n -> Just q `verifiedWith` notifierKey n) (notifier $ snd q)) <$> get SNotifier
     Cmd SProxiedClient _ -> pure $ VRVerified Nothing
   where
     verify = verifyCmdAuthorization auth_ tAuth authorized
@@ -1016,10 +1016,10 @@ verifyTransmission ms auth_ tAuth authorized queueId cmd =
     verifyQueue :: ((StoreQueue s, QueueRec) -> VerificationResult s) -> Either ErrorType (StoreQueue s, QueueRec) -> VerificationResult s
     verifyQueue = either (const dummyVerify)
     verified q cond = if cond then VRVerified q else VRFailed
-    verifiedWith :: Maybe (StoreQueue s) -> C.APublicAuthKey -> VerificationResult s
+    verifiedWith :: Maybe (StoreQueue s, QueueRec) -> C.APublicAuthKey -> VerificationResult s
     verifiedWith q k = q `verified` verify k
     get :: DirectParty p => SParty p -> M (Either ErrorType (StoreQueue s, QueueRec))
-    get party = liftIO $ getQueue ms party queueId >>= bimapM pure (\q -> (q,) <$> readTVarIO (queueRec' q))
+    get party = liftIO $ getQueueRec ms party queueId
 
 verifyCmdAuthorization :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> C.APublicAuthKey -> Bool
 verifyCmdAuthorization auth_ tAuth authorized key = maybe False (verify key) tAuth
@@ -1168,7 +1168,7 @@ client
     mkIncProxyStats ps psOwn own sel = do
       incStat $ sel ps
       when own $ incStat $ sel psOwn
-    processCommand :: (Maybe (StoreQueue s), Transmission Cmd) -> M (Maybe (Transmission BrokerMsg))
+    processCommand :: (Maybe (StoreQueue s, QueueRec), Transmission Cmd) -> M (Maybe (Transmission BrokerMsg))
     processCommand (q_, (corrId, entId, cmd)) = case cmd of
       Cmd SProxiedClient command -> processProxiedCmd (corrId, entId, command)
       Cmd SSender command -> Just <$> case command of
@@ -1194,11 +1194,10 @@ client
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
           KEY sKey -> withQueue $ \q qr -> (corrId,entId,) <$> secureQueue_ q qr sKey
-          NKEY nKey dhKey -> addQueueNotifier_ nKey dhKey
-          NDEL -> deleteQueueNotifier_
-          -- TODO check mark deleted, and fail with AUTH when deleted
+          NKEY nKey dhKey -> withQueue $ \q _ -> addQueueNotifier_ q nKey dhKey
+          NDEL -> withQueue $ \q _ -> deleteQueueNotifier_ q
           OFF -> maybe (pure $ err INTERNAL) suspendQueue_ q_
-          DEL -> delQueueAndMsgs
+          DEL -> maybe (pure $ err INTERNAL) delQueueAndMsgs q_          
           QUE -> withQueue $ \q qr -> (corrId,entId,) <$> getQueueInfo q qr
       where
         createQueue :: RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> SenderCanSecure -> M (Transmission BrokerMsg)
@@ -1247,16 +1246,16 @@ client
 
         secureQueue_ :: StoreQueue s -> QueueRec -> SndPublicAuthKey -> M BrokerMsg
         secureQueue_ q qr sKey = do
-          atomically (secureQueueRec (queueRec' q) sKey) >>= \case
-            Nothing -> pure $ ERR AUTH
-            Just _qr -> do
+          liftIO (secureQueue ms q sKey) >>= \case
+            Left e -> pure $ ERR e
+            Right _qr -> do
               withLog $ \s -> logSecureQueue s (recipientId qr) sKey
               stats <- asks serverStats
               incStat $ qSecured stats
               pure OK
 
-        addQueueNotifier_ :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> M (Transmission BrokerMsg)
-        addQueueNotifier_ notifierKey dhKey = time "NKEY" $ do
+        addQueueNotifier_ :: StoreQueue s -> NtfPublicAuthKey -> RcvNtfPublicDhKey -> M (Transmission BrokerMsg)
+        addQueueNotifier_ q notifierKey dhKey = time "NKEY" $ do
           (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
           let rcvNtfDhSecret = C.dh' dhKey privDhKey
           (corrId,entId,) <$> addNotifierRetry 3 rcvPublicDhKey rcvNtfDhSecret
@@ -1266,7 +1265,7 @@ client
             addNotifierRetry n rcvPublicDhKey rcvNtfDhSecret = do
               notifierId <- randomId =<< asks (queueIdBytes . config)
               let ntfCreds = NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}
-              liftIO (addQueueNotifier ms entId ntfCreds) >>= \case
+              liftIO (addQueueNotifier ms q ntfCreds) >>= \case
                 Left DUPLICATE_ -> addNotifierRetry (n - 1) rcvPublicDhKey rcvNtfDhSecret
                 Left e -> pure $ ERR e
                 Right nId_ -> do
@@ -1275,10 +1274,10 @@ client
                   forM_ nId_ $ \nId -> atomically $ writeTQueue ntfSubscribedQ (nId, clientId, False)
                   pure $ NID notifierId rcvPublicDhKey
 
-        deleteQueueNotifier_ :: M (Transmission BrokerMsg)
-        deleteQueueNotifier_ = do
+        deleteQueueNotifier_ :: StoreQueue s -> M (Transmission BrokerMsg)
+        deleteQueueNotifier_ q = do
           withLog (`logDeleteNotifier` entId)
-          liftIO (deleteQueueNotifier ms entId) >>= \case
+          liftIO (deleteQueueNotifier ms q) >>= \case
             Right (Just nId) -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
               stats <- asks serverStats
@@ -1290,12 +1289,11 @@ client
             Right Nothing -> pure ok
             Left e -> pure $ err e
 
-        -- TODO check deleted
-        suspendQueue_ :: StoreQueue s -> M (Transmission BrokerMsg)
-        suspendQueue_ q = do
-          atomically $ suspendQueueRec (queueRec' q)
-          withLog (`logSuspendQueue` entId)
-          pure ok
+        suspendQueue_ :: (StoreQueue s, QueueRec) -> M (Transmission BrokerMsg)
+        suspendQueue_ (q, _) =
+          liftIO (suspendQueue ms q) >>= \case
+            Right () -> withLog (`logSuspendQueue` entId) $> ok
+            Left e -> pure $ err e
 
         subscribeQueue :: StoreQueue s -> QueueRec -> M (Transmission BrokerMsg)
         subscribeQueue q qr =
@@ -1366,20 +1364,17 @@ client
 
         withQueue :: (StoreQueue s -> QueueRec -> M (Transmission BrokerMsg)) -> M (Transmission BrokerMsg)
         withQueue action = case q_ of
-          -- TODO check mark deleted, and fail with AUTH when deleted
-          Just q -> updateQueueDate (queueRec' q) >>= action q
           Nothing -> pure $ err INTERNAL
-
-        updateQueueDate :: TVar QueueRec -> M QueueRec
-        updateQueueDate qr  = do
-          q@QueueRec {updatedAt} <- readTVarIO qr
-          t <- liftIO getSystemDate
-          if Just t == updatedAt
-            then pure q
-            else do
-              (q', changed) <- atomically $ updateQueueRecTime qr t
-              when changed $ withLog $ \s -> logUpdateQueueTime s entId t
-              pure q'
+          Just (q, qr@QueueRec {updatedAt}) -> do
+            t <- liftIO getSystemDate
+            if updatedAt == Just t
+              then action q qr
+              else
+                liftIO (updateQueueTime ms q t) >>= \case
+                  Right (qr', changed) -> do
+                    when changed (withLog $ \s -> logUpdateQueueTime s entId t)
+                    action q qr'
+                  Left e -> pure $ err e
 
         subscribeNotifications :: M (Transmission BrokerMsg)
         subscribeNotifications = do
@@ -1604,7 +1599,7 @@ client
           incStat $ pMsgFwdsRecv stats
           pure $ RRES r3
           where
-            rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe (StoreQueue s), Transmission Cmd))
+            rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe (StoreQueue s, QueueRec), Transmission Cmd))
             rejectOrVerify clntThAuth (tAuth, authorized, (corrId', entId', cmdOrError)) =
               case cmdOrError of
                 Left e -> pure $ Left (corrId', entId', ERR e)
@@ -1647,25 +1642,25 @@ client
         setDelivered :: Sub -> Message -> STM Bool
         setDelivered s msg = tryPutTMVar (delivered s) $! messageId msg
 
-        delQueueAndMsgs :: M (Transmission BrokerMsg)
-        delQueueAndMsgs = do
+        delQueueAndMsgs :: (StoreQueue s, QueueRec) -> M (Transmission BrokerMsg)
+        delQueueAndMsgs (q, _) = do
           withLog (`logDeleteQueue` entId)
-          liftIO (runExceptT $ deleteQueue ms entId) >>= \case
-            Right q -> do
+          liftIO (deleteQueue ms entId q) >>= \case
+            Right qr -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
               atomically $ do
                 writeTQueue subscribedQ (entId, clientId, False)
                 -- queue is usually deleted by the same client that is currently subscribed,
                 -- we delete subscription here, so the client with no subscriptions can be disconnected.
                 TM.delete entId subscriptions
-              forM_ (notifierId <$> notifier q) $ \nId -> do
+              forM_ (notifierId <$> notifier qr) $ \nId -> do
                 -- queue is deleted by a different client from the one subscribed to notifications,
                 -- so we don't need to remove subscription from the current client.
                 stats <- asks serverStats
                 deleted <- asks ntfStore >>= liftIO . (`deleteNtfs` nId)
                 when (deleted > 0) $ liftIO $ atomicModifyIORef'_ (ntfCount stats) (subtract deleted)
                 atomically $ writeTQueue ntfSubscribedQ (nId, clientId, False)
-              updateDeletedStats q
+              updateDeletedStats qr
               pure ok
             Left e -> pure $ err e
 

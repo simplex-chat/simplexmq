@@ -29,22 +29,23 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   newMsgStore :: MsgStoreConfig s -> IO s
   closeMsgStore :: s -> IO ()
   activeMsgQueues :: s -> TMap RecipientId (StoreQueue s)
-  queuesAndNotifiers :: s -> (TMap RecipientId (StoreQueue s), TMap NotifierId RecipientId)
+  queueNotifiers :: s -> TMap NotifierId RecipientId
   withAllMsgQueues :: Monoid a => Bool -> s -> (RecipientId -> StoreQueue s -> IO a) -> IO a
   logQueueStates :: s -> IO ()
   logQueueState :: StoreQueue s -> IO ()
   addQueue :: s -> QueueRec -> IO (Either ErrorType (StoreQueue s))
   getQueue :: DirectParty p => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s))
-  queueRec' :: StoreQueue s -> TVar QueueRec
+  getQueueRec :: DirectParty p => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s, QueueRec))
+  queueRec' :: StoreQueue s -> TVar (Maybe QueueRec)
   getMsgQueue :: s -> RecipientId -> StoreQueue s -> StoreMonad s (MsgQueue s)
   openedMsgQueue :: StoreQueue s -> StoreMonad s (Maybe (MsgQueue s))
-  secureQueue :: s -> RecipientId -> SndPublicAuthKey -> IO (Either ErrorType QueueRec)
-  addQueueNotifier :: s -> RecipientId -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
-  deleteQueueNotifier :: s -> RecipientId -> IO (Either ErrorType (Maybe NotifierId))
-  suspendQueue :: s -> RecipientId -> IO (Either ErrorType ())
-  updateQueueTime :: s -> RecipientId -> RoundedSystemTime -> IO ()
-  deleteQueue :: s -> RecipientId -> ExceptT ErrorType IO QueueRec
-  deleteQueueSize :: s -> RecipientId -> ExceptT ErrorType IO (QueueRec, Int)
+  secureQueue :: s -> StoreQueue s -> SndPublicAuthKey -> IO (Either ErrorType QueueRec)
+  addQueueNotifier :: s -> StoreQueue s -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
+  deleteQueueNotifier :: s -> StoreQueue s -> IO (Either ErrorType (Maybe NotifierId))
+  suspendQueue :: s -> StoreQueue s -> IO (Either ErrorType ())
+  updateQueueTime :: s -> StoreQueue s -> RoundedSystemTime -> IO (Either ErrorType (QueueRec, Bool))
+  deleteQueue :: s -> RecipientId -> StoreQueue s -> IO (Either ErrorType QueueRec)
+  deleteQueueSize :: s -> RecipientId -> StoreQueue s -> IO (Either ErrorType (QueueRec, Int))
   getQueueMessages_ :: Bool -> MsgQueue s -> StoreMonad s [Message]
   writeMsg :: s -> RecipientId -> StoreQueue s -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
   setOverQuota_ :: StoreQueue s -> IO () -- can ONLY be used while restoring messages, not while server running

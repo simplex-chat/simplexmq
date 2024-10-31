@@ -11,6 +11,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module Simplex.Messaging.Server.MsgStore.Journal
@@ -60,7 +61,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.Server.QueueStore.STM hiding (STMMsgQueue (..))
+import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM, tshow, ($>>=))
@@ -222,8 +223,8 @@ instance MsgStoreClass JournalMsgStore where
   activeMsgQueues = queues
   {-# INLINE activeMsgQueues #-}
 
-  queuesAndNotifiers st = (queues st, notifiers st)
-  {-# INLINE queuesAndNotifiers #-}
+  queueNotifiers = notifiers
+  {-# INLINE queueNotifiers #-}
 
   -- This function is a "foldr" that opens and closes all queues, processes them as defined by action and accumulates the result.
   -- It is used to export storage to a single file and also to expire messages and validate all queues when server is started.
@@ -287,6 +288,9 @@ instance MsgStoreClass JournalMsgStore where
   getQueue JournalMsgStore {queues, senders, notifiers} = getQueue' queues senders notifiers
   {-# INLINE getQueue #-}
 
+  getQueueRec JournalMsgStore {queues, senders, notifiers} = getQueueRec' queues senders notifiers
+  {-# INLINE getQueueRec #-}
+
   queueRec' = queueRec
   {-# INLINE queueRec' #-}
 
@@ -313,43 +317,56 @@ instance MsgStoreClass JournalMsgStore where
   openedMsgQueue = StoreIO . readTVarIO . msgQueue_
   {-# INLINE openedMsgQueue #-}
 
-  secureQueue = secureQueue' . queues
+  -- TODO move log here
+  secureQueue :: JournalMsgStore -> JSTMQueue -> SndPublicAuthKey -> IO (Either ErrorType QueueRec)  
+  secureQueue _ms q = atomically . secureQueue' (queueRec q)
   {-# INLINE secureQueue #-}
-  
-  addQueueNotifier JournalMsgStore {queues, notifiers} = addQueueNotifier' queues notifiers
+
+  -- TODO move log here
+  addQueueNotifier :: JournalMsgStore -> JSTMQueue -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
+  addQueueNotifier ms q = atomically . addQueueNotifier' (notifiers ms) (queueRec q)
   {-# INLINE addQueueNotifier #-}
   
-  deleteQueueNotifier JournalMsgStore {queues, notifiers} = deleteQueueNotifier' queues notifiers
+  -- TODO move log here
+  deleteQueueNotifier :: JournalMsgStore -> JSTMQueue -> IO (Either ErrorType (Maybe NotifierId))
+  deleteQueueNotifier ms = atomically . deleteQueueNotifier' (notifiers ms) . queueRec
   {-# INLINE deleteQueueNotifier #-}
   
-  suspendQueue = suspendQueue' . queues
+  -- TODO move log here
+  suspendQueue :: JournalMsgStore -> JSTMQueue -> IO (Either ErrorType ())
+  suspendQueue _ms = atomically . suspendQueue' . queueRec
   {-# INLINE suspendQueue #-}
 
-  updateQueueTime = updateQueueTime' . queues
+  -- TODO move log here
+  updateQueueTime :: JournalMsgStore -> JSTMQueue -> RoundedSystemTime -> IO (Either ErrorType (QueueRec, Bool))
+  updateQueueTime _ms q = atomically . updateQueueTime' (queueRec q)
   {-# INLINE updateQueueTime #-}
 
-  deleteQueue :: JournalMsgStore -> RecipientId -> ExceptT ErrorType IO QueueRec
-  deleteQueue ms@JournalMsgStore {queues, senders, notifiers} rId =
-    fmap fst $ isolateQueueId "deleteQueue" ms rId $ do
-      q <-
-        atomically (deleteQueue' queues senders notifiers rId)
-          >>= mapM (traverse $ readTVarIO >=> mapM_ closeMsgQueueHandles)
+  -- TODO move log here
+  deleteQueue :: JournalMsgStore -> RecipientId -> JSTMQueue -> IO (Either ErrorType QueueRec)
+  deleteQueue ms@JournalMsgStore {senders, notifiers} rId q =
+    runExceptT $ isolateQueueId "deleteQueue" ms rId $ do
+      q' <-
+        atomically (deleteQueueRec' senders notifiers (queueRec q))
+          >>= mapM (closeMsgQueue q $>)
       removeQueueDirectory ms rId
-      pure q
+      pure q'
 
-  deleteQueueSize :: JournalMsgStore -> RecipientId -> ExceptT ErrorType IO (QueueRec, Int)
-  deleteQueueSize ms@JournalMsgStore {queues, senders, notifiers} rId =
-    isolateQueueId "deleteQueueSize" ms rId $ do
+  -- TODO move log here
+  deleteQueueSize :: JournalMsgStore -> RecipientId -> JSTMQueue -> IO (Either ErrorType (QueueRec, Int))
+  deleteQueueSize ms@JournalMsgStore {senders, notifiers} rId q =
+    runExceptT $ isolateQueueId "deleteQueueSize" ms rId $ do
       r <-
-        atomically (deleteQueue' queues senders notifiers rId)
-          >>= mapM (traverse $ readTVarIO >=> maybe (pure (-1)) delete)
+        atomically (deleteQueueRec' senders notifiers (queueRec q)) >>=
+          mapM (\q' -> (q',) <$> delMsgQueueSize)
       removeQueueDirectory ms rId
       pure r
     -- traverse operates on the second tuple element
     where
-      delete q = do
-        closeMsgQueueHandles q
-        size <$> readTVarIO (state q)
+      delMsgQueueSize = atomically (swapTVar (msgQueue_ q) Nothing) >>= maybe (pure (-1)) delete
+      delete mq = do
+        closeMsgQueueHandles mq
+        size <$> readTVarIO (state mq)
 
   getQueueMessages_ :: Bool -> JournalMsgQueue -> StoreIO [Message]
   getQueueMessages_ drainMsgs q = StoreIO (run [])

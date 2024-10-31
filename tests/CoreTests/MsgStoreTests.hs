@@ -148,7 +148,7 @@ testGetQueue ms = do
     (Msg "message 7", Just MessageQuota {msgId = mId8}) <- tryDelPeekMsg ms rId q mId7
     (Just MessageQuota {}, Nothing) <- tryDelPeekMsg ms rId q mId8
     (Nothing, Nothing) <- tryDelPeekMsg ms rId q mId8
-    void $ deleteQueue ms rId
+    void $ ExceptT $ deleteQueue ms rId q
 
 testChangeReadJournal :: MsgStoreClass s => s -> IO ()
 testChangeReadJournal ms = do
@@ -167,7 +167,7 @@ testChangeReadJournal ms = do
     (Msg "message 4", Nothing) <- tryDelPeekMsg ms rId q mId4
     Just (Message {msgId = mId5}, True) <- write "message 5"
     (Msg "message 5", Nothing) <- tryDelPeekMsg ms rId q mId5
-    void $ deleteQueue ms rId
+    void $ ExceptT $ deleteQueue ms rId q
 
 testExportImportStore :: JournalMsgStore -> IO ()
 testExportImportStore ms = do
