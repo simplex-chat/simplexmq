@@ -19,7 +19,9 @@ import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Server.StoreLog.Types
 import Simplex.Messaging.TMap (TMap)
+import System.IO (IOMode (..))
 
 class Monad (StoreMonad s) => MsgStoreClass s where
   type StoreMonad s = (m :: Type -> Type) | m -> s
@@ -27,6 +29,7 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   type StoreQueue s = q | q -> s
   type MsgQueue s = q | q -> s
   newMsgStore :: MsgStoreConfig s -> IO s
+  setStoreLog :: s -> StoreLog 'WriteMode -> IO ()
   closeMsgStore :: s -> IO ()
   activeMsgQueues :: s -> TMap RecipientId (StoreQueue s)
   queueNotifiers :: s -> TMap NotifierId RecipientId
@@ -39,11 +42,11 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   queueRec' :: StoreQueue s -> TVar (Maybe QueueRec)
   getMsgQueue :: s -> RecipientId -> StoreQueue s -> StoreMonad s (MsgQueue s)
   openedMsgQueue :: StoreQueue s -> StoreMonad s (Maybe (MsgQueue s))
-  secureQueue :: s -> StoreQueue s -> SndPublicAuthKey -> IO (Either ErrorType QueueRec)
+  secureQueue :: s -> StoreQueue s -> SndPublicAuthKey -> IO (Either ErrorType ())
   addQueueNotifier :: s -> StoreQueue s -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
   deleteQueueNotifier :: s -> StoreQueue s -> IO (Either ErrorType (Maybe NotifierId))
   suspendQueue :: s -> StoreQueue s -> IO (Either ErrorType ())
-  updateQueueTime :: s -> StoreQueue s -> RoundedSystemTime -> IO (Either ErrorType (QueueRec, Bool))
+  updateQueueTime :: s -> StoreQueue s -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
   deleteQueue :: s -> RecipientId -> StoreQueue s -> IO (Either ErrorType QueueRec)
   deleteQueueSize :: s -> RecipientId -> StoreQueue s -> IO (Either ErrorType (QueueRec, Int))
   getQueueMessages_ :: Bool -> MsgQueue s -> StoreMonad s [Message]

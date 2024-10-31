@@ -184,6 +184,7 @@ library
       Simplex.Messaging.Server.QueueStore.STM
       Simplex.Messaging.Server.Stats
       Simplex.Messaging.Server.StoreLog
+      Simplex.Messaging.Server.StoreLog.Types
       Simplex.Messaging.ServiceScheme
       Simplex.Messaging.Session
       Simplex.Messaging.TMap

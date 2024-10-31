@@ -1,5 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -25,14 +26,18 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM
+import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Util ((<$$>))
+import System.IO (IOMode (..))
 
 data STMMsgStore = STMMsgStore
   { storeConfig :: STMStoreConfig,
     queues :: TMap RecipientId STMQueue',
     senders :: TMap SenderId RecipientId,
-    notifiers :: TMap NotifierId RecipientId
+    notifiers :: TMap NotifierId RecipientId,
+    storeLog :: TVar (Maybe (StoreLog 'WriteMode))
   }
 
 type STMQueue' = STMQueue STMMsgQueue
@@ -59,9 +64,13 @@ instance MsgStoreClass STMMsgStore where
     queues <- TM.emptyIO
     senders <- TM.emptyIO
     notifiers <- TM.emptyIO
-    pure STMMsgStore {storeConfig, queues, senders, notifiers}
+    storeLog <- newTVarIO Nothing
+    pure STMMsgStore {storeConfig, queues, senders, notifiers, storeLog}
 
-  closeMsgStore _ = pure ()
+  setStoreLog :: STMMsgStore -> StoreLog 'WriteMode -> IO ()
+  setStoreLog st sl = atomically $ writeTVar (storeLog st) (Just sl)
+
+  closeMsgStore st = withLog' (storeLog st) closeStoreLog
 
   activeMsgQueues = queues
   {-# INLINE activeMsgQueues #-}
@@ -76,8 +85,8 @@ instance MsgStoreClass STMMsgStore where
 
   logQueueState _ = pure ()
 
-  addQueue STMMsgStore {queues, senders, notifiers} q =
-    addQueue' queues senders notifiers q =<< createLockIO
+  addQueue STMMsgStore {queues, senders, notifiers, storeLog} q =
+    createLockIO >>= addQueue' queues senders notifiers storeLog q
   {-# INLINE addQueue #-}
 
   getQueue STMMsgStore {queues, senders, notifiers} = getQueue' queues senders notifiers
@@ -104,46 +113,36 @@ instance MsgStoreClass STMMsgStore where
   openedMsgQueue = readTVar . msgQueue_
   {-# INLINE openedMsgQueue #-}
 
-  -- TODO move log here
-  secureQueue :: STMMsgStore -> STMQueue' -> SndPublicAuthKey -> IO (Either ErrorType QueueRec)  
-  secureQueue _ms q = atomically . secureQueue' (queueRec q)
+  secureQueue :: STMMsgStore -> STMQueue' -> SndPublicAuthKey -> IO (Either ErrorType ())  
+  secureQueue = secureQueue' . storeLog
   {-# INLINE secureQueue #-}
 
-  -- TODO move log here
   addQueueNotifier :: STMMsgStore -> STMQueue' -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
-  addQueueNotifier ms q = atomically . addQueueNotifier' (notifiers ms) (queueRec q)
+  addQueueNotifier ms = addQueueNotifier' (notifiers ms) (storeLog ms)
   {-# INLINE addQueueNotifier #-}
   
-  -- TODO move log here
   deleteQueueNotifier :: STMMsgStore -> STMQueue' -> IO (Either ErrorType (Maybe NotifierId))
-  deleteQueueNotifier ms = atomically . deleteQueueNotifier' (notifiers ms) . queueRec
+  deleteQueueNotifier ms = deleteQueueNotifier' (notifiers ms) (storeLog ms)
   {-# INLINE deleteQueueNotifier #-}
   
-  -- TODO move log here
   suspendQueue :: STMMsgStore -> STMQueue' -> IO (Either ErrorType ())
-  suspendQueue _ms = atomically . suspendQueue' . queueRec
+  suspendQueue = suspendQueue' . storeLog
   {-# INLINE suspendQueue #-}
 
-  -- TODO move log here
-  updateQueueTime :: STMMsgStore -> STMQueue' -> RoundedSystemTime -> IO (Either ErrorType (QueueRec, Bool))
-  updateQueueTime _ms q = atomically . updateQueueTime' (queueRec q)
+  updateQueueTime :: STMMsgStore -> STMQueue' -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
+  updateQueueTime = updateQueueTime' . storeLog
   {-# INLINE updateQueueTime #-}
 
-  -- TODO move log here
   deleteQueue :: STMMsgStore -> RecipientId -> STMQueue' -> IO (Either ErrorType QueueRec)
-  deleteQueue STMMsgStore {senders, notifiers} _rId q =
-    atomically $
-      deleteQueueRec' senders notifiers (queueRec q)
-        >>= mapM (writeTVar (msgQueue_ q) Nothing $>)
+  deleteQueue STMMsgStore {senders, notifiers, storeLog} rId q =
+    fst <$$> deleteQueue' senders notifiers storeLog rId q
 
-  -- TODO move log here
   deleteQueueSize :: STMMsgStore -> RecipientId -> STMQueue' -> IO (Either ErrorType (QueueRec, Int))
-  deleteQueueSize STMMsgStore {senders, notifiers} _rId q =
-    atomically $
-      deleteQueueRec' senders notifiers (queueRec q)
-        >>= mapM (\q' -> (q',) <$> getSize)
+  deleteQueueSize STMMsgStore {senders, notifiers, storeLog} rId q =
+    deleteQueue' senders notifiers storeLog rId q >>= mapM (traverse getSize)
+    -- traverse operates on the second tuple element
     where
-      getSize = swapTVar (msgQueue_ q) Nothing >>= maybe (pure 0) (\STMMsgQueue {size} -> readTVar size)
+      getSize = maybe (pure 0) (\STMMsgQueue {size} -> readTVarIO size)
 
   getQueueMessages_ :: Bool -> STMMsgQueue -> STM [Message]
   getQueueMessages_ drainMsgs = (if drainMsgs then flushTQueue else snapshotTQueue) . msgQueue

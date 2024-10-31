@@ -47,16 +47,11 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Server.StoreLog.Types
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (tshow, ifM, unlessM, whenM)
 import System.Directory (doesFileExist, renameFile)
 import System.IO
-
--- | opaque container for file handle with a type-safe IOMode
--- constructors are not exported, openWriteStoreLog and openReadStoreLog should be used instead
-data StoreLog (a :: IOMode) where
-  ReadStoreLog :: FilePath -> Handle -> StoreLog 'ReadMode
-  WriteStoreLog :: FilePath -> Handle -> StoreLog 'WriteMode
 
 data StoreLogRecord
   = CreateQueue QueueRec

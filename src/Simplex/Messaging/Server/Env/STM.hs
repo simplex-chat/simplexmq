@@ -52,7 +52,6 @@ import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
 import Simplex.Messaging.Transport.Server
 import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
-import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
 
@@ -163,7 +162,6 @@ data Env = Env
     msgStore :: AMsgStore,
     ntfStore :: NtfStore,
     random :: TVar ChaChaDRG,
-    storeLog :: Maybe (StoreLog 'WriteMode),
     tlsServerCreds :: T.Credential,
     httpServerCreds :: Maybe T.Credential,
     serverStats :: ServerStats,
@@ -291,10 +289,10 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
       Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
-  storeLog <-
-    forM storeLogFile $ \f -> do
-      logInfo $ "restoring queues from file " <> T.pack f
-      readWriteQueueStore f store
+  forM_ storeLogFile $ \f -> do
+    logInfo $ "restoring queues from file " <> T.pack f
+    sl <- readWriteQueueStore f store
+    setStoreLog store sl
   tlsServerCreds <- getCredentials "SMP" smpCredentials
   httpServerCreds <- mapM (getCredentials "HTTPS") httpCredentials
   mapM_ checkHTTPSCredentials httpServerCreds
@@ -305,7 +303,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
   clientSeq <- newTVarIO 0
   clients <- newTVarIO mempty
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
-  pure Env {serverActive, config, serverInfo, server, serverIdentity, msgStore, ntfStore, random, storeLog, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
+  pure Env {serverActive, config, serverInfo, server, serverIdentity, msgStore, ntfStore, random, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     getCredentials protocol creds = do
       files <- missingCreds

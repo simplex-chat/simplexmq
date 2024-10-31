@@ -101,7 +101,6 @@ import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.Stats
-import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -222,8 +221,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
 
     saveServer :: Bool -> M ()
     saveServer drainMsgs = do
-      withLog closeStoreLog
-      saveServerMessages drainMsgs
+      ams@(AMS _ ms) <- asks msgStore
+      liftIO $ saveServerMessages drainMsgs ams >> closeMsgStore ms
       saveServerNtfs
       saveServerStats
 
@@ -806,7 +805,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                 case r of
                   Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
                   Right (qr, numDeleted) -> do
-                    withLog (`logDeleteQueue` recipientId qr)
                     updateDeletedStats qr
                     liftIO $ hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
               CPSave -> withAdminRole $ withLock' (savingLock srv) "control" $ do
@@ -1173,8 +1171,8 @@ client
       Cmd SProxiedClient command -> processProxiedCmd (corrId, entId, command)
       Cmd SSender command -> Just <$> case command of
         SKEY sKey ->
-          withQueue $ \q qr@QueueRec {sndSecure} ->
-            (corrId,entId,) <$> if sndSecure then secureQueue_ q qr sKey else pure $ ERR AUTH
+          withQueue $ \q QueueRec {sndSecure} ->
+            (corrId,entId,) <$> if sndSecure then secureQueue_ q sKey else pure $ ERR AUTH
         SEND flags msgBody -> withQueue $ sendMessage flags msgBody
         PING -> pure (corrId, NoEntity, PONG)
         RFWD encBlock -> (corrId, NoEntity,) <$> processForwardedCommand encBlock
@@ -1193,7 +1191,7 @@ client
           SUB -> withQueue subscribeQueue
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
-          KEY sKey -> withQueue $ \q qr -> (corrId,entId,) <$> secureQueue_ q qr sKey
+          KEY sKey -> withQueue $ \q _ -> (corrId,entId,) <$> secureQueue_ q sKey
           NKEY nKey dhKey -> withQueue $ \q _ -> addQueueNotifier_ q nKey dhKey
           NDEL -> withQueue $ \q _ -> deleteQueueNotifier_ q
           OFF -> maybe (pure $ err INTERNAL) suspendQueue_ q_
@@ -1230,7 +1228,6 @@ client
                 Left DUPLICATE_ -> addQueueRetry (n - 1) qik qRec
                 Left e -> pure $ ERR e
                 Right q -> do
-                  withLog (`logCreateQueue` qr)
                   stats <- asks serverStats
                   incStat $ qCreated stats
                   incStat $ qCount stats
@@ -1244,12 +1241,11 @@ client
               n <- asks $ queueIdBytes . config
               liftM2 (,) (randomId n) (randomId n)
 
-        secureQueue_ :: StoreQueue s -> QueueRec -> SndPublicAuthKey -> M BrokerMsg
-        secureQueue_ q qr sKey = do
+        secureQueue_ :: StoreQueue s -> SndPublicAuthKey -> M BrokerMsg
+        secureQueue_ q sKey = do
           liftIO (secureQueue ms q sKey) >>= \case
             Left e -> pure $ ERR e
-            Right _qr -> do
-              withLog $ \s -> logSecureQueue s (recipientId qr) sKey
+            Right () -> do
               stats <- asks serverStats
               incStat $ qSecured stats
               pure OK
@@ -1269,14 +1265,12 @@ client
                 Left DUPLICATE_ -> addNotifierRetry (n - 1) rcvPublicDhKey rcvNtfDhSecret
                 Left e -> pure $ ERR e
                 Right nId_ -> do
-                  withLog $ \s -> logAddNotifier s entId ntfCreds
                   incStat . ntfCreated =<< asks serverStats
                   forM_ nId_ $ \nId -> atomically $ writeTQueue ntfSubscribedQ (nId, clientId, False)
                   pure $ NID notifierId rcvPublicDhKey
 
         deleteQueueNotifier_ :: StoreQueue s -> M (Transmission BrokerMsg)
-        deleteQueueNotifier_ q = do
-          withLog (`logDeleteNotifier` entId)
+        deleteQueueNotifier_ q =
           liftIO (deleteQueueNotifier ms q) >>= \case
             Right (Just nId) -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
@@ -1290,10 +1284,7 @@ client
             Left e -> pure $ err e
 
         suspendQueue_ :: (StoreQueue s, QueueRec) -> M (Transmission BrokerMsg)
-        suspendQueue_ (q, _) =
-          liftIO (suspendQueue ms q) >>= \case
-            Right () -> withLog (`logSuspendQueue` entId) $> ok
-            Left e -> pure $ err e
+        suspendQueue_ (q, _) = liftIO $ either err (const ok) <$> suspendQueue ms q
 
         subscribeQueue :: StoreQueue s -> QueueRec -> M (Transmission BrokerMsg)
         subscribeQueue q qr =
@@ -1369,12 +1360,7 @@ client
             t <- liftIO getSystemDate
             if updatedAt == Just t
               then action q qr
-              else
-                liftIO (updateQueueTime ms q t) >>= \case
-                  Right (qr', changed) -> do
-                    when changed (withLog $ \s -> logUpdateQueueTime s entId t)
-                    action q qr'
-                  Left e -> pure $ err e
+              else liftIO (updateQueueTime ms q t) >>= either (pure . err) (action q)
 
         subscribeNotifications :: M (Transmission BrokerMsg)
         subscribeNotifications = do
@@ -1644,7 +1630,6 @@ client
 
         delQueueAndMsgs :: (StoreQueue s, QueueRec) -> M (Transmission BrokerMsg)
         delQueueAndMsgs (q, _) = do
-          withLog (`logDeleteQueue` entId)
           liftIO (deleteQueue ms entId q) >>= \case
             Right qr -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
@@ -1703,11 +1688,6 @@ incStat :: MonadIO m => IORef Int -> m ()
 incStat r = liftIO $ atomicModifyIORef'_ r (+ 1)
 {-# INLINE incStat #-}
 
-withLog :: (StoreLog 'WriteMode -> IO a) -> M ()
-withLog action = do
-  env <- ask
-  liftIO . mapM_ action $ storeLog (env :: Env)
-
 timed :: MonadIO m => T.Text -> RecipientId -> m a -> m a
 timed name (EntityId qId) a = do
   t <- liftIO getSystemTime
@@ -1727,15 +1707,12 @@ randomId :: Int -> M EntityId
 randomId = fmap EntityId . randomId'
 {-# INLINE randomId #-}
 
-saveServerMessages :: Bool -> M ()
-saveServerMessages drainMsgs =
-  asks msgStore >>= \case
-    AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-      Just f -> liftIO $ exportMessages False ms f drainMsgs
-      Nothing -> logInfo "undelivered messages are not saved"
-    AMS SMSJournal ms -> do
-      liftIO $ closeMsgStore ms
-      logInfo "closed journal message storage"
+saveServerMessages :: Bool -> AMsgStore -> IO ()
+saveServerMessages drainMsgs = \case
+  AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
+    Just f -> exportMessages False ms f drainMsgs
+    Nothing -> logInfo "undelivered messages are not saved"
+  AMS SMSJournal _ -> logInfo "closed journal message storage"
 
 exportMessages :: MsgStoreClass s => Bool -> s -> FilePath -> Bool -> IO ()
 exportMessages tty ms f drainMsgs = do
