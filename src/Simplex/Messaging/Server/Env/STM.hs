@@ -44,6 +44,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
@@ -52,6 +53,7 @@ import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
 import Simplex.Messaging.Transport.Server
 import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
+import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
 
@@ -175,7 +177,7 @@ type family MsgStore s where
   MsgStore 'MSMemory = STMMsgStore
   MsgStore 'MSJournal = JournalMsgStore
 
-data AMsgStore = forall s. MsgStoreClass (MsgStore s) => AMS (SMSType s) (MsgStore s)
+data AMsgStore = forall s. (STMQueueStore (MsgStore s), MsgStoreClass (MsgStore s)) => AMS (SMSType s) (MsgStore s)
 
 data AStoreQueue = forall s. MsgStoreClass (MsgStore s) => ASQ (SMSType s) (StoreQueue (MsgStore s))
 
@@ -347,3 +349,6 @@ newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO ProxyAgent
 newSMPProxyAgent smpAgentCfg random = do
   smpAgent <- newSMPClientAgent smpAgentCfg random
   pure ProxyAgent {smpAgent}
+
+readWriteQueueStore :: STMQueueStore s => FilePath -> s -> IO (StoreLog 'WriteMode)
+readWriteQueueStore = readWriteStoreLog readQueues writeQueues

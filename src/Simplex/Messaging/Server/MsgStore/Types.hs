@@ -23,6 +23,14 @@ import Simplex.Messaging.Server.StoreLog.Types
 import Simplex.Messaging.TMap (TMap)
 import System.IO (IOMode (..))
 
+class MsgStoreClass s => STMQueueStore s where
+  queues' :: s -> TMap RecipientId (StoreQueue s)
+  senders' :: s -> TMap SenderId RecipientId
+  notifiers' :: s -> TMap NotifierId RecipientId
+  storeLog' :: s -> TVar (Maybe (StoreLog 'WriteMode))
+  mkQueue :: s -> QueueRec -> STM (StoreQueue s)
+  msgQueue_' :: StoreQueue s -> TVar (Maybe (MsgQueue s))
+
 class Monad (StoreMonad s) => MsgStoreClass s where
   type StoreMonad s = (m :: Type -> Type) | m -> s
   type MsgStoreConfig s = c | c -> s
@@ -32,21 +40,12 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   setStoreLog :: s -> StoreLog 'WriteMode -> IO ()
   closeMsgStore :: s -> IO ()
   activeMsgQueues :: s -> TMap RecipientId (StoreQueue s)
-  queueNotifiers :: s -> TMap NotifierId RecipientId
   withAllMsgQueues :: Monoid a => Bool -> s -> (RecipientId -> StoreQueue s -> IO a) -> IO a
   logQueueStates :: s -> IO ()
   logQueueState :: StoreQueue s -> IO ()
-  addQueue :: s -> QueueRec -> IO (Either ErrorType (StoreQueue s))
-  getQueue :: DirectParty p => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s))
-  getQueueRec :: DirectParty p => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s, QueueRec))
   queueRec' :: StoreQueue s -> TVar (Maybe QueueRec)
   getMsgQueue :: s -> RecipientId -> StoreQueue s -> StoreMonad s (MsgQueue s)
   openedMsgQueue :: StoreQueue s -> StoreMonad s (Maybe (MsgQueue s))
-  secureQueue :: s -> StoreQueue s -> SndPublicAuthKey -> IO (Either ErrorType ())
-  addQueueNotifier :: s -> StoreQueue s -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
-  deleteQueueNotifier :: s -> StoreQueue s -> IO (Either ErrorType (Maybe NotifierId))
-  suspendQueue :: s -> StoreQueue s -> IO (Either ErrorType ())
-  updateQueueTime :: s -> StoreQueue s -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
   deleteQueue :: s -> RecipientId -> StoreQueue s -> IO (Either ErrorType QueueRec)
   deleteQueueSize :: s -> RecipientId -> StoreQueue s -> IO (Either ErrorType (QueueRec, Int))
   getQueueMessages_ :: Bool -> MsgQueue s -> StoreMonad s [Message]

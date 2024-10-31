@@ -29,12 +29,13 @@ import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), Message (..), RecipientId, SParty (..), noMsgFlags)
 import Simplex.Messaging.Server (MessageStats (..), exportMessages, importMessages, printMessageStats)
-import Simplex.Messaging.Server.Env.STM (journalMsgStoreDepth)
+import Simplex.Messaging.Server.Env.STM (journalMsgStoreDepth, readWriteQueueStore)
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue, readWriteQueueStore)
+import Simplex.Messaging.Server.QueueStore.STM
+import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue)
 import SMPClient (testStoreLogFile, testStoreMsgsDir, testStoreMsgsDir2, testStoreMsgsFile, testStoreMsgsFile2)
 import System.Directory (copyFile, createDirectoryIfMissing, listDirectory, removeFile, renameFile)
 import System.FilePath ((</>))
@@ -51,12 +52,12 @@ msgStoreTests = do
       it "should restore queue state from the last line" testQueueState
       it "should recover when message is written and state is not" testMessageState
   where
-    someMsgStoreTests :: MsgStoreClass s => SpecWith s
+    someMsgStoreTests :: STMQueueStore s => SpecWith s
     someMsgStoreTests = do
       it "should get queue and store/read messages" testGetQueue
       it "should not fail on EOF when changing read journal" testChangeReadJournal
 
-withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
+withMsgStore :: STMQueueStore s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
 withMsgStore cfg = bracket (newMsgStore cfg) closeMsgStore
 
 testSMTStoreConfig :: STMStoreConfig
@@ -108,7 +109,7 @@ testNewQueueRec g sndSecure = do
           }
   pure (rId, qr)
 
-testGetQueue :: MsgStoreClass s => s -> IO ()
+testGetQueue :: STMQueueStore s => s -> IO ()
 testGetQueue ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
@@ -150,7 +151,7 @@ testGetQueue ms = do
     (Nothing, Nothing) <- tryDelPeekMsg ms rId q mId8
     void $ ExceptT $ deleteQueue ms rId q
 
-testChangeReadJournal :: MsgStoreClass s => s -> IO ()
+testChangeReadJournal :: STMQueueStore s => s -> IO ()
 testChangeReadJournal ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True

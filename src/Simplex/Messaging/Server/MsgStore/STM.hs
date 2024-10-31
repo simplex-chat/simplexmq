@@ -53,6 +53,18 @@ data STMStoreConfig = STMStoreConfig
     quota :: Int
   }
 
+instance STMQueueStore STMMsgStore where
+  queues' = queues
+  senders' = senders
+  notifiers' = notifiers
+  storeLog' = storeLog
+  mkQueue _ qr = do
+    lock <- createLock
+    q <- newTVar $! Just qr
+    mq <- newTVar Nothing
+    pure $ STMQueue lock q mq
+  msgQueue_' = msgQueue_
+
 instance MsgStoreClass STMMsgStore where
   type StoreMonad STMMsgStore = STM
   type StoreQueue STMMsgStore = STMQueue'
@@ -75,25 +87,12 @@ instance MsgStoreClass STMMsgStore where
   activeMsgQueues = queues
   {-# INLINE activeMsgQueues #-}
 
-  queueNotifiers = notifiers
-  {-# INLINE queueNotifiers #-}
-
   withAllMsgQueues _ = withActiveMsgQueues
   {-# INLINE withAllMsgQueues #-}
 
   logQueueStates _ = pure ()
 
   logQueueState _ = pure ()
-
-  addQueue STMMsgStore {queues, senders, notifiers, storeLog} q =
-    createLockIO >>= addQueue' queues senders notifiers storeLog q
-  {-# INLINE addQueue #-}
-
-  getQueue STMMsgStore {queues, senders, notifiers} = getQueue' queues senders notifiers
-  {-# INLINE getQueue #-}
-
-  getQueueRec STMMsgStore {queues, senders, notifiers} = getQueueRec' queues senders notifiers
-  {-# INLINE getQueueRec #-}
 
   queueRec' = queueRec
   {-# INLINE queueRec' #-}
@@ -113,33 +112,11 @@ instance MsgStoreClass STMMsgStore where
   openedMsgQueue = readTVar . msgQueue_
   {-# INLINE openedMsgQueue #-}
 
-  secureQueue :: STMMsgStore -> STMQueue' -> SndPublicAuthKey -> IO (Either ErrorType ())  
-  secureQueue = secureQueue' . storeLog
-  {-# INLINE secureQueue #-}
-
-  addQueueNotifier :: STMMsgStore -> STMQueue' -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
-  addQueueNotifier ms = addQueueNotifier' (notifiers ms) (storeLog ms)
-  {-# INLINE addQueueNotifier #-}
-  
-  deleteQueueNotifier :: STMMsgStore -> STMQueue' -> IO (Either ErrorType (Maybe NotifierId))
-  deleteQueueNotifier ms = deleteQueueNotifier' (notifiers ms) (storeLog ms)
-  {-# INLINE deleteQueueNotifier #-}
-  
-  suspendQueue :: STMMsgStore -> STMQueue' -> IO (Either ErrorType ())
-  suspendQueue = suspendQueue' . storeLog
-  {-# INLINE suspendQueue #-}
-
-  updateQueueTime :: STMMsgStore -> STMQueue' -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
-  updateQueueTime = updateQueueTime' . storeLog
-  {-# INLINE updateQueueTime #-}
-
   deleteQueue :: STMMsgStore -> RecipientId -> STMQueue' -> IO (Either ErrorType QueueRec)
-  deleteQueue STMMsgStore {senders, notifiers, storeLog} rId q =
-    fst <$$> deleteQueue' senders notifiers storeLog rId q
+  deleteQueue ms rId q = fst <$$> deleteQueue' ms rId q
 
   deleteQueueSize :: STMMsgStore -> RecipientId -> STMQueue' -> IO (Either ErrorType (QueueRec, Int))
-  deleteQueueSize STMMsgStore {senders, notifiers, storeLog} rId q =
-    deleteQueue' senders notifiers storeLog rId q >>= mapM (traverse getSize)
+  deleteQueueSize ms rId q = deleteQueue' ms rId q >>= mapM (traverse getSize)
     -- traverse operates on the second tuple element
     where
       getSize = maybe (pure 0) (\STMMsgQueue {size} -> readTVarIO size)

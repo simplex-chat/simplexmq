@@ -205,6 +205,18 @@ logFileExt = ".log"
 newtype StoreIO a = StoreIO {unStoreIO :: IO a}
   deriving newtype (Functor, Applicative, Monad)
 
+instance STMQueueStore JournalMsgStore where
+  queues' = queues
+  senders' = senders
+  notifiers' = notifiers
+  storeLog' = storeLog
+  mkQueue st qr = do
+    lock <- getMapLock (queueLocks st) $ recipientId qr
+    q <- newTVar $! Just qr
+    mq <- newTVar Nothing
+    pure $ STMQueue lock q mq
+  msgQueue_' = msgQueue_
+
 instance MsgStoreClass JournalMsgStore where
   type StoreMonad JournalMsgStore = StoreIO
   type StoreQueue JournalMsgStore = JSTMQueue
@@ -230,9 +242,6 @@ instance MsgStoreClass JournalMsgStore where
 
   activeMsgQueues = queues
   {-# INLINE activeMsgQueues #-}
-
-  queueNotifiers = notifiers
-  {-# INLINE queueNotifiers #-}
 
   -- This function is a "foldr" that opens and closes all queues, processes them as defined by action and accumulates the result.
   -- It is used to export storage to a single file and also to expire messages and validate all queues when server is started.
@@ -289,17 +298,6 @@ instance MsgStoreClass JournalMsgStore where
         $>>= \mq -> readTVarIO (handles mq)
         $>>= (\hs -> (readTVarIO (state mq) >>= appendState (stateHandle hs)) $> Just ())
 
-  addQueue JournalMsgStore {queueLocks, queues, senders, notifiers, storeLog} q =
-    atomically (getMapLock queueLocks $ recipientId q) >>=
-      addQueue' queues senders notifiers storeLog q
-  {-# INLINE addQueue #-}
-
-  getQueue JournalMsgStore {queues, senders, notifiers} = getQueue' queues senders notifiers
-  {-# INLINE getQueue #-}
-
-  getQueueRec JournalMsgStore {queues, senders, notifiers} = getQueueRec' queues senders notifiers
-  {-# INLINE getQueueRec #-}
-
   queueRec' = queueRec
   {-# INLINE queueRec' #-}
 
@@ -325,25 +323,6 @@ instance MsgStoreClass JournalMsgStore where
   openedMsgQueue :: JSTMQueue -> StoreIO (Maybe JournalMsgQueue)
   openedMsgQueue = StoreIO . readTVarIO . msgQueue_
   {-# INLINE openedMsgQueue #-}
-
-  secureQueue :: JournalMsgStore -> JSTMQueue -> SndPublicAuthKey -> IO (Either ErrorType ())  
-  secureQueue = secureQueue' . storeLog
-  {-# INLINE secureQueue #-}
-
-  addQueueNotifier :: JournalMsgStore -> JSTMQueue -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
-  addQueueNotifier ms = addQueueNotifier' (notifiers ms) (storeLog ms)
-  
-  deleteQueueNotifier :: JournalMsgStore -> JSTMQueue -> IO (Either ErrorType (Maybe NotifierId))
-  deleteQueueNotifier ms = deleteQueueNotifier' (notifiers ms) (storeLog ms)
-  {-# INLINE deleteQueueNotifier #-}
-  
-  suspendQueue :: JournalMsgStore -> JSTMQueue -> IO (Either ErrorType ())
-  suspendQueue = suspendQueue' . storeLog
-  {-# INLINE suspendQueue #-}
-
-  updateQueueTime :: JournalMsgStore -> JSTMQueue -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
-  updateQueueTime = updateQueueTime' . storeLog
-  {-# INLINE updateQueueTime #-}
 
   deleteQueue :: JournalMsgStore -> RecipientId -> JSTMQueue -> IO (Either ErrorType QueueRec)
   deleteQueue ms rId q =
@@ -661,9 +640,9 @@ validQueueState MsgQueueState {readState = rs, writeState = ws, size}
         && bytePos ws == byteCount ws
 
 deleteQueue_ :: JournalMsgStore -> RecipientId -> JSTMQueue -> IO (Either ErrorType (QueueRec, Maybe JournalMsgQueue))
-deleteQueue_ ms@JournalMsgStore {senders, notifiers, storeLog} rId q =
+deleteQueue_ ms rId q =
   runExceptT $ isolateQueueId "deleteQueue_" ms rId $
-    deleteQueue' senders notifiers storeLog rId q >>= mapM remove
+    deleteQueue' ms rId q >>= mapM remove
   where
     remove r@(_, mq_) = do
       mapM_ closeMsgQueueHandles mq_
