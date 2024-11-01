@@ -14,8 +14,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 
 module Simplex.Messaging.Server.QueueStore.STM
-  ( STMQueue (..),
-    addQueue,
+  ( addQueue,
     getQueue,
     getQueueRec,
     secureQueue,
@@ -40,7 +39,6 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
-import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
@@ -50,14 +48,6 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM, tshow, ($>>=), (<$$))
 import System.IO
 import UnliftIO.STM
-
-data STMQueue q = STMQueue
-  { queueLock :: Lock,
-    -- To avoid race conditions and errors when restoring queues,
-    -- Nothing is written to TVar when queue is deleted.
-    queueRec :: TVar (Maybe QueueRec),
-    msgQueue_ :: TVar (Maybe q)
-  }
 
 addQueue :: STMQueueStore s => s -> QueueRec -> IO (Either ErrorType (StoreQueue s))
 addQueue st qr@QueueRec {recipientId = rId, senderId = sId, notifier}=

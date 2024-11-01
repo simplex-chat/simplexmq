@@ -94,7 +94,7 @@ import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.MsgStore.Journal (JSTMQueue, closeMsgQueue)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue, closeMsgQueue)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -1765,7 +1765,7 @@ processServerMessages = do
                   liftIO $ logQueueState q
                   liftIO $ closeMsgQueue q
                   pure (stored'', expired'')
-            processValidateQueue :: RecipientId -> JSTMQueue -> IO MessageStats
+            processValidateQueue :: RecipientId -> JournalQueue -> IO MessageStats
             processValidateQueue rId q =
               runExceptT (getQueueSize ms rId q) >>= \case
                 Right storedMsgsCount -> pure newMessageStats {storedMsgsCount, storedQueues = 1}

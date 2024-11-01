@@ -16,7 +16,7 @@
 
 module Simplex.Messaging.Server.MsgStore.Journal
   ( JournalMsgStore (queues, senders, notifiers, random),
-    JSTMQueue,
+    JournalQueue,
     JournalMsgQueue (queue),
     JMQueue (queueDirectory, statePath),
     JournalStoreConfig (..),
@@ -77,7 +77,7 @@ data JournalMsgStore = JournalMsgStore
   { config :: JournalStoreConfig,
     random :: TVar StdGen,
     queueLocks :: TMap RecipientId Lock,
-    queues :: TMap RecipientId JSTMQueue,
+    queues :: TMap RecipientId JournalQueue,
     senders :: TMap SenderId RecipientId,
     notifiers :: TMap NotifierId RecipientId,
     storeLog :: TVar (Maybe (StoreLog 'WriteMode))
@@ -94,7 +94,13 @@ data JournalStoreConfig = JournalStoreConfig
     maxStateLines :: Int
   }
 
-type JSTMQueue = STMQueue JournalMsgQueue
+data JournalQueue = JournalQueue
+  { queueLock :: Lock,
+    -- To avoid race conditions and errors when restoring queues,
+    -- Nothing is written to TVar when queue is deleted.
+    queueRec :: TVar (Maybe QueueRec),
+    msgQueue_ :: TVar (Maybe JournalMsgQueue)
+  }
 
 data JMQueue = JMQueue
   { queueDirectory :: FilePath,
@@ -214,12 +220,12 @@ instance STMQueueStore JournalMsgStore where
     lock <- getMapLock (queueLocks st) $ recipientId qr
     q <- newTVar $! Just qr
     mq <- newTVar Nothing
-    pure $ STMQueue lock q mq
+    pure $ JournalQueue lock q mq
   msgQueue_' = msgQueue_
 
 instance MsgStoreClass JournalMsgStore where
   type StoreMonad JournalMsgStore = StoreIO
-  type StoreQueue JournalMsgStore = JSTMQueue
+  type StoreQueue JournalMsgStore = JournalQueue
   type MsgQueue JournalMsgStore = JournalMsgQueue
   type MsgStoreConfig JournalMsgStore = JournalStoreConfig
 
@@ -247,7 +253,7 @@ instance MsgStoreClass JournalMsgStore where
   -- It is used to export storage to a single file and also to expire messages and validate all queues when server is started.
   -- TODO this function requires case-sensitive file system, because it uses queue directory as recipient ID.
   -- It can be made to support case-insensite FS by supporting more than one queue per directory, by getting recipient ID from state file name.
-  withAllMsgQueues :: forall a. Monoid a => Bool -> JournalMsgStore -> (RecipientId -> JSTMQueue -> IO a) -> IO a
+  withAllMsgQueues :: forall a. Monoid a => Bool -> JournalMsgStore -> (RecipientId -> JournalQueue -> IO a) -> IO a
   withAllMsgQueues tty ms@JournalMsgStore {config} action = ifM (doesDirectoryExist storePath) processStore (pure mempty)
     where
       processStore = do
@@ -290,7 +296,7 @@ instance MsgStoreClass JournalMsgStore where
   logQueueStates :: JournalMsgStore -> IO ()
   logQueueStates ms = withActiveMsgQueues ms $ \_ -> logQueueState
 
-  logQueueState :: JSTMQueue -> IO ()
+  logQueueState :: JournalQueue -> IO ()
   logQueueState q =
     void $
       readTVarIO (msgQueue_ q)
@@ -300,8 +306,8 @@ instance MsgStoreClass JournalMsgStore where
   queueRec' = queueRec
   {-# INLINE queueRec' #-}
 
-  getMsgQueue :: JournalMsgStore -> RecipientId -> JSTMQueue -> StoreIO JournalMsgQueue
-  getMsgQueue ms@JournalMsgStore {random} rId STMQueue {msgQueue_} =
+  getMsgQueue :: JournalMsgStore -> RecipientId -> JournalQueue -> StoreIO JournalMsgQueue
+  getMsgQueue ms@JournalMsgStore {random} rId JournalQueue {msgQueue_} =
     StoreIO $ readTVarIO msgQueue_ >>= maybe newQ pure
     where
       newQ = do
@@ -319,15 +325,15 @@ instance MsgStoreClass JournalMsgStore where
             journalId <- newJournalId random
             mkJournalQueue queue (newMsgQueueState journalId) Nothing
 
-  openedMsgQueue :: JSTMQueue -> StoreIO (Maybe JournalMsgQueue)
+  openedMsgQueue :: JournalQueue -> StoreIO (Maybe JournalMsgQueue)
   openedMsgQueue = StoreIO . readTVarIO . msgQueue_
   {-# INLINE openedMsgQueue #-}
 
-  deleteQueue :: JournalMsgStore -> RecipientId -> JSTMQueue -> IO (Either ErrorType QueueRec)
+  deleteQueue :: JournalMsgStore -> RecipientId -> JournalQueue -> IO (Either ErrorType QueueRec)
   deleteQueue ms rId q =
     fst <$$> deleteQueue_ ms rId q
 
-  deleteQueueSize :: JournalMsgStore -> RecipientId -> JSTMQueue -> IO (Either ErrorType (QueueRec, Int))
+  deleteQueueSize :: JournalMsgStore -> RecipientId -> JournalQueue -> IO (Either ErrorType (QueueRec, Int))
   deleteQueueSize ms rId q =
     deleteQueue_ ms rId q >>= mapM (traverse getSize)
     -- traverse operates on the second tuple element
@@ -345,7 +351,7 @@ instance MsgStoreClass JournalMsgStore where
             updateReadPos q drainMsgs len hs
             (msg :) <$> run msgs
 
-  writeMsg :: JournalMsgStore -> RecipientId -> JSTMQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
+  writeMsg :: JournalMsgStore -> RecipientId -> JournalQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
   writeMsg ms rId q' logState msg = isolateQueue rId q' "writeMsg" $ do
     q <- getMsgQueue ms rId q'
     StoreIO $ do
@@ -393,7 +399,7 @@ instance MsgStoreClass JournalMsgStore where
             pure (newJournalState journalId, wh)
 
   -- can ONLY be used while restoring messages, not while server running
-  setOverQuota_ :: JSTMQueue -> IO ()
+  setOverQuota_ :: JournalQueue -> IO ()
   setOverQuota_ q =
     readTVarIO (msgQueue_ q)
       >>= mapM_ (\JournalMsgQueue {state} -> atomically $ modifyTVar' state $ \st -> st {canWrite = False})
@@ -420,8 +426,8 @@ instance MsgStoreClass JournalMsgStore where
         $>>= \len -> readTVarIO handles
         $>>= \hs -> updateReadPos q logState len hs $> Just ()
 
-  isolateQueue :: RecipientId -> JSTMQueue -> String -> StoreIO a -> ExceptT ErrorType IO a
-  isolateQueue rId STMQueue {queueLock} op =
+  isolateQueue :: RecipientId -> JournalQueue -> String -> StoreIO a -> ExceptT ErrorType IO a
+  isolateQueue rId JournalQueue {queueLock} op =
     tryStore' op rId . withLock' queueLock op . unStoreIO
 
 tryStore' :: String -> RecipientId -> IO a -> ExceptT ErrorType IO a
@@ -638,7 +644,7 @@ validQueueState MsgQueueState {readState = rs, writeState = ws, size}
         && msgPos ws == msgCount ws
         && bytePos ws == byteCount ws
 
-deleteQueue_ :: JournalMsgStore -> RecipientId -> JSTMQueue -> IO (Either ErrorType (QueueRec, Maybe JournalMsgQueue))
+deleteQueue_ :: JournalMsgStore -> RecipientId -> JournalQueue -> IO (Either ErrorType (QueueRec, Maybe JournalMsgQueue))
 deleteQueue_ ms rId q =
   runExceptT $ isolateQueueId "deleteQueue_" ms rId $
     deleteQueue' ms rId q >>= mapM remove
@@ -648,8 +654,8 @@ deleteQueue_ ms rId q =
       removeQueueDirectory ms rId
       pure r
 
-closeMsgQueue :: JSTMQueue -> IO ()
-closeMsgQueue STMQueue {msgQueue_} = atomically (swapTVar msgQueue_ Nothing) >>= mapM_ closeMsgQueueHandles
+closeMsgQueue :: JournalQueue -> IO ()
+closeMsgQueue JournalQueue {msgQueue_} = atomically (swapTVar msgQueue_ Nothing) >>= mapM_ closeMsgQueueHandles
 
 closeMsgQueueHandles :: JournalMsgQueue -> IO ()
 closeMsgQueueHandles q = readTVarIO (handles q) >>= mapM_ closeHandles
