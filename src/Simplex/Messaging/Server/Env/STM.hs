@@ -351,4 +351,4 @@ newSMPProxyAgent smpAgentCfg random = do
   pure ProxyAgent {smpAgent}
 
 readWriteQueueStore :: STMQueueStore s => FilePath -> s -> IO (StoreLog 'WriteMode)
-readWriteQueueStore = readWriteStoreLog readQueues writeQueues
+readWriteQueueStore = readWriteStoreLog readQueueStore writeQueueStore

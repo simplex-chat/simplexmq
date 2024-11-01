@@ -25,12 +25,13 @@ module Simplex.Messaging.Server.StoreLog
     logDeleteNotifier,
     logUpdateQueueTime,
     readWriteStoreLog,
-    writeQueues,
+    writeQueueStore,
   )
 where
 
 import Control.Applicative (optional, (<|>))
 import Control.Concurrent.STM
+import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -39,13 +40,14 @@ import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import GHC.IO (catchAny)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.StoreLog.Types
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (ifM, unlessM, whenM)
+import Simplex.Messaging.Util (ifM, tshow, unlessM, whenM)
 import System.Directory (doesFileExist, renameFile)
 import System.IO
 
@@ -155,11 +157,13 @@ storeLogFilePath = \case
 
 closeStoreLog :: StoreLog a -> IO ()
 closeStoreLog = \case
-  WriteStoreLog _ h -> hClose h
-  ReadStoreLog _ h -> hClose h
+  WriteStoreLog _ h -> close_ h
+  ReadStoreLog _ h -> close_ h
+  where
+    close_ h = hClose h `catchAny` \e -> logError ("STORE: closeStoreLog, error closing, " <> tshow e)
 
 writeStoreLogRecord :: StrEncoding r => StoreLog 'WriteMode -> r -> IO ()
-writeStoreLogRecord (WriteStoreLog _ h) r = do
+writeStoreLogRecord (WriteStoreLog _ h) r = E.uninterruptibleMask_ $ do
   B.hPut h $ strEncode r `B.snoc` '\n' -- hPutStrLn makes write non-atomic for length > 1024
   hFlush h
 
@@ -219,8 +223,8 @@ readWriteStoreLog readStore writeStore f st =
       renameFile tempBackup timedBackup
       logInfo $ "original state preserved as " <> T.pack timedBackup
 
-writeQueues :: STMQueueStore s => StoreLog 'WriteMode -> s -> IO ()
-writeQueues s st = readTVarIO (activeMsgQueues st) >>= mapM_ writeQueue . M.assocs
+writeQueueStore :: STMQueueStore s => StoreLog 'WriteMode -> s -> IO ()
+writeQueueStore s st = readTVarIO (activeMsgQueues st) >>= mapM_ writeQueue . M.assocs
   where
     writeQueue (rId, q) =
       readTVarIO (queueRec' q) >>= \case

@@ -237,7 +237,7 @@ instance MsgStoreClass JournalMsgStore where
   setStoreLog st sl = atomically $ writeTVar (storeLog st) (Just sl)
 
   closeMsgStore st = do
-    withLog' (storeLog st) closeStoreLog
+    readTVarIO (storeLog st) >>= mapM_ closeStoreLog
     readTVarIO (queues st) >>= mapM_ closeMsgQueue
 
   activeMsgQueues = queues
@@ -251,7 +251,6 @@ instance MsgStoreClass JournalMsgStore where
   withAllMsgQueues tty ms@JournalMsgStore {config} action = ifM (doesDirectoryExist storePath) processStore (pure mempty)
     where
       processStore = do
-        closeMsgStore ms
         (!count, !res) <- foldQueues 0 processQueue (0, mempty) ("", storePath)
         putStrLn $ progress count
         pure res

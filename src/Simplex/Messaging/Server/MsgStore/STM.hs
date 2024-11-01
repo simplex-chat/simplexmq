@@ -82,7 +82,7 @@ instance MsgStoreClass STMMsgStore where
   setStoreLog :: STMMsgStore -> StoreLog 'WriteMode -> IO ()
   setStoreLog st sl = atomically $ writeTVar (storeLog st) (Just sl)
 
-  closeMsgStore st = withLog' (storeLog st) closeStoreLog
+  closeMsgStore st = readTVarIO (storeLog st) >>= mapM_ closeStoreLog
 
   activeMsgQueues = queues
   {-# INLINE activeMsgQueues #-}
