@@ -12,6 +12,7 @@ module Simplex.FileTransfer.Transport
   ( supportedFileServerVRange,
     authCmdsXFTPVersion,
     xftpClientHandshakeStub,
+    supportedXFTPhandshakes,
     XFTPClientHandshake (..),
     -- xftpClientHandshake,
     XFTPServerHandshake (..),
@@ -57,7 +58,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (CommandError)
-import Simplex.Messaging.Transport (SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
+import Simplex.Messaging.Transport (ALPN, SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Transport.HTTP2.File
 import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version
@@ -100,6 +101,9 @@ supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion
 -- XFTP protocol does not use this handshake method
 xftpClientHandshakeStub :: c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
 xftpClientHandshakeStub _c _ks _keyHash _xftpVRange = throwE TEVersion
+
+supportedXFTPhandshakes :: [ALPN]
+supportedXFTPhandshakes = ["xftp/1"]
 
 data XFTPServerHandshake = XFTPServerHandshake
   { xftpVersionRange :: VersionRangeXFTP,

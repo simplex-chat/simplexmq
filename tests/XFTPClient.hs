@@ -14,8 +14,8 @@ import SMPClient (serverBracket)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Server (runXFTPServerBlocking)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration, defaultInactiveClientExpiration, supportedXFTPhandshakes)
-import Simplex.FileTransfer.Transport (supportedFileServerVRange)
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration, defaultInactiveClientExpiration)
+import Simplex.FileTransfer.Transport (supportedFileServerVRange, supportedXFTPhandshakes)
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.Transport (ALPN)
 import Simplex.Messaging.Transport.Server
