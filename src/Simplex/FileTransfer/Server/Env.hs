@@ -28,7 +28,6 @@ import Simplex.FileTransfer.Transport (VersionRangeXFTP)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (ALPN)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), loadFingerprint, loadServerCredential)
 import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
@@ -95,9 +94,6 @@ defaultFileExpiration =
     { ttl = defFileExpirationHours * 3600, -- seconds
       checkInterval = 2 * 3600 -- seconds, 2 hours
     }
-
-supportedXFTPhandshakes :: [ALPN]
-supportedXFTPhandshakes = ["xftp/1"]
 
 newXFTPServerEnv :: XFTPServerConfig -> IO XFTPEnv
 newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, xftpCredentials} = do

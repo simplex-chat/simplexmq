@@ -1796,9 +1796,9 @@ processServerMessages = do
 importMessages :: forall s. MsgStoreClass s => Bool -> s -> FilePath -> Maybe Int64 -> IO MessageStats
 importMessages tty ms f old_ = do
   logInfo $ "restoring messages from file " <> T.pack f
-  LB.readFile f >>= runExceptT . foldM restoreMsg (0, Nothing, (0, 0, M.empty)) . zip [0..] . LB.lines >>= \case
+  LB.readFile f >>= runExceptT . foldM restoreMsg (0, Nothing, (0, 0, M.empty)) . LB.lines >>= \case
     Left e -> do
-      putStrLn ""
+      when tty $ putStrLn ""
       logError . T.pack $ "error restoring messages: " <> e
       liftIO exitFailure
     Right (lineCount, _, (storedMsgsCount, expiredMsgsCount, overQuota)) -> do
@@ -1810,9 +1810,9 @@ importMessages tty ms f old_ = do
       pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues}
   where
     progress i = "Processed " <> show i <> " lines"
-    restoreMsg :: (Int, Maybe (RecipientId, MsgQueue s), (Int, Int, M.Map RecipientId (MsgQueue s))) -> (Int, LB.ByteString) -> ExceptT String IO (Int, Maybe (RecipientId, MsgQueue s), (Int, Int, M.Map RecipientId (MsgQueue s)))
-    restoreMsg (!lineCount, q_, (!stored, !expired, !overQuota)) (i, s') = do
-      when (tty && i `mod` 1000 == 0) $ liftIO $ putStr (progress i <> "\r")
+    restoreMsg :: (Int, Maybe (RecipientId, MsgQueue s), (Int, Int, M.Map RecipientId (MsgQueue s))) -> LB.ByteString -> ExceptT String IO (Int, Maybe (RecipientId, MsgQueue s), (Int, Int, M.Map RecipientId (MsgQueue s)))
+    restoreMsg (!i, q_, (!stored, !expired, !overQuota)) s' = do
+      when (tty && i `mod` 1000 == 0) $ liftIO $ putStr (progress i <> "\r") >> hFlush stdout
       MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
       liftError show $ addToMsgQueue rId msg
       where
@@ -1822,7 +1822,7 @@ importMessages tty ms f old_ = do
             -- to avoid lookup when restoring the next message to the same queue
             Just (rId', q') | rId' == rId -> pure q'
             _ -> getMsgQueue ms rId
-          (lineCount + 1,Just (rId, q),) <$> case msg of
+          (i + 1,Just (rId, q),) <$> case msg of
             Message {msgTs}
               | maybe True (systemSeconds msgTs >=) old_ -> do
                   writeMsg ms q False msg >>= \case
