@@ -24,6 +24,7 @@ import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Base64.URL as B64
+import Data.Maybe (fromJust)
 import Data.Time.Clock.System (getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
@@ -51,6 +52,11 @@ msgStoreTests = do
     describe "queue state" $ do
       it "should restore queue state from the last line" testQueueState
       it "should recover when message is written and state is not" testMessageState
+    describe "missing files" $ do
+      it "should create read file when missing" testReadFileMissing
+      it "should switch to write file when read file missing" testReadFileMissingSwitch
+      it "should create write file when missing" testWriteFileMissing
+      it "should create read file when read and write files are missing" testReadAndWriteFilesMissing
   where
     someMsgStoreTests :: STMQueueStore s => SpecWith s
     someMsgStoreTests = do
@@ -308,3 +314,100 @@ testMessageState ms = do
     (Msg "message 1", Msg "message 3") <- tryDelPeekMsg ms rId q mId1
     (Msg "message 3", Nothing) <- tryDelPeekMsg ms rId q mId3
     liftIO $ closeMsgQueue q
+
+testReadFileMissing :: JournalMsgStore -> IO ()
+testReadFileMissing ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g True
+  let write q s = writeMsg ms rId q True =<< mkMessage s
+  q <- runRight $ do
+    q <- ExceptT $ addQueue ms qr
+    Just (Message {}, True) <- write q "message 1"
+    Msg "message 1" <- tryPeekMsg ms rId q
+    pure q
+
+  mq <- fromJust <$> readTVarIO (msgQueue_' q)
+  MsgQueueState {readState = rs} <- readTVarIO $ state mq
+  closeMsgStore ms
+  let path = journalFilePath (queueDirectory $ queue mq) $ journalId rs
+  removeFile path
+
+  runRight_ $ do
+    q' <- ExceptT $ getQueue ms SRecipient rId
+    Nothing <- tryPeekMsg ms rId q'
+    Just (Message {}, True) <- write q' "message 2"
+    Msg "message 2" <- tryPeekMsg ms rId q'
+    pure ()
+
+testReadFileMissingSwitch :: JournalMsgStore -> IO ()
+testReadFileMissingSwitch ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g True
+  q <- writeMessages ms rId qr
+
+  mq <- fromJust <$> readTVarIO (msgQueue_' q)
+  MsgQueueState {readState = rs} <- readTVarIO $ state mq
+  closeMsgStore ms
+  let path = journalFilePath (queueDirectory $ queue mq) $ journalId rs
+  removeFile path
+
+  runRight_ $ do
+    q' <- ExceptT $ getQueue ms SRecipient rId
+    Just (Message {}, False) <- writeMsg ms rId q' True =<< mkMessage "message 6"
+    Msg "message 5" <- tryPeekMsg ms rId q'
+    pure ()
+
+testWriteFileMissing :: JournalMsgStore -> IO ()
+testWriteFileMissing ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g True
+  q <- writeMessages ms rId qr
+
+  mq <- fromJust <$> readTVarIO (msgQueue_' q)
+  MsgQueueState {writeState = ws} <- readTVarIO $ state mq
+  closeMsgStore ms
+  let path = journalFilePath (queueDirectory $ queue mq) $ journalId ws
+  print path
+  removeFile path
+
+  runRight_ $ do
+    q' <- ExceptT $ getQueue ms SRecipient rId
+    Just Message {msgId = mId3} <- tryPeekMsg ms rId q'
+    (Msg "message 3", Msg "message 4") <- tryDelPeekMsg ms rId q' mId3
+    Just Message {msgId = mId4} <- tryPeekMsg ms rId q'
+    (Msg "message 4", Nothing) <- tryDelPeekMsg ms rId q' mId4
+    Just (Message {}, True) <- writeMsg ms rId q' True =<< mkMessage "message 6"
+    Msg "message 6" <- tryPeekMsg ms rId q'
+    pure ()
+
+testReadAndWriteFilesMissing :: JournalMsgStore -> IO ()
+testReadAndWriteFilesMissing ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g True
+  q <- writeMessages ms rId qr
+
+  mq <- fromJust <$> readTVarIO (msgQueue_' q)
+  MsgQueueState {readState = rs, writeState = ws} <- readTVarIO $ state mq
+  closeMsgStore ms
+  removeFile $ journalFilePath (queueDirectory $ queue mq) $ journalId rs
+  removeFile $ journalFilePath (queueDirectory $ queue mq) $ journalId ws
+
+  runRight_ $ do
+    q' <- ExceptT $ getQueue ms SRecipient rId
+    Nothing <- tryPeekMsg ms rId q'
+    Just (Message {}, True) <- writeMsg ms rId q' True =<< mkMessage "message 6"
+    Msg "message 6" <- tryPeekMsg ms rId q'
+    pure ()
+
+writeMessages :: JournalMsgStore -> RecipientId -> QueueRec -> IO JournalQueue
+writeMessages ms rId qr = runRight $ do
+  q <- ExceptT $ addQueue ms qr
+  let write s = writeMsg ms rId q True =<< mkMessage s
+  Just (Message {msgId = mId1}, True) <- write "message 1"
+  Just (Message {msgId = mId2}, False) <- write "message 2"
+  Just (Message {}, False) <- write "message 3"
+  (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms rId q mId1
+  (Msg "message 2", Msg "message 3") <- tryDelPeekMsg ms rId q mId2
+  Just (Message {}, False) <- write "message 4"
+  Just (Message {}, False) <- write "message 5"
+  pure q

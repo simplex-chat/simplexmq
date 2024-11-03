@@ -17,7 +17,7 @@
 module Simplex.Messaging.Server.MsgStore.Journal
   ( JournalMsgStore (queues, senders, notifiers, random),
     JournalQueue,
-    JournalMsgQueue (queue),
+    JournalMsgQueue (queue, state),
     JMQueue (queueDirectory, statePath),
     JournalStoreConfig (..),
     getQueueMessages,
@@ -34,6 +34,7 @@ module Simplex.Messaging.Server.MsgStore.Journal
     newJournalId,
     appendState,
     queueLogFileName,
+    journalFilePath,
     logFileExt,
   )
 where
@@ -447,7 +448,7 @@ isolateQueueId op ms rId = tryStore op rId . withLockMap (queueLocks ms) rId op
 openMsgQueue :: JournalMsgStore -> JMQueue -> IO JournalMsgQueue
 openMsgQueue ms q@JMQueue {queueDirectory = dir, statePath} = do
   (st, sh) <- readWriteQueueState ms statePath
-  (st', rh, wh_) <- closeOnException sh $ openJournals dir st sh
+  (st', rh, wh_) <- closeOnException sh $ openJournals ms dir st sh
   let hs = MsgQueueHandles {stateHandle = sh, readHandle = rh, writeHandle = wh_}
   mkJournalQueue q st' (Just hs)
 
@@ -517,17 +518,26 @@ createNewJournal dir journalId = do
 newJournalId :: TVar StdGen -> IO ByteString
 newJournalId g = strEncode <$> atomically (stateTVar g $ genByteString 12)
 
-openJournals :: FilePath -> MsgQueueState -> Handle -> IO (MsgQueueState, Handle, Maybe Handle)
-openJournals dir st@MsgQueueState {readState = rs, writeState = ws} sh = do
+openJournals :: JournalMsgStore -> FilePath -> MsgQueueState -> Handle -> IO (MsgQueueState, Handle, Maybe Handle)
+openJournals ms dir st@MsgQueueState {readState = rs, writeState = ws} sh = do
   let rjId = journalId rs
       wjId = journalId ws
   openJournal rs >>= \case
-    Left path -> do
-      logError $ "STORE: openJournals, no read file - creating new file, " <> T.pack path
-      rh <- createNewJournal dir rjId
-      let st' = newMsgQueueState rjId
-      closeOnException rh $ appendState sh st'
-      pure (st', rh, Nothing)
+    Left path
+      | rjId == wjId -> do
+          logError $ "STORE: openJournals, no read/write file - creating new file, " <> T.pack path
+          newReadJournal
+      | otherwise -> do
+          let rs' = (newJournalState wjId) {msgCount = msgCount ws, byteCount = byteCount ws}
+              st' = st {readState = rs', size = msgCount ws}
+          openJournal rs' >>= \case
+            Left path' -> do
+              logError $ "STORE: openJournals, no read and write files - creating new file, read: " <> T.pack path <> ", write: " <> T.pack path'
+              newReadJournal
+            Right rh -> do
+              logError $ "STORE: openJournals, no read file - switched to write file, " <> T.pack path
+              closeOnException rh $ fixFileSize rh $ bytePos ws
+              pure (st', rh, Nothing)
     Right rh
       | rjId == wjId -> do
           closeOnException rh $ fixFileSize rh $ bytePos ws
@@ -536,16 +546,23 @@ openJournals dir st@MsgQueueState {readState = rs, writeState = ws} sh = do
           fixFileSize rh $ byteCount rs
           openJournal ws >>= \case
             Left path -> do
-              logError $ "STORE: openJournals, no write file - creating new file, " <> T.pack path
-              wh <- createNewJournal dir wjId
-              let size' = msgCount rs - msgPos rs
-                  st' = st {writeState = newJournalState wjId, size = size'} -- we don't amend canWrite to trigger QCONT
-              closeOnException wh $ appendState sh st'
-              pure (st', rh, Just wh)
+              let msgs = msgCount rs
+                  bytes = byteCount rs
+                  size' = msgs - msgPos rs
+                  ws' = (newJournalState rjId) {msgPos = msgs, msgCount = msgs, bytePos = bytes, byteCount = bytes}
+                  st' = st {writeState = ws', size = size'} -- we don't amend canWrite to trigger QCONT
+              logError $ "STORE: openJournals, no write file, " <> T.pack path
+              pure (st', rh, Nothing)
             Right wh -> do
               closeOnException wh $ fixFileSize wh $ bytePos ws
               pure (st, rh, Just wh)
   where
+    newReadJournal = do
+      rjId' <- newJournalId $ random ms
+      rh <- createNewJournal dir rjId'
+      let st' = newMsgQueueState rjId'
+      closeOnException rh $ appendState sh st'
+      pure (st', rh, Nothing)
     openJournal :: JournalState t -> IO (Either FilePath Handle)
     openJournal JournalState {journalId} =
       let path = journalFilePath dir journalId
