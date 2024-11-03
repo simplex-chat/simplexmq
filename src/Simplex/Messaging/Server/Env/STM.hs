@@ -79,6 +79,7 @@ data ServerConfig = ServerConfig
     controlPortAdminAuth :: Maybe BasicAuth,
     -- | time after which the messages can be removed from the queues and check interval, seconds
     messageExpiration :: Maybe ExpirationConfig,
+    expireMessagesOnStart :: Bool,
     -- | notification expiration interval (seconds)
     notificationExpiration :: ExpirationConfig,
     -- | time after which the socket with inactive client can be disconnected (without any messages or commands, incl. PING),
@@ -154,6 +155,9 @@ defaultMaxJournalMsgCount = 256
 
 defaultMsgQueueQuota :: Int
 defaultMsgQueueQuota = 128
+
+defaultStateTailSize :: Int
+defaultStateTailSize = 512
 
 data Env = Env
   { config :: ServerConfig,
@@ -284,7 +288,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
     AMSType SMSMemory -> AMS SMSMemory <$> newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
     AMSType SMSJournal -> case storeMsgsFile of
       Just storePath -> 
-        let cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines}
+        let cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize}
          in AMS SMSJournal <$> newMsgStore cfg
       Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
   ntfStore <- NtfStore <$> TM.emptyIO

@@ -137,7 +137,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError a
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
-    newJournalMsgStore = newMsgStore JournalStoreConfig {storePath = storeMsgsJournalDir, pathParts = journalMsgStoreDepth, quota = defaultMsgQueueQuota, maxMsgCount = defaultMaxJournalMsgCount, maxStateLines = defaultMaxJournalStateLines}
+    newJournalMsgStore = newMsgStore JournalStoreConfig {storePath = storeMsgsJournalDir, pathParts = journalMsgStoreDepth, quota = defaultMsgQueueQuota, maxMsgCount = defaultMaxJournalMsgCount, maxStateLines = defaultMaxJournalStateLines, stateTailSize = defaultStateTailSize}
     iniFile = combine cfgPath "smp-server.ini"
     serverVersion = "SMP server v" <> simplexMQVersion
     defaultServerPorts = "5223,443"
@@ -238,6 +238,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 <> ("restore_messages: " <> onOff enableStoreLog <> "\n\n")
                 <> "# Messages and notifications expiration periods.\n"
                 <> ("expire_messages_days: " <> tshow defMsgExpirationDays <> "\n")
+                <> "expire_messages_on_start: on\n"
                 <> ("expire_ntfs_hours: " <> tshow defNtfExpirationHours <> "\n\n")
                 <> "# Log daily server statistics to CSV file\n"
                 <> ("log_stats: " <> onOff logStats <> "\n\n")
@@ -403,6 +404,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   defaultMessageExpiration
                     { ttl = 86400 * readIniDefault defMsgExpirationDays "STORE_LOG" "expire_messages_days" ini
                     },
+              expireMessagesOnStart = fromMaybe True $ iniOnOff "STORE_LOG" "expire_messages_on_start" ini,
               notificationExpiration =
                 defaultNtfExpiration
                   { ttl = 3600 * readIniDefault defNtfExpirationHours "STORE_LOG" "expire_ntfs_hours" ini
