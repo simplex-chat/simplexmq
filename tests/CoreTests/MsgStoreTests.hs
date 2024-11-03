@@ -63,7 +63,8 @@ testJournalStoreCfg =
       pathParts = journalMsgStoreDepth,
       quota = 3,
       maxMsgCount = 4,
-      maxStateLines = 2
+      maxStateLines = 2,
+      stateTailSize = 256
     }
 
 mkMessage :: MonadIO m => ByteString -> m Message
