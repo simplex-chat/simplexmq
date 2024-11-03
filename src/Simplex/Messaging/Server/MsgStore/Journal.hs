@@ -46,7 +46,6 @@ import Control.Monad.Trans.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (intercalate)
@@ -91,7 +90,8 @@ data JournalStoreConfig = JournalStoreConfig
     -- When this limit is reached, the file will be changed.
     -- This number should be set bigger than queue quota.
     maxMsgCount :: Int,
-    maxStateLines :: Int
+    maxStateLines :: Int,
+    stateTailSize :: Int
   }
 
 data JournalQueue = JournalQueue
@@ -583,7 +583,7 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
   where
     tempBackup = statePath <> ".bak"
     readQueueState = do
-      ls <- LB.lines <$> LB.readFile statePath
+      ls <- B.lines <$> readFileTail
       case ls of
         [] -> writeNewQueueState
         _ -> do
@@ -594,7 +594,7 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
       logWarn $ "STORE: readWriteQueueState, empty queue state - initialized, " <> T.pack statePath
       st <- newMsgQueueState <$> newJournalId random
       writeQueueState st
-    useLastLine len isLastLine ls = case strDecode $ LB.toStrict $ last ls of
+    useLastLine len isLastLine ls = case strDecode $ last ls of
       Right st
         | len > maxStateLines config || not isLastLine ->
             backupWriteQueueState st
@@ -624,6 +624,14 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
       sh <- openFile statePath AppendMode
       closeOnException sh $ appendState sh st
       pure (st, sh)
+    readFileTail =
+      IO.withFile statePath ReadMode $ \h -> do
+        size <- IO.hFileSize h
+        let sz = stateTailSize config
+            sz' = fromIntegral sz
+        if size > sz'
+          then IO.hSeek h AbsoluteSeek (size - sz') >> B.hGet h sz
+          else B.hGet h (fromIntegral size)
 
 validQueueState :: MsgQueueState -> Bool
 validQueueState MsgQueueState {readState = rs, writeState = ws, size}

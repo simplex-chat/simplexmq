@@ -1736,20 +1736,23 @@ exportMessages tty ms f drainMsgs = do
 processServerMessages :: M MessageStats
 processServerMessages = do
   old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
-  asks msgStore >>= liftIO . processMessages old_
+  expire <- asks $ expireMessagesOnStart . config
+  asks msgStore >>= liftIO . processMessages old_ expire
     where
-      processMessages :: Maybe Int64 -> AMsgStore -> IO MessageStats
-      processMessages old_ = \case
+      processMessages :: Maybe Int64 -> Bool -> AMsgStore -> IO MessageStats
+      processMessages old_ expire = \case
         AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
           Just f -> ifM (doesFileExist f) (importMessages False ms f old_) (pure newMessageStats)
           Nothing -> pure newMessageStats
-        AMS SMSJournal ms -> case old_ of
-          Just old -> do
-            logInfo "expiring journal store messages..."
-            withAllMsgQueues False ms $ processExpireQueue old
-          Nothing -> do
-            logInfo "validating journal store messages..."
-            withAllMsgQueues False ms $ processValidateQueue
+        AMS SMSJournal ms
+          | expire -> case old_ of
+              Just old -> do
+                logInfo "expiring journal store messages..."
+                withAllMsgQueues False ms $ processExpireQueue old
+              Nothing -> do
+                logInfo "validating journal store messages..."
+                withAllMsgQueues False ms $ processValidateQueue
+          | otherwise -> logWarn "skipping message expiration" $> newMessageStats
           where
             processExpireQueue old rId q =
               runExceptT expireQueue >>= \case
