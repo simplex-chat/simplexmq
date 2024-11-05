@@ -393,10 +393,10 @@ data Command (p :: Party) where
   -- v6 of SMP servers only support signature algorithm for command authorization.
   -- v7 of SMP servers additionally support additional layer of authenticated encryption.
   -- RcvPublicAuthKey is defined as C.APublicKey - it can be either signature or DH public keys.
-  NEW :: RcvPublicAuthKey -> RcvPublicDhKey -> Maybe BasicAuth -> SubscriptionMode -> SenderCanSecure -> Command Recipient
+  NEW :: RcvPublicAuthKey -> RcvPublicDhKey -> Maybe BasicAuth -> SubscriptionMode -> SenderCanSecure -> Maybe NtfRequest -> Command Recipient
   SUB :: Command Recipient
   KEY :: SndPublicAuthKey -> Command Recipient
-  NKEY :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> Command Recipient
+  NKEY :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> Maybe NtfServerRequest -> Command Recipient
   NDEL :: Command Recipient
   GET :: Command Recipient
   ACK :: MsgId -> Command Recipient
@@ -424,6 +424,17 @@ data Command (p :: Party) where
   RFWD :: EncFwdTransmission -> Command Sender -- use CorrId as CbNonce, proxy to relay
 
 deriving instance Show (Command p)
+
+-- [ntf]
+-- why does client need to include pass into commands?
+-- client doesn't have to pass them to ntf server, so smp server could generate them itself.
+-- does ntf server even need NtfPublicAuthKey it if it won't be making subscription? - only RcvNtfPublicDhKey for ecryption?
+data NtfRequest = NtfRequest NotifierId NtfPublicAuthKey RcvNtfPublicDhKey NtfServerRequest
+
+data NtfServerRequest = NtfServerRequest NtfServer EncSingedNtfCmd
+
+-- EncSingedNtfCmd should contain device token
+type EncSingedNtfCmd = ByteString
 
 data SubscriptionMode = SMSubscribe | SMOnlyCreate
   deriving (Eq, Show)

@@ -292,6 +292,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       stats <- asks serverStats
       liftIO $ forever $ do
         threadDelay ntfInt
+        -- [ntf] in addition to subscribed ntf clients (legacy), should push itself for queues with ntf server saved
         readTVarIO ntfSubClients >>= mapM_ (deliverNtfs ns stats)
       where
         deliverNtfs ns stats Client {clientId, ntfSubscriptions, sndQ, connected} =
@@ -1251,6 +1252,14 @@ client thParams' clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, s
           incStat $ qSecured stats
           liftIO $ either ERR (const OK) <$> secureQueue st rId sKey
 
+        -- [ntf]
+        -- take notifier id (Maybe for backwards compatibility).
+        -- if id is passed:
+        --   - response to client would be OK
+        --   - if it already exists, response would be AUTH / duplicate error?
+        --   - forward notifier id, EncSingedNtfCmd and dhKey for encryption negotiation to ntf server to create "subscription" record.
+        -- smp server should differentiate on queue record whether it expects ntf subscriptions or
+        --  it should push notifications to ntf server itself. - store ntf server on queue record.
         addQueueNotifier_ :: QueueStore -> NtfPublicAuthKey -> RcvNtfPublicDhKey -> M (Transmission BrokerMsg)
         addQueueNotifier_ st notifierKey dhKey = time "NKEY" $ do
           (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random

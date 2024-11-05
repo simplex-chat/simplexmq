@@ -46,4 +46,12 @@ NKEY :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> Maybe NtfServerRequest -> Comma
 -- NotifierID is passed in entity ID field of the transmission
 ```
 
-2. Notification server will need to support an additional command to receive "proxied" subscription commands, `SFWD`, that would include `NtfServerRequest`. This command can include both `SNEW` and `SDEL` commands.
+Instead of client generating keys for request, SMP server could generate them itself before forwarding request to notifications server.
+
+2. SMP server has to differentiate legacy queues and queues using new notifications protocol, for example by saving notifications server on queue record.
+
+For sending notifications, subscriptions mechanism could be replaced with direct push to notifications protocol.
+
+3. Notification server will need to support an additional command to receive "proxied" subscription commands, `SFWD`, that would include `NtfServerRequest`. This command can include both `SNEW` and `SDEL` commands.
+
+Notifications server has to process NMSG in form of forwarded request from SMP server (in addition to processing it in subscriptions loop). Notifications "subscription" record in that case would be used only for bookkeeping, for example, finding token (not for making subscriptions to SMP server via NSUB).
