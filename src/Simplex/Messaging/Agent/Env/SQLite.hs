@@ -22,7 +22,6 @@ module Simplex.Messaging.Agent.Env.SQLite
     UserServers (..),
     NetworkConfig (..),
     presetServerCfg,
-    enabledServerCfg,
     allRoles,
     mkUserServers,
     serverHosts,
@@ -102,8 +101,6 @@ data InitialAgentServers = InitialAgentServers
 data ServerCfg p = ServerCfg
   { server :: ProtoServerWithAuth p,
     operator :: Maybe OperatorId,
-    preset :: Bool,
-    tested :: Maybe Bool,
     enabled :: Bool,
     roles :: ServerRoles
   }
@@ -118,13 +115,9 @@ data ServerRoles = ServerRoles
 allRoles :: ServerRoles
 allRoles = ServerRoles True True
 
-enabledServerCfg :: ProtoServerWithAuth p -> ServerCfg p
-enabledServerCfg server =
-  ServerCfg {server, operator = Nothing, preset = False, tested = Nothing, enabled = True, roles = allRoles}
-
 presetServerCfg :: Bool -> ServerRoles -> Maybe OperatorId -> ProtoServerWithAuth p -> ServerCfg p
 presetServerCfg enabled roles operator server =
-  ServerCfg {server, operator, preset = True, tested = Nothing, enabled, roles}
+  ServerCfg {server, operator, enabled, roles}
 
 data UserServers p = UserServers
   { storageSrvs :: NonEmpty (Maybe OperatorId, ProtoServerWithAuth p),
