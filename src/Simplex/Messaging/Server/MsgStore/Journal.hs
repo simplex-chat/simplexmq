@@ -334,15 +334,14 @@ instance MsgStoreClass JournalMsgStore where
 
   withIdleMsgQueue :: Int64 -> JournalMsgStore -> RecipientId -> JournalQueue -> (JournalMsgQueue -> StoreIO a) -> StoreIO (Maybe a)
   withIdleMsgQueue now ms@JournalMsgStore {config} rId q action =
-    StoreIO $ readTVarIO (msgQueue_ q) >>= maybe runQ idleQ
-    where
-      runQ =
+    StoreIO $ readTVarIO (msgQueue_ q) >>= \case
+      Nothing ->
         Just <$>
           E.bracket
             (unStoreIO $ getMsgQueue ms rId q)
             (\_ -> closeMsgQueue q)
             (unStoreIO . action)
-      idleQ mq = do
+      Just mq -> do
         ts <- readTVarIO $ activeAt q
         if now - ts >= idleInterval config
           then Just <$> unStoreIO (action mq) `E.finally` closeMsgQueue q
