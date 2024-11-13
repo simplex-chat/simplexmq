@@ -55,7 +55,7 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   setOverQuota_ :: StoreQueue s -> IO () -- can ONLY be used while restoring messages, not while server running
   getQueueSize_ :: MsgQueue s -> StoreMonad s Int
   tryPeekMsg_ :: MsgQueue s -> StoreMonad s (Maybe Message)
-  tryDeleteMsg_ :: MsgQueue s -> Bool -> StoreMonad s ()
+  tryDeleteMsg_ :: StoreQueue s -> MsgQueue s -> Bool -> StoreMonad s ()
   isolateQueue :: RecipientId -> StoreQueue s -> String -> StoreMonad s a -> ExceptT ErrorType IO a
 
 data MSType = MSMemory | MSJournal
@@ -91,7 +91,7 @@ tryDelMsg st rId q msgId' =
     tryPeekMsg_ mq >>= \case
       msg_@(Just msg)
         | messageId msg == msgId' ->
-            tryDeleteMsg_ mq True >> pure msg_
+            tryDeleteMsg_ q mq True >> pure msg_
       _ -> pure Nothing
 
 -- atomic delete (== read) last and peek next message if available
@@ -100,7 +100,7 @@ tryDelPeekMsg st rId q msgId' =
   withMsgQueue st rId q "tryDelPeekMsg" $ \mq ->
     tryPeekMsg_ mq >>= \case
       msg_@(Just msg)
-        | messageId msg == msgId' -> (msg_,) <$> (tryDeleteMsg_ mq True >> tryPeekMsg_ mq)
+        | messageId msg == msgId' -> (msg_,) <$> (tryDeleteMsg_ q mq True >> tryPeekMsg_ mq)
         | otherwise -> pure (Nothing, msg_)
       _ -> pure (Nothing, Nothing)
 
@@ -129,5 +129,5 @@ deleteExpireMsgs_ old q mq = do
       tryPeekMsg_ mq >>= \case
         Just Message {msgTs}
           | systemSeconds msgTs < old ->
-              tryDeleteMsg_ mq False >> loop (dc + 1)
+              tryDeleteMsg_ q mq False >> loop (dc + 1)
         _ -> pure dc

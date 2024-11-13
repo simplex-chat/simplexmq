@@ -1820,7 +1820,7 @@ importMessages tty ms f old_ = do
                 -- if the first message in queue head is "quota", remove it.
                 mergeQuotaMsgs = withMsgQueue ms rId q "mergeQuotaMsgs" $ \mq ->
                   tryPeekMsg_ mq >>= \case
-                    Just MessageQuota {} -> tryDeleteMsg_ mq False
+                    Just MessageQuota {} -> tryDeleteMsg_ q mq False
                     _ -> pure ()
         msgErr :: Show e => String -> e -> String
         msgErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)

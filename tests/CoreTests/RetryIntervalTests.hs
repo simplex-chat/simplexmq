@@ -66,7 +66,7 @@ testRetryIntervalSameMode =
 
 testRetryIntervalSwitchMode :: Spec
 testRetryIntervalSwitchMode =
-  it "should increase elapased time and interval when the mode stays the same" $ do
+  it "should increase elapased time and interval when the mode switches" $ do
     lock <- newEmptyTMVarIO
     intervals <- newTVarIO []
     reportedIntervals <- newTVarIO []

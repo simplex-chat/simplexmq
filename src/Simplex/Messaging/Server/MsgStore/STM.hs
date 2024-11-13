@@ -159,8 +159,8 @@ instance MsgStoreClass STMMsgStore where
   tryPeekMsg_ = tryPeekTQueue . msgQueue
   {-# INLINE tryPeekMsg_ #-}
 
-  tryDeleteMsg_ :: STMMsgQueue -> Bool -> STM ()
-  tryDeleteMsg_ STMMsgQueue {msgQueue = q, size} _logState =
+  tryDeleteMsg_ :: STMQueue -> STMMsgQueue -> Bool -> STM ()
+  tryDeleteMsg_ _ STMMsgQueue {msgQueue = q, size} _logState =
     tryReadTQueue q >>= \case
       Just _ -> modifyTVar' size (subtract 1)
       _ -> pure ()

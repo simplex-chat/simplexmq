@@ -290,7 +290,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
     AMSType SMSMemory -> AMS SMSMemory <$> newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
     AMSType SMSJournal -> case storeMsgsFile of
       Just storePath -> 
-        let idleInterval = checkInterval defaultMessageExpiration
+        let idleInterval = maybe maxBound checkInterval messageExpiration
             cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval}
          in AMS SMSJournal <$> newMsgStore cfg
       Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
