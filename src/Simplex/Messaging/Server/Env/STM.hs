@@ -121,7 +121,7 @@ defaultMessageExpiration :: ExpirationConfig
 defaultMessageExpiration =
   ExpirationConfig
     { ttl = defMsgExpirationDays * 86400, -- seconds
-      checkInterval = 43200 -- seconds, 12 hours
+      checkInterval = 21600 -- seconds, 6 hours
     }
 
 defNtfExpirationHours :: Int64
@@ -290,7 +290,8 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
     AMSType SMSMemory -> AMS SMSMemory <$> newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
     AMSType SMSJournal -> case storeMsgsFile of
       Just storePath -> 
-        let cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize}
+        let idleInterval = checkInterval defaultMessageExpiration
+            cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval}
          in AMS SMSJournal <$> newMsgStore cfg
       Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
   ntfStore <- NtfStore <$> TM.emptyIO

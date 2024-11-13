@@ -15,6 +15,7 @@ import Control.Monad (foldM)
 import Control.Monad.Trans.Except
 import Data.Int (Int64)
 import Data.Kind
+import Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Simplex.Messaging.Protocol
@@ -42,10 +43,11 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   activeMsgQueues :: s -> TMap RecipientId (StoreQueue s)
   withAllMsgQueues :: Monoid a => Bool -> s -> (RecipientId -> StoreQueue s -> IO a) -> IO a
   logQueueStates :: s -> IO ()
-  logQueueState :: StoreQueue s -> IO ()
+  logQueueState :: StoreQueue s -> StoreMonad s ()
   queueRec' :: StoreQueue s -> TVar (Maybe QueueRec)
   getMsgQueue :: s -> RecipientId -> StoreQueue s -> StoreMonad s (MsgQueue s)
-  openedMsgQueue :: StoreQueue s -> StoreMonad s (Maybe (MsgQueue s))
+  -- the journal queue will be closed after action if it was initially closed or idle longer than interval in config
+  withIdleMsgQueue :: Int64 -> s -> RecipientId -> StoreQueue s -> (MsgQueue s -> StoreMonad s a) -> StoreMonad s (Maybe a)
   deleteQueue :: s -> RecipientId -> StoreQueue s -> IO (Either ErrorType QueueRec)
   deleteQueueSize :: s -> RecipientId -> StoreQueue s -> IO (Either ErrorType (QueueRec, Int))
   getQueueMessages_ :: Bool -> MsgQueue s -> StoreMonad s [Message]
@@ -106,13 +108,26 @@ withMsgQueue :: MsgStoreClass s => s -> RecipientId -> StoreQueue s -> String ->
 withMsgQueue st rId q op a = isolateQueue rId q op $ getMsgQueue st rId q >>= a
 {-# INLINE withMsgQueue #-}
 
-deleteExpiredMsgs :: MsgStoreClass s => RecipientId -> StoreQueue s -> Bool -> Int64 -> ExceptT ErrorType IO Int
-deleteExpiredMsgs rId q logState old =
-  isolateQueue rId q "deleteExpiredMsgs" $ openedMsgQueue q >>= maybe (pure 0) (loop 0)
+deleteExpiredMsgs :: MsgStoreClass s => s -> RecipientId -> StoreQueue s -> Int64 -> ExceptT ErrorType IO Int
+deleteExpiredMsgs st rId q old =
+  isolateQueue rId q "deleteExpiredMsgs" $
+    getMsgQueue st rId q >>= deleteExpireMsgs_ old q
+
+-- closed and idle queues will be closed after expiration
+idleDeleteExpiredMsgs :: MsgStoreClass s => Int64 -> s -> RecipientId -> StoreQueue s -> Int64 -> ExceptT ErrorType IO Int
+idleDeleteExpiredMsgs now st rId q old =
+  isolateQueue rId q "idleDeleteExpiredMsgs" $ 
+    fromMaybe 0 <$> withIdleMsgQueue now st rId q (deleteExpireMsgs_ old q)
+
+deleteExpireMsgs_ :: MsgStoreClass s => Int64 -> StoreQueue s -> MsgQueue s -> StoreMonad s Int
+deleteExpireMsgs_ old q mq = do
+  n <- loop 0
+  logQueueState q
+  pure n
   where
-    loop dc mq =
+    loop dc =
       tryPeekMsg_ mq >>= \case
         Just Message {msgTs}
           | systemSeconds msgTs < old ->
-              tryDeleteMsg_ mq logState >> loop (dc + 1) mq
+              tryDeleteMsg_ mq False >> loop (dc + 1)
         _ -> pure dc

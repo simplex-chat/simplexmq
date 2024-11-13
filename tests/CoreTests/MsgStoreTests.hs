@@ -77,7 +77,8 @@ testJournalStoreCfg =
       quota = 3,
       maxMsgCount = 4,
       maxStateLines = 2,
-      stateTailSize = 256
+      stateTailSize = 256,
+      idleInterval = 21600
     }
 
 mkMessage :: MonadIO m => ByteString -> m Message

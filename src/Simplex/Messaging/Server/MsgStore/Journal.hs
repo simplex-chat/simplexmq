@@ -53,6 +53,7 @@ import Data.List (intercalate)
 import Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
+import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import GHC.IO (catchAny)
 import Simplex.Messaging.Agent.Client (getMapLock, withLockMap)
@@ -92,7 +93,9 @@ data JournalStoreConfig = JournalStoreConfig
     -- This number should be set bigger than queue quota.
     maxMsgCount :: Int,
     maxStateLines :: Int,
-    stateTailSize :: Int
+    stateTailSize :: Int,
+    -- time in seconds after which the queue will be closed after message expiration
+    idleInterval :: Int64
   }
 
 data JournalQueue = JournalQueue
@@ -116,7 +119,9 @@ data JournalMsgQueue = JournalMsgQueue
     -- It  prevents reading each message twice,
     -- and reading it after it was just written.
     tipMsg :: TVar (Maybe (Maybe (Message, Int64))),
-    handles :: TVar (Maybe MsgQueueHandles)
+    handles :: TVar (Maybe MsgQueueHandles),
+    -- system time in seconds since epoch
+    activeAt :: TVar Int64
   }
 
 data MsgQueueState = MsgQueueState
@@ -295,11 +300,11 @@ instance MsgStoreClass JournalMsgStore where
               (Nothing <$ putStrLn ("Error: path " <> path' <> " is not a directory, skipping"))
 
   logQueueStates :: JournalMsgStore -> IO ()
-  logQueueStates ms = withActiveMsgQueues ms $ \_ -> logQueueState
+  logQueueStates ms = withActiveMsgQueues ms $ \_ -> unStoreIO . logQueueState
 
-  logQueueState :: JournalQueue -> IO ()
+  logQueueState :: JournalQueue -> StoreIO ()
   logQueueState q =
-    void $
+    StoreIO . void $
       readTVarIO (msgQueue_ q)
         $>>= \mq -> readTVarIO (handles mq)
         $>>= (\hs -> (readTVarIO (state mq) >>= appendState (stateHandle hs)) $> Just ())
@@ -326,9 +331,21 @@ instance MsgStoreClass JournalMsgStore where
             journalId <- newJournalId random
             mkJournalQueue queue (newMsgQueueState journalId) Nothing
 
-  openedMsgQueue :: JournalQueue -> StoreIO (Maybe JournalMsgQueue)
-  openedMsgQueue = StoreIO . readTVarIO . msgQueue_
-  {-# INLINE openedMsgQueue #-}
+  withIdleMsgQueue :: Int64 -> JournalMsgStore -> RecipientId -> JournalQueue -> (JournalMsgQueue -> StoreIO a) -> StoreIO (Maybe a)
+  withIdleMsgQueue now ms@JournalMsgStore {config} rId q action =
+    StoreIO $ readTVarIO (msgQueue_ q) >>= maybe runQ idleQ
+    where
+      runQ =
+        Just <$>
+          E.bracket
+            (unStoreIO $ getMsgQueue ms rId q)
+            (\_ -> closeMsgQueue q)
+            (unStoreIO . action)
+      idleQ mq = do
+        ts <- readTVarIO $ activeAt mq
+        if now - ts > idleInterval config
+          then Just <$> unStoreIO (action mq) `E.finally` closeMsgQueue q
+          else pure Nothing
 
   deleteQueue :: JournalMsgStore -> RecipientId -> JournalQueue -> IO (Either ErrorType QueueRec)
   deleteQueue ms rId q =
@@ -355,7 +372,7 @@ instance MsgStoreClass JournalMsgStore where
   writeMsg :: JournalMsgStore -> RecipientId -> JournalQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
   writeMsg ms rId q' logState msg = isolateQueue rId q' "writeMsg" $ do
     q <- getMsgQueue ms rId q'
-    StoreIO $ do
+    StoreIO $ (`E.finally` updateActiveAt q) $ do
       st@MsgQueueState {canWrite, size} <- readTVarIO (state q)
       let empty = size == 0
       if canWrite || empty
@@ -420,7 +437,7 @@ instance MsgStoreClass JournalMsgStore where
             pure $ Just msg
 
   tryDeleteMsg_ :: JournalMsgQueue -> Bool -> StoreIO ()
-  tryDeleteMsg_ q@JournalMsgQueue {tipMsg, handles} logState = StoreIO $
+  tryDeleteMsg_ q@JournalMsgQueue {tipMsg, handles} logState = StoreIO $ (`E.finally` updateActiveAt q) $
     void $
       readTVarIO tipMsg -- if there is no cached tipMsg, do nothing
         $>>= (pure . fmap snd)
@@ -430,6 +447,9 @@ instance MsgStoreClass JournalMsgStore where
   isolateQueue :: RecipientId -> JournalQueue -> String -> StoreIO a -> ExceptT ErrorType IO a
   isolateQueue rId JournalQueue {queueLock} op =
     tryStore' op rId . withLock' queueLock op . unStoreIO
+
+updateActiveAt :: JournalMsgQueue -> IO ()
+updateActiveAt q = atomically . writeTVar (activeAt q) . systemSeconds =<< getSystemTime
 
 tryStore' :: String -> RecipientId -> IO a -> ExceptT ErrorType IO a
 tryStore' op rId = tryStore op rId . fmap Right
@@ -457,9 +477,10 @@ mkJournalQueue queue st hs_ = do
   state <- newTVarIO st
   tipMsg <- newTVarIO Nothing
   handles <- newTVarIO hs_
+  activeAt <- newTVarIO . systemSeconds =<< getSystemTime
   -- using the same queue lock which is currently locked,
   -- to avoid map lookup on queue operations
-  pure JournalMsgQueue {queue, state, tipMsg, handles}
+  pure JournalMsgQueue {queue, state, tipMsg, handles, activeAt}
 
 chooseReadJournal :: JournalMsgQueue -> Bool -> MsgQueueHandles -> IO (Maybe (JournalState 'JTRead, Handle))
 chooseReadJournal q log' hs = do

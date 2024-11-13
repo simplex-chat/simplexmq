@@ -21,6 +21,7 @@ import Control.Concurrent.STM
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
@@ -108,9 +109,10 @@ instance MsgStoreClass STMMsgStore where
         writeTVar msgQueue_ $! Just q
         pure q
 
-  openedMsgQueue :: STMQueue -> STM (Maybe STMMsgQueue)
-  openedMsgQueue = readTVar . msgQueue_
-  {-# INLINE openedMsgQueue #-}
+  -- does not create queue if it does not exist, does not delete it if it does (can't just close in-memory queue)
+  withIdleMsgQueue :: Int64 -> STMMsgStore -> RecipientId -> STMQueue -> (STMMsgQueue -> STM a) -> STM (Maybe a)
+  withIdleMsgQueue _ _ _ STMQueue {msgQueue_} action = readTVar msgQueue_ >>= mapM action
+  {-# INLINE withIdleMsgQueue #-}
 
   deleteQueue :: STMMsgStore -> RecipientId -> STMQueue -> IO (Either ErrorType QueueRec)
   deleteQueue ms rId q = fst <$$> deleteQueue' ms rId q
