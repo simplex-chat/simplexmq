@@ -15,6 +15,7 @@ import Control.Monad (foldM)
 import Control.Monad.Trans.Except
 import Data.Int (Int64)
 import Data.Kind
+import Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Simplex.Messaging.Protocol
@@ -42,10 +43,11 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   activeMsgQueues :: s -> TMap RecipientId (StoreQueue s)
   withAllMsgQueues :: Monoid a => Bool -> s -> (RecipientId -> StoreQueue s -> IO a) -> IO a
   logQueueStates :: s -> IO ()
-  logQueueState :: StoreQueue s -> IO ()
+  logQueueState :: StoreQueue s -> StoreMonad s ()
   queueRec' :: StoreQueue s -> TVar (Maybe QueueRec)
   getMsgQueue :: s -> RecipientId -> StoreQueue s -> StoreMonad s (MsgQueue s)
-  openedMsgQueue :: StoreQueue s -> StoreMonad s (Maybe (MsgQueue s))
+  -- the journal queue will be closed after action if it was initially closed or idle longer than interval in config
+  withIdleMsgQueue :: Int64 -> s -> RecipientId -> StoreQueue s -> (MsgQueue s -> StoreMonad s a) -> StoreMonad s (Maybe a)
   deleteQueue :: s -> RecipientId -> StoreQueue s -> IO (Either ErrorType QueueRec)
   deleteQueueSize :: s -> RecipientId -> StoreQueue s -> IO (Either ErrorType (QueueRec, Int))
   getQueueMessages_ :: Bool -> MsgQueue s -> StoreMonad s [Message]
@@ -53,7 +55,7 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   setOverQuota_ :: StoreQueue s -> IO () -- can ONLY be used while restoring messages, not while server running
   getQueueSize_ :: MsgQueue s -> StoreMonad s Int
   tryPeekMsg_ :: MsgQueue s -> StoreMonad s (Maybe Message)
-  tryDeleteMsg_ :: MsgQueue s -> Bool -> StoreMonad s ()
+  tryDeleteMsg_ :: StoreQueue s -> MsgQueue s -> Bool -> StoreMonad s ()
   isolateQueue :: RecipientId -> StoreQueue s -> String -> StoreMonad s a -> ExceptT ErrorType IO a
 
 data MSType = MSMemory | MSJournal
@@ -89,7 +91,7 @@ tryDelMsg st rId q msgId' =
     tryPeekMsg_ mq >>= \case
       msg_@(Just msg)
         | messageId msg == msgId' ->
-            tryDeleteMsg_ mq True >> pure msg_
+            tryDeleteMsg_ q mq True >> pure msg_
       _ -> pure Nothing
 
 -- atomic delete (== read) last and peek next message if available
@@ -98,7 +100,7 @@ tryDelPeekMsg st rId q msgId' =
   withMsgQueue st rId q "tryDelPeekMsg" $ \mq ->
     tryPeekMsg_ mq >>= \case
       msg_@(Just msg)
-        | messageId msg == msgId' -> (msg_,) <$> (tryDeleteMsg_ mq True >> tryPeekMsg_ mq)
+        | messageId msg == msgId' -> (msg_,) <$> (tryDeleteMsg_ q mq True >> tryPeekMsg_ mq)
         | otherwise -> pure (Nothing, msg_)
       _ -> pure (Nothing, Nothing)
 
@@ -106,13 +108,26 @@ withMsgQueue :: MsgStoreClass s => s -> RecipientId -> StoreQueue s -> String ->
 withMsgQueue st rId q op a = isolateQueue rId q op $ getMsgQueue st rId q >>= a
 {-# INLINE withMsgQueue #-}
 
-deleteExpiredMsgs :: MsgStoreClass s => RecipientId -> StoreQueue s -> Bool -> Int64 -> ExceptT ErrorType IO Int
-deleteExpiredMsgs rId q logState old =
-  isolateQueue rId q "deleteExpiredMsgs" $ openedMsgQueue q >>= maybe (pure 0) (loop 0)
+deleteExpiredMsgs :: MsgStoreClass s => s -> RecipientId -> StoreQueue s -> Int64 -> ExceptT ErrorType IO Int
+deleteExpiredMsgs st rId q old =
+  isolateQueue rId q "deleteExpiredMsgs" $
+    getMsgQueue st rId q >>= deleteExpireMsgs_ old q
+
+-- closed and idle queues will be closed after expiration
+idleDeleteExpiredMsgs :: MsgStoreClass s => Int64 -> s -> RecipientId -> StoreQueue s -> Int64 -> ExceptT ErrorType IO Int
+idleDeleteExpiredMsgs now st rId q old =
+  isolateQueue rId q "idleDeleteExpiredMsgs" $ 
+    fromMaybe 0 <$> withIdleMsgQueue now st rId q (deleteExpireMsgs_ old q)
+
+deleteExpireMsgs_ :: MsgStoreClass s => Int64 -> StoreQueue s -> MsgQueue s -> StoreMonad s Int
+deleteExpireMsgs_ old q mq = do
+  n <- loop 0
+  logQueueState q
+  pure n
   where
-    loop dc mq =
+    loop dc =
       tryPeekMsg_ mq >>= \case
         Just Message {msgTs}
           | systemSeconds msgTs < old ->
-              tryDeleteMsg_ mq logState >> loop (dc + 1) mq
+              tryDeleteMsg_ q mq False >> loop (dc + 1)
         _ -> pure dc

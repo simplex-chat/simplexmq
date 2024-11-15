@@ -296,7 +296,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         deliverNtfs ns stats (AClient _ Client {clientId, ntfSubscriptions, sndQ, connected}) =
           whenM (currentClient readTVarIO) $ do
             subs <- readTVarIO ntfSubscriptions
-            logDebug $ "NOTIFICATIONS: client #" <> tshow clientId <> " is current with " <> tshow (M.size subs) <> " subs"
             ntfQs <- M.assocs . M.filterWithKey (\nId _ -> M.member nId subs) <$> readTVarIO ns
             tryAny (atomically $ flushSubscribedNtfs ntfQs) >>= \case
               Right len -> updateNtfStats len
@@ -321,12 +320,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                   writeTVar v []
                   pure $ foldl' (\acc' ntf -> nmsg nId ntf : acc') acc ntfs -- reverses, to order by time
             nmsg nId MsgNtf {ntfNonce, ntfEncMeta} = (CorrId "", nId, NMSG ntfNonce ntfEncMeta)
-            updateNtfStats 0 = logDebug $ "NOTIFICATIONS: no ntfs for client #" <> tshow clientId
+            updateNtfStats 0 = pure ()
             updateNtfStats len = liftIO $ do
               atomicModifyIORef'_ (ntfCount stats) (subtract len)
               atomicModifyIORef'_ (msgNtfs stats) (+ len)
               atomicModifyIORef'_ (msgNtfsB stats) (+ (len `div` 80 + 1)) -- up to 80 NMSG in the batch
-              logDebug $ "NOTIFICATIONS: delivered to client #" <> tshow clientId <> " " <> tshow len <> " ntfs"
 
     sendPendingEvtsThread :: Server -> M ()
     sendPendingEvtsThread s = do
@@ -386,13 +384,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       liftIO $ forever $ do
         threadDelay' interval
         old <- expireBeforeEpoch expCfg
-        Sum deleted <- withActiveMsgQueues ms $ expireQueueMsgs stats old
+        now <- systemSeconds <$> getSystemTime
+        Sum deleted <- withActiveMsgQueues ms $ expireQueueMsgs now ms old
+        atomicModifyIORef'_ (msgExpired stats) (+ deleted)
         logInfo $ "STORE: expireMessagesThread, expired " <> tshow deleted <> " messages"
       where
-        expireQueueMsgs stats old rId q =
-          runExceptT (deleteExpiredMsgs rId q True old) >>= \case
-            Right deleted -> Sum deleted <$ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
-            Left _ -> pure 0
+        expireQueueMsgs now ms old rId q =
+          either (const 0) Sum <$> runExceptT (idleDeleteExpiredMsgs now ms rId q old)
 
     expireNtfsThread :: ServerConfig -> M ()
     expireNtfsThread ServerConfig {notificationExpiration = expCfg} = do
@@ -1469,7 +1467,7 @@ client
 
             expireMessages :: Maybe ExpirationConfig -> ServerStats -> ExceptT ErrorType IO ()
             expireMessages msgExp stats = do
-              deleted <- maybe (pure 0) (deleteExpiredMsgs (recipientId qr) q True <=< liftIO . expireBeforeEpoch) msgExp
+              deleted <- maybe (pure 0) (deleteExpiredMsgs ms (recipientId qr) q <=< liftIO . expireBeforeEpoch) msgExp
               liftIO $ when (deleted > 0) $ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
 
             -- The condition for delivery of the message is:
@@ -1763,9 +1761,8 @@ processServerMessages = do
                   exitFailure
               where
                 expireQueue = do
-                  expired'' <- deleteExpiredMsgs rId q False old
+                  expired'' <- deleteExpiredMsgs ms rId q old
                   stored'' <- getQueueSize ms rId q
-                  liftIO $ logQueueState q
                   liftIO $ closeMsgQueue q
                   pure (stored'', expired'')
             processValidateQueue :: RecipientId -> JournalQueue -> IO MessageStats
@@ -1823,7 +1820,7 @@ importMessages tty ms f old_ = do
                 -- if the first message in queue head is "quota", remove it.
                 mergeQuotaMsgs = withMsgQueue ms rId q "mergeQuotaMsgs" $ \mq ->
                   tryPeekMsg_ mq >>= \case
-                    Just MessageQuota {} -> tryDeleteMsg_ mq False
+                    Just MessageQuota {} -> tryDeleteMsg_ q mq False
                     _ -> pure ()
         msgErr :: Show e => String -> e -> String
         msgErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
