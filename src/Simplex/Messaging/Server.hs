@@ -392,8 +392,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         printMessageStats "STORE: messages" msgStats
       where
         expireQueueMsgs now ms old rId q = fmap (fromRight newMessageStats) . runExceptT $ do
-          (stored, expired) <- idleDeleteExpiredMsgs now ms rId q old
-          pure MessageStats {storedMsgsCount = stored, expiredMsgsCount = expired, storedQueues = 1}
+          (expired_, stored) <- idleDeleteExpiredMsgs now ms rId q old
+          pure MessageStats {storedMsgsCount = stored, expiredMsgsCount = fromMaybe 0 expired_, storedQueues = 1}
 
     expireNtfsThread :: ServerConfig -> M ()
     expireNtfsThread ServerConfig {notificationExpiration = expCfg} = do
