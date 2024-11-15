@@ -332,18 +332,18 @@ instance MsgStoreClass JournalMsgStore where
             journalId <- newJournalId random
             mkJournalQueue queue (newMsgQueueState journalId) Nothing
 
-  withIdleMsgQueue :: Int64 -> JournalMsgStore -> RecipientId -> JournalQueue -> (JournalMsgQueue -> StoreIO a) -> StoreIO (Maybe a)
+  withIdleMsgQueue :: Int64 -> JournalMsgStore -> RecipientId -> JournalQueue -> (JournalMsgQueue -> StoreIO a) -> StoreIO (Int, Maybe a)
   withIdleMsgQueue now ms@JournalMsgStore {config} rId q action =
     StoreIO $ readTVarIO (msgQueue_ q) >>= \case
       Nothing ->
-        Just <$>
-          E.bracket
-            (unStoreIO $ getMsgQueue ms rId q)
-            (\_ -> closeMsgQueue q)
-            (unStoreIO . action)
+        E.bracket (unStoreIO $ getMsgQueue ms rId q) (\_ -> closeMsgQueue q) $ \mq -> unStoreIO $ do
+          sz <- getQueueSize_ mq
+          r <- action mq
+          pure (sz, Just r)
       Just mq -> do
         ts <- readTVarIO $ activeAt q
-        if now - ts >= idleInterval config
+        sz <- unStoreIO $ getQueueSize_ mq
+        (sz,) <$> if now - ts >= idleInterval config
           then Just <$> unStoreIO (action mq) `E.finally` closeMsgQueue q
           else pure Nothing
 

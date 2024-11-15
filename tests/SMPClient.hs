@@ -133,6 +133,7 @@ cfgMS msType =
       controlPortAdminAuth = Nothing,
       messageExpiration = Just defaultMessageExpiration,
       expireMessagesOnStart = True,
+      idleQueueInterval = defaultIdleQueueInterval,
       notificationExpiration = defaultNtfExpiration,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       logStatsInterval = Nothing,

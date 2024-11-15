@@ -110,9 +110,13 @@ instance MsgStoreClass STMMsgStore where
         pure q
 
   -- does not create queue if it does not exist, does not delete it if it does (can't just close in-memory queue)
-  withIdleMsgQueue :: Int64 -> STMMsgStore -> RecipientId -> STMQueue -> (STMMsgQueue -> STM a) -> STM (Maybe a)
-  withIdleMsgQueue _ _ _ STMQueue {msgQueue_} action = readTVar msgQueue_ >>= mapM action
-  {-# INLINE withIdleMsgQueue #-}
+  withIdleMsgQueue :: Int64 -> STMMsgStore -> RecipientId -> STMQueue -> (STMMsgQueue -> STM a) -> STM (Int, Maybe a)
+  withIdleMsgQueue _ _ _ STMQueue {msgQueue_} action = readTVar msgQueue_ >>= \case
+    Just q -> do
+      sz <- getQueueSize_ q
+      r <- action q
+      pure (sz, Just r)
+    Nothing -> pure (0, Nothing)
 
   deleteQueue :: STMMsgStore -> RecipientId -> STMQueue -> IO (Either ErrorType QueueRec)
   deleteQueue ms rId q = fst <$$> deleteQueue' ms rId q

@@ -80,6 +80,8 @@ data ServerConfig = ServerConfig
     -- | time after which the messages can be removed from the queues and check interval, seconds
     messageExpiration :: Maybe ExpirationConfig,
     expireMessagesOnStart :: Bool,
+    -- | interval of inactivity after which journal queue is closed
+    idleQueueInterval :: Int64,
     -- | notification expiration interval (seconds)
     notificationExpiration :: ExpirationConfig,
     -- | time after which the socket with inactive client can be disconnected (without any messages or commands, incl. PING),
@@ -121,8 +123,11 @@ defaultMessageExpiration :: ExpirationConfig
 defaultMessageExpiration =
   ExpirationConfig
     { ttl = defMsgExpirationDays * 86400, -- seconds
-      checkInterval = 21600 -- seconds, 6 hours
+      checkInterval = 14400 -- seconds, 4 hours
     }
+
+defaultIdleQueueInterval :: Int64
+defaultIdleQueueInterval = 28800 -- seconds, 8 hours
 
 defNtfExpirationHours :: Int64
 defNtfExpirationHours = 24
@@ -290,8 +295,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
     AMSType SMSMemory -> AMS SMSMemory <$> newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
     AMSType SMSJournal -> case storeMsgsFile of
       Just storePath -> 
-        let idleInterval = maybe maxBound checkInterval messageExpiration
-            cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval}
+        let cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = defaultIdleQueueInterval}
          in AMS SMSJournal <$> newMsgStore cfg
       Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
   ntfStore <- NtfStore <$> TM.emptyIO
