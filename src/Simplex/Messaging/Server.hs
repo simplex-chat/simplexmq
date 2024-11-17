@@ -163,11 +163,11 @@ smpServer :: TMVar Bool -> ServerConfig -> Maybe AttachHTTP -> M ()
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHTTP_ = do
   s <- asks server
   pa <- asks proxyAgent
-  msgStats <- processServerMessages
+  msgStats_ <- processServerMessages
   ntfStats <- restoreServerNtfs
-  liftIO $ printMessageStats "messages" msgStats
+  liftIO $ mapM_ (printMessageStats "messages") msgStats_
   liftIO $ printMessageStats "notifications" ntfStats
-  restoreServerStats msgStats ntfStats
+  restoreServerStats msgStats_ ntfStats
   raceAny_
     ( serverThread s "server subscribedQ" subscribedQ subscribers subClients pendingSubEvents subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubClients pendingNtfSubEvents ntfSubscriptions (\_ -> pure ())
@@ -385,12 +385,15 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         threadDelay' interval
         old <- expireBeforeEpoch expCfg
         now <- systemSeconds <$> getSystemTime
-        Sum deleted <- withActiveMsgQueues ms $ expireQueueMsgs now ms old
-        atomicModifyIORef'_ (msgExpired stats) (+ deleted)
-        logInfo $ "STORE: expireMessagesThread, expired " <> tshow deleted <> " messages"
+        msgStats@MessageStats {storedMsgsCount = stored, expiredMsgsCount = expired} <-
+          withActiveMsgQueues ms $ expireQueueMsgs now ms old
+        atomicWriteIORef (msgCount stats) stored
+        atomicModifyIORef'_ (msgExpired stats) (+ expired)
+        printMessageStats "STORE: messages" msgStats
       where
-        expireQueueMsgs now ms old rId q =
-          either (const 0) Sum <$> runExceptT (idleDeleteExpiredMsgs now ms rId q old)
+        expireQueueMsgs now ms old rId q = fmap (fromRight newMessageStats) . runExceptT $ do
+          (expired_, stored) <- idleDeleteExpiredMsgs now ms rId q old
+          pure MessageStats {storedMsgsCount = stored, expiredMsgsCount = fromMaybe 0 expired_, storedQueues = 1}
 
     expireNtfsThread :: ServerConfig -> M ()
     expireNtfsThread ServerConfig {notificationExpiration = expCfg} = do
@@ -1731,26 +1734,26 @@ exportMessages tty ms f drainMsgs = do
           exitFailure
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
 
-processServerMessages :: M MessageStats
+processServerMessages :: M (Maybe MessageStats)
 processServerMessages = do
   old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
   expire <- asks $ expireMessagesOnStart . config
   asks msgStore >>= liftIO . processMessages old_ expire
     where
-      processMessages :: Maybe Int64 -> Bool -> AMsgStore -> IO MessageStats
+      processMessages :: Maybe Int64 -> Bool -> AMsgStore -> IO (Maybe MessageStats)
       processMessages old_ expire = \case
         AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-          Just f -> ifM (doesFileExist f) (importMessages False ms f old_) (pure newMessageStats)
-          Nothing -> pure newMessageStats
+          Just f -> ifM (doesFileExist f) (Just <$> importMessages False ms f old_) (pure Nothing)
+          Nothing -> pure Nothing
         AMS SMSJournal ms
-          | expire -> case old_ of
+          | expire -> Just <$> case old_ of
               Just old -> do
                 logInfo "expiring journal store messages..."
                 withAllMsgQueues False ms $ processExpireQueue old
               Nothing -> do
                 logInfo "validating journal store messages..."
                 withAllMsgQueues False ms $ processValidateQueue
-          | otherwise -> logWarn "skipping message expiration" $> newMessageStats
+          | otherwise -> logWarn "skipping message expiration" $> Nothing
           where
             processExpireQueue old rId q =
               runExceptT expireQueue >>= \case
@@ -1887,8 +1890,8 @@ saveServerStats =
       B.writeFile f $ strEncode stats
       logInfo "server stats saved"
 
-restoreServerStats :: MessageStats -> MessageStats -> M ()
-restoreServerStats msgStats ntfStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
+restoreServerStats :: Maybe MessageStats -> MessageStats -> M ()
+restoreServerStats msgStats_ ntfStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
   where
     restoreStats f = whenM (doesFileExist f) $ do
       logInfo $ "restoring server stats from file " <> T.pack f
@@ -1897,9 +1900,11 @@ restoreServerStats msgStats ntfStats = asks (serverStatsBackupFile . config) >>=
           s <- asks serverStats
           AMS _ st <- asks msgStore
           _qCount <- M.size <$> readTVarIO (activeMsgQueues st)
-          let _msgCount = storedMsgsCount msgStats
+          let _msgCount = maybe statsMsgCount storedMsgsCount msgStats_
               _ntfCount = storedMsgsCount ntfStats
-          liftIO $ setServerStats s d {_qCount, _msgCount, _ntfCount, _msgExpired = _msgExpired d + expiredMsgsCount msgStats, _msgNtfExpired = _msgNtfExpired d + expiredMsgsCount ntfStats}
+              _msgExpired' = _msgExpired d + maybe 0 expiredMsgsCount msgStats_
+              _msgNtfExpired' = _msgNtfExpired d + expiredMsgsCount ntfStats
+          liftIO $ setServerStats s d {_qCount, _msgCount, _ntfCount, _msgExpired = _msgExpired', _msgNtfExpired = _msgNtfExpired'}
           renameFile f $ f <> ".bak"
           logInfo "server stats restored"
           compareCounts "Queue" statsQCount _qCount

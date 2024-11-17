@@ -15,7 +15,6 @@ import Control.Monad (foldM)
 import Control.Monad.Trans.Except
 import Data.Int (Int64)
 import Data.Kind
-import Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Simplex.Messaging.Protocol
@@ -47,7 +46,7 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   queueRec' :: StoreQueue s -> TVar (Maybe QueueRec)
   getMsgQueue :: s -> RecipientId -> StoreQueue s -> StoreMonad s (MsgQueue s)
   -- the journal queue will be closed after action if it was initially closed or idle longer than interval in config
-  withIdleMsgQueue :: Int64 -> s -> RecipientId -> StoreQueue s -> (MsgQueue s -> StoreMonad s a) -> StoreMonad s (Maybe a)
+  withIdleMsgQueue :: Int64 -> s -> RecipientId -> StoreQueue s -> (MsgQueue s -> StoreMonad s a) -> StoreMonad s (Maybe a, Int)
   deleteQueue :: s -> RecipientId -> StoreQueue s -> IO (Either ErrorType QueueRec)
   deleteQueueSize :: s -> RecipientId -> StoreQueue s -> IO (Either ErrorType (QueueRec, Int))
   getQueueMessages_ :: Bool -> MsgQueue s -> StoreMonad s [Message]
@@ -114,10 +113,11 @@ deleteExpiredMsgs st rId q old =
     getMsgQueue st rId q >>= deleteExpireMsgs_ old q
 
 -- closed and idle queues will be closed after expiration
-idleDeleteExpiredMsgs :: MsgStoreClass s => Int64 -> s -> RecipientId -> StoreQueue s -> Int64 -> ExceptT ErrorType IO Int
+-- returns (expired count, queue size after expiration)
+idleDeleteExpiredMsgs :: MsgStoreClass s => Int64 -> s -> RecipientId -> StoreQueue s -> Int64 -> ExceptT ErrorType IO (Maybe Int, Int)
 idleDeleteExpiredMsgs now st rId q old =
-  isolateQueue rId q "idleDeleteExpiredMsgs" $ 
-    fromMaybe 0 <$> withIdleMsgQueue now st rId q (deleteExpireMsgs_ old q)
+  isolateQueue rId q "idleDeleteExpiredMsgs" $
+    withIdleMsgQueue now st rId q (deleteExpireMsgs_ old q)
 
 deleteExpireMsgs_ :: MsgStoreClass s => Int64 -> StoreQueue s -> MsgQueue s -> StoreMonad s Int
 deleteExpireMsgs_ old q mq = do
