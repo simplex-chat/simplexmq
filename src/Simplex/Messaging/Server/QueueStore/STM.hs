@@ -1,120 +1,196 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Simplex.Messaging.Server.QueueStore.STM
-  ( QueueStore (..),
-    newQueueStore,
-    addQueue,
+  ( addQueue,
     getQueue,
+    getQueueRec,
     secureQueue,
     addQueueNotifier,
     deleteQueueNotifier,
     suspendQueue,
     updateQueueTime,
-    deleteQueue,
+    deleteQueue',
+    readQueueStore,
+    withLog',
   )
 where
 
+import qualified Control.Exception as E
+import Control.Logger.Simple
 import Control.Monad
+import Control.Monad.IO.Class
+import Control.Monad.Trans.Except
+import Data.Bitraversable (bimapM)
+import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
+import qualified Data.Text as T
+import Data.Text.Encoding (decodeLatin1)
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.TMap (TMap)
+import Simplex.Messaging.Server.StoreLog
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (ifM, ($>>=))
+import Simplex.Messaging.Util (ifM, tshow, ($>>=), (<$$))
+import System.IO
 import UnliftIO.STM
 
-data QueueStore = QueueStore
-  { queues :: TMap RecipientId (TVar QueueRec),
-    senders :: TMap SenderId RecipientId,
-    notifiers :: TMap NotifierId RecipientId
-  }
-
-newQueueStore :: IO QueueStore
-newQueueStore = do
-  queues <- TM.emptyIO
-  senders <- TM.emptyIO
-  notifiers <- TM.emptyIO
-  pure QueueStore {queues, senders, notifiers}
-
-addQueue :: QueueStore -> QueueRec -> IO (Either ErrorType ())
-addQueue QueueStore {queues, senders, notifiers} q@QueueRec {recipientId = rId, senderId = sId, notifier} = atomically $ do
-  ifM hasId (pure $ Left DUPLICATE_) $ do
-    TM.insertM rId (newTVar q) queues
-    TM.insert sId rId senders
-    forM_ notifier $ \NtfCreds {notifierId} -> TM.insert notifierId rId notifiers
-    pure $ Right ()
+addQueue :: STMQueueStore s => s -> QueueRec -> IO (Either ErrorType (StoreQueue s))
+addQueue st qr@QueueRec {recipientId = rId, senderId = sId, notifier}=
+  atomically add
+    $>>= \q -> q <$$ withLog "addQueue" st (`logCreateQueue` qr)
   where
-    hasId = (||) <$> TM.member rId queues <*> TM.member sId senders
+    add = ifM hasId (pure $ Left DUPLICATE_) $ do
+      q <- mkQueue st qr -- STMQueue lock <$> (newTVar $! Just qr) <*> newTVar Nothing
+      TM.insert rId q $ queues' st
+      TM.insert sId rId $ senders' st
+      forM_ notifier $ \NtfCreds {notifierId} -> TM.insert notifierId rId $ notifiers' st
+      pure $ Right q
+    hasId = or <$> sequence [TM.member rId $ queues' st, TM.member sId $ senders' st, hasNotifier]
+    hasNotifier = maybe (pure False) (\NtfCreds {notifierId} -> TM.member notifierId (notifiers' st)) notifier
 
-getQueue :: DirectParty p => QueueStore -> SParty p -> QueueId -> IO (Either ErrorType QueueRec)
-getQueue QueueStore {queues, senders, notifiers} party qId =
-  toResult <$> (mapM readTVarIO =<< getVar)
+getQueue :: (STMQueueStore s, DirectParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s))
+getQueue st party qId =
+  maybe (Left AUTH) Right <$> case party of
+    SRecipient -> TM.lookupIO qId $ queues' st
+    SSender -> TM.lookupIO qId (senders' st) $>>= (`TM.lookupIO` queues' st)
+    SNotifier -> TM.lookupIO qId (notifiers' st) $>>= (`TM.lookupIO` queues' st)
+
+getQueueRec :: (STMQueueStore s, DirectParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s, QueueRec))
+getQueueRec st party qId =
+  getQueue st party qId
+    $>>= (\q -> maybe (Left AUTH) (Right . (q,)) <$> readTVarIO (queueRec' q))
+
+secureQueue :: STMQueueStore s => s -> StoreQueue s -> SndPublicAuthKey -> IO (Either ErrorType ())
+secureQueue st sq sKey =
+  atomically (readQueueRec qr $>>= secure)
+    $>>= \rId -> withLog "secureQueue" st $ \s -> logSecureQueue s rId sKey
   where
-    getVar = case party of
-      SRecipient -> TM.lookupIO qId queues
-      SSender -> TM.lookupIO qId senders $>>= (`TM.lookupIO` queues)
-      SNotifier -> TM.lookupIO qId notifiers $>>= (`TM.lookupIO` queues)
+    qr = queueRec' sq
+    secure q@QueueRec {recipientId = rId} = case senderKey q of
+      Just k -> pure $ if sKey == k then Right rId else Left AUTH
+      Nothing -> do
+        writeTVar qr $! Just q {senderKey = Just sKey}
+        pure $ Right rId
 
-secureQueue :: QueueStore -> RecipientId -> SndPublicAuthKey -> IO (Either ErrorType QueueRec)
-secureQueue QueueStore {queues} rId sKey = toResult <$> do
-  TM.lookupIO rId queues $>>= \qVar -> atomically $ 
-    readTVar qVar >>= \q -> case senderKey q of
-      Just k -> pure $ if sKey == k then Just q else Nothing
-      _ ->
-        let !q' = q {senderKey = Just sKey}
-         in writeTVar qVar q' $> Just q'
-
-addQueueNotifier :: QueueStore -> RecipientId -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
-addQueueNotifier QueueStore {queues, notifiers} rId ntfCreds@NtfCreds {notifierId = nId} = do
-  TM.lookupIO rId queues >>= \case
-    Just qVar -> atomically $ ifM (TM.member nId notifiers) (pure $ Left DUPLICATE_) $ do
-      q <- readTVar qVar
-      nId_ <- forM (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId notifiers $> notifierId
+addQueueNotifier :: STMQueueStore s => s -> StoreQueue s -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
+addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId} =
+  atomically (readQueueRec qr $>>= add)
+    $>>= \(rId, nId_) -> nId_ <$$ withLog "addQueueNotifier" st (\s -> logAddNotifier s rId ntfCreds)
+  where
+    qr = queueRec' sq
+    add q@QueueRec {recipientId = rId} = ifM (TM.member nId (notifiers' st)) (pure $ Left DUPLICATE_) $ do
+      nId_ <- forM (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId (notifiers' st) $> notifierId
       let !q' = q {notifier = Just ntfCreds}
-      writeTVar qVar q'
-      TM.insert nId rId notifiers
-      pure $ Right nId_
-    Nothing -> pure $ Left AUTH
+      writeTVar qr $! Just q'
+      TM.insert nId rId $ notifiers' st
+      pure $ Right (rId, nId_)
 
-deleteQueueNotifier :: QueueStore -> RecipientId -> IO (Either ErrorType (Maybe NotifierId))
-deleteQueueNotifier QueueStore {queues, notifiers} rId =
-  withQueue rId queues $ \qVar -> do
-    q <- readTVar qVar
-    forM (notifier q) $ \NtfCreds {notifierId} -> do
-      TM.delete notifierId notifiers
-      writeTVar qVar $! q {notifier = Nothing}
+deleteQueueNotifier :: STMQueueStore s => s -> StoreQueue s -> IO (Either ErrorType (Maybe NotifierId))
+deleteQueueNotifier st sq =
+  atomically (readQueueRec qr >>= mapM delete)
+    $>>= \(rId, nId_) -> nId_ <$$ withLog "deleteQueueNotifier" st (`logDeleteNotifier` rId)
+  where
+    qr = queueRec' sq
+    delete q = fmap (recipientId q,) $ forM (notifier q) $ \NtfCreds {notifierId} -> do
+      TM.delete notifierId $ notifiers' st
+      writeTVar qr $! Just q {notifier = Nothing}
       pure notifierId
 
-suspendQueue :: QueueStore -> RecipientId -> IO (Either ErrorType ())
-suspendQueue QueueStore {queues} rId =
-  withQueue rId queues (`modifyTVar'` \q -> q {status = QueueOff})
+suspendQueue :: STMQueueStore s => s -> StoreQueue s -> IO (Either ErrorType ())
+suspendQueue st sq =
+  atomically (readQueueRec qr >>= mapM suspend)
+    $>>= \rId -> withLog "suspendQueue" st (`logSuspendQueue` rId)
+  where
+    qr = queueRec' sq
+    suspend q = do
+      writeTVar qr $! Just q {status = QueueOff}
+      pure $ recipientId q
 
-updateQueueTime :: QueueStore -> RecipientId -> RoundedSystemTime -> IO ()
-updateQueueTime QueueStore {queues} rId t =
-  void $ withQueue rId queues (`modifyTVar'` \q -> q {updatedAt = Just t})
+updateQueueTime :: STMQueueStore s => s -> StoreQueue s -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
+updateQueueTime st sq t = atomically (readQueueRec qr >>= mapM update) $>>= log'
+  where
+    qr = queueRec' sq
+    update q@QueueRec {updatedAt}
+      | updatedAt == Just t = pure (q, False)
+      | otherwise =
+          let !q' = q {updatedAt = Just t}
+           in (writeTVar qr $! Just q') $> (q', True)
+    log' (q, changed)
+      | changed = q <$$ withLog "updateQueueTime" st (\sl -> logUpdateQueueTime sl (recipientId q) t)
+      | otherwise = pure $ Right q
 
-deleteQueue :: QueueStore -> RecipientId -> IO (Either ErrorType QueueRec)
-deleteQueue QueueStore {queues, senders, notifiers} rId = atomically $ do
-  TM.lookupDelete rId queues >>= \case
-    Just qVar ->
-      readTVar qVar >>= \q -> do
-        TM.delete (senderId q) senders
-        forM_ (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId notifiers
-        pure $ Right q
-    _ -> pure $ Left AUTH
+deleteQueue' :: STMQueueStore s => s -> RecipientId -> StoreQueue s -> IO (Either ErrorType (QueueRec, Maybe (MsgQueue s)))
+deleteQueue' st rId sq =
+  atomically (readQueueRec qr >>= mapM delete)
+    $>>= \q -> withLog "deleteQueue" st (`logDeleteQueue` rId)
+    >>= bimapM pure (\_ -> (q,) <$> atomically (swapTVar (msgQueue_' sq) Nothing))
+  where
+    qr = queueRec' sq
+    delete q = do
+      writeTVar qr Nothing
+      TM.delete (senderId q) $ senders' st
+      forM_ (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId $ notifiers' st
+      pure q
 
-toResult :: Maybe a -> Either ErrorType a
-toResult = maybe (Left AUTH) Right
+readQueueRec :: TVar (Maybe QueueRec) -> STM (Either ErrorType QueueRec)
+readQueueRec qr = maybe (Left AUTH) Right <$> readTVar qr
+{-# INLINE readQueueRec #-}
 
-withQueue :: RecipientId -> TMap RecipientId (TVar QueueRec) -> (TVar QueueRec -> STM a) -> IO (Either ErrorType a)
-withQueue rId queues f = toResult <$> TM.lookupIO rId queues >>= atomically . mapM f
+withLog' :: String -> TVar (Maybe (StoreLog 'WriteMode)) -> (StoreLog 'WriteMode -> IO ()) -> IO (Either ErrorType ())
+withLog' name sl action =
+  readTVarIO sl
+    >>= maybe (pure $ Right ()) (E.try . action >=> bimapM logErr pure)
+  where
+    logErr :: E.SomeException -> IO ErrorType
+    logErr e = logError ("STORE: " <> T.pack err) $> STORE err
+      where
+        err = name <> ", withLog, " <> show e
+
+withLog :: STMQueueStore s => String -> s -> (StoreLog 'WriteMode -> IO ()) -> IO (Either ErrorType ())
+withLog name = withLog' name . storeLog'
+
+readQueueStore :: forall s. STMQueueStore s => FilePath -> s -> IO ()
+readQueueStore f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . LB.lines
+  where
+    processLine :: LB.ByteString -> IO ()
+    processLine s' = either printError procLogRecord (strDecode s)
+      where
+        s = LB.toStrict s'
+        procLogRecord :: StoreLogRecord -> IO ()
+        procLogRecord = \case
+          CreateQueue q -> addQueue st q >>= qError (recipientId q) "CreateQueue"
+          SecureQueue qId sKey -> withQueue qId "SecureQueue" $ \q -> secureQueue st q sKey
+          AddNotifier qId ntfCreds -> withQueue qId "AddNotifier" $ \q -> addQueueNotifier st q ntfCreds
+          SuspendQueue qId -> withQueue qId "SuspendQueue" $ suspendQueue st
+          DeleteQueue qId -> withQueue qId "DeleteQueue" $ deleteQueue st qId
+          DeleteNotifier qId -> withQueue qId "DeleteNotifier" $ deleteQueueNotifier st
+          UpdateTime qId t -> withQueue qId "UpdateTime" $ \q -> updateQueueTime st q t
+        printError :: String -> IO ()
+        printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
+        withQueue :: forall a. RecipientId -> T.Text -> (StoreQueue s -> IO (Either ErrorType a)) -> IO ()
+        withQueue qId op a = runExceptT go >>= qError qId op
+          where
+            go = do
+              q <- ExceptT $ getQueue st SRecipient qId
+              liftIO (readTVarIO $ queueRec' q) >>= \case
+                Nothing -> logWarn $ logPfx qId op <> "already deleted"
+                Just _ -> void $ ExceptT $ a q
+        qError qId op = \case
+          Left e -> logError $ logPfx qId op <> tshow e
+          Right _ -> pure ()
+        logPfx qId op = "STORE: " <> op <> ", stored queue " <> decodeLatin1 (strEncode qId) <> ", "

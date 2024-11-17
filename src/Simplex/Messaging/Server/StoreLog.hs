@@ -6,6 +6,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Server.StoreLog
@@ -23,35 +24,32 @@ module Simplex.Messaging.Server.StoreLog
     logDeleteQueue,
     logDeleteNotifier,
     logUpdateQueueTime,
-    readWriteQueueStore,
     readWriteStoreLog,
+    writeQueueStore,
   )
 where
 
 import Control.Applicative (optional, (<|>))
 import Control.Concurrent.STM
+import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
-import qualified Data.ByteString.Base64.URL as B64
+import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import GHC.IO (catchAny)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.Server.QueueStore.STM
-import Simplex.Messaging.Util (bshow, ifM, unlessM, whenM)
+import Simplex.Messaging.Server.StoreLog.Types
+import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Util (ifM, tshow, unlessM, whenM)
 import System.Directory (doesFileExist, renameFile)
 import System.IO
-
--- | opaque container for file handle with a type-safe IOMode
--- constructors are not exported, openWriteStoreLog and openReadStoreLog should be used instead
-data StoreLog (a :: IOMode) where
-  ReadStoreLog :: FilePath -> Handle -> StoreLog 'ReadMode
-  WriteStoreLog :: FilePath -> Handle -> StoreLog 'WriteMode
 
 data StoreLogRecord
   = CreateQueue QueueRec
@@ -159,11 +157,13 @@ storeLogFilePath = \case
 
 closeStoreLog :: StoreLog a -> IO ()
 closeStoreLog = \case
-  WriteStoreLog _ h -> hClose h
-  ReadStoreLog _ h -> hClose h
+  WriteStoreLog _ h -> close_ h
+  ReadStoreLog _ h -> close_ h
+  where
+    close_ h = hClose h `catchAny` \e -> logError ("STORE: closeStoreLog, error closing, " <> tshow e)
 
 writeStoreLogRecord :: StrEncoding r => StoreLog 'WriteMode -> r -> IO ()
-writeStoreLogRecord (WriteStoreLog _ h) r = do
+writeStoreLogRecord (WriteStoreLog _ h) r = E.uninterruptibleMask_ $ do
   B.hPut h $ strEncode r `B.snoc` '\n' -- hPutStrLn makes write non-atomic for length > 1024
   hFlush h
 
@@ -187,9 +187,6 @@ logDeleteNotifier s = writeStoreLogRecord s . DeleteNotifier
 
 logUpdateQueueTime :: StoreLog 'WriteMode -> QueueId -> RoundedSystemTime -> IO ()
 logUpdateQueueTime s qId t = writeStoreLogRecord s $ UpdateTime qId t
-
-readWriteQueueStore :: FilePath -> QueueStore -> IO (StoreLog 'WriteMode)
-readWriteQueueStore = readWriteStoreLog readQueues writeQueues
 
 readWriteStoreLog :: (FilePath -> s -> IO ()) -> (StoreLog 'WriteMode -> s -> IO ()) -> FilePath -> s -> IO (StoreLog 'WriteMode)
 readWriteStoreLog readStore writeStore f st =
@@ -226,31 +223,11 @@ readWriteStoreLog readStore writeStore f st =
       renameFile tempBackup timedBackup
       logInfo $ "original state preserved as " <> T.pack timedBackup
 
-writeQueues :: StoreLog 'WriteMode -> QueueStore -> IO ()
-writeQueues s st = readTVarIO (queues st) >>= mapM_ writeQueue
+writeQueueStore :: STMQueueStore s => StoreLog 'WriteMode -> s -> IO ()
+writeQueueStore s st = readTVarIO (activeMsgQueues st) >>= mapM_ writeQueue . M.assocs
   where
-    writeQueue v = readTVarIO v >>= \q -> when (active q) $ logCreateQueue s q
+    writeQueue (rId, q) =
+      readTVarIO (queueRec' q) >>= \case
+        Just q' -> when (active q') $ logCreateQueue s q' -- TODO we should log suspended queues when we use them
+        Nothing -> atomically $ TM.delete rId $ activeMsgQueues st
     active QueueRec {status} = status == QueueActive
-
-readQueues :: FilePath -> QueueStore -> IO ()
-readQueues f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . LB.lines
-  where
-    processLine :: LB.ByteString -> IO ()
-    processLine s' = either printError procLogRecord (strDecode s)
-      where
-        s = LB.toStrict s'
-        procLogRecord :: StoreLogRecord -> IO ()
-        procLogRecord = \case
-          CreateQueue q -> addQueue st q >>= qError "create" (recipientId q)
-          SecureQueue qId sKey -> secureQueue st qId sKey >>= qError "secure" qId
-          AddNotifier qId ntfCreds -> addQueueNotifier st qId ntfCreds >>= qError "addNotifier" qId
-          SuspendQueue qId -> suspendQueue st qId >>= qError "suspend" qId
-          DeleteQueue qId -> deleteQueue st qId >>= qError "delete" qId
-          DeleteNotifier qId -> deleteQueueNotifier st qId >>= qError "deleteNotifier" qId
-          UpdateTime qId t -> updateQueueTime st qId t
-        printError :: String -> IO ()
-        printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
-        qError :: B.ByteString -> RecipientId -> Either ErrorType a -> IO ()
-        qError op (EntityId qId) = \case
-          Left e -> B.putStrLn $ op <> " stored queue " <> B64.encode qId <> " error: " <> bshow e
-          Right _ -> pure ()

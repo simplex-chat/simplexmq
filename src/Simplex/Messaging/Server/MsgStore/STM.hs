@@ -1,5 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -7,11 +8,11 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module Simplex.Messaging.Server.MsgStore.STM
   ( STMMsgStore (..),
-    STMMsgQueue (msgQueue),
     STMStoreConfig (..),
   )
 where
@@ -20,21 +21,36 @@ import Control.Concurrent.STM
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Data.Functor (($>))
-import Simplex.Messaging.Protocol (ErrorType, Message (..), RecipientId)
+import Data.Int (Int64)
+import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
+import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Server.QueueStore.STM
+import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-
-data STMMsgQueue = STMMsgQueue
-  { msgQueue :: TQueue Message,
-    quota :: Int,
-    canWrite :: TVar Bool,
-    size :: TVar Int
-  }
+import Simplex.Messaging.Util ((<$$>))
+import System.IO (IOMode (..))
 
 data STMMsgStore = STMMsgStore
   { storeConfig :: STMStoreConfig,
-    msgQueues :: TMap RecipientId STMMsgQueue
+    queues :: TMap RecipientId STMQueue,
+    senders :: TMap SenderId RecipientId,
+    notifiers :: TMap NotifierId RecipientId,
+    storeLog :: TVar (Maybe (StoreLog 'WriteMode))
+  }
+
+data STMQueue = STMQueue
+  { -- To avoid race conditions and errors when restoring queues,
+    -- Nothing is written to TVar when queue is deleted.
+    queueRec :: TVar (Maybe QueueRec),
+    msgQueue_ :: TVar (Maybe STMMsgQueue)
+  }
+
+data STMMsgQueue = STMMsgQueue
+  { msgQueue :: TQueue Message,
+    canWrite :: TVar Bool,
+    size :: TVar Int
   }
 
 data STMStoreConfig = STMStoreConfig
@@ -42,19 +58,34 @@ data STMStoreConfig = STMStoreConfig
     quota :: Int
   }
 
+instance STMQueueStore STMMsgStore where
+  queues' = queues
+  senders' = senders
+  notifiers' = notifiers
+  storeLog' = storeLog
+  mkQueue _ qr = STMQueue <$> (newTVar $! Just qr) <*> newTVar Nothing
+  msgQueue_' = msgQueue_
+
 instance MsgStoreClass STMMsgStore where
   type StoreMonad STMMsgStore = STM
+  type StoreQueue STMMsgStore = STMQueue
   type MsgQueue STMMsgStore = STMMsgQueue
   type MsgStoreConfig STMMsgStore = STMStoreConfig
 
   newMsgStore :: STMStoreConfig -> IO STMMsgStore
   newMsgStore storeConfig = do
-    msgQueues <- TM.emptyIO
-    pure STMMsgStore {storeConfig, msgQueues}
+    queues <- TM.emptyIO
+    senders <- TM.emptyIO
+    notifiers <- TM.emptyIO
+    storeLog <- newTVarIO Nothing
+    pure STMMsgStore {storeConfig, queues, senders, notifiers, storeLog}
 
-  closeMsgStore _ = pure ()
+  setStoreLog :: STMMsgStore -> StoreLog 'WriteMode -> IO ()
+  setStoreLog st sl = atomically $ writeTVar (storeLog st) (Just sl)
 
-  activeMsgQueues = msgQueues
+  closeMsgStore st = readTVarIO (storeLog st) >>= mapM_ closeStoreLog
+
+  activeMsgQueues = queues
   {-# INLINE activeMsgQueues #-}
 
   withAllMsgQueues _ = withActiveMsgQueues
@@ -64,39 +95,49 @@ instance MsgStoreClass STMMsgStore where
 
   logQueueState _ = pure ()
 
-  -- The reason for double lookup is that majority of messaging queues exist,
-  -- because multiple messages are sent to the same queue,
-  -- so the first lookup without STM transaction will return the queue faster.
-  -- In case the queue does not exist, it needs to be looked-up again inside transaction.
-  getMsgQueue :: STMMsgStore -> RecipientId -> ExceptT ErrorType IO STMMsgQueue
-  getMsgQueue STMMsgStore {msgQueues = qs, storeConfig = STMStoreConfig {quota}} rId =
-    liftIO $ TM.lookupIO rId qs >>= maybe (atomically maybeNewQ) pure
+  queueRec' = queueRec
+  {-# INLINE queueRec' #-}
+
+  getMsgQueue :: STMMsgStore -> RecipientId -> STMQueue -> STM STMMsgQueue
+  getMsgQueue _ _ STMQueue {msgQueue_} = readTVar msgQueue_ >>= maybe newQ pure
     where
-      maybeNewQ = TM.lookup rId qs >>= maybe newQ pure
       newQ = do
         msgQueue <- newTQueue
         canWrite <- newTVar True
         size <- newTVar 0
-        let q = STMMsgQueue {msgQueue, quota, canWrite, size}
-        TM.insert rId q qs
+        let q = STMMsgQueue {msgQueue, canWrite, size}
+        writeTVar msgQueue_ $! Just q
         pure q
 
-  delMsgQueue :: STMMsgStore -> RecipientId -> IO ()
-  delMsgQueue st rId = atomically $ TM.delete rId $ msgQueues st
+  -- does not create queue if it does not exist, does not delete it if it does (can't just close in-memory queue)
+  withIdleMsgQueue :: Int64 -> STMMsgStore -> RecipientId -> STMQueue -> (STMMsgQueue -> STM a) -> STM (Maybe a, Int)
+  withIdleMsgQueue _ _ _ STMQueue {msgQueue_} action = readTVar msgQueue_ >>= \case
+    Just q -> do
+      r <- action q
+      sz <- getQueueSize_ q
+      pure (Just r, sz)
+    Nothing -> pure (Nothing, 0)
 
-  delMsgQueueSize :: STMMsgStore -> RecipientId -> IO Int
-  delMsgQueueSize st rId = atomically (TM.lookupDelete rId $ msgQueues st) >>= maybe (pure 0) (\STMMsgQueue {size} -> readTVarIO size)
+  deleteQueue :: STMMsgStore -> RecipientId -> STMQueue -> IO (Either ErrorType QueueRec)
+  deleteQueue ms rId q = fst <$$> deleteQueue' ms rId q
 
-  getQueueMessages :: Bool -> STMMsgQueue -> IO [Message]
-  getQueueMessages drainMsgs = atomically . (if drainMsgs then flushTQueue else snapshotTQueue) . msgQueue
+  deleteQueueSize :: STMMsgStore -> RecipientId -> STMQueue -> IO (Either ErrorType (QueueRec, Int))
+  deleteQueueSize ms rId q = deleteQueue' ms rId q >>= mapM (traverse getSize)
+    -- traverse operates on the second tuple element
+    where
+      getSize = maybe (pure 0) (\STMMsgQueue {size} -> readTVarIO size)
+
+  getQueueMessages_ :: Bool -> STMMsgQueue -> STM [Message]
+  getQueueMessages_ drainMsgs = (if drainMsgs then flushTQueue else snapshotTQueue) . msgQueue
     where
       snapshotTQueue q = do
         msgs <- flushTQueue q
         mapM_ (writeTQueue q) msgs
         pure msgs
 
-  writeMsg :: STMMsgStore -> STMMsgQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
-  writeMsg _ STMMsgQueue {msgQueue = q, quota, canWrite, size} _logState msg = liftIO $ atomically $ do
+  writeMsg :: STMMsgStore -> RecipientId -> STMQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
+  writeMsg ms rId q' _logState msg = liftIO $ atomically $ do
+    STMMsgQueue {msgQueue = q, canWrite, size} <- getMsgQueue ms rId q'
     canWrt <- readTVar canWrite
     empty <- isEmptyTQueue q
     if canWrt || empty
@@ -109,23 +150,24 @@ instance MsgStoreClass STMMsgStore where
           else (writeTQueue q $! msgQuota) $> Nothing
       else pure Nothing
     where
-      msgQuota = MessageQuota {msgId = msgId msg, msgTs = msgTs msg}
+      STMMsgStore {storeConfig = STMStoreConfig {quota}} = ms
+      msgQuota = MessageQuota {msgId = messageId msg, msgTs = messageTs msg}
 
-  setOverQuota_ :: STMMsgQueue -> IO ()
-  setOverQuota_ q = atomically $ writeTVar (canWrite q) False
+  setOverQuota_ :: STMQueue -> IO ()
+  setOverQuota_ q = readTVarIO (msgQueue_ q) >>= mapM_ (\mq -> atomically $ writeTVar (canWrite mq) False)
 
-  getQueueSize :: STMMsgQueue -> IO Int
-  getQueueSize STMMsgQueue {size} = readTVarIO size
+  getQueueSize_ :: STMMsgQueue -> STM Int
+  getQueueSize_ STMMsgQueue {size} = readTVar size
 
   tryPeekMsg_ :: STMMsgQueue -> STM (Maybe Message)
   tryPeekMsg_ = tryPeekTQueue . msgQueue
   {-# INLINE tryPeekMsg_ #-}
 
-  tryDeleteMsg_ :: STMMsgQueue -> Bool -> STM ()
-  tryDeleteMsg_ STMMsgQueue {msgQueue = q, size} _logState =
+  tryDeleteMsg_ :: STMQueue -> STMMsgQueue -> Bool -> STM ()
+  tryDeleteMsg_ _ STMMsgQueue {msgQueue = q, size} _logState =
     tryReadTQueue q >>= \case
       Just _ -> modifyTVar' size (subtract 1)
       _ -> pure ()
 
-  isolateQueue :: STMMsgQueue -> String -> STM a -> ExceptT ErrorType IO a
-  isolateQueue _ _ = liftIO . atomically
+  isolateQueue :: RecipientId -> STMQueue -> String -> STM a -> ExceptT ErrorType IO a
+  isolateQueue _ _ _ = liftIO . atomically

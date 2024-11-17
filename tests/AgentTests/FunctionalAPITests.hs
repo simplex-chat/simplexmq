@@ -3076,8 +3076,9 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a
-    ("", "", DOWN _ _) <- nGet a
-    ("", "", UP _ _) <- nGet a
+    -- to avoice race condition
+    nGet a =##> \case ("", "", DOWN _ _) -> True; ("", "", UP _ _) -> True; _ -> False
+    nGet a =##> \case ("", "", UP _ _) -> True; ("", "", DOWN _ _) -> True; _ -> False
     ("", "", UP _ _) <- nGet a
     ("", "", UP _ _) <- nGet a
     ("", "", UP _ _) <- nGet a

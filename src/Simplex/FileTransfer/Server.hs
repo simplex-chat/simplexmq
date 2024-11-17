@@ -181,6 +181,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
     stopServer = do
       withFileLog closeStoreLog
       saveServerStats
+      logInfo "Server stopped"
 
     expireFilesThread_ :: XFTPServerConfig -> [M ()]
     expireFilesThread_ XFTPServerConfig {fileExpiration = Just fileExp} = [expireFiles fileExp]

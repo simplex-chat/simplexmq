@@ -115,10 +115,12 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
 
     stopServer :: M ()
     stopServer = do
+      logInfo "Saving server state..."
       saveServer
       NtfSubscriber {smpSubscribers, smpAgent} <- asks subscriber
       liftIO $ readTVarIO smpSubscribers >>= mapM_ (\SMPSubscriber {subThreadId} -> readTVarIO subThreadId >>= mapM_ (deRefWeak >=> mapM_ killThread))
       liftIO $ closeSMPClientAgent smpAgent
+      logInfo "Server stopped"
 
     saveServer :: M ()
     saveServer = withNtfLog closeStoreLog >> saveServerLastNtfs >> saveServerStats

@@ -538,11 +538,13 @@ messageId :: Message -> MsgId
 messageId = \case
   Message {msgId} -> msgId
   MessageQuota {msgId} -> msgId
+{-# INLINE messageId #-}
 
 messageTs :: Message -> SystemTime
 messageTs = \case
   Message {msgTs} -> msgTs
   MessageQuota {msgTs} -> msgTs
+{-# INLINE messageTs #-}
 
 newtype EncRcvMsgBody = EncRcvMsgBody ByteString
   deriving (Eq, Show)

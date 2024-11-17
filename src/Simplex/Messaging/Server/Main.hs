@@ -46,10 +46,11 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..), newMsgStore)
+import Simplex.Messaging.Server.QueueStore.STM (readQueueStore)
 import Simplex.Messaging.Transport (batchCmdsSMPVersion, sendingProxySMPVersion, simplexMQVersion, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
-import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, tshow)
+import Simplex.Messaging.Util (eitherToMaybe, ifM, safeDecodeUtf8, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure)
@@ -85,6 +86,14 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
     Journal cmd -> withIniFile $ \ini -> do
       msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
       msgsFileExists <- doesFileExist storeMsgsFilePath
+      let enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
+      storeLogFile <- case enableStoreLog $> storeLogFilePath of
+        Just storeLogFile -> do
+          ifM
+            (doesFileExist storeLogFile)
+            (pure storeLogFile)
+            (putStrLn ("Store log file " <> storeLogFile <> " not found") >> exitFailure)
+        Nothing -> putStrLn "Store log disabled, see `[STORE_LOG] enable`" >> exitFailure
       case cmd of
         JCImport
           | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
@@ -99,6 +108,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 ("WARNING: message log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir)
                 "Messages not imported"
               ms <- newJournalMsgStore
+              readQueueStore storeLogFile ms
               msgStats <- importMessages True ms storeMsgsFilePath Nothing -- no expiration
               putStrLn "Import completed"
               printMessageStats "Messages" msgStats
@@ -116,6 +126,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
                 "Journal not exported"
               ms <- newJournalMsgStore
+              readQueueStore storeLogFile ms
               exportMessages True ms storeMsgsFilePath False
               putStrLn "Export completed"
               putStrLn $ case readMsgStoreType ini of
@@ -137,7 +148,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError a
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
-    newJournalMsgStore = newMsgStore JournalStoreConfig {storePath = storeMsgsJournalDir, pathParts = journalMsgStoreDepth, quota = defaultMsgQueueQuota, maxMsgCount = defaultMaxJournalMsgCount, maxStateLines = defaultMaxJournalStateLines}
+    newJournalMsgStore = newMsgStore JournalStoreConfig {storePath = storeMsgsJournalDir, pathParts = journalMsgStoreDepth, quota = defaultMsgQueueQuota, maxMsgCount = defaultMaxJournalMsgCount, maxStateLines = defaultMaxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = checkInterval defaultMessageExpiration}
     iniFile = combine cfgPath "smp-server.ini"
     serverVersion = "SMP server v" <> simplexMQVersion
     defaultServerPorts = "5223,443"
@@ -238,6 +249,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 <> ("restore_messages: " <> onOff enableStoreLog <> "\n\n")
                 <> "# Messages and notifications expiration periods.\n"
                 <> ("expire_messages_days: " <> tshow defMsgExpirationDays <> "\n")
+                <> "expire_messages_on_start: on\n"
                 <> ("expire_ntfs_hours: " <> tshow defNtfExpirationHours <> "\n\n")
                 <> "# Log daily server statistics to CSV file\n"
                 <> ("log_stats: " <> onOff logStats <> "\n\n")
@@ -403,6 +415,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   defaultMessageExpiration
                     { ttl = 86400 * readIniDefault defMsgExpirationDays "STORE_LOG" "expire_messages_days" ini
                     },
+              expireMessagesOnStart = fromMaybe True $ iniOnOff "STORE_LOG" "expire_messages_on_start" ini,
+              idleQueueInterval = defaultIdleQueueInterval,
               notificationExpiration =
                 defaultNtfExpiration
                   { ttl = 3600 * readIniDefault defNtfExpirationHours "STORE_LOG" "expire_ntfs_hours" ini
