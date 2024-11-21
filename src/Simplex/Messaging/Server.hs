@@ -1821,8 +1821,8 @@ importMessages tty ms f old_ = do
               mergeQuotaMsgs >> writeMsg ms rId q False msg $> (stored, expired, M.insert rId q overQuota)
               where
                 -- if the first message in queue head is "quota", remove it.
-                mergeQuotaMsgs = withMsgQueue ms rId q "mergeQuotaMsgs" $ \mq ->
-                  tryPeekMsg_ mq >>= \case
+                mergeQuotaMsgs = withMsgQueue ms rId q "mergeQuotaMsgs" $ maybe (pure ()) $ \mq ->
+                  tryPeekMsg_ q mq >>= \case
                     Just MessageQuota {} -> tryDeleteMsg_ q mq False
                     _ -> pure ()
         msgErr :: Show e => String -> e -> String

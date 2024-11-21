@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -8,7 +7,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module Simplex.Messaging.Server.MsgStore.STM
@@ -63,7 +61,7 @@ instance STMQueueStore STMMsgStore where
   senders' = senders
   notifiers' = notifiers
   storeLog' = storeLog
-  mkQueue _ qr = STMQueue <$> (newTVar $! Just qr) <*> newTVar Nothing
+  mkQueue _ qr = STMQueue <$> newTVar (Just qr) <*> newTVar Nothing
   msgQueue_' = msgQueue_
 
 instance MsgStoreClass STMMsgStore where
@@ -106,8 +104,12 @@ instance MsgStoreClass STMMsgStore where
         canWrite <- newTVar True
         size <- newTVar 0
         let q = STMMsgQueue {msgQueue, canWrite, size}
-        writeTVar msgQueue_ $! Just q
+        writeTVar msgQueue_ (Just q)
         pure q
+
+  getNonEmptyMsgQueue :: STMMsgStore -> RecipientId -> STMQueue -> STM (Maybe STMMsgQueue)
+  getNonEmptyMsgQueue _ _ STMQueue {msgQueue_} = readTVar msgQueue_
+  {-# INLINE getNonEmptyMsgQueue #-}
 
   -- does not create queue if it does not exist, does not delete it if it does (can't just close in-memory queue)
   withIdleMsgQueue :: Int64 -> STMMsgStore -> RecipientId -> STMQueue -> (STMMsgQueue -> STM a) -> STM (Maybe a, Int)
@@ -159,8 +161,8 @@ instance MsgStoreClass STMMsgStore where
   getQueueSize_ :: STMMsgQueue -> STM Int
   getQueueSize_ STMMsgQueue {size} = readTVar size
 
-  tryPeekMsg_ :: STMMsgQueue -> STM (Maybe Message)
-  tryPeekMsg_ = tryPeekTQueue . msgQueue
+  tryPeekMsg_ :: STMQueue -> STMMsgQueue -> STM (Maybe Message)
+  tryPeekMsg_ _ = tryPeekTQueue . msgQueue
   {-# INLINE tryPeekMsg_ #-}
 
   tryDeleteMsg_ :: STMQueue -> STMMsgQueue -> Bool -> STM ()
