@@ -470,10 +470,6 @@ instance MsgStoreClass JournalMsgStore where
 updateActiveAt :: JournalQueue -> IO ()
 updateActiveAt q = atomically . writeTVar (activeAt q) . systemSeconds =<< getSystemTime
 
-setQueueEmpty :: JournalQueue -> Bool -> IO ()
-setQueueEmpty q = atomically . writeTVar (isEmpty q)
-{-# INLINE setQueueEmpty #-}
-
 tryStore' :: String -> RecipientId -> IO a -> ExceptT ErrorType IO a
 tryStore' op rId = tryStore op rId . fmap Right
 
