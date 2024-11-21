@@ -1388,6 +1388,7 @@ temporaryAgentError = \case
   PROXY _ _ (ProxyProtocolError (SMP.PROXY (SMP.BROKER e))) -> tempBrokerError e
   PROXY _ _ (ProxyProtocolError (SMP.PROXY SMP.NO_SESSION)) -> True
   INACTIVE -> True
+  CRITICAL True _ -> True -- critical errors that do not show restart button are likely to be permanent
   _ -> False
   where
     tempBrokerError = \case
