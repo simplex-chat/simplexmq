@@ -4,15 +4,20 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+
+{-# HLINT ignore "Redundant multi-way if" #-}
 
 module Simplex.Messaging.Server.MsgStore.Types where
 
 import Control.Concurrent.STM
 import Control.Monad (foldM)
 import Control.Monad.Trans.Except
+import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind
 import qualified Data.Map.Strict as M
@@ -21,6 +26,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.StoreLog.Types
 import Simplex.Messaging.TMap (TMap)
+import Simplex.Messaging.Util ((<$$>))
 import System.IO (IOMode (..))
 
 class MsgStoreClass s => STMQueueStore s where
@@ -44,8 +50,9 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   logQueueStates :: s -> IO ()
   logQueueState :: StoreQueue s -> StoreMonad s ()
   queueRec' :: StoreQueue s -> TVar (Maybe QueueRec)
-  getNonEmptyMsgQueue :: s -> RecipientId -> StoreQueue s -> StoreMonad s (Maybe (MsgQueue s))
+  getPeekMsgQueue :: s -> RecipientId -> StoreQueue s -> StoreMonad s (Maybe (MsgQueue s, Message))
   getMsgQueue :: s -> RecipientId -> StoreQueue s -> StoreMonad s (MsgQueue s)
+
   -- the journal queue will be closed after action if it was initially closed or idle longer than interval in config
   withIdleMsgQueue :: Int64 -> s -> RecipientId -> StoreQueue s -> (MsgQueue s -> StoreMonad s a) -> StoreMonad s (Maybe a, Int)
   deleteQueue :: s -> RecipientId -> StoreQueue s -> IO (Either ErrorType QueueRec)
@@ -74,39 +81,39 @@ withActiveMsgQueues st f = readTVarIO (activeMsgQueues st) >>= foldM run mempty 
       pure $! acc <> r
 
 getQueueMessages :: MsgStoreClass s => Bool -> s -> RecipientId -> StoreQueue s -> ExceptT ErrorType IO [Message]
-getQueueMessages drainMsgs st rId q = withMsgQueue st rId q "getQueueSize" $ maybe (pure []) $ getQueueMessages_ drainMsgs
+getQueueMessages drainMsgs st rId q = withPeekMsgQueue st rId q "getQueueSize" $ maybe (pure []) (getQueueMessages_ drainMsgs . fst)
 {-# INLINE getQueueMessages #-}
 
 getQueueSize :: MsgStoreClass s => s -> RecipientId -> StoreQueue s -> ExceptT ErrorType IO Int
-getQueueSize st rId q = withMsgQueue st rId q "getQueueSize" $ maybe (pure 0) getQueueSize_
+getQueueSize st rId q = withPeekMsgQueue st rId q "getQueueSize" $ maybe (pure 0) (getQueueSize_ . fst)
 {-# INLINE getQueueSize #-}
 
 tryPeekMsg :: MsgStoreClass s => s -> RecipientId -> StoreQueue s -> ExceptT ErrorType IO (Maybe Message)
-tryPeekMsg st rId q = withMsgQueue st rId q "tryPeekMsg" $ maybe (pure Nothing) (tryPeekMsg_ q)
+tryPeekMsg st rId q = snd <$$> withPeekMsgQueue st rId q "tryPeekMsg" pure
 {-# INLINE tryPeekMsg #-}
 
 tryDelMsg :: MsgStoreClass s => s -> RecipientId -> StoreQueue s -> MsgId -> ExceptT ErrorType IO (Maybe Message)
-tryDelMsg st rId q msgId' = withMsgQueue st rId q "tryDelMsg" $ maybe (pure Nothing) $ \mq ->
-    tryPeekMsg_ q mq >>= \case
-      msg_@(Just msg)
+tryDelMsg st rId q msgId' =
+  withPeekMsgQueue st rId q "tryDelMsg" $
+    maybe (pure Nothing) $ \(mq, msg) ->
+      if
         | messageId msg == msgId' ->
-            tryDeleteMsg_ q mq True >> pure msg_
-      _ -> pure Nothing
+            tryDeleteMsg_ q mq True $> Just msg
+        | otherwise -> pure Nothing
 
 -- atomic delete (== read) last and peek next message if available
 tryDelPeekMsg :: MsgStoreClass s => s -> RecipientId -> StoreQueue s -> MsgId -> ExceptT ErrorType IO (Maybe Message, Maybe Message)
 tryDelPeekMsg st rId q msgId' =
-  withMsgQueue st rId q "tryDelPeekMsg" $ maybe (pure (Nothing, Nothing)) $ \mq ->
-    tryPeekMsg_ q mq >>= \case
-      msg_@(Just msg)
-        | messageId msg == msgId' -> (msg_,) <$> (tryDeleteMsg_ q mq True >> tryPeekMsg_ q mq)
-        | otherwise -> pure (Nothing, msg_)
-      _ -> pure (Nothing, Nothing)
+  withPeekMsgQueue st rId q "tryDelPeekMsg" $
+    maybe (pure (Nothing, Nothing)) $ \(mq, msg) ->
+      if
+        | messageId msg == msgId' -> (Just msg,) <$> (tryDeleteMsg_ q mq True >> tryPeekMsg_ q mq)
+        | otherwise -> pure (Nothing, Just msg)
 
 -- The action is called with Nothing when it is known that the queue is empty
-withMsgQueue :: MsgStoreClass s => s -> RecipientId -> StoreQueue s -> String -> (Maybe (MsgQueue s) -> StoreMonad s a) -> ExceptT ErrorType IO a
-withMsgQueue st rId q op a = isolateQueue rId q op $ getNonEmptyMsgQueue st rId q >>= a
-{-# INLINE withMsgQueue #-}
+withPeekMsgQueue :: MsgStoreClass s => s -> RecipientId -> StoreQueue s -> String -> (Maybe (MsgQueue s, Message) -> StoreMonad s a) -> ExceptT ErrorType IO a
+withPeekMsgQueue st rId q op a = isolateQueue rId q op $ getPeekMsgQueue st rId q >>= a
+{-# INLINE withPeekMsgQueue #-}
 
 deleteExpiredMsgs :: MsgStoreClass s => s -> RecipientId -> StoreQueue s -> Int64 -> ExceptT ErrorType IO Int
 deleteExpiredMsgs st rId q old =

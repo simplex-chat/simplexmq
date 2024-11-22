@@ -12,6 +12,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Server.MsgStore.Journal
   ( JournalMsgStore (queues, senders, notifiers, random),
@@ -104,8 +105,8 @@ data JournalQueue = JournalQueue
     msgQueue_ :: TVar (Maybe JournalMsgQueue),
     -- system time in seconds since epoch
     activeAt :: TVar Int64,
-    -- True - empty, False - non-empty or unknown
-    isEmpty :: TVar Bool
+    -- Just True - empty, Just False - non-empty, Nothing - unknown
+    isEmpty :: TVar (Maybe Bool)
   }
 
 data JMQueue = JMQueue
@@ -227,7 +228,7 @@ instance STMQueueStore JournalMsgStore where
     q <- newTVar $ Just qr
     mq <- newTVar Nothing
     activeAt <- newTVar 0
-    isEmpty <- newTVar False
+    isEmpty <- newTVar Nothing
     pure $ JournalQueue lock q mq activeAt isEmpty
   msgQueue_' = msgQueue_
 
@@ -333,12 +334,24 @@ instance MsgStoreClass JournalMsgStore where
             journalId <- newJournalId random
             mkJournalQueue queue (newMsgQueueState journalId) Nothing
 
-  getNonEmptyMsgQueue :: JournalMsgStore -> RecipientId -> JournalQueue -> StoreIO (Maybe JournalMsgQueue)
-  getNonEmptyMsgQueue ms rId q@JournalQueue {isEmpty} =
-    ifM
-      (StoreIO $ readTVarIO isEmpty)
-      (pure Nothing)
-      (Just <$> getMsgQueue ms rId q)
+  getPeekMsgQueue :: JournalMsgStore -> RecipientId -> JournalQueue -> StoreIO (Maybe (JournalMsgQueue, Message))
+  getPeekMsgQueue ms rId q@JournalQueue {isEmpty} =
+    StoreIO (readTVarIO isEmpty) >>= \case
+      Just True -> pure Nothing
+      Just False -> peek
+      Nothing -> do
+        -- We only close the queue if we just learnt it's empty.
+        -- This is needed to reduce file descriptors and memory usage
+        -- after the server just started and many clients subscribe.
+        -- In case the queue became non-empty on write and then again empty on read
+        -- we won't be closing it, to avoid frequent open/close on active queues.
+        r <- peek
+        when (isNothing r) $ StoreIO $ closeMsgQueue q
+        pure r
+    where
+      peek = do
+        mq <- getMsgQueue ms rId q
+        (mq,) <$$> tryPeekMsg_ q mq
 
   -- only runs action if queue is not empty
   withIdleMsgQueue :: Int64 -> JournalMsgStore -> RecipientId -> JournalQueue -> (JournalMsgQueue -> StoreIO a) -> StoreIO (Maybe a, Int)
@@ -346,11 +359,11 @@ instance MsgStoreClass JournalMsgStore where
     StoreIO $ readTVarIO (msgQueue_ q) >>= \case
       Nothing ->
         E.bracket
-          (unStoreIO $ getNonEmptyMsgQueue ms rId q)
+          (unStoreIO $ getPeekMsgQueue ms rId q)
           (mapM_ $ \_ -> closeMsgQueue q)
           (maybe (pure (Nothing, 0)) (unStoreIO . run))
         where
-          run mq = do
+          run (mq, _) = do
             r <- action mq
             sz <- getQueueSize_ mq
             pure (Just r, sz)
@@ -392,7 +405,7 @@ instance MsgStoreClass JournalMsgStore where
       let empty = size == 0
       if canWrite || empty
         then do
-          atomically $ writeTVar (isEmpty q') False
+          atomically $ writeTVar (isEmpty q') (Just False)
           let canWrt' = quota > size
           if canWrt'
             then writeToJournal q st canWrt' msg $> Just (msg, empty)
@@ -452,7 +465,7 @@ instance MsgStoreClass JournalMsgStore where
             atomically $ writeTVar tipMsg $ Just (Just ml)
             pure $ Just msg
       setEmpty msg = do
-        atomically $ writeTVar (isEmpty q) (isNothing msg)
+        atomically $ writeTVar (isEmpty q) (Just $ isNothing msg)
         pure msg
 
   tryDeleteMsg_ :: JournalQueue -> JournalMsgQueue -> Bool -> StoreIO ()

@@ -8,6 +8,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Server.MsgStore.STM
   ( STMMsgStore (..),
@@ -27,7 +28,7 @@ import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util ((<$$>))
+import Simplex.Messaging.Util ((<$$>), ($>>=))
 import System.IO (IOMode (..))
 
 data STMMsgStore = STMMsgStore
@@ -107,9 +108,8 @@ instance MsgStoreClass STMMsgStore where
         writeTVar msgQueue_ (Just q)
         pure q
 
-  getNonEmptyMsgQueue :: STMMsgStore -> RecipientId -> STMQueue -> STM (Maybe STMMsgQueue)
-  getNonEmptyMsgQueue _ _ STMQueue {msgQueue_} = readTVar msgQueue_
-  {-# INLINE getNonEmptyMsgQueue #-}
+  getPeekMsgQueue :: STMMsgStore -> RecipientId -> STMQueue -> STM (Maybe (STMMsgQueue, Message))
+  getPeekMsgQueue _ _ q@STMQueue {msgQueue_} = readTVar msgQueue_ $>>= \mq -> (mq,) <$$> tryPeekMsg_ q mq
 
   -- does not create queue if it does not exist, does not delete it if it does (can't just close in-memory queue)
   withIdleMsgQueue :: Int64 -> STMMsgStore -> RecipientId -> STMQueue -> (STMMsgQueue -> STM a) -> STM (Maybe a, Int)
