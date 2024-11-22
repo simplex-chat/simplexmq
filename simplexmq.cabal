@@ -384,6 +384,7 @@ test-suite simplexmq-test
       AgentTests.MigrationTests
       AgentTests.NotificationTests
       AgentTests.SchemaDump
+      AgentTests.ServerChoice
       AgentTests.SQLiteTests
       CLITests
       CoreTests.BatchingTests

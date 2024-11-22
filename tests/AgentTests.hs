@@ -16,6 +16,7 @@ import AgentTests.FunctionalAPITests (functionalAPITests)
 import AgentTests.MigrationTests (migrationTests)
 import AgentTests.NotificationTests (notificationTests)
 import AgentTests.SQLiteTests (storeTests)
+import AgentTests.ServerChoice (serverChoiceTests)
 import Simplex.Messaging.Transport (ATransport (..))
 import Test.Hspec
 
@@ -26,4 +27,5 @@ agentTests (ATransport t) = do
   describe "Functional API" $ functionalAPITests (ATransport t)
   describe "Notification tests" $ notificationTests (ATransport t)
   describe "SQLite store" storeTests
+  describe "Chosen servers" serverChoiceTests
   describe "Migration tests" migrationTests

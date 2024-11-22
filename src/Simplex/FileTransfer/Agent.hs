@@ -461,14 +461,14 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           pure srv
           where
             tryCreate = do
-              usedSrvs <- newTVarIO ([] :: [XFTPServer])
+              triedHosts <- newTVarIO S.empty
               let AgentClient {xftpServers} = c
               userSrvCount <- liftIO $ length <$> TM.lookupIO userId xftpServers
               withRetryIntervalCount (riFast ri) $ \n _ loop -> do
                 liftIO $ waitWhileSuspended c
                 liftIO $ waitForUserNetwork c
                 let triedAllSrvs = n > userSrvCount
-                createWithNextSrv usedSrvs
+                createWithNextSrv triedHosts
                   `catchAgentError` \e -> retryOnError "XFTP prepare worker" (retryLoop loop triedAllSrvs e) (throwE e) e
               where
                 -- we don't do closeXFTPServerClient here to not risk closing connection for concurrent chunk upload
@@ -477,10 +477,10 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
                     when (triedAllSrvs && serverHostError e) $ notify c sndFileEntityId $ SFWARN e
                   liftIO $ assertAgentForeground c
                   loop
-            createWithNextSrv usedSrvs = do
+            createWithNextSrv triedHosts = do
               deleted <- withStore' c $ \db -> getSndFileDeleted db sndFileId
               when deleted $ throwE $ FILE NO_FILE
-              withNextSrv c userId usedSrvs [] $ \srvAuth -> do
+              withNextSrv c userId storageSrvs triedHosts [] $ \srvAuth -> do
                 replica <- agentXFTPNewChunk c ch numRecipients' srvAuth
                 pure (replica, srvAuth)
 

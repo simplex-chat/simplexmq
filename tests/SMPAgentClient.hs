@@ -38,7 +38,7 @@ testSMPServer :: SMPServer
 testSMPServer = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"
 
 testSMPServer2 :: SMPServer
-testSMPServer2 = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5002"
+testSMPServer2 = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@127.0.0.1:5002"
 
 testNtfServer :: NtfServer
 testNtfServer = "ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"
@@ -92,7 +92,7 @@ userServers :: NonEmpty (ProtocolServer p) -> Map UserId (NonEmpty (ServerCfg p)
 userServers = userServers' . L.map noAuthSrv
 
 userServers' :: NonEmpty (ProtoServerWithAuth p) -> Map UserId (NonEmpty (ServerCfg p))
-userServers' srvs = M.fromList [(1, L.map (presetServerCfg True) srvs)]
+userServers' srvs = M.fromList [(1, L.map (presetServerCfg True (ServerRoles True True) (Just 1)) srvs)]
 
 noAuthSrvCfg :: ProtocolServer p -> ServerCfg p
-noAuthSrvCfg = presetServerCfg True . noAuthSrv
+noAuthSrvCfg = presetServerCfg True (ServerRoles True True) (Just 1) . noAuthSrv
