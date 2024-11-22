@@ -1,7 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module AgentTests.ServerChoice where
 
@@ -15,7 +14,6 @@ import Simplex.Messaging.Agent.Client hiding (userServers)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Client (defaultNetworkConfig)
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Transport.Client (TransportHost)
 import Test.Hspec
 import Test.QuickCheck
 import XFTPClient (testXFTPServer)
@@ -65,9 +63,6 @@ initServers =
       xftp = userServers [testXFTPServer],
       netCfg = defaultNetworkConfig
     }
-
-pattern Server :: TransportHost -> SMPServer
-pattern Server host' = SMPServer (host' :| []) "" "LcJU"
 
 testChooseDifferentOperator :: IO ()
 testChooseDifferentOperator = do
