@@ -817,11 +817,13 @@ newConnToAccept c connId enableNtfs invId pqSup = do
 
 joinConn :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
 joinConn c userId connId enableNtfs cReq cInfo pqSupport subMode = do
-  srv <- case cReq of
-    CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _ ->
-      getNextSMPServer c userId [qServer q]
-    _ -> getSMPServer c userId -- TODO when connecting to contact address, also try gettings a different operator/server
+  srv <- getNextSMPServer c userId [qServer cReqQueue]
   joinConnSrv c userId connId enableNtfs cReq cInfo pqSupport subMode srv
+  where
+    cReqQueue :: SMPQueueUri
+    cReqQueue = case cReq of
+      CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _ -> q
+      CRContactUri ConnReqUriData {crSmpQueues = q :| _} -> q
 
 startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM (ConnData, SndQueue, CR.SndE2ERatchetParams 'C.X448)
 startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
