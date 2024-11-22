@@ -45,6 +45,7 @@ module Simplex.Messaging.Agent.Env.SQLite
 where
 
 import Control.Concurrent (ThreadId)
+import Control.Exception (BlockedIndefinitelyOnSTM (..), SomeException, fromException)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
@@ -84,7 +85,6 @@ import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryAllErrors, tryAllErrors')
 import System.Mem.Weak (Weak)
 import System.Random (StdGen, newStdGen)
-import UnliftIO (SomeException)
 import UnliftIO.STM
 
 type AM' a = ReaderT Env IO a
@@ -332,7 +332,9 @@ agentFinally = allFinally mkInternal
 {-# INLINE agentFinally #-}
 
 mkInternal :: SomeException -> AgentErrorType
-mkInternal = INTERNAL . show
+mkInternal e = case fromException e of
+  Just BlockedIndefinitelyOnSTM -> CRITICAL True "Thread blocked indefinitely in STM transaction"
+  _ -> INTERNAL $ show e
 {-# INLINE mkInternal #-}
 
 data Worker = Worker

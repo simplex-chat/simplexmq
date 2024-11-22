@@ -84,7 +84,7 @@ secureQueue st sq sKey =
     secure q@QueueRec {recipientId = rId} = case senderKey q of
       Just k -> pure $ if sKey == k then Right rId else Left AUTH
       Nothing -> do
-        writeTVar qr $! Just q {senderKey = Just sKey}
+        writeTVar qr $ Just q {senderKey = Just sKey}
         pure $ Right rId
 
 addQueueNotifier :: STMQueueStore s => s -> StoreQueue s -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
@@ -96,7 +96,7 @@ addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId} =
     add q@QueueRec {recipientId = rId} = ifM (TM.member nId (notifiers' st)) (pure $ Left DUPLICATE_) $ do
       nId_ <- forM (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId (notifiers' st) $> notifierId
       let !q' = q {notifier = Just ntfCreds}
-      writeTVar qr $! Just q'
+      writeTVar qr $ Just q'
       TM.insert nId rId $ notifiers' st
       pure $ Right (rId, nId_)
 
