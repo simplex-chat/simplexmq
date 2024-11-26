@@ -28,22 +28,22 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Time.Clock.System (SystemTime)
 import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (RcvPublicAuthKey, RecipientId, SenderId)
+import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Util (bshow, whenM)
-import System.Directory (doesFileExist, renameFile)
+import Simplex.Messaging.Util (bshow)
 import System.IO
 
 data FileStoreLogRecord
-  = AddFile SenderId FileInfo SystemTime
+  = AddFile SenderId FileInfo RoundedSystemTime
   | PutFile SenderId FilePath
   | AddRecipients SenderId (NonEmpty FileRecipient)
   | DeleteFile SenderId
   | AckFile RecipientId
+  deriving (Show)
 
 instance StrEncoding FileStoreLogRecord where
   strEncode = \case
@@ -64,7 +64,7 @@ instance StrEncoding FileStoreLogRecord where
 logFileStoreRecord :: StoreLog 'WriteMode -> FileStoreLogRecord -> IO ()
 logFileStoreRecord = writeStoreLogRecord
 
-logAddFile :: StoreLog 'WriteMode -> SenderId -> FileInfo -> SystemTime -> IO ()
+logAddFile :: StoreLog 'WriteMode -> SenderId -> FileInfo -> RoundedSystemTime -> IO ()
 logAddFile s = logFileStoreRecord s .:. AddFile
 
 logPutFile :: StoreLog 'WriteMode -> SenderId -> FilePath -> IO ()
@@ -80,13 +80,7 @@ logAckFile :: StoreLog 'WriteMode -> RecipientId -> IO ()
 logAckFile s = logFileStoreRecord s . AckFile
 
 readWriteFileStore :: FilePath -> FileStore -> IO (StoreLog 'WriteMode)
-readWriteFileStore f st = do
-  whenM (doesFileExist f) $ do
-    readFileStore f st
-    renameFile f $ f <> ".bak"
-  s <- openWriteStoreLog f
-  writeFileStore s st
-  pure s
+readWriteFileStore = readWriteStoreLog readFileStore writeFileStore
 
 readFileStore :: FilePath -> FileStore -> IO ()
 readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f

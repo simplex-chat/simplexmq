@@ -1,3 +1,161 @@
+# 6.1.3
+
+SMP server: fix restoring notification credentials.
+
+# 6.1.2
+
+Servers: more reliable restoring of state.
+
+SMP server: reduced memory usage and faster start.
+
+Notifications: compensate for iOS notifications being droppted by Apple while device is offline (#1378):
+- Ntf server: send multiple SMP notifications in one iOS notification.
+- Agent: get multiple messages for one iOS notification.
+
+# 6.1.1
+
+SMP:
+- stop server faster (#1371)
+- add STORE error (#1372)
+
+# 6.1.0
+
+Version 6.1.0.7
+
+SMP server and client:
+- transport block encryption (#1317).
+
+Agent:
+- batch and optimize iOS notifications processing (#1308, #1311, #1313, #1316, #1330, #1331, #1333, #1337, #1346).
+- allow receiving multiple messages from single iOS notification (#1355, #1362).
+- prepare connection to accept to avoid race condition with events (#1365).
+- transport isolation mode "Session" (default) to use new SOCKS credentials when client restarts or SOCKS proxy configuration changes (#1321).
+
+Ntf server:
+- control port (#1354).
+- enable pings on ntf subscriptions, to resubscribe on reconnection (#1353).
+
+SMP server:
+- support multiple server ports (#1319).
+- support serving HTTPS and SMP transport on the same port (#1326, #1327).
+- persist iOS notifications to avoid losing them when Ntf server is offline (#1336, #1339, #1350).
+- fix lost notification subscriptions (#1347).
+- reject SKEY with different key earlier, at verification step (#1366).
+- pass server information via CLI during server initialization (#1356).
+- show version on server page (#1341).
+- explicit graceful shutdown on SIGINT (#1360).
+
+XRCP (remote access protocol):
+- use SHA3-256 in hybrid key agreement (#1302).
+- session encryption with forward secrecy (#1328).
+
+# 6.0.5
+
+SMP agent:
+- support generic SOCKS proxy (without isolate-by-auth).
+- reduce max message sizes
+
+# 6.0.4
+
+SMP server:
+- better performance/memory: fewer map updates on re-subscriptions (#1297), split and reduce STM transactions (#1294)
+- send DELD when subscribed queue is deleted (#1312)
+- add created/updated/used date to queues to manage expiration (#1306)
+
+XFTP server: truncate file creation time to 1 hour (#1310)
+
+Servers:
+- bind control port only to 127.0.0.1 for better security in case of firewall misconfiguration (#1280)
+- reduce memory used for period stats (#1298)
+
+Agent: process last notification from list (#1307)
+- report receive file error with redirected file ID, when redirect is present (#1304)
+- special error when deleted user record is not in database (#1303)
+- fix race when sending a message to the deleted connection (#1296)
+- support for multiple messages in a single notification
+
+Ntf server:
+- only use SOCKS proxy for servers without public address (#1314)
+
+# 6.0.3
+
+Agent:
+- fix possible stuck queue rotation (#1290).
+
+SMP server:
+- batch END responses when subscribed client switches to reduce server and client traffic.
+- reduce STM transactions for better performance.
+- add stats for END events and for SUB/DEL event batches.
+- remove "expensive" stats to save memory.
+
+# 6.0.2
+
+SMP agent:
+- fix stuck connection commands when a server is not responding.
+- store query errors, reduce slow query threshold to 1ms.
+
+Notification server:
+- reduce PING interval to 1 minute.
+- fix subscriptions disabled on race condition (only mark subscriptions with END status when received via the active connection).
+
+# 6.0.1
+
+SMP agent:
+- support changing user of the new connection.
+- do not start delivery workers when there are no messages to deliver.
+- enable notifications for all connections.
+- combine database transactions when subscribing.
+
+SMP server:
+- safe compacting of store log.
+- fix possible race when creating client that might lead to memory leak.
+
+Dependencies: upgrade tls to 1.9
+
+# 6.0.0
+
+Version 6.0.0.8
+
+Agent:
+- enabled fast handshake support.
+- batch-send multiple messages in each connection.
+- resume subscriptions as soon as agent moves to foreground or as network connection resumes.
+- "known" servers to determine whether to use SMP proxy.
+- retry on SMP proxy NO_SESSION error.
+- fixes to notification subscriptions.
+- persistent server statistics.
+- better concurrency.
+
+SMP server:
+- reduce threads usage.
+- additional statistics.
+- improve disabling inactive clients.
+- additional control port commands for monitoring.
+
+Notification server:
+- support onion-only SMP servers.
+
+# 5.8.2
+
+Agent:
+- fast handshake support (disabled).
+- new statistics api.
+
+SMP server:
+- fast handshake support (SKEY command).
+- minor changes to reduce memory usage.
+
+# 5.8.1
+
+Agent:
+- API to reconnect one server.
+- Better error handling of file errors and remote control connection errors.
+- Only start uploading file once all chunks were registered on the servers.
+
+SMP server:
+- additional stats for sent message notifications.
+- fix server page layout.
+
 # 5.8.0
 
 Version 5.8.0.10

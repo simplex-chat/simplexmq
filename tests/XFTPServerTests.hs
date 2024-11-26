@@ -2,6 +2,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module XFTPServerTests where
@@ -17,16 +18,17 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.List (isInfixOf)
+import Data.Time.Clock (getCurrentTime)
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description (kb)
-import Simplex.FileTransfer.Protocol (FileInfo (..))
+import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPFileId)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType (..), XFTPRcvChunkSpec (..))
 import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
-import Simplex.Messaging.Protocol (BasicAuth, SenderId)
+import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), pattern NoEntity)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive, removeFile)
 import System.FilePath ((</>))
@@ -74,8 +76,8 @@ createTestChunk fp = do
   B.writeFile fp bytes
   pure bytes
 
-readChunk :: SenderId -> IO ByteString
-readChunk sId = B.readFile (xftpServerFiles </> B.unpack (B64.encode sId))
+readChunk :: XFTPFileId -> IO ByteString
+readChunk sId = B.readFile (xftpServerFiles </> B.unpack (B64.encode $ unEntityId sId))
 
 testFileChunkDelivery :: Expectation
 testFileChunkDelivery = xftpTest $ \c -> runRight_ $ runTestFileChunkDelivery c c
@@ -219,7 +221,8 @@ testFileChunkExpiration = withXFTPServerCfg testXFTPServerConfig {fileExpiration
 testInactiveClientExpiration :: Expectation
 testInactiveClientExpiration = withXFTPServerCfg testXFTPServerConfig {inactiveClientExpiration} $ \_ -> runRight_ $ do
   disconnected <- newEmptyTMVarIO
-  c <- ExceptT $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig (\_ -> atomically $ putTMVar disconnected ())
+  ts <- liftIO getCurrentTime
+  c <- ExceptT $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig ts (\_ -> atomically $ putTMVar disconnected ())
   pingXFTP c
   liftIO $ do
     threadDelay 100000
@@ -267,9 +270,9 @@ testFileLog = do
   (rcvKey1, rpKey1) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   (rcvKey2, rpKey2) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
-  sIdVar <- newTVarIO ""
-  rIdVar1 <- newTVarIO ""
-  rIdVar2 <- newTVarIO ""
+  sIdVar <- newTVarIO NoEntity
+  rIdVar1 <- newTVarIO NoEntity
+  rIdVar2 <- newTVarIO NoEntity
 
   threadDelay 100000
 

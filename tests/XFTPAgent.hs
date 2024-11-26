@@ -20,21 +20,24 @@ import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.Maybe (fromJust)
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
+import SMPClient (xit'')
 import Simplex.FileTransfer.Client (XFTPClientConfig (..))
 import Simplex.FileTransfer.Description (FileChunk (..), FileDescription (..), FileDescriptionURI (..), ValidFileDescription, fileDescriptionURI, kb, mb, qrSizeLimit, pattern ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
-import Simplex.FileTransfer.Transport (XFTPErrorType (AUTH))
+import Simplex.FileTransfer.Transport (XFTPErrorType (AUTH), supportedXFTPhandshakes)
+import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
 import Simplex.Messaging.Agent (AgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendDescription, xftpSendFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, xftpCfg)
-import Simplex.Messaging.Agent.Protocol (ACommand (..), AgentErrorType (..), BrokerErrorType (..), RcvFileId, SndFileId, noAuthSrv)
+import Simplex.Messaging.Agent.Protocol (AEvent (..), AgentErrorType (..), BrokerErrorType (..), noAuthSrv)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.File as CF
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (BasicAuth, ProtoServerWithAuth (..), ProtocolServer (..), XFTPServerWithAuth)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
+import Simplex.Messaging.Transport (ALPN)
 import Simplex.Messaging.Util (tshow)
 import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
 import System.FilePath ((</>))
@@ -58,7 +61,7 @@ xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
   it "should resume receiving file after restart" testXFTPAgentReceiveRestore
   it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
   it "should resume sending file after restart" testXFTPAgentSendRestore
-  xit "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
+  xit'' "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
   it "should delete sent file on server" testXFTPAgentDelete
   it "should resume deleting file after restart" testXFTPAgentDeleteRestore
   -- TODO when server is fixed to correctly send AUTH error, this test has to be modified to expect AUTH error
@@ -255,11 +258,11 @@ testXFTPAgentSendReceiveMatrix = do
   where
     oldClient = agentCfg {xftpCfg = (xftpCfg agentCfg) {clientALPN = Nothing}}
     newClient = agentCfg
-    oldServer = testXFTPServerConfig_ Nothing
-    newServer = testXFTPServerConfig
-    run :: HasCallStack => XFTPServerConfig -> AgentConfig -> AgentConfig -> IO ()
-    run server sender receiver =
-      withXFTPServerCfg server $ \_t -> do
+    oldServer = Nothing
+    newServer = Just supportedXFTPhandshakes
+    run :: HasCallStack => Maybe [ALPN] -> AgentConfig -> AgentConfig -> IO ()
+    run alpn sender receiver =
+      withXFTPServerCfgALPN testXFTPServerConfig alpn $ \_t -> do
         filePath <- createRandomFile_ (kb 319 :: Integer) "testfile"
         rfd <- withAgent 1 sender initAgentServers testDB $ \sndr -> do
           (sfId, _, rfd1, _) <- runRight $ testSendCF' sndr (CF.plain filePath) (kb 320)
@@ -396,7 +399,7 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
     -- receive file - should fail with AUTH error
     withAgent 3 agentCfg initAgentServers testDB2 $ \rcp' -> do
       runRight_ $ xftpStartWorkers rcp' (Just recipientFiles)
-      ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <- rfGet rcp'
+      ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <- rfGet rcp'
       rfId' `shouldBe` rfId
 
   -- tmp path should be removed after permanent error
@@ -427,7 +430,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
       ("", sfId', SFPROG _ _) <- sfGet sndr'
       liftIO $ sfId' `shouldBe` sfId
 
-  threadDelay 100000
+  threadDelay 200000
 
   withXFTPServerStoreLogOn $ \_ -> do
     -- send file - should continue uploading with server up
@@ -441,7 +444,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
       pure rfd1
 
     -- prefix path should be removed after sending file
-    threadDelay 100000
+    threadDelay 200000
     doesDirectoryExist prefixPath `shouldReturn` False
     doesFileExist encPath `shouldReturn` False
 
@@ -475,7 +478,7 @@ testXFTPAgentSendCleanup = withGlobalLogging logCfgNoLogs $ do
     -- send file - should fail with AUTH error
     withAgent 2 agentCfg initAgentServers testDB $ \sndr' -> do
       runRight_ $ xftpStartWorkers sndr' (Just senderFiles)
-      ("", sfId', SFERR (INTERNAL "XFTP {serverAddress = \"xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000\", xftpErr = AUTH}")) <-
+      ("", sfId', SFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <-
         sfGet sndr'
       sfId' `shouldBe` sfId
 
@@ -511,7 +514,7 @@ testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
       withAgent 3 agentCfg initAgentServers testDB2 $ \rcp2 -> runRight $ do
         xftpStartWorkers rcp2 (Just recipientFiles)
         rfId <- xftpReceiveFile rcp2 1 rfd2 Nothing True
-        ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <-
+        ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <-
           rfGet rcp2
         liftIO $ rfId' `shouldBe` rfId
 
@@ -549,7 +552,7 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
       withAgent 5 agentCfg initAgentServers testDB3 $ \rcp2 -> runRight $ do
         xftpStartWorkers rcp2 (Just recipientFiles)
         rfId <- xftpReceiveFile rcp2 1 rfd2 Nothing True
-        ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <-
+        ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <-
           rfGet rcp2
         liftIO $ rfId' `shouldBe` rfId
 
@@ -584,7 +587,7 @@ testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs $
         runRight_ . void $ do
           -- receive file 1 again
           rfId1 <- xftpReceiveFile rcp 1 rfd1_2 Nothing True
-          ("", rfId1', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <-
+          ("", rfId1', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <-
             rfGet rcp
           liftIO $ rfId1 `shouldBe` rfId1'
 
@@ -617,7 +620,7 @@ testXFTPAgentExpiredOnServer = withGlobalLogging logCfgNoLogs $ do
         -- receive file 1 again - should fail with AUTH error
         runRight $ do
           rfId <- xftpReceiveFile rcp 1 rfd1_2 Nothing True
-          ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7000" AUTH)) <-
+          ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <-
             rfGet rcp
           liftIO $ rfId' `shouldBe` rfId
 

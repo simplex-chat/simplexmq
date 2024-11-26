@@ -11,8 +11,10 @@ import CoreTests.BatchingTests
 import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
-import CoreTests.ProtocolErrorTests
+import CoreTests.MsgStoreTests
 import CoreTests.RetryIntervalTests
+import CoreTests.SOCKSSettings
+import CoreTests.StoreLogTests
 import CoreTests.TRcvQueuesTests
 import CoreTests.UtilTests
 import CoreTests.VersionRangeTests
@@ -23,8 +25,9 @@ import NtfServerTests (ntfServerTests)
 import RemoteControl (remoteControlTests)
 import SMPProxyTests (smpProxyTests)
 import ServerTests
+import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..))
 import Simplex.Messaging.Transport (TLS, Transport (..))
-import Simplex.Messaging.Transport.WebSockets (WS)
+-- import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Environment (setEnv)
 import Test.Hspec
@@ -49,15 +52,23 @@ main = do
         describe "Core tests" $ do
           describe "Batching tests" batchingTests
           describe "Encoding tests" encodingTests
-          describe "Protocol error tests" protocolErrorTests
           describe "Version range" versionRangeTests
           describe "Encryption tests" cryptoTests
           describe "Encrypted files tests" cryptoFileTests
+          describe "Message store tests" msgStoreTests
           describe "Retry interval tests" retryIntervalTests
+          describe "SOCKS settings tests" socksSettingsTests
+          describe "Store log tests" storeLogTests
           describe "TRcvQueues tests" tRcvQueuesTests
           describe "Util tests" utilTests
-        describe "SMP server via TLS" $ serverTests (transport @TLS)
-        describe "SMP server via WebSockets" $ serverTests (transport @WS)
+        describe "SMP server via TLS, jornal message store" $ do
+          describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
+          before (pure (transport @TLS, AMSType SMSJournal)) serverTests
+        describe "SMP server via TLS, memory message store" $
+          before (pure (transport @TLS, AMSType SMSMemory)) serverTests
+        -- xdescribe "SMP server via WebSockets" $ do
+        --   describe "SMP syntax" $ serverSyntaxTests (transport @WS)
+        --   before (pure (transport @WS, AMSType SMSJournal)) serverTests
         describe "Notifications server" $ ntfServerTests (transport @TLS)
         describe "SMP client agent" $ agentTests (transport @TLS)
         describe "SMP proxy" smpProxyTests

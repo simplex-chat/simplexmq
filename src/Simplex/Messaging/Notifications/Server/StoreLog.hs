@@ -37,8 +37,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Protocol (NtfPrivateAuthKey)
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Util (safeDecodeUtf8, whenM)
-import System.Directory (doesFileExist, renameFile)
+import Simplex.Messaging.Util (safeDecodeUtf8)
 import System.IO
 
 data NtfStoreLogRecord
@@ -50,6 +49,7 @@ data NtfStoreLogRecord
   | CreateSubscription NtfSubRec
   | SubscriptionStatus NtfSubscriptionId NtfSubStatus
   | DeleteSubscription NtfSubscriptionId
+  deriving (Show)
 
 data NtfTknRec = NtfTknRec
   { ntfTknId :: NtfTokenId,
@@ -61,6 +61,7 @@ data NtfTknRec = NtfTknRec
     tknRegCode :: NtfRegCode,
     tknCronInterval :: Word16
   }
+  deriving (Show)
 
 mkTknData :: NtfTknRec -> STM NtfTknData
 mkTknData NtfTknRec {ntfTknId, token, tknStatus = status, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval = cronInt} = do
@@ -81,6 +82,7 @@ data NtfSubRec = NtfSubRec
     tokenId :: NtfTokenId,
     subStatus :: NtfSubStatus
   }
+  deriving (Show)
 
 mkSubData :: NtfSubRec -> STM NtfSubData
 mkSubData NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus = status} = do
@@ -183,13 +185,7 @@ logDeleteSubscription :: StoreLog 'WriteMode -> NtfSubscriptionId -> IO ()
 logDeleteSubscription s subId = logNtfStoreRecord s $ DeleteSubscription subId
 
 readWriteNtfStore :: FilePath -> NtfStore -> IO (StoreLog 'WriteMode)
-readWriteNtfStore f st = do
-  whenM (doesFileExist f) $ do
-    readNtfStore f st
-    renameFile f $ f <> ".bak"
-  s <- openWriteStoreLog f
-  writeNtfStore s st
-  pure s
+readWriteNtfStore = readWriteStoreLog readNtfStore writeNtfStore
 
 readNtfStore :: FilePath -> NtfStore -> IO ()
 readNtfStore f st = mapM_ (addNtfLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f

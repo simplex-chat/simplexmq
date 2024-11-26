@@ -9,6 +9,14 @@ packages: .
 -- packages: . ../http2
 -- packages: . ../network-transport
 
+-- package *
+   -- coverage: True
+   -- library-coverage: True
+
+-- package attoparsec
+   -- coverage: False
+   -- library-coverage: False
+
 index-state: 2023-12-12T00:00:00Z
 
 package cryptostore
@@ -33,3 +41,17 @@ source-repository-package
     type: git
     location: https://github.com/simplex-chat/sqlcipher-simple.git
     tag: a46bd361a19376c5211f1058908fc0ae6bf42446
+
+-- waiting for published warp-tls-3.4.7
+source-repository-package
+    type: git
+    location: https://github.com/yesodweb/wai.git
+    tag: ec5e017d896a78e787a5acea62b37a4e677dec2e
+    subdir: warp-tls
+
+-- backported fork due http-5.0
+source-repository-package
+    type: git
+    location: https://github.com/simplex-chat/wai.git
+    tag: 2f6e5aa5f05ba9140ac99e195ee647b4f7d926b0
+    subdir: warp

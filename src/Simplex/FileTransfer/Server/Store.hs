@@ -17,6 +17,7 @@ module Simplex.FileTransfer.Server.Store
     expiredFilePath,
     getFile,
     ackFile,
+    fileTimePrecision,
   )
 where
 
@@ -25,12 +26,12 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Int (Int64)
 import Data.Set (Set)
 import qualified Data.Set as S
-import Data.Time.Clock.System (SystemTime (..))
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..), XFTPFileId)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (RcvPublicAuthKey, RecipientId, SenderId)
+import Simplex.Messaging.Server.QueueStore (RoundedSystemTime (..))
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM, ($>>=))
@@ -46,30 +47,34 @@ data FileRec = FileRec
     fileInfo :: FileInfo,
     filePath :: TVar (Maybe FilePath),
     recipientIds :: TVar (Set RecipientId),
-    createdAt :: SystemTime
+    createdAt :: RoundedSystemTime
   }
 
+fileTimePrecision :: Int64
+fileTimePrecision = 3600 -- truncate creation time to 1 hour
+
 data FileRecipient = FileRecipient RecipientId RcvPublicAuthKey
+  deriving (Show)
 
 instance StrEncoding FileRecipient where
   strEncode (FileRecipient rId rKey) = strEncode rId <> ":" <> strEncode rKey
   strP = FileRecipient <$> strP <* A.char ':' <*> strP
 
-newFileStore :: STM FileStore
+newFileStore :: IO FileStore
 newFileStore = do
-  files <- TM.empty
-  recipients <- TM.empty
-  usedStorage <- newTVar 0
+  files <- TM.emptyIO
+  recipients <- TM.emptyIO
+  usedStorage <- newTVarIO 0
   pure FileStore {files, recipients, usedStorage}
 
-addFile :: FileStore -> SenderId -> FileInfo -> SystemTime -> STM (Either XFTPErrorType ())
+addFile :: FileStore -> SenderId -> FileInfo -> RoundedSystemTime -> STM (Either XFTPErrorType ())
 addFile FileStore {files} sId fileInfo createdAt =
   ifM (TM.member sId files) (pure $ Left DUPLICATE_) $ do
     f <- newFileRec sId fileInfo createdAt
     TM.insert sId f files
     pure $ Right ()
 
-newFileRec :: SenderId -> FileInfo -> SystemTime -> STM FileRec
+newFileRec :: SenderId -> FileInfo -> RoundedSystemTime -> STM FileRec
 newFileRec senderId fileInfo createdAt = do
   recipientIds <- newTVar S.empty
   filePath <- newTVar Nothing
@@ -120,8 +125,8 @@ getFile st party fId = case party of
 expiredFilePath :: FileStore -> XFTPFileId -> Int64 -> STM (Maybe (Maybe FilePath))
 expiredFilePath FileStore {files} sId old =
   TM.lookup sId files
-    $>>= \FileRec {filePath, createdAt} ->
-      if systemSeconds createdAt < old
+    $>>= \FileRec {filePath, createdAt = RoundedSystemTime createdAt} ->
+      if createdAt + fileTimePrecision < old
         then Just <$> readTVar filePath
         else pure Nothing
 

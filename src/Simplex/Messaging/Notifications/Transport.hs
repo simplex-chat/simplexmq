@@ -116,7 +116,7 @@ ntfServerHandshake serverSignKey c (k, pk) kh ntfVRange = do
   getHandshake th >>= \case
     NtfClientHandshake {ntfVersion = v, keyHash}
       | keyHash /= kh ->
-          throwError $ TEHandshake IDENTITY
+          throwE $ TEHandshake IDENTITY
       | otherwise ->
           case compatibleVRange' ntfVersionRange v of
             Just (Compatible vr) -> pure $ ntfThHandleServer th v vr pk
@@ -128,7 +128,7 @@ ntfClientHandshake c keyHash ntfVRange = do
   let th@THandle {params = THandleParams {sessionId}} = ntfTHandle c
   NtfServerHandshake {sessionId = sessId, ntfVersionRange, authPubKey = sk'} <- getHandshake th
   if sessionId /= sessId
-    then throwError TEBadSession
+    then throwE TEBadSession
     else case ntfVersionRange `compatibleVRange` ntfVRange of
       Just (Compatible vr) -> do
         ck_ <- forM sk' $ \signedKey -> liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
@@ -169,5 +169,6 @@ ntfTHandle c = THandle {connection = c, params}
           thServerVRange = versionToRange v,
           thAuth = Nothing,
           implySessId = False,
+          encryptBlock = Nothing,
           batch = False
         }

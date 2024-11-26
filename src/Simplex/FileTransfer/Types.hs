@@ -2,23 +2,32 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.FileTransfer.Types where
 
+import qualified Data.Aeson.TH as J
+import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
+import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word32)
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
-import Simplex.Messaging.Agent.Protocol (RcvFileId, SndFileId)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (fromTextField_)
-import Simplex.Messaging.Protocol
+import Simplex.Messaging.Parsers
+import Simplex.Messaging.Protocol (XFTPServer)
 import System.FilePath ((</>))
+
+type RcvFileId = ByteString -- Agent entity ID
+
+type SndFileId = ByteString -- Agent entity ID
 
 authTagSize :: Int64
 authTagSize = fromIntegral C.authTagSize
@@ -236,3 +245,35 @@ data DeletedSndChunkReplica = DeletedSndChunkReplica
     retries :: Int
   }
   deriving (Show)
+
+data FileErrorType
+  = -- | cannot proceed with download from not approved relays without proxy
+    NOT_APPROVED
+  | -- | max file size exceeded
+    SIZE
+  | -- | bad redirect data
+    REDIRECT {redirectError :: String}
+  | -- | file crypto error
+    FILE_IO {fileIOError :: String}
+  | -- | file not found or was deleted
+    NO_FILE
+  deriving (Eq, Show)
+
+instance StrEncoding FileErrorType where
+  strP =
+    A.takeTill (== ' ')
+      >>= \case
+        "NOT_APPROVED" -> pure NOT_APPROVED
+        "SIZE" -> pure SIZE
+        "REDIRECT" -> REDIRECT <$> (A.space *> textP)
+        "FILE_IO" -> FILE_IO <$> (A.space *> textP)
+        "NO_FILE" -> pure NO_FILE
+        _ -> fail "bad FileErrorType"
+  strEncode = \case
+    NOT_APPROVED -> "NOT_APPROVED"
+    SIZE -> "SIZE"
+    REDIRECT e -> "REDIRECT " <> encodeUtf8 (T.pack e)
+    FILE_IO e -> "FILE_IO " <> encodeUtf8 (T.pack e)
+    NO_FILE -> "NO_FILE"
+
+$(J.deriveJSON (sumTypeJSON id) ''FileErrorType)

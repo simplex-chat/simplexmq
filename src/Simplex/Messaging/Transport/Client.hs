@@ -13,9 +13,13 @@ module Simplex.Messaging.Transport.Client
     defaultSMPPort,
     defaultTcpConnectTimeout,
     defaultTransportClientConfig,
+    defaultSocksProxyWithAuth,
     defaultSocksProxy,
+    defaultSocksHost,
     TransportClientConfig (..),
-    SocksProxy,
+    SocksProxy (..),
+    SocksProxyWithAuth (..),
+    SocksAuth (..),
     TransportHost (..),
     TransportHosts (..),
     TransportHosts_ (..),
@@ -23,7 +27,7 @@ module Simplex.Messaging.Transport.Client
   )
 where
 
-import Control.Applicative (optional)
+import Control.Applicative (optional, (<|>))
 import Control.Logger.Simple (logError)
 import Control.Monad (when)
 import Data.Aeson (FromJSON (..), ToJSON (..))
@@ -79,7 +83,7 @@ instance StrEncoding TransportHost where
   strP =
     A.choice
       [ THIPv4 <$> ((,,,) <$> ipNum <*> ipNum <*> ipNum <*> A.decimal),
-        maybe (Left "bad IPv6") (Right . THIPv6 . fromIPv6w) . readMaybe . B.unpack <$?> A.takeWhile1 (\c -> isHexDigit c || c == ':'),
+        maybe (Left "bad IPv6") (Right . THIPv6 . fromIPv6w) . readMaybe . B.unpack <$?> ipv6StrP,
         THOnionHost <$> ((<>) <$> A.takeWhile (\c -> isAsciiLower c || isDigit c) <*> A.string ".onion"),
         THDomainName . B.unpack <$> (notOnion <$?> A.takeWhile1 (A.notInClass ":#,;/ \n\r\t"))
       ]
@@ -87,6 +91,9 @@ instance StrEncoding TransportHost where
       ipNum = validIP <$?> (A.decimal <* A.char '.')
       validIP :: Int -> Either String Word8
       validIP n = if 0 <= n && n <= 255 then Right $ fromIntegral n else Left "invalid IP address"
+      ipv6StrP =
+        A.char '[' *> A.takeWhile1 (/= ']') <* A.char ']'
+          <|> A.takeWhile1 (\c -> isHexDigit c || c == ':')
       notOnion s = if ".onion" `B.isSuffixOf` s then Left "invalid onion host" else Right s
 
 instance ToJSON TransportHost where
@@ -118,7 +125,8 @@ data TransportClientConfig = TransportClientConfig
     tcpKeepAlive :: Maybe KeepAliveOpts,
     logTLSErrors :: Bool,
     clientCredentials :: Maybe (X.CertificateChain, T.PrivKey),
-    alpn :: Maybe [ALPN]
+    alpn :: Maybe [ALPN],
+    useSNI :: Bool
   }
   deriving (Eq, Show)
 
@@ -127,23 +135,23 @@ defaultTcpConnectTimeout :: Int
 defaultTcpConnectTimeout = 25_000_000
 
 defaultTransportClientConfig :: TransportClientConfig
-defaultTransportClientConfig = TransportClientConfig Nothing defaultTcpConnectTimeout (Just defaultKeepAliveOpts) True Nothing Nothing
+defaultTransportClientConfig = TransportClientConfig Nothing defaultTcpConnectTimeout (Just defaultKeepAliveOpts) True Nothing Nothing True
 
 clientTransportConfig :: TransportClientConfig -> TransportConfig
 clientTransportConfig TransportClientConfig {logTLSErrors} =
   TransportConfig {logTLSErrors, transportTimeout = Nothing}
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: Transport c => TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
-runTransportClient = runTLSTransportClient supportedParameters Nothing
+runTransportClient :: Transport c => TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
+runTransportClient = runTLSTransportClient defaultSupportedParams Nothing
 
-runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe ByteString -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
-runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, alpn} proxyUsername host port keyHash client = do
+runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
+runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, alpn, useSNI} socksCreds host port keyHash client = do
   serverCert <- newEmptyTMVarIO
   let hostName = B.unpack $ strEncode host
-      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials alpn serverCert
+      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials alpn useSNI serverCert
       connectTCP = case socksProxy of
-        Just proxy -> connectSocksClient proxy proxyUsername (hostAddr host)
+        Just proxy -> connectSocksClient proxy socksCreds (hostAddr host)
         _ -> connectTCPClient hostName
   c <- do
     sock <- connectTCP port
@@ -191,45 +199,76 @@ connectTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
 defaultSMPPort :: PortNumber
 defaultSMPPort = 5223
 
-connectSocksClient :: SocksProxy -> Maybe ByteString -> SocksHostAddress -> ServiceName -> IO Socket
-connectSocksClient (SocksProxy addr) proxyUsername hostAddr _port = do
+connectSocksClient :: SocksProxy -> Maybe SocksCredentials -> SocksHostAddress -> ServiceName -> IO Socket
+connectSocksClient (SocksProxy addr) socksCreds hostAddr _port = do
   let port = if null _port then defaultSMPPort else fromMaybe defaultSMPPort $ readMaybe _port
-  fst <$> case proxyUsername of
-    Just username -> socksConnectAuth (defaultSocksConf addr) (SocksAddress hostAddr port) (SocksCredentials username "")
+  fst <$> case socksCreds of
+    Just creds -> socksConnectAuth (defaultSocksConf addr) (SocksAddress hostAddr port) creds
     _ -> socksConnect (defaultSocksConf addr) (SocksAddress hostAddr port)
 
-defaultSocksHost :: HostAddress
-defaultSocksHost = tupleToHostAddress (127, 0, 0, 1)
+defaultSocksHost :: (Word8, Word8, Word8, Word8)
+defaultSocksHost = (127, 0, 0, 1)
+
+defaultSocksProxyWithAuth :: SocksProxyWithAuth
+defaultSocksProxyWithAuth = SocksProxyWithAuth SocksIsolateByAuth defaultSocksProxy
 
 defaultSocksProxy :: SocksProxy
-defaultSocksProxy = SocksProxy $ SockAddrInet 9050 defaultSocksHost
+defaultSocksProxy = SocksProxy $ SockAddrInet 9050 $ tupleToHostAddress defaultSocksHost
 
 newtype SocksProxy = SocksProxy SockAddr
   deriving (Eq)
+
+data SocksProxyWithAuth = SocksProxyWithAuth SocksAuth SocksProxy
+  deriving (Eq, Show)
+
+data SocksAuth
+  = SocksAuthUsername {username :: ByteString, password :: ByteString}
+  | SocksAuthNull
+  | SocksIsolateByAuth -- this is default
+  deriving (Eq, Show)
 
 instance Show SocksProxy where show (SocksProxy addr) = show addr
 
 instance StrEncoding SocksProxy where
   strEncode = B.pack . show
   strP = do
-    host <- maybe defaultSocksHost tupleToHostAddress <$> optional ipv4P
+    host <- fromMaybe (THIPv4 defaultSocksHost) <$> optional strP
     port <- fromMaybe 9050 <$> optional (A.char ':' *> (fromInteger <$> A.decimal))
-    pure . SocksProxy $ SockAddrInet port host
+    SocksProxy <$> socksAddr port host
     where
-      ipv4P = (,,,) <$> ipNum <*> ipNum <*> ipNum <*> A.decimal
-      ipNum = A.decimal <* A.char '.'
+      socksAddr port = \case
+        THIPv4 addr -> pure $ SockAddrInet port $ tupleToHostAddress addr
+        THIPv6 addr -> pure $ SockAddrInet6 port 0 addr 0
+        _ -> fail "SOCKS5 host should be IPv4 or IPv6 address"
 
-instance ToJSON SocksProxy where
+instance StrEncoding SocksProxyWithAuth where
+  strEncode (SocksProxyWithAuth auth proxy) = strEncode auth <> strEncode proxy
+  strP = SocksProxyWithAuth <$> strP <*> strP
+
+instance ToJSON SocksProxyWithAuth where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
-instance FromJSON SocksProxy where
-  parseJSON = strParseJSON "SocksProxy"
+instance FromJSON SocksProxyWithAuth where
+  parseJSON = strParseJSON "SocksProxyWithAuth"
 
-mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe (X.CertificateChain, T.PrivKey) -> Maybe [ALPN] -> TMVar X.CertificateChain -> T.ClientParams
-mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ alpn_ serverCerts =
+instance StrEncoding SocksAuth where
+  strEncode = \case
+    SocksAuthUsername {username, password} -> username <> ":" <> password <> "@"
+    SocksAuthNull -> "@"
+    SocksIsolateByAuth -> ""
+  strP = usernameP <|> (SocksAuthNull <$ A.char '@') <|> pure SocksIsolateByAuth
+    where
+      usernameP = do
+        username <- A.takeTill (== ':') <* A.char ':'
+        password <- A.takeTill (== '@') <* A.char '@'
+        pure SocksAuthUsername {username, password}
+
+mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe (X.CertificateChain, T.PrivKey) -> Maybe [ALPN] -> Bool -> TMVar X.CertificateChain -> T.ClientParams
+mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ alpn_ sni serverCerts =
   (T.defaultParamsClient host p)
-    { T.clientShared = def {T.sharedCAStore = fromMaybe (T.sharedCAStore def) caStore_},
+    { T.clientUseServerNameIndication = sni,
+      T.clientShared = def {T.sharedCAStore = fromMaybe (T.sharedCAStore def) caStore_},
       T.clientHooks =
         def
           { T.onServerCertificate = onServerCert,

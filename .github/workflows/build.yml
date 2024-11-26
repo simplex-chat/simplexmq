@@ -63,7 +63,7 @@ jobs:
           mv $(cabal list-bin xftp) xftp-ubuntu-${{ matrix.platform_name}}
 
       - name: Build changelog
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.os == 'ubuntu-22.04'
+        if: startsWith(github.ref, 'refs/tags/v')
         id: build_changelog
         uses: mikepenz/release-changelog-builder-action@v1
         with:

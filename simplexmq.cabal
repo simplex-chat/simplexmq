@@ -1,11 +1,7 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.35.0.
---
--- see: https://github.com/sol/hpack
-
 name:           simplexmq
-version:        5.8.0.10
+version:        6.2.0.4
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -66,6 +62,11 @@ flag use_crypton
   manual: True
   default: True
 
+flag client_library
+  description: Don't build server-related code.
+  manual: True
+  default: False
+
 library
   exposed-modules:
       Simplex.FileTransfer.Agent
@@ -77,13 +78,6 @@ library
       Simplex.FileTransfer.Crypto
       Simplex.FileTransfer.Description
       Simplex.FileTransfer.Protocol
-      Simplex.FileTransfer.Server
-      Simplex.FileTransfer.Server.Control
-      Simplex.FileTransfer.Server.Env
-      Simplex.FileTransfer.Server.Main
-      Simplex.FileTransfer.Server.Stats
-      Simplex.FileTransfer.Server.Store
-      Simplex.FileTransfer.Server.StoreLog
       Simplex.FileTransfer.Transport
       Simplex.FileTransfer.Types
       Simplex.FileTransfer.Util
@@ -95,7 +89,7 @@ library
       Simplex.Messaging.Agent.Protocol
       Simplex.Messaging.Agent.QueryString
       Simplex.Messaging.Agent.RetryInterval
-      Simplex.Messaging.Agent.Server
+      Simplex.Messaging.Agent.Stats
       Simplex.Messaging.Agent.Store
       Simplex.Messaging.Agent.Store.SQLite
       Simplex.Messaging.Agent.Store.SQLite.Common
@@ -133,6 +127,10 @@ library
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240223_connections_wait_delivery
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240225_ratchet_kem
       Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240417_rcv_files_approved_relays
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240624_snd_secure
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240702_servers_stats
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240930_ntf_tokens_to_delete
+      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
@@ -150,32 +148,13 @@ library
       Simplex.Messaging.Encoding.String
       Simplex.Messaging.Notifications.Client
       Simplex.Messaging.Notifications.Protocol
-      Simplex.Messaging.Notifications.Server
-      Simplex.Messaging.Notifications.Server.Env
-      Simplex.Messaging.Notifications.Server.Main
-      Simplex.Messaging.Notifications.Server.Push.APNS
-      Simplex.Messaging.Notifications.Server.Push.APNS.Internal
-      Simplex.Messaging.Notifications.Server.Stats
-      Simplex.Messaging.Notifications.Server.Store
-      Simplex.Messaging.Notifications.Server.StoreLog
       Simplex.Messaging.Notifications.Transport
       Simplex.Messaging.Notifications.Types
       Simplex.Messaging.Parsers
       Simplex.Messaging.Protocol
-      Simplex.Messaging.Server
       Simplex.Messaging.Server.CLI
-      Simplex.Messaging.Server.Control
-      Simplex.Messaging.Server.Env.STM
       Simplex.Messaging.Server.Expiration
-      Simplex.Messaging.Server.Information
-      Simplex.Messaging.Server.Main
-      Simplex.Messaging.Server.MsgStore
-      Simplex.Messaging.Server.MsgStore.STM
-      Simplex.Messaging.Server.QueueStore
       Simplex.Messaging.Server.QueueStore.QueueInfo
-      Simplex.Messaging.Server.QueueStore.STM
-      Simplex.Messaging.Server.Stats
-      Simplex.Messaging.Server.StoreLog
       Simplex.Messaging.ServiceScheme
       Simplex.Messaging.Session
       Simplex.Messaging.TMap
@@ -198,13 +177,46 @@ library
       Simplex.RemoteControl.Discovery.Multicast
       Simplex.RemoteControl.Invitation
       Simplex.RemoteControl.Types
+  if !flag(client_library)
+      exposed-modules:
+          Simplex.FileTransfer.Server
+          Simplex.FileTransfer.Server.Control
+          Simplex.FileTransfer.Server.Env
+          Simplex.FileTransfer.Server.Main
+          Simplex.FileTransfer.Server.Stats
+          Simplex.FileTransfer.Server.Store
+          Simplex.FileTransfer.Server.StoreLog
+          Simplex.Messaging.Server
+          Simplex.Messaging.Server.Control
+          Simplex.Messaging.Server.Env.STM
+          Simplex.Messaging.Server.Information
+          Simplex.Messaging.Server.Main
+          Simplex.Messaging.Server.MsgStore
+          Simplex.Messaging.Server.MsgStore.Journal
+          Simplex.Messaging.Server.MsgStore.STM
+          Simplex.Messaging.Server.MsgStore.Types
+          Simplex.Messaging.Server.NtfStore
+          Simplex.Messaging.Server.QueueStore
+          Simplex.Messaging.Server.QueueStore.STM
+          Simplex.Messaging.Server.Stats
+          Simplex.Messaging.Server.StoreLog
+          Simplex.Messaging.Server.StoreLog.Types
+          Simplex.Messaging.Notifications.Server
+          Simplex.Messaging.Notifications.Server.Control
+          Simplex.Messaging.Notifications.Server.Env
+          Simplex.Messaging.Notifications.Server.Main
+          Simplex.Messaging.Notifications.Server.Push.APNS
+          Simplex.Messaging.Notifications.Server.Push.APNS.Internal
+          Simplex.Messaging.Notifications.Server.Stats
+          Simplex.Messaging.Notifications.Server.Store
+          Simplex.Messaging.Notifications.Server.StoreLog
   other-modules:
       Paths_simplexmq
   hs-source-dirs:
       src
   default-extensions:
       StrictData
-  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2
+  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-home-modules -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2
   include-dirs:
       cbits
   c-sources:
@@ -214,14 +226,12 @@ library
       crypto
   build-depends:
       aeson ==2.2.*
-    , ansi-terminal >=0.10 && <0.12
     , asn1-encoding ==0.9.*
     , asn1-types ==0.3.*
     , async ==2.2.*
     , attoparsec ==0.14.*
     , base >=4.14 && <5
     , base64-bytestring >=1.0 && <1.3
-    , case-insensitive ==1.2.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
@@ -256,7 +266,7 @@ library
     , temporary ==1.3.*
     , time ==1.12.*
     , time-manager ==0.0.*
-    , tls >=1.7.0 && <1.8
+    , tls >=1.9.0 && <1.10
     , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
@@ -266,18 +276,22 @@ library
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
+  if !flag(client_library)
+    build-depends:
+        case-insensitive ==1.2.*
+      , hashable ==1.4.*
   if impl(ghc >= 9.6.2)
     build-depends:
         bytestring ==0.11.*
-      , template-haskell ==2.20.*
       , text >=2.0.1 && <2.2
   if impl(ghc < 9.6.2)
     build-depends:
         bytestring ==0.10.*
-      , template-haskell ==2.16.*
       , text >=1.2.3.0 && <1.3
 
 executable ntf-server
+  if flag(client_library)
+      buildable: False
   main-is: Main.hs
   other-modules:
       Paths_simplexmq
@@ -285,149 +299,16 @@ executable ntf-server
       apps/ntf-server
   default-extensions:
       StrictData
-  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
+  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
-      aeson ==2.2.*
-    , ansi-terminal >=0.10 && <0.12
-    , asn1-encoding ==0.9.*
-    , asn1-types ==0.3.*
-    , async ==2.2.*
-    , attoparsec ==0.14.*
-    , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
-    , case-insensitive ==1.2.*
-    , composition ==1.0.*
-    , constraints >=0.12 && <0.14
-    , containers ==0.6.*
-    , crypton ==0.34.*
-    , crypton-x509 ==1.7.*
-    , crypton-x509-store ==1.6.*
-    , crypton-x509-validation ==1.6.*
-    , cryptostore ==0.3.*
-    , data-default ==0.7.*
-    , direct-sqlcipher ==2.3.*
-    , directory ==1.3.*
-    , filepath ==1.4.*
-    , hourglass ==0.2.*
-    , http-types ==0.12.*
-    , http2 >=4.2.2 && <4.3
-    , ini ==0.4.1
-    , iproute ==1.7.*
-    , iso8601-time ==0.1.*
-    , memory ==0.18.*
-    , mtl >=2.3.1 && <3.0
-    , network >=3.1.2.7 && <3.2
-    , network-info ==0.2.*
-    , network-transport ==0.5.6
-    , network-udp ==0.0.*
-    , optparse-applicative >=0.15 && <0.17
-    , process ==1.6.*
-    , random >=1.1 && <1.3
-    , simple-logger ==0.1.*
+      base
+    , simple-logger
     , simplexmq
-    , socks ==0.6.*
-    , sqlcipher-simple ==0.4.*
-    , stm ==2.5.*
-    , temporary ==1.3.*
-    , time ==1.12.*
-    , time-manager ==0.0.*
-    , tls >=1.7.0 && <1.8
-    , transformers ==0.6.*
-    , unliftio ==0.2.*
-    , unliftio-core ==0.2.*
-    , websockets ==0.12.*
-    , yaml ==0.11.*
-    , zstd ==0.1.3.*
   default-language: Haskell2010
-  if flag(swift)
-    cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
-    build-depends:
-        bytestring ==0.11.*
-      , template-haskell ==2.20.*
-      , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
-    build-depends:
-        bytestring ==0.10.*
-      , template-haskell ==2.16.*
-      , text >=1.2.3.0 && <1.3
-
-executable smp-agent
-  main-is: Main.hs
-  other-modules:
-      Paths_simplexmq
-  hs-source-dirs:
-      apps/smp-agent
-  default-extensions:
-      StrictData
-  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
-  build-depends:
-      aeson ==2.2.*
-    , ansi-terminal >=0.10 && <0.12
-    , asn1-encoding ==0.9.*
-    , asn1-types ==0.3.*
-    , async ==2.2.*
-    , attoparsec ==0.14.*
-    , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
-    , case-insensitive ==1.2.*
-    , composition ==1.0.*
-    , constraints >=0.12 && <0.14
-    , containers ==0.6.*
-    , crypton ==0.34.*
-    , crypton-x509 ==1.7.*
-    , crypton-x509-store ==1.6.*
-    , crypton-x509-validation ==1.6.*
-    , cryptostore ==0.3.*
-    , data-default ==0.7.*
-    , direct-sqlcipher ==2.3.*
-    , directory ==1.3.*
-    , filepath ==1.4.*
-    , hourglass ==0.2.*
-    , http-types ==0.12.*
-    , http2 >=4.2.2 && <4.3
-    , ini ==0.4.1
-    , iproute ==1.7.*
-    , iso8601-time ==0.1.*
-    , memory ==0.18.*
-    , mtl >=2.3.1 && <3.0
-    , network >=3.1.2.7 && <3.2
-    , network-info ==0.2.*
-    , network-transport ==0.5.6
-    , network-udp ==0.0.*
-    , optparse-applicative >=0.15 && <0.17
-    , process ==1.6.*
-    , random >=1.1 && <1.3
-    , simple-logger ==0.1.*
-    , simplexmq
-    , socks ==0.6.*
-    , sqlcipher-simple ==0.4.*
-    , stm ==2.5.*
-    , temporary ==1.3.*
-    , time ==1.12.*
-    , time-manager ==0.0.*
-    , tls >=1.7.0 && <1.8
-    , transformers ==0.6.*
-    , unliftio ==0.2.*
-    , unliftio-core ==0.2.*
-    , websockets ==0.12.*
-    , yaml ==0.11.*
-    , zstd ==0.1.3.*
-  default-language: Haskell2010
-  if flag(swift)
-    cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
-    build-depends:
-        bytestring ==0.11.*
-      , template-haskell ==2.20.*
-      , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
-    build-depends:
-        bytestring ==0.10.*
-      , template-haskell ==2.16.*
-      , text >=1.2.3.0 && <1.3
 
 executable smp-server
+  if flag(client_library)
+      buildable: False
   main-is: Main.hs
   other-modules:
       Static
@@ -438,78 +319,27 @@ executable smp-server
       apps/smp-server/web
   default-extensions:
       StrictData
-  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
+  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
-      aeson ==2.2.*
-    , ansi-terminal >=0.10 && <0.12
-    , asn1-encoding ==0.9.*
-    , asn1-types ==0.3.*
-    , async ==2.2.*
-    , attoparsec ==0.14.*
-    , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
-    , case-insensitive ==1.2.*
-    , composition ==1.0.*
-    , constraints >=0.12 && <0.14
-    , containers ==0.6.*
-    , crypton ==0.34.*
-    , crypton-x509 ==1.7.*
-    , crypton-x509-store ==1.6.*
-    , crypton-x509-validation ==1.6.*
-    , cryptostore ==0.3.*
-    , data-default ==0.7.*
-    , direct-sqlcipher ==2.3.*
-    , directory ==1.3.*
+      base
+    , bytestring
+    , directory
     , file-embed
-    , filepath ==1.4.*
-    , hourglass ==0.2.*
-    , http-types ==0.12.*
-    , http2 >=4.2.2 && <4.3
-    , ini ==0.4.1
-    , iproute ==1.7.*
-    , iso8601-time ==0.1.*
-    , memory ==0.18.*
-    , mtl >=2.3.1 && <3.0
-    , network >=3.1.2.7 && <3.2
-    , network-info ==0.2.*
-    , network-transport ==0.5.6
-    , network-udp ==0.0.*
-    , optparse-applicative >=0.15 && <0.17
-    , process ==1.6.*
-    , random >=1.1 && <1.3
-    , simple-logger ==0.1.*
+    , filepath
+    , network
+    , simple-logger
     , simplexmq
-    , socks ==0.6.*
-    , sqlcipher-simple ==0.4.*
-    , stm ==2.5.*
-    , temporary ==1.3.*
-    , time ==1.12.*
-    , time-manager ==0.0.*
-    , tls >=1.7.0 && <1.8
-    , transformers ==0.6.*
-    , unliftio ==0.2.*
-    , unliftio-core ==0.2.*
+    , text
+    , unliftio
+    , wai
     , wai-app-static
-    , warp
-    , warp-tls
-    , websockets ==0.12.*
-    , yaml ==0.11.*
-    , zstd ==0.1.3.*
+    , warp ==3.3.30
+    , warp-tls ==3.4.7
   default-language: Haskell2010
-  if flag(swift)
-    cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
-    build-depends:
-        bytestring ==0.11.*
-      , template-haskell ==2.20.*
-      , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
-    build-depends:
-        bytestring ==0.10.*
-      , template-haskell ==2.16.*
-      , text >=1.2.3.0 && <1.3
 
 executable xftp
+  if flag(client_library)
+      buildable: False
   main-is: Main.hs
   other-modules:
       Paths_simplexmq
@@ -517,74 +347,15 @@ executable xftp
       apps/xftp
   default-extensions:
       StrictData
-  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
+  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
-      aeson ==2.2.*
-    , ansi-terminal >=0.10 && <0.12
-    , asn1-encoding ==0.9.*
-    , asn1-types ==0.3.*
-    , async ==2.2.*
-    , attoparsec ==0.14.*
-    , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
-    , case-insensitive ==1.2.*
-    , composition ==1.0.*
-    , constraints >=0.12 && <0.14
-    , containers ==0.6.*
-    , crypton ==0.34.*
-    , crypton-x509 ==1.7.*
-    , crypton-x509-store ==1.6.*
-    , crypton-x509-validation ==1.6.*
-    , cryptostore ==0.3.*
-    , data-default ==0.7.*
-    , direct-sqlcipher ==2.3.*
-    , directory ==1.3.*
-    , filepath ==1.4.*
-    , hourglass ==0.2.*
-    , http-types ==0.12.*
-    , http2 >=4.2.2 && <4.3
-    , ini ==0.4.1
-    , iproute ==1.7.*
-    , iso8601-time ==0.1.*
-    , memory ==0.18.*
-    , mtl >=2.3.1 && <3.0
-    , network >=3.1.2.7 && <3.2
-    , network-info ==0.2.*
-    , network-transport ==0.5.6
-    , network-udp ==0.0.*
-    , optparse-applicative >=0.15 && <0.17
-    , process ==1.6.*
-    , random >=1.1 && <1.3
-    , simple-logger ==0.1.*
+      base
     , simplexmq
-    , socks ==0.6.*
-    , sqlcipher-simple ==0.4.*
-    , stm ==2.5.*
-    , temporary ==1.3.*
-    , time ==1.12.*
-    , time-manager ==0.0.*
-    , tls >=1.7.0 && <1.8
-    , transformers ==0.6.*
-    , unliftio ==0.2.*
-    , unliftio-core ==0.2.*
-    , websockets ==0.12.*
-    , yaml ==0.11.*
-    , zstd ==0.1.3.*
   default-language: Haskell2010
-  if flag(swift)
-    cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
-    build-depends:
-        bytestring ==0.11.*
-      , template-haskell ==2.20.*
-      , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
-    build-depends:
-        bytestring ==0.10.*
-      , template-haskell ==2.16.*
-      , text >=1.2.3.0 && <1.3
 
 executable xftp-server
+  if flag(client_library)
+      buildable: False
   main-is: Main.hs
   other-modules:
       Paths_simplexmq
@@ -592,74 +363,16 @@ executable xftp-server
       apps/xftp-server
   default-extensions:
       StrictData
-  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
+  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
-      aeson ==2.2.*
-    , ansi-terminal >=0.10 && <0.12
-    , asn1-encoding ==0.9.*
-    , asn1-types ==0.3.*
-    , async ==2.2.*
-    , attoparsec ==0.14.*
-    , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
-    , case-insensitive ==1.2.*
-    , composition ==1.0.*
-    , constraints >=0.12 && <0.14
-    , containers ==0.6.*
-    , crypton ==0.34.*
-    , crypton-x509 ==1.7.*
-    , crypton-x509-store ==1.6.*
-    , crypton-x509-validation ==1.6.*
-    , cryptostore ==0.3.*
-    , data-default ==0.7.*
-    , direct-sqlcipher ==2.3.*
-    , directory ==1.3.*
-    , filepath ==1.4.*
-    , hourglass ==0.2.*
-    , http-types ==0.12.*
-    , http2 >=4.2.2 && <4.3
-    , ini ==0.4.1
-    , iproute ==1.7.*
-    , iso8601-time ==0.1.*
-    , memory ==0.18.*
-    , mtl >=2.3.1 && <3.0
-    , network >=3.1.2.7 && <3.2
-    , network-info ==0.2.*
-    , network-transport ==0.5.6
-    , network-udp ==0.0.*
-    , optparse-applicative >=0.15 && <0.17
-    , process ==1.6.*
-    , random >=1.1 && <1.3
-    , simple-logger ==0.1.*
+      base
+    , simple-logger
     , simplexmq
-    , socks ==0.6.*
-    , sqlcipher-simple ==0.4.*
-    , stm ==2.5.*
-    , temporary ==1.3.*
-    , time ==1.12.*
-    , time-manager ==0.0.*
-    , tls >=1.7.0 && <1.8
-    , transformers ==0.6.*
-    , unliftio ==0.2.*
-    , unliftio-core ==0.2.*
-    , websockets ==0.12.*
-    , yaml ==0.11.*
-    , zstd ==0.1.3.*
   default-language: Haskell2010
-  if flag(swift)
-    cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
-    build-depends:
-        bytestring ==0.11.*
-      , template-haskell ==2.20.*
-      , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
-    build-depends:
-        bytestring ==0.10.*
-      , template-haskell ==2.16.*
-      , text >=1.2.3.0 && <1.3
 
 test-suite simplexmq-test
+  if flag(client_library)
+      buildable: False
   type: exitcode-stdio-1.0
   main-is: Test.hs
   other-modules:
@@ -671,14 +384,17 @@ test-suite simplexmq-test
       AgentTests.MigrationTests
       AgentTests.NotificationTests
       AgentTests.SchemaDump
+      AgentTests.ServerChoice
       AgentTests.SQLiteTests
       CLITests
       CoreTests.BatchingTests
       CoreTests.CryptoFileTests
       CoreTests.CryptoTests
       CoreTests.EncodingTests
-      CoreTests.ProtocolErrorTests
+      CoreTests.MsgStoreTests
       CoreTests.RetryIntervalTests
+      CoreTests.SOCKSSettings
+      CoreTests.StoreLogTests
       CoreTests.TRcvQueuesTests
       CoreTests.UtilTests
       CoreTests.VersionRangeTests
@@ -695,83 +411,61 @@ test-suite simplexmq-test
       XFTPCLI
       XFTPClient
       XFTPServerTests
+      Static
+      Static.Embedded
       Paths_simplexmq
   hs-source-dirs:
       tests
+      apps/smp-server/web
   default-extensions:
       StrictData
-  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-unused-packages -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts -with-rtsopts=-A64M -with-rtsopts=-N1
+  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts -with-rtsopts=-A64M -with-rtsopts=-N1
   build-depends:
-      HUnit ==1.6.*
-    , QuickCheck ==2.14.*
-    , aeson ==2.2.*
-    , ansi-terminal >=0.10 && <0.12
-    , asn1-encoding ==0.9.*
-    , asn1-types ==0.3.*
-    , async ==2.2.*
-    , attoparsec ==0.14.*
-    , base >=4.14 && <5
-    , base64-bytestring >=1.0 && <1.3
-    , case-insensitive ==1.2.*
-    , composition ==1.0.*
-    , constraints >=0.12 && <0.14
-    , containers ==0.6.*
-    , crypton ==0.34.*
-    , crypton-x509 ==1.7.*
-    , crypton-x509-store ==1.6.*
-    , crypton-x509-validation ==1.6.*
-    , cryptostore ==0.3.*
-    , data-default ==0.7.*
+      base
+    , aeson
+    , async
+    , base64-bytestring
+    , bytestring
+    , containers
+    , crypton
+    , crypton-x509
+    , crypton-x509-store
+    , crypton-x509-validation
     , deepseq ==1.4.*
-    , direct-sqlcipher ==2.3.*
-    , directory ==1.3.*
-    , filepath ==1.4.*
+    , directory
+    , file-embed
+    , filepath
     , generic-random ==1.5.*
-    , hourglass ==0.2.*
+    , hashable
     , hspec ==2.11.*
-    , hspec-core ==2.11.*
-    , http-types ==0.12.*
-    , http2 >=4.2.2 && <4.3
-    , ini ==0.4.1
-    , iproute ==1.7.*
-    , iso8601-time ==0.1.*
+    , http-client
+    , http-types
+    , http2
+    , HUnit ==1.6.*
+    , ini
+    , iso8601-time
     , main-tester ==0.2.*
-    , memory ==0.18.*
-    , mtl >=2.3.1 && <3.0
-    , network >=3.1.2.7 && <3.2
-    , network-info ==0.2.*
-    , network-transport ==0.5.6
-    , network-udp ==0.0.*
-    , optparse-applicative >=0.15 && <0.17
-    , process ==1.6.*
-    , random >=1.1 && <1.3
+    , memory
+    , mtl
+    , network
+    , process
+    , QuickCheck ==2.14.*
+    , random
     , silently ==1.2.*
-    , simple-logger ==0.1.*
+    , simple-logger
     , simplexmq
-    , socks ==0.6.*
-    , sqlcipher-simple ==0.4.*
-    , stm ==2.5.*
-    , temporary ==1.3.*
-    , time ==1.12.*
-    , time-manager ==0.0.*
+    , sqlcipher-simple
+    , stm
+    , text
+    , time
     , timeit ==2.0.*
-    , tls >=1.7.0 && <1.8
-    , transformers ==0.6.*
-    , unliftio ==0.2.*
-    , unliftio-core ==0.2.*
-    , websockets ==0.12.*
-    , yaml ==0.11.*
-    , zstd ==0.1.3.*
+    , transformers
+    , unliftio
+    , unliftio-core
+    , unordered-containers
+    , wai
+    , wai-app-static
+    , warp
+    , warp-tls
+    , yaml
   default-language: Haskell2010
-  if flag(swift)
-    cpp-options: -DswiftJSON
-  if impl(ghc >= 9.6.2)
-    build-depends:
-        bytestring ==0.11.*
-      , template-haskell ==2.20.*
-      , text >=2.0.1 && <2.2
-  if impl(ghc < 9.6.2)
-    build-depends:
-        bytestring ==0.10.*
-      , template-haskell ==2.16.*
-      , text >=1.2.3.0 && <1.3

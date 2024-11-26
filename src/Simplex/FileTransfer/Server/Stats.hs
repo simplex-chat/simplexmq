@@ -7,25 +7,24 @@ module Simplex.FileTransfer.Server.Stats where
 import Control.Applicative ((<|>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
+import Data.IORef
 import Data.Int (Int64)
 import Data.Time.Clock (UTCTime)
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (SenderId)
 import Simplex.Messaging.Server.Stats (PeriodStats, PeriodStatsData, getPeriodStatsData, newPeriodStats, setPeriodStats)
-import UnliftIO.STM
 
 data FileServerStats = FileServerStats
-  { fromTime :: TVar UTCTime,
-    filesCreated :: TVar Int,
-    fileRecipients :: TVar Int,
-    filesUploaded :: TVar Int,
-    filesExpired :: TVar Int,
-    filesDeleted :: TVar Int,
-    filesDownloaded :: PeriodStats SenderId,
-    fileDownloads :: TVar Int,
-    fileDownloadAcks :: TVar Int,
-    filesCount :: TVar Int,
-    filesSize :: TVar Int64
+  { fromTime :: IORef UTCTime,
+    filesCreated :: IORef Int,
+    fileRecipients :: IORef Int,
+    filesUploaded :: IORef Int,
+    filesExpired :: IORef Int,
+    filesDeleted :: IORef Int,
+    filesDownloaded :: PeriodStats,
+    fileDownloads :: IORef Int,
+    fileDownloadAcks :: IORef Int,
+    filesCount :: IORef Int,
+    filesSize :: IORef Int64
   }
 
 data FileServerStatsData = FileServerStatsData
@@ -35,7 +34,7 @@ data FileServerStatsData = FileServerStatsData
     _filesUploaded :: Int,
     _filesExpired :: Int,
     _filesDeleted :: Int,
-    _filesDownloaded :: PeriodStatsData SenderId,
+    _filesDownloaded :: PeriodStatsData,
     _fileDownloads :: Int,
     _fileDownloadAcks :: Int,
     _filesCount :: Int,
@@ -43,49 +42,50 @@ data FileServerStatsData = FileServerStatsData
   }
   deriving (Show)
 
-newFileServerStats :: UTCTime -> STM FileServerStats
+newFileServerStats :: UTCTime -> IO FileServerStats
 newFileServerStats ts = do
-  fromTime <- newTVar ts
-  filesCreated <- newTVar 0
-  fileRecipients <- newTVar 0
-  filesUploaded <- newTVar 0
-  filesExpired <- newTVar 0
-  filesDeleted <- newTVar 0
+  fromTime <- newIORef ts
+  filesCreated <- newIORef 0
+  fileRecipients <- newIORef 0
+  filesUploaded <- newIORef 0
+  filesExpired <- newIORef 0
+  filesDeleted <- newIORef 0
   filesDownloaded <- newPeriodStats
-  fileDownloads <- newTVar 0
-  fileDownloadAcks <- newTVar 0
-  filesCount <- newTVar 0
-  filesSize <- newTVar 0
+  fileDownloads <- newIORef 0
+  fileDownloadAcks <- newIORef 0
+  filesCount <- newIORef 0
+  filesSize <- newIORef 0
   pure FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesExpired, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize}
 
-getFileServerStatsData :: FileServerStats -> STM FileServerStatsData
+getFileServerStatsData :: FileServerStats -> IO FileServerStatsData
 getFileServerStatsData s = do
-  _fromTime <- readTVar $ fromTime (s :: FileServerStats)
-  _filesCreated <- readTVar $ filesCreated s
-  _fileRecipients <- readTVar $ fileRecipients s
-  _filesUploaded <- readTVar $ filesUploaded s
-  _filesExpired <- readTVar $ filesExpired s
-  _filesDeleted <- readTVar $ filesDeleted s
+  _fromTime <- readIORef $ fromTime (s :: FileServerStats)
+  _filesCreated <- readIORef $ filesCreated s
+  _fileRecipients <- readIORef $ fileRecipients s
+  _filesUploaded <- readIORef $ filesUploaded s
+  _filesExpired <- readIORef $ filesExpired s
+  _filesDeleted <- readIORef $ filesDeleted s
   _filesDownloaded <- getPeriodStatsData $ filesDownloaded s
-  _fileDownloads <- readTVar $ fileDownloads s
-  _fileDownloadAcks <- readTVar $ fileDownloadAcks s
-  _filesCount <- readTVar $ filesCount s
-  _filesSize <- readTVar $ filesSize s
+  _fileDownloads <- readIORef $ fileDownloads s
+  _fileDownloadAcks <- readIORef $ fileDownloadAcks s
+  _filesCount <- readIORef $ filesCount s
+  _filesSize <- readIORef $ filesSize s
   pure FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesExpired, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount, _filesSize}
 
-setFileServerStats :: FileServerStats -> FileServerStatsData -> STM ()
+-- this function is not thread safe, it is used on server start only
+setFileServerStats :: FileServerStats -> FileServerStatsData -> IO ()
 setFileServerStats s d = do
-  writeTVar (fromTime (s :: FileServerStats)) $! _fromTime (d :: FileServerStatsData)
-  writeTVar (filesCreated s) $! _filesCreated d
-  writeTVar (fileRecipients s) $! _fileRecipients d
-  writeTVar (filesUploaded s) $! _filesUploaded d
-  writeTVar (filesExpired s) $! _filesExpired d
-  writeTVar (filesDeleted s) $! _filesDeleted d
+  writeIORef (fromTime (s :: FileServerStats)) $! _fromTime (d :: FileServerStatsData)
+  writeIORef (filesCreated s) $! _filesCreated d
+  writeIORef (fileRecipients s) $! _fileRecipients d
+  writeIORef (filesUploaded s) $! _filesUploaded d
+  writeIORef (filesExpired s) $! _filesExpired d
+  writeIORef (filesDeleted s) $! _filesDeleted d
   setPeriodStats (filesDownloaded s) $! _filesDownloaded d
-  writeTVar (fileDownloads s) $! _fileDownloads d
-  writeTVar (fileDownloadAcks s) $! _fileDownloadAcks d
-  writeTVar (filesCount s) $! _filesCount d
-  writeTVar (filesSize s) $! _filesSize d
+  writeIORef (fileDownloads s) $! _fileDownloads d
+  writeIORef (fileDownloadAcks s) $! _fileDownloadAcks d
+  writeIORef (filesCount s) $! _filesCount d
+  writeIORef (filesSize s) $! _filesSize d
 
 instance StrEncoding FileServerStatsData where
   strEncode FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesExpired, _filesDeleted, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount, _filesSize} =

@@ -7,19 +7,26 @@ import qualified Control.Exception as E
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
+import Control.Monad.Trans.Except
+import Data.Aeson (FromJSON, ToJSON)
+import qualified Data.Aeson as J
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.IORef
 import Data.Int (Int64)
 import Data.List (groupBy, sortOn)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8With)
+import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
 import Data.Time (NominalDiffTime)
 import GHC.Conc (labelThread, myThreadId, threadDelay)
-import UnliftIO
+import UnliftIO hiding (atomicModifyIORef')
 import qualified UnliftIO.Exception as UE
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
@@ -28,11 +35,15 @@ raceAny_ = r []
     r as (m : ms) = withAsync m $ \a -> r (a : as) ms
     r as [] = void $ waitAnyCancel as
 
-infixl 4 <$$>, <$?>
+infixl 4 <$$>, <$$, <$?>
 
 (<$$>) :: (Functor f, Functor g) => (a -> b) -> f (g a) -> f (g b)
 (<$$>) = fmap . fmap
 {-# INLINE (<$$>) #-}
+
+(<$$) :: (Functor f, Functor g) => b -> f (g a) -> f (g b)
+(<$$) = fmap . fmap . const
+{-# INLINE (<$$) #-}
 
 (<$?>) :: MonadFail m => (a -> Either String b) -> m a -> m b
 f <$?> m = either fail pure . f =<< m
@@ -114,11 +125,11 @@ catchAllErrors' err action handler = tryAllErrors' err action >>= either handler
 {-# INLINE catchAllErrors' #-}
 
 catchThrow :: MonadUnliftIO m => ExceptT e m a -> (E.SomeException -> e) -> ExceptT e m a
-catchThrow action err = catchAllErrors err action throwError
+catchThrow action err = catchAllErrors err action throwE
 {-# INLINE catchThrow #-}
 
 allFinally :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a -> ExceptT e m b -> ExceptT e m a
-allFinally err action final = tryAllErrors err action >>= \r -> final >> either throwError pure r
+allFinally err action final = tryAllErrors err action >>= \r -> final >> either throwE pure r
 {-# INLINE allFinally #-}
 
 eitherToMaybe :: Either a b -> Maybe b
@@ -149,7 +160,7 @@ safeDecodeUtf8 = decodeUtf8With onError
     onError _ _ = Just '?'
 
 timeoutThrow :: MonadUnliftIO m => e -> Int -> ExceptT e m a -> ExceptT e m a
-timeoutThrow e ms action = ExceptT (sequence <$> (ms `timeout` runExceptT action)) >>= maybe (throwError e) pure
+timeoutThrow e ms action = ExceptT (sequence <$> (ms `timeout` runExceptT action)) >>= maybe (throwE e) pure
 
 threadDelay' :: Int64 -> IO ()
 threadDelay' = loop
@@ -162,10 +173,25 @@ threadDelay' = loop
           loop $ time - maxWait
 
 diffToMicroseconds :: NominalDiffTime -> Int64
-diffToMicroseconds diff = fromIntegral ((truncate $ diff * 1000000) :: Integer)
+diffToMicroseconds diff = truncate $ diff * 1000000
+{-# INLINE diffToMicroseconds #-}
 
 diffToMilliseconds :: NominalDiffTime -> Int64
-diffToMilliseconds diff = fromIntegral ((truncate $ diff * 1000) :: Integer)
+diffToMilliseconds diff = truncate $ diff * 1000
+{-# INLINE diffToMilliseconds #-}
 
 labelMyThread :: MonadIO m => String -> m ()
 labelMyThread label = liftIO $ myThreadId >>= (`labelThread` label)
+
+atomicModifyIORef'_ :: IORef a -> (a -> a) -> IO ()
+atomicModifyIORef'_ r f = atomicModifyIORef' r (\v -> (f v, ()))
+
+encodeJSON :: ToJSON a => a -> Text
+encodeJSON = safeDecodeUtf8 . LB.toStrict . J.encode
+
+decodeJSON :: FromJSON a => Text -> Maybe a
+decodeJSON = J.decode . LB.fromStrict . encodeUtf8
+
+traverseWithKey_ :: Monad m => (k -> v -> m ()) -> Map k v -> m ()
+traverseWithKey_ f = M.foldrWithKey (\k v -> (f k v >>)) (pure ())
+{-# INLINE traverseWithKey_ #-}

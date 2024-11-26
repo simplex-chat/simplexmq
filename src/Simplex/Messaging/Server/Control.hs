@@ -4,11 +4,11 @@
 module Simplex.Messaging.Server.Control where
 
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.ByteString (ByteString)
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (BasicAuth)
+import Simplex.Messaging.Protocol (BasicAuth, SenderId)
 
 data CPClientRole = CPRNone | CPRUser | CPRAdmin
+  deriving (Eq)
 
 data ControlProtocol
   = CPAuth BasicAuth
@@ -20,7 +20,8 @@ data ControlProtocol
   | CPThreads
   | CPSockets
   | CPSocketThreads
-  | CPDelete ByteString
+  | CPServerInfo
+  | CPDelete SenderId
   | CPSave
   | CPHelp
   | CPQuit
@@ -37,6 +38,7 @@ instance StrEncoding ControlProtocol where
     CPThreads -> "threads"
     CPSockets -> "sockets"
     CPSocketThreads -> "socket-threads"
+    CPServerInfo -> "server-info"
     CPDelete bs -> "delete " <> strEncode bs
     CPSave -> "save"
     CPHelp -> "help"
@@ -53,6 +55,7 @@ instance StrEncoding ControlProtocol where
       "threads" -> pure CPThreads
       "sockets" -> pure CPSockets
       "socket-threads" -> pure CPSocketThreads
+      "server-info" -> pure CPServerInfo
       "delete" -> CPDelete <$> (A.space *> strP)
       "save" -> pure CPSave
       "help" -> pure CPHelp

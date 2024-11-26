@@ -1,13 +1,17 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Server.StoreLog
   ( StoreLog, -- constructors are not exported
+    StoreLogRecord (..), -- used in tests
     openWriteStoreLog,
     openReadStoreLog,
     storeLogFilePath,
@@ -19,30 +23,33 @@ module Simplex.Messaging.Server.StoreLog
     logSuspendQueue,
     logDeleteQueue,
     logDeleteNotifier,
+    logUpdateQueueTime,
     readWriteStoreLog,
+    writeQueueStore,
   )
 where
 
 import Control.Applicative (optional, (<|>))
-import Control.Monad (foldM, unless, when)
+import Control.Concurrent.STM
+import qualified Control.Exception as E
+import Control.Logger.Simple
+import Control.Monad
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
-import Data.Functor (($>))
-import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import qualified Data.Text as T
+import Data.Time.Clock (getCurrentTime)
+import Data.Time.Format.ISO8601 (iso8601Show)
+import GHC.IO (catchAny)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.QueueStore (NtfCreds (..), QueueRec (..), ServerQueueStatus (..))
-import Simplex.Messaging.Transport.Buffer (trimCR)
-import Simplex.Messaging.Util (ifM)
-import System.Directory (doesFileExist)
+import Simplex.Messaging.Server.MsgStore.Types
+import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Server.StoreLog.Types
+import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Util (ifM, tshow, unlessM, whenM)
+import System.Directory (doesFileExist, renameFile)
 import System.IO
-
--- | opaque container for file handle with a type-safe IOMode
--- constructors are not exported, openWriteStoreLog and openReadStoreLog should be used instead
-data StoreLog (a :: IOMode) where
-  ReadStoreLog :: FilePath -> Handle -> StoreLog 'ReadMode
-  WriteStoreLog :: FilePath -> Handle -> StoreLog 'WriteMode
 
 data StoreLogRecord
   = CreateQueue QueueRec
@@ -51,9 +58,20 @@ data StoreLogRecord
   | SuspendQueue QueueId
   | DeleteQueue QueueId
   | DeleteNotifier QueueId
+  | UpdateTime QueueId RoundedSystemTime
+  deriving (Show)
+
+data SLRTag
+  = CreateQueue_
+  | SecureQueue_
+  | AddNotifier_
+  | SuspendQueue_
+  | DeleteQueue_
+  | DeleteNotifier_
+  | UpdateTime_
 
 instance StrEncoding QueueRec where
-  strEncode QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier} =
+  strEncode QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, updatedAt} =
     B.unwords
       [ "rid=" <> strEncode recipientId,
         "rk=" <> strEncode recipientKey,
@@ -61,9 +79,13 @@ instance StrEncoding QueueRec where
         "sid=" <> strEncode senderId,
         "sk=" <> strEncode senderKey
       ]
+      <> sndSecureStr
       <> maybe "" notifierStr notifier
+      <> maybe "" updatedAtStr updatedAt
     where
+      sndSecureStr = if sndSecure then " sndSecure=" <> strEncode sndSecure else ""
       notifierStr ntfCreds = " notifier=" <> strEncode ntfCreds
+      updatedAtStr t = " updated_at=" <> strEncode t
 
   strP = do
     recipientId <- "rid=" *> strP_
@@ -71,25 +93,51 @@ instance StrEncoding QueueRec where
     rcvDhSecret <- "rdh=" *> strP_
     senderId <- "sid=" *> strP_
     senderKey <- "sk=" *> strP
+    sndSecure <- (" sndSecure=" *> strP) <|> pure False
     notifier <- optional $ " notifier=" *> strP
-    pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, notifier, status = QueueActive}
+    updatedAt <- optional $ " updated_at=" *> strP
+    pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status = QueueActive, updatedAt}
+
+instance StrEncoding SLRTag where
+  strEncode = \case
+    CreateQueue_ -> "CREATE"
+    SecureQueue_ -> "SECURE"
+    AddNotifier_ -> "NOTIFIER"
+    SuspendQueue_ -> "SUSPEND"
+    DeleteQueue_ -> "DELETE"
+    DeleteNotifier_ -> "NDELETE"
+    UpdateTime_ -> "TIME"
+
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "CREATE" -> pure CreateQueue_
+      "SECURE" -> pure SecureQueue_
+      "NOTIFIER" -> pure AddNotifier_
+      "SUSPEND" -> pure SuspendQueue_
+      "DELETE" -> pure DeleteQueue_
+      "NDELETE" -> pure DeleteNotifier_
+      "TIME" -> pure UpdateTime_
+      s -> fail $ "invalid log record tag: " <> B.unpack s
 
 instance StrEncoding StoreLogRecord where
   strEncode = \case
-    CreateQueue q -> strEncode (Str "CREATE", q)
-    SecureQueue rId sKey -> strEncode (Str "SECURE", rId, sKey)
-    AddNotifier rId ntfCreds -> strEncode (Str "NOTIFIER", rId, ntfCreds)
-    SuspendQueue rId -> strEncode (Str "SUSPEND", rId)
-    DeleteQueue rId -> strEncode (Str "DELETE", rId)
-    DeleteNotifier rId -> strEncode (Str "NDELETE", rId)
+    CreateQueue q -> strEncode (CreateQueue_, q)
+    SecureQueue rId sKey -> strEncode (SecureQueue_, rId, sKey)
+    AddNotifier rId ntfCreds -> strEncode (AddNotifier_, rId, ntfCreds)
+    SuspendQueue rId -> strEncode (SuspendQueue_, rId)
+    DeleteQueue rId -> strEncode (DeleteQueue_, rId)
+    DeleteNotifier rId -> strEncode (DeleteNotifier_, rId)
+    UpdateTime rId t ->  strEncode (UpdateTime_, rId, t)
 
   strP =
-    "CREATE " *> (CreateQueue <$> strP)
-      <|> "SECURE " *> (SecureQueue <$> strP_ <*> strP)
-      <|> "NOTIFIER " *> (AddNotifier <$> strP_ <*> strP)
-      <|> "SUSPEND " *> (SuspendQueue <$> strP)
-      <|> "DELETE " *> (DeleteQueue <$> strP)
-      <|> "NDELETE " *> (DeleteNotifier <$> strP)
+    strP_ >>= \case
+      CreateQueue_ -> CreateQueue <$> strP
+      SecureQueue_ -> SecureQueue <$> strP_ <*> strP
+      AddNotifier_ -> AddNotifier <$> strP_ <*> strP
+      SuspendQueue_ -> SuspendQueue <$> strP
+      DeleteQueue_ -> DeleteQueue <$> strP
+      DeleteNotifier_ -> DeleteNotifier <$> strP
+      UpdateTime_ -> UpdateTime <$> strP_ <*> strP
 
 openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
 openWriteStoreLog f = do
@@ -99,7 +147,7 @@ openWriteStoreLog f = do
 
 openReadStoreLog :: FilePath -> IO (StoreLog 'ReadMode)
 openReadStoreLog f = do
-  doesFileExist f >>= (`unless` writeFile f "")
+  unlessM (doesFileExist f) (writeFile f "")
   ReadStoreLog f <$> openFile f ReadMode
 
 storeLogFilePath :: StoreLog a -> FilePath
@@ -109,11 +157,13 @@ storeLogFilePath = \case
 
 closeStoreLog :: StoreLog a -> IO ()
 closeStoreLog = \case
-  WriteStoreLog _ h -> hClose h
-  ReadStoreLog _ h -> hClose h
+  WriteStoreLog _ h -> close_ h
+  ReadStoreLog _ h -> close_ h
+  where
+    close_ h = hClose h `catchAny` \e -> logError ("STORE: closeStoreLog, error closing, " <> tshow e)
 
 writeStoreLogRecord :: StrEncoding r => StoreLog 'WriteMode -> r -> IO ()
-writeStoreLogRecord (WriteStoreLog _ h) r = do
+writeStoreLogRecord (WriteStoreLog _ h) r = E.uninterruptibleMask_ $ do
   B.hPut h $ strEncode r `B.snoc` '\n' -- hPutStrLn makes write non-atomic for length > 1024
   hFlush h
 
@@ -135,34 +185,49 @@ logDeleteQueue s = writeStoreLogRecord s . DeleteQueue
 logDeleteNotifier :: StoreLog 'WriteMode -> QueueId -> IO ()
 logDeleteNotifier s = writeStoreLogRecord s . DeleteNotifier
 
-readWriteStoreLog :: FilePath -> IO (Map RecipientId QueueRec, StoreLog 'WriteMode)
-readWriteStoreLog f = do
-  qs <- ifM (doesFileExist f) (readQueues f) (pure M.empty)
-  s <- openWriteStoreLog f
-  writeQueues s qs
-  pure (qs, s)
+logUpdateQueueTime :: StoreLog 'WriteMode -> QueueId -> RoundedSystemTime -> IO ()
+logUpdateQueueTime s qId t = writeStoreLogRecord s $ UpdateTime qId t
 
-writeQueues :: StoreLog 'WriteMode -> Map RecipientId QueueRec -> IO ()
-writeQueues s = mapM_ $ \q -> when (active q) $ logCreateQueue s q
+readWriteStoreLog :: (FilePath -> s -> IO ()) -> (StoreLog 'WriteMode -> s -> IO ()) -> FilePath -> s -> IO (StoreLog 'WriteMode)
+readWriteStoreLog readStore writeStore f st =
+  ifM
+    (doesFileExist tempBackup)
+    (useTempBackup >> readWriteLog)
+    (ifM (doesFileExist f) readWriteLog (writeLog "creating store log..."))
   where
+    f' = T.pack f
+    tempBackup = f <> ".start"
+    useTempBackup = do
+      -- preserve current file, use temp backup
+      logWarn $ "Server terminated abnormally on last start, restoring state from " <> T.pack tempBackup
+      whenM (doesFileExist f) $ do
+        renameFile f (f <> ".bak")
+        logInfo $ "preserved incomplete state " <> f' <> " as " <> (f' <> ".bak")
+      renameFile tempBackup f
+    readWriteLog = do
+      -- log backup is made in two steps to mitigate the crash during the compacting.
+      -- Temporary backup file .start will be used when it is present.
+      readStore f st
+      renameFile f tempBackup -- 1) make temp backup
+      s <- writeLog "compacting store log (do not terminate)..." -- 2) save state
+      renameBackup -- 3) timed backup
+      pure s
+    writeLog msg = do
+      s <- openWriteStoreLog f
+      logInfo msg
+      writeStore s st
+      pure s
+    renameBackup = do
+      ts <- getCurrentTime
+      let timedBackup = f <> "." <> iso8601Show ts
+      renameFile tempBackup timedBackup
+      logInfo $ "original state preserved as " <> T.pack timedBackup
+
+writeQueueStore :: STMQueueStore s => StoreLog 'WriteMode -> s -> IO ()
+writeQueueStore s st = readTVarIO (activeMsgQueues st) >>= mapM_ writeQueue . M.assocs
+  where
+    writeQueue (rId, q) =
+      readTVarIO (queueRec' q) >>= \case
+        Just q' -> when (active q') $ logCreateQueue s q' -- TODO we should log suspended queues when we use them
+        Nothing -> atomically $ TM.delete rId $ activeMsgQueues st
     active QueueRec {status} = status == QueueActive
-
-readQueues :: FilePath -> IO (Map RecipientId QueueRec)
-readQueues f = foldM processLine M.empty . LB.lines =<< LB.readFile f
-  where
-    processLine :: Map RecipientId QueueRec -> LB.ByteString -> IO (Map RecipientId QueueRec)
-    processLine m s' = case strDecode $ trimCR s of
-      Right r -> pure $ procLogRecord r
-      Left e -> printError e $> m
-      where
-        s = LB.toStrict s'
-        procLogRecord :: StoreLogRecord -> Map RecipientId QueueRec
-        procLogRecord = \case
-          CreateQueue q -> M.insert (recipientId q) q m
-          SecureQueue qId sKey -> M.adjust (\q -> q {senderKey = Just sKey}) qId m
-          AddNotifier qId ntfCreds -> M.adjust (\q -> q {notifier = Just ntfCreds}) qId m
-          SuspendQueue qId -> M.adjust (\q -> q {status = QueueOff}) qId m
-          DeleteQueue qId -> M.delete qId m
-          DeleteNotifier qId -> M.adjust (\q -> q {notifier = Nothing}) qId m
-        printError :: String -> IO ()
-        printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s

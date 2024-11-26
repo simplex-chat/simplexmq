@@ -15,6 +15,12 @@
   <link rel="stylesheet" href="/media/style.css">
 
   <style>
+    body,
+    html {
+      width: 100%;
+      overflow-x: hidden;
+    }
+
     table#config {
       border-collapse: collapse;
       margin-bottom: 4px;
@@ -39,6 +45,17 @@
     @media screen and (max-width: 767px) {
       tr td:not(:last-child) {
         font-size: 16px;
+      }
+    }
+
+    @media screen and (max-width: 440px) {
+      table {
+        width: 100%;
+        table-layout: fixed;
+      }
+
+      tr td:not(:last-child) {
+        width: 40%;
       }
     }
 
@@ -205,6 +222,10 @@
             </h2>
             <table id="public-info">
               <tr class="text-grey-black dark:text-white text-base">
+                <td>Server version:</td>
+                <td>${version}</td>
+              </tr>
+              <tr class="text-grey-black dark:text-white text-base">
                 <td>Source code:</td>
                 <td><a href="${sourceCode}" target="_blank">${sourceCode}</a></td>
               </tr>
@@ -274,6 +295,12 @@
                   <td>${hostingEntity} (${hostingCountry})</td>
                 </tr>
               </x-hosting>
+              <x-hostingType>
+                <tr class="text-grey-black dark:text-white text-base">
+                  <td>Hosting type:</td>
+                  <td>${hostingType}</td>
+                </tr>
+              </x-hostingType>
               <x-serverCountry>
                 <tr class="text-grey-black dark:text-white text-base">
                   <td>Server country:</td>
