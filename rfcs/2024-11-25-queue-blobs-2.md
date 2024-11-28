@@ -51,6 +51,8 @@ These files would contain a one line with the recipient ID of the queue. These f
 
 There is logic in code preventing using the same ID in different contexts, and the ID size is large enough to make any collisions unlikely (192 bits), so with correctly working code the queue folder would either have one of reference files, and nothing else, or the queue and message files from the beginning of this section. But even if the same ID is re-used in different context, it should not cause any problems as file names don't overlap.
 
+While we could store different types of references in different types of folders, it would have additional costs of maintaining 4 folder hierarchies. Instead we could use the fact that it is one hierarchy to prevent using the same ID in different contexts.
+
 ## Protocol
 
 The only change in protocol is that there will be only one blob per queue, without markers (see the previous doc). Otherwise the protocol and proposed privacy improvement seem reasonable.
