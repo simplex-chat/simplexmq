@@ -18,6 +18,7 @@ import CoreTests.StoreLogTests
 import CoreTests.TRcvQueuesTests
 import CoreTests.UtilTests
 import CoreTests.VersionRangeTests
+import Data.Maybe (fromMaybe)
 import FileDescriptionTests (fileDescriptionTests)
 import GHC.IO.Exception (IOException (..))
 import qualified GHC.IO.Exception as IOException
@@ -30,7 +31,10 @@ import Simplex.Messaging.Transport (TLS, Transport (..))
 -- import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Environment (setEnv)
+import System.Timeout (timeout)
 import Test.Hspec
+import Test.Hspec.Core.Spec
+import Test.Hspec.Runner (configPrintSlowItems, defaultConfig, hspecWith)
 import XFTPAgent
 import XFTPCLI
 import XFTPServerTests (xftpServerTests)
@@ -44,9 +48,10 @@ main = do
   withGlobalLogging logCfg $ do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
-    hspec
+    hspecWith defaultConfig {configPrintSlowItems = Just 10}
       . before_ (createDirectoryIfMissing False "tests/tmp")
       . after_ (eventuallyRemove "tests/tmp" 3)
+      . deadline (120 * 1000000)
       $ do
         describe "Agent SQLite schema dump" schemaDumpTest
         describe "Core tests" $ do
@@ -89,3 +94,11 @@ eventuallyRemove path retries = case retries of
       _ -> E.throwIO ioe
   where
     action = removeDirectoryRecursive path
+
+-- | Abort tests after a reasonable deadline.
+deadline :: Int -> SpecWith b -> SpecWith b
+deadline limit = mapSpecItem_ $ \item@Item {itemLocation, itemExample} ->
+  item
+    { itemExample = \params aw pc ->
+        fromMaybe (Result "timed out" . Failure itemLocation $ Reason "time limit") <$> timeout limit (itemExample params aw pc)
+    }
