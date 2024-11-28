@@ -11,6 +11,11 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 
+data QueueReference q
+  = QRRecipient q
+  | QRSender q
+  | QRNotifier q
+
 data QueueRec = QueueRec
   { recipientId :: !RecipientId,
     recipientKey :: !RcvPublicAuthKey,

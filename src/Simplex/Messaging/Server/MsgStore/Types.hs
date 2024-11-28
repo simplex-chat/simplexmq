@@ -30,9 +30,12 @@ import Simplex.Messaging.Util ((<$$>))
 import System.IO (IOMode (..))
 
 class MsgStoreClass s => STMQueueStore s where
-  queues' :: s -> TMap RecipientId (StoreQueue s)
-  senders' :: s -> TMap SenderId RecipientId
-  notifiers' :: s -> TMap NotifierId RecipientId
+  queues' :: s -> TMap QueueId (QueueReference (StoreQueue s))
+  queueCount' :: s -> TVar Int
+  notifierCount' :: s -> TVar Int
+
+  -- senders' :: s -> TMap SenderId RecipientId
+  -- notifiers' :: s -> TMap NotifierId RecipientId
   storeLog' :: s -> TVar (Maybe (StoreLog 'WriteMode))
   mkQueue :: s -> QueueRec -> STM (StoreQueue s)
   msgQueue_' :: StoreQueue s -> TVar (Maybe (MsgQueue s))
@@ -45,7 +48,7 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   newMsgStore :: MsgStoreConfig s -> IO s
   setStoreLog :: s -> StoreLog 'WriteMode -> IO ()
   closeMsgStore :: s -> IO ()
-  activeMsgQueues :: s -> TMap RecipientId (StoreQueue s)
+  activeMsgQueues :: s -> TMap RecipientId (QueueReference (StoreQueue s))
   withAllMsgQueues :: Monoid a => Bool -> s -> (RecipientId -> StoreQueue s -> IO a) -> IO a
   logQueueStates :: s -> IO ()
   logQueueState :: StoreQueue s -> StoreMonad s ()
@@ -76,9 +79,10 @@ data AMSType = forall s. AMSType (SMSType s)
 withActiveMsgQueues :: (MsgStoreClass s, Monoid a) => s -> (RecipientId -> StoreQueue s -> IO a) -> IO a
 withActiveMsgQueues st f = readTVarIO (activeMsgQueues st) >>= foldM run mempty . M.assocs
   where
-    run !acc (k, v) = do
+    run !acc (k, QRRecipient v) = do
       r <- f k v
       pure $! acc <> r
+    run acc _ = pure acc
 
 getQueueMessages :: MsgStoreClass s => Bool -> s -> RecipientId -> StoreQueue s -> ExceptT ErrorType IO [Message]
 getQueueMessages drainMsgs st rId q = withPeekMsgQueue st rId q "getQueueSize" $ maybe (pure []) (getQueueMessages_ drainMsgs . fst)
