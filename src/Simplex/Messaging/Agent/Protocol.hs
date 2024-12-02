@@ -108,6 +108,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnReqUriData (..),
     CRClientData,
     ServiceScheme,
+    sameConnReqContact,
     simplexChat,
     connReqUriP',
     AgentErrorType (..),
@@ -1262,6 +1263,12 @@ instance Eq AConnectionRequestUri where
     _ -> False
 
 deriving instance Show AConnectionRequestUri
+
+sameConnReqContact :: ConnectionRequestUri 'CMContact -> ConnectionRequestUri 'CMContact -> Bool
+sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUri ConnReqUriData {crSmpQueues = qs'}) =
+  L.length qs == L.length qs' && all same (L.zip qs qs')
+  where
+    same (q, q') = sameQAddress (qAddress q) (qAddress q')
 
 data ConnReqUriData = ConnReqUriData
   { crScheme :: ServiceScheme,
