@@ -2020,7 +2020,7 @@ storeError = \case
   SEConnDuplicate -> CONN DUPLICATE
   SEBadConnType CRcv -> CONN SIMPLEX
   SEBadConnType CSnd -> CONN SIMPLEX
-  SEInvitationNotFound str -> CMD PROHIBITED ("SEInvitationNotFound " <> str)
+  SEInvitationNotFound cxt invId -> CMD PROHIBITED $ "SEInvitationNotFound " <> cxt <> ", invitationId = " <> show invId
   -- this error is never reported as store error,
   -- it is used to wrap agent operations when "transaction-like" store access is needed
   -- NOTE: network IO should NOT be used inside AgentStoreMonad
