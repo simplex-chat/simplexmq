@@ -687,6 +687,12 @@ allowConnectionAsync' c corrId connId confId ownConnInfo =
       enqueueCommand c corrId connId (Just server) $ AClientCommand $ LET confId ownConnInfo
     _ -> throwE $ CMD PROHIBITED "allowConnectionAsync"
 
+-- TODO
+-- Unlike `acceptContact` (synchronous version), `acceptContactAsync` uses `unacceptInvitation` in case of error,
+-- because we're not taking lock here. In practice it is less likely to fail because it doesn't involve network IO,
+-- and also it can't be triggered by user concurrently several times in a row. It could be improved similarly to
+-- `acceptContact` by creating a new map for invitation locks and taking lock here, and removing `unacceptInvitation`
+-- while marking invitation as accepted inside "lock level transaction" after successful `joinConnAsync`.
 acceptContactAsync' :: AgentClient -> ACorrId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
 acceptContactAsync' c corrId enableNtfs invId ownConnInfo pqSupport subMode = do
   Invitation {contactConnId, connReq} <- withStore c $ \db -> getInvitation db "acceptContactAsync'" invId
@@ -944,10 +950,9 @@ acceptContact' c connId enableNtfs invId ownConnInfo pqSupport subMode = withCon
   Invitation {contactConnId, connReq} <- withStore c $ \db -> getInvitation db "acceptContact'" invId
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ (ContactConnection ConnData {userId} _) -> do
+      sqSecured <- joinConn c userId connId enableNtfs connReq ownConnInfo pqSupport subMode
       withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-      joinConn c userId connId enableNtfs connReq ownConnInfo pqSupport subMode `catchAgentError` \err -> do
-        withStore' c (`unacceptInvitation` invId)
-        throwE err
+      pure sqSecured
     _ -> throwE $ CMD PROHIBITED "acceptContact"
 
 -- | Reject contact (RJCT command) in Reader monad
