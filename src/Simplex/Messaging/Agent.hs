@@ -689,7 +689,7 @@ allowConnectionAsync' c corrId connId confId ownConnInfo =
 
 acceptContactAsync' :: AgentClient -> ACorrId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
 acceptContactAsync' c corrId enableNtfs invId ownConnInfo pqSupport subMode = do
-  Invitation {contactConnId, connReq} <- withStore c (`getInvitation` invId)
+  Invitation {contactConnId, connReq} <- withStore c $ \db -> getInvitation db "acceptContactAsync'" invId
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ (ContactConnection ConnData {userId} _) -> do
       withStore' c $ \db -> acceptInvitation db invId ownConnInfo
@@ -809,7 +809,7 @@ newConnToJoin c userId connId enableNtfs cReq pqSup = case cReq of
 
 newConnToAccept :: AgentClient -> ConnId -> Bool -> ConfirmationId -> PQSupport -> AM ConnId
 newConnToAccept c connId enableNtfs invId pqSup = do
-  Invitation {connReq, contactConnId} <- withStore c (`getInvitation` invId)
+  Invitation {connReq, contactConnId} <- withStore c $ \db -> getInvitation db "newConnToAccept" invId
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ (ContactConnection ConnData {userId} _) ->
       newConnToJoin c userId connId enableNtfs connReq pqSup
@@ -941,7 +941,7 @@ allowConnection' c connId confId ownConnInfo = withConnLock c connId "allowConne
 -- | Accept contact (ACPT command) in Reader monad
 acceptContact' :: AgentClient -> ConnId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
 acceptContact' c connId enableNtfs invId ownConnInfo pqSupport subMode = withConnLock c connId "acceptContact" $ do
-  Invitation {contactConnId, connReq} <- withStore c (`getInvitation` invId)
+  Invitation {contactConnId, connReq} <- withStore c $ \db -> getInvitation db "acceptContact'" invId
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ (ContactConnection ConnData {userId} _) -> do
       withStore' c $ \db -> acceptInvitation db invId ownConnInfo

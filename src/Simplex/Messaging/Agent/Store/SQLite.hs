@@ -926,9 +926,9 @@ createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInf
       |]
       (invitationId, contactConnId, connReq, recipientConnInfo)
 
-getInvitation :: DB.Connection -> InvitationId -> IO (Either StoreError Invitation)
-getInvitation db invitationId =
-  firstRow invitation SEInvitationNotFound $
+getInvitation :: DB.Connection -> String -> InvitationId -> IO (Either StoreError Invitation)
+getInvitation db str invitationId =
+  firstRow invitation (SEInvitationNotFound str) $
     DB.query
       db
       [sql|

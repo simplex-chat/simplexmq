@@ -623,7 +623,7 @@ data StoreError
   | -- | Confirmation not found.
     SEConfirmationNotFound
   | -- | Invitation not found
-    SEInvitationNotFound
+    SEInvitationNotFound String
   | -- | Message not found
     SEMsgNotFound
   | -- | Command not found
