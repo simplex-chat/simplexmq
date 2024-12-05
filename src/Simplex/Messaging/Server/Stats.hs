@@ -347,6 +347,113 @@ getServerStatsData s = do
         _ntfCount
       }
 
+getResetDailyServerStats :: ServerStats -> UTCTime -> IO (ServerStatsData, PeriodStatCounts, PeriodStatCounts)
+getResetDailyServerStats s ts = do
+  _fromTime <- atomicSwapIORef (fromTime s) ts
+  _qCreated <- atomicSwapIORef (qCreated s) 0
+  _qSecured <- atomicSwapIORef (qSecured s) 0
+  _qDeletedAll <- atomicSwapIORef (qDeletedAll s) 0
+  _qDeletedAllB <- atomicSwapIORef (qDeletedAllB s) 0
+  _qDeletedNew <- atomicSwapIORef (qDeletedNew s) 0
+  _qDeletedSecured <- atomicSwapIORef (qDeletedSecured s) 0
+  _qSub <- atomicSwapIORef (qSub s) 0
+  _qSubAllB <- atomicSwapIORef (qSubAllB s) 0
+  _qSubAuth <- atomicSwapIORef (qSubAuth s) 0
+  _qSubDuplicate <- atomicSwapIORef (qSubDuplicate s) 0
+  _qSubProhibited <- atomicSwapIORef (qSubProhibited s) 0
+  _qSubEnd <- atomicSwapIORef (qSubEnd s) 0
+  _qSubEndB <- atomicSwapIORef (qSubEndB s) 0
+  _ntfCreated <- atomicSwapIORef (ntfCreated s) 0
+  _ntfDeleted <- atomicSwapIORef (ntfDeleted s) 0
+  _ntfDeletedB <- atomicSwapIORef (ntfDeletedB s) 0
+  _ntfSub <- atomicSwapIORef (ntfSub s) 0
+  _ntfSubB <- atomicSwapIORef (ntfSubB s) 0
+  _ntfSubAuth <- atomicSwapIORef (ntfSubAuth s) 0
+  _ntfSubDuplicate <- atomicSwapIORef (ntfSubDuplicate s) 0
+  _msgSent <- atomicSwapIORef (msgSent s) 0
+  _msgSentAuth <- atomicSwapIORef (msgSentAuth s) 0
+  _msgSentQuota <- atomicSwapIORef (msgSentQuota s) 0
+  _msgSentLarge <- atomicSwapIORef (msgSentLarge s) 0
+  _msgRecv <- atomicSwapIORef (msgRecv s) 0
+  _msgRecvGet <- atomicSwapIORef (msgRecvGet s) 0
+  _msgGet <- atomicSwapIORef (msgGet s) 0
+  _msgGetNoMsg <- atomicSwapIORef (msgGetNoMsg s) 0
+  _msgGetAuth <- atomicSwapIORef (msgGetAuth s) 0
+  _msgGetDuplicate <- atomicSwapIORef (msgGetDuplicate s) 0
+  _msgGetProhibited <- atomicSwapIORef (msgGetProhibited s) 0
+  _msgExpired <- atomicSwapIORef (msgExpired s) 0
+  (_activeQueues, activeQueueCounts) <- getResetDailyPeriodStats (activeQueues s) ts
+  _msgSentNtf <- atomicSwapIORef (msgSentNtf s) 0
+  _msgRecvNtf <- atomicSwapIORef (msgRecvNtf s) 0
+  (_activeQueuesNtf, activeNtfCounts) <- getResetDailyPeriodStats (activeQueuesNtf s) ts
+  _msgNtfs <- atomicSwapIORef (msgNtfs s) 0
+  _msgNtfsB <- atomicSwapIORef (msgNtfsB s) 0
+  _msgNtfNoSub <- atomicSwapIORef (msgNtfNoSub s) 0
+  _msgNtfLost <- atomicSwapIORef (msgNtfLost s) 0
+  _msgNtfExpired <- atomicSwapIORef (msgNtfExpired s) 0
+  _pRelays <- getResetProxyStatsData $ pRelays s
+  _pRelaysOwn <- getResetProxyStatsData $ pRelaysOwn s
+  _pMsgFwds <- getResetProxyStatsData $ pMsgFwds s
+  _pMsgFwdsOwn <- getResetProxyStatsData $ pMsgFwdsOwn s
+  _pMsgFwdsRecv <- atomicSwapIORef (pMsgFwdsRecv s) 0
+  _qCount <- readIORef $ qCount s
+  _msgCount <- readIORef $ msgCount s
+  _ntfCount <- readIORef $ ntfCount s
+  let d =
+        ServerStatsData
+          { _fromTime,
+            _qCreated,
+            _qSecured,
+            _qDeletedAll,
+            _qDeletedAllB,
+            _qDeletedNew,
+            _qDeletedSecured,
+            _qSub,
+            _qSubAllB,
+            _qSubAuth,
+            _qSubDuplicate,
+            _qSubProhibited,
+            _qSubEnd,
+            _qSubEndB,
+            _ntfCreated,
+            _ntfDeleted,
+            _ntfDeletedB,
+            _ntfSub,
+            _ntfSubB,
+            _ntfSubAuth,
+            _ntfSubDuplicate,
+            _msgSent,
+            _msgSentAuth,
+            _msgSentQuota,
+            _msgSentLarge,
+            _msgRecv,
+            _msgRecvGet,
+            _msgGet,
+            _msgGetNoMsg,
+            _msgGetAuth,
+            _msgGetDuplicate,
+            _msgGetProhibited,
+            _msgExpired,
+            _activeQueues,
+            _msgSentNtf,
+            _msgRecvNtf,
+            _activeQueuesNtf,
+            _msgNtfs,
+            _msgNtfsB,
+            _msgNtfNoSub,
+            _msgNtfLost,
+            _msgNtfExpired,
+            _pRelays,
+            _pRelaysOwn,
+            _pMsgFwds,
+            _pMsgFwdsOwn,
+            _pMsgFwdsRecv,
+            _qCount,
+            _msgCount,
+            _ntfCount
+          }
+  pure (d, activeQueueCounts, activeNtfCounts)
+
 -- this function is not thread safe, it is used on server start only
 setServerStats :: ServerStats -> ServerStatsData -> IO ()
 setServerStats s d = do
@@ -637,6 +744,22 @@ data PeriodStatCounts = PeriodStatCounts
     weekCount :: String,
     monthCount :: String
   }
+
+getResetDailyPeriodStats :: PeriodStats -> UTCTime -> IO (PeriodStatsData, PeriodStatCounts)
+getResetDailyPeriodStats ps ts = do
+  let d = utctDay ts
+      (_, wDay) = mondayStartWeek d
+      MonthDay _ mDay = d
+  (_day, dayCount) <- periodStats 1 $ day ps
+  (_week, weekCount) <- periodStats wDay $ week ps
+  (_month, monthCount) <- periodStats mDay $ month ps
+  pure (PeriodStatsData {_day, _week, _month}, PeriodStatCounts {dayCount, weekCount, monthCount})
+  where
+    periodStats :: Int -> IORef IntSet -> IO (IntSet, String)
+    periodStats 1 ref = do
+      s <- atomicSwapIORef ref IS.empty
+      pure (s, show $ IS.size s)
+    periodStats _ ref = (,"") <$> readIORef ref
 
 periodStatCounts :: PeriodStats -> UTCTime -> IO PeriodStatCounts
 periodStatCounts ps ts = do

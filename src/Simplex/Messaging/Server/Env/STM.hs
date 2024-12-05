@@ -94,6 +94,8 @@ data ServerConfig = ServerConfig
     logStatsStartTime :: Int64,
     -- | file to log stats
     serverStatsLogFile :: FilePath,
+    -- | file to save prometheus metrics
+    -- prometheusMetricsFile :: Maybe FilePath,
     -- | file to save and restore stats
     serverStatsBackupFile :: Maybe FilePath,
     -- | notification delivery interval

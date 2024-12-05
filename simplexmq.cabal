@@ -154,6 +154,7 @@ library
       Simplex.Messaging.Protocol
       Simplex.Messaging.Server.CLI
       Simplex.Messaging.Server.Expiration
+      Simplex.Messaging.Server.Prometheus
       Simplex.Messaging.Server.QueueStore.QueueInfo
       Simplex.Messaging.ServiceScheme
       Simplex.Messaging.Session
