@@ -1,3 +1,19 @@
+# 6.2.0
+
+Version 6.2.0.7
+
+Build:
+- client_library flag to build only used modules in the clients, remove package yaml
+
+SMP server:
+- journal storage for messages (BETA).
+- prevent race condition when deleting queue and to avoid "orphan" messages (#1395).
+
+SMP agent:
+- support SMP and XFTP server roles (storage/proxy) and operators (#1343).
+- treat blocked STM and other critical errors that offer restart as temporary for message delivery (#1405).
+- fix inconsistent state after app restart while accepting contact request (#1412).
+
 # 6.1.3
 
 SMP server: fix restoring notification credentials.
