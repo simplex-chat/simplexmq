@@ -7,8 +7,8 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Simplex.Messaging.Server.MsgStore.STM
   ( STMMsgStore (..),
@@ -28,14 +28,16 @@ import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util ((<$$>), ($>>=))
+import Simplex.Messaging.Util (($>>=), (<$$>))
 import System.IO (IOMode (..))
 
 data STMMsgStore = STMMsgStore
   { storeConfig :: STMStoreConfig,
-    queues :: TMap RecipientId STMQueue,
-    senders :: TMap SenderId RecipientId,
-    notifiers :: TMap NotifierId RecipientId,
+    queues :: TMap RecipientId (QueueReference STMQueue),
+    queueCount :: TVar Int,
+    notifierCount :: TVar Int,
+    -- senders :: TMap SenderId RecipientId,
+    -- notifiers :: TMap NotifierId RecipientId,
     storeLog :: TVar (Maybe (StoreLog 'WriteMode))
   }
 
@@ -59,8 +61,11 @@ data STMStoreConfig = STMStoreConfig
 
 instance STMQueueStore STMMsgStore where
   queues' = queues
-  senders' = senders
-  notifiers' = notifiers
+  queueCount' = queueCount
+  notifierCount' = notifierCount
+
+  -- senders' = senders
+  -- notifiers' = notifiers
   storeLog' = storeLog
   mkQueue _ qr = STMQueue <$> newTVar (Just qr) <*> newTVar Nothing
   msgQueue_' = msgQueue_
@@ -74,10 +79,12 @@ instance MsgStoreClass STMMsgStore where
   newMsgStore :: STMStoreConfig -> IO STMMsgStore
   newMsgStore storeConfig = do
     queues <- TM.emptyIO
-    senders <- TM.emptyIO
-    notifiers <- TM.emptyIO
+    queueCount <- newTVarIO 0
+    notifierCount <- newTVarIO 0
+    -- senders <- TM.emptyIO
+    -- notifiers <- TM.emptyIO
     storeLog <- newTVarIO Nothing
-    pure STMMsgStore {storeConfig, queues, senders, notifiers, storeLog}
+    pure STMMsgStore {storeConfig, queues, queueCount, notifierCount, storeLog}
 
   setStoreLog :: STMMsgStore -> StoreLog 'WriteMode -> IO ()
   setStoreLog st sl = atomically $ writeTVar (storeLog st) (Just sl)
@@ -113,20 +120,22 @@ instance MsgStoreClass STMMsgStore where
 
   -- does not create queue if it does not exist, does not delete it if it does (can't just close in-memory queue)
   withIdleMsgQueue :: Int64 -> STMMsgStore -> RecipientId -> STMQueue -> (STMMsgQueue -> STM a) -> STM (Maybe a, Int)
-  withIdleMsgQueue _ _ _ STMQueue {msgQueue_} action = readTVar msgQueue_ >>= \case
-    Just q -> do
-      r <- action q
-      sz <- getQueueSize_ q
-      pure (Just r, sz)
-    Nothing -> pure (Nothing, 0)
+  withIdleMsgQueue _ _ _ STMQueue {msgQueue_} action =
+    readTVar msgQueue_ >>= \case
+      Just q -> do
+        r <- action q
+        sz <- getQueueSize_ q
+        pure (Just r, sz)
+      Nothing -> pure (Nothing, 0)
 
   deleteQueue :: STMMsgStore -> RecipientId -> STMQueue -> IO (Either ErrorType QueueRec)
   deleteQueue ms rId q = fst <$$> deleteQueue' ms rId q
 
   deleteQueueSize :: STMMsgStore -> RecipientId -> STMQueue -> IO (Either ErrorType (QueueRec, Int))
   deleteQueueSize ms rId q = deleteQueue' ms rId q >>= mapM (traverse getSize)
-    -- traverse operates on the second tuple element
     where
+      -- traverse operates on the second tuple element
+
       getSize = maybe (pure 0) (\STMMsgQueue {size} -> readTVarIO size)
 
   getQueueMessages_ :: Bool -> STMMsgQueue -> STM [Message]

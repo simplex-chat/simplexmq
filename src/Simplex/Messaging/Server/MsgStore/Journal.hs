@@ -11,11 +11,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Simplex.Messaging.Server.MsgStore.Journal
-  ( JournalMsgStore (queues, senders, notifiers, random),
+  ( JournalMsgStore (queues, random),
     JournalQueue,
     JournalMsgQueue (queue, state),
     JMQueue (queueDirectory, statePath),
@@ -62,9 +62,9 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM
+import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (ifM, tshow, ($>>=), (<$$>))
 import System.Directory
 import System.Exit
@@ -77,9 +77,11 @@ data JournalMsgStore = JournalMsgStore
   { config :: JournalStoreConfig,
     random :: TVar StdGen,
     queueLocks :: TMap RecipientId Lock,
-    queues :: TMap RecipientId JournalQueue,
-    senders :: TMap SenderId RecipientId,
-    notifiers :: TMap NotifierId RecipientId,
+    queues :: TMap RecipientId (QueueReference JournalQueue),
+    queueCount :: TVar Int,
+    notifierCount :: TVar Int,
+    -- senders :: TMap SenderId RecipientId,
+    -- notifiers :: TMap NotifierId RecipientId,
     storeLog :: TVar (Maybe (StoreLog 'WriteMode))
   }
 
@@ -220,8 +222,11 @@ newtype StoreIO a = StoreIO {unStoreIO :: IO a}
 
 instance STMQueueStore JournalMsgStore where
   queues' = queues
-  senders' = senders
-  notifiers' = notifiers
+  queueCount' = queueCount
+  notifierCount' = notifierCount
+
+  -- senders' = senders
+  -- notifiers' = notifiers
   storeLog' = storeLog
   mkQueue st qr = do
     lock <- getMapLock (queueLocks st) $ recipientId qr
@@ -243,17 +248,19 @@ instance MsgStoreClass JournalMsgStore where
     random <- newTVarIO =<< newStdGen
     queueLocks <- TM.emptyIO
     queues <- TM.emptyIO
-    senders <- TM.emptyIO
-    notifiers <- TM.emptyIO
+    queueCount <- newTVarIO 0
+    notifierCount <- newTVarIO 0
+    -- senders <- TM.emptyIO
+    -- notifiers <- TM.emptyIO
     storeLog <- newTVarIO Nothing
-    pure JournalMsgStore {config, random, queueLocks, queues, senders, notifiers, storeLog}
+    pure JournalMsgStore {config, random, queueLocks, queues, queueCount, notifierCount, storeLog}
 
   setStoreLog :: JournalMsgStore -> StoreLog 'WriteMode -> IO ()
   setStoreLog st sl = atomically $ writeTVar (storeLog st) (Just sl)
 
   closeMsgStore st = do
     readTVarIO (storeLog st) >>= mapM_ closeStoreLog
-    readTVarIO (queues st) >>= mapM_ closeMsgQueue
+    readTVarIO (queues st) >>= mapM_ (\case QRRecipient q -> closeMsgQueue q; _ -> pure ())
 
   activeMsgQueues = queues
   {-# INLINE activeMsgQueues #-}
@@ -309,8 +316,9 @@ instance MsgStoreClass JournalMsgStore where
   logQueueState q =
     StoreIO . void $
       readTVarIO (msgQueue_ q)
-        $>>= \mq -> readTVarIO (handles mq)
-        $>>= (\hs -> (readTVarIO (state mq) >>= appendState (stateHandle hs)) $> Just ())
+        $>>= \mq ->
+          readTVarIO (handles mq)
+            $>>= (\hs -> (readTVarIO (state mq) >>= appendState (stateHandle hs)) $> Just ())
 
   queueRec' = queueRec
   {-# INLINE queueRec' #-}
@@ -356,24 +364,26 @@ instance MsgStoreClass JournalMsgStore where
   -- only runs action if queue is not empty
   withIdleMsgQueue :: Int64 -> JournalMsgStore -> RecipientId -> JournalQueue -> (JournalMsgQueue -> StoreIO a) -> StoreIO (Maybe a, Int)
   withIdleMsgQueue now ms@JournalMsgStore {config} rId q action =
-    StoreIO $ readTVarIO (msgQueue_ q) >>= \case
-      Nothing ->
-        E.bracket
-          (unStoreIO $ getPeekMsgQueue ms rId q)
-          (mapM_ $ \_ -> closeMsgQueue q)
-          (maybe (pure (Nothing, 0)) (unStoreIO . run))
-        where
-          run (mq, _) = do
-            r <- action mq
-            sz <- getQueueSize_ mq
-            pure (Just r, sz)
-      Just mq -> do
-        ts <- readTVarIO $ activeAt q
-        r <- if now - ts >= idleInterval config
-          then Just <$> unStoreIO (action mq) `E.finally` closeMsgQueue q
-          else pure Nothing
-        sz <- unStoreIO $ getQueueSize_ mq
-        pure (r, sz)
+    StoreIO $
+      readTVarIO (msgQueue_ q) >>= \case
+        Nothing ->
+          E.bracket
+            (unStoreIO $ getPeekMsgQueue ms rId q)
+            (mapM_ $ \_ -> closeMsgQueue q)
+            (maybe (pure (Nothing, 0)) (unStoreIO . run))
+          where
+            run (mq, _) = do
+              r <- action mq
+              sz <- getQueueSize_ mq
+              pure (Just r, sz)
+        Just mq -> do
+          ts <- readTVarIO $ activeAt q
+          r <-
+            if now - ts >= idleInterval config
+              then Just <$> unStoreIO (action mq) `E.finally` closeMsgQueue q
+              else pure Nothing
+          sz <- unStoreIO $ getQueueSize_ mq
+          pure (r, sz)
 
   deleteQueue :: JournalMsgStore -> RecipientId -> JournalQueue -> IO (Either ErrorType QueueRec)
   deleteQueue ms rId q =
@@ -382,8 +392,9 @@ instance MsgStoreClass JournalMsgStore where
   deleteQueueSize :: JournalMsgStore -> RecipientId -> JournalQueue -> IO (Either ErrorType (QueueRec, Int))
   deleteQueueSize ms rId q =
     deleteQueue_ ms rId q >>= mapM (traverse getSize)
-    -- traverse operates on the second tuple element
     where
+      -- traverse operates on the second tuple element
+
       getSize = maybe (pure (-1)) (fmap size . readTVarIO . state)
 
   getQueueMessages_ :: Bool -> JournalMsgQueue -> StoreIO [Message]
@@ -428,7 +439,9 @@ instance MsgStoreClass JournalMsgStore where
             !st' = st {writeState = ws', readState = rs', canWrite = canWrt', size = size + 1}
         hAppend wh (bytePos ws) msgStr
         updateQueueState q logState hs st' $
-          when (size == 0) $ writeTVar (tipMsg q) $ Just (Just (msg, msgLen))
+          when (size == 0) $
+            writeTVar (tipMsg q) $
+              Just (Just (msg, msgLen))
         where
           JournalMsgQueue {queue = JMQueue {queueDirectory, statePath}, handles} = q
           createQueueDir = do
@@ -469,12 +482,15 @@ instance MsgStoreClass JournalMsgStore where
         pure msg
 
   tryDeleteMsg_ :: JournalQueue -> JournalMsgQueue -> Bool -> StoreIO ()
-  tryDeleteMsg_ q mq@JournalMsgQueue {tipMsg, handles} logState = StoreIO $ (`E.finally` when logState (updateActiveAt q)) $
-    void $
-      readTVarIO tipMsg -- if there is no cached tipMsg, do nothing
-        $>>= (pure . fmap snd)
-        $>>= \len -> readTVarIO handles
-        $>>= \hs -> updateReadPos mq logState len hs $> Just ()
+  tryDeleteMsg_ q mq@JournalMsgQueue {tipMsg, handles} logState =
+    StoreIO $
+      (`E.finally` when logState (updateActiveAt q)) $
+        void $
+          readTVarIO tipMsg -- if there is no cached tipMsg, do nothing
+            $>>= (pure . fmap snd)
+            $>>= \len ->
+              readTVarIO handles
+                $>>= \hs -> updateReadPos mq logState len hs $> Just ()
 
   isolateQueue :: RecipientId -> JournalQueue -> String -> StoreIO a -> ExceptT ErrorType IO a
   isolateQueue rId JournalQueue {queueLock} op =
@@ -619,7 +635,8 @@ openJournals ms dir st@MsgQueueState {readState = rs, writeState = ws} sh = do
     openJournal JournalState {journalId} =
       let path = journalFilePath dir journalId
        in ifM (doesFileExist path) (Right <$> openFile path ReadWriteMode) (pure $ Left path)
-    -- do that for all append operations
+
+-- do that for all append operations
 
 fixFileSize :: Handle -> Int64 -> IO ()
 fixFileSize h pos = do
@@ -723,8 +740,9 @@ validQueueState MsgQueueState {readState = rs, writeState = ws, size}
 
 deleteQueue_ :: JournalMsgStore -> RecipientId -> JournalQueue -> IO (Either ErrorType (QueueRec, Maybe JournalMsgQueue))
 deleteQueue_ ms rId q =
-  runExceptT $ isolateQueueId "deleteQueue_" ms rId $
-    deleteQueue' ms rId q >>= mapM remove
+  runExceptT $
+    isolateQueueId "deleteQueue_" ms rId $
+      deleteQueue' ms rId q >>= mapM remove
   where
     remove r@(_, mq_) = do
       mapM_ closeMsgQueueHandles mq_

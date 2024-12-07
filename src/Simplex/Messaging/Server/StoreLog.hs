@@ -127,7 +127,7 @@ instance StrEncoding StoreLogRecord where
     SuspendQueue rId -> strEncode (SuspendQueue_, rId)
     DeleteQueue rId -> strEncode (DeleteQueue_, rId)
     DeleteNotifier rId -> strEncode (DeleteNotifier_, rId)
-    UpdateTime rId t ->  strEncode (UpdateTime_, rId, t)
+    UpdateTime rId t -> strEncode (UpdateTime_, rId, t)
 
   strP =
     strP_ >>= \case
@@ -226,8 +226,9 @@ readWriteStoreLog readStore writeStore f st =
 writeQueueStore :: STMQueueStore s => StoreLog 'WriteMode -> s -> IO ()
 writeQueueStore s st = readTVarIO (activeMsgQueues st) >>= mapM_ writeQueue . M.assocs
   where
-    writeQueue (rId, q) =
+    writeQueue (rId, QRRecipient q) =
       readTVarIO (queueRec' q) >>= \case
         Just q' -> when (active q') $ logCreateQueue s q' -- TODO we should log suspended queues when we use them
-        Nothing -> atomically $ TM.delete rId $ activeMsgQueues st
+        Nothing -> atomically $ TM.delete rId $ queues' st
+    writeQueue _ = pure ()
     active QueueRec {status} = status == QueueActive

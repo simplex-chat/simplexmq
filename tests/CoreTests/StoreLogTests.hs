@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -109,4 +110,4 @@ testSMPStoreLog testSuite tests =
       ([], compacted') <- partitionEithers . map strDecode . B.lines <$> B.readFile testStoreLogFile
       compacted' `shouldBe` compacted
     storeState :: JournalMsgStore -> IO (M.Map RecipientId QueueRec)
-    storeState st = M.mapMaybe id <$> (readTVarIO (queues st) >>= mapM (readTVarIO . queueRec'))
+    storeState st = M.mapMaybe id <$> (readTVarIO (queues st) >>= mapM (\case QRQueue q -> readTVarIO (queueRec' q); _ -> pure Nothing))

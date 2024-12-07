@@ -423,9 +423,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv}
         <- asks serverStats
       AMS _ st <- asks msgStore
-      let queues = activeMsgQueues st
-          notifiers = notifiers' st
-          interval = 1000000 * logInterval
+      let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
@@ -478,8 +476,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
           pMsgFwdsOwn' <- getResetProxyStatsData pMsgFwdsOwn
           pMsgFwdsRecv' <- atomicSwapIORef pMsgFwdsRecv 0
           qCount' <- readIORef qCount
-          qCount'' <- M.size <$> readTVarIO queues
-          notifierCount' <- M.size <$> readTVarIO notifiers
+          qCount'' <- readTVarIO $ queueCount' st
+          ntfrCount' <- readTVarIO $ notifierCount' st
           msgCount' <- readIORef msgCount
           ntfCount' <- readIORef ntfCount
           hPutStrLn h $
@@ -538,7 +536,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                        show ntfSub',
                        show ntfSubAuth',
                        show ntfSubDuplicate',
-                       show notifierCount',
+                       show ntfrCount',
                        show qDeletedAllB',
                        show qSubAllB',
                        show qSubEnd',
@@ -625,9 +623,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
               CPStats -> withUserRole $ do
                 ss <- unliftIO u $ asks serverStats
                 AMS _ st <- unliftIO u $ asks msgStore
-                let queues = activeMsgQueues st
-                    notifiers = notifiers' st
-                    getStat :: (ServerStats -> IORef a) -> IO a
+                let getStat :: (ServerStats -> IORef a) -> IO a
                     getStat var = readIORef (var ss)
                     putStat :: Show a => String -> (ServerStats -> IORef a) -> IO ()
                     putStat label var = getStat var >>= \v -> hPutStrLn h $ label <> ": " <> show v
@@ -664,9 +660,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                 putStat "msgNtfsB" msgNtfsB
                 putStat "msgNtfExpired" msgNtfExpired
                 putStat "qCount" qCount
-                qCount2 <- M.size <$> readTVarIO queues
+                qCount2 <- readTVarIO $ queueCount' st
                 hPutStrLn h $ "qCount 2: " <> show qCount2
-                notifierCount <- M.size <$> readTVarIO notifiers
+                notifierCount <- readTVarIO $ notifierCount' st
                 hPutStrLn h $ "notifiers: " <> show notifierCount
                 putStat "msgCount" msgCount
                 putStat "ntfCount" ntfCount
