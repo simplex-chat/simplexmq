@@ -67,6 +67,11 @@ flag client_library
   manual: True
   default: False
 
+flag client_postgres
+  description: Build with PostgreSQL instead of SQLite.
+  manual: True
+  default: False
+
 library
   exposed-modules:
       Simplex.FileTransfer.Agent
@@ -91,6 +96,7 @@ library
       Simplex.Messaging.Agent.RetryInterval
       Simplex.Messaging.Agent.Stats
       Simplex.Messaging.Agent.Store
+      Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
       Simplex.Messaging.Agent.Store.SQLite
       Simplex.Messaging.Agent.Store.SQLite.Common
       Simplex.Messaging.Agent.Store.SQLite.DB
@@ -280,6 +286,9 @@ library
     build-depends:
         case-insensitive ==1.2.*
       , hashable ==1.4.*
+  if flag(client_postgres)
+    build-depends:
+        postgresql-simple ==0.6.*
   if impl(ghc >= 9.6.2)
     build-depends:
         bytestring ==0.11.*
@@ -469,3 +478,6 @@ test-suite simplexmq-test
     , warp-tls
     , yaml
   default-language: Haskell2010
+  if flag(client_postgres)
+    build-depends:
+        postgresql-simple ==0.6.*
