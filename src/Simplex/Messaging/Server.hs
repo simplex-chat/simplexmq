@@ -178,7 +178,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         : receiveFromProxyAgent pa
         : expireNtfsThread cfg
         : sigIntHandlerThread
-        : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> prometheusMetricsThread_ cfg <> controlPortThread_ cfg
+        : map runServer transports
+            <> expireMessagesThread_ cfg
+            <> serverStatsThread_ cfg
+            <> prometheusMetricsThread_ cfg
+            <> controlPortThread_ cfg
     )
     `finally` stopServer s
   where
