@@ -546,8 +546,8 @@ runXFTPSndWorker c srv Worker {doWork} = do
         withStore' c $ \db -> updateSndFileComplete db sndFileId
       where
         addRecipients :: SndFileChunk -> SndFileChunkReplica -> AM SndFileChunkReplica
-        addRecipients ch@SndFileChunk {numRecipients} cr@SndFileChunkReplica {rcvIdsKeys}
-          | length rcvIdsKeys > numRecipients = throwE $ INTERNAL "too many recipients"
+        addRecipients ch@SndFileChunk {numRecipients} cr@SndFileChunkReplica {sndChunkReplicaId, rcvIdsKeys}
+          | length rcvIdsKeys > numRecipients = throwE $ INTERNAL ("too many recipients, sndChunkReplicaId = " <> show sndChunkReplicaId)
           | length rcvIdsKeys == numRecipients = pure cr
           | otherwise = do
               let numRecipients' = min (numRecipients - length rcvIdsKeys) maxRecipients
