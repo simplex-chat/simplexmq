@@ -154,7 +154,6 @@ library
       Simplex.Messaging.Protocol
       Simplex.Messaging.Server.CLI
       Simplex.Messaging.Server.Expiration
-      Simplex.Messaging.Server.Prometheus
       Simplex.Messaging.Server.QueueStore.QueueInfo
       Simplex.Messaging.ServiceScheme
       Simplex.Messaging.Session
@@ -197,6 +196,7 @@ library
           Simplex.Messaging.Server.MsgStore.STM
           Simplex.Messaging.Server.MsgStore.Types
           Simplex.Messaging.Server.NtfStore
+          Simplex.Messaging.Server.Prometheus
           Simplex.Messaging.Server.QueueStore
           Simplex.Messaging.Server.QueueStore.STM
           Simplex.Messaging.Server.Stats
