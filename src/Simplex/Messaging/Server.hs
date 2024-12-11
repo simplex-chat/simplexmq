@@ -78,6 +78,7 @@ import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
 import Data.Typeable (cast)
 import GHC.Conc.Signal
+import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
@@ -421,7 +422,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ss <- asks serverStats
+      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv}
+        <- asks serverStats
       AMS _ st <- asks msgStore
       let queues = activeMsgQueues st
           notifiers = notifiers' st
@@ -430,75 +432,124 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
           ts <- getCurrentTime
-          (d, ps, psNtf) <- getResetDailyServerStats ss ts
+          fromTime' <- atomicSwapIORef fromTime ts
+          qCreated' <- atomicSwapIORef qCreated 0
+          qSecured' <- atomicSwapIORef qSecured 0
+          qDeletedAll' <- atomicSwapIORef qDeletedAll 0
+          qDeletedAllB' <- atomicSwapIORef qDeletedAllB 0
+          qDeletedNew' <- atomicSwapIORef qDeletedNew 0
+          qDeletedSecured' <- atomicSwapIORef qDeletedSecured 0
+          qSub' <- atomicSwapIORef qSub 0
+          qSubAllB' <- atomicSwapIORef qSubAllB 0
+          qSubAuth' <- atomicSwapIORef qSubAuth 0
+          qSubDuplicate' <- atomicSwapIORef qSubDuplicate 0
+          qSubProhibited' <- atomicSwapIORef qSubProhibited 0
+          qSubEnd' <- atomicSwapIORef qSubEnd 0
+          qSubEndB' <- atomicSwapIORef qSubEndB 0
+          ntfCreated' <- atomicSwapIORef ntfCreated 0
+          ntfDeleted' <- atomicSwapIORef ntfDeleted 0
+          ntfDeletedB' <- atomicSwapIORef ntfDeletedB 0
+          ntfSub' <- atomicSwapIORef ntfSub 0
+          ntfSubB' <- atomicSwapIORef ntfSubB 0
+          ntfSubAuth' <- atomicSwapIORef ntfSubAuth 0
+          ntfSubDuplicate' <- atomicSwapIORef ntfSubDuplicate 0
+          msgSent' <- atomicSwapIORef msgSent 0
+          msgSentAuth' <- atomicSwapIORef msgSentAuth 0
+          msgSentQuota' <- atomicSwapIORef msgSentQuota 0
+          msgSentLarge' <- atomicSwapIORef msgSentLarge 0
+          msgRecv' <- atomicSwapIORef msgRecv 0
+          msgRecvGet' <- atomicSwapIORef msgRecvGet 0
+          msgGet' <- atomicSwapIORef msgGet 0
+          msgGetNoMsg' <- atomicSwapIORef msgGetNoMsg 0
+          msgGetAuth' <- atomicSwapIORef msgGetAuth 0
+          msgGetDuplicate' <- atomicSwapIORef msgGetDuplicate 0
+          msgGetProhibited' <- atomicSwapIORef msgGetProhibited 0
+          msgExpired' <- atomicSwapIORef msgExpired 0
+          ps <- liftIO $ periodStatCounts activeQueues ts
+          msgSentNtf' <- atomicSwapIORef msgSentNtf 0
+          msgRecvNtf' <- atomicSwapIORef msgRecvNtf 0
+          psNtf <- liftIO $ periodStatCounts activeQueuesNtf ts
+          msgNtfs' <- atomicSwapIORef (msgNtfs ss) 0
+          msgNtfsB' <- atomicSwapIORef (msgNtfsB ss) 0
+          msgNtfNoSub' <- atomicSwapIORef (msgNtfNoSub ss) 0
+          msgNtfLost' <- atomicSwapIORef (msgNtfLost ss) 0
+          msgNtfExpired' <- atomicSwapIORef (msgNtfExpired ss) 0
+          pRelays' <- getResetProxyStatsData pRelays
+          pRelaysOwn' <- getResetProxyStatsData pRelaysOwn
+          pMsgFwds' <- getResetProxyStatsData pMsgFwds
+          pMsgFwdsOwn' <- getResetProxyStatsData pMsgFwdsOwn
+          pMsgFwdsRecv' <- atomicSwapIORef pMsgFwdsRecv 0
+          qCount' <- readIORef qCount
           qCount'' <- M.size <$> readTVarIO queues
           notifierCount' <- M.size <$> readTVarIO notifiers
+          msgCount' <- readIORef msgCount
+          ntfCount' <- readIORef ntfCount
           hPutStrLn h $
             intercalate
               ","
-              ( [ iso8601Show $ utctDay (_fromTime d),
-                  show (_qCreated d),
-                  show (_qSecured d),
-                  show (_qDeletedAll d),
-                  show (_msgSent d),
-                  show (_msgRecv d),
+              ( [ iso8601Show $ utctDay fromTime',
+                  show qCreated',
+                  show qSecured',
+                  show qDeletedAll',
+                  show msgSent',
+                  show msgRecv',
                   dayCount ps,
                   weekCount ps,
                   monthCount ps,
-                  show (_msgSentNtf d),
-                  show (_msgRecvNtf d),
+                  show msgSentNtf',
+                  show msgRecvNtf',
                   dayCount psNtf,
                   weekCount psNtf,
                   monthCount psNtf,
-                  show (_qCount d),
-                  show (_msgCount d),
-                  show (_msgExpired d),
-                  show (_qDeletedNew d),
-                  show (_qDeletedSecured d)
+                  show qCount',
+                  show msgCount',
+                  show msgExpired',
+                  show qDeletedNew',
+                  show qDeletedSecured'
                 ]
-                  <> showProxyStats (_pRelays d)
-                  <> showProxyStats (_pRelaysOwn d)
-                  <> showProxyStats (_pMsgFwds d)
-                  <> showProxyStats (_pMsgFwdsOwn d)
-                  <> [ show (_pMsgFwdsRecv d),
-                       show (_qSub d),
-                       show (_qSubAuth d),
-                       show (_qSubDuplicate d),
-                       show (_qSubProhibited d),
-                       show (_msgSentAuth d),
-                       show (_msgSentQuota d),
-                       show (_msgSentLarge d),
-                       show (_msgNtfs d),
-                       show (_msgNtfNoSub d),
-                       show (_msgNtfLost d),
+                  <> showProxyStats pRelays'
+                  <> showProxyStats pRelaysOwn'
+                  <> showProxyStats pMsgFwds'
+                  <> showProxyStats pMsgFwdsOwn'
+                  <> [ show pMsgFwdsRecv',
+                       show qSub',
+                       show qSubAuth',
+                       show qSubDuplicate',
+                       show qSubProhibited',
+                       show msgSentAuth',
+                       show msgSentQuota',
+                       show msgSentLarge',
+                       show msgNtfs',
+                       show msgNtfNoSub',
+                       show msgNtfLost',
                        "0", -- qSubNoMsg' is removed for performance.
                        -- Use qSubAllB for the approximate number of all subscriptions.
                        -- Average observed batch size is 25-30 subscriptions.
-                       show (_msgRecvGet d),
-                       show (_msgGet d),
-                       show (_msgGetNoMsg d),
-                       show (_msgGetAuth d),
-                       show (_msgGetDuplicate d),
-                       show (_msgGetProhibited d),
+                       show msgRecvGet',
+                       show msgGet',
+                       show msgGetNoMsg',
+                       show msgGetAuth',
+                       show msgGetDuplicate',
+                       show msgGetProhibited',
                        "0", -- dayCount psSub; psSub is removed to reduce memory usage
                        "0", -- weekCount psSub
                        "0", -- monthCount psSub
                        show qCount'',
-                       show (_ntfCreated d),
-                       show (_ntfDeleted d),
-                       show (_ntfSub d),
-                       show (_ntfSubAuth d),
-                       show (_ntfSubDuplicate d),
+                       show ntfCreated',
+                       show ntfDeleted',
+                       show ntfSub',
+                       show ntfSubAuth',
+                       show ntfSubDuplicate',
                        show notifierCount',
-                       show (_qDeletedAllB d),
-                       show (_qSubAllB d),
-                       show (_qSubEnd d),
-                       show (_qSubEndB d),
-                       show (_ntfDeletedB d),
-                       show (_ntfSubB d),
-                       show (_msgNtfsB d),
-                       show (_msgNtfExpired d),
-                       show (_ntfCount d)
+                       show qDeletedAllB',
+                       show qSubAllB',
+                       show qSubEnd',
+                       show qSubEndB',
+                       show ntfDeletedB',
+                       show ntfSubB',
+                       show msgNtfsB',
+                       show msgNtfExpired',
+                       show ntfCount'
                      ]
               )
         liftIO $ threadDelay' interval

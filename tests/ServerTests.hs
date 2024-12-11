@@ -71,7 +71,7 @@ serverTests  = do
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
-  fdescribe "Save prometheus metrics" testPrometheusMetrics
+  describe "Save prometheus metrics" testPrometheusMetrics
   describe "Timing of AUTH error" testTiming
   describe "Message notifications" testMessageNotifications
   describe "Message expiration" $ do
