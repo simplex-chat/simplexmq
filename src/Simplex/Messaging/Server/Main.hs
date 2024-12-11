@@ -253,7 +253,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 <> ("expire_ntfs_hours: " <> tshow defNtfExpirationHours <> "\n\n")
                 <> "# Log daily server statistics to CSV file\n"
                 <> ("log_stats: " <> onOff logStats <> "\n\n")
-                <> "[AUTH]\n\
+                <> "# Log interval for real-time Prometheus metrics\n\
+                   \# prometheus_interval: 300\n\n\
+                   \[AUTH]\n\
                    \# Set new_queues option to off to completely prohibit creating new messaging queues.\n\
                    \# This can be useful when you want to decommission the server, but not all connections are switched yet.\n\
                    \new_queues: on\n\n\
@@ -431,6 +433,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "smp-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log",
+              prometheusInterval = eitherToMaybe $ read . T.unpack <$> lookupValue "STORE_LOG" "prometheus_interval" ini,
+              prometheusMetricsFile = combine logPath "smp-server-metrics.txt",
               pendingENDInterval = 15000000, -- 15 seconds
               ntfDeliveryInterval = 3000000, -- 3 seconds
               smpServerVRange = supportedServerSMPRelayVRange,

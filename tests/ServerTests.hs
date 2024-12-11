@@ -46,7 +46,7 @@ import Simplex.Messaging.Server.StoreLog (closeStoreLog)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (whenM)
 import Simplex.Messaging.Version (mkVersionRange)
-import System.Directory (doesDirectoryExist, removeDirectoryRecursive, removeFile)
+import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
 import System.TimeIt (timeItT)
 import System.Timeout
 import Test.HUnit
@@ -71,6 +71,7 @@ serverTests  = do
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
+  fdescribe "Save prometheus metrics" testPrometheusMetrics
   describe "Timing of AUTH error" testTiming
   describe "Message notifications" testMessageNotifications
   describe "Message expiration" $ do
@@ -824,6 +825,13 @@ testRestoreExpireMessages =
 
     runClient :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
+
+testPrometheusMetrics :: SpecWith (ATransport, AMSType)
+testPrometheusMetrics =
+  it "should save Prometheus metrics" $ \(at, msType) -> do
+    let cfg' = (cfgMS msType) {prometheusInterval = Just 1}
+    withSmpServerConfigOn at cfg' testPort $ \_ -> threadDelay 1000000
+    doesFileExist testPrometheusMetricsFile `shouldReturn` True
 
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do
