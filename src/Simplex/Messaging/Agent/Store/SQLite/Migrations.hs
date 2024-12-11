@@ -5,40 +5,30 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Agent.Store.SQLite.Migrations
-  ( Migration (..),
-    MigrationsToRun (..),
-    MTRError (..),
-    DownMigration (..),
-    app,
+  ( app,
     initialize,
-    get,
     run,
     getCurrent,
-    mtrErrorDescription,
-    -- for unit tests
-    migrationsToRun,
-    toDownMigration,
   )
 where
 
 import Control.Monad (forM_, when)
-import qualified Data.Aeson.TH as J
-import Data.List (intercalate, sortOn)
+import Data.List (sortOn)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
-import Data.Maybe (isNothing, mapMaybe)
 import Data.Text (Text)
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (getCurrentTime)
-import Database.SQLite.Simple (Connection, Only (..), Query (..))
+import Database.SQLite.Simple (Only (..), Query (..))
 import qualified Database.SQLite.Simple as DB
+import qualified Simplex.Messaging.Agent.Store.SQLite.DB as SQLiteDB
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
 import Simplex.Messaging.Agent.Protocol (extraSMPServerHosts)
+import Simplex.Messaging.Agent.Store.Migrations.Shared
 import Simplex.Messaging.Agent.Store.SQLite.Common
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
@@ -77,11 +67,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240702_servers_stats
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240930_ntf_tokens_to_delete
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport.Client (TransportHost)
-
-data Migration = Migration {name :: String, up :: Text, down :: Maybe Text}
-  deriving (Eq, Show)
 
 schemaMigrations :: [(String, Query, Maybe Query)]
 schemaMigrations =
@@ -129,11 +115,8 @@ app = sortOn name $ map migration schemaMigrations
   where
     migration (name, up, down) = Migration {name, up = fromQuery up, down = fromQuery <$> down}
 
-get :: SQLiteStore -> [Migration] -> IO (Either MTRError MigrationsToRun)
-get st migrations = migrationsToRun migrations <$> withTransaction' st getCurrent
-
-getCurrent :: Connection -> IO [Migration]
-getCurrent db = map toMigration <$> DB.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
+getCurrent :: SQLiteDB.Connection -> IO [Migration]
+getCurrent db = map toMigration <$> SQLiteDB.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
   where
     toMigration (name, down) = Migration {name, up = "", down}
 
@@ -178,37 +161,3 @@ initialize st = withTransaction' st $ \db -> do
             PRIMARY KEY (name)
           );
         |]
-
-data DownMigration = DownMigration {downName :: String, downQuery :: Text}
-  deriving (Eq, Show)
-
-toDownMigration :: Migration -> Maybe DownMigration
-toDownMigration Migration {name, down} = DownMigration name <$> down
-
-data MigrationsToRun = MTRUp [Migration] | MTRDown [DownMigration] | MTRNone
-  deriving (Eq, Show)
-
-data MTRError
-  = MTRENoDown {dbMigrations :: [String]}
-  | MTREDifferent {appMigration :: String, dbMigration :: String}
-  deriving (Eq, Show)
-
-mtrErrorDescription :: MTRError -> String
-mtrErrorDescription = \case
-  MTRENoDown ms -> "database version is newer than the app, but no down migration for: " <> intercalate ", " ms
-  MTREDifferent a d -> "different migration in the app/database: " <> a <> " / " <> d
-
-migrationsToRun :: [Migration] -> [Migration] -> Either MTRError MigrationsToRun
-migrationsToRun [] [] = Right MTRNone
-migrationsToRun appMs [] = Right $ MTRUp appMs
-migrationsToRun [] dbMs
-  | length dms == length dbMs = Right $ MTRDown dms
-  | otherwise = Left $ MTRENoDown $ mapMaybe nameNoDown dbMs
-  where
-    dms = mapMaybe toDownMigration dbMs
-    nameNoDown m = if isNothing (down m) then Just $ name m else Nothing
-migrationsToRun (a : as) (d : ds)
-  | name a == name d = migrationsToRun as ds
-  | otherwise = Left $ MTREDifferent (name a) (name d)
-
-$(J.deriveJSON (sumTypeJSON $ dropPrefix "MTRE") ''MTRError)

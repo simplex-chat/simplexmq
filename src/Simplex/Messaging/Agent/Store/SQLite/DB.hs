@@ -91,6 +91,7 @@ execute_ :: Connection -> Query -> IO ()
 execute_ Connection {conn, slow} sql = timeIt slow sql $ SQL.execute_ conn sql
 {-# INLINE execute_ #-}
 
+-- TODO [postgres] remove
 executeNamed :: Connection -> Query -> [NamedParam] -> IO ()
 executeNamed Connection {conn, slow} sql = timeIt slow sql . SQL.executeNamed conn sql
 {-# INLINE executeNamed #-}
@@ -107,6 +108,7 @@ query_ :: FromRow r => Connection -> Query -> IO [r]
 query_ Connection {conn, slow} sql = timeIt slow sql $ SQL.query_ conn sql
 {-# INLINE query_ #-}
 
+-- TODO [postgres] remove
 queryNamed :: FromRow r => Connection -> Query -> [NamedParam] -> IO [r]
 queryNamed Connection {conn, slow} sql = timeIt slow sql . SQL.queryNamed conn sql
 {-# INLINE queryNamed #-}

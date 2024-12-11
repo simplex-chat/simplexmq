@@ -96,7 +96,12 @@ library
       Simplex.Messaging.Agent.RetryInterval
       Simplex.Messaging.Agent.Stats
       Simplex.Messaging.Agent.Store
-      Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
+      Simplex.Messaging.Agent.Store.AgentQueries
+      Simplex.Messaging.Agent.Store.Common
+      Simplex.Messaging.Agent.Store.DB
+      Simplex.Messaging.Agent.Store.Migrations
+      Simplex.Messaging.Agent.Store.Migrations.Shared
+      Simplex.Messaging.Agent.Store.Shared
       Simplex.Messaging.Agent.Store.SQLite
       Simplex.Messaging.Agent.Store.SQLite.Common
       Simplex.Messaging.Agent.Store.SQLite.DB
@@ -183,6 +188,13 @@ library
       Simplex.RemoteControl.Discovery.Multicast
       Simplex.RemoteControl.Invitation
       Simplex.RemoteControl.Types
+  if flag(client_postgres)
+      exposed-modules:
+          Simplex.Messaging.Agent.Store.Postgres
+          Simplex.Messaging.Agent.Store.Postgres.Common
+          Simplex.Messaging.Agent.Store.Postgres.DB
+          Simplex.Messaging.Agent.Store.Postgres.Migrations
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
   if !flag(client_library)
       exposed-modules:
           Simplex.FileTransfer.Server
@@ -289,6 +301,8 @@ library
   if flag(client_postgres)
     build-depends:
         postgresql-simple ==0.6.*
+      , raw-strings-qq ==1.1.*
+    cpp-options: -DdbPostgres
   if impl(ghc >= 9.6.2)
     build-depends:
         bytestring ==0.11.*
@@ -481,3 +495,5 @@ test-suite simplexmq-test
   if flag(client_postgres)
     build-depends:
         postgresql-simple ==0.6.*
+      , raw-strings-qq ==1.1.*
+    cpp-options: -DdbPostgres
