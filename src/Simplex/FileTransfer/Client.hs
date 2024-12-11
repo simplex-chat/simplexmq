@@ -20,14 +20,18 @@ import Data.Bifunctor (first)
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.Int (Int64)
+import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
+import Data.Maybe (listToMaybe)
 import Data.Time.Clock (UTCTime)
 import Data.Word (Word32)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
+import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Transport
 import Simplex.Messaging.Client
@@ -298,3 +302,41 @@ noFile HTTP2Body {bodyPart} a = case bodyPart of
 
 -- FACK :: FileCommand Recipient
 -- PING :: FileCommand Recipient
+
+singleChunkSize :: Int64 -> Maybe Word32
+singleChunkSize size' =
+  listToMaybe $ dropWhile (< chunkSize) serverChunkSizes
+  where
+    chunkSize = fromIntegral size'
+
+prepareChunkSizes :: Int64 -> [Word32]
+prepareChunkSizes size' = prepareSizes size'
+  where
+    (smallSize, bigSize)
+      | size' > size34 chunkSize3 = (chunkSize2, chunkSize3)
+      | size' > size34 chunkSize2 = (chunkSize1, chunkSize2)
+      | otherwise = (chunkSize0, chunkSize1)
+    size34 sz = (fromIntegral sz * 3) `div` 4
+    prepareSizes 0 = []
+    prepareSizes size
+      | size >= fromIntegral bigSize = replicate (fromIntegral n1) bigSize <> prepareSizes remSz
+      | size > size34 bigSize = [bigSize]
+      | otherwise = replicate (fromIntegral n2') smallSize
+      where
+        (n1, remSz) = size `divMod` fromIntegral bigSize
+        n2' = let (n2, remSz2) = (size `divMod` fromIntegral smallSize) in if remSz2 == 0 then n2 else n2 + 1
+
+prepareChunkSpecs :: FilePath -> [Word32] -> [XFTPChunkSpec]
+prepareChunkSpecs filePath chunkSizes = reverse . snd $ foldl' addSpec (0, []) chunkSizes
+  where
+    addSpec :: (Int64, [XFTPChunkSpec]) -> Word32 -> (Int64, [XFTPChunkSpec])
+    addSpec (chunkOffset, specs) sz =
+      let spec = XFTPChunkSpec {filePath, chunkOffset, chunkSize = sz}
+       in (chunkOffset + fromIntegral sz, spec : specs)
+
+getChunkDigest :: XFTPChunkSpec -> IO ByteString
+getChunkDigest XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =
+  withFile chunkPath ReadMode $ \h -> do
+    hSeek h AbsoluteSeek $ fromIntegral chunkOffset
+    chunk <- LB.hGet h (fromIntegral chunkSize)
+    pure $! LC.sha256Hash chunk
