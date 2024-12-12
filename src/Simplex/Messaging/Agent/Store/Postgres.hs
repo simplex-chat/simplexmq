@@ -6,7 +6,7 @@ module Simplex.Messaging.Agent.Store.Postgres
 where
 
 import Data.Text (Text)
-import qualified Database.PostgreSQL.Simple as DB
+import qualified Database.PostgreSQL.Simple as PSQL
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationError (..))
 
@@ -17,7 +17,7 @@ createDBStore = undefined
 closeDBStore :: DBStore -> IO ()
 closeDBStore = undefined
 
-execSQL :: DB.Connection -> Text -> IO [Text]
+execSQL :: PSQL.Connection -> Text -> IO [Text]
 execSQL = undefined
 
 -- createDatabaseIfNotExists :: ConnectInfo -> String -> IO ()

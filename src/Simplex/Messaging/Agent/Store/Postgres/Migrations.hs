@@ -12,7 +12,7 @@ where
 import Data.List (sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Database.PostgreSQL.Simple as DB
+import qualified Database.PostgreSQL.Simple as PSQL
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
 import Simplex.Messaging.Agent.Store.Shared
@@ -36,7 +36,7 @@ initialize st = undefined
 run :: DBStore -> MigrationsToRun -> IO ()
 run st = undefined
 
-getCurrent :: DB.Connection -> IO [Migration]
-getCurrent db = map toMigration <$> DB.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
+getCurrent :: PSQL.Connection -> IO [Migration]
+getCurrent db = map toMigration <$> PSQL.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
   where
     toMigration (name, down) = Migration {name, up = T.pack "", down}
