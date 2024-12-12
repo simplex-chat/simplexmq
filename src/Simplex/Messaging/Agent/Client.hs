@@ -1649,7 +1649,7 @@ disableQueuesNtfs = sendTSessionBatches "NDEL" snd disableQueues_
 sendAck :: AgentClient -> RcvQueue -> MsgId -> AM ()
 sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId =
   withSMPClient c rq ("ACK:" <> logSecret' msgId) $ \smp ->
-    ackSMPMessage smp rcvPrivateKey rcvId msgId      
+    ackSMPMessage smp rcvPrivateKey rcvId msgId
 
 hasGetLock :: AgentClient -> RcvQueue -> IO Bool
 hasGetLock c RcvQueue {server, rcvId} =
@@ -2044,7 +2044,7 @@ pickServer = \case
 getNextServer ::
   (ProtocolTypeI p, UserProtocol p) =>
   AgentClient ->
-  UserId -> 
+  UserId ->
   (UserServers p -> NonEmpty (Maybe OperatorId, ProtoServerWithAuth p)) ->
   [ProtocolServer p] ->
   AM (ProtoServerWithAuth p)
@@ -2097,7 +2097,7 @@ withNextSrv ::
   UserId ->
   (UserServers p -> NonEmpty (Maybe OperatorId, ProtoServerWithAuth p)) ->
   TVar (Set TransportHost) ->
-  [ProtocolServer p] -> 
+  [ProtocolServer p] ->
   (ProtoServerWithAuth p -> AM a) ->
   AM a
 withNextSrv c userId srvsSel triedHosts usedSrvs action = do

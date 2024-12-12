@@ -13,9 +13,9 @@ import Data.List (sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Database.PostgreSQL.Simple as DB
-import Simplex.Messaging.Agent.Store.Shared
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
+import Simplex.Messaging.Agent.Store.Shared
 
 schemaMigrations :: [(String, Text, Maybe Text)]
 schemaMigrations =

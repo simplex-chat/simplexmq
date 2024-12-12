@@ -6,10 +6,9 @@ import Control.Monad
 import Data.Maybe (fromJust)
 import Data.Word (Word32)
 import Database.SQLite.Simple (fromOnly)
-import Simplex.Messaging.Agent.Store.Common (withTransaction)
+import Simplex.Messaging.Agent.Store.Common (DBStore, withTransaction)
 import Simplex.Messaging.Agent.Store.Migrations (migrationsToRun)
 import Simplex.Messaging.Agent.Store.SQLite (closeDBStore, createDBStore)
-import Simplex.Messaging.Agent.Store.Common (DBStore)
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.Shared
 import System.Directory (removeFile)
