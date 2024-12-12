@@ -196,8 +196,8 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_messages_sent counter\n\
       \simplex_smp_messages_sent " <> tshow _msgSent <> "\n# msgSent\n\
       \\n\
-      \# HELP simplex_smp_messages_errors Total number of messages errors by type.\n\
-      \# TYPE simplex_smp_messages_errors counter\n\
+      \# HELP simplex_smp_messages_sent_errors Total number of messages errors by type.\n\
+      \# TYPE simplex_smp_messages_sent_errors counter\n\
       \simplex_smp_messages_sent_errors{type=\"auth\"} " <> tshow _msgSentAuth <> "\n# msgSentAuth\n\
       \simplex_smp_messages_sent_errors{type=\"quota\"} " <> tshow _msgSentQuota <> "\n# msgSentQuota\n\
       \simplex_smp_messages_sent_errors{type=\"large\"} " <> tshow _msgSentLarge <> "\n# msgSentLarge\n\
@@ -331,8 +331,8 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_relay_messages_errors{source=\"own\",type=\"compat\"} " <> tshow (_pErrorsCompat _pMsgFwdsOwn) <> "\n# pMsgFwdsOwn_pErrorsCompat\n\
       \simplex_smp_relay_messages_errors{source=\"own\",type=\"other\"} " <> tshow (_pErrorsOther _pMsgFwdsOwn) <> "\n# pMsgFwdsOwn_pErrorsOther\n\
       \\n\
-      \# HELP simplex_smp_relay_messages Relay messages statistics.\n\
-      \# TYPE simplex_smp_relay_messages counter\n\
+      \# HELP simplex_smp_relay_messages_received Relay messages statistics.\n\
+      \# TYPE simplex_smp_relay_messages_received counter\n\
       \simplex_smp_relay_messages_received " <> tshow _pMsgFwdsRecv <> "\n# pMsgFwdsRecv\n\
       \\n"
     info =
@@ -344,11 +344,11 @@ prometheusMetrics sm rtm ts =
       <> socketsMetric socketsActive "simplex_smp_sockets_active" "Active sockets"
       <> socketsMetric socketsLeaked "simplex_smp_sockets_leaked" "Leaked sockets"
       <> "# HELP simplex_smp_threads_total Threads\n\
-      \# TYPE simplex_smp_threads_total gauge \n\
+      \# TYPE simplex_smp_threads_total gauge\n\
       \simplex_smp_threads_total " <> tshow threadsCount <> "\n\
       \\n\
       \# HELP simplex_smp_clients_total Clients\n\
-      \# TYPE simplex_smp_clients_total gauge \n\
+      \# TYPE simplex_smp_clients_total gauge\n\
       \simplex_smp_clients_total " <> tshow clientsCount <> "\n\
       \\n\
       \# HELP simplex_smp_subscribtion_total Total subscriptions\n\
@@ -369,7 +369,7 @@ prometheusMetrics sm rtm ts =
     socketsMetric :: (SocketStats -> Int) -> Text -> Text -> Text
     socketsMetric sel metric descr =
       "# HELP " <> metric <> " " <> descr <> "\n"
-        <> "# TYPE " <> metric <> " gauge \n"
+        <> "# TYPE " <> metric <> " gauge\n"
         <> T.concat (map (\(port, ss) -> metric <> "{port=\"" <> T.pack port <> "\"} " <> tshow (sel ss) <> "\n") socketStats)
         <> "\n"
 {-# FOURMOLU_ENABLE\n#-}
