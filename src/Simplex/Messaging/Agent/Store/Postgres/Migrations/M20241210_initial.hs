@@ -2,26 +2,22 @@
 
 module Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial where
 
-import Database.PostgreSQL.Simple (Query)
-import Database.PostgreSQL.Simple.SqlQQ (sql)
+import Data.Text (Text)
+import qualified Data.Text as T
+import Text.RawString.QQ (r)
 
-m20241210_initial :: Query
+m20241210_initial :: Text
 m20241210_initial =
-  [sql|
+  T.pack
+    [r|
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
--- TODO remove
+-- TODO [postgres] remove
 DROP SCHEMA IF EXISTS agent_schema CASCADE;
 CREATE SCHEMA agent_schema;
 
 SET search_path TO agent_schema;
 
-CREATE TABLE migrations(
-  name TEXT NOT NULL,
-  ts TEXT NOT NULL,
-  down TEXT,
-  PRIMARY KEY(name)
-);
 CREATE TABLE users(
   user_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   deleted INTEGER NOT NULL DEFAULT 0

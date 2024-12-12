@@ -96,47 +96,11 @@ library
       Simplex.Messaging.Agent.RetryInterval
       Simplex.Messaging.Agent.Stats
       Simplex.Messaging.Agent.Store
-      Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
-      Simplex.Messaging.Agent.Store.SQLite
-      Simplex.Messaging.Agent.Store.SQLite.Common
-      Simplex.Messaging.Agent.Store.SQLite.DB
-      Simplex.Messaging.Agent.Store.SQLite.Migrations
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220322_notifications
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220608_v2
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220625_v2_ntf_mode
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220811_onion_hosts
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220817_connection_ntfs
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220905_commands
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220915_connection_queues
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230110_users
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230117_fkey_indexes
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230120_delete_errors
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230217_server_key_hash
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230223_files
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230320_retry_state
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230401_snd_files
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230510_files_pending_replicas_indexes
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230516_encrypted_rcv_message_hashes
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230531_switch_status
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230615_ratchet_sync
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230701_delivery_receipts
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230720_delete_expired_messages
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230722_indexes
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230814_indexes
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230829_crypto_files
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231222_command_created_at
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231225_failed_work_items
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240121_message_delivery_indexes
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240124_file_redirect
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240223_connections_wait_delivery
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240225_ratchet_kem
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240417_rcv_files_approved_relays
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240624_snd_secure
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240702_servers_stats
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240930_ntf_tokens_to_delete
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
+      Simplex.Messaging.Agent.Store.AgentStore
+      Simplex.Messaging.Agent.Store.Common
+      Simplex.Messaging.Agent.Store.DB
+      Simplex.Messaging.Agent.Store.Migrations
+      Simplex.Messaging.Agent.Store.Shared
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
@@ -183,6 +147,55 @@ library
       Simplex.RemoteControl.Discovery.Multicast
       Simplex.RemoteControl.Invitation
       Simplex.RemoteControl.Types
+  if flag(client_postgres)
+      exposed-modules:
+          Simplex.Messaging.Agent.Store.Postgres
+          Simplex.Messaging.Agent.Store.Postgres.Common
+          Simplex.Messaging.Agent.Store.Postgres.DB
+          Simplex.Messaging.Agent.Store.Postgres.Migrations
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
+  else
+      exposed-modules:
+          Simplex.Messaging.Agent.Store.SQLite
+          Simplex.Messaging.Agent.Store.SQLite.Common
+          Simplex.Messaging.Agent.Store.SQLite.DB
+          Simplex.Messaging.Agent.Store.SQLite.Migrations
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220322_notifications
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220608_v2
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220625_v2_ntf_mode
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220811_onion_hosts
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220817_connection_ntfs
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220905_commands
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220915_connection_queues
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230110_users
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230117_fkey_indexes
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230120_delete_errors
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230217_server_key_hash
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230223_files
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230320_retry_state
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230401_snd_files
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230510_files_pending_replicas_indexes
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230516_encrypted_rcv_message_hashes
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230531_switch_status
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230615_ratchet_sync
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230701_delivery_receipts
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230720_delete_expired_messages
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230722_indexes
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230814_indexes
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230829_crypto_files
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231222_command_created_at
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231225_failed_work_items
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240121_message_delivery_indexes
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240124_file_redirect
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240223_connections_wait_delivery
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240225_ratchet_kem
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240417_rcv_files_approved_relays
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240624_snd_secure
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240702_servers_stats
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240930_ntf_tokens_to_delete
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
   if !flag(client_library)
       exposed-modules:
           Simplex.FileTransfer.Server
@@ -289,6 +302,8 @@ library
   if flag(client_postgres)
     build-depends:
         postgresql-simple ==0.6.*
+      , raw-strings-qq ==1.1.*
+    cpp-options: -DdbPostgres
   if impl(ghc >= 9.6.2)
     build-depends:
         bytestring ==0.11.*
@@ -481,3 +496,5 @@ test-suite simplexmq-test
   if flag(client_postgres)
     build-depends:
         postgresql-simple ==0.6.*
+      , raw-strings-qq ==1.1.*
+    cpp-options: -DdbPostgres
