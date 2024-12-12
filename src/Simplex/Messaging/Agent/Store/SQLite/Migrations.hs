@@ -27,6 +27,7 @@ import qualified Database.SQLite.Simple as DB
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
 import Simplex.Messaging.Agent.Protocol (extraSMPServerHosts)
+import Simplex.Messaging.Agent.Store.Shared
 import Simplex.Messaging.Agent.Store.SQLite.Common
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
@@ -64,7 +65,6 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240624_snd_secure
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240702_servers_stats
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240930_ntf_tokens_to_delete
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
-import Simplex.Messaging.Agent.Store.Shared
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Transport.Client (TransportHost)
 
