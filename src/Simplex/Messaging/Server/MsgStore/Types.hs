@@ -34,7 +34,7 @@ class MsgStoreClass s => STMQueueStore s where
   senders' :: s -> TMap SenderId RecipientId
   notifiers' :: s -> TMap NotifierId RecipientId
   storeLog' :: s -> TVar (Maybe (StoreLog 'WriteMode))
-  mkQueue :: s -> QueueRec -> STM (StoreQueue s)
+  mkQueue :: s -> QueueRec -> IO (StoreQueue s)
 
 class Monad (StoreMonad s) => MsgStoreClass s where
   type StoreMonad s = (m :: Type -> Type) | m -> s

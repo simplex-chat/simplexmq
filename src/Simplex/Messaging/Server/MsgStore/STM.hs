@@ -63,7 +63,7 @@ instance STMQueueStore STMMsgStore where
   senders' = senders
   notifiers' = notifiers
   storeLog' = storeLog
-  mkQueue _ qr = STMQueue <$> newTVar (Just qr) <*> newTVar Nothing
+  mkQueue _ qr = STMQueue <$> newTVarIO (Just qr) <*> newTVarIO Nothing
 
 instance MsgStoreClass STMMsgStore where
   type StoreMonad STMMsgStore = STM

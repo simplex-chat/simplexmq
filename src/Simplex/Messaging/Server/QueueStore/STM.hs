@@ -44,17 +44,16 @@ import System.IO
 import UnliftIO.STM
 
 addQueue' :: STMQueueStore s => s -> QueueRec -> IO (Either ErrorType (StoreQueue s))
-addQueue' st qr@QueueRec {recipientId = rId, senderId = sId, notifier}=
-  atomically add
+addQueue' st qr@QueueRec {recipientId = rId, senderId = sId, notifier} =
+  (mkQueue st qr >>= atomically . add)
     $>>= \q -> q <$$ withLog "addQueue" st (`logCreateQueue` qr)
   where
-    add = ifM hasId (pure $ Left DUPLICATE_) $ do
-      q <- mkQueue st qr
+    add q = ifM hasId (pure $ Left DUPLICATE_) $ do
       TM.insert rId q $ queues' st
       TM.insert sId rId $ senders' st
       forM_ notifier $ \NtfCreds {notifierId} -> TM.insert notifierId rId $ notifiers' st
       pure $ Right q
-    hasId = or <$> sequence [TM.member rId $ queues' st, TM.member sId $ senders' st, hasNotifier]
+    hasId = foldM (fmap . (||)) False [TM.member rId $ queues' st, TM.member sId $ senders' st, hasNotifier]
     hasNotifier = maybe (pure False) (\NtfCreds {notifierId} -> TM.member notifierId (notifiers' st)) notifier
 
 getQueue' :: (STMQueueStore s, DirectParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s))
