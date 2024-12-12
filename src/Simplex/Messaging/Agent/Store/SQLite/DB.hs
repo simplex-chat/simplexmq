@@ -20,8 +20,8 @@ module Simplex.Messaging.Agent.Store.SQLite.DB
 where
 
 import Control.Concurrent.STM
-import Control.Monad (when)
 import Control.Exception
+import Control.Monad (when)
 import qualified Data.Aeson.TH as J
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
@@ -51,9 +51,10 @@ data SlowQueryStats = SlowQueryStats
 timeIt :: TMap Query SlowQueryStats -> Query -> IO a -> IO a
 timeIt slow sql a = do
   t <- getCurrentTime
-  r <- a `catch` \e -> do
-    atomically $ TM.alter (Just . updateQueryErrors e) sql slow
-    throwIO e
+  r <-
+    a `catch` \e -> do
+      atomically $ TM.alter (Just . updateQueryErrors e) sql slow
+      throwIO e
   t' <- getCurrentTime
   let diff = diffToMilliseconds $ diffUTCTime t' t
   when (diff > 1) $ atomically $ TM.alter (updateQueryStats diff) sql slow
