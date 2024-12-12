@@ -29,11 +29,11 @@ app = sortOn name $ map migration schemaMigrations
     migration (name, up, down) = Migration {name, up, down = down}
 
 -- TODO [postgres] initialize
-initialize :: PostgresStore -> IO ()
+initialize :: DBStore -> IO ()
 initialize st = undefined
 
 -- TODO [postgres] run
-run :: PostgresStore -> MigrationsToRun -> IO ()
+run :: DBStore -> MigrationsToRun -> IO ()
 run st = undefined
 
 getCurrent :: DB.Connection -> IO [Migration]

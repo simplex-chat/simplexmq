@@ -1,6 +1,6 @@
 module Simplex.Messaging.Agent.Store.Postgres
-  ( createPostgresStore,
-    closePostgresStore,
+  ( createDBStore,
+    closeDBStore,
     execSQL,
   )
 where
@@ -10,17 +10,12 @@ import qualified Database.PostgreSQL.Simple as DB
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationError (..))
 
--- TODO [postgres] methods
--- createPostgresStore
--- closePostgresStore
--- etc.
-
 -- TODO [postgres] pass db name / ConnectInfo?
-createPostgresStore :: MigrationConfirmation -> IO (Either MigrationError PostgresStore)
-createPostgresStore = undefined
+createDBStore :: [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createDBStore = undefined
 
-closePostgresStore :: PostgresStore -> IO ()
-closePostgresStore = undefined
+closeDBStore :: DBStore -> IO ()
+closeDBStore = undefined
 
 execSQL :: DB.Connection -> Text -> IO [Text]
 execSQL = undefined

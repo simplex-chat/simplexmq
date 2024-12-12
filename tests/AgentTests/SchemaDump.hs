@@ -50,7 +50,7 @@ testVerifySchemaDump :: IO ()
 testVerifySchemaDump = do
   savedSchema <- ifM (doesFileExist appSchema) (readFile appSchema) (pure "")
   savedSchema `deepseq` pure ()
-  void $ createSQLiteStore testDB "" False Migrations.app MCConsole
+  void $ createDBStore testDB "" False Migrations.app MCConsole
   getSchema testDB appSchema `shouldReturn` savedSchema
   removeFile testDB
 
@@ -58,7 +58,7 @@ testVerifyLintFKeyIndexes :: IO ()
 testVerifyLintFKeyIndexes = do
   savedLint <- ifM (doesFileExist appLint) (readFile appLint) (pure "")
   savedLint `deepseq` pure ()
-  void $ createSQLiteStore testDB "" False Migrations.app MCConsole
+  void $ createDBStore testDB "" False Migrations.app MCConsole
   getLintFKeyIndexes testDB "tests/tmp/agent_lint.sql" `shouldReturn` savedLint
   removeFile testDB
 
@@ -71,9 +71,9 @@ withTmpFiles =
 testSchemaMigrations :: IO ()
 testSchemaMigrations = do
   let noDownMigrations = dropWhileEnd (\Migration {down} -> isJust down) Migrations.app
-  Right st <- createSQLiteStore testDB "" False noDownMigrations MCError
+  Right st <- createDBStore testDB "" False noDownMigrations MCError
   mapM_ (testDownMigration st) $ drop (length noDownMigrations) Migrations.app
-  closeSQLiteStore st
+  closeDBStore st
   removeFile testDB
   removeFile testSchema
   where
@@ -94,22 +94,22 @@ testSchemaMigrations = do
 
 testUsersMigrationNew :: IO ()
 testUsersMigrationNew = do
-  Right st <- createSQLiteStore testDB "" False Migrations.app MCError
+  Right st <- createDBStore testDB "" False Migrations.app MCError
   withTransaction' st (`SQL.query_` "SELECT user_id FROM users;")
     `shouldReturn` ([] :: [Only Int])
-  closeSQLiteStore st
+  closeDBStore st
 
 testUsersMigrationOld :: IO ()
 testUsersMigrationOld = do
   let beforeUsers = takeWhile (("m20230110_users" /=) . name) Migrations.app
-  Right st <- createSQLiteStore testDB "" False beforeUsers MCError
+  Right st <- createDBStore testDB "" False beforeUsers MCError
   withTransaction' st (`SQL.query_` "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users';")
     `shouldReturn` ([] :: [Only String])
-  closeSQLiteStore st
-  Right st' <- createSQLiteStore testDB "" False Migrations.app MCYesUp
+  closeDBStore st
+  Right st' <- createDBStore testDB "" False Migrations.app MCYesUp
   withTransaction' st' (`SQL.query_` "SELECT user_id FROM users;")
     `shouldReturn` ([Only (1 :: Int)])
-  closeSQLiteStore st'
+  closeDBStore st'
 
 skipComparisonForDownMigrations :: [String]
 skipComparisonForDownMigrations =

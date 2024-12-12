@@ -55,35 +55,25 @@ import Simplex.Messaging.Protocol
   )
 import qualified Simplex.Messaging.Protocol as SMP
 #if defined(dbPostgres)
-import Simplex.Messaging.Agent.Store.Postgres (createPostgresStore, closePostgresStore)
-import qualified Simplex.Messaging.Agent.Store.Postgres as PostgresStore
+import qualified Simplex.Messaging.Agent.Store.Postgres as StoreFunctions
 #else
-import Simplex.Messaging.Agent.Store.SQLite (createSQLiteStore, closeSQLiteStore)
-import qualified Simplex.Messaging.Agent.Store.SQLite as SQLiteStore
+import qualified Simplex.Messaging.Agent.Store.SQLite as StoreFunctions
 import Data.ByteArray (ScrubbedBytes)
 #endif
 
 #if defined(dbPostgres)
 createStore :: MigrationConfirmation -> IO (Either MigrationError DBStore)
-createStore = createPostgresStore
+createStore = StoreFunctions.createDBStore Migrations.app
 #else
 createStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError DBStore)
-createStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey keepKey Migrations.app
+createStore dbFilePath dbKey keepKey = StoreFunctions.createDBStore dbFilePath dbKey keepKey Migrations.app
 #endif
 
 closeStore :: DBStore -> IO ()
-#if defined(dbPostgres)
-closeStore = closePostgresStore
-#else
-closeStore = closeSQLiteStore
-#endif
+closeStore = StoreFunctions.closeDBStore
 
 execSQL :: DB.Connection -> Text -> IO [Text]
-#if defined(dbPostgres)
-execSQL = PostgresStore.execSQL
-#else
-execSQL = SQLiteStore.execSQL
-#endif
+execSQL = StoreFunctions.execSQL
 
 -- * Queue types
 

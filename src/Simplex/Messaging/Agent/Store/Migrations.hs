@@ -5,11 +5,11 @@ module Simplex.Messaging.Agent.Store.Migrations
   ( Migration (..),
     MigrationsToRun (..),
     DownMigration (..),
-    app,
+    Migrations.app,
+    Migrations.getCurrent,
     get,
-    getCurrent,
-    initialize,
-    run,
+    Migrations.initialize,
+    Migrations.run,
     migrateSchema,
     -- for tests
     migrationsToRun,
@@ -22,50 +22,18 @@ import Data.Char (toLower)
 import Data.Functor (($>))
 import Data.Maybe (isNothing, mapMaybe)
 import Simplex.Messaging.Agent.Store.Common
-import Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Shared
 import System.Exit (exitFailure)
 import System.IO (hFlush, stdout)
 #if defined(dbPostgres)
-import qualified Simplex.Messaging.Agent.Store.Postgres.Migrations as PostgresMigrations
-import Simplex.Messaging.Agent.Store.Postgres.Common (PostgresStore (..))
+import qualified Simplex.Messaging.Agent.Store.Postgres.Migrations as Migrations
 #else
-import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as SQLiteMigrations
-import Simplex.Messaging.Agent.Store.SQLite.Common (SQLiteStore (..))
-import Simplex.Messaging.Agent.Store.SQLite.DB (Connection (..))
+import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import System.Directory (copyFile)
 #endif
 
-app :: [Migration]
-#if defined(dbPostgres)
-app = PostgresMigrations.app
-#else
-app = SQLiteMigrations.app
-#endif
-
 get :: DBStore -> [Migration] -> IO (Either MTRError MigrationsToRun)
-get st migrations = migrationsToRun migrations <$> withTransaction st getCurrent
-
-getCurrent :: DB.Connection -> IO [Migration]
-#if defined(dbPostgres)
-getCurrent = PostgresMigrations.getCurrent
-#else
-getCurrent = SQLiteMigrations.getCurrent . conn
-#endif
-
-initialize :: DBStore -> IO ()
-#if defined(dbPostgres)
-initialize = PostgresMigrations.initialize
-#else
-initialize = SQLiteMigrations.initialize
-#endif
-
-run :: DBStore -> MigrationsToRun -> IO ()
-#if defined(dbPostgres)
-run = PostgresMigrations.run
-#else
-run = SQLiteMigrations.run
-#endif
+get st migrations = migrationsToRun migrations <$> withTransaction st Migrations.getCurrent
 
 migrationsToRun :: [Migration] -> [Migration] -> Either MTRError MigrationsToRun
 migrationsToRun [] [] = Right MTRNone
@@ -82,14 +50,14 @@ migrationsToRun (a : as) (d : ds)
 
 migrateSchema :: DBStore -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError ())
 migrateSchema st migrations confirmMigrations = do
-  initialize st
+  Migrations.initialize st
   get st migrations >>= \case
     Left e -> do
       when (confirmMigrations == MCConsole) $ confirmOrExit ("Database state error: " <> mtrErrorDescription e)
       pure . Left $ MigrationError e
     Right MTRNone -> pure $ Right ()
     Right ms@(MTRUp ums)
-      | dbNew st -> run st ms $> Right ()
+      | dbNew st -> Migrations.run st ms $> Right ()
       | otherwise -> case confirmMigrations of
           MCYesUp -> runWithBackup st ms
           MCYesUpDown -> runWithBackup st ms
@@ -107,15 +75,14 @@ migrateSchema st migrations confirmMigrations = do
   where
     confirm err = confirmOrExit $ migrationErrorDescription err
 
--- TODO [postgres] backup?
 runWithBackup :: DBStore -> MigrationsToRun -> IO (Either a ())
 #if defined(dbPostgres)
-runWithBackup st ms = run st ms $> Right ()
+runWithBackup st ms = Migrations.run st ms $> Right ()
 #else
 runWithBackup st ms = do
   let f = dbFilePath st
   copyFile f (f <> ".bak")
-  run st ms
+  Migrations.run st ms
   pure $ Right ()
 #endif
 

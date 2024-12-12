@@ -4,7 +4,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Agent.Store.SQLite.Common
-  ( SQLiteStore (..),
+  ( DBStore (..),
     withConnection,
     withConnection',
     withTransaction,
@@ -30,7 +30,7 @@ import UnliftIO.STM
 storeKey :: ScrubbedBytes -> Bool -> Maybe ScrubbedBytes
 storeKey key keepKey = if keepKey || BA.null key then Just key else Nothing
 
-data SQLiteStore = SQLiteStore
+data DBStore = DBStore
   { dbFilePath :: FilePath,
     dbKey :: TVar (Maybe ScrubbedBytes),
     dbSem :: TVar Int,
@@ -39,8 +39,8 @@ data SQLiteStore = SQLiteStore
     dbNew :: Bool
   }
 
-withConnectionPriority :: SQLiteStore -> Bool -> (DB.Connection -> IO a) -> IO a
-withConnectionPriority SQLiteStore {dbSem, dbConnection} priority action
+withConnectionPriority :: DBStore -> Bool -> (DB.Connection -> IO a) -> IO a
+withConnectionPriority DBStore {dbSem, dbConnection} priority action
   | priority = E.bracket_ signal release $ withMVar dbConnection action
   | otherwise = lowPriority
   where
@@ -50,20 +50,20 @@ withConnectionPriority SQLiteStore {dbSem, dbConnection} priority action
     wait = unlessM free $ atomically $ unlessM ((0 ==) <$> readTVar dbSem) retry
     free = (0 ==) <$> readTVarIO dbSem
 
-withConnection :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
+withConnection :: DBStore -> (DB.Connection -> IO a) -> IO a
 withConnection st = withConnectionPriority st False
 
-withConnection' :: SQLiteStore -> (SQL.Connection -> IO a) -> IO a
+withConnection' :: DBStore -> (SQL.Connection -> IO a) -> IO a
 withConnection' st action = withConnection st $ action . DB.conn
 
-withTransaction' :: SQLiteStore -> (SQL.Connection -> IO a) -> IO a
+withTransaction' :: DBStore -> (SQL.Connection -> IO a) -> IO a
 withTransaction' st action = withTransaction st $ action . DB.conn
 
-withTransaction :: SQLiteStore -> (DB.Connection -> IO a) -> IO a
+withTransaction :: DBStore -> (DB.Connection -> IO a) -> IO a
 withTransaction st = withTransactionPriority st False
 {-# INLINE withTransaction #-}
 
-withTransactionPriority :: SQLiteStore -> Bool -> (DB.Connection -> IO a) -> IO a
+withTransactionPriority :: DBStore -> Bool -> (DB.Connection -> IO a) -> IO a
 withTransactionPriority st priority action = withConnectionPriority st priority $ dbBusyLoop . transaction
   where
     transaction db@DB.Connection {conn} = SQL.withImmediateTransaction conn $ action db

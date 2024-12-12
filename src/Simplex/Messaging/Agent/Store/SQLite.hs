@@ -25,9 +25,9 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Agent.Store.SQLite
-  ( createSQLiteStore,
+  ( createDBStore,
     connectSQLiteStore,
-    closeSQLiteStore,
+    closeDBStore,
     openSQLiteStore,
     reopenSQLiteStore,
     sqlString,
@@ -62,17 +62,17 @@ import UnliftIO.STM
 
 -- * SQLite Store implementation
 
-createSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
-createSQLiteStore dbFilePath dbKey keepKey migrations confirmMigrations = do
+createDBStore :: FilePath -> ScrubbedBytes -> Bool -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createDBStore dbFilePath dbKey keepKey migrations confirmMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing True dbDir
   st <- connectSQLiteStore dbFilePath dbKey keepKey
-  r <- migrateSchema st migrations confirmMigrations `onException` closeSQLiteStore st
+  r <- migrateSchema st migrations confirmMigrations `onException` closeDBStore st
   case r of
     Right () -> pure $ Right st
-    Left e -> closeSQLiteStore st $> Left e
+    Left e -> closeDBStore st $> Left e
 
-connectSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> IO SQLiteStore
+connectSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> IO DBStore
 connectSQLiteStore dbFilePath key keepKey = do
   dbNew <- not <$> doesFileExist dbFilePath
   dbConn <- dbBusyLoop (connectDB dbFilePath key)
@@ -80,7 +80,7 @@ connectSQLiteStore dbFilePath key keepKey = do
   dbKey <- newTVarIO $! storeKey key keepKey
   dbClosed <- newTVarIO False
   dbSem <- newTVarIO 0
-  pure SQLiteStore {dbFilePath, dbKey, dbSem, dbConnection, dbNew, dbClosed}
+  pure DBStore {dbFilePath, dbKey, dbSem, dbConnection, dbNew, dbClosed}
 
 connectDB :: FilePath -> ScrubbedBytes -> IO DB.Connection
 connectDB path key = do
@@ -101,19 +101,19 @@ connectDB path key = do
           PRAGMA auto_vacuum = FULL;
         |]
 
-closeSQLiteStore :: SQLiteStore -> IO ()
-closeSQLiteStore st@SQLiteStore {dbClosed} =
-  ifM (readTVarIO dbClosed) (putStrLn "closeSQLiteStore: already closed") $
+closeDBStore :: DBStore -> IO ()
+closeDBStore st@DBStore {dbClosed} =
+  ifM (readTVarIO dbClosed) (putStrLn "closeDBStore: already closed") $
     withConnection st $ \conn -> do
       DB.close conn
       atomically $ writeTVar dbClosed True
 
-openSQLiteStore :: SQLiteStore -> ScrubbedBytes -> Bool -> IO ()
-openSQLiteStore st@SQLiteStore {dbClosed} key keepKey =
+openSQLiteStore :: DBStore -> ScrubbedBytes -> Bool -> IO ()
+openSQLiteStore st@DBStore {dbClosed} key keepKey =
   ifM (readTVarIO dbClosed) (openSQLiteStore_ st key keepKey) (putStrLn "openSQLiteStore: already opened")
 
-openSQLiteStore_ :: SQLiteStore -> ScrubbedBytes -> Bool -> IO ()
-openSQLiteStore_ SQLiteStore {dbConnection, dbFilePath, dbKey, dbClosed} key keepKey =
+openSQLiteStore_ :: DBStore -> ScrubbedBytes -> Bool -> IO ()
+openSQLiteStore_ DBStore {dbConnection, dbFilePath, dbKey, dbClosed} key keepKey =
   bracketOnError
     (takeMVar dbConnection)
     (tryPutMVar dbConnection)
@@ -124,8 +124,8 @@ openSQLiteStore_ SQLiteStore {dbConnection, dbFilePath, dbKey, dbClosed} key kee
         writeTVar dbKey $! storeKey key keepKey
       putMVar dbConnection DB.Connection {conn, slow}
 
-reopenSQLiteStore :: SQLiteStore -> IO ()
-reopenSQLiteStore st@SQLiteStore {dbKey, dbClosed} =
+reopenSQLiteStore :: DBStore -> IO ()
+reopenSQLiteStore st@DBStore {dbKey, dbClosed} =
   ifM (readTVarIO dbClosed) open (putStrLn "reopenSQLiteStore: already opened")
   where
     open =

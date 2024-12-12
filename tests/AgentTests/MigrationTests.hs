@@ -8,8 +8,8 @@ import Data.Word (Word32)
 import Database.SQLite.Simple (fromOnly)
 import Simplex.Messaging.Agent.Store.Common (withTransaction)
 import Simplex.Messaging.Agent.Store.Migrations (migrationsToRun)
-import Simplex.Messaging.Agent.Store.SQLite (closeSQLiteStore, createSQLiteStore)
-import Simplex.Messaging.Agent.Store.SQLite.Common (SQLiteStore)
+import Simplex.Messaging.Agent.Store.SQLite (closeDBStore, createDBStore)
+import Simplex.Messaging.Agent.Store.Common (DBStore)
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.Shared
 import System.Directory (removeFile)
@@ -182,20 +182,20 @@ testMigration ::
 testMigration (initMs, initTables) (finalMs, confirmModes, tablesOrError) = forM_ confirmModes $ \confirmMode -> do
   r <- randomIO :: IO Word32
   let dpPath = testDB <> show r
-  Right st <- createSQLiteStore dpPath "" False initMs MCError
+  Right st <- createDBStore dpPath "" False initMs MCError
   st `shouldHaveTables` initTables
-  closeSQLiteStore st
+  closeDBStore st
   case tablesOrError of
     Right tables -> do
-      Right st' <- createSQLiteStore dpPath "" False finalMs confirmMode
+      Right st' <- createDBStore dpPath "" False finalMs confirmMode
       st' `shouldHaveTables` tables
-      closeSQLiteStore st'
+      closeDBStore st'
     Left e -> do
-      Left e' <- createSQLiteStore dpPath "" False finalMs confirmMode
+      Left e' <- createDBStore dpPath "" False finalMs confirmMode
       e `shouldBe` e'
   removeFile dpPath
   where
-    shouldHaveTables :: SQLiteStore -> [String] -> IO ()
+    shouldHaveTables :: DBStore -> [String] -> IO ()
     st `shouldHaveTables` expected = do
       tables <- map fromOnly <$> withTransaction st (`DB.query_` "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY 1;")
       tables `shouldBe` "migrations" : expected

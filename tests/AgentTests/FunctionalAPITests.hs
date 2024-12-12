@@ -85,6 +85,7 @@ import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestSte
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
+import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction')
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), SMPProxyFallback (..), SMPProxyMode (..), TransportSessionMode (..), defaultClientConfig)
 import qualified Simplex.Messaging.Crypto as C
@@ -108,11 +109,6 @@ import Test.Hspec
 import UnliftIO
 import Util
 import XFTPClient (testXFTPServer)
-#if defined(dbPostgres)
-import Simplex.Messaging.Agent.Store.Postgres.Common (PostgresStore (..), withTransaction')
-#else
-import Simplex.Messaging.Agent.Store.SQLite.Common (SQLiteStore (..), withTransaction')
-#endif
 
 type AEntityTransmission e = (ACorrId, ConnId, AEvent e)
 
