@@ -25,7 +25,7 @@
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
-module Simplex.Messaging.Agent.Store.AgentQueries
+module Simplex.Messaging.Agent.Store.AgentStore
   ( -- * Users
     createUserRecord,
     deleteUserRecord,
@@ -264,7 +264,7 @@ import Simplex.Messaging.Agent.RetryInterval (RI2State (..))
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.SQLite.Common
-import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
+import qualified Simplex.Messaging.Agent.Store.DB as DB
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs (..))
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption (..), PQSupport (..), RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)

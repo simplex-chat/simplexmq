@@ -1,10 +1,29 @@
-module Simplex.Messaging.Agent.Store.Postgres where
+module Simplex.Messaging.Agent.Store.Postgres
+  ( createPostgresStore,
+    closePostgresStore,
+    execSQL,
+  )
+where
+
+import Data.Text (Text)
+import qualified Database.PostgreSQL.Simple as DB
+import Simplex.Messaging.Agent.Store.Postgres.Common
+import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationError (..))
 
 -- TODO [postgres] methods
 -- createPostgresStore
--- migrateSchema
 -- closePostgresStore
 -- etc.
+
+-- TODO [postgres] pass db name / ConnectInfo?
+createPostgresStore :: MigrationConfirmation -> IO (Either MigrationError PostgresStore)
+createPostgresStore = undefined
+
+closePostgresStore :: PostgresStore -> IO ()
+closePostgresStore = undefined
+
+execSQL :: DB.Connection -> Text -> IO [Text]
+execSQL = undefined
 
 -- createDatabaseIfNotExists :: ConnectInfo -> String -> IO ()
 -- createDatabaseIfNotExists defaultConnectInfo targetDbName = do

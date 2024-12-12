@@ -221,8 +221,8 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..), withTransaction)
-import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
+import Simplex.Messaging.Agent.Store.Common (DBStore, withTransaction)
+import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues (getRcvQueues))
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import Simplex.Messaging.Client
@@ -555,7 +555,7 @@ slowNetworkConfig cfg@NetworkConfig {tcpConnectTimeout, tcpTimeout, tcpTimeoutPe
     slow :: Integral a => a -> a
     slow t = (t * 3) `div` 2
 
-agentClientStore :: AgentClient -> SQLiteStore
+agentClientStore :: AgentClient -> DBStore
 agentClientStore AgentClient {agentEnv = Env {store}} = store
 {-# INLINE agentClientStore #-}
 

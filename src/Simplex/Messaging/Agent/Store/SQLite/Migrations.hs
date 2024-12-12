@@ -24,11 +24,10 @@ import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (getCurrentTime)
 import Database.SQLite.Simple (Only (..), Query (..))
 import qualified Database.SQLite.Simple as DB
-import qualified Simplex.Messaging.Agent.Store.SQLite.DB as SQLiteDB
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
 import Simplex.Messaging.Agent.Protocol (extraSMPServerHosts)
-import Simplex.Messaging.Agent.Store.Migrations.Shared
+import Simplex.Messaging.Agent.Store.Shared
 import Simplex.Messaging.Agent.Store.SQLite.Common
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
@@ -115,8 +114,8 @@ app = sortOn name $ map migration schemaMigrations
   where
     migration (name, up, down) = Migration {name, up = fromQuery up, down = fromQuery <$> down}
 
-getCurrent :: SQLiteDB.Connection -> IO [Migration]
-getCurrent db = map toMigration <$> SQLiteDB.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
+getCurrent :: DB.Connection -> IO [Migration]
+getCurrent db = map toMigration <$> DB.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
   where
     toMigration (name, down) = Migration {name, up = "", down}
 

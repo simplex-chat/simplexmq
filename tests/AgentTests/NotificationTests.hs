@@ -61,7 +61,9 @@ import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMes
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, SENT)
-import Simplex.Messaging.Agent.Store.SQLite (closeSQLiteStore, getSavedNtfToken, reopenSQLiteStore, withTransaction)
+import Simplex.Messaging.Agent.Store.AgentStore (getSavedNtfToken)
+import Simplex.Messaging.Agent.Store.SQLite (closeSQLiteStore, reopenSQLiteStore)
+import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction)
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -83,6 +85,7 @@ removeFileIfExists filePath = do
   fileExists <- doesFileExist filePath
   when fileExists $ removeFile filePath
 
+-- TODO [postgres] don't run with postgres? (notifications are only on ios)
 notificationTests :: ATransport -> Spec
 notificationTests t = do
   describe "Managing notification tokens" $ do

@@ -96,11 +96,10 @@ library
       Simplex.Messaging.Agent.RetryInterval
       Simplex.Messaging.Agent.Stats
       Simplex.Messaging.Agent.Store
-      Simplex.Messaging.Agent.Store.AgentQueries
+      Simplex.Messaging.Agent.Store.AgentStore
       Simplex.Messaging.Agent.Store.Common
       Simplex.Messaging.Agent.Store.DB
       Simplex.Messaging.Agent.Store.Migrations
-      Simplex.Messaging.Agent.Store.Migrations.Shared
       Simplex.Messaging.Agent.Store.Shared
       Simplex.Messaging.Agent.Store.SQLite
       Simplex.Messaging.Agent.Store.SQLite.Common
@@ -192,7 +191,6 @@ library
       exposed-modules:
           Simplex.Messaging.Agent.Store.Postgres
           Simplex.Messaging.Agent.Store.Postgres.Common
-          Simplex.Messaging.Agent.Store.Postgres.DB
           Simplex.Messaging.Agent.Store.Postgres.Migrations
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
   if !flag(client_library)

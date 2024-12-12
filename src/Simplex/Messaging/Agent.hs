@@ -167,9 +167,11 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite
-import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
-import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
+import Simplex.Messaging.Agent.Store.AgentStore
+import Simplex.Messaging.Agent.Store.Common (DBStore)
+import qualified Simplex.Messaging.Agent.Store.DB as DB
+import qualified Simplex.Messaging.Agent.Store.Migrations as Migrations
+import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
 import Simplex.Messaging.Client (SMPClientError, ServerTransmission (..), ServerTransmissionBatch, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
@@ -200,11 +202,11 @@ import UnliftIO.STM
 type AE a = ExceptT AgentErrorType IO a
 
 -- | Creates an SMP agent client instance
-getSMPAgentClient :: AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> IO AgentClient
+getSMPAgentClient :: AgentConfig -> InitialAgentServers -> DBStore -> Bool -> IO AgentClient
 getSMPAgentClient = getSMPAgentClient_ 1
 {-# INLINE getSMPAgentClient #-}
 
-getSMPAgentClient_ :: Int -> AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> IO AgentClient
+getSMPAgentClient_ :: Int -> AgentConfig -> InitialAgentServers -> DBStore -> Bool -> IO AgentClient
 getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp} store backgroundMode =
   newSMPAgentEnv cfg store >>= runReaderT runAgent
   where
@@ -277,7 +279,7 @@ disposeAgentClient c@AgentClient {acThread, agentEnv = Env {store}} = do
   t_ <- atomically (swapTVar acThread Nothing) $>>= (liftIO . deRefWeak)
   disconnectAgentClient c
   mapM_ killThread t_
-  liftIO $ closeSQLiteStore store
+  liftIO $ closeStore store
 
 resumeAgentClient :: AgentClient -> IO ()
 resumeAgentClient c = atomically $ writeTVar (active c) True
@@ -2154,7 +2156,7 @@ execAgentStoreSQL :: AgentClient -> Text -> AE [Text]
 execAgentStoreSQL c sql = withAgentEnv c $ withStore' c (`execSQL` sql)
 
 getAgentMigrations :: AgentClient -> AE [UpMigration]
-getAgentMigrations c = withAgentEnv c $ map upMigration <$> withStore' c (Migrations.getCurrent . DB.conn)
+getAgentMigrations c = withAgentEnv c $ map upMigration <$> withStore' c Migrations.getCurrent
 
 debugAgentLocks :: AgentClient -> IO AgentLocks
 debugAgentLocks AgentClient {connLocks = cs, invLocks = is, deleteLock = d} = do

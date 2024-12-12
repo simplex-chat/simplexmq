@@ -10,14 +10,14 @@ module Simplex.Messaging.Agent.Store.Common
   )
 where
 
-import Simplex.Messaging.Agent.Store.DB as DB
 #if defined(dbPostgres)
-import qualified Database.PostgreSQL.Simple as Postgres
+import qualified Database.PostgreSQL.Simple as LibDB
+import qualified Database.PostgreSQL.Simple as DB
 import qualified Simplex.Messaging.Agent.Store.Postgres.Common as PostgresCommon
 #else
-import qualified Simplex.Messaging.Agent.Store.SQLite.DB as SQLiteDB
+import qualified Database.SQLite.Simple as LibDB
+import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Common as SQLiteCommon
-import qualified Database.SQLite.Simple as SQLite
 #endif
 
 #if defined(dbPostgres)
@@ -34,7 +34,7 @@ withConnection = SQLiteCommon.withConnection
 #endif
 {-# INLINE withConnection #-}
 
-withConnection' :: DBStore -> (DB.Connection -> IO a) -> IO a
+withConnection' :: DBStore -> (LibDB.Connection -> IO a) -> IO a
 #if defined(dbPostgres)
 withConnection' = PostgresCommon.withConnection'
 #else
@@ -42,7 +42,7 @@ withConnection' = SQLiteCommon.withConnection'
 #endif
 {-# INLINE withConnection' #-}
 
-withTransaction' :: DBStore -> (DB.Connection -> IO a) -> IO a
+withTransaction' :: DBStore -> (LibDB.Connection -> IO a) -> IO a
 #if defined(dbPostgres)
 withTransaction' = PostgresCommon.withTransaction'
 #else

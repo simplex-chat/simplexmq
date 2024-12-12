@@ -12,8 +12,8 @@ import Database.SQLite.Simple (Only (..))
 import qualified Database.SQLite.Simple as SQL
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
-import Simplex.Messaging.Agent.Store.SQLite.Migrations (Migration (..), MigrationsToRun (..), toDownMigration)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
+import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationsToRun (..), toDownMigration)
 import Simplex.Messaging.Util (ifM)
 import System.Directory (createDirectoryIfMissing, doesFileExist, removeDirectoryRecursive, removeFile)
 import System.Process (readCreateProcess, shell)
@@ -37,6 +37,7 @@ appLint = "src/Simplex/Messaging/Agent/Store/SQLite/Migrations/agent_lint.sql"
 testSchema :: FilePath
 testSchema = "tests/tmp/test_agent_schema.sql"
 
+-- TODO [postgres] run with postgres
 schemaDumpTest :: Spec
 schemaDumpTest = do
   it "verify and overwrite schema dump" testVerifySchemaDump

@@ -9,15 +9,18 @@ module Simplex.Messaging.Agent.Store.DB
     executeMany,
     query,
     query_,
+    executeNamed,
+    queryNamed,
   )
 where
 
-import Control.Monad (void)
 #if defined(dbPostgres)
+import Control.Monad (void)
 import qualified Database.PostgreSQL.Simple as Postgres
 #else
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as SQLiteDB
 import qualified Database.SQLite.Simple as SQLite
+import Database.SQLite.Simple (NamedParam, FromRow)
 #endif
 
 #if defined(dbPostgres)
@@ -32,7 +35,7 @@ type Query = Postgres.Query
 type Query = SQLite.Query
 #endif
 
--- TODO [postgres] connectDB
+-- TODO [postgres] cleanup
 #if defined(dbPostgres)
 open :: Postgres.ConnectInfo -> IO Connection
 open = Postgres.connect
@@ -91,3 +94,23 @@ query_ :: SQLite.FromRow r => Connection -> Query -> IO [r]
 query_ = SQLiteDB.query_
 #endif
 {-# INLINE query_ #-}
+
+-- TODO [postgres] change queries - postgres doesn't support
+#if defined(dbPostgres)
+executeNamed :: IO ()
+executeNamed = undefined
+#else
+executeNamed :: Connection -> Query -> [NamedParam] -> IO ()
+executeNamed = SQLiteDB.executeNamed
+#endif
+{-# INLINE executeNamed #-}
+
+-- TODO [postgres] change queries - postgres doesn't support
+#if defined(dbPostgres)
+queryNamed :: IO ()
+queryNamed = undefined
+#else
+queryNamed :: FromRow r => Connection -> Query -> [NamedParam] -> IO [r]
+queryNamed = SQLiteDB.queryNamed
+#endif
+{-# INLINE queryNamed #-}

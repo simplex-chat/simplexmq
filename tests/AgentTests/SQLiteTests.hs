@@ -41,10 +41,12 @@ import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Client ()
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
+import Simplex.Messaging.Agent.Store.AgentStore
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
+import Simplex.Messaging.Agent.Store.SQLite.Common (SQLiteStore (..), withTransaction')
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), pattern PQSupportOn)
@@ -60,19 +62,19 @@ testDB :: String
 testDB = "tests/tmp/smp-agent.test.db"
 
 withStore :: SpecWith SQLiteStore -> Spec
-withStore = before createStore . after removeStore
+withStore = before createStore' . after removeStore
 
 withStore2 :: SpecWith (SQLiteStore, SQLiteStore) -> Spec
 withStore2 = before connect2 . after (removeStore . fst)
   where
     connect2 :: IO (SQLiteStore, SQLiteStore)
     connect2 = do
-      s1 <- createStore
+      s1 <- createStore'
       s2 <- connectSQLiteStore (dbFilePath s1) "" False
       pure (s1, s2)
 
-createStore :: IO SQLiteStore
-createStore = createEncryptedStore "" False
+createStore' :: IO SQLiteStore
+createStore' = createEncryptedStore "" False
 
 createEncryptedStore :: ScrubbedBytes -> Bool -> IO SQLiteStore
 createEncryptedStore key keepKey = do
@@ -352,7 +354,7 @@ testSetConnUserIdNewConn =
         let ConnData {userId} = connData
         userId `shouldBe` newUserId
       _ -> do
-         expectationFailure "Failed to get connection"
+        expectationFailure "Failed to get connection"
 
 testDeleteRcvConn :: SpecWith SQLiteStore
 testDeleteRcvConn =
@@ -592,7 +594,7 @@ testCreateRcvAndSndMsgs =
 
 testCloseReopenStore :: IO ()
 testCloseReopenStore = do
-  st <- createStore
+  st <- createStore'
   hasMigrations st
   closeSQLiteStore st
   closeSQLiteStore st

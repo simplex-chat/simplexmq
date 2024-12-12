@@ -34,14 +34,12 @@ module Simplex.Messaging.Agent.Store.SQLite
     keyString,
     storeKey,
     execSQL,
-    upMigration, -- used in tests
   )
 where
 
 import Control.Monad
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
-import Data.Char (toLower)
 import Data.Functor (($>))
 import Data.IORef
 import Data.Maybe (fromMaybe)
@@ -51,17 +49,13 @@ import Database.SQLite.Simple (Query (..))
 import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
-import Simplex.Messaging.Agent.Store.Migrations (mtrErrorDescription)
-import Simplex.Messaging.Agent.Store.Migrations.Shared (Migration (..), MigrationsToRun (..))
+import Simplex.Messaging.Agent.Store.Migrations (migrateSchema)
 import Simplex.Messaging.Agent.Store.SQLite.Common
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
-import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
-import Simplex.Messaging.Agent.Store.Shared
+import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationError (..))
 import Simplex.Messaging.Util (ifM, safeDecodeUtf8)
-import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
-import System.Exit (exitFailure)
+import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (takeDirectory)
-import System.IO (hFlush, stdout)
 import UnliftIO.Exception (bracketOnError, onException)
 import UnliftIO.MVar
 import UnliftIO.STM
@@ -77,46 +71,6 @@ createSQLiteStore dbFilePath dbKey keepKey migrations confirmMigrations = do
   case r of
     Right () -> pure $ Right st
     Left e -> closeSQLiteStore st $> Left e
-
-migrateSchema :: SQLiteStore -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError ())
-migrateSchema st migrations confirmMigrations = do
-  Migrations.initialize st
-  Migrations.get st migrations >>= \case
-    Left e -> do
-      when (confirmMigrations == MCConsole) $ confirmOrExit ("Database state error: " <> mtrErrorDescription e)
-      pure . Left $ MigrationError e
-    Right MTRNone -> pure $ Right ()
-    Right ms@(MTRUp ums)
-      | dbNew st -> Migrations.run st ms $> Right ()
-      | otherwise -> case confirmMigrations of
-          MCYesUp -> run ms
-          MCYesUpDown -> run ms
-          MCConsole -> confirm err >> run ms
-          MCError -> pure $ Left err
-      where
-        err = MEUpgrade $ map upMigration ums -- "The app has a newer version than the database.\nConfirm to back up and upgrade using these migrations: " <> intercalate ", " (map name ums)
-    Right ms@(MTRDown dms) -> case confirmMigrations of
-      MCYesUpDown -> run ms
-      MCConsole -> confirm err >> run ms
-      MCYesUp -> pure $ Left err
-      MCError -> pure $ Left err
-      where
-        err = MEDowngrade $ map downName dms
-  where
-    confirm err = confirmOrExit $ migrationErrorDescription err
-    run ms = do
-      let f = dbFilePath st
-      copyFile f (f <> ".bak")
-      Migrations.run st ms
-      pure $ Right ()
-
-confirmOrExit :: String -> IO ()
-confirmOrExit s = do
-  putStrLn s
-  putStr "Continue (y/N): "
-  hFlush stdout
-  ok <- getLine
-  when (map toLower ok /= "y") exitFailure
 
 connectSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> IO SQLiteStore
 connectSQLiteStore dbFilePath key keepKey = do

@@ -6,13 +6,17 @@ import Control.Monad
 import Data.Maybe (fromJust)
 import Data.Word (Word32)
 import Database.SQLite.Simple (fromOnly)
-import Simplex.Messaging.Agent.Store.SQLite (MigrationConfirmation (..), MigrationError (MEDowngrade, MEUpgrade, MigrationError), SQLiteStore, closeSQLiteStore, createSQLiteStore, upMigration, withTransaction)
+import Simplex.Messaging.Agent.Store.Common (withTransaction)
+import Simplex.Messaging.Agent.Store.Migrations (migrationsToRun)
+import Simplex.Messaging.Agent.Store.SQLite (closeSQLiteStore, createSQLiteStore)
+import Simplex.Messaging.Agent.Store.SQLite.Common (SQLiteStore)
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
-import Simplex.Messaging.Agent.Store.SQLite.Migrations
+import Simplex.Messaging.Agent.Store.Shared
 import System.Directory (removeFile)
 import System.Random (randomIO)
 import Test.Hspec
 
+-- TODO [postgres] run with postgres
 migrationTests :: Spec
 migrationTests = do
   it "should determine migrations to run" testMigrationsToRun

@@ -4,11 +4,18 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.Messaging.Agent.Store.Shared
-  ( MigrationConfirmation (..),
+  ( Migration (..),
+    MigrationsToRun (..),
+    DownMigration (..),
+    MTRError (..),
+    mtrErrorDescription,
+    MigrationConfirmation (..),
     MigrationError (..),
     UpMigration (..),
     migrationErrorDescription,
-    upMigration, -- used in tests
+    -- for tests
+    toDownMigration,
+    upMigration,
   )
 where
 
@@ -16,9 +23,31 @@ import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.List (intercalate)
 import Data.Maybe (isJust)
-import Simplex.Messaging.Agent.Store.Migrations (MTRError (..), Migration (..), mtrErrorDescription)
+import Data.Text (Text)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, sumTypeJSON)
+
+data Migration = Migration {name :: String, up :: Text, down :: Maybe Text}
+  deriving (Eq, Show)
+
+data DownMigration = DownMigration {downName :: String, downQuery :: Text}
+  deriving (Eq, Show)
+
+toDownMigration :: Migration -> Maybe DownMigration
+toDownMigration Migration {name, down} = DownMigration name <$> down
+
+data MigrationsToRun = MTRUp [Migration] | MTRDown [DownMigration] | MTRNone
+  deriving (Eq, Show)
+
+data MTRError
+  = MTRENoDown {dbMigrations :: [String]}
+  | MTREDifferent {appMigration :: String, dbMigration :: String}
+  deriving (Eq, Show)
+
+mtrErrorDescription :: MTRError -> String
+mtrErrorDescription = \case
+  MTRENoDown ms -> "database version is newer than the app, but no down migration for: " <> intercalate ", " ms
+  MTREDifferent a d -> "different migration in the app/database: " <> a <> " / " <> d
 
 data MigrationError
   = MEUpgrade {upMigrations :: [UpMigration]}
@@ -56,6 +85,8 @@ instance StrEncoding MigrationConfirmation where
       "console" -> pure MCConsole
       "error" -> pure MCError
       _ -> fail "invalid MigrationConfirmation"
+
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "MTRE") ''MTRError)
 
 $(J.deriveJSON defaultJSON ''UpMigration)
 

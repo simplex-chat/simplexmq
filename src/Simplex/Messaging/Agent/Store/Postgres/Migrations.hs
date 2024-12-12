@@ -3,6 +3,8 @@
 
 module Simplex.Messaging.Agent.Store.Postgres.Migrations
   ( app,
+    initialize,
+    run,
     getCurrent,
   )
 where
@@ -11,7 +13,8 @@ import Data.List (sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Database.PostgreSQL.Simple as DB
-import Simplex.Messaging.Agent.Store.Migrations.Shared
+import Simplex.Messaging.Agent.Store.Shared
+import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
 
 schemaMigrations :: [(String, Text, Maybe Text)]
@@ -25,11 +28,15 @@ app = sortOn name $ map migration schemaMigrations
   where
     migration (name, up, down) = Migration {name, up, down = down}
 
+-- TODO [postgres] initialize
+initialize :: PostgresStore -> IO ()
+initialize st = undefined
+
+-- TODO [postgres] run
+run :: PostgresStore -> MigrationsToRun -> IO ()
+run st = undefined
+
 getCurrent :: DB.Connection -> IO [Migration]
 getCurrent db = map toMigration <$> DB.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
   where
     toMigration (name, down) = Migration {name, up = T.pack "", down}
-
--- TODO [postgres] run
-
--- TODO [postgres] initialize
