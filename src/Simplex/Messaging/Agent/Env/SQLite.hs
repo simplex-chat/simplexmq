@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -52,7 +53,6 @@ import Control.Monad.Reader
 import Crypto.Random
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as JQ
-import Data.ByteArray (ScrubbedBytes)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -68,8 +68,9 @@ import Numeric.Natural
 import Simplex.FileTransfer.Client (XFTPClientConfig (..), defaultXFTPClientConfig)
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
-import Simplex.Messaging.Agent.Store.SQLite
-import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
+import Simplex.Messaging.Agent.Store (createStore)
+import Simplex.Messaging.Agent.Store.Common (DBStore)
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..), MigrationError (..))
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (VersionRangeE2E, supportedE2EEncryptVRange)
@@ -86,6 +87,10 @@ import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryA
 import System.Mem.Weak (Weak)
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
+#if defined(dbPostgres)
+#else
+import Data.ByteArray (ScrubbedBytes)
+#endif
 
 type AM' a = ReaderT Env IO a
 
@@ -254,7 +259,7 @@ defaultAgentConfig =
 
 data Env = Env
   { config :: AgentConfig,
-    store :: SQLiteStore,
+    store :: DBStore,
     random :: TVar ChaChaDRG,
     randomServer :: TVar StdGen,
     ntfSupervisor :: NtfSupervisor,
@@ -262,7 +267,7 @@ data Env = Env
     multicastSubscribers :: TMVar Int
   }
 
-newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
+newSMPAgentEnv :: AgentConfig -> DBStore -> IO Env
 newSMPAgentEnv config store = do
   random <- C.newRandom
   randomServer <- newTVarIO =<< liftIO newStdGen
@@ -271,8 +276,14 @@ newSMPAgentEnv config store = do
   multicastSubscribers <- newTMVarIO 0
   pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
 
-createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
-createAgentStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey keepKey Migrations.app
+#if defined(dbPostgres)
+-- TODO [postgres] pass db name / ConnectInfo?
+createAgentStore :: MigrationConfirmation -> IO (Either MigrationError DBStore)
+createAgentStore = createStore
+#else
+createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createAgentStore = createStore
+#endif
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),

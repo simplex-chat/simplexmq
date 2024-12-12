@@ -20,8 +20,8 @@ module Simplex.Messaging.Agent.Store.SQLite.DB
 where
 
 import Control.Concurrent.STM
-import Control.Monad (when)
 import Control.Exception
+import Control.Monad (when)
 import qualified Data.Aeson.TH as J
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
@@ -51,9 +51,10 @@ data SlowQueryStats = SlowQueryStats
 timeIt :: TMap Query SlowQueryStats -> Query -> IO a -> IO a
 timeIt slow sql a = do
   t <- getCurrentTime
-  r <- a `catch` \e -> do
-    atomically $ TM.alter (Just . updateQueryErrors e) sql slow
-    throwIO e
+  r <-
+    a `catch` \e -> do
+      atomically $ TM.alter (Just . updateQueryErrors e) sql slow
+      throwIO e
   t' <- getCurrentTime
   let diff = diffToMilliseconds $ diffUTCTime t' t
   when (diff > 1) $ atomically $ TM.alter (updateQueryStats diff) sql slow
@@ -91,6 +92,7 @@ execute_ :: Connection -> Query -> IO ()
 execute_ Connection {conn, slow} sql = timeIt slow sql $ SQL.execute_ conn sql
 {-# INLINE execute_ #-}
 
+-- TODO [postgres] remove
 executeNamed :: Connection -> Query -> [NamedParam] -> IO ()
 executeNamed Connection {conn, slow} sql = timeIt slow sql . SQL.executeNamed conn sql
 {-# INLINE executeNamed #-}
@@ -107,6 +109,7 @@ query_ :: FromRow r => Connection -> Query -> IO [r]
 query_ Connection {conn, slow} sql = timeIt slow sql $ SQL.query_ conn sql
 {-# INLINE query_ #-}
 
+-- TODO [postgres] remove
 queryNamed :: FromRow r => Connection -> Query -> [NamedParam] -> IO [r]
 queryNamed Connection {conn, slow} sql = timeIt slow sql . SQL.queryNamed conn sql
 {-# INLINE queryNamed #-}

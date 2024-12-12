@@ -41,10 +41,12 @@ import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Client ()
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
+import Simplex.Messaging.Agent.Store.AgentStore
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
+import Simplex.Messaging.Agent.Store.SQLite.Common (DBStore (..), withTransaction')
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), pattern PQSupportOn)
@@ -59,36 +61,36 @@ import UnliftIO.Directory (removeFile)
 testDB :: String
 testDB = "tests/tmp/smp-agent.test.db"
 
-withStore :: SpecWith SQLiteStore -> Spec
-withStore = before createStore . after removeStore
+withStore :: SpecWith DBStore -> Spec
+withStore = before createStore' . after removeStore
 
-withStore2 :: SpecWith (SQLiteStore, SQLiteStore) -> Spec
+withStore2 :: SpecWith (DBStore, DBStore) -> Spec
 withStore2 = before connect2 . after (removeStore . fst)
   where
-    connect2 :: IO (SQLiteStore, SQLiteStore)
+    connect2 :: IO (DBStore, DBStore)
     connect2 = do
-      s1 <- createStore
+      s1 <- createStore'
       s2 <- connectSQLiteStore (dbFilePath s1) "" False
       pure (s1, s2)
 
-createStore :: IO SQLiteStore
-createStore = createEncryptedStore "" False
+createStore' :: IO DBStore
+createStore' = createEncryptedStore "" False
 
-createEncryptedStore :: ScrubbedBytes -> Bool -> IO SQLiteStore
+createEncryptedStore :: ScrubbedBytes -> Bool -> IO DBStore
 createEncryptedStore key keepKey = do
   -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
   -- IO operations on multiple similarly named files; error seems to be environment specific
   r <- randomIO :: IO Word32
-  Right st <- createSQLiteStore (testDB <> show r) key keepKey Migrations.app MCError
+  Right st <- createDBStore (testDB <> show r) key keepKey Migrations.app MCError
   withTransaction' st (`SQL.execute_` "INSERT INTO users (user_id) VALUES (1);")
   pure st
 
-removeStore :: SQLiteStore -> IO ()
+removeStore :: DBStore -> IO ()
 removeStore db = do
   close db
   removeFile $ dbFilePath db
   where
-    close :: SQLiteStore -> IO ()
+    close :: DBStore -> IO ()
     close st = mapM_ DB.close =<< tryTakeMVar (dbConnection st)
 
 storeTests :: Spec
@@ -147,7 +149,7 @@ storeTests = do
     it "should close and re-open encrypted store" testCloseReopenEncryptedStore
     it "should close and re-open encrypted store (keep key)" testReopenEncryptedStoreKeepKey
 
-testConcurrentWrites :: SpecWith (SQLiteStore, SQLiteStore)
+testConcurrentWrites :: SpecWith (DBStore, DBStore)
 testConcurrentWrites =
   it "should complete multiple concurrent write transactions w/t sqlite busy errors" $ \(s1, s2) -> do
     g <- C.newRandom
@@ -156,22 +158,22 @@ testConcurrentWrites =
     let ConnData {connId} = cData1
     concurrently_ (runTest s1 connId rq) (runTest s2 connId rq)
   where
-    runTest :: SQLiteStore -> ConnId -> RcvQueue -> IO ()
+    runTest :: DBStore -> ConnId -> RcvQueue -> IO ()
     runTest st connId rq = replicateM_ 100 . withTransaction st $ \db -> do
       (internalId, internalRcvId, _, _) <- updateRcvIds db connId
       let rcvMsgData = mkRcvMsgData internalId internalRcvId 0 "0" "hash_dummy"
       createRcvMsg db connId rq rcvMsgData
 
-testCompiledThreadsafe :: SpecWith SQLiteStore
+testCompiledThreadsafe :: SpecWith DBStore
 testCompiledThreadsafe =
   it "compiled sqlite library should be threadsafe" . withStoreTransaction $ \db -> do
     compileOptions <- DB.query_ db "pragma COMPILE_OPTIONS;" :: IO [[T.Text]]
     compileOptions `shouldNotContain` [["THREADSAFE=0"]]
 
-withStoreTransaction :: (DB.Connection -> IO a) -> SQLiteStore -> IO a
+withStoreTransaction :: (DB.Connection -> IO a) -> DBStore -> IO a
 withStoreTransaction = flip withTransaction
 
-testForeignKeysEnabled :: SpecWith SQLiteStore
+testForeignKeysEnabled :: SpecWith DBStore
 testForeignKeysEnabled =
   it "foreign keys should be enabled" . withStoreTransaction $ \db -> do
     let inconsistentQuery =
@@ -261,7 +263,7 @@ createRcvConn db g cData rq cMode = runExceptT $ do
   rq' <- ExceptT $ updateNewConnRcv db connId rq
   pure (connId, rq')
 
-testCreateRcvConn :: SpecWith SQLiteStore
+testCreateRcvConn :: SpecWith DBStore
 testCreateRcvConn =
   it "should create RcvConnection and add SndQueue" . withStoreTransaction $ \db -> do
     g <- C.newRandom
@@ -275,7 +277,7 @@ testCreateRcvConn =
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq] [sq]))
 
-testCreateRcvConnRandomId :: SpecWith SQLiteStore
+testCreateRcvConnRandomId :: SpecWith DBStore
 testCreateRcvConnRandomId =
   it "should create RcvConnection and add SndQueue with random ID" . withStoreTransaction $ \db -> do
     g <- C.newRandom
@@ -287,7 +289,7 @@ testCreateRcvConnRandomId =
     getConn db connId
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} [rq] [sq]))
 
-testCreateRcvConnDuplicate :: SpecWith SQLiteStore
+testCreateRcvConnDuplicate :: SpecWith DBStore
 testCreateRcvConnDuplicate =
   it "should throw error on attempt to create duplicate RcvConnection" . withStoreTransaction $ \db -> do
     g <- C.newRandom
@@ -295,7 +297,7 @@ testCreateRcvConnDuplicate =
     createRcvConn db g cData1 rcvQueue1 SCMInvitation
       `shouldReturn` Left SEConnDuplicate
 
-testCreateSndConn :: SpecWith SQLiteStore
+testCreateSndConn :: SpecWith DBStore
 testCreateSndConn =
   it "should create SndConnection and add RcvQueue" . withStoreTransaction $ \db -> do
     g <- C.newRandom
@@ -309,7 +311,7 @@ testCreateSndConn =
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq] [sq]))
 
-testCreateSndConnRandomID :: SpecWith SQLiteStore
+testCreateSndConnRandomID :: SpecWith DBStore
 testCreateSndConnRandomID =
   it "should create SndConnection and add RcvQueue with random ID" . withStoreTransaction $ \db -> do
     g <- C.newRandom
@@ -321,7 +323,7 @@ testCreateSndConnRandomID =
     getConn db connId
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} [rq] [sq]))
 
-testCreateSndConnDuplicate :: SpecWith SQLiteStore
+testCreateSndConnDuplicate :: SpecWith DBStore
 testCreateSndConnDuplicate =
   it "should throw error on attempt to create duplicate SndConnection" . withStoreTransaction $ \db -> do
     g <- C.newRandom
@@ -329,7 +331,7 @@ testCreateSndConnDuplicate =
     createSndConn db g cData1 sndQueue1
       `shouldReturn` Left SEConnDuplicate
 
-testGetRcvConn :: SpecWith SQLiteStore
+testGetRcvConn :: SpecWith DBStore
 testGetRcvConn =
   it "should get connection using rcv queue id and server" . withStoreTransaction $ \db -> do
     let smpServer = SMPServer "smp.simplex.im" "5223" testKeyHash
@@ -339,7 +341,7 @@ testGetRcvConn =
     getRcvConn db smpServer recipientId
       `shouldReturn` Right (rq, SomeConn SCRcv (RcvConnection cData1 rq))
 
-testSetConnUserIdNewConn :: SpecWith SQLiteStore
+testSetConnUserIdNewConn :: SpecWith DBStore
 testSetConnUserIdNewConn =
   it "should set user id for new connection" . withStoreTransaction $ \db -> do
     g <- C.newRandom
@@ -352,9 +354,9 @@ testSetConnUserIdNewConn =
         let ConnData {userId} = connData
         userId `shouldBe` newUserId
       _ -> do
-         expectationFailure "Failed to get connection"
+        expectationFailure "Failed to get connection"
 
-testDeleteRcvConn :: SpecWith SQLiteStore
+testDeleteRcvConn :: SpecWith DBStore
 testDeleteRcvConn =
   it "should create RcvConnection and delete it" . withStoreTransaction $ \db -> do
     g <- C.newRandom
@@ -366,7 +368,7 @@ testDeleteRcvConn =
     getConn db "conn1"
       `shouldReturn` Left SEConnNotFound
 
-testDeleteSndConn :: SpecWith SQLiteStore
+testDeleteSndConn :: SpecWith DBStore
 testDeleteSndConn =
   it "should create SndConnection and delete it" . withStoreTransaction $ \db -> do
     g <- C.newRandom
@@ -378,7 +380,7 @@ testDeleteSndConn =
     getConn db "conn1"
       `shouldReturn` Left SEConnNotFound
 
-testDeleteDuplexConn :: SpecWith SQLiteStore
+testDeleteDuplexConn :: SpecWith DBStore
 testDeleteDuplexConn =
   it "should create DuplexConnection and delete it" . withStoreTransaction $ \db -> do
     g <- C.newRandom
@@ -391,7 +393,7 @@ testDeleteDuplexConn =
     getConn db "conn1"
       `shouldReturn` Left SEConnNotFound
 
-testUpgradeRcvConnToDuplex :: SpecWith SQLiteStore
+testUpgradeRcvConnToDuplex :: SpecWith DBStore
 testUpgradeRcvConnToDuplex =
   it "should throw error on attempt to add SndQueue to SndConnection or DuplexConnection" . withStoreTransaction $ \db -> do
     g <- C.newRandom
@@ -420,7 +422,7 @@ testUpgradeRcvConnToDuplex =
     upgradeRcvConnToDuplex db "conn1" anotherSndQueue
       `shouldReturn` Left (SEBadConnType CDuplex)
 
-testUpgradeSndConnToDuplex :: SpecWith SQLiteStore
+testUpgradeSndConnToDuplex :: SpecWith DBStore
 testUpgradeSndConnToDuplex =
   it "should throw error on attempt to add RcvQueue to RcvConnection or DuplexConnection" . withStoreTransaction $ \db -> do
     g <- C.newRandom
@@ -452,7 +454,7 @@ testUpgradeSndConnToDuplex =
     upgradeSndConnToDuplex db "conn1" anotherRcvQueue
       `shouldReturn` Left (SEBadConnType CDuplex)
 
-testSetRcvQueueStatus :: SpecWith SQLiteStore
+testSetRcvQueueStatus :: SpecWith DBStore
 testSetRcvQueueStatus =
   it "should update status of RcvQueue" . withStoreTransaction $ \db -> do
     g <- C.newRandom
@@ -464,7 +466,7 @@ testSetRcvQueueStatus =
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rq {status = Confirmed}))
 
-testSetSndQueueStatus :: SpecWith SQLiteStore
+testSetSndQueueStatus :: SpecWith DBStore
 testSetSndQueueStatus =
   it "should update status of SndQueue" . withStoreTransaction $ \db -> do
     g <- C.newRandom
@@ -476,7 +478,7 @@ testSetSndQueueStatus =
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sq {status = Confirmed}))
 
-testSetQueueStatusDuplex :: SpecWith SQLiteStore
+testSetQueueStatusDuplex :: SpecWith DBStore
 testSetQueueStatusDuplex =
   it "should update statuses of RcvQueue and SndQueue in DuplexConnection" . withStoreTransaction $ \db -> do
     g <- C.newRandom
@@ -529,7 +531,7 @@ testCreateRcvMsg_ db expectedPrevSndId expectedPrevHash connId rq rcvMsgData@Rcv
   createRcvMsg db connId rq rcvMsgData
     `shouldReturn` ()
 
-testCreateRcvMsg :: SpecWith SQLiteStore
+testCreateRcvMsg :: SpecWith DBStore
 testCreateRcvMsg =
   it "should reserve internal ids and create a RcvMsg" $ \st -> do
     g <- C.newRandom
@@ -563,7 +565,7 @@ testCreateSndMsg_ db expectedPrevHash connId sq sndMsgData@SndMsgData {..} = do
   createSndMsgDelivery db connId sq internalId
     `shouldReturn` ()
 
-testCreateSndMsg :: SpecWith SQLiteStore
+testCreateSndMsg :: SpecWith DBStore
 testCreateSndMsg =
   it "should create a SndMsg and return InternalId and PrevSndMsgHash" $ \st -> do
     g <- C.newRandom
@@ -574,7 +576,7 @@ testCreateSndMsg =
       testCreateSndMsg_ db "" connId sq $ mkSndMsgData (InternalId 1) (InternalSndId 1) "hash_dummy"
       testCreateSndMsg_ db "hash_dummy" connId sq $ mkSndMsgData (InternalId 2) (InternalSndId 2) "new_hash_dummy"
 
-testCreateRcvAndSndMsgs :: SpecWith SQLiteStore
+testCreateRcvAndSndMsgs :: SpecWith DBStore
 testCreateRcvAndSndMsgs =
   it "should create multiple RcvMsg and SndMsg, correctly ordering internal Ids and returning previous state" $ \st -> do
     let ConnData {connId} = cData1
@@ -592,15 +594,15 @@ testCreateRcvAndSndMsgs =
 
 testCloseReopenStore :: IO ()
 testCloseReopenStore = do
-  st <- createStore
+  st <- createStore'
   hasMigrations st
-  closeSQLiteStore st
-  closeSQLiteStore st
+  closeDBStore st
+  closeDBStore st
   errorGettingMigrations st
   openSQLiteStore st "" False
   openSQLiteStore st "" False
   hasMigrations st
-  closeSQLiteStore st
+  closeDBStore st
   errorGettingMigrations st
   reopenSQLiteStore st
   hasMigrations st
@@ -610,14 +612,14 @@ testCloseReopenEncryptedStore = do
   let key = "test_key"
   st <- createEncryptedStore key False
   hasMigrations st
-  closeSQLiteStore st
-  closeSQLiteStore st
+  closeDBStore st
+  closeDBStore st
   errorGettingMigrations st
   reopenSQLiteStore st `shouldThrow` \(e :: SomeException) -> "reopenSQLiteStore: no key" `isInfixOf` show e
   openSQLiteStore st key True
   openSQLiteStore st key True
   hasMigrations st
-  closeSQLiteStore st
+  closeDBStore st
   errorGettingMigrations st
   reopenSQLiteStore st
   hasMigrations st
@@ -627,21 +629,21 @@ testReopenEncryptedStoreKeepKey = do
   let key = "test_key"
   st <- createEncryptedStore key True
   hasMigrations st
-  closeSQLiteStore st
+  closeDBStore st
   errorGettingMigrations st
   reopenSQLiteStore st
   hasMigrations st
 
-getMigrations :: SQLiteStore -> IO Bool
-getMigrations st = not . null <$> withTransaction st (Migrations.getCurrent . DB.conn)
+getMigrations :: DBStore -> IO Bool
+getMigrations st = not . null <$> withTransaction st Migrations.getCurrent
 
-hasMigrations :: SQLiteStore -> Expectation
+hasMigrations :: DBStore -> Expectation
 hasMigrations st = getMigrations st `shouldReturn` True
 
-errorGettingMigrations :: SQLiteStore -> Expectation
+errorGettingMigrations :: DBStore -> Expectation
 errorGettingMigrations st = getMigrations st `shouldThrow` \(e :: SomeException) -> "ErrorMisuse" `isInfixOf` show e
 
-testGetPendingQueueMsg :: SQLiteStore -> Expectation
+testGetPendingQueueMsg :: DBStore -> Expectation
 testGetPendingQueueMsg st = do
   g <- C.newRandom
   withTransaction st $ \db -> do
@@ -658,7 +660,7 @@ testGetPendingQueueMsg st = do
     Right (Just (Nothing, PendingMsgData {msgId})) <- getPendingQueueMsg db connId sq
     msgId `shouldBe` InternalId 2
 
-testGetPendingServerCommand :: SQLiteStore -> Expectation
+testGetPendingServerCommand :: DBStore -> Expectation
 testGetPendingServerCommand st = do
   g <- C.newRandom
   withTransaction st $ \db -> do
@@ -728,7 +730,7 @@ testFileCbNonce = either error id $ strDecode "dPSF-wrQpDiK_K6sYv0BDBZ9S4dg-jmu"
 testFileReplicaKey :: C.APrivateAuthKey
 testFileReplicaKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
 
-testGetNextRcvChunkToDownload :: SQLiteStore -> Expectation
+testGetNextRcvChunkToDownload :: DBStore -> Expectation
 testGetNextRcvChunkToDownload st = do
   g <- C.newRandom
   withTransaction st $ \db -> do
@@ -745,7 +747,7 @@ testGetNextRcvChunkToDownload st = do
     Right (Just (RcvFileChunk {rcvFileEntityId}, _, Nothing)) <- getNextRcvChunkToDownload db xftpServer1 86400
     rcvFileEntityId `shouldBe` fId2
 
-testGetNextRcvFileToDecrypt :: SQLiteStore -> Expectation
+testGetNextRcvFileToDecrypt :: DBStore -> Expectation
 testGetNextRcvFileToDecrypt st = do
   g <- C.newRandom
   withTransaction st $ \db -> do
@@ -764,7 +766,7 @@ testGetNextRcvFileToDecrypt st = do
     Right (Just RcvFile {rcvFileEntityId}) <- getNextRcvFileToDecrypt db 86400
     rcvFileEntityId `shouldBe` fId2
 
-testGetNextSndFileToPrepare :: SQLiteStore -> Expectation
+testGetNextSndFileToPrepare :: DBStore -> Expectation
 testGetNextSndFileToPrepare st = do
   g <- C.newRandom
   withTransaction st $ \db -> do
@@ -791,7 +793,7 @@ newSndChunkReplica1 =
       rcvIdsKeys = [(ChunkReplicaId $ EntityId "abc", testFileReplicaKey)]
     }
 
-testGetNextSndChunkToUpload :: SQLiteStore -> Expectation
+testGetNextSndChunkToUpload :: DBStore -> Expectation
 testGetNextSndChunkToUpload st = do
   g <- C.newRandom
   withTransaction st $ \db -> do
@@ -814,7 +816,7 @@ testGetNextSndChunkToUpload st = do
     Right (Just SndFileChunk {sndFileEntityId}) <- getNextSndChunkToUpload db xftpServer1 86400
     sndFileEntityId `shouldBe` fId2
 
-testGetNextDeletedSndChunkReplica :: SQLiteStore -> Expectation
+testGetNextDeletedSndChunkReplica :: DBStore -> Expectation
 testGetNextDeletedSndChunkReplica st = do
   withTransaction st $ \db -> do
     Right Nothing <- getNextDeletedSndChunkReplica db xftpServer1 86400
@@ -830,17 +832,17 @@ testGetNextDeletedSndChunkReplica st = do
     Right (Just DeletedSndChunkReplica {deletedSndChunkReplicaId}) <- getNextDeletedSndChunkReplica db xftpServer1 86400
     deletedSndChunkReplicaId `shouldBe` 2
 
-testMarkNtfSubActionNtfFailed :: SQLiteStore -> Expectation
+testMarkNtfSubActionNtfFailed :: DBStore -> Expectation
 testMarkNtfSubActionNtfFailed st = do
   withTransaction st $ \db -> do
     markNtfSubActionNtfFailed_ db "abc"
 
-testMarkNtfSubActionSMPFailed :: SQLiteStore -> Expectation
+testMarkNtfSubActionSMPFailed :: DBStore -> Expectation
 testMarkNtfSubActionSMPFailed st = do
   withTransaction st $ \db -> do
     markNtfSubActionSMPFailed_ db "abc"
 
-testMarkNtfTokenToDeleteFailed :: SQLiteStore -> Expectation
+testMarkNtfTokenToDeleteFailed :: DBStore -> Expectation
 testMarkNtfTokenToDeleteFailed st = do
   withTransaction st $ \db -> do
     markNtfTokenToDeleteFailed_ db 1
