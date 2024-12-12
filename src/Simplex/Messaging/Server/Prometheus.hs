@@ -152,7 +152,7 @@ prometheusMetrics sm rtm ts =
       \\n\
       \# HELP simplex_smp_queues_notify_daily Daily active queues with notifications.\n\
       \# TYPE simplex_smp_queues_notify_daily gauge\n\
-      \simplex_smp_queues_notify_active_daily " <> T.pack (dayCount psNtf) <> "\n# dayCountNtf\n\
+      \simplex_smp_queues_notify_daily " <> T.pack (dayCount psNtf) <> "\n# dayCountNtf\n\
       \\n\
       \# HELP simplex_smp_queues_notify_weekly Weekly active queues with notifications.\n\
       \# TYPE simplex_smp_queues_notify_weekly gauge\n\
@@ -253,9 +253,12 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_queues_notify_deleted_batch counter\n\
       \simplex_smp_queues_notify_deleted_batch " <> tshow _ntfDeletedB <> "\n# ntfDeletedB\n\
       \\n\
-      \# HELP simplex_smp_queues_notify_total Total number of stored queues with notification flag.\n\
-      \# TYPE simplex_smp_queues_notify_total gauge\n\
+      \# HELP simplex_smp_queues_notify_total1 Total number of stored queues with notification flag (first type of count).\n\
+      \# TYPE simplex_smp_queues_notify_total1 gauge\n\
       \simplex_smp_queues_notify_total1 " <> tshow _ntfCount <> "\n# ntfCount1\n\
+      \\n\
+      \# HELP simplex_smp_queues_notify_total2 Total number of stored queues with notification flag (second type of count).\n\
+      \# TYPE simplex_smp_queues_notify_total2 gauge\n\
       \simplex_smp_queues_notify_total2 " <> tshow notifierCount <> "\n# ntfCount2\n\
       \\n"
     ntfs =
