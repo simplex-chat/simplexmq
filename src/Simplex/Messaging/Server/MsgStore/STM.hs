@@ -21,6 +21,7 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Data.Functor (($>))
 import Data.Int (Int64)
+import qualified Data.Map.Strict as M
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
@@ -63,7 +64,6 @@ instance STMQueueStore STMMsgStore where
   notifiers' = notifiers
   storeLog' = storeLog
   mkQueue _ qr = STMQueue <$> newTVar (Just qr) <*> newTVar Nothing
-  msgQueue_' = msgQueue_
 
 instance MsgStoreClass STMMsgStore where
   type StoreMonad STMMsgStore = STM
@@ -96,6 +96,39 @@ instance MsgStoreClass STMMsgStore where
 
   queueRec' = queueRec
   {-# INLINE queueRec' #-}
+
+  msgQueue_' = msgQueue_
+  {-# INLINE msgQueue_' #-}
+
+  queueCounts :: STMMsgStore -> IO QueueCounts
+  queueCounts st = do
+    queueCount <- M.size <$> readTVarIO (queues st)
+    notifierCount <- M.size <$> readTVarIO (notifiers st)
+    pure QueueCounts {queueCount, notifierCount}
+
+  addQueue = addQueue'
+  {-# INLINE addQueue #-}
+
+  getQueue = getQueue'
+  {-# INLINE getQueue #-}
+
+  getQueueRec = getQueueRec'
+  {-# INLINE getQueueRec #-}
+
+  secureQueue = secureQueue'
+  {-# INLINE secureQueue #-}
+
+  addQueueNotifier = addQueueNotifier'
+  {-# INLINE addQueueNotifier #-}
+
+  deleteQueueNotifier = deleteQueueNotifier'
+  {-# INLINE deleteQueueNotifier #-}
+
+  suspendQueue = suspendQueue'
+  {-# INLINE suspendQueue #-}
+
+  updateQueueTime = updateQueueTime'
+  {-# INLINE updateQueueTime #-}
 
   getMsgQueue :: STMMsgStore -> RecipientId -> STMQueue -> STM STMMsgQueue
   getMsgQueue _ _ STMQueue {msgQueue_} = readTVar msgQueue_ >>= maybe newQ pure

@@ -100,7 +100,6 @@ import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
-import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -423,9 +422,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv}
         <- asks serverStats
       AMS _ st <- asks msgStore
-      let queues = activeMsgQueues st
-          notifiers = notifiers' st
-          interval = 1000000 * logInterval
+      QueueCounts {queueCount, notifierCount} <- liftIO $ queueCounts st
+      let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
@@ -478,8 +476,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
           pMsgFwdsOwn' <- getResetProxyStatsData pMsgFwdsOwn
           pMsgFwdsRecv' <- atomicSwapIORef pMsgFwdsRecv 0
           qCount' <- readIORef qCount
-          qCount'' <- M.size <$> readTVarIO queues
-          notifierCount' <- M.size <$> readTVarIO notifiers
           msgCount' <- readIORef msgCount
           ntfCount' <- readIORef ntfCount
           hPutStrLn h $
@@ -532,13 +528,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                        "0", -- dayCount psSub; psSub is removed to reduce memory usage
                        "0", -- weekCount psSub
                        "0", -- monthCount psSub
-                       show qCount'',
+                       show queueCount,
                        show ntfCreated',
                        show ntfDeleted',
                        show ntfSub',
                        show ntfSubAuth',
                        show ntfSubDuplicate',
-                       show notifierCount',
+                       show notifierCount,
                        show qDeletedAllB',
                        show qSubAllB',
                        show qSubEnd',
@@ -625,9 +621,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
               CPStats -> withUserRole $ do
                 ss <- unliftIO u $ asks serverStats
                 AMS _ st <- unliftIO u $ asks msgStore
-                let queues = activeMsgQueues st
-                    notifiers = notifiers' st
-                    getStat :: (ServerStats -> IORef a) -> IO a
+                QueueCounts {queueCount, notifierCount} <- queueCounts st
+                let getStat :: (ServerStats -> IORef a) -> IO a
                     getStat var = readIORef (var ss)
                     putStat :: Show a => String -> (ServerStats -> IORef a) -> IO ()
                     putStat label var = getStat var >>= \v -> hPutStrLn h $ label <> ": " <> show v
@@ -664,9 +659,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                 putStat "msgNtfsB" msgNtfsB
                 putStat "msgNtfExpired" msgNtfExpired
                 putStat "qCount" qCount
-                qCount2 <- M.size <$> readTVarIO queues
-                hPutStrLn h $ "qCount 2: " <> show qCount2
-                notifierCount <- M.size <$> readTVarIO notifiers
+                hPutStrLn h $ "qCount 2: " <> show queueCount
                 hPutStrLn h $ "notifiers: " <> show notifierCount
                 putStat "msgCount" msgCount
                 putStat "ntfCount" ntfCount
@@ -841,7 +834,7 @@ runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessio
   c <- liftIO $ newClient msType clientId q thVersion sessionId ts
   runClientThreads msType ms active c clientId `finally` clientDisconnected c
   where
-    runClientThreads :: STMQueueStore (MsgStore s) => SMSType s -> MsgStore s -> TVar (IM.IntMap (Maybe AClient)) -> Client (MsgStore s) -> IS.Key -> M ()
+    runClientThreads :: MsgStoreClass (MsgStore s) => SMSType s -> MsgStore s -> TVar (IM.IntMap (Maybe AClient)) -> Client (MsgStore s) -> IS.Key -> M ()
     runClientThreads msType ms active c clientId = do
       atomically $ modifyTVar' active $ IM.insert clientId $ Just (AClient msType c)
       s <- asks server
@@ -897,7 +890,7 @@ cancelSub s = case subThread s of
       _ -> pure ()
   ProhibitSub -> pure ()
 
-receive :: forall c s. (Transport c, STMQueueStore s) => THandleSMP c 'TServer -> s -> Client s -> M ()
+receive :: forall c s. (Transport c, MsgStoreClass s) => THandleSMP c 'TServer -> s -> Client s -> M ()
 receive h@THandle {params = THandleParams {thAuth}} ms Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   sa <- asks serverActive
@@ -997,7 +990,7 @@ data VerificationResult s = VRVerified (Maybe (StoreQueue s, QueueRec)) | VRFail
 -- - the queue or party key do not exist.
 -- In all cases, the time of the verification should depend only on the provided authorization type,
 -- a dummy key is used to run verification in the last two cases, and failure is returned irrespective of the result.
-verifyTransmission :: forall s. STMQueueStore s => s -> Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> QueueId -> Cmd -> M (VerificationResult s)
+verifyTransmission :: forall s. MsgStoreClass s => s -> Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> QueueId -> Cmd -> M (VerificationResult s)
 verifyTransmission ms auth_ tAuth authorized queueId cmd =
   case cmd of
     Cmd SRecipient (NEW k _ _ _ _) -> pure $ Nothing `verifiedWith` k
@@ -1074,7 +1067,7 @@ forkClient Client {endThreads, endThreadSeq} label action = do
     action `finally` atomically (modifyTVar' endThreads $ IM.delete tId)
   mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
 
-client :: forall s. STMQueueStore s => THandleParams SMPVersion 'TServer -> Server -> s -> Client s -> M ()
+client :: forall s. MsgStoreClass s => THandleParams SMPVersion 'TServer -> Server -> s -> Client s -> M ()
 client
   thParams'
   Server {subscribedQ, ntfSubscribedQ, subscribers}
@@ -1768,7 +1761,7 @@ processServerMessages = do
                   stored'' <- getQueueSize ms rId q
                   liftIO $ closeMsgQueue q
                   pure (stored'', expired'')
-            processValidateQueue :: RecipientId -> JournalQueue -> IO MessageStats
+            processValidateQueue :: RecipientId -> JournalQueue 'MSMemory -> IO MessageStats
             processValidateQueue rId q =
               runExceptT (getQueueSize ms rId q) >>= \case
                 Right storedMsgsCount -> pure newMessageStats {storedMsgsCount, storedQueues = 1}
@@ -1777,7 +1770,7 @@ processServerMessages = do
                   exitFailure
 
 -- TODO this function should be called after importing queues from store log
-importMessages :: forall s. STMQueueStore s => Bool -> s -> FilePath -> Maybe Int64 -> IO MessageStats
+importMessages :: forall s. MsgStoreClass s => Bool -> s -> FilePath -> Maybe Int64 -> IO MessageStats
 importMessages tty ms f old_ = do
   logInfo $ "restoring messages from file " <> T.pack f
   LB.readFile f >>= runExceptT . foldM restoreMsg (0, Nothing, (0, 0, M.empty)) . LB.lines >>= \case

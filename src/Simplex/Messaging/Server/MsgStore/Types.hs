@@ -35,7 +35,6 @@ class MsgStoreClass s => STMQueueStore s where
   notifiers' :: s -> TMap NotifierId RecipientId
   storeLog' :: s -> TVar (Maybe (StoreLog 'WriteMode))
   mkQueue :: s -> QueueRec -> STM (StoreQueue s)
-  msgQueue_' :: StoreQueue s -> TVar (Maybe (MsgQueue s))
 
 class Monad (StoreMonad s) => MsgStoreClass s where
   type StoreMonad s = (m :: Type -> Type) | m -> s
@@ -50,6 +49,18 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   logQueueStates :: s -> IO ()
   logQueueState :: StoreQueue s -> StoreMonad s ()
   queueRec' :: StoreQueue s -> TVar (Maybe QueueRec)
+  msgQueue_' :: StoreQueue s -> TVar (Maybe (MsgQueue s))
+  queueCounts :: s -> IO QueueCounts
+
+  addQueue :: s -> QueueRec -> IO (Either ErrorType (StoreQueue s))
+  getQueue :: DirectParty p => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s))
+  getQueueRec :: DirectParty p => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s, QueueRec))
+  secureQueue :: s -> StoreQueue s -> SndPublicAuthKey -> IO (Either ErrorType ())
+  addQueueNotifier :: s -> StoreQueue s -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
+  deleteQueueNotifier :: s -> StoreQueue s -> IO (Either ErrorType (Maybe NotifierId))
+  suspendQueue :: s -> StoreQueue s -> IO (Either ErrorType ())
+  updateQueueTime :: s -> StoreQueue s -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
+
   getPeekMsgQueue :: s -> RecipientId -> StoreQueue s -> StoreMonad s (Maybe (MsgQueue s, Message))
   getMsgQueue :: s -> RecipientId -> StoreQueue s -> StoreMonad s (MsgQueue s)
 
@@ -64,6 +75,11 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   tryPeekMsg_ :: StoreQueue s -> MsgQueue s -> StoreMonad s (Maybe Message)
   tryDeleteMsg_ :: StoreQueue s -> MsgQueue s -> Bool -> StoreMonad s ()
   isolateQueue :: RecipientId -> StoreQueue s -> String -> StoreMonad s a -> ExceptT ErrorType IO a
+
+data QueueCounts = QueueCounts
+  { queueCount :: Int,
+    notifierCount :: Int
+  }
 
 data MSType = MSMemory | MSJournal
 
