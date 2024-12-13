@@ -17,9 +17,8 @@
 
 module Simplex.Messaging.Server.MsgStore.Journal
   ( JournalMsgStore (queueStore, random),
-    JournalQueue,
-    JournalMsgQueue (queue, state),
-    JMQueue (queueDirectory, statePath),
+    JournalQueue (queueDirectory),
+    JournalMsgQueue (state),
     JournalStoreConfig (..),
     closeMsgQueue,
     closeMsgQueueHandles,
@@ -67,7 +66,7 @@ import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Util (ifM, tshow, ($>>=), (<$$>))
+import Simplex.Messaging.Util (anyM, ifM, tshow, ($>>=), (<$$>))
 import System.Directory
 import System.Exit
 import System.FilePath ((</>))
@@ -113,7 +112,8 @@ data JournalStoreConfig s = JournalStoreConfig
   }
 
 data JournalQueue (s :: MSType) = JournalQueue
-  { queueLock :: Lock,
+  { recipientId :: RecipientId,
+    queueLock :: Lock,
     -- To avoid race conditions and errors when restoring queues,
     -- Nothing is written to TVar when queue is deleted.
     queueRec :: TVar (Maybe QueueRec),
@@ -121,17 +121,13 @@ data JournalQueue (s :: MSType) = JournalQueue
     -- system time in seconds since epoch
     activeAt :: TVar Int64,
     -- Just True - empty, Just False - non-empty, Nothing - unknown
-    isEmpty :: TVar (Maybe Bool)
-  }
-
-data JMQueue = JMQueue
-  { queueDirectory :: FilePath,
+    isEmpty :: TVar (Maybe Bool),
+    queueDirectory :: FilePath,
     statePath :: FilePath
   }
 
 data JournalMsgQueue (s :: MSType) = JournalMsgQueue
-  { queue :: JMQueue,
-    state :: TVar MsgQueueState,
+  { state :: TVar MsgQueueState,
     -- tipMsg contains last message and length incl. newline
     -- Nothing - unknown, Just Nothing - empty queue.
     -- It  prevents reading each message twice,
@@ -241,17 +237,29 @@ instance STMQueueStore (JournalMsgStore 'MSMemory) where
   senders' = senders . queueStore
   notifiers' = notifiers . queueStore
   storeLog' = storeLog . queueStore
-  mkQueue st qr = do
-    lock <- atomically $ getMapLock (queueLocks st) $ recipientId qr
-    makeQueue lock qr
+  mkQueue st qr@QueueRec {recipientId} = do
+    lock <- atomically $ getMapLock (queueLocks st) recipientId
+    makeQueue st lock qr
 
-makeQueue :: Lock -> QueueRec -> IO (JournalQueue s)
-makeQueue lock qr = do
-  q <- newTVarIO $ Just qr
-  mq <- newTVarIO Nothing
+makeQueue :: JournalMsgStore s -> Lock -> QueueRec -> IO (JournalQueue s)
+makeQueue st queueLock qr@QueueRec {recipientId} = do
+  queueRec <- newTVarIO $ Just qr
+  msgQueue_ <- newTVarIO Nothing
   activeAt <- newTVarIO 0
   isEmpty <- newTVarIO Nothing
-  pure $ JournalQueue lock q mq activeAt isEmpty
+  let dir = msgQueueDirectory st recipientId
+      statePath = msgQueueStatePath dir $ B.unpack (strEncode recipientId)
+  pure
+    JournalQueue
+      { recipientId,
+        queueLock,
+        queueRec,
+        msgQueue_,
+        activeAt,
+        isEmpty,
+        queueDirectory = dir,
+        statePath
+      }
 
 instance MsgStoreClass (JournalMsgStore s) where
   type StoreMonad (JournalMsgStore s) = StoreIO s
@@ -297,7 +305,7 @@ instance MsgStoreClass (JournalMsgStore s) where
   -- It is used to export storage to a single file and also to expire messages and validate all queues when server is started.
   -- TODO this function requires case-sensitive file system, because it uses queue directory as recipient ID.
   -- It can be made to support case-insensite FS by supporting more than one queue per directory, by getting recipient ID from state file name.
-  withAllMsgQueues :: forall a. Monoid a => Bool -> JournalMsgStore s -> (RecipientId -> JournalQueue s -> IO a) -> IO a
+  withAllMsgQueues :: forall a. Monoid a => Bool -> JournalMsgStore s -> (JournalQueue s -> IO a) -> IO a
   withAllMsgQueues tty ms@JournalMsgStore {config} action = ifM (doesDirectoryExist storePath) processStore (pure mempty)
     where
       processStore = do
@@ -311,7 +319,7 @@ instance MsgStoreClass (JournalMsgStore s) where
         r' <- case strDecode $ B.pack queueId of
           Right rId ->
             getQueue ms SRecipient rId >>= \case
-              Right q -> unStoreIO (getMsgQueue ms rId q) *> action rId q <* closeMsgQueue q
+              Right q -> unStoreIO (getMsgQueue ms q) *> action q <* closeMsgQueue q
               Left AUTH -> do
                 logWarn $ "STORE: processQueue, queue " <> T.pack queueId <> " was removed, removing " <> T.pack dir
                 removeQueueDirectory_ dir
@@ -338,7 +346,7 @@ instance MsgStoreClass (JournalMsgStore s) where
               (Nothing <$ putStrLn ("Error: path " <> path' <> " is not a directory, skipping"))
 
   logQueueStates :: JournalMsgStore s -> IO ()
-  logQueueStates ms = withActiveMsgQueues ms $ \_ -> unStoreIO . logQueueState
+  logQueueStates ms = withActiveMsgQueues ms $ unStoreIO . logQueueState
 
   logQueueState :: JournalQueue s -> StoreIO s ()
   logQueueState q =
@@ -346,6 +354,10 @@ instance MsgStoreClass (JournalMsgStore s) where
       readTVarIO (msgQueue_ q)
         $>>= \mq -> readTVarIO (handles mq)
         $>>= (\hs -> (readTVarIO (state mq) >>= appendState (stateHandle hs)) $> Just ())
+
+  -- TODO [queues] remove pun once recipientId is removed from QueueRec
+  recipientId' JournalQueue {recipientId} = recipientId
+  {-# INLINE recipientId' #-}
 
   queueRec' = queueRec
   {-# INLINE queueRec' #-}
@@ -365,25 +377,18 @@ instance MsgStoreClass (JournalMsgStore s) where
   addQueue st@JournalMsgStore {queueLocks = ls} qr@QueueRec {recipientId = rId, senderId = sId, notifier} = case queueStore st of
     MQStore {} -> addQueue' st qr
     JQStore {queues_, senders_, notifiers_} -> do
-      lock <- atomically $ getMapLock ls $ recipientId qr
+      lock <- atomically $ getMapLock ls rId
       tryStore "addQueue" rId $
         withLock' lock "addQueue" $ withLockMap ls sId "addQueueS" $ withNotifierLock $
           ifM hasAnyId (pure $ Left DUPLICATE_) $ E.uninterruptibleMask_ $ do
-            q <- makeQueue lock qr
+            q <- makeQueue st lock qr
+            storeQueue_ q qr
             atomically $ TM.insert rId (Just q) queues_
-            atomically $ TM.insert sId (Just rId) senders_
-            storeQueue queuePath qr
-            saveQueueRef sId rId
-            forM_ notifier $ \NtfCreds {notifierId} -> do
-              atomically $ TM.insert notifierId (Just rId) notifiers_
-              saveQueueRef notifierId rId
+            saveQueueRef st sId rId senders_
+            forM_ notifier $ \NtfCreds {notifierId} -> saveQueueRef st notifierId rId notifiers_
             pure $ Right q
       where
-        dir = msgQueueDirectory st rId
-        queuePath = queueRecPath dir $ B.unpack (strEncode rId)
-        storeQueue _ _ = pure () -- TODO
-        saveQueueRef _ _ = pure () -- TODO
-        hasAnyId = foldM (fmap . (||)) False [hasId rId queues_, hasId sId senders_, withNotifier (`hasId` notifiers_), hasDir rId, hasDir sId, withNotifier hasDir]
+        hasAnyId = anyM [hasId rId queues_, hasId sId senders_, withNotifier (`hasId` notifiers_), hasDir rId, hasDir sId, withNotifier hasDir]
         withNotifier p = maybe (pure False) (\NtfCreds {notifierId} -> p notifierId) notifier
         withNotifierLock a = maybe a (\NtfCreds {notifierId} -> withLockMap ls notifierId "addQueueN" a) notifier
         hasId :: EntityId -> TMap EntityId (Maybe a) -> IO Bool
@@ -393,36 +398,58 @@ instance MsgStoreClass (JournalMsgStore s) where
   getQueue :: DirectParty p => JournalMsgStore s -> SParty p -> QueueId -> IO (Either ErrorType (JournalQueue s))
   getQueue st party qId = case queueStore st of
     MQStore {} -> getQueue' st party qId
-    JQStore {queues_, senders_, notifiers_} -> maybe (Left AUTH) Right <$> case party of
-      SRecipient -> getQueue_ qId
-      SSender -> getQueueRef senders_ $>>= getQueue_
-      SNotifier -> getQueueRef notifiers_ $>>= getQueue_
+    JQStore {queues_, senders_, notifiers_} ->
+      isolateQueueId "getQueue" st qId $
+        maybe (Left AUTH) Right <$> case party of
+          SRecipient -> getQueue_ qId
+          SSender -> getQueueRef senders_ $>>= getQueue_
+          SNotifier -> getQueueRef notifiers_ $>>= getQueue_
       where
         getQueue_ rId = TM.lookupIO rId queues_ >>= maybe (loadQueue rId) pure
         getQueueRef :: TMap EntityId (Maybe RecipientId) -> IO (Maybe RecipientId)
         getQueueRef m = TM.lookupIO qId m >>= maybe (loadQueueRef m) pure
-        loadQueue _rId = undefined -- TODO load, cache, return queue
-        loadQueueRef _m = undefined -- TODO load, cache, return queue ID
-
-  getQueueRec :: DirectParty p => JournalMsgStore s -> SParty p -> QueueId -> IO (Either ErrorType (JournalQueue s, QueueRec))
-  getQueueRec st party qId = case queueStore st of
-    MQStore {} -> getQueueRec' st party qId
-    JQStore {} -> undefined
+        loadQueue _rId = undefined -- TODO [queues] load, cache, return queue
+        loadQueueRef _m = undefined -- TODO [queues] load, cache, return queue ID
 
   secureQueue :: JournalMsgStore s -> JournalQueue s -> SndPublicAuthKey -> IO (Either ErrorType ())
   secureQueue st sq sKey = case queueStore st of
     MQStore {} -> secureQueue' st sq sKey
-    JQStore {} -> undefined
+    JQStore {} ->
+      isolateQueueRec sq "secureQueue" $ \q -> case senderKey q of
+        Just k -> pure $ if sKey == k then Right () else Left AUTH
+        Nothing -> storeQueue sq q {senderKey = Just sKey} $> Right ()
 
   addQueueNotifier :: JournalMsgStore s -> JournalQueue s -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
-  addQueueNotifier st sq ntfCreds = case queueStore st of
+  addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId} = case queueStore st of
     MQStore {} -> addQueueNotifier' st sq ntfCreds
-    JQStore {} -> undefined
+    JQStore {notifiers_} ->
+      isolateQueueRec sq "addQueueNotifier" $ \q@QueueRec {recipientId = rId} ->
+        withLockMap (queueLocks st) nId "addQueueNotifierN" $
+          ifM hasNotifierId (pure $ Left DUPLICATE_) $ do
+            nId_ <- forM (notifier q) $ \NtfCreds {notifierId = nId'} -> 
+              withLockMap (queueLocks st) nId' "addQueueNotifierD" $ do
+                deleteQueueRef st nId'
+                atomically $ TM.delete nId' notifiers_
+                pure nId'
+            storeQueue sq q {notifier = Just ntfCreds}
+            saveQueueRef st nId rId notifiers_
+            pure $ Right nId_
+      where
+        hasNotifierId = anyM [hasId, hasDir]
+        hasId = maybe False isJust <$> atomically (TM.lookup nId notifiers_)
+        hasDir = doesDirectoryExist $ msgQueueDirectory st nId
 
   deleteQueueNotifier :: JournalMsgStore s -> JournalQueue s -> IO (Either ErrorType (Maybe NotifierId))
   deleteQueueNotifier st sq = case queueStore st of
     MQStore {} -> deleteQueueNotifier' st sq
-    JQStore {} -> undefined
+    JQStore {notifiers_} ->
+      isolateQueueRec sq "deleteQueueNotifier" $ \q ->
+        fmap Right $ forM (notifier q) $ \NtfCreds {notifierId = nId} ->
+          withLockMap (queueLocks st) nId "deleteQueueNotifierN" $ do
+            deleteQueueRef st nId
+            atomically $ TM.delete nId notifiers_
+            storeQueue sq q {notifier = Nothing}
+            pure nId
 
   suspendQueue :: JournalMsgStore s -> JournalQueue s -> IO (Either ErrorType ())
   suspendQueue st sq = case queueStore st of
@@ -434,29 +461,26 @@ instance MsgStoreClass (JournalMsgStore s) where
     MQStore {} -> updateQueueTime' st sq t
     JQStore {} -> undefined
 
-  getMsgQueue :: JournalMsgStore s -> RecipientId -> JournalQueue s -> StoreIO s (JournalMsgQueue s)
-  getMsgQueue ms@JournalMsgStore {random} rId JournalQueue {msgQueue_} =
+  getMsgQueue :: JournalMsgStore s -> JournalQueue s -> StoreIO s (JournalMsgQueue s)
+  getMsgQueue ms@JournalMsgStore {random} sq@JournalQueue {msgQueue_, queueDirectory} =
     StoreIO $ readTVarIO msgQueue_ >>= maybe newQ pure
     where
       newQ = do
-        let dir = msgQueueDirectory ms rId
-            statePath = msgQueueStatePath dir $ B.unpack (strEncode rId)
-            queue = JMQueue {queueDirectory = dir, statePath}
-        -- TODO this should account for the possibility that the folder exists,
+        -- TODO [queues] this should account for the possibility that the folder exists,
         -- but queue files do not
-        q <- ifM (doesDirectoryExist dir) (openMsgQueue ms queue) (createQ queue)
+        q <- ifM (doesDirectoryExist queueDirectory) (openMsgQueue ms sq) createQ
         atomically $ writeTVar msgQueue_ $ Just q
         pure q
         where
-          createQ :: JMQueue -> IO (JournalMsgQueue s)
-          createQ queue = do
+          createQ :: IO (JournalMsgQueue s)
+          createQ = do
             -- folder and files are not created here,
             -- to avoid file IO for queues without messages during subscription
             journalId <- newJournalId random
-            mkJournalQueue queue (newMsgQueueState journalId) Nothing
+            mkJournalQueue (newMsgQueueState journalId) Nothing
 
-  getPeekMsgQueue :: JournalMsgStore s -> RecipientId -> JournalQueue s -> StoreIO s (Maybe (JournalMsgQueue s, Message))
-  getPeekMsgQueue ms rId q@JournalQueue {isEmpty} =
+  getPeekMsgQueue :: JournalMsgStore s -> JournalQueue s -> StoreIO s (Maybe (JournalMsgQueue s, Message))
+  getPeekMsgQueue ms q@JournalQueue {isEmpty} =
     StoreIO (readTVarIO isEmpty) >>= \case
       Just True -> pure Nothing
       Just False -> peek
@@ -471,16 +495,16 @@ instance MsgStoreClass (JournalMsgStore s) where
         pure r
     where
       peek = do
-        mq <- getMsgQueue ms rId q
+        mq <- getMsgQueue ms q
         (mq,) <$$> tryPeekMsg_ q mq
 
   -- only runs action if queue is not empty
-  withIdleMsgQueue :: Int64 -> JournalMsgStore s -> RecipientId -> JournalQueue s -> (JournalMsgQueue s -> StoreIO s a) -> StoreIO s (Maybe a, Int)
-  withIdleMsgQueue now ms@JournalMsgStore {config} rId q action =
+  withIdleMsgQueue :: Int64 -> JournalMsgStore s -> JournalQueue s -> (JournalMsgQueue s -> StoreIO s a) -> StoreIO s (Maybe a, Int)
+  withIdleMsgQueue now ms@JournalMsgStore {config} q action =
     StoreIO $ readTVarIO (msgQueue_ q) >>= \case
       Nothing ->
         E.bracket
-          (unStoreIO $ getPeekMsgQueue ms rId q)
+          (unStoreIO $ getPeekMsgQueue ms q)
           (mapM_ $ \_ -> closeMsgQueue q)
           (maybe (pure (Nothing, 0)) (unStoreIO . run))
         where
@@ -507,20 +531,20 @@ instance MsgStoreClass (JournalMsgStore s) where
     where
       getSize = maybe (pure (-1)) (fmap size . readTVarIO . state)
 
-  getQueueMessages_ :: Bool -> JournalMsgQueue s -> StoreIO s [Message]
-  getQueueMessages_ drainMsgs q = StoreIO (run [])
+  getQueueMessages_ :: Bool -> JournalQueue s -> JournalMsgQueue s -> StoreIO s [Message]
+  getQueueMessages_ drainMsgs sq q = StoreIO (run [])
     where
       run msgs = readTVarIO (handles q) >>= maybe (pure []) (getMsg msgs)
-      getMsg msgs hs = chooseReadJournal q drainMsgs hs >>= maybe (pure msgs) readMsg
+      getMsg msgs hs = chooseReadJournal sq q drainMsgs hs >>= maybe (pure msgs) readMsg
         where
           readMsg (rs, h) = do
             (msg, len) <- hGetMsgAt h $ bytePos rs
             updateReadPos q drainMsgs len hs
             (msg :) <$> run msgs
 
-  writeMsg :: JournalMsgStore s -> RecipientId -> JournalQueue s -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
-  writeMsg ms rId q' logState msg = isolateQueue rId q' "writeMsg" $ do
-    q <- getMsgQueue ms rId q'
+  writeMsg :: JournalMsgStore s -> JournalQueue s -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
+  writeMsg ms q'@JournalQueue {queueDirectory, statePath} logState msg = isolateQueue q' "writeMsg" $ do
+    q <- getMsgQueue ms q'
     StoreIO $ (`E.finally` updateActiveAt q') $ do
       st@MsgQueueState {canWrite, size} <- readTVarIO (state q)
       let empty = size == 0
@@ -535,7 +559,7 @@ instance MsgStoreClass (JournalMsgStore s) where
     where
       JournalStoreConfig {quota, maxMsgCount} = config ms
       msgQuota = MessageQuota {msgId = messageId msg, msgTs = messageTs msg}
-      writeToJournal q st@MsgQueueState {writeState, readState = rs, size} canWrt' !msg' = do
+      writeToJournal q@JournalMsgQueue {handles} st@MsgQueueState {writeState, readState = rs, size} canWrt' !msg' = do
         let msgStr = strEncode msg' `B.snoc` '\n'
             msgLen = fromIntegral $ B.length msgStr
         hs <- maybe createQueueDir pure =<< readTVarIO handles
@@ -551,7 +575,6 @@ instance MsgStoreClass (JournalMsgStore s) where
         updateQueueState q logState hs st' $
           when (size == 0) $ writeTVar (tipMsg q) $ Just (Just (msg, msgLen))
         where
-          JournalMsgQueue {queue = JMQueue {queueDirectory, statePath}, handles} = q
           createQueueDir = do
             createDirectoryIfMissing True queueDirectory
             sh <- openFile statePath AppendMode
@@ -574,10 +597,11 @@ instance MsgStoreClass (JournalMsgStore s) where
 
   getQueueSize_ :: JournalMsgQueue s -> StoreIO s Int
   getQueueSize_ JournalMsgQueue {state} = StoreIO $ size <$> readTVarIO state
+  {-# INLINE getQueueSize_ #-}
 
   tryPeekMsg_ :: JournalQueue s -> JournalMsgQueue s -> StoreIO s (Maybe Message)
   tryPeekMsg_ q mq@JournalMsgQueue {tipMsg, handles} =
-    StoreIO $ (readTVarIO handles $>>= chooseReadJournal mq True $>>= peekMsg) >>= setEmpty
+    StoreIO $ (readTVarIO handles $>>= chooseReadJournal q mq True $>>= peekMsg) >>= setEmpty
     where
       peekMsg (rs, h) = readTVarIO tipMsg >>= maybe readMsg (pure . fmap fst)
         where
@@ -597,15 +621,12 @@ instance MsgStoreClass (JournalMsgStore s) where
         $>>= \len -> readTVarIO handles
         $>>= \hs -> updateReadPos mq logState len hs $> Just ()
 
-  isolateQueue :: RecipientId -> JournalQueue s -> String -> StoreIO s a -> ExceptT ErrorType IO a
-  isolateQueue rId JournalQueue {queueLock} op =
-    tryStore' op rId . withLock' queueLock op . unStoreIO
+  isolateQueue :: JournalQueue s -> String -> StoreIO s a -> ExceptT ErrorType IO a
+  isolateQueue q op = ExceptT . isolateQueue_ q op . fmap Right . unStoreIO
+  {-# INLINE isolateQueue #-}
 
 updateActiveAt :: JournalQueue s -> IO ()
 updateActiveAt q = atomically . writeTVar (activeAt q) . systemSeconds =<< getSystemTime
-
-tryStore' :: String -> RecipientId -> IO a -> ExceptT ErrorType IO a
-tryStore' op rId = ExceptT . tryStore op rId . fmap Right
 
 tryStore :: forall a. String -> RecipientId -> IO (Either ErrorType a) -> IO (Either ErrorType a)
 tryStore op rId a = E.mask_ $ E.try a >>= either storeErr pure
@@ -615,34 +636,61 @@ tryStore op rId a = E.mask_ $ E.try a >>= either storeErr pure
       let e' = intercalate ", " [op, B.unpack $ strEncode rId, show e]
        in logError ("STORE: " <> T.pack e') $> Left (STORE e')
 
-isolateQueueId :: String -> JournalMsgStore s -> RecipientId -> IO (Either ErrorType a) -> ExceptT ErrorType IO a
-isolateQueueId op ms rId = ExceptT . tryStore op rId . withLockMap (queueLocks ms) rId op
+isolateQueueRec :: JournalQueue s -> String -> (QueueRec -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
+isolateQueueRec sq op a = isolateQueue_ sq op (atomically (readQueueRec qr) $>>= a)
+  where
+    qr = queueRec' sq
 
-openMsgQueue :: JournalMsgStore s -> JMQueue -> IO (JournalMsgQueue s)
-openMsgQueue ms q@JMQueue {queueDirectory = dir, statePath} = do
+isolateQueue_ :: JournalQueue s -> String -> IO (Either ErrorType a) -> IO (Either ErrorType a)
+isolateQueue_ JournalQueue {recipientId, queueLock} op = tryStore op recipientId . withLock' queueLock op
+
+isolateQueueId :: String -> JournalMsgStore s -> RecipientId -> IO (Either ErrorType a) -> IO (Either ErrorType a)
+isolateQueueId op ms rId = tryStore op rId . withLockMap (queueLocks ms) rId op
+
+storeQueue :: JournalQueue s -> QueueRec -> IO ()
+storeQueue sq@JournalQueue {queueRec} q = do
+  storeQueue_ sq q
+  atomically $ writeTVar queueRec $ Just q
+
+-- TODO [queues]
+saveQueueRef :: JournalMsgStore s -> QueueId -> RecipientId -> TMap QueueId (Maybe RecipientId) -> IO ()
+saveQueueRef _st qId rId m = do
+  pure () -- save ref to disk
+  atomically $ TM.insert qId (Just rId) m
+
+-- TODO [queues]
+deleteQueueRef :: JournalMsgStore s -> QueueId -> IO ()
+deleteQueueRef _st _qId = pure ()
+
+-- TODO [queues]
+storeQueue_ :: JournalQueue s -> QueueRec -> IO ()
+storeQueue_ JournalQueue {recipientId, queueDirectory} _q = pure () -- save queue to disk
+  where
+    _queuePath = queueRecPath queueDirectory $ B.unpack (strEncode recipientId)
+
+openMsgQueue :: JournalMsgStore s -> JournalQueue s -> IO (JournalMsgQueue s)
+openMsgQueue ms JournalQueue {queueDirectory = dir, statePath} = do
   (st, sh) <- readWriteQueueState ms statePath
   (st', rh, wh_) <- closeOnException sh $ openJournals ms dir st sh
   let hs = MsgQueueHandles {stateHandle = sh, readHandle = rh, writeHandle = wh_}
-  mkJournalQueue q st' (Just hs)
+  mkJournalQueue st' (Just hs)
 
-mkJournalQueue :: JMQueue -> MsgQueueState -> Maybe MsgQueueHandles -> IO (JournalMsgQueue s)
-mkJournalQueue queue st hs_ = do
+mkJournalQueue :: MsgQueueState -> Maybe MsgQueueHandles -> IO (JournalMsgQueue s)
+mkJournalQueue st hs_ = do
   state <- newTVarIO st
   tipMsg <- newTVarIO Nothing
   handles <- newTVarIO hs_
-  -- using the same queue lock which is currently locked,
-  -- to avoid map lookup on queue operations
-  pure JournalMsgQueue {queue, state, tipMsg, handles}
+  pure JournalMsgQueue {state, tipMsg, handles}
 
-chooseReadJournal :: JournalMsgQueue s -> Bool -> MsgQueueHandles -> IO (Maybe (JournalState 'JTRead, Handle))
-chooseReadJournal q log' hs = do
+chooseReadJournal :: JournalQueue s -> JournalMsgQueue s -> Bool -> MsgQueueHandles -> IO (Maybe (JournalState 'JTRead, Handle))
+chooseReadJournal sq q log' hs = do
   st@MsgQueueState {writeState = ws, readState = rs} <- readTVarIO (state q)
   case writeHandle hs of
     Just wh | msgPos rs >= msgCount rs && journalId rs /= journalId ws -> do
       -- switching to write journal
       atomically $ writeTVar (handles q) $ Just hs {readHandle = wh, writeHandle = Nothing}
       hClose $ readHandle hs
-      when log' $ removeJournal (queueDirectory $ queue q) rs
+      when log' $ removeJournal (queueDirectory sq) rs
       let !rs' = (newJournalState $ journalId ws) {msgCount = msgCount ws, byteCount = byteCount ws}
           !st' = st {readState = rs'}
       updateQueueState q log' hs st' $ pure ()
@@ -686,7 +734,7 @@ msgQueueStatePath dir queueId = dir </> (queueLogFileName <> "." <> queueId <> l
 
 createNewJournal :: FilePath -> ByteString -> IO Handle
 createNewJournal dir journalId = do
-  let path = journalFilePath dir journalId -- TODO retry if file exists
+  let path = journalFilePath dir journalId -- TODO [queues] retry if file exists
   h <- openFile path ReadWriteMode
   B.hPutStr h ""
   pure h
@@ -847,7 +895,7 @@ validQueueState MsgQueueState {readState = rs, writeState = ws, size}
 
 deleteQueue_ :: forall s. JournalMsgStore s -> RecipientId -> JournalQueue s -> IO (Either ErrorType (QueueRec, Maybe (JournalMsgQueue s)))
 deleteQueue_ ms rId q =
-  runExceptT $ isolateQueueId "deleteQueue_" ms rId $ case queueStore ms of
+  isolateQueueId "deleteQueue_" ms rId $ case queueStore ms of
     MQStore {} -> deleteQueue' ms rId q >>= mapM remove
     JQStore {} -> undefined
   where

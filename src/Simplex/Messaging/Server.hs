@@ -390,8 +390,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         atomicModifyIORef'_ (msgExpired stats) (+ expired)
         printMessageStats "STORE: messages" msgStats
       where
-        expireQueueMsgs now ms old rId q = fmap (fromRight newMessageStats) . runExceptT $ do
-          (expired_, stored) <- idleDeleteExpiredMsgs now ms rId q old
+        expireQueueMsgs now ms old q = fmap (fromRight newMessageStats) . runExceptT $ do
+          (expired_, stored) <- idleDeleteExpiredMsgs now ms q old
           pure MessageStats {storedMsgsCount = stored, expiredMsgsCount = fromMaybe 0 expired_, storedQueues = 1}
 
     expireNtfsThread :: ServerConfig -> M ()
@@ -1307,7 +1307,7 @@ client
             deliver inc sub = do
               stats <- asks serverStats
               fmap (either (\e -> (corrId, rId, ERR e)) id) $ liftIO $ runExceptT $ do
-                msg_ <- tryPeekMsg ms rId q
+                msg_ <- tryPeekMsg ms q
                 liftIO $ when (inc && isJust msg_) $ incStat (qSub stats)
                 liftIO $ deliverMessage "SUB" qr rId sub msg_
 
@@ -1341,7 +1341,7 @@ client
             getMessage_ s delivered_ = do
               stats <- asks serverStats
               fmap (either err id) $ liftIO $ runExceptT $
-                tryPeekMsg ms (recipientId qr) q >>= \case
+                tryPeekMsg ms q >>= \case
                   Just msg -> do
                     let encMsg = encryptMsg qr msg
                     incStat $ (if isJust delivered_ then msgGetDuplicate else msgGet) stats
@@ -1383,11 +1383,11 @@ client
                   fmap (either err id) $ liftIO $ runExceptT $ do
                     case st of
                       ProhibitSub -> do
-                        deletedMsg_ <- tryDelMsg ms (recipientId qr) q msgId
+                        deletedMsg_ <- tryDelMsg ms q msgId
                         liftIO $ mapM_ (updateStats stats True) deletedMsg_
                         pure ok
                       _ -> do
-                        (deletedMsg_, msg_) <- tryDelPeekMsg ms (recipientId qr) q msgId
+                        (deletedMsg_, msg_) <- tryDelPeekMsg ms q msgId
                         liftIO $ mapM_ (updateStats stats False) deletedMsg_
                         liftIO $ deliverMessage "ACK" qr entId sub msg_
                 _ -> pure $ err NO_MSG
@@ -1438,7 +1438,7 @@ client
                       msg_ <- liftIO $ time "SEND" $ runExceptT $ do
                         expireMessages messageExpiration stats
                         msg <- liftIO $ mkMessage msgId body
-                        writeMsg ms (recipientId qr) q True msg
+                        writeMsg ms q True msg
                       case msg_ of
                         Left e -> pure $ err e
                         Right Nothing -> do
@@ -1463,7 +1463,7 @@ client
 
             expireMessages :: Maybe ExpirationConfig -> ServerStats -> ExceptT ErrorType IO ()
             expireMessages msgExp stats = do
-              deleted <- maybe (pure 0) (deleteExpiredMsgs ms (recipientId qr) q <=< liftIO . expireBeforeEpoch) msgExp
+              deleted <- maybe (pure 0) (deleteExpiredMsgs ms q <=< liftIO . expireBeforeEpoch) msgExp
               liftIO $ when (deleted > 0) $ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
 
             -- The condition for delivery of the message is:
@@ -1645,11 +1645,11 @@ client
             Left e -> pure $ err e
 
         getQueueInfo :: StoreQueue s -> QueueRec -> M BrokerMsg
-        getQueueInfo q QueueRec {recipientId = rId, senderKey, notifier} = do
+        getQueueInfo q QueueRec {senderKey, notifier} = do
           fmap (either ERR id) $ liftIO $ runExceptT $ do
             qiSub <- liftIO $ TM.lookupIO entId subscriptions >>= mapM mkQSub
-            qiSize <- getQueueSize ms rId q
-            qiMsg <- toMsgInfo <$$> tryPeekMsg ms rId q
+            qiSize <- getQueueSize ms q
+            qiMsg <- toMsgInfo <$$> tryPeekMsg ms q
             let info = QueueInfo {qiSnd = isJust senderKey, qiNtf = isJust notifier, qiSub, qiSize, qiMsg}
             pure $ INFO info
           where
@@ -1719,8 +1719,9 @@ exportMessages tty ms f drainMsgs = do
         logError $ "error exporting messages: " <> tshow e
         exitFailure
   where
-    saveQueueMsgs h rId q =
-      runExceptT (getQueueMessages drainMsgs ms rId q) >>= \case
+    saveQueueMsgs h q = do
+      let rId = recipientId' q
+      runExceptT (getQueueMessages drainMsgs ms q) >>= \case
         Right msgs -> Sum (length msgs) <$ BLD.hPutBuilder h (encodeMessages rId msgs)
         Left e -> do
           logError $ "STORE: saveQueueMsgs, error exporting messages from queue " <> decodeLatin1 (strEncode rId) <> ", " <> tshow e
@@ -1748,7 +1749,7 @@ processServerMessages = do
                 withAllMsgQueues False ms $ processValidateQueue
           | otherwise -> logWarn "skipping message expiration" $> Nothing
           where
-            processExpireQueue old rId q =
+            processExpireQueue old q =
               runExceptT expireQueue >>= \case
                 Right (storedMsgsCount, expiredMsgsCount) ->
                   pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues = 1}
@@ -1757,13 +1758,13 @@ processServerMessages = do
                   exitFailure
               where
                 expireQueue = do
-                  expired'' <- deleteExpiredMsgs ms rId q old
-                  stored'' <- getQueueSize ms rId q
+                  expired'' <- deleteExpiredMsgs ms q old
+                  stored'' <- getQueueSize ms q
                   liftIO $ closeMsgQueue q
                   pure (stored'', expired'')
-            processValidateQueue :: RecipientId -> JournalQueue 'MSMemory -> IO MessageStats
-            processValidateQueue rId q =
-              runExceptT (getQueueSize ms rId q) >>= \case
+            processValidateQueue :: JournalQueue 'MSMemory -> IO MessageStats
+            processValidateQueue q =
+              runExceptT (getQueueSize ms q) >>= \case
                 Right storedMsgsCount -> pure newMessageStats {storedMsgsCount, storedQueues = 1}
                 Left e -> do
                   logError $ "STORE: processValidateQueue, failed opening message queue, " <> tshow e
@@ -1802,7 +1803,7 @@ importMessages tty ms f old_ = do
           (i + 1,Just (rId, q),) <$> case msg of
             Message {msgTs}
               | maybe True (systemSeconds msgTs >=) old_ -> do
-                  writeMsg ms rId q False msg >>= \case
+                  writeMsg ms q False msg >>= \case
                     Just _ -> pure (stored + 1, expired, overQuota)
                     Nothing -> do
                       logError $ decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
@@ -1811,11 +1812,11 @@ importMessages tty ms f old_ = do
             MessageQuota {} ->
               -- queue was over quota at some point,
               -- it will be set as over quota once fully imported
-              mergeQuotaMsgs >> writeMsg ms rId q False msg $> (stored, expired, M.insert rId q overQuota)
+              mergeQuotaMsgs >> writeMsg ms q False msg $> (stored, expired, M.insert rId q overQuota)
               where
                 -- if the first message in queue head is "quota", remove it.
                 mergeQuotaMsgs =
-                  withPeekMsgQueue ms rId q "mergeQuotaMsgs" $ maybe (pure ()) $ \case
+                  withPeekMsgQueue ms q "mergeQuotaMsgs" $ maybe (pure ()) $ \case
                     (mq, MessageQuota {}) -> tryDeleteMsg_ q mq False
                     _ -> pure ()
         msgErr :: Show e => String -> e -> String

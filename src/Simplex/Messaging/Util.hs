@@ -85,6 +85,10 @@ unlessM :: Monad m => m Bool -> m () -> m ()
 unlessM b = ifM b $ pure ()
 {-# INLINE unlessM #-}
 
+anyM :: Monad m => [m Bool] -> m Bool
+anyM = foldM (\r a -> if r then pure r else (r ||) <$!> a) False
+{-# INLINE anyM #-}
+
 ($>>=) :: (Monad m, Monad f, Traversable f) => m (f a) -> (a -> m (f b)) -> m (f b)
 f $>>= g = f >>= fmap join . mapM g
 

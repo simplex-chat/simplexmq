@@ -43,6 +43,7 @@ data STMMsgStore = STMMsgStore
 data STMQueue = STMQueue
   { -- To avoid race conditions and errors when restoring queues,
     -- Nothing is written to TVar when queue is deleted.
+    recipientId :: RecipientId,
     queueRec :: TVar (Maybe QueueRec),
     msgQueue_ :: TVar (Maybe STMMsgQueue)
   }
@@ -63,7 +64,8 @@ instance STMQueueStore STMMsgStore where
   senders' = senders
   notifiers' = notifiers
   storeLog' = storeLog
-  mkQueue _ qr = STMQueue <$> newTVarIO (Just qr) <*> newTVarIO Nothing
+  mkQueue _ qr@QueueRec {recipientId} =
+    STMQueue recipientId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
 
 instance MsgStoreClass STMMsgStore where
   type StoreMonad STMMsgStore = STM
@@ -94,6 +96,10 @@ instance MsgStoreClass STMMsgStore where
 
   logQueueState _ = pure ()
 
+  -- TODO [queues] remove pun once recipientId is removed from QueueRec
+  recipientId' STMQueue {recipientId} = recipientId
+  {-# INLINE recipientId' #-}
+
   queueRec' = queueRec
   {-# INLINE queueRec' #-}
 
@@ -112,9 +118,6 @@ instance MsgStoreClass STMMsgStore where
   getQueue = getQueue'
   {-# INLINE getQueue #-}
 
-  getQueueRec = getQueueRec'
-  {-# INLINE getQueueRec #-}
-
   secureQueue = secureQueue'
   {-# INLINE secureQueue #-}
 
@@ -130,8 +133,8 @@ instance MsgStoreClass STMMsgStore where
   updateQueueTime = updateQueueTime'
   {-# INLINE updateQueueTime #-}
 
-  getMsgQueue :: STMMsgStore -> RecipientId -> STMQueue -> STM STMMsgQueue
-  getMsgQueue _ _ STMQueue {msgQueue_} = readTVar msgQueue_ >>= maybe newQ pure
+  getMsgQueue :: STMMsgStore -> STMQueue -> STM STMMsgQueue
+  getMsgQueue _ STMQueue {msgQueue_} = readTVar msgQueue_ >>= maybe newQ pure
     where
       newQ = do
         msgQueue <- newTQueue
@@ -141,12 +144,12 @@ instance MsgStoreClass STMMsgStore where
         writeTVar msgQueue_ (Just q)
         pure q
 
-  getPeekMsgQueue :: STMMsgStore -> RecipientId -> STMQueue -> STM (Maybe (STMMsgQueue, Message))
-  getPeekMsgQueue _ _ q@STMQueue {msgQueue_} = readTVar msgQueue_ $>>= \mq -> (mq,) <$$> tryPeekMsg_ q mq
+  getPeekMsgQueue :: STMMsgStore -> STMQueue -> STM (Maybe (STMMsgQueue, Message))
+  getPeekMsgQueue _ q@STMQueue {msgQueue_} = readTVar msgQueue_ $>>= \mq -> (mq,) <$$> tryPeekMsg_ q mq
 
   -- does not create queue if it does not exist, does not delete it if it does (can't just close in-memory queue)
-  withIdleMsgQueue :: Int64 -> STMMsgStore -> RecipientId -> STMQueue -> (STMMsgQueue -> STM a) -> STM (Maybe a, Int)
-  withIdleMsgQueue _ _ _ STMQueue {msgQueue_} action = readTVar msgQueue_ >>= \case
+  withIdleMsgQueue :: Int64 -> STMMsgStore -> STMQueue -> (STMMsgQueue -> STM a) -> STM (Maybe a, Int)
+  withIdleMsgQueue _ _ STMQueue {msgQueue_} action = readTVar msgQueue_ >>= \case
     Just q -> do
       r <- action q
       sz <- getQueueSize_ q
@@ -162,17 +165,17 @@ instance MsgStoreClass STMMsgStore where
     where
       getSize = maybe (pure 0) (\STMMsgQueue {size} -> readTVarIO size)
 
-  getQueueMessages_ :: Bool -> STMMsgQueue -> STM [Message]
-  getQueueMessages_ drainMsgs = (if drainMsgs then flushTQueue else snapshotTQueue) . msgQueue
+  getQueueMessages_ :: Bool -> STMQueue -> STMMsgQueue -> STM [Message]
+  getQueueMessages_ drainMsgs _ = (if drainMsgs then flushTQueue else snapshotTQueue) . msgQueue
     where
       snapshotTQueue q = do
         msgs <- flushTQueue q
         mapM_ (writeTQueue q) msgs
         pure msgs
 
-  writeMsg :: STMMsgStore -> RecipientId -> STMQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
-  writeMsg ms rId q' _logState msg = liftIO $ atomically $ do
-    STMMsgQueue {msgQueue = q, canWrite, size} <- getMsgQueue ms rId q'
+  writeMsg :: STMMsgStore -> STMQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
+  writeMsg ms q' _logState msg = liftIO $ atomically $ do
+    STMMsgQueue {msgQueue = q, canWrite, size} <- getMsgQueue ms q'
     canWrt <- readTVar canWrite
     empty <- isEmptyTQueue q
     if canWrt || empty
@@ -193,6 +196,7 @@ instance MsgStoreClass STMMsgStore where
 
   getQueueSize_ :: STMMsgQueue -> STM Int
   getQueueSize_ STMMsgQueue {size} = readTVar size
+  {-# INLINE getQueueSize_ #-}
 
   tryPeekMsg_ :: STMQueue -> STMMsgQueue -> STM (Maybe Message)
   tryPeekMsg_ _ = tryPeekTQueue . msgQueue
@@ -204,5 +208,6 @@ instance MsgStoreClass STMMsgStore where
       Just _ -> modifyTVar' size (subtract 1)
       _ -> pure ()
 
-  isolateQueue :: RecipientId -> STMQueue -> String -> STM a -> ExceptT ErrorType IO a
-  isolateQueue _ _ _ = liftIO . atomically
+  isolateQueue :: STMQueue -> String -> STM a -> ExceptT ErrorType IO a
+  isolateQueue _ _ = liftIO . atomically
+  {-# INLINE isolateQueue #-}

@@ -16,7 +16,6 @@
 module Simplex.Messaging.Server.QueueStore.STM
   ( addQueue',
     getQueue',
-    getQueueRec',
     secureQueue',
     addQueueNotifier',
     deleteQueueNotifier',
@@ -24,6 +23,7 @@ module Simplex.Messaging.Server.QueueStore.STM
     updateQueueTime',
     deleteQueue',
     readQueueStore,
+    readQueueRec,
     withLog',
   )
 where
@@ -39,7 +39,7 @@ import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.StoreLog
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (ifM, ($>>=), (<$$))
+import Simplex.Messaging.Util (anyM, ifM, ($>>=), (<$$))
 import System.IO
 import UnliftIO.STM
 
@@ -53,7 +53,7 @@ addQueue' st qr@QueueRec {recipientId = rId, senderId = sId, notifier} =
       TM.insert sId rId $ senders' st
       forM_ notifier $ \NtfCreds {notifierId} -> TM.insert notifierId rId $ notifiers' st
       pure $ Right q
-    hasId = foldM (fmap . (||)) False [TM.member rId $ queues' st, TM.member sId $ senders' st, hasNotifier]
+    hasId = anyM [TM.member rId $ queues' st, TM.member sId $ senders' st, hasNotifier]
     hasNotifier = maybe (pure False) (\NtfCreds {notifierId} -> TM.member notifierId (notifiers' st)) notifier
 
 getQueue' :: (STMQueueStore s, DirectParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s))
@@ -62,11 +62,6 @@ getQueue' st party qId =
     SRecipient -> TM.lookupIO qId $ queues' st
     SSender -> TM.lookupIO qId (senders' st) $>>= (`TM.lookupIO` queues' st)
     SNotifier -> TM.lookupIO qId (notifiers' st) $>>= (`TM.lookupIO` queues' st)
-
-getQueueRec' :: (STMQueueStore s, DirectParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s, QueueRec))
-getQueueRec' st party qId =
-  getQueue st party qId
-    $>>= (\q -> maybe (Left AUTH) (Right . (q,)) <$> readTVarIO (queueRec' q))
 
 secureQueue' :: STMQueueStore s => s -> StoreQueue s -> SndPublicAuthKey -> IO (Either ErrorType ())
 secureQueue' st sq sKey =
