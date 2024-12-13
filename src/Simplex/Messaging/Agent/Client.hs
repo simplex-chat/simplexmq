@@ -1,5 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -205,7 +206,6 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
-import qualified Database.SQLite.Simple as SQL
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -282,6 +282,9 @@ import UnliftIO.Concurrent (forkIO, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+#if !defined(dbPostgres)
+import qualified Database.SQLite.Simple as SQL
+#endif
 
 type ClientVar msg = SessionVar (Either (AgentErrorType, Maybe UTCTime) (Client msg))
 
@@ -1989,6 +1992,13 @@ withStore c action = do
   withExceptT storeError . ExceptT . liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
     withTransaction st action `E.catches` handleDBErrors
   where
+#if defined(dbPostgres)
+    -- TODO [postgres] postgres specific error handling
+    handleDBErrors :: [E.Handler IO (Either StoreError a)]
+    handleDBErrors =
+      [ E.Handler $ \(E.SomeException e) -> pure . Left $ SEInternal $ bshow e
+      ]
+#else
     handleDBErrors :: [E.Handler IO (Either StoreError a)]
     handleDBErrors =
       [ E.Handler $ \(e :: SQL.SQLError) ->
@@ -1997,6 +2007,7 @@ withStore c action = do
            in pure . Left . (if busy then SEDatabaseBusy else SEInternal) $ bshow se,
         E.Handler $ \(E.SomeException e) -> pure . Left $ SEInternal $ bshow e
       ]
+#endif
 
 withStoreBatch :: Traversable t => AgentClient -> (DB.Connection -> t (IO (Either AgentErrorType a))) -> AM' (t (Either AgentErrorType a))
 withStoreBatch c actions = do
