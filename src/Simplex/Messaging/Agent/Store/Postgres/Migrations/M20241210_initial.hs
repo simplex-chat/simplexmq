@@ -6,18 +6,16 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Text.RawString.QQ (r)
 
+-- TODO [postgres] remove
+-- DROP SCHEMA IF EXISTS agent_schema CASCADE;
+-- CREATE SCHEMA agent_schema;
+
+-- SET search_path TO agent_schema;
+
 m20241210_initial :: Text
 m20241210_initial =
   T.pack
     [r|
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-
--- TODO [postgres] remove
-DROP SCHEMA IF EXISTS agent_schema CASCADE;
-CREATE SCHEMA agent_schema;
-
-SET search_path TO agent_schema;
-
 CREATE TABLE users(
   user_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   deleted SMALLINT NOT NULL DEFAULT 0

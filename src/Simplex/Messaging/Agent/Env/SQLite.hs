@@ -88,6 +88,7 @@ import System.Mem.Weak (Weak)
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
 #if defined(dbPostgres)
+import Database.PostgreSQL.Simple (ConnectInfo (..))
 #else
 import Data.ByteArray (ScrubbedBytes)
 #endif
@@ -277,8 +278,7 @@ newSMPAgentEnv config store = do
   pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
 
 #if defined(dbPostgres)
--- TODO [postgres] pass db name / ConnectInfo?
-createAgentStore :: MigrationConfirmation -> IO (Either MigrationError DBStore)
+createAgentStore ::ConnectInfo -> String -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createAgentStore = createStore
 #else
 createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError DBStore)
