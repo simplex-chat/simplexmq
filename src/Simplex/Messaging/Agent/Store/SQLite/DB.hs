@@ -11,11 +11,9 @@ module Simplex.Messaging.Agent.Store.SQLite.DB
     close,
     execute,
     execute_,
-    executeNamed,
     executeMany,
     query,
     query_,
-    queryNamed,
   )
 where
 
@@ -28,7 +26,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import Data.Time (diffUTCTime, getCurrentTime)
-import Database.SQLite.Simple (FromRow, NamedParam, Query, ToRow)
+import Database.SQLite.Simple (FromRow, Query, ToRow)
 import qualified Database.SQLite.Simple as SQL
 import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.TMap (TMap)
@@ -92,11 +90,6 @@ execute_ :: Connection -> Query -> IO ()
 execute_ Connection {conn, slow} sql = timeIt slow sql $ SQL.execute_ conn sql
 {-# INLINE execute_ #-}
 
--- TODO [postgres] remove
-executeNamed :: Connection -> Query -> [NamedParam] -> IO ()
-executeNamed Connection {conn, slow} sql = timeIt slow sql . SQL.executeNamed conn sql
-{-# INLINE executeNamed #-}
-
 executeMany :: ToRow q => Connection -> Query -> [q] -> IO ()
 executeMany Connection {conn, slow} sql = timeIt slow sql . SQL.executeMany conn sql
 {-# INLINE executeMany #-}
@@ -108,10 +101,5 @@ query Connection {conn, slow} sql = timeIt slow sql . SQL.query conn sql
 query_ :: FromRow r => Connection -> Query -> IO [r]
 query_ Connection {conn, slow} sql = timeIt slow sql $ SQL.query_ conn sql
 {-# INLINE query_ #-}
-
--- TODO [postgres] remove
-queryNamed :: FromRow r => Connection -> Query -> [NamedParam] -> IO [r]
-queryNamed Connection {conn, slow} sql = timeIt slow sql . SQL.queryNamed conn sql
-{-# INLINE queryNamed #-}
 
 $(J.deriveJSON defaultJSON ''SlowQueryStats)

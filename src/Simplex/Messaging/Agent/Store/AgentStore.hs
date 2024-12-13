@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -18,7 +19,6 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -249,11 +249,6 @@ import Data.Ord (Down (..))
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Word (Word32)
-import Database.SQLite.Simple (FromRow (..), NamedParam (..), Only (..), Query (..), SQLError, ToRow (..), field, (:.) (..))
-import qualified Database.SQLite.Simple as SQL
-import Database.SQLite.Simple.FromField
-import Database.SQLite.Simple.QQ (sql)
-import Database.SQLite.Simple.ToField (ToField (..))
 import Network.Socket (ServiceName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
@@ -281,14 +276,34 @@ import Simplex.Messaging.Util (bshow, catchAllErrors, eitherToMaybe, ifM, tshow,
 import Simplex.Messaging.Version.Internal
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+#if defined(dbPostgres)
+import Database.PostgreSQL.Simple (Only (..), Query, SqlError, (:.) (..))
+import Database.PostgreSQL.Simple.FromField
+import Database.PostgreSQL.Simple.Errors (constraintViolation)
+import Database.PostgreSQL.Simple.SqlQQ (sql)
+import Database.PostgreSQL.Simple.ToField (ToField (..))
+#else
+import Database.SQLite.Simple (FromRow (..), Only (..), Query (..), SQLError, ToRow (..), field, (:.) (..))
+import qualified Database.SQLite.Simple as SQL
+import Database.SQLite.Simple.FromField
+import Database.SQLite.Simple.QQ (sql)
+import Database.SQLite.Simple.ToField (ToField (..))
+#endif
 
 checkConstraint :: StoreError -> IO (Either StoreError a) -> IO (Either StoreError a)
 checkConstraint err action = action `E.catch` (pure . Left . handleSQLError err)
 
+#if defined(dbPostgres)
+handleSQLError :: StoreError -> SqlError -> StoreError
+handleSQLError err e = case constraintViolation e of
+  Just _ -> err
+  Nothing -> SEInternal $ bshow e
+#else
 handleSQLError :: StoreError -> SQLError -> StoreError
 handleSQLError err e
   | SQL.sqlError e == SQL.ErrorConstraint = err
   | otherwise = SEInternal $ bshow e
+#endif
 
 createUserRecord :: DB.Connection -> IO UserId
 createUserRecord db = do
@@ -481,14 +496,14 @@ addConnSndQueue_ db connId sq@SndQueue {server} = do
 setRcvQueueStatus :: DB.Connection -> RcvQueue -> QueueStatus -> IO ()
 setRcvQueueStatus db RcvQueue {rcvId, server = ProtocolServer {host, port}} status =
   -- ? return error if queue does not exist?
-  DB.executeNamed
+  DB.execute
     db
     [sql|
       UPDATE rcv_queues
-      SET status = :status
-      WHERE host = :host AND port = :port AND rcv_id = :rcv_id;
+      SET status = ?
+      WHERE host = ? AND port = ? AND rcv_id = ?
     |]
-    [":status" := status, ":host" := host, ":port" := port, ":rcv_id" := rcvId]
+    (status, host, port, rcvId)
 
 setRcvSwitchStatus :: DB.Connection -> RcvQueue -> Maybe RcvSwitchStatus -> IO RcvQueue
 setRcvSwitchStatus db rq@RcvQueue {rcvId, server = ProtocolServer {host, port}} rcvSwchStatus = do
@@ -515,34 +530,28 @@ setRcvQueueDeleted db RcvQueue {rcvId, server = ProtocolServer {host, port}} = d
 
 setRcvQueueConfirmedE2E :: DB.Connection -> RcvQueue -> C.DhSecretX25519 -> VersionSMPC -> IO ()
 setRcvQueueConfirmedE2E db RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret smpClientVersion =
-  DB.executeNamed
+  DB.execute
     db
     [sql|
       UPDATE rcv_queues
-      SET e2e_dh_secret = :e2e_dh_secret,
-          status = :status,
-          smp_client_version = :smp_client_version
-      WHERE host = :host AND port = :port AND rcv_id = :rcv_id
+      SET e2e_dh_secret = ?,
+          status = ?,
+          smp_client_version = ?
+      WHERE host = ? AND port = ? AND rcv_id = ?
     |]
-    [ ":status" := Confirmed,
-      ":e2e_dh_secret" := e2eDhSecret,
-      ":smp_client_version" := smpClientVersion,
-      ":host" := host,
-      ":port" := port,
-      ":rcv_id" := rcvId
-    ]
+    (e2eDhSecret, Confirmed, smpClientVersion, host, port, rcvId)
 
 setSndQueueStatus :: DB.Connection -> SndQueue -> QueueStatus -> IO ()
 setSndQueueStatus db SndQueue {sndId, server = ProtocolServer {host, port}} status =
   -- ? return error if queue does not exist?
-  DB.executeNamed
+  DB.execute
     db
     [sql|
       UPDATE snd_queues
-      SET status = :status
-      WHERE host = :host AND port = :port AND snd_id = :snd_id;
+      SET status = ?
+      WHERE host = ? AND port = ? AND snd_id = ?
     |]
-    [":status" := status, ":host" := host, ":port" := port, ":snd_id" := sndId]
+    (status, host, port, sndId)
 
 setSndSwitchStatus :: DB.Connection -> SndQueue -> Maybe SndSwitchStatus -> IO SndQueue
 setSndSwitchStatus db sq@SndQueue {sndId, server = ProtocolServer {host, port}} sndSwchStatus = do
@@ -639,17 +648,15 @@ createConfirmation db gVar NewConfirmation {connId, senderConf = SMPConfirmation
 
 acceptConfirmation :: DB.Connection -> ConfirmationId -> ConnInfo -> IO (Either StoreError AcceptedConfirmation)
 acceptConfirmation db confirmationId ownConnInfo = do
-  DB.executeNamed
+  DB.execute
     db
     [sql|
       UPDATE conn_confirmations
       SET accepted = 1,
-          own_conn_info = :own_conn_info
-      WHERE confirmation_id = :confirmation_id;
+          own_conn_info = ?
+      WHERE confirmation_id = ?
     |]
-    [ ":own_conn_info" := ownConnInfo,
-      ":confirmation_id" := confirmationId
-    ]
+    (ownConnInfo, confirmationId)
   firstRow confirmation SEConfirmationNotFound $
     DB.query
       db
@@ -692,13 +699,13 @@ getAcceptedConfirmation db connId =
 
 removeConfirmations :: DB.Connection -> ConnId -> IO ()
 removeConfirmations db connId =
-  DB.executeNamed
+  DB.execute
     db
     [sql|
       DELETE FROM conn_confirmations
-      WHERE conn_id = :conn_id;
+      WHERE conn_id = ?
     |]
-    [":conn_id" := connId]
+    (Only connId)
 
 createInvitation :: DB.Connection -> TVar ChaChaDRG -> NewInvitation -> IO (Either StoreError InvitationId)
 createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =
@@ -729,17 +736,15 @@ getInvitation db cxt invitationId =
 
 acceptInvitation :: DB.Connection -> InvitationId -> ConnInfo -> IO ()
 acceptInvitation db invitationId ownConnInfo =
-  DB.executeNamed
+  DB.execute
     db
     [sql|
       UPDATE conn_invitations
       SET accepted = 1,
-          own_conn_info = :own_conn_info
-      WHERE invitation_id = :invitation_id
+          own_conn_info = ?
+      WHERE invitation_id = ?
     |]
-    [ ":own_conn_info" := ownConnInfo,
-      ":invitation_id" := invitationId
-    ]
+    (ownConnInfo, invitationId)
 
 unacceptInvitation :: DB.Connection -> InvitationId -> IO ()
 unacceptInvitation db invitationId =
@@ -1052,20 +1057,20 @@ setRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 pqPrivKem =
 -- TODO remove the columns for public keys in v5.7.
 createRatchet :: DB.Connection -> ConnId -> RatchetX448 -> IO ()
 createRatchet db connId rc =
-  DB.executeNamed
+  DB.execute
     db
     [sql|
       INSERT INTO ratchets (conn_id, ratchet_state)
-      VALUES (:conn_id, :ratchet_state)
+      VALUES (?, ?)
       ON CONFLICT (conn_id) DO UPDATE SET
-        ratchet_state = :ratchet_state,
+        ratchet_state = ?,
         x3dh_priv_key_1 = NULL,
         x3dh_priv_key_2 = NULL,
         x3dh_pub_key_1 = NULL,
         x3dh_pub_key_2 = NULL,
         pq_priv_kem = NULL
     |]
-    [":conn_id" := connId, ":ratchet_state" := rc]
+    (connId, rc, rc)
 
 deleteRatchet :: DB.Connection -> ConnId -> IO ()
 deleteRatchet db connId =
@@ -1109,9 +1114,15 @@ createCommand db corrId connId srv_ cmd = runExceptT $ do
       (host_, port_, corrId, connId, cmdTag, cmd, serverKeyHash_, createdAt)
   where
     cmdTag = agentCommandTag cmd
+#if defined(dbPostgres)
+    handleErr e = case constraintViolation e of
+      Just _ -> logError $ "tried to create command " <> tshow cmdTag <> " for deleted connection"
+      Nothing -> E.throwIO e
+#else
     handleErr e
       | SQL.sqlError e == SQL.ErrorConstraint = logError $ "tried to create command " <> tshow cmdTag <> " for deleted connection"
       | otherwise = E.throwIO e
+#endif
     serverFields :: ExceptT StoreError IO (Maybe (NonEmpty TransportHost), Maybe ServiceName, Maybe C.KeyHash)
     serverFields = case srv_ of
       Just srv@(SMPServer host port _) ->
@@ -1630,19 +1641,35 @@ instance FromField QueueStatus where fromField = fromTextField_ queueStatusT
 
 instance ToField (DBQueueId 'QSStored) where toField (DBQueueId qId) = toField qId
 
+#if defined(dbPostgres)
+instance FromField (DBQueueId 'QSStored) where fromField = fromField
+#else
 instance FromField (DBQueueId 'QSStored) where fromField x = DBQueueId <$> fromField x
+#endif
 
 instance ToField InternalRcvId where toField (InternalRcvId x) = toField x
 
+#if defined(dbPostgres)
+instance FromField InternalRcvId where fromField = fromField
+#else
 instance FromField InternalRcvId where fromField x = InternalRcvId <$> fromField x
+#endif
 
 instance ToField InternalSndId where toField (InternalSndId x) = toField x
 
+#if defined(dbPostgres)
+instance FromField InternalSndId where fromField = fromField
+#else
 instance FromField InternalSndId where fromField x = InternalSndId <$> fromField x
+#endif
 
 instance ToField InternalId where toField (InternalId x) = toField x
 
+#if defined(dbPostgres)
+instance FromField InternalId where fromField = fromField
+#else
 instance FromField InternalId where fromField x = InternalId <$> fromField x
+#endif
 
 instance ToField AgentMessageType where toField = toField . smpEncode
 
@@ -1698,7 +1725,11 @@ instance FromField MsgReceiptStatus where fromField = fromTextField_ $ eitherToM
 
 instance ToField (Version v) where toField (Version v) = toField v
 
+#if defined(dbPostgres)
+instance FromField (Version v) where fromField = fromField
+#else
 instance FromField (Version v) where fromField f = Version <$> fromField f
+#endif
 
 deriving newtype instance ToField EntityId
 
@@ -1721,6 +1752,7 @@ maybeFirstRow f q = fmap f . listToMaybe <$> q
 firstRow' :: (a -> Either e b) -> e -> IO [a] -> IO (Either e b)
 firstRow' f e a = (f <=< listToEither e) <$> a
 
+#if !defined(dbPostgres)
 {- ORMOLU_DISABLE -}
 -- SQLite.Simple only has these up to 10 fields, which is insufficient for some of our queries
 instance (FromField a, FromField b, FromField c, FromField d, FromField e,
@@ -1748,6 +1780,7 @@ instance (ToField a, ToField b, ToField c, ToField d, ToField e, ToField f,
     ]
 
 {- ORMOLU_ENABLE -}
+#endif
 
 -- * Server helper
 
@@ -1771,16 +1804,16 @@ getServerKeyHash_ db ProtocolServer {host, port, keyHash} = do
 
 upsertNtfServer_ :: DB.Connection -> NtfServer -> IO ()
 upsertNtfServer_ db ProtocolServer {host, port, keyHash} = do
-  DB.executeNamed
+  DB.execute
     db
     [sql|
-      INSERT INTO ntf_servers (ntf_host, ntf_port, ntf_key_hash) VALUES (:host,:port,:key_hash)
+      INSERT INTO ntf_servers (ntf_host, ntf_port, ntf_key_hash) VALUES (?,?,?)
       ON CONFLICT (ntf_host, ntf_port) DO UPDATE SET
         ntf_host=excluded.ntf_host,
         ntf_port=excluded.ntf_port,
         ntf_key_hash=excluded.ntf_key_hash;
     |]
-    [":host" := host, ":port" := port, ":key_hash" := keyHash]
+    (host, port, keyHash)
 
 -- * createRcvConn helpers
 
@@ -2015,30 +2048,27 @@ getSndQueueById db connId dbSndId =
 retrieveLastIdsAndHashRcv_ :: DB.Connection -> ConnId -> IO (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
 retrieveLastIdsAndHashRcv_ dbConn connId = do
   [(lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash)] <-
-    DB.queryNamed
+    DB.query
       dbConn
       [sql|
         SELECT last_internal_msg_id, last_internal_rcv_msg_id, last_external_snd_msg_id, last_rcv_msg_hash
         FROM connections
-        WHERE conn_id = :conn_id;
+        WHERE conn_id = ?
       |]
-      [":conn_id" := connId]
+      (Only connId)
   return (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash)
 
 updateLastIdsRcv_ :: DB.Connection -> ConnId -> InternalId -> InternalRcvId -> IO ()
 updateLastIdsRcv_ dbConn connId newInternalId newInternalRcvId =
-  DB.executeNamed
+  DB.execute
     dbConn
     [sql|
       UPDATE connections
-      SET last_internal_msg_id = :last_internal_msg_id,
-          last_internal_rcv_msg_id = :last_internal_rcv_msg_id
-      WHERE conn_id = :conn_id;
+      SET last_internal_msg_id = ?,
+          last_internal_rcv_msg_id = ?
+      WHERE conn_id = ?
     |]
-    [ ":last_internal_msg_id" := newInternalId,
-      ":last_internal_rcv_msg_id" := newInternalRcvId,
-      ":conn_id" := connId
-    ]
+    (newInternalId, newInternalRcvId, connId)
 
 -- * createRcvMsg helpers
 
@@ -2057,7 +2087,7 @@ insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgType, msgFlags, msgBody,
 insertRcvMsgDetails_ :: DB.Connection -> ConnId -> RcvQueue -> RcvMsgData -> IO ()
 insertRcvMsgDetails_ db connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, internalRcvId, internalHash, externalPrevSndHash, encryptedMsgHash} = do
   let MsgMeta {integrity, recipient, broker, sndMsgId} = msgMeta
-  DB.executeNamed
+  DB.execute
     db
     [sql|
       INSERT INTO rcv_messages
@@ -2065,69 +2095,50 @@ insertRcvMsgDetails_ db connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, interna
           broker_id, broker_ts,
           internal_hash, external_prev_snd_hash, integrity)
       VALUES
-        (:conn_id,:rcv_queue_id,:internal_rcv_id,:internal_id,:external_snd_id,
-         :broker_id,:broker_ts,
-         :internal_hash,:external_prev_snd_hash,:integrity);
+        (?,?,?,?,?,?,?,?,?,?)
     |]
-    [ ":conn_id" := connId,
-      ":rcv_queue_id" := dbQueueId,
-      ":internal_rcv_id" := internalRcvId,
-      ":internal_id" := fst recipient,
-      ":external_snd_id" := sndMsgId,
-      ":broker_id" := fst broker,
-      ":broker_ts" := snd broker,
-      ":internal_hash" := internalHash,
-      ":external_prev_snd_hash" := externalPrevSndHash,
-      ":integrity" := integrity
-    ]
+    (connId, dbQueueId, internalRcvId, fst recipient, sndMsgId, fst broker, snd broker, internalHash, externalPrevSndHash, integrity)
   DB.execute db "INSERT INTO encrypted_rcv_message_hashes (conn_id, hash) VALUES (?,?)" (connId, encryptedMsgHash)
 
 updateRcvMsgHash :: DB.Connection -> ConnId -> AgentMsgId -> InternalRcvId -> MsgHash -> IO ()
 updateRcvMsgHash db connId sndMsgId internalRcvId internalHash =
-  DB.executeNamed
+  DB.execute
     db
     -- last_internal_rcv_msg_id equality check prevents race condition in case next id was reserved
     [sql|
       UPDATE connections
-      SET last_external_snd_msg_id = :last_external_snd_msg_id,
-          last_rcv_msg_hash = :last_rcv_msg_hash
-      WHERE conn_id = :conn_id
-        AND last_internal_rcv_msg_id = :last_internal_rcv_msg_id;
+      SET last_external_snd_msg_id = ?,
+          last_rcv_msg_hash = ?
+      WHERE conn_id = ?
+        AND last_internal_rcv_msg_id = ?
     |]
-    [ ":last_external_snd_msg_id" := sndMsgId,
-      ":last_rcv_msg_hash" := internalHash,
-      ":conn_id" := connId,
-      ":last_internal_rcv_msg_id" := internalRcvId
-    ]
+    (sndMsgId, internalHash, connId, internalRcvId)
 
 -- * updateSndIds helpers
 
 retrieveLastIdsAndHashSnd_ :: DB.Connection -> ConnId -> IO (Either StoreError (InternalId, InternalSndId, PrevSndMsgHash))
 retrieveLastIdsAndHashSnd_ dbConn connId = do
   firstRow id SEConnNotFound $
-    DB.queryNamed
+    DB.query
       dbConn
       [sql|
         SELECT last_internal_msg_id, last_internal_snd_msg_id, last_snd_msg_hash
         FROM connections
-        WHERE conn_id = :conn_id;
+        WHERE conn_id = ?
       |]
-      [":conn_id" := connId]
+      (Only connId)
 
 updateLastIdsSnd_ :: DB.Connection -> ConnId -> InternalId -> InternalSndId -> IO ()
 updateLastIdsSnd_ dbConn connId newInternalId newInternalSndId =
-  DB.executeNamed
+  DB.execute
     dbConn
     [sql|
       UPDATE connections
-      SET last_internal_msg_id = :last_internal_msg_id,
-          last_internal_snd_msg_id = :last_internal_snd_msg_id
-      WHERE conn_id = :conn_id;
+      SET last_internal_msg_id = ?,
+          last_internal_snd_msg_id = ?
+      WHERE conn_id = ?
     |]
-    [ ":last_internal_msg_id" := newInternalId,
-      ":last_internal_snd_msg_id" := newInternalSndId,
-      ":conn_id" := connId
-    ]
+    (newInternalId, newInternalSndId, connId)
 
 -- * createSndMsg helpers
 
@@ -2145,36 +2156,28 @@ insertSndMsgBase_ db connId SndMsgData {internalId, internalTs, internalSndId, m
 
 insertSndMsgDetails_ :: DB.Connection -> ConnId -> SndMsgData -> IO ()
 insertSndMsgDetails_ dbConn connId SndMsgData {..} =
-  DB.executeNamed
+  DB.execute
     dbConn
     [sql|
       INSERT INTO snd_messages
         ( conn_id, internal_snd_id, internal_id, internal_hash, previous_msg_hash)
       VALUES
-        (:conn_id,:internal_snd_id,:internal_id,:internal_hash,:previous_msg_hash);
+        (?,?,?,?,?)
     |]
-    [ ":conn_id" := connId,
-      ":internal_snd_id" := internalSndId,
-      ":internal_id" := internalId,
-      ":internal_hash" := internalHash,
-      ":previous_msg_hash" := prevMsgHash
-    ]
+    (connId, internalSndId, internalId, internalHash, prevMsgHash)
 
 updateSndMsgHash :: DB.Connection -> ConnId -> InternalSndId -> MsgHash -> IO ()
 updateSndMsgHash db connId internalSndId internalHash =
-  DB.executeNamed
+  DB.execute
     db
     -- last_internal_snd_msg_id equality check prevents race condition in case next id was reserved
     [sql|
       UPDATE connections
-      SET last_snd_msg_hash = :last_snd_msg_hash
-      WHERE conn_id = :conn_id
-        AND last_internal_snd_msg_id = :last_internal_snd_msg_id;
+      SET last_snd_msg_hash = ?
+      WHERE conn_id = ?
+        AND last_internal_snd_msg_id = ?;
     |]
-    [ ":last_snd_msg_hash" := internalHash,
-      ":conn_id" := connId,
-      ":last_internal_snd_msg_id" := internalSndId
-    ]
+    (internalHash, connId, internalSndId)
 
 -- create record with a random ID
 createWithRandomId :: TVar ChaChaDRG -> (ByteString -> IO ()) -> IO (Either StoreError ByteString)
@@ -2189,9 +2192,16 @@ createWithRandomId' gVar create = tryCreate 3
       id' <- randomId gVar 12
       E.try (create id') >>= \case
         Right r -> pure $ Right (id', r)
-        Left e
-          | SQL.sqlError e == SQL.ErrorConstraint -> tryCreate (n - 1)
-          | otherwise -> pure . Left . SEInternal $ bshow e
+        Left e -> handleErr n e
+#if defined(dbPostgres)
+    handleErr n e = case constraintViolation e of
+      Just _ -> tryCreate (n - 1)
+      Nothing -> pure . Left . SEInternal $ bshow e
+#else
+    handleErr n e
+      | SQL.sqlError e == SQL.ErrorConstraint = tryCreate (n - 1)
+      | otherwise = pure . Left . SEInternal $ bshow e
+#endif
 
 randomId :: TVar ChaChaDRG -> Int -> IO ByteString
 randomId gVar n = atomically $ U.encode <$> C.randomBytes n gVar
