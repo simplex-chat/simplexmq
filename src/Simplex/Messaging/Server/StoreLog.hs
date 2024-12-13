@@ -57,7 +57,7 @@ import System.Directory (doesFileExist, renameFile)
 import System.IO
 
 data StoreLogRecord
-  = CreateQueue QueueRec
+  = CreateQueue RecipientId QueueRec
   | SecureQueue QueueId SndPublicAuthKey
   | AddNotifier QueueId NtfCreds
   | SuspendQueue QueueId
@@ -76,10 +76,9 @@ data SLRTag
   | UpdateTime_
 
 instance StrEncoding QueueRec where
-  strEncode QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, updatedAt} =
+  strEncode QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, updatedAt} =
     B.unwords
-      [ "rid=" <> strEncode recipientId,
-        "rk=" <> strEncode recipientKey,
+      [ "rk=" <> strEncode recipientKey,
         "rdh=" <> strEncode rcvDhSecret,
         "sid=" <> strEncode senderId,
         "sk=" <> strEncode senderKey
@@ -93,7 +92,6 @@ instance StrEncoding QueueRec where
       updatedAtStr t = " updated_at=" <> strEncode t
 
   strP = do
-    recipientId <- "rid=" *> strP_
     recipientKey <- "rk=" *> strP_
     rcvDhSecret <- "rdh=" *> strP_
     senderId <- "sid=" *> strP_
@@ -101,7 +99,7 @@ instance StrEncoding QueueRec where
     sndSecure <- (" sndSecure=" *> strP) <|> pure False
     notifier <- optional $ " notifier=" *> strP
     updatedAt <- optional $ " updated_at=" *> strP
-    pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status = QueueActive, updatedAt}
+    pure QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status = QueueActive, updatedAt}
 
 instance StrEncoding SLRTag where
   strEncode = \case
@@ -126,7 +124,7 @@ instance StrEncoding SLRTag where
 
 instance StrEncoding StoreLogRecord where
   strEncode = \case
-    CreateQueue q -> strEncode (CreateQueue_, q)
+    CreateQueue rId q -> strEncode (CreateQueue_, Str $ "rid=" <> strEncode rId, q)
     SecureQueue rId sKey -> strEncode (SecureQueue_, rId, sKey)
     AddNotifier rId ntfCreds -> strEncode (AddNotifier_, rId, ntfCreds)
     SuspendQueue rId -> strEncode (SuspendQueue_, rId)
@@ -136,7 +134,7 @@ instance StrEncoding StoreLogRecord where
 
   strP =
     strP_ >>= \case
-      CreateQueue_ -> CreateQueue <$> strP
+      CreateQueue_ -> CreateQueue <$> ("rid=" *> strP_) <*> strP
       SecureQueue_ -> SecureQueue <$> strP_ <*> strP
       AddNotifier_ -> AddNotifier <$> strP_ <*> strP
       SuspendQueue_ -> SuspendQueue <$> strP
@@ -172,8 +170,8 @@ writeStoreLogRecord (WriteStoreLog _ h) r = E.uninterruptibleMask_ $ do
   B.hPut h $ strEncode r `B.snoc` '\n' -- hPutStrLn makes write non-atomic for length > 1024
   hFlush h
 
-logCreateQueue :: StoreLog 'WriteMode -> QueueRec -> IO ()
-logCreateQueue s = writeStoreLogRecord s . CreateQueue
+logCreateQueue :: StoreLog 'WriteMode -> RecipientId -> QueueRec -> IO ()
+logCreateQueue s rId q = writeStoreLogRecord s $ CreateQueue rId q
 
 logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SndPublicAuthKey -> IO ()
 logSecureQueue s qId sKey = writeStoreLogRecord s $ SecureQueue qId sKey
@@ -233,7 +231,7 @@ writeQueueStore s st = readTVarIO (activeMsgQueues st) >>= mapM_ writeQueue . M.
   where
     writeQueue (rId, q) =
       readTVarIO (queueRec' q) >>= \case
-        Just q' -> when (active q') $ logCreateQueue s q' -- TODO we should log suspended queues when we use them
+        Just q' -> when (active q') $ logCreateQueue s rId q' -- TODO we should log suspended queues when we use them
         Nothing -> atomically $ TM.delete rId $ activeMsgQueues st
     active QueueRec {status} = status == QueueActive
 
@@ -246,11 +244,11 @@ readQueueStore f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLin
         s = LB.toStrict s'
         procLogRecord :: StoreLogRecord -> IO ()
         procLogRecord = \case
-          CreateQueue q -> addQueue st q >>= qError (recipientId q) "CreateQueue"
+          CreateQueue rId q -> addQueue st rId q >>= qError rId "CreateQueue"
           SecureQueue qId sKey -> withQueue qId "SecureQueue" $ \q -> secureQueue st q sKey
           AddNotifier qId ntfCreds -> withQueue qId "AddNotifier" $ \q -> addQueueNotifier st q ntfCreds
           SuspendQueue qId -> withQueue qId "SuspendQueue" $ suspendQueue st
-          DeleteQueue qId -> withQueue qId "DeleteQueue" $ deleteQueue st qId
+          DeleteQueue qId -> withQueue qId "DeleteQueue" $ deleteQueue st
           DeleteNotifier qId -> withQueue qId "DeleteNotifier" $ deleteQueueNotifier st
           UpdateTime qId t -> withQueue qId "UpdateTime" $ \q -> updateQueueTime st q t
         printError :: String -> IO ()

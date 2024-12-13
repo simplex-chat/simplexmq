@@ -57,38 +57,38 @@ storeLogTests =
     testSMPStoreLog ("SMP server store log, sndSecure = " <> show sndSecure)
       [ SLTC
           { name = "create new queue",
-            saved = [CreateQueue qr],
-            compacted = [CreateQueue qr],
+            saved = [CreateQueue rId qr],
+            compacted = [CreateQueue rId qr],
             state = M.fromList [(rId, qr)]
           },
         SLTC
           { name = "secure queue",
-            saved = [CreateQueue qr, SecureQueue rId testPublicAuthKey],
-            compacted = [CreateQueue qr {senderKey = Just testPublicAuthKey}],
+            saved = [CreateQueue rId qr, SecureQueue rId testPublicAuthKey],
+            compacted = [CreateQueue rId qr {senderKey = Just testPublicAuthKey}],
             state = M.fromList [(rId, qr {senderKey = Just testPublicAuthKey})]
           },          
         SLTC
           { name = "create and delete queue",
-            saved = [CreateQueue qr, DeleteQueue rId],
+            saved = [CreateQueue rId qr, DeleteQueue rId],
             compacted = [],
             state = M.fromList []
           },
         SLTC
           { name = "create queue and add notifier",
-            saved = [CreateQueue qr, AddNotifier rId ntfCreds],
-            compacted = [CreateQueue $ qr {notifier = Just ntfCreds}],
+            saved = [CreateQueue rId qr, AddNotifier rId ntfCreds],
+            compacted = [CreateQueue rId qr {notifier = Just ntfCreds}],
             state = M.fromList [(rId, qr {notifier = Just ntfCreds})]
           },
         SLTC
           { name = "delete notifier",
-            saved = [CreateQueue qr, AddNotifier rId ntfCreds, DeleteNotifier rId],
-            compacted = [CreateQueue qr],
+            saved = [CreateQueue rId qr, AddNotifier rId ntfCreds, DeleteNotifier rId],
+            compacted = [CreateQueue rId qr],
             state = M.fromList [(rId, qr)]
           },
         SLTC
           { name = "update time",
-            saved = [CreateQueue qr, UpdateTime rId date],
-            compacted = [CreateQueue qr {updatedAt = Just date}],
+            saved = [CreateQueue rId qr, UpdateTime rId date],
+            compacted = [CreateQueue rId qr {updatedAt = Just date}],
             state = M.fromList [(rId, qr {updatedAt = Just date})]
           }          
       ]

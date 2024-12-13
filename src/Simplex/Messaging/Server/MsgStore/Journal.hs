@@ -236,28 +236,26 @@ instance STMQueueStore (JournalMsgStore 'MSMemory) where
   senders' = senders . queueStore
   notifiers' = notifiers . queueStore
   storeLog' = storeLog . queueStore
-  mkQueue st qr@QueueRec {recipientId} = do
-    lock <- atomically $ getMapLock (queueLocks st) recipientId
-    makeQueue st lock qr
+  mkQueue st rId qr = do
+    lock <- atomically $ getMapLock (queueLocks st) rId
+    makeQueue st lock rId qr
 
-makeQueue :: JournalMsgStore s -> Lock -> QueueRec -> IO (JournalQueue s)
-makeQueue st queueLock qr@QueueRec {recipientId} = do
+makeQueue :: JournalMsgStore s -> Lock -> RecipientId -> QueueRec -> IO (JournalQueue s)
+makeQueue st queueLock rId qr = do
   queueRec <- newTVarIO $ Just qr
   msgQueue_ <- newTVarIO Nothing
   activeAt <- newTVarIO 0
   isEmpty <- newTVarIO Nothing
   pure
     JournalQueue
-      { recipientId,
+      { recipientId = rId,
         queueLock,
         queueRec,
         msgQueue_,
         activeAt,
         isEmpty,
-        queueDirectory = msgQueueDirectory st recipientId
+        queueDirectory = msgQueueDirectory st rId
       }
-
--- statePath = msgQueueStatePath dir $ B.unpack (strEncode recipientId)
 
 instance MsgStoreClass (JournalMsgStore s) where
   type StoreMonad (JournalMsgStore s) = StoreIO s
@@ -371,15 +369,15 @@ instance MsgStoreClass (JournalMsgStore s) where
       pure QueueCounts {queueCount, notifierCount}
     JQStore {} -> undefined
 
-  addQueue :: JournalMsgStore s -> QueueRec -> IO (Either ErrorType (JournalQueue s))
-  addQueue st@JournalMsgStore {queueLocks = ls} qr@QueueRec {recipientId = rId, senderId = sId, notifier} = case queueStore st of
-    MQStore {} -> addQueue' st qr
+  addQueue :: JournalMsgStore s -> RecipientId -> QueueRec -> IO (Either ErrorType (JournalQueue s))
+  addQueue st@JournalMsgStore {queueLocks = ls} rId qr@QueueRec {senderId = sId, notifier} = case queueStore st of
+    MQStore {} -> addQueue' st rId qr
     JQStore {queues_, senders_, notifiers_} -> do
       lock <- atomically $ getMapLock ls rId
       tryStore "addQueue" rId $
         withLock' lock "addQueue" $ withLockMap ls sId "addQueueS" $ withNotifierLock $
           ifM hasAnyId (pure $ Left DUPLICATE_) $ E.uninterruptibleMask_ $ do
-            q <- makeQueue st lock qr
+            q <- makeQueue st lock rId qr
             storeQueue_ q qr
             atomically $ TM.insert rId (Just q) queues_
             saveQueueRef st sId rId senders_
@@ -421,7 +419,7 @@ instance MsgStoreClass (JournalMsgStore s) where
   addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId} = case queueStore st of
     MQStore {} -> addQueueNotifier' st sq ntfCreds
     JQStore {notifiers_} ->
-      isolateQueueRec sq "addQueueNotifier" $ \q@QueueRec {recipientId = rId} ->
+      isolateQueueRec sq "addQueueNotifier" $ \q ->
         withLockMap (queueLocks st) nId "addQueueNotifierN" $
           ifM hasNotifierId (pure $ Left DUPLICATE_) $ do
             nId_ <- forM (notifier q) $ \NtfCreds {notifierId = nId'} -> 
@@ -430,7 +428,7 @@ instance MsgStoreClass (JournalMsgStore s) where
                 atomically $ TM.delete nId' notifiers_
                 pure nId'
             storeQueue sq q {notifier = Just ntfCreds}
-            saveQueueRef st nId rId notifiers_
+            saveQueueRef st nId (recipientId sq) notifiers_
             pure $ Right nId_
       where
         hasNotifierId = anyM [hasId, hasDir]
@@ -518,13 +516,12 @@ instance MsgStoreClass (JournalMsgStore s) where
         sz <- unStoreIO $ getQueueSize_ mq
         pure (r, sz)
 
-  deleteQueue :: JournalMsgStore s -> RecipientId -> JournalQueue s -> IO (Either ErrorType QueueRec)
-  deleteQueue ms rId q =
-    fst <$$> deleteQueue_ ms rId q
+  deleteQueue :: JournalMsgStore s -> JournalQueue s -> IO (Either ErrorType QueueRec)
+  deleteQueue ms q = fst <$$> deleteQueue_ ms q
 
-  deleteQueueSize :: JournalMsgStore s -> RecipientId -> JournalQueue s -> IO (Either ErrorType (QueueRec, Int))
-  deleteQueueSize ms rId q =
-    deleteQueue_ ms rId q >>= mapM (traverse getSize)
+  deleteQueueSize :: JournalMsgStore s -> JournalQueue s -> IO (Either ErrorType (QueueRec, Int))
+  deleteQueueSize ms q =
+    deleteQueue_ ms q >>= mapM (traverse getSize)
     -- traverse operates on the second tuple element
     where
       getSize = maybe (pure (-1)) (fmap size . readTVarIO . state)
@@ -893,12 +890,13 @@ validQueueState MsgQueueState {readState = rs, writeState = ws, size}
         && msgPos ws == msgCount ws
         && bytePos ws == byteCount ws
 
-deleteQueue_ :: forall s. JournalMsgStore s -> RecipientId -> JournalQueue s -> IO (Either ErrorType (QueueRec, Maybe (JournalMsgQueue s)))
-deleteQueue_ ms rId q =
+deleteQueue_ :: forall s. JournalMsgStore s -> JournalQueue s -> IO (Either ErrorType (QueueRec, Maybe (JournalMsgQueue s)))
+deleteQueue_ ms q =
   isolateQueueId "deleteQueue_" ms rId $ case queueStore ms of
-    MQStore {} -> deleteQueue' ms rId q >>= mapM remove
+    MQStore {} -> deleteQueue' ms q >>= mapM remove
     JQStore {} -> undefined
   where
+    rId = recipientId q
     remove :: (QueueRec, Maybe (JournalMsgQueue s)) -> IO (QueueRec, Maybe (JournalMsgQueue s))
     remove r@(_, mq_) = do
       mapM_ closeMsgQueueHandles mq_

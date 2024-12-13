@@ -795,8 +795,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
               CPDelete qId -> withUserRole $ unliftIO u $ do
                 AMS _ st <- asks msgStore
                 r <- liftIO $ runExceptT $ do
-                  (q, qr) <- ExceptT (getQueueRec st SSender qId) `catchE` \_ -> ExceptT (getQueueRec st SRecipient qId)
-                  ExceptT $ deleteQueueSize st (recipientId qr) q
+                  q <- ExceptT (getQueue st SSender qId) `catchE` \_ -> ExceptT (getQueue st SRecipient qId)
+                  ExceptT $ deleteQueueSize st q
                 case r of
                   Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
                   Right (qr, numDeleted) -> do
@@ -1199,10 +1199,9 @@ client
           updatedAt <- Just <$> liftIO getSystemDate
           let rcvDhSecret = C.dh' dhKey privDhKey
               qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey, sndSecure}
-              qRec (recipientId, senderId) =
+              qRec senderId =
                 QueueRec
-                  { recipientId,
-                    senderId,
+                  { senderId,
                     recipientKey,
                     rcvDhSecret,
                     senderKey = Nothing,
@@ -1214,12 +1213,12 @@ client
           (corrId,entId,) <$> addQueueRetry 3 qik qRec
           where
             addQueueRetry ::
-              Int -> ((RecipientId, SenderId) -> QueueIdsKeys) -> ((RecipientId, SenderId) -> QueueRec) -> M BrokerMsg
+              Int -> ((RecipientId, SenderId) -> QueueIdsKeys) -> (SenderId -> QueueRec) -> M BrokerMsg
             addQueueRetry 0 _ _ = pure $ ERR INTERNAL
             addQueueRetry n qik qRec = do
-              ids <- getIds
-              let qr = qRec ids
-              liftIO (addQueue ms qr) >>= \case
+              ids@(rId, sId) <- getIds
+              let qr = qRec sId
+              liftIO (addQueue ms rId qr) >>= \case
                 Left DUPLICATE_ -> addQueueRetry (n - 1) qik qRec
                 Left e -> pure $ ERR e
                 Right q -> do
@@ -1296,7 +1295,7 @@ client
                   incStat $ qSubDuplicate stats
                   atomically (tryTakeTMVar $ delivered s) >> deliver False s
           where
-            rId = recipientId qr
+            rId = recipientId' q
             newSub :: M Sub
             newSub = time "SUB newSub" . atomically $ do
               writeTQueue subscribedQ (rId, clientId, True)
@@ -1449,10 +1448,10 @@ client
                           when (notification msgFlags) $ do
                             mapM_ (`enqueueNotification` msg) (notifier qr)
                             incStat $ msgSentNtf stats
-                            liftIO $ updatePeriodStats (activeQueuesNtf stats) (recipientId qr)
+                            liftIO $ updatePeriodStats (activeQueuesNtf stats) (recipientId' q)
                           incStat $ msgSent stats
                           incStat $ msgCount stats
-                          liftIO $ updatePeriodStats (activeQueues stats) (recipientId qr)
+                          liftIO $ updatePeriodStats (activeQueues stats) (recipientId' q)
                           pure ok
           where
             THandleParams {thVersion} = thParams'
@@ -1481,7 +1480,7 @@ client
               whenM (TM.memberIO rId subscribers) $
                 atomically deliverToSub >>= mapM_ forkDeliver
               where
-                rId = recipientId qr
+                rId = recipientId' q
                 deliverToSub =
                   -- lookup has ot be in the same transaction,
                   -- so that if subscription ends, it re-evalutates
@@ -1625,7 +1624,7 @@ client
 
         delQueueAndMsgs :: (StoreQueue s, QueueRec) -> M (Transmission BrokerMsg)
         delQueueAndMsgs (q, _) = do
-          liftIO (deleteQueue ms entId q) >>= \case
+          liftIO (deleteQueue ms q) >>= \case
             Right qr -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
               atomically $ do

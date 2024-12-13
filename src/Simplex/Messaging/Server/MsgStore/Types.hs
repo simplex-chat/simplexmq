@@ -33,7 +33,7 @@ class MsgStoreClass s => STMQueueStore s where
   senders' :: s -> TMap SenderId RecipientId
   notifiers' :: s -> TMap NotifierId RecipientId
   storeLog' :: s -> TVar (Maybe (StoreLog 'WriteMode))
-  mkQueue :: s -> QueueRec -> IO (StoreQueue s)
+  mkQueue :: s -> RecipientId -> QueueRec -> IO (StoreQueue s)
 
 class Monad (StoreMonad s) => MsgStoreClass s where
   type StoreMonad s = (m :: Type -> Type) | m -> s
@@ -52,7 +52,7 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   msgQueue_' :: StoreQueue s -> TVar (Maybe (MsgQueue s))
   queueCounts :: s -> IO QueueCounts
 
-  addQueue :: s -> QueueRec -> IO (Either ErrorType (StoreQueue s))
+  addQueue :: s -> RecipientId -> QueueRec -> IO (Either ErrorType (StoreQueue s))
   getQueue :: DirectParty p => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s))
   secureQueue :: s -> StoreQueue s -> SndPublicAuthKey -> IO (Either ErrorType ())
   addQueueNotifier :: s -> StoreQueue s -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
@@ -65,8 +65,8 @@ class Monad (StoreMonad s) => MsgStoreClass s where
 
   -- the journal queue will be closed after action if it was initially closed or idle longer than interval in config
   withIdleMsgQueue :: Int64 -> s -> StoreQueue s -> (MsgQueue s -> StoreMonad s a) -> StoreMonad s (Maybe a, Int)
-  deleteQueue :: s -> RecipientId -> StoreQueue s -> IO (Either ErrorType QueueRec)
-  deleteQueueSize :: s -> RecipientId -> StoreQueue s -> IO (Either ErrorType (QueueRec, Int))
+  deleteQueue :: s -> StoreQueue s -> IO (Either ErrorType QueueRec)
+  deleteQueueSize :: s -> StoreQueue s -> IO (Either ErrorType (QueueRec, Int))
   getQueueMessages_ :: Bool -> StoreQueue s -> MsgQueue s -> StoreMonad s [Message]
   writeMsg :: s -> StoreQueue s -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
   setOverQuota_ :: StoreQueue s -> IO () -- can ONLY be used while restoring messages, not while server running

@@ -12,8 +12,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 
 data QueueRec = QueueRec
-  { recipientId :: !RecipientId,
-    recipientKey :: !RcvPublicAuthKey,
+  { recipientKey :: !RcvPublicAuthKey,
     rcvDhSecret :: !RcvDhSecret,
     senderId :: !SenderId,
     senderKey :: !(Maybe SndPublicAuthKey),

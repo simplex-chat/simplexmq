@@ -64,8 +64,7 @@ instance STMQueueStore STMMsgStore where
   senders' = senders
   notifiers' = notifiers
   storeLog' = storeLog
-  mkQueue _ qr@QueueRec {recipientId} =
-    STMQueue recipientId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
+  mkQueue _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
 
 instance MsgStoreClass STMMsgStore where
   type StoreMonad STMMsgStore = STM
@@ -156,11 +155,11 @@ instance MsgStoreClass STMMsgStore where
       pure (Just r, sz)
     Nothing -> pure (Nothing, 0)
 
-  deleteQueue :: STMMsgStore -> RecipientId -> STMQueue -> IO (Either ErrorType QueueRec)
-  deleteQueue ms rId q = fst <$$> deleteQueue' ms rId q
+  deleteQueue :: STMMsgStore -> STMQueue -> IO (Either ErrorType QueueRec)
+  deleteQueue ms q = fst <$$> deleteQueue' ms q
 
-  deleteQueueSize :: STMMsgStore -> RecipientId -> STMQueue -> IO (Either ErrorType (QueueRec, Int))
-  deleteQueueSize ms rId q = deleteQueue' ms rId q >>= mapM (traverse getSize)
+  deleteQueueSize :: STMMsgStore -> STMQueue -> IO (Either ErrorType (QueueRec, Int))
+  deleteQueueSize ms q = deleteQueue' ms q >>= mapM (traverse getSize)
     -- traverse operates on the second tuple element
     where
       getSize = maybe (pure 0) (\STMMsgQueue {size} -> readTVarIO size)
