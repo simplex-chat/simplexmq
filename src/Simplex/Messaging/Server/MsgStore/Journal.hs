@@ -291,7 +291,8 @@ instance MsgStoreClass (JournalMsgStore s) where
     MQStore {queues, storeLog} -> do
       readTVarIO storeLog >>= mapM_ closeStoreLog
       readTVarIO queues >>= mapM_ closeMsgQueue
-    JQStore {} -> undefined
+    JQStore {queues_} ->
+      readTVarIO queues_ >>= mapM_ (mapM closeMsgQueue)
 
   activeMsgQueues st = case queueStore st of
     MQStore {queues} -> queues
