@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Crypto.SNTRUP761.Bindings where
@@ -9,14 +10,19 @@ import Data.Bifunctor (bimap)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
-import Database.SQLite.Simple.FromField
-import Database.SQLite.Simple.ToField
 import Foreign (nullPtr)
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG (withDRG)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+#if defined(dbPostgres)
+import Database.PostgreSQL.Simple.FromField
+import Database.PostgreSQL.Simple.ToField
+#else
+import Database.SQLite.Simple.FromField
+import Database.SQLite.Simple.ToField
+#endif
 
 newtype KEMPublicKey = KEMPublicKey ByteString
   deriving (Eq, Show)
@@ -120,8 +126,15 @@ instance FromJSON KEMCiphertext where
 instance ToField KEMSharedKey where
   toField (KEMSharedKey k) = toField (BA.convert k :: ByteString)
 
+#if defined(dbPostgres)
+instance FromField KEMSharedKey where
+  fromField field mData = do
+    bs <- fromField field mData
+    pure $ KEMSharedKey (BA.convert @ByteString bs)
+#else
 instance FromField KEMSharedKey where
   fromField f = KEMSharedKey . BA.convert @ByteString <$> fromField f
+#endif
 
 instance ToJSON KEMSharedKey where
   toJSON = strToJSON

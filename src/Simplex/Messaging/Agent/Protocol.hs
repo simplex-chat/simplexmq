@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -167,8 +168,6 @@ import Data.Time.Clock.System (SystemTime)
 import Data.Type.Equality
 import Data.Typeable ()
 import Data.Word (Word16, Word32)
-import Database.SQLite.Simple.FromField
-import Database.SQLite.Simple.ToField
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType)
@@ -224,6 +223,13 @@ import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import Simplex.RemoteControl.Types
 import UnliftIO.Exception (Exception)
+#if defined(dbPostgres)
+import Database.PostgreSQL.Simple.FromField
+import Database.PostgreSQL.Simple.ToField
+#else
+import Database.SQLite.Simple.FromField
+import Database.SQLite.Simple.ToField
+#endif
 
 -- SMP agent protocol version history:
 -- 1 - binary protocol encoding (1/1/2022)

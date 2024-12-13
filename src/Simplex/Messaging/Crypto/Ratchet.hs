@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -109,8 +110,6 @@ import Data.Maybe (fromMaybe, isJust)
 import Data.Type.Equality
 import Data.Typeable (Typeable)
 import Data.Word (Word16, Word32)
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.QueryString
 import Simplex.Messaging.Crypto
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
@@ -121,6 +120,13 @@ import Simplex.Messaging.Util (($>>=), (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import UnliftIO.STM
+#if defined(dbPostgres)
+import Database.PostgreSQL.Simple.FromField (FromField (..))
+import Database.PostgreSQL.Simple.ToField (ToField (..))
+#else
+import Database.SQLite.Simple.FromField (FromField (..))
+import Database.SQLite.Simple.ToField (ToField (..))
+#endif
 
 -- e2e encryption headers version history:
 -- 1 - binary protocol encoding (1/1/2022)
@@ -1126,8 +1132,16 @@ instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = b
 
 instance ToField PQEncryption where toField (PQEncryption pqEnc) = toField pqEnc
 
+#if defined(dbPostgres)
+instance FromField PQEncryption where fromField = fromField
+#else
 instance FromField PQEncryption where fromField f = PQEncryption <$> fromField f
+#endif
 
 instance ToField PQSupport where toField (PQSupport pqEnc) = toField pqEnc
 
+#if defined(dbPostgres)
+instance FromField PQSupport where fromField = fromField
+#else
 instance FromField PQSupport where fromField f = PQSupport <$> fromField f
+#endif

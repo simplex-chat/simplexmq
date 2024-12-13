@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -233,14 +234,19 @@ import Data.Typeable (Proxy (Proxy), Typeable)
 import Data.Word (Word32)
 import Data.X509
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.TypeLits (ErrorMessage (..), KnownNat, Nat, TypeError, natVal, type (+))
 import Network.Transport.Internal (decodeWord16, encodeWord16)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
 import Simplex.Messaging.Util ((<$?>))
+#if defined(dbPostgres)
+import Database.PostgreSQL.Simple.FromField (FromField (..))
+import Database.PostgreSQL.Simple.ToField (ToField (..))
+#else
+import Database.SQLite.Simple.FromField (FromField (..))
+import Database.SQLite.Simple.ToField (ToField (..))
+#endif
 
 -- | Cryptographic algorithms.
 data Algorithm = Ed25519 | Ed448 | X25519 | X448
@@ -891,7 +897,11 @@ newtype Key = Key {unKey :: ByteString}
 
 instance ToField Key where toField = toField . unKey
 
+#if defined(dbPostgres)
+instance FromField Key where fromField = fromField
+#else
 instance FromField Key where fromField f = Key <$> fromField f
+#endif
 
 instance ToJSON Key where
   toJSON = strToJSON . unKey
@@ -1161,8 +1171,15 @@ instance SignatureAlgorithmX509 pk => SignatureAlgorithmX509 (a, pk) where
 -- | A wrapper to marshall signed ASN1 objects, like certificates.
 newtype SignedObject a = SignedObject {getSignedExact :: SignedExact a}
 
+#if defined(dbPostgres)
+instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
+  fromField field mData = do
+    signedExact <- blobFieldDecoder decodeSignedObject field mData
+    pure $ SignedObject signedExact
+#else
 instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
   fromField = fmap SignedObject . blobFieldDecoder decodeSignedObject
+#endif
 
 instance (Eq a, Show a, ASN1Object a) => ToField (SignedObject a) where
   toField (SignedObject s) = toField $ encodeSignedObject s
@@ -1282,7 +1299,11 @@ instance ToJSON CbNonce where
 instance FromJSON CbNonce where
   parseJSON = strParseJSON "CbNonce"
 
+#if defined(dbPostgres)
+instance FromField CbNonce where fromField = fromField
+#else
 instance FromField CbNonce where fromField f = CryptoBoxNonce <$> fromField f
+#endif
 
 instance ToField CbNonce where toField (CryptoBoxNonce s) = toField s
 
@@ -1326,7 +1347,11 @@ instance ToJSON SbKey where
 instance FromJSON SbKey where
   parseJSON = strParseJSON "SbKey"
 
+#if defined(dbPostgres)
+instance FromField SbKey where fromField = fromField
+#else
 instance FromField SbKey where fromField f = SecretBoxKey <$> fromField f
+#endif
 
 instance ToField SbKey where toField (SecretBoxKey s) = toField s
 
