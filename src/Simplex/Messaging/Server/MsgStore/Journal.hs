@@ -367,7 +367,10 @@ instance MsgStoreClass (JournalMsgStore s) where
       queueCount <- M.size <$> readTVarIO queues
       notifierCount <- M.size <$> readTVarIO notifiers
       pure QueueCounts {queueCount, notifierCount}
-    JQStore {} -> undefined
+    JQStore {queues_, notifiers_} -> do
+      queueCount <- M.size <$> readTVarIO queues_
+      notifierCount <- M.size <$> readTVarIO notifiers_
+      pure QueueCounts {queueCount, notifierCount}
 
   addQueue :: JournalMsgStore s -> RecipientId -> QueueRec -> IO (Either ErrorType (JournalQueue s))
   addQueue st@JournalMsgStore {queueLocks = ls} rId qr@QueueRec {senderId = sId, notifier} = case queueStore st of
@@ -378,6 +381,7 @@ instance MsgStoreClass (JournalMsgStore s) where
         withLock' lock "addQueue" $ withLockMap ls sId "addQueueS" $ withNotifierLock $
           ifM hasAnyId (pure $ Left DUPLICATE_) $ E.uninterruptibleMask_ $ do
             q <- makeQueue st lock rId qr
+            -- TODO [queues] maybe createQueueDir
             storeQueue_ q qr
             atomically $ TM.insert rId (Just q) queues_
             saveQueueRef st sId rId senders_
@@ -423,10 +427,8 @@ instance MsgStoreClass (JournalMsgStore s) where
         withLockMap (queueLocks st) nId "addQueueNotifierN" $
           ifM hasNotifierId (pure $ Left DUPLICATE_) $ do
             nId_ <- forM (notifier q) $ \NtfCreds {notifierId = nId'} -> 
-              withLockMap (queueLocks st) nId' "addQueueNotifierD" $ do
-                deleteQueueRef st nId'
-                atomically $ TM.delete nId' notifiers_
-                pure nId'
+              withLockMap (queueLocks st) nId' "addQueueNotifierD" $
+                deleteQueueRef st nId' notifiers_ $> nId'
             storeQueue sq q {notifier = Just ntfCreds}
             saveQueueRef st nId (recipientId sq) notifiers_
             pure $ Right nId_
@@ -442,20 +444,27 @@ instance MsgStoreClass (JournalMsgStore s) where
       isolateQueueRec sq "deleteQueueNotifier" $ \q ->
         fmap Right $ forM (notifier q) $ \NtfCreds {notifierId = nId} ->
           withLockMap (queueLocks st) nId "deleteQueueNotifierN" $ do
-            deleteQueueRef st nId
-            atomically $ TM.delete nId notifiers_
+            deleteQueueRef st nId notifiers_
             storeQueue sq q {notifier = Nothing}
             pure nId
 
   suspendQueue :: JournalMsgStore s -> JournalQueue s -> IO (Either ErrorType ())
   suspendQueue st sq = case queueStore st of
     MQStore {} -> suspendQueue' st sq
-    JQStore {} -> undefined
+    JQStore {} ->
+      isolateQueueRec sq "suspendQueue" $ \q ->
+        fmap Right $ storeQueue sq q {status = QueueOff}
 
   updateQueueTime :: JournalMsgStore s -> JournalQueue s -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
   updateQueueTime st sq t = case queueStore st of
     MQStore {} -> updateQueueTime' st sq t
-    JQStore {} -> undefined
+    JQStore {} -> isolateQueueRec sq "updateQueueTime" $ fmap Right . update
+      where
+        update q@QueueRec {updatedAt}
+          | updatedAt == Just t = pure q
+          | otherwise =
+              let !q' = q {updatedAt = Just t}
+               in storeQueue sq q' $> q'
 
   getMsgQueue :: JournalMsgStore s -> JournalQueue s -> StoreIO s (JournalMsgQueue s)
   getMsgQueue ms@JournalMsgStore {random} sq@JournalQueue {msgQueue_, queueDirectory} =
@@ -463,7 +472,7 @@ instance MsgStoreClass (JournalMsgStore s) where
     where
       newQ = do
         -- TODO [queues] this should account for the possibility that the folder exists,
-        -- but queue files do not
+        -- but queue messaging files do not, which will always be the case when queue record is in journals
         q <- ifM (doesDirectoryExist queueDirectory) (openMsgQueue ms sq) createQ
         atomically $ writeTVar msgQueue_ $ Just q
         pure q
@@ -635,7 +644,7 @@ tryStore op rId a = E.mask_ $ E.try a >>= either storeErr pure
 isolateQueueRec :: JournalQueue s -> String -> (QueueRec -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
 isolateQueueRec sq op a = isolateQueue_ sq op (atomically (readQueueRec qr) $>>= a)
   where
-    qr = queueRec' sq
+    qr = queueRec sq
 
 isolateQueue_ :: JournalQueue s -> String -> IO (Either ErrorType a) -> IO (Either ErrorType a)
 isolateQueue_ JournalQueue {recipientId, queueLock} op = tryStore op recipientId . withLock' queueLock op
@@ -649,14 +658,20 @@ storeQueue sq@JournalQueue {queueRec} q = do
   atomically $ writeTVar queueRec $ Just q
 
 -- TODO [queues]
+deleteQueueDir :: JournalQueue s -> IO ()
+deleteQueueDir _sq = pure ()
+
+-- TODO [queues]
 saveQueueRef :: JournalMsgStore s -> QueueId -> RecipientId -> TMap QueueId (Maybe RecipientId) -> IO ()
 saveQueueRef _st qId rId m = do
   pure () -- save ref to disk
   atomically $ TM.insert qId (Just rId) m
 
 -- TODO [queues]
-deleteQueueRef :: JournalMsgStore s -> QueueId -> IO ()
-deleteQueueRef _st _qId = pure ()
+deleteQueueRef :: JournalMsgStore s -> QueueId -> TMap QueueId (Maybe RecipientId) -> IO ()
+deleteQueueRef _st qId m = do
+  pure () -- delete ref from disk
+  atomically $ TM.delete qId m
 
 -- TODO [queues]
 storeQueue_ :: JournalQueue s -> QueueRec -> IO ()
@@ -891,17 +906,28 @@ validQueueState MsgQueueState {readState = rs, writeState = ws, size}
         && bytePos ws == byteCount ws
 
 deleteQueue_ :: forall s. JournalMsgStore s -> JournalQueue s -> IO (Either ErrorType (QueueRec, Maybe (JournalMsgQueue s)))
-deleteQueue_ ms q =
-  isolateQueueId "deleteQueue_" ms rId $ case queueStore ms of
-    MQStore {} -> deleteQueue' ms q >>= mapM remove
-    JQStore {} -> undefined
+deleteQueue_ st sq =
+  isolateQueueId "deleteQueue_" st rId $ 
+    delete >>= mapM (traverse remove)
   where
-    rId = recipientId q
-    remove :: (QueueRec, Maybe (JournalMsgQueue s)) -> IO (QueueRec, Maybe (JournalMsgQueue s))
-    remove r@(_, mq_) = do
-      mapM_ closeMsgQueueHandles mq_
-      removeQueueDirectory ms rId
-      pure r
+    rId = recipientId sq
+    qr = queueRec sq
+    delete :: IO (Either ErrorType (QueueRec, Maybe (JournalMsgQueue s)))
+    delete = case queueStore st of
+      MQStore {} -> deleteQueue' st sq
+      JQStore {senders_, notifiers_} -> atomically (readQueueRec qr) >>= mapM jqDelete
+        where
+          jqDelete q = E.uninterruptibleMask_ $ do
+            deleteQueueRef st (senderId q) senders_
+            forM_ (notifier q) $ \NtfCreds {notifierId} -> deleteQueueRef st notifierId notifiers_
+            deleteQueueDir sq
+            atomically $ writeTVar qr Nothing
+            (q,) <$> atomically (swapTVar (msgQueue_' sq) Nothing)
+    remove :: Maybe (JournalMsgQueue s) -> IO (Maybe (JournalMsgQueue s))
+    remove mq = do
+      mapM_ closeMsgQueueHandles mq
+      removeQueueDirectory st rId
+      pure mq
 
 closeMsgQueue :: JournalQueue s -> IO ()
 closeMsgQueue JournalQueue {msgQueue_} = atomically (swapTVar msgQueue_ Nothing) >>= mapM_ closeMsgQueueHandles
