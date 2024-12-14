@@ -19,11 +19,7 @@ module Simplex.FileTransfer.Client.Main
     singleChunkSize,
     prepareChunkSizes,
     prepareChunkSpecs,
-    maxFileSize,
-    maxFileSizeHard,
-    fileSizeLen,
     getChunkDigest,
-    SentRecipientReplica (..),
   )
 where
 
@@ -34,7 +30,6 @@ import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
-import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Char (toLower)
@@ -45,7 +40,7 @@ import Data.List.NonEmpty (NonEmpty (..), nonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Word (Word32)
 import GHC.Records (HasField (getField))
@@ -79,20 +74,6 @@ import UnliftIO.Directory
 
 xftpClientVersion :: String
 xftpClientVersion = "1.0.1"
-
--- | Soft limit for XFTP clients. Should be checked and reported to user.
-maxFileSize :: Int64
-maxFileSize = gb 1
-
-maxFileSizeStr :: String
-maxFileSizeStr = B.unpack . strEncode $ FileSize maxFileSize
-
--- | Hard internal limit for XFTP agent after which it refuses to prepare chunks.
-maxFileSizeHard :: Int64
-maxFileSizeHard = gb 5
-
-fileSizeLen :: Int64
-fileSizeLen = 8
 
 newtype CLIError = CLIError String
   deriving (Eq, Show, Exception)
@@ -230,16 +211,6 @@ data SentFileChunkReplica = SentFileChunkReplica
     recipients :: [(ChunkReplicaId, C.APrivateAuthKey)]
   }
   deriving (Show)
-
-data SentRecipientReplica = SentRecipientReplica
-  { chunkNo :: Int,
-    server :: XFTPServer,
-    rcvNo :: Int,
-    replicaId :: ChunkReplicaId,
-    replicaKey :: C.APrivateAuthKey,
-    digest :: FileDigest,
-    chunkSize :: FileSize Word32
-  }
 
 logCfg :: LogConfig
 logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
@@ -414,13 +385,6 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       B.writeFile fdSndPath $ strEncode fdSnd
       pure (fdRcvPaths, fdSndPath)
 
-getChunkDigest :: XFTPChunkSpec -> IO ByteString
-getChunkDigest XFTPChunkSpec {filePath = chunkPath, chunkOffset, chunkSize} =
-  withFile chunkPath ReadMode $ \h -> do
-    hSeek h AbsoluteSeek $ fromIntegral chunkOffset
-    chunk <- LB.hGet h (fromIntegral chunkSize)
-    pure $! LC.sha256Hash chunk
-
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, verbose, yes} =
   getFileDescription' fileDescription >>= receive
@@ -535,37 +499,6 @@ getFileDescription' :: FilePartyI p => FilePath -> ExceptT CLIError IO (ValidFil
 getFileDescription' path =
   getFileDescription path >>= \case
     AVFD fd -> either (throwE . CLIError) pure $ checkParty fd
-
-singleChunkSize :: Int64 -> Maybe Word32
-singleChunkSize size' =
-  listToMaybe $ dropWhile (< chunkSize) serverChunkSizes
-  where
-    chunkSize = fromIntegral size'
-
-prepareChunkSizes :: Int64 -> [Word32]
-prepareChunkSizes size' = prepareSizes size'
-  where
-    (smallSize, bigSize)
-      | size' > size34 chunkSize3 = (chunkSize2, chunkSize3)
-      | size' > size34 chunkSize2 = (chunkSize1, chunkSize2)
-      | otherwise = (chunkSize0, chunkSize1)
-    size34 sz = (fromIntegral sz * 3) `div` 4
-    prepareSizes 0 = []
-    prepareSizes size
-      | size >= fromIntegral bigSize = replicate (fromIntegral n1) bigSize <> prepareSizes remSz
-      | size > size34 bigSize = [bigSize]
-      | otherwise = replicate (fromIntegral n2') smallSize
-      where
-        (n1, remSz) = size `divMod` fromIntegral bigSize
-        n2' = let (n2, remSz2) = (size `divMod` fromIntegral smallSize) in if remSz2 == 0 then n2 else n2 + 1
-
-prepareChunkSpecs :: FilePath -> [Word32] -> [XFTPChunkSpec]
-prepareChunkSpecs filePath chunkSizes = reverse . snd $ foldl' addSpec (0, []) chunkSizes
-  where
-    addSpec :: (Int64, [XFTPChunkSpec]) -> Word32 -> (Int64, [XFTPChunkSpec])
-    addSpec (chunkOffset, specs) sz =
-      let spec = XFTPChunkSpec {filePath, chunkOffset, chunkSize = sz}
-       in (chunkOffset + fromIntegral sz, spec : specs)
 
 getEncPath :: MonadIO m => Maybe FilePath -> String -> m FilePath
 getEncPath path name = (`uniqueCombine` (name <> ".encrypted")) =<< maybe (liftIO getCanonicalTemporaryDirectory) pure path

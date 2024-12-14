@@ -145,7 +145,6 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (SocksAuth (..), SocksProxyWithAuth (..), TransportClientConfig (..), TransportHost (..), defaultSMPPort, defaultTcpConnectTimeout, runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
-import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (bshow, diffToMicroseconds, ifM, liftEitherWith, raceAny_, threadDelay', tshow, whenM)
 import Simplex.Messaging.Version
 import System.Mem.Weak (Weak, deRefWeak)
@@ -544,7 +543,6 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
       "" -> case protocolTypeI @(ProtoType msg) of
         SPSMP | smpWebPort -> ("443", transport @TLS)
         _ -> defaultTransport cfg
-      "80" -> ("80", transport @WS)
       p -> (p, transport @TLS)
 
     client :: forall c. Transport c => TProxy c -> PClient v err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient v err msg)) -> c -> IO ()
