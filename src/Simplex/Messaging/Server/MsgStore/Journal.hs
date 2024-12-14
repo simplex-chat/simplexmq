@@ -285,7 +285,7 @@ instance MsgStoreClass (JournalMsgStore s) where
   setStoreLog :: JournalMsgStore s -> StoreLog 'WriteMode -> IO ()
   setStoreLog st sl = case queueStore st of
     MQStore {storeLog} -> atomically $ writeTVar storeLog (Just sl)
-    JQStore {} -> undefined
+    JQStore {} -> undefined -- TODO [queues]
 
   closeMsgStore st = case queueStore st of
     MQStore {queues, storeLog} -> do
@@ -296,7 +296,7 @@ instance MsgStoreClass (JournalMsgStore s) where
 
   activeMsgQueues st = case queueStore st of
     MQStore {queues} -> queues
-    JQStore {} -> undefined
+    JQStore {} -> undefined -- TODO [queues]
 
   -- This function is a "foldr" that opens and closes all queues, processes them as defined by action and accumulates the result.
   -- It is used to export storage to a single file and also to expire messages and validate all queues when server is started.
