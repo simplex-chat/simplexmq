@@ -221,13 +221,14 @@ getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp} stor
       | backgroundMode = run c "subscriber" $ subscriber c
       | otherwise = do
           restoreServersStats c
-          raceAny_
-            [ run c "subscriber" $ subscriber c,
-              run c "runNtfSupervisor" $ runNtfSupervisor c,
-              run c "cleanupManager" $ cleanupManager c,
-              run c "logServersStats" $ logServersStats c
-            ]
-            `E.finally` saveServersStats c
+          run c "subscriber" $ subscriber c
+          -- raceAny_
+          --   [ run c "subscriber" $ subscriber c
+          --     run c "runNtfSupervisor" $ runNtfSupervisor c,
+          --     run c "cleanupManager" $ cleanupManager c,
+          --     run c "logServersStats" $ logServersStats c
+          --   ]
+          --   `E.finally` saveServersStats c
     run AgentClient {subQ, acThread} name a =
       a `E.catchAny` \e -> whenM (isJust <$> readTVarIO acThread) $ do
         logError $ "Agent thread " <> name <> " crashed: " <> tshow e
