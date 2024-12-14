@@ -37,6 +37,10 @@ module Simplex.FileTransfer.Description
     FileClientData,
     fileDescriptionURI,
     qrSizeLimit,
+    maxFileSize,
+    maxFileSizeStr,
+    maxFileSizeHard,
+    fileSizeLen,
   )
 where
 
@@ -265,6 +269,21 @@ instance StrEncoding FileDescriptionURI where
 -- | URL length in QR code before jumping up to a next size.
 qrSizeLimit :: Int
 qrSizeLimit = 1002 -- ~2 chunks in URLencoded YAML with some spare size for server hosts
+
+-- | Soft limit for XFTP clients. Should be checked and reported to user.
+maxFileSize :: Int64
+maxFileSize = gb 1
+
+maxFileSizeStr :: String
+maxFileSizeStr = B.unpack . strEncode $ FileSize maxFileSize
+
+-- | Hard internal limit for XFTP agent after which it refuses to prepare chunks.
+maxFileSizeHard :: Int64
+maxFileSizeHard = gb 5
+
+fileSizeLen :: Int64
+fileSizeLen = 8
+
 
 instance (Integral a, Show a) => StrEncoding (FileSize a) where
   strEncode (FileSize b)
