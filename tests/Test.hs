@@ -61,14 +61,14 @@ main = do
           describe "Store log tests" storeLogTests
           describe "TRcvQueues tests" tRcvQueuesTests
           describe "Util tests" utilTests
-        describe "SMP server via TLS, jornal message store" $ do
+        describe "SMP server via TLS, hybrid message store" $ do
           describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
-          before (pure (transport @TLS, AMSType SMSJournal)) serverTests
+          before (pure (transport @TLS, AMSType SMSHybrid)) serverTests
         describe "SMP server via TLS, memory message store" $
           before (pure (transport @TLS, AMSType SMSMemory)) serverTests
         -- xdescribe "SMP server via WebSockets" $ do
         --   describe "SMP syntax" $ serverSyntaxTests (transport @WS)
-        --   before (pure (transport @WS, AMSType SMSJournal)) serverTests
+        --   before (pure (transport @WS, AMSType SMSHybrid)) serverTests
         describe "Notifications server" $ ntfServerTests (transport @TLS)
         describe "SMP client agent" $ agentTests (transport @TLS)
         describe "SMP proxy" smpProxyTests

@@ -111,7 +111,7 @@ testSMPClient_ host port vr client = do
       | otherwise = Nothing
 
 cfg :: ServerConfig
-cfg = cfgMS (AMSType SMSJournal)
+cfg = cfgMS (AMSType SMSHybrid) -- TODO [queues]
 
 cfgMS :: AMSType -> ServerConfig
 cfgMS msType =
@@ -127,8 +127,9 @@ cfgMS msType =
       msgIdBytes = 24,
       storeLogFile = Just testStoreLogFile,
       storeMsgsFile = Just $ case msType of
-        AMSType SMSJournal -> testStoreMsgsDir
-        AMSType SMSMemory -> testStoreMsgsFile,
+        AMSType SMSMemory -> testStoreMsgsFile
+        AMSType SMSHybrid -> testStoreMsgsDir
+        AMSType SMSJournal -> testStoreMsgsDir,
       storeNtfsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
@@ -189,14 +190,14 @@ proxyVRangeV8 :: VersionRangeSMP
 proxyVRangeV8 = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerStoreMsgLogOn = (`withSmpServerStoreMsgLogOnMS` AMSType SMSJournal)
+withSmpServerStoreMsgLogOn = (`withSmpServerStoreMsgLogOnMS` AMSType SMSHybrid) -- TODO [queues]
 
 withSmpServerStoreMsgLogOnMS :: HasCallStack => ATransport -> AMSType -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOnMS t msType =
   withSmpServerConfigOn t (cfgMS msType) {storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
 
 withSmpServerStoreLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerStoreLogOn = (`withSmpServerStoreLogOnMS` AMSType SMSJournal)
+withSmpServerStoreLogOn = (`withSmpServerStoreLogOnMS` AMSType SMSHybrid) -- TODO [queues]
 
 withSmpServerStoreLogOnMS :: HasCallStack => ATransport -> AMSType -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreLogOnMS t msType = withSmpServerConfigOn t (cfgMS msType) {serverStatsBackupFile = Just testServerStatsBackupFile}
@@ -251,7 +252,7 @@ smpServerTest ::
   TProxy c ->
   (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
   IO (Maybe TransmissionAuth, ByteString, ByteString, BrokerMsg)
-smpServerTest _ t = runSmpTest (AMSType SMSJournal) $ \h -> tPut' h t >> tGet' h
+smpServerTest _ t = runSmpTest (AMSType SMSHybrid) $ \h -> tPut' h t >> tGet' h -- TODO [queues]
   where
     tPut' :: THandleSMP c 'TClient -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
     tPut' h@THandle {params = THandleParams {sessionId, implySessId}} (sig, corrId, queueId, smp) = do
@@ -269,7 +270,7 @@ smpTestN :: (HasCallStack, Transport c) => AMSType -> Int -> (HasCallStack => [T
 smpTestN msType n test' = runSmpTestN msType n test' `shouldReturn` ()
 
 smpTest2' :: forall c. (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
-smpTest2' = (`smpTest2` AMSType SMSJournal)
+smpTest2' = (`smpTest2` AMSType SMSHybrid) -- TODO [queues]
 
 smpTest2 :: forall c. (HasCallStack, Transport c) => TProxy c -> AMSType -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
 smpTest2 t msType = smpTest2Cfg (cfgMS msType) supportedClientSMPRelayVRange t

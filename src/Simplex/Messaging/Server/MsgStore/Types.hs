@@ -8,7 +8,9 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
+{-# LANGUAGE TypeOperators #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 {-# HLINT ignore "Redundant multi-way if" #-}
 
@@ -21,6 +23,8 @@ import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind
 import Data.Time.Clock.System (SystemTime (systemSeconds))
+import GHC.TypeLits (ErrorMessage (..), TypeError)
+import qualified GHC.TypeLits as Type
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.StoreLog.Types
@@ -33,6 +37,7 @@ class MsgStoreClass s => STMQueueStore s where
   senders' :: s -> TMap SenderId RecipientId
   notifiers' :: s -> TMap NotifierId RecipientId
   storeLog' :: s -> TVar (Maybe (StoreLog 'WriteMode))
+  setStoreLog :: s -> StoreLog 'WriteMode -> IO ()
   mkQueue :: s -> RecipientId -> QueueRec -> IO (StoreQueue s)
 
 class Monad (StoreMonad s) => MsgStoreClass s where
@@ -41,7 +46,6 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   type StoreQueue s = q | q -> s
   type MsgQueue s = q | q -> s
   newMsgStore :: MsgStoreConfig s -> IO s
-  setStoreLog :: s -> StoreLog 'WriteMode -> IO ()
   closeMsgStore :: s -> IO ()
   activeMsgQueues :: s -> TMap RecipientId (StoreQueue s)
   withAllMsgQueues :: Monoid a => Bool -> s -> (StoreQueue s -> IO a) -> IO a
@@ -80,11 +84,18 @@ data QueueCounts = QueueCounts
     notifierCount :: Int
   }
 
-data MSType = MSMemory | MSJournal
+data MSType = MSMemory | MSHybrid | MSJournal
 
 data SMSType :: MSType -> Type where
   SMSMemory :: SMSType 'MSMemory
+  SMSHybrid :: SMSType 'MSHybrid
   SMSJournal :: SMSType 'MSJournal
+
+type family JournalStoreType (s :: MSType) :: Constraint where
+  JournalStoreType 'MSHybrid = ()
+  JournalStoreType 'MSJournal = ()
+  JournalStoreType p =
+    (Int ~ Bool, TypeError ('Type.Text "Store " :<>: 'ShowType p :<>: 'Type.Text " is not journal"))
 
 data AMSType = forall s. AMSType (SMSType s)
 

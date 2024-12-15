@@ -14,6 +14,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Simplex.Messaging.Server.MsgStore.Journal
   ( JournalMsgStore (queueStore, random),
@@ -83,11 +84,11 @@ data JournalMsgStore s = JournalMsgStore
 
 data QueueStore (s :: MSType) where
   MQStore ::
-    { queues :: TMap RecipientId (JournalQueue 'MSMemory),
+    { queues :: TMap RecipientId (JournalQueue 'MSHybrid),
       senders :: TMap SenderId RecipientId,
       notifiers :: TMap NotifierId RecipientId,
       storeLog :: TVar (Maybe (StoreLog 'WriteMode))
-    } -> QueueStore 'MSMemory
+    } -> QueueStore 'MSHybrid
   -- maps store cached queues
   -- Nothing in map indicates that the queue doesn't exist
   JQStore ::
@@ -231,11 +232,16 @@ logFileExt = ".log"
 newtype StoreIO (s :: MSType) a = StoreIO {unStoreIO :: IO a}
   deriving newtype (Functor, Applicative, Monad)
 
-instance STMQueueStore (JournalMsgStore 'MSMemory) where
+instance STMQueueStore (JournalMsgStore 'MSHybrid) where
   queues' = queues . queueStore
+  {-# INLINE queues' #-}
   senders' = senders . queueStore
+  {-# INLINE senders' #-}
   notifiers' = notifiers . queueStore
+  {-# INLINE notifiers' #-}
   storeLog' = storeLog . queueStore
+  {-# INLINE storeLog' #-}
+  setStoreLog st sl = atomically $ writeTVar (storeLog' st) (Just sl)
   mkQueue st rId qr = do
     lock <- atomically $ getMapLock (queueLocks st) rId
     makeQueue st lock rId qr
@@ -257,7 +263,7 @@ makeQueue st queueLock rId qr = do
         queueDirectory = msgQueueDirectory st rId
       }
 
-instance MsgStoreClass (JournalMsgStore s) where
+instance JournalStoreType s => MsgStoreClass (JournalMsgStore s) where
   type StoreMonad (JournalMsgStore s) = StoreIO s
   type StoreQueue (JournalMsgStore s) = JournalQueue s
   type MsgQueue (JournalMsgStore s) = JournalMsgQueue s
@@ -268,7 +274,7 @@ instance MsgStoreClass (JournalMsgStore s) where
     random <- newTVarIO =<< newStdGen
     queueLocks :: TMap RecipientId Lock <- TM.emptyIO
     case queueStoreType config of
-      SMSMemory -> do
+      SMSHybrid -> do
         queues <- TM.emptyIO
         senders <- TM.emptyIO
         notifiers <- TM.emptyIO
@@ -281,11 +287,6 @@ instance MsgStoreClass (JournalMsgStore s) where
         notifiers_ <- TM.emptyIO
         let queueStore = JQStore {queues_, senders_, notifiers_}
         pure JournalMsgStore {config, random, queueLocks, queueStore}
-
-  setStoreLog :: JournalMsgStore s -> StoreLog 'WriteMode -> IO ()
-  setStoreLog st sl = case queueStore st of
-    MQStore {storeLog} -> atomically $ writeTVar storeLog (Just sl)
-    JQStore {} -> undefined -- TODO [queues]
 
   closeMsgStore st = case queueStore st of
     MQStore {queues, storeLog} -> do
@@ -352,8 +353,7 @@ instance MsgStoreClass (JournalMsgStore s) where
         $>>= \mq -> readTVarIO (handles mq)
         $>>= (\hs -> (readTVarIO (state mq) >>= appendState (stateHandle hs)) $> Just ())
 
-  -- TODO [queues] remove pun once recipientId is removed from QueueRec
-  recipientId' JournalQueue {recipientId} = recipientId
+  recipientId' = recipientId
   {-# INLINE recipientId' #-}
 
   queueRec' = queueRec
@@ -382,7 +382,7 @@ instance MsgStoreClass (JournalMsgStore s) where
         withLock' lock "addQueue" $ withLockMap ls sId "addQueueS" $ withNotifierLock $
           ifM hasAnyId (pure $ Left DUPLICATE_) $ E.uninterruptibleMask_ $ do
             q <- makeQueue st lock rId qr
-            -- TODO [queues] maybe createQueueDir
+            -- TODO [queues] maybe rename to createQueueDir
             storeQueue_ q qr
             atomically $ TM.insert rId (Just q) queues_
             saveQueueRef st sId rId senders_

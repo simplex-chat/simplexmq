@@ -68,12 +68,12 @@ withMsgStore cfg = bracket (newMsgStore cfg) closeMsgStore
 testSMTStoreConfig :: STMStoreConfig
 testSMTStoreConfig = STMStoreConfig {storePath = Nothing, quota = 3}
 
-testJournalStoreCfg :: JournalStoreConfig 'MSMemory
+testJournalStoreCfg :: JournalStoreConfig 'MSHybrid
 testJournalStoreCfg =
   JournalStoreConfig
     { storePath = testStoreMsgsDir,
       pathParts = journalMsgStoreDepth,
-      queueStoreType = SMSMemory,
+      queueStoreType = SMSHybrid,
       quota = 3,
       maxMsgCount = 4,
       maxStateLines = 2,
@@ -177,7 +177,7 @@ testChangeReadJournal ms = do
     (Msg "message 5", Nothing) <- tryDelPeekMsg ms q mId5
     void $ ExceptT $ deleteQueue ms q
 
-testExportImportStore :: JournalMsgStore s -> IO ()
+testExportImportStore :: JournalStoreType s => JournalMsgStore s -> IO ()
 testExportImportStore ms = do
   g <- C.newRandom
   (rId1, qr1) <- testNewQueueRec g True
@@ -208,7 +208,7 @@ testExportImportStore ms = do
   closeStoreLog sl
   exportMessages False ms testStoreMsgsFile False
   (B.readFile testStoreMsgsFile `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".copy")
-  let cfg = (testJournalStoreCfg :: JournalStoreConfig 'MSMemory) {storePath = testStoreMsgsDir2}
+  let cfg = (testJournalStoreCfg :: JournalStoreConfig 'MSHybrid) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
   readWriteQueueStore testStoreLogFile ms' >>= closeStoreLog
   stats@MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
@@ -225,7 +225,7 @@ testExportImportStore ms = do
   exportMessages False stmStore testStoreMsgsFile False
   (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))
 
-testQueueState :: JournalMsgStore s -> IO ()
+testQueueState :: JournalStoreType s => JournalMsgStore s -> IO ()
 testQueueState ms = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
@@ -290,7 +290,7 @@ testQueueState ms = do
         let f = dir </> name
          in unless (f == keep) $ removeFile f
 
-testMessageState :: JournalMsgStore s -> IO ()
+testMessageState :: JournalStoreType s => JournalMsgStore s -> IO ()
 testMessageState ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
@@ -315,7 +315,7 @@ testMessageState ms = do
     (Msg "message 3", Nothing) <- tryDelPeekMsg ms q mId3
     liftIO $ closeMsgQueue q
 
-testReadFileMissing :: JournalMsgStore s -> IO ()
+testReadFileMissing :: JournalStoreType s => JournalMsgStore s -> IO ()
 testReadFileMissing ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
@@ -339,7 +339,7 @@ testReadFileMissing ms = do
     Msg "message 2" <- tryPeekMsg ms q'
     pure ()
 
-testReadFileMissingSwitch :: JournalMsgStore s -> IO ()
+testReadFileMissingSwitch :: JournalStoreType s => JournalMsgStore s -> IO ()
 testReadFileMissingSwitch ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
@@ -357,7 +357,7 @@ testReadFileMissingSwitch ms = do
     Msg "message 5" <- tryPeekMsg ms q'
     pure ()
 
-testWriteFileMissing :: JournalMsgStore s -> IO ()
+testWriteFileMissing :: JournalStoreType s => JournalMsgStore s -> IO ()
 testWriteFileMissing ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
@@ -380,7 +380,7 @@ testWriteFileMissing ms = do
     Msg "message 6" <- tryPeekMsg ms q'
     pure ()
 
-testReadAndWriteFilesMissing :: JournalMsgStore s -> IO ()
+testReadAndWriteFilesMissing :: JournalStoreType s => JournalMsgStore s -> IO ()
 testReadAndWriteFilesMissing ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
@@ -399,7 +399,7 @@ testReadAndWriteFilesMissing ms = do
     Msg "message 6" <- tryPeekMsg ms q'
     pure ()
 
-writeMessages :: JournalMsgStore s -> RecipientId -> QueueRec -> IO (JournalQueue s)
+writeMessages :: JournalStoreType s => JournalMsgStore s -> RecipientId -> QueueRec -> IO (JournalQueue s)
 writeMessages ms rId qr = runRight $ do
   q <- ExceptT $ addQueue ms rId qr
   let write s = writeMsg ms q True =<< mkMessage s

@@ -811,7 +811,8 @@ testRestoreExpireMessages =
   where
     exportStoreMessages :: AMSType -> IO ()
     exportStoreMessages = \case
-      AMSType SMSJournal -> do
+      AMSType SMSJournal -> undefined -- TODO [queues]
+      AMSType SMSHybrid -> do
         ms <- newMsgStore testJournalStoreCfg {quota = 4}
         readWriteQueueStore testStoreLogFile ms >>= closeStoreLog
         removeFileIfExists testStoreMsgsFile

@@ -61,9 +61,14 @@ data STMStoreConfig = STMStoreConfig
 
 instance STMQueueStore STMMsgStore where
   queues' = queues
+  {-# INLINE queues' #-}
   senders' = senders
+  {-# INLINE senders' #-}
   notifiers' = notifiers
+  {-# INLINE notifiers' #-}
   storeLog' = storeLog
+  {-# INLINE storeLog' #-}
+  setStoreLog st sl = atomically $ writeTVar (storeLog st) (Just sl)
   mkQueue _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
 
 instance MsgStoreClass STMMsgStore where
@@ -80,9 +85,6 @@ instance MsgStoreClass STMMsgStore where
     storeLog <- newTVarIO Nothing
     pure STMMsgStore {storeConfig, queues, senders, notifiers, storeLog}
 
-  setStoreLog :: STMMsgStore -> StoreLog 'WriteMode -> IO ()
-  setStoreLog st sl = atomically $ writeTVar (storeLog st) (Just sl)
-
   closeMsgStore st = readTVarIO (storeLog st) >>= mapM_ closeStoreLog
 
   activeMsgQueues = queues
@@ -95,8 +97,7 @@ instance MsgStoreClass STMMsgStore where
 
   logQueueState _ = pure ()
 
-  -- TODO [queues] remove pun once recipientId is removed from QueueRec
-  recipientId' STMQueue {recipientId} = recipientId
+  recipientId' = recipientId
   {-# INLINE recipientId' #-}
 
   queueRec' = queueRec

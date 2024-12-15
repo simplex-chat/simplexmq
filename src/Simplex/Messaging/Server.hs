@@ -94,7 +94,7 @@ import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue, closeMsgQueue)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue, closeMsgQueue)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -1706,7 +1706,7 @@ saveServerMessages drainMsgs = \case
   AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
     Just f -> exportMessages False ms f drainMsgs
     Nothing -> logInfo "undelivered messages are not saved"
-  AMS SMSJournal _ -> logInfo "closed journal message storage"
+  AMS _ _ -> logInfo "closed journal message storage"
 
 exportMessages :: MsgStoreClass s => Bool -> s -> FilePath -> Bool -> IO ()
 exportMessages tty ms f drainMsgs = do
@@ -1738,16 +1738,20 @@ processServerMessages = do
         AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
           Just f -> ifM (doesFileExist f) (Just <$> importMessages False ms f old_) (pure Nothing)
           Nothing -> pure Nothing
-        AMS SMSJournal ms
-          | expire -> Just <$> case old_ of
-              Just old -> do
-                logInfo "expiring journal store messages..."
-                withAllMsgQueues False ms $ processExpireQueue old
-              Nothing -> do
-                logInfo "validating journal store messages..."
-                withAllMsgQueues False ms $ processValidateQueue
-          | otherwise -> logWarn "skipping message expiration" $> Nothing
-          where
+        AMS SMSHybrid ms -> processJournalMessages old_ expire ms
+        AMS SMSJournal ms -> processJournalMessages old_ expire ms
+      processJournalMessages :: forall s. JournalStoreType s => Maybe Int64 -> Bool -> JournalMsgStore s -> IO (Maybe MessageStats)
+      processJournalMessages old_ expire ms
+        | expire = Just <$> case old_ of
+            Just old -> do
+              logInfo "expiring journal store messages..."
+              withAllMsgQueues False ms $ processExpireQueue old
+            Nothing -> do
+              logInfo "validating journal store messages..."
+              withAllMsgQueues False ms $ processValidateQueue
+        | otherwise = logWarn "skipping message expiration" $> Nothing
+        where
+            processExpireQueue :: Int64 -> JournalQueue s -> IO MessageStats
             processExpireQueue old q =
               runExceptT expireQueue >>= \case
                 Right (storedMsgsCount, expiredMsgsCount) ->
@@ -1761,7 +1765,7 @@ processServerMessages = do
                   stored'' <- getQueueSize ms q
                   liftIO $ closeMsgQueue q
                   pure (stored'', expired'')
-            processValidateQueue :: JournalQueue 'MSMemory -> IO MessageStats
+            processValidateQueue :: JournalStoreType s => JournalQueue s -> IO MessageStats
             processValidateQueue q =
               runExceptT (getQueueSize ms q) >>= \case
                 Right storedMsgsCount -> pure newMessageStats {storedMsgsCount, storedQueues = 1}
@@ -1769,7 +1773,6 @@ processServerMessages = do
                   logError $ "STORE: processValidateQueue, failed opening message queue, " <> tshow e
                   exitFailure
 
--- TODO this function should be called after importing queues from store log
 importMessages :: forall s. MsgStoreClass s => Bool -> s -> FilePath -> Maybe Int64 -> IO MessageStats
 importMessages tty ms f old_ = do
   logInfo $ "restoring messages from file " <> T.pack f
