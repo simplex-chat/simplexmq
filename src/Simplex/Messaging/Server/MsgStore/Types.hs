@@ -32,12 +32,15 @@ import Simplex.Messaging.TMap (TMap)
 import Simplex.Messaging.Util ((<$$>), ($>>=))
 import System.IO (IOMode (..))
 
-class MsgStoreClass s => STMQueueStore s where
-  queues' :: s -> TMap RecipientId (StoreQueue s)
-  senders' :: s -> TMap SenderId RecipientId
-  notifiers' :: s -> TMap NotifierId RecipientId
-  storeLog' :: s -> TVar (Maybe (StoreLog 'WriteMode))
-  setStoreLog :: s -> StoreLog 'WriteMode -> IO ()
+data STMQueueStore q = STMQueueStore
+  { queues :: TMap RecipientId q,
+    senders :: TMap SenderId RecipientId,
+    notifiers :: TMap NotifierId RecipientId,
+    storeLog :: TVar (Maybe (StoreLog 'WriteMode))
+  }
+
+class MsgStoreClass s => STMStoreClass s where
+  stmQueueStore :: s -> STMQueueStore (StoreQueue s)
   mkQueue :: s -> RecipientId -> QueueRec -> IO (StoreQueue s)
 
 class Monad (StoreMonad s) => MsgStoreClass s where

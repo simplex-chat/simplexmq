@@ -320,14 +320,14 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
         AMS SMSJournal <$> newMsgStore (storeCfg SMSJournal storePath)
       (_, Nothing) -> putStrLn "Error: journal msg store requires that restore_messages is enabled in [STORE_LOG]" >> exitFailure
       where
-        storeCfg :: JournalStoreType s => SMSType s -> FilePath -> JournalStoreConfig s
+        storeCfg :: SMSType s -> FilePath -> JournalStoreConfig s
         storeCfg queueStoreType storePath =
           JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreType, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
-        loadStoreLog :: STMQueueStore s => s -> IO ()
-        loadStoreLog store = forM_ storeLogFile $ \f -> do
+        loadStoreLog :: STMStoreClass s => s -> IO ()
+        loadStoreLog st = forM_ storeLogFile $ \f -> do
           logInfo $ "restoring queues from file " <> T.pack f
-          sl <- readWriteQueueStore f store
-          setStoreLog store sl
+          sl <- readWriteQueueStore f st
+          setStoreLog (stmQueueStore st) sl
     getCredentials protocol creds = do
       files <- missingCreds
       unless (null files) $ do
@@ -371,5 +371,5 @@ newSMPProxyAgent smpAgentCfg random = do
   smpAgent <- newSMPClientAgent smpAgentCfg random
   pure ProxyAgent {smpAgent}
 
-readWriteQueueStore :: MsgStoreClass s => FilePath -> s -> IO (StoreLog 'WriteMode)
+readWriteQueueStore :: STMStoreClass s => FilePath -> s -> IO (StoreLog 'WriteMode)
 readWriteQueueStore = readWriteStoreLog readQueueStore writeQueueStore

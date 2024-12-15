@@ -57,12 +57,12 @@ msgStoreTests = do
       it "should create write file when missing" testWriteFileMissing
       it "should create read file when read and write files are missing" testReadAndWriteFilesMissing
   where
-    someMsgStoreTests :: STMQueueStore s => SpecWith s
+    someMsgStoreTests :: STMStoreClass s => SpecWith s
     someMsgStoreTests = do
       it "should get queue and store/read messages" testGetQueue
       it "should not fail on EOF when changing read journal" testChangeReadJournal
 
-withMsgStore :: STMQueueStore s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
+withMsgStore :: STMStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
 withMsgStore cfg = bracket (newMsgStore cfg) closeMsgStore
 
 testSMTStoreConfig :: STMStoreConfig
@@ -116,7 +116,7 @@ testNewQueueRec g sndSecure = do
           }
   pure (rId, qr)
 
-testGetQueue :: STMQueueStore s => s -> IO ()
+testGetQueue :: STMStoreClass s => s -> IO ()
 testGetQueue ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
@@ -158,7 +158,7 @@ testGetQueue ms = do
     (Nothing, Nothing) <- tryDelPeekMsg ms q mId8
     void $ ExceptT $ deleteQueue ms q
 
-testChangeReadJournal :: STMQueueStore s => s -> IO ()
+testChangeReadJournal :: STMStoreClass s => s -> IO ()
 testChangeReadJournal ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
@@ -177,7 +177,7 @@ testChangeReadJournal ms = do
     (Msg "message 5", Nothing) <- tryDelPeekMsg ms q mId5
     void $ ExceptT $ deleteQueue ms q
 
-testExportImportStore :: JournalStoreType s => JournalMsgStore s -> IO ()
+testExportImportStore :: JournalMsgStore 'MSHybrid -> IO ()
 testExportImportStore ms = do
   g <- C.newRandom
   (rId1, qr1) <- testNewQueueRec g True
@@ -225,7 +225,7 @@ testExportImportStore ms = do
   exportMessages False stmStore testStoreMsgsFile False
   (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))
 
-testQueueState :: JournalStoreType s => JournalMsgStore s -> IO ()
+testQueueState :: JournalMsgStore s -> IO ()
 testQueueState ms = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)

@@ -109,4 +109,4 @@ testSMPStoreLog testSuite tests =
       ([], compacted') <- partitionEithers . map strDecode . B.lines <$> B.readFile testStoreLogFile
       compacted' `shouldBe` compacted
     storeState :: JournalMsgStore 'MSHybrid -> IO (M.Map RecipientId QueueRec)
-    storeState st = M.mapMaybe id <$> (readTVarIO (queues' st) >>= mapM (readTVarIO . queueRec'))
+    storeState st = M.mapMaybe id <$> (readTVarIO (queues $ stmQueueStore st) >>= mapM (readTVarIO . queueRec'))

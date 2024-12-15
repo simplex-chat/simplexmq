@@ -1765,7 +1765,7 @@ processServerMessages = do
                   stored'' <- getQueueSize ms q
                   liftIO $ closeMsgQueue q
                   pure (stored'', expired'')
-            processValidateQueue :: JournalStoreType s => JournalQueue s -> IO MessageStats
+            processValidateQueue :: JournalQueue s -> IO MessageStats
             processValidateQueue q =
               runExceptT (getQueueSize ms q) >>= \case
                 Right storedMsgsCount -> pure newMessageStats {storedMsgsCount, storedQueues = 1}

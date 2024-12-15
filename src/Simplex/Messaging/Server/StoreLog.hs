@@ -26,7 +26,6 @@ module Simplex.Messaging.Server.StoreLog
     logUpdateQueueTime,
     readWriteStoreLog,
     writeQueueStore,
-    readQueueStore,
   )
 where
 
@@ -35,14 +34,10 @@ import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
-import Control.Monad.IO.Class
-import Control.Monad.Trans.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import GHC.IO (catchAny)
@@ -226,42 +221,12 @@ readWriteStoreLog readStore writeStore f st =
       renameFile tempBackup timedBackup
       logInfo $ "original state preserved as " <> T.pack timedBackup
 
-writeQueueStore :: MsgStoreClass s => StoreLog 'WriteMode -> s -> IO ()
-writeQueueStore s st = readTVarIO (activeMsgQueues st) >>= mapM_ writeQueue . M.assocs
+writeQueueStore :: STMStoreClass s => StoreLog 'WriteMode -> s -> IO ()
+writeQueueStore s st = readTVarIO qs >>= mapM_ writeQueue . M.assocs
   where
+    qs = queues $ stmQueueStore st
     writeQueue (rId, q) =
       readTVarIO (queueRec' q) >>= \case
         Just q' -> when (active q') $ logCreateQueue s rId q' -- TODO we should log suspended queues when we use them
-        Nothing -> atomically $ TM.delete rId $ activeMsgQueues st
+        Nothing -> atomically $ TM.delete rId qs
     active QueueRec {status} = status == QueueActive
-
-readQueueStore :: forall s. MsgStoreClass s => FilePath -> s -> IO ()
-readQueueStore f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . LB.lines
-  where
-    processLine :: LB.ByteString -> IO ()
-    processLine s' = either printError procLogRecord (strDecode s)
-      where
-        s = LB.toStrict s'
-        procLogRecord :: StoreLogRecord -> IO ()
-        procLogRecord = \case
-          CreateQueue rId q -> addQueue st rId q >>= qError rId "CreateQueue"
-          SecureQueue qId sKey -> withQueue qId "SecureQueue" $ \q -> secureQueue st q sKey
-          AddNotifier qId ntfCreds -> withQueue qId "AddNotifier" $ \q -> addQueueNotifier st q ntfCreds
-          SuspendQueue qId -> withQueue qId "SuspendQueue" $ suspendQueue st
-          DeleteQueue qId -> withQueue qId "DeleteQueue" $ deleteQueue st
-          DeleteNotifier qId -> withQueue qId "DeleteNotifier" $ deleteQueueNotifier st
-          UpdateTime qId t -> withQueue qId "UpdateTime" $ \q -> updateQueueTime st q t
-        printError :: String -> IO ()
-        printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
-        withQueue :: forall a. RecipientId -> T.Text -> (StoreQueue s -> IO (Either ErrorType a)) -> IO ()
-        withQueue qId op a = runExceptT go >>= qError qId op
-          where
-            go = do
-              q <- ExceptT $ getQueue st SRecipient qId
-              liftIO (readTVarIO $ queueRec' q) >>= \case
-                Nothing -> logWarn $ logPfx qId op <> "already deleted"
-                Just _ -> void $ ExceptT $ a q
-        qError qId op = \case
-          Left e -> logError $ logPfx qId op <> tshow e
-          Right _ -> pure ()
-        logPfx qId op = "STORE: " <> op <> ", stored queue " <> decodeLatin1 (strEncode qId) <> ", "

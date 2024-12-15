@@ -27,17 +27,11 @@ import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.TMap (TMap)
-import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util ((<$$>), ($>>=))
-import System.IO (IOMode (..))
 
 data STMMsgStore = STMMsgStore
   { storeConfig :: STMStoreConfig,
-    queues :: TMap RecipientId STMQueue,
-    senders :: TMap SenderId RecipientId,
-    notifiers :: TMap NotifierId RecipientId,
-    storeLog :: TVar (Maybe (StoreLog 'WriteMode))
+    queueStore :: STMQueueStore STMQueue
   }
 
 data STMQueue = STMQueue
@@ -59,16 +53,8 @@ data STMStoreConfig = STMStoreConfig
     quota :: Int
   }
 
-instance STMQueueStore STMMsgStore where
-  queues' = queues
-  {-# INLINE queues' #-}
-  senders' = senders
-  {-# INLINE senders' #-}
-  notifiers' = notifiers
-  {-# INLINE notifiers' #-}
-  storeLog' = storeLog
-  {-# INLINE storeLog' #-}
-  setStoreLog st sl = atomically $ writeTVar (storeLog st) (Just sl)
+instance STMStoreClass STMMsgStore where
+  stmQueueStore = queueStore
   mkQueue _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
 
 instance MsgStoreClass STMMsgStore where
@@ -78,16 +64,11 @@ instance MsgStoreClass STMMsgStore where
   type MsgStoreConfig STMMsgStore = STMStoreConfig
 
   newMsgStore :: STMStoreConfig -> IO STMMsgStore
-  newMsgStore storeConfig = do
-    queues <- TM.emptyIO
-    senders <- TM.emptyIO
-    notifiers <- TM.emptyIO
-    storeLog <- newTVarIO Nothing
-    pure STMMsgStore {storeConfig, queues, senders, notifiers, storeLog}
+  newMsgStore storeConfig = STMMsgStore storeConfig <$> newQueueStore
 
-  closeMsgStore st = readTVarIO (storeLog st) >>= mapM_ closeStoreLog
+  closeMsgStore st = readTVarIO (storeLog $ queueStore st) >>= mapM_ closeStoreLog
 
-  activeMsgQueues = queues
+  activeMsgQueues = queues . queueStore
   {-# INLINE activeMsgQueues #-}
 
   withAllMsgQueues _ = withActiveMsgQueues
@@ -107,30 +88,30 @@ instance MsgStoreClass STMMsgStore where
   {-# INLINE msgQueue_' #-}
 
   queueCounts :: STMMsgStore -> IO QueueCounts
-  queueCounts st = do
-    queueCount <- M.size <$> readTVarIO (queues st)
-    notifierCount <- M.size <$> readTVarIO (notifiers st)
+  queueCounts STMMsgStore {queueStore} = do
+    queueCount <- M.size <$> readTVarIO (queues queueStore)
+    notifierCount <- M.size <$> readTVarIO (notifiers queueStore)
     pure QueueCounts {queueCount, notifierCount}
 
   addQueue = addQueue'
   {-# INLINE addQueue #-}
 
-  getQueue = getQueue'
+  getQueue = getQueue' . queueStore
   {-# INLINE getQueue #-}
 
-  secureQueue = secureQueue'
+  secureQueue = secureQueue' . queueStore
   {-# INLINE secureQueue #-}
 
-  addQueueNotifier = addQueueNotifier'
+  addQueueNotifier = addQueueNotifier' . queueStore
   {-# INLINE addQueueNotifier #-}
 
-  deleteQueueNotifier = deleteQueueNotifier'
+  deleteQueueNotifier = deleteQueueNotifier' . queueStore
   {-# INLINE deleteQueueNotifier #-}
 
-  suspendQueue = suspendQueue'
+  suspendQueue = suspendQueue' . queueStore
   {-# INLINE suspendQueue #-}
 
-  updateQueueTime = updateQueueTime'
+  updateQueueTime = updateQueueTime' . queueStore
   {-# INLINE updateQueueTime #-}
 
   getMsgQueue :: STMMsgStore -> STMQueue -> STM STMMsgQueue
@@ -157,10 +138,10 @@ instance MsgStoreClass STMMsgStore where
     Nothing -> pure (Nothing, 0)
 
   deleteQueue :: STMMsgStore -> STMQueue -> IO (Either ErrorType QueueRec)
-  deleteQueue ms q = fst <$$> deleteQueue' ms q
+  deleteQueue ms q = fst <$$> deleteQueue' (queueStore ms) q
 
   deleteQueueSize :: STMMsgStore -> STMQueue -> IO (Either ErrorType (QueueRec, Int))
-  deleteQueueSize ms q = deleteQueue' ms q >>= mapM (traverse getSize)
+  deleteQueueSize ms q = deleteQueue' (queueStore ms) q >>= mapM (traverse getSize)
     -- traverse operates on the second tuple element
     where
       getSize = maybe (pure 0) (\STMMsgQueue {size} -> readTVarIO size)
