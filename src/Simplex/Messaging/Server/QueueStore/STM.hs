@@ -17,6 +17,7 @@ module Simplex.Messaging.Server.QueueStore.STM
   ( STMQueueStore (..),
     newQueueStore,
     setStoreLog,
+    withQueues,
     addQueue',
     getQueue',
     secureQueue',
@@ -62,6 +63,11 @@ newQueueStore = do
 
 setStoreLog :: STMQueueStore q -> StoreLog 'WriteMode -> IO ()
 setStoreLog st sl = atomically $ writeTVar (storeLog st) (Just sl)
+
+withQueues :: Monoid a => STMQueueStore (StoreQueue s) -> (StoreQueue s -> IO a) -> IO a
+withQueues st f = readTVarIO (queues st) >>= foldM run mempty
+  where
+    run !acc = fmap (acc <>) . f
 
 addQueue' :: STMStoreClass s => s -> RecipientId -> QueueRec -> IO (Either ErrorType (StoreQueue s))
 addQueue' ms rId qr@QueueRec {senderId = sId, notifier} =

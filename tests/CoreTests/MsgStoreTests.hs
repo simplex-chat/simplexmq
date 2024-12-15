@@ -23,7 +23,6 @@ import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Base64.URL as B64
 import Data.Maybe (fromJust)
 import Data.Time.Clock.System (getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
@@ -230,7 +229,7 @@ testQueueState ms = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
   let dir = msgQueueDirectory ms rId
-      statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
+      statePath = msgQueueStatePath dir rId
   createDirectoryIfMissing True dir
   state <- newMsgQueueState <$> newJournalId (random ms)
   withFile statePath WriteMode (`appendState` state)
@@ -295,7 +294,7 @@ testMessageState ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
   let dir = msgQueueDirectory ms rId
-      statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
+      statePath = msgQueueStatePath dir rId
       write q s = writeMsg ms q True =<< mkMessage s
 
   mId1 <- runRight $ do

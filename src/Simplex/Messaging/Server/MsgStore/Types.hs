@@ -17,7 +17,6 @@
 module Simplex.Messaging.Server.MsgStore.Types where
 
 import Control.Concurrent.STM
-import Control.Monad (foldM)
 import Control.Monad.Trans.Except
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -50,7 +49,7 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   type MsgQueue s = q | q -> s
   newMsgStore :: MsgStoreConfig s -> IO s
   closeMsgStore :: s -> IO ()
-  activeMsgQueues :: s -> TMap RecipientId (StoreQueue s)
+  withActiveMsgQueues :: Monoid a => s -> (StoreQueue s -> IO a) -> IO a
   withAllMsgQueues :: Monoid a => Bool -> s -> (StoreQueue s -> IO a) -> IO a
   logQueueStates :: s -> IO ()
   logQueueState :: StoreQueue s -> StoreMonad s ()
@@ -106,13 +105,6 @@ getQueueRec :: (MsgStoreClass s, DirectParty p) => s -> SParty p -> QueueId -> I
 getQueueRec st party qId =
   getQueue st party qId
     $>>= (\q -> maybe (Left AUTH) (Right . (q,)) <$> readTVarIO (queueRec' q))
-
-withActiveMsgQueues :: (MsgStoreClass s, Monoid a) => s -> (StoreQueue s -> IO a) -> IO a
-withActiveMsgQueues st f = readTVarIO (activeMsgQueues st) >>= foldM run mempty
-  where
-    run !acc q = do
-      r <- f q
-      pure $! acc <> r
 
 getQueueMessages :: MsgStoreClass s => Bool -> s -> StoreQueue s -> ExceptT ErrorType IO [Message]
 getQueueMessages drainMsgs st q = withPeekMsgQueue st q "getQueueSize" $ maybe (pure []) (getQueueMessages_ drainMsgs q . fst)

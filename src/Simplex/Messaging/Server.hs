@@ -1786,8 +1786,8 @@ importMessages tty ms f old_ = do
       renameFile f $ f <> ".bak"
       mapM_ setOverQuota_ overQuota
       logQueueStates ms
-      storedQueues <- M.size <$> readTVarIO (activeMsgQueues ms)
-      pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues}
+      QueueCounts {queueCount} <- queueCounts ms
+      pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues = queueCount}
   where
     progress i = "Processed " <> show i <> " lines"
     restoreMsg :: (Int, Maybe (RecipientId, StoreQueue s), (Int, Int, M.Map RecipientId (StoreQueue s))) -> LB.ByteString -> ExceptT String IO (Int, Maybe (RecipientId, StoreQueue s), (Int, Int, M.Map RecipientId (StoreQueue s)))
@@ -1895,7 +1895,7 @@ restoreServerStats msgStats_ ntfStats = asks (serverStatsBackupFile . config) >>
         Right d@ServerStatsData {_qCount = statsQCount, _msgCount = statsMsgCount, _ntfCount = statsNtfCount} -> do
           s <- asks serverStats
           AMS _ st <- asks msgStore
-          _qCount <- M.size <$> readTVarIO (activeMsgQueues st)
+          QueueCounts {queueCount = _qCount} <- liftIO $ queueCounts st
           let _msgCount = maybe statsMsgCount storedMsgsCount msgStats_
               _ntfCount = storedMsgsCount ntfStats
               _msgExpired' = _msgExpired d + maybe 0 expiredMsgsCount msgStats_
