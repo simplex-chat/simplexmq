@@ -7,12 +7,16 @@ module Simplex.Messaging.Agent.Store.Postgres
     defaultSimplexConnectInfo,
     closeDBStore,
     execSQL,
+    -- for tests
+    dropDatabaseAndUser,
+    dropSchema,
   )
 where
 
 import Control.Exception (bracket, throwIO)
 import Control.Monad (unless, void)
 import Data.Functor (($>))
+import Data.String (fromString)
 import Data.Text (Text)
 import Database.PostgreSQL.Simple (ConnectInfo (..), Only (..), defaultConnectInfo)
 import qualified Database.PostgreSQL.Simple as PSQL
@@ -64,7 +68,7 @@ createDBAndUserIfNotExists ConnectInfo {connectUser = user, connectDatabase = db
             )
           |]
           (Only user)
-      unless userExists $ void $ PSQL.execute db "CREATE USER ?" (Only user)
+      unless userExists $ void $ PSQL.execute_ db (fromString $ "CREATE USER " <> user)
       -- check if the database exists, create if not
       [Only dbExists] <-
         PSQL.query
@@ -76,7 +80,7 @@ createDBAndUserIfNotExists ConnectInfo {connectUser = user, connectDatabase = db
             )
           |]
           (Only dbName)
-      unless dbExists $ void $ PSQL.execute db "CREATE DATABASE ? OWNER ?" (dbName, user)
+      unless dbExists $ void $ PSQL.execute_ db (fromString $ "CREATE DATABASE " <> dbName <> " OWNER " <> user)
 
 connectPostgresStore :: ConnectInfo -> String -> IO DBStore
 connectPostgresStore dbConnectInfo schema = do
@@ -87,11 +91,10 @@ connectPostgresStore dbConnectInfo schema = do
 
 connectDB :: ConnectInfo -> String -> IO (DB.Connection, Bool)
 connectDB dbConnectInfo schema = do
-  bracket (PSQL.connect dbConnectInfo) PSQL.close $
-    \db -> do
-      schemaExists <- prepare db
-      let dbNew = not schemaExists
-      pure (db, dbNew)
+  db <- PSQL.connect dbConnectInfo
+  schemaExists <- prepare db `onException` PSQL.close db
+  let dbNew = not schemaExists
+  pure (db, dbNew)
   where
     prepare db = do
       [Only schemaExists] <-
@@ -104,8 +107,8 @@ connectDB dbConnectInfo schema = do
             )
           |]
           (Only schema)
-      unless schemaExists $ void $ PSQL.execute db "CREATE SCHEMA ?" (Only schema)
-      void $ PSQL.execute db "SET search_path TO ?" (Only schema)
+      unless schemaExists $ void $ PSQL.execute_ db (fromString $ "CREATE SCHEMA " <> schema)
+      void $ PSQL.execute_ db (fromString $ "SET search_path TO " <> schema)
       pure schemaExists
 
 -- can share with SQLite
@@ -119,3 +122,16 @@ closeDBStore st@DBStore {dbClosed} =
 -- TODO [postgres] not necessary for postgres (used for ExecAgentStoreSQL, ExecChatStoreSQL)
 execSQL :: PSQL.Connection -> Text -> IO [Text]
 execSQL _db _query = throwIO (userError "not implemented")
+
+dropSchema :: ConnectInfo -> String -> IO ()
+dropSchema connectInfo schema = do
+  bracket (PSQL.connect connectInfo) PSQL.close $
+    \db ->
+      void $ PSQL.execute_ db (fromString $ "DROP SCHEMA IF EXISTS " <> schema <> " CASCADE")
+
+dropDatabaseAndUser :: ConnectInfo -> IO ()
+dropDatabaseAndUser ConnectInfo {connectUser = user, connectDatabase = dbName} = do
+  bracket (PSQL.connect defaultConnectInfo {connectUser = "postgres", connectDatabase = "postgres"}) PSQL.close $
+    \db -> do
+      void $ PSQL.execute_ db (fromString $ "DROP USER " <> user)
+      void $ PSQL.execute_ db (fromString $ "DROP DATABASE " <> dbName)

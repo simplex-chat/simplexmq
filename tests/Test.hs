@@ -1,6 +1,13 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeApplications #-}
 
+-- TODO [postgres] fix and reenable tests
+#if defined(dbPostgres)
+import Control.Logger.Simple
+import AgentTests.MigrationTests (migrationTests)
+import Test.Hspec
+#else
 import AgentTests (agentTests)
 import AgentTests.SchemaDump (schemaDumpTest)
 import CLITests
@@ -34,10 +41,23 @@ import Test.Hspec
 import XFTPAgent
 import XFTPCLI
 import XFTPServerTests (xftpServerTests)
+#endif
 
 logCfg :: LogConfig
 logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 
+#if defined(dbPostgres)
+main :: IO ()
+main = do
+  setLogLevel LogError -- LogInfo
+  withGlobalLogging logCfg $ do
+    hspec
+      -- . before_ (createDirectoryIfMissing False "tests/tmp")
+      -- . after_ (eventuallyRemove "tests/tmp" 3)
+      $ do
+        describe "Migration tests" migrationTests
+
+#else
 main :: IO ()
 main = do
   setLogLevel LogError -- LogInfo
@@ -89,3 +109,4 @@ eventuallyRemove path retries = case retries of
       _ -> E.throwIO ioe
   where
     action = removeDirectoryRecursive path
+#endif
