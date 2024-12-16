@@ -265,9 +265,9 @@ sendMessage c connId msgFlags msgBody = do
 -- TODO [postgres] run with postgres
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
-  fdescribe "Establishing duplex connection" $ do
+  describe "Establishing duplex connection" $ do
     testMatrix2 t runAgentClientTest
-    it "should connect when server with multiple identities is stored" $
+    fit "should connect when server with multiple identities is stored" $
       withSmpServer t testServerMultipleIdentities
     it "should connect with two peers" $
       withSmpServer t testAgentClient3

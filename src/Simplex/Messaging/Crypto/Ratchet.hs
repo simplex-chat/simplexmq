@@ -111,6 +111,7 @@ import Data.Type.Equality
 import Data.Typeable (Typeable)
 import Data.Word (Word16, Word32)
 import Simplex.Messaging.Agent.QueryString
+import Simplex.Messaging.Agent.Store.DB (BoolInt (..))
 import Simplex.Messaging.Crypto
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
@@ -1130,18 +1131,30 @@ instance AlgorithmI a => ToField (Ratchet a) where toField = toField . LB.toStri
 
 instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder J.eitherDecodeStrict'
 
-instance ToField PQEncryption where toField (PQEncryption pqEnc) = toField pqEnc
+instance ToField PQEncryption where toField (PQEncryption pqEnc) = toField (BI pqEnc)
 
 #if defined(dbPostgres)
-instance FromField PQEncryption where fromField = fromField
+instance FromField PQEncryption where
+  fromField f mData = do
+    BI b <- fromField f mData
+    pure $ PQEncryption b
 #else
-instance FromField PQEncryption where fromField f = PQEncryption <$> fromField f
+instance FromField PQEncryption where
+  fromField f = do
+    BI b <- fromField f
+    pure $ PQEncryption b
 #endif
 
-instance ToField PQSupport where toField (PQSupport pqEnc) = toField pqEnc
+instance ToField PQSupport where toField (PQSupport pqEnc) = toField (BI pqEnc)
 
 #if defined(dbPostgres)
-instance FromField PQSupport where fromField = fromField
+instance FromField PQSupport where
+  fromField f mData = do
+    BI b <- fromField f mData
+    pure $ PQSupport b
 #else
-instance FromField PQSupport where fromField f = PQSupport <$> fromField f
+instance FromField PQSupport where
+  fromField f = do
+    BI b <- fromField f
+    pure $ PQSupport b
 #endif

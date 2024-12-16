@@ -1,11 +1,14 @@
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.Messaging.Agent.Store.SQLite.DB
-  ( Connection (..),
+  ( BoolInt (..),
+    Connection (..),
     SlowQueryStats (..),
     open,
     close,
@@ -28,10 +31,15 @@ import Data.Text (Text)
 import Data.Time (diffUTCTime, getCurrentTime)
 import Database.SQLite.Simple (FromRow, Query, ToRow)
 import qualified Database.SQLite.Simple as SQL
+import Database.SQLite.Simple.FromField (FromField (..))
+import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (diffToMilliseconds, tshow)
+
+newtype BoolInt v = BI {unBI :: Bool}
+  deriving newtype (FromField, ToField)
 
 data Connection = Connection
   { conn :: SQL.Connection,

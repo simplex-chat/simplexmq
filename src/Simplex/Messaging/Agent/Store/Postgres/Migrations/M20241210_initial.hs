@@ -411,8 +411,8 @@ CREATE TABLE ntf_tokens_to_delete(
   ntf_key_hash BYTEA NOT NULL,
   tkn_id BYTEA NOT NULL,
   tkn_priv_key BYTEA NOT NULL,
-del_failed SMALLINT DEFAULT 0,
-created_at TIMESTAMP NOT NULL DEFAULT (now())
+  del_failed SMALLINT DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT (now())
 );
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);
 CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);

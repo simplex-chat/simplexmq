@@ -260,6 +260,7 @@ import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.Common
 import qualified Simplex.Messaging.Agent.Store.DB as DB
+import Simplex.Messaging.Agent.Store.DB (BoolInt (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs (..))
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption (..), PQSupport (..), RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
@@ -409,7 +410,7 @@ createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSup
       INSERT INTO connections
         (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, pq_support, duplex_handshake) VALUES (?,?,?,?,?,?,?)
     |]
-    (userId, connId, cMode, connAgentVersion, enableNtfs, pqSupport, True)
+    (userId, connId, cMode, connAgentVersion, BI enableNtfs, pqSupport, BI True)
 
 checkConfirmedSndQueueExists_ :: DB.Connection -> NewSndQueue -> IO Bool
 checkConfirmedSndQueueExists_ db SndQueue {server, sndId} = do
@@ -1631,7 +1632,7 @@ getNtfRcvQueue db SMPQueueNtf {smpServer = (SMPServer host port _), notifierId} 
 
 setConnectionNtfs :: DB.Connection -> ConnId -> Bool -> IO ()
 setConnectionNtfs db connId enableNtfs =
-  DB.execute db "UPDATE connections SET enable_ntfs = ? WHERE conn_id = ?" (enableNtfs, connId)
+  DB.execute db "UPDATE connections SET enable_ntfs = ? WHERE conn_id = ?" (BI enableNtfs, connId)
 
 -- * Auxiliary helpers
 
@@ -1909,7 +1910,7 @@ getConnData db connId' =
       (Only connId')
   where
     cData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport) =
-      (ConnData {userId, connId, connAgentVersion, enableNtfs = fromMaybe True enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport}, cMode)
+      (ConnData {userId, connId, connAgentVersion, enableNtfs = maybe True unBI enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport}, cMode)
 
 setConnDeleted :: DB.Connection -> Bool -> ConnId -> IO ()
 setConnDeleted db waitDelivery connId
