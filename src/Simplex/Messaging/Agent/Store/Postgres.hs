@@ -10,13 +10,14 @@ module Simplex.Messaging.Agent.Store.Postgres
     execSQL,
     -- for tests
     createDBAndUserIfNotExists,
-    dropDatabaseAndUser,
     dropSchema,
+    dropAllSchemasExceptSystem,
+    dropDatabaseAndUser,
   )
 where
 
 import Control.Exception (bracket, throwIO)
-import Control.Monad (unless, void)
+import Control.Monad (forM_, unless, void)
 import Data.Functor (($>))
 import Data.String (fromString)
 import Data.Text (Text)
@@ -131,13 +132,28 @@ dropSchema connectInfo schema =
     \db ->
       void $ PSQL.execute_ db (fromString $ "DROP SCHEMA IF EXISTS " <> schema <> " CASCADE")
 
+dropAllSchemasExceptSystem :: ConnectInfo -> IO ()
+dropAllSchemasExceptSystem connectInfo =
+  bracket (PSQL.connect connectInfo) PSQL.close $
+    \db -> do
+      schemaNames :: [Only String] <-
+        PSQL.query_
+          db
+          [sql|
+            SELECT schema_name
+            FROM information_schema.schemata
+            WHERE schema_name NOT IN ('public', 'pg_catalog', 'information_schema')
+          |]
+      forM_ schemaNames $ \(Only schema) ->
+        PSQL.execute_ db (fromString $ "DROP SCHEMA " <> schema <> " CASCADE")
+
 dropDatabaseAndUser :: ConnectInfo -> IO ()
 dropDatabaseAndUser ConnectInfo {connectUser = user, connectDatabase = dbName} =
   bracket (PSQL.connect defaultConnectInfo {connectUser = "postgres", connectDatabase = "postgres"}) PSQL.close $
     \db -> do
       void $ PSQL.execute_ db (fromString $ "ALTER DATABASE " <> dbName <> " WITH ALLOW_CONNECTIONS false")
       -- terminate all connections to the database
-      _r :: [[Bool]] <-
+      _r :: [Only Bool] <-
         PSQL.query
           db
           [sql|

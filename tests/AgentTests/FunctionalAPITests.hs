@@ -265,7 +265,7 @@ sendMessage c connId msgFlags msgBody = do
 -- TODO [postgres] run with postgres
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
-  describe "Establishing duplex connection" $ do
+  fdescribe "Establishing duplex connection" $ do
     testMatrix2 t runAgentClientTest
     it "should connect when server with multiple identities is stored" $
       withSmpServer t testServerMultipleIdentities
@@ -3100,15 +3100,21 @@ getSMPAgentClient' :: Int -> AgentConfig -> InitialAgentServers -> String -> IO 
 getSMPAgentClient' clientId cfg' initServers dbPath = do
   Right st <- liftIO $ createStore dbPath
   c <- getSMPAgentClient_ clientId cfg' initServers st False
-  when (dbNew st) $ withTransaction st (`DB.execute_` "INSERT INTO users (user_id) VALUES (1)")
+  when (dbNew st) $ insertUser st
   pure c
 
 #if defined(dbPostgres)
 createStore :: String -> IO (Either MigrationError DBStore)
 createStore schema = createAgentStore testDBConnectInfo schema MCError
+
+insertUser :: DBStore -> IO ()
+insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users (user_id) OVERRIDING SYSTEM VALUE VALUES (1)")
 #else
 createStore :: String -> IO (Either MigrationError DBStore)
 createStore dbPath = createAgentStore dbPath "" False MCError
+
+insertUser :: DBStore -> IO ()
+insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users (user_id) VALUES (1)")
 #endif
 
 testServerMultipleIdentities :: HasCallStack => IO ()

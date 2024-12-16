@@ -15,7 +15,10 @@ import AgentTests.MigrationTests (migrationTests)
 import AgentTests.ServerChoice (serverChoiceTests)
 import Simplex.Messaging.Transport (ATransport (..))
 import Test.Hspec
-#if !defined(dbPostgres)
+#if defined(dbPostgres)
+import Fixtures
+import Simplex.Messaging.Agent.Store.Postgres (dropAllSchemasExceptSystem)
+#else
 import AgentTests.NotificationTests (notificationTests)
 import AgentTests.SQLiteTests (storeTests)
 #endif
@@ -24,8 +27,11 @@ agentTests :: ATransport -> Spec
 agentTests (ATransport t) = do
   describe "Connection request" connectionRequestTests
   describe "Double ratchet tests" doubleRatchetTests
+#if defined(dbPostgres)
+  after_ (dropAllSchemasExceptSystem testDBConnectInfo) $
+    describe "Functional API" $ functionalAPITests (ATransport t)
+#else
   describe "Functional API" $ functionalAPITests (ATransport t)
-#if !defined(dbPostgres)
   describe "Notification tests" $ notificationTests (ATransport t)
   describe "SQLite store" storeTests
 #endif

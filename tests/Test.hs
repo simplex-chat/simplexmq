@@ -4,6 +4,8 @@
 
 import AgentTests (agentTests)
 import CLITests
+import Control.Concurrent (threadDelay)
+import qualified Control.Exception as E
 import Control.Logger.Simple
 import CoreTests.BatchingTests
 import CoreTests.CryptoFileTests
@@ -17,6 +19,8 @@ import CoreTests.TRcvQueuesTests
 import CoreTests.UtilTests
 import CoreTests.VersionRangeTests
 import FileDescriptionTests (fileDescriptionTests)
+import GHC.IO.Exception (IOException (..))
+import qualified GHC.IO.Exception as IOException
 import NtfServerTests (ntfServerTests)
 import RemoteControl (remoteControlTests)
 import SMPProxyTests (smpProxyTests)
@@ -24,6 +28,7 @@ import ServerTests
 import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..))
 import Simplex.Messaging.Transport (TLS, Transport (..))
 -- import Simplex.Messaging.Transport.WebSockets (WS)
+import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Environment (setEnv)
 import Test.Hspec
 import XFTPAgent
@@ -34,11 +39,6 @@ import Fixtures
 import Simplex.Messaging.Agent.Store.Postgres (createDBAndUserIfNotExists, dropDatabaseAndUser)
 #else
 import AgentTests.SchemaDump (schemaDumpTest)
-import Control.Concurrent (threadDelay)
-import qualified Control.Exception as E
-import GHC.IO.Exception (IOException (..))
-import qualified GHC.IO.Exception as IOException
-import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 #endif
 
 logCfg :: LogConfig
@@ -51,8 +51,12 @@ main = do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
     hspec
-      . before_ doBefore
-      . after_ doAfter
+#if defined(dbPostgres)
+      . beforeAll_ (createDBAndUserIfNotExists testDBConnectInfo)
+      . afterAll_ (dropDatabaseAndUser testDBConnectInfo)
+#endif
+      . before_ (createDirectoryIfMissing False "tests/tmp")
+      . after_ (eventuallyRemove "tests/tmp" 3)
       $ do
 -- TODO [postgres] schema dump for postgres
 #if !defined(dbPostgres)
@@ -89,19 +93,6 @@ main = do
         describe "XRCP" remoteControlTests
         describe "Server CLIs" cliTests
 
-#if defined(dbPostgres)
-doBefore :: IO ()
-doBefore = createDBAndUserIfNotExists testDBConnectInfo
-
-doAfter :: IO ()
-doAfter = dropDatabaseAndUser testDBConnectInfo
-#else
-doBefore :: IO ()
-doBefore = createDirectoryIfMissing False "tests/tmp"
-
-doAfter :: IO ()
-doAfter = eventuallyRemove "tests/tmp" 3
-
 eventuallyRemove :: FilePath -> Int -> IO ()
 eventuallyRemove path retries = case retries of
   0 -> action
@@ -111,4 +102,3 @@ eventuallyRemove path retries = case retries of
       _ -> E.throwIO ioe
   where
     action = removeDirectoryRecursive path
-#endif
