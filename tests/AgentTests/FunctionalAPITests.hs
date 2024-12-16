@@ -3120,8 +3120,11 @@ insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users (user_id) V
 testServerMultipleIdentities :: HasCallStack => IO ()
 testServerMultipleIdentities =
   withAgentClients2 $ \alice bob -> runRight_ $ do
+    liftIO $ print "test 1"
     (bobId, cReq) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+    liftIO $ print "test 2"
     (aliceId, sqSecured) <- joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
+    liftIO $ print "test 3"
     liftIO $ sqSecured `shouldBe` True
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"

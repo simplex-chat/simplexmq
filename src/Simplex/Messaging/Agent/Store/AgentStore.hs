@@ -282,7 +282,7 @@ import Database.PostgreSQL.Simple (Only (..), Query, SqlError, (:.) (..))
 import Database.PostgreSQL.Simple.FromField
 import Database.PostgreSQL.Simple.Errors (constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
-import Database.PostgreSQL.Simple.ToField (ToField (..))
+import Database.PostgreSQL.Simple.ToField (ToField (..), Action (..))
 #else
 import Database.SQLite.Simple (FromRow (..), Only (..), Query (..), SQLError, ToRow (..), field, (:.) (..))
 import qualified Database.SQLite.Simple as SQL
@@ -602,12 +602,12 @@ getPrimaryRcvQueue db connId =
 getRcvQueue :: DB.Connection -> ConnId -> SMPServer -> SMP.RecipientId -> IO (Either StoreError RcvQueue)
 getRcvQueue db connId (SMPServer host port _) rcvId =
   firstRow toRcvQueue SEConnNotFound $
-    DB.query db (rcvQueueQuery <> "WHERE q.conn_id = ? AND q.host = ? AND q.port = ? AND q.rcv_id = ? AND q.deleted = 0") (connId, host, port, rcvId)
+    DB.query db (rcvQueueQuery <> " WHERE q.conn_id = ? AND q.host = ? AND q.port = ? AND q.rcv_id = ? AND q.deleted = 0") (connId, host, port, rcvId)
 
 getDeletedRcvQueue :: DB.Connection -> ConnId -> SMPServer -> SMP.RecipientId -> IO (Either StoreError RcvQueue)
 getDeletedRcvQueue db connId (SMPServer host port _) rcvId =
   firstRow toRcvQueue SEConnNotFound $
-    DB.query db (rcvQueueQuery <> "WHERE q.conn_id = ? AND q.host = ? AND q.port = ? AND q.rcv_id = ? AND q.deleted = 1") (connId, host, port, rcvId)
+    DB.query db (rcvQueueQuery <> " WHERE q.conn_id = ? AND q.host = ? AND q.port = ? AND q.rcv_id = ? AND q.deleted = 1") (connId, host, port, rcvId)
 
 setRcvQueueNtfCreds :: DB.Connection -> ConnId -> Maybe ClientNtfCreds -> IO ()
 setRcvQueueNtfCreds db connId clientNtfCreds =
@@ -1735,9 +1735,19 @@ instance FromField (Version v) where
 instance FromField (Version v) where fromField f = Version <$> fromField f
 #endif
 
-deriving newtype instance ToField EntityId
+#if defined(dbPostgres)
+instance FromField EntityId where
+  fromField field mData = do
+    i <- fromField field mData
+    pure $ EntityId i
 
+instance ToField EntityId where
+  toField (EntityId i) = EscapeByteA i
+#else
 deriving newtype instance FromField EntityId
+
+deriving newtype instance ToField EntityId
+#endif
 
 deriving newtype instance ToField ChunkReplicaId
 
@@ -1827,6 +1837,7 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
   -- possibly, it can be done in one query.
   currQId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT rcv_queue_id FROM rcv_queues WHERE conn_id = ? AND host = ? AND port = ? AND snd_id = ?" (connId', host server, port server, sndId)
   qId <- maybe (newQueueId_ <$> DB.query db "SELECT rcv_queue_id FROM rcv_queues WHERE conn_id = ? ORDER BY rcv_queue_id DESC LIMIT 1" (Only connId')) pure currQId_
+  print "insertRcvQueue_ 1"
   DB.execute
     db
     [sql|
@@ -1834,6 +1845,7 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
         (host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, snd_secure, status, rcv_queue_id, rcv_primary, replace_rcv_queue_id, smp_client_version, server_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
     ((host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret) :. (sndId, sndSecure, status, qId, primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
+  print "insertRcvQueue_ 2"
   pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId}
 
 -- * createSndConn helpers
@@ -1970,7 +1982,7 @@ deleteRatchetKeyHashesExpired db ttl = do
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))
 getRcvQueuesByConnId_ db connId =
   L.nonEmpty . sortBy primaryFirst . map toRcvQueue
-    <$> DB.query db (rcvQueueQuery <> "WHERE q.conn_id = ? AND q.deleted = 0") (Only connId)
+    <$> DB.query db (rcvQueueQuery <> " WHERE q.conn_id = ? AND q.deleted = 0") (Only connId)
   where
     primaryFirst RcvQueue {primary = p, dbReplaceQueueId = i} RcvQueue {primary = p', dbReplaceQueueId = i'} =
       -- the current primary queue is ordered first, the next primary - second
@@ -2010,7 +2022,7 @@ getRcvQueueById db connId dbRcvId =
 getSndQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty SndQueue))
 getSndQueuesByConnId_ dbConn connId =
   L.nonEmpty . sortBy primaryFirst . map toSndQueue
-    <$> DB.query dbConn (sndQueueQuery <> "WHERE q.conn_id = ?") (Only connId)
+    <$> DB.query dbConn (sndQueueQuery <> " WHERE q.conn_id = ?") (Only connId)
   where
     primaryFirst SndQueue {primary = p, dbReplaceQueueId = i} SndQueue {primary = p', dbReplaceQueueId = i'} =
       -- the current primary queue is ordered first, the next primary - second
