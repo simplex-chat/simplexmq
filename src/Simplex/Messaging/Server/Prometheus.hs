@@ -180,7 +180,7 @@ prometheusMetrics sm rtm ts =
       \\n\
       \# HELP simplex_smp_subscribtion_end_batch Batched ended subscriptions.\n\
       \# TYPE simplex_smp_subscribtion_end_batch counter\n\
-      \simplex_smp_subscribtion_end " <> tshow _qSubEndB <> "\n# qSubEndB\n\
+      \simplex_smp_subscribtion_end_batch " <> tshow _qSubEndB <> "\n# qSubEndB\n\
       \\n\
       \# HELP simplex_smp_subscribtion_errors Subscription errors.\n\
       \# TYPE simplex_smp_subscribtion_errors counter\n\
@@ -279,13 +279,13 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_messages_ntf_errors{type=\"lost\"} " <> tshow _msgNtfLost <> "\n# msgNtfLost\n\
       \simplex_smp_messages_ntf_errors{type=\"expired\"} " <> tshow _msgNtfExpired <> "\n# msgNtfExpired\n\
       \\n\
-      \# HELP simplex_smp_subscriptions_ntf_requests Subscription requests with notification flag (from ntf server). \n\
-      \# TYPE simplex_smp_subscriptions_ntf_requests counter\n\
-      \simplex_smp_subscriptions_ntf_requests " <> tshow _ntfSub <> "\n# ntfSub\n\
+      \# HELP simplex_smp_subscription_ntf_requests Subscription requests with notification flag (from ntf server). \n\
+      \# TYPE simplex_smp_subscription_ntf_requests counter\n\
+      \simplex_smp_subscription_ntf_requests " <> tshow _ntfSub <> "\n# ntfSub\n\
       \\n\
-      \# HELP simplex_smp_subscriptions_ntf_requests_batch Batched subscription requests with notification flag (from ntf server). \n\
-      \# TYPE simplex_smp_subscriptions_ntf_requests_batch counter\n\
-      \simplex_smp_subscriptions_ntf_requests_batch " <> tshow _ntfSubB <> "\n# ntfSubB\n\
+      \# HELP simplex_smp_subscription_ntf_requests_batch Batched subscription requests with notification flag (from ntf server). \n\
+      \# TYPE simplex_smp_subscription_ntf_requests_batch counter\n\
+      \simplex_smp_subscription_ntf_requests_batch " <> tshow _ntfSubB <> "\n# ntfSubB\n\
       \\n\
       \# HELP simplex_smp_subscribtion_ntf_errors Subscription errors with notification flag (from ntf server). \n\
       \# TYPE simplex_smp_subscribtion_ntf_errors counter\n\
