@@ -28,7 +28,7 @@ migrationTests = do
   describe "run migrations" $ do
     -- (init migrs, tables)
     -- (final migrs, confirm modes, final tables or error)
-    fit "up 1-2 tables (yes)" $
+    it "up 1-2 tables (yes)" $
       testMigration
         ([m1], [t1])
         ([m1, m2], [MCYesUp, MCYesUpDown], Right [t1, t2])
@@ -183,9 +183,7 @@ testMigration ::
   IO ()
 testMigration (initMs, initTables) (finalMs, confirmModes, tablesOrError) = forM_ confirmModes $ \confirmMode -> do
   r <- randomIO :: IO Word32
-  print 0
   Right st <- createStore r initMs MCError
-  print 1
   st `shouldHaveTables` initTables
   closeDBStore st
   case tablesOrError of
@@ -196,16 +194,7 @@ testMigration (initMs, initTables) (finalMs, confirmModes, tablesOrError) = forM
     Left e -> do
       Left e' <- createStore r finalMs confirmMode
       e `shouldBe` e'
-#if defined(dbPostgres)
-  dropSchema testDBConnectInfo (testSchema r)
-#else
-  removeFile (testDB r)
-#endif
-  where
-    shouldHaveTables :: DBStore -> [String] -> IO ()
-    st `shouldHaveTables` expected = do
-      tables <- map fromOnly <$> withTransaction st (`DB.query_` "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY 1;")
-      tables `shouldBe` "migrations" : expected
+  cleanup r
 
 #if defined(dbPostgres)
 -- TODO [postgres] move to shared module
@@ -222,10 +211,26 @@ testSchema randSuffix = "test_migrations_schema" <> show randSuffix
 createStore :: Word32 -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createStore randSuffix migrations confirmMigrations =
   createDBStore testDBConnectInfo (testSchema randSuffix) migrations confirmMigrations
+
+cleanup :: Word32 -> IO ()
+cleanup randSuffix = dropSchema testDBConnectInfo (testSchema randSuffix)
+
+shouldHaveTables :: DBStore -> [String] -> IO ()
+st `shouldHaveTables` expected = do
+  tables <- map fromOnly <$> withTransaction st (`DB.query_` "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY 1")
+  tables `shouldBe` "migrations" : expected
 #else
 testDB :: Word32 -> FilePath
 testDB randSuffix = "tests/tmp/test_migrations.db" <> show randSuffix
 
 createStore :: Word32 -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createStore randSuffix = createDBStore (testDB randSuffix) "" False
+
+cleanup :: Word32 -> IO ()
+cleanup randSuffix = removeFile (testDB randSuffix)
+
+shouldHaveTables :: DBStore -> [String] -> IO ()
+st `shouldHaveTables` expected = do
+  tables <- map fromOnly <$> withTransaction st (`DB.query_` "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY 1")
+  tables `shouldBe` "migrations" : expected
 #endif

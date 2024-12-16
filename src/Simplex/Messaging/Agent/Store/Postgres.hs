@@ -131,6 +131,12 @@ dropSchema connectInfo schema = do
 
 dropDatabaseAndUser :: ConnectInfo -> IO ()
 dropDatabaseAndUser ConnectInfo {connectUser = user, connectDatabase = dbName} = do
+  -- TODO [postgres] terminate all connections to the database
+  -- ALTER DATABASE your_database_name WITH ALLOW_CONNECTIONS false;
+  -- SELECT pg_terminate_backend(pg_stat_activity.pid)
+  -- FROM pg_stat_activity
+  -- WHERE datname = <db_name>
+  --   AND pid <> pg_backend_pid();
   bracket (PSQL.connect defaultConnectInfo {connectUser = "postgres", connectDatabase = "postgres"}) PSQL.close $
     \db -> do
       void $ PSQL.execute_ db (fromString $ "DROP USER " <> user)

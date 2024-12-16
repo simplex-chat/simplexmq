@@ -12,7 +12,6 @@ module Simplex.Messaging.Agent.Store.Postgres.Migrations
   )
 where
 
-import Control.Concurrent.MVar (takeMVar)
 import Control.Monad (void)
 import Data.List (sortOn)
 import Data.Text (Text)
@@ -27,6 +26,7 @@ import Database.PostgreSQL.Simple.SqlQQ (sql)
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
 import Simplex.Messaging.Agent.Store.Shared
+import UnliftIO.MVar
 
 schemaMigrations :: [(String, Text, Maybe Text)]
 schemaMigrations =
@@ -68,9 +68,9 @@ run st = \case
     runDown DownMigration {downName, downQuery} = withTransaction' st $ \db -> do
       execSQL db downQuery
       void $ PSQL.execute db "DELETE FROM migrations WHERE name = ?" (Only downName)
-    execSQL db query = do
-      pqConn <- takeMVar (connectionHandle db)
-      void $ LibPQ.exec pqConn (TE.encodeUtf8 query)
+    execSQL db query =
+      withMVar (connectionHandle db) $ \pqConn ->
+        void $ LibPQ.exec pqConn (TE.encodeUtf8 query)
 
 getCurrent :: PSQL.Connection -> IO [Migration]
 getCurrent db = map toMigration <$> PSQL.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
