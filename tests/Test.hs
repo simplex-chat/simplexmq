@@ -64,7 +64,7 @@ main = do
         describe "SMP server via TLS, hybrid store" $ do
           describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
           before (pure (transport @TLS, AMSType SMSHybrid)) serverTests
-        fdescribe "SMP server via TLS, journal message store" $ do
+        describe "SMP server via TLS, journal message store" $ do
           before (pure (transport @TLS, AMSType SMSJournal)) serverTests
         describe "SMP server via TLS, memory message store" $
           before (pure (transport @TLS, AMSType SMSMemory)) serverTests

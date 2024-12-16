@@ -44,35 +44,41 @@ import Test.Hspec
 msgStoreTests :: Spec
 msgStoreTests = do
   around (withMsgStore testSMTStoreConfig) $ describe "STM message store" someMsgStoreTests
-  around (withMsgStore testJournalStoreCfg) $ describe "Journal message store" $ do
-    someMsgStoreTests
-    it "should export and import journal store" testExportImportStore
-    describe "queue state" $ do
-      it "should restore queue state from the last line" testQueueState
-      it "should recover when message is written and state is not" testMessageState
-    describe "missing files" $ do
-      it "should create read file when missing" testReadFileMissing
-      it "should switch to write file when read file missing" testReadFileMissingSwitch
-      it "should create write file when missing" testWriteFileMissing
-      it "should create read file when read and write files are missing" testReadAndWriteFilesMissing
+  around (withMsgStore $ testJournalStoreCfg SMSHybrid) $
+    describe "Hybrid message store" $ do
+      journalMsgStoreTests
+      it "should export and import journal store" testExportImportStore
+  around (withMsgStore $ testJournalStoreCfg SMSJournal) $
+    describe "Journal message store" journalMsgStoreTests
   where
-    someMsgStoreTests :: STMStoreClass s => SpecWith s
+    journalMsgStoreTests :: JournalStoreType s => SpecWith (JournalMsgStore s)
+    journalMsgStoreTests = do
+      someMsgStoreTests
+      describe "queue state" $ do
+        it "should restore queue state from the last line" testQueueState
+        it "should recover when message is written and state is not" testMessageState
+      describe "missing files" $ do
+        it "should create read file when missing" testReadFileMissing
+        it "should switch to write file when read file missing" testReadFileMissingSwitch
+        it "should create write file when missing" testWriteFileMissing
+        it "should create read file when read and write files are missing" testReadAndWriteFilesMissing
+    someMsgStoreTests :: MsgStoreClass s => SpecWith s
     someMsgStoreTests = do
       it "should get queue and store/read messages" testGetQueue
       it "should not fail on EOF when changing read journal" testChangeReadJournal
 
-withMsgStore :: STMStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
+withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
 withMsgStore cfg = bracket (newMsgStore cfg) closeMsgStore
 
 testSMTStoreConfig :: STMStoreConfig
 testSMTStoreConfig = STMStoreConfig {storePath = Nothing, quota = 3}
 
-testJournalStoreCfg :: JournalStoreConfig 'MSHybrid
-testJournalStoreCfg =
+testJournalStoreCfg :: SMSType s -> JournalStoreConfig s
+testJournalStoreCfg queueStoreType =
   JournalStoreConfig
     { storePath = testStoreMsgsDir,
       pathParts = journalMsgStoreDepth,
-      queueStoreType = SMSHybrid,
+      queueStoreType,
       quota = 3,
       maxMsgCount = 4,
       maxStateLines = 2,
@@ -115,7 +121,7 @@ testNewQueueRec g sndSecure = do
           }
   pure (rId, qr)
 
-testGetQueue :: STMStoreClass s => s -> IO ()
+testGetQueue :: MsgStoreClass s => s -> IO ()
 testGetQueue ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
@@ -157,7 +163,7 @@ testGetQueue ms = do
     (Nothing, Nothing) <- tryDelPeekMsg ms q mId8
     void $ ExceptT $ deleteQueue ms q
 
-testChangeReadJournal :: STMStoreClass s => s -> IO ()
+testChangeReadJournal :: MsgStoreClass s => s -> IO ()
 testChangeReadJournal ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
@@ -207,7 +213,7 @@ testExportImportStore ms = do
   closeStoreLog sl
   exportMessages False ms testStoreMsgsFile False
   (B.readFile testStoreMsgsFile `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".copy")
-  let cfg = (testJournalStoreCfg :: JournalStoreConfig 'MSHybrid) {storePath = testStoreMsgsDir2}
+  let cfg = (testJournalStoreCfg SMSHybrid :: JournalStoreConfig 'MSHybrid) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
   readWriteQueueStore testStoreLogFile ms' >>= closeStoreLog
   stats@MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-

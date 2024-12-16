@@ -309,25 +309,44 @@ instance JournalStoreType s => MsgStoreClass (JournalMsgStore s) where
         (!count, !res) <- foldQueues 0 processQueue (0, mempty) ("", storePath)
         putStrLn $ progress count
         pure res
-      JournalStoreConfig {storePath, pathParts} = config
+      JournalStoreConfig {queueStoreType, storePath, pathParts} = config
       processQueue :: (Int, a) -> (String, FilePath) -> IO (Int, a)
       processQueue (!i, !r) (queueId, dir) = do
         when (tty && i `mod` 100 == 0) $ putStr (progress i <> "\r") >> IO.hFlush stdout
         r' <- case strDecode $ B.pack queueId of
           Right rId ->
-            getQueue ms SRecipient rId >>= \case
-              Right q -> unStoreIO (getMsgQueue ms q) *> action q <* closeMsgQueue q
-              Left AUTH -> do
-                logWarn $ "STORE: processQueue, queue " <> T.pack queueId <> " was removed, removing " <> T.pack dir
-                removeQueueDirectory_ dir
+            validRecipientDir dir rId >>= \case
+              Just True ->
+                getQueue ms SRecipient rId >>= \case
+                  Right q -> unStoreIO (getMsgQueue ms q) *> action q <* closeMsgQueue q
+                  Left AUTH -> case queueStoreType of
+                    SMSJournal -> do
+                      logError $ "STORE: processQueue, queue " <> T.pack queueId <> " failed to open, directory: " <> T.pack dir
+                      exitFailure
+                    SMSHybrid -> do
+                      logWarn $ "STORE: processQueue, queue " <> T.pack queueId <> " was removed, removing " <> T.pack dir
+                      removeQueueDirectory_ dir
+                      pure mempty
+                  Left e -> do
+                    logError $ "STORE: processQueue, error getting queue " <> T.pack queueId <> ", " <> tshow e
+                    exitFailure
+              Just False -> pure mempty
+              Nothing -> do
+                logWarn $ "STORE: processQueue, skipping unknown entity " <> T.pack queueId <> ", directory: " <> T.pack dir
                 pure mempty
-              Left e -> do
-                logError $ "STORE: processQueue, error getting queue " <> T.pack queueId <> ", " <> tshow e
-                exitFailure
           Left e -> do
             logError $ "STORE: processQueue, message queue directory " <> T.pack dir <> " is invalid, " <> tshow e
             exitFailure
         pure (i + 1, r <> r')
+      validRecipientDir dir qId = do
+        ifM
+          (anyExists [queueRecPath, msgQueueStatePath])
+          (pure $ Just True)
+          (ifM (anyExists [queueRefPath QRSender, queueRefPath QRNotifier]) (pure $ Just False) (pure Nothing))
+        where
+          anyExists fs =
+            let paths = map (\f -> f dir qId) fs
+             in anyM $ map doesFileExist $ paths <> map (<> ".bak") paths
       progress i = "Processed: " <> show i <> " queues"
       foldQueues depth f acc (queueId, path) = do
         let f' = if depth == pathParts - 1 then f else foldQueues (depth + 1) f
@@ -416,7 +435,7 @@ instance JournalStoreType s => MsgStoreClass (JournalMsgStore s) where
                 pure $ Left AUTH
             load dir f = do
               -- TODO [queues] read backup if exists, remove old timed backups
-              qr_ <- first STORE . strDecode <$> B.readFile f
+              qr_ <- first STORE . strDecode  <$> B.readFile f
               forM qr_ $ \qr -> do
                 lock <- atomically $ getMapLock (queueLocks ms) rId
                 q <- makeQueue dir lock rId qr
@@ -427,7 +446,7 @@ instance JournalStoreType s => MsgStoreClass (JournalMsgStore s) where
           where
             loadQueueRef = do
               let dir = msgQueueDirectory ms qId
-                  f = queueRefPath dir qRef qId
+                  f = queueRefPath qRef dir qId
               ifM (doesFileExist f) (loadRef f) $ do
                 atomically $ TM.insert qId Nothing m
                 pure $ Left AUTH
@@ -692,7 +711,7 @@ storeQueue sq@JournalQueue {queueRec} q = do
 saveQueueRef :: JournalMsgStore 'MSJournal -> QueueRef -> QueueId -> RecipientId -> TMap QueueId (Maybe RecipientId) -> IO ()
 saveQueueRef st qRef qId rId m = do
   let dir = msgQueueDirectory st qId
-      f = queueRefPath dir qRef qId
+      f = queueRefPath qRef dir qId
   createDirectoryIfMissing True dir
   safeReplaceFile f $ strEncode rId
   atomically $ TM.insert qId (Just rId) m
@@ -700,8 +719,10 @@ saveQueueRef st qRef qId rId m = do
 deleteQueueRef :: JournalMsgStore 'MSJournal -> QueueRef -> QueueId -> TMap QueueId (Maybe RecipientId) -> IO ()
 deleteQueueRef st qRef qId m = do
   let dir = msgQueueDirectory st qId
-      f = queueRefPath dir qRef qId
+      f = queueRefPath qRef dir qId
   whenM (doesFileExist f) $ removeFile f
+  -- TODO [queues] remove folder if it's empty or has only timed backups
+  -- TODO [queues] remove empty parent folders up to storage depth
   atomically $ TM.delete qId m
 
 storeQueue_ :: JournalQueue s -> QueueRec -> IO ()
@@ -712,11 +733,11 @@ storeQueue_ JournalQueue {recipientId, queueDirectory} q = do
 safeReplaceFile :: FilePath -> ByteString -> IO ()
 safeReplaceFile f s = ifM (doesFileExist f) replace (B.writeFile f s)
   where
-    tempBackup = f <> ".bak"
+    temp = f <> ".bak"
     replace = do
-      renameFile f tempBackup
+      renameFile f temp
       B.writeFile f s
-      renameFile tempBackup =<< timedBackupName f
+      renameFile temp =<< timedBackupName f
 
 timedBackupName :: FilePath -> IO FilePath
 timedBackupName f = do
@@ -784,8 +805,8 @@ msgQueueDirectory JournalMsgStore {config = JournalStoreConfig {storePath, pathP
 queueRecPath :: FilePath -> RecipientId -> FilePath
 queueRecPath dir rId = dir </> (queueRecFileName <> "." <> B.unpack (strEncode rId) <> logFileExt)
 
-queueRefPath :: FilePath -> QueueRef -> QueueId -> FilePath
-queueRefPath dir qRef qId = dir </> (queueRefFileName qRef <> "." <> B.unpack (strEncode qId) <> queueRefFileExt)
+queueRefPath :: QueueRef -> FilePath -> QueueId -> FilePath
+queueRefPath qRef dir qId = dir </> (queueRefFileName qRef <> "." <> B.unpack (strEncode qId) <> queueRefFileExt)
 
 msgQueueStatePath :: FilePath -> RecipientId -> FilePath
 msgQueueStatePath dir rId = dir </> (queueLogFileName <> "." <> B.unpack (strEncode rId) <> logFileExt)
@@ -1015,7 +1036,8 @@ openFile f mode = do
   pure h
 
 hClose :: Handle -> IO ()
-hClose h =
+hClose h = do
+  IO.hFlush h
   IO.hClose h `catchAny` \e -> do
     name <- IO.hShow h
     logError $ "STORE: hClose, " <> T.pack name <> ", " <> tshow e

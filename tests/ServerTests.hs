@@ -19,7 +19,7 @@ import AgentTests.NotificationTests (removeFileIfExists)
 import CoreTests.MsgStoreTests (testJournalStoreCfg)
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, throwIO, try)
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.Bifunctor (first)
@@ -572,7 +572,6 @@ testWithStoreLog =
     senderId1 <- newTVarIO NoEntity
     senderId2 <- newTVarIO NoEntity
     notifierId <- newTVarIO NoEntity
-
     withSmpServerStoreLogOnMS at msType testPort . runTest t $ \h -> runClient t $ \h1 -> do
       (sId1, rId1, rKey1, dhShared) <- createAndSecureQueue h sPub1
       (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
@@ -603,16 +602,14 @@ testWithStoreLog =
 
       Resp "dabc" _ OK <- signSendRecv h rKey2 ("dabc", rId2, DEL)
       pure ()
-
-    logSize testStoreLogFile `shouldReturn` 6
-
+    withHybridStore msType $
+      logSize testStoreLogFile `shouldReturn` 6
     let cfg' = (cfgMS msType) {msgStoreType = AMSType SMSMemory, storeLogFile = Nothing, storeMsgsFile = Nothing}
     withSmpServerConfigOn at cfg' testPort . runTest t $ \h -> do
       sId1 <- readTVarIO senderId1
       -- fails if store log is disabled
       Resp "bcda" _ (ERR AUTH) <- signSendRecv h sKey1 ("bcda", sId1, _SEND "hello")
       pure ()
-
     withSmpServerStoreLogOnMS at msType testPort . runTest t $ \h -> runClient t $ \h1 -> do
       -- this queue is restored
       rId1 <- readTVarIO recipientId1
@@ -629,9 +626,9 @@ testWithStoreLog =
       sId2 <- readTVarIO senderId2
       Resp "cdab" _ (ERR AUTH) <- signSendRecv h sKey2 ("cdab", sId2, _SEND "hello too")
       pure ()
-
-    logSize testStoreLogFile `shouldReturn` 1
-    removeFile testStoreLogFile
+    withHybridStore msType $ do
+      logSize testStoreLogFile `shouldReturn` 1
+      removeFile testStoreLogFile
   where
     runTest :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
@@ -641,11 +638,20 @@ testWithStoreLog =
     runClient :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
+withHybridStore :: AMSType -> IO () -> IO ()
+withHybridStore msType a = case msType of
+  AMSType SMSHybrid -> a
+  _ -> pure ()
+
 logSize :: FilePath -> IO Int
-logSize f =
-  try (length . B.lines <$> B.readFile f) >>= \case
-    Right l -> pure l
-    Left (_ :: SomeException) -> logSize f
+logSize f = go (3 :: Int)
+  where
+    go n =
+      try (length . B.lines <$> B.readFile f) >>= \case
+        Right l -> pure l
+        Left (e :: SomeException)
+          | n == 0 -> throwIO e
+          | otherwise -> threadDelay 100000 >> go (n - 1)
 
 testRestoreMessages :: SpecWith (ATransport, AMSType)
 testRestoreMessages =
@@ -685,7 +691,8 @@ testRestoreMessages =
 
     rId <- readTVarIO recipientId
 
-    logSize testStoreLogFile `shouldReturn` 2
+    withHybridStore msType $
+      logSize testStoreLogFile `shouldReturn` 2
     -- logSize testStoreMsgsFile `shouldReturn` 5
     logSize testServerStatsBackupFile `shouldReturn` 74
     Right stats1 <- strDecode <$> B.readFile testServerStatsBackupFile
@@ -702,9 +709,10 @@ testRestoreMessages =
       Resp "4" _ (Msg mId4 msg4) <- signSendRecv h rKey ("4", rId, ACK mId3)
       (dec mId4 msg4, Right "hello 4") #== "restored message delivered"
 
-    logSize testStoreLogFile `shouldReturn` 1
-    -- the last message is not removed because it was not ACK'd
-    -- logSize testStoreMsgsFile `shouldReturn` 3
+    withHybridStore msType $
+      logSize testStoreLogFile `shouldReturn` 1
+      -- the last message is not removed because it was not ACK'd
+      -- logSize testStoreMsgsFile `shouldReturn` 3
     logSize testServerStatsBackupFile `shouldReturn` 74
     Right stats2 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats2 [rId] 5 3
@@ -721,13 +729,14 @@ testRestoreMessages =
       (dec mId6 msg6, Left "ClientRcvMsgQuota") #== "restored message delivered"
       Resp "7" _ OK <- signSendRecv h rKey ("7", rId, ACK mId6)
       pure ()
-    logSize testStoreLogFile `shouldReturn` 1
-    -- logSize testStoreMsgsFile `shouldReturn` 0
+    withHybridStore msType $
+      logSize testStoreLogFile `shouldReturn` 1
+      -- logSize testStoreMsgsFile `shouldReturn` 0
     logSize testServerStatsBackupFile `shouldReturn` 74
     Right stats3 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats3 [rId] 5 5
 
-    removeFile testStoreLogFile
+    withHybridStore msType $ removeFile testStoreLogFile
     removeFileIfExists testStoreMsgsFile
     whenM (doesDirectoryExist testStoreMsgsDir) $ removeDirectoryRecursive testStoreMsgsDir
     removeFile testServerStatsBackupFile
@@ -782,7 +791,8 @@ testRestoreExpireMessages =
       Resp "4" _ OK <- signSendRecv h sKey ("4", sId, _SEND "hello 4")
       pure ()
 
-    logSize testStoreLogFile `shouldReturn` 2
+    withHybridStore msType $
+      logSize testStoreLogFile `shouldReturn` 2
     exportStoreMessages msType
     msgs <- B.readFile testStoreMsgsFile
     length (B.lines msgs) `shouldBe` 4
@@ -791,7 +801,8 @@ testRestoreExpireMessages =
         cfg1 = (cfgMS msType) {messageExpiration = expCfg1, serverStatsBackupFile = Just testServerStatsBackupFile}
     withSmpServerConfigOn at cfg1 testPort . runTest t $ \_ -> pure ()
 
-    logSize testStoreLogFile `shouldReturn` 1
+    withHybridStore msType $
+      logSize testStoreLogFile `shouldReturn` 1
     exportStoreMessages msType
     msgs' <- B.readFile testStoreMsgsFile
     msgs' `shouldBe` msgs
@@ -800,7 +811,8 @@ testRestoreExpireMessages =
         cfg2 = (cfgMS msType) {messageExpiration = expCfg2, serverStatsBackupFile = Just testServerStatsBackupFile}
     withSmpServerConfigOn at cfg2 testPort . runTest t $ \_ -> pure ()
 
-    logSize testStoreLogFile `shouldReturn` 1
+    withHybridStore msType $
+      logSize testStoreLogFile `shouldReturn` 1
     -- two messages expired
     exportStoreMessages msType
     msgs'' <- B.readFile testStoreMsgsFile
@@ -810,10 +822,13 @@ testRestoreExpireMessages =
     _msgExpired `shouldBe` 2
   where
     exportStoreMessages :: AMSType -> IO ()
-    exportStoreMessages = \case
-      AMSType SMSJournal -> undefined -- TODO [queues]
+    exportStoreMessages msType = case msType of
+      AMSType SMSJournal -> do
+        ms <- newMsgStore $ (testJournalStoreCfg SMSJournal) {quota = 4}
+        removeFileIfExists testStoreMsgsFile
+        exportMessages False ms testStoreMsgsFile False
       AMSType SMSHybrid -> do
-        ms <- newMsgStore testJournalStoreCfg {quota = 4}
+        ms <- newMsgStore $ (testJournalStoreCfg SMSHybrid) {quota = 4}
         readWriteQueueStore testStoreLogFile ms >>= closeStoreLog
         removeFileIfExists testStoreMsgsFile
         exportMessages False ms testStoreMsgsFile False

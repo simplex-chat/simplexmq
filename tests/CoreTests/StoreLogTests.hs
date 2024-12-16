@@ -102,7 +102,7 @@ testSMPStoreLog testSuite tests =
     replicateM_ 3 $ testReadWrite t
   where
     testReadWrite SLTC {compacted, state} = do
-      st <- newMsgStore testJournalStoreCfg
+      st <- newMsgStore $ testJournalStoreCfg SMSHybrid
       l <- readWriteQueueStore testStoreLogFile st
       storeState st `shouldReturn` state
       closeStoreLog l
