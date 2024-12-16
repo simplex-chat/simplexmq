@@ -384,6 +384,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         threadDelay' interval
         old <- expireBeforeEpoch expCfg
         now <- systemSeconds <$> getSystemTime
+        -- TODO [queues] this should iterate all queues, there are more queues than active queues in journal mode
+        -- TODO [queues] it should also compact journals (see 2024-11-25-journal-expiration.md)
         msgStats@MessageStats {storedMsgsCount = stored, expiredMsgsCount = expired} <-
           withActiveMsgQueues ms $ expireQueueMsgs now ms old
         atomicWriteIORef (msgCount stats) stored

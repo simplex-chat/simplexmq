@@ -894,6 +894,7 @@ removeJournal dir JournalState {journalId} = do
 
 -- This function is supposed to be resilient to crashes while updating state files,
 -- and also resilient to crashes during its execution.
+-- TODO [queues] remove old timed backups
 readWriteQueueState :: JournalMsgStore s -> FilePath -> IO (MsgQueueState, Handle)
 readWriteQueueState JournalMsgStore {random, config} statePath =
   ifM
