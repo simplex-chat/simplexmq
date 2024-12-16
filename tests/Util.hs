@@ -1,9 +1,10 @@
 module Util where
 
-import Control.Monad (replicateM)
+import Control.Monad (replicateM, when)
 import Data.Either (partitionEithers)
 import Data.List (tails)
 import GHC.Conc (getNumCapabilities, getNumProcessors, setNumCapabilities)
+import System.Directory (doesFileExist, removeFile)
 import Test.Hspec
 import UnliftIO
 
@@ -26,3 +27,8 @@ inParrallel n action = do
 combinations :: Int -> [a] -> [[a]]
 combinations 0 _ = [[]]
 combinations k xs = [y : ys | y : xs' <- tails xs, ys <- combinations (k - 1) xs']
+
+removeFileIfExists :: FilePath -> IO ()
+removeFileIfExists filePath = do
+  fileExists <- doesFileExist filePath
+  when fileExists $ removeFile filePath

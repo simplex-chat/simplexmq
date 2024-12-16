@@ -2,17 +2,8 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeApplications #-}
 
--- TODO [postgres] fix and reenable tests
-#if defined(dbPostgres)
-import Control.Logger.Simple
-import AgentTests.MigrationTests (migrationTests)
-import Test.Hspec
-#else
 import AgentTests (agentTests)
-import AgentTests.SchemaDump (schemaDumpTest)
 import CLITests
-import Control.Concurrent (threadDelay)
-import qualified Control.Exception as E
 import Control.Logger.Simple
 import CoreTests.BatchingTests
 import CoreTests.CryptoFileTests
@@ -26,8 +17,6 @@ import CoreTests.TRcvQueuesTests
 import CoreTests.UtilTests
 import CoreTests.VersionRangeTests
 import FileDescriptionTests (fileDescriptionTests)
-import GHC.IO.Exception (IOException (..))
-import qualified GHC.IO.Exception as IOException
 import NtfServerTests (ntfServerTests)
 import RemoteControl (remoteControlTests)
 import SMPProxyTests (smpProxyTests)
@@ -35,29 +24,26 @@ import ServerTests
 import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..))
 import Simplex.Messaging.Transport (TLS, Transport (..))
 -- import Simplex.Messaging.Transport.WebSockets (WS)
-import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Environment (setEnv)
 import Test.Hspec
 import XFTPAgent
 import XFTPCLI
 import XFTPServerTests (xftpServerTests)
+#if defined(dbPostgres)
+import Fixtures
+import Simplex.Messaging.Agent.Store.Postgres (createDBAndUserIfNotExists, dropDatabaseAndUser)
+#else
+import AgentTests.SchemaDump (schemaDumpTest)
+import Control.Concurrent (threadDelay)
+import qualified Control.Exception as E
+import GHC.IO.Exception (IOException (..))
+import qualified GHC.IO.Exception as IOException
+import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 #endif
 
 logCfg :: LogConfig
 logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 
-#if defined(dbPostgres)
-main :: IO ()
-main = do
-  setLogLevel LogError -- LogInfo
-  withGlobalLogging logCfg $ do
-    hspec
-      -- . before_ (createDirectoryIfMissing False "tests/tmp")
-      -- . after_ (eventuallyRemove "tests/tmp" 3)
-      $ do
-        describe "Migration tests" migrationTests
-
-#else
 main :: IO ()
 main = do
   setLogLevel LogError -- LogInfo
@@ -65,10 +51,13 @@ main = do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
     hspec
-      . before_ (createDirectoryIfMissing False "tests/tmp")
-      . after_ (eventuallyRemove "tests/tmp" 3)
+      . before_ doBefore
+      . after_ doAfter
       $ do
+-- TODO [postgres] schema dump for postgres
+#if !defined(dbPostgres)
         describe "Agent SQLite schema dump" schemaDumpTest
+#endif
         describe "Core tests" $ do
           describe "Batching tests" batchingTests
           describe "Encoding tests" encodingTests
@@ -99,6 +88,19 @@ main = do
           describe "XFTP agent" xftpAgentTests
         describe "XRCP" remoteControlTests
         describe "Server CLIs" cliTests
+
+#if defined(dbPostgres)
+doBefore :: IO ()
+doBefore = createDBAndUserIfNotExists testDBConnectInfo
+
+doAfter :: IO ()
+doAfter = dropDatabaseAndUser testDBConnectInfo
+#else
+doBefore :: IO ()
+doBefore = createDirectoryIfMissing False "tests/tmp"
+
+doAfter :: IO ()
+doAfter = eventuallyRemove "tests/tmp" 3
 
 eventuallyRemove :: FilePath -> Int -> IO ()
 eventuallyRemove path retries = case retries of

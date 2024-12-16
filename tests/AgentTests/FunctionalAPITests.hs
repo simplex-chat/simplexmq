@@ -75,7 +75,6 @@ import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality (testEquality, (:~:) (Refl))
 import Data.Word (Word16)
-import qualified Database.SQLite.Simple as SQL
 import GHC.Stack (withFrozenCallStack)
 import SMPAgentClient
 import SMPClient (cfg, prevRange, prevVersion, testPort, testPort2, testStoreLogFile2, testStoreMsgsDir2, withSmpServer, withSmpServerConfigOn, withSmpServerProxy, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
@@ -85,8 +84,9 @@ import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestSte
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
-import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction')
-import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
+import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
+import qualified Simplex.Messaging.Agent.Store.DB as DB
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..), MigrationError (..))
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), SMPProxyFallback (..), SMPProxyMode (..), TransportSessionMode (..), defaultClientConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
@@ -109,6 +109,9 @@ import Test.Hspec
 import UnliftIO
 import Util
 import XFTPClient (testXFTPServer)
+#if defined(dbPostgres)
+import Fixtures
+#endif
 
 type AEntityTransmission e = (ACorrId, ConnId, AEvent e)
 
@@ -2563,7 +2566,7 @@ testSwitchAsync servers = do
     withB :: (AgentClient -> IO a) -> IO a
     withB = withAgent 2 agentCfg servers testDB2
 
-withAgent :: HasCallStack => Int -> AgentConfig -> InitialAgentServers -> FilePath -> (HasCallStack => AgentClient -> IO a) -> IO a
+withAgent :: HasCallStack => Int -> AgentConfig -> InitialAgentServers -> String -> (HasCallStack => AgentClient -> IO a) -> IO a
 withAgent clientId cfg' servers dbPath = bracket (getSMPAgentClient' clientId cfg' servers dbPath) (\a -> disposeAgentClient a >> threadDelay 100000)
 
 sessionSubscribe :: (forall a. (AgentClient -> IO a) -> IO a) -> [ConnId] -> (AgentClient -> ExceptT AgentErrorType IO ()) -> IO ()
@@ -3093,12 +3096,20 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     hasClients :: HasCallStack => AgentClient -> Int -> ExceptT AgentErrorType IO ()
     hasClients c n = liftIO $ M.size <$> readTVarIO (smpClients c) `shouldReturn` n
 
-getSMPAgentClient' :: Int -> AgentConfig -> InitialAgentServers -> FilePath -> IO AgentClient
+getSMPAgentClient' :: Int -> AgentConfig -> InitialAgentServers -> String -> IO AgentClient
 getSMPAgentClient' clientId cfg' initServers dbPath = do
-  Right st <- liftIO $ createAgentStore dbPath "" False MCError
+  Right st <- liftIO $ createStore dbPath
   c <- getSMPAgentClient_ clientId cfg' initServers st False
-  when (dbNew st) $ withTransaction' st (`SQL.execute_` "INSERT INTO users (user_id) VALUES (1)")
+  when (dbNew st) $ withTransaction st (`DB.execute_` "INSERT INTO users (user_id) VALUES (1)")
   pure c
+
+#if defined(dbPostgres)
+createStore :: String -> IO (Either MigrationError DBStore)
+createStore schema = createAgentStore testDBConnectInfo schema MCError
+#else
+createStore :: String -> IO (Either MigrationError DBStore)
+createStore dbPath = createAgentStore dbPath "" False MCError
+#endif
 
 testServerMultipleIdentities :: HasCallStack => IO ()
 testServerMultipleIdentities =

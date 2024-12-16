@@ -12,8 +12,9 @@ import Simplex.Messaging.Agent.Store.Shared
 import System.Random (randomIO)
 import Test.Hspec
 #if defined(dbPostgres)
-import Database.PostgreSQL.Simple (ConnectInfo (..), fromOnly)
-import Simplex.Messaging.Agent.Store.Postgres (closeDBStore, createDBStore, defaultSimplexConnectInfo, dropSchema)
+import Database.PostgreSQL.Simple (fromOnly)
+import Fixtures
+import Simplex.Messaging.Agent.Store.Postgres (closeDBStore, createDBStore, dropSchema)
 import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
 #else
 import Database.SQLite.Simple (fromOnly)
@@ -197,14 +198,6 @@ testMigration (initMs, initTables) (finalMs, confirmModes, tablesOrError) = forM
   cleanup r
 
 #if defined(dbPostgres)
--- TODO [postgres] move to shared module
-testDBConnectInfo :: ConnectInfo
-testDBConnectInfo =
-  defaultSimplexConnectInfo {
-    connectUser = "test_user",
-    connectDatabase = "test_db"
-  }
-
 testSchema :: Word32 -> String
 testSchema randSuffix = "test_migrations_schema" <> show randSuffix
 

@@ -8,6 +8,7 @@ module Simplex.Messaging.Agent.Store.Postgres
     closeDBStore,
     execSQL,
     -- for tests
+    createDBAndUserIfNotExists,
     dropDatabaseAndUser,
     dropSchema,
   )
@@ -124,20 +125,26 @@ execSQL :: PSQL.Connection -> Text -> IO [Text]
 execSQL _db _query = throwIO (userError "not implemented")
 
 dropSchema :: ConnectInfo -> String -> IO ()
-dropSchema connectInfo schema = do
+dropSchema connectInfo schema =
   bracket (PSQL.connect connectInfo) PSQL.close $
     \db ->
       void $ PSQL.execute_ db (fromString $ "DROP SCHEMA IF EXISTS " <> schema <> " CASCADE")
 
 dropDatabaseAndUser :: ConnectInfo -> IO ()
-dropDatabaseAndUser ConnectInfo {connectUser = user, connectDatabase = dbName} = do
-  -- TODO [postgres] terminate all connections to the database
-  -- ALTER DATABASE your_database_name WITH ALLOW_CONNECTIONS false;
-  -- SELECT pg_terminate_backend(pg_stat_activity.pid)
-  -- FROM pg_stat_activity
-  -- WHERE datname = <db_name>
-  --   AND pid <> pg_backend_pid();
+dropDatabaseAndUser ConnectInfo {connectUser = user, connectDatabase = dbName} =
   bracket (PSQL.connect defaultConnectInfo {connectUser = "postgres", connectDatabase = "postgres"}) PSQL.close $
     \db -> do
+      void $ PSQL.execute_ db (fromString $ "ALTER DATABASE " <> dbName <> " WITH ALLOW_CONNECTIONS false")
+      -- terminate all connections to the database
+      void $
+        PSQL.execute
+          db
+          [sql|
+            SELECT pg_terminate_backend(pg_stat_activity.pid)
+            FROM pg_stat_activity
+            WHERE datname = ?
+              AND pid <> pg_backend_pid()
+          |]
+          (Only dbName)
       void $ PSQL.execute_ db (fromString $ "DROP USER " <> user)
       void $ PSQL.execute_ db (fromString $ "DROP DATABASE " <> dbName)

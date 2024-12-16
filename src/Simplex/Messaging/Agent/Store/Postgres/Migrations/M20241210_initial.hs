@@ -6,12 +6,6 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Text.RawString.QQ (r)
 
--- TODO [postgres] remove
--- DROP SCHEMA IF EXISTS agent_schema CASCADE;
--- CREATE SCHEMA agent_schema;
-
--- SET search_path TO agent_schema;
-
 m20241210_initial :: Text
 m20241210_initial =
   T.pack

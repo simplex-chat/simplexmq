@@ -403,45 +403,46 @@ test-suite simplexmq-test
   type: exitcode-stdio-1.0
   main-is: Test.hs
   other-modules:
-      -- AgentTests
-      -- AgentTests.ConnectionRequestTests
-      -- AgentTests.DoubleRatchetTests
-      -- AgentTests.EqInstances
-      -- AgentTests.FunctionalAPITests
+      AgentTests
+      AgentTests.ConnectionRequestTests
+      AgentTests.DoubleRatchetTests
+      AgentTests.EqInstances
+      AgentTests.FunctionalAPITests
       AgentTests.MigrationTests
-      -- AgentTests.SchemaDump
-      -- AgentTests.ServerChoice
-      -- CLITests
-      -- CoreTests.BatchingTests
-      -- CoreTests.CryptoFileTests
-      -- CoreTests.CryptoTests
-      -- CoreTests.EncodingTests
-      -- CoreTests.MsgStoreTests
-      -- CoreTests.RetryIntervalTests
-      -- CoreTests.SOCKSSettings
-      -- CoreTests.StoreLogTests
-      -- CoreTests.TRcvQueuesTests
-      -- CoreTests.UtilTests
-      -- CoreTests.VersionRangeTests
-      -- FileDescriptionTests
-      -- NtfClient
-      -- NtfServerTests
-      -- RemoteControl
-      -- ServerTests
-      -- SMPAgentClient
-      -- SMPClient
-      -- SMPProxyTests
-      -- Util
-      -- XFTPAgent
-      -- XFTPCLI
-      -- XFTPClient
-      -- XFTPServerTests
+      AgentTests.ServerChoice
+      CLITests
+      CoreTests.BatchingTests
+      CoreTests.CryptoFileTests
+      CoreTests.CryptoTests
+      CoreTests.EncodingTests
+      CoreTests.MsgStoreTests
+      CoreTests.RetryIntervalTests
+      CoreTests.SOCKSSettings
+      CoreTests.StoreLogTests
+      CoreTests.TRcvQueuesTests
+      CoreTests.UtilTests
+      CoreTests.VersionRangeTests
+      FileDescriptionTests
+      Fixtures
+      NtfClient
+      NtfServerTests
+      RemoteControl
+      ServerTests
+      SMPAgentClient
+      SMPClient
+      SMPProxyTests
+      Util
+      XFTPAgent
+      XFTPCLI
+      XFTPClient
+      XFTPServerTests
       Static
       Static.Embedded
       Paths_simplexmq
   if !flag(client_postgres)
       other-modules:
           AgentTests.NotificationTests
+          AgentTests.SchemaDump
           AgentTests.SQLiteTests
   hs-source-dirs:
       tests
