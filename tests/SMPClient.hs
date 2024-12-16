@@ -127,8 +127,9 @@ cfgMS msType =
       msgIdBytes = 24,
       storeLogFile = Just testStoreLogFile,
       storeMsgsFile = Just $ case msType of
-        AMSType SMSJournal -> testStoreMsgsDir
-        AMSType SMSMemory -> testStoreMsgsFile,
+        AMSType SMSMemory -> testStoreMsgsFile
+        AMSType SMSHybrid -> testStoreMsgsDir
+        AMSType SMSJournal -> testStoreMsgsDir,
       storeNtfsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,

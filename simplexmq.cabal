@@ -279,6 +279,7 @@ library
     build-depends:
         case-insensitive ==1.2.*
       , hashable ==1.4.*
+      , unix ==2.8.*
       , websockets ==0.12.*
   if impl(ghc >= 9.6.2)
     build-depends:

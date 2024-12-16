@@ -95,7 +95,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             (putStrLn ("Store log file " <> storeLogFile <> " not found") >> exitFailure)
         Nothing -> putStrLn "Store log disabled, see `[STORE_LOG] enable`" >> exitFailure
       case cmd of
-        JCImport
+        JCImport (Just JSCMessages)
           | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
           | msgsDirExists -> do
               putStrLn $ storeMsgsJournalDir <> " directory already exists."
@@ -108,15 +108,17 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 ("WARNING: message log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir)
                 "Messages not imported"
               ms <- newJournalMsgStore
+              -- TODO [queues] it should not load queues if queues are in journal
               readQueueStore storeLogFile ms
               msgStats <- importMessages True ms storeMsgsFilePath Nothing -- no expiration
               putStrLn "Import completed"
               printMessageStats "Messages" msgStats
               putStrLn $ case readMsgStoreType ini of
                 Right (AMSType SMSMemory) -> "store_messages set to `memory`, update it to `journal` in INI file"
-                Right (AMSType SMSJournal) -> "store_messages set to `journal`"
+                Right (AMSType _) -> "store_messages set to `journal`" -- TODO [queues]
                 Left e -> e <> ", update it to `journal` in INI file"
-        JCExport
+        JCImport _ -> undefined -- TODO [queues]
+        JCExport (Just JSCMessages)
           | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
           | msgsFileExists -> do
               putStrLn $ storeMsgsFilePath <> " file already exists."
@@ -126,13 +128,15 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
                 "Journal not exported"
               ms <- newJournalMsgStore
+              -- TODO [queues] it should not load queues if queues are in journal
               readQueueStore storeLogFile ms
               exportMessages True ms storeMsgsFilePath False
               putStrLn "Export completed"
               putStrLn $ case readMsgStoreType ini of
                 Right (AMSType SMSMemory) -> "store_messages set to `memory`"
-                Right (AMSType SMSJournal) -> "store_messages set to `journal`, update it to `memory` in INI file"
+                Right _ -> "store_messages set to `journal`, update it to `memory` in INI file" -- TODO [queues]
                 Left e -> e <> ", update it to `memory` in INI file"
+        JCExport _ -> undefined -- TODO [queues]
         JCDelete
           | not msgsDirExists -> do
               putStrLn $ storeMsgsJournalDir <> " directory does not exists."
@@ -148,7 +152,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError a
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
-    newJournalMsgStore = newMsgStore JournalStoreConfig {storePath = storeMsgsJournalDir, pathParts = journalMsgStoreDepth, quota = defaultMsgQueueQuota, maxMsgCount = defaultMaxJournalMsgCount, maxStateLines = defaultMaxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = checkInterval defaultMessageExpiration}
+    newJournalMsgStore = newMsgStore JournalStoreConfig {storePath = storeMsgsJournalDir, pathParts = journalMsgStoreDepth, queueStoreType = SMSHybrid, quota = defaultMsgQueueQuota, maxMsgCount = defaultMaxJournalMsgCount, maxStateLines = defaultMaxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = checkInterval defaultMessageExpiration}
     iniFile = combine cfgPath "smp-server.ini"
     serverVersion = "SMP server v" <> simplexMQVersion
     defaultServerPorts = "5223,443"
@@ -161,7 +165,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
     readMsgStoreType = textToMsgStoreType . fromRight "memory" . lookupValue "STORE_LOG" "store_messages"
     textToMsgStoreType = \case
       "memory" -> Right $ AMSType SMSMemory
-      "journal" -> Right $ AMSType SMSJournal
+      "journal" -> Right $ AMSType SMSHybrid -- TODO [queues]
       s -> Left $ "invalid store_messages: " <> T.unpack s
     httpsCertFile = combine cfgPath "web.crt"
     httpsKeyFile = combine cfgPath "web.key"
@@ -403,7 +407,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               storeLogFile = enableStoreLog $> storeLogFilePath,
               storeMsgsFile = case iniMsgStoreType of
                 AMSType SMSMemory -> restoreMessagesFile storeMsgsFilePath
-                AMSType SMSJournal -> Just storeMsgsJournalDir,
+                AMSType _ -> Just storeMsgsJournalDir,
               storeNtfsFile = restoreMessagesFile storeNtfsFilePath,
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
@@ -486,7 +490,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       msgsFileExists <- doesFileExist storeMsgsFilePath
       case mode of
         _ | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
-        AMSType SMSJournal
+        AMSType SMSJournal -> undefined -- TODO [queues]
+        AMSType SMSHybrid
           | msgsFileExists -> do
               putStrLn $ "Error: store_messages is `journal` with " <> storeMsgsFilePath <> " file present."
               putStrLn "Set store_messages to `memory` or use `smp-server journal export` to migrate."
@@ -634,7 +639,9 @@ data CliCommand
   | Delete
   | Journal JournalCmd
 
-data JournalCmd = JCImport | JCExport | JCDelete
+data JournalCmd = JCImport (Maybe JournalSubCmd) | JCExport (Maybe JournalSubCmd) | JCDelete
+
+data JournalSubCmd = JSCQueues | JSCMessages
 
 data InitOptions = InitOptions
   { enableStoreLog :: Bool,
@@ -807,11 +814,19 @@ cliCommandP cfgPath logPath iniFile =
             scripted
           }
     journalCmdP =
-      hsubparser
-        ( command "import" (info (pure JCImport) (progDesc "Import message log file into a new journal storage"))
-            <> command "export" (info (pure JCExport) (progDesc "Export journal storage to message log file"))
-            <> command "delete" (info (pure JCDelete) (progDesc "Delete journal storage"))
-        )
+      hsubparser $
+        command "import" (info (JCImport <$> optional (journalSubCmdP True)) (progDesc "Import log files into a new journal storage"))
+          <> command "export" (info (JCExport <$> optional (journalSubCmdP False)) (progDesc "Export journal storage to log files"))
+          <> command "delete" (info (pure JCDelete) (progDesc "Delete journal storage"))
+    journalSubCmdP importing
+      | importing =
+          hsubparser $
+            command "queues" (info (pure JSCQueues) (progDesc "Import queues from store log file"))
+              <> command "messages" (info (pure JSCMessages) (progDesc "Import messages from message log log"))
+      | otherwise =
+          hsubparser $
+            command "queues" (info (pure JSCQueues) (progDesc "Export queues to store log file"))
+              <> command "messages" (info (pure JSCMessages) (progDesc "Export messages to message log file"))
 
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
