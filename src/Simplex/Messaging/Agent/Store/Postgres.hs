@@ -12,12 +12,12 @@ module Simplex.Messaging.Agent.Store.Postgres
     createDBAndUserIfNotExists,
     dropSchema,
     dropAllSchemasExceptSystem,
-    dropDatabaseAndUser,
+    dropDatabaseAndUserIfExists,
   )
 where
 
 import Control.Exception (bracket, throwIO)
-import Control.Monad (forM_, unless, void)
+import Control.Monad (forM_, unless, void, when)
 import Data.Functor (($>))
 import Data.String (fromString)
 import Data.Text (Text)
@@ -59,11 +59,11 @@ createDBAndUserIfNotExists :: ConnectInfo -> IO ()
 createDBAndUserIfNotExists ConnectInfo {connectUser = user, connectDatabase = dbName} = do
   -- connect to the default "postgres" maintenance database
   bracket (PSQL.connect defaultConnectInfo {connectUser = "postgres", connectDatabase = "postgres"}) PSQL.close $
-    \db -> do
+    \postgresDB -> do
       -- check if the user exists, create if not
       [Only userExists] <-
         PSQL.query
-          db
+          postgresDB
           [sql|
             SELECT EXISTS (
               SELECT 1 FROM pg_catalog.pg_roles
@@ -71,19 +71,24 @@ createDBAndUserIfNotExists ConnectInfo {connectUser = user, connectDatabase = db
             )
           |]
           (Only user)
-      unless userExists $ void $ PSQL.execute_ db (fromString $ "CREATE USER " <> user)
+      unless userExists $ void $ PSQL.execute_ postgresDB (fromString $ "CREATE USER " <> user)
       -- check if the database exists, create if not
-      [Only dbExists] <-
-        PSQL.query
-          db
-          [sql|
-            SELECT EXISTS (
-              SELECT 1 FROM pg_catalog.pg_database
-              WHERE datname = ?
-            )
-          |]
-          (Only dbName)
-      unless dbExists $ void $ PSQL.execute_ db (fromString $ "CREATE DATABASE " <> dbName <> " OWNER " <> user)
+      dbExists <- checkDBExists postgresDB dbName
+      unless dbExists $ void $ PSQL.execute_ postgresDB (fromString $ "CREATE DATABASE " <> dbName <> " OWNER " <> user)
+
+checkDBExists :: PSQL.Connection -> String -> IO Bool
+checkDBExists postgresDB dbName = do
+  [Only dbExists] <-
+    PSQL.query
+      postgresDB
+      [sql|
+        SELECT EXISTS (
+          SELECT 1 FROM pg_catalog.pg_database
+          WHERE datname = ?
+        )
+      |]
+      (Only dbName)
+  pure dbExists
 
 connectPostgresStore :: ConnectInfo -> String -> IO DBStore
 connectPostgresStore dbConnectInfo schema = do
@@ -147,21 +152,23 @@ dropAllSchemasExceptSystem connectInfo =
       forM_ schemaNames $ \(Only schema) ->
         PSQL.execute_ db (fromString $ "DROP SCHEMA " <> schema <> " CASCADE")
 
-dropDatabaseAndUser :: ConnectInfo -> IO ()
-dropDatabaseAndUser ConnectInfo {connectUser = user, connectDatabase = dbName} =
+dropDatabaseAndUserIfExists :: ConnectInfo -> IO ()
+dropDatabaseAndUserIfExists ConnectInfo {connectUser = user, connectDatabase = dbName} =
   bracket (PSQL.connect defaultConnectInfo {connectUser = "postgres", connectDatabase = "postgres"}) PSQL.close $
-    \db -> do
-      void $ PSQL.execute_ db (fromString $ "ALTER DATABASE " <> dbName <> " WITH ALLOW_CONNECTIONS false")
-      -- terminate all connections to the database
-      _r :: [Only Bool] <-
-        PSQL.query
-          db
-          [sql|
-            SELECT pg_terminate_backend(pg_stat_activity.pid)
-            FROM pg_stat_activity
-            WHERE datname = ?
-              AND pid <> pg_backend_pid()
-          |]
-          (Only dbName)
-      void $ PSQL.execute_ db (fromString $ "DROP DATABASE " <> dbName)
-      void $ PSQL.execute_ db (fromString $ "DROP USER " <> user)
+    \postgresDB -> do
+      dbExists <- checkDBExists postgresDB dbName
+      when dbExists $ do
+        void $ PSQL.execute_ postgresDB (fromString $ "ALTER DATABASE " <> dbName <> " WITH ALLOW_CONNECTIONS false")
+        -- terminate all connections to the database
+        _r :: [Only Bool] <-
+          PSQL.query
+            postgresDB
+            [sql|
+              SELECT pg_terminate_backend(pg_stat_activity.pid)
+              FROM pg_stat_activity
+              WHERE datname = ?
+                AND pid <> pg_backend_pid()
+            |]
+            (Only dbName)
+        void $ PSQL.execute_ postgresDB (fromString $ "DROP DATABASE " <> dbName)
+      void $ PSQL.execute_ postgresDB (fromString $ "DROP USER IF EXISTS " <> user)

@@ -73,8 +73,7 @@ import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Util (bshow, safeDecodeUtf8, (<$?>))
 #if defined(dbPostgres)
-import Database.PostgreSQL.Simple (ResultError (..))
-import Database.PostgreSQL.Simple.FromField (FromField (..), returnError)
+import Database.PostgreSQL.Simple.FromField (FromField (..))
 import Database.PostgreSQL.Simple.ToField (ToField (..))
 #else
 import Database.SQLite.Simple.FromField (FromField (..))
@@ -301,14 +300,6 @@ instance (Integral a, Show a) => IsString (FileSize a) where
 
 #if defined(dbPostgres)
 instance FromField a => FromField (FileSize a) where fromField = fromField
-
--- TODO [postgres] orphan instance
-instance FromField Word32 where
-  fromField field mData = do
-    i <- fromField field mData
-    if i >= (0 :: Int64)
-      then pure (fromIntegral i :: Word32)
-      else returnError ConversionFailed field "Negative value can't be converted to Word32"
 #else
 instance FromField a => FromField (FileSize a) where fromField f = FileSize <$> fromField f
 #endif

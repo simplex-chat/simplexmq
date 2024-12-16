@@ -39,6 +39,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (diffToMilliseconds, tshow)
 
 newtype BoolInt v = BI {unBI :: Bool}
+  deriving (Eq, Show)
   deriving newtype (FromField, ToField)
 
 data Connection = Connection

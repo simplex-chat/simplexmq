@@ -1727,7 +1727,10 @@ instance FromField MsgReceiptStatus where fromField = fromTextField_ $ eitherToM
 instance ToField (Version v) where toField (Version v) = toField v
 
 #if defined(dbPostgres)
-instance FromField (Version v) where fromField = fromField
+instance FromField (Version v) where
+  fromField field mData = do
+    i <- fromField field mData
+    pure $ Version i
 #else
 instance FromField (Version v) where fromField f = Version <$> fromField f
 #endif
@@ -1909,7 +1912,7 @@ getConnData db connId' =
       |]
       (Only connId')
   where
-    cData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport) =
+    cData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, BI deleted, ratchetSyncState, pqSupport) =
       (ConnData {userId, connId, connAgentVersion, enableNtfs = maybe True unBI enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport}, cMode)
 
 setConnDeleted :: DB.Connection -> Bool -> ConnId -> IO ()

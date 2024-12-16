@@ -36,7 +36,7 @@ import XFTPCLI
 import XFTPServerTests (xftpServerTests)
 #if defined(dbPostgres)
 import Fixtures
-import Simplex.Messaging.Agent.Store.Postgres (createDBAndUserIfNotExists, dropDatabaseAndUser)
+import Simplex.Messaging.Agent.Store.Postgres (createDBAndUserIfNotExists, dropDatabaseAndUserIfExists)
 #else
 import AgentTests.SchemaDump (schemaDumpTest)
 #endif
@@ -52,8 +52,8 @@ main = do
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
     hspec
 #if defined(dbPostgres)
-      . beforeAll_ (createDBAndUserIfNotExists testDBConnectInfo)
-      . afterAll_ (dropDatabaseAndUser testDBConnectInfo)
+      . beforeAll_ (dropDatabaseAndUserIfExists testDBConnectInfo >> createDBAndUserIfNotExists testDBConnectInfo)
+      . afterAll_ (dropDatabaseAndUserIfExists testDBConnectInfo)
 #endif
       . before_ (createDirectoryIfMissing False "tests/tmp")
       . after_ (eventuallyRemove "tests/tmp" 3)
