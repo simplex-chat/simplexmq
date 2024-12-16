@@ -1,6 +1,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Agent.Store.Postgres
   ( createDBStore,
@@ -136,8 +137,8 @@ dropDatabaseAndUser ConnectInfo {connectUser = user, connectDatabase = dbName} =
     \db -> do
       void $ PSQL.execute_ db (fromString $ "ALTER DATABASE " <> dbName <> " WITH ALLOW_CONNECTIONS false")
       -- terminate all connections to the database
-      void $
-        PSQL.execute
+      _r :: [[Bool]] <-
+        PSQL.query
           db
           [sql|
             SELECT pg_terminate_backend(pg_stat_activity.pid)
@@ -146,5 +147,5 @@ dropDatabaseAndUser ConnectInfo {connectUser = user, connectDatabase = dbName} =
               AND pid <> pg_backend_pid()
           |]
           (Only dbName)
-      void $ PSQL.execute_ db (fromString $ "DROP USER " <> user)
       void $ PSQL.execute_ db (fromString $ "DROP DATABASE " <> dbName)
+      void $ PSQL.execute_ db (fromString $ "DROP USER " <> user)
