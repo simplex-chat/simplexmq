@@ -377,7 +377,6 @@ prometheusMetrics sm rtm ts =
         <> "# TYPE " <> metric <> " gauge\n"
         <> T.concat (map (\(port, ss) -> metric <> "{port=\"" <> T.pack port <> "\"} " <> mshow (sel ss) <> "\n") socketStats)
         <> "\n"
-    mstr :: String -> Text
     mstr a = T.pack a <> " " <> tsEpoch
     mshow :: Show a => a -> Text
     mshow = mstr . show
