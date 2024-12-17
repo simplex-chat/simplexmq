@@ -919,7 +919,7 @@ newtype Key = Key {unKey :: ByteString}
 #if defined(dbPostgres)
 instance ToField Key where toField (Key s) = EscapeByteA s
 
-instance FromField Key where fromField f mData = Key <$> fromField f mData
+instance FromField Key where fromField f dat = Key <$> fromField f dat
 #else
 instance ToField Key where toField = toField . unKey
 
@@ -1196,8 +1196,8 @@ newtype SignedObject a = SignedObject {getSignedExact :: SignedExact a}
 
 #if defined(dbPostgres)
 instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
-  fromField field mData = do
-    signedExact <- blobFieldDecoder decodeSignedObject field mData
+  fromField field dat = do
+    signedExact <- blobFieldDecoder decodeSignedObject field dat
     pure $ SignedObject signedExact
 #else
 instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
@@ -1323,7 +1323,7 @@ instance FromJSON CbNonce where
   parseJSON = strParseJSON "CbNonce"
 
 #if defined(dbPostgres)
-instance FromField CbNonce where fromField f mData = CryptoBoxNonce <$> fromField f mData
+instance FromField CbNonce where fromField f dat = CryptoBoxNonce <$> fromField f dat
 
 instance ToField CbNonce where toField (CryptoBoxNonce s) = EscapeByteA s
 #else
@@ -1373,7 +1373,7 @@ instance FromJSON SbKey where
   parseJSON = strParseJSON "SbKey"
 
 #if defined(dbPostgres)
-instance FromField SbKey where fromField f mData = SecretBoxKey <$> fromField f mData
+instance FromField SbKey where fromField f dat = SecretBoxKey <$> fromField f dat
 
 instance ToField SbKey where toField (SecretBoxKey s) = EscapeByteA s
 #else

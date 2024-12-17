@@ -129,7 +129,7 @@ instance ToJSON FileDigest where
   toEncoding = strToJEncoding
 
 #if defined(dbPostgres)
-instance FromField FileDigest where fromField f mData = FileDigest <$> fromField f mData
+instance FromField FileDigest where fromField f dat = FileDigest <$> fromField f dat
 
 instance ToField FileDigest where toField (FileDigest s) = EscapeByteA s
 #else
@@ -302,7 +302,7 @@ instance (Integral a, Show a) => IsString (FileSize a) where
   fromString = either error id . strDecode . B.pack
 
 #if defined(dbPostgres)
-instance FromField a => FromField (FileSize a) where fromField = fromField
+instance FromField a => FromField (FileSize a) where fromField f dat = FileSize <$> fromField f dat
 #else
 instance FromField a => FromField (FileSize a) where fromField f = FileSize <$> fromField f
 #endif

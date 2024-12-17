@@ -25,8 +25,8 @@ newtype BoolInt = BI {unBI :: Bool}
   deriving (Eq, Show)
 
 instance FromField BoolInt where
-  fromField field mData = do
-    b :: Int <- fromField field mData
+  fromField field dat = do
+    b :: Int <- fromField field dat
     pure $ BI (b /= 0)
   {-# INLINE fromField #-}
 
@@ -50,16 +50,16 @@ executeMany db q qs = void $ PSQL.executeMany db q qs
 
 -- used in FileSize
 instance FromField Word32 where
-  fromField field mData = do
-    i <- fromField field mData
+  fromField field dat = do
+    i <- fromField field dat
     if i >= (0 :: Int64)
       then pure (fromIntegral i :: Word32)
       else returnError ConversionFailed field "Negative value can't be converted to Word32"
 
 -- used in Version
 instance FromField Word16 where
-  fromField field mData = do
-    i <- fromField field mData
+  fromField field dat = do
+    i <- fromField field dat
     if i >= (0 :: Int32)
       then pure (fromIntegral i :: Word16)
       else returnError ConversionFailed field "Negative value can't be converted to Word16"

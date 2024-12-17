@@ -128,8 +128,8 @@ instance ToField KEMSharedKey where
 
 #if defined(dbPostgres)
 instance FromField KEMSharedKey where
-  fromField field mData = do
-    bs <- fromField field mData
+  fromField field dat = do
+    bs <- fromField field dat
     pure $ KEMSharedKey (BA.convert @ByteString bs)
 #else
 instance FromField KEMSharedKey where
