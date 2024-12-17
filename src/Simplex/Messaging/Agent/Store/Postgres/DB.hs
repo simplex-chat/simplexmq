@@ -21,16 +21,16 @@ import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.FromField (FromField (..), returnError)
 import Database.PostgreSQL.Simple.ToField (ToField (..))
 
-newtype BoolInt v = BI {unBI :: Bool}
+newtype BoolInt = BI {unBI :: Bool}
   deriving (Eq, Show)
 
-instance FromField (BoolInt v) where
+instance FromField BoolInt where
   fromField field mData = do
     b :: Int <- fromField field mData
     pure $ BI (b /= 0)
   {-# INLINE fromField #-}
 
-instance ToField (BoolInt v) where
+instance ToField BoolInt where
   toField (BI b) = toField ((if b then 1 else 0) :: Int)
   {-# INLINE toField #-}
 

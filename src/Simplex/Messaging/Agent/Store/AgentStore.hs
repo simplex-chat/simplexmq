@@ -314,7 +314,7 @@ createUserRecord db = do
 checkUser :: DB.Connection -> UserId -> IO (Either StoreError ())
 checkUser db userId =
   firstRow (\(_ :: Only Int64) -> ()) SEUserNotFound $
-    DB.query db "SELECT user_id FROM users WHERE user_id = ? AND deleted = ?" (userId, False)
+    DB.query db "SELECT user_id FROM users WHERE user_id = ? AND deleted = ?" (userId, BI False)
 
 deleteUserRecord :: DB.Connection -> UserId -> IO (Either StoreError ())
 deleteUserRecord db userId = runExceptT $ do
@@ -325,7 +325,7 @@ setUserDeleted :: DB.Connection -> UserId -> IO (Either StoreError [ConnId])
 setUserDeleted db userId = runExceptT $ do
   ExceptT $ checkUser db userId
   liftIO $ do
-    DB.execute db "UPDATE users SET deleted = ? WHERE user_id = ?" (True, userId)
+    DB.execute db "UPDATE users SET deleted = ? WHERE user_id = ?" (BI True, userId)
     map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE user_id = ?" (Only userId)
 
 deleteUserWithoutConns :: DB.Connection -> UserId -> IO Bool
@@ -340,7 +340,7 @@ deleteUserWithoutConns db userId = do
             AND u.deleted = ?
             AND NOT EXISTS (SELECT c.conn_id FROM connections c WHERE c.user_id = u.user_id)
         |]
-        (userId, True)
+        (userId, BI True)
   case userId_ of
     Just _ -> DB.execute db "DELETE FROM users WHERE user_id = ?" (Only userId) $> True
     _ -> pure False
@@ -356,7 +356,7 @@ deleteUsersWithoutConns db = do
           WHERE u.deleted = ?
             AND NOT EXISTS (SELECT c.conn_id FROM connections c WHERE c.user_id = u.user_id)
         |]
-        (Only True)
+        (Only (BI True))
   forM_ userIds $ DB.execute db "DELETE FROM users WHERE user_id = ?" . Only
   pure userIds
 
@@ -572,15 +572,15 @@ setRcvQueuePrimary db connId RcvQueue {dbQueueId} = do
   DB.execute
     db
     "UPDATE rcv_queues SET rcv_primary = ?, replace_rcv_queue_id = ? WHERE conn_id = ? AND rcv_queue_id = ?"
-    (True, Nothing :: Maybe Int64, connId, dbQueueId)
+    (BI True, Nothing :: Maybe Int64, connId, dbQueueId)
 
 setSndQueuePrimary :: DB.Connection -> ConnId -> SndQueue -> IO ()
 setSndQueuePrimary db connId SndQueue {dbQueueId} = do
-  DB.execute db "UPDATE snd_queues SET snd_primary = ? WHERE conn_id = ?" (False, connId)
+  DB.execute db "UPDATE snd_queues SET snd_primary = ? WHERE conn_id = ?" (BI False, connId)
   DB.execute
     db
     "UPDATE snd_queues SET snd_primary = ?, replace_snd_queue_id = ? WHERE conn_id = ? AND snd_queue_id = ?"
-    (True, Nothing :: Maybe Int64, connId, dbQueueId)
+    (BI True, Nothing :: Maybe Int64, connId, dbQueueId)
 
 incRcvDeleteErrors :: DB.Connection -> RcvQueue -> IO ()
 incRcvDeleteErrors db RcvQueue {connId, dbQueueId} =
@@ -732,7 +732,7 @@ getInvitation db cxt invitationId =
       |]
       (Only invitationId)
   where
-    invitation (contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted) =
+    invitation (contactConnId, connReq, recipientConnInfo, ownConnInfo, BI accepted) =
       Invitation {invitationId, contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted}
 
 acceptInvitation :: DB.Connection -> InvitationId -> ConnInfo -> IO ()
@@ -925,7 +925,7 @@ setMsgUserAck db connId agentMsgId = runExceptT $ do
     ExceptT . firstRow id SEMsgNotFound $
       DB.query db "SELECT rcv_queue_id, broker_id FROM rcv_messages WHERE conn_id = ? AND internal_id = ?" (connId, agentMsgId)
   rq <- ExceptT $ getRcvQueueById db connId dbRcvId
-  liftIO $ DB.execute db "UPDATE rcv_messages SET user_ack = ? WHERE conn_id = ? AND internal_id = ?" (True, connId, agentMsgId)
+  liftIO $ DB.execute db "UPDATE rcv_messages SET user_ack = ? WHERE conn_id = ? AND internal_id = ?" (BI True, connId, agentMsgId)
   pure (rq, srvMsgId)
 
 getRcvMsg :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError RcvMsg)
@@ -961,8 +961,8 @@ getLastMsg db connId msgId =
       |]
       (connId, msgId)
 
-toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs) :. (AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, MsgBody, PQEncryption, Maybe AgentMsgId, Maybe MsgReceiptStatus, Bool) -> RcvMsg
-toRcvMsg ((agentMsgId, internalTs, brokerId, brokerTs) :. (sndMsgId, integrity, internalHash, msgType, msgBody, pqEncryption, rcptInternalId_, rcptStatus_, userAck)) =
+toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs) :. (AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, MsgBody, PQEncryption, Maybe AgentMsgId, Maybe MsgReceiptStatus, BoolInt) -> RcvMsg
+toRcvMsg ((agentMsgId, internalTs, brokerId, brokerTs) :. (sndMsgId, integrity, internalHash, msgType, msgBody, pqEncryption, rcptInternalId_, rcptStatus_, BI userAck)) =
   let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity, pqEncryption}
       msgReceipt = MsgReceipt <$> rcptInternalId_ <*> rcptStatus_
    in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgType, msgBody, internalHash, msgReceipt, userAck}
@@ -1420,7 +1420,7 @@ supervisorUpdateNtfSub db NtfSubscription {connId, smpServer = (SMPServer smpHos
       WHERE conn_id = ?
     |]
     ( (smpHost, smpPort, ntfQueueId, ntfHost, ntfPort, ntfSubId)
-        :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, ts, True, ts, connId)
+        :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, ts, BI True, ts, connId)
     )
   where
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
@@ -1435,13 +1435,13 @@ supervisorUpdateNtfAction db connId action = do
       SET ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
       WHERE conn_id = ?
     |]
-    (ntfSubAction, ntfSubSMPAction, ts, True, ts, connId)
+    (ntfSubAction, ntfSubSMPAction, ts, BI True, ts, connId)
   where
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
 
 updateNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubAction -> NtfActionTs -> IO ()
 updateNtfSubscription db NtfSubscription {connId, ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} action actionTs = do
-  r <- maybeFirstRow fromOnly $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
+  r <- maybeFirstRow fromOnlyBI $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
   forM_ r $ \updatedBySupervisor -> do
     updatedAt <- getCurrentTime
     if updatedBySupervisor
@@ -1453,7 +1453,7 @@ updateNtfSubscription db NtfSubscription {connId, ntfQueueId, ntfServer = (NtfSe
             SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, updated_by_supervisor = ?, updated_at = ?
             WHERE conn_id = ?
           |]
-          (ntfQueueId, ntfSubId, ntfSubStatus, False, updatedAt, connId)
+          (ntfQueueId, ntfSubId, ntfSubStatus, BI False, updatedAt, connId)
       else
         DB.execute
           db
@@ -1462,13 +1462,13 @@ updateNtfSubscription db NtfSubscription {connId, ntfQueueId, ntfServer = (NtfSe
             SET smp_ntf_id = ?, ntf_host = ?, ntf_port = ?, ntf_sub_id = ?, ntf_sub_status = ?, ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
             WHERE conn_id = ?
           |]
-          ((ntfQueueId, ntfHost, ntfPort, ntfSubId) :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, actionTs, False, updatedAt, connId))
+          ((ntfQueueId, ntfHost, ntfPort, ntfSubId) :. (ntfSubStatus, ntfSubAction, ntfSubSMPAction, actionTs, BI False, updatedAt, connId))
   where
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
 
 setNullNtfSubscriptionAction :: DB.Connection -> ConnId -> IO ()
 setNullNtfSubscriptionAction db connId = do
-  r <- maybeFirstRow fromOnly $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
+  r <- maybeFirstRow fromOnlyBI $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
   forM_ r $ \updatedBySupervisor ->
     unless updatedBySupervisor $ do
       updatedAt <- getCurrentTime
@@ -1479,11 +1479,11 @@ setNullNtfSubscriptionAction db connId = do
           SET ntf_sub_action = ?, ntf_sub_smp_action = ?, ntf_sub_action_ts = ?, updated_by_supervisor = ?, updated_at = ?
           WHERE conn_id = ?
         |]
-        (Nothing :: Maybe NtfSubNTFAction, Nothing :: Maybe NtfSubSMPAction, Nothing :: Maybe UTCTime, False, updatedAt, connId)
+        (Nothing :: Maybe NtfSubNTFAction, Nothing :: Maybe NtfSubSMPAction, Nothing :: Maybe UTCTime, BI False, updatedAt, connId)
 
 deleteNtfSubscription :: DB.Connection -> ConnId -> IO ()
 deleteNtfSubscription db connId = do
-  r <- maybeFirstRow fromOnly $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
+  r <- maybeFirstRow fromOnlyBI $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
   forM_ r $ \updatedBySupervisor -> do
     updatedAt <- getCurrentTime
     if updatedBySupervisor
@@ -1495,7 +1495,7 @@ deleteNtfSubscription db connId = do
             SET smp_ntf_id = ?, ntf_sub_id = ?, ntf_sub_status = ?, updated_by_supervisor = ?, updated_at = ?
             WHERE conn_id = ?
           |]
-          (Nothing :: Maybe SMP.NotifierId, Nothing :: Maybe NtfSubscriptionId, NASDeleted, False, updatedAt, connId)
+          (Nothing :: Maybe SMP.NotifierId, Nothing :: Maybe NtfSubscriptionId, NASDeleted, BI False, updatedAt, connId)
       else deleteNtfSubscription' db connId
 
 deleteNtfSubscription' :: DB.Connection -> ConnId -> IO ()
@@ -1763,6 +1763,9 @@ firstRow f e a = second f . listToEither e <$> a
 maybeFirstRow :: Functor f => (a -> b) -> f [a] -> f (Maybe b)
 maybeFirstRow f q = fmap f . listToMaybe <$> q
 
+fromOnlyBI :: Only BoolInt -> Bool
+fromOnlyBI (Only (BI b)) = b
+
 firstRow' :: (a -> Either e b) -> e -> IO [a] -> IO (Either e b)
 firstRow' f e a = (f <=< listToEither e) <$> a
 
@@ -1844,7 +1847,7 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
       INSERT INTO rcv_queues
         (host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, snd_secure, status, rcv_queue_id, rcv_primary, replace_rcv_queue_id, smp_client_version, server_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
-    ((host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret) :. (sndId, sndSecure, status, qId, primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
+    ((host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret) :. (sndId, BI sndSecure, status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
   print "insertRcvQueue_ 2"
   pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId}
 
@@ -1862,7 +1865,7 @@ insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
       INSERT OR REPLACE INTO snd_queues
         (host, port, snd_id, snd_secure, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, snd_queue_id, snd_primary, replace_snd_queue_id, smp_client_version, server_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
-    ((host server, port server, sndId, sndSecure, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) :. (status, qId, primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
+    ((host server, port server, sndId, BI sndSecure, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) :. (status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
   pure (sq :: NewSndQueue) {connId = connId', dbQueueId = qId}
 
 newQueueId_ :: [Only Int64] -> DBQueueId 'QSStored
@@ -1933,7 +1936,7 @@ setConnDeleted db waitDelivery connId
       currentTs <- getCurrentTime
       DB.execute db "UPDATE connections SET deleted_at_wait_delivery = ? WHERE conn_id = ?" (currentTs, connId)
   | otherwise =
-      DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (True, connId)
+      DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (BI True, connId)
 
 setConnUserId :: DB.Connection -> UserId -> ConnId -> UserId -> IO ()
 setConnUserId db oldUserId connId newUserId =
@@ -1948,7 +1951,7 @@ setConnPQSupport db connId pqSupport =
   DB.execute db "UPDATE connections SET pq_support = ? WHERE conn_id = ?" (pqSupport, connId)
 
 getDeletedConnIds :: DB.Connection -> IO [ConnId]
-getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only True)
+getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only (BI True))
 
 getDeletedWaitingDeliveryConnIds :: DB.Connection -> IO [ConnId]
 getDeletedWaitingDeliveryConnIds db =
@@ -2001,11 +2004,11 @@ rcvQueueQuery =
   |]
 
 toRcvQueue ::
-  (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateAuthKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, SenderCanSecure)
-    :. (QueueStatus, DBQueueId 'QSStored, Bool, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int)
+  (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateAuthKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, BoolInt)
+    :. (QueueStatus, DBQueueId 'QSStored, BoolInt, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int)
     :. (Maybe SMP.NtfPublicAuthKey, Maybe SMP.NtfPrivateAuthKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret) ->
   RcvQueue
-toRcvQueue ((userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, sndSecure) :. (status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
+toRcvQueue ((userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, BI sndSecure) :. (status, dbQueueId, BI primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
   let server = SMPServer host port keyHash
       smpClientVersion = fromMaybe initialSMPClientVersion smpClientVersion_
       clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
@@ -2041,14 +2044,14 @@ sndQueueQuery =
   |]
 
 toSndQueue ::
-  (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SenderId, SenderCanSecure)
+  (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SenderId, BoolInt)
     :. (Maybe SndPublicAuthKey, SndPrivateAuthKey, Maybe C.PublicKeyX25519, C.DhSecretX25519, QueueStatus)
-    :. (DBQueueId 'QSStored, Bool, Maybe Int64, Maybe SndSwitchStatus, VersionSMPC) ->
+    :. (DBQueueId 'QSStored, BoolInt, Maybe Int64, Maybe SndSwitchStatus, VersionSMPC) ->
   SndQueue
 toSndQueue
-  ( (userId, keyHash, connId, host, port, sndId, sndSecure)
+  ( (userId, keyHash, connId, host, port, sndId, BI sndSecure)
       :. (sndPubKey, sndPrivateKey@(C.APrivateAuthKey a pk), e2ePubKey, e2eDhSecret, status)
-      :. (dbQueueId, primary, dbReplaceQueueId, sndSwchStatus, smpClientVersion)
+      :. (dbQueueId, BI primary, dbReplaceQueueId, sndSwchStatus, smpClientVersion)
     ) =
     let server = SMPServer host port keyHash
         sndPublicKey = fromMaybe (C.APublicAuthKey a (C.publicKey pk)) sndPubKey
@@ -2284,7 +2287,7 @@ insertRcvFile db gVar userId FileDescription {size, digest, key, nonce, chunkSiz
       DB.execute
         db
         "INSERT INTO rcv_files (rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, prefix_path, tmp_path, save_path, save_file_key, save_file_nonce, status, redirect_id, redirect_entity_id, redirect_digest, redirect_size, approved_relays) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-        ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, fileKey <$> cfArgs, fileNonce <$> cfArgs, RFSReceiving, redirectId_, redirectEntityId_, redirectDigest_, redirectSize_, approvedRelays))
+        ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, fileKey <$> cfArgs, fileNonce <$> cfArgs, RFSReceiving, redirectId_, redirectEntityId_, redirectDigest_, redirectSize_, BI approvedRelays))
   rcvFileId <- liftIO $ insertedRowId db
   pure (rcvFileEntityId, rcvFileId)
 
@@ -2337,8 +2340,8 @@ getRcvFile db rcvFileId = runExceptT $ do
           |]
           (Only rcvFileId)
       where
-        toFile :: (RcvFileId, UserId, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, FilePath, Maybe FilePath) :. (FilePath, Maybe C.SbKey, Maybe C.CbNonce, RcvFileStatus, Bool, Maybe DBRcvFileId, Maybe RcvFileId, Maybe (FileSize Int64), Maybe FileDigest) -> RcvFile
-        toFile ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, saveKey_, saveNonce_, status, deleted, redirectDbId, redirectEntityId, redirectSize_, redirectDigest_)) =
+        toFile :: (RcvFileId, UserId, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, FilePath, Maybe FilePath) :. (FilePath, Maybe C.SbKey, Maybe C.CbNonce, RcvFileStatus, BoolInt, Maybe DBRcvFileId, Maybe RcvFileId, Maybe (FileSize Int64), Maybe FileDigest) -> RcvFile
+        toFile ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, saveKey_, saveNonce_, status, BI deleted, redirectDbId, redirectEntityId, redirectSize_, redirectDigest_)) =
           let cfArgs = CFArgs <$> saveKey_ <*> saveNonce_
               saveFile = CryptoFile savePath cfArgs
               redirect =
@@ -2381,8 +2384,8 @@ getRcvFile db rcvFileId = runExceptT $ do
           |]
           (Only chunkId)
       where
-        toReplica :: (Int64, ChunkReplicaId, C.APrivateAuthKey, Bool, Maybe Int64, Int, NonEmpty TransportHost, ServiceName, C.KeyHash) -> RcvFileChunkReplica
-        toReplica (rcvChunkReplicaId, replicaId, replicaKey, received, delay, retries, host, port, keyHash) =
+        toReplica :: (Int64, ChunkReplicaId, C.APrivateAuthKey, BoolInt, Maybe Int64, Int, NonEmpty TransportHost, ServiceName, C.KeyHash) -> RcvFileChunkReplica
+        toReplica (rcvChunkReplicaId, replicaId, replicaKey, BI received, delay, retries, host, port, keyHash) =
           let server = XFTPServer host port keyHash
            in RcvFileChunkReplica {rcvChunkReplicaId, server, replicaId, replicaKey, received, delay, retries}
 
@@ -2476,8 +2479,8 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = d
           |]
           (Only rcvFileChunkReplicaId)
       where
-        toChunk :: ((DBRcvFileId, RcvFileId, UserId, Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath) :. (Int64, ChunkReplicaId, C.APrivateAuthKey, Bool, Maybe Int64, Int) :. (Bool, Maybe RcvFileId)) -> (RcvFileChunk, Bool, Maybe RcvFileId)
-        toChunk ((rcvFileId, rcvFileEntityId, userId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath) :. (rcvChunkReplicaId, replicaId, replicaKey, received, delay, retries) :. (approvedRelays, redirectEntityId_)) =
+        toChunk :: ((DBRcvFileId, RcvFileId, UserId, Int64, Int, FileSize Word32, FileDigest, FilePath, Maybe FilePath) :. (Int64, ChunkReplicaId, C.APrivateAuthKey, BoolInt, Maybe Int64, Int) :. (BoolInt, Maybe RcvFileId)) -> (RcvFileChunk, Bool, Maybe RcvFileId)
+        toChunk ((rcvFileId, rcvFileEntityId, userId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath, chunkTmpPath) :. (rcvChunkReplicaId, replicaId, replicaKey, BI received, delay, retries) :. (BI approvedRelays, redirectEntityId_)) =
           ( RcvFileChunk
               { rcvFileId,
                 rcvFileEntityId,
@@ -2612,8 +2615,8 @@ getSndFile db sndFileId = runExceptT $ do
           |]
           (Only sndFileId)
       where
-        toFile :: (SndFileId, UserId, FilePath, Maybe C.SbKey, Maybe C.CbNonce, Int, Maybe FileDigest, Maybe FilePath, C.SbKey, C.CbNonce) :. (SndFileStatus, Bool, Maybe (FileSize Int64), Maybe FileDigest) -> SndFile
-        toFile ((sndFileEntityId, userId, srcPath, srcKey_, srcNonce_, numRecipients, digest, prefixPath, key, nonce) :. (status, deleted, redirectSize_, redirectDigest_)) =
+        toFile :: (SndFileId, UserId, FilePath, Maybe C.SbKey, Maybe C.CbNonce, Int, Maybe FileDigest, Maybe FilePath, C.SbKey, C.CbNonce) :. (SndFileStatus, BoolInt, Maybe (FileSize Int64), Maybe FileDigest) -> SndFile
+        toFile ((sndFileEntityId, userId, srcPath, srcKey_, srcNonce_, numRecipients, digest, prefixPath, key, nonce) :. (status, BI deleted, redirectSize_, redirectDigest_)) =
           let cfArgs = CFArgs <$> srcKey_ <*> srcNonce_
               srcFile = CryptoFile srcPath cfArgs
               redirect = RedirectFileInfo <$> redirectSize_ <*> redirectDigest_
@@ -2735,7 +2738,7 @@ deleteSndFile' db sndFileId =
 getSndFileDeleted :: DB.Connection -> DBSndFileId -> IO Bool
 getSndFileDeleted db sndFileId =
   fromMaybe True
-    <$> maybeFirstRow fromOnly (DB.query db "SELECT deleted FROM snd_files WHERE snd_file_id = ?" (Only sndFileId))
+    <$> maybeFirstRow fromOnlyBI (DB.query db "SELECT deleted FROM snd_files WHERE snd_file_id = ?" (Only sndFileId))
 
 createSndFileReplica :: DB.Connection -> SndFileChunk -> NewSndChunkReplica -> IO ()
 createSndFileReplica db SndFileChunk {sndChunkId} = createSndFileReplica_ db sndChunkId
