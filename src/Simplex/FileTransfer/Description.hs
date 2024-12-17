@@ -74,7 +74,7 @@ import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Util (bshow, safeDecodeUtf8, (<$?>))
 #if defined(dbPostgres)
 import Database.PostgreSQL.Simple.FromField (FromField (..))
-import Database.PostgreSQL.Simple.ToField (ToField (..))
+import Database.PostgreSQL.Simple.ToField (ToField (..), Action (..))
 #else
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
@@ -129,12 +129,15 @@ instance ToJSON FileDigest where
   toEncoding = strToJEncoding
 
 #if defined(dbPostgres)
-instance FromField FileDigest where fromField = fromField
+instance FromField FileDigest where fromField f mData = FileDigest <$> fromField f mData
+
+instance ToField FileDigest where toField (FileDigest s) = EscapeByteA s
 #else
 instance FromField FileDigest where fromField f = FileDigest <$> fromField f
-#endif
 
 instance ToField FileDigest where toField (FileDigest s) = toField s
+#endif
+
 
 data FileChunk = FileChunk
   { chunkNo :: Int,

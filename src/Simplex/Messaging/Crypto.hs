@@ -242,7 +242,7 @@ import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
 import Simplex.Messaging.Util ((<$?>))
 #if defined(dbPostgres)
 import Database.PostgreSQL.Simple.FromField (FromField (..))
-import Database.PostgreSQL.Simple.ToField (ToField (..))
+import Database.PostgreSQL.Simple.ToField (ToField (..), Action (..))
 #else
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
@@ -727,6 +727,25 @@ generateKeyPair_ = case sAlgorithm @a of
       let k = X448.toPublic pk
        in pure (PublicKeyX448 k, PrivateKeyX448 pk k)
 
+#if defined(dbPostgres)
+instance ToField APrivateSignKey where toField = EscapeByteA . encodePrivKey
+
+instance ToField APublicVerifyKey where toField = EscapeByteA . encodePubKey
+
+instance ToField APrivateAuthKey where toField = EscapeByteA . encodePrivKey
+
+instance ToField APublicAuthKey where toField = EscapeByteA . encodePubKey
+
+instance ToField APrivateDhKey where toField = EscapeByteA . encodePrivKey
+
+instance ToField APublicDhKey where toField = EscapeByteA . encodePubKey
+
+instance AlgorithmI a => ToField (PrivateKey a) where toField = EscapeByteA . encodePrivKey
+
+instance AlgorithmI a => ToField (PublicKey a) where toField = EscapeByteA . encodePubKey
+
+instance ToField (DhSecret a) where toField = EscapeByteA . dhBytes'
+#else
 instance ToField APrivateSignKey where toField = toField . encodePrivKey
 
 instance ToField APublicVerifyKey where toField = toField . encodePubKey
@@ -744,6 +763,7 @@ instance AlgorithmI a => ToField (PrivateKey a) where toField = toField . encode
 instance AlgorithmI a => ToField (PublicKey a) where toField = toField . encodePubKey
 
 instance ToField (DhSecret a) where toField = toField . dhBytes'
+#endif
 
 instance FromField APrivateSignKey where fromField = blobFieldDecoder decodePrivKey
 
@@ -895,11 +915,14 @@ validSignatureSize n =
 newtype Key = Key {unKey :: ByteString}
   deriving (Eq, Ord, Show)
 
-instance ToField Key where toField = toField . unKey
 
 #if defined(dbPostgres)
-instance FromField Key where fromField = fromField
+instance ToField Key where toField (Key s) = EscapeByteA s
+
+instance FromField Key where fromField f mData = Key <$> fromField f mData
 #else
+instance ToField Key where toField = toField . unKey
+
 instance FromField Key where fromField f = Key <$> fromField f
 #endif
 
@@ -1300,12 +1323,14 @@ instance FromJSON CbNonce where
   parseJSON = strParseJSON "CbNonce"
 
 #if defined(dbPostgres)
-instance FromField CbNonce where fromField = fromField
+instance FromField CbNonce where fromField f mData = CryptoBoxNonce <$> fromField f mData
+
+instance ToField CbNonce where toField (CryptoBoxNonce s) = EscapeByteA s
 #else
 instance FromField CbNonce where fromField f = CryptoBoxNonce <$> fromField f
-#endif
 
 instance ToField CbNonce where toField (CryptoBoxNonce s) = toField s
+#endif
 
 cbNonce :: ByteString -> CbNonce
 cbNonce s
@@ -1348,12 +1373,15 @@ instance FromJSON SbKey where
   parseJSON = strParseJSON "SbKey"
 
 #if defined(dbPostgres)
-instance FromField SbKey where fromField = fromField
+instance FromField SbKey where fromField f mData = SecretBoxKey <$> fromField f mData
+
+instance ToField SbKey where toField (SecretBoxKey s) = EscapeByteA s
 #else
 instance FromField SbKey where fromField f = SecretBoxKey <$> fromField f
-#endif
 
 instance ToField SbKey where toField (SecretBoxKey s) = toField s
+#endif
+
 
 sbKey :: ByteString -> Either String SbKey
 sbKey s

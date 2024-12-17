@@ -1727,25 +1727,16 @@ instance FromField MsgReceiptStatus where fromField = fromTextField_ $ eitherToM
 instance ToField (Version v) where toField (Version v) = toField v
 
 #if defined(dbPostgres)
-instance FromField (Version v) where
-  fromField field mData = do
-    i <- fromField field mData
-    pure $ Version i
+instance FromField (Version v) where fromField f mData = Version <$> fromField f mData
 #else
 instance FromField (Version v) where fromField f = Version <$> fromField f
 #endif
 
-#if defined(dbPostgres)
-instance FromField EntityId where
-  fromField field mData = do
-    i <- fromField field mData
-    pure $ EntityId i
-
-instance ToField EntityId where
-  toField (EntityId i) = EscapeByteA i
-#else
 deriving newtype instance FromField EntityId
 
+#if defined(dbPostgres)
+instance ToField EntityId where toField (EntityId s) = EscapeByteA s
+#else
 deriving newtype instance ToField EntityId
 #endif
 
@@ -1840,7 +1831,6 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
   -- possibly, it can be done in one query.
   currQId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT rcv_queue_id FROM rcv_queues WHERE conn_id = ? AND host = ? AND port = ? AND snd_id = ?" (connId', host server, port server, sndId)
   qId <- maybe (newQueueId_ <$> DB.query db "SELECT rcv_queue_id FROM rcv_queues WHERE conn_id = ? ORDER BY rcv_queue_id DESC LIMIT 1" (Only connId')) pure currQId_
-  print "insertRcvQueue_ 1"
   DB.execute
     db
     [sql|
@@ -1848,7 +1838,6 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
         (host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, snd_secure, status, rcv_queue_id, rcv_primary, replace_rcv_queue_id, smp_client_version, server_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
     ((host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret) :. (sndId, BI sndSecure, status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
-  print "insertRcvQueue_ 2"
   pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId}
 
 -- * createSndConn helpers
@@ -1859,13 +1848,45 @@ insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
   -- possibly, it can be done in one query.
   currQId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? AND host = ? AND port = ? AND snd_id = ?" (connId', host server, port server, sndId)
   qId <- maybe (newQueueId_ <$> DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? ORDER BY snd_queue_id DESC LIMIT 1" (Only connId')) pure currQId_
+#if defined(dbPostgres)
+  DB.execute
+    db
+    [sql|
+      INSERT INTO snd_queues
+        (host, port, snd_id, snd_secure, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret,
+         status, snd_queue_id, snd_primary, replace_snd_queue_id, smp_client_version, server_key_hash)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT (conn_id, snd_queue_id) DO UPDATE SET
+        host=EXCLUDED.host,
+        port=EXCLUDED.port,
+        snd_id=EXCLUDED.snd_id,
+        snd_secure=EXCLUDED.snd_secure,
+        conn_id=EXCLUDED.conn_id,
+        snd_public_key=EXCLUDED.snd_public_key,
+        snd_private_key=EXCLUDED.snd_private_key,
+        e2e_pub_key=EXCLUDED.e2e_pub_key,
+        e2e_dh_secret=EXCLUDED.e2e_dh_secret,
+        status=EXCLUDED.status,
+        snd_queue_id=EXCLUDED.snd_queue_id,
+        snd_primary=EXCLUDED.snd_primary,
+        replace_snd_queue_id=EXCLUDED.replace_snd_queue_id,
+        smp_client_version=EXCLUDED.smp_client_version,
+        server_key_hash=EXCLUDED.server_key_hash
+    |]
+    ((host server, port server, sndId, BI sndSecure, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) 
+    :. (status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
+#else
   DB.execute
     db
     [sql|
       INSERT OR REPLACE INTO snd_queues
-        (host, port, snd_id, snd_secure, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret, status, snd_queue_id, snd_primary, replace_snd_queue_id, smp_client_version, server_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+        (host, port, snd_id, snd_secure, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret,
+         status, snd_queue_id, snd_primary, replace_snd_queue_id, smp_client_version, server_key_hash)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     |]
-    ((host server, port server, sndId, BI sndSecure, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) :. (status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
+    ((host server, port server, sndId, BI sndSecure, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) 
+    :. (status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
+#endif
   pure (sq :: NewSndQueue) {connId = connId', dbQueueId = qId}
 
 newQueueId_ :: [Only Int64] -> DBQueueId 'QSStored

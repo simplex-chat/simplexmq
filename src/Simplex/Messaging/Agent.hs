@@ -783,9 +783,7 @@ newRcvConnSrv c userId connId enableNtfs cMode clientData pqInitKeys subMode srv
   let sndSecure = case cMode of SCMInvitation -> True; SCMContact -> False
   (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srvWithAuth smpClientVRange subMode sndSecure `catchAgentError` \e -> liftIO (print e) >> throwE e
   atomically $ incSMPServerStat c userId srv connCreated
-  liftIO $ print "newRcvConnSrv 1"
   rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
-  liftIO $ print "newRcvConnSrv 2"
   lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
   when enableNtfs $ do
     ns <- asks ntfSupervisor

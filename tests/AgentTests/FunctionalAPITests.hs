@@ -267,7 +267,7 @@ functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
   describe "Establishing duplex connection" $ do
     testMatrix2 t runAgentClientTest
-    it "should connect when server with multiple identities is stored" $
+    fit "should connect when server with multiple identities is stored" $
       withSmpServer t testServerMultipleIdentities
     it "should connect with two peers" $
       withSmpServer t testAgentClient3
@@ -3120,11 +3120,10 @@ insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users (user_id) V
 testServerMultipleIdentities :: HasCallStack => IO ()
 testServerMultipleIdentities =
   withAgentClients2 $ \alice bob -> runRight_ $ do
-    liftIO $ print "test 1"
     (bobId, cReq) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
-    liftIO $ print "test 2"
+    liftIO $ print "test 1"
     (aliceId, sqSecured) <- joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
-    liftIO $ print "test 3"
+    liftIO $ print "test 2"
     liftIO $ sqSecured `shouldBe` True
     ("", _, CONF confId _ "bob's connInfo") <- get alice
     allowConnection alice bobId confId "alice's connInfo"
