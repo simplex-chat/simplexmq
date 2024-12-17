@@ -1,5 +1,6 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
@@ -23,10 +24,13 @@ import Data.Typeable (Typeable)
 import Simplex.Messaging.Util (safeDecodeUtf8, (<$?>))
 import Text.Read (readMaybe)
 #if defined(dbPostgres)
+import qualified Database.PostgreSQL.LibPQ as LibPQ
 import Database.PostgreSQL.Simple (ResultError (..))
 import Database.PostgreSQL.Simple.FromField (FieldParser, returnError, Field (..))
+import Database.PostgreSQL.Simple.Internal (Field (..))
 import Database.PostgreSQL.Simple.TypeInfo.Static (byteaOid, textOid, varcharOid)
 import qualified Data.Text.Encoding as TE
+import System.IO.Unsafe (unsafeDupablePerformIO)
 #else
 import Database.SQLite.Simple (ResultError (..), SQLData (..))
 import Database.SQLite.Simple.FromField (FieldParser, returnError)
@@ -89,11 +93,21 @@ blobFieldDecoder :: Typeable k => (ByteString -> Either String k) -> FieldParser
 blobFieldDecoder dec f val =
   if typeOid f == byteaOid
     then case val of
-      Just b -> case dec b of
-        Right k -> pure k
-        Left e  -> returnError ConversionFailed f ("couldn't parse field: " ++ e)
+      Just b -> do
+        b' <- pure $ case format f of
+          LibPQ.Text -> unsafeDupablePerformIO (LibPQ.unescapeBytea b)
+          LibPQ.Binary -> Just b
+        case b' of
+          Just b'' -> case dec b'' of
+            Right k -> pure k
+            Left e -> returnError ConversionFailed f ("couldn't parse field: " ++ e)
+          Nothing -> returnError ConversionFailed f "unescapeBytea failed"
       Nothing -> returnError UnexpectedNull f "NULL value found for non-NULL field"
     else returnError Incompatible f "expecting BYTEA column type"
+
+format :: Field -> LibPQ.Format
+format Field {result, column} = unsafeDupablePerformIO (LibPQ.fformat result column)
+
 #else
 blobFieldDecoder :: Typeable k => (ByteString -> Either String k) -> FieldParser k
 blobFieldDecoder dec = \case

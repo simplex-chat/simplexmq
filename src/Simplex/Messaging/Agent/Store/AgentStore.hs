@@ -464,7 +464,41 @@ upgradeRcvConnToDuplex db connId sq =
     (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
 
 upgradeSndConnToDuplex :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
-upgradeSndConnToDuplex db connId rq =
+upgradeSndConnToDuplex db connId rq = do
+  print "upgradeSndConnToDuplex c.user_id"
+  [Only (_x :: UserId)] <- DB.query db "SELECT c.user_id FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex coalesce key_hash"
+  [Only (_x :: C.KeyHash)] <- DB.query db "SELECT COALESCE(q.server_key_hash, s.key_hash) FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex q.conn_id"
+  [Only (_x :: ConnId)] <- DB.query db "SELECT q.conn_id FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex q.host"
+  [Only (_x :: NonEmpty TransportHost)] <- DB.query db "SELECT q.host FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex q.port"
+  [Only (_x :: ServiceName)] <- DB.query db "SELECT q.port FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex q.snd_id"
+  [Only (_x :: SenderId)] <- DB.query db "SELECT q.snd_id FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex q.snd_secure"
+  [Only (_x :: BoolInt)] <- DB.query db "SELECT q.snd_secure FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex q.snd_public_key"
+  [Only (_x :: Maybe SndPublicAuthKey)] <- DB.query db "SELECT q.snd_public_key FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex q.snd_private_key"
+  [Only (_x :: SndPrivateAuthKey)] <- DB.query db "SELECT q.snd_private_key FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex q.e2e_pub_key"
+  [Only (_x :: Maybe C.PublicKeyX25519)] <- DB.query db "SELECT q.e2e_pub_key FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex q.e2e_dh_secret"
+  [Only (_x :: C.DhSecretX25519)] <- DB.query db "SELECT q.e2e_dh_secret FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex q.status"
+  [Only (_x :: QueueStatus)] <- DB.query db "SELECT q.status FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex q.snd_queue_id"
+  [Only (_x :: DBQueueId 'QSStored)] <- DB.query db "SELECT q.snd_queue_id FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex q.snd_primary"
+  [Only (_x :: BoolInt)] <- DB.query db "SELECT q.snd_primary FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex q.replace_snd_queue_id"
+  [Only (_x :: Maybe Int64)] <- DB.query db "SELECT q.replace_snd_queue_id FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex q.switch_status"
+  [Only (_x :: Maybe SndSwitchStatus)] <- DB.query db "SELECT q.switch_status FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
+  print "upgradeSndConnToDuplex q.smp_client_version"
+  [Only (_x :: VersionSMPC)] <- DB.query db "SELECT q.smp_client_version FROM snd_queues q JOIN servers s ON q.host = s.host AND q.port = s.port JOIN connections c ON q.conn_id = c.conn_id WHERE q.conn_id = ?" (Only connId)
   getConn db connId >>= \case
     Right (SomeConn _ SndConnection {}) -> Right <$> addConnRcvQueue_ db connId rq
     Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
@@ -1849,6 +1883,7 @@ insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
   currQId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? AND host = ? AND port = ? AND snd_id = ?" (connId', host server, port server, sndId)
   qId <- maybe (newQueueId_ <$> DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? ORDER BY snd_queue_id DESC LIMIT 1" (Only connId')) pure currQId_
 #if defined(dbPostgres)
+  -- TODO [postgres] check ON CONFLICT clause - did we intend primary key or unique?
   DB.execute
     db
     [sql|
@@ -1911,7 +1946,9 @@ getAnyConn deleted' dbConn connId =
       | deleted /= deleted' -> pure $ Left SEConnNotFound
       | otherwise -> do
           rQ <- getRcvQueuesByConnId_ dbConn connId
+          print "getAnyConn 1"
           sQ <- getSndQueuesByConnId_ dbConn connId
+          print "getAnyConn 2"
           pure $ case (rQ, sQ, cMode) of
             (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
             (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
