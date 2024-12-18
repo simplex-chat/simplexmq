@@ -2,6 +2,7 @@
 
 module Simplex.Messaging.Agent.Store.Postgres.DB
   ( BoolInt (..),
+    PSQL.Binary (..),
     PSQL.Connection,
     PSQL.connect,
     PSQL.close,
@@ -22,12 +23,9 @@ import Database.PostgreSQL.Simple.FromField (FromField (..), returnError)
 import Database.PostgreSQL.Simple.ToField (ToField (..))
 
 newtype BoolInt = BI {unBI :: Bool}
-  deriving (Eq, Show)
 
 instance FromField BoolInt where
-  fromField field dat = do
-    b :: Int <- fromField field dat
-    pure $ BI (b /= 0)
+  fromField field dat = BI . (/= (0 :: Int)) <$> fromField field dat
   {-# INLINE fromField #-}
 
 instance ToField BoolInt where

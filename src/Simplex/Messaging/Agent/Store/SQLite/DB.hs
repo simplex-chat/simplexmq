@@ -8,6 +8,7 @@
 
 module Simplex.Messaging.Agent.Store.SQLite.DB
   ( BoolInt (..),
+    Binary (..),
     Connection (..),
     SlowQueryStats (..),
     open,
@@ -24,6 +25,7 @@ import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad (when)
 import qualified Data.Aeson.TH as J
+import Data.ByteString (ByteString)
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -39,7 +41,9 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (diffToMilliseconds, tshow)
 
 newtype BoolInt = BI {unBI :: Bool}
-  deriving (Eq, Show)
+  deriving newtype (FromField, ToField)
+
+newtype Binary = Binary {fromBinary :: ByteString}
   deriving newtype (FromField, ToField)
 
 data Connection = Connection

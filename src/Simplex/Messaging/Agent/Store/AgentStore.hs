@@ -260,7 +260,7 @@ import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.Common
 import qualified Simplex.Messaging.Agent.Store.DB as DB
-import Simplex.Messaging.Agent.Store.DB (BoolInt (..))
+import Simplex.Messaging.Agent.Store.DB (Binary (..), BoolInt (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs (..))
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption (..), PQSupport (..), RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
@@ -279,10 +279,10 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 #if defined(dbPostgres)
 import Database.PostgreSQL.Simple (Only (..), Query, SqlError, (:.) (..))
-import Database.PostgreSQL.Simple.FromField
+import Database.PostgreSQL.Simple.FromField (FromField (..))
 import Database.PostgreSQL.Simple.Errors (constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
-import Database.PostgreSQL.Simple.ToField (ToField (..), Action (..))
+import Database.PostgreSQL.Simple.ToField (ToField (..))
 #else
 import Database.SQLite.Simple (FromRow (..), Only (..), Query (..), SQLError, ToRow (..), field, (:.) (..))
 import qualified Database.SQLite.Simple as SQL
@@ -1716,11 +1716,7 @@ instance ToField (Version v) where toField (Version v) = toField v
 
 deriving newtype instance FromField (Version v)
 
-#if defined(dbPostgres)
-instance ToField EntityId where toField (EntityId s) = EscapeByteA s
-#else
-deriving newtype instance ToField EntityId
-#endif
+instance ToField EntityId where toField (EntityId s) = toField $ Binary s
 
 deriving newtype instance FromField EntityId
 
@@ -2202,7 +2198,7 @@ updateSndMsgHash db connId internalSndId internalHash =
       WHERE conn_id = ?
         AND last_internal_snd_msg_id = ?;
     |]
-    (internalHash, connId, internalSndId)
+    (Binary internalHash, connId, internalSndId)
 
 -- create record with a random ID
 createWithRandomId :: TVar ChaChaDRG -> (ByteString -> IO ()) -> IO (Either StoreError ByteString)

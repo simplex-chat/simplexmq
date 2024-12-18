@@ -3125,20 +3125,33 @@ testServerMultipleIdentities =
     (aliceId, sqSecured) <- joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
     liftIO $ print "test 2"
     liftIO $ sqSecured `shouldBe` True
+    liftIO $ print "test 3"
+    r <- get alice
+    liftIO $ print $ "test 3a " <> show r
     ("", _, CONF confId _ "bob's connInfo") <- get alice
+    liftIO $ print "test 4"
     allowConnection alice bobId confId "alice's connInfo"
+    liftIO $ print "test 5"
     get alice ##> ("", bobId, CON)
+    liftIO $ print "test 6"
     get bob ##> ("", aliceId, INFO "alice's connInfo")
+    liftIO $ print "test 7"
     get bob ##> ("", aliceId, CON)
+    liftIO $ print "test 8"
     exchangeGreetings alice bobId bob aliceId
+    liftIO $ print "test 9"
     -- this saves queue with second server identity
+    liftIO $ print "test 10"
     bob' <- liftIO $ do
       Left (BROKER _ NETWORK) <- runExceptT $ joinConnection bob 1 True secondIdentityCReq "bob's connInfo" SMSubscribe
       disposeAgentClient bob
       threadDelay 250000
       getSMPAgentClient' 3 agentCfg initAgentServers testDB2
+    liftIO $ print "test 11"
     subscribeConnection bob' aliceId
+    liftIO $ print "test 12"
     exchangeGreetingsMsgId 4 alice bobId bob' aliceId
+    liftIO $ print "test 13"
     liftIO $ disposeAgentClient bob'
   where
     secondIdentityCReq :: ConnectionRequestUri 'CMInvitation

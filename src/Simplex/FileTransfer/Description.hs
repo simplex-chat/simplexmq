@@ -66,6 +66,7 @@ import qualified Data.Yaml as Y
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Protocol
 import Simplex.Messaging.Agent.QueryString
+import Simplex.Messaging.Agent.Store.DB (Binary (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, parseAll)
@@ -74,7 +75,7 @@ import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Util (bshow, safeDecodeUtf8, (<$?>))
 #if defined(dbPostgres)
 import Database.PostgreSQL.Simple.FromField (FromField (..))
-import Database.PostgreSQL.Simple.ToField (ToField (..), Action (..))
+import Database.PostgreSQL.Simple.ToField (ToField (..))
 #else
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
@@ -115,6 +116,9 @@ fdSeparator = "################################\n"
 
 newtype FileDigest = FileDigest {unFileDigest :: ByteString}
   deriving (Eq, Show)
+  deriving newtype (FromField)
+
+instance ToField FileDigest where toField (FileDigest s) = toField $ Binary s
 
 instance StrEncoding FileDigest where
   strEncode (FileDigest fd) = strEncode fd
@@ -127,17 +131,6 @@ instance FromJSON FileDigest where
 instance ToJSON FileDigest where
   toJSON = strToJSON
   toEncoding = strToJEncoding
-
-#if defined(dbPostgres)
-instance FromField FileDigest where fromField f dat = FileDigest <$> fromField f dat
-
-instance ToField FileDigest where toField (FileDigest s) = EscapeByteA s
-#else
-instance FromField FileDigest where fromField f = FileDigest <$> fromField f
-
-instance ToField FileDigest where toField (FileDigest s) = toField s
-#endif
-
 
 data FileChunk = FileChunk
   { chunkNo :: Int,
