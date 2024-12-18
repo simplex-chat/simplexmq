@@ -173,6 +173,7 @@ import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType)
 import Simplex.FileTransfer.Types (FileErrorType)
 import Simplex.Messaging.Agent.QueryString
+import Simplex.Messaging.Agent.Store.DB (Binary (..))
 import Simplex.Messaging.Client (ProxyClientError)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
@@ -224,11 +225,11 @@ import Simplex.Messaging.Version.Internal
 import Simplex.RemoteControl.Types
 import UnliftIO.Exception (Exception)
 #if defined(dbPostgres)
-import Database.PostgreSQL.Simple.FromField
-import Database.PostgreSQL.Simple.ToField
+import Database.PostgreSQL.Simple.FromField (FromField (..))
+import Database.PostgreSQL.Simple.ToField (ToField (..))
 #else
-import Database.SQLite.Simple.FromField
-import Database.SQLite.Simple.ToField
+import Database.SQLite.Simple.FromField (FromField (..))
+import Database.SQLite.Simple.ToField (ToField (..))
 #endif
 
 -- SMP agent protocol version history:
@@ -650,7 +651,7 @@ instance ToJSON NotificationsMode where
 instance FromJSON NotificationsMode where
   parseJSON = strParseJSON "NotificationsMode"
 
-instance ToField NotificationsMode where toField = toField . strEncode
+instance ToField NotificationsMode where toField = toField . Binary . strEncode
 
 instance FromField NotificationsMode where fromField = blobFieldDecoder $ parseAll strP
 

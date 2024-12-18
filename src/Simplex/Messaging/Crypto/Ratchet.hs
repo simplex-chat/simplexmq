@@ -111,7 +111,7 @@ import Data.Type.Equality
 import Data.Typeable (Typeable)
 import Data.Word (Word16, Word32)
 import Simplex.Messaging.Agent.QueryString
-import Simplex.Messaging.Agent.Store.DB (BoolInt (..))
+import Simplex.Messaging.Agent.Store.DB (Binary (..), BoolInt (..))
 import Simplex.Messaging.Crypto
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
@@ -366,7 +366,7 @@ instance Encoding APrivRKEMParams where
       'A' -> APRKP SRKSAccepted .:. PrivateRKParamsAccepted <$> smpP <*> smpP <*> smpP
       _ -> fail "bad APrivRKEMParams"
 
-instance RatchetKEMStateI s => ToField (PrivRKEMParams s) where toField = toField . smpEncode
+instance RatchetKEMStateI s => ToField (PrivRKEMParams s) where toField = toField . Binary . smpEncode
 
 instance (Typeable s, RatchetKEMStateI s) => FromField (PrivRKEMParams s) where fromField = blobFieldDecoder smpDecode
 
@@ -583,7 +583,7 @@ instance ToJSON RatchetKey where
 instance FromJSON RatchetKey where
   parseJSON = fmap RatchetKey . strParseJSON "Key"
 
-instance ToField MessageKey where toField = toField . smpEncode
+instance ToField MessageKey where toField = toField . Binary . smpEncode
 
 instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 
@@ -1127,7 +1127,7 @@ instance AlgorithmI a => ToJSON (Ratchet a) where
 instance AlgorithmI a => FromJSON (Ratchet a) where
   parseJSON = $(JQ.mkParseJSON defaultJSON ''Ratchet)
 
-instance AlgorithmI a => ToField (Ratchet a) where toField = toField . LB.toStrict . J.encode
+instance AlgorithmI a => ToField (Ratchet a) where toField = toField . Binary . LB.toStrict . J.encode
 
 instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder J.eitherDecodeStrict'
 

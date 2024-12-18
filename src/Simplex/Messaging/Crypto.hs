@@ -960,7 +960,7 @@ instance FromJSON KeyHash where
 instance IsString KeyHash where
   fromString = parseString $ parseAll strP
 
-instance ToField KeyHash where toField = toField . strEncode
+instance ToField KeyHash where toField = toField . Binary . strEncode
 
 instance FromField KeyHash where fromField = blobFieldDecoder $ parseAll strP
 
@@ -1180,7 +1180,7 @@ instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) 
 #endif
 
 instance (Eq a, Show a, ASN1Object a) => ToField (SignedObject a) where
-  toField (SignedObject s) = toField $ encodeSignedObject s
+  toField (SignedObject s) = toField . Binary $ encodeSignedObject s
 
 instance (Eq a, Show a, ASN1Object a) => Encoding (SignedObject a) where
   smpEncode (SignedObject exact) = smpEncode . Large $ encodeSignedObject exact

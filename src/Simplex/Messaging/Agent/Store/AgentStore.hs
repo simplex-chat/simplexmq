@@ -645,7 +645,7 @@ createConfirmation db gVar NewConfirmation {connId, senderConf = SMPConfirmation
         INSERT INTO conn_confirmations
         (confirmation_id, conn_id, sender_key, e2e_snd_pub_key, ratchet_state, sender_conn_info, smp_reply_queues, smp_client_version, accepted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0);
       |]
-      (confirmationId, connId, senderKey, e2ePubKey, ratchetState, connInfo, smpReplyQueues, smpClientVersion)
+      (Binary confirmationId, connId, senderKey, e2ePubKey, ratchetState, Binary connInfo, smpReplyQueues, smpClientVersion)
 
 acceptConfirmation :: DB.Connection -> ConfirmationId -> ConnInfo -> IO (Either StoreError AcceptedConfirmation)
 acceptConfirmation db confirmationId ownConnInfo = do
@@ -657,7 +657,7 @@ acceptConfirmation db confirmationId ownConnInfo = do
           own_conn_info = ?
       WHERE confirmation_id = ?
     |]
-    (ownConnInfo, confirmationId)
+    (Binary ownConnInfo, Binary confirmationId)
   firstRow confirmation SEConfirmationNotFound $
     DB.query
       db
@@ -666,7 +666,7 @@ acceptConfirmation db confirmationId ownConnInfo = do
         FROM conn_confirmations
         WHERE confirmation_id = ?;
       |]
-      (Only confirmationId)
+      (Only (Binary confirmationId))
   where
     confirmation ((connId, ratchetState) :. confRow) =
       AcceptedConfirmation
@@ -717,7 +717,7 @@ createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInf
         INSERT INTO conn_invitations
         (invitation_id,  contact_conn_id, cr_invitation, recipient_conn_info, accepted) VALUES (?, ?, ?, ?, 0);
       |]
-      (invitationId, contactConnId, connReq, recipientConnInfo)
+      (Binary invitationId, contactConnId, connReq, Binary recipientConnInfo)
 
 getInvitation :: DB.Connection -> String -> InvitationId -> IO (Either StoreError Invitation)
 getInvitation db cxt invitationId =
@@ -730,7 +730,7 @@ getInvitation db cxt invitationId =
         WHERE invitation_id = ?
           AND accepted = 0
       |]
-      (Only invitationId)
+      (Only (Binary invitationId))
   where
     invitation (contactConnId, connReq, recipientConnInfo, ownConnInfo, BI accepted) =
       Invitation {invitationId, contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted}
@@ -745,17 +745,17 @@ acceptInvitation db invitationId ownConnInfo =
           own_conn_info = ?
       WHERE invitation_id = ?
     |]
-    (ownConnInfo, invitationId)
+    (Binary ownConnInfo, Binary invitationId)
 
 unacceptInvitation :: DB.Connection -> InvitationId -> IO ()
 unacceptInvitation db invitationId =
-  DB.execute db "UPDATE conn_invitations SET accepted = 0, own_conn_info = NULL WHERE invitation_id = ?" (Only invitationId)
+  DB.execute db "UPDATE conn_invitations SET accepted = 0, own_conn_info = NULL WHERE invitation_id = ?" (Only (Binary invitationId))
 
 deleteInvitation :: DB.Connection -> ConnId -> InvitationId -> IO (Either StoreError ())
 deleteInvitation db contactConnId invId =
   getConn db contactConnId $>>= \case
     SomeConn SCContact _ ->
-      Right <$> DB.execute db "DELETE FROM conn_invitations WHERE contact_conn_id = ? AND invitation_id = ?" (contactConnId, invId)
+      Right <$> DB.execute db "DELETE FROM conn_invitations WHERE contact_conn_id = ? AND invitation_id = ?" (contactConnId, Binary invId)
     _ -> pure $ Left SEConnNotFound
 
 updateRcvIds :: DB.Connection -> ConnId -> IO (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
@@ -959,7 +959,7 @@ getLastMsg db connId msgId =
         LEFT JOIN snd_messages s ON s.conn_id = r.conn_id AND s.rcpt_internal_id = r.internal_id
         WHERE r.conn_id = ? AND r.broker_id = ?
       |]
-      (connId, msgId)
+      (connId, Binary msgId)
 
 toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs) :. (AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, MsgBody, PQEncryption, Maybe AgentMsgId, Maybe MsgReceiptStatus, BoolInt) -> RcvMsg
 toRcvMsg ((agentMsgId, internalTs, brokerId, brokerTs) :. (sndMsgId, integrity, internalHash, msgType, msgBody, pqEncryption, rcptInternalId_, rcptStatus_, BI userAck)) =
@@ -975,13 +975,13 @@ checkRcvMsgHashExists db connId hash = do
       ( DB.query
           db
           "SELECT 1 FROM encrypted_rcv_message_hashes WHERE conn_id = ? AND hash = ? LIMIT 1"
-          (connId, hash)
+          (connId, Binary hash)
       )
 
 getRcvMsgBrokerTs :: DB.Connection -> ConnId -> SMP.MsgId -> IO (Either StoreError BrokerTs)
 getRcvMsgBrokerTs db connId msgId =
   firstRow fromOnly SEMsgNotFound $
-    DB.query db "SELECT broker_ts FROM rcv_messages WHERE conn_id = ? AND broker_id = ?" (connId, msgId)
+    DB.query db "SELECT broker_ts FROM rcv_messages WHERE conn_id = ? AND broker_id = ?" (connId, Binary msgId)
 
 deleteMsg :: DB.Connection -> ConnId -> InternalId -> IO ()
 deleteMsg db connId msgId =
@@ -989,7 +989,11 @@ deleteMsg db connId msgId =
 
 deleteMsgContent :: DB.Connection -> ConnId -> InternalId -> IO ()
 deleteMsgContent db connId msgId =
-  DB.execute db "UPDATE messages SET msg_body = x'' WHERE conn_id = ? AND internal_id = ?;" (connId, msgId)
+#if defined(dbPostgres)
+  DB.execute db "UPDATE messages SET msg_body = ''::BYTEA WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
+#else
+  DB.execute db "UPDATE messages SET msg_body = x'' WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
+#endif
 
 deleteDeliveredSndMsg :: DB.Connection -> ConnId -> InternalId -> IO ()
 deleteDeliveredSndMsg db connId msgId = do
@@ -1112,7 +1116,7 @@ createCommand db corrId connId srv_ cmd = runExceptT $ do
     DB.execute
       db
       "INSERT INTO commands (host, port, corr_id, conn_id, command_tag, command, server_key_hash, created_at) VALUES (?,?,?,?,?,?,?,?)"
-      (host_, port_, corrId, connId, cmdTag, cmd, serverKeyHash_, createdAt)
+      (host_, port_, Binary corrId, connId, cmdTag, cmd, serverKeyHash_, createdAt)
   where
     cmdTag = agentCommandTag cmd
 #if defined(dbPostgres)
@@ -1660,23 +1664,23 @@ instance ToField InternalId where toField (InternalId x) = toField x
 
 deriving newtype instance FromField InternalId
 
-instance ToField AgentMessageType where toField = toField . smpEncode
+instance ToField AgentMessageType where toField = toField . Binary . smpEncode
 
 instance FromField AgentMessageType where fromField = blobFieldParser smpP
 
-instance ToField MsgIntegrity where toField = toField . strEncode
+instance ToField MsgIntegrity where toField = toField . Binary . strEncode
 
 instance FromField MsgIntegrity where fromField = blobFieldParser strP
 
-instance ToField SMPQueueUri where toField = toField . strEncode
+instance ToField SMPQueueUri where toField = toField . Binary . strEncode
 
 instance FromField SMPQueueUri where fromField = blobFieldParser strP
 
-instance ToField AConnectionRequestUri where toField = toField . strEncode
+instance ToField AConnectionRequestUri where toField = toField . Binary . strEncode
 
 instance FromField AConnectionRequestUri where fromField = blobFieldParser strP
 
-instance ConnectionModeI c => ToField (ConnectionRequestUri c) where toField = toField . strEncode
+instance ConnectionModeI c => ToField (ConnectionRequestUri c) where toField = toField . Binary . strEncode
 
 instance (E.Typeable c, ConnectionModeI c) => FromField (ConnectionRequestUri c) where fromField = blobFieldParser strP
 
@@ -1692,7 +1696,8 @@ instance ToField MsgFlags where toField = toField . decodeLatin1 . smpEncode
 
 instance FromField MsgFlags where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
 
-instance ToField [SMPQueueInfo] where toField = toField . smpEncodeList
+-- TODO [postgres] binary instances
+instance ToField [SMPQueueInfo] where toField = toField . Binary . smpEncodeList
 
 instance FromField [SMPQueueInfo] where fromField = blobFieldParser smpListP
 
@@ -1700,11 +1705,11 @@ instance ToField (NonEmpty TransportHost) where toField = toField . decodeLatin1
 
 instance FromField (NonEmpty TransportHost) where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
-instance ToField AgentCommand where toField = toField . strEncode
+instance ToField AgentCommand where toField = toField . Binary . strEncode
 
 instance FromField AgentCommand where fromField = blobFieldParser strP
 
-instance ToField AgentCommandTag where toField = toField . strEncode
+instance ToField AgentCommandTag where toField = toField . Binary . strEncode
 
 instance FromField AgentCommandTag where fromField = blobFieldParser strP
 
@@ -1965,7 +1970,7 @@ setConnRatchetSync db connId ratchetSyncState =
 
 addProcessedRatchetKeyHash :: DB.Connection -> ConnId -> ByteString -> IO ()
 addProcessedRatchetKeyHash db connId hash =
-  DB.execute db "INSERT INTO processed_ratchet_key_hashes (conn_id, hash) VALUES (?,?)" (connId, hash)
+  DB.execute db "INSERT INTO processed_ratchet_key_hashes (conn_id, hash) VALUES (?,?)" (connId, Binary hash)
 
 checkRatchetKeyHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
 checkRatchetKeyHashExists db connId hash = do
@@ -1975,7 +1980,7 @@ checkRatchetKeyHashExists db connId hash = do
       ( DB.query
           db
           "SELECT 1 FROM processed_ratchet_key_hashes WHERE conn_id = ? AND hash = ? LIMIT 1"
-          (connId, hash)
+          (connId, Binary hash)
       )
 
 deleteRatchetKeyHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
@@ -2103,7 +2108,7 @@ insertRcvMsgBase_ dbConn connId RcvMsgData {msgMeta, msgType, msgFlags, msgBody,
         (conn_id, internal_id, internal_ts, internal_rcv_id, internal_snd_id, msg_type, msg_flags, msg_body, pq_encryption)
         VALUES (?,?,?,?,?,?,?,?,?);
     |]
-    (connId, internalId, internalTs, internalRcvId, Nothing :: Maybe Int64, msgType, msgFlags, msgBody, pqEncryption)
+    (connId, internalId, internalTs, internalRcvId, Nothing :: Maybe Int64, msgType, msgFlags, Binary msgBody, pqEncryption)
 
 insertRcvMsgDetails_ :: DB.Connection -> ConnId -> RcvQueue -> RcvMsgData -> IO ()
 insertRcvMsgDetails_ db connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, internalRcvId, internalHash, externalPrevSndHash, encryptedMsgHash} = do
@@ -2118,8 +2123,8 @@ insertRcvMsgDetails_ db connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, interna
       VALUES
         (?,?,?,?,?,?,?,?,?,?)
     |]
-    (connId, dbQueueId, internalRcvId, fst recipient, sndMsgId, fst broker, snd broker, internalHash, externalPrevSndHash, integrity)
-  DB.execute db "INSERT INTO encrypted_rcv_message_hashes (conn_id, hash) VALUES (?,?)" (connId, encryptedMsgHash)
+    (connId, dbQueueId, internalRcvId, fst recipient, sndMsgId, Binary (fst broker), snd broker, Binary internalHash, Binary externalPrevSndHash, integrity)
+  DB.execute db "INSERT INTO encrypted_rcv_message_hashes (conn_id, hash) VALUES (?,?)" (connId, Binary encryptedMsgHash)
 
 updateRcvMsgHash :: DB.Connection -> ConnId -> AgentMsgId -> InternalRcvId -> MsgHash -> IO ()
 updateRcvMsgHash db connId sndMsgId internalRcvId internalHash =
@@ -2133,7 +2138,7 @@ updateRcvMsgHash db connId sndMsgId internalRcvId internalHash =
       WHERE conn_id = ?
         AND last_internal_rcv_msg_id = ?
     |]
-    (sndMsgId, internalHash, connId, internalRcvId)
+    (sndMsgId, Binary internalHash, connId, internalRcvId)
 
 -- * updateSndIds helpers
 
@@ -2173,7 +2178,7 @@ insertSndMsgBase_ db connId SndMsgData {internalId, internalTs, internalSndId, m
       VALUES
         (?,?,?,?,?,?,?,?,?);
     |]
-    (connId, internalId, internalTs, Nothing :: Maybe Int64, internalSndId, msgType, msgFlags, msgBody, pqEncryption)
+    (connId, internalId, internalTs, Nothing :: Maybe Int64, internalSndId, msgType, msgFlags, Binary msgBody, pqEncryption)
 
 insertSndMsgDetails_ :: DB.Connection -> ConnId -> SndMsgData -> IO ()
 insertSndMsgDetails_ dbConn connId SndMsgData {..} =
@@ -2185,7 +2190,7 @@ insertSndMsgDetails_ dbConn connId SndMsgData {..} =
       VALUES
         (?,?,?,?,?)
     |]
-    (connId, internalSndId, internalId, internalHash, prevMsgHash)
+    (connId, internalSndId, internalId, Binary internalHash, Binary prevMsgHash)
 
 updateSndMsgHash :: DB.Connection -> ConnId -> InternalSndId -> MsgHash -> IO ()
 updateSndMsgHash db connId internalSndId internalHash =
@@ -2289,7 +2294,7 @@ insertRcvFile db gVar userId FileDescription {size, digest, key, nonce, chunkSiz
       DB.execute
         db
         "INSERT INTO rcv_files (rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, prefix_path, tmp_path, save_path, save_file_key, save_file_nonce, status, redirect_id, redirect_entity_id, redirect_digest, redirect_size, approved_relays) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-        ((rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, fileKey <$> cfArgs, fileNonce <$> cfArgs, RFSReceiving, redirectId_, redirectEntityId_, redirectDigest_, redirectSize_, BI approvedRelays))
+        ((Binary rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, fileKey <$> cfArgs, fileNonce <$> cfArgs, RFSReceiving, redirectId_, Binary <$> redirectEntityId_, redirectDigest_, redirectSize_, BI approvedRelays))
   rcvFileId <- liftIO $ insertedRowId db
   pure (rcvFileEntityId, rcvFileId)
 
@@ -2317,7 +2322,7 @@ getRcvFileByEntityId db rcvFileEntityId = runExceptT $ do
 getRcvFileIdByEntityId_ :: DB.Connection -> RcvFileId -> IO (Either StoreError DBRcvFileId)
 getRcvFileIdByEntityId_ db rcvFileEntityId =
   firstRow fromOnly SEFileNotFound $
-    DB.query db "SELECT rcv_file_id FROM rcv_files WHERE rcv_file_entity_id = ?" (Only rcvFileEntityId)
+    DB.query db "SELECT rcv_file_id FROM rcv_files WHERE rcv_file_entity_id = ?" (Only (Binary rcvFileEntityId))
 
 getRcvFileRedirects :: DB.Connection -> DBRcvFileId -> IO [RcvFile]
 getRcvFileRedirects db rcvFileId = do
@@ -2582,7 +2587,7 @@ createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients prefixPath k
     DB.execute
       db
       "INSERT INTO snd_files (snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, prefix_path, key, nonce, status, redirect_size, redirect_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
-      ((sndFileEntityId, userId, path, fileKey <$> cfArgs, fileNonce <$> cfArgs, numRecipients) :. (prefixPath, key, nonce, SFSNew, redirectSize_, redirectDigest_))
+      ((Binary sndFileEntityId, userId, path, fileKey <$> cfArgs, fileNonce <$> cfArgs, numRecipients) :. (prefixPath, key, nonce, SFSNew, redirectSize_, redirectDigest_))
   where
     (redirectSize_, redirectDigest_) =
       case redirect_ of
@@ -2597,7 +2602,7 @@ getSndFileByEntityId db sndFileEntityId = runExceptT $ do
 getSndFileIdByEntityId_ :: DB.Connection -> SndFileId -> IO (Either StoreError DBSndFileId)
 getSndFileIdByEntityId_ db sndFileEntityId =
   firstRow fromOnly SEFileNotFound $
-    DB.query db "SELECT snd_file_id FROM snd_files WHERE snd_file_entity_id = ?" (Only sndFileEntityId)
+    DB.query db "SELECT snd_file_id FROM snd_files WHERE snd_file_entity_id = ?" (Only (Binary sndFileEntityId))
 
 getSndFile :: DB.Connection -> DBSndFileId -> IO (Either StoreError SndFile)
 getSndFile db sndFileId = runExceptT $ do
