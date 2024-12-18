@@ -35,7 +35,7 @@ CREATE TABLE connections(
   deleted SMALLINT NOT NULL DEFAULT 0,
   user_id BIGINT NOT NULL REFERENCES users ON DELETE CASCADE,
   ratchet_sync_state TEXT NOT NULL DEFAULT 'ok',
-  deleted_at_wait_delivery TIMESTAMP,
+  deleted_at_wait_delivery TIMESTAMPTZ,
   pq_support SMALLINT NOT NULL DEFAULT 0
 );
 CREATE TABLE rcv_queues(
@@ -64,7 +64,7 @@ CREATE TABLE rcv_queues(
   switch_status TEXT,
   deleted SMALLINT NOT NULL DEFAULT 0,
   snd_secure SMALLINT NOT NULL DEFAULT 0,
-  last_broker_ts TIMESTAMP,
+  last_broker_ts TIMESTAMPTZ,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -96,7 +96,7 @@ CREATE TABLE messages(
   conn_id BYTEA NOT NULL REFERENCES connections(conn_id)
   ON DELETE CASCADE,
   internal_id BIGINT NOT NULL,
-  internal_ts TIMESTAMP NOT NULL,
+  internal_ts TIMESTAMPTZ NOT NULL,
   internal_rcv_id BIGINT,
   internal_snd_id BIGINT,
   msg_type BYTEA NOT NULL,
@@ -111,7 +111,7 @@ CREATE TABLE rcv_messages(
   internal_id BIGINT NOT NULL,
   external_snd_id BIGINT NOT NULL,
   broker_id BYTEA NOT NULL,
-  broker_ts TIMESTAMP NOT NULL,
+  broker_ts TIMESTAMPTZ NOT NULL,
   internal_hash BYTEA NOT NULL,
   external_prev_snd_hash BYTEA NOT NULL,
   integrity BYTEA NOT NULL,
@@ -152,7 +152,7 @@ CREATE TABLE conn_confirmations(
   sender_conn_info BYTEA NOT NULL,
   accepted SMALLINT NOT NULL,
   own_conn_info BYTEA,
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
   smp_reply_queues BYTEA NULL,
   smp_client_version INTEGER
 );
@@ -163,7 +163,7 @@ CREATE TABLE conn_invitations(
   recipient_conn_info BYTEA NOT NULL,
   accepted SMALLINT NOT NULL DEFAULT 0,
   own_conn_info BYTEA,
-  created_at TIMESTAMP NOT NULL DEFAULT (now())
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now())
 );
 CREATE TABLE ratchets(
   conn_id BYTEA NOT NULL PRIMARY KEY REFERENCES connections
@@ -188,8 +188,8 @@ CREATE TABLE ntf_servers(
   ntf_host TEXT NOT NULL,
   ntf_port TEXT NOT NULL,
   ntf_key_hash BYTEA NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
-  updated_at TIMESTAMP NOT NULL DEFAULT (now()),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
   PRIMARY KEY(ntf_host, ntf_port)
 );
 CREATE TABLE ntf_tokens(
@@ -205,8 +205,8 @@ CREATE TABLE ntf_tokens(
   tkn_dh_secret BYTEA,
   tkn_status TEXT NOT NULL,
   tkn_action BYTEA,
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
-  updated_at TIMESTAMP NOT NULL DEFAULT (now()),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
   ntf_mode TEXT NULL,
   PRIMARY KEY(provider, device_token, ntf_host, ntf_port),
   FOREIGN KEY(ntf_host, ntf_port) REFERENCES ntf_servers
@@ -223,10 +223,10 @@ CREATE TABLE ntf_subscriptions(
   ntf_sub_status TEXT NOT NULL,
   ntf_sub_action TEXT,
   ntf_sub_smp_action TEXT,
-  ntf_sub_action_ts TIMESTAMP,
+  ntf_sub_action_ts TIMESTAMPTZ,
   updated_by_supervisor SMALLINT NOT NULL DEFAULT 0,
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
-  updated_at TIMESTAMP NOT NULL DEFAULT (now()),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
   smp_server_key_hash BYTEA,
   ntf_failed SMALLINT DEFAULT 0,
   smp_failed SMALLINT DEFAULT 0,
@@ -246,7 +246,7 @@ CREATE TABLE commands(
   command BYTEA NOT NULL,
   agent_version INTEGER NOT NULL DEFAULT 1,
   server_key_hash BYTEA,
-  created_at TIMESTAMP NOT NULL DEFAULT '1970-01-01 00:00:00',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01 00:00:00',
   failed SMALLINT DEFAULT 0,
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
@@ -264,8 +264,8 @@ CREATE TABLE xftp_servers(
   xftp_host TEXT NOT NULL,
   xftp_port TEXT NOT NULL,
   xftp_key_hash BYTEA NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
-  updated_at TIMESTAMP NOT NULL DEFAULT (now()),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
   UNIQUE(xftp_host, xftp_port, xftp_key_hash)
 );
 CREATE TABLE rcv_files(
@@ -283,8 +283,8 @@ CREATE TABLE rcv_files(
   status TEXT NOT NULL,
   deleted SMALLINT NOT NULL DEFAULT 0,
   error TEXT,
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
-  updated_at TIMESTAMP NOT NULL DEFAULT (now()),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
   save_file_key BYTEA,
   save_file_nonce BYTEA,
   failed SMALLINT DEFAULT 0,
@@ -302,8 +302,8 @@ CREATE TABLE rcv_file_chunks(
   chunk_size BIGINT NOT NULL,
   digest BYTEA NOT NULL,
   tmp_path TEXT,
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
-  updated_at TIMESTAMP NOT NULL DEFAULT (now())
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT (now())
 );
 CREATE TABLE rcv_file_chunk_replicas(
   rcv_file_chunk_replica_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -315,8 +315,8 @@ CREATE TABLE rcv_file_chunk_replicas(
   received SMALLINT NOT NULL DEFAULT 0,
   delay BIGINT,
   retries BIGINT NOT NULL DEFAULT 0,
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
-  updated_at TIMESTAMP NOT NULL DEFAULT (now())
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT (now())
 );
 CREATE TABLE snd_files(
   snd_file_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -331,8 +331,8 @@ CREATE TABLE snd_files(
   status TEXT NOT NULL,
   deleted SMALLINT NOT NULL DEFAULT 0,
   error TEXT,
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
-  updated_at TIMESTAMP NOT NULL DEFAULT (now()),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
   src_file_key BYTEA,
   src_file_nonce BYTEA,
   failed SMALLINT DEFAULT 0,
@@ -346,8 +346,8 @@ CREATE TABLE snd_file_chunks(
   chunk_offset BIGINT NOT NULL,
   chunk_size BIGINT NOT NULL,
   digest BYTEA NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
-  updated_at TIMESTAMP NOT NULL DEFAULT (now())
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT (now())
 );
 CREATE TABLE snd_file_chunk_replicas(
   snd_file_chunk_replica_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -359,16 +359,16 @@ CREATE TABLE snd_file_chunk_replicas(
   replica_status TEXT NOT NULL,
   delay BIGINT,
   retries BIGINT NOT NULL DEFAULT 0,
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
-  updated_at TIMESTAMP NOT NULL DEFAULT (now())
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT (now())
 );
 CREATE TABLE snd_file_chunk_replica_recipients(
   snd_file_chunk_replica_recipient_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   snd_file_chunk_replica_id BIGINT NOT NULL REFERENCES snd_file_chunk_replicas ON DELETE CASCADE,
   rcv_replica_id BYTEA NOT NULL,
   rcv_replica_key BYTEA NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
-  updated_at TIMESTAMP NOT NULL DEFAULT (now())
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT (now())
 );
 CREATE TABLE deleted_snd_chunk_replicas(
   deleted_snd_chunk_replica_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -379,31 +379,32 @@ CREATE TABLE deleted_snd_chunk_replicas(
   chunk_digest BYTEA NOT NULL,
   delay BIGINT,
   retries BIGINT NOT NULL DEFAULT 0,
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
-  updated_at TIMESTAMP NOT NULL DEFAULT (now()),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
   failed SMALLINT DEFAULT 0
 );
 CREATE TABLE encrypted_rcv_message_hashes(
   encrypted_rcv_message_hash_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   conn_id BYTEA NOT NULL REFERENCES connections ON DELETE CASCADE,
   hash BYTEA NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
-  updated_at TIMESTAMP NOT NULL DEFAULT (now())
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT (now())
 );
 CREATE TABLE processed_ratchet_key_hashes(
   processed_ratchet_key_hash_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   conn_id BYTEA NOT NULL REFERENCES connections ON DELETE CASCADE,
   hash BYTEA NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
-  updated_at TIMESTAMP NOT NULL DEFAULT (now())
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT (now())
 );
 CREATE TABLE servers_stats(
   servers_stats_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   servers_stats TEXT,
-  started_at TIMESTAMP NOT NULL DEFAULT (now()),
-  created_at TIMESTAMP NOT NULL DEFAULT (now()),
-  updated_at TIMESTAMP NOT NULL DEFAULT (now())
+  started_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT (now())
 );
+INSERT INTO servers_stats (servers_stats_id) OVERRIDING SYSTEM VALUE VALUES (1);
 CREATE TABLE ntf_tokens_to_delete(
   ntf_token_to_delete_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   ntf_host TEXT NOT NULL,
@@ -412,7 +413,7 @@ CREATE TABLE ntf_tokens_to_delete(
   tkn_id BYTEA NOT NULL,
   tkn_priv_key BYTEA NOT NULL,
   del_failed SMALLINT DEFAULT 0,
-  created_at TIMESTAMP NOT NULL DEFAULT (now())
+  created_at TIMESTAMPTZ NOT NULL DEFAULT (now())
 );
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);
 CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);
