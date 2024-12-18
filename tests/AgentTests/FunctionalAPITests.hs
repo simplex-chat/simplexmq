@@ -329,6 +329,8 @@ functionalAPITests t = do
       it "should expire multiple messages" $ testExpireManyMessages t
       it "should expire one message if quota is exceeded" $ testExpireMessageQuota t
       it "should expire multiple messages if quota is exceeded" $ testExpireManyMessagesQuota t
+#if !defined(dbPostgres)
+    -- TODO [postgres] restore from outdated db backup (we use copyFile/renameFile for sqlite)
     describe "Ratchet synchronization" $ do
       it "should report ratchet de-synchronization, synchronize ratchets" $
         testRatchetSync t
@@ -340,6 +342,7 @@ functionalAPITests t = do
         testRatchetSyncSuspendForeground t
       it "should synchronize ratchets when clients start synchronization simultaneously" $
         testRatchetSyncSimultaneous t
+#endif
     describe "Subscription mode OnlyCreate" $ do
       it "messages delivered only when polled (v8 - slow handshake)" $
         withSmpServer t testOnlyCreatePullSlowHandshake
