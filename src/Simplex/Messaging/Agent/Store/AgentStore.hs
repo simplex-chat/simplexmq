@@ -568,7 +568,7 @@ setSndSwitchStatus db sq@SndQueue {sndId, server = ProtocolServer {host, port}} 
 
 setRcvQueuePrimary :: DB.Connection -> ConnId -> RcvQueue -> IO ()
 setRcvQueuePrimary db connId RcvQueue {dbQueueId} = do
-  DB.execute db "UPDATE rcv_queues SET rcv_primary = ? WHERE conn_id = ?" (False, connId)
+  DB.execute db "UPDATE rcv_queues SET rcv_primary = ? WHERE conn_id = ?" (BI False, connId)
   DB.execute
     db
     "UPDATE rcv_queues SET rcv_primary = ?, replace_rcv_queue_id = ? WHERE conn_id = ? AND rcv_queue_id = ?"
