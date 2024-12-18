@@ -1696,7 +1696,6 @@ instance ToField MsgFlags where toField = toField . decodeLatin1 . smpEncode
 
 instance FromField MsgFlags where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
 
--- TODO [postgres] binary instances
 instance ToField [SMPQueueInfo] where toField = toField . Binary . smpEncodeList
 
 instance FromField [SMPQueueInfo] where fromField = blobFieldParser smpListP

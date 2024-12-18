@@ -29,7 +29,7 @@ agentTests (ATransport t) = do
   describe "Double ratchet tests" doubleRatchetTests
 #if defined(dbPostgres)
   after_ (dropAllSchemasExceptSystem testDBConnectInfo) $
-    describe "Functional API" $ functionalAPITests (ATransport t)
+    fdescribe "Functional API" $ functionalAPITests (ATransport t)
 #else
   describe "Functional API" $ functionalAPITests (ATransport t)
   describe "Notification tests" $ notificationTests (ATransport t)

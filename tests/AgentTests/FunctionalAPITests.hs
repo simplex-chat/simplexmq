@@ -262,12 +262,11 @@ sendMessage c connId msgFlags msgBody = do
   liftIO $ pqEnc `shouldBe` PQEncOn
   pure msgId
 
--- TODO [postgres] run with postgres
 functionalAPITests :: ATransport -> Spec
 functionalAPITests t = do
   describe "Establishing duplex connection" $ do
     testMatrix2 t runAgentClientTest
-    fit "should connect when server with multiple identities is stored" $
+    it "should connect when server with multiple identities is stored" $
       withSmpServer t testServerMultipleIdentities
     it "should connect with two peers" $
       withSmpServer t testAgentClient3
