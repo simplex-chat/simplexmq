@@ -1833,7 +1833,6 @@ insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
   currQId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? AND host = ? AND port = ? AND snd_id = ?" (connId', host server, port server, sndId)
   qId <- maybe (newQueueId_ <$> DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? ORDER BY snd_queue_id DESC LIMIT 1" (Only connId')) pure currQId_
 #if defined(dbPostgres)
-  -- TODO [postgres] check ON CONFLICT clause - did we intend primary key or unique?
   DB.execute
     db
     [sql|
@@ -1841,7 +1840,7 @@ insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
         (host, port, snd_id, snd_secure, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret,
          status, snd_queue_id, snd_primary, replace_snd_queue_id, smp_client_version, server_key_hash)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT (conn_id, snd_queue_id) DO UPDATE SET
+      ON CONFLICT (host, port, snd_id) DO UPDATE SET
         host=EXCLUDED.host,
         port=EXCLUDED.port,
         snd_id=EXCLUDED.snd_id,
