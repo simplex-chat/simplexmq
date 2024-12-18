@@ -292,7 +292,7 @@ functionalAPITests t = do
   it "should support rejecting contact request" $
     withSmpServer t testRejectContactRequest
   describe "Changing connection user id" $ do
-    it "should change user id for new connections" $ do
+    fit "should change user id for new connections" $ do
       withSmpServer t testUpdateConnectionUserId
   describe "Establishing connection asynchronously" $ do
     it "should connect with initiating client going offline" $
@@ -923,18 +923,31 @@ testRejectContactRequest =
 testUpdateConnectionUserId :: HasCallStack => IO ()
 testUpdateConnectionUserId =
   withAgentClients2 $ \alice bob -> runRight_ $ do
+    liftIO $ print 1
     (connId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+    liftIO $ print 2
     newUserId <- createUser alice [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
+    liftIO $ print 3
     _ <- changeConnectionUser alice 1 connId newUserId
+    liftIO $ print 4
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+    liftIO $ print 5
     sqSecured' <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    liftIO $ print 6
     liftIO $ sqSecured' `shouldBe` True
+    liftIO $ print 7
     ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
+    liftIO $ print 8
     liftIO $ pqSup' `shouldBe` PQSupportOn
+    liftIO $ print 9
     allowConnection alice connId confId "alice's connInfo"
+    liftIO $ print 10
     let pqEnc = CR.pqSupportToEnc PQSupportOn
+    liftIO $ print 11
     get alice ##> ("", connId, A.CON pqEnc)
+    liftIO $ print 12
     get bob ##> ("", aliceId, A.INFO PQSupportOn "alice's connInfo")
+    liftIO $ print 13
     get bob ##> ("", aliceId, A.CON pqEnc)
 
 testAsyncInitiatingOffline :: HasCallStack => IO ()
@@ -3107,7 +3120,7 @@ createStore :: String -> IO (Either MigrationError DBStore)
 createStore schema = createAgentStore testDBConnectInfo schema MCError
 
 insertUser :: DBStore -> IO ()
-insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users (user_id) OVERRIDING SYSTEM VALUE VALUES (1)")
+insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users DEFAULT VALUES")
 #else
 createStore :: String -> IO (Either MigrationError DBStore)
 createStore dbPath = createAgentStore dbPath "" False MCError

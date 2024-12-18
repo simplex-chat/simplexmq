@@ -404,7 +404,7 @@ CREATE TABLE servers_stats(
   created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT (now())
 );
-INSERT INTO servers_stats (servers_stats_id) OVERRIDING SYSTEM VALUE VALUES (1);
+INSERT INTO servers_stats DEFAULT VALUES;
 CREATE TABLE ntf_tokens_to_delete(
   ntf_token_to_delete_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   ntf_host TEXT NOT NULL,
