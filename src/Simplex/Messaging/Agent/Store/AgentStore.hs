@@ -1135,7 +1135,11 @@ createCommand db corrId connId srv_ cmd = runExceptT $ do
       Nothing -> pure (Nothing, Nothing, Nothing)
 
 insertedRowId :: DB.Connection -> IO Int64
+#if defined(dbPostgres)
+insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT lastval()"
+#else
 insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT last_insert_rowid()"
+#endif
 
 getPendingCommandServers :: DB.Connection -> ConnId -> IO [Maybe SMPServer]
 getPendingCommandServers db connId = do
