@@ -97,6 +97,9 @@ data ServerConfig = ServerConfig
     serverStatsLogFile :: FilePath,
     -- | file to save and restore stats
     serverStatsBackupFile :: Maybe FilePath,
+    -- | interval and file to save prometheus metrics
+    prometheusInterval :: Maybe Int,
+    prometheusMetricsFile :: FilePath,
     -- | notification delivery interval
     ntfDeliveryInterval :: Int,
     -- | interval between sending pending END events to unsubscribed clients, seconds

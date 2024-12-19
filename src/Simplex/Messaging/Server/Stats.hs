@@ -638,6 +638,14 @@ data PeriodStatCounts = PeriodStatCounts
     monthCount :: String
   }
 
+periodStatDataCounts :: PeriodStatsData -> PeriodStatCounts
+periodStatDataCounts PeriodStatsData {_day, _week, _month} =
+  PeriodStatCounts
+    { dayCount = show $ IS.size _day,
+      weekCount = show $ IS.size _week,
+      monthCount = show $ IS.size _month
+    }
+
 periodStatCounts :: PeriodStats -> UTCTime -> IO PeriodStatCounts
 periodStatCounts ps ts = do
   let d = utctDay ts

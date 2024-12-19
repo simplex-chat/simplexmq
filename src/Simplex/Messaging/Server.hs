@@ -71,6 +71,7 @@ import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
 import Data.Semigroup (Sum (..))
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
+import qualified Data.Text.IO as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
@@ -98,6 +99,7 @@ import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue,
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
+import Simplex.Messaging.Server.Prometheus
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.Stats
@@ -175,7 +177,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         : receiveFromProxyAgent pa
         : expireNtfsThread cfg
         : sigIntHandlerThread
-        : map runServer transports <> expireMessagesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg
+        : map runServer transports
+            <> expireMessagesThread_ cfg
+            <> serverStatsThread_ cfg
+            <> prometheusMetricsThread_ cfg
+            <> controlPortThread_ cfg
     )
     `finally` stopServer s
   where
@@ -553,6 +559,50 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         showProxyStats ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther} =
           [show _pRequests, show _pSuccesses, show _pErrorsConnect, show _pErrorsCompat, show _pErrorsOther]
 
+    prometheusMetricsThread_ :: ServerConfig -> [M ()]
+    prometheusMetricsThread_ ServerConfig {prometheusInterval = Just interval, prometheusMetricsFile} =
+      [savePrometheusMetrics interval prometheusMetricsFile]
+    prometheusMetricsThread_ _ = []
+
+    savePrometheusMetrics :: Int -> FilePath -> M ()
+    savePrometheusMetrics saveInterval metricsFile = do
+      labelMyThread "savePrometheusMetrics"
+      liftIO $ putStrLn $ "Prometheus metrics saved every " <> show saveInterval <> " seconds to " <> metricsFile
+      AMS _ st <- asks msgStore
+      ss <- asks serverStats
+      env <- ask
+      let interval = 1000000 * saveInterval
+      liftIO $ forever $ do
+        threadDelay interval
+        ts <- getCurrentTime
+        sm <- getServerMetrics st ss
+        rtm <- getRealTimeMetrics env
+        T.writeFile metricsFile $ prometheusMetrics sm rtm ts
+
+    getServerMetrics :: STMQueueStore s => s -> ServerStats -> IO ServerMetrics
+    getServerMetrics st ss = do
+      d <- getServerStatsData ss
+      let ps = periodStatDataCounts $ _activeQueues d
+          psNtf = periodStatDataCounts $ _activeQueuesNtf d
+      queueCount <- M.size <$> readTVarIO (activeMsgQueues st)
+      notifierCount <- M.size <$> readTVarIO (notifiers' st)
+      pure ServerMetrics {statsData = d, activeQueueCounts = ps, activeNtfCounts = psNtf, queueCount, notifierCount}
+
+    getRealTimeMetrics :: Env -> IO RealTimeMetrics
+    getRealTimeMetrics Env {clients, sockets, server = Server {subscribers, notifiers, subClients, ntfSubClients}} = do
+      socketStats <- mapM (traverse getSocketStats) =<< readTVarIO sockets
+#if MIN_VERSION_base(4,18,0)
+      threadsCount <- length <$> listThreads
+#else
+      let threadsCount = 0
+#endif
+      clientsCount <- IM.size <$> readTVarIO clients
+      smpSubsCount <- M.size <$> readTVarIO subscribers
+      smpSubClientsCount <- IM.size <$> readTVarIO subClients
+      ntfSubsCount <- M.size <$> readTVarIO notifiers
+      ntfSubClientsCount <- IM.size <$> readTVarIO ntfSubClients
+      pure RealTimeMetrics {socketStats, threadsCount, clientsCount, smpSubsCount, smpSubClientsCount, ntfSubsCount, ntfSubClientsCount}
+
     runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
     runClient signKey tp h = do
       kh <- asks serverIdentity
@@ -690,13 +740,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
 #endif
               CPSockets -> withUserRole $ unliftIO u (asks sockets) >>= readTVarIO >>= mapM_ putSockets
                 where
-                  putSockets (tcpPort, (accepted', closed', active')) = do
-                    (accepted, closed, active) <- (,,) <$> readTVarIO accepted' <*> readTVarIO closed' <*> readTVarIO active'
+                  putSockets (tcpPort, socketsState) = do
+                    ss <- getSocketStats socketsState
                     hPutStrLn h $ "Sockets for port " <> tcpPort <> ":"
-                    hPutStrLn h $ "accepted: " <> show accepted
-                    hPutStrLn h $ "closed: " <> show closed
-                    hPutStrLn h $ "active: " <> show (IM.size active)
-                    hPutStrLn h $ "leaked: " <> show (accepted - closed - IM.size active)
+                    hPutStrLn h $ "accepted: " <> show (socketsAccepted ss)
+                    hPutStrLn h $ "closed: " <> show (socketsClosed ss)
+                    hPutStrLn h $ "active: " <> show (socketsActive ss)
+                    hPutStrLn h $ "leaked: " <> show (socketsLeaked ss)
               CPSocketThreads -> withAdminRole $ do
 #if MIN_VERSION_base(4,18,0)
                 unliftIO u (asks sockets) >>= readTVarIO >>= mapM_ putSocketThreads
