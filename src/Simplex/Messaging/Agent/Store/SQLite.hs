@@ -26,14 +26,17 @@
 
 module Simplex.Messaging.Agent.Store.SQLite
   ( createDBStore,
-    connectSQLiteStore,
     closeDBStore,
-    openSQLiteStore,
-    reopenSQLiteStore,
+    execSQL,
+    -- used in Simplex.Chat.Archive
     sqlString,
     keyString,
     storeKey,
-    execSQL,
+    -- used in Simplex.Chat.Mobile and tests
+    reopenSQLiteStore,
+    -- used in tests
+    connectSQLiteStore,
+    openSQLiteStore,
   )
 where
 

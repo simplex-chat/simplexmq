@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
@@ -25,6 +26,17 @@ import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth (..), Protocol
 import Simplex.Messaging.Transport
 import XFTPClient (testXFTPServer)
 
+-- name fixtures are reused, but they are used as schema name instead of database file path
+#if defined(dbPostgres)
+testDB :: String
+testDB = "smp_agent_test_protocol_schema"
+
+testDB2 :: String
+testDB2 = "smp_agent2_test_protocol_schema"
+
+testDB3 :: String
+testDB3 = "smp_agent3_test_protocol_schema"
+#else
 testDB :: FilePath
 testDB = "tests/tmp/smp-agent.test.protocol.db"
 
@@ -33,6 +45,7 @@ testDB2 = "tests/tmp/smp-agent2.test.protocol.db"
 
 testDB3 :: FilePath
 testDB3 = "tests/tmp/smp-agent3.test.protocol.db"
+#endif
 
 testSMPServer :: SMPServer
 testSMPServer = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"

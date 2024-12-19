@@ -15,13 +15,12 @@
 
 module ServerTests where
 
-import AgentTests.NotificationTests (removeFileIfExists)
-import CoreTests.MsgStoreTests (testJournalStoreCfg)
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
 import Control.Monad
 import Control.Monad.IO.Class
+import CoreTests.MsgStoreTests (testJournalStoreCfg)
 import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
@@ -51,9 +50,10 @@ import System.TimeIt (timeItT)
 import System.Timeout
 import Test.HUnit
 import Test.Hspec
+import Util (removeFileIfExists)
 
 serverTests :: SpecWith (ATransport, AMSType)
-serverTests  = do
+serverTests = do
   describe "SMP queues" $ do
     describe "NEW and KEY commands, SEND messages" testCreateSecure
     describe "NEW and SKEY commands" $ do

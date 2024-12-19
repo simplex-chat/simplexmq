@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
@@ -62,17 +63,23 @@ import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word32)
 import qualified Data.Yaml as Y
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Protocol
 import Simplex.Messaging.Agent.QueryString
+import Simplex.Messaging.Agent.Store.DB (Binary (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, parseAll)
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Util (bshow, safeDecodeUtf8, (<$?>))
+#if defined(dbPostgres)
+import Database.PostgreSQL.Simple.FromField (FromField (..))
+import Database.PostgreSQL.Simple.ToField (ToField (..))
+#else
+import Database.SQLite.Simple.FromField (FromField (..))
+import Database.SQLite.Simple.ToField (ToField (..))
+#endif
 
 data FileDescription (p :: FileParty) = FileDescription
   { party :: SFileParty p,
@@ -109,6 +116,9 @@ fdSeparator = "################################\n"
 
 newtype FileDigest = FileDigest {unFileDigest :: ByteString}
   deriving (Eq, Show)
+  deriving newtype (FromField)
+
+instance ToField FileDigest where toField (FileDigest s) = toField $ Binary s
 
 instance StrEncoding FileDigest where
   strEncode (FileDigest fd) = strEncode fd
@@ -121,10 +131,6 @@ instance FromJSON FileDigest where
 instance ToJSON FileDigest where
   toJSON = strToJSON
   toEncoding = strToJEncoding
-
-instance FromField FileDigest where fromField f = FileDigest <$> fromField f
-
-instance ToField FileDigest where toField (FileDigest s) = toField s
 
 data FileChunk = FileChunk
   { chunkNo :: Int,
@@ -288,7 +294,11 @@ instance (Integral a, Show a) => StrEncoding (FileSize a) where
 instance (Integral a, Show a) => IsString (FileSize a) where
   fromString = either error id . strDecode . B.pack
 
+#if defined(dbPostgres)
+instance FromField a => FromField (FileSize a) where fromField f dat = FileSize <$> fromField f dat
+#else
 instance FromField a => FromField (FileSize a) where fromField f = FileSize <$> fromField f
+#endif
 
 instance ToField a => ToField (FileSize a) where toField (FileSize s) = toField s
 

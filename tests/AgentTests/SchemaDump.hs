@@ -37,7 +37,6 @@ appLint = "src/Simplex/Messaging/Agent/Store/SQLite/Migrations/agent_lint.sql"
 testSchema :: FilePath
 testSchema = "tests/tmp/test_agent_schema.sql"
 
--- TODO [postgres] run with postgres
 schemaDumpTest :: Spec
 schemaDumpTest = do
   it "verify and overwrite schema dump" testVerifySchemaDump
