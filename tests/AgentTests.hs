@@ -37,6 +37,5 @@ agentTests (ATransport t) = do
   describe "Chosen servers" serverChoiceTests
   -- notifications aren't tested with postgres, as we don't plan to use iOS client with it
   describe "Notification tests" $ notificationTests (ATransport t)
-  -- TODO [postgres] add work items tests for postgres (to test 'failed' fields)
   describe "SQLite store" storeTests
 #endif
