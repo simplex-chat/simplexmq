@@ -79,6 +79,9 @@ testStoreNtfsFile = "tests/tmp/smp-server-ntfs.log"
 testStoreNtfsFile2 :: FilePath
 testStoreNtfsFile2 = "tests/tmp/smp-server-ntfs.log.2"
 
+testPrometheusMetricsFile :: FilePath
+testPrometheusMetricsFile = "tests/tmp/smp-server-metrics.txt"
+
 testServerStatsBackupFile :: FilePath
 testServerStatsBackupFile = "tests/tmp/smp-server-stats.log"
 
@@ -127,8 +130,9 @@ cfgMS msType =
       msgIdBytes = 24,
       storeLogFile = Just testStoreLogFile,
       storeMsgsFile = Just $ case msType of
-        AMSType SMSJournal -> testStoreMsgsDir
-        AMSType SMSMemory -> testStoreMsgsFile,
+        AMSType SMSMemory -> testStoreMsgsFile
+        AMSType SMSHybrid -> testStoreMsgsDir
+        AMSType SMSJournal -> testStoreMsgsDir,
       storeNtfsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
@@ -141,8 +145,10 @@ cfgMS msType =
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
-      serverStatsLogFile = "tests/smp-server-stats.daily.log",
+      serverStatsLogFile = "tests/tmp/smp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
+      prometheusInterval = Nothing,
+      prometheusMetricsFile = testPrometheusMetricsFile,
       pendingENDInterval = 500000,
       ntfDeliveryInterval = 200000,
       smpCredentials =

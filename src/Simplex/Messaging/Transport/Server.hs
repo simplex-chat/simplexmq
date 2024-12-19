@@ -13,6 +13,7 @@ module Simplex.Messaging.Transport.Server
     runTransportServerState_,
     SocketState,
     newSocketState,
+    getSocketStats,
     runTransportServer,
     runTransportServerSocket,
     runLocalTCPServer,
@@ -43,6 +44,7 @@ import Foreign.C.Error
 import GHC.IO.Exception (ioe_errno)
 import Network.Socket
 import qualified Network.TLS as T
+import Simplex.Messaging.Server.Prometheus
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (catchAll_, labelMyThread, tshow)
 import System.Exit (exitFailure)
@@ -165,6 +167,14 @@ type SocketState = (TVar Int, TVar Int, TVar (IntMap (Weak ThreadId)))
 
 newSocketState :: IO SocketState
 newSocketState = (,,) <$> newTVarIO 0 <*> newTVarIO 0 <*> newTVarIO mempty
+
+getSocketStats :: SocketState -> IO SocketStats
+getSocketStats (accepted, closed, active) = do
+  socketsAccepted <- readTVarIO accepted
+  socketsClosed <- readTVarIO closed
+  socketsActive <- IM.size <$> readTVarIO active
+  let socketsLeaked = socketsAccepted - socketsClosed - socketsActive
+  pure SocketStats {socketsAccepted, socketsClosed, socketsActive, socketsLeaked}
 
 closeServer :: TMVar Bool -> TVar (IntMap (Weak ThreadId)) -> Socket -> IO ()
 closeServer started clients sock = do
