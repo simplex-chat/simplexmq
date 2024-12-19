@@ -278,7 +278,7 @@ newSMPAgentEnv config store = do
   pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
 
 #if defined(dbPostgres)
-createAgentStore ::ConnectInfo -> String -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createAgentStore :: ConnectInfo -> String -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createAgentStore = createStore
 #else
 createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError DBStore)
