@@ -60,6 +60,7 @@ createDBAndUserIfNotExists ConnectInfo {connectUser = user, connectDatabase = db
   -- connect to the default "postgres" maintenance database
   bracket (PSQL.connect defaultConnectInfo {connectUser = "postgres", connectDatabase = "postgres"}) PSQL.close $
     \postgresDB -> do
+      void $ PSQL.execute_ postgresDB "SET client_min_messages TO WARNING"
       -- check if the user exists, create if not
       [Only userExists] <-
         PSQL.query
@@ -105,6 +106,7 @@ connectDB dbConnectInfo schema = do
   pure (db, dbNew)
   where
     prepare db = do
+      void $ PSQL.execute_ db "SET client_min_messages TO WARNING"
       [Only schemaExists] <-
         PSQL.query
           db
@@ -134,13 +136,15 @@ execSQL _db _query = throwIO (userError "not implemented")
 dropSchema :: ConnectInfo -> String -> IO ()
 dropSchema connectInfo schema =
   bracket (PSQL.connect connectInfo) PSQL.close $
-    \db ->
+    \db -> do
+      void $ PSQL.execute_ db "SET client_min_messages TO WARNING"
       void $ PSQL.execute_ db (fromString $ "DROP SCHEMA IF EXISTS " <> schema <> " CASCADE")
 
 dropAllSchemasExceptSystem :: ConnectInfo -> IO ()
 dropAllSchemasExceptSystem connectInfo =
   bracket (PSQL.connect connectInfo) PSQL.close $
     \db -> do
+      void $ PSQL.execute_ db "SET client_min_messages TO WARNING"
       schemaNames :: [Only String] <-
         PSQL.query_
           db
@@ -156,6 +160,7 @@ dropDatabaseAndUser :: ConnectInfo -> IO ()
 dropDatabaseAndUser ConnectInfo {connectUser = user, connectDatabase = dbName} =
   bracket (PSQL.connect defaultConnectInfo {connectUser = "postgres", connectDatabase = "postgres"}) PSQL.close $
     \postgresDB -> do
+      void $ PSQL.execute_ postgresDB "SET client_min_messages TO WARNING"
       dbExists <- checkDBExists postgresDB dbName
       when dbExists $ do
         void $ PSQL.execute_ postgresDB (fromString $ "ALTER DATABASE " <> dbName <> " WITH ALLOW_CONNECTIONS false")
