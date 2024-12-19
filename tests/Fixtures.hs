@@ -11,6 +11,6 @@ testDBConnectInfo :: ConnectInfo
 testDBConnectInfo =
   defaultConnectInfo {
     connectUser = "test_user",
-    connectDatabase = "test_db"
+    connectDatabase = "test_agent_db"
   }
 #endif
