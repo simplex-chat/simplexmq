@@ -25,15 +25,18 @@ import AgentTests.SQLiteTests (storeTests)
 
 agentTests :: ATransport -> Spec
 agentTests (ATransport t) = do
+  describe "Migration tests" migrationTests
   describe "Connection request" connectionRequestTests
   describe "Double ratchet tests" doubleRatchetTests
 #if defined(dbPostgres)
-  after_ (dropAllSchemasExceptSystem testDBConnectInfo) $
-    fdescribe "Functional API" $ functionalAPITests (ATransport t)
+  after_ (dropAllSchemasExceptSystem testDBConnectInfo) $ do
+    describe "Functional API" $ functionalAPITests (ATransport t)
+    describe "Chosen servers" serverChoiceTests
 #else
   describe "Functional API" $ functionalAPITests (ATransport t)
+  describe "Chosen servers" serverChoiceTests
+  -- notifications aren't tested with postgres, as we don't plan to use iOS client with it
   describe "Notification tests" $ notificationTests (ATransport t)
+  -- TODO [postgres] add work items tests for postgres (to test 'failed' fields)
   describe "SQLite store" storeTests
 #endif
-  describe "Chosen servers" serverChoiceTests
-  describe "Migration tests" migrationTests

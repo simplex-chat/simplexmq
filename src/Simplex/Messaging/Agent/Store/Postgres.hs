@@ -12,7 +12,7 @@ module Simplex.Messaging.Agent.Store.Postgres
     createDBAndUserIfNotExists,
     dropSchema,
     dropAllSchemasExceptSystem,
-    dropDatabaseAndUserIfExists,
+    dropDatabaseAndUser,
   )
 where
 
@@ -152,8 +152,8 @@ dropAllSchemasExceptSystem connectInfo =
       forM_ schemaNames $ \(Only schema) ->
         PSQL.execute_ db (fromString $ "DROP SCHEMA " <> schema <> " CASCADE")
 
-dropDatabaseAndUserIfExists :: ConnectInfo -> IO ()
-dropDatabaseAndUserIfExists ConnectInfo {connectUser = user, connectDatabase = dbName} =
+dropDatabaseAndUser :: ConnectInfo -> IO ()
+dropDatabaseAndUser ConnectInfo {connectUser = user, connectDatabase = dbName} =
   bracket (PSQL.connect defaultConnectInfo {connectUser = "postgres", connectDatabase = "postgres"}) PSQL.close $
     \postgresDB -> do
       dbExists <- checkDBExists postgresDB dbName
