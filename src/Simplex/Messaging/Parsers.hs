@@ -24,13 +24,10 @@ import Data.Typeable (Typeable)
 import Simplex.Messaging.Util (safeDecodeUtf8, (<$?>))
 import Text.Read (readMaybe)
 #if defined(dbPostgres)
-import qualified Database.PostgreSQL.LibPQ as LibPQ
 import Database.PostgreSQL.Simple (ResultError (..))
 import Database.PostgreSQL.Simple.FromField (FromField(..), FieldParser, returnError, Field (..))
-import Database.PostgreSQL.Simple.Internal (Field (..))
 import Database.PostgreSQL.Simple.TypeInfo.Static (textOid, varcharOid)
 import qualified Data.Text.Encoding as TE
-import System.IO.Unsafe (unsafeDupablePerformIO)
 #else
 import Database.SQLite.Simple (ResultError (..), SQLData (..))
 import Database.SQLite.Simple.FromField (FieldParser, returnError)
@@ -95,10 +92,6 @@ blobFieldDecoder dec f val = do
   case dec x of
     Right k -> pure k
     Left e -> returnError ConversionFailed f ("couldn't parse field: " ++ e)
-
-format :: Field -> LibPQ.Format
-format Field {result, column} = unsafeDupablePerformIO (LibPQ.fformat result column)
-
 #else
 blobFieldDecoder :: Typeable k => (ByteString -> Either String k) -> FieldParser k
 blobFieldDecoder dec = \case
