@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -46,40 +47,49 @@ import UnliftIO
 import UnliftIO.Concurrent
 import XFTPCLI
 import XFTPClient
+#if defined(dbPostgres)
+import Fixtures
+import Simplex.Messaging.Agent.Store.Postgres (dropAllSchemasExceptSystem)
+#endif
 
 xftpAgentTests :: Spec
-xftpAgentTests = around_ testBracket . describe "agent XFTP API" $ do
-  it "should send and receive file" $ withXFTPServer testXFTPAgentSendReceive
-  -- uncomment CPP option slow_servers and run hpack to run this test
-  xit "should send and receive file with slow server responses" $
-    withXFTPServerCfg testXFTPServerConfig {responseDelay = 500000} $
-      \_ -> testXFTPAgentSendReceive
-  it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
-  it "should send and receive large file with a redirect" testXFTPAgentSendReceiveRedirect
-  it "should send and receive small file without a redirect" testXFTPAgentSendReceiveNoRedirect
-  describe "sending and receiving with version negotiation" testXFTPAgentSendReceiveMatrix
-  it "should resume receiving file after restart" testXFTPAgentReceiveRestore
-  it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
-  it "should resume sending file after restart" testXFTPAgentSendRestore
-  xit'' "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
-  it "should delete sent file on server" testXFTPAgentDelete
-  it "should resume deleting file after restart" testXFTPAgentDeleteRestore
-  -- TODO when server is fixed to correctly send AUTH error, this test has to be modified to expect AUTH error
-  it "if file is deleted on server, should limit retries and continue receiving next file" testXFTPAgentDeleteOnServer
-  it "if file is expired on server, should report error and continue receiving next file" testXFTPAgentExpiredOnServer
-  it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
-  describe "XFTP server test via agent API" $ do
-    it "should pass without basic auth" $ testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Nothing
-    let srv1 = testXFTPServer2 {keyHash = "1234"}
-    it "should fail with incorrect fingerprint" $ do
-      testXFTPServerTest Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
-    describe "server with password" $ do
-      let auth = Just "abcd"
-          srv = ProtoServerWithAuth testXFTPServer2
-          authErr = Just (ProtocolTestFailure TSCreateFile $ XFTP (B.unpack $ strEncode testXFTPServer2) AUTH)
-      it "should pass with correct password" $ testXFTPServerTest auth (srv auth) `shouldReturn` Nothing
-      it "should fail without password" $ testXFTPServerTest auth (srv Nothing) `shouldReturn` authErr
-      it "should fail with incorrect password" $ testXFTPServerTest auth (srv $ Just "wrong") `shouldReturn` authErr
+xftpAgentTests =
+  around_ testBracket
+#if defined(dbPostgres)
+    . after_ (dropAllSchemasExceptSystem testDBConnectInfo)
+#endif
+    . describe "agent XFTP API" $ do
+      it "should send and receive file" $ withXFTPServer testXFTPAgentSendReceive
+      -- uncomment CPP option slow_servers and run hpack to run this test
+      xit "should send and receive file with slow server responses" $
+        withXFTPServerCfg testXFTPServerConfig {responseDelay = 500000} $
+          \_ -> testXFTPAgentSendReceive
+      it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
+      it "should send and receive large file with a redirect" testXFTPAgentSendReceiveRedirect
+      it "should send and receive small file without a redirect" testXFTPAgentSendReceiveNoRedirect
+      describe "sending and receiving with version negotiation" testXFTPAgentSendReceiveMatrix
+      it "should resume receiving file after restart" testXFTPAgentReceiveRestore
+      it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
+      it "should resume sending file after restart" testXFTPAgentSendRestore
+      xit'' "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
+      it "should delete sent file on server" testXFTPAgentDelete
+      it "should resume deleting file after restart" testXFTPAgentDeleteRestore
+      -- TODO when server is fixed to correctly send AUTH error, this test has to be modified to expect AUTH error
+      it "if file is deleted on server, should limit retries and continue receiving next file" testXFTPAgentDeleteOnServer
+      it "if file is expired on server, should report error and continue receiving next file" testXFTPAgentExpiredOnServer
+      it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
+      describe "XFTP server test via agent API" $ do
+        it "should pass without basic auth" $ testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Nothing
+        let srv1 = testXFTPServer2 {keyHash = "1234"}
+        it "should fail with incorrect fingerprint" $ do
+          testXFTPServerTest Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
+        describe "server with password" $ do
+          let auth = Just "abcd"
+              srv = ProtoServerWithAuth testXFTPServer2
+              authErr = Just (ProtocolTestFailure TSCreateFile $ XFTP (B.unpack $ strEncode testXFTPServer2) AUTH)
+          it "should pass with correct password" $ testXFTPServerTest auth (srv auth) `shouldReturn` Nothing
+          it "should fail without password" $ testXFTPServerTest auth (srv Nothing) `shouldReturn` authErr
+          it "should fail with incorrect password" $ testXFTPServerTest auth (srv $ Just "wrong") `shouldReturn` authErr
 
 rfProgress :: forall m. (HasCallStack, MonadIO m, MonadFail m) => AgentClient -> Int64 -> m ()
 rfProgress c expected = loop 0
