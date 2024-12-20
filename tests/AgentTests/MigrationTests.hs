@@ -14,7 +14,8 @@ import Test.Hspec
 #if defined(dbPostgres)
 import Database.PostgreSQL.Simple (fromOnly)
 import Fixtures
-import Simplex.Messaging.Agent.Store.Postgres (closeDBStore, createDBStore, dropSchema)
+import Simplex.Messaging.Agent.Store.Postgres (closeDBStore, createDBStore)
+import Simplex.Messaging.Agent.Store.Postgres.Util (dropSchema)
 import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
 #else
 import Database.SQLite.Simple (fromOnly)

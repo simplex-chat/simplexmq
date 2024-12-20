@@ -17,7 +17,7 @@ import Simplex.Messaging.Transport (ATransport (..))
 import Test.Hspec
 #if defined(dbPostgres)
 import Fixtures
-import Simplex.Messaging.Agent.Store.Postgres (dropAllSchemasExceptSystem)
+import Simplex.Messaging.Agent.Store.Postgres.Util (dropAllSchemasExceptSystem)
 #else
 import AgentTests.NotificationTests (notificationTests)
 import AgentTests.SQLiteTests (storeTests)

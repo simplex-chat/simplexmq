@@ -49,7 +49,7 @@ import XFTPCLI
 import XFTPClient
 #if defined(dbPostgres)
 import Fixtures
-import Simplex.Messaging.Agent.Store.Postgres (dropAllSchemasExceptSystem)
+import Simplex.Messaging.Agent.Store.Postgres.Util (dropAllSchemasExceptSystem)
 #endif
 
 xftpAgentTests :: Spec

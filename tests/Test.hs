@@ -36,7 +36,8 @@ import XFTPCLI
 import XFTPServerTests (xftpServerTests)
 #if defined(dbPostgres)
 import Fixtures
-import Simplex.Messaging.Agent.Store.Postgres (createDBAndUserIfNotExists, dropDatabaseAndUser)
+import Simplex.Messaging.Agent.Store.Postgres (createDBAndUserIfNotExists)
+import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists)
 #else
 import AgentTests.SchemaDump (schemaDumpTest)
 #endif
