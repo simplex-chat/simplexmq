@@ -22,7 +22,7 @@ data DBStore = DBStore
     dbNew :: Bool
   }
 
--- TODO [postgres] semaphore / connection pool?
+-- TODO [postgres] connection pool
 withConnectionPriority :: DBStore -> Bool -> (PSQL.Connection -> IO a) -> IO a
 withConnectionPriority DBStore {dbConnection} _priority action =
   withMVar dbConnection action

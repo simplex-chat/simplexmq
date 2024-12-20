@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module AgentTests.MigrationTests (migrationTests) where
@@ -5,17 +6,24 @@ module AgentTests.MigrationTests (migrationTests) where
 import Control.Monad
 import Data.Maybe (fromJust)
 import Data.Word (Word32)
-import Database.SQLite.Simple (fromOnly)
 import Simplex.Messaging.Agent.Store.Common (DBStore, withTransaction)
 import Simplex.Messaging.Agent.Store.Migrations (migrationsToRun)
-import Simplex.Messaging.Agent.Store.SQLite (closeDBStore, createDBStore)
-import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.Shared
-import System.Directory (removeFile)
 import System.Random (randomIO)
 import Test.Hspec
+#if defined(dbPostgres)
+import Database.PostgreSQL.Simple (fromOnly)
+import Fixtures
+import Simplex.Messaging.Agent.Store.Postgres (closeDBStore, createDBStore)
+import Simplex.Messaging.Agent.Store.Postgres.Util (dropSchema)
+import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
+#else
+import Database.SQLite.Simple (fromOnly)
+import Simplex.Messaging.Agent.Store.SQLite (closeDBStore, createDBStore)
+import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
+import System.Directory (removeFile)
+#endif
 
--- TODO [postgres] run with postgres
 migrationTests :: Spec
 migrationTests = do
   it "should determine migrations to run" testMigrationsToRun
@@ -98,9 +106,6 @@ migrationTests = do
         ([m1, m2, m3, m4], [t1, t2, t3, t4])
         ([m1, m2, m4], [MCYesUp, MCYesUpDown, MCError], Left . MigrationError $ MTREDifferent (name m4) (name m3))
 
-testDB :: FilePath
-testDB = "tests/tmp/test_migrations.db"
-
 m1 :: Migration
 m1 = Migration "20230301-migration1" "create table test1 (id1 integer primary key);" Nothing
 
@@ -180,21 +185,46 @@ testMigration ::
   IO ()
 testMigration (initMs, initTables) (finalMs, confirmModes, tablesOrError) = forM_ confirmModes $ \confirmMode -> do
   r <- randomIO :: IO Word32
-  let dpPath = testDB <> show r
-  Right st <- createDBStore dpPath "" False initMs MCError
+  Right st <- createStore r initMs MCError
   st `shouldHaveTables` initTables
   closeDBStore st
   case tablesOrError of
     Right tables -> do
-      Right st' <- createDBStore dpPath "" False finalMs confirmMode
+      Right st' <- createStore r finalMs confirmMode
       st' `shouldHaveTables` tables
       closeDBStore st'
     Left e -> do
-      Left e' <- createDBStore dpPath "" False finalMs confirmMode
+      Left e' <- createStore r finalMs confirmMode
       e `shouldBe` e'
-  removeFile dpPath
-  where
-    shouldHaveTables :: DBStore -> [String] -> IO ()
-    st `shouldHaveTables` expected = do
-      tables <- map fromOnly <$> withTransaction st (`DB.query_` "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY 1;")
-      tables `shouldBe` "migrations" : expected
+  cleanup r
+
+#if defined(dbPostgres)
+testSchema :: Word32 -> String
+testSchema randSuffix = "test_migrations_schema" <> show randSuffix
+
+createStore :: Word32 -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createStore randSuffix migrations confirmMigrations =
+  createDBStore testDBConnectInfo (testSchema randSuffix) migrations confirmMigrations
+
+cleanup :: Word32 -> IO ()
+cleanup randSuffix = dropSchema testDBConnectInfo (testSchema randSuffix)
+
+shouldHaveTables :: DBStore -> [String] -> IO ()
+st `shouldHaveTables` expected = do
+  tables <- map fromOnly <$> withTransaction st (`DB.query_` "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY 1")
+  tables `shouldBe` "migrations" : expected
+#else
+testDB :: Word32 -> FilePath
+testDB randSuffix = "tests/tmp/test_migrations.db" <> show randSuffix
+
+createStore :: Word32 -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createStore randSuffix = createDBStore (testDB randSuffix) "" False
+
+cleanup :: Word32 -> IO ()
+cleanup randSuffix = removeFile (testDB randSuffix)
+
+shouldHaveTables :: DBStore -> [String] -> IO ()
+st `shouldHaveTables` expected = do
+  tables <- map fromOnly <$> withTransaction st (`DB.query_` "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY 1")
+  tables `shouldBe` "migrations" : expected
+#endif

@@ -76,14 +76,8 @@ import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), NtfSer
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport (ATransport)
-import System.Directory (doesFileExist, removeFile)
 import Test.Hspec
 import UnliftIO
-
-removeFileIfExists :: FilePath -> IO ()
-removeFileIfExists filePath = do
-  fileExists <- doesFileExist filePath
-  when fileExists $ removeFile filePath
 
 notificationTests :: ATransport -> Spec
 notificationTests t = do
