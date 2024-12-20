@@ -126,13 +126,10 @@ instance FromJSON KEMCiphertext where
 instance ToField KEMSharedKey where
   toField (KEMSharedKey k) = toField (BA.convert k :: ByteString)
 
+instance FromField KEMSharedKey where
 #if defined(dbPostgres)
-instance FromField KEMSharedKey where
-  fromField field dat = do
-    bs <- fromField field dat
-    pure $ KEMSharedKey (BA.convert @ByteString bs)
+  fromField f dat = KEMSharedKey . BA.convert @ByteString <$> fromField f dat
 #else
-instance FromField KEMSharedKey where
   fromField f = KEMSharedKey . BA.convert @ByteString <$> fromField f
 #endif
 

@@ -1135,10 +1135,12 @@ createCommand db corrId connId srv_ cmd = runExceptT $ do
       Nothing -> pure (Nothing, Nothing, Nothing)
 
 insertedRowId :: DB.Connection -> IO Int64
+insertedRowId db = fromOnly . head <$> DB.query_ db q
+  where
 #if defined(dbPostgres)
-insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT lastval()"
+    q = "SELECT lastval()"
 #else
-insertedRowId db = fromOnly . head <$> DB.query_ db "SELECT last_insert_rowid()"
+    q = "SELECT last_insert_rowid()"
 #endif
 
 getPendingCommandServers :: DB.Connection -> ConnId -> IO [Maybe SMPServer]
@@ -1650,10 +1652,11 @@ instance FromField QueueStatus where fromField = fromTextField_ queueStatusT
 
 instance ToField (DBQueueId 'QSStored) where toField (DBQueueId qId) = toField qId
 
+instance FromField (DBQueueId 'QSStored) where 
 #if defined(dbPostgres)
-instance FromField (DBQueueId 'QSStored) where fromField x dat = DBQueueId <$> fromField x dat
+  fromField x dat = DBQueueId <$> fromField x dat
 #else
-instance FromField (DBQueueId 'QSStored) where fromField x = DBQueueId <$> fromField x
+  fromField x = DBQueueId <$> fromField x
 #endif
 
 instance ToField InternalRcvId where toField (InternalRcvId x) = toField x

@@ -1133,16 +1133,18 @@ instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = b
 
 instance ToField PQEncryption where toField (PQEncryption pqEnc) = toField (BI pqEnc)
 
+instance FromField PQEncryption where 
 #if defined(dbPostgres)
-instance FromField PQEncryption where fromField f dat = PQEncryption . unBI <$> fromField f dat
+  fromField f dat = PQEncryption . unBI <$> fromField f dat
 #else
-instance FromField PQEncryption where fromField f = PQEncryption . unBI <$> fromField f
+  fromField f = PQEncryption . unBI <$> fromField f
 #endif
 
 instance ToField PQSupport where toField (PQSupport pqEnc) = toField (BI pqEnc)
 
+instance FromField PQSupport where
 #if defined(dbPostgres)
-instance FromField PQSupport where fromField f dat = PQSupport . unBI <$> fromField f dat
+  fromField f dat = PQSupport . unBI <$> fromField f dat
 #else
-instance FromField PQSupport where fromField f = PQSupport . unBI <$> fromField f
+  fromField f = PQSupport . unBI <$> fromField f
 #endif
