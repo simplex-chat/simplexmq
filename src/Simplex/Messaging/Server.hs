@@ -579,13 +579,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         rtm <- getRealTimeMetrics env
         T.writeFile metricsFile $ prometheusMetrics sm rtm ts
 
-    getServerMetrics :: STMQueueStore s => s -> ServerStats -> IO ServerMetrics
+    getServerMetrics :: MsgStoreClass s => s -> ServerStats -> IO ServerMetrics
     getServerMetrics st ss = do
       d <- getServerStatsData ss
       let ps = periodStatDataCounts $ _activeQueues d
           psNtf = periodStatDataCounts $ _activeQueuesNtf d
-      queueCount <- M.size <$> readTVarIO (activeMsgQueues st)
-      notifierCount <- M.size <$> readTVarIO (notifiers' st)
+      QueueCounts {queueCount, notifierCount} <- queueCounts st
       pure ServerMetrics {statsData = d, activeQueueCounts = ps, activeNtfCounts = psNtf, queueCount, notifierCount}
 
     getRealTimeMetrics :: Env -> IO RealTimeMetrics
