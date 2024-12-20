@@ -1171,9 +1171,7 @@ newtype SignedObject a = SignedObject {getSignedExact :: SignedExact a}
 
 #if defined(dbPostgres)
 instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
-  fromField field dat = do
-    signedExact <- blobFieldDecoder decodeSignedObject field dat
-    pure $ SignedObject signedExact
+  fromField field dat = SignedObject signedExact <$> blobFieldDecoder decodeSignedObject field dat
 #else
 instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
   fromField = fmap SignedObject . blobFieldDecoder decodeSignedObject
