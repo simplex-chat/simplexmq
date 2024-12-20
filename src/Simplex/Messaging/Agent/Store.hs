@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -25,10 +26,15 @@ import Data.List (find)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust)
+import Data.Text (Text)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
+import Simplex.Messaging.Agent.Store.Common
+import qualified Simplex.Messaging.Agent.Store.DB as DB
+import qualified Simplex.Messaging.Agent.Store.Migrations as Migrations
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..), MigrationError (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport, RatchetX448)
 import Simplex.Messaging.Encoding.String
@@ -42,12 +48,33 @@ import Simplex.Messaging.Protocol
     RcvDhSecret,
     RcvNtfDhSecret,
     RcvPrivateAuthKey,
+    SenderCanSecure,
     SndPrivateAuthKey,
     SndPublicAuthKey,
-    SenderCanSecure,
     VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
+#if defined(dbPostgres)
+import Database.PostgreSQL.Simple (ConnectInfo (..))
+import qualified Simplex.Messaging.Agent.Store.Postgres as StoreFunctions
+#else
+import Data.ByteArray (ScrubbedBytes)
+import qualified Simplex.Messaging.Agent.Store.SQLite as StoreFunctions
+#endif
+
+#if defined(dbPostgres)
+createStore :: ConnectInfo -> String -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createStore connectInfo schema = StoreFunctions.createDBStore connectInfo schema Migrations.app
+#else
+createStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createStore dbFilePath dbKey keepKey = StoreFunctions.createDBStore dbFilePath dbKey keepKey Migrations.app
+#endif
+
+closeStore :: DBStore -> IO ()
+closeStore = StoreFunctions.closeDBStore
+
+execSQL :: DB.Connection -> Text -> IO [Text]
+execSQL = StoreFunctions.execSQL
 
 -- * Queue types
 

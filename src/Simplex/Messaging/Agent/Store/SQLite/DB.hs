@@ -1,39 +1,50 @@
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.Messaging.Agent.Store.SQLite.DB
-  ( Connection (..),
+  ( BoolInt (..),
+    Binary (..),
+    Connection (..),
     SlowQueryStats (..),
     open,
     close,
     execute,
     execute_,
-    executeNamed,
     executeMany,
     query,
     query_,
-    queryNamed,
   )
 where
 
 import Control.Concurrent.STM
-import Control.Monad (when)
 import Control.Exception
+import Control.Monad (when)
 import qualified Data.Aeson.TH as J
+import Data.ByteString (ByteString)
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import Data.Time (diffUTCTime, getCurrentTime)
-import Database.SQLite.Simple (FromRow, NamedParam, Query, ToRow)
+import Database.SQLite.Simple (FromRow, Query, ToRow)
 import qualified Database.SQLite.Simple as SQL
+import Database.SQLite.Simple.FromField (FromField (..))
+import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (diffToMilliseconds, tshow)
+
+newtype BoolInt = BI {unBI :: Bool}
+  deriving newtype (FromField, ToField)
+
+newtype Binary = Binary {fromBinary :: ByteString}
+  deriving newtype (FromField, ToField)
 
 data Connection = Connection
   { conn :: SQL.Connection,
@@ -51,9 +62,10 @@ data SlowQueryStats = SlowQueryStats
 timeIt :: TMap Query SlowQueryStats -> Query -> IO a -> IO a
 timeIt slow sql a = do
   t <- getCurrentTime
-  r <- a `catch` \e -> do
-    atomically $ TM.alter (Just . updateQueryErrors e) sql slow
-    throwIO e
+  r <-
+    a `catch` \e -> do
+      atomically $ TM.alter (Just . updateQueryErrors e) sql slow
+      throwIO e
   t' <- getCurrentTime
   let diff = diffToMilliseconds $ diffUTCTime t' t
   when (diff > 1) $ atomically $ TM.alter (updateQueryStats diff) sql slow
@@ -91,10 +103,6 @@ execute_ :: Connection -> Query -> IO ()
 execute_ Connection {conn, slow} sql = timeIt slow sql $ SQL.execute_ conn sql
 {-# INLINE execute_ #-}
 
-executeNamed :: Connection -> Query -> [NamedParam] -> IO ()
-executeNamed Connection {conn, slow} sql = timeIt slow sql . SQL.executeNamed conn sql
-{-# INLINE executeNamed #-}
-
 executeMany :: ToRow q => Connection -> Query -> [q] -> IO ()
 executeMany Connection {conn, slow} sql = timeIt slow sql . SQL.executeMany conn sql
 {-# INLINE executeMany #-}
@@ -106,9 +114,5 @@ query Connection {conn, slow} sql = timeIt slow sql . SQL.query conn sql
 query_ :: FromRow r => Connection -> Query -> IO [r]
 query_ Connection {conn, slow} sql = timeIt slow sql $ SQL.query_ conn sql
 {-# INLINE query_ #-}
-
-queryNamed :: FromRow r => Connection -> Query -> [NamedParam] -> IO [r]
-queryNamed Connection {conn, slow} sql = timeIt slow sql . SQL.queryNamed conn sql
-{-# INLINE queryNamed #-}
 
 $(J.deriveJSON defaultJSON ''SlowQueryStats)
