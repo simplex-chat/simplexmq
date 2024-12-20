@@ -1744,6 +1744,7 @@ maybeFirstRow f q = fmap f . listToMaybe <$> q
 
 fromOnlyBI :: Only BoolInt -> Bool
 fromOnlyBI (Only (BI b)) = b
+{-# INLINE fromOnlyBI #-}
 
 firstRow' :: (a -> Either e b) -> e -> IO [a] -> IO (Either e b)
 firstRow' f e a = (f <=< listToEither e) <$> a
@@ -1836,7 +1837,6 @@ insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
   -- possibly, it can be done in one query.
   currQId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? AND host = ? AND port = ? AND snd_id = ?" (connId', host server, port server, sndId)
   qId <- maybe (newQueueId_ <$> DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? ORDER BY snd_queue_id DESC LIMIT 1" (Only connId')) pure currQId_
-#if defined(dbPostgres)
   DB.execute
     db
     [sql|
@@ -1863,18 +1863,6 @@ insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
     |]
     ((host server, port server, sndId, BI sndSecure, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) 
     :. (status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
-#else
-  DB.execute
-    db
-    [sql|
-      INSERT OR REPLACE INTO snd_queues
-        (host, port, snd_id, snd_secure, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret,
-         status, snd_queue_id, snd_primary, replace_snd_queue_id, smp_client_version, server_key_hash)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    |]
-    ((host server, port server, sndId, BI sndSecure, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) 
-    :. (status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
-#endif
   pure (sq :: NewSndQueue) {connId = connId', dbQueueId = qId}
 
 newQueueId_ :: [Only Int64] -> DBQueueId 'QSStored

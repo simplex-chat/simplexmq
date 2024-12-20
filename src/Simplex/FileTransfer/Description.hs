@@ -10,6 +10,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
@@ -294,13 +295,9 @@ instance (Integral a, Show a) => StrEncoding (FileSize a) where
 instance (Integral a, Show a) => IsString (FileSize a) where
   fromString = either error id . strDecode . B.pack
 
-#if defined(dbPostgres)
-instance FromField a => FromField (FileSize a) where fromField f dat = FileSize <$> fromField f dat
-#else
-instance FromField a => FromField (FileSize a) where fromField f = FileSize <$> fromField f
-#endif
+deriving newtype instance FromField a => FromField (FileSize a)
 
-instance ToField a => ToField (FileSize a) where toField (FileSize s) = toField s
+deriving newtype instance ToField a => ToField (FileSize a)
 
 groupReplicasByServer :: FileSize Word32 -> [FileChunk] -> [NonEmpty FileServerReplica]
 groupReplicasByServer defChunkSize =
