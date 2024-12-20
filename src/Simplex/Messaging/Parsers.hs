@@ -102,6 +102,7 @@ blobFieldDecoder dec = \case
   f -> returnError ConversionFailed f "expecting SQLBlob column type"
 #endif
 
+-- TODO [postgres] review
 #if defined(dbPostgres)
 fromTextField_ :: Typeable a => (Text -> Maybe a) -> FieldParser a
 fromTextField_ fromText f val =
