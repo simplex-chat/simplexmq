@@ -1169,11 +1169,10 @@ instance SignatureAlgorithmX509 pk => SignatureAlgorithmX509 (a, pk) where
 -- | A wrapper to marshall signed ASN1 objects, like certificates.
 newtype SignedObject a = SignedObject {getSignedExact :: SignedExact a}
 
-#if defined(dbPostgres)
 instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
+#if defined(dbPostgres)
   fromField field dat = SignedObject signedExact <$> blobFieldDecoder decodeSignedObject field dat
 #else
-instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
   fromField = fmap SignedObject . blobFieldDecoder decodeSignedObject
 #endif
 
