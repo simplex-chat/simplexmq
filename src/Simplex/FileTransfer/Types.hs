@@ -252,6 +252,16 @@ data DeletedSndChunkReplica = DeletedSndChunkReplica
   }
   deriving (Show)
 
+data SentRecipientReplica = SentRecipientReplica
+  { chunkNo :: Int,
+    server :: XFTPServer,
+    rcvNo :: Int,
+    replicaId :: ChunkReplicaId,
+    replicaKey :: C.APrivateAuthKey,
+    digest :: FileDigest,
+    chunkSize :: FileSize Word32
+  }
+
 data FileErrorType
   = -- | cannot proceed with download from not approved relays without proxy
     NOT_APPROVED

@@ -51,8 +51,7 @@ import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Simplex.FileTransfer.Chunks (toKB)
-import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
-import Simplex.FileTransfer.Client.Main
+import Simplex.FileTransfer.Client (XFTPChunkSpec (..), getChunkDigest, prepareChunkSizes, prepareChunkSpecs, singleChunkSize)
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))

@@ -1,7 +1,7 @@
 cabal-version: 1.12
 
 name:           simplexmq
-version:        6.2.0.7
+version:        6.2.1.0
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -78,7 +78,6 @@ library
       Simplex.FileTransfer.Chunks
       Simplex.FileTransfer.Client
       Simplex.FileTransfer.Client.Agent
-      Simplex.FileTransfer.Client.Main
       Simplex.FileTransfer.Client.Presets
       Simplex.FileTransfer.Crypto
       Simplex.FileTransfer.Description
@@ -122,7 +121,6 @@ library
       Simplex.Messaging.Notifications.Types
       Simplex.Messaging.Parsers
       Simplex.Messaging.Protocol
-      Simplex.Messaging.Server.CLI
       Simplex.Messaging.Server.Expiration
       Simplex.Messaging.Server.QueueStore.QueueInfo
       Simplex.Messaging.ServiceScheme
@@ -138,7 +136,6 @@ library
       Simplex.Messaging.Transport.HTTP2.Server
       Simplex.Messaging.Transport.KeepAlive
       Simplex.Messaging.Transport.Server
-      Simplex.Messaging.Transport.WebSockets
       Simplex.Messaging.Util
       Simplex.Messaging.Version
       Simplex.Messaging.Version.Internal
@@ -201,6 +198,7 @@ library
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
   if !flag(client_library)
       exposed-modules:
+          Simplex.FileTransfer.Client.Main
           Simplex.FileTransfer.Server
           Simplex.FileTransfer.Server.Control
           Simplex.FileTransfer.Server.Env
@@ -208,21 +206,6 @@ library
           Simplex.FileTransfer.Server.Stats
           Simplex.FileTransfer.Server.Store
           Simplex.FileTransfer.Server.StoreLog
-          Simplex.Messaging.Server
-          Simplex.Messaging.Server.Control
-          Simplex.Messaging.Server.Env.STM
-          Simplex.Messaging.Server.Information
-          Simplex.Messaging.Server.Main
-          Simplex.Messaging.Server.MsgStore
-          Simplex.Messaging.Server.MsgStore.Journal
-          Simplex.Messaging.Server.MsgStore.STM
-          Simplex.Messaging.Server.MsgStore.Types
-          Simplex.Messaging.Server.NtfStore
-          Simplex.Messaging.Server.QueueStore
-          Simplex.Messaging.Server.QueueStore.STM
-          Simplex.Messaging.Server.Stats
-          Simplex.Messaging.Server.StoreLog
-          Simplex.Messaging.Server.StoreLog.Types
           Simplex.Messaging.Notifications.Server
           Simplex.Messaging.Notifications.Server.Control
           Simplex.Messaging.Notifications.Server.Env
@@ -232,6 +215,24 @@ library
           Simplex.Messaging.Notifications.Server.Stats
           Simplex.Messaging.Notifications.Server.Store
           Simplex.Messaging.Notifications.Server.StoreLog
+          Simplex.Messaging.Server
+          Simplex.Messaging.Server.CLI
+          Simplex.Messaging.Server.Control
+          Simplex.Messaging.Server.Env.STM
+          Simplex.Messaging.Server.Information
+          Simplex.Messaging.Server.Main
+          Simplex.Messaging.Server.MsgStore
+          Simplex.Messaging.Server.MsgStore.Journal
+          Simplex.Messaging.Server.MsgStore.STM
+          Simplex.Messaging.Server.MsgStore.Types
+          Simplex.Messaging.Server.NtfStore
+          Simplex.Messaging.Server.Prometheus
+          Simplex.Messaging.Server.QueueStore
+          Simplex.Messaging.Server.QueueStore.STM
+          Simplex.Messaging.Server.Stats
+          Simplex.Messaging.Server.StoreLog
+          Simplex.Messaging.Server.StoreLog.Types
+          Simplex.Messaging.Transport.WebSockets
   other-modules:
       Paths_simplexmq
   hs-source-dirs:
@@ -290,7 +291,6 @@ library
     , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
-    , websockets ==0.12.*
     , yaml ==0.11.*
     , zstd ==0.1.3.*
   default-language: Haskell2010
@@ -300,6 +300,7 @@ library
     build-depends:
         case-insensitive ==1.2.*
       , hashable ==1.4.*
+      , websockets ==0.12.*
   if flag(client_postgres)
     build-depends:
         postgresql-libpq >=0.10.0.0
