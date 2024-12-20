@@ -13,6 +13,7 @@ import Data.Time.Clock.System (systemEpochDay)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Server.Stats
+import Simplex.Messaging.Transport.Server (SocketStats (..))
 
 data ServerMetrics = ServerMetrics
   { statsData :: ServerStatsData,
@@ -30,13 +31,6 @@ data RealTimeMetrics = RealTimeMetrics
     smpSubClientsCount :: Int,
     ntfSubsCount :: Int,
     ntfSubClientsCount :: Int
-  }
-
-data SocketStats = SocketStats
-  { socketsAccepted :: Int,
-    socketsClosed :: Int,
-    socketsActive :: Int,
-    socketsLeaked :: Int
   }
 
 {-# FOURMOLU_DISABLE\n#-}
