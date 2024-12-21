@@ -87,6 +87,7 @@ data QueueCounts = QueueCounts
   }
 
 data MSType = MSMemory | MSHybrid | MSJournal
+  deriving (Show)
 
 data SMSType :: MSType -> Type where
   SMSMemory :: SMSType 'MSMemory
