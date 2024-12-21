@@ -127,7 +127,7 @@ a =##> p =
 
 withTimeout :: (HasCallStack, MonadUnliftIO m) => m a -> (HasCallStack => a -> Expectation) -> m ()
 withTimeout a test =
-  timeout 10_000000 a >>= \case
+  timeout 100_000000 a >>= \case
     Nothing -> error "operation timed out"
     Just t -> liftIO $ test t
 

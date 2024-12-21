@@ -43,9 +43,9 @@ Additional suggestion to reduce probability of queue_state.log and queue_rec.log
 - check the last byte of the file and log EOL if it is not EOL. Probably cleanest approach, but with a small performance cost.
 
 If queue folder is a reference to the queue, it may have one of these files:
-- notifier.id
-- sender.id
-- link.id
+- notifier.ref
+- sender.ref
+- link.ref
 
 These files would contain a one line with the recipient ID of the queue. These files would never change, they can only be deleted when queue is deleted or when notifier/link is deleted.
 
