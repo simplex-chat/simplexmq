@@ -18,6 +18,7 @@ import Control.Monad
 import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
+import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -96,6 +97,9 @@ data ServerConfig = ServerConfig
     serverStatsLogFile :: FilePath,
     -- | file to save and restore stats
     serverStatsBackupFile :: Maybe FilePath,
+    -- | interval and file to save prometheus metrics
+    prometheusInterval :: Maybe Int,
+    prometheusMetricsFile :: FilePath,
     -- | notification delivery interval
     ntfDeliveryInterval :: Int,
     -- | interval between sending pending END events to unsubscribed clients, seconds
@@ -184,9 +188,10 @@ data Env = Env
 
 type family MsgStore s where
   MsgStore 'MSMemory = STMMsgStore
-  MsgStore 'MSJournal = JournalMsgStore
+  MsgStore 'MSHybrid = JournalMsgStore 'MSHybrid
+  MsgStore 'MSJournal = JournalMsgStore 'MSJournal
 
-data AMsgStore = forall s. (STMQueueStore (MsgStore s), MsgStoreClass (MsgStore s)) => AMS (SMSType s) (MsgStore s)
+data AMsgStore = forall s. MsgStoreClass (MsgStore s) => AMS (SMSType s) (MsgStore s)
 
 data AStoreQueue = forall s. MsgStoreClass (MsgStore s) => ASQ (SMSType s) (StoreQueue (MsgStore s))
 
@@ -194,7 +199,7 @@ data AMsgStoreCfg = forall s. MsgStoreClass (MsgStore s) => AMSC (SMSType s) (Ms
 
 msgPersistence :: AMsgStoreCfg -> Bool
 msgPersistence (AMSC SMSMemory (STMStoreConfig {storePath})) = isJust storePath
-msgPersistence (AMSC SMSJournal _) = True
+msgPersistence _ = True
 
 type Subscribed = Bool
 
@@ -291,19 +296,9 @@ newEnv :: ServerConfig -> IO Env
 newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgStoreType, storeMsgsFile, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines} = do
   serverActive <- newTVarIO True
   server <- newServer
-  msgStore@(AMS _ store) <- case msgStoreType of
-    AMSType SMSMemory -> AMS SMSMemory <$> newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
-    AMSType SMSJournal -> case storeMsgsFile of
-      Just storePath -> 
-        let cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
-         in AMS SMSJournal <$> newMsgStore cfg
-      Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
+  msgStore <- createMsgStore
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
-  forM_ storeLogFile $ \f -> do
-    logInfo $ "restoring queues from file " <> T.pack f
-    sl <- readWriteQueueStore f store
-    setStoreLog store sl
   tlsServerCreds <- getCredentials "SMP" smpCredentials
   httpServerCreds <- mapM (getCredentials "HTTPS") httpCredentials
   mapM_ checkHTTPSCredentials httpServerCreds
@@ -316,6 +311,26 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
   pure Env {serverActive, config, serverInfo, server, serverIdentity, msgStore, ntfStore, random, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
+    createMsgStore :: IO AMsgStore
+    createMsgStore = case (msgStoreType, storeMsgsFile) of
+      (AMSType SMSMemory, _) -> do
+        st <- newMsgStore STMStoreConfig {storePath = storeLogFile, quota = msgQueueQuota}
+        loadStoreLog st $> AMS SMSMemory st
+      (AMSType SMSHybrid, Just storePath) -> do
+        st <- newMsgStore $ storeCfg SMSHybrid storePath
+        loadStoreLog st $> AMS SMSHybrid st
+      (AMSType SMSJournal, Just storePath) ->
+        AMS SMSJournal <$> newMsgStore (storeCfg SMSJournal storePath)
+      (_, Nothing) -> putStrLn "Error: journal msg store requires that restore_messages is enabled in [STORE_LOG]" >> exitFailure
+      where
+        storeCfg :: SMSType s -> FilePath -> JournalStoreConfig s
+        storeCfg queueStoreType storePath =
+          JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreType, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
+        loadStoreLog :: STMStoreClass s => s -> IO ()
+        loadStoreLog st = forM_ storeLogFile $ \f -> do
+          logInfo $ "restoring queues from file " <> T.pack f
+          sl <- readWriteQueueStore f st
+          setStoreLog (stmQueueStore st) sl
     getCredentials protocol creds = do
       files <- missingCreds
       unless (null files) $ do
@@ -359,5 +374,5 @@ newSMPProxyAgent smpAgentCfg random = do
   smpAgent <- newSMPClientAgent smpAgentCfg random
   pure ProxyAgent {smpAgent}
 
-readWriteQueueStore :: STMQueueStore s => FilePath -> s -> IO (StoreLog 'WriteMode)
+readWriteQueueStore :: STMStoreClass s => FilePath -> s -> IO (StoreLog 'WriteMode)
 readWriteQueueStore = readWriteStoreLog readQueueStore writeQueueStore
