@@ -19,12 +19,12 @@ import Control.Logger.Simple
 import Control.Monad
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (isAlpha, isAscii, toUpper)
-import Data.Either (fromRight)
+import Data.Char (isAlpha, isAscii, toLower, toUpper)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
 import Data.List (find, isPrefixOf)
 import qualified Data.List.NonEmpty as L
+import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -44,15 +44,18 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..))
-import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..), newMsgStore)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), JournalStoreConfig (..))
+import Simplex.Messaging.Server.MsgStore.STM (STMStoreConfig (..))
+import Simplex.Messaging.Server.MsgStore.Types
+import Simplex.Messaging.Server.QueueStore (QueueRec (..), ServerQueueStatus (..))
 import Simplex.Messaging.Server.QueueStore.STM (readQueueStore)
+import Simplex.Messaging.Server.StoreLog (openWriteStoreLog, logCreateQueue)
 import Simplex.Messaging.Transport (batchCmdsSMPVersion, sendingProxySMPVersion, simplexMQVersion, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
-import Simplex.Messaging.Util (eitherToMaybe, ifM, safeDecodeUtf8, tshow)
+import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, renameFile)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
@@ -85,58 +88,140 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       putStrLn "Deleted configuration and log files"
     Journal cmd -> withIniFile $ \ini -> do
       msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
+      qsFileExists <- doesFileExist storeLogFilePath
       msgsFileExists <- doesFileExist storeMsgsFilePath
       let enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
-      storeLogFile <- case enableStoreLog $> storeLogFilePath of
-        Just storeLogFile -> do
-          ifM
-            (doesFileExist storeLogFile)
-            (pure storeLogFile)
-            (putStrLn ("Store log file " <> storeLogFile <> " not found") >> exitFailure)
+      case enableStoreLog $> storeLogFilePath of
+        Just storeLogFile ->
+          unless qsFileExists $
+            putStrLn ("Store log file " <> storeLogFile <> " not found") >> exitFailure
         Nothing -> putStrLn "Store log disabled, see `[STORE_LOG] enable`" >> exitFailure
       case cmd of
-        JCImport (Just JSCMessages)
+        JCImport sCmd
           | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
-          | msgsDirExists -> do
-              putStrLn $ storeMsgsJournalDir <> " directory already exists."
-              exitFailure
-          | not msgsFileExists -> do
-              putStrLn $ storeMsgsFilePath <> " file does not exists."
-              exitFailure
-          | otherwise -> do
-              confirmOrExit
-                ("WARNING: message log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir)
-                "Messages not imported"
-              ms <- newJournalMsgStore
-              -- TODO [queues] it should not load queues if queues are in journal
-              readQueueStore storeLogFile ms
-              msgStats <- importMessages True ms storeMsgsFilePath Nothing -- no expiration
-              putStrLn "Import completed"
-              printMessageStats "Messages" msgStats
-              putStrLn $ case readMsgStoreType ini of
-                Right (AMSType SMSMemory) -> "store_messages set to `memory`, update it to `journal` in INI file"
-                Right (AMSType _) -> "store_messages set to `journal`" -- TODO [queues]
-                Left e -> e <> ", update it to `journal` in INI file"
-        JCImport _ -> undefined -- TODO [queues]
-        JCExport (Just JSCMessages)
+          | otherwise -> case sCmd of
+              Just JSCMessages -- TODO deprecated, remove in v6.3
+                | msgsDirExists -> putStrLn ("Directory already exists: " <> storeMsgsJournalDir) >> exitFailure
+                | not msgsFileExists -> putStrLn ("File does not exists: " <> storeMsgsFilePath) >> exitFailure
+                | otherwise -> do
+                    confirmOrExit
+                      ("WARNING: this command is deprecated.\nMessage log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir)
+                      "Messages not imported"
+                    ms <- newJournalMsgStore SMSHybrid
+                    readQueueStore storeLogFilePath ms
+                    msgStats <- importMessages True ms storeMsgsFilePath Nothing -- no expiration
+                    putStrLn "Import of messages completed"
+                    printMessageStats "Messages" msgStats
+                    putStrLn $ case readMsgStoreType ini of
+                      Right (AMSType SMSMemory) -> "store_messages set to `memory`, update it to `journal` in INI file"
+                      Right (AMSType SMSHybrid) -> "store_messages set to `journal`, all correct"
+                      Right (AMSType SMSJournal) -> "store_messages and store_queues set to `journal`, it is incorrect as only messages were imported"
+                      Left e -> e <> ", update it to `journal` in INI file"
+              Just JSCQueues -- TODO deprecated, remove in v6.3
+                | not msgsDirExists -> putStrLn ("Directory must exists to use this command: " <> storeMsgsJournalDir <> "\nUse `journal import` instead.") >> exitFailure
+                | otherwise -> do
+                    confirmOrExit
+                      ("WARNING: message queues log file " <> storeLogFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir)
+                      "Queues not imported"
+                    void importQueueStoreLog
+                    putStrLn "Import of queues completed"
+                    putStrLn importStoreSettings
+              Nothing
+                | msgsDirExists -> putStrLn ("Directory already exists: " <> storeMsgsJournalDir) >> exitFailure
+                | not msgsFileExists -> putStrLn ("File does not exists: " <> storeMsgsFilePath) >> exitFailure
+                | otherwise -> do
+                    confirmOrExit
+                      ("WARNING: message queues log file " <> storeLogFilePath <> " and message log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir)
+                      "Queues and messages not imported"
+                    ms <- importQueueStoreLog
+                    msgStats <- importMessages True ms storeMsgsFilePath Nothing -- no expiration
+                    putStrLn "Import of queues and messages completed"
+                    printMessageStats "Messages" msgStats
+                    putStrLn importStoreSettings
+          where
+            importQueueStoreLog = do
+              putStrLn $ "restoring queues from file " <> storeLogFilePath
+              st <- newMsgStore STMStoreConfig {storePath = Just storeLogFilePath, quota = defaultMsgQueueQuota}
+              readQueueStore storeLogFilePath st
+              ms <- newJournalMsgStore SMSJournal
+              writeJournalQueues st ms
+              pure ms
+              where
+                writeJournalQueues st ms = do
+                  putStrLn $ "saving queues to journal directory " <> storeMsgsJournalDir
+                  let qs = queues $ stmQueueStore st
+                  readTVarIO qs >>= mapM_ (writeQueue ms) . M.assocs
+                  renameFile storeLogFilePath (storeLogFilePath <> ".bak")
+                active QueueRec {status} = status == QueueActive
+                writeQueue ms (rId, q) =
+                  readTVarIO (queueRec' q) >>= \case
+                    Just q' | active q' ->  -- TODO we should log suspended queues when we use them
+                      addQueue ms rId q' >>= \case
+                        Right _ -> pure ()
+                        Left e -> do
+                          putStrLn $ "error saving queue " <> B.unpack (strEncode rId) <> ": " <> show e
+                          exitFailure
+                    _ -> putStrLn $ "skipping suspended queue " <> B.unpack (strEncode rId)
+            importStoreSettings = case readMsgStoreType ini of
+              Right (AMSType SMSMemory) -> "store_messages set to `memory`, set store_messages and store_queues to `journal` in INI file"
+              Right (AMSType SMSHybrid) -> "store_messages set to `journal`, set store_queues to `journal` in INI file"
+              Right (AMSType SMSJournal) -> "store_messages and store_queues set to `journal`, all correct"
+              Left e -> e <> ", update it to `journal` in INI file"
+        JCExport sCmd
           | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
-          | msgsFileExists -> do
-              putStrLn $ storeMsgsFilePath <> " file already exists."
-              exitFailure
-          | otherwise -> do
-              confirmOrExit
-                ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
-                "Journal not exported"
-              ms <- newJournalMsgStore
-              -- TODO [queues] it should not load queues if queues are in journal
-              readQueueStore storeLogFile ms
-              exportMessages True ms storeMsgsFilePath False
-              putStrLn "Export completed"
-              putStrLn $ case readMsgStoreType ini of
-                Right (AMSType SMSMemory) -> "store_messages set to `memory`"
-                Right _ -> "store_messages set to `journal`, update it to `memory` in INI file" -- TODO [queues]
-                Left e -> e <> ", update it to `memory` in INI file"
-        JCExport _ -> undefined -- TODO [queues]
+          | not msgsDirExists -> putStrLn ("Directory does not exist: " <> storeMsgsJournalDir) >> exitFailure
+          | otherwise -> case sCmd of
+              Just JSCMessages -- TODO deprecated, remove in v6.3
+                | msgsFileExists -> putStrLn ("File already exists: " <> storeMsgsFilePath) >> exitFailure
+                | otherwise -> do
+                    confirmOrExit
+                      ("WARNING: messages from journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
+                      "Journal messages not exported"
+                    ms <- newJournalMsgStore SMSHybrid
+                    readQueueStore storeLogFilePath ms
+                    exportMessages True ms storeMsgsFilePath False
+                    putStrLn "Export of messages completed"
+                    putStrLn exportStoreSettings
+              Just JSCQueues -- TODO deprecated, remove in v6.3
+                | qsFileExists -> putStrLn ("File already exists: " <> storeLogFilePath) >> exitFailure
+                | otherwise -> do
+                    confirmOrExit
+                      ("WARNING: queues from journal directory " <> storeMsgsJournalDir <> " will be exported to queue store log file " <> storeLogFilePath)
+                      "Journal queues not exported"
+                    ms <- newJournalMsgStore SMSJournal
+                    exportQueueStoreLog ms
+                    putStrLn "Export of queues completed"
+                    putStrLn $ case readMsgStoreType ini of
+                      Right (AMSType SMSMemory) -> "store_messages set to `memory`, update it to `journal` in INI file"
+                      Right (AMSType SMSHybrid) -> "store_messages set to `journal`, all correct"
+                      Right (AMSType SMSJournal) -> "store_queues set to `journal`, update it to `memory` in INI file"
+                      Left e -> e <> ", set store_messages to `journal` and `store_queues` to `memory` in INI file"
+              Nothing
+                | qsFileExists -> putStrLn (storeLogFilePath <> " file already exists.") >> exitFailure
+                | msgsFileExists -> putStrLn (storeMsgsFilePath <> " file already exists.") >> exitFailure
+                | otherwise -> do
+                    confirmOrExit
+                      ("WARNING: queues and messages from journal directory " <> storeMsgsJournalDir <> " will be exported to queue store log file " <> storeLogFilePath <> " and to message log file " <> storeMsgsFilePath)
+                      "Journal queues and messages not exported"
+                    ms <- newJournalMsgStore SMSJournal
+                    exportQueueStoreLog ms
+                    exportMessages True ms storeMsgsFilePath False
+                    putStrLn "Export of queues and messages completed"
+                    putStrLn exportStoreSettings
+          where
+            exportQueueStoreLog ms = do
+              s <- openWriteStoreLog storeLogFilePath
+              withAllMsgQueues True ms $ \q -> do
+                let rId = recipientId' q
+                readTVarIO (queueRec' q) >>= \case
+                  Just q' -> when (active q') $ logCreateQueue s rId q' -- TODO we should log suspended queues when we use them
+                  Nothing -> putStrLn $ "WARN: deleted queue " <> B.unpack (strEncode rId) <> ", verify the journal folder"
+            active QueueRec {status} = status == QueueActive
+            exportStoreSettings = case readMsgStoreType ini of
+              Right (AMSType SMSMemory) -> "store_messages set to `memory`, all correct"
+              Right (AMSType SMSHybrid) -> "store_messages set to `journal`, update it to `memory` in INI file"
+              Right (AMSType SMSJournal) -> "store_messages and store_queues set to `journal`, update it to `memory` in INI file"
+              Left e -> e <> ", update it to `memory` in INI file"
         JCDelete
           | not msgsDirExists -> do
               putStrLn $ storeMsgsJournalDir <> " directory does not exists."
@@ -152,7 +237,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError a
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
-    newJournalMsgStore = newMsgStore JournalStoreConfig {storePath = storeMsgsJournalDir, pathParts = journalMsgStoreDepth, queueStoreType = SMSHybrid, quota = defaultMsgQueueQuota, maxMsgCount = defaultMaxJournalMsgCount, maxStateLines = defaultMaxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = checkInterval defaultMessageExpiration}
+    newJournalMsgStore :: JournalStoreType s => SMSType s -> IO (JournalMsgStore s)
+    newJournalMsgStore queueStoreType = newMsgStore JournalStoreConfig {storePath = storeMsgsJournalDir, pathParts = journalMsgStoreDepth, queueStoreType, quota = defaultMsgQueueQuota, maxMsgCount = defaultMaxJournalMsgCount, maxStateLines = defaultMaxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = checkInterval defaultMessageExpiration}
     iniFile = combine cfgPath "smp-server.ini"
     serverVersion = "SMP server v" <> simplexMQVersion
     defaultServerPorts = "5223,443"
@@ -162,48 +248,92 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
     storeMsgsJournalDir = combine logPath "messages"
     storeNtfsFilePath = combine logPath "smp-server-ntfs.log"
     readMsgStoreType :: Ini -> Either String AMSType
-    readMsgStoreType = textToMsgStoreType . fromRight "memory" . lookupValue "STORE_LOG" "store_messages"
-    textToMsgStoreType = \case
-      "memory" -> Right $ AMSType SMSMemory
-      "journal" -> Right $ AMSType SMSHybrid -- TODO [queues]
-      s -> Left $ "invalid store_messages: " <> T.unpack s
+    readMsgStoreType ini = do
+      queues <- journalStore "store_queues" False ini
+      messages <- journalStore "store_messages" queues ini
+      case (queues, messages) of
+        (False, False) -> Right $ AMSType SMSMemory
+        (False, True) -> Right $ AMSType SMSHybrid
+        (True, True) -> Right $ AMSType SMSJournal
+        (True, False) -> Left "`store_queues: journal` requires `store_messages: journal`"
+    journalStore param def = either (const $ Right def) isJournal . lookupValue "STORE_LOG" param
+      where
+        isJournal = \case
+          "memory" -> Right False
+          "journal" -> Right True
+          s -> Left $ "invalid " <> T.unpack (param <> ": " <> s)
+    encodeMsgStoreType :: Maybe Bool -> Text
+    encodeMsgStoreType = \case
+      Just True -> "journal"
+      _ -> "memory"
+    encodeEnablePersistence :: Maybe Bool -> Text
+    encodeEnablePersistence = \case
+      Just _ -> "on"
+      Nothing -> "off"
     httpsCertFile = combine cfgPath "web.crt"
     httpsKeyFile = combine cfgPath "web.key"
     defaultStaticPath = combine logPath "www"
-    initializeServer opts@InitOptions {ip, fqdn, sourceCode = src', webStaticPath = sp', disableWeb = noWeb', scripted}
+    initializeServer opts@InitOptions {journalPersistence, logStats, ip, fqdn, password, sourceCode = src', webStaticPath = sp', disableWeb = noWeb', scripted}
       | scripted = initialize opts
       | otherwise = do
           putStrLn "Use `smp-server init -h` for available options."
           checkInitOptions opts
           void $ withPrompt "SMP server will be initialized (press Enter)" getLine
-          enableStoreLog <- onOffPrompt "Enable store log to restore queues and messages on server restart" True
-          logStats <- onOffPrompt "Enable logging daily statistics" False
-          putStrLn "Require a password to create new messaging queues?"
-          password <- withPrompt "'r' for random (default), 'n' - no password, or enter password: " serverPassword
+          journalPersistence' <- getPersistenceMode
+          logStats' <- onOffPrompt "Enable logging daily statistics" logStats
+          password' <- getServerPassword
           let host = fromMaybe ip fqdn
           host' <- withPrompt ("Enter server FQDN or IP address for certificate (" <> host <> "): ") getLine
           sourceCode' <- withPrompt ("Enter server source code URI (" <> maybe simplexmqSource T.unpack src' <> "): ") getServerSourceCode
           staticPath' <- withPrompt ("Enter path to store generated static site with server information (" <> fromMaybe defaultStaticPath sp' <> "): ") getLine
           initialize
             opts
-              { enableStoreLog,
-                logStats,
+              { journalPersistence = journalPersistence',
+                logStats = logStats',
                 fqdn = if null host' then fqdn else Just host',
-                password,
+                password = password',
                 sourceCode = (T.pack <$> sourceCode') <|> src' <|> Just (T.pack simplexmqSource),
                 webStaticPath = if null staticPath' then sp' else Just staticPath',
                 disableWeb = noWeb'
               }
       where
-        serverPassword =
-          getLine >>= \case
-            "" -> pure $ Just SPRandom
-            "r" -> pure $ Just SPRandom
-            "n" -> pure Nothing
-            s ->
-              case strDecode $ encodeUtf8 $ T.pack s of
-                Right auth -> pure . Just $ ServerPassword auth
-                _ -> putStrLn "Invalid password. Only latin letters, digits and symbols other than '@' and ':' are allowed" >> serverPassword
+        getPersistenceMode = do
+          putStrLn "Server persistence mode:"
+          putStrLn "  'm' - in-memory store with append-inly log (default, dump and restore messages on restart)"
+          putStrLn "  'j' - journal (BETA, durable memory-efficient persistence for queues and messages)"
+          putStrLn "  'd' - disable persistence (not recommended, all data will be lost on restart)"
+          let options = case journalPersistence of
+                Just False -> "Mjd"
+                Just True -> "mJd"
+                Nothing -> "mjD"
+          withPrompt ("Choose mode (" <> options <> "): ") get
+          where
+            get =
+              (map toLower <$> getLine) >>= \case
+                "" -> pure journalPersistence
+                "m" -> pure $ Just False
+                "j" -> pure $ Just True
+                "d" -> pure Nothing
+                _ -> withPrompt "Invalid mode, please enter 'm', 'j' or 'd'" get
+        getServerPassword = do
+          putStrLn "Require a password to create new messaging queues and to use server as proxy?"
+          let options = case password of
+                Just SPRandom -> "'r' - random (default), 'n' - no password"
+                Just (ServerPassword _) -> "'r' - random, 'n' - no password, Enter - to confirm password in options"
+                Nothing -> "'r' - random, 'n' - no password (default)"
+          withPrompt (options <> ", or enter password: ") get
+          where
+            get =
+              getLine >>= \case
+                "" -> pure password
+                "r" -> pure $ Just SPRandom
+                "R" -> pure $ Just SPRandom
+                "n" -> pure Nothing
+                "N" -> pure Nothing
+                s ->
+                  case strDecode $ encodeUtf8 $ T.pack s of
+                    Right auth -> pure . Just $ ServerPassword auth
+                    _ -> putStrLn "Invalid password. Only latin letters, digits and symbols other than '@' and ':' are allowed" >> get
         checkInitOptions InitOptions {sourceCode, serverInfo, operatorCountry, hostingCountry} = do
           let err_
                 | isNothing sourceCode && hasServerInfo serverInfo =
@@ -214,7 +344,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                     Just "Error: passing --hosting-country requires passing --hosting"
                 | otherwise = Nothing
           forM_ err_ $ \err -> putStrLn err >> exitFailure
-        initialize opts'@InitOptions {enableStoreLog, logStats, signAlgorithm, password, controlPort, socksProxy, ownDomains, sourceCode, webStaticPath, disableWeb} = do
+        initialize opts'@InitOptions {signAlgorithm, controlPort, socksProxy, ownDomains, sourceCode, webStaticPath, disableWeb} = do
           checkInitOptions opts'
           clearDirIfExists cfgPath
           clearDirIfExists logPath
@@ -245,12 +375,15 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                    \# This option enables saving memory to append only log,\n\
                    \# and restoring it when the server is started.\n\
                    \# Log is compacted on start (deleted objects are removed).\n"
-                <> ("enable: " <> onOff enableStoreLog <> "\n\n")
+                <> ("enable: " <> encodeEnablePersistence journalPersistence <> "\n\n")
+                <> "# Queue storage mode: `memory` or `journal`.\n"
+                <> ("store_queues: " <> encodeMsgStoreType journalPersistence <> "\n\n")
                 <> "# Message storage mode: `memory` or `journal`.\n\
-                   \store_messages: memory\n\n\
-                   \# When store_messages is `memory`, undelivered messages are optionally saved and restored\n\
+                   \This option is deprecated and will be removed, do NOT use `journal` here if `store_queues` is memory.\n"
+                <> ("store_messages: " <> encodeMsgStoreType journalPersistence <> "\n\n")
+                <> "# When store_messages is `memory`, undelivered messages are optionally saved and restored\n\
                    \# when the server restarts, they are preserved in the .bak file until the next restart.\n"
-                <> ("restore_messages: " <> onOff enableStoreLog <> "\n\n")
+                <> ("restore_messages: " <> encodeEnablePersistence journalPersistence <> "\n\n")
                 <> "# Messages and notifications expiration periods.\n"
                 <> ("expire_messages_days: " <> tshow defMsgExpirationDays <> "\n")
                 <> "expire_messages_on_start: on\n"
@@ -510,7 +643,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
         _ -> pure ()
 
     exitConfigureMsgStorage = do
-      putStrLn $ "Error: both " <> storeMsgsFilePath <> " file and " <> storeMsgsJournalDir <> " directory are present."
+      putStrLn $ "Error: file " <> storeMsgsFilePath <> " and directory " <> storeMsgsJournalDir <> " are present."
       putStrLn "Configure memory storage."
       exitFailure
 
@@ -648,7 +781,7 @@ data JournalCmd = JCImport (Maybe JournalSubCmd) | JCExport (Maybe JournalSubCmd
 data JournalSubCmd = JSCQueues | JSCMessages
 
 data InitOptions = InitOptions
-  { enableStoreLog :: Bool,
+  { journalPersistence :: Maybe Bool,
     logStats :: Bool,
     signAlgorithm :: SignAlgorithm,
     ip :: HostName,
@@ -682,12 +815,26 @@ cliCommandP cfgPath logPath iniFile =
   where
     initP :: Parser InitOptions
     initP = do
-      enableStoreLog <-
-        switch
+      journalPersistence <-
+        flag' (Just False)
           ( long "store-log"
               <> short 'l'
-              <> help "Enable store log for persistence"
+              <> long "memory"
+              <> short 'm'
+              <> help "In-memory store with append-only log (default, dump and restore messages on restart)"
           )
+          <|>
+            flag' (Just True)
+              ( long "journal"
+                  <> short 'j'
+                  <> help "Journal (BETA, durable memory-efficient persistence for queues and messages)"
+              )
+          <|>
+            flag' Nothing
+              ( long "disable-store"
+                  <> help "Disable persistence (not recommended, all data will be lost on restart)"
+              )
+          <|> pure (Just False)
       logStats <-
         switch
           ( long "daily-stats"
@@ -789,7 +936,7 @@ cliCommandP cfgPath logPath iniFile =
           )
       pure
         InitOptions
-          { enableStoreLog,
+          { journalPersistence,
             logStats,
             signAlgorithm,
             ip,

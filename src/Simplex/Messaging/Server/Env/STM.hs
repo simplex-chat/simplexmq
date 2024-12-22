@@ -314,7 +314,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
     createMsgStore :: IO AMsgStore
     createMsgStore = case (msgStoreType, storeMsgsFile) of
       (AMSType SMSMemory, _) -> do
-        st <- newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
+        st <- newMsgStore STMStoreConfig {storePath = storeLogFile, quota = msgQueueQuota}
         loadStoreLog st $> AMS SMSMemory st
       (AMSType SMSHybrid, Just storePath) -> do
         st <- newMsgStore $ storeCfg SMSHybrid storePath
