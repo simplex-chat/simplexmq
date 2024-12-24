@@ -1,3 +1,11 @@
+# 6.2.2
+
+SMP server:
+- add optional Prometheus metrics (#1411).
+
+Build:
+- remove three modules from client library.
+
 # 6.2.0
 
 Version 6.2.0.7
