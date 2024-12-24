@@ -834,7 +834,27 @@ joinConn c userId connId enableNtfs cReq cInfo pqSupport subMode = do
 startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM (ConnData, SndQueue, CR.SndE2ERatchetParams 'C.X448)
 startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
   lift (compatibleInvitationUri cReqUri) >>= \case
-    Just (qInfo, Compatible e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_), Compatible connAgentVersion) -> do
+    Just (qInfo, Compatible e2eRcvParams, Compatible connAgentVersion) -> do
+      -- this case avoids re-generating queue keys and subsequent failure of SKEY that timed out
+      -- e2ePubKey is always present, it's Maybe historically
+      (pqSupport, sq', e2eSndParams) <- case sq_ of
+        Just sq@SndQueue {e2ePubKey = Just _k} -> do
+          -- get ratchet, e2eSndParams, regenerate if nothing
+          (pqSupport, rc, e2eSndParams) <- generateRatchet e2eRcvParams connAgentVersion
+          pure (pqSupport, sq, e2eSndParams)
+        _ -> do
+          (pqSupport, rc, e2eSndParams) <- generateRatchet e2eRcvParams connAgentVersion
+          q <- lift $ fst <$> newSndQueue userId "" qInfo
+          sq' <- withStore c $ \db -> runExceptT $ do
+            liftIO $ createRatchet db connId rc
+            liftIO $ setConfE2ESndParams db connId e2eSndParams
+            maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
+          pure (pqSupport, sq', e2eSndParams)
+      let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
+      pure (cData, sq', e2eSndParams)
+    Nothing -> throwE $ AGENT A_VERSION
+  where
+    generateRatchet e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_) connAgentVersion = do
       g <- asks random
       let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (Just v)
       (pk1, pk2, pKem, e2eSndParams) <- liftIO $ CR.generateSndE2EParams g v (CR.replyKEM_ v kem_ pqSupport)
@@ -843,17 +863,7 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
       maxSupported <- asks $ maxVersion . e2eEncryptVRange . config
       let rcVs = CR.RatchetVersions {current = v, maxSupported}
           rc = CR.initSndRatchet rcVs rcDHRr rcDHRs rcParams
-      -- this case avoids re-generating queue keys and subsequent failure of SKEY that timed out
-      -- e2ePubKey is always present, it's Maybe historically
-      q <- case sq_ of
-        Just sq@SndQueue {e2ePubKey = Just _k} -> pure (sq :: SndQueue) {dbQueueId = DBNewQueue}
-        _ -> lift $ fst <$> newSndQueue userId "" qInfo
-      let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
-      sq' <- withStore c $ \db -> runExceptT $ do
-        liftIO $ createRatchet db connId rc
-        maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
-      pure (cData, sq', e2eSndParams)
-    Nothing -> throwE $ AGENT A_VERSION
+      pure (pqSupport, rc, e2eSndParams)
 
 connRequestPQSupport :: AgentClient -> PQSupport -> ConnectionRequestUri c -> IO (Maybe (VersionSMPA, PQSupport))
 connRequestPQSupport c pqSup cReq = withAgentEnv' c $ case cReq of

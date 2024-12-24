@@ -53,6 +53,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     createNewConn,
     updateNewConnRcv,
     updateNewConnSnd,
+    setConfE2ESndParams,
+    getConfE2ESndParams,
     createSndConn,
     getConn,
     getDeletedConn,
@@ -586,11 +588,21 @@ updateNewConnSnd :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreEr
 updateNewConnSnd db connId sq =
   getConn db connId $>>= \case
     (SomeConn _ NewConnection {}) -> updateConn
-    (SomeConn _ SndConnection {}) -> updateConn -- to allow retries
     (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
   where
     updateConn :: IO (Either StoreError SndQueue)
     updateConn = Right <$> addConnSndQueue_ db connId sq
+
+setConfE2ESndParams :: DB.Connection -> ConnId -> CR.AE2ERatchetParamsX448 -> IO ()
+setConfE2ESndParams db connId e2eSndParams =
+  DB.execute db "UPDATE connections SET conf_e2e_snd_params = ? WHERE conn_id = ?" (e2eSndParams, connId)
+
+getConfE2ESndParams :: DB.Connection -> ConnId -> IO (Either StoreError (Maybe CR.AE2ERatchetParamsX448))
+getConfE2ESndParams db connId =
+  firstRow' params SEConnNotFound $
+    DB.query db "SELECT conf_e2e_snd_params FROM connections WHERE conn_id = ?" (Only connId)
+  where
+    params = maybe (Left SERatchetNotFound) Right . fromOnly
 
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewSndQueue -> IO (Either StoreError (ConnId, SndQueue))
 createSndConn db gVar cData q@SndQueue {server} =

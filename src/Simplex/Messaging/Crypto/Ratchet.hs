@@ -40,6 +40,7 @@ module Simplex.Messaging.Crypto.Ratchet
     RcvE2ERatchetParams,
     SndE2ERatchetParams,
     AE2ERatchetParams (..),
+    AE2ERatchetParamsX448,
     E2ERatchetParamsUri (..),
     E2ERatchetParams (..),
     VersionE2E,
@@ -209,6 +210,8 @@ instance Encoding ARKEMParams where
 data E2ERatchetParams (s :: RatchetKEMState) (a :: Algorithm)
   = E2ERatchetParams VersionE2E (PublicKey a) (PublicKey a) (Maybe (RKEMParams s))
   deriving (Show)
+
+type AE2ERatchetParamsX448 = AE2ERatchetParams 'X448
 
 data AE2ERatchetParams (a :: Algorithm)
   = forall s.
