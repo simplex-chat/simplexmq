@@ -53,8 +53,6 @@ module Simplex.Messaging.Agent.Store.SQLite
     createNewConn,
     updateNewConnRcv,
     updateNewConnSnd,
-    setConfE2ESndParams,
-    getConfE2ESndParams,
     createSndConn,
     getConn,
     getDeletedConn,
@@ -133,6 +131,8 @@ module Simplex.Messaging.Agent.Store.SQLite
     -- Double ratchet persistence
     createRatchetX3dhKeys,
     getRatchetX3dhKeys,
+    createSndRatchet,
+    getSndRatchet,
     setRatchetX3dhKeys,
     createRatchet,
     deleteRatchet,
@@ -247,7 +247,6 @@ where
 
 import Control.Logger.Simple
 import Control.Monad
-import Control.Monad.Except
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
@@ -592,17 +591,6 @@ updateNewConnSnd db connId sq =
   where
     updateConn :: IO (Either StoreError SndQueue)
     updateConn = Right <$> addConnSndQueue_ db connId sq
-
-setConfE2ESndParams :: DB.Connection -> ConnId -> CR.AE2ERatchetParamsX448 -> IO ()
-setConfE2ESndParams db connId e2eSndParams =
-  DB.execute db "UPDATE connections SET conf_e2e_snd_params = ? WHERE conn_id = ?" (e2eSndParams, connId)
-
-getConfE2ESndParams :: DB.Connection -> ConnId -> IO (Either StoreError (Maybe CR.AE2ERatchetParamsX448))
-getConfE2ESndParams db connId =
-  firstRow' params SEConnNotFound $
-    DB.query db "SELECT conf_e2e_snd_params FROM connections WHERE conn_id = ?" (Only connId)
-  where
-    params = maybe (Left SERatchetNotFound) Right . fromOnly
 
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewSndQueue -> IO (Either StoreError (ConnId, SndQueue))
 createSndConn db gVar cData q@SndQueue {server} =
@@ -1262,19 +1250,48 @@ getRatchetX3dhKeys db connId =
       (Just k1, Just k2, pKem) -> Right (k1, k2, pKem)
       _ -> Left SEX3dhKeysNotFound
 
+createSndRatchet :: DB.Connection -> ConnId -> RatchetX448 -> CR.AE2ERatchetParams 'C.X448 -> IO ()
+createSndRatchet db connId ratchetState (CR.AE2ERatchetParams s (CR.E2ERatchetParams _ x3dhPubKey1 x3dhPubKey2 pqPubKem)) =
+  DB.execute
+    db
+    [sql|
+      INSERT INTO ratchets
+        (conn_id, ratchet_state, x3dh_pub_key_1, x3dh_pub_key_2, pq_pub_kem) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (conn_id) DO UPDATE SET
+        ratchet_state = EXCLUDED.ratchet_state,
+        x3dh_priv_key_1 = NULL,
+        x3dh_priv_key_2 = NULL,
+        x3dh_pub_key_1 = EXCLUDED.x3dh_pub_key_1,
+        x3dh_pub_key_2 = EXCLUDED.x3dh_pub_key_2,
+        pq_priv_kem = NULL,
+        pq_pub_kem = EXCLUDED.pq_pub_kem
+    |]
+    (connId, ratchetState, x3dhPubKey1, x3dhPubKey2, CR.ARKP s <$> pqPubKem)
+
+getSndRatchet :: DB.Connection -> ConnId -> CR.VersionE2E -> IO (Either StoreError (RatchetX448, CR.AE2ERatchetParams 'C.X448))
+getSndRatchet db connId v =
+  firstRow' result SEX3dhKeysNotFound $
+    DB.query db "SELECT ratchet_state, x3dh_pub_key_1, x3dh_pub_key_2, pq_pub_kem FROM ratchets WHERE conn_id = ?" (Only connId)
+  where
+    result = \case
+      (Just ratchetState, Just k1, Just k2, pKem_) -> 
+        let params = case pKem_ of
+              Nothing -> CR.AE2ERatchetParams CR.SRKSProposed (CR.E2ERatchetParams v k1 k2 Nothing)
+              Just (CR.ARKP s pKem) -> CR.AE2ERatchetParams s (CR.E2ERatchetParams v k1 k2 (Just pKem))
+         in Right (ratchetState, params)
+      _ -> Left SEX3dhKeysNotFound
+
 -- used to remember new keys when starting ratchet re-synchronization
--- TODO remove the columns for public keys in v5.7.
--- Currently, the keys are not used but still stored to support app downgrade to the previous version.
 setRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> Maybe CR.RcvPrivRKEMParams -> IO ()
 setRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 pqPrivKem =
   DB.execute
     db
     [sql|
       UPDATE ratchets
-      SET x3dh_priv_key_1 = ?, x3dh_priv_key_2 = ?, x3dh_pub_key_1 = ?, x3dh_pub_key_2 = ?, pq_priv_kem = ?
+      SET x3dh_priv_key_1 = ?, x3dh_priv_key_2 = ?, pq_priv_kem = ?
       WHERE conn_id = ?
     |]
-    (x3dhPrivKey1, x3dhPrivKey2, C.publicKey x3dhPrivKey1, C.publicKey x3dhPrivKey2, pqPrivKem, connId)
+    (x3dhPrivKey1, x3dhPrivKey2, pqPrivKem, connId)
 
 -- TODO remove the columns for public keys in v5.7.
 createRatchet :: DB.Connection -> ConnId -> RatchetX448 -> IO ()
@@ -1290,7 +1307,8 @@ createRatchet db connId rc =
         x3dh_priv_key_2 = NULL,
         x3dh_pub_key_1 = NULL,
         x3dh_pub_key_2 = NULL,
-        pq_priv_kem = NULL
+        pq_priv_kem = NULL,
+        pq_pub_kem = NULL
     |]
     [":conn_id" := connId, ":ratchet_state" := rc]
 

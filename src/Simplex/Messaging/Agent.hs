@@ -834,36 +834,39 @@ joinConn c userId connId enableNtfs cReq cInfo pqSupport subMode = do
 startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM (ConnData, SndQueue, CR.SndE2ERatchetParams 'C.X448)
 startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
   lift (compatibleInvitationUri cReqUri) >>= \case
-    Just (qInfo, Compatible e2eRcvParams, Compatible connAgentVersion) -> do
+    Just (qInfo, Compatible e2eRcvParams@(CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
       -- this case avoids re-generating queue keys and subsequent failure of SKEY that timed out
       -- e2ePubKey is always present, it's Maybe historically
-      (pqSupport, sq', e2eSndParams) <- case sq_ of
+      let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (Just v)
+      (sq', e2eSndParams) <- case sq_ of
         Just sq@SndQueue {e2ePubKey = Just _k} -> do
-          -- get ratchet, e2eSndParams, regenerate if nothing
-          (pqSupport, rc, e2eSndParams) <- generateRatchet e2eRcvParams connAgentVersion
-          pure (pqSupport, sq, e2eSndParams)
+          e2eSndParams <-
+            withStore' c (\db -> getSndRatchet db connId v) >>= \case
+              Right r -> pure $ snd r
+              Left e -> do
+                atomically $ writeTBQueue (subQ c) ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no snd ratchet " <> show e))
+                createRatchet_ pqSupport e2eRcvParams
+          pure (sq, e2eSndParams)
         _ -> do
-          (pqSupport, rc, e2eSndParams) <- generateRatchet e2eRcvParams connAgentVersion
           q <- lift $ fst <$> newSndQueue userId "" qInfo
-          sq' <- withStore c $ \db -> runExceptT $ do
-            liftIO $ createRatchet db connId rc
-            liftIO $ setConfE2ESndParams db connId e2eSndParams
-            maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
-          pure (pqSupport, sq', e2eSndParams)
+          e2eSndParams <- createRatchet_ pqSupport e2eRcvParams
+          withStore c $ \db -> runExceptT $ do
+            sq' <- maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
+            pure (sq', e2eSndParams)
       let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
       pure (cData, sq', e2eSndParams)
     Nothing -> throwE $ AGENT A_VERSION
   where
-    generateRatchet e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_) connAgentVersion = do
+    createRatchet_ pqSupport e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_) = do
       g <- asks random
-      let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (Just v)
       (pk1, pk2, pKem, e2eSndParams) <- liftIO $ CR.generateSndE2EParams g v (CR.replyKEM_ v kem_ pqSupport)
       (_, rcDHRs) <- atomically $ C.generateKeyPair g
       rcParams <- liftEitherWith cryptoError $ CR.pqX3dhSnd pk1 pk2 pKem e2eRcvParams
       maxSupported <- asks $ maxVersion . e2eEncryptVRange . config
       let rcVs = CR.RatchetVersions {current = v, maxSupported}
           rc = CR.initSndRatchet rcVs rcDHRr rcDHRs rcParams
-      pure (pqSupport, rc, e2eSndParams)
+      withStore' c $ \db -> createSndRatchet db connId rc e2eSndParams
+      pure e2eSndParams
 
 connRequestPQSupport :: AgentClient -> PQSupport -> ConnectionRequestUri c -> IO (Maybe (VersionSMPA, PQSupport))
 connRequestPQSupport c pqSup cReq = withAgentEnv' c $ case cReq of
@@ -902,9 +905,7 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMod
     case conn of
       NewConnection _ -> doJoin Nothing
       SndConnection _ sq -> doJoin $ Just sq
-      DuplexConnection _ (RcvQueue {status = rqStatus} :| _) (sq@SndQueue {status = sqStatus} :| _)
-        | rqStatus == New && sqStatus == New -> doJoin $ Just sq
-        | otherwise -> throwE $ CMD PROHIBITED "joinConnSrv: already joined"
+      DuplexConnection _ (RcvQueue {status = New} :| _) (sq@SndQueue {status = New} :| _) -> doJoin $ Just sq
       _ -> throwE $ CMD PROHIBITED $ "joinConnSrv: bad connection " <> show cType
   where
     doJoin :: Maybe SndQueue -> AM SndQueueSecured

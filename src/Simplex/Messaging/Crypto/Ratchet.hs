@@ -40,7 +40,6 @@ module Simplex.Messaging.Crypto.Ratchet
     RcvE2ERatchetParams,
     SndE2ERatchetParams,
     AE2ERatchetParams (..),
-    AE2ERatchetParamsX448,
     E2ERatchetParamsUri (..),
     E2ERatchetParams (..),
     VersionE2E,
@@ -207,11 +206,13 @@ instance Encoding ARKEMParams where
       'A' -> ARKP SRKSAccepted .: RKParamsAccepted <$> smpP <*> smpP
       _ -> fail "bad ratchet KEM params"
 
+instance ToField ARKEMParams where toField = toField . smpEncode
+
+instance FromField ARKEMParams where fromField = blobFieldDecoder smpDecode
+
 data E2ERatchetParams (s :: RatchetKEMState) (a :: Algorithm)
   = E2ERatchetParams VersionE2E (PublicKey a) (PublicKey a) (Maybe (RKEMParams s))
   deriving (Show)
-
-type AE2ERatchetParamsX448 = AE2ERatchetParams 'X448
 
 data AE2ERatchetParams (a :: Algorithm)
   = forall s.
