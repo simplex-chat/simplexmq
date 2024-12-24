@@ -902,6 +902,9 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMod
     case conn of
       NewConnection _ -> doJoin Nothing
       SndConnection _ sq -> doJoin $ Just sq
+      DuplexConnection _ (RcvQueue {status = rqStatus} :| _) (sq@SndQueue {status = sqStatus} :| _)
+        | rqStatus == New && sqStatus == New -> doJoin $ Just sq
+        | otherwise -> throwE $ CMD PROHIBITED "joinConnSrv: already joined"
       _ -> throwE $ CMD PROHIBITED $ "joinConnSrv: bad connection " <> show cType
   where
     doJoin :: Maybe SndQueue -> AM SndQueueSecured
