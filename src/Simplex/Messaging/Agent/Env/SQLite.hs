@@ -259,7 +259,8 @@ data Env = Env
     randomServer :: TVar StdGen,
     ntfSupervisor :: NtfSupervisor,
     xftpAgent :: XFTPAgent,
-    multicastSubscribers :: TMVar Int
+    multicastSubscribers :: TMVar Int,
+    counter :: TVar Int
   }
 
 newSMPAgentEnv :: AgentConfig -> SQLiteStore -> IO Env
@@ -269,7 +270,8 @@ newSMPAgentEnv config store = do
   ntfSupervisor <- newNtfSubSupervisor $ tbqSize config
   xftpAgent <- newXFTPAgent
   multicastSubscribers <- newTMVarIO 0
-  pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
+  counter <- newTVarIO 0
+  pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers, counter}
 
 createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError SQLiteStore)
 createAgentStore dbFilePath dbKey keepKey = createSQLiteStore dbFilePath dbKey keepKey Migrations.app

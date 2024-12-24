@@ -2534,6 +2534,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
 
           smpConfirmation :: SMP.MsgId -> Connection c -> Maybe C.APublicAuthKey -> C.PublicKeyX25519 -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> ByteString -> VersionSMPC -> VersionSMPA -> AM ()
           smpConfirmation srvMsgId conn' senderKey e2ePubKey e2eEncryption encConnInfo smpClientVersion agentVersion = do
+            liftIO $ threadDelay' 3000000
             logServer "<--" c srv rId $ "MSG <CONF>:" <> logSecret' srvMsgId
             AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
             let ConnData {pqSupport} = toConnData conn'
@@ -2879,8 +2880,15 @@ secureConfirmQueue c cData@ConnData {connId, connAgentVersion, pqSupport} sq srv
   sqSecured <- agentSecureSndQueue c cData sq
   msg <- mkConfirmation =<< mkAgentConfirmation c cData sq srv connInfo subMode
   void $ sendConfirmation c sq msg
-  withStore' c $ \db -> setSndQueueStatus db sq Confirmed
-  pure sqSecured
+  counter <- asks counter
+  n <- readTVarIO counter
+  if n == 0
+    then do
+      atomically $ modifyTVar' counter succ
+      throwE $ INTERNAL "secureConfirmQueue fail"
+    else do
+      withStore' c $ \db -> setSndQueueStatus db sq Confirmed
+      pure sqSecured
   where
     mkConfirmation :: AgentMessage -> AM MsgBody
     mkConfirmation aMessage = do
