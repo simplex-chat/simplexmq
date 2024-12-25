@@ -206,6 +206,10 @@ instance Encoding ARKEMParams where
       'A' -> ARKP SRKSAccepted .: RKParamsAccepted <$> smpP <*> smpP
       _ -> fail "bad ratchet KEM params"
 
+instance ToField ARKEMParams where toField = toField . smpEncode
+
+instance FromField ARKEMParams where fromField = blobFieldDecoder smpDecode
+
 data E2ERatchetParams (s :: RatchetKEMState) (a :: Algorithm)
   = E2ERatchetParams VersionE2E (PublicKey a) (PublicKey a) (Maybe (RKEMParams s))
   deriving (Show)
