@@ -174,7 +174,8 @@ CREATE TABLE ratchets(
   e2e_version INTEGER NOT NULL DEFAULT 1,
   x3dh_pub_key_1 BYTEA,
   x3dh_pub_key_2 BYTEA,
-  pq_priv_kem BYTEA
+  pq_priv_kem BYTEA,
+  pq_pub_kem BYTEA
 );
 CREATE TABLE skipped_messages(
   skipped_message_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,

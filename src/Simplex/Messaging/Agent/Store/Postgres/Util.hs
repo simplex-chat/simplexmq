@@ -12,22 +12,12 @@ module Simplex.Messaging.Agent.Store.Postgres.Util
   )
 where
 
-import Control.Exception (bracket, throwIO)
+import Control.Exception (bracket)
 import Control.Monad (forM_, unless, void, when)
-import Data.Functor (($>))
 import Data.String (fromString)
-import Data.Text (Text)
 import Database.PostgreSQL.Simple (ConnectInfo (..), Only (..), defaultConnectInfo)
 import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.SqlQQ (sql)
-import Simplex.Messaging.Agent.Store.Migrations (migrateSchema)
-import Simplex.Messaging.Agent.Store.Postgres.Common
-import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
-import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationError (..))
-import Simplex.Messaging.Util (ifM)
-import UnliftIO.Exception (onException)
-import UnliftIO.MVar
-import UnliftIO.STM
 
 createDBAndUserIfNotExists :: ConnectInfo -> IO ()
 createDBAndUserIfNotExists ConnectInfo {connectUser = user, connectDatabase = dbName} = do
