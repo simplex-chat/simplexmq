@@ -227,6 +227,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     firstRow,
     firstRow',
     maybeFirstRow,
+    fromOnlyBI,
   )
 where
 
