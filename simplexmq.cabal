@@ -67,6 +67,11 @@ flag client_library
   manual: True
   default: False
 
+flag client_postgres
+  description: Build with PostgreSQL instead of SQLite.
+  manual: True
+  default: False
+
 library
   exposed-modules:
       Simplex.FileTransfer.Agent
@@ -90,47 +95,11 @@ library
       Simplex.Messaging.Agent.RetryInterval
       Simplex.Messaging.Agent.Stats
       Simplex.Messaging.Agent.Store
-      Simplex.Messaging.Agent.Store.SQLite
-      Simplex.Messaging.Agent.Store.SQLite.Common
-      Simplex.Messaging.Agent.Store.SQLite.DB
-      Simplex.Messaging.Agent.Store.SQLite.Migrations
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220322_notifications
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220608_v2
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220625_v2_ntf_mode
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220811_onion_hosts
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220817_connection_ntfs
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220905_commands
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220915_connection_queues
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230110_users
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230117_fkey_indexes
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230120_delete_errors
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230217_server_key_hash
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230223_files
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230320_retry_state
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230401_snd_files
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230510_files_pending_replicas_indexes
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230516_encrypted_rcv_message_hashes
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230531_switch_status
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230615_ratchet_sync
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230701_delivery_receipts
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230720_delete_expired_messages
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230722_indexes
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230814_indexes
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230829_crypto_files
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231222_command_created_at
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231225_failed_work_items
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240121_message_delivery_indexes
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240124_file_redirect
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240223_connections_wait_delivery
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240225_ratchet_kem
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240417_rcv_files_approved_relays
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240624_snd_secure
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240702_servers_stats
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240930_ntf_tokens_to_delete
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
-      Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241224_ratchet_e2e_snd_params
+      Simplex.Messaging.Agent.Store.AgentStore
+      Simplex.Messaging.Agent.Store.Common
+      Simplex.Messaging.Agent.Store.DB
+      Simplex.Messaging.Agent.Store.Migrations
+      Simplex.Messaging.Agent.Store.Shared
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
@@ -175,6 +144,59 @@ library
       Simplex.RemoteControl.Discovery.Multicast
       Simplex.RemoteControl.Invitation
       Simplex.RemoteControl.Types
+  if flag(client_postgres)
+      exposed-modules:
+          Simplex.Messaging.Agent.Store.Postgres
+          Simplex.Messaging.Agent.Store.Postgres.Common
+          Simplex.Messaging.Agent.Store.Postgres.DB
+          Simplex.Messaging.Agent.Store.Postgres.Migrations
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
+      if !flag(client_library)
+          exposed-modules:
+              Simplex.Messaging.Agent.Store.Postgres.Util
+  else
+      exposed-modules:
+          Simplex.Messaging.Agent.Store.SQLite
+          Simplex.Messaging.Agent.Store.SQLite.Common
+          Simplex.Messaging.Agent.Store.SQLite.DB
+          Simplex.Messaging.Agent.Store.SQLite.Migrations
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220322_notifications
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220608_v2
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220625_v2_ntf_mode
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220811_onion_hosts
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220817_connection_ntfs
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220905_commands
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220915_connection_queues
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230110_users
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230117_fkey_indexes
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230120_delete_errors
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230217_server_key_hash
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230223_files
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230320_retry_state
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230401_snd_files
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230510_files_pending_replicas_indexes
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230516_encrypted_rcv_message_hashes
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230531_switch_status
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230615_ratchet_sync
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230701_delivery_receipts
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230720_delete_expired_messages
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230722_indexes
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230814_indexes
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20230829_crypto_files
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231222_command_created_at
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20231225_failed_work_items
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240121_message_delivery_indexes
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240124_file_redirect
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240223_connections_wait_delivery
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240225_ratchet_kem
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240417_rcv_files_approved_relays
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240624_snd_secure
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240702_servers_stats
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240930_ntf_tokens_to_delete
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241224_ratchet_e2e_snd_params
   if !flag(client_library)
       exposed-modules:
           Simplex.FileTransfer.Client.Main
@@ -243,7 +265,6 @@ library
     , crypton-x509-validation ==1.6.*
     , cryptostore ==0.3.*
     , data-default ==0.7.*
-    , direct-sqlcipher ==2.3.*
     , directory ==1.3.*
     , filepath ==1.4.*
     , hourglass ==0.2.*
@@ -263,7 +284,6 @@ library
     , random >=1.1 && <1.3
     , simple-logger ==0.1.*
     , socks ==0.6.*
-    , sqlcipher-simple ==0.4.*
     , stm ==2.5.*
     , temporary ==1.3.*
     , time ==1.12.*
@@ -282,6 +302,16 @@ library
         case-insensitive ==1.2.*
       , hashable ==1.4.*
       , websockets ==0.12.*
+  if flag(client_postgres)
+    build-depends:
+        postgresql-libpq >=0.10.0.0
+      , postgresql-simple ==0.7.*
+      , raw-strings-qq ==1.1.*
+    cpp-options: -DdbPostgres
+  else
+    build-depends:
+        direct-sqlcipher ==2.3.*
+      , sqlcipher-simple ==0.4.*
   if impl(ghc >= 9.6.2)
     build-depends:
         bytestring ==0.11.*
@@ -384,10 +414,7 @@ test-suite simplexmq-test
       AgentTests.EqInstances
       AgentTests.FunctionalAPITests
       AgentTests.MigrationTests
-      AgentTests.NotificationTests
-      AgentTests.SchemaDump
       AgentTests.ServerChoice
-      AgentTests.SQLiteTests
       CLITests
       CoreTests.BatchingTests
       CoreTests.CryptoFileTests
@@ -401,6 +428,7 @@ test-suite simplexmq-test
       CoreTests.UtilTests
       CoreTests.VersionRangeTests
       FileDescriptionTests
+      Fixtures
       NtfClient
       NtfServerTests
       RemoteControl
@@ -416,6 +444,11 @@ test-suite simplexmq-test
       Static
       Static.Embedded
       Paths_simplexmq
+  if !flag(client_postgres)
+      other-modules:
+          AgentTests.NotificationTests
+          AgentTests.SchemaDump
+          AgentTests.SQLiteTests
   hs-source-dirs:
       tests
       apps/smp-server/web
@@ -456,7 +489,6 @@ test-suite simplexmq-test
     , silently ==1.2.*
     , simple-logger
     , simplexmq
-    , sqlcipher-simple
     , stm
     , text
     , time
@@ -471,3 +503,12 @@ test-suite simplexmq-test
     , warp-tls
     , yaml
   default-language: Haskell2010
+  if flag(client_postgres)
+    build-depends:
+        postgresql-libpq >=0.10.0.0
+      , postgresql-simple ==0.7.*
+      , raw-strings-qq ==1.1.*
+    cpp-options: -DdbPostgres
+  else
+    build-depends:
+        sqlcipher-simple

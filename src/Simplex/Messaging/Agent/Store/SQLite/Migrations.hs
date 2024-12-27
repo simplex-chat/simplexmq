@@ -5,40 +5,29 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Agent.Store.SQLite.Migrations
-  ( Migration (..),
-    MigrationsToRun (..),
-    MTRError (..),
-    DownMigration (..),
-    app,
+  ( app,
     initialize,
-    get,
     run,
     getCurrent,
-    mtrErrorDescription,
-    -- for unit tests
-    migrationsToRun,
-    toDownMigration,
   )
 where
 
 import Control.Monad (forM_, when)
-import qualified Data.Aeson.TH as J
-import Data.List (intercalate, sortOn)
+import Data.List (sortOn)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
-import Data.Maybe (isNothing, mapMaybe)
 import Data.Text (Text)
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (getCurrentTime)
-import Database.SQLite.Simple (Connection, Only (..), Query (..))
-import qualified Database.SQLite.Simple as DB
+import Database.SQLite.Simple (Only (..), Query (..))
+import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
 import Simplex.Messaging.Agent.Protocol (extraSMPServerHosts)
+import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.SQLite.Common
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220301_snd_queue_keys
@@ -77,12 +66,9 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240702_servers_stats
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240930_ntf_tokens_to_delete
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241224_ratchet_e2e_snd_params
+import Simplex.Messaging.Agent.Store.Shared
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport.Client (TransportHost)
-
-data Migration = Migration {name :: String, up :: Text, down :: Maybe Text}
-  deriving (Eq, Show)
 
 schemaMigrations :: [(String, Query, Maybe Query)]
 schemaMigrations =
@@ -131,15 +117,12 @@ app = sortOn name $ map migration schemaMigrations
   where
     migration (name, up, down) = Migration {name, up = fromQuery up, down = fromQuery <$> down}
 
-get :: SQLiteStore -> [Migration] -> IO (Either MTRError MigrationsToRun)
-get st migrations = migrationsToRun migrations <$> withTransaction' st getCurrent
-
-getCurrent :: Connection -> IO [Migration]
-getCurrent db = map toMigration <$> DB.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
+getCurrent :: DB.Connection -> IO [Migration]
+getCurrent DB.Connection {DB.conn} = map toMigration <$> SQL.query_ conn "SELECT name, down FROM migrations ORDER BY name ASC;"
   where
     toMigration (name, down) = Migration {name, up = "", down}
 
-run :: SQLiteStore -> MigrationsToRun -> IO ()
+run :: DBStore -> MigrationsToRun -> IO ()
 run st = \case
   MTRUp [] -> pure ()
   MTRUp ms -> mapM_ runUp ms >> withConnection' st (`execSQL` "VACUUM;")
@@ -150,27 +133,27 @@ run st = \case
       when (name == "m20220811_onion_hosts") $ updateServers db
       insert db >> execSQL db up'
       where
-        insert db = DB.execute db "INSERT INTO migrations (name, down, ts) VALUES (?,?,?)" . (name,down,) =<< getCurrentTime
+        insert db = SQL.execute db "INSERT INTO migrations (name, down, ts) VALUES (?,?,?)" . (name,down,) =<< getCurrentTime
         up'
           | dbNew st && name == "m20230110_users" = fromQuery new_m20230110_users
           | otherwise = up
         updateServers db = forM_ (M.assocs extraSMPServerHosts) $ \(h, h') ->
           let hs = decodeLatin1 . strEncode $ ([h, h'] :: NonEmpty TransportHost)
-           in DB.execute db "UPDATE servers SET host = ? WHERE host = ?" (hs, decodeLatin1 $ strEncode h)
+           in SQL.execute db "UPDATE servers SET host = ? WHERE host = ?" (hs, decodeLatin1 $ strEncode h)
     runDown DownMigration {downName, downQuery} = withTransaction' st $ \db -> do
       execSQL db downQuery
-      DB.execute db "DELETE FROM migrations WHERE name = ?" (Only downName)
-    execSQL db = SQLite3.exec $ DB.connectionHandle db
+      SQL.execute db "DELETE FROM migrations WHERE name = ?" (Only downName)
+    execSQL db = SQLite3.exec $ SQL.connectionHandle db
 
-initialize :: SQLiteStore -> IO ()
+initialize :: DBStore -> IO ()
 initialize st = withTransaction' st $ \db -> do
-  cs :: [Text] <- map fromOnly <$> DB.query_ db "SELECT name FROM pragma_table_info('migrations')"
+  cs :: [Text] <- map fromOnly <$> SQL.query_ db "SELECT name FROM pragma_table_info('migrations')"
   case cs of
     [] -> createMigrations db
-    _ -> when ("down" `notElem` cs) $ DB.execute_ db "ALTER TABLE migrations ADD COLUMN down TEXT"
+    _ -> when ("down" `notElem` cs) $ SQL.execute_ db "ALTER TABLE migrations ADD COLUMN down TEXT"
   where
     createMigrations db =
-      DB.execute_
+      SQL.execute_
         db
         [sql|
           CREATE TABLE IF NOT EXISTS migrations (
@@ -180,37 +163,3 @@ initialize st = withTransaction' st $ \db -> do
             PRIMARY KEY (name)
           );
         |]
-
-data DownMigration = DownMigration {downName :: String, downQuery :: Text}
-  deriving (Eq, Show)
-
-toDownMigration :: Migration -> Maybe DownMigration
-toDownMigration Migration {name, down} = DownMigration name <$> down
-
-data MigrationsToRun = MTRUp [Migration] | MTRDown [DownMigration] | MTRNone
-  deriving (Eq, Show)
-
-data MTRError
-  = MTRENoDown {dbMigrations :: [String]}
-  | MTREDifferent {appMigration :: String, dbMigration :: String}
-  deriving (Eq, Show)
-
-mtrErrorDescription :: MTRError -> String
-mtrErrorDescription = \case
-  MTRENoDown ms -> "database version is newer than the app, but no down migration for: " <> intercalate ", " ms
-  MTREDifferent a d -> "different migration in the app/database: " <> a <> " / " <> d
-
-migrationsToRun :: [Migration] -> [Migration] -> Either MTRError MigrationsToRun
-migrationsToRun [] [] = Right MTRNone
-migrationsToRun appMs [] = Right $ MTRUp appMs
-migrationsToRun [] dbMs
-  | length dms == length dbMs = Right $ MTRDown dms
-  | otherwise = Left $ MTRENoDown $ mapMaybe nameNoDown dbMs
-  where
-    dms = mapMaybe toDownMigration dbMs
-    nameNoDown m = if isNothing (down m) then Just $ name m else Nothing
-migrationsToRun (a : as) (d : ds)
-  | name a == name d = migrationsToRun as ds
-  | otherwise = Left $ MTREDifferent (name a) (name d)
-
-$(J.deriveJSON (sumTypeJSON $ dropPrefix "MTRE") ''MTRError)

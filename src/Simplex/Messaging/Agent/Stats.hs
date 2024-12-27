@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -10,13 +11,18 @@ import qualified Data.Aeson.TH as J
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.Protocol (UserId)
 import Simplex.Messaging.Parsers (defaultJSON, fromTextField_)
-import Simplex.Messaging.Protocol (SMPServer, XFTPServer, NtfServer)
+import Simplex.Messaging.Protocol (NtfServer, SMPServer, XFTPServer)
 import Simplex.Messaging.Util (decodeJSON, encodeJSON)
 import UnliftIO.STM
+#if defined(dbPostgres)
+import Database.PostgreSQL.Simple.FromField (FromField (..))
+import Database.PostgreSQL.Simple.ToField (ToField (..))
+#else
+import Database.SQLite.Simple.FromField (FromField (..))
+import Database.SQLite.Simple.ToField (ToField (..))
+#endif
 
 data AgentSMPServerStats = AgentSMPServerStats
   { sentDirect :: TVar Int, -- successfully sent messages

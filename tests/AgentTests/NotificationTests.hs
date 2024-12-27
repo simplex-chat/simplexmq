@@ -61,7 +61,9 @@ import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMes
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, SENT)
-import Simplex.Messaging.Agent.Store.SQLite (closeSQLiteStore, getSavedNtfToken, reopenSQLiteStore, withTransaction)
+import Simplex.Messaging.Agent.Store.AgentStore (getSavedNtfToken)
+import Simplex.Messaging.Agent.Store.SQLite (closeDBStore, reopenSQLiteStore)
+import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction)
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -74,14 +76,8 @@ import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), NtfSer
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport (ATransport)
-import System.Directory (doesFileExist, removeFile)
 import Test.Hspec
 import UnliftIO
-
-removeFileIfExists :: FilePath -> IO ()
-removeFileIfExists filePath = do
-  fileExists <- doesFileExist filePath
-  when fileExists $ removeFile filePath
 
 notificationTests :: ATransport -> Spec
 notificationTests t = do
@@ -500,7 +496,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
 
   threadDelay 500000
   suspendAgent alice 0
-  closeSQLiteStore store
+  closeDBStore store
   threadDelay 1000000
   putStrLn "before opening the database from another agent"
 
