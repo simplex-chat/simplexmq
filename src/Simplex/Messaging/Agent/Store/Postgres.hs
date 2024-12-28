@@ -46,7 +46,7 @@ createDBStore :: ConnectInfo -> String -> [Migration] -> MigrationConfirmation -
 createDBStore connectInfo schema migrations confirmMigrations = do
   createDBAndUserIfNotExists connectInfo
   st <- connectPostgresStore connectInfo schema
-  r <- migrateSchema st migrations confirmMigrations `onException` closeDBStore st
+  r <- migrateSchema st migrations confirmMigrations True `onException` closeDBStore st
   case r of
     Right () -> pure $ Right st
     Left e -> closeDBStore st $> Left e

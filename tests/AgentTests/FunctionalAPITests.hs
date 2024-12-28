@@ -3113,7 +3113,7 @@ insertUser :: DBStore -> IO ()
 insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users DEFAULT VALUES")
 #else
 createStore :: String -> IO (Either MigrationError DBStore)
-createStore dbPath = createAgentStore dbPath "" False MCError
+createStore dbPath = createAgentStore dbPath "" False MCError True
 
 insertUser :: DBStore -> IO ()
 insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users (user_id) VALUES (1)")

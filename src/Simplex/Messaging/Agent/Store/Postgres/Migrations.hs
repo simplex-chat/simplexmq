@@ -53,8 +53,8 @@ initialize st = withTransaction' st $ \db ->
       )
     |]
 
-run :: DBStore -> MigrationsToRun -> IO ()
-run st = \case
+run :: DBStore -> Bool -> MigrationsToRun -> IO ()
+run st _vacuum = \case
   MTRUp [] -> pure ()
   MTRUp ms -> mapM_ runUp ms
   MTRDown ms -> mapM_ runDown $ reverse ms

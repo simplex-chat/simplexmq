@@ -281,7 +281,7 @@ newSMPAgentEnv config store = do
 createAgentStore :: ConnectInfo -> String -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createAgentStore = createStore
 #else
-createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> Bool -> IO (Either MigrationError DBStore)
 createAgentStore = createStore
 #endif
 
