@@ -218,7 +218,7 @@ testDB :: Word32 -> FilePath
 testDB randSuffix = "tests/tmp/test_migrations.db" <> show randSuffix
 
 createStore :: Word32 -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
-createStore randSuffix = createDBStore (testDB randSuffix) "" False
+createStore randSuffix migrations migrationConf = createDBStore (testDB randSuffix) "" False migrations migrationConf True
 
 cleanup :: Word32 -> IO ()
 cleanup randSuffix = removeFile (testDB randSuffix)

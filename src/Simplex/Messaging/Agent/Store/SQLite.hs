@@ -65,12 +65,12 @@ import UnliftIO.STM
 
 -- * SQLite Store implementation
 
-createDBStore :: FilePath -> ScrubbedBytes -> Bool -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
-createDBStore dbFilePath dbKey keepKey migrations confirmMigrations = do
+createDBStore :: FilePath -> ScrubbedBytes -> Bool -> [Migration] -> MigrationConfirmation -> Bool -> IO (Either MigrationError DBStore)
+createDBStore dbFilePath dbKey keepKey migrations confirmMigrations vacuum = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing True dbDir
   st <- connectSQLiteStore dbFilePath dbKey keepKey
-  r <- migrateSchema st migrations confirmMigrations `onException` closeDBStore st
+  r <- migrateSchema st migrations confirmMigrations vacuum `onException` closeDBStore st
   case r of
     Right () -> pure $ Right st
     Left e -> closeDBStore st $> Left e

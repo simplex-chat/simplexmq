@@ -49,7 +49,7 @@ testVerifySchemaDump :: IO ()
 testVerifySchemaDump = do
   savedSchema <- ifM (doesFileExist appSchema) (readFile appSchema) (pure "")
   savedSchema `deepseq` pure ()
-  void $ createDBStore testDB "" False Migrations.app MCConsole
+  void $ createDBStore testDB "" False Migrations.app MCConsole True
   getSchema testDB appSchema `shouldReturn` savedSchema
   removeFile testDB
 
@@ -57,7 +57,7 @@ testVerifyLintFKeyIndexes :: IO ()
 testVerifyLintFKeyIndexes = do
   savedLint <- ifM (doesFileExist appLint) (readFile appLint) (pure "")
   savedLint `deepseq` pure ()
-  void $ createDBStore testDB "" False Migrations.app MCConsole
+  void $ createDBStore testDB "" False Migrations.app MCConsole True
   getLintFKeyIndexes testDB "tests/tmp/agent_lint.sql" `shouldReturn` savedLint
   removeFile testDB
 
@@ -70,7 +70,7 @@ withTmpFiles =
 testSchemaMigrations :: IO ()
 testSchemaMigrations = do
   let noDownMigrations = dropWhileEnd (\Migration {down} -> isJust down) Migrations.app
-  Right st <- createDBStore testDB "" False noDownMigrations MCError
+  Right st <- createDBStore testDB "" False noDownMigrations MCError True
   mapM_ (testDownMigration st) $ drop (length noDownMigrations) Migrations.app
   closeDBStore st
   removeFile testDB
@@ -80,20 +80,20 @@ testSchemaMigrations = do
       putStrLn $ "down migration " <> name m
       let downMigr = fromJust $ toDownMigration m
       schema <- getSchema testDB testSchema
-      Migrations.run st $ MTRUp [m]
+      Migrations.run st True $ MTRUp [m]
       schema' <- getSchema testDB testSchema
       schema' `shouldNotBe` schema
-      Migrations.run st $ MTRDown [downMigr]
+      Migrations.run st True $ MTRDown [downMigr]
       unless (name m `elem` skipComparisonForDownMigrations) $ do
         schema'' <- getSchema testDB testSchema
         schema'' `shouldBe` schema
-      Migrations.run st $ MTRUp [m]
+      Migrations.run st True $ MTRUp [m]
       schema''' <- getSchema testDB testSchema
       schema''' `shouldBe` schema'
 
 testUsersMigrationNew :: IO ()
 testUsersMigrationNew = do
-  Right st <- createDBStore testDB "" False Migrations.app MCError
+  Right st <- createDBStore testDB "" False Migrations.app MCError True
   withTransaction' st (`SQL.query_` "SELECT user_id FROM users;")
     `shouldReturn` ([] :: [Only Int])
   closeDBStore st
@@ -101,11 +101,11 @@ testUsersMigrationNew = do
 testUsersMigrationOld :: IO ()
 testUsersMigrationOld = do
   let beforeUsers = takeWhile (("m20230110_users" /=) . name) Migrations.app
-  Right st <- createDBStore testDB "" False beforeUsers MCError
+  Right st <- createDBStore testDB "" False beforeUsers MCError True
   withTransaction' st (`SQL.query_` "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users';")
     `shouldReturn` ([] :: [Only String])
   closeDBStore st
-  Right st' <- createDBStore testDB "" False Migrations.app MCYesUp
+  Right st' <- createDBStore testDB "" False Migrations.app MCYesUp True
   withTransaction' st' (`SQL.query_` "SELECT user_id FROM users;")
     `shouldReturn` ([Only (1 :: Int)])
   closeDBStore st'

@@ -122,10 +122,12 @@ getCurrent DB.Connection {DB.conn} = map toMigration <$> SQL.query_ conn "SELECT
   where
     toMigration (name, down) = Migration {name, up = "", down}
 
-run :: DBStore -> MigrationsToRun -> IO ()
-run st = \case
+run :: DBStore -> Bool -> MigrationsToRun -> IO ()
+run st vacuum = \case
   MTRUp [] -> pure ()
-  MTRUp ms -> mapM_ runUp ms >> withConnection' st (`execSQL` "VACUUM;")
+  MTRUp ms -> do
+    mapM_ runUp ms
+    when vacuum $ withConnection' st (`execSQL` "VACUUM;")
   MTRDown ms -> mapM_ runDown $ reverse ms
   MTRNone -> pure ()
   where

@@ -48,8 +48,8 @@ migrationsToRun (a : as) (d : ds)
   | name a == name d = migrationsToRun as ds
   | otherwise = Left $ MTREDifferent (name a) (name d)
 
-migrateSchema :: DBStore -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError ())
-migrateSchema st migrations confirmMigrations = do
+migrateSchema :: DBStore -> [Migration] -> MigrationConfirmation -> Bool -> IO (Either MigrationError ())
+migrateSchema st migrations confirmMigrations vacuum = do
   Migrations.initialize st
   get st migrations >>= \case
     Left e -> do
@@ -57,17 +57,17 @@ migrateSchema st migrations confirmMigrations = do
       pure . Left $ MigrationError e
     Right MTRNone -> pure $ Right ()
     Right ms@(MTRUp ums)
-      | dbNew st -> Migrations.run st ms $> Right ()
+      | dbNew st -> Migrations.run st vacuum ms $> Right ()
       | otherwise -> case confirmMigrations of
-          MCYesUp -> runWithBackup st ms
-          MCYesUpDown -> runWithBackup st ms
-          MCConsole -> confirm err >> runWithBackup st ms
+          MCYesUp -> runWithBackup st vacuum ms
+          MCYesUpDown -> runWithBackup st vacuum ms
+          MCConsole -> confirm err >> runWithBackup st vacuum ms
           MCError -> pure $ Left err
       where
         err = MEUpgrade $ map upMigration ums -- "The app has a newer version than the database.\nConfirm to back up and upgrade using these migrations: " <> intercalate ", " (map name ums)
     Right ms@(MTRDown dms) -> case confirmMigrations of
-      MCYesUpDown -> runWithBackup st ms
-      MCConsole -> confirm err >> runWithBackup st ms
+      MCYesUpDown -> runWithBackup st vacuum ms
+      MCConsole -> confirm err >> runWithBackup st vacuum ms
       MCYesUp -> pure $ Left err
       MCError -> pure $ Left err
       where
@@ -75,14 +75,14 @@ migrateSchema st migrations confirmMigrations = do
   where
     confirm err = confirmOrExit $ migrationErrorDescription err
 
-runWithBackup :: DBStore -> MigrationsToRun -> IO (Either a ())
+runWithBackup :: DBStore -> Bool -> MigrationsToRun -> IO (Either a ())
 #if defined(dbPostgres)
-runWithBackup st ms = Migrations.run st ms $> Right ()
+runWithBackup st vacuum ms = Migrations.run st vacuum ms $> Right ()
 #else
-runWithBackup st ms = do
+runWithBackup st vacuum ms = do
   let f = dbFilePath st
   copyFile f (f <> ".bak")
-  Migrations.run st ms
+  Migrations.run st vacuum ms
   pure $ Right ()
 #endif
 
