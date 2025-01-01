@@ -13,6 +13,7 @@ module Simplex.FileTransfer.Server.Store
     setFilePath,
     addRecipient,
     deleteFile,
+    blockFile,
     deleteRecipient,
     expiredFilePath,
     getFile,
@@ -22,6 +23,7 @@ module Simplex.FileTransfer.Server.Store
 where
 
 import Control.Concurrent.STM
+import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Int (Int64)
 import Data.Set (Set)
@@ -30,8 +32,8 @@ import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..), XFTPFileId
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (RcvPublicAuthKey, RecipientId, SenderId)
-import Simplex.Messaging.Server.QueueStore (RoundedSystemTime (..))
+import Simplex.Messaging.Protocol (BlockingInfo, RcvPublicAuthKey, RecipientId, SenderId)
+import Simplex.Messaging.Server.QueueStore (RoundedSystemTime (..), ServerEntityStatus (..))
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM, ($>>=))
@@ -47,7 +49,8 @@ data FileRec = FileRec
     fileInfo :: FileInfo,
     filePath :: TVar (Maybe FilePath),
     recipientIds :: TVar (Set RecipientId),
-    createdAt :: RoundedSystemTime
+    createdAt :: RoundedSystemTime,
+    fileStatus :: TVar ServerEntityStatus
   }
 
 fileTimePrecision :: Int64
@@ -78,7 +81,8 @@ newFileRec :: SenderId -> FileInfo -> RoundedSystemTime -> STM FileRec
 newFileRec senderId fileInfo createdAt = do
   recipientIds <- newTVar S.empty
   filePath <- newTVar Nothing
-  pure FileRec {senderId, fileInfo, filePath, recipientIds, createdAt}
+  fileStatus <- newTVar EntityActive
+  pure FileRec {senderId, fileInfo, filePath, recipientIds, createdAt, fileStatus}
 
 setFilePath :: FileStore -> SenderId -> FilePath -> STM (Either XFTPErrorType ())
 setFilePath st sId fPath =
@@ -108,6 +112,14 @@ deleteFile FileStore {files, recipients, usedStorage} senderId = do
       modifyTVar' usedStorage $ subtract (fromIntegral $ size fileInfo)
       pure $ Right ()
     _ -> pure $ Left AUTH
+
+-- this function must be called after the file is deleted from the file system
+blockFile :: FileStore -> SenderId -> BlockingInfo -> Bool -> STM (Either XFTPErrorType ())
+blockFile st@FileStore {usedStorage} senderId info deleted =
+  withFile st senderId $ \FileRec {fileInfo, fileStatus} -> do
+    when deleted $ modifyTVar' usedStorage $ subtract (fromIntegral $ size fileInfo)
+    writeTVar fileStatus $! EntityBlocked info
+    pure $ Right ()
 
 deleteRecipient :: FileStore -> RecipientId -> FileRec -> STM ()
 deleteRecipient FileStore {recipients} rId FileRec {recipientIds} = do

@@ -112,7 +112,7 @@ testNewQueueRec g sndSecure = do
             senderKey = Nothing,
             sndSecure,
             notifier = Nothing,
-            status = QueueActive,
+            status = EntityActive,
             updatedAt = Nothing
           }
   pure (rId, qr)

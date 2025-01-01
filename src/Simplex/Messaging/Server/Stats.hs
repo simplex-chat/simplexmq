@@ -34,6 +34,7 @@ data ServerStats = ServerStats
     qDeletedAllB :: IORef Int,
     qDeletedNew :: IORef Int,
     qDeletedSecured :: IORef Int,
+    qBlocked :: IORef Int,
     qSub :: IORef Int, -- only includes subscriptions when there were pending messages
     -- qSubNoMsg :: IORef Int, -- this stat creates too many STM transactions
     qSubAllB :: IORef Int, -- count of all subscription batches (with and without pending messages)
@@ -53,6 +54,7 @@ data ServerStats = ServerStats
     msgSentAuth :: IORef Int,
     msgSentQuota :: IORef Int,
     msgSentLarge :: IORef Int,
+    msgSentBlock :: IORef Int,
     msgRecv :: IORef Int,
     msgRecvGet :: IORef Int,
     msgGet :: IORef Int,
@@ -89,6 +91,7 @@ data ServerStatsData = ServerStatsData
     _qDeletedAllB :: Int,
     _qDeletedNew :: Int,
     _qDeletedSecured :: Int,
+    _qBlocked :: Int,
     _qSub :: Int,
     _qSubAllB :: Int,
     _qSubAuth :: Int,
@@ -107,6 +110,7 @@ data ServerStatsData = ServerStatsData
     _msgSentAuth :: Int,
     _msgSentQuota :: Int,
     _msgSentLarge :: Int,
+    _msgSentBlock :: Int,
     _msgRecv :: Int,
     _msgRecvGet :: Int,
     _msgGet :: Int,
@@ -144,6 +148,7 @@ newServerStats ts = do
   qDeletedAllB <- newIORef 0
   qDeletedNew <- newIORef 0
   qDeletedSecured <- newIORef 0
+  qBlocked <- newIORef 0
   qSub <- newIORef 0
   qSubAllB <- newIORef 0
   qSubAuth <- newIORef 0
@@ -162,6 +167,7 @@ newServerStats ts = do
   msgSentAuth <- newIORef 0
   msgSentQuota <- newIORef 0
   msgSentLarge <- newIORef 0
+  msgSentBlock <- newIORef 0
   msgRecv <- newIORef 0
   msgRecvGet <- newIORef 0
   msgGet <- newIORef 0
@@ -196,6 +202,7 @@ newServerStats ts = do
         qDeletedAllB,
         qDeletedNew,
         qDeletedSecured,
+        qBlocked,
         qSub,
         qSubAllB,
         qSubAuth,
@@ -214,6 +221,7 @@ newServerStats ts = do
         msgSentAuth,
         msgSentQuota,
         msgSentLarge,
+        msgSentBlock,
         msgRecv,
         msgRecvGet,
         msgGet,
@@ -250,6 +258,7 @@ getServerStatsData s = do
   _qDeletedAllB <- readIORef $ qDeletedAllB s
   _qDeletedNew <- readIORef $ qDeletedNew s
   _qDeletedSecured <- readIORef $ qDeletedSecured s
+  _qBlocked <- readIORef $ qBlocked s
   _qSub <- readIORef $ qSub s
   _qSubAllB <- readIORef $ qSubAllB s
   _qSubAuth <- readIORef $ qSubAuth s
@@ -268,6 +277,7 @@ getServerStatsData s = do
   _msgSentAuth <- readIORef $ msgSentAuth s
   _msgSentQuota <- readIORef $ msgSentQuota s
   _msgSentLarge <- readIORef $ msgSentLarge s
+  _msgSentBlock <- readIORef $ msgSentBlock s
   _msgRecv <- readIORef $ msgRecv s
   _msgRecvGet <- readIORef $ msgRecvGet s
   _msgGet <- readIORef $ msgGet s
@@ -302,6 +312,7 @@ getServerStatsData s = do
         _qDeletedAllB,
         _qDeletedNew,
         _qDeletedSecured,
+        _qBlocked,
         _qSub,
         _qSubAllB,
         _qSubAuth,
@@ -320,6 +331,7 @@ getServerStatsData s = do
         _msgSentAuth,
         _msgSentQuota,
         _msgSentLarge,
+        _msgSentBlock,
         _msgRecv,
         _msgRecvGet,
         _msgGet,
@@ -357,6 +369,7 @@ setServerStats s d = do
   writeIORef (qDeletedAllB s) $! _qDeletedAllB d
   writeIORef (qDeletedNew s) $! _qDeletedNew d
   writeIORef (qDeletedSecured s) $! _qDeletedSecured d
+  writeIORef (qBlocked s) $! _qBlocked d
   writeIORef (qSub s) $! _qSub d
   writeIORef (qSubAllB s) $! _qSubAllB d
   writeIORef (qSubAuth s) $! _qSubAuth d
@@ -375,6 +388,7 @@ setServerStats s d = do
   writeIORef (msgSentAuth s) $! _msgSentAuth d
   writeIORef (msgSentQuota s) $! _msgSentQuota d
   writeIORef (msgSentLarge s) $! _msgSentLarge d
+  writeIORef (msgSentBlock s) $! _msgSentBlock d
   writeIORef (msgRecv s) $! _msgRecv d
   writeIORef (msgRecvGet s) $! _msgRecvGet d
   writeIORef (msgGet s) $! _msgGet d
@@ -411,6 +425,7 @@ instance StrEncoding ServerStatsData where
         "qDeletedNew=" <> strEncode (_qDeletedNew d),
         "qDeletedSecured=" <> strEncode (_qDeletedSecured d),
         "qDeletedAllB=" <> strEncode (_qDeletedAllB d),
+        "qBlocked=" <> strEncode (_qBlocked d),
         "qCount=" <> strEncode (_qCount d),
         "qSub=" <> strEncode (_qSub d),
         "qSubAllB=" <> strEncode (_qSubAllB d),
@@ -430,6 +445,7 @@ instance StrEncoding ServerStatsData where
         "msgSentAuth=" <> strEncode (_msgSentAuth d),
         "msgSentQuota=" <> strEncode (_msgSentQuota d),
         "msgSentLarge=" <> strEncode (_msgSentLarge d),
+        "msgSentBlock=" <> strEncode (_msgSentBlock d),
         "msgRecv=" <> strEncode (_msgRecv d),
         "msgRecvGet=" <> strEncode (_msgRecvGet d),
         "msgGet=" <> strEncode (_msgGet d),
@@ -467,6 +483,7 @@ instance StrEncoding ServerStatsData where
       (,0,0) <$> ("qDeleted=" *> strP <* A.endOfLine)
         <|> ((,,) <$> ("qDeletedAll=" *> strP <* A.endOfLine) <*> ("qDeletedNew=" *> strP <* A.endOfLine) <*> ("qDeletedSecured=" *> strP <* A.endOfLine))
     _qDeletedAllB <- opt "qDeletedAllB="
+    _qBlocked <- opt "qBlocked="
     _qCount <- opt "qCount="
     _qSub <- opt "qSub="
     _qSubNoMsg <- skipInt "qSubNoMsg=" -- skipping it for backward compatibility
@@ -487,6 +504,7 @@ instance StrEncoding ServerStatsData where
     _msgSentAuth <- opt "msgSentAuth="
     _msgSentQuota <- opt "msgSentQuota="
     _msgSentLarge <- opt "msgSentLarge="
+    _msgSentBlock <- opt "msgSentBlock="
     _msgRecv <- "msgRecv=" *> strP <* A.endOfLine
     _msgRecvGet <- opt "msgRecvGet="
     _msgGet <- opt "msgGet="
@@ -532,6 +550,7 @@ instance StrEncoding ServerStatsData where
           _qDeletedAllB,
           _qDeletedNew,
           _qDeletedSecured,
+          _qBlocked,
           _qSub,
           _qSubAllB,
           _qSubAuth,
@@ -550,6 +569,7 @@ instance StrEncoding ServerStatsData where
           _msgSentAuth,
           _msgSentQuota,
           _msgSentLarge,
+          _msgSentBlock,
           _msgRecv,
           _msgRecvGet,
           _msgGet,
