@@ -53,7 +53,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId (..), EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TransmissionAuth, pattern NoEntity)
+import Simplex.Messaging.Protocol (CorrId (..), BlockingInfo, EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TransmissionAuth, pattern NoEntity)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Expiration
@@ -287,10 +287,14 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               CPDelete fileId -> withUserRole $ unliftIO u $ do
                 fs <- asks store
                 r <- runExceptT $ do
-                  let asSender = ExceptT . atomically $ getFile fs SFSender fileId
-                  let asRecipient = ExceptT . atomically $ getFile fs SFRecipient fileId
-                  (fr, _) <- asSender `catchError` const asRecipient
+                  (fr, _) <- ExceptT $ atomically $ getFile fs SFSender fileId
                   ExceptT $ deleteServerFile_ fr
+                liftIO . hPutStrLn h $ either (\e -> "error: " <> show e) (\() -> "ok") r
+              CPBlock fileId info -> withUserRole $ unliftIO u $ do
+                fs <- asks store
+                r <- runExceptT $ do
+                  (fr, _) <- ExceptT $ atomically $ getFile fs SFSender fileId
+                  ExceptT $ blockServerFile fr info
                 liftIO . hPutStrLn h $ either (\e -> "error: " <> show e) (\() -> "ok") r
               CPHelp -> hPutStrLn h "commands: stats-rts, delete, help, quit"
               CPQuit -> pure ()
@@ -518,15 +522,24 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       pure FROk
 
 deleteServerFile_ :: FileRec -> M (Either XFTPErrorType ())
-deleteServerFile_ FileRec {senderId, fileInfo, filePath} = do
+deleteServerFile_ fr@FileRec {senderId} = do
   withFileLog (`logDeleteFile` senderId)
-  runExceptT $ do
+  deleteOrBlockServerFile_ fr filesDeleted (`deleteFile` senderId)
+
+-- this also deletes the file from storage, but doesn't include it in delete statistics
+blockServerFile :: FileRec -> BlockingInfo -> M (Either XFTPErrorType ())
+blockServerFile fr@FileRec {senderId} info = do
+  withFileLog $ \sl -> logBlockFile sl senderId info
+  deleteOrBlockServerFile_ fr filesBlocked $ \st -> blockFile st senderId info True
+
+deleteOrBlockServerFile_ :: FileRec -> (FileServerStats -> IORef Int) -> (FileStore -> STM (Either XFTPErrorType ())) -> M (Either XFTPErrorType ())
+deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = runExceptT $ do
     path <- readTVarIO filePath
     stats <- asks serverStats
     ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
     st <- asks store
-    void $ atomically $ deleteFile st senderId
-    lift $ incFileStat filesDeleted
+    void $ atomically $ storeAction st
+    lift $ incFileStat stat
   where
     deletedStats stats = do
       liftIO $ atomicModifyIORef'_ (filesCount stats) (subtract 1)

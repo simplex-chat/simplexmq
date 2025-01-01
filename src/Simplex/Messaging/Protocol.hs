@@ -70,6 +70,7 @@ module Simplex.Messaging.Protocol
     CommandError (..),
     ProxyError (..),
     BrokerErrorType (..),
+    BlockingInfo (..),
     Transmission,
     TransmissionAuth (..),
     SignedTransmission,
@@ -196,6 +197,7 @@ import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isPrint, isSpace)
+import Data.Time.Clock (UTCTime)
 import Data.Constraint (Dict (..))
 import Data.Functor (($>))
 import Data.Kind
@@ -1194,6 +1196,8 @@ data ErrorType
     PROXY {proxyErr :: ProxyError}
   | -- | command authorization error - bad signature or non-existing SMP queue
     AUTH
+  | -- | command with the entity that was blocked
+    BLOCKED {blockInfo :: BlockingInfo}
   | -- | encryption/decryption error in proxy protocol
     CRYPTO
   | -- | SMP queue capacity is exceeded on the server
@@ -1210,17 +1214,41 @@ data ErrorType
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
     DUPLICATE_ -- not part of SMP protocol, used internally
-  deriving (Eq, Read, Show)
+  deriving (Eq, Show)
 
 instance StrEncoding ErrorType where
   strEncode = \case
+    BLOCK -> "BLOCK"
+    SESSION -> "SESSION"
     CMD e -> "CMD " <> bshow e
     PROXY e -> "PROXY " <> strEncode e
-    e -> bshow e
+    AUTH -> "AUTH"
+    BLOCKED info -> "BLOCKED " <> strEncode info
+    CRYPTO -> "CRYPTO"
+    QUOTA -> "QUOTA"
+    STORE e -> "STORE " <> encodeUtf8 (T.pack e)
+    NO_MSG -> "NO_MSG"
+    LARGE_MSG -> "LARGE_MSG"
+    EXPIRED -> "EXPIRED"
+    INTERNAL -> "INTERNAL"
+    DUPLICATE_ -> "DUPLICATE_"
   strP =
-    "CMD " *> (CMD <$> parseRead1)
-      <|> "PROXY " *> (PROXY <$> strP)
-      <|> parseRead1
+    A.choice
+      [ "BLOCK" $> BLOCK,
+        "SESSION" $> SESSION,
+        "CMD " *> (CMD <$> parseRead1),
+        "PROXY " *> (PROXY <$> strP),
+        "AUTH" $> AUTH,
+        "BLOCKED " *> strP,
+        "CRYPTO" $> CRYPTO,
+        "QUOTA" $> QUOTA,
+        "STORE " *> (STORE . T.unpack . safeDecodeUtf8 <$> A.takeByteString),
+        "NO_MSG" $> NO_MSG,
+        "LARGE_MSG" $> LARGE_MSG,
+        "EXPIRED" $> EXPIRED,
+        "INTERNAL" $> INTERNAL,
+        "DUPLICATE_" $> DUPLICATE_
+      ]
 
 -- | SMP command error type.
 data CommandError
@@ -1248,7 +1276,7 @@ data ProxyError
     BASIC_AUTH
   | -- no destination server error
     NO_SESSION
-  deriving (Eq, Read, Show)
+  deriving (Eq, Show)
 
 -- | SMP server errors.
 data BrokerErrorType
@@ -1265,6 +1293,82 @@ data BrokerErrorType
   | -- | command response timeout
     TIMEOUT
   deriving (Eq, Read, Show, Exception)
+
+data BlockingInfo = BlockingInfo
+  { reason :: BlockingReason,
+    restriction :: Maybe ClientRestriction
+  }
+  deriving (Eq, Show)
+
+data BlockingReason = BRSpam | BRContent
+  deriving (Eq, Show)
+
+data ClientRestriction = ClientRestriction
+  { restrictActions :: NonEmpty UserAction,
+    restrictUntil :: Maybe UTCTime
+  }
+  deriving (Eq, Show)
+
+data UserAction
+  = -- any file upload to servers with blocking record, detected on the recipient side, it may need to be ignored in super-peers.
+    UAUploadFile
+  | -- any action with blocked group - send messages, connect members, forward messages, etc.
+    UAGroupAction
+  | -- create group link, it needs to be ignored in directory service.
+    UACreatePublicGroup
+  | -- block sending any messages to servers with blocking record, it needs to be ignored in directory service
+    UASendMessage
+  deriving (Eq, Show)
+
+instance StrEncoding BlockingInfo where
+  strEncode BlockingInfo {reason, restriction} =
+    ("reason=" <> strEncode reason)
+      <> maybe "" (\r -> ",restriction=" <> strEncode r) restriction
+  strP = do
+    reason <- "reason=" *> strP
+    restriction <- optional $ ",restriction=" *> strP
+    pure BlockingInfo {reason, restriction}
+
+instance StrEncoding BlockingReason where
+  strEncode = \case
+    BRSpam -> "spam"
+    BRContent -> "content"
+  strP = "spam" $> BRSpam <|> "content" $> BRContent
+
+instance ToJSON BlockingReason where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON BlockingReason where
+  parseJSON = strParseJSON "BlockingReason"
+
+instance StrEncoding ClientRestriction where
+  strEncode ClientRestriction {restrictActions, restrictUntil} =
+    B.intercalate "+" (map strEncode $ L.toList restrictActions)
+      <> maybe ",permanent" (\t -> "until=" <> strEncode t) restrictUntil
+  strP = do
+    restrictActions <- L.fromList <$> strP `A.sepBy1'` A.char '+'
+    restrictUntil <- (",permanent" $> Nothing) <|> (",until=" *> strP)
+    pure ClientRestriction {restrictActions, restrictUntil}
+
+instance StrEncoding UserAction where
+  strEncode = \case
+    UAUploadFile -> "upload_file"
+    UAGroupAction -> "group_action"
+    UACreatePublicGroup -> "create_public_group"
+    UASendMessage -> "send_message"
+  strP =
+    "upload_file" $> UAUploadFile
+      <|> "group_action" $>  UAGroupAction
+      <|> "create_public_group" $> UACreatePublicGroup
+      <|> "send_message" $> UASendMessage
+
+instance ToJSON UserAction where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON UserAction where
+  parseJSON = strParseJSON "UserAction"
 
 -- | SMP transmission parser.
 transmissionP :: THandleParams v p -> Parser RawTransmission
@@ -1513,6 +1617,7 @@ instance Encoding ErrorType where
     CMD err -> "CMD " <> smpEncode err
     PROXY err -> "PROXY " <> smpEncode err
     AUTH -> "AUTH"
+    BLOCKED info -> "BLOCKED" <> smpEncode (strEncode info)
     CRYPTO -> "CRYPTO"
     QUOTA -> "QUOTA"
     STORE err -> "STORE " <> smpEncode err
@@ -1529,6 +1634,7 @@ instance Encoding ErrorType where
       "CMD" -> CMD <$> _smpP
       "PROXY" -> PROXY <$> _smpP
       "AUTH" -> pure AUTH
+      "BLOCKED" -> BLOCKED <$> (strDecode <$?> _smpP)
       "CRYPTO" -> pure CRYPTO
       "QUOTA" -> pure QUOTA
       "STORE" -> STORE <$> _smpP
@@ -1759,9 +1865,13 @@ tDecodeParseValidate THandleParams {sessionId, thVersion = v, implySessId} = \ca
 
 $(J.deriveJSON defaultJSON ''MsgFlags)
 
-$(J.deriveJSON (sumTypeJSON id) ''CommandError)
+$(J.deriveJSON (taggedObjectJSON id) ''CommandError)
 
-$(J.deriveJSON (sumTypeJSON id) ''BrokerErrorType)
+$(J.deriveJSON (taggedObjectJSON id) ''BrokerErrorType)
+
+$(J.deriveJSON defaultJSON ''ClientRestriction)
+
+$(J.deriveJSON defaultJSON ''BlockingInfo)
 
 -- run deriveJSON in one TH splice to allow mutual instance
 $(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''ErrorType])

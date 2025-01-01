@@ -21,6 +21,7 @@ module Simplex.Messaging.Server.QueueStore.STM
     addQueueNotifier,
     deleteQueueNotifier,
     suspendQueue,
+    blockQueue,
     updateQueueTime,
     deleteQueue',
     readQueueStore,
@@ -118,7 +119,17 @@ suspendQueue st sq =
   where
     qr = queueRec' sq
     suspend q = do
-      writeTVar qr $! Just q {status = QueueOff}
+      writeTVar qr $! Just q {status = EntityOff}
+      pure $ recipientId q
+
+blockQueue :: STMQueueStore s => s -> StoreQueue s -> BlockingInfo -> IO (Either ErrorType ())
+blockQueue st sq info = 
+  atomically (readQueueRec qr >>= mapM block)
+    $>>= \rId -> withLog "blockQueue" st (\sl -> logBlockQueue sl rId info)
+  where
+    qr = queueRec' sq
+    block q = do
+      writeTVar qr $ Just q {status = EntityBlocked info}
       pure $ recipientId q
 
 updateQueueTime :: STMQueueStore s => s -> StoreQueue s -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
@@ -177,6 +188,7 @@ readQueueStore f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLin
           SecureQueue qId sKey -> withQueue qId "SecureQueue" $ \q -> secureQueue st q sKey
           AddNotifier qId ntfCreds -> withQueue qId "AddNotifier" $ \q -> addQueueNotifier st q ntfCreds
           SuspendQueue qId -> withQueue qId "SuspendQueue" $ suspendQueue st
+          BlockQueue qId info -> withQueue qId "BlockQueue" $ \q -> blockQueue st q info
           DeleteQueue qId -> withQueue qId "DeleteQueue" $ deleteQueue st qId
           DeleteNotifier qId -> withQueue qId "DeleteNotifier" $ deleteQueueNotifier st
           UpdateTime qId t -> withQueue qId "UpdateTime" $ \q -> updateQueueTime st q t

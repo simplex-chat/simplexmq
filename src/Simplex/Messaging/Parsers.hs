@@ -78,6 +78,7 @@ parseRead2 = parseRead $ do
 
 wordEnd :: Char -> Bool
 wordEnd c = c == ' ' || c == '\n'
+{-# INLINE wordEnd #-}
 
 parseString :: (ByteString -> Either String a) -> (String -> a)
 parseString p = either error id . p . B.pack
