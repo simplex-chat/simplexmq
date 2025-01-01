@@ -1235,7 +1235,7 @@ client
         SKEY sKey ->
           withQueue $ \q QueueRec {sndSecure} ->
             (corrId,entId,) <$> if sndSecure then secureQueue_ q sKey else pure $ ERR AUTH
-        SEND flags msgBody -> withQueue $ sendMessage flags msgBody
+        SEND flags msgBody -> withQueue_ False $ sendMessage flags msgBody
         PING -> pure (corrId, NoEntity, PONG)
         RFWD encBlock -> (corrId, NoEntity,) <$> processForwardedCommand encBlock
       Cmd SNotifier NSUB -> Just <$> subscribeNotifications
@@ -1416,13 +1416,18 @@ client
                   Nothing -> incStat (msgGetNoMsg stats) $> ok
 
         withQueue :: (StoreQueue s -> QueueRec -> M (Transmission BrokerMsg)) -> M (Transmission BrokerMsg)
-        withQueue action = case q_ of
+        withQueue = withQueue_ True
+
+        withQueue_ :: Bool -> (StoreQueue s -> QueueRec -> M (Transmission BrokerMsg)) -> M (Transmission BrokerMsg)
+        withQueue_ queueNotBlocked action = case q_ of
           Nothing -> pure $ err INTERNAL
-          Just (q, qr@QueueRec {updatedAt}) -> do
-            t <- liftIO getSystemDate
-            if updatedAt == Just t
-              then action q qr
-              else liftIO (updateQueueTime ms q t) >>= either (pure . err) (action q)
+          Just (q, qr@QueueRec {status, updatedAt}) -> case status of
+            EntityBlocked info | queueNotBlocked -> pure $ err $ BLOCKED info
+            _ -> do
+              t <- liftIO getSystemDate
+              if updatedAt == Just t
+                then action q qr
+                else liftIO (updateQueueTime ms q t) >>= either (pure . err) (action q)
 
         subscribeNotifications :: M (Transmission BrokerMsg)
         subscribeNotifications = do
@@ -1496,7 +1501,9 @@ client
                 EntityOff -> do
                   incStat $ msgSentAuth stats
                   pure $ err AUTH
-                EntityBlocked _ -> undefined
+                EntityBlocked info -> do
+                  incStat $ msgSentBlock stats
+                  pure $ err $ BLOCKED info
                 EntityActive ->
                   case C.maxLenBS msgBody of
                     Left _ -> pure $ err LARGE_MSG

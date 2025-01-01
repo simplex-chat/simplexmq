@@ -57,7 +57,7 @@ import Simplex.Messaging.Protocol (CorrId (..), BlockingInfo, EntityId (..), Rcv
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, getRoundedSystemTime)
+import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, ServerEntityStatus (..), getRoundedSystemTime)
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -325,7 +325,7 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
               let THandleParams {thAuth} = thParams
               verifyXFTPTransmission ((,C.cbNonce (bs corrId)) <$> thAuth) sig_ signed fId cmd >>= \case
                 VRVerified req -> uncurry send =<< processXFTPRequest body req
-                VRFailed -> send (FRErr AUTH) Nothing
+                VRFailed e -> send (FRErr e) Nothing
             Left e -> send (FRErr e) Nothing
           where
             send resp = sendXFTPResponse (corrId, fId, resp)
@@ -359,7 +359,7 @@ randomDelay = do
     threadDelay $ (d * (1000 + pc)) `div` 1000
 #endif
 
-data VerificationResult = VRVerified XFTPRequest | VRFailed
+data VerificationResult = VRVerified XFTPRequest | VRFailed XFTPErrorType
 
 verifyXFTPTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
 verifyXFTPTransmission auth_ tAuth authorized fId cmd =
@@ -371,13 +371,19 @@ verifyXFTPTransmission auth_ tAuth authorized fId cmd =
     verifyCmd :: SFileParty p -> M VerificationResult
     verifyCmd party = do
       st <- asks store
-      atomically $ verify <$> getFile st party fId
+      atomically $ verify =<< getFile st party fId
       where
         verify = \case
-          Right (fr, k) -> XFTPReqCmd fId fr cmd `verifyWith` k
-          _ -> maybe False (dummyVerifyCmd Nothing authorized) tAuth `seq` VRFailed
+          Right (fr, k) -> result <$> readTVar (fileStatus fr)
+            where
+              result = \case
+                EntityActive -> XFTPReqCmd fId fr cmd `verifyWith` k
+                EntityBlocked info -> VRFailed $ BLOCKED info
+                EntityOff -> noFileAuth
+          Left _ -> pure noFileAuth
+        noFileAuth = maybe False (dummyVerifyCmd Nothing authorized) tAuth `seq` VRFailed AUTH
     -- TODO verify with DH authorization
-    req `verifyWith` k = if verifyCmdAuthorization auth_ tAuth authorized k then VRVerified req else VRFailed
+    req `verifyWith` k = if verifyCmdAuthorization auth_ tAuth authorized k then VRVerified req else VRFailed AUTH
 
 processXFTPRequest :: HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)
 processXFTPRequest HTTP2Body {bodyPart} = \case
@@ -394,7 +400,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     FACK -> noFile =<< ackFileReception fId fr
     -- it should never get to the commands below, they are passed in other constructors of XFTPRequest
     FNEW {} -> noFile $ FRErr INTERNAL
-    PING -> noFile FRPong
+    PING -> noFile $ FRErr INTERNAL
   XFTPReqPing -> noFile FRPong
   where
     noFile resp = pure (resp, Nothing)

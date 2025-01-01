@@ -123,7 +123,7 @@ suspendQueue st sq =
       pure $ recipientId q
 
 blockQueue :: STMQueueStore s => s -> StoreQueue s -> BlockingInfo -> IO (Either ErrorType ())
-blockQueue st sq info = 
+blockQueue st sq info =
   atomically (readQueueRec qr >>= mapM block)
     $>>= \rId -> withLog "blockQueue" st (\sl -> logBlockQueue sl rId info)
   where

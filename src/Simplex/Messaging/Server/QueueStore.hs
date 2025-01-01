@@ -56,7 +56,7 @@ instance StrEncoding ServerEntityStatus where
     "active" $> EntityActive
       <|> "blocked," *> (EntityBlocked <$> strP)
       <|> "off" $> EntityOff
-  
+
 newtype RoundedSystemTime = RoundedSystemTime Int64
   deriving (Eq, Ord, Show)
 

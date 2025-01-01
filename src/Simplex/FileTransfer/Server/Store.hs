@@ -115,7 +115,7 @@ deleteFile FileStore {files, recipients, usedStorage} senderId = do
 
 -- this function must be called after the file is deleted from the file system
 blockFile :: FileStore -> SenderId -> BlockingInfo -> Bool -> STM (Either XFTPErrorType ())
-blockFile st@FileStore {usedStorage} senderId info deleted =  
+blockFile st@FileStore {usedStorage} senderId info deleted =
   withFile st senderId $ \FileRec {fileInfo, fileStatus} -> do
     when deleted $ modifyTVar' usedStorage $ subtract (fromIntegral $ size fileInfo)
     writeTVar fileStatus $! EntityBlocked info

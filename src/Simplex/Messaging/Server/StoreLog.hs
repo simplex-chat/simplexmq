@@ -192,7 +192,7 @@ logSuspendQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
 logSuspendQueue s = writeStoreLogRecord s . SuspendQueue
 
 logBlockQueue :: StoreLog 'WriteMode -> QueueId -> BlockingInfo -> IO ()
-logBlockQueue s qId = writeStoreLogRecord s . BlockQueue qId
+logBlockQueue s qId info = writeStoreLogRecord s $ BlockQueue qId info
 
 logDeleteQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
 logDeleteQueue s = writeStoreLogRecord s . DeleteQueue

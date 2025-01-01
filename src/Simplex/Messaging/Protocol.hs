@@ -1329,6 +1329,10 @@ instance StrEncoding BlockingInfo where
     restriction <- optional $ ",restriction=" *> strP
     pure BlockingInfo {reason, restriction}
 
+instance Encoding BlockingInfo where
+  smpEncode = smpEncode . strEncode
+  smpP = strDecode <$?> smpP
+
 instance StrEncoding BlockingReason where
   strEncode = \case
     BRSpam -> "spam"
@@ -1617,7 +1621,7 @@ instance Encoding ErrorType where
     CMD err -> "CMD " <> smpEncode err
     PROXY err -> "PROXY " <> smpEncode err
     AUTH -> "AUTH"
-    BLOCKED info -> "BLOCKED" <> smpEncode (strEncode info)
+    BLOCKED info -> "BLOCKED" <> smpEncode info
     CRYPTO -> "CRYPTO"
     QUOTA -> "QUOTA"
     STORE err -> "STORE " <> smpEncode err
@@ -1634,7 +1638,7 @@ instance Encoding ErrorType where
       "CMD" -> CMD <$> _smpP
       "PROXY" -> PROXY <$> _smpP
       "AUTH" -> pure AUTH
-      "BLOCKED" -> BLOCKED <$> (strDecode <$?> _smpP)
+      "BLOCKED" -> BLOCKED <$> _smpP
       "CRYPTO" -> pure CRYPTO
       "QUOTA" -> pure QUOTA
       "STORE" -> STORE <$> _smpP
