@@ -10,7 +10,7 @@ import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
 testDBConnectInfo :: ConnectInfo
 testDBConnectInfo =
   defaultConnectInfo {
-    connectUser = "test_user",
+    connectUser = "test_agent_user",
     connectDatabase = "test_agent_db"
   }
 #endif

@@ -5,7 +5,6 @@
 
 module Simplex.Messaging.Agent.Store.Postgres
   ( createDBStore,
-    defaultSimplexConnectInfo,
     closeDBStore,
     execSQL
   )
@@ -28,13 +27,6 @@ import Simplex.Messaging.Util (ifM)
 import UnliftIO.Exception (onException)
 import UnliftIO.MVar
 import UnliftIO.STM
-
-defaultSimplexConnectInfo :: ConnectInfo
-defaultSimplexConnectInfo =
-  defaultConnectInfo
-    { connectUser = "simplex",
-      connectDatabase = "simplex_v6_3_client_db"
-    }
 
 -- | Create a new Postgres DBStore with the given connection info, schema name and migrations.
 -- This function creates the user and/or database passed in connectInfo if they do not exist
