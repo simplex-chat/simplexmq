@@ -31,7 +31,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import Data.Time (diffUTCTime, getCurrentTime)
-import Database.SQLite.Simple (FromRow, NamedParam, Query, ToRow)
+import Database.SQLite.Simple (FromRow, Query, ToRow)
 import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.FromField (FromField (..))
 import Database.SQLite.Simple.ToField (ToField (..))
