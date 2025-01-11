@@ -22,6 +22,7 @@ module Simplex.Messaging.Server.StoreLog
     logAddNotifier,
     logSuspendQueue,
     logBlockQueue,
+    logUnblockQueue,
     logDeleteQueue,
     logDeleteNotifier,
     logUpdateQueueTime,
@@ -58,6 +59,7 @@ data StoreLogRecord
   | AddNotifier QueueId NtfCreds
   | SuspendQueue QueueId
   | BlockQueue QueueId BlockingInfo
+  | UnblockQueue QueueId
   | DeleteQueue QueueId
   | DeleteNotifier QueueId
   | UpdateTime QueueId RoundedSystemTime
@@ -69,6 +71,7 @@ data SLRTag
   | AddNotifier_
   | SuspendQueue_
   | BlockQueue_
+  | UnblockQueue_
   | DeleteQueue_
   | DeleteNotifier_
   | UpdateTime_
@@ -113,6 +116,7 @@ instance StrEncoding SLRTag where
     AddNotifier_ -> "NOTIFIER"
     SuspendQueue_ -> "SUSPEND"
     BlockQueue_ -> "BLOCK"
+    UnblockQueue_ -> "UNBLOCK"
     DeleteQueue_ -> "DELETE"
     DeleteNotifier_ -> "NDELETE"
     UpdateTime_ -> "TIME"
@@ -124,6 +128,7 @@ instance StrEncoding SLRTag where
         "NOTIFIER" $> AddNotifier_,
         "SUSPEND" $> SuspendQueue_,
         "BLOCK" $> BlockQueue_,
+        "UNBLOCK" $> UnblockQueue_,
         "DELETE" $> DeleteQueue_,
         "NDELETE" $> DeleteNotifier_,
         "TIME" $> UpdateTime_
@@ -136,6 +141,7 @@ instance StrEncoding StoreLogRecord where
     AddNotifier rId ntfCreds -> strEncode (AddNotifier_, rId, ntfCreds)
     SuspendQueue rId -> strEncode (SuspendQueue_, rId)
     BlockQueue rId info -> strEncode (BlockQueue_, rId, info)
+    UnblockQueue rId -> strEncode (UnblockQueue_, rId)
     DeleteQueue rId -> strEncode (DeleteQueue_, rId)
     DeleteNotifier rId -> strEncode (DeleteNotifier_, rId)
     UpdateTime rId t ->  strEncode (UpdateTime_, rId, t)
@@ -147,6 +153,7 @@ instance StrEncoding StoreLogRecord where
       AddNotifier_ -> AddNotifier <$> strP_ <*> strP
       SuspendQueue_ -> SuspendQueue <$> strP
       BlockQueue_ -> BlockQueue <$> strP_ <*> strP
+      UnblockQueue_ -> UnblockQueue <$> strP
       DeleteQueue_ -> DeleteQueue <$> strP
       DeleteNotifier_ -> DeleteNotifier <$> strP
       UpdateTime_ -> UpdateTime <$> strP_ <*> strP
@@ -193,6 +200,9 @@ logSuspendQueue s = writeStoreLogRecord s . SuspendQueue
 
 logBlockQueue :: StoreLog 'WriteMode -> QueueId -> BlockingInfo -> IO ()
 logBlockQueue s qId info = writeStoreLogRecord s $ BlockQueue qId info
+
+logUnblockQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
+logUnblockQueue s = writeStoreLogRecord s . UnblockQueue
 
 logDeleteQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
 logDeleteQueue s = writeStoreLogRecord s . DeleteQueue

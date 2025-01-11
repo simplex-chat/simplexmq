@@ -869,6 +869,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                   Right () -> do
                     incStat . qBlocked =<< asks serverStats
                     liftIO $ hPutStrLn h "ok"
+              CPUnblock sId -> withAdminRole $ unliftIO u $ do
+                AMS _ st <- asks msgStore
+                r <- liftIO $ runExceptT $ do
+                  q <- ExceptT $ getQueue st SSender sId
+                  ExceptT $ unblockQueue st q
+                liftIO $ hPutStrLn h $ case r of
+                  Left e -> "error: " <> show e
+                  Right () -> "ok"
               CPSave -> withAdminRole $ withLock' (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer False

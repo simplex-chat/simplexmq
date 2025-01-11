@@ -78,6 +78,7 @@ serverTests = do
     testMsgExpireOnSend
     testMsgExpireOnInterval
     testMsgNOTExpireOnInterval
+  describe "Blocking queues" $ testBlockMessageQueue
 
 pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmission ErrorType BrokerMsg
 pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
@@ -994,9 +995,9 @@ testMsgExpireOnInterval =
             Nothing -> return ()
             Just _ -> error "nothing should be delivered"
 
-testMsgNOTExpireOnInterval :: SpecWith (ATransport, AMSType)
-testMsgNOTExpireOnInterval =
-  it "should NOT expire messages that are not received before messageTTL if expiry interval is large" $ \(ATransport (t :: TProxy c), msType) -> do
+testBlockMessageQueue :: SpecWith (ATransport, AMSType)
+testBlockMessageQueue =
+  it "should block and unblock message queues" $ \(ATransport (t :: TProxy c), msType) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     let cfg' = (cfgMS msType) {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 10000}}
@@ -1012,6 +1013,10 @@ testMsgNOTExpireOnInterval =
           1000 `timeout` tGet @SMPVersion @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
             Just _ -> error "nothing else should be delivered"
+
+testMsgNOTExpireOnInterval :: SpecWith (ATransport, AMSType)
+testMsgNOTExpireOnInterval =
+  it "should NOT expire messages that are not received before messageTTL if expiry interval is large" $ \(ATransport (t :: TProxy c), msType) -> do
 
 samplePubKey :: C.APublicVerifyKey
 samplePubKey = C.APublicVerifyKey C.SEd25519 "MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ6buiZJVgSpQWsucXq7U6zjMgY="

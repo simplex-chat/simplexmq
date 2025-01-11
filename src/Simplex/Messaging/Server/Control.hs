@@ -23,6 +23,7 @@ data ControlProtocol
   | CPServerInfo
   | CPDelete SenderId
   | CPBlock SenderId BlockingInfo
+  | CPUnblock SenderId
   | CPSave
   | CPHelp
   | CPQuit
@@ -42,6 +43,7 @@ instance StrEncoding ControlProtocol where
     CPServerInfo -> "server-info"
     CPDelete sId -> "delete " <> strEncode sId
     CPBlock sId info -> "block " <> strEncode sId <> " " <> strEncode info
+    CPUnblock sId -> "unblock " <> strEncode sId
     CPSave -> "save"
     CPHelp -> "help"
     CPQuit -> "quit"
@@ -60,6 +62,7 @@ instance StrEncoding ControlProtocol where
       "server-info" -> pure CPServerInfo
       "delete" -> CPDelete <$> _strP
       "block" -> CPBlock <$> _strP <*> _strP
+      "unblock" -> CPUnblock <$> _strP
       "save" -> pure CPSave
       "help" -> pure CPHelp
       "quit" -> pure CPQuit
