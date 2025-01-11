@@ -71,6 +71,7 @@ module Simplex.Messaging.Protocol
     ProxyError (..),
     BrokerErrorType (..),
     BlockingInfo (..),
+    BlockingReason (..),
     Transmission,
     TransmissionAuth (..),
     SignedTransmission,
@@ -1310,14 +1311,10 @@ data ClientRestriction = ClientRestriction
   deriving (Eq, Show)
 
 data UserAction
-  = -- any file upload to servers with blocking record, detected on the recipient side, it may need to be ignored in super-peers.
+  = -- any file upload to operator servers with blocking record, detected on the recipient side, it may need to be ignored in super-peers.
     UAUploadFile
-  | -- any action with blocked group - send messages, connect members, forward messages, etc.
-    UAGroupAction
-  | -- create group link, it needs to be ignored in directory service.
-    UACreatePublicGroup
-  | -- block sending any messages to servers with blocking record, it needs to be ignored in directory service
-    UASendMessage
+  | -- create contact addresses on operator server.
+    UACreateContact
   deriving (Eq, Show)
 
 instance StrEncoding BlockingInfo where
@@ -1358,14 +1355,10 @@ instance StrEncoding ClientRestriction where
 instance StrEncoding UserAction where
   strEncode = \case
     UAUploadFile -> "upload_file"
-    UAGroupAction -> "group_action"
-    UACreatePublicGroup -> "create_public_group"
-    UASendMessage -> "send_message"
+    UACreateContact -> "create_contact"
   strP =
     "upload_file" $> UAUploadFile
-      <|> "group_action" $>  UAGroupAction
-      <|> "create_public_group" $> UACreatePublicGroup
-      <|> "send_message" $> UASendMessage
+      <|> "create_contact" $> UACreateContact
 
 instance ToJSON UserAction where
   toJSON = strToJSON
