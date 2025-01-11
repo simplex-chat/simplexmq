@@ -1543,7 +1543,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       | otherwise -> e END_
     INFO info -> e (INFO_, ' ', info)
     OK -> e OK_
-    ERR err -> e (ERR_, ' ', err)
+    ERR err -> case err of
+      BLOCKED _ | v < blockedEntityErrorSMPVersion -> e (ERR_, ' ', AUTH)
+      _ -> e (ERR_, ' ', err)
     PONG -> e PONG_
     where
       e :: Encoding a => a -> ByteString

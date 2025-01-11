@@ -49,6 +49,7 @@ module Simplex.Messaging.Transport
     sndAuthKeySMPVersion,
     deletedEventSMPVersion,
     encryptedBlockSMPVersion,
+    blockedEntityErrorSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -142,6 +143,7 @@ smpBlockSize = 16384
 -- 9 - faster handshake: SKEY command for sender to secure queue
 -- 10 - DELD event to subscriber when queue is deleted via another connnection
 -- 11 - additional encryption of transport blocks with forward secrecy (9/14/2024)
+-- 12 - BLOCKED error for blocked queues (1/11/2025)
 
 data SMPVersion
 
@@ -178,14 +180,17 @@ deletedEventSMPVersion = VersionSMP 10
 encryptedBlockSMPVersion :: VersionSMP
 encryptedBlockSMPVersion = VersionSMP 11
 
+blockedEntityErrorSMPVersion :: VersionSMP
+blockedEntityErrorSMPVersion = VersionSMP 12
+
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 11
+currentClientSMPRelayVersion = VersionSMP 12
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 11
+currentServerSMPRelayVersion = VersionSMP 12
 
 -- Max SMP protocol version to be used in e2e encrypted
 -- connection between client and server, as defined by SMP proxy.
@@ -193,7 +198,7 @@ currentServerSMPRelayVersion = VersionSMP 11
 -- to prevent client version fingerprinting by the
 -- destination relays when clients upgrade at different times.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 9
+proxiedSMPRelayVersion = VersionSMP 11
 
 -- minimal supported protocol version is 4
 -- TODO remove code that supports sending commands without batching
