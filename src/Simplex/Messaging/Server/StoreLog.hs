@@ -21,6 +21,8 @@ module Simplex.Messaging.Server.StoreLog
     logSecureQueue,
     logAddNotifier,
     logSuspendQueue,
+    logBlockQueue,
+    logUnblockQueue,
     logDeleteQueue,
     logDeleteNotifier,
     logUpdateQueueTime,
@@ -33,9 +35,9 @@ import Control.Applicative (optional, (<|>))
 import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Control.Logger.Simple
-import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
+import Data.Functor (($>))
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
@@ -56,6 +58,8 @@ data StoreLogRecord
   | SecureQueue QueueId SndPublicAuthKey
   | AddNotifier QueueId NtfCreds
   | SuspendQueue QueueId
+  | BlockQueue QueueId BlockingInfo
+  | UnblockQueue QueueId
   | DeleteQueue QueueId
   | DeleteNotifier QueueId
   | UpdateTime QueueId RoundedSystemTime
@@ -66,12 +70,14 @@ data SLRTag
   | SecureQueue_
   | AddNotifier_
   | SuspendQueue_
+  | BlockQueue_
+  | UnblockQueue_
   | DeleteQueue_
   | DeleteNotifier_
   | UpdateTime_
 
 instance StrEncoding QueueRec where
-  strEncode QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, updatedAt} =
+  strEncode QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt} =
     B.unwords
       [ "rid=" <> strEncode recipientId,
         "rk=" <> strEncode recipientKey,
@@ -82,10 +88,14 @@ instance StrEncoding QueueRec where
       <> sndSecureStr
       <> maybe "" notifierStr notifier
       <> maybe "" updatedAtStr updatedAt
+      <> statusStr
     where
       sndSecureStr = if sndSecure then " sndSecure=" <> strEncode sndSecure else ""
       notifierStr ntfCreds = " notifier=" <> strEncode ntfCreds
       updatedAtStr t = " updated_at=" <> strEncode t
+      statusStr = case status of
+        EntityActive -> ""
+        _ -> " status=" <> strEncode status
 
   strP = do
     recipientId <- "rid=" *> strP_
@@ -96,7 +106,8 @@ instance StrEncoding QueueRec where
     sndSecure <- (" sndSecure=" *> strP) <|> pure False
     notifier <- optional $ " notifier=" *> strP
     updatedAt <- optional $ " updated_at=" *> strP
-    pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status = QueueActive, updatedAt}
+    status <- (" status=" *> strP) <|> pure EntityActive
+    pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt}
 
 instance StrEncoding SLRTag where
   strEncode = \case
@@ -104,20 +115,24 @@ instance StrEncoding SLRTag where
     SecureQueue_ -> "SECURE"
     AddNotifier_ -> "NOTIFIER"
     SuspendQueue_ -> "SUSPEND"
+    BlockQueue_ -> "BLOCK"
+    UnblockQueue_ -> "UNBLOCK"
     DeleteQueue_ -> "DELETE"
     DeleteNotifier_ -> "NDELETE"
     UpdateTime_ -> "TIME"
 
   strP =
-    A.takeTill (== ' ') >>= \case
-      "CREATE" -> pure CreateQueue_
-      "SECURE" -> pure SecureQueue_
-      "NOTIFIER" -> pure AddNotifier_
-      "SUSPEND" -> pure SuspendQueue_
-      "DELETE" -> pure DeleteQueue_
-      "NDELETE" -> pure DeleteNotifier_
-      "TIME" -> pure UpdateTime_
-      s -> fail $ "invalid log record tag: " <> B.unpack s
+    A.choice
+      [ "CREATE" $> CreateQueue_,
+        "SECURE" $> SecureQueue_,
+        "NOTIFIER" $> AddNotifier_,
+        "SUSPEND" $> SuspendQueue_,
+        "BLOCK" $> BlockQueue_,
+        "UNBLOCK" $> UnblockQueue_,
+        "DELETE" $> DeleteQueue_,
+        "NDELETE" $> DeleteNotifier_,
+        "TIME" $> UpdateTime_
+      ]
 
 instance StrEncoding StoreLogRecord where
   strEncode = \case
@@ -125,6 +140,8 @@ instance StrEncoding StoreLogRecord where
     SecureQueue rId sKey -> strEncode (SecureQueue_, rId, sKey)
     AddNotifier rId ntfCreds -> strEncode (AddNotifier_, rId, ntfCreds)
     SuspendQueue rId -> strEncode (SuspendQueue_, rId)
+    BlockQueue rId info -> strEncode (BlockQueue_, rId, info)
+    UnblockQueue rId -> strEncode (UnblockQueue_, rId)
     DeleteQueue rId -> strEncode (DeleteQueue_, rId)
     DeleteNotifier rId -> strEncode (DeleteNotifier_, rId)
     UpdateTime rId t ->  strEncode (UpdateTime_, rId, t)
@@ -135,6 +152,8 @@ instance StrEncoding StoreLogRecord where
       SecureQueue_ -> SecureQueue <$> strP_ <*> strP
       AddNotifier_ -> AddNotifier <$> strP_ <*> strP
       SuspendQueue_ -> SuspendQueue <$> strP
+      BlockQueue_ -> BlockQueue <$> strP_ <*> strP
+      UnblockQueue_ -> UnblockQueue <$> strP
       DeleteQueue_ -> DeleteQueue <$> strP
       DeleteNotifier_ -> DeleteNotifier <$> strP
       UpdateTime_ -> UpdateTime <$> strP_ <*> strP
@@ -178,6 +197,12 @@ logAddNotifier s qId ntfCreds = writeStoreLogRecord s $ AddNotifier qId ntfCreds
 
 logSuspendQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
 logSuspendQueue s = writeStoreLogRecord s . SuspendQueue
+
+logBlockQueue :: StoreLog 'WriteMode -> QueueId -> BlockingInfo -> IO ()
+logBlockQueue s qId info = writeStoreLogRecord s $ BlockQueue qId info
+
+logUnblockQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
+logUnblockQueue s = writeStoreLogRecord s . UnblockQueue
 
 logDeleteQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
 logDeleteQueue s = writeStoreLogRecord s . DeleteQueue
@@ -228,6 +253,5 @@ writeQueueStore s st = readTVarIO (activeMsgQueues st) >>= mapM_ writeQueue . M.
   where
     writeQueue (rId, q) =
       readTVarIO (queueRec' q) >>= \case
-        Just q' -> when (active q') $ logCreateQueue s q' -- TODO we should log suspended queues when we use them
+        Just q' -> logCreateQueue s q'
         Nothing -> atomically $ TM.delete rId $ activeMsgQueues st
-    active QueueRec {status} = status == QueueActive

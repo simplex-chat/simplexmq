@@ -11,6 +11,7 @@
 module Simplex.FileTransfer.Transport
   ( supportedFileServerVRange,
     authCmdsXFTPVersion,
+    blockedFilesXFTPVersion,
     xftpClientHandshakeStub,
     supportedXFTPhandshakes,
     XFTPClientHandshake (..),
@@ -33,7 +34,6 @@ module Simplex.FileTransfer.Transport
   )
 where
 
-import Control.Applicative ((<|>))
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -57,7 +57,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
-import Simplex.Messaging.Protocol (CommandError)
+import Simplex.Messaging.Protocol (BlockingInfo, CommandError)
 import Simplex.Messaging.Transport (ALPN, SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Transport.HTTP2.File
 import Simplex.Messaging.Util (bshow, tshow)
@@ -92,8 +92,11 @@ initialXFTPVersion = VersionXFTP 1
 authCmdsXFTPVersion :: VersionXFTP
 authCmdsXFTPVersion = VersionXFTP 2
 
+blockedFilesXFTPVersion :: VersionXFTP
+blockedFilesXFTPVersion = VersionXFTP 3
+
 currentXFTPVersion :: VersionXFTP
-currentXFTPVersion = VersionXFTP 2
+currentXFTPVersion = VersionXFTP 3
 
 supportedFileServerVRange :: VersionRangeXFTP
 supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion
@@ -211,6 +214,8 @@ data XFTPErrorType
     CMD {cmdErr :: CommandError}
   | -- | command authorization error - bad signature or non-existing SMP queue
     AUTH
+  | -- | command with the entity that was blocked
+    BLOCKED {blockInfo :: BlockingInfo}
   | -- | incorrent file size
     SIZE
   | -- | storage quota exceeded
@@ -231,15 +236,46 @@ data XFTPErrorType
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
     DUPLICATE_ -- not part of SMP protocol, used internally
-  deriving (Eq, Read, Show)
+  deriving (Eq, Show)
 
 instance StrEncoding XFTPErrorType where
   strEncode = \case
+    BLOCK -> "BLOCK"
+    SESSION -> "SESSION"
+    HANDSHAKE -> "HANDSHAKE"
     CMD e -> "CMD " <> bshow e
-    e -> bshow e
+    AUTH -> "AUTH"
+    BLOCKED info -> "BLOCKED " <> strEncode info
+    SIZE -> "SIZE"
+    QUOTA -> "QUOTA"
+    DIGEST -> "DIGEST"
+    CRYPTO -> "CRYPTO"
+    NO_FILE -> "NO_FILE"
+    HAS_FILE -> "HAS_FILE"
+    FILE_IO -> "FILE_IO"
+    TIMEOUT -> "TIMEOUT"
+    INTERNAL -> "INTERNAL"
+    DUPLICATE_ -> "DUPLICATE_"
+
   strP =
-    "CMD " *> (CMD <$> parseRead1)
-      <|> parseRead1
+    A.takeTill (== ' ') >>= \case
+      "BLOCK" -> pure BLOCK
+      "SESSION" -> pure SESSION
+      "HANDSHAKE" -> pure HANDSHAKE
+      "CMD" -> CMD <$> parseRead1
+      "AUTH" -> pure AUTH
+      "BLOCKED" -> BLOCKED <$> _strP
+      "SIZE" -> pure SIZE
+      "QUOTA" -> pure QUOTA
+      "DIGEST" -> pure DIGEST
+      "CRYPTO" -> pure CRYPTO
+      "NO_FILE" -> pure NO_FILE
+      "HAS_FILE" -> pure HAS_FILE
+      "FILE_IO" -> pure FILE_IO
+      "TIMEOUT" -> pure TIMEOUT
+      "INTERNAL" -> pure INTERNAL
+      "DUPLICATE_" -> pure DUPLICATE_
+      _ -> fail "bad error type"
 
 instance Encoding XFTPErrorType where
   smpEncode = \case
@@ -248,6 +284,7 @@ instance Encoding XFTPErrorType where
     HANDSHAKE -> "HANDSHAKE"
     CMD err -> "CMD " <> smpEncode err
     AUTH -> "AUTH"
+    BLOCKED info -> "BLOCKED " <> smpEncode info
     SIZE -> "SIZE"
     QUOTA -> "QUOTA"
     DIGEST -> "DIGEST"
@@ -266,6 +303,7 @@ instance Encoding XFTPErrorType where
       "HANDSHAKE" -> pure HANDSHAKE
       "CMD" -> CMD <$> _smpP
       "AUTH" -> pure AUTH
+      "BLOCKED" -> BLOCKED <$> _smpP
       "SIZE" -> pure SIZE
       "QUOTA" -> pure QUOTA
       "DIGEST" -> pure DIGEST

@@ -849,16 +849,41 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                               SubPending -> (c1, c2 + 1, c3, c4)
                               SubThread _ -> (c1, c2, c3 + 1, c4)
                           ProhibitSub -> pure (c1, c2, c3, c4 + 1)
-              CPDelete qId -> withUserRole $ unliftIO u $ do
+              CPDelete sId -> withUserRole $ unliftIO u $ do
                 AMS _ st <- asks msgStore
                 r <- liftIO $ runExceptT $ do
-                  (q, qr) <- ExceptT (getQueueRec st SSender qId) `catchE` \_ -> ExceptT (getQueueRec st SRecipient qId)
+                  (q, qr) <- ExceptT $ getQueueRec st SSender sId
                   ExceptT $ deleteQueueSize st (recipientId qr) q
                 case r of
                   Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
                   Right (qr, numDeleted) -> do
                     updateDeletedStats qr
                     liftIO $ hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
+              CPStatus sId -> withUserRole $ unliftIO u $ do
+                AMS _ st <- asks msgStore
+                q <- liftIO $ getQueueRec st SSender sId
+                liftIO $ hPutStrLn h $ case q of
+                  Left e -> "error: " <> show e
+                  Right (_, QueueRec {sndSecure, status, updatedAt}) ->
+                    "status: " <> show status <> ", updatedAt: " <> show updatedAt <> ", sndSecure: " <> show sndSecure
+              CPBlock sId info -> withUserRole $ unliftIO u $ do
+                AMS _ st <- asks msgStore
+                r <- liftIO $ runExceptT $ do
+                  q <- ExceptT $ getQueue st SSender sId
+                  ExceptT $ blockQueue st q info
+                case r of
+                  Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
+                  Right () -> do
+                    incStat . qBlocked =<< asks serverStats
+                    liftIO $ hPutStrLn h "ok"
+              CPUnblock sId -> withUserRole $ unliftIO u $ do
+                AMS _ st <- asks msgStore
+                r <- liftIO $ runExceptT $ do
+                  q <- ExceptT $ getQueue st SSender sId
+                  ExceptT $ unblockQueue st q
+                liftIO $ hPutStrLn h $ case r of
+                  Left e -> "error: " <> show e
+                  Right () -> "ok"
               CPSave -> withAdminRole $ withLock' (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer False
@@ -1225,7 +1250,7 @@ client
         SKEY sKey ->
           withQueue $ \q QueueRec {sndSecure} ->
             (corrId,entId,) <$> if sndSecure then secureQueue_ q sKey else pure $ ERR AUTH
-        SEND flags msgBody -> withQueue $ sendMessage flags msgBody
+        SEND flags msgBody -> withQueue_ False $ sendMessage flags msgBody
         PING -> pure (corrId, NoEntity, PONG)
         RFWD encBlock -> (corrId, NoEntity,) <$> processForwardedCommand encBlock
       Cmd SNotifier NSUB -> Just <$> subscribeNotifications
@@ -1247,7 +1272,7 @@ client
           NKEY nKey dhKey -> withQueue $ \q _ -> addQueueNotifier_ q nKey dhKey
           NDEL -> withQueue $ \q _ -> deleteQueueNotifier_ q
           OFF -> maybe (pure $ err INTERNAL) suspendQueue_ q_
-          DEL -> maybe (pure $ err INTERNAL) delQueueAndMsgs q_          
+          DEL -> maybe (pure $ err INTERNAL) delQueueAndMsgs q_
           QUE -> withQueue $ \q qr -> (corrId,entId,) <$> getQueueInfo q qr
       where
         createQueue :: RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> SenderCanSecure -> M (Transmission BrokerMsg)
@@ -1264,7 +1289,7 @@ client
                     rcvDhSecret,
                     senderKey = Nothing,
                     notifier = Nothing,
-                    status = QueueActive,
+                    status = EntityActive,
                     sndSecure,
                     updatedAt
                   }
@@ -1406,13 +1431,18 @@ client
                   Nothing -> incStat (msgGetNoMsg stats) $> ok
 
         withQueue :: (StoreQueue s -> QueueRec -> M (Transmission BrokerMsg)) -> M (Transmission BrokerMsg)
-        withQueue action = case q_ of
+        withQueue = withQueue_ True
+
+        withQueue_ :: Bool -> (StoreQueue s -> QueueRec -> M (Transmission BrokerMsg)) -> M (Transmission BrokerMsg)
+        withQueue_ queueNotBlocked action = case q_ of
           Nothing -> pure $ err INTERNAL
-          Just (q, qr@QueueRec {updatedAt}) -> do
-            t <- liftIO getSystemDate
-            if updatedAt == Just t
-              then action q qr
-              else liftIO (updateQueueTime ms q t) >>= either (pure . err) (action q)
+          Just (q, qr@QueueRec {status, updatedAt}) -> case status of
+            EntityBlocked info | queueNotBlocked -> pure $ err $ BLOCKED info
+            _ -> do
+              t <- liftIO getSystemDate
+              if updatedAt == Just t
+                then action q qr
+                else liftIO (updateQueueTime ms q t) >>= either (pure . err) (action q)
 
         subscribeNotifications :: M (Transmission BrokerMsg)
         subscribeNotifications = do
@@ -1483,10 +1513,13 @@ client
           | otherwise = do
               stats <- asks serverStats
               case status qr of
-                QueueOff -> do
+                EntityOff -> do
                   incStat $ msgSentAuth stats
                   pure $ err AUTH
-                QueueActive ->
+                EntityBlocked info -> do
+                  incStat $ msgSentBlock stats
+                  pure $ err $ BLOCKED info
+                EntityActive ->
                   case C.maxLenBS msgBody of
                     Left _ -> pure $ err LARGE_MSG
                     Right body -> do
@@ -1734,7 +1767,7 @@ updateDeletedStats q = do
   let delSel = if isNothing (senderKey q) then qDeletedNew else qDeletedSecured
   incStat $ delSel stats
   incStat $ qDeletedAll stats
-  incStat $ qCount stats
+  liftIO $ atomicModifyIORef'_ (qCount stats) (subtract 1)
 
 incStat :: MonadIO m => IORef Int -> m ()
 incStat r = liftIO $ atomicModifyIORef'_ r (+ 1)
