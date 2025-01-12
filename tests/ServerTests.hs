@@ -41,11 +41,12 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
-import Simplex.Messaging.Server.StoreLog (closeStoreLog)
+import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (whenM)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
+import System.IO (IOMode (..), withFile)
 import System.TimeIt (timeItT)
 import System.Timeout
 import Test.HUnit
@@ -995,8 +996,8 @@ testMsgExpireOnInterval =
             Nothing -> return ()
             Just _ -> error "nothing should be delivered"
 
-testBlockMessageQueue :: SpecWith (ATransport, AMSType)
-testBlockMessageQueue =
+testMsgNOTExpireOnInterval :: SpecWith (ATransport, AMSType)
+testMsgNOTExpireOnInterval =
   it "should block and unblock message queues" $ \(ATransport (t :: TProxy c), msType) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -1014,9 +1015,29 @@ testBlockMessageQueue =
             Nothing -> return ()
             Just _ -> error "nothing else should be delivered"
 
-testMsgNOTExpireOnInterval :: SpecWith (ATransport, AMSType)
-testMsgNOTExpireOnInterval =
-  it "should NOT expire messages that are not received before messageTTL if expiry interval is large" $ \(ATransport (t :: TProxy c), msType) -> do
+testBlockMessageQueue :: SpecWith (ATransport, AMSType)
+testBlockMessageQueue =
+  it "should return BLOCKED error when queue is blocked" $ \(at@(ATransport (t :: TProxy c)), msType) -> do
+    g <- C.newRandom
+    (rId, sId) <- withSmpServerStoreLogOnMS at msType testPort $ runTest t $ \h -> do
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+      (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "abcd" rId1 (Ids rId sId _srvDh) <- signSendRecv h rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe True)
+      (rId1, NoEntity) #== "creates queue"
+      pure (rId, sId)
+
+    withFile testStoreLogFile AppendMode $ \h -> B.hPutStrLn h $ strEncode $ BlockQueue rId $ BlockingInfo BRContent
+
+    withSmpServerStoreLogOnMS at msType testPort $ runTest t $ \h -> do
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+      Resp "dabc" sId2 (ERR (BLOCKED (BlockingInfo BRContent))) <- signSendRecv h sKey ("dabc", sId, SKEY sPub)
+      (sId2, sId) #== "same queue ID in response"
+  where
+    runTest :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a
+    runTest _ test' server = do
+      a <- testSMPClient test'
+      killThread server
+      pure a
 
 samplePubKey :: C.APublicVerifyKey
 samplePubKey = C.APublicVerifyKey C.SEd25519 "MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ6buiZJVgSpQWsucXq7U6zjMgY="

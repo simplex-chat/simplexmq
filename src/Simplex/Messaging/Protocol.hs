@@ -198,7 +198,6 @@ import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isPrint, isSpace)
-import Data.Time.Clock (UTCTime)
 import Data.Constraint (Dict (..))
 import Data.Functor (($>))
 import Data.Kind
@@ -1296,39 +1295,22 @@ data BrokerErrorType
   deriving (Eq, Read, Show, Exception)
 
 data BlockingInfo = BlockingInfo
-  { reason :: BlockingReason,
-    restriction :: Maybe ClientRestriction
+  { reason :: BlockingReason
   }
   deriving (Eq, Show)
 
 data BlockingReason = BRSpam | BRContent
   deriving (Eq, Show)
 
-data ClientRestriction = ClientRestriction
-  { restrictActions :: NonEmpty UserAction,
-    restrictUntil :: Maybe UTCTime
-  }
-  deriving (Eq, Show)
-
-data UserAction
-  = -- any file upload to operator servers with blocking record, detected on the recipient side, it may need to be ignored in super-peers.
-    UAUploadFile
-  | -- create contact addresses on operator server.
-    UACreateContact
-  deriving (Eq, Show)
-
 instance StrEncoding BlockingInfo where
-  strEncode BlockingInfo {reason, restriction} =
-    ("reason=" <> strEncode reason)
-      <> maybe "" (\r -> ",restriction=" <> strEncode r) restriction
+  strEncode BlockingInfo {reason} = "reason=" <> strEncode reason
   strP = do
     reason <- "reason=" *> strP
-    restriction <- optional $ ",restriction=" *> strP
-    pure BlockingInfo {reason, restriction}
+    pure BlockingInfo {reason}
 
 instance Encoding BlockingInfo where
-  smpEncode = smpEncode . strEncode
-  smpP = strDecode <$?> smpP
+  smpEncode = strEncode
+  smpP = strP
 
 instance StrEncoding BlockingReason where
   strEncode = \case
@@ -1342,30 +1324,6 @@ instance ToJSON BlockingReason where
 
 instance FromJSON BlockingReason where
   parseJSON = strParseJSON "BlockingReason"
-
-instance StrEncoding ClientRestriction where
-  strEncode ClientRestriction {restrictActions, restrictUntil} =
-    B.intercalate "+" (map strEncode $ L.toList restrictActions)
-      <> maybe ",permanent" (\t -> "until=" <> strEncode t) restrictUntil
-  strP = do
-    restrictActions <- L.fromList <$> strP `A.sepBy1'` A.char '+'
-    restrictUntil <- (",permanent" $> Nothing) <|> (",until=" *> strP)
-    pure ClientRestriction {restrictActions, restrictUntil}
-
-instance StrEncoding UserAction where
-  strEncode = \case
-    UAUploadFile -> "upload_file"
-    UACreateContact -> "create_contact"
-  strP =
-    "upload_file" $> UAUploadFile
-      <|> "create_contact" $> UACreateContact
-
-instance ToJSON UserAction where
-  toJSON = strToJSON
-  toEncoding = strToJEncoding
-
-instance FromJSON UserAction where
-  parseJSON = strParseJSON "UserAction"
 
 -- | SMP transmission parser.
 transmissionP :: THandleParams v p -> Parser RawTransmission
@@ -1616,7 +1574,7 @@ instance Encoding ErrorType where
     CMD err -> "CMD " <> smpEncode err
     PROXY err -> "PROXY " <> smpEncode err
     AUTH -> "AUTH"
-    BLOCKED info -> "BLOCKED" <> smpEncode info
+    BLOCKED info -> "BLOCKED " <> smpEncode info
     CRYPTO -> "CRYPTO"
     QUOTA -> "QUOTA"
     STORE err -> "STORE " <> smpEncode err
@@ -1867,8 +1825,6 @@ $(J.deriveJSON defaultJSON ''MsgFlags)
 $(J.deriveJSON (taggedObjectJSON id) ''CommandError)
 
 $(J.deriveJSON (taggedObjectJSON id) ''BrokerErrorType)
-
-$(J.deriveJSON defaultJSON ''ClientRestriction)
 
 $(J.deriveJSON defaultJSON ''BlockingInfo)
 

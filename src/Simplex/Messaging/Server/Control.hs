@@ -22,6 +22,7 @@ data ControlProtocol
   | CPSocketThreads
   | CPServerInfo
   | CPDelete SenderId
+  | CPStatus SenderId
   | CPBlock SenderId BlockingInfo
   | CPUnblock SenderId
   | CPSave
@@ -42,6 +43,7 @@ instance StrEncoding ControlProtocol where
     CPSocketThreads -> "socket-threads"
     CPServerInfo -> "server-info"
     CPDelete sId -> "delete " <> strEncode sId
+    CPStatus sId -> "status " <> strEncode sId
     CPBlock sId info -> "block " <> strEncode sId <> " " <> strEncode info
     CPUnblock sId -> "unblock " <> strEncode sId
     CPSave -> "save"
@@ -61,6 +63,7 @@ instance StrEncoding ControlProtocol where
       "socket-threads" -> pure CPSocketThreads
       "server-info" -> pure CPServerInfo
       "delete" -> CPDelete <$> _strP
+      "status" -> CPStatus <$> _strP
       "block" -> CPBlock <$> _strP <*> _strP
       "unblock" -> CPUnblock <$> _strP
       "save" -> pure CPSave

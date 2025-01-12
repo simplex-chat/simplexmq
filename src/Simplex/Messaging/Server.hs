@@ -859,6 +859,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                   Right (qr, numDeleted) -> do
                     updateDeletedStats qr
                     liftIO $ hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
+              CPStatus sId -> withUserRole $ unliftIO u $ do
+                AMS _ st <- asks msgStore
+                q <- liftIO $ getQueueRec st SSender sId
+                liftIO $ hPutStrLn h $ case q of
+                  Left e -> "error: " <> show e
+                  Right (_, QueueRec {sndSecure, status, updatedAt}) ->
+                    "status: " <> show status <> ", updatedAt: " <> show updatedAt <> ", sndSecure: " <> show sndSecure
               CPBlock sId info -> withUserRole $ unliftIO u $ do
                 AMS _ st <- asks msgStore
                 r <- liftIO $ runExceptT $ do
@@ -869,7 +876,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                   Right () -> do
                     incStat . qBlocked =<< asks serverStats
                     liftIO $ hPutStrLn h "ok"
-              CPUnblock sId -> withAdminRole $ unliftIO u $ do
+              CPUnblock sId -> withUserRole $ unliftIO u $ do
                 AMS _ st <- asks msgStore
                 r <- liftIO $ runExceptT $ do
                   q <- ExceptT $ getQueue st SSender sId
