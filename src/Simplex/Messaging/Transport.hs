@@ -198,7 +198,7 @@ currentServerSMPRelayVersion = VersionSMP 12
 -- to prevent client version fingerprinting by the
 -- destination relays when clients upgrade at different times.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 11
+proxiedSMPRelayVersion = VersionSMP 12
 
 -- minimal supported protocol version is 4
 -- TODO remove code that supports sending commands without batching
