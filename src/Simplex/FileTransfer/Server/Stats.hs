@@ -116,10 +116,12 @@ instance StrEncoding FileServerStatsData where
     _filesUploaded <- "filesUploaded=" *> strP <* A.endOfLine
     _filesExpired <- "filesExpired=" *> strP <* A.endOfLine <|> pure 0
     _filesDeleted <- "filesDeleted=" *> strP <* A.endOfLine
-    _filesBlocked <- "filesBlocked=" *> strP <* A.endOfLine
+    _filesBlocked <- opt "filesBlocked="
     _filesCount <- "filesCount=" *> strP <* A.endOfLine <|> pure 0
     _filesSize <- "filesSize=" *> strP <* A.endOfLine <|> pure 0
     _filesDownloaded <- "filesDownloaded:" *> A.endOfLine *> strP <* A.endOfLine
     _fileDownloads <- "fileDownloads=" *> strP <* A.endOfLine
     _fileDownloadAcks <- "fileDownloadAcks=" *> strP <* A.endOfLine
     pure FileServerStatsData {_fromTime, _filesCreated, _fileRecipients, _filesUploaded, _filesExpired, _filesDeleted, _filesBlocked, _filesDownloaded, _fileDownloads, _fileDownloadAcks, _filesCount, _filesSize}
+    where
+      opt s = A.string s *> strP <* A.endOfLine <|> pure 0
