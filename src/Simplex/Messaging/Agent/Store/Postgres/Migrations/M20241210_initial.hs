@@ -208,7 +208,7 @@ CREATE TABLE ntf_tokens(
   tkn_action BYTEA,
   created_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT (now()),
-  ntf_mode TEXT NULL,
+  ntf_mode BYTEA NULL,
   PRIMARY KEY(provider, device_token, ntf_host, ntf_port),
   FOREIGN KEY(ntf_host, ntf_port) REFERENCES ntf_servers
   ON DELETE RESTRICT ON UPDATE CASCADE

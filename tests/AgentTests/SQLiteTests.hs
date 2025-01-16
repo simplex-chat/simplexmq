@@ -604,7 +604,7 @@ testCloseReopenStore = do
   hasMigrations st
   closeDBStore st
   errorGettingMigrations st
-  reopenSQLiteStore st
+  reopenDBStore st
   hasMigrations st
 
 testCloseReopenEncryptedStore :: IO ()
@@ -615,13 +615,13 @@ testCloseReopenEncryptedStore = do
   closeDBStore st
   closeDBStore st
   errorGettingMigrations st
-  reopenSQLiteStore st `shouldThrow` \(e :: SomeException) -> "reopenSQLiteStore: no key" `isInfixOf` show e
+  reopenDBStore st `shouldThrow` \(e :: SomeException) -> "reopenDBStore: no key" `isInfixOf` show e
   openSQLiteStore st key True
   openSQLiteStore st key True
   hasMigrations st
   closeDBStore st
   errorGettingMigrations st
-  reopenSQLiteStore st
+  reopenDBStore st
   hasMigrations st
 
 testReopenEncryptedStoreKeepKey :: IO ()
@@ -631,7 +631,7 @@ testReopenEncryptedStoreKeepKey = do
   hasMigrations st
   closeDBStore st
   errorGettingMigrations st
-  reopenSQLiteStore st
+  reopenDBStore st
   hasMigrations st
 
 getMigrations :: DBStore -> IO Bool

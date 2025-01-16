@@ -12,6 +12,7 @@ import AgentTests.ConnectionRequestTests
 import AgentTests.DoubleRatchetTests (doubleRatchetTests)
 import AgentTests.FunctionalAPITests (functionalAPITests)
 import AgentTests.MigrationTests (migrationTests)
+import AgentTests.NotificationTests (notificationTests)
 import AgentTests.ServerChoice (serverChoiceTests)
 import Simplex.Messaging.Transport (ATransport (..))
 import Test.Hspec
@@ -19,7 +20,6 @@ import Test.Hspec
 import Fixtures
 import Simplex.Messaging.Agent.Store.Postgres.Util (dropAllSchemasExceptSystem)
 #else
-import AgentTests.NotificationTests (notificationTests)
 import AgentTests.SQLiteTests (storeTests)
 #endif
 
@@ -30,12 +30,12 @@ agentTests (ATransport t) = do
   describe "Double ratchet tests" doubleRatchetTests
 #if defined(dbPostgres)
   after_ (dropAllSchemasExceptSystem testDBConnectInfo) $ do
+#else
+  do
+#endif
     describe "Functional API" $ functionalAPITests (ATransport t)
     describe "Chosen servers" serverChoiceTests
-#else
-  describe "Functional API" $ functionalAPITests (ATransport t)
-  describe "Chosen servers" serverChoiceTests
-  -- notifications aren't tested with postgres, as we don't plan to use iOS client with it
-  describe "Notification tests" $ notificationTests (ATransport t)
+    fdescribe "Notification tests" $ notificationTests (ATransport t)
+#if !defined(dbPostgres)
   describe "SQLite store" storeTests
 #endif
