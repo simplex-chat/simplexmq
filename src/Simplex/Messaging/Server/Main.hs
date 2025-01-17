@@ -447,7 +447,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 defaultSMPClientAgentConfig
                   { smpCfg =
                       (smpCfg defaultSMPClientAgentConfig)
-                        { serverVRange = mkVersionRange batchCmdsSMPVersion currentServerSMPRelayVersion,
+                        { serverVRange = mkVersionRange batchCmdsSMPVersion deletedEventSMPVersion,
                           agreeSecret = True,
                           networkConfig =
                             defaultNetworkConfig
