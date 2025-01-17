@@ -170,6 +170,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
 import Simplex.Messaging.Agent.Store.Common (DBStore)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
+import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL)
 import qualified Simplex.Messaging.Agent.Store.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
 import Simplex.Messaging.Client (SMPClientError, ServerTransmission (..), ServerTransmissionBatch, temporaryClientError, unexpectedResponse)
@@ -279,7 +280,7 @@ disposeAgentClient c@AgentClient {acThread, agentEnv = Env {store}} = do
   t_ <- atomically (swapTVar acThread Nothing) $>>= (liftIO . deRefWeak)
   disconnectAgentClient c
   mapM_ killThread t_
-  liftIO $ closeStore store
+  liftIO $ closeDBStore store
 
 resumeAgentClient :: AgentClient -> IO ()
 resumeAgentClient c = atomically $ writeTVar (active c) True

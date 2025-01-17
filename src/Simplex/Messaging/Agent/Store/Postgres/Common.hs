@@ -10,13 +10,14 @@ module Simplex.Messaging.Agent.Store.Postgres.Common
   )
 where
 
+import Data.ByteString (ByteString)
 import qualified Database.PostgreSQL.Simple as PSQL
 import UnliftIO.MVar
 import UnliftIO.STM
 
 -- TODO [postgres] use log_min_duration_statement instead of custom slow queries (SQLite's Connection type)
 data DBStore = DBStore
-  { dbConnectInfo :: PSQL.ConnectInfo,
+  { dbConnstr :: ByteString,
     dbSchema :: String,
     dbConnection :: MVar PSQL.Connection,
     dbClosed :: TVar Bool,

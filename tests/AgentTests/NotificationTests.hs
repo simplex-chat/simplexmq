@@ -62,8 +62,8 @@ import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestSte
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, SENT)
 import Simplex.Messaging.Agent.Store.AgentStore (getSavedNtfToken)
-import Simplex.Messaging.Agent.Store (closeStore, reopenStore)
 import Simplex.Messaging.Agent.Store.Common (withTransaction)
+import Simplex.Messaging.Agent.Store.Interface (closeDBStore, reopenDBStore)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -501,7 +501,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
 
   threadDelay 500000
   suspendAgent alice 0
-  closeStore store
+  closeDBStore store
   threadDelay 1000000
   putStrLn "before opening the database from another agent"
 
@@ -512,7 +512,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
 
   threadDelay 1000000
   putStrLn "after closing the database in another agent"
-  reopenStore store
+  reopenDBStore store
   foregroundAgent alice
   threadDelay 500000
 

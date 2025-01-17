@@ -85,6 +85,7 @@ import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
+import Simplex.Messaging.Agent.Store.Interface
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..), MigrationError (..))
 import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), SMPProxyFallback (..), SMPProxyMode (..), TransportSessionMode (..), defaultClientConfig)
@@ -3107,13 +3108,13 @@ getSMPAgentClient' clientId cfg' initServers dbPath = do
 
 #if defined(dbPostgres)
 createStore :: String -> IO (Either MigrationError DBStore)
-createStore schema = createAgentStore testDBConnectInfo schema MCError
+createStore schema = createAgentStore (DBCreateOpts testDBConnstr schema) MCError
 
 insertUser :: DBStore -> IO ()
 insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users DEFAULT VALUES")
 #else
 createStore :: String -> IO (Either MigrationError DBStore)
-createStore dbPath = createAgentStore dbPath "" False MCError True
+createStore dbPath = createAgentStore (DBCreateOpts dbPath "" False True) MCError
 
 insertUser :: DBStore -> IO ()
 insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users (user_id) VALUES (1)")

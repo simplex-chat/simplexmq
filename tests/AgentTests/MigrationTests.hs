@@ -7,6 +7,7 @@ import Control.Monad
 import Data.Maybe (fromJust)
 import Data.Word (Word32)
 import Simplex.Messaging.Agent.Store.Common (DBStore, withTransaction)
+import Simplex.Messaging.Agent.Store.Interface
 import Simplex.Messaging.Agent.Store.Migrations (migrationsToRun)
 import Simplex.Messaging.Agent.Store.Shared
 import System.Random (randomIO)
@@ -14,12 +15,10 @@ import Test.Hspec
 #if defined(dbPostgres)
 import Database.PostgreSQL.Simple (fromOnly)
 import Fixtures
-import Simplex.Messaging.Agent.Store.Postgres (closeDBStore, createDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Util (dropSchema)
 import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
 #else
 import Database.SQLite.Simple (fromOnly)
-import Simplex.Messaging.Agent.Store.SQLite (closeDBStore, createDBStore)
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import System.Directory (removeFile)
 #endif
@@ -203,8 +202,13 @@ testSchema :: Word32 -> String
 testSchema randSuffix = "test_migrations_schema" <> show randSuffix
 
 createStore :: Word32 -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
-createStore randSuffix migrations confirmMigrations =
-  createDBStore testDBConnectInfo (testSchema randSuffix) migrations confirmMigrations
+createStore randSuffix migrations confirmMigrations = do
+  let dbCreateOpts =
+        DBCreateOpts {
+          connstr = testDBConnstr,
+          schema = testSchema randSuffix
+        }
+  createDBStore dbCreateOpts migrations confirmMigrations
 
 cleanup :: Word32 -> IO ()
 cleanup randSuffix = dropSchema testDBConnectInfo (testSchema randSuffix)
@@ -218,7 +222,15 @@ testDB :: Word32 -> FilePath
 testDB randSuffix = "tests/tmp/test_migrations.db" <> show randSuffix
 
 createStore :: Word32 -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
-createStore randSuffix migrations migrationConf = createDBStore (testDB randSuffix) "" False migrations migrationConf True
+createStore randSuffix migrations confirmMigrations = do
+  let dbCreateOpts =
+        DBCreateOpts {
+          dbFilePath = testDB randSuffix,
+          dbKey = "",
+          keepKey = False,
+          vacuum = True
+        }
+  createDBStore dbCreateOpts migrations confirmMigrations
 
 cleanup :: Word32 -> IO ()
 cleanup randSuffix = removeFile (testDB randSuffix)

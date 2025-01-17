@@ -98,6 +98,7 @@ library
       Simplex.Messaging.Agent.Store.AgentStore
       Simplex.Messaging.Agent.Store.Common
       Simplex.Messaging.Agent.Store.DB
+      Simplex.Messaging.Agent.Store.Interface
       Simplex.Messaging.Agent.Store.Migrations
       Simplex.Messaging.Agent.Store.Shared
       Simplex.Messaging.Agent.TRcvQueues

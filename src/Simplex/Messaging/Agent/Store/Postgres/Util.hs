@@ -5,7 +5,6 @@
 
 module Simplex.Messaging.Agent.Store.Postgres.Util
   ( createDBAndUserIfNotExists,
-    -- for tests
     dropSchema,
     dropAllSchemasExceptSystem,
     dropDatabaseAndUser,

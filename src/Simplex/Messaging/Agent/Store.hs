@@ -26,13 +26,12 @@ import Data.List (find)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust)
-import Data.Text (Text)
 import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
 import Simplex.Messaging.Agent.Store.Common
-import qualified Simplex.Messaging.Agent.Store.DB as DB
+import Simplex.Messaging.Agent.Store.Interface (DBCreateOpts, createDBStore)
 import qualified Simplex.Messaging.Agent.Store.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..), MigrationError (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -54,30 +53,9 @@ import Simplex.Messaging.Protocol
     VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
-#if defined(dbPostgres)
-import Database.PostgreSQL.Simple (ConnectInfo (..))
-import qualified Simplex.Messaging.Agent.Store.Postgres as Store
-#else
-import Data.ByteArray (ScrubbedBytes)
-import qualified Simplex.Messaging.Agent.Store.SQLite as Store
-#endif
 
-#if defined(dbPostgres)
-createStore :: ConnectInfo -> String -> MigrationConfirmation -> IO (Either MigrationError DBStore)
-createStore connectInfo schema = Store.createDBStore connectInfo schema Migrations.app
-#else
-createStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> Bool -> IO (Either MigrationError DBStore)
-createStore dbFilePath dbKey keepKey = Store.createDBStore dbFilePath dbKey keepKey Migrations.app
-#endif
-
-closeStore :: DBStore -> IO ()
-closeStore = Store.closeDBStore
-
-reopenStore :: DBStore -> IO ()
-reopenStore = Store.reopenDBStore
-
-execSQL :: DB.Connection -> Text -> IO [Text]
-execSQL = Store.execSQL
+createStore :: DBCreateOpts -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createStore dbCreateOpts = createDBStore dbCreateOpts Migrations.app
 
 -- * Queue types
 

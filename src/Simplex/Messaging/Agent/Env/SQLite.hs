@@ -88,9 +88,9 @@ import System.Mem.Weak (Weak)
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
 #if defined(dbPostgres)
-import Database.PostgreSQL.Simple (ConnectInfo (..))
+import Simplex.Messaging.Agent.Store.Postgres (DBCreateOpts)
 #else
-import Data.ByteArray (ScrubbedBytes)
+import Simplex.Messaging.Agent.Store.SQLite (DBCreateOpts)
 #endif
 
 type AM' a = ReaderT Env IO a
@@ -277,13 +277,8 @@ newSMPAgentEnv config store = do
   multicastSubscribers <- newTMVarIO 0
   pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
 
-#if defined(dbPostgres)
-createAgentStore :: ConnectInfo -> String -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createAgentStore :: DBCreateOpts -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createAgentStore = createStore
-#else
-createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> Bool -> IO (Either MigrationError DBStore)
-createAgentStore = createStore
-#endif
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
