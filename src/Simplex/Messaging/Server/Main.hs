@@ -47,11 +47,10 @@ import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Server.QueueStore.STM (readQueueStore)
-import Simplex.Messaging.Transport (batchCmdsSMPVersion, currentServerSMPRelayVersion, deletedEventSMPVersion, simplexMQVersion, supportedServerSMPRelayVRange)
+import Simplex.Messaging.Transport (simplexMQVersion, supportedProxyClientSMPRelayVRange, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, ifM, safeDecodeUtf8, tshow)
-import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
@@ -447,7 +446,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 defaultSMPClientAgentConfig
                   { smpCfg =
                       (smpCfg defaultSMPClientAgentConfig)
-                        { serverVRange = mkVersionRange batchCmdsSMPVersion deletedEventSMPVersion,
+                        { serverVRange = supportedProxyClientSMPRelayVRange,
                           agreeSecret = True,
                           networkConfig =
                             defaultNetworkConfig

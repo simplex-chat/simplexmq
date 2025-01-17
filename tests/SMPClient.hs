@@ -167,10 +167,10 @@ cfgMS msType =
     }
 
 cfgV7 :: ServerConfig
-cfgV7 = cfg {smpServerVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}
+cfgV7 = cfg {smpServerVRange = mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion}
 
 cfgV8 :: ServerConfig
-cfgV8 = cfg {smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion}
+cfgV8 = cfg {smpServerVRange = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion}
 
 cfgVPrev :: ServerConfig
 cfgVPrev = cfg {smpServerVRange = prevRange $ smpServerVRange cfg}
@@ -191,7 +191,7 @@ proxyCfg =
     smpAgentCfg' = smpAgentCfg cfg
 
 proxyVRangeV8 :: VersionRangeSMP
-proxyVRangeV8 = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion
+proxyVRangeV8 = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn = (`withSmpServerStoreMsgLogOnMS` AMSType SMSJournal)

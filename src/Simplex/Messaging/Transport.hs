@@ -36,14 +36,14 @@ module Simplex.Messaging.Transport
     supportedSMPHandshakes,
     supportedClientSMPRelayVRange,
     supportedServerSMPRelayVRange,
+    supportedProxyClientSMPRelayVRange,
     proxiedSMPRelayVRange,
+    minClientSMPRelayVersion,
+    minServerSMPRelayVersion,
     legacyServerSMPRelayVRange,
     currentClientSMPRelayVersion,
     legacyServerSMPRelayVersion,
     currentServerSMPRelayVersion,
-    batchCmdsSMPVersion,
-    basicAuthSMPVersion,
-    subModeSMPVersion,
     authCmdsSMPVersion,
     sendingProxySMPVersion,
     sndAuthKeySMPVersion,
@@ -156,14 +156,8 @@ type VersionRangeSMP = VersionRange SMPVersion
 pattern VersionSMP :: Word16 -> VersionSMP
 pattern VersionSMP v = Version v
 
-batchCmdsSMPVersion :: VersionSMP
-batchCmdsSMPVersion = VersionSMP 4
-
-basicAuthSMPVersion :: VersionSMP
-basicAuthSMPVersion = VersionSMP 5
-
-subModeSMPVersion :: VersionSMP
-subModeSMPVersion = VersionSMP 6
+_subModeSMPVersion :: VersionSMP
+_subModeSMPVersion = VersionSMP 6
 
 authCmdsSMPVersion :: VersionSMP
 authCmdsSMPVersion = VersionSMP 7
@@ -182,6 +176,12 @@ encryptedBlockSMPVersion = VersionSMP 11
 
 blockedEntityErrorSMPVersion :: VersionSMP
 blockedEntityErrorSMPVersion = VersionSMP 12
+
+minClientSMPRelayVersion :: VersionSMP
+minClientSMPRelayVersion = VersionSMP 6
+
+minServerSMPRelayVersion :: VersionSMP
+minServerSMPRelayVersion = VersionSMP 6
 
 currentClientSMPRelayVersion :: VersionSMP
 currentClientSMPRelayVersion = VersionSMP 12
@@ -203,13 +203,17 @@ proxiedSMPRelayVersion = VersionSMP 12
 -- minimal supported protocol version is 4
 -- TODO remove code that supports sending commands without batching
 supportedClientSMPRelayVRange :: VersionRangeSMP
-supportedClientSMPRelayVRange = mkVersionRange batchCmdsSMPVersion currentClientSMPRelayVersion
+supportedClientSMPRelayVRange = mkVersionRange minClientSMPRelayVersion currentClientSMPRelayVersion
 
 legacyServerSMPRelayVRange :: VersionRangeSMP
-legacyServerSMPRelayVRange = mkVersionRange batchCmdsSMPVersion legacyServerSMPRelayVersion
+legacyServerSMPRelayVRange = mkVersionRange minServerSMPRelayVersion legacyServerSMPRelayVersion
 
 supportedServerSMPRelayVRange :: VersionRangeSMP
-supportedServerSMPRelayVRange = mkVersionRange batchCmdsSMPVersion currentServerSMPRelayVersion
+supportedServerSMPRelayVRange = mkVersionRange minServerSMPRelayVersion currentServerSMPRelayVersion
+
+-- cap it temporarily to version 10
+supportedProxyClientSMPRelayVRange :: VersionRangeSMP
+supportedProxyClientSMPRelayVRange = mkVersionRange minServerSMPRelayVersion deletedEventSMPVersion
 
 -- This range initially allows only version 8 - see the comment above.
 proxiedSMPRelayVRange :: VersionRangeSMP

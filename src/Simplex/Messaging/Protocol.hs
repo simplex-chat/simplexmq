@@ -1370,9 +1370,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   encodeProtocol v = \case
     NEW rKey dhKey auth_ subMode sndSecure
       | v >= sndAuthKeySMPVersion -> new <> e (auth_, subMode, sndSecure)
-      | v >= subModeSMPVersion -> new <> auth <> e subMode
-      | v == basicAuthSMPVersion -> new <> auth
-      | otherwise -> new
+      | otherwise -> new <> auth <> e subMode
       where
         new = e (NEW_, ' ', rKey, dhKey)
         auth = maybe "" (e . ('A',)) auth_
@@ -1441,9 +1439,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
       Cmd SRecipient <$> case tag of
         NEW_
           | v >= sndAuthKeySMPVersion -> new <*> smpP <*> smpP <*> smpP
-          | v >= subModeSMPVersion -> new <*> auth <*> smpP <*> pure False
-          | v == basicAuthSMPVersion -> new <*> auth <*> pure SMSubscribe <*> pure False
-          | otherwise -> new <*> pure Nothing <*> pure SMSubscribe <*> pure False
+          | otherwise -> new <*> auth <*> smpP <*> pure False
           where
             new = NEW <$> _smpP <*> smpP
             auth = optional (A.char 'A' *> smpP)
