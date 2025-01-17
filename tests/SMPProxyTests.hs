@@ -68,11 +68,11 @@ smpProxyTests = do
     let srv1 = SMPServer testHost testPort testKeyHash
         srv2 = SMPServer testHost2 testPort2 testKeyHash
     describe "client API" $ do
-      let maxLen = maxMessageLength encryptedBlockSMPVersion
+      let maxLen = 16048 -- maxMessageLength encryptedBlockSMPVersion
       describe "one server" $ do
         it "deliver via proxy" . oneServer $ do
           deliverMessageViaProxy srv1 srv1 C.SEd448 "hello 1" "hello 2"
-      describe "two servers" $ do
+      fdescribe "two servers" $ do
         let proxyServ = srv1
             relayServ = srv2
         (msg1, msg2) <- runIO $ do
@@ -85,6 +85,34 @@ smpProxyTests = do
         it "max message size, Ed25519 keys" . twoServersFirstProxy $
           deliverMessageViaProxy proxyServ relayServ C.SEd25519 msg1 msg2
         it "max message size, X25519 keys" . twoServersFirstProxy $
+          deliverMessageViaProxy proxyServ relayServ C.SX25519 msg1 msg2
+      fdescribe "new server and old proxy" $ do
+        let proxyServ = srv1
+            relayServ = srv2
+        (msg1, msg2) <- runIO $ do
+          g <- C.newRandom
+          atomically $ (,) <$> C.randomBytes maxLen g <*> C.randomBytes maxLen g
+        it "deliver via proxy" . twoServers_ proxyCfgV62 proxyCfg $
+          deliverMessageViaProxy proxyServ relayServ C.SEd448 "hello 1" "hello 2"
+        it "max message size, Ed448 keys" . twoServers_ proxyCfgV62 proxyCfg $
+          deliverMessageViaProxy proxyServ relayServ C.SEd448 msg1 msg2
+        it "max message size, Ed25519 keys" . twoServers_ proxyCfgV62 proxyCfg $
+          deliverMessageViaProxy proxyServ relayServ C.SEd25519 msg1 msg2
+        it "max message size, X25519 keys" . twoServers_ proxyCfgV62 proxyCfg $
+          deliverMessageViaProxy proxyServ relayServ C.SX25519 msg1 msg2
+      fdescribe "old server and new proxy" $ do
+        let proxyServ = srv1
+            relayServ = srv2
+        (msg1, msg2) <- runIO $ do
+          g <- C.newRandom
+          atomically $ (,) <$> C.randomBytes maxLen g <*> C.randomBytes maxLen g
+        it "deliver via proxy" . twoServers_ proxyCfg proxyCfgV62 $
+          deliverMessageViaProxy proxyServ relayServ C.SEd448 "hello 1" "hello 2"
+        it "max message size, Ed448 keys" . twoServers_ proxyCfg proxyCfgV62 $
+          deliverMessageViaProxy proxyServ relayServ C.SEd448 msg1 msg2
+        it "max message size, Ed25519 keys" . twoServers_ proxyCfg proxyCfgV62 $
+          deliverMessageViaProxy proxyServ relayServ C.SEd25519 msg1 msg2
+        it "max message size, X25519 keys" . twoServers_ proxyCfg proxyCfgV62 $
           deliverMessageViaProxy proxyServ relayServ C.SX25519 msg1 msg2
       describe "stress test 1k" $ do
         let deliver n = deliverMessagesViaProxy srv1 srv2 C.SEd448 [] (map bshow [1 :: Int .. n])

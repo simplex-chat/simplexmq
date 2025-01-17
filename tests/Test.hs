@@ -84,7 +84,7 @@ main = do
         --   before (pure (transport @WS, AMSType SMSJournal)) serverTests
         describe "Notifications server" $ ntfServerTests (transport @TLS)
         describe "SMP client agent" $ agentTests (transport @TLS)
-        describe "SMP proxy" smpProxyTests
+        fdescribe "SMP proxy" smpProxyTests
         describe "XFTP" $ do
           describe "XFTP server" xftpServerTests
           describe "XFTP file description" fileDescriptionTests

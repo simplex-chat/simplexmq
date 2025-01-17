@@ -260,7 +260,7 @@ supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClie
 -- TODO v6.0 remove dependency on version
 maxMessageLength :: VersionSMP -> Int
 maxMessageLength v
-  | v >= encryptedBlockSMPVersion = 16048 -- max 16051
+  | v >= encryptedBlockSMPVersion = 16048 -- max 16048
   | v >= sendingProxySMPVersion = 16064 -- max 16067
   | otherwise = 16088 -- 16048 - always use this size to determine allowed ranges
 
@@ -1694,12 +1694,26 @@ tPut th@THandle {params} = fmap concat . mapM tPutBatch . batchTransmissions (ba
       TBTransmission s _ -> (: []) <$> tPutLog th s
 
 tPutLog :: Transport c => THandle v c p -> ByteString -> IO (Either TransportError ())
-tPutLog th s = do
+tPutLog th@THandle {params} s = do
   r <- tPutBlock th s
   case r of
-    Left e -> putStrLn ("tPut error: " <> show e)
+    Left e -> putStrLn ("tPut error: " <> show e <> paramsStr)
     _ -> pure ()
   pure r
+  where
+    paramsStr =
+      ", block size"
+        <> show (B.length s)
+        <> ", thServerVRange = "
+        <> show (thServerVRange params)
+        <> ", thVersion = "
+        <> show (thVersion params)
+        <> ", thAuth = "
+        <> show (isJust $ thAuth params)
+        <> ", implySessId = "
+        <> show (implySessId params)
+        <> ", encryptBlock = "
+        <> show (isJust $ encryptBlock params)
 
 -- ByteString in TBTransmissions includes byte with transmissions count
 data TransportBatch r = TBTransmissions ByteString Int [r] | TBTransmission ByteString r | TBError TransportError r
