@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
@@ -6,7 +7,8 @@
 module Simplex.Messaging.Agent.Store.Postgres
   ( createDBStore,
     closeDBStore,
-    execSQL
+    reopenDBStore,
+    execSQL,
   )
 where
 
@@ -15,7 +17,7 @@ import Control.Monad (unless, void)
 import Data.Functor (($>))
 import Data.String (fromString)
 import Data.Text (Text)
-import Database.PostgreSQL.Simple (ConnectInfo (..), Only (..), defaultConnectInfo)
+import Database.PostgreSQL.Simple (ConnectInfo (..), Only (..))
 import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 import Simplex.Messaging.Agent.Store.Migrations (migrateSchema)
@@ -24,7 +26,7 @@ import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
 import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists)
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationError (..))
 import Simplex.Messaging.Util (ifM)
-import UnliftIO.Exception (onException)
+import UnliftIO.Exception (bracketOnError, onException)
 import UnliftIO.MVar
 import UnliftIO.STM
 
@@ -44,11 +46,11 @@ createDBStore connectInfo schema migrations confirmMigrations = do
     Left e -> closeDBStore st $> Left e
 
 connectPostgresStore :: ConnectInfo -> String -> IO DBStore
-connectPostgresStore dbConnectInfo schema = do
-  (dbConn, dbNew) <- connectDB dbConnectInfo schema -- TODO [postgres] analogue for dbBusyLoop?
+connectPostgresStore dbConnectInfo dbSchema = do
+  (dbConn, dbNew) <- connectDB dbConnectInfo dbSchema -- TODO [postgres] analogue for dbBusyLoop?
   dbConnection <- newMVar dbConn
   dbClosed <- newTVarIO False
-  pure DBStore {dbConnectInfo, dbConnection, dbNew, dbClosed}
+  pure DBStore {dbConnectInfo, dbSchema, dbConnection, dbNew, dbClosed}
 
 connectDB :: ConnectInfo -> String -> IO (DB.Connection, Bool)
 connectDB dbConnectInfo schema = do
@@ -80,6 +82,22 @@ closeDBStore st@DBStore {dbClosed} =
     withConnection st $ \conn -> do
       DB.close conn
       atomically $ writeTVar dbClosed True
+
+openPostgresStore_ :: DBStore -> IO ()
+openPostgresStore_ DBStore {dbConnectInfo, dbSchema, dbConnection, dbClosed} =
+  bracketOnError
+    (takeMVar dbConnection)
+    (tryPutMVar dbConnection)
+    $ \_dbConn -> do
+      (dbConn, _dbNew) <- connectDB dbConnectInfo dbSchema
+      atomically $ writeTVar dbClosed False
+      putMVar dbConnection dbConn
+
+reopenDBStore :: DBStore -> IO ()
+reopenDBStore st@DBStore {dbClosed} =
+  ifM (readTVarIO dbClosed) open (putStrLn "reopenDBStore: already opened")
+  where
+    open = openPostgresStore_ st
 
 -- TODO [postgres] not necessary for postgres (used for ExecAgentStoreSQL, ExecChatStoreSQL)
 execSQL :: PSQL.Connection -> Text -> IO [Text]

@@ -27,13 +27,12 @@
 module Simplex.Messaging.Agent.Store.SQLite
   ( createDBStore,
     closeDBStore,
+    reopenDBStore,
     execSQL,
     -- used in Simplex.Chat.Archive
     sqlString,
     keyString,
     storeKey,
-    -- used in Simplex.Chat.Mobile and tests
-    reopenSQLiteStore,
     -- used in tests
     connectSQLiteStore,
     openSQLiteStore,
@@ -127,14 +126,14 @@ openSQLiteStore_ DBStore {dbConnection, dbFilePath, dbKey, dbClosed} key keepKey
         writeTVar dbKey $! storeKey key keepKey
       putMVar dbConnection DB.Connection {conn, slow}
 
-reopenSQLiteStore :: DBStore -> IO ()
-reopenSQLiteStore st@DBStore {dbKey, dbClosed} =
-  ifM (readTVarIO dbClosed) open (putStrLn "reopenSQLiteStore: already opened")
+reopenDBStore :: DBStore -> IO ()
+reopenDBStore st@DBStore {dbKey, dbClosed} =
+  ifM (readTVarIO dbClosed) open (putStrLn "reopenDBStore: already opened")
   where
     open =
       readTVarIO dbKey >>= \case
         Just key -> openSQLiteStore_ st key True
-        Nothing -> fail "reopenSQLiteStore: no key"
+        Nothing -> fail "reopenDBStore: no key"
 
 keyString :: ScrubbedBytes -> Text
 keyString = sqlString . safeDecodeUtf8 . BA.convert

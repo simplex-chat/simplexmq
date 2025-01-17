@@ -17,6 +17,7 @@ import UnliftIO.STM
 -- TODO [postgres] use log_min_duration_statement instead of custom slow queries (SQLite's Connection type)
 data DBStore = DBStore
   { dbConnectInfo :: PSQL.ConnectInfo,
+    dbSchema :: String,
     dbConnection :: MVar PSQL.Connection,
     dbClosed :: TVar Bool,
     dbNew :: Bool

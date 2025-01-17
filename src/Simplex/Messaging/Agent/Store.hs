@@ -73,6 +73,9 @@ createStore dbFilePath dbKey keepKey = Store.createDBStore dbFilePath dbKey keep
 closeStore :: DBStore -> IO ()
 closeStore = Store.closeDBStore
 
+reopenStore :: DBStore -> IO ()
+reopenStore = Store.reopenDBStore
+
 execSQL :: DB.Connection -> Text -> IO [Text]
 execSQL = Store.execSQL
 
