@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -70,6 +69,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store (createStore)
 import Simplex.Messaging.Agent.Store.Common (DBStore)
+import Simplex.Messaging.Agent.Store.Interface (DBCreateOpts)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..), MigrationError (..))
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
@@ -87,11 +87,6 @@ import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryA
 import System.Mem.Weak (Weak)
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
-#if defined(dbPostgres)
-import Simplex.Messaging.Agent.Store.Postgres (DBCreateOpts)
-#else
-import Simplex.Messaging.Agent.Store.SQLite (DBCreateOpts)
-#endif
 
 type AM' a = ReaderT Env IO a
 
