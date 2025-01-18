@@ -60,6 +60,7 @@ module Simplex.Messaging.Protocol
     SenderCanSecure,
     Party (..),
     Cmd (..),
+    CmdTag (..),
     DirectParty,
     BrokerMsg (..),
     SParty (..),
@@ -1358,7 +1359,7 @@ instance Protocol SMPVersion ErrorType BrokerMsg where
     ERR e -> Just e
     _ -> Nothing
 
-class ProtocolMsgTag (Tag msg) => ProtocolEncoding v err msg | msg -> err, msg -> v where
+class (ProtocolMsgTag (Tag msg), Show (Tag msg)) => ProtocolEncoding v err msg | msg -> err, msg -> v where
   type Tag msg
   encodeProtocol :: Version v -> msg -> ByteString
   protocolP :: Version v -> Tag msg -> Parser msg
