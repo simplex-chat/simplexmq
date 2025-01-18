@@ -190,14 +190,6 @@ proxyCfg =
   where
     smpAgentCfg' = smpAgentCfg cfg
 
-proxyCfgV62 :: ServerConfig
-proxyCfgV62 =
-  proxyCfg
-    { smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {serverVRange = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion}}
-    }
-  where
-    smpAgentCfg' = smpAgentCfg proxyCfg
-
 proxyVRangeV8 :: VersionRangeSMP
 proxyVRangeV8 = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion
 

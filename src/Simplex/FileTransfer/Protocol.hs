@@ -111,8 +111,6 @@ deriving instance Show (FileCommandTag p)
 
 data FileCmdTag = forall p. FilePartyI p => FCT (SFileParty p) (FileCommandTag p)
 
-deriving instance Show FileCmdTag
-
 instance FilePartyI p => Encoding (FileCommandTag p) where
   smpEncode = \case
     FNEW_ -> "FNEW"

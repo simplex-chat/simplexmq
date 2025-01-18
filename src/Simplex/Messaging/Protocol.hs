@@ -60,7 +60,6 @@ module Simplex.Messaging.Protocol
     SenderCanSecure,
     Party (..),
     Cmd (..),
-    CmdTag (..),
     DirectParty,
     BrokerMsg (..),
     SParty (..),
@@ -1695,26 +1694,12 @@ tPut th@THandle {params} = fmap concat . mapM tPutBatch . batchTransmissions (ba
       TBTransmission s _ -> (: []) <$> tPutLog th s
 
 tPutLog :: Transport c => THandle v c p -> ByteString -> IO (Either TransportError ())
-tPutLog th@THandle {params} s = do
+tPutLog th s = do
   r <- tPutBlock th s
   case r of
-    Left e -> putStrLn ("tPut error: " <> show e <> paramsStr)
+    Left e -> putStrLn ("tPut error: " <> show e)
     _ -> pure ()
   pure r
-  where
-    paramsStr =
-      ", block size "
-        <> show (B.length s)
-        <> ", thServerVRange = "
-        <> show (thServerVRange params)
-        <> ", thVersion = "
-        <> show (thVersion params)
-        <> ", thAuth = "
-        <> show (isJust $ thAuth params)
-        <> ", implySessId = "
-        <> show (implySessId params)
-        <> ", encryptBlock = "
-        <> show (isJust $ encryptBlock params)
 
 -- ByteString in TBTransmissions includes byte with transmissions count
 data TransportBatch r = TBTransmissions ByteString Int [r] | TBTransmission ByteString r | TBError TransportError r

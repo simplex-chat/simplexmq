@@ -80,8 +80,6 @@ deriving instance Show (NtfCommandTag e)
 
 data NtfCmdTag = forall e. NtfEntityI e => NCT (SNtfEntity e) (NtfCommandTag e)
 
-deriving instance Show NtfCmdTag
-
 instance NtfEntityI e => Encoding (NtfCommandTag e) where
   smpEncode = \case
     TNEW_ -> "TNEW"
