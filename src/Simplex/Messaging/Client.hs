@@ -406,6 +406,8 @@ data ProtocolClientConfig v = ProtocolClientConfig
     serverVRange :: VersionRange v,
     -- | agree shared session secret (used in SMP proxy for additional encryption layer)
     agreeSecret :: Bool,
+    -- | Whether connecting client is a proxy server. See comment in ClientHandshake
+    proxyServer :: Bool,
     -- | send SNI to server, False for SMP
     useSNI :: Bool
   }
@@ -420,6 +422,7 @@ defaultClientConfig clientALPN useSNI serverVRange =
       clientALPN,
       serverVRange,
       agreeSecret = False,
+      proxyServer = False,
       useSNI
     }
 {-# INLINE defaultClientConfig #-}
@@ -489,7 +492,7 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe ByteString)
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret, useSNI} msgQ proxySessTs disconnected = do
+getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret, proxyServer, useSNI} msgQ proxySessTs disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
@@ -548,7 +551,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     client :: forall c. Transport c => TProxy c -> PClient v err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient v err msg)) -> c -> IO ()
     client _ c cVar h = do
       ks <- if agreeSecret then Just <$> atomically (C.generateKeyPair g) else pure Nothing
-      runExceptT (protocolClientHandshake @v @err @msg h ks (keyHash srv) serverVRange) >>= \case
+      runExceptT (protocolClientHandshake @v @err @msg h ks (keyHash srv) serverVRange proxyServer) >>= \case
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
         Right th@THandle {params} -> do
           sessionTs <- getCurrentTime

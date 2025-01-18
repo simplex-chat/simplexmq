@@ -105,7 +105,7 @@ testSMPClient_ :: Transport c => TransportHost -> ServiceName -> VersionRangeSMP
 testSMPClient_ host port vr client = do
   let tcConfig = defaultTransportClientConfig {Client.alpn = clientALPN}
   runTransportClient tcConfig Nothing host port (Just testKeyHash) $ \h ->
-    runExceptT (smpClientHandshake h Nothing testKeyHash vr) >>= \case
+    runExceptT (smpClientHandshake h Nothing testKeyHash vr False) >>= \case
       Right th -> client th
       Left e -> error $ show e
   where
@@ -185,7 +185,7 @@ proxyCfg :: ServerConfig
 proxyCfg =
   cfg
     { allowSMPProxy = True,
-      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {agreeSecret = True, serverVRange = supportedProxyClientSMPRelayVRange}}
+      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {agreeSecret = True, proxyServer = True, serverVRange = supportedProxyClientSMPRelayVRange}}
     }
   where
     smpAgentCfg' = smpAgentCfg cfg

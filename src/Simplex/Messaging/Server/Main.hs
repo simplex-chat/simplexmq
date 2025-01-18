@@ -448,6 +448,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                       (smpCfg defaultSMPClientAgentConfig)
                         { serverVRange = supportedProxyClientSMPRelayVRange,
                           agreeSecret = True,
+                          proxyServer = True,
                           networkConfig =
                             defaultNetworkConfig
                               { socksProxy = either error id <$!> strDecodeIni "PROXY" "socks_proxy" ini,

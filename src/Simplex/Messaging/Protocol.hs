@@ -1344,7 +1344,7 @@ transmissionP THandleParams {sessionId, implySessId} = do
 class (ProtocolTypeI (ProtoType msg), ProtocolEncoding v err msg, ProtocolEncoding v err (ProtoCommand msg), Show err, Show msg) => Protocol v err msg | msg -> v, msg -> err where
   type ProtoCommand msg = cmd | cmd -> msg
   type ProtoType msg = (sch :: ProtocolType) | sch -> msg
-  protocolClientHandshake :: forall c. Transport c => c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> ExceptT TransportError IO (THandle v c 'TClient)
+  protocolClientHandshake :: forall c. Transport c => c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> Bool -> ExceptT TransportError IO (THandle v c 'TClient)
   protocolPing :: ProtoCommand msg
   protocolError :: msg -> Maybe err
 
@@ -1492,7 +1492,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     INFO info -> e (INFO_, ' ', info)
     OK -> e OK_
     ERR err -> case err of
-      BLOCKED _ | v < blockedEntityErrorSMPVersion -> e (ERR_, ' ', AUTH)
+      BLOCKED _ | v < blockedEntitySMPVersion -> e (ERR_, ' ', AUTH)
       _ -> e (ERR_, ' ', err)
     PONG -> e PONG_
     where
