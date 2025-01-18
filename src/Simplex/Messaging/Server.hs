@@ -1217,6 +1217,25 @@ client
                   Right r -> PRES r <$ inc own pSuccesses
                   Left e -> ERR (smpProxyError e) <$ case e of
                     PCEProtocolError {} -> inc own pSuccesses
+                    PCETransportError e' -> do
+                      liftIO $ putStrLn $ "forwardSMPTransmission error: " <> show e' <> paramsStr
+                      inc own pErrorsOther
+                      where
+                        THandleParams {thVersion = v'} = thParams'
+                        EncTransmission s = encBlock
+                        paramsStr =
+                          ", block size "
+                            <> show (B.length s)
+                            <> ", thServerVRange = "
+                            <> show (thServerVRange thParams')
+                            <> ", thVersion = "
+                            <> show v'
+                            <> ", thAuth = "
+                            <> show (isJust $ thAuth thParams')
+                            <> ", implySessId = "
+                            <> show (implySessId thParams')
+                            <> ", encryptBlock = "
+                            <> show (isJust $ encryptBlock thParams')
                     _ -> inc own pErrorsOther
               else Just (ERR $ transportErr TEVersion) <$ inc own pErrorsCompat
             where

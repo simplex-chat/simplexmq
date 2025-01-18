@@ -171,7 +171,7 @@ data PClient v err msg = PClient
     timeoutErrorCount :: TVar Int,
     clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
-    sndQ :: TBQueue (Maybe (TVar Bool), ByteString, Maybe (Tag (ProtoCommand msg))),
+    sndQ :: TBQueue (Maybe (Request err msg), ByteString, Maybe (Tag (ProtoCommand msg))),
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmissionBatch v err msg))
   }
@@ -563,12 +563,14 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= sendPending
       where
-        sendPending (Nothing, s, tag) = send_ s tag
-        sendPending (Just pending, s, tag) = whenM (readTVarIO pending) $ send_ s tag
-        send_ s tag =
+        sendPending (Nothing, s, tag) = send_ s tag Nothing
+        sendPending (Just Request {pending, responseVar}, s, tag) = whenM (readTVarIO pending) $ send_ s tag (Just responseVar)
+        send_ s tag responseVar_ =
           tPutLog h s >>= \case
             Right () -> pure ()
-            Left e -> putStrLn $ "send error: " <> show tag <> ", " <> show e
+            Left e -> do
+              putStrLn $ "send error: " <> show tag <> ", " <> show e
+              atomically $ forM_ responseVar_ $ \v -> putTMVar v $ Left $ PCETransportError e
 
     receive :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     receive ProtocolClient {client_ = PClient {rcvQ, lastReceived, timeoutErrorCount}} h = forever $ do
@@ -1104,12 +1106,12 @@ sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THan
   where
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: Either TransportError SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
-    sendRecv t_ r@Request {pending} = case t_ of
+    sendRecv t_ r = case t_ of
       Left e -> pure . Left $ PCETransportError e
       Right t
         | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
         | otherwise -> do
-            atomically $ writeTBQueue sndQ (Just pending, s, cmdTag)
+            atomically $ writeTBQueue sndQ (Just r, s, cmdTag)
             response <$> getResponse c tOut r
         where
           s

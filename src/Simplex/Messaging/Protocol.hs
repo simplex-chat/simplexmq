@@ -1703,7 +1703,7 @@ tPutLog th@THandle {params} s = do
   pure r
   where
     paramsStr =
-      ", block size"
+      ", block size "
         <> show (B.length s)
         <> ", thServerVRange = "
         <> show (thServerVRange params)
