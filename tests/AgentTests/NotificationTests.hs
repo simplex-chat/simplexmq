@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
@@ -53,7 +54,6 @@ import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Text.Encoding (encodeUtf8)
-import Database.SQLite.Simple.QQ (sql)
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testNtfServer, testNtfServer2)
 import SMPClient (cfg, cfgVPrev, testPort, testPort2, testStoreLogFile2, testStoreMsgsDir2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
@@ -62,9 +62,9 @@ import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestSte
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, SENT)
 import Simplex.Messaging.Agent.Store.AgentStore (getSavedNtfToken)
-import Simplex.Messaging.Agent.Store.SQLite (closeDBStore, reopenSQLiteStore)
-import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction)
-import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
+import Simplex.Messaging.Agent.Store (closeStore, reopenStore)
+import Simplex.Messaging.Agent.Store.Common (withTransaction)
+import qualified Simplex.Messaging.Agent.Store.DB as DB
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
@@ -78,6 +78,11 @@ import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.Transport (ATransport)
 import Test.Hspec
 import UnliftIO
+#if defined(dbPostgres)
+import Database.PostgreSQL.Simple.SqlQQ (sql)
+#else
+import Database.SQLite.Simple.QQ (sql)
+#endif
 
 notificationTests :: ATransport -> Spec
 notificationTests t = do
@@ -496,7 +501,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
 
   threadDelay 500000
   suspendAgent alice 0
-  closeDBStore store
+  closeStore store
   threadDelay 1000000
   putStrLn "before opening the database from another agent"
 
@@ -507,7 +512,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
 
   threadDelay 1000000
   putStrLn "after closing the database in another agent"
-  reopenSQLiteStore store
+  reopenStore store
   foregroundAgent alice
   threadDelay 500000
 
