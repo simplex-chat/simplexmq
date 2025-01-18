@@ -604,6 +604,19 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) vRange proxyServer = do
   let th@THandle {params = THandleParams {sessionId}} = smpTHandle c
   ServerHandshake {sessionId = sessId, smpVersionRange, authPubKey} <- getHandshake th
   when (sessionId /= sessId) $ throwE TEBadSession
+  -- Below logic downgrades version range in case the "client" is SMP proxy server and it is
+  -- connected to the destination server of the version 11 or older.
+  -- It disables transport encryption between SMP proxy and destination relay.
+  --
+  -- Prior to version v6.3 the version between proxy and destination was capped at 8,
+  -- by mistake, which also disables transport encryption and the latest features.
+  --
+  -- Transport encryption between proxy and destination breaks clients with version 10 or earlier,
+  -- because of a larger message size (see maxMessageLength).
+  --
+  -- To summarize:
+  -- - proxy and relay version 12: the agreed version is 12, transport encryption disabled (see blockEncryption with proxyServer == True).
+  -- - proxy is v 12, relay is 11: the agreed version is 10, because of this logic, transport encryption is disabled.
   let smpVRange =
         if proxyServer && maxVersion smpVersionRange < blockedEntitySMPVersion
           then vRange {maxVersion = max (minVersion vRange) deletedEventSMPVersion}

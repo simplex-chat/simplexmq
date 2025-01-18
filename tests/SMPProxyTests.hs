@@ -86,36 +86,6 @@ smpProxyTests = do
           deliverMessageViaProxy proxyServ relayServ C.SEd25519 msg1 msg2
         it "max message size, X25519 keys" . twoServersFirstProxy $
           deliverMessageViaProxy proxyServ relayServ C.SX25519 msg1 msg2
-      xdescribe "client without block encryption, server v6.2 and proxy v6.3 (fails)" $ do
-        let proxyServ = srv1
-            relayServ = srv2
-            maxLen' = maxMessageLength deletedEventSMPVersion
-        (msg1, msg2) <- runIO $ do
-          g <- C.newRandom
-          atomically $ (,) <$> C.randomBytes maxLen' g <*> C.randomBytes maxLen' g
-        it "deliver via proxy" . twoServers_ proxyCfg proxyCfgV62 $
-          deliverMessagesViaProxyVersion deletedEventSMPVersion proxyServ relayServ C.SEd448 ["hello 1"] ["hello 2"]
-        it "max message size, Ed448 keys" . twoServers_ proxyCfg proxyCfgV62 $
-          deliverMessagesViaProxyVersion deletedEventSMPVersion proxyServ relayServ C.SEd448 [msg1] [msg2]
-        it "max message size, Ed25519 keys" . twoServers_ proxyCfg proxyCfgV62 $
-          deliverMessagesViaProxyVersion deletedEventSMPVersion proxyServ relayServ C.SEd25519 [msg1] [msg2]
-        it "max message size, X25519 keys" . twoServers_ proxyCfg proxyCfgV62 $
-          deliverMessagesViaProxyVersion deletedEventSMPVersion proxyServ relayServ C.SX25519 [msg1] [msg2]
-      xdescribe "client without block encryption, server v6.2 and proxy v6.2 (works)" $ do
-        let proxyServ = srv1
-            relayServ = srv2
-            maxLen' = maxMessageLength deletedEventSMPVersion
-        (msg1, msg2) <- runIO $ do
-          g <- C.newRandom
-          atomically $ (,) <$> C.randomBytes maxLen' g <*> C.randomBytes maxLen' g
-        it "deliver via proxy" . twoServers_ proxyCfgV62 proxyCfgV62 $
-          deliverMessagesViaProxyVersion deletedEventSMPVersion proxyServ relayServ C.SEd448 ["hello 1"] ["hello 2"]
-        it "max message size, Ed448 keys" . twoServers_ proxyCfgV62 proxyCfgV62 $
-          deliverMessagesViaProxyVersion deletedEventSMPVersion proxyServ relayServ C.SEd448 [msg1] [msg2]
-        it "max message size, Ed25519 keys" . twoServers_ proxyCfgV62 proxyCfgV62 $
-          deliverMessagesViaProxyVersion deletedEventSMPVersion proxyServ relayServ C.SEd25519 [msg1] [msg2]
-        it "max message size, X25519 keys" . twoServers_ proxyCfgV62 proxyCfgV62 $
-          deliverMessagesViaProxyVersion deletedEventSMPVersion proxyServ relayServ C.SX25519 [msg1] [msg2]
       describe "stress test 1k" $ do
         let deliver n = deliverMessagesViaProxy srv1 srv2 C.SEd448 [] (map bshow [1 :: Int .. n])
         it "1x1000" . twoServersFirstProxy $ deliver 1000
@@ -188,14 +158,11 @@ deliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => SMPServer -> SM
 deliverMessageViaProxy proxyServ relayServ alg msg msg' = deliverMessagesViaProxy proxyServ relayServ alg [msg] [msg']
 
 deliverMessagesViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => SMPServer -> SMPServer -> C.SAlgorithm a -> [ByteString] -> [ByteString] -> IO ()
-deliverMessagesViaProxy = deliverMessagesViaProxyVersion currentClientSMPRelayVersion
-
-deliverMessagesViaProxyVersion :: (C.AlgorithmI a, C.AuthAlgorithm a) => VersionSMP -> SMPServer -> SMPServer -> C.SAlgorithm a -> [ByteString] -> [ByteString] -> IO ()
-deliverMessagesViaProxyVersion maxProxyClientVersion proxyServ relayServ alg unsecuredMsgs securedMsgs = do
+deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   g <- C.newRandom
   -- set up proxy
   ts <- getCurrentTime
-  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion maxProxyClientVersion} Nothing ts (\_ -> pure ())
+  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion} Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pc'
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- set up relay
