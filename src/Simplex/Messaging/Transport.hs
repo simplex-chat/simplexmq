@@ -145,7 +145,8 @@ smpBlockSize = 16384
 -- 9 - faster handshake: SKEY command for sender to secure queue (6/30/2024)
 -- 10 - DELD event to subscriber when queue is deleted via another connnection (9/11/2024)
 -- 11 - additional encryption of transport blocks with forward secrecy (10/06/2024)
--- 12 - BLOCKED error for blocked queues, handshake property to disable transport encryption between server and proxy (1/11/2025)
+-- 12 - BLOCKED error for blocked queues (1/11/2025)
+-- 14 - proxyServer handshake property to disable transport encryption between server and proxy (1/19/2025)
 
 data SMPVersion
 
@@ -179,6 +180,9 @@ encryptedBlockSMPVersion = VersionSMP 11
 blockedEntitySMPVersion :: VersionSMP
 blockedEntitySMPVersion = VersionSMP 12
 
+proxyServerHandshakeSMPVersion :: VersionSMP
+proxyServerHandshakeSMPVersion = VersionSMP 14
+
 minClientSMPRelayVersion :: VersionSMP
 minClientSMPRelayVersion = VersionSMP 6
 
@@ -186,13 +190,13 @@ minServerSMPRelayVersion :: VersionSMP
 minServerSMPRelayVersion = VersionSMP 6
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 12
+currentClientSMPRelayVersion = VersionSMP 14
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 12
+currentServerSMPRelayVersion = VersionSMP 14
 
 -- Max SMP protocol version to be used in e2e encrypted
 -- connection between client and server, as defined by SMP proxy.
@@ -200,7 +204,7 @@ currentServerSMPRelayVersion = VersionSMP 12
 -- to prevent client version fingerprinting by the
 -- destination relays when clients upgrade at different times.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 12
+proxiedSMPRelayVersion = VersionSMP 14
 
 -- minimal supported protocol version is 6
 -- TODO remove code that supports sending commands without batching
@@ -480,7 +484,7 @@ instance Encoding ClientHandshake where
     pure ClientHandshake {smpVersion = v, keyHash, authPubKey, proxyServer}
 
 ifHasProxy :: VersionSMP -> a -> a -> a
-ifHasProxy v a b = if v >= blockedEntitySMPVersion then a else b
+ifHasProxy v a b = if v >= proxyServerHandshakeSMPVersion then a else b
 
 instance Encoding ServerHandshake where
   smpEncode ServerHandshake {smpVersionRange, sessionId, authPubKey} =
@@ -618,7 +622,7 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) vRange proxyServer = do
   -- - proxy and relay version 12: the agreed version is 12, transport encryption disabled (see blockEncryption with proxyServer == True).
   -- - proxy is v 12, relay is 11: the agreed version is 10, because of this logic, transport encryption is disabled.
   let smpVRange =
-        if proxyServer && maxVersion smpVersionRange < blockedEntitySMPVersion
+        if proxyServer && maxVersion smpVersionRange < proxyServerHandshakeSMPVersion
           then vRange {maxVersion = max (minVersion vRange) deletedEventSMPVersion}
           else vRange
   case smpVersionRange `compatibleVRange` smpVRange of
