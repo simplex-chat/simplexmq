@@ -217,11 +217,9 @@ legacyServerSMPRelayVRange = mkVersionRange minServerSMPRelayVersion legacyServe
 supportedServerSMPRelayVRange :: VersionRangeSMP
 supportedServerSMPRelayVRange = mkVersionRange minServerSMPRelayVersion currentServerSMPRelayVersion
 
--- cap it temporarily to version 10
 supportedProxyClientSMPRelayVRange :: VersionRangeSMP
 supportedProxyClientSMPRelayVRange = mkVersionRange minServerSMPRelayVersion currentServerSMPRelayVersion
 
--- This range initially allows only version 8 - see the comment above.
 proxiedSMPRelayVRange :: VersionRangeSMP
 proxiedSMPRelayVRange = mkVersionRange sendingProxySMPVersion proxiedSMPRelayVersion
 
