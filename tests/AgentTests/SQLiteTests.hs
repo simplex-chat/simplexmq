@@ -69,8 +69,8 @@ withStore2 = before connect2 . after (removeStore . fst)
   where
     connect2 :: IO (DBStore, DBStore)
     connect2 = do
-      s1 <- createStore'
-      s2 <- connectSQLiteStore (dbFilePath s1) "" False
+      s1@DBStore {dbFilePath} <- createStore'
+      s2 <- connectSQLiteStore dbFilePath "" False
       pure (s1, s2)
 
 createStore' :: IO DBStore
@@ -81,14 +81,14 @@ createEncryptedStore key keepKey = do
   -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
   -- IO operations on multiple similarly named files; error seems to be environment specific
   r <- randomIO :: IO Word32
-  Right st <- createDBStore (testDB <> show r) key keepKey Migrations.app MCError True
+  Right st <- createDBStore (DBOpts (testDB <> show r) key keepKey True) Migrations.app MCError
   withTransaction' st (`SQL.execute_` "INSERT INTO users (user_id) VALUES (1);")
   pure st
 
 removeStore :: DBStore -> IO ()
-removeStore db = do
+removeStore db@DBStore {dbFilePath} = do
   close db
-  removeFile $ dbFilePath db
+  removeFile dbFilePath
   where
     close :: DBStore -> IO ()
     close st = mapM_ DB.close =<< tryTakeMVar (dbConnection st)

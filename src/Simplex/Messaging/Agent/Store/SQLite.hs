@@ -25,7 +25,8 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Agent.Store.SQLite
-  ( createDBStore,
+  ( DBOpts (..),
+    createDBStore,
     closeDBStore,
     reopenDBStore,
     execSQL,
@@ -64,8 +65,15 @@ import UnliftIO.STM
 
 -- * SQLite Store implementation
 
-createDBStore :: FilePath -> ScrubbedBytes -> Bool -> [Migration] -> MigrationConfirmation -> Bool -> IO (Either MigrationError DBStore)
-createDBStore dbFilePath dbKey keepKey migrations confirmMigrations vacuum = do
+data DBOpts = DBOpts
+  { dbFilePath :: FilePath,
+    dbKey :: ScrubbedBytes,
+    keepKey :: Bool,
+    vacuum :: Bool
+  }
+
+createDBStore :: DBOpts -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createDBStore DBOpts {dbFilePath, dbKey, keepKey, vacuum} migrations confirmMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing True dbDir
   st <- connectSQLiteStore dbFilePath dbKey keepKey

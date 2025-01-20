@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -70,6 +69,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store (createStore)
 import Simplex.Messaging.Agent.Store.Common (DBStore)
+import Simplex.Messaging.Agent.Store.Interface (DBOpts)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..), MigrationError (..))
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
@@ -87,11 +87,6 @@ import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryA
 import System.Mem.Weak (Weak)
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
-#if defined(dbPostgres)
-import Database.PostgreSQL.Simple (ConnectInfo (..))
-#else
-import Data.ByteArray (ScrubbedBytes)
-#endif
 
 type AM' a = ReaderT Env IO a
 
@@ -277,13 +272,8 @@ newSMPAgentEnv config store = do
   multicastSubscribers <- newTMVarIO 0
   pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
 
-#if defined(dbPostgres)
-createAgentStore :: ConnectInfo -> String -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createAgentStore :: DBOpts -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createAgentStore = createStore
-#else
-createAgentStore :: FilePath -> ScrubbedBytes -> Bool -> MigrationConfirmation -> Bool -> IO (Either MigrationError DBStore)
-createAgentStore = createStore
-#endif
 
 data NtfSupervisor = NtfSupervisor
   { ntfTkn :: TVar (Maybe NtfToken),
