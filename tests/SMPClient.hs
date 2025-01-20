@@ -105,7 +105,7 @@ testSMPClient_ :: Transport c => TransportHost -> ServiceName -> VersionRangeSMP
 testSMPClient_ host port vr client = do
   let tcConfig = defaultTransportClientConfig {Client.alpn = clientALPN}
   runTransportClient tcConfig Nothing host port (Just testKeyHash) $ \h ->
-    runExceptT (smpClientHandshake h Nothing testKeyHash vr) >>= \case
+    runExceptT (smpClientHandshake h Nothing testKeyHash vr False) >>= \case
       Right th -> client th
       Left e -> error $ show e
   where
@@ -167,10 +167,10 @@ cfgMS msType =
     }
 
 cfgV7 :: ServerConfig
-cfgV7 = cfg {smpServerVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion}
+cfgV7 = cfg {smpServerVRange = mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion}
 
 cfgV8 :: ServerConfig
-cfgV8 = cfg {smpServerVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion}
+cfgV8 = cfg {smpServerVRange = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion}
 
 cfgVPrev :: ServerConfig
 cfgVPrev = cfg {smpServerVRange = prevRange $ smpServerVRange cfg}
@@ -185,13 +185,13 @@ proxyCfg :: ServerConfig
 proxyCfg =
   cfg
     { allowSMPProxy = True,
-      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {agreeSecret = True}}
+      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {agreeSecret = True, proxyServer = True, serverVRange = supportedProxyClientSMPRelayVRange}}
     }
   where
     smpAgentCfg' = smpAgentCfg cfg
 
 proxyVRangeV8 :: VersionRangeSMP
-proxyVRangeV8 = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion
+proxyVRangeV8 = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn = (`withSmpServerStoreMsgLogOnMS` AMSType SMSJournal)

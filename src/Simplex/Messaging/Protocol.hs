@@ -260,7 +260,7 @@ supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClie
 -- TODO v6.0 remove dependency on version
 maxMessageLength :: VersionSMP -> Int
 maxMessageLength v
-  | v >= encryptedBlockSMPVersion = 16048 -- max 16051
+  | v >= encryptedBlockSMPVersion = 16048 -- max 16048
   | v >= sendingProxySMPVersion = 16064 -- max 16067
   | otherwise = 16088 -- 16048 - always use this size to determine allowed ranges
 
@@ -1343,7 +1343,7 @@ transmissionP THandleParams {sessionId, implySessId} = do
 class (ProtocolTypeI (ProtoType msg), ProtocolEncoding v err msg, ProtocolEncoding v err (ProtoCommand msg), Show err, Show msg) => Protocol v err msg | msg -> v, msg -> err where
   type ProtoCommand msg = cmd | cmd -> msg
   type ProtoType msg = (sch :: ProtocolType) | sch -> msg
-  protocolClientHandshake :: forall c. Transport c => c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> ExceptT TransportError IO (THandle v c 'TClient)
+  protocolClientHandshake :: forall c. Transport c => c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> Bool -> ExceptT TransportError IO (THandle v c 'TClient)
   protocolPing :: ProtoCommand msg
   protocolError :: msg -> Maybe err
 
@@ -1370,9 +1370,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   encodeProtocol v = \case
     NEW rKey dhKey auth_ subMode sndSecure
       | v >= sndAuthKeySMPVersion -> new <> e (auth_, subMode, sndSecure)
-      | v >= subModeSMPVersion -> new <> auth <> e subMode
-      | v == basicAuthSMPVersion -> new <> auth
-      | otherwise -> new
+      | otherwise -> new <> auth <> e subMode
       where
         new = e (NEW_, ' ', rKey, dhKey)
         auth = maybe "" (e . ('A',)) auth_
@@ -1441,9 +1439,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
       Cmd SRecipient <$> case tag of
         NEW_
           | v >= sndAuthKeySMPVersion -> new <*> smpP <*> smpP <*> smpP
-          | v >= subModeSMPVersion -> new <*> auth <*> smpP <*> pure False
-          | v == basicAuthSMPVersion -> new <*> auth <*> pure SMSubscribe <*> pure False
-          | otherwise -> new <*> pure Nothing <*> pure SMSubscribe <*> pure False
+          | otherwise -> new <*> auth <*> smpP <*> pure False
           where
             new = NEW <$> _smpP <*> smpP
             auth = optional (A.char 'A' *> smpP)
@@ -1495,7 +1491,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     INFO info -> e (INFO_, ' ', info)
     OK -> e OK_
     ERR err -> case err of
-      BLOCKED _ | v < blockedEntityErrorSMPVersion -> e (ERR_, ' ', AUTH)
+      BLOCKED _ | v < blockedEntitySMPVersion -> e (ERR_, ' ', AUTH)
       _ -> e (ERR_, ' ', err)
     PONG -> e PONG_
     where

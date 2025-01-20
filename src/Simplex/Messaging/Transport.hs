@@ -3,6 +3,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE KindSignatures #-}
@@ -14,6 +15,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
 
 -- |
 -- Module      : Simplex.Messaging.Transport
@@ -36,20 +38,20 @@ module Simplex.Messaging.Transport
     supportedSMPHandshakes,
     supportedClientSMPRelayVRange,
     supportedServerSMPRelayVRange,
+    supportedProxyClientSMPRelayVRange,
     proxiedSMPRelayVRange,
+    minClientSMPRelayVersion,
+    minServerSMPRelayVersion,
     legacyServerSMPRelayVRange,
     currentClientSMPRelayVersion,
     legacyServerSMPRelayVersion,
     currentServerSMPRelayVersion,
-    batchCmdsSMPVersion,
-    basicAuthSMPVersion,
-    subModeSMPVersion,
     authCmdsSMPVersion,
     sendingProxySMPVersion,
     sndAuthKeySMPVersion,
     deletedEventSMPVersion,
     encryptedBlockSMPVersion,
-    blockedEntityErrorSMPVersion,
+    blockedEntitySMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -90,7 +92,7 @@ where
 
 import Control.Applicative (optional)
 import Control.Concurrent.STM
-import Control.Monad (forM, (<$!>))
+import Control.Monad (forM, when, (<$!>))
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Except (throwE)
@@ -139,11 +141,12 @@ smpBlockSize = 16384
 -- 5 - basic auth for SMP servers (11/12/2022)
 -- 6 - allow creating queues without subscribing (9/10/2023)
 -- 7 - support authenticated encryption to verify senders' commands, imply but do NOT send session ID in signed part (4/30/2024)
--- 8 - SMP proxy for sender commands
--- 9 - faster handshake: SKEY command for sender to secure queue
--- 10 - DELD event to subscriber when queue is deleted via another connnection
--- 11 - additional encryption of transport blocks with forward secrecy (9/14/2024)
+-- 8 - SMP proxy for sender commands (6/03/2024)
+-- 9 - faster handshake: SKEY command for sender to secure queue (6/30/2024)
+-- 10 - DELD event to subscriber when queue is deleted via another connnection (9/11/2024)
+-- 11 - additional encryption of transport blocks with forward secrecy (10/06/2024)
 -- 12 - BLOCKED error for blocked queues (1/11/2025)
+-- 14 - proxyServer handshake property to disable transport encryption between server and proxy (1/19/2025)
 
 data SMPVersion
 
@@ -156,14 +159,8 @@ type VersionRangeSMP = VersionRange SMPVersion
 pattern VersionSMP :: Word16 -> VersionSMP
 pattern VersionSMP v = Version v
 
-batchCmdsSMPVersion :: VersionSMP
-batchCmdsSMPVersion = VersionSMP 4
-
-basicAuthSMPVersion :: VersionSMP
-basicAuthSMPVersion = VersionSMP 5
-
-subModeSMPVersion :: VersionSMP
-subModeSMPVersion = VersionSMP 6
+_subModeSMPVersion :: VersionSMP
+_subModeSMPVersion = VersionSMP 6
 
 authCmdsSMPVersion :: VersionSMP
 authCmdsSMPVersion = VersionSMP 7
@@ -180,17 +177,26 @@ deletedEventSMPVersion = VersionSMP 10
 encryptedBlockSMPVersion :: VersionSMP
 encryptedBlockSMPVersion = VersionSMP 11
 
-blockedEntityErrorSMPVersion :: VersionSMP
-blockedEntityErrorSMPVersion = VersionSMP 12
+blockedEntitySMPVersion :: VersionSMP
+blockedEntitySMPVersion = VersionSMP 12
+
+proxyServerHandshakeSMPVersion :: VersionSMP
+proxyServerHandshakeSMPVersion = VersionSMP 14
+
+minClientSMPRelayVersion :: VersionSMP
+minClientSMPRelayVersion = VersionSMP 6
+
+minServerSMPRelayVersion :: VersionSMP
+minServerSMPRelayVersion = VersionSMP 6
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 12
+currentClientSMPRelayVersion = VersionSMP 14
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 12
+currentServerSMPRelayVersion = VersionSMP 14
 
 -- Max SMP protocol version to be used in e2e encrypted
 -- connection between client and server, as defined by SMP proxy.
@@ -198,20 +204,22 @@ currentServerSMPRelayVersion = VersionSMP 12
 -- to prevent client version fingerprinting by the
 -- destination relays when clients upgrade at different times.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 12
+proxiedSMPRelayVersion = VersionSMP 14
 
--- minimal supported protocol version is 4
+-- minimal supported protocol version is 6
 -- TODO remove code that supports sending commands without batching
 supportedClientSMPRelayVRange :: VersionRangeSMP
-supportedClientSMPRelayVRange = mkVersionRange batchCmdsSMPVersion currentClientSMPRelayVersion
+supportedClientSMPRelayVRange = mkVersionRange minClientSMPRelayVersion currentClientSMPRelayVersion
 
 legacyServerSMPRelayVRange :: VersionRangeSMP
-legacyServerSMPRelayVRange = mkVersionRange batchCmdsSMPVersion legacyServerSMPRelayVersion
+legacyServerSMPRelayVRange = mkVersionRange minServerSMPRelayVersion legacyServerSMPRelayVersion
 
 supportedServerSMPRelayVRange :: VersionRangeSMP
-supportedServerSMPRelayVRange = mkVersionRange batchCmdsSMPVersion currentServerSMPRelayVersion
+supportedServerSMPRelayVRange = mkVersionRange minServerSMPRelayVersion currentServerSMPRelayVersion
 
--- This range initially allows only version 8 - see the comment above.
+supportedProxyClientSMPRelayVRange :: VersionRangeSMP
+supportedProxyClientSMPRelayVRange = mkVersionRange minServerSMPRelayVersion currentServerSMPRelayVersion
+
 proxiedSMPRelayVRange :: VersionRangeSMP
 proxiedSMPRelayVRange = mkVersionRange sendingProxySMPVersion proxiedSMPRelayVersion
 
@@ -412,7 +420,7 @@ data THandleParams v p = THandleParams
     -- | do NOT send session ID in transmission, but include it into signed message
     -- based on protocol version
     implySessId :: Bool,
-    -- -- | additional block encryption
+    -- | keys for additional transport encryption
     encryptBlock :: Maybe TSbChainKeys,
     -- | send multiple transmissions in a single block
     -- based on protocol version
@@ -453,18 +461,28 @@ data ClientHandshake = ClientHandshake
     smpVersion :: VersionSMP,
     -- | server identity - CA certificate fingerprint
     keyHash :: C.KeyHash,
-    -- pub key to agree shared secret for entity ID encryption, shared secret for command authorization is agreed using per-queue keys.
-    authPubKey :: Maybe C.PublicKeyX25519
+    -- | pub key to agree shared secret for entity ID encryption, shared secret for command authorization is agreed using per-queue keys.
+    authPubKey :: Maybe C.PublicKeyX25519,
+    -- | Whether connecting client is a proxy server (send from SMP v12).
+    -- This property, if True, disables additional transport encrytion inside TLS.
+    -- (Proxy server connection already has additional encryption, so this layer is not needed there).
+    proxyServer :: Bool
   }
 
 instance Encoding ClientHandshake where
-  smpEncode ClientHandshake {smpVersion, keyHash, authPubKey} =
-    smpEncode (smpVersion, keyHash) <> encodeAuthEncryptCmds smpVersion authPubKey
+  smpEncode ClientHandshake {smpVersion = v, keyHash, authPubKey, proxyServer} =
+    smpEncode (v, keyHash)
+      <> encodeAuthEncryptCmds v authPubKey
+      <> ifHasProxy v (smpEncode proxyServer) ""
   smpP = do
-    (smpVersion, keyHash) <- smpP
+    (v, keyHash) <- smpP
     -- TODO drop SMP v6: remove special parser and make key non-optional
-    authPubKey <- authEncryptCmdsP smpVersion smpP
-    pure ClientHandshake {smpVersion, keyHash, authPubKey}
+    authPubKey <- authEncryptCmdsP v smpP
+    proxyServer <- ifHasProxy v smpP (pure False)
+    pure ClientHandshake {smpVersion = v, keyHash, authPubKey, proxyServer}
+
+ifHasProxy :: VersionSMP -> a -> a -> a
+ifHasProxy v a b = if v >= proxyServerHandshakeSMPVersion then a else b
 
 instance Encoding ServerHandshake where
   smpEncode ServerHandshake {smpVersionRange, sessionId, authPubKey} =
@@ -572,54 +590,70 @@ smpServerHandshake serverSignKey c (k, pk) kh smpVRange = do
       smpVersionRange = maybe legacyServerSMPRelayVRange (const smpVRange) $ getSessionALPN c
   sendHandshake th $ ServerHandshake {sessionId, smpVersionRange, authPubKey = Just (certChain, sk)}
   getHandshake th >>= \case
-    ClientHandshake {smpVersion = v, keyHash, authPubKey = k'}
+    ClientHandshake {smpVersion = v, keyHash, authPubKey = k', proxyServer}
       | keyHash /= kh ->
           throwE $ TEHandshake IDENTITY
       | otherwise ->
           case compatibleVRange' smpVersionRange v of
-            Just (Compatible vr) -> liftIO $ smpTHandleServer th v vr pk k'
+            Just (Compatible vr) -> liftIO $ smpTHandleServer th v vr pk k' proxyServer
             Nothing -> throwE TEVersion
 
 -- | Client SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-smpClientHandshake :: forall c. Transport c => c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> ExceptT TransportError IO (THandleSMP c 'TClient)
-smpClientHandshake c ks_ keyHash@(C.KeyHash kh) smpVRange = do
+smpClientHandshake :: forall c. Transport c => c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> Bool -> ExceptT TransportError IO (THandleSMP c 'TClient)
+smpClientHandshake c ks_ keyHash@(C.KeyHash kh) vRange proxyServer = do
   let th@THandle {params = THandleParams {sessionId}} = smpTHandle c
   ServerHandshake {sessionId = sessId, smpVersionRange, authPubKey} <- getHandshake th
-  if sessionId /= sessId
-    then throwE TEBadSession
-    else case smpVersionRange `compatibleVRange` smpVRange of
-      Just (Compatible vr) -> do
-        ck_ <- forM authPubKey $ \certKey@(X.CertificateChain cert, exact) ->
-          liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
-            case cert of
-              [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
-              _ -> throwError "bad certificate"
-            serverKey <- getServerVerifyKey c
-            pubKey <- C.verifyX509 serverKey exact
-            (,certKey) <$> (C.x509ToPublic (pubKey, []) >>= C.pubKey)
-        let v = maxVersion vr
-        sendHandshake th $ ClientHandshake {smpVersion = v, keyHash, authPubKey = fst <$> ks_}
-        liftIO $ smpTHandleClient th v vr (snd <$> ks_) ck_
-      Nothing -> throwE TEVersion
+  when (sessionId /= sessId) $ throwE TEBadSession
+  -- Below logic downgrades version range in case the "client" is SMP proxy server and it is
+  -- connected to the destination server of the version 11 or older.
+  -- It disables transport encryption between SMP proxy and destination relay.
+  --
+  -- Prior to version v6.3 the version between proxy and destination was capped at 8,
+  -- by mistake, which also disables transport encryption and the latest features.
+  --
+  -- Transport encryption between proxy and destination breaks clients with version 10 or earlier,
+  -- because of a larger message size (see maxMessageLength).
+  --
+  -- To summarize:
+  -- - proxy and relay version 12: the agreed version is 12, transport encryption disabled (see blockEncryption with proxyServer == True).
+  -- - proxy is v 12, relay is 11: the agreed version is 10, because of this logic, transport encryption is disabled.
+  let smpVRange =
+        if proxyServer && maxVersion smpVersionRange < proxyServerHandshakeSMPVersion
+          then vRange {maxVersion = max (minVersion vRange) deletedEventSMPVersion}
+          else vRange
+  case smpVersionRange `compatibleVRange` smpVRange of
+    Just (Compatible vr) -> do
+      ck_ <- forM authPubKey $ \certKey@(X.CertificateChain cert, exact) ->
+        liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
+          case cert of
+            [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
+            _ -> throwError "bad certificate"
+          serverKey <- getServerVerifyKey c
+          pubKey <- C.verifyX509 serverKey exact
+          (,certKey) <$> (C.x509ToPublic (pubKey, []) >>= C.pubKey)
+      let v = maxVersion vr
+      sendHandshake th $ ClientHandshake {smpVersion = v, keyHash, authPubKey = fst <$> ks_, proxyServer}
+      liftIO $ smpTHandleClient th v vr (snd <$> ks_) ck_ proxyServer
+    Nothing -> throwE TEVersion
 
-smpTHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> VersionRangeSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> IO (THandleSMP c 'TServer)
-smpTHandleServer th v vr pk k_ = do
+smpTHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> VersionRangeSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> Bool -> IO (THandleSMP c 'TServer)
+smpTHandleServer th v vr pk k_ proxyServer = do
   let thAuth = Just THAuthServer {serverPrivKey = pk, sessSecret' = (`C.dh'` pk) <$!> k_}
-  be <- blockEncryption th v thAuth
+  be <- blockEncryption th v proxyServer thAuth
   pure $ smpTHandle_ th v vr thAuth $ uncurry TSbChainKeys <$> be
 
-smpTHandleClient :: forall c. THandleSMP c 'TClient -> VersionSMP -> VersionRangeSMP -> Maybe C.PrivateKeyX25519 -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> IO (THandleSMP c 'TClient)
-smpTHandleClient th v vr pk_ ck_ = do
+smpTHandleClient :: forall c. THandleSMP c 'TClient -> VersionSMP -> VersionRangeSMP -> Maybe C.PrivateKeyX25519 -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> Bool -> IO (THandleSMP c 'TClient)
+smpTHandleClient th v vr pk_ ck_ proxyServer = do
   let thAuth = (\(k, ck) -> THAuthClient {serverPeerPubKey = k, serverCertKey = forceCertChain ck, sessSecret = C.dh' k <$!> pk_}) <$!> ck_
-  be <- blockEncryption th v thAuth
+  be <- blockEncryption th v proxyServer thAuth
   -- swap is needed to use client's sndKey as server's rcvKey and vice versa
   pure $ smpTHandle_ th v vr thAuth $ uncurry TSbChainKeys . swap <$> be
 
-blockEncryption :: THandleSMP c p -> VersionSMP -> Maybe (THandleAuth p) -> IO (Maybe (TVar C.SbChainKey, TVar C.SbChainKey))
-blockEncryption THandle {params = THandleParams {sessionId}} v = \case
-  Just thAuth | v >= encryptedBlockSMPVersion -> case thAuth of
+blockEncryption :: THandleSMP c p -> VersionSMP -> Bool -> Maybe (THandleAuth p) -> IO (Maybe (TVar C.SbChainKey, TVar C.SbChainKey))
+blockEncryption THandle {params = THandleParams {sessionId}} v proxyServer = \case
+  Just thAuth | not proxyServer && v >= encryptedBlockSMPVersion -> case thAuth of
     THAuthClient {sessSecret} -> be sessSecret
     THAuthServer {sessSecret'} -> be sessSecret'
   _ -> pure Nothing

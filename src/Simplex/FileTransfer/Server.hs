@@ -287,13 +287,13 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               CPDelete fileId -> withUserRole $ unliftIO u $ do
                 fs <- asks store
                 r <- runExceptT $ do
-                  (fr, _) <- ExceptT $ atomically $ getFile fs SFSender fileId
+                  (fr, _) <- ExceptT $ atomically $ getFile fs SFRecipient fileId
                   ExceptT $ deleteServerFile_ fr
                 liftIO . hPutStrLn h $ either (\e -> "error: " <> show e) (\() -> "ok") r
               CPBlock fileId info -> withUserRole $ unliftIO u $ do
                 fs <- asks store
                 r <- runExceptT $ do
-                  (fr, _) <- ExceptT $ atomically $ getFile fs SFSender fileId
+                  (fr, _) <- ExceptT $ atomically $ getFile fs SFRecipient fileId
                   ExceptT $ blockServerFile fr info
                 liftIO . hPutStrLn h $ either (\e -> "error: " <> show e) (\() -> "ok") r
               CPHelp -> hPutStrLn h "commands: stats-rts, delete, help, quit"
@@ -540,12 +540,12 @@ blockServerFile fr@FileRec {senderId} info = do
 
 deleteOrBlockServerFile_ :: FileRec -> (FileServerStats -> IORef Int) -> (FileStore -> STM (Either XFTPErrorType ())) -> M (Either XFTPErrorType ())
 deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = runExceptT $ do
-    path <- readTVarIO filePath
-    stats <- asks serverStats
-    ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
-    st <- asks store
-    void $ atomically $ storeAction st
-    lift $ incFileStat stat
+  path <- readTVarIO filePath
+  stats <- asks serverStats
+  ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
+  st <- asks store
+  void $ atomically $ storeAction st
+  lift $ incFileStat stat
   where
     deletedStats stats = do
       liftIO $ atomicModifyIORef'_ (filesCount stats) (subtract 1)

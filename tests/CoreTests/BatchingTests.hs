@@ -296,7 +296,7 @@ testClientStubV6 :: IO (ProtocolClient SMPVersion ErrorType BrokerMsg)
 testClientStubV6 = do
   g <- C.newRandom
   sessId <- atomically $ C.randomBytes 32 g
-  smpClientStub g sessId subModeSMPVersion Nothing
+  smpClientStub g sessId minServerSMPRelayVersion Nothing
 
 testClientStub :: IO (ProtocolClient SMPVersion ErrorType BrokerMsg)
 testClientStub = do
@@ -307,7 +307,7 @@ testClientStub = do
   smpClientStub g sessId currentClientSMPRelayVersion thAuth_
 
 randomSUBv6 :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
-randomSUBv6 = randomSUB_ C.SEd25519 subModeSMPVersion
+randomSUBv6 = randomSUB_ C.SEd25519 minServerSMPRelayVersion
 
 randomSUB :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSUB = randomSUB_ C.SEd25519 currentClientSMPRelayVersion
@@ -354,7 +354,7 @@ randomNMSGCmd ts = do
   pure (CorrId "", EntityId nId, NMSG nonce encNMsgMeta)
 
 randomSENDv6 :: ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
-randomSENDv6 = randomSEND_ C.SEd25519 subModeSMPVersion
+randomSENDv6 = randomSEND_ C.SEd25519 minServerSMPRelayVersion
 
 randomSEND :: ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
 randomSEND = randomSEND_ C.SX25519 currentClientSMPRelayVersion

@@ -124,8 +124,8 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_queues_deleted{type=\"new\"} " <> mshow _qDeletedNew <> "\n# qDeletedNew\n\
       \simplex_smp_queues_deleted{type=\"secured\"} " <> mshow _qDeletedSecured <> "\n# qDeletedSecured\n\
       \\n\
-      \# HELP simplex_smp_queues_deleted Deleted queues\n\
-      \# TYPE simplex_smp_queues_deleted counter\n\
+      \# HELP simplex_smp_queues_blocked Deleted queues\n\
+      \# TYPE simplex_smp_queues_blocked counter\n\
       \simplex_smp_queues_blocked " <> mshow _qBlocked <> "\n# qBlocked\n\
       \\n\
       \# HELP simplex_smp_queues_deleted_batch Batched requests to delete queues\n\
