@@ -49,7 +49,7 @@ testVerifySchemaDump :: IO ()
 testVerifySchemaDump = do
   savedSchema <- ifM (doesFileExist appSchema) (readFile appSchema) (pure "")
   savedSchema `deepseq` pure ()
-  void $ createDBStore (DBCreateOpts testDB "" False True) Migrations.app MCConsole
+  void $ createDBStore (DBOpts testDB "" False True) Migrations.app MCConsole
   getSchema testDB appSchema `shouldReturn` savedSchema
   removeFile testDB
 
@@ -57,7 +57,7 @@ testVerifyLintFKeyIndexes :: IO ()
 testVerifyLintFKeyIndexes = do
   savedLint <- ifM (doesFileExist appLint) (readFile appLint) (pure "")
   savedLint `deepseq` pure ()
-  void $ createDBStore (DBCreateOpts testDB "" False True) Migrations.app MCConsole
+  void $ createDBStore (DBOpts testDB "" False True) Migrations.app MCConsole
   getLintFKeyIndexes testDB "tests/tmp/agent_lint.sql" `shouldReturn` savedLint
   removeFile testDB
 
@@ -70,7 +70,7 @@ withTmpFiles =
 testSchemaMigrations :: IO ()
 testSchemaMigrations = do
   let noDownMigrations = dropWhileEnd (\Migration {down} -> isJust down) Migrations.app
-  Right st <- createDBStore (DBCreateOpts testDB "" False True) noDownMigrations MCError
+  Right st <- createDBStore (DBOpts testDB "" False True) noDownMigrations MCError
   mapM_ (testDownMigration st) $ drop (length noDownMigrations) Migrations.app
   closeDBStore st
   removeFile testDB
@@ -93,7 +93,7 @@ testSchemaMigrations = do
 
 testUsersMigrationNew :: IO ()
 testUsersMigrationNew = do
-  Right st <- createDBStore (DBCreateOpts testDB "" False True) Migrations.app MCError
+  Right st <- createDBStore (DBOpts testDB "" False True) Migrations.app MCError
   withTransaction' st (`SQL.query_` "SELECT user_id FROM users;")
     `shouldReturn` ([] :: [Only Int])
   closeDBStore st
@@ -101,11 +101,11 @@ testUsersMigrationNew = do
 testUsersMigrationOld :: IO ()
 testUsersMigrationOld = do
   let beforeUsers = takeWhile (("m20230110_users" /=) . name) Migrations.app
-  Right st <- createDBStore (DBCreateOpts testDB "" False True) beforeUsers MCError
+  Right st <- createDBStore (DBOpts testDB "" False True) beforeUsers MCError
   withTransaction' st (`SQL.query_` "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users';")
     `shouldReturn` ([] :: [Only String])
   closeDBStore st
-  Right st' <- createDBStore (DBCreateOpts testDB "" False True) Migrations.app MCYesUp
+  Right st' <- createDBStore (DBOpts testDB "" False True) Migrations.app MCYesUp
   withTransaction' st' (`SQL.query_` "SELECT user_id FROM users;")
     `shouldReturn` ([Only (1 :: Int)])
   closeDBStore st'

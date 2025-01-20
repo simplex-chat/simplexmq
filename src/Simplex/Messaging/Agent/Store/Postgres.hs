@@ -5,7 +5,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Agent.Store.Postgres
-  ( DBCreateOpts (..),
+  ( DBOpts (..),
     createDBStore,
     closeDBStore,
     reopenDBStore,
@@ -31,7 +31,7 @@ import UnliftIO.Exception (bracketOnError, onException)
 import UnliftIO.MVar
 import UnliftIO.STM
 
-data DBCreateOpts = DBCreateOpts
+data DBOpts = DBOpts
   { connstr :: ByteString,
     schema :: String
   }
@@ -40,8 +40,8 @@ data DBCreateOpts = DBCreateOpts
 -- If passed schema does not exist in connectInfo database, it will be created.
 -- Applies necessary migrations to schema.
 -- TODO [postgres] authentication / user password, db encryption (?)
-createDBStore :: DBCreateOpts -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
-createDBStore DBCreateOpts {connstr, schema} migrations confirmMigrations = do
+createDBStore :: DBOpts -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createDBStore DBOpts {connstr, schema} migrations confirmMigrations = do
   st <- connectPostgresStore connstr schema
   r <- migrateSchema st migrations confirmMigrations True `onException` closeDBStore st
   case r of

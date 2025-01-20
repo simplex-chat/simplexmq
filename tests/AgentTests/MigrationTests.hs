@@ -203,12 +203,12 @@ testSchema randSuffix = "test_migrations_schema" <> show randSuffix
 
 createStore :: Word32 -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createStore randSuffix migrations confirmMigrations = do
-  let dbCreateOpts =
-        DBCreateOpts {
+  let dbOpts =
+        DBOpts {
           connstr = testDBConnstr,
           schema = testSchema randSuffix
         }
-  createDBStore dbCreateOpts migrations confirmMigrations
+  createDBStore dbOpts migrations confirmMigrations
 
 cleanup :: Word32 -> IO ()
 cleanup randSuffix = dropSchema testDBConnectInfo (testSchema randSuffix)
@@ -223,14 +223,14 @@ testDB randSuffix = "tests/tmp/test_migrations.db" <> show randSuffix
 
 createStore :: Word32 -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createStore randSuffix migrations confirmMigrations = do
-  let dbCreateOpts =
-        DBCreateOpts {
+  let dbOpts =
+        DBOpts {
           dbFilePath = testDB randSuffix,
           dbKey = "",
           keepKey = False,
           vacuum = True
         }
-  createDBStore dbCreateOpts migrations confirmMigrations
+  createDBStore dbOpts migrations confirmMigrations
 
 cleanup :: Word32 -> IO ()
 cleanup randSuffix = removeFile (testDB randSuffix)

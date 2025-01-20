@@ -3108,13 +3108,13 @@ getSMPAgentClient' clientId cfg' initServers dbPath = do
 
 #if defined(dbPostgres)
 createStore :: String -> IO (Either MigrationError DBStore)
-createStore schema = createAgentStore (DBCreateOpts testDBConnstr schema) MCError
+createStore schema = createAgentStore (DBOpts testDBConnstr schema) MCError
 
 insertUser :: DBStore -> IO ()
 insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users DEFAULT VALUES")
 #else
 createStore :: String -> IO (Either MigrationError DBStore)
-createStore dbPath = createAgentStore (DBCreateOpts dbPath "" False True) MCError
+createStore dbPath = createAgentStore (DBOpts dbPath "" False True) MCError
 
 insertUser :: DBStore -> IO ()
 insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users (user_id) VALUES (1)")
