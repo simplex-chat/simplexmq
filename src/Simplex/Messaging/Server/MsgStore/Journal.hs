@@ -499,7 +499,21 @@ instance JournalStoreType s => MsgStoreClass (JournalMsgStore s) where
     MQStore st -> suspendQueue' st sq
     JQStore {} ->
       isolateQueueRec sq "suspendQueue" $ \q ->
-        fmap Right $ storeQueue sq q {status = QueueOff}
+        fmap Right $ storeQueue sq q {status = EntityOff}
+
+  blockQueue :: JournalMsgStore s -> JournalQueue s -> BlockingInfo -> IO (Either ErrorType ())
+  blockQueue ms sq info = case queueStore ms of
+    MQStore st -> blockQueue' st sq info
+    JQStore {} ->
+      isolateQueueRec sq "blockQueue" $ \q ->
+        fmap Right $ storeQueue sq q {status = EntityBlocked info}
+
+  unblockQueue :: JournalMsgStore s -> JournalQueue s -> IO (Either ErrorType ())
+  unblockQueue ms sq = case queueStore ms of
+    MQStore st -> unblockQueue' st sq
+    JQStore {} ->
+      isolateQueueRec sq "unblockQueue" $ \q ->
+        fmap Right $ storeQueue sq q {status = EntityActive}
 
   updateQueueTime :: JournalMsgStore s -> JournalQueue s -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
   updateQueueTime ms sq t = case queueStore ms of

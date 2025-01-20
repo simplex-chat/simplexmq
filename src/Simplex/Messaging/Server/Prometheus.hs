@@ -13,6 +13,7 @@ import Data.Time.Clock.System (systemEpochDay)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Server.Stats
+import Simplex.Messaging.Transport.Server (SocketStats (..))
 
 data ServerMetrics = ServerMetrics
   { statsData :: ServerStatsData,
@@ -30,13 +31,6 @@ data RealTimeMetrics = RealTimeMetrics
     smpSubClientsCount :: Int,
     ntfSubsCount :: Int,
     ntfSubClientsCount :: Int
-  }
-
-data SocketStats = SocketStats
-  { socketsAccepted :: Int,
-    socketsClosed :: Int,
-    socketsActive :: Int,
-    socketsLeaked :: Int
   }
 
 {-# FOURMOLU_DISABLE\n#-}
@@ -62,6 +56,7 @@ prometheusMetrics sm rtm ts =
         _qDeletedAllB,
         _qDeletedNew,
         _qDeletedSecured,
+        _qBlocked,
         _qSub,
         _qSubAllB,
         _qSubAuth,
@@ -80,6 +75,7 @@ prometheusMetrics sm rtm ts =
         _msgSentAuth,
         _msgSentQuota,
         _msgSentLarge,
+        _msgSentBlock,
         _msgRecv,
         _msgRecvGet,
         _msgGet,
@@ -127,6 +123,10 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_queues_deleted{type=\"all\"} " <> mshow _qDeletedAll <> "\n# qDeleted\n\
       \simplex_smp_queues_deleted{type=\"new\"} " <> mshow _qDeletedNew <> "\n# qDeletedNew\n\
       \simplex_smp_queues_deleted{type=\"secured\"} " <> mshow _qDeletedSecured <> "\n# qDeletedSecured\n\
+      \\n\
+      \# HELP simplex_smp_queues_blocked Deleted queues\n\
+      \# TYPE simplex_smp_queues_blocked counter\n\
+      \simplex_smp_queues_blocked " <> mshow _qBlocked <> "\n# qBlocked\n\
       \\n\
       \# HELP simplex_smp_queues_deleted_batch Batched requests to delete queues\n\
       \# TYPE simplex_smp_queues_deleted_batch counter\n\
@@ -203,6 +203,7 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_messages_sent_errors{type=\"auth\"} " <> mshow _msgSentAuth <> "\n# msgSentAuth\n\
       \simplex_smp_messages_sent_errors{type=\"quota\"} " <> mshow _msgSentQuota <> "\n# msgSentQuota\n\
       \simplex_smp_messages_sent_errors{type=\"large\"} " <> mshow _msgSentLarge <> "\n# msgSentLarge\n\
+      \simplex_smp_messages_sent_errors{type=\"block\"} " <> mshow _msgSentBlock <> "\n# msgSentBlock\n\
       \\n\
       \# HELP simplex_smp_messages_received Received messages.\n\
       \# TYPE simplex_smp_messages_received counter\n\

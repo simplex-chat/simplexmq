@@ -47,14 +47,12 @@ import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), JournalStoreConfig (..))
 import Simplex.Messaging.Server.MsgStore.STM (STMStoreConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types
-import Simplex.Messaging.Server.QueueStore (QueueRec (..), ServerQueueStatus (..))
 import Simplex.Messaging.Server.QueueStore.STM (readQueueStore)
 import Simplex.Messaging.Server.StoreLog (openWriteStoreLog, logCreateQueue)
-import Simplex.Messaging.Transport (batchCmdsSMPVersion, sendingProxySMPVersion, simplexMQVersion, supportedServerSMPRelayVRange)
+import Simplex.Messaging.Transport (simplexMQVersion, supportedProxyClientSMPRelayVRange, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, tshow)
-import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, renameFile)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
@@ -152,10 +150,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   let qs = queues $ stmQueueStore st
                   readTVarIO qs >>= mapM_ (writeQueue ms) . M.assocs
                   renameFile storeLogFilePath (storeLogFilePath <> ".bak")
-                active QueueRec {status} = status == QueueActive
                 writeQueue ms (rId, q) =
                   readTVarIO (queueRec' q) >>= \case
-                    Just q' | active q' ->  -- TODO we should log suspended queues when we use them
+                    Just q' ->
                       addQueue ms rId q' >>= \case
                         Right _ -> pure ()
                         Left e -> do
@@ -214,9 +211,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               withAllMsgQueues True ms $ \q -> do
                 let rId = recipientId' q
                 readTVarIO (queueRec' q) >>= \case
-                  Just q' -> when (active q') $ logCreateQueue s rId q' -- TODO we should log suspended queues when we use them
+                  Just q' -> logCreateQueue s rId q' -- TODO we should log suspended queues when we use them
                   Nothing -> putStrLn $ "WARN: deleted queue " <> B.unpack (strEncode rId) <> ", verify the journal folder"
-            active QueueRec {status} = status == QueueActive
             exportStoreSettings = case readMsgStoreType ini of
               Right (AMSType SMSMemory) -> "store_messages set to `memory`, all correct"
               Right (AMSType SMSHybrid) -> "store_messages set to `journal`, update it to `memory` in INI file"
@@ -584,8 +580,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 defaultSMPClientAgentConfig
                   { smpCfg =
                       (smpCfg defaultSMPClientAgentConfig)
-                        { serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion,
+                        { serverVRange = supportedProxyClientSMPRelayVRange,
                           agreeSecret = True,
+                          proxyServer = True,
                           networkConfig =
                             defaultNetworkConfig
                               { socksProxy = either error id <$!> strDecodeIni "PROXY" "socks_proxy" ini,

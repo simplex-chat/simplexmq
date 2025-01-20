@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
@@ -46,6 +47,10 @@ import System.Random (randomRIO)
 import Test.Hspec
 import UnliftIO
 import Util
+#if defined(dbPostgres)
+import Fixtures
+import Simplex.Messaging.Agent.Store.Postgres.Util (dropAllSchemasExceptSystem)
+#endif
 
 smpProxyTests :: Spec
 smpProxyTests = do
@@ -101,7 +106,11 @@ smpProxyTests = do
         it "100x100 N4 C16" . twoServersMoreConc $ withNumCapabilities 4 $ 100 `inParrallel` deliver 100
         it "100x100 N" . twoServersFirstProxy $ withNCPUCapabilities $ 100 `inParrallel` deliver 100
         it "500x20" . twoServersFirstProxy $ 500 `inParrallel` deliver 20
+#if defined(dbPostgres)
+    after_ (dropAllSchemasExceptSystem testDBConnectInfo) . describe "agent API" $ do
+#else
     describe "agent API" $ do
+#endif
       describe "one server" $ do
         it "always via proxy" . oneServer $
           agentDeliverMessageViaProxy ([srv1], SPMAlways, True) ([srv1], SPMAlways, True) C.SEd448 "hello 1" "hello 2" 1
@@ -153,12 +162,12 @@ deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   g <- C.newRandom
   -- set up proxy
   ts <- getCurrentTime
-  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} Nothing ts (\_ -> pure ())
+  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion} Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pc'
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- set up relay
   msgQ <- newTBQueueIO 1024
-  rc' <- getProtocolClient g (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion} (Just msgQ) ts (\_ -> pure ())
+  rc' <- getProtocolClient g (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion} (Just msgQ) ts (\_ -> pure ())
   rc <- either (fail . show) pure rc'
   -- prepare receiving queue
   (rPub, rPriv) <- atomically $ C.generateAuthKeyPair alg g
@@ -196,7 +205,7 @@ proxyConnectDeadRelay n d proxyServ = do
   g <- C.newRandom
   -- set up proxy
   ts <- getCurrentTime
-  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion} Nothing ts (\_ -> pure ())
+  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion} Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pc'
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- get proxy session

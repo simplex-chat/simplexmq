@@ -24,6 +24,8 @@ module Simplex.Messaging.Server.QueueStore.STM
     addQueueNotifier',
     deleteQueueNotifier',
     suspendQueue',
+    blockQueue',
+    unblockQueue',
     updateQueueTime',
     deleteQueue',
     readQueueStore,
@@ -133,7 +135,23 @@ suspendQueue' st sq =
     $>>= \_ -> withLog "suspendQueue" st (`logSuspendQueue` recipientId' sq)
   where
     qr = queueRec' sq
-    suspend q = writeTVar qr $! Just q {status = QueueOff}
+    suspend q = writeTVar qr $! Just q {status = EntityOff}
+
+blockQueue' :: MsgStoreClass s => STMQueueStore (StoreQueue s) -> StoreQueue s -> BlockingInfo -> IO (Either ErrorType ())
+blockQueue' st sq info =
+  atomically (readQueueRec qr >>= mapM block)
+    $>>= \_ -> withLog "blockQueue" st (\sl -> logBlockQueue sl (recipientId' sq) info)
+  where
+    qr = queueRec' sq
+    block q = writeTVar qr $ Just q {status = EntityBlocked info}
+
+unblockQueue' :: MsgStoreClass s => STMQueueStore (StoreQueue s) -> StoreQueue s -> IO (Either ErrorType ())
+unblockQueue' st sq =
+  atomically (readQueueRec qr >>= mapM unblock)
+    $>>= \_ -> withLog "unblockQueue" st (`logUnblockQueue` recipientId' sq)
+  where
+    qr = queueRec' sq
+    unblock q = writeTVar qr $ Just q {status = EntityActive}
 
 updateQueueTime' :: MsgStoreClass s => STMQueueStore (StoreQueue s) -> StoreQueue s -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
 updateQueueTime' st sq t = atomically (readQueueRec qr >>= mapM update) $>>= log'
@@ -188,10 +206,12 @@ readQueueStore f ms = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLin
         s = LB.toStrict s'
         procLogRecord :: StoreLogRecord -> IO ()
         procLogRecord = \case
-          CreateQueue rId q -> addQueue' ms rId q >>= qError rId "CreateQueue"
+          CreateQueue rId q -> addQueue ms rId q >>= qError rId "CreateQueue"
           SecureQueue qId sKey -> withQueue qId "SecureQueue" $ \q -> secureQueue' st q sKey
           AddNotifier qId ntfCreds -> withQueue qId "AddNotifier" $ \q -> addQueueNotifier' st q ntfCreds
           SuspendQueue qId -> withQueue qId "SuspendQueue" $ suspendQueue' st
+          BlockQueue qId info -> withQueue qId "BlockQueue" $ \q -> blockQueue' st q info
+          UnblockQueue qId -> withQueue qId "UnblockQueue" $ unblockQueue' st
           DeleteQueue qId -> withQueue qId "DeleteQueue" $ deleteQueue' st
           DeleteNotifier qId -> withQueue qId "DeleteNotifier" $ deleteQueueNotifier' st
           UpdateTime qId t -> withQueue qId "UpdateTime" $ \q -> updateQueueTime' st q t

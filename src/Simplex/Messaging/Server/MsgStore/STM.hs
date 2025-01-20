@@ -111,6 +111,12 @@ instance MsgStoreClass STMMsgStore where
   suspendQueue = suspendQueue' . queueStore
   {-# INLINE suspendQueue #-}
 
+  blockQueue = blockQueue' . queueStore
+  {-# INLINE blockQueue #-}
+
+  unblockQueue = unblockQueue' . queueStore
+  {-# INLINE unblockQueue #-}
+
   updateQueueTime = updateQueueTime' . queueStore
   {-# INLINE updateQueueTime #-}
 

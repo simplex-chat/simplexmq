@@ -12,6 +12,7 @@ module Simplex.Messaging.Transport.Server
     runTransportServerState,
     runTransportServerState_,
     SocketState,
+    SocketStats (..),
     newSocketState,
     getSocketStats,
     runTransportServer,
@@ -44,7 +45,6 @@ import Foreign.C.Error
 import GHC.IO.Exception (ioe_errno)
 import Network.Socket
 import qualified Network.TLS as T
-import Simplex.Messaging.Server.Prometheus
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (catchAll_, labelMyThread, tshow)
 import System.Exit (exitFailure)
@@ -159,11 +159,18 @@ safeAccept sock =
       | otherwise -> logError err >> E.throwIO e
       where
         retryAccept = maybe False ((`elem` again) . Errno) errno
-        again = [eAGAIN, eNETDOWN, ePROTO, eNOPROTOOPT, eHOSTDOWN, eNONET, eHOSTUNREACH, eOPNOTSUPP, eNETUNREACH]
+        again = [eCONNABORTED, eAGAIN, eNETDOWN, ePROTO, eNOPROTOOPT, eHOSTDOWN, eNONET, eHOSTUNREACH, eOPNOTSUPP, eNETUNREACH]
         err = "socket accept error: " <> tshow e <> maybe "" ((", errno=" <>) . tshow) errno
         errno = ioe_errno e
 
 type SocketState = (TVar Int, TVar Int, TVar (IntMap (Weak ThreadId)))
+
+data SocketStats = SocketStats
+  { socketsAccepted :: Int,
+    socketsClosed :: Int,
+    socketsActive :: Int,
+    socketsLeaked :: Int
+  }
 
 newSocketState :: IO SocketState
 newSocketState = (,,) <$> newTVarIO 0 <*> newTVarIO 0 <*> newTVarIO mempty

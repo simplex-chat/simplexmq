@@ -1,11 +1,14 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -233,14 +236,20 @@ import Data.Typeable (Proxy (Proxy), Typeable)
 import Data.Word (Word32)
 import Data.X509
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
 import GHC.TypeLits (ErrorMessage (..), KnownNat, Nat, TypeError, natVal, type (+))
 import Network.Transport.Internal (decodeWord16, encodeWord16)
+import Simplex.Messaging.Agent.Store.DB (Binary (..))
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (blobFieldDecoder, parseAll, parseString)
 import Simplex.Messaging.Util ((<$?>))
+#if defined(dbPostgres)
+import Database.PostgreSQL.Simple.FromField (FromField (..))
+import Database.PostgreSQL.Simple.ToField (ToField (..))
+#else
+import Database.SQLite.Simple.FromField (FromField (..))
+import Database.SQLite.Simple.ToField (ToField (..))
+#endif
 
 -- | Cryptographic algorithms.
 data Algorithm = Ed25519 | Ed448 | X25519 | X448
@@ -721,23 +730,23 @@ generateKeyPair_ = case sAlgorithm @a of
       let k = X448.toPublic pk
        in pure (PublicKeyX448 k, PrivateKeyX448 pk k)
 
-instance ToField APrivateSignKey where toField = toField . encodePrivKey
+instance ToField APrivateSignKey where toField = toField . Binary . encodePrivKey
 
-instance ToField APublicVerifyKey where toField = toField . encodePubKey
+instance ToField APublicVerifyKey where toField = toField . Binary . encodePubKey
 
-instance ToField APrivateAuthKey where toField = toField . encodePrivKey
+instance ToField APrivateAuthKey where toField = toField . Binary . encodePrivKey
 
-instance ToField APublicAuthKey where toField = toField . encodePubKey
+instance ToField APublicAuthKey where toField = toField . Binary . encodePubKey
 
-instance ToField APrivateDhKey where toField = toField . encodePrivKey
+instance ToField APrivateDhKey where toField = toField . Binary . encodePrivKey
 
-instance ToField APublicDhKey where toField = toField . encodePubKey
+instance ToField APublicDhKey where toField = toField . Binary . encodePubKey
 
-instance AlgorithmI a => ToField (PrivateKey a) where toField = toField . encodePrivKey
+instance AlgorithmI a => ToField (PrivateKey a) where toField = toField . Binary . encodePrivKey
 
-instance AlgorithmI a => ToField (PublicKey a) where toField = toField . encodePubKey
+instance AlgorithmI a => ToField (PublicKey a) where toField = toField . Binary . encodePubKey
 
-instance ToField (DhSecret a) where toField = toField . dhBytes'
+instance ToField (DhSecret a) where toField = toField . Binary . dhBytes'
 
 instance FromField APrivateSignKey where fromField = blobFieldDecoder decodePrivKey
 
@@ -888,10 +897,9 @@ validSignatureSize n =
 -- | AES key newtype.
 newtype Key = Key {unKey :: ByteString}
   deriving (Eq, Ord, Show)
+  deriving newtype (FromField)
 
-instance ToField Key where toField = toField . unKey
-
-instance FromField Key where fromField f = Key <$> fromField f
+instance ToField Key where toField (Key s) = toField $ Binary s
 
 instance ToJSON Key where
   toJSON = strToJSON . unKey
@@ -952,7 +960,7 @@ instance FromJSON KeyHash where
 instance IsString KeyHash where
   fromString = parseString $ parseAll strP
 
-instance ToField KeyHash where toField = toField . strEncode
+instance ToField KeyHash where toField = toField . Binary . strEncode
 
 instance FromField KeyHash where fromField = blobFieldDecoder $ parseAll strP
 
@@ -1162,10 +1170,14 @@ instance SignatureAlgorithmX509 pk => SignatureAlgorithmX509 (a, pk) where
 newtype SignedObject a = SignedObject {getSignedExact :: SignedExact a}
 
 instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
+#if defined(dbPostgres)
+  fromField f dat = SignedObject <$> blobFieldDecoder decodeSignedObject f dat
+#else
   fromField = fmap SignedObject . blobFieldDecoder decodeSignedObject
+#endif
 
 instance (Eq a, Show a, ASN1Object a) => ToField (SignedObject a) where
-  toField (SignedObject s) = toField $ encodeSignedObject s
+  toField (SignedObject s) = toField . Binary $ encodeSignedObject s
 
 instance (Eq a, Show a, ASN1Object a) => Encoding (SignedObject a) where
   smpEncode (SignedObject exact) = smpEncode . Large $ encodeSignedObject exact
@@ -1265,6 +1277,9 @@ cbVerify k pk nonce (CbAuthenticator s) authorized = cbDecryptNoPad (dh' k pk) n
 
 newtype CbNonce = CryptoBoxNonce {unCbNonce :: ByteString}
   deriving (Eq, Show)
+  deriving newtype (FromField)
+
+instance ToField CbNonce where toField (CryptoBoxNonce s) = toField $ Binary s
 
 pattern CbNonce :: ByteString -> CbNonce
 pattern CbNonce s <- CryptoBoxNonce s
@@ -1281,10 +1296,6 @@ instance ToJSON CbNonce where
 
 instance FromJSON CbNonce where
   parseJSON = strParseJSON "CbNonce"
-
-instance FromField CbNonce where fromField f = CryptoBoxNonce <$> fromField f
-
-instance ToField CbNonce where toField (CryptoBoxNonce s) = toField s
 
 cbNonce :: ByteString -> CbNonce
 cbNonce s
@@ -1309,6 +1320,9 @@ instance Encoding CbNonce where
 
 newtype SbKey = SecretBoxKey {unSbKey :: ByteString}
   deriving (Eq, Show)
+  deriving newtype (FromField)
+
+instance ToField SbKey where toField (SecretBoxKey s) = toField $ Binary s
 
 pattern SbKey :: ByteString -> SbKey
 pattern SbKey s <- SecretBoxKey s
@@ -1325,10 +1339,6 @@ instance ToJSON SbKey where
 
 instance FromJSON SbKey where
   parseJSON = strParseJSON "SbKey"
-
-instance FromField SbKey where fromField f = SecretBoxKey <$> fromField f
-
-instance ToField SbKey where toField (SecretBoxKey s) = toField s
 
 sbKey :: ByteString -> Either String SbKey
 sbKey s

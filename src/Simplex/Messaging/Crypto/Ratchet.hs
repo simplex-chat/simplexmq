@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -109,9 +110,8 @@ import Data.Maybe (fromMaybe, isJust)
 import Data.Type.Equality
 import Data.Typeable (Typeable)
 import Data.Word (Word16, Word32)
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.QueryString
+import Simplex.Messaging.Agent.Store.DB (Binary (..), BoolInt (..))
 import Simplex.Messaging.Crypto
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
@@ -121,6 +121,13 @@ import Simplex.Messaging.Util (($>>=), (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import UnliftIO.STM
+#if defined(dbPostgres)
+import Database.PostgreSQL.Simple.FromField (FromField (..))
+import Database.PostgreSQL.Simple.ToField (ToField (..))
+#else
+import Database.SQLite.Simple.FromField (FromField (..))
+import Database.SQLite.Simple.ToField (ToField (..))
+#endif
 
 -- e2e encryption headers version history:
 -- 1 - binary protocol encoding (1/1/2022)
@@ -205,6 +212,10 @@ instance Encoding ARKEMParams where
       'P' -> ARKP SRKSProposed . RKParamsProposed <$> smpP
       'A' -> ARKP SRKSAccepted .: RKParamsAccepted <$> smpP <*> smpP
       _ -> fail "bad ratchet KEM params"
+
+instance ToField ARKEMParams where toField = toField . Binary . smpEncode
+
+instance FromField ARKEMParams where fromField = blobFieldDecoder smpDecode
 
 data E2ERatchetParams (s :: RatchetKEMState) (a :: Algorithm)
   = E2ERatchetParams VersionE2E (PublicKey a) (PublicKey a) (Maybe (RKEMParams s))
@@ -359,7 +370,7 @@ instance Encoding APrivRKEMParams where
       'A' -> APRKP SRKSAccepted .:. PrivateRKParamsAccepted <$> smpP <*> smpP <*> smpP
       _ -> fail "bad APrivRKEMParams"
 
-instance RatchetKEMStateI s => ToField (PrivRKEMParams s) where toField = toField . smpEncode
+instance RatchetKEMStateI s => ToField (PrivRKEMParams s) where toField = toField . Binary . smpEncode
 
 instance (Typeable s, RatchetKEMStateI s) => FromField (PrivRKEMParams s) where fromField = blobFieldDecoder smpDecode
 
@@ -576,7 +587,7 @@ instance ToJSON RatchetKey where
 instance FromJSON RatchetKey where
   parseJSON = fmap RatchetKey . strParseJSON "Key"
 
-instance ToField MessageKey where toField = toField . smpEncode
+instance ToField MessageKey where toField = toField . Binary . smpEncode
 
 instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 
@@ -1120,14 +1131,24 @@ instance AlgorithmI a => ToJSON (Ratchet a) where
 instance AlgorithmI a => FromJSON (Ratchet a) where
   parseJSON = $(JQ.mkParseJSON defaultJSON ''Ratchet)
 
-instance AlgorithmI a => ToField (Ratchet a) where toField = toField . LB.toStrict . J.encode
+instance AlgorithmI a => ToField (Ratchet a) where toField = toField . Binary . LB.toStrict . J.encode
 
 instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder J.eitherDecodeStrict'
 
-instance ToField PQEncryption where toField (PQEncryption pqEnc) = toField pqEnc
+instance ToField PQEncryption where toField (PQEncryption pqEnc) = toField (BI pqEnc)
 
-instance FromField PQEncryption where fromField f = PQEncryption <$> fromField f
+instance FromField PQEncryption where 
+#if defined(dbPostgres)
+  fromField f dat = PQEncryption . unBI <$> fromField f dat
+#else
+  fromField f = PQEncryption . unBI <$> fromField f
+#endif
 
-instance ToField PQSupport where toField (PQSupport pqEnc) = toField pqEnc
+instance ToField PQSupport where toField (PQSupport pqEnc) = toField (BI pqEnc)
 
-instance FromField PQSupport where fromField f = PQSupport <$> fromField f
+instance FromField PQSupport where
+#if defined(dbPostgres)
+  fromField f dat = PQSupport . unBI <$> fromField f dat
+#else
+  fromField f = PQSupport . unBI <$> fromField f
+#endif

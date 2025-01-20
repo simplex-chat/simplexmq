@@ -14,6 +14,7 @@ module Simplex.FileTransfer.Server.StoreLog
     logPutFile,
     logAddRecipients,
     logDeleteFile,
+    logBlockFile,
     logAckFile,
   )
 where
@@ -31,7 +32,7 @@ import qualified Data.Map.Strict as M
 import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (RcvPublicAuthKey, RecipientId, SenderId)
+import Simplex.Messaging.Protocol (BlockingInfo, RcvPublicAuthKey, RecipientId, SenderId)
 import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (bshow)
@@ -42,7 +43,8 @@ data FileStoreLogRecord
   | PutFile SenderId FilePath
   | AddRecipients SenderId (NonEmpty FileRecipient)
   | DeleteFile SenderId
-  | AckFile RecipientId
+  | BlockFile SenderId BlockingInfo
+  | AckFile RecipientId -- TODO add senderId as well?
   deriving (Show)
 
 instance StrEncoding FileStoreLogRecord where
@@ -51,6 +53,7 @@ instance StrEncoding FileStoreLogRecord where
     PutFile sId path -> strEncode (Str "FPUT", sId, path)
     AddRecipients sId rcps -> strEncode (Str "FADD", sId, rcps)
     DeleteFile sId -> strEncode (Str "FDEL", sId)
+    BlockFile sId info -> strEncode (Str "FBLK", sId, info)
     AckFile rId -> strEncode (Str "FACK", rId)
   strP =
     A.choice
@@ -58,6 +61,7 @@ instance StrEncoding FileStoreLogRecord where
         "FPUT " *> (PutFile <$> strP_ <*> strP),
         "FADD " *> (AddRecipients <$> strP_ <*> strP),
         "FDEL " *> (DeleteFile <$> strP),
+        "FBLK " *> (BlockFile <$> strP_ <*> strP),
         "FACK " *> (AckFile <$> strP)
       ]
 
@@ -75,6 +79,9 @@ logAddRecipients s = logFileStoreRecord s .: AddRecipients
 
 logDeleteFile :: StoreLog 'WriteMode -> SenderId -> IO ()
 logDeleteFile s = logFileStoreRecord s . DeleteFile
+
+logBlockFile :: StoreLog 'WriteMode -> SenderId -> BlockingInfo -> IO ()
+logBlockFile s fId = logFileStoreRecord s . BlockFile fId
 
 logAckFile :: StoreLog 'WriteMode -> RecipientId -> IO ()
 logAckFile s = logFileStoreRecord s . AckFile
@@ -96,6 +103,7 @@ readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.re
       PutFile qId path -> setFilePath st qId path
       AddRecipients sId rcps -> runExceptT $ addRecipients sId rcps
       DeleteFile sId -> deleteFile st sId
+      BlockFile sId info -> blockFile st sId info True
       AckFile rId -> ackFile st rId
     addRecipients sId rcps = mapM_ (ExceptT . addRecipient st sId) rcps
 

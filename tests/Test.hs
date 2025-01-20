@@ -1,8 +1,8 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeApplications #-}
 
 import AgentTests (agentTests)
-import AgentTests.SchemaDump (schemaDumpTest)
 import CLITests
 import Control.Concurrent (threadDelay)
 import qualified Control.Exception as E
@@ -34,6 +34,12 @@ import Test.Hspec
 import XFTPAgent
 import XFTPCLI
 import XFTPServerTests (xftpServerTests)
+#if defined(dbPostgres)
+import Fixtures
+import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists, dropDatabaseAndUser)
+#else
+import AgentTests.SchemaDump (schemaDumpTest)
+#endif
 
 logCfg :: LogConfig
 logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
@@ -45,10 +51,17 @@ main = do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
     hspec
+#if defined(dbPostgres)
+      . beforeAll_ (dropDatabaseAndUser testDBConnectInfo >> createDBAndUserIfNotExists testDBConnectInfo)
+      . afterAll_ (dropDatabaseAndUser testDBConnectInfo)
+#endif
       . before_ (createDirectoryIfMissing False "tests/tmp")
       . after_ (eventuallyRemove "tests/tmp" 3)
       $ do
+-- TODO [postgres] schema dump for postgres
+#if !defined(dbPostgres)
         describe "Agent SQLite schema dump" schemaDumpTest
+#endif
         describe "Core tests" $ do
           describe "Batching tests" batchingTests
           describe "Encoding tests" encodingTests

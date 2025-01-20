@@ -10,13 +10,12 @@ module CoreTests.StoreLogTests where
 
 import Control.Concurrent.STM
 import Control.Monad
+import CoreTests.MsgStoreTests
 import Crypto.Random (ChaChaDRG)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (partitionEithers)
 import qualified Data.Map.Strict as M
 import SMPClient
-import AgentTests.SQLiteTests
-import CoreTests.MsgStoreTests
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
@@ -26,6 +25,9 @@ import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.StoreLog
 import Test.Hspec
+
+testPublicAuthKey :: C.APublicAuthKey
+testPublicAuthKey = C.APublicAuthKey C.SEd25519 (C.publicKey "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe")
 
 testNtfCreds :: TVar ChaChaDRG -> IO NtfCreds
 testNtfCreds g = do
@@ -54,7 +56,8 @@ storeLogTests =
     ((rId, qr), ntfCreds, date) <- runIO $ do
       g <- C.newRandom
       (,,) <$> testNewQueueRec g sndSecure <*> testNtfCreds g <*> getSystemDate
-    testSMPStoreLog ("SMP server store log, sndSecure = " <> show sndSecure)
+    testSMPStoreLog
+      ("SMP server store log, sndSecure = " <> show sndSecure)
       [ SLTC
           { name = "create new queue",
             saved = [CreateQueue rId qr],
@@ -66,7 +69,7 @@ storeLogTests =
             saved = [CreateQueue rId qr, SecureQueue rId testPublicAuthKey],
             compacted = [CreateQueue rId qr {senderKey = Just testPublicAuthKey}],
             state = M.fromList [(rId, qr {senderKey = Just testPublicAuthKey})]
-          },          
+          },
         SLTC
           { name = "create and delete queue",
             saved = [CreateQueue rId qr, DeleteQueue rId],
@@ -90,7 +93,7 @@ storeLogTests =
             saved = [CreateQueue rId qr, UpdateTime rId date],
             compacted = [CreateQueue rId qr {updatedAt = Just date}],
             state = M.fromList [(rId, qr {updatedAt = Just date})]
-          }          
+          }
       ]
 
 testSMPStoreLog :: String -> [SMPStoreLogTestCase] -> Spec

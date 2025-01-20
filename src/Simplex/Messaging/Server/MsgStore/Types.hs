@@ -64,6 +64,8 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   addQueueNotifier :: s -> StoreQueue s -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
   deleteQueueNotifier :: s -> StoreQueue s -> IO (Either ErrorType (Maybe NotifierId))
   suspendQueue :: s -> StoreQueue s -> IO (Either ErrorType ())
+  blockQueue :: s -> StoreQueue s -> BlockingInfo -> IO (Either ErrorType ())
+  unblockQueue :: s -> StoreQueue s -> IO (Either ErrorType ())
   updateQueueTime :: s -> StoreQueue s -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
 
   getPeekMsgQueue :: s -> StoreQueue s -> StoreMonad s (Maybe (MsgQueue s, Message))

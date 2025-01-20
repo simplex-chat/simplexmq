@@ -167,9 +167,12 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite
-import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
-import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
+import Simplex.Messaging.Agent.Store.AgentStore
+import Simplex.Messaging.Agent.Store.Common (DBStore)
+import qualified Simplex.Messaging.Agent.Store.DB as DB
+import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL)
+import qualified Simplex.Messaging.Agent.Store.Migrations as Migrations
+import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
 import Simplex.Messaging.Client (SMPClientError, ServerTransmission (..), ServerTransmissionBatch, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
@@ -200,11 +203,11 @@ import UnliftIO.STM
 type AE a = ExceptT AgentErrorType IO a
 
 -- | Creates an SMP agent client instance
-getSMPAgentClient :: AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> IO AgentClient
+getSMPAgentClient :: AgentConfig -> InitialAgentServers -> DBStore -> Bool -> IO AgentClient
 getSMPAgentClient = getSMPAgentClient_ 1
 {-# INLINE getSMPAgentClient #-}
 
-getSMPAgentClient_ :: Int -> AgentConfig -> InitialAgentServers -> SQLiteStore -> Bool -> IO AgentClient
+getSMPAgentClient_ :: Int -> AgentConfig -> InitialAgentServers -> DBStore -> Bool -> IO AgentClient
 getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp} store backgroundMode =
   newSMPAgentEnv cfg store >>= runReaderT runAgent
   where
@@ -277,7 +280,7 @@ disposeAgentClient c@AgentClient {acThread, agentEnv = Env {store}} = do
   t_ <- atomically (swapTVar acThread Nothing) $>>= (liftIO . deRefWeak)
   disconnectAgentClient c
   mapM_ killThread t_
-  liftIO $ closeSQLiteStore store
+  liftIO $ closeDBStore store
 
 resumeAgentClient :: AgentClient -> IO ()
 resumeAgentClient c = atomically $ writeTVar (active c) True
@@ -834,26 +837,39 @@ joinConn c userId connId enableNtfs cReq cInfo pqSupport subMode = do
 startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM (ConnData, SndQueue, CR.SndE2ERatchetParams 'C.X448)
 startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
   lift (compatibleInvitationUri cReqUri) >>= \case
-    Just (qInfo, Compatible e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_), Compatible connAgentVersion) -> do
-      g <- asks random
+    Just (qInfo, Compatible e2eRcvParams@(CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
+      -- this case avoids re-generating queue keys and subsequent failure of SKEY that timed out
+      -- e2ePubKey is always present, it's Maybe historically
       let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (Just v)
+      (sq', e2eSndParams) <- case sq_ of
+        Just sq@SndQueue {e2ePubKey = Just _k} -> do
+          e2eSndParams <-
+            withStore' c (\db -> getSndRatchet db connId v) >>= \case
+              Right r -> pure $ snd r
+              Left e -> do
+                atomically $ writeTBQueue (subQ c) ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no snd ratchet " <> show e))
+                createRatchet_ pqSupport e2eRcvParams
+          pure (sq, e2eSndParams)
+        _ -> do
+          q <- lift $ fst <$> newSndQueue userId "" qInfo
+          e2eSndParams <- createRatchet_ pqSupport e2eRcvParams
+          withStore c $ \db -> runExceptT $ do
+            sq' <- maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
+            pure (sq', e2eSndParams)
+      let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
+      pure (cData, sq', e2eSndParams)
+    Nothing -> throwE $ AGENT A_VERSION
+  where
+    createRatchet_ pqSupport e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_) = do
+      g <- asks random
       (pk1, pk2, pKem, e2eSndParams) <- liftIO $ CR.generateSndE2EParams g v (CR.replyKEM_ v kem_ pqSupport)
       (_, rcDHRs) <- atomically $ C.generateKeyPair g
       rcParams <- liftEitherWith cryptoError $ CR.pqX3dhSnd pk1 pk2 pKem e2eRcvParams
       maxSupported <- asks $ maxVersion . e2eEncryptVRange . config
       let rcVs = CR.RatchetVersions {current = v, maxSupported}
           rc = CR.initSndRatchet rcVs rcDHRr rcDHRs rcParams
-      -- this case avoids re-generating queue keys and subsequent failure of SKEY that timed out
-      -- e2ePubKey is always present, it's Maybe historically
-      q <- case sq_ of
-        Just sq@SndQueue {e2ePubKey = Just _k} -> pure (sq :: SndQueue) {dbQueueId = DBNewQueue}
-        _ -> lift $ fst <$> newSndQueue userId "" qInfo
-      let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
-      sq' <- withStore c $ \db -> runExceptT $ do
-        liftIO $ createRatchet db connId rc
-        maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
-      pure (cData, sq', e2eSndParams)
-    Nothing -> throwE $ AGENT A_VERSION
+      withStore' c $ \db -> createSndRatchet db connId rc e2eSndParams
+      pure e2eSndParams
 
 connRequestPQSupport :: AgentClient -> PQSupport -> ConnectionRequestUri c -> IO (Maybe (VersionSMPA, PQSupport))
 connRequestPQSupport c pqSup cReq = withAgentEnv' c $ case cReq of
@@ -892,6 +908,7 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMod
     case conn of
       NewConnection _ -> doJoin Nothing
       SndConnection _ sq -> doJoin $ Just sq
+      DuplexConnection _ (RcvQueue {status = New} :| _) (sq@SndQueue {status = New} :| _) -> doJoin $ Just sq
       _ -> throwE $ CMD PROHIBITED $ "joinConnSrv: bad connection " <> show cType
   where
     doJoin :: Maybe SndQueue -> AM SndQueueSecured
@@ -2154,7 +2171,7 @@ execAgentStoreSQL :: AgentClient -> Text -> AE [Text]
 execAgentStoreSQL c sql = withAgentEnv c $ withStore' c (`execSQL` sql)
 
 getAgentMigrations :: AgentClient -> AE [UpMigration]
-getAgentMigrations c = withAgentEnv c $ map upMigration <$> withStore' c (Migrations.getCurrent . DB.conn)
+getAgentMigrations c = withAgentEnv c $ map upMigration <$> withStore' c Migrations.getCurrent
 
 debugAgentLocks :: AgentClient -> IO AgentLocks
 debugAgentLocks AgentClient {connLocks = cs, invLocks = is, deleteLock = d} = do

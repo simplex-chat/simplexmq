@@ -53,11 +53,11 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId (..), EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TransmissionAuth, pattern NoEntity)
+import Simplex.Messaging.Protocol (CorrId (..), BlockingInfo, EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TransmissionAuth, pattern NoEntity)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, getRoundedSystemTime)
+import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, ServerEntityStatus (..), getRoundedSystemTime)
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -287,10 +287,14 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               CPDelete fileId -> withUserRole $ unliftIO u $ do
                 fs <- asks store
                 r <- runExceptT $ do
-                  let asSender = ExceptT . atomically $ getFile fs SFSender fileId
-                  let asRecipient = ExceptT . atomically $ getFile fs SFRecipient fileId
-                  (fr, _) <- asSender `catchError` const asRecipient
+                  (fr, _) <- ExceptT $ atomically $ getFile fs SFRecipient fileId
                   ExceptT $ deleteServerFile_ fr
+                liftIO . hPutStrLn h $ either (\e -> "error: " <> show e) (\() -> "ok") r
+              CPBlock fileId info -> withUserRole $ unliftIO u $ do
+                fs <- asks store
+                r <- runExceptT $ do
+                  (fr, _) <- ExceptT $ atomically $ getFile fs SFRecipient fileId
+                  ExceptT $ blockServerFile fr info
                 liftIO . hPutStrLn h $ either (\e -> "error: " <> show e) (\() -> "ok") r
               CPHelp -> hPutStrLn h "commands: stats-rts, delete, help, quit"
               CPQuit -> pure ()
@@ -321,7 +325,7 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
               let THandleParams {thAuth} = thParams
               verifyXFTPTransmission ((,C.cbNonce (bs corrId)) <$> thAuth) sig_ signed fId cmd >>= \case
                 VRVerified req -> uncurry send =<< processXFTPRequest body req
-                VRFailed -> send (FRErr AUTH) Nothing
+                VRFailed e -> send (FRErr e) Nothing
             Left e -> send (FRErr e) Nothing
           where
             send resp = sendXFTPResponse (corrId, fId, resp)
@@ -355,7 +359,7 @@ randomDelay = do
     threadDelay $ (d * (1000 + pc)) `div` 1000
 #endif
 
-data VerificationResult = VRVerified XFTPRequest | VRFailed
+data VerificationResult = VRVerified XFTPRequest | VRFailed XFTPErrorType
 
 verifyXFTPTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
 verifyXFTPTransmission auth_ tAuth authorized fId cmd =
@@ -367,13 +371,19 @@ verifyXFTPTransmission auth_ tAuth authorized fId cmd =
     verifyCmd :: SFileParty p -> M VerificationResult
     verifyCmd party = do
       st <- asks store
-      atomically $ verify <$> getFile st party fId
+      atomically $ verify =<< getFile st party fId
       where
         verify = \case
-          Right (fr, k) -> XFTPReqCmd fId fr cmd `verifyWith` k
-          _ -> maybe False (dummyVerifyCmd Nothing authorized) tAuth `seq` VRFailed
+          Right (fr, k) -> result <$> readTVar (fileStatus fr)
+            where
+              result = \case
+                EntityActive -> XFTPReqCmd fId fr cmd `verifyWith` k
+                EntityBlocked info -> VRFailed $ BLOCKED info
+                EntityOff -> noFileAuth
+          Left _ -> pure noFileAuth
+        noFileAuth = maybe False (dummyVerifyCmd Nothing authorized) tAuth `seq` VRFailed AUTH
     -- TODO verify with DH authorization
-    req `verifyWith` k = if verifyCmdAuthorization auth_ tAuth authorized k then VRVerified req else VRFailed
+    req `verifyWith` k = if verifyCmdAuthorization auth_ tAuth authorized k then VRVerified req else VRFailed AUTH
 
 processXFTPRequest :: HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)
 processXFTPRequest HTTP2Body {bodyPart} = \case
@@ -390,7 +400,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     FACK -> noFile =<< ackFileReception fId fr
     -- it should never get to the commands below, they are passed in other constructors of XFTPRequest
     FNEW {} -> noFile $ FRErr INTERNAL
-    PING -> noFile FRPong
+    PING -> noFile $ FRErr INTERNAL
   XFTPReqPing -> noFile FRPong
   where
     noFile resp = pure (resp, Nothing)
@@ -518,15 +528,24 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
       pure FROk
 
 deleteServerFile_ :: FileRec -> M (Either XFTPErrorType ())
-deleteServerFile_ FileRec {senderId, fileInfo, filePath} = do
+deleteServerFile_ fr@FileRec {senderId} = do
   withFileLog (`logDeleteFile` senderId)
-  runExceptT $ do
-    path <- readTVarIO filePath
-    stats <- asks serverStats
-    ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
-    st <- asks store
-    void $ atomically $ deleteFile st senderId
-    lift $ incFileStat filesDeleted
+  deleteOrBlockServerFile_ fr filesDeleted (`deleteFile` senderId)
+
+-- this also deletes the file from storage, but doesn't include it in delete statistics
+blockServerFile :: FileRec -> BlockingInfo -> M (Either XFTPErrorType ())
+blockServerFile fr@FileRec {senderId} info = do
+  withFileLog $ \sl -> logBlockFile sl senderId info
+  deleteOrBlockServerFile_ fr filesBlocked $ \st -> blockFile st senderId info True
+
+deleteOrBlockServerFile_ :: FileRec -> (FileServerStats -> IORef Int) -> (FileStore -> STM (Either XFTPErrorType ())) -> M (Either XFTPErrorType ())
+deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = runExceptT $ do
+  path <- readTVarIO filePath
+  stats <- asks serverStats
+  ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
+  st <- asks store
+  void $ atomically $ storeAction st
+  lift $ incFileStat stat
   where
     deletedStats stats = do
       liftIO $ atomicModifyIORef'_ (filesCount stats) (subtract 1)
