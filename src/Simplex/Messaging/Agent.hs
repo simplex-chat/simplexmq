@@ -733,15 +733,33 @@ deleteConnectionsAsync' :: AgentClient -> Bool -> [ConnId] -> AM ()
 deleteConnectionsAsync' = deleteConnectionsAsync_ $ pure ()
 {-# INLINE deleteConnectionsAsync' #-}
 
+timeItM :: String -> AM a -> AM a
+timeItM s action = do
+  t1 <- liftIO getCurrentTime
+  a <- action
+  t2 <- liftIO getCurrentTime
+  let diff = diffToMilliseconds $ diffUTCTime t2 t1
+  liftIO . print $ show diff <> " ms - " <> s
+  pure a
+
+timeItM' :: String -> AM' a -> AM' a
+timeItM' s action = do
+  t1 <- liftIO getCurrentTime
+  a <- action
+  t2 <- liftIO getCurrentTime
+  let diff = diffToMilliseconds $ diffUTCTime t2 t1
+  liftIO . print $ show diff <> " ms - " <> s
+  pure a
+
 deleteConnectionsAsync_ :: AM () -> AgentClient -> Bool -> [ConnId] -> AM ()
 deleteConnectionsAsync_ onSuccess c waitDelivery connIds = case connIds of
   [] -> onSuccess
   _ -> do
-    (_, rqs, connIds') <- prepareDeleteConnections_ getConns c waitDelivery connIds
+    (_, rqs, connIds') <- timeItM "prepareDeleteConnections_" $ prepareDeleteConnections_ getConns c waitDelivery connIds
     withStore' c $ \db -> forM_ connIds' $ setConnDeleted db waitDelivery
     void . lift . forkIO $
       withLock' (deleteLock c) "deleteConnectionsAsync" $
-        deleteConnQueues c waitDelivery True rqs >> void (runExceptT onSuccess)
+        timeItM' "deleteConnQueues" (deleteConnQueues c waitDelivery True rqs) >> void (runExceptT onSuccess)
 
 -- | Add connection to the new receive queue
 switchConnectionAsync' :: AgentClient -> ACorrId -> ConnId -> AM ConnectionStats
@@ -1793,20 +1811,20 @@ prepareDeleteConnections_ ::
   [ConnId] ->
   AM (Map ConnId (Either AgentErrorType ()), [RcvQueue], [ConnId])
 prepareDeleteConnections_ getConnections c waitDelivery connIds = do
-  conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (`getConnections` connIds)
+  conns :: Map ConnId (Either StoreError SomeConn) <- timeItM "[prepareDeleteConnections_] getConnections" $ M.fromList . zip connIds <$> withStore' c (`getConnections` connIds)
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
       (delRs, rcvQs) = M.mapEither rcvQueues cs
       rqs = concat $ M.elems rcvQs
       connIds' = M.keys rcvQs
-  lift $ forM_ (L.nonEmpty connIds') unsubConnIds
+  timeItM "[prepareDeleteConnections_] unsubConnIds" $ lift $ forM_ (L.nonEmpty connIds') unsubConnIds
   -- ! delRs is not used to notify about the result in any of the calling functions,
   -- ! it is only used to check results count in deleteConnections_;
   -- ! if it was used to notify about the result, it might be necessary to differentiate
   -- ! between completed deletions of connections, and deletions delayed due to wait for delivery (see deleteConn)
   deliveryTimeout <- if waitDelivery then asks (Just . connDeleteDeliveryTimeout . config) else pure Nothing
-  rs' <- lift $ catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) (M.keys delRs))
-  forM_ rs' $ \cId -> notify ("", cId, AEvt SAEConn DEL_CONN)
+  rs' <- timeItM "[prepareDeleteConnections_] batch deleteConn" $ lift $ catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) (M.keys delRs))
+  timeItM "[prepareDeleteConnections_] notify" $ forM_ rs' $ \cId -> notify ("", cId, AEvt SAEConn DEL_CONN)
   pure (errs' <> delRs, rqs, connIds')
   where
     rcvQueues :: SomeConn -> Either (Either AgentErrorType ()) [RcvQueue]
@@ -1823,18 +1841,23 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
 
 deleteConnQueues :: AgentClient -> Bool -> Bool -> [RcvQueue] -> AM' (Map ConnId (Either AgentErrorType ()))
 deleteConnQueues c waitDelivery ntf rqs = do
-  rs <- connResults <$> (deleteQueueRecs =<< deleteQueues c rqs)
+  rs <-
+    connResults
+      <$> ( do
+              dqs <- timeItM' "[deleteConnQueues] deleteQueues" $ deleteQueues c rqs
+              timeItM' "[deleteConnQueues] deleteQueueRecs" $ deleteQueueRecs dqs
+          )
   let connIds = M.keys $ M.filter isRight rs
   deliveryTimeout <- if waitDelivery then asks (Just . connDeleteDeliveryTimeout . config) else pure Nothing
-  rs' <- catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) connIds)
-  forM_ rs' $ \cId -> notify ("", cId, AEvt SAEConn DEL_CONN)
+  rs' <- timeItM' "[deleteConnQueues] batch deleteConn" $ catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) connIds)
+  timeItM' "[deleteConnQueues] notify" $ forM_ rs' $ \cId -> notify ("", cId, AEvt SAEConn DEL_CONN)
   pure rs
   where
     deleteQueueRecs :: [(RcvQueue, Either AgentErrorType ())] -> AM' [(RcvQueue, Either AgentErrorType ())]
     deleteQueueRecs rs = do
       maxErrs <- asks $ deleteErrorCount . config
-      (rs', notifyActions) <- unzip . rights <$> withStoreBatch' c (\db -> map (deleteQueueRec db maxErrs) rs)
-      mapM_ sequence_ notifyActions
+      (rs', notifyActions) <- timeItM' "[deleteConnQueues, deleteQueueRecs] batch deleteQueueRec" $ unzip . rights <$> withStoreBatch' c (\db -> map (deleteQueueRec db maxErrs) rs)
+      timeItM' "[deleteConnQueues, deleteQueueRecs] notifyActions" $ mapM_ sequence_ notifyActions
       pure rs'
       where
         deleteQueueRec ::
