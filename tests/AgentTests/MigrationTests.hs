@@ -228,7 +228,8 @@ createStore randSuffix migrations confirmMigrations = do
           dbFilePath = testDB randSuffix,
           dbKey = "",
           keepKey = False,
-          vacuum = True
+          vacuum = True,
+          track = DB.TQOff
         }
   createDBStore dbOpts migrations confirmMigrations
 
