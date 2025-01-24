@@ -5,12 +5,21 @@ Description=SMP server
 User=smp
 Group=smp
 Type=simple
+
 ExecStart=/usr/local/bin/smp-server start +RTS -N -RTS 
 ExecStopPost=/usr/local/bin/simplex-servers-stopscript smp-server
+
 LimitNOFILE=65535
 KillSignal=SIGINT
+
 TimeoutStartSec=infinity
 TimeoutStopSec=infinity
+
+Restart=on-failure
+RestartSec=10s
+StartLimitBurst=3
+StartLimitInterval=60s
+
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]
