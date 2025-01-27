@@ -2055,8 +2055,8 @@ testAsyncCommands sqSecured alice bob baseId =
     ackMessageAsync alice "7" bobId (baseId + 4) Nothing
     get alice =##> \case ("7", _, OK) -> True; _ -> False
     deleteConnectionAsync alice False bobId
-    get alice =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bobId; _ -> False
-    get alice =##> \case ("", c, DEL_CONN) -> c == bobId; _ -> False
+    get alice =##> \case ("", "", DEL_RCVQS [(c, _, _, Nothing)]) -> c == bobId; _ -> False
+    get alice =##> \case ("", "", DEL_CONNS [c]) -> c == bobId; _ -> False
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   where
     msgId = subtract baseId
@@ -2123,12 +2123,9 @@ testDeleteConnectionAsync t =
     runRight_ $ do
       deleteConnectionsAsync a False connIds
       nGet a =##> \case ("", "", DOWN {}) -> True; _ -> False
-      get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
-      get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
-      get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
-      get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
-      get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
-      get a =##> \case ("", c, DEL_CONN) -> c `elem` connIds; _ -> False
+      let delOk = \case (c, _, _, Just (BROKER _ e)) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
+      get a =##> \case ("", "", DEL_RCVQS rs) -> length rs == 3 && all delOk rs; _ -> False
+      get a =##> \case ("", "", DEL_CONNS cs) -> length cs == 3 && all (`elem` connIds) cs; _ -> False
       liftIO $ noMessages a "nothing else should be delivered to alice"
 
 testWaitDeliveryNoPending :: ATransport -> IO ()
@@ -2147,8 +2144,8 @@ testWaitDeliveryNoPending t = withAgentClients2 $ \alice bob ->
     ackMessage alice bobId (baseId + 2) Nothing
 
     deleteConnectionsAsync alice True [bobId]
-    get alice =##> \case ("", cId, DEL_RCVQ _ _ Nothing) -> cId == bobId; _ -> False
-    get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
+    get alice =##> \case ("", "", DEL_RCVQS [(cId, _, _, Nothing)]) -> cId == bobId; _ -> False
+    get alice =##> \case ("", "", DEL_CONNS [cId]) -> cId == bobId; _ -> False
 
     3 <- msgId <$> sendMessage bob aliceId SMP.noMsgFlags "message 2"
     get bob =##> \case ("", cId, MERR mId (SMP _ AUTH)) -> cId == aliceId && mId == (baseId + 3); _ -> False
@@ -2184,14 +2181,14 @@ testWaitDelivery t =
         3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
         4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
         deleteConnectionsAsync alice True [bobId]
-        get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
+        get alice =##> \case ("", "", DEL_RCVQS [(cId, _, _, Just (BROKER _ e))]) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
         liftIO $ noMessages alice "nothing else should be delivered to alice"
         liftIO $ noMessages bob "nothing else should be delivered to bob"
 
       withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
         get alice ##> ("", bobId, SENT $ baseId + 3)
         get alice ##> ("", bobId, SENT $ baseId + 4)
-        get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
+        get alice =##> \case ("", "", DEL_CONNS [cId]) -> cId == bobId; _ -> False
 
         liftIO $
           getInAnyOrder
@@ -2231,8 +2228,8 @@ testWaitDeliveryAUTHErr t =
         ackMessage alice bobId (baseId + 2) Nothing
 
         deleteConnectionsAsync bob False [aliceId]
-        get bob =##> \case ("", cId, DEL_RCVQ _ _ Nothing) -> cId == aliceId; _ -> False
-        get bob =##> \case ("", cId, DEL_CONN) -> cId == aliceId; _ -> False
+        get bob =##> \case ("", "", DEL_RCVQS [(cId, _, _, Nothing)]) -> cId == aliceId; _ -> False
+        get bob =##> \case ("", "", DEL_CONNS [cId]) -> cId == aliceId; _ -> False
 
         pure (aliceId, bobId)
 
@@ -2241,14 +2238,14 @@ testWaitDeliveryAUTHErr t =
         3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
         4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
         deleteConnectionsAsync alice True [bobId]
-        get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
+        get alice =##> \case ("", "", DEL_RCVQS [(cId, _, _, Just (BROKER _ e))]) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
         liftIO $ noMessages alice "nothing else should be delivered to alice"
         liftIO $ noMessages bob "nothing else should be delivered to bob"
 
       withSmpServerStoreLogOn t testPort $ \_ -> do
         get alice =##> \case ("", cId, MERR mId (SMP _ AUTH)) -> cId == bobId && mId == (baseId + 3); _ -> False
         get alice =##> \case ("", cId, MERR mId (SMP _ AUTH)) -> cId == bobId && mId == (baseId + 4); _ -> False
-        get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
+        get alice =##> \case ("", "", DEL_CONNS [cId]) -> cId == bobId; _ -> False
 
         liftIO $ noMessages alice "nothing else should be delivered to alice"
         liftIO $ noMessages bob "nothing else should be delivered to bob"
@@ -2281,8 +2278,8 @@ testWaitDeliveryTimeout t =
         3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
         4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
         deleteConnectionsAsync alice True [bobId]
-        get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
-        get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
+        get alice =##> \case ("", "", DEL_RCVQS [(cId, _, _, Just (BROKER _ e))]) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
+        get alice =##> \case ("", "", DEL_CONNS [cId]) -> cId == bobId; _ -> False
         liftIO $ noMessages alice "nothing else should be delivered to alice"
         liftIO $ noMessages bob "nothing else should be delivered to bob"
 
@@ -2321,8 +2318,8 @@ testWaitDeliveryTimeout2 t =
         3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
         4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
         deleteConnectionsAsync alice True [bobId]
-        get alice =##> \case ("", cId, DEL_RCVQ _ _ (Just (BROKER _ e))) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
-        get alice =##> \case ("", cId, DEL_CONN) -> cId == bobId; _ -> False
+        get alice =##> \case ("", "", DEL_RCVQS [(cId, _, _, Just (BROKER _ e))]) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
+        get alice =##> \case ("", "", DEL_CONNS [cId]) -> cId == bobId; _ -> False
         liftIO $ noMessages alice "nothing else should be delivered to alice"
         liftIO $ noMessages bob "nothing else should be delivered to bob"
 
@@ -2430,8 +2427,8 @@ testUsers =
     (aId', bId') <- makeConnectionForUsers a auId b 1
     exchangeGreetings a bId' b aId'
     deleteUser a auId True
-    get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId'; _ -> False
-    get a =##> \case ("", c, DEL_CONN) -> c == bId'; _ -> False
+    get a =##> \case ("", "", DEL_RCVQS [(c, _, _, Nothing)]) -> c == bId'; _ -> False
+    get a =##> \case ("", "", DEL_CONNS [c]) -> c == bId'; _ -> False
     nGet a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
     exchangeGreetingsMsgId 4 a bId b aId
     liftIO $ noMessages a "nothing else should be delivered to alice"
@@ -2462,8 +2459,8 @@ testUsersNoServer t = withAgentClientsCfg2 aCfg agentCfg $ \a b -> do
   nGet b =##> \case ("", "", DOWN _ cs) -> length cs == 2; _ -> False
   runRight_ $ do
     deleteUser a auId True
-    get a =##> \case ("", c, DEL_RCVQ _ _ (Just (BROKER _ e))) -> c == bId' && (e == TIMEOUT || e == NETWORK); _ -> False
-    get a =##> \case ("", c, DEL_CONN) -> c == bId'; _ -> False
+    get a =##> \case ("", "", DEL_RCVQS [(c, _, _, Just (BROKER _ e))]) -> c == bId' && (e == TIMEOUT || e == NETWORK); _ -> False
+    get a =##> \case ("", "", DEL_CONNS [c]) -> c == bId'; _ -> False
     nGet a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
     liftIO $ noMessages a "nothing else should be delivered to alice"
   withSmpServerStoreLogOn t testPort $ \_ -> runRight_ $ do
@@ -2581,9 +2578,8 @@ testSwitchDelete servers =
     liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
     phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
     deleteConnectionAsync a False bId
-    get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId; _ -> False
-    get a =##> \case ("", c, DEL_RCVQ _ _ Nothing) -> c == bId; _ -> False
-    get a =##> \case ("", c, DEL_CONN) -> c == bId; _ -> False
+    get a =##> \case ("", "", DEL_RCVQS [(c, _, _, Nothing), (c', _, _, Nothing)]) -> c == bId && c' == bId; _ -> False
+    get a =##> \case ("", "", DEL_CONNS [c]) -> c == bId; _ -> False
     liftIO $ noMessages a "nothing else should be delivered to alice"
 
 testAbortSwitchStarted :: HasCallStack => InitialAgentServers -> IO ()

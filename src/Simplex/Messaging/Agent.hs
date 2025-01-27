@@ -1823,8 +1823,8 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
   -- ! if it was used to notify about the result, it might be necessary to differentiate
   -- ! between completed deletions of connections, and deletions delayed due to wait for delivery (see deleteConn)
   deliveryTimeout <- if waitDelivery then asks (Just . connDeleteDeliveryTimeout . config) else pure Nothing
-  rs' <- timeItM "[prepareDeleteConnections_] batch deleteConn" $ lift $ catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) (M.keys delRs))
-  timeItM "[prepareDeleteConnections_] notify" $ forM_ rs' $ \cId -> notify ("", cId, AEvt SAEConn DEL_CONN)
+  cIds_ <- timeItM "[prepareDeleteConnections_] batch deleteConn" $ lift $ L.nonEmpty . catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) (M.keys delRs))
+  timeItM "[prepareDeleteConnections_] notify DEL_CONNS" $ forM_ cIds_ $ \cIds -> notify ("", "", AEvt SAEConn $ DEL_CONNS cIds)
   pure (errs' <> delRs, rqs, connIds')
   where
     rcvQueues :: SomeConn -> Either (Either AgentErrorType ()) [RcvQueue]
@@ -1849,32 +1849,33 @@ deleteConnQueues c waitDelivery ntf rqs = do
           )
   let connIds = M.keys $ M.filter isRight rs
   deliveryTimeout <- if waitDelivery then asks (Just . connDeleteDeliveryTimeout . config) else pure Nothing
-  rs' <- timeItM' "[deleteConnQueues] batch deleteConn" $ catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) connIds)
-  timeItM' "[deleteConnQueues] notify" $ forM_ rs' $ \cId -> notify ("", cId, AEvt SAEConn DEL_CONN)
+  cIds_ <- timeItM' "[deleteConnQueues] batch deleteConn" $ L.nonEmpty . catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) connIds)
+  timeItM' "[deleteConnQueues] notify DEL_CONNS" $ forM_ cIds_ $ \cIds -> notify ("", "", AEvt SAEConn $ DEL_CONNS cIds)
   pure rs
   where
     deleteQueueRecs :: [(RcvQueue, Either AgentErrorType ())] -> AM' [(RcvQueue, Either AgentErrorType ())]
     deleteQueueRecs rs = do
       maxErrs <- asks $ deleteErrorCount . config
-      (rs', notifyActions) <- timeItM' "[deleteConnQueues, deleteQueueRecs] batch deleteQueueRec" $ unzip . rights <$> withStoreBatch' c (\db -> map (deleteQueueRec db maxErrs) rs)
-      timeItM' "[deleteConnQueues, deleteQueueRecs] notifyActions" $ mapM_ sequence_ notifyActions
-      pure rs'
+      rs' <- timeItM' "[deleteConnQueues, deleteQueueRecs] batch deleteQueueRec" $ rights <$> withStoreBatch' c (\db -> map (deleteQueueRec db maxErrs) rs)
+      let delQ ((rq, _), err_) =  (qConnId rq,qServer rq,queueId rq,) <$> err_
+          delQs_ = L.nonEmpty $ mapMaybe delQ rs'
+      timeItM' "[deleteConnQueues, deleteQueueRecs] notify DEL_RCVQS" $ forM_ delQs_ $ \delQs -> notify ("", "", AEvt SAEConn $ DEL_RCVQS delQs)
+      pure $ map fst rs'
       where
         deleteQueueRec ::
           DB.Connection ->
           Int ->
           (RcvQueue, Either AgentErrorType ()) ->
-          IO ((RcvQueue, Either AgentErrorType ()), Maybe (AM' ()))
+          IO ((RcvQueue, Either AgentErrorType ()), Maybe (Maybe AgentErrorType)) -- Nothing - no event, Just Nothing - no error
         deleteQueueRec db maxErrs (rq@RcvQueue {userId, server}, r) = case r of
-          Right _ -> deleteConnRcvQueue db rq $> ((rq, r), Just (notifyRQ rq Nothing))
+          Right _ -> deleteConnRcvQueue db rq $> ((rq, r), Just Nothing)
           Left e
             | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs -> incRcvDeleteErrors db rq $> ((rq, r), Nothing)
             | otherwise -> do
                 deleteConnRcvQueue db rq
                 -- attempts and successes are counted in deleteQueues function
                 atomically $ incSMPServerStat c userId server connDeleted
-                pure ((rq, Right ()), Just (notifyRQ rq (Just e)))
-    notifyRQ rq e_ = notify ("", qConnId rq, AEvt SAEConn $ DEL_RCVQ (qServer rq) (queueId rq) e_)
+                pure ((rq, Right ()), Just (Just e))
     notify = when ntf . atomically . writeTBQueue (subQ c)
     connResults :: [(RcvQueue, Either AgentErrorType ())] -> Map ConnId (Either AgentErrorType ())
     connResults = M.map snd . foldl' addResult M.empty
