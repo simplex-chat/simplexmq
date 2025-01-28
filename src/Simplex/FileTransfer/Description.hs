@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
@@ -71,20 +70,13 @@ import qualified Data.Yaml as Y
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Protocol
 import Simplex.Messaging.Agent.QueryString
-import Simplex.Messaging.Agent.Store.DB (Binary (..))
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, parseAll)
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Util (bshow, safeDecodeUtf8, (<$?>))
-#if defined(dbPostgres)
-import Database.PostgreSQL.Simple.FromField (FromField (..))
-import Database.PostgreSQL.Simple.ToField (ToField (..))
-#else
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
-#endif
 
 data FileDescription (p :: FileParty) = FileDescription
   { party :: SFileParty p,

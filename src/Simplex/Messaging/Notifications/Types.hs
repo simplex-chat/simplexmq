@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
@@ -11,19 +10,12 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time (UTCTime)
 import Simplex.Messaging.Agent.Protocol (ConnId, NotificationsMode (..), UserId)
-import Simplex.Messaging.Agent.Store.DB (Binary (..))
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Parsers (blobFieldDecoder, fromTextField_)
 import Simplex.Messaging.Protocol (NotifierId, NtfServer, SMPServer)
-#if defined(dbPostgres)
-import Database.PostgreSQL.Simple.FromField (FromField (..))
-import Database.PostgreSQL.Simple.ToField (ToField (..))
-#else
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
-#endif
 
 data NtfTknAction
   = NTARegister
