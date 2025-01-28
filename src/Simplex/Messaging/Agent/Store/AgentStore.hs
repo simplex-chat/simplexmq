@@ -262,7 +262,7 @@ import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.Common
 import qualified Simplex.Messaging.Agent.Store.DB as DB
-import Simplex.Messaging.Agent.Store.DB (Binary (..), BoolInt (..))
+import Simplex.Messaging.Agent.Store.DB (Binary (..), BoolInt (..), FromField (..), ToField (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs (..))
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption (..), PQSupport (..), RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
@@ -281,16 +281,12 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 #if defined(dbPostgres)
 import Database.PostgreSQL.Simple (Only (..), Query, SqlError, (:.) (..))
-import Database.PostgreSQL.Simple.FromField (FromField (..))
 import Database.PostgreSQL.Simple.Errors (constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
-import Database.PostgreSQL.Simple.ToField (ToField (..))
 #else
 import Database.SQLite.Simple (FromRow (..), Only (..), Query (..), SQLError, ToRow (..), field, (:.) (..))
 import qualified Database.SQLite.Simple as SQL
-import Database.SQLite.Simple.FromField
 import Database.SQLite.Simple.QQ (sql)
-import Database.SQLite.Simple.ToField (ToField (..))
 #endif
 
 checkConstraint :: StoreError -> IO (Either StoreError a) -> IO (Either StoreError a)

@@ -111,7 +111,7 @@ import Data.Type.Equality
 import Data.Typeable (Typeable)
 import Data.Word (Word16, Word32)
 import Simplex.Messaging.Agent.QueryString
-import Simplex.Messaging.Agent.Store.DB (Binary (..), BoolInt (..))
+import Simplex.Messaging.Agent.Store.DB (Binary (..), BoolInt (..), FromField (..), ToField (..))
 import Simplex.Messaging.Crypto
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
@@ -121,13 +121,6 @@ import Simplex.Messaging.Util (($>>=), (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import UnliftIO.STM
-#if defined(dbPostgres)
-import Database.PostgreSQL.Simple.FromField (FromField (..))
-import Database.PostgreSQL.Simple.ToField (ToField (..))
-#else
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
-#endif
 
 -- e2e encryption headers version history:
 -- 1 - binary protocol encoding (1/1/2022)

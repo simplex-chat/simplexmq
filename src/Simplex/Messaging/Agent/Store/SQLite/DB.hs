@@ -12,6 +12,8 @@ module Simplex.Messaging.Agent.Store.SQLite.DB
     Connection (..),
     SlowQueryStats (..),
     TrackQueries (..),
+    FromField (..),
+    ToField (..),
     open,
     close,
     execute,

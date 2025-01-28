@@ -11,18 +11,12 @@ import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import Foreign (nullPtr)
+import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..))
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG (withDRG)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-#if defined(dbPostgres)
-import Database.PostgreSQL.Simple.FromField
-import Database.PostgreSQL.Simple.ToField
-#else
-import Database.SQLite.Simple.FromField
-import Database.SQLite.Simple.ToField
-#endif
 
 newtype KEMPublicKey = KEMPublicKey ByteString
   deriving (Eq, Show)
