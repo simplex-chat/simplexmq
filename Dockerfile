@@ -26,7 +26,7 @@ WORKDIR /project
 
 ARG APP
 ARG APP_PORT
-RUN if [ -z "$APP" ] || [ -z "$APP_PORT" ]; then printf "Please spcify \$APP and \$APP_PORT build-arg.\n"; exit 1; fi
+RUN if [ -z "$APP" ] || [ -z "$APP_PORT" ]; then printf "Please specify \$APP and \$APP_PORT build-arg.\n"; exit 1; fi
 
 # Compile app
 RUN cabal update
