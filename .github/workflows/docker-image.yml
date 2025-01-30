@@ -14,22 +14,22 @@ jobs:
       matrix:
         include:
           - app: smp-server
-            app_port: 5223
+            app_port: "443 5223"
           - app: xftp-server
-            app_port: 443 
+            app_port: 443
     steps:
       - name: Clone project
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
       - name: Extract metadata for Docker image
         id: meta
-        uses: docker/metadata-action@v4
+        uses: docker/metadata-action@v5
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.app }}
           flavor: |
@@ -40,7 +40,7 @@ jobs:
             type=semver,pattern=v{{major}}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v4
+        uses: docker/build-push-action@v6
         with:
           push: true
           build-args: |
