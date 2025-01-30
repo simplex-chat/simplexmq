@@ -38,6 +38,38 @@ YLW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+menu="Select what you want to update:
+${GRN}1${NC}) Update all (systemd, update/backup/install scripts)
+${GRN}2${NC}) Update only binaries
+${GRN}3${NC}) Exit the update script
+
+- "
+
+menu_one="This will:
+  - Update update/backup/uninstall scripts
+  - Update systemd services and reload the daemon
+
+  If the systemd service is running:
+    - Stop the systemd service
+    - Update the binary
+    - Start the service
+  
+  If not:
+    - Update the binary
+
+Proceed? (${GRN}yes${NC}/${RED}no${NC}): "
+
+menu_two="This will:
+  If the systemd service is running:
+    - Stop the systemd service
+    - Update the binary
+    - Start the service
+  
+  If not:
+    - Update the binary
+
+Proceed? (${GRN}yes${NC}/${RED}no${NC}): "
+
 # Currently, XFTP default to v0.1.0, so it doesn't make sense to check its version
 
 os_test() {
@@ -61,19 +93,6 @@ os_test() {
  bin_xftp="$bin/xftp-server-ubuntu-${version}-${arch}"
 }
 
-installed_test() {
-  set +u
-  for i in $path_conf_etc/*; do
-    if [ -d "$i" ]; then
-      case "$i" in
-        *simplex) apps="smp $apps" ;;
-        *simplex-xftp) apps="xftp $apps" ;;
-      esac
-    fi
-  done
-  set -u
-}
-
 set_version() {
   ver="${VER:-latest}"
 
@@ -87,6 +106,13 @@ set_version() {
       remote_version="${ver}"
       ;;
   esac
+
+  for i in smp xftp; do
+    if command -v "$i-server" >/dev/null; then
+      apps="$i $apps"
+      eval local_version_$i="$(${i}-server -v | awk '{print $NF}')"
+    fi
+  done
 }
 
 update_scripts() {
@@ -120,7 +146,7 @@ update_scripts() {
     mv "$path_tmp_bin_update" "$path_bin_update"
     printf "${GRN}Done!${NC}\n"
     printf -- "- Re-executing Update script with latest updates..."
-    exec sh "$path_bin_update" "continue"
+    exec sh CHOOSE="$choose" "$path_bin_update"
   fi
 }
 
@@ -170,6 +196,17 @@ update_bins() {
     set_ver "$1"
   fi
 
+  update_submenu() {
+    printf "This will update ${YLW}%s${NC} from ${BLU}%s${NC} to ${BLU}%s${NC}. Proceed? (${GRN}yes${NC}/${RED}no${NC}): " "$service" "$local_version" "$remote_version"
+    read proceed
+  }
+
+  case "$proceed" in
+    yes) : ;;
+    no) printf '\n'; exit 0 ;;
+    *) update_submenu ;;
+  esac
+
   if [ "$local_version" != "$remote_version" ]; then
     if systemctl is-active --quiet "$service"; then
       printf -- "- Stopping %s service..." "$service"
@@ -205,35 +242,107 @@ checks() {
 
   set_version
   os_test
-  installed_test
+
+  if [ -z "$apps" ]; then
+    printf 'No simplex servers installed! Aborting...\n'
+    exit 1
+  fi
 
   mkdir -p $path_conf_info
+}
+
+menu_main() {
+  choose="${CHOOSE:-}"
+
+  set +u
+  while [ -z "$choose" ]; do
+    printf '%b' "$menu"
+    read choose
+  done
+  set -u
+}
+
+menu_one() {
+  set +u
+  while [ -z "$choose_one" ]; do
+    printf '%b' "$menu_one"
+    read choose_one
+  done
+  set -u
+}
+
+menu_two() {
+  set +u
+  while [ -z "$choose_two" ]; do
+    printf '%b' "$menu_two"
+    read choose_two
+  done
+  set -u
 }
 
 main() {
   checks
 
-  set +u
-  if [ "$1" != "continue" ]; then
-    set -u
-    printf "Updating scripts...\n"
-    update_scripts
-  else
-    set -u
-    printf "${GRN}Done!${NC}\n"
-  fi
+  menu_main
 
-  printf "Updating systemd services...\n"
-  for i in $apps; do
-    update_systemd "$i"
-  done
+  case "$choose" in
+    1)
+      menu_one
+      
+      case "$choose_one" in
+        yes) : ;;
+        no) printf '\n'; exit 0 ;;
+        *) menu_one ;;
+      esac
+
+      set +u
+      if [ -z "$CHOOSE" ]; then
+        set -u
+        printf "Updating scripts...\n"
+        update_scripts
+      else
+        set -u
+        printf "${GRN}Done!${NC}\n"
+      fi
+
+      printf "Updating systemd services...\n"
+      for i in $apps; do
+        update_systemd "$i"
+      done
   
-  printf "Updating simplex servers...\n"
-  for i in $apps; do
-    update_bins "$i"
-  done
+      printf "Updating simplex servers...\n"
+      for i in $apps; do
+        update_bins "$i"
+      done
 
-  rm -rf "$path_tmp_bin"
+      rm -rf "$path_tmp_bin"
+      ;;
+      
+    2)
+      menu_two
+      
+      case "$choose_two" in
+        yes) : ;;
+        no) printf '\n'; exit 0 ;;
+        *) menu_two ;;
+      esac
+
+      printf "Updating simplex servers...\n"
+      for i in $apps; do
+        update_bins "$i"
+      done
+
+      rm -rf "$path_tmp_bin"
+      ;;
+      
+    3)
+      printf '\n'
+      exit 0
+      ;;
+    *)
+      menu_main
+      ;;
+  esac
 }
 
 main "$@"
