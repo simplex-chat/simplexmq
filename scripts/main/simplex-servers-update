@@ -208,12 +208,8 @@ update_bins() {
   fi
 
   update_submenu() {
-    set +u
-    while [ -z "$proceed" ]; do
-      printf "This will update ${YLW}%s${NC} from ${BLU}%s${NC} to ${BLU}%s${NC}. Proceed? (${GRN}yes${NC}/${RED}no${NC}): " "$service" "$local_version" "$remote_version"
-      read proceed
-    done
-    set -u
+    printf "This will update ${YLW}%s${NC} from ${BLU}%s${NC} to ${BLU}%s${NC}. Proceed? (${GRN}yes${NC}/${RED}no${NC}): " "$service" "$local_version" "$remote_version"
+    read proceed
     
     case "$proceed" in
       yes) : ;;
@@ -268,22 +264,9 @@ checks() {
   mkdir -p $path_conf_info
 }
 
-menu_main() {
-  set +u
-  while [ -z "$choose" ]; do
-    printf '%b' "$menu"
-    read choose
-  done
-  set -u
-}
-
 menu_one() {
-  set +u
-  while [ -z "$choose_one" ]; do
-    printf '%b' "$menu_one"
-    read choose_one
-  done
-  set -u
+  printf '%b' "$menu_one"
+  read choose_one
 
   case "$choose_one" in
     yes) : ;;
@@ -293,12 +276,8 @@ menu_one() {
 }
 
 menu_two() {
-  set +u
-  while [ -z "$choose_two" ]; do
-    printf '%b' "$menu_two"
-    read choose_two
-  done
-  set -u
+  printf '%b' "$menu_two"
+  read choose_two
 
   case "$choose_two" in
     yes) : ;;
@@ -308,12 +287,16 @@ menu_two() {
 }
 
 main() {
-  checks
-
-  menu_main
+  printf '%b' "$menu"
+  read choose
 
   case "$choose" in
     1)
+      case "$CHOOSE" in
+        1) choose_one=yes ;;
+        *) : ;;
+      esac
+
       menu_one
       
       set +u
@@ -357,9 +340,10 @@ main() {
     *)
       unset choose
       erase_lines 6
-      menu_main
+      main
       ;;
   esac
 }
 
+checks
 main "$@"
