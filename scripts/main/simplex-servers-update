@@ -310,7 +310,7 @@ update_bins() {
       printf -- "- Updating %s to %s..." "$service" "$remote_version"
 
       curl --proto '=https' --tlsv1.2 -sSf -L "$bin" -o "$path_bin" && chmod +x "$path_bin"
-      if ! check_sanity "$path_tmp_systemd" 'file: ELF'; then
+      if ! check_sanity "$path_bin" 'file: ELF'; then
         printf "Something went wrong when downloading %s binary: either you don't have connection to Github or you're rate-limited.\n" "$service"
         rm "$path_bin.old"
         exit 1
