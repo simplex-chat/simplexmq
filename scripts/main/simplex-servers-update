@@ -49,23 +49,23 @@ menu_one="This will:
   - Update update/backup/uninstall scripts
   - Update systemd services and reload the daemon
 
-If the systemd service is running:
+  If the systemd service is running:
   - Stop the systemd service
   - Update the binary
   - Start the service
   
-If not:
+  If not:
   - Update the binary
 
 Proceed? (${GRN}yes${NC}/${RED}no${NC}): "
 
 menu_two="This will:
-If the systemd service is running:
+  If the systemd service is running:
   - Stop the systemd service
   - Update the binary
   - Start the service
   
-If not:
+  If not:
   - Update the binary
 
 Proceed? (${GRN}yes${NC}/${RED}no${NC}): "
