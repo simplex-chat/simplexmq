@@ -107,12 +107,14 @@ set_version() {
       ;;
   esac
 
+  set +u
   for i in smp xftp; do
     if command -v "$i-server" >/dev/null; then
       apps="$i $apps"
       eval local_version_$i="$(${i}-server -v | awk '{print $NF}')"
     fi
   done
+  set -u
 }
 
 update_scripts() {
