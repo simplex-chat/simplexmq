@@ -127,7 +127,11 @@ erase_lines() {
 }
 
 update_scripts() {
+  set +u
+
   if [ -z "$SCRIPTS_DONE" ]; then
+    set -u
+    
     curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_update" -o "$path_tmp_bin_update" && chmod +x "$path_tmp_bin_update"
     curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_uninstall" -o "$path_tmp_bin_uninstall" && chmod +x "$path_tmp_bin_uninstall"
     curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_stopscript" -o "$path_tmp_bin_stopscript" && chmod +x "$path_tmp_bin_stopscript"
@@ -163,6 +167,8 @@ update_scripts() {
   else
     printf "${GRN}Done!${NC}\n"
   fi
+
+  set -u
 }
 
 update_systemd() {
