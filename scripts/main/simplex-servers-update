@@ -265,8 +265,10 @@ checks() {
 }
 
 menu_one() {
-  printf '%b' "$menu_one"
-  read choose_one
+  while [ -z "$choose_one" ]; do
+    printf '%b' "$menu_one"
+    read choose_one
+  done
 
   case "$choose_one" in
     yes) : ;;
@@ -276,8 +278,10 @@ menu_one() {
 }
 
 menu_two() {
-  printf '%b' "$menu_two"
-  read choose_two
+  while [ -z "$choose_two" ]; do
+    printf '%b' "$menu_two"
+    read choose_two
+  done
 
   case "$choose_two" in
     yes) : ;;
@@ -287,8 +291,10 @@ menu_two() {
 }
 
 main() {
-  printf '%b' "$menu"
-  read choose
+  while [ -z "$choose" ]; do
+    printf '%b' "$menu"
+    read choose
+  done
 
   case "$choose" in
     1)
@@ -325,6 +331,13 @@ main() {
       ;;
       
     2)
+      set +u
+      case "$CHOOSE" in
+        1) choose_two=yes ;;
+        *) : ;;
+      esac
+      set -u
+
       menu_two
       
       printf "Updating simplex servers...\n"
@@ -342,7 +355,7 @@ main() {
     *)
       unset choose
       erase_lines 6
-      main
+      main "$@"
       ;;
   esac
 }
