@@ -127,48 +127,39 @@ erase_lines() {
 }
 
 update_scripts() {
-  set +u
-
-  if [ -z "$SCRIPTS_DONE" ]; then
-    set -u
     
-    curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_update" -o "$path_tmp_bin_update" && chmod +x "$path_tmp_bin_update"
-    curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_uninstall" -o "$path_tmp_bin_uninstall" && chmod +x "$path_tmp_bin_uninstall"
-    curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_stopscript" -o "$path_tmp_bin_stopscript" && chmod +x "$path_tmp_bin_stopscript"
+  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_update" -o "$path_tmp_bin_update" && chmod +x "$path_tmp_bin_update"
+  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_uninstall" -o "$path_tmp_bin_uninstall" && chmod +x "$path_tmp_bin_uninstall"
+  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_stopscript" -o "$path_tmp_bin_stopscript" && chmod +x "$path_tmp_bin_stopscript"
 
-    if diff -q "$path_bin_uninstall" "$path_tmp_bin_uninstall" > /dev/null 2>&1; then
-      printf -- "- ${YLW}Uninstall script is up-to-date${NC}.\n"
-      rm "$path_tmp_bin_uninstall"
-    else
-      printf -- "- Updating uninstall script..."
-      mv "$path_tmp_bin_uninstall" "$path_bin_uninstall"
-      printf "${GRN}Done!${NC}\n"
-    fi
-
-    if diff -q "$path_bin_stopscript" "$path_tmp_bin_stopscript" > /dev/null 2>&1; then
-      printf -- "- ${YLW}Stopscript script is up-to-date${NC}.\n"
-      rm "$path_tmp_bin_stopscript"
-    else
-      printf -- "- Updating stopscript script..."
-      mv "$path_tmp_bin_stopscript" "$path_bin_stopscript"
-      printf "${GRN}Done!${NC}\n"
-    fi
-
-    if diff -q "$path_bin_update" "$path_tmp_bin_update" > /dev/null 2>&1; then
-      printf -- "- ${YLW}Update script is up-to-date${NC}.\n"
-      rm "$path_tmp_bin_update"
-    else
-      printf -- "- Updating update script..."
-      mv "$path_tmp_bin_update" "$path_bin_update"
-      printf "${GRN}Done!${NC}\n"
-      printf -- "- Re-executing Update script with latest updates..."
-      exec env CHOOSE="$choose" SCRIPTS_DONE=1 "$path_bin_update"
-    fi
+  if diff -q "$path_bin_uninstall" "$path_tmp_bin_uninstall" > /dev/null 2>&1; then
+    printf -- "- ${YLW}Uninstall script is up-to-date${NC}.\n"
+    rm "$path_tmp_bin_uninstall"
   else
+    printf -- "- Updating uninstall script..."
+    mv "$path_tmp_bin_uninstall" "$path_bin_uninstall"
     printf "${GRN}Done!${NC}\n"
   fi
 
-  set -u
+  if diff -q "$path_bin_stopscript" "$path_tmp_bin_stopscript" > /dev/null 2>&1; then
+    printf -- "- ${YLW}Stopscript script is up-to-date${NC}.\n"
+    rm "$path_tmp_bin_stopscript"
+  else
+    printf -- "- Updating stopscript script..."
+    mv "$path_tmp_bin_stopscript" "$path_bin_stopscript"
+    printf "${GRN}Done!${NC}\n"
+  fi
+
+  if diff -q "$path_bin_update" "$path_tmp_bin_update" > /dev/null 2>&1; then
+    printf -- "- ${YLW}Update script is up-to-date${NC}.\n"
+    rm "$path_tmp_bin_update"
+  else
+    printf -- "- Updating update script..."
+    mv "$path_tmp_bin_update" "$path_bin_update"
+    printf "${GRN}Done!${NC}\n"
+    printf -- "- Re-executing Update script..."
+    exec env CHOOSE="$choose" SCRIPTS_DONE=1 "$path_bin_update"
+  fi
 }
 
 update_systemd() {
@@ -323,8 +314,16 @@ main() {
 
       menu_one
       
-      printf "Updating scripts...\n"
-      update_scripts
+      set +u
+      if [ -z "$SCRIPTS_DONE" ]; then
+        set -u
+
+        printf "Updating scripts...\n"
+        update_scripts
+      else
+        printf "${GRN}Done!${NC}\n"
+      fi
+      set -u
 
       printf "Updating systemd services...\n"
       for i in $apps; do
