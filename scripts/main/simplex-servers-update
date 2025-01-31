@@ -127,7 +127,6 @@ erase_lines() {
 }
 
 update_scripts() {
-    
   curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_update" -o "$path_tmp_bin_update" && chmod +x "$path_tmp_bin_update"
   curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_uninstall" -o "$path_tmp_bin_uninstall" && chmod +x "$path_tmp_bin_uninstall"
   curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_stopscript" -o "$path_tmp_bin_stopscript" && chmod +x "$path_tmp_bin_stopscript"
@@ -341,7 +340,7 @@ main() {
     2)
       set +u
       case "$CHOOSE" in
-        1) choose_two=yes ;;
+        2) choose_two=yes ;;
         *) : ;;
       esac
       set -u
