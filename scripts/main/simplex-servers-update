@@ -73,6 +73,15 @@ Proceed? (${GRN}yes${NC}/${RED}no${NC}): "
 # Set CHOOSe globally and only once
 choose="${CHOOSE:-}"
 
+# Cleanup temp files
+cleanup() {
+    rm -rf -- "$path_tmp_bin"
+}
+
+trap '(exit 130)' INT
+trap '(exit 143)' TERM
+trap 'rc=$?; cleanup; exit $rc' EXIT
+
 # Currently, XFTP default to v0.1.0, so it doesn't make sense to check its version
 
 os_test() {
@@ -102,7 +111,12 @@ set_version() {
   case "$ver" in 
     latest)
       bin="https://github.com/simplex-chat/simplexmq/releases/latest/download"
-      remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest | grep -i "tag_name" | awk -F \" '{print $4}')"
+      remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest 2>/dev/null | grep -i "tag_name" | awk -F \" '{print $4}')"
+
+      if [ -z "$remote_version" ]; then
+        printf "Something went wrong: either you don't have connection to Github or you're rate-limited.\n"
+        exit 1
+      fi
       ;;
     *)
       bin="https://github.com/simplex-chat/simplexmq/releases/download/${ver}"
@@ -126,10 +140,58 @@ erase_lines() {
   done
 }
 
+check_sanity() {
+  path="$1"
+  criteria="$2"
+
+  case "$criteria" in
+    string:*)
+      pattern="$(printf '%s' "$criteria" | awk '{print $2}')"
+      
+      if grep -q "$pattern" "$path"; then
+        sane=0
+      else
+        sane=1
+      fi
+      ;;
+    file:*)
+      pattern="$(printf '%s' "$criteria" | awk '{print $2}')"
+
+      if file "$path" | grep -q "$pattern"; then
+        sane=0
+      else
+        sane=1
+      fi
+      ;;
+    *) printf 'Unknown criteria.\n'; sane=1 ;;
+  esac
+
+  unset path string
+
+  return "$sane"
+}
+
 update_scripts() {
   curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_update" -o "$path_tmp_bin_update" && chmod +x "$path_tmp_bin_update"
+
+  if ! check_sanity "$path_tmp_bin_update" 'string: /usr/bin/env'; then
+    printf "Something went wrong when downloading Update script: either you don't have connection to Github or you're rate-limited.\n"
+    exit 1
+  fi
+  
   curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_uninstall" -o "$path_tmp_bin_uninstall" && chmod +x "$path_tmp_bin_uninstall"
+
+  if ! check_sanity "$path_tmp_bin_uninstall" 'string: /usr/bin/env'; then
+    printf "Something went wrong when downloading Uninstall script: either you don't have connection to Github or you're rate-limited.\n"
+    exit 1
+  fi
+
   curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_stopscript" -o "$path_tmp_bin_stopscript" && chmod +x "$path_tmp_bin_stopscript"
+
+  if ! check_sanity "$path_tmp_bin_stopscript" 'string: /usr/bin/env'; then
+    printf "Something went wrong when downloading Update script: either you don't have connection to Github or you're rate-limited.\n"
+    exit 1
+  fi
 
   if diff -q "$path_bin_uninstall" "$path_tmp_bin_uninstall" > /dev/null 2>&1; then
     printf -- "- ${YLW}Uninstall script is up-to-date${NC}.\n"
@@ -168,6 +230,11 @@ update_systemd() {
   eval "path_tmp_systemd=\$path_tmp_systemd_${1}"
    
   curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_systemd" -o "$path_tmp_systemd"
+
+  if ! check_sanity "$path_tmp_systemd" 'string: [Service]'; then
+    printf "Something went wrong when downloading Systemd service: either you don't have connection to Github or you're rate-limited.\n"
+    exit 1
+  fi
 
   if diff -q "$path_systemd" "$path_tmp_systemd" > /dev/null 2>&1; then
     printf -- "- ${YLW}%s service is up-to-date${NC}.\n" "$service"
@@ -227,7 +294,16 @@ update_bins() {
       printf "${GRN}Done!${NC}\n"
 
       printf -- "- Updating %s to %s..." "$service" "$remote_version"
-      curl --proto '=https' --tlsv1.2 -sSf -L "$bin" -o "$path_bin" && chmod +x "$path_bin"
+
+      curl --proto '=https' --tlsv1.2 -sSf -L "$bin" -o "$path_bin.old" && chmod +x "$path_bin.old"
+      if ! check_sanity "$path_tmp_systemd" 'file: ELF'; then
+        printf "Something went wrong when downloading %s binary: either you don't have connection to Github or you're rate-limited.\n" "$service"
+        rm "$path_bin.old"
+        exit 1
+      else
+        mv "$path_bin.old" "$path_bin"
+      fi
+      
       printf "${GRN}Done!${NC}\n"
       
       printf -- "- Starting %s service..." "$service"
@@ -235,7 +311,16 @@ update_bins() {
       printf "${GRN}Done!${NC}\n"
     else
       printf -- "- Updating %s to %s..." "$service" "$remote_version"
+
       curl --proto '=https' --tlsv1.2 -sSf -L "$bin" -o "$path_bin" && chmod +x "$path_bin"
+      if ! check_sanity "$path_tmp_systemd" 'file: ELF'; then
+        printf "Something went wrong when downloading %s binary: either you don't have connection to Github or you're rate-limited.\n" "$service"
+        rm "$path_bin.old"
+        exit 1
+      else
+        mv "$path_bin.old" "$path_bin"
+      fi
+
       printf "${GRN}Done!${NC}\n"
     fi
   else
@@ -333,8 +418,6 @@ main() {
       for i in $apps; do
         update_bins "$i"
       done
-
-      rm -rf "$path_tmp_bin"
       ;;
       
     2)
@@ -351,8 +434,6 @@ main() {
       for i in $apps; do
         update_bins "$i"
       done
-
-      rm -rf "$path_tmp_bin"
       ;;
       
     3)
