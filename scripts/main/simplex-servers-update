@@ -357,7 +357,7 @@ menu_one() {
   case "$choose_one" in
     yes) : ;;
     no) printf '\n'; exit 0 ;;
-    *) unset choose_one; erase_lines 13; menu_one ;;
+    *) unset choose_one; erase_lines 8; menu_one ;;
   esac
 }
 
@@ -372,7 +372,7 @@ menu_two() {
   case "$choose_two" in
     yes) : ;;
     no) printf '\n'; exit 0 ;;
-    *) unset choose_two; erase_lines 10; menu_two ;;
+    *) unset choose_two; erase_lines 6; menu_two ;;
   esac
 }
 
@@ -439,7 +439,7 @@ main() {
       ;;
     *)
       unset choose
-      erase_lines 6
+      erase_lines 12
       main "$@"
       ;;
   esac
