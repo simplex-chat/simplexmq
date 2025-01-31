@@ -111,7 +111,7 @@ set_version() {
       remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest 2>/dev/null | grep -i "tag_name" | awk -F \" '{print $4}')"
 
       if [ -z "$remote_version" ]; then
-        printf "Something went wrong: either you don't have connection to Github or you're rate-limited.\n"
+        printf "${RED}Something went wrong when ${YLW}resolving the lastest version${NC}: either you don't have connection to Github or you're rate-limited.\n"
         exit 1
       fi
       ;;
@@ -172,21 +172,21 @@ update_scripts() {
   curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_update" -o "$path_tmp_bin_update" && chmod +x "$path_tmp_bin_update"
 
   if ! check_sanity "$path_tmp_bin_update" 'string: /usr/bin/env'; then
-    printf "Something went wrong when downloading Update script: either you don't have connection to Github or you're rate-limited.\n"
+    printf "${RED}Something went wrong when downloading ${YLW}Update script${NC}: either you don't have connection to Github or you're rate-limited.\n"
     exit 1
   fi
   
   curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_uninstall" -o "$path_tmp_bin_uninstall" && chmod +x "$path_tmp_bin_uninstall"
 
   if ! check_sanity "$path_tmp_bin_uninstall" 'string: /usr/bin/env'; then
-    printf "Something went wrong when downloading Uninstall script: either you don't have connection to Github or you're rate-limited.\n"
+    printf "${RED}Something went wrong when downloading ${YLW}Uninstall script${NC}: either you don't have connection to Github or you're rate-limited.\n"
     exit 1
   fi
 
   curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_stopscript" -o "$path_tmp_bin_stopscript" && chmod +x "$path_tmp_bin_stopscript"
 
   if ! check_sanity "$path_tmp_bin_stopscript" 'string: /usr/bin/env'; then
-    printf "Something went wrong when downloading Update script: either you don't have connection to Github or you're rate-limited.\n"
+    printf "${RED}Something went wrong when downloading ${YLW}Update script${NC}: either you don't have connection to Github or you're rate-limited.\n"
     exit 1
   fi
 
@@ -229,7 +229,7 @@ update_systemd() {
   curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_systemd" -o "$path_tmp_systemd"
 
   if ! check_sanity "$path_tmp_systemd" 'string: [Service]'; then
-    printf "Something went wrong when downloading Systemd service: either you don't have connection to Github or you're rate-limited.\n"
+    printf "${RED}Something went wrong when downloading ${YLW}Systemd service${NC}: either you don't have connection to Github or you're rate-limited.\n"
     exit 1
   fi
 
@@ -287,8 +287,8 @@ update_bins() {
 
     curl --proto '=https' --tlsv1.2 -sSf -L "$bin" -o "$path_bin.new" && chmod +x "$path_bin.new"
     if ! check_sanity "$path_bin.new" 'file: ELF'; then
-      printf "\nSomething went wrong when downloading %s binary: either you don't have connection to Github or you're rate-limited.\n" "$service"
-      rm "$path_bin.new"
+      printf "\n${RED}Something went wrong when downloading ${YLW}%s binary${NC}: either you don't have connection to Github or you're rate-limited.\n" "$service"
+      rm -f "$path_bin.new"
       exit 1
     else
       mv "$path_bin.new" "$path_bin"
