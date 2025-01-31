@@ -43,7 +43,7 @@ ${GRN}1${NC}) Update all (systemd, update/backup/install scripts)
 ${GRN}2${NC}) Update only binaries
 ${GRN}3${NC}) Exit the update script
 
-- "
+Select: "
 
 menu_one="This will:
   - Update update/backup/uninstall scripts
