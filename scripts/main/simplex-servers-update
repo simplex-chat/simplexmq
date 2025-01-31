@@ -199,15 +199,21 @@ update_bins() {
   fi
 
   update_submenu() {
-    printf "This will update ${YLW}%s${NC} from ${BLU}%s${NC} to ${BLU}%s${NC}. Proceed? (${GRN}yes${NC}/${RED}no${NC}): " "$service" "$local_version" "$remote_version"
-    read proceed
+    set +u
+    while [ -z "$proceed" ]; do
+      printf "This will update ${YLW}%s${NC} from ${BLU}%s${NC} to ${BLU}%s${NC}. Proceed? (${GRN}yes${NC}/${RED}no${NC}): " "$service" "$local_version" "$remote_version"
+      read proceed
+    done
+    set -u
+    
+    case "$proceed" in
+      yes) : ;;
+      no) printf '\n'; exit 0 ;;
+      *) update_submenu ;;
+    esac
   }
 
-  case "$proceed" in
-    yes) : ;;
-    no) printf '\n'; exit 0 ;;
-    *) update_submenu ;;
-  esac
+  update_submenu
 
   if [ "$local_version" != "$remote_version" ]; then
     if systemctl is-active --quiet "$service"; then
@@ -271,6 +277,12 @@ menu_one() {
     read choose_one
   done
   set -u
+
+  case "$choose_one" in
+    yes) : ;;
+    no) printf '\n'; exit 0 ;;
+    *) menu_one ;;
+  esac
 }
 
 menu_two() {
@@ -280,6 +292,12 @@ menu_two() {
     read choose_two
   done
   set -u
+
+  case "$choose_two" in
+    yes) : ;;
+    no) printf '\n'; exit 0 ;;
+    *) menu_two ;;
+  esac
 }
 
 main() {
@@ -291,12 +309,6 @@ main() {
     1)
       menu_one
       
-      case "$choose_one" in
-        yes) : ;;
-        no) printf '\n'; exit 0 ;;
-        *) menu_one ;;
-      esac
-
       set +u
       if [ -z "$CHOOSE" ]; then
         set -u
@@ -323,12 +335,6 @@ main() {
     2)
       menu_two
       
-      case "$choose_two" in
-        yes) : ;;
-        no) printf '\n'; exit 0 ;;
-        *) menu_two ;;
-      esac
-
       printf "Updating simplex servers...\n"
       for i in $apps; do
         update_bins "$i"
