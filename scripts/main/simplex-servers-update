@@ -70,6 +70,9 @@ menu_two="This will:
 
 Proceed? (${GRN}yes${NC}/${RED}no${NC}): "
 
+# Set CHOOSe globally and only once
+choose="${CHOOSE:-}"
+
 # Currently, XFTP default to v0.1.0, so it doesn't make sense to check its version
 
 os_test() {
@@ -209,7 +212,7 @@ update_bins() {
     case "$proceed" in
       yes) : ;;
       no) printf '\n'; exit 0 ;;
-      *) update_submenu ;;
+      *) unset proceed; update_submenu ;;
     esac
   }
 
@@ -260,8 +263,6 @@ checks() {
 }
 
 menu_main() {
-  choose="${CHOOSE:-}"
-
   set +u
   while [ -z "$choose" ]; do
     printf '%b' "$menu"
@@ -281,7 +282,7 @@ menu_one() {
   case "$choose_one" in
     yes) : ;;
     no) printf '\n'; exit 0 ;;
-    *) menu_one ;;
+    *) unset choose_one; menu_one ;;
   esac
 }
 
@@ -296,7 +297,7 @@ menu_two() {
   case "$choose_two" in
     yes) : ;;
     no) printf '\n'; exit 0 ;;
-    *) menu_two ;;
+    *) unset choose_two; menu_two ;;
   esac
 }
 
@@ -348,6 +349,7 @@ main() {
       exit 0
       ;;
     *)
+      unset choose
       menu_main
       ;;
   esac
