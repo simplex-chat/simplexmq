@@ -292,10 +292,12 @@ main() {
 
   case "$choose" in
     1)
+      set +u
       case "$CHOOSE" in
         1) choose_one=yes ;;
         *) : ;;
       esac
+      set -u
 
       menu_one
       
