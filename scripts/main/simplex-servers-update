@@ -282,6 +282,21 @@ update_bins() {
     esac
   }
 
+  update_bin() {
+    printf -- "- Updating %s to %s..." "$service" "$remote_version"
+
+    curl --proto '=https' --tlsv1.2 -sSf -L "$bin" -o "$path_bin.new" && chmod +x "$path_bin.new"
+    if ! check_sanity "$path_tmp_systemd" 'file: ELF'; then
+      printf "\nSomething went wrong when downloading %s binary: either you don't have connection to Github or you're rate-limited.\n" "$service"
+      rm "$path_bin.new"
+      exit 1
+    else
+      mv "$path_bin.new" "$path_bin"
+    fi
+      
+    printf "${GRN}Done!${NC}\n"
+  }
+
   if [ "$local_version" != "$remote_version" ]; then
     update_submenu
     
@@ -290,35 +305,13 @@ update_bins() {
       systemctl stop "$service"
       printf "${GRN}Done!${NC}\n"
 
-      printf -- "- Updating %s to %s..." "$service" "$remote_version"
-
-      curl --proto '=https' --tlsv1.2 -sSf -L "$bin" -o "$path_bin.old" && chmod +x "$path_bin.old"
-      if ! check_sanity "$path_tmp_systemd" 'file: ELF'; then
-        printf "Something went wrong when downloading %s binary: either you don't have connection to Github or you're rate-limited.\n" "$service"
-        rm "$path_bin.old"
-        exit 1
-      else
-        mv "$path_bin.old" "$path_bin"
-      fi
-      
-      printf "${GRN}Done!${NC}\n"
+      update_bin
       
       printf -- "- Starting %s service..." "$service"
       systemctl start "$service"
       printf "${GRN}Done!${NC}\n"
     else
-      printf -- "- Updating %s to %s..." "$service" "$remote_version"
-
-      curl --proto '=https' --tlsv1.2 -sSf -L "$bin" -o "$path_bin" && chmod +x "$path_bin"
-      if ! check_sanity "$path_bin" 'file: ELF'; then
-        printf "Something went wrong when downloading %s binary: either you don't have connection to Github or you're rate-limited.\n" "$service"
-        rm "$path_bin.old"
-        exit 1
-      else
-        mv "$path_bin.old" "$path_bin"
-      fi
-
-      printf "${GRN}Done!${NC}\n"
+      update_bin
     fi
   else
     printf -- "- ${YLW}%s is up-to-date${NC}.\n" "$service"
