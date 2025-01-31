@@ -269,10 +269,12 @@ checks() {
 }
 
 menu_one() {
+  set +u
   while [ -z "$choose_one" ]; do
     printf '%b' "$menu_one"
     read choose_one
   done
+  set -u
 
   case "$choose_one" in
     yes) : ;;
@@ -282,10 +284,12 @@ menu_one() {
 }
 
 menu_two() {
+  set +u
   while [ -z "$choose_two" ]; do
     printf '%b' "$menu_two"
     read choose_two
   done
+  set -u
 
   case "$choose_two" in
     yes) : ;;
@@ -295,10 +299,12 @@ menu_two() {
 }
 
 main() {
+  set +u
   while [ -z "$choose" ]; do
     printf '%b' "$menu"
     read choose
   done
+  set -u
 
   case "$choose" in
     1)
