@@ -270,10 +270,10 @@ checks() {
 
 menu_one() {
   set +u
-  while [ -z "$choose_one" ]; do
+  if [ -z "$choose_one" ]; then
     printf '%b' "$menu_one"
     read choose_one
-  done
+  fi
   set -u
 
   case "$choose_one" in
@@ -285,10 +285,10 @@ menu_one() {
 
 menu_two() {
   set +u
-  while [ -z "$choose_two" ]; do
+  if [ -z "$choose_two" ]; then
     printf '%b' "$menu_two"
     read choose_two
-  done
+  fi
   set -u
 
   case "$choose_two" in
@@ -300,10 +300,10 @@ menu_two() {
 
 main() {
   set +u
-  while [ -z "$choose" ]; do
+  if [ -z "$choose" ]; then
     printf '%b' "$menu"
     read choose
-  done
+  fi
   set -u
 
   case "$choose" in
