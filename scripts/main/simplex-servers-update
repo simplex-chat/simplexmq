@@ -147,7 +147,7 @@ update_scripts() {
     printf -- "- Updating update script..."
     mv "$path_tmp_bin_update" "$path_bin_update"
     printf "${GRN}Done!${NC}\n"
-    printf -- "- Re-executing Update script with latest updates..."
+    printf -- "- Re-executing Update script with latest updates...\n"
     exec sh CHOOSE="$choose" "$path_bin_update"
   fi
 }
