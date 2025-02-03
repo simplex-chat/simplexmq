@@ -997,6 +997,7 @@ deleteDeliveredSndMsg db connId msgId = do
   cnt <- countPendingSndDeliveries_ db connId msgId
   when (cnt == 0) $ deleteMsg db connId msgId
 
+-- TODO [save once] Delete from shared message bodies if no deliveries reference it. (`when (cnt == 0)`)
 deleteSndMsgDelivery :: DB.Connection -> ConnId -> SndQueue -> InternalId -> Bool -> IO ()
 deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
   DB.execute

@@ -1380,6 +1380,9 @@ enqueueMessage c cData sq msgFlags aMessage =
   ExceptT $ fmap fst . runIdentity <$> enqueueMessageB c (Identity (Right (cData, [sq], Nothing, msgFlags, aMessage)))
 {-# INLINE enqueueMessage #-}
 
+-- TODO [save once] Parameter to save unencrypted message only once in the database - passed from sendMessagesB
+-- TODO             (which would mean client passed same MsgBody in all MsgReq records).
+-- TODO             Or - separate sendBroadcastMessage api?
 -- this function is used only for sending messages in batch, it returns the list of successes to enqueue additional deliveries
 enqueueMessageB :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage)) -> AM' (t (Either AgentErrorType ((AgentMsgId, PQEncryption), Maybe (ConnData, [SndQueue], AgentMsgId))))
 enqueueMessageB c reqs = do
@@ -1400,6 +1403,10 @@ enqueueMessageB c reqs = do
           agentMsgStr = smpEncode agentMsg
           internalHash = C.sha256Hash agentMsgStr
           currentE2EVersion = maxVersion e2eEncryptVRange
+      -- TODO [save once] Save single MsgBody / enveloped body agentMsgStr (outside of withStoreBatch ... storeSentMsg).
+      -- TODO             Link all messages (message deliveries) to it, save encryption data per message, e.g. pqEnc_ (intent, not result).
+      -- TODO             'msg_body' field is not nullable - use default empty strings?
+      -- TODO             No need to save specific ratchet state/keys for encryption at this point? - Get them at point of delivery?
       (encAgentMessage, pqEnc) <- agentRatchetEncrypt db cData agentMsgStr e2eEncAgentMsgLength pqEnc_ currentE2EVersion
       let agentVersion = maxVersion smpAgentVRange
           msgBody = smpEncode $ AgentMsgEnvelope {agentVersion, encAgentMessage}
@@ -1407,6 +1414,9 @@ enqueueMessageB c reqs = do
           msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody, pqEncryption = pqEnc, internalHash, prevMsgHash}
       liftIO $ createSndMsg db connId msgData
       liftIO $ createSndMsgDelivery db connId sq internalId
+      -- TODO [save once] What to do with pqEnc return? (Chat makes decision to create "PQ e2e enabled" chat items based on it)
+      -- TODO             If encryption happens asynchronously before delivery, we don't know at this point if it'll be "enabled".
+      -- TODO             Send separate events? Return current ratchet state (so 1 step behind -> chat would show PQ got enabled later)?
       pure (req, internalId, pqEnc)
 
 enqueueSavedMessage :: AgentClient -> ConnData -> AgentMsgId -> SndQueue -> AM' ()
@@ -1462,6 +1472,14 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c sq msgBody
+            -- TODO [save once] PendingMsgData to contain PQ "intent".
+            -- TODO             Get connection ratchet, call agentRatchetEncrypt, wrap into AgentMsgEnvelope.
+            --
+            -- from enqueueMessageB:
+            --
+            -- (encAgentMessage, pqEnc) <- agentRatchetEncrypt db cData agentMsgStr e2eEncAgentMsgLength pqEnc_ currentE2EVersion
+            -- let agentVersion = maxVersion smpAgentVRange
+            --     msgBody = smpEncode $ AgentMsgEnvelope {agentVersion, encAgentMessage}
             _ -> sendAgentMessage c sq msgFlags msgBody
           case resp of
             Left e -> do
