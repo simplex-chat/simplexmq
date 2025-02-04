@@ -127,6 +127,8 @@ CREATE TABLE snd_messages(
   retry_int_fast INTEGER,
   rcpt_internal_id INTEGER,
   rcpt_status TEXT,
+  msg_encrypt_key BLOB,
+  padded_msg_len INTEGER,
   PRIMARY KEY(conn_id, internal_snd_id),
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages
   ON DELETE CASCADE
