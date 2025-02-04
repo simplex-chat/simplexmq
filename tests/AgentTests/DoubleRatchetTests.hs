@@ -589,8 +589,8 @@ encrypt_ pqEnc_ (_, rc, _) msg =
     >>= either (pure . Left) checkLength
   where
     encrypt = do
-      (msgEncrypt, rc') <- rcPrepareEncrypt rc paddedMsgLen pqEnc_ currentE2EEncryptVersion
-      msg' <- rcEncrypt msgEncrypt msg
+      (mek, rc') <- rcEncryptHeader rc pqEnc_ currentE2EEncryptVersion
+      msg' <- rcEncryptMsg mek paddedMsgLen msg
       pure (msg', rc')
     checkLength (msg', rc') = do
       B.length msg' `shouldBe` fullMsgLen rc'

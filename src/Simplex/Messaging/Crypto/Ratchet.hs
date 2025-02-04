@@ -20,7 +20,7 @@
 
 module Simplex.Messaging.Crypto.Ratchet
   ( Ratchet (..),
-    MsgEncrypt (..),
+    MsgEncryptKey (..),
     RatchetX448,
     SkippedMsgDiff (..),
     SkippedMsgKeys,
@@ -65,8 +65,8 @@ module Simplex.Messaging.Crypto.Ratchet
     pqX3dhRcv,
     initSndRatchet,
     initRcvRatchet,
-    rcPrepareEncrypt,
-    rcEncrypt,
+    rcEncryptHeader,
+    rcEncryptMsg,
     rcDecrypt,
     -- used in tests
     MsgHeader (..),
@@ -118,7 +118,7 @@ import Simplex.Messaging.Crypto
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (blobFieldDecoder, defaultJSON, parseE, parseE')
+import Simplex.Messaging.Parsers (blobFieldDecoder, blobFieldParser, defaultJSON, parseE, parseE')
 import Simplex.Messaging.Util (($>>=), (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
@@ -566,6 +566,7 @@ applySMDiff smks = \case
 type HeaderKey = Key
 
 data MessageKey = MessageKey Key IV
+  deriving (Show)
 
 instance Encoding MessageKey where
   smpEncode (MessageKey (Key key) (IV iv)) = smpEncode (key, iv)
@@ -847,9 +848,9 @@ connPQEncryption = \case
   IKUsePQ -> PQSupportOn
   IKNoPQ pq -> pq -- default for creating connection is IKNoPQ PQEncOn
 
-rcPrepareEncrypt :: AlgorithmI a => Ratchet a -> Int -> Maybe PQEncryption -> VersionE2E -> ExceptT CryptoError IO (MsgEncrypt a, Ratchet a)
-rcPrepareEncrypt Ratchet {rcSnd = Nothing} _ _ _ = throwE CERatchetState
-rcPrepareEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcSupportKEM, rcEnableKEM, rcVersion} paddedMsgLen pqEnc_ supportedE2EVersion = do
+rcEncryptHeader :: AlgorithmI a => Ratchet a -> Maybe PQEncryption -> VersionE2E -> ExceptT CryptoError IO (MsgEncryptKey a, Ratchet a)
+rcEncryptHeader Ratchet {rcSnd = Nothing} _ _ = throwE CERatchetState
+rcEncryptHeader rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcSupportKEM, rcEnableKEM, rcVersion} pqEnc_ supportedE2EVersion = do
   -- state.CKs, mk = KDF_CK(state.CKs)
   let (ck', mk, iv, ehIV) = chainKdf rcCKs
       v = current rcVersion
@@ -862,22 +863,16 @@ rcPrepareEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, 
       -- TODO note that maxSupported will not downgrade here below current (v).
       maxSupported' = max supportedE2EVersion $ if pqEnc_ == Just PQEncOn then pqRatchetE2EEncryptVersion else v
       rcVersion' = rcVersion {maxSupported = maxSupported'}
-      msgEncrypt =
-        MsgEncrypt
-          { msgMk = mk,
-            msgIV = iv,
-            msgEhIV = ehIV,
-            msgPaddedLen = paddedMsgLen,
-            msgRcCurrentVersion = v,
-            msgRcMaxSupported = maxSupported',
-            msgRcSndHKs = rcHKs,
+  -- enc_header = HENCRYPT(state.HKs, header)
+  (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV (paddedHeaderLen v rcSupportKEM') rcAD (msgHeader v maxSupported')
+  -- return enc_header
+  let emHeader = smpEncode EncMessageHeader {ehVersion = v, ehBody, ehAuthTag, ehIV}
+      msgEncryptKey =
+        MsgEncryptKey
+          { msgRcCurrentVersion = v,
+            msgKey = MessageKey mk iv,
             msgRcAD = Str rcAD,
-            msgRcDHRs = rcDHRs,
-            msgRcKEM = rcKEM,
-            msgRcSupportKEM = rcSupportKEM',
-            msgRcNs = rcNs,
-            msgRcPN = rcPN,
-            msgRcNHKr = rcHKs
+            msgEncHeader = emHeader
           }
       rc' =
         rc
@@ -888,35 +883,7 @@ rcPrepareEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, 
             rcVersion = rcVersion',
             rcKEM = if pqEnc_ == Just PQEncOff then (\rck -> rck {rcKEMs = Nothing}) <$> rcKEM else rcKEM
           }
-  pure (msgEncrypt, rc')
-
-data MsgEncrypt a = MsgEncrypt
-  { msgMk :: Key,
-    msgIV :: IV,
-    msgEhIV :: IV,
-    msgPaddedLen :: Int,
-    msgRcCurrentVersion :: VersionE2E,
-    msgRcMaxSupported :: VersionE2E,
-    msgRcSndHKs :: HeaderKey,
-    msgRcAD :: Str,
-    msgRcDHRs :: PrivateKey a,
-    msgRcKEM :: Maybe RatchetKEM,
-    msgRcSupportKEM :: PQSupport,
-    msgRcNs :: Word32,
-    msgRcPN :: Word32,
-    msgRcNHKr :: HeaderKey
-  }
-  deriving (Show)
-
-rcEncrypt :: AlgorithmI a => MsgEncrypt a -> ByteString -> ExceptT CryptoError IO ByteString
-rcEncrypt MsgEncrypt {msgMk, msgIV, msgEhIV, msgPaddedLen, msgRcSndHKs, msgRcDHRs, msgRcKEM, msgRcNs, msgRcPN, msgRcAD = Str rcAD, msgRcSupportKEM, msgRcCurrentVersion = v, msgRcMaxSupported} msg = do
-  -- enc_header = HENCRYPT(state.HKs, header)
-  (ehAuthTag, ehBody) <- encryptAEAD msgRcSndHKs msgEhIV (paddedHeaderLen v msgRcSupportKEM) rcAD msgHeader
-  -- return enc_header, ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
-  let emHeader = smpEncode EncMessageHeader {ehVersion = v, ehBody, ehAuthTag, ehIV = msgEhIV}
-  (emAuthTag, emBody) <- encryptAEAD msgMk msgIV msgPaddedLen (rcAD <> emHeader) msg
-  let msg' = encodeEncRatchetMessage v EncRatchetMessage {emHeader, emBody, emAuthTag}
-  pure msg'
+  pure (msgEncryptKey, rc')
   where
     -- header = HEADER_PQ2(
     --   dh = state.DHRs.public,
@@ -925,19 +892,34 @@ rcEncrypt MsgEncrypt {msgMk, msgIV, msgEhIV, msgPaddedLen, msgRcSndHKs, msgRcDHR
     --   pn = state.PN,
     --   n = state.Ns
     -- )
-    msgHeader =
+    msgHeader v maxSupported' =
       encodeMsgHeader
         v
         MsgHeader
-          { msgMaxVersion = msgRcMaxSupported,
-            msgDHRs = publicKey msgRcDHRs,
-            msgKEM = msgKEMParams <$> msgRcKEM,
-            msgPN = msgRcPN,
-            msgNs = msgRcNs
+          { msgMaxVersion = maxSupported',
+            msgDHRs = publicKey rcDHRs,
+            msgKEM = msgKEMParams <$> rcKEM,
+            msgPN = rcPN,
+            msgNs = rcNs
           }
     msgKEMParams RatchetKEM {rcPQRs = (k, _), rcKEMs} = case rcKEMs of
       Nothing -> ARKP SRKSProposed $ RKParamsProposed k
       Just RatchetKEMAccepted {rcPQRct} -> ARKP SRKSAccepted $ RKParamsAccepted rcPQRct k
+
+data MsgEncryptKey a = MsgEncryptKey
+  { msgRcCurrentVersion :: VersionE2E,
+    msgKey :: MessageKey,
+    msgRcAD :: Str,
+    msgEncHeader :: ByteString
+  }
+  deriving (Show)
+
+rcEncryptMsg :: AlgorithmI a => MsgEncryptKey a -> Int -> ByteString -> ExceptT CryptoError IO ByteString
+rcEncryptMsg MsgEncryptKey {msgKey = MessageKey mk iv, msgRcAD = Str rcAD, msgEncHeader, msgRcCurrentVersion = v} paddedMsgLen msg = do
+  -- return ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
+  (emAuthTag, emBody) <- encryptAEAD mk iv paddedMsgLen (rcAD <> msgEncHeader) msg
+  let msg' = encodeEncRatchetMessage v EncRatchetMessage {emHeader = msgEncHeader, emBody, emAuthTag}
+  pure msg'
 
 data SkippedMessage a
   = SMMessage (DecryptResult a)
@@ -1185,3 +1167,14 @@ instance FromField PQSupport where
 #else
   fromField f = PQSupport . unBI <$> fromField f
 #endif
+
+instance Encoding (MsgEncryptKey a) where
+  smpEncode MsgEncryptKey {msgRcCurrentVersion = v, msgKey, msgRcAD = Str msgRcAD, msgEncHeader} =
+    smpEncode (v, msgRcAD, msgKey, Large msgEncHeader)
+  smpP = do
+    (v, msgRcAD, msgKey, Tail msgEncHeader) <- smpP
+    pure MsgEncryptKey {msgRcCurrentVersion = v, msgRcAD = Str msgRcAD, msgKey, msgEncHeader}
+
+instance AlgorithmI a => ToField (MsgEncryptKey a) where toField = toField . Binary . smpEncode
+
+instance (AlgorithmI a, Typeable a) => FromField (MsgEncryptKey a) where fromField = blobFieldParser smpP
