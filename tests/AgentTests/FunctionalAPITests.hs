@@ -728,13 +728,15 @@ testEnablePQEncryption =
     -- switched to smaller envelopes (before reporting PQ encryption enabled)
     sml <- largeMsg g PQSupportOn
     -- fail because of message size
-    Left (A.CMD LARGE _) <- tryError $ A.sendMessage ca bId PQEncOn SMP.noMsgFlags lrg
+    (6, PQEncOff) <- A.sendMessage ca bId PQEncOn SMP.noMsgFlags lrg
+    get ca ##> ("", bId, MERR 6 (A.CMD {cmdErr = LARGE, errContext = "CryptoLargeMsgError"}))
     (7, PQEncOff) <- A.sendMessage ca bId PQEncOn SMP.noMsgFlags sml
     get ca =##> \case ("", connId, SENT 7) -> connId == bId; _ -> False
     get cb =##> \case ("", connId, MsgErr' 6 MsgSkipped {} PQEncOff msg') -> connId == aId && msg' == sml; _ -> False
     ackMessage cb aId 6 Nothing
     -- -- fail in reply to sync IDss
-    Left (A.CMD LARGE _) <- tryError $ A.sendMessage cb aId PQEncOn SMP.noMsgFlags lrg
+    (7, PQEncOff) <- A.sendMessage cb aId PQEncOn SMP.noMsgFlags lrg
+    get cb ##> ("", aId, MERR 7 (A.CMD {cmdErr = LARGE, errContext = "CryptoLargeMsgError"}))
     (8, PQEncOff) <- A.sendMessage cb aId PQEncOn SMP.noMsgFlags sml
     get cb =##> \case ("", connId, SENT 8) -> connId == aId; _ -> False
     get ca =##> \case ("", connId, MsgErr' 8 MsgSkipped {} PQEncOff msg') -> connId == bId && msg' == sml; _ -> False
@@ -761,8 +763,10 @@ testEnablePQEncryption =
     (b, 24, sml) \#>\ a
     (a, 25, sml) \#>\ b
     -- PQ encryption is now disabled, but support remained enabled, so we still cannot send larger messages
-    Left (A.CMD LARGE _) <- tryError $ A.sendMessage ca bId PQEncOff SMP.noMsgFlags (sml <> "123456")
-    Left (A.CMD LARGE _) <- tryError $ A.sendMessage cb aId PQEncOff SMP.noMsgFlags (sml <> "123456")
+    (26, PQEncOff) <- A.sendMessage ca bId PQEncOff SMP.noMsgFlags (sml <> "123456")
+    get ca ##> ("", bId, MERR 26 (A.CMD {cmdErr = LARGE, errContext = "CryptoLargeMsgError"}))
+    (26, PQEncOff) <- A.sendMessage cb aId PQEncOff SMP.noMsgFlags (sml <> "123456")
+    get cb ##> ("", aId, MERR 26 (A.CMD {cmdErr = LARGE, errContext = "CryptoLargeMsgError"}))
     pure ()
   where
     (\#>\) = PQEncOff `sndRcv` PQEncOff
