@@ -871,7 +871,7 @@ rcEncryptHeader rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, r
         MsgEncryptKey
           { msgRcCurrentVersion = v,
             msgKey = MessageKey mk iv,
-            msgRcAD = Str rcAD,
+            msgRcAD = rcAD,
             msgEncHeader = emHeader
           }
       rc' =
@@ -909,15 +909,15 @@ rcEncryptHeader rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, r
 data MsgEncryptKey a = MsgEncryptKey
   { msgRcCurrentVersion :: VersionE2E,
     msgKey :: MessageKey,
-    msgRcAD :: Str,
+    msgRcAD :: ByteString,
     msgEncHeader :: ByteString
   }
   deriving (Show)
 
 rcEncryptMsg :: AlgorithmI a => MsgEncryptKey a -> Int -> ByteString -> ExceptT CryptoError IO ByteString
-rcEncryptMsg MsgEncryptKey {msgKey = MessageKey mk iv, msgRcAD = Str rcAD, msgEncHeader, msgRcCurrentVersion = v} paddedMsgLen msg = do
+rcEncryptMsg MsgEncryptKey {msgKey = MessageKey mk iv, msgRcAD, msgEncHeader, msgRcCurrentVersion = v} paddedMsgLen msg = do
   -- return ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
-  (emAuthTag, emBody) <- encryptAEAD mk iv paddedMsgLen (rcAD <> msgEncHeader) msg
+  (emAuthTag, emBody) <- encryptAEAD mk iv paddedMsgLen (msgRcAD <> msgEncHeader) msg
   let msg' = encodeEncRatchetMessage v EncRatchetMessage {emHeader = msgEncHeader, emBody, emAuthTag}
   pure msg'
 
@@ -1169,11 +1169,11 @@ instance FromField PQSupport where
 #endif
 
 instance Encoding (MsgEncryptKey a) where
-  smpEncode MsgEncryptKey {msgRcCurrentVersion = v, msgKey, msgRcAD = Str msgRcAD, msgEncHeader} =
+  smpEncode MsgEncryptKey {msgRcCurrentVersion = v, msgKey, msgRcAD, msgEncHeader} =
     smpEncode (v, msgRcAD, msgKey, Large msgEncHeader)
   smpP = do
-    (v, msgRcAD, msgKey, Tail msgEncHeader) <- smpP
-    pure MsgEncryptKey {msgRcCurrentVersion = v, msgRcAD = Str msgRcAD, msgKey, msgEncHeader}
+    (v, msgRcAD, msgKey, Large msgEncHeader) <- smpP
+    pure MsgEncryptKey {msgRcCurrentVersion = v, msgRcAD, msgKey, msgEncHeader}
 
 instance AlgorithmI a => ToField (MsgEncryptKey a) where toField = toField . Binary . smpEncode
 
