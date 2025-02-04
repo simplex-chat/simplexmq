@@ -4,6 +4,8 @@ module Simplex.Messaging.Agent.Store.Postgres.DB
   ( BoolInt (..),
     PSQL.Binary (..),
     PSQL.Connection,
+    FromField (..),
+    ToField (..),
     PSQL.connect,
     PSQL.close,
     execute,
@@ -49,15 +51,15 @@ executeMany db q qs = void $ PSQL.executeMany db q qs
 -- used in FileSize
 instance FromField Word32 where
   fromField field dat = do
-    i <- fromField field dat
-    if i >= (0 :: Int64)
+    i :: Int64 <- fromField field dat
+    if i >= 0 && i <= fromIntegral (maxBound :: Word32)
       then pure (fromIntegral i :: Word32)
       else returnError ConversionFailed field "Negative value can't be converted to Word32"
 
 -- used in Version
 instance FromField Word16 where
   fromField field dat = do
-    i <- fromField field dat
-    if i >= (0 :: Int32)
+    i :: Int64 <- fromField field dat
+    if i >= 0 && i <= fromIntegral (maxBound :: Word16)
       then pure (fromIntegral i :: Word16)
       else returnError ConversionFailed field "Negative value can't be converted to Word16"

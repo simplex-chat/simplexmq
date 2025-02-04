@@ -69,32 +69,33 @@ data DBOpts = DBOpts
   { dbFilePath :: FilePath,
     dbKey :: ScrubbedBytes,
     keepKey :: Bool,
-    vacuum :: Bool
+    vacuum :: Bool,
+    track :: DB.TrackQueries
   }
 
 createDBStore :: DBOpts -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
-createDBStore DBOpts {dbFilePath, dbKey, keepKey, vacuum} migrations confirmMigrations = do
+createDBStore DBOpts {dbFilePath, dbKey, keepKey, track, vacuum} migrations confirmMigrations = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing True dbDir
-  st <- connectSQLiteStore dbFilePath dbKey keepKey
+  st <- connectSQLiteStore dbFilePath dbKey keepKey track
   r <- migrateSchema st migrations confirmMigrations vacuum `onException` closeDBStore st
   case r of
     Right () -> pure $ Right st
     Left e -> closeDBStore st $> Left e
 
-connectSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> IO DBStore
-connectSQLiteStore dbFilePath key keepKey = do
+connectSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> DB.TrackQueries -> IO DBStore
+connectSQLiteStore dbFilePath key keepKey track = do
   dbNew <- not <$> doesFileExist dbFilePath
-  dbConn <- dbBusyLoop (connectDB dbFilePath key)
+  dbConn <- dbBusyLoop (connectDB dbFilePath key track)
   dbConnection <- newMVar dbConn
   dbKey <- newTVarIO $! storeKey key keepKey
   dbClosed <- newTVarIO False
   dbSem <- newTVarIO 0
   pure DBStore {dbFilePath, dbKey, dbSem, dbConnection, dbNew, dbClosed}
 
-connectDB :: FilePath -> ScrubbedBytes -> IO DB.Connection
-connectDB path key = do
-  db <- DB.open path
+connectDB :: FilePath -> ScrubbedBytes -> DB.TrackQueries -> IO DB.Connection
+connectDB path key track = do
+  db <- DB.open path track
   prepare db `onException` DB.close db
   -- _printPragmas db path
   pure db
@@ -127,12 +128,12 @@ openSQLiteStore_ DBStore {dbConnection, dbFilePath, dbKey, dbClosed} key keepKey
   bracketOnError
     (takeMVar dbConnection)
     (tryPutMVar dbConnection)
-    $ \DB.Connection {slow} -> do
-      DB.Connection {conn} <- connectDB dbFilePath key
+    $ \DB.Connection {slow, track} -> do
+      DB.Connection {conn} <- connectDB dbFilePath key track
       atomically $ do
         writeTVar dbClosed False
         writeTVar dbKey $! storeKey key keepKey
-      putMVar dbConnection DB.Connection {conn, slow}
+      putMVar dbConnection DB.Connection {conn, slow, track}
 
 reopenDBStore :: DBStore -> IO ()
 reopenDBStore st@DBStore {dbKey, dbClosed} =

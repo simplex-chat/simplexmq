@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -168,12 +167,12 @@ import Data.Time.Clock.System (SystemTime)
 import Data.Type.Equality
 import Data.Typeable ()
 import Data.Word (Word16, Word32)
+import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..))
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType)
 import Simplex.FileTransfer.Types (FileErrorType)
 import Simplex.Messaging.Agent.QueryString
-import Simplex.Messaging.Agent.Store.DB (Binary (..))
 import Simplex.Messaging.Client (ProxyClientError)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
@@ -224,13 +223,6 @@ import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import Simplex.RemoteControl.Types
 import UnliftIO.Exception (Exception)
-#if defined(dbPostgres)
-import Database.PostgreSQL.Simple.FromField (FromField (..))
-import Database.PostgreSQL.Simple.ToField (ToField (..))
-#else
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
-#endif
 
 -- SMP agent protocol version history:
 -- 1 - binary protocol encoding (1/1/2022)
@@ -366,8 +358,8 @@ data AEvent (e :: AEntity) where
   MSGNTF :: MsgId -> Maybe UTCTime -> AEvent AEConn
   RCVD :: MsgMeta -> NonEmpty MsgReceipt -> AEvent AEConn
   QCONT :: AEvent AEConn
-  DEL_RCVQ :: SMPServer -> SMP.RecipientId -> Maybe AgentErrorType -> AEvent AEConn
-  DEL_CONN :: AEvent AEConn
+  DEL_RCVQS :: NonEmpty (ConnId, SMPServer, SMP.RecipientId, Maybe AgentErrorType) -> AEvent AEConn
+  DEL_CONNS :: NonEmpty ConnId -> AEvent AEConn
   DEL_USER :: Int64 -> AEvent AENone
   STAT :: ConnectionStats -> AEvent AEConn
   OK :: AEvent AEConn
@@ -437,8 +429,8 @@ data AEventTag (e :: AEntity) where
   MSGNTF_ :: AEventTag AEConn
   RCVD_ :: AEventTag AEConn
   QCONT_ :: AEventTag AEConn
-  DEL_RCVQ_ :: AEventTag AEConn
-  DEL_CONN_ :: AEventTag AEConn
+  DEL_RCVQS_ :: AEventTag AEConn
+  DEL_CONNS_ :: AEventTag AEConn
   DEL_USER_ :: AEventTag AENone
   STAT_ :: AEventTag AEConn
   OK_ :: AEventTag AEConn
@@ -492,8 +484,8 @@ aEventTag = \case
   MSGNTF {} -> MSGNTF_
   RCVD {} -> RCVD_
   QCONT -> QCONT_
-  DEL_RCVQ {} -> DEL_RCVQ_
-  DEL_CONN -> DEL_CONN_
+  DEL_RCVQS _ -> DEL_RCVQS_
+  DEL_CONNS _ -> DEL_CONNS_
   DEL_USER _ -> DEL_USER_
   STAT _ -> STAT_
   OK -> OK_
@@ -651,7 +643,7 @@ instance ToJSON NotificationsMode where
 instance FromJSON NotificationsMode where
   parseJSON = strParseJSON "NotificationsMode"
 
-instance ToField NotificationsMode where toField = toField . Binary . strEncode
+instance ToField NotificationsMode where toField = toField . strEncode
 
 instance FromField NotificationsMode where fromField = blobFieldDecoder $ parseAll strP
 
