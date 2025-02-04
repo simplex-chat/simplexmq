@@ -34,7 +34,7 @@ import Simplex.Messaging.Agent.Store.Interface (DBOpts, createDBStore)
 import qualified Simplex.Messaging.Agent.Store.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..), MigrationError (..))
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport, RatchetX448)
+import Simplex.Messaging.Crypto.Ratchet (MsgEncryptKeyX448, PQEncryption, PQSupport, RatchetX448)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( MsgBody,
@@ -543,7 +543,9 @@ data SndMsgData = SndMsgData
     msgBody :: MsgBody,
     pqEncryption :: PQEncryption,
     internalHash :: MsgHash,
-    prevMsgHash :: MsgHash
+    prevMsgHash :: MsgHash,
+    encryptKey_ :: Maybe MsgEncryptKeyX448,
+    paddedLen_ :: Maybe Int
   }
 
 data SndMsg = SndMsg
@@ -561,7 +563,9 @@ data PendingMsgData = PendingMsgData
     msgBody :: MsgBody,
     pqEncryption :: PQEncryption,
     msgRetryState :: Maybe RI2State,
-    internalTs :: InternalTs
+    internalTs :: InternalTs,
+    encryptKey_ :: Maybe MsgEncryptKeyX448,
+    paddedLen_ :: Maybe Int
   }
   deriving (Show)
 

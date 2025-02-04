@@ -20,8 +20,9 @@
 
 module Simplex.Messaging.Crypto.Ratchet
   ( Ratchet (..),
-    MsgEncryptKey (..),
     RatchetX448,
+    MsgEncryptKey (..),
+    MsgEncryptKeyX448,
     SkippedMsgDiff (..),
     SkippedMsgKeys,
     InitialKeys (..),
@@ -905,6 +906,8 @@ rcEncryptHeader rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, r
     msgKEMParams RatchetKEM {rcPQRs = (k, _), rcKEMs} = case rcKEMs of
       Nothing -> ARKP SRKSProposed $ RKParamsProposed k
       Just RatchetKEMAccepted {rcPQRct} -> ARKP SRKSAccepted $ RKParamsAccepted rcPQRct k
+
+type MsgEncryptKeyX448 = MsgEncryptKey 'X448
 
 data MsgEncryptKey a = MsgEncryptKey
   { msgRcCurrentVersion :: VersionE2E,

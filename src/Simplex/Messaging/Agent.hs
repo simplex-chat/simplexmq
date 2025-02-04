@@ -1380,9 +1380,7 @@ enqueueMessage c cData sq msgFlags aMessage =
   ExceptT $ fmap fst . runIdentity <$> enqueueMessageB c (Identity (Right (cData, [sq], Nothing, msgFlags, aMessage)))
 {-# INLINE enqueueMessage #-}
 
--- TODO [save once] Parameter to save unencrypted message only once in the database - passed from sendMessagesB
--- TODO             (which would mean client passed same MsgBody in all MsgReq records).
--- TODO             Or - separate sendBroadcastMessage api?
+-- TODO [save once] IntMap of msg bodies.
 -- this function is used only for sending messages in batch, it returns the list of successes to enqueue additional deliveries
 enqueueMessageB :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage)) -> AM' (t (Either AgentErrorType ((AgentMsgId, PQEncryption), Maybe (ConnData, [SndQueue], AgentMsgId))))
 enqueueMessageB c reqs = do
@@ -1395,7 +1393,7 @@ enqueueMessageB c reqs = do
   where
     storeSentMsg :: DB.Connection -> AgentConfig -> (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage) -> IO (Either AgentErrorType ((ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, AMessage), InternalId, PQEncryption))
     storeSentMsg db cfg req@(cData@ConnData {connId}, sq :| _, pqEnc_, msgFlags, aMessage) = fmap (first storeError) $ runExceptT $ do
-      let AgentConfig {smpAgentVRange, e2eEncryptVRange} = cfg
+      let AgentConfig {e2eEncryptVRange} = cfg
       internalTs <- liftIO getCurrentTime
       (internalId, internalSndId, prevMsgHash) <- ExceptT $ updateSndIds db connId
       let privHeader = APrivHeader (unSndId internalSndId) prevMsgHash
@@ -1404,19 +1402,13 @@ enqueueMessageB c reqs = do
           internalHash = C.sha256Hash agentMsgStr
           currentE2EVersion = maxVersion e2eEncryptVRange
       -- TODO [save once] Save single MsgBody / enveloped body agentMsgStr (outside of withStoreBatch ... storeSentMsg).
-      -- TODO             Link all messages (message deliveries) to it, save encryption data per message, e.g. pqEnc_ (intent, not result).
+      -- TODO             Link messages to it, save encryption data per message.
       -- TODO             'msg_body' field is not nullable - use default empty strings?
-      -- TODO             No need to save specific ratchet state/keys for encryption at this point? - Get them at point of delivery?
-      (encAgentMessage, pqEnc) <- agentRatchetEncrypt db cData agentMsgStr e2eEncAgentMsgLength pqEnc_ currentE2EVersion
-      let agentVersion = maxVersion smpAgentVRange
-          msgBody = smpEncode $ AgentMsgEnvelope {agentVersion, encAgentMessage}
-          msgType = agentMessageType agentMsg
-          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody, pqEncryption = pqEnc, internalHash, prevMsgHash}
+      (mek, paddedLen, pqEnc) <- agentRatchetEncryptHeader db cData e2eEncAgentMsgLength pqEnc_ currentE2EVersion
+      let msgType = agentMessageType agentMsg
+          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody = agentMsgStr, pqEncryption = pqEnc, internalHash, prevMsgHash, encryptKey_ = Just mek, paddedLen_ = Just paddedLen}
       liftIO $ createSndMsg db connId msgData
       liftIO $ createSndMsgDelivery db connId sq internalId
-      -- TODO [save once] What to do with pqEnc return? (Chat makes decision to create "PQ e2e enabled" chat items based on it)
-      -- TODO             If encryption happens asynchronously before delivery, we don't know at this point if it'll be "enabled".
-      -- TODO             Send separate events? Return current ratchet state (so 1 step behind -> chat would show PQ got enabled later)?
       pure (req, internalId, pqEnc)
 
 enqueueSavedMessage :: AgentClient -> ConnData -> AgentMsgId -> SndQueue -> AM' ()
@@ -1462,7 +1454,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
     liftIO $ throwWhenNoDelivery c sq
     atomically $ beginAgentOperation c AOSndNetwork
     withWork c doWork (\db -> getPendingQueueMsg db connId sq) $
-      \(rq_, PendingMsgData {msgId, msgType, msgBody, pqEncryption, msgFlags, msgRetryState, internalTs}) -> do
+      \(rq_, PendingMsgData {msgId, msgType, msgBody, pqEncryption, msgFlags, msgRetryState, internalTs, encryptKey_, paddedLen_}) -> do
         atomically $ endAgentOperation c AOMsgDelivery -- this operation begins in submitPendingMsg
         let mId = unId msgId
             ri' = maybe id updateRetryInterval2 msgRetryState ri
@@ -1472,15 +1464,15 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c sq msgBody
-            -- TODO [save once] PendingMsgData to contain PQ "intent".
-            -- TODO             Get connection ratchet, call agentRatchetEncrypt, wrap into AgentMsgEnvelope.
-            --
-            -- from enqueueMessageB:
-            --
-            -- (encAgentMessage, pqEnc) <- agentRatchetEncrypt db cData agentMsgStr e2eEncAgentMsgLength pqEnc_ currentE2EVersion
-            -- let agentVersion = maxVersion smpAgentVRange
-            --     msgBody = smpEncode $ AgentMsgEnvelope {agentVersion, encAgentMessage}
-            _ -> sendAgentMessage c sq msgFlags msgBody
+            _ -> case (encryptKey_, paddedLen_) of
+              (Nothing, Nothing) -> sendAgentMessage c sq msgFlags msgBody
+              (Just mek, Just paddedLen) -> do
+                AgentConfig {smpAgentVRange} <- asks config
+                encAgentMessage <- liftError cryptoError $ CR.rcEncryptMsg mek paddedLen msgBody
+                let agentVersion = maxVersion smpAgentVRange
+                    msgBody' = smpEncode $ AgentMsgEnvelope {agentVersion, encAgentMessage}
+                sendAgentMessage c sq msgFlags msgBody'
+              _ -> throwE $ INTERNAL "runSmpQueueMsgDelivery: missing encryption data"
           case resp of
             Left e -> do
               let err = if msgType == AM_A_MSG_ then MERR mId e else ERR e
@@ -1852,7 +1844,7 @@ deleteConnQueues c waitDelivery ntf rqs = do
     deleteQueueRecs rs = do
       maxErrs <- asks $ deleteErrorCount . config
       rs' <- rights <$> withStoreBatch' c (\db -> map (deleteQueueRec db maxErrs) rs)
-      let delQ ((rq, _), err_) =  (qConnId rq,qServer rq,queueId rq,) <$> err_
+      let delQ ((rq, _), err_) = (qConnId rq,qServer rq,queueId rq,) <$> err_
           delQs_ = L.nonEmpty $ mapMaybe delQ rs'
       forM_ delQs_ $ \delQs -> notify ("", "", AEvt SAEConn $ DEL_RCVQS delQs)
       pure $ map fst rs'
@@ -2963,7 +2955,7 @@ storeConfirmation c cData@ConnData {connId, pqSupport, connAgentVersion = v} sq 
     (encConnInfo, pqEncryption) <- agentRatchetEncrypt db cData agentMsgStr e2eEncConnInfoLength (Just pqEnc) currentE2EVersion
     let msgBody = smpEncode $ AgentConfirmation {agentVersion = v, e2eEncryption_, encConnInfo}
         msgType = agentMessageType agentMsg
-        msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash}
+        msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash, encryptKey_ = Nothing, paddedLen_ = Nothing}
     liftIO $ createSndMsg db connId msgData
     liftIO $ createSndMsgDelivery db connId sq internalId
 
@@ -2989,21 +2981,25 @@ enqueueRatchetKey c cData@ConnData {connId} sq e2eEncryption = do
       let msgBody = smpEncode $ AgentRatchetKey {agentVersion, e2eEncryption, info = agentMsgStr}
           msgType = agentMessageType agentMsg
           -- this message is e2e encrypted with queue key, not with double ratchet
-          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption = PQEncOff, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash}
+          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption = PQEncOff, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash, encryptKey_ = Nothing, paddedLen_ = Nothing}
       liftIO $ createSndMsg db connId msgData
       liftIO $ createSndMsgDelivery db connId sq internalId
       pure internalId
 
 -- encoded AgentMessage -> encoded EncAgentMessage
 agentRatchetEncrypt :: DB.Connection -> ConnData -> ByteString -> (VersionSMPA -> PQSupport -> Int) -> Maybe PQEncryption -> CR.VersionE2E -> ExceptT StoreError IO (ByteString, PQEncryption)
-agentRatchetEncrypt db ConnData {connId, connAgentVersion = v, pqSupport} msg getPaddedLen pqEnc_ currentE2EVersion = do
+agentRatchetEncrypt db cData msg getPaddedLen pqEnc_ currentE2EVersion = do
+  (mek, paddedLen, pqEnc) <- agentRatchetEncryptHeader db cData getPaddedLen pqEnc_ currentE2EVersion
+  encMsg <- withExceptT (SEAgentError . cryptoError) $ CR.rcEncryptMsg mek paddedLen msg
+  pure (encMsg, pqEnc)
+
+agentRatchetEncryptHeader :: DB.Connection -> ConnData -> (VersionSMPA -> PQSupport -> Int) -> Maybe PQEncryption -> CR.VersionE2E -> ExceptT StoreError IO (CR.MsgEncryptKeyX448, Int, PQEncryption)
+agentRatchetEncryptHeader db ConnData {connId, connAgentVersion = v, pqSupport} getPaddedLen pqEnc_ currentE2EVersion = do
   rc <- ExceptT $ getRatchet db connId
   let paddedLen = getPaddedLen v pqSupport
-  -- TODO [save once] save mek, paddedLen and rc' state in one transaction; read mek and paddedLen on delivery
-  (mek, rc') <- withExceptT (SEAgentError . cryptoError) $ CR.rcEncryptHeader rc  pqEnc_ currentE2EVersion
-  encMsg <- withExceptT (SEAgentError . cryptoError) $ CR.rcEncryptMsg mek paddedLen msg
+  (mek, rc') <- withExceptT (SEAgentError . cryptoError) $ CR.rcEncryptHeader rc pqEnc_ currentE2EVersion
   liftIO $ updateRatchet db connId rc' CR.SMDNoChange
-  pure (encMsg, CR.rcSndKEM rc')
+  pure (mek, paddedLen, CR.rcSndKEM rc')
 
 -- encoded EncAgentMessage -> encoded AgentMessage
 agentRatchetDecrypt :: TVar ChaChaDRG -> DB.Connection -> ConnId -> ByteString -> ExceptT StoreError IO (ByteString, PQEncryption)
