@@ -54,7 +54,7 @@ import System.Directory (doesFileExist, renameFile)
 import System.IO
 
 data StoreLogRecord
-  = CreateQueue QueueRec
+  = CreateQueue RecipientId QueueRec
   | SecureQueue QueueId SndPublicAuthKey
   | AddNotifier QueueId NtfCreds
   | SuspendQueue QueueId
@@ -77,10 +77,9 @@ data SLRTag
   | UpdateTime_
 
 instance StrEncoding QueueRec where
-  strEncode QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt} =
+  strEncode QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt} =
     B.unwords
-      [ "rid=" <> strEncode recipientId,
-        "rk=" <> strEncode recipientKey,
+      [ "rk=" <> strEncode recipientKey,
         "rdh=" <> strEncode rcvDhSecret,
         "sid=" <> strEncode senderId,
         "sk=" <> strEncode senderKey
@@ -98,7 +97,6 @@ instance StrEncoding QueueRec where
         _ -> " status=" <> strEncode status
 
   strP = do
-    recipientId <- "rid=" *> strP_
     recipientKey <- "rk=" *> strP_
     rcvDhSecret <- "rdh=" *> strP_
     senderId <- "sid=" *> strP_
@@ -107,7 +105,7 @@ instance StrEncoding QueueRec where
     notifier <- optional $ " notifier=" *> strP
     updatedAt <- optional $ " updated_at=" *> strP
     status <- (" status=" *> strP) <|> pure EntityActive
-    pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt}
+    pure QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt}
 
 instance StrEncoding SLRTag where
   strEncode = \case
@@ -136,7 +134,7 @@ instance StrEncoding SLRTag where
 
 instance StrEncoding StoreLogRecord where
   strEncode = \case
-    CreateQueue q -> strEncode (CreateQueue_, q)
+    CreateQueue rId q -> B.unwords [strEncode CreateQueue_, "rid=" <> strEncode rId, strEncode q]
     SecureQueue rId sKey -> strEncode (SecureQueue_, rId, sKey)
     AddNotifier rId ntfCreds -> strEncode (AddNotifier_, rId, ntfCreds)
     SuspendQueue rId -> strEncode (SuspendQueue_, rId)
@@ -148,7 +146,7 @@ instance StrEncoding StoreLogRecord where
 
   strP =
     strP_ >>= \case
-      CreateQueue_ -> CreateQueue <$> strP
+      CreateQueue_ -> CreateQueue <$> ("rid=" *> strP_) <*> strP
       SecureQueue_ -> SecureQueue <$> strP_ <*> strP
       AddNotifier_ -> AddNotifier <$> strP_ <*> strP
       SuspendQueue_ -> SuspendQueue <$> strP
@@ -186,8 +184,8 @@ writeStoreLogRecord (WriteStoreLog _ h) r = E.uninterruptibleMask_ $ do
   B.hPut h $ strEncode r `B.snoc` '\n' -- hPutStrLn makes write non-atomic for length > 1024
   hFlush h
 
-logCreateQueue :: StoreLog 'WriteMode -> QueueRec -> IO ()
-logCreateQueue s = writeStoreLogRecord s . CreateQueue
+logCreateQueue :: StoreLog 'WriteMode -> RecipientId -> QueueRec -> IO ()
+logCreateQueue s rId q = writeStoreLogRecord s $ CreateQueue rId q
 
 logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SndPublicAuthKey -> IO ()
 logSecureQueue s qId sKey = writeStoreLogRecord s $ SecureQueue qId sKey
@@ -248,10 +246,11 @@ readWriteStoreLog readStore writeStore f st =
       renameFile tempBackup timedBackup
       logInfo $ "original state preserved as " <> T.pack timedBackup
 
-writeQueueStore :: STMQueueStore s => StoreLog 'WriteMode -> s -> IO ()
-writeQueueStore s st = readTVarIO (activeMsgQueues st) >>= mapM_ writeQueue . M.assocs
+writeQueueStore :: STMStoreClass s => StoreLog 'WriteMode -> s -> IO ()
+writeQueueStore s st = readTVarIO qs >>= mapM_ writeQueue . M.assocs
   where
+    qs = queues $ stmQueueStore st
     writeQueue (rId, q) =
       readTVarIO (queueRec' q) >>= \case
-        Just q' -> logCreateQueue s q'
-        Nothing -> atomically $ TM.delete rId $ activeMsgQueues st
+        Just q' -> logCreateQueue s rId q'
+        Nothing -> atomically $ TM.delete rId qs
