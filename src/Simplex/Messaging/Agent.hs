@@ -2999,7 +2999,9 @@ agentRatchetEncrypt :: DB.Connection -> ConnData -> ByteString -> (VersionSMPA -
 agentRatchetEncrypt db ConnData {connId, connAgentVersion = v, pqSupport} msg getPaddedLen pqEnc_ currentE2EVersion = do
   rc <- ExceptT $ getRatchet db connId
   let paddedLen = getPaddedLen v pqSupport
-  (encMsg, rc') <- withExceptT (SEAgentError . cryptoError) $ CR.rcEncrypt rc paddedLen msg pqEnc_ currentE2EVersion
+  -- TODO [save once] save msgEncrypt and rc' state in one transaction; read msgEncrypt on delivery
+  (msgEncrypt, rc') <- withExceptT (SEAgentError . cryptoError) $ CR.rcPrepareEncrypt rc paddedLen pqEnc_ currentE2EVersion
+  encMsg <- withExceptT (SEAgentError . cryptoError) $ CR.rcEncrypt msgEncrypt msg
   liftIO $ updateRatchet db connId rc' CR.SMDNoChange
   pure (encMsg, CR.rcSndKEM rc')
 
