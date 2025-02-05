@@ -75,7 +75,9 @@ instance MsgStoreClass STMMsgStore where
 
   closeMsgStore st = readTVarIO (storeLog $ queueStore st) >>= mapM_ closeStoreLog
 
-  withAllMsgQueues _ = withActiveMsgQueues
+  withActiveMsgQueues = withQueues . queueStore
+  {-# INLINE withActiveMsgQueues #-}
+  withAllMsgQueues _ = withQueues . queueStore
   {-# INLINE withAllMsgQueues #-}
   logQueueStates _ = pure ()
   {-# INLINE logQueueStates #-}
@@ -87,6 +89,8 @@ instance MsgStoreClass STMMsgStore where
   {-# INLINE queueRec' #-}
   msgQueue_' = msgQueue_
   {-# INLINE msgQueue_' #-}
+  queueCounts = stmQueueCounts . queueStore
+  {-# INLINE queueCounts #-}
   addQueue = stmAddQueue
   {-# INLINE addQueue #-}
   getQueue = stmGetQueue . queueStore

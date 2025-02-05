@@ -15,7 +15,6 @@
 module Simplex.Messaging.Server.MsgStore.Types where
 
 import Control.Concurrent.STM
-import Control.Monad (foldM)
 import Control.Monad.Trans.Except
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -47,12 +46,14 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   newMsgStore :: MsgStoreConfig s -> IO s
   setStoreLog :: s -> StoreLog 'WriteMode -> IO ()
   closeMsgStore :: s -> IO ()
+  withActiveMsgQueues :: Monoid a => s -> (StoreQueue s -> IO a) -> IO a
   withAllMsgQueues :: Monoid a => Bool -> s -> (StoreQueue s -> IO a) -> IO a
   logQueueStates :: s -> IO ()
   logQueueState :: StoreQueue s -> StoreMonad s ()
   recipientId' :: StoreQueue s -> RecipientId
   queueRec' :: StoreQueue s -> TVar (Maybe QueueRec)
   msgQueue_' :: StoreQueue s -> TVar (Maybe (MsgQueue s))
+  queueCounts :: s -> IO QueueCounts
 
   -- Queue store methods
   addQueue :: s -> RecipientId -> QueueRec -> IO (Either ErrorType (StoreQueue s))
@@ -82,6 +83,11 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   tryDeleteMsg_ :: StoreQueue s -> MsgQueue s -> Bool -> StoreMonad s ()
   isolateQueue :: StoreQueue s -> String -> StoreMonad s a -> ExceptT ErrorType IO a
 
+data QueueCounts = QueueCounts
+  { queueCount :: Int,
+    notifierCount :: Int
+  }
+
 data MSType = MSMemory | MSJournal
 
 data SMSType :: MSType -> Type where
@@ -90,15 +96,16 @@ data SMSType :: MSType -> Type where
 
 data AMSType = forall s. AMSType (SMSType s)
 
+data QSType = QSMemory | QSPostgres
+
+data SQSType :: QSType -> Type where
+  SQSMemory :: SQSType 'QSMemory
+  -- SQSPostgres :: SQSType 'QSPostgres
+
 getQueueRec :: (MsgStoreClass s, DirectParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s, QueueRec))
 getQueueRec st party qId =
   getQueue st party qId
     $>>= (\q -> maybe (Left AUTH) (Right . (q,)) <$> readTVarIO (queueRec' q))
-
-withActiveMsgQueues :: (STMStoreClass s, Monoid a) => s -> (StoreQueue s -> IO a) -> IO a
-withActiveMsgQueues st f = readTVarIO (queues $ stmQueueStore st) >>= foldM run mempty
-  where
-    run !acc = fmap (acc <>) . f
 
 getQueueMessages :: MsgStoreClass s => Bool -> s -> StoreQueue s -> ExceptT ErrorType IO [Message]
 getQueueMessages drainMsgs st q = withPeekMsgQueue st q "getQueueSize" $ maybe (pure []) (getQueueMessages_ drainMsgs . fst)

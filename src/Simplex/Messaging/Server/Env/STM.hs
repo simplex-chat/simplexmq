@@ -18,6 +18,7 @@ import Control.Monad
 import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random
 import Data.ByteString.Char8 (ByteString)
+import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -187,9 +188,9 @@ data Env = Env
 
 type family MsgStore s where
   MsgStore 'MSMemory = STMMsgStore
-  MsgStore 'MSJournal = JournalMsgStore
+  MsgStore 'MSJournal = JournalMsgStore 'QSMemory
 
-data AMsgStore = forall s. (STMStoreClass (MsgStore s), MsgStoreClass (MsgStore s)) => AMS (SMSType s) (MsgStore s)
+data AMsgStore = forall s. MsgStoreClass (MsgStore s) => AMS (SMSType s) (MsgStore s)
 
 data AStoreQueue = forall s. MsgStoreClass (MsgStore s) => ASQ (SMSType s) (StoreQueue (MsgStore s))
 
@@ -294,19 +295,18 @@ newEnv :: ServerConfig -> IO Env
 newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgStoreType, storeMsgsFile, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines} = do
   serverActive <- newTVarIO True
   server <- newServer
-  msgStore@(AMS _ store) <- case msgStoreType of
-    AMSType SMSMemory -> AMS SMSMemory <$> newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
+  msgStore <- case msgStoreType of
+    AMSType SMSMemory -> do
+      st <- newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
+      loadStoreLog st $> AMS SMSMemory st
     AMSType SMSJournal -> case storeMsgsFile of
-      Just storePath -> 
-        let cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
-         in AMS SMSJournal <$> newMsgStore cfg
-      Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
+      Just storePath -> do
+        let cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreType = SQSMemory, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
+        st <- newMsgStore cfg
+        loadStoreLog st $> AMS SMSJournal st
+      Nothing -> putStrLn "Error: journal msg store requires that restore_messages is enabled in [STORE_LOG]" >> exitFailure
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
-  forM_ storeLogFile $ \f -> do
-    logInfo $ "restoring queues from file " <> T.pack f
-    sl <- readWriteSTMQueueStore f store
-    setStoreLog store sl
   tlsServerCreds <- getCredentials "SMP" smpCredentials
   httpServerCreds <- mapM (getCredentials "HTTPS") httpCredentials
   mapM_ checkHTTPSCredentials httpServerCreds
@@ -319,6 +319,23 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
   pure Env {serverActive, config, serverInfo, server, serverIdentity, msgStore, ntfStore, random, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
+    -- createMsgStore = case (msgStoreType, storeMsgsFile) of
+    --   (AMSType SMSMemory, _) -> do
+    --     st <- newMsgStore STMStoreConfig {storePath = storeLogFile, quota = msgQueueQuota}
+    --     loadStoreLog st $> AMS SMSMemory st
+    --   (AMSType SMSJournal, Just storePath) -> do
+    --     st <- newMsgStore $ storeCfg SQSMemory storePath
+    --     loadStoreLog st $> AMS SMSJournal st
+    --   (_, Nothing) -> putStrLn "Error: journal msg store requires that restore_messages is enabled in [STORE_LOG]" >> exitFailure
+    --   where
+    --     storeCfg :: SQSType s -> FilePath -> JournalStoreConfig s
+    --     storeCfg queueStoreType storePath =
+    --       JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreType, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
+    loadStoreLog :: STMStoreClass s => s -> IO ()
+    loadStoreLog st = forM_ storeLogFile $ \f -> do
+      logInfo $ "restoring queues from file " <> T.pack f
+      sl <- readWriteSTMQueueStore f st
+      setStoreLog st sl
     getCredentials protocol creds = do
       files <- missingCreds
       unless (null files) $ do

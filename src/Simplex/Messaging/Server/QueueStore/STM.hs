@@ -14,7 +14,8 @@
 {-# LANGUAGE UndecidableInstances #-}
 
 module Simplex.Messaging.Server.QueueStore.STM
-  ( stmAddQueue,
+  ( stmQueueCounts,
+    stmAddQueue,
     stmGetQueue,
     stmSecureQueue,
     stmAddQueueNotifier,
@@ -26,6 +27,7 @@ module Simplex.Messaging.Server.QueueStore.STM
     stmDeleteQueue,
     newSTMQueueStore,
     readSTMQueueStore,
+    withQueues,
     withLog',
   )
 where
@@ -39,6 +41,7 @@ import Data.Bitraversable (bimapM)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
+import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Simplex.Messaging.Encoding.String
@@ -58,6 +61,17 @@ newSTMQueueStore = do
   notifiers <- TM.emptyIO
   storeLog <- newTVarIO Nothing
   pure STMQueueStore {queues, senders, notifiers, storeLog}
+
+withQueues :: Monoid a => STMQueueStore (StoreQueue s) -> (StoreQueue s -> IO a) -> IO a
+withQueues st f = readTVarIO (queues st) >>= foldM run mempty
+  where
+    run !acc = fmap (acc <>) . f
+
+stmQueueCounts :: STMQueueStore q -> IO QueueCounts
+stmQueueCounts st = do
+  queueCount <- M.size <$> readTVarIO (queues st)
+  notifierCount <- M.size <$> readTVarIO (notifiers st)
+  pure QueueCounts {queueCount, notifierCount}
 
 stmAddQueue :: STMStoreClass s => s -> RecipientId -> QueueRec -> IO (Either ErrorType (StoreQueue s))
 stmAddQueue ms rId qr@QueueRec {senderId = sId, notifier}=

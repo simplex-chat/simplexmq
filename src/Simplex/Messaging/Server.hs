@@ -95,7 +95,7 @@ import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue, closeMsgQueue)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue, closeMsgQueue)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -428,8 +428,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
       ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv}
         <- asks serverStats
       AMS _ st <- asks msgStore
-      let STMQueueStore {queues, notifiers} = stmQueueStore st
-          interval = 1000000 * logInterval
+      QueueCounts {queueCount, notifierCount} <- liftIO $ queueCounts st
+      let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
@@ -482,8 +482,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
           pMsgFwdsOwn' <- getResetProxyStatsData pMsgFwdsOwn
           pMsgFwdsRecv' <- atomicSwapIORef pMsgFwdsRecv 0
           qCount' <- readIORef qCount
-          qCount'' <- M.size <$> readTVarIO queues
-          notifierCount' <- M.size <$> readTVarIO notifiers
           msgCount' <- readIORef msgCount
           ntfCount' <- readIORef ntfCount
           hPutStrLn h $
@@ -536,13 +534,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                        "0", -- dayCount psSub; psSub is removed to reduce memory usage
                        "0", -- weekCount psSub
                        "0", -- monthCount psSub
-                       show qCount'',
+                       show queueCount,
                        show ntfCreated',
                        show ntfDeleted',
                        show ntfSub',
                        show ntfSubAuth',
                        show ntfSubDuplicate',
-                       show notifierCount',
+                       show notifierCount,
                        show qDeletedAllB',
                        show qSubAllB',
                        show qSubEnd',
@@ -579,14 +577,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
         rtm <- getRealTimeMetrics env
         T.writeFile metricsFile $ prometheusMetrics sm rtm ts
 
-    getServerMetrics :: STMStoreClass s => s -> ServerStats -> IO ServerMetrics
+    getServerMetrics :: MsgStoreClass s => s -> ServerStats -> IO ServerMetrics
     getServerMetrics st ss = do
       d <- getServerStatsData ss
       let ps = periodStatDataCounts $ _activeQueues d
           psNtf = periodStatDataCounts $ _activeQueuesNtf d
-          STMQueueStore {queues, notifiers} = stmQueueStore st
-      queueCount <- M.size <$> readTVarIO queues
-      notifierCount <- M.size <$> readTVarIO notifiers
+      QueueCounts {queueCount, notifierCount} <- queueCounts st          
       pure ServerMetrics {statsData = d, activeQueueCounts = ps, activeNtfCounts = psNtf, queueCount, notifierCount}
 
     getRealTimeMetrics :: Env -> IO RealTimeMetrics
@@ -674,8 +670,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
               CPStats -> withUserRole $ do
                 ss <- unliftIO u $ asks serverStats
                 AMS _ st <- unliftIO u $ asks msgStore
-                let STMQueueStore {queues, notifiers} = stmQueueStore st
-                    getStat :: (ServerStats -> IORef a) -> IO a
+                QueueCounts {queueCount, notifierCount} <- queueCounts st
+                let getStat :: (ServerStats -> IORef a) -> IO a
                     getStat var = readIORef (var ss)
                     putStat :: Show a => String -> (ServerStats -> IORef a) -> IO ()
                     putStat label var = getStat var >>= \v -> hPutStrLn h $ label <> ": " <> show v
@@ -712,9 +708,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                 putStat "msgNtfsB" msgNtfsB
                 putStat "msgNtfExpired" msgNtfExpired
                 putStat "qCount" qCount
-                qCount2 <- M.size <$> readTVarIO queues
-                hPutStrLn h $ "qCount 2: " <> show qCount2
-                notifierCount <- M.size <$> readTVarIO notifiers
+                hPutStrLn h $ "qCount 2: " <> show queueCount
                 hPutStrLn h $ "notifiers: " <> show notifierCount
                 putStat "msgCount" msgCount
                 putStat "ntfCount" ntfCount
@@ -914,7 +908,7 @@ runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessio
   c <- liftIO $ newClient msType clientId q thVersion sessionId ts
   runClientThreads msType ms active c clientId `finally` clientDisconnected c
   where
-    runClientThreads :: STMStoreClass (MsgStore s) => SMSType s -> MsgStore s -> TVar (IM.IntMap (Maybe AClient)) -> Client (MsgStore s) -> IS.Key -> M ()
+    runClientThreads :: MsgStoreClass (MsgStore s) => SMSType s -> MsgStore s -> TVar (IM.IntMap (Maybe AClient)) -> Client (MsgStore s) -> IS.Key -> M ()
     runClientThreads msType ms active c clientId = do
       atomically $ modifyTVar' active $ IM.insert clientId $ Just (AClient msType c)
       s <- asks server
@@ -970,7 +964,7 @@ cancelSub s = case subThread s of
       _ -> pure ()
   ProhibitSub -> pure ()
 
-receive :: forall c s. (Transport c, STMStoreClass s) => THandleSMP c 'TServer -> s -> Client s -> M ()
+receive :: forall c s. (Transport c, MsgStoreClass s) => THandleSMP c 'TServer -> s -> Client s -> M ()
 receive h@THandle {params = THandleParams {thAuth}} ms Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   sa <- asks serverActive
@@ -1070,7 +1064,7 @@ data VerificationResult s = VRVerified (Maybe (StoreQueue s, QueueRec)) | VRFail
 -- - the queue or party key do not exist.
 -- In all cases, the time of the verification should depend only on the provided authorization type,
 -- a dummy key is used to run verification in the last two cases, and failure is returned irrespective of the result.
-verifyTransmission :: forall s. STMStoreClass s => s -> Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> QueueId -> Cmd -> M (VerificationResult s)
+verifyTransmission :: forall s. MsgStoreClass s => s -> Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> QueueId -> Cmd -> M (VerificationResult s)
 verifyTransmission ms auth_ tAuth authorized queueId cmd =
   case cmd of
     Cmd SRecipient (NEW k _ _ _ _) -> pure $ Nothing `verifiedWith` k
@@ -1147,7 +1141,7 @@ forkClient Client {endThreads, endThreadSeq} label action = do
     action `finally` atomically (modifyTVar' endThreads $ IM.delete tId)
   mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
 
-client :: forall s. STMStoreClass s => THandleParams SMPVersion 'TServer -> Server -> s -> Client s -> M ()
+client :: forall s. MsgStoreClass s => THandleParams SMPVersion 'TServer -> Server -> s -> Client s -> M ()
 client
   thParams'
   Server {subscribedQ, ntfSubscribedQ, subscribers}
@@ -1826,36 +1820,39 @@ processServerMessages = do
         AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
           Just f -> ifM (doesFileExist f) (Just <$> importMessages False ms f old_) (pure Nothing)
           Nothing -> pure Nothing
-        AMS SMSJournal ms
-          | expire -> Just <$> case old_ of
-              Just old -> do
-                logInfo "expiring journal store messages..."
-                withAllMsgQueues False ms $ processExpireQueue old
-              Nothing -> do
-                logInfo "validating journal store messages..."
-                withAllMsgQueues False ms $ processValidateQueue
-          | otherwise -> logWarn "skipping message expiration" $> Nothing
-          where
-            processExpireQueue old q =
-              runExceptT expireQueue >>= \case
-                Right (storedMsgsCount, expiredMsgsCount) ->
-                  pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues = 1}
-                Left e -> do
-                  logError $ "STORE: processExpireQueue, failed expiring messages in queue, " <> tshow e
-                  exitFailure
-              where
-                expireQueue = do
-                  expired'' <- deleteExpiredMsgs ms q old
-                  stored'' <- getQueueSize ms q
-                  liftIO $ closeMsgQueue q
-                  pure (stored'', expired'')
-            processValidateQueue :: JournalQueue -> IO MessageStats
-            processValidateQueue q =
-              runExceptT (getQueueSize ms q) >>= \case
-                Right storedMsgsCount -> pure newMessageStats {storedMsgsCount, storedQueues = 1}
-                Left e -> do
-                  logError $ "STORE: processValidateQueue, failed opening message queue, " <> tshow e
-                  exitFailure
+        AMS SMSJournal ms -> processJournalMessages old_ expire ms
+      processJournalMessages :: forall s. Maybe Int64 -> Bool -> JournalMsgStore s -> IO (Maybe MessageStats)
+      processJournalMessages old_ expire ms
+        | expire = Just <$> case old_ of
+            Just old -> do
+              logInfo "expiring journal store messages..."
+              withAllMsgQueues False ms $ processExpireQueue old
+            Nothing -> do
+              logInfo "validating journal store messages..."
+              withAllMsgQueues False ms $ processValidateQueue
+        | otherwise = logWarn "skipping message expiration" $> Nothing
+        where
+          processExpireQueue :: Int64 -> JournalQueue s -> IO MessageStats
+          processExpireQueue old q =
+            runExceptT expireQueue >>= \case
+              Right (storedMsgsCount, expiredMsgsCount) ->
+                pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues = 1}
+              Left e -> do
+                logError $ "STORE: processExpireQueue, failed expiring messages in queue, " <> tshow e
+                exitFailure
+            where
+              expireQueue = do
+                expired'' <- deleteExpiredMsgs ms q old
+                stored'' <- getQueueSize ms q
+                liftIO $ closeMsgQueue q
+                pure (stored'', expired'')
+          processValidateQueue :: JournalQueue s -> IO MessageStats
+          processValidateQueue q =
+            runExceptT (getQueueSize ms q) >>= \case
+              Right storedMsgsCount -> pure newMessageStats {storedMsgsCount, storedQueues = 1}
+              Left e -> do
+                logError $ "STORE: processValidateQueue, failed opening message queue, " <> tshow e
+                exitFailure
 
 -- TODO this function should be called after importing queues from store log
 importMessages :: forall s. STMStoreClass s => Bool -> s -> FilePath -> Maybe Int64 -> IO MessageStats
@@ -1980,7 +1977,7 @@ restoreServerStats msgStats_ ntfStats = asks (serverStatsBackupFile . config) >>
         Right d@ServerStatsData {_qCount = statsQCount, _msgCount = statsMsgCount, _ntfCount = statsNtfCount} -> do
           s <- asks serverStats
           AMS _ st <- asks msgStore
-          _qCount <- M.size <$> readTVarIO (queues $ stmQueueStore st)
+          QueueCounts {queueCount = _qCount} <- liftIO $ queueCounts st
           let _msgCount = maybe statsMsgCount storedMsgsCount msgStats_
               _ntfCount = storedMsgsCount ntfStats
               _msgExpired' = _msgExpired d + maybe 0 expiredMsgsCount msgStats_
