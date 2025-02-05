@@ -58,12 +58,12 @@ msgStoreTests = do
       it "should create write file when missing" testWriteFileMissing
       it "should create read file when read and write files are missing" testReadAndWriteFilesMissing
   where
-    someMsgStoreTests :: STMQueueStore s => SpecWith s
+    someMsgStoreTests :: STMStoreClass s => SpecWith s
     someMsgStoreTests = do
       it "should get queue and store/read messages" testGetQueue
       it "should not fail on EOF when changing read journal" testChangeReadJournal
 
-withMsgStore :: STMQueueStore s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
+withMsgStore :: STMStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
 withMsgStore cfg = bracket (newMsgStore cfg) closeMsgStore
 
 testSMTStoreConfig :: STMStoreConfig
@@ -105,8 +105,7 @@ testNewQueueRec g sndSecure = do
   (k, pk) <- atomically $ C.generateKeyPair @'C.X25519 g
   let qr =
         QueueRec
-          { recipientId = rId,
-            recipientKey,
+          { recipientKey,
             rcvDhSecret = C.dh' k pk,
             senderId,
             senderKey = Nothing,
@@ -117,66 +116,66 @@ testNewQueueRec g sndSecure = do
           }
   pure (rId, qr)
 
-testGetQueue :: STMQueueStore s => s -> IO ()
+testGetQueue :: STMStoreClass s => s -> IO ()
 testGetQueue ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
   runRight_ $ do
-    q <- ExceptT $ addQueue ms qr
-    let write s = writeMsg ms rId q True =<< mkMessage s
+    q <- ExceptT $ addQueue ms rId qr
+    let write s = writeMsg ms q True =<< mkMessage s
     Just (Message {msgId = mId1}, True) <- write "message 1"
     Just (Message {msgId = mId2}, False) <- write "message 2"
     Just (Message {msgId = mId3}, False) <- write "message 3"
-    Msg "message 1" <- tryPeekMsg ms rId q
-    Msg "message 1" <- tryPeekMsg ms rId q
-    Nothing <- tryDelMsg ms rId q mId2
-    Msg "message 1" <- tryDelMsg ms rId q mId1
-    Nothing <- tryDelMsg ms rId q mId1
-    Msg "message 2" <- tryPeekMsg ms rId q
-    Nothing <- tryDelMsg ms rId q mId1
-    (Nothing, Msg "message 2") <- tryDelPeekMsg ms rId q mId1
-    (Msg "message 2", Msg "message 3") <- tryDelPeekMsg ms rId q mId2
-    (Nothing, Msg "message 3") <- tryDelPeekMsg ms rId q mId2
-    Msg "message 3" <- tryPeekMsg ms rId q
-    (Msg "message 3", Nothing) <- tryDelPeekMsg ms rId q mId3
-    Nothing <- tryDelMsg ms rId q mId2
-    Nothing <- tryDelMsg ms rId q mId3
-    Nothing <- tryPeekMsg ms rId q
+    Msg "message 1" <- tryPeekMsg ms q
+    Msg "message 1" <- tryPeekMsg ms q
+    Nothing <- tryDelMsg ms q mId2
+    Msg "message 1" <- tryDelMsg ms q mId1
+    Nothing <- tryDelMsg ms q mId1
+    Msg "message 2" <- tryPeekMsg ms q
+    Nothing <- tryDelMsg ms q mId1
+    (Nothing, Msg "message 2") <- tryDelPeekMsg ms q mId1
+    (Msg "message 2", Msg "message 3") <- tryDelPeekMsg ms q mId2
+    (Nothing, Msg "message 3") <- tryDelPeekMsg ms q mId2
+    Msg "message 3" <- tryPeekMsg ms q
+    (Msg "message 3", Nothing) <- tryDelPeekMsg ms q mId3
+    Nothing <- tryDelMsg ms q mId2
+    Nothing <- tryDelMsg ms q mId3
+    Nothing <- tryPeekMsg ms q
     Just (Message {msgId = mId4}, True) <- write "message 4"
-    Msg "message 4" <- tryPeekMsg ms rId q
+    Msg "message 4" <- tryPeekMsg ms q
     Just (Message {msgId = mId5}, False) <- write "message 5"
-    (Nothing, Msg "message 4") <- tryDelPeekMsg ms rId q mId3
-    (Msg "message 4", Msg "message 5") <- tryDelPeekMsg ms rId q mId4
+    (Nothing, Msg "message 4") <- tryDelPeekMsg ms q mId3
+    (Msg "message 4", Msg "message 5") <- tryDelPeekMsg ms q mId4
     Just (Message {msgId = mId6}, False) <- write "message 6"
     Just (Message {msgId = mId7}, False) <- write "message 7"
     Nothing <- write "message 8"
-    Msg "message 5" <- tryPeekMsg ms rId q
-    (Nothing, Msg "message 5") <- tryDelPeekMsg ms rId q mId4
-    (Msg "message 5", Msg "message 6") <- tryDelPeekMsg ms rId q mId5
-    (Msg "message 6", Msg "message 7") <- tryDelPeekMsg ms rId q mId6
-    (Msg "message 7", Just MessageQuota {msgId = mId8}) <- tryDelPeekMsg ms rId q mId7
-    (Just MessageQuota {}, Nothing) <- tryDelPeekMsg ms rId q mId8
-    (Nothing, Nothing) <- tryDelPeekMsg ms rId q mId8
-    void $ ExceptT $ deleteQueue ms rId q
+    Msg "message 5" <- tryPeekMsg ms q
+    (Nothing, Msg "message 5") <- tryDelPeekMsg ms q mId4
+    (Msg "message 5", Msg "message 6") <- tryDelPeekMsg ms q mId5
+    (Msg "message 6", Msg "message 7") <- tryDelPeekMsg ms q mId6
+    (Msg "message 7", Just MessageQuota {msgId = mId8}) <- tryDelPeekMsg ms q mId7
+    (Just MessageQuota {}, Nothing) <- tryDelPeekMsg ms q mId8
+    (Nothing, Nothing) <- tryDelPeekMsg ms q mId8
+    void $ ExceptT $ deleteQueue ms q
 
-testChangeReadJournal :: STMQueueStore s => s -> IO ()
+testChangeReadJournal :: STMStoreClass s => s -> IO ()
 testChangeReadJournal ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
   runRight_ $ do
-    q <- ExceptT $ addQueue ms qr
-    let write s = writeMsg ms rId q True =<< mkMessage s
+    q <- ExceptT $ addQueue ms rId qr
+    let write s = writeMsg ms q True =<< mkMessage s
     Just (Message {msgId = mId1}, True) <- write "message 1"
-    (Msg "message 1", Nothing) <- tryDelPeekMsg ms rId q mId1
+    (Msg "message 1", Nothing) <- tryDelPeekMsg ms q mId1
     Just (Message {msgId = mId2}, True) <- write "message 2"
-    (Msg "message 2", Nothing) <- tryDelPeekMsg ms rId q mId2
+    (Msg "message 2", Nothing) <- tryDelPeekMsg ms q mId2
     Just (Message {msgId = mId3}, True) <- write "message 3"
-    (Msg "message 3", Nothing) <- tryDelPeekMsg ms rId q mId3
+    (Msg "message 3", Nothing) <- tryDelPeekMsg ms q mId3
     Just (Message {msgId = mId4}, True) <- write "message 4"
-    (Msg "message 4", Nothing) <- tryDelPeekMsg ms rId q mId4
+    (Msg "message 4", Nothing) <- tryDelPeekMsg ms q mId4
     Just (Message {msgId = mId5}, True) <- write "message 5"
-    (Msg "message 5", Nothing) <- tryDelPeekMsg ms rId q mId5
-    void $ ExceptT $ deleteQueue ms rId q
+    (Msg "message 5", Nothing) <- tryDelPeekMsg ms q mId5
+    void $ ExceptT $ deleteQueue ms q
 
 testExportImportStore :: JournalMsgStore -> IO ()
 testExportImportStore ms = do
@@ -185,21 +184,21 @@ testExportImportStore ms = do
   (rId2, qr2) <- testNewQueueRec g True
   sl <- readWriteQueueStore testStoreLogFile ms
   runRight_ $ do
-    let write rId q s = writeMsg ms rId q True =<< mkMessage s
-    q1 <- ExceptT $ addQueue ms qr1
-    liftIO $ logCreateQueue sl qr1
-    Just (Message {}, True) <- write rId1 q1 "message 1"
-    Just (Message {}, False) <- write rId1 q1 "message 2"
-    q2 <- ExceptT $ addQueue ms qr2
-    liftIO $ logCreateQueue sl qr2
-    Just (Message {msgId = mId3}, True) <- write rId2 q2 "message 3"
-    Just (Message {msgId = mId4}, False) <- write rId2 q2 "message 4"
-    (Msg "message 3", Msg "message 4") <- tryDelPeekMsg ms rId2 q2 mId3
-    (Msg "message 4", Nothing) <- tryDelPeekMsg ms rId2 q2 mId4
-    Just (Message {}, True) <- write rId2 q2 "message 5"
-    Just (Message {}, False) <- write rId2 q2 "message 6"
-    Just (Message {}, False) <- write rId2 q2 "message 7"
-    Nothing <- write rId2 q2 "message 8"
+    let write q s = writeMsg ms q True =<< mkMessage s
+    q1 <- ExceptT $ addQueue ms rId1 qr1
+    liftIO $ logCreateQueue sl rId1 qr1
+    Just (Message {}, True) <- write q1 "message 1"
+    Just (Message {}, False) <- write q1 "message 2"
+    q2 <- ExceptT $ addQueue ms rId2 qr2
+    liftIO $ logCreateQueue sl rId2 qr2
+    Just (Message {msgId = mId3}, True) <- write q2 "message 3"
+    Just (Message {msgId = mId4}, False) <- write q2 "message 4"
+    (Msg "message 3", Msg "message 4") <- tryDelPeekMsg ms q2 mId3
+    (Msg "message 4", Nothing) <- tryDelPeekMsg ms q2 mId4
+    Just (Message {}, True) <- write q2 "message 5"
+    Just (Message {}, False) <- write q2 "message 6"
+    Just (Message {}, False) <- write q2 "message 7"
+    Nothing <- write q2 "message 8"
     pure ()
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3
@@ -297,10 +296,10 @@ testMessageState ms = do
   (rId, qr) <- testNewQueueRec g True
   let dir = msgQueueDirectory ms rId
       statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
-      write q s = writeMsg ms rId q True =<< mkMessage s
+      write q s = writeMsg ms q True =<< mkMessage s
 
   mId1 <- runRight $ do
-    q <- ExceptT $ addQueue ms qr
+    q <- ExceptT $ addQueue ms rId qr
     Just (Message {msgId = mId1}, True) <- write q "message 1"
     Just (Message {}, False) <- write q "message 2"
     liftIO $ closeMsgQueue q
@@ -312,19 +311,19 @@ testMessageState ms = do
   runRight_ $ do
     q <- ExceptT $ getQueue ms SRecipient rId
     Just (Message {msgId = mId3}, False) <- write q "message 3"
-    (Msg "message 1", Msg "message 3") <- tryDelPeekMsg ms rId q mId1
-    (Msg "message 3", Nothing) <- tryDelPeekMsg ms rId q mId3
+    (Msg "message 1", Msg "message 3") <- tryDelPeekMsg ms q mId1
+    (Msg "message 3", Nothing) <- tryDelPeekMsg ms q mId3
     liftIO $ closeMsgQueue q
 
 testReadFileMissing :: JournalMsgStore -> IO ()
 testReadFileMissing ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
-  let write q s = writeMsg ms rId q True =<< mkMessage s
+  let write q s = writeMsg ms q True =<< mkMessage s
   q <- runRight $ do
-    q <- ExceptT $ addQueue ms qr
+    q <- ExceptT $ addQueue ms rId qr
     Just (Message {}, True) <- write q "message 1"
-    Msg "message 1" <- tryPeekMsg ms rId q
+    Msg "message 1" <- tryPeekMsg ms q
     pure q
 
   mq <- fromJust <$> readTVarIO (msgQueue_' q)
@@ -335,9 +334,9 @@ testReadFileMissing ms = do
 
   runRight_ $ do
     q' <- ExceptT $ getQueue ms SRecipient rId
-    Nothing <- tryPeekMsg ms rId q'
+    Nothing <- tryPeekMsg ms q'
     Just (Message {}, True) <- write q' "message 2"
-    Msg "message 2" <- tryPeekMsg ms rId q'
+    Msg "message 2" <- tryPeekMsg ms q'
     pure ()
 
 testReadFileMissingSwitch :: JournalMsgStore -> IO ()
@@ -354,8 +353,8 @@ testReadFileMissingSwitch ms = do
 
   runRight_ $ do
     q' <- ExceptT $ getQueue ms SRecipient rId
-    Just (Message {}, False) <- writeMsg ms rId q' True =<< mkMessage "message 6"
-    Msg "message 5" <- tryPeekMsg ms rId q'
+    Just (Message {}, False) <- writeMsg ms q' True =<< mkMessage "message 6"
+    Msg "message 5" <- tryPeekMsg ms q'
     pure ()
 
 testWriteFileMissing :: JournalMsgStore -> IO ()
@@ -373,12 +372,12 @@ testWriteFileMissing ms = do
 
   runRight_ $ do
     q' <- ExceptT $ getQueue ms SRecipient rId
-    Just Message {msgId = mId3} <- tryPeekMsg ms rId q'
-    (Msg "message 3", Msg "message 4") <- tryDelPeekMsg ms rId q' mId3
-    Just Message {msgId = mId4} <- tryPeekMsg ms rId q'
-    (Msg "message 4", Nothing) <- tryDelPeekMsg ms rId q' mId4
-    Just (Message {}, True) <- writeMsg ms rId q' True =<< mkMessage "message 6"
-    Msg "message 6" <- tryPeekMsg ms rId q'
+    Just Message {msgId = mId3} <- tryPeekMsg ms q'
+    (Msg "message 3", Msg "message 4") <- tryDelPeekMsg ms q' mId3
+    Just Message {msgId = mId4} <- tryPeekMsg ms q'
+    (Msg "message 4", Nothing) <- tryDelPeekMsg ms q' mId4
+    Just (Message {}, True) <- writeMsg ms q' True =<< mkMessage "message 6"
+    Msg "message 6" <- tryPeekMsg ms q'
     pure ()
 
 testReadAndWriteFilesMissing :: JournalMsgStore -> IO ()
@@ -395,20 +394,20 @@ testReadAndWriteFilesMissing ms = do
 
   runRight_ $ do
     q' <- ExceptT $ getQueue ms SRecipient rId
-    Nothing <- tryPeekMsg ms rId q'
-    Just (Message {}, True) <- writeMsg ms rId q' True =<< mkMessage "message 6"
-    Msg "message 6" <- tryPeekMsg ms rId q'
+    Nothing <- tryPeekMsg ms q'
+    Just (Message {}, True) <- writeMsg ms q' True =<< mkMessage "message 6"
+    Msg "message 6" <- tryPeekMsg ms q'
     pure ()
 
 writeMessages :: JournalMsgStore -> RecipientId -> QueueRec -> IO JournalQueue
 writeMessages ms rId qr = runRight $ do
-  q <- ExceptT $ addQueue ms qr
-  let write s = writeMsg ms rId q True =<< mkMessage s
+  q <- ExceptT $ addQueue ms rId qr
+  let write s = writeMsg ms q True =<< mkMessage s
   Just (Message {msgId = mId1}, True) <- write "message 1"
   Just (Message {msgId = mId2}, False) <- write "message 2"
   Just (Message {}, False) <- write "message 3"
-  (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms rId q mId1
-  (Msg "message 2", Msg "message 3") <- tryDelPeekMsg ms rId q mId2
+  (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms q mId1
+  (Msg "message 2", Msg "message 3") <- tryDelPeekMsg ms q mId2
   Just (Message {}, False) <- write "message 4"
   Just (Message {}, False) <- write "message 5"
   pure q
