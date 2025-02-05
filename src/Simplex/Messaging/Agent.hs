@@ -1405,6 +1405,7 @@ enqueueMessageB c reqs = do
       -- TODO             Link messages to it, save encryption data per message.
       -- TODO             'msg_body' field is not nullable - use default empty strings?
       (mek, paddedLen, pqEnc) <- agentRatchetEncryptHeader db cData e2eEncAgentMsgLength pqEnc_ currentE2EVersion
+      withExceptT (SEAgentError . cryptoError) $ CR.rcCheckCanPad paddedLen agentMsgStr
       let msgType = agentMessageType agentMsg
           msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody = agentMsgStr, pqEncryption = pqEnc, internalHash, prevMsgHash, encryptKey_ = Just mek, paddedLen_ = Just paddedLen}
       liftIO $ createSndMsg db connId msgData

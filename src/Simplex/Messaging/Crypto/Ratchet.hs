@@ -66,6 +66,7 @@ module Simplex.Messaging.Crypto.Ratchet
     pqX3dhRcv,
     initSndRatchet,
     initRcvRatchet,
+    rcCheckCanPad,
     rcEncryptHeader,
     rcEncryptMsg,
     rcDecrypt,
@@ -88,6 +89,7 @@ module Simplex.Messaging.Crypto.Ratchet
 where
 
 import Control.Applicative ((<|>))
+import Control.Monad (unless)
 import Control.Monad.Except
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
@@ -848,6 +850,10 @@ connPQEncryption :: InitialKeys -> PQSupport
 connPQEncryption = \case
   IKUsePQ -> PQSupportOn
   IKNoPQ pq -> pq -- default for creating connection is IKNoPQ PQEncOn
+
+rcCheckCanPad :: Int -> ByteString -> ExceptT CryptoError IO ()
+rcCheckCanPad paddedMsgLen msg =
+  unless (canPad (B.length msg) paddedMsgLen) $ throwE CryptoLargeMsgError
 
 rcEncryptHeader :: AlgorithmI a => Ratchet a -> Maybe PQEncryption -> VersionE2E -> ExceptT CryptoError IO (MsgEncryptKey a, Ratchet a)
 rcEncryptHeader Ratchet {rcSnd = Nothing} _ _ = throwE CERatchetState
