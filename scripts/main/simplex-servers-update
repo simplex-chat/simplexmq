@@ -3,8 +3,7 @@ set -eu
 
 # TODO:
 # 1. CHOOSE -> UPDATE: ALL/BINARY
-# 2. Add menu
-# 3. Change main entrypoint
+# 2. Exit early if there's only exit option
 
 # Links to scripts/configs
 scripts_url="https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/scripts/main"
@@ -48,8 +47,10 @@ NC='\033[0m'
 NL='
 '
 
-# Set CHOOSe globally and only once
-choose="${CHOOSE:-}"
+# Set UPDATE variable globally and only once
+UPDATE="${UPDATE:-}"
+# Set VER globally and only once
+VER="${VER:-latest}"
 
 # Currently, XFTP default to v0.1.0, so it doesn't make sense to check its version
 
@@ -85,7 +86,7 @@ replace_x() {
   # Append any remaining text.
   result="${result}${text}"
 
-  printf '%s' "$result"
+  printf '%b' "$result"
 }
 
 # Checks "sanity" of downloaded thing, e.g. if it's really a script or binary
@@ -125,7 +126,11 @@ change_check() {
   old="$1"
   new="$2"
 
-  type="$(file $new)"
+  if [ -x "$new" ] || [ -f "$new" ]; then
+    type="$(file $new)"
+  else
+    type='string'
+  fi
 
   case "$type" in
     *script*)
@@ -135,18 +140,11 @@ change_check() {
         changed=0
       fi
       ;;
-    *executable*)
-      case "$new" in
-        *smp*) server='smp' ;;
-        *xftp*) server='xftp' ;;
-      esac
-
-      eval "local_version=\$local_version_${server}"
-      
-      if [ "$local_version" != "$remote_version" ]; then
-        changed=0
-      else
+    string)
+      if [ "$old" = "$new" ]; then
         changed=1
+      else
+        changed=0
       fi
       ;;
   esac
@@ -179,9 +177,7 @@ check_versions() {
   # - local_version
   # - apps
 
-  ver="${VER:-latest}"
-
-  case "$ver" in 
+  case "$VER" in 
     latest)
       bin_url="https://github.com/simplex-chat/simplexmq/releases/latest/download"
       remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest 2>/dev/null | grep -i "tag_name" | awk -F \" '{print $4}')"
@@ -193,7 +189,7 @@ check_versions() {
       ;;
     *)
       bin_url="https://github.com/simplex-chat/simplexmq/releases/download/${ver}"
-      remote_version="${ver}"
+      remote_version="${VER}"
       ;;
   esac
 
@@ -210,21 +206,21 @@ check_versions() {
     exit 1
   fi
 
-  for server in $apps; do
-    if [ -f "$path_conf_info/release" ]; then
-      . "$path_conf_info/release" 2>/dev/null
+  if [ -f "$path_conf_info/release" ]; then
+    . "$path_conf_info/release" 2>/dev/null
 
-      set +u
+    for server in $apps; do
       eval "local_version=\$local_version_${server}"
-      set -u
 
       if [ -z "${local_version}" ]; then
         update_local_version "$server" 'unset'
       fi
-    else
+    done
+  else
+    for server in $apps; do
       printf "local_version_${server}=unset\n" > "$path_conf_info/release"
-    fi
-  done
+    done
+  fi
 }
 
 # Checks the distro and sets the urls variables
@@ -256,7 +252,7 @@ checks() {
     exit 1
   fi
 
-  check_variables
+  check_versions
   check_distro
 
   mkdir -p $path_conf_info $path_tmp_bin
@@ -314,7 +310,7 @@ download_all() {
     eval "path_tmp_systemd_final=\$path_tmp_systemd_${i}"
     eval "path_systemd_final=\$path_systemd_${i}"
    
-    download_thing "$scripts_url_systemd_final" "$path_tmp_systemd_final" 'string: /usr/bin/env' "$service systemd service"
+    download_thing "$scripts_url_systemd_final" "$path_tmp_systemd_final" 'string: [Unit]' "$service systemd service"
     if change_check "$path_tmp_systemd_final" "$path_systemd_final"; then
       msg_services="${msg_services+$msg_services/}${YLW}$service${NC}"
     fi
@@ -322,18 +318,15 @@ download_all() {
 
   for i in $apps; do
     service="${i}-server"
-    eval "bin_url_final=\$bin_url_${i}"
-    eval "path_tmp_bin_final=\$path_tmp_bin_${i}"
-    eval "path_bin_final=\$path_bin_${i}"
+    eval "local_version=\$local_version_${server}"
 
-    download_thing "$bin_url_final" "$path_tmp_bin_final" 'file: ELF' "$service"
-    if change_check "$path_tmp_bin_final" "$path_bin_final"; then
+    if change_check "$local_version" "$remote_version"; then
       msg_bins="${msg_bins+$msg_bins$NC}  - ${YLW}$service${NC}: from ${BLU}$local_version${NC} to ${BLU}$remote_version${NC}"
     fi
   done
 }
 
-----------update_scripts() {
+changeme_update_scripts() {
   if diff -q "$path_bin_uninstall" "$path_tmp_bin_uninstall" > /dev/null 2>&1; then
     printf -- "- ${YLW}Uninstall script is up-to-date${NC}.\n"
     rm "$path_tmp_bin_uninstall"
@@ -364,7 +357,7 @@ download_all() {
   fi
 }
 
--------------update_systemd() {
+changeme_update_systemd() {
   if diff -q "$path_systemd" "$path_tmp_systemd" > /dev/null 2>&1; then
     printf -- "- ${YLW}%s service is up-to-date${NC}.\n" "$service"
     rm "$path_tmp_systemd"
@@ -376,7 +369,7 @@ download_all() {
   fi
 }
 
--------------------update_bins() {
+changeme_update_bins() {
   service="${1}-server"
   eval "bin=\$bin_${1}"
   eval "path_bin=\$path_bin_${1}"
@@ -398,7 +391,21 @@ download_all() {
 
   if [ "$local_version" != "$remote_version" ]; then
     update_submenu
-    
+
+# -----------------------------------------------------------
+  for i in $apps; do
+    service="${i}-server"
+    eval "bin_url_final=\$bin_url_${i}"
+    eval "path_tmp_bin_final=\$path_tmp_bin_${i}"
+    eval "path_bin_final=\$path_bin_${i}"
+
+    download_thing "$bin_url_final" "$path_tmp_bin_final" 'file: ELF' "$service"
+    if change_check "$path_tmp_bin_final" "$path_bin_final"; then
+      msg_bins="${msg_bins+$msg_bins$NC}  - ${YLW}$service${NC}: from ${BLU}$local_version${NC} to ${BLU}$remote_version${NC}"
+    fi
+  done
+# ------------------------------------------------------------
+
     if systemctl is-active --quiet "$service"; then
       printf -- "- Stopping %s service..." "$service"
       systemctl stop "$service"
@@ -424,34 +431,69 @@ download_all() {
 main() {
   printf 'Please wait while script is downloading files...\n'
   download_all
+  
+  menu_end="${RED}X${NC}) Exit the script${NL}${NL}Selection: "
+
+  set +u
+  if [ -n "$msg_scripts" ]; then
+    menu_option_misc_raw="${menu_option_misc_raw+${menu_option_misc_raw}${NL}}  - ${msg_scripts} scripts"
+  fi
+
+  if [ -n "$msg_services" ]; then
+    menu_option_misc_raw="${menu_option_misc_raw+${menu_option_misc_raw}${NL}}  - ${msg_services} services"
+  fi
+
+  if [ -n "$menu_option_misc_raw" ]; then
+    menu_option_misc="${GRN}X${NC}) Update misc:${NL}${menu_option_misc_raw}${NL}"
+  fi
 
   if [ -n "$msg_bins" ]; then
-    menu_option_bins="${GRN}X${NC}) Update binaries:${NL}$msg_bins$NL"
-
-    if [ -n "$msg_scripts" ] || [ -n "$msg_services" ]; then
-      menu_option_all="${GRN}X${NC}) Update all:${NL}"
-      menu_option_misc="${GRN}X${NC}) Update misc:${NL}"
-
-      if [ -n "$msg_scripts" ]; then
-        menu_option_all="$menu_option_all  - $msg_scripts scripts$NL"
-        menu_option_misc="$menu_option_misc  - $msg_scripts scripts$NL"
-      fi
-
-      if [ -n "$msg_services" ]; then
-        menu_option_all="$menu_option_all  - $msg_services services$NL"
-        menu_option_misc="$menu_option_misc  - $msg_services services$NL"
-      fi
-
-      menu_option_all="$menu_option_all$msg_bins$NL"
-      menu_option_misc="$menu_option_misc$msg_bins$NL"
+    menu_option_bins="${GRN}X${NC}) Update binaries:${NL}${msg_bins}${NL}"
+    if [ -n "$menu_option_misc" ]; then
+      menu_option_all="${GRN}X${NC}) Update all:${NL}${menu_option_misc_raw}${NL}${msg_bins}${NL}"
     fi
-
-    menu_end="${GRN}X${NC}) Exit the script${NL}${NL}Selection: "
-
-    eval "menu=\"\${menu_option_all:-}\${menu_option_bins}\${menu_option_misc:-}\${menu_end}\""
-
-    menu="$(replace_x "$menu")"
   fi
+
+  menu="${menu_option_all:-}${menu_option_bins}${menu_option_misc:-}${menu_end}"
+
+  menu="$(replace_x "$menu")"
+  menu_lc=$(printf '%b' "$menu" | tr -cd '\n' | wc -c)
+  menu_lc=$((menu_lc + 1))
+
+  selection_check=''
+  while [ "$selection_check" != 'pass' ]; do
+
+    printf '%b' "$menu"
+    read selection
+
+    line="$(printf '%s' "$menu" | sed 's|\x1b\[[0-9;]*m||g' | grep "$selection)" || :)"
+
+    if [ -n "$line" ]; then
+      selection_parse="$(printf '%s' "$line" | sed 's|^.*) ||')"
+
+      case "$selection_parse" in
+        'Update misc:')
+          update_misc
+          ;;
+        'Update binaries:')
+          update_bins
+          ;;
+        'Update all:')
+          update_all
+          ;;
+        'Exit the script')
+          exit 0
+          ;;
+        *)
+          erase_lines "$menu_lc"
+          selection_check='nopass'
+          ;;
+      esac
+    else
+      erase_lines "$menu_lc"
+      selection_check='nopass'
+    fi
+  done
 }
 
 checks
