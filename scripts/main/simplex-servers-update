@@ -1,13 +1,18 @@
 #!/usr/bin/env sh
 set -eu
 
+# TODO:
+# 1. CHOOSE -> UPDATE: ALL/BINARY
+# 2. Add menu
+# 3. Change main entrypoint
+
 # Links to scripts/configs
-scripts="https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/scripts/main"
-scripts_systemd_smp="$scripts/smp-server.service"
-scripts_systemd_xftp="$scripts/xftp-server.service"
-scripts_update="$scripts/simplex-servers-update"
-scripts_uninstall="$scripts/simplex-servers-uninstall"
-scripts_stopscript="$scripts/simplex-servers-stopscript"
+scripts_url="https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/scripts/main"
+scripts_url_systemd_smp="$scripts_url/smp-server.service"
+scripts_url_systemd_xftp="$scripts_url/xftp-server.service"
+scripts_url_update="$scripts_url/simplex-servers-update"
+scripts_url_uninstall="$scripts_url/simplex-servers-uninstall"
+scripts_url_stopscript="$scripts_url/simplex-servers-stopscript"
 
 # Default installation paths
 path_bin="/usr/local/bin"
@@ -22,7 +27,9 @@ path_systemd_smp="$path_systemd/smp-server.service"
 path_systemd_xftp="$path_systemd/xftp-server.service"
 
 # Temporary paths
-path_tmp_bin="$(mktemp -d)"
+path_tmp_bin="/tmp/simplex-servers"
+path_tmp_bin_smp="$path_tmp_bin/smp-server"
+path_tmp_bin_xftp="$path_tmp_bin/xftp-server"
 path_tmp_bin_update="$path_tmp_bin/simplex-servers-update"
 path_tmp_bin_uninstall="$path_tmp_bin/simplex-servers-uninstall"
 path_tmp_bin_stopscript="$path_tmp_bin/simplex-servers-stopscript"
@@ -51,92 +58,23 @@ ${BLU}VER=vX.X.X${NC} CHOOSE=1 simplex-servers-update
 
 Selection: "
 
-menu_one="This will:
-- ${YLW}Update update/backup/uninstall scripts${NC}
-- ${YLW}Update systemd services and reload the daemon${NC}
-- ${YLW}Stop the systemd service if it's running${NC}
-- ${YLW}Update the binary${NC}
-- ${YLW}Restart the service if it was stopped by the script${NC}
-
-Proceed? (${GRN}yes${NC}/${RED}no${NC}): "
-
-menu_two="This will:
-- ${YLW}Stop the systemd service if it's running${NC}
-- ${YLW}Update the binary${NC}
-- ${YLW}Restart the service if it was stopped by the script${NC}
-
-Proceed? (${GRN}yes${NC}/${RED}no${NC}): "
-
 # Set CHOOSe globally and only once
 choose="${CHOOSE:-}"
 
-# Cleanup temp files
-cleanup() {
-    rm -rf -- "$path_tmp_bin"
-}
-
-trap '(exit 130)' INT
-trap '(exit 143)' TERM
-trap 'rc=$?; cleanup; exit $rc' EXIT
-
 # Currently, XFTP default to v0.1.0, so it doesn't make sense to check its version
 
-os_test() {
- . /etc/os-release
+######################
+### Misc functions ###
+######################
 
- case "$VERSION_ID" in
-  20.04|22.04) : ;;
-  24.04) VERSION_ID='22.04' ;;
-  *) printf "${RED}Unsupported Ubuntu version!${NC}\nPlease file Github issue with request to support Ubuntu %s: https://github.com/simplex-chat/simplexmq/issues/new\n" "$VERSION_ID" && exit 1 ;;
- esac
-
- version="$(printf '%s' "$VERSION_ID" | tr '.' '_')"
- arch="$(uname -p)"
-
- case "$arch" in
-  x86_64) arch="$(printf '%s' "$arch" | tr '_' '-')" ;;
-  *)  printf "${RED}Unsupported architecture!${NC}\nPlease file Github issue with request to support %s architecture: https://github.com/simplex-chat/simplexmq/issues/new" "$arch" && exit 1 ;;
- esac
-
- bin_smp="$bin/smp-server-ubuntu-${version}-${arch}"
- bin_xftp="$bin/xftp-server-ubuntu-${version}-${arch}"
-}
-
-set_version() {
-  ver="${VER:-latest}"
-
-  case "$ver" in 
-    latest)
-      bin="https://github.com/simplex-chat/simplexmq/releases/latest/download"
-      remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest 2>/dev/null | grep -i "tag_name" | awk -F \" '{print $4}')"
-
-      if [ -z "$remote_version" ]; then
-        printf "${RED}Something went wrong when ${YLW}resolving the lastest version${NC}: either you don't have connection to Github or you're rate-limited.\n"
-        exit 1
-      fi
-      ;;
-    *)
-      bin="https://github.com/simplex-chat/simplexmq/releases/download/${ver}"
-      remote_version="${ver}"
-      ;;
-  esac
-
-  set +u
-  for i in smp xftp; do
-    if command -v "$i-server" >/dev/null; then
-      apps="$i $apps"
-      eval local_version_$i="$(${i}-server -v | awk '{print $NF}')"
-    fi
-  done
-  set -u
-}
-
+# Erases specified amount of lines (useful to rerender the menu)
 erase_lines() {
   for i in $(seq 1 "${1}"); do
     printf '\e[A\e[K'
   done
 }
 
+# Checks "sanity" of downloaded thing, e.g. if it's really a script or binary
 check_sanity() {
   path="$1"
   criteria="$2"
@@ -168,28 +106,202 @@ check_sanity() {
   return "$sane"
 }
 
-update_scripts() {
-  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_update" -o "$path_tmp_bin_update" && chmod +x "$path_tmp_bin_update"
+# Checks if old thing and new thing is different
+change_check() {
+  old="$1"
+  new="$2"
 
-  if ! check_sanity "$path_tmp_bin_update" 'string: /usr/bin/env'; then
-    printf "${RED}Something went wrong when downloading ${YLW}Update script${NC}: either you don't have connection to Github or you're rate-limited.\n"
-    exit 1
-  fi
+  type="$(file $new)"
+
+  case "$type" in
+    *script*)
+      if diff -q "$old" "$new" > /dev/null 2>&1; then
+        changed=1
+      else
+        changed=0
+      fi
+      ;;
+    *executable*)
+      case "$new" in
+        *smp*) server='smp' ;;
+        *xftp*) server='xftp' ;;
+      esac
+
+      eval "local_version=\$local_version_${server}"
+      
+      if [ "$local_version" != "$remote_version" ]; then
+        changed=0
+      else
+        changed=1
+      fi
+      ;;
+  esac
+
+  return "$changed"
+}
+
+##########################
+### Misc functions END ###
+##########################
+
+#########################
+### Support functions ###
+#########################
+
+# Updates stored local version of server
+update_local_version() {
+  server="$1"
+  new_ver="$2"
   
-  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_uninstall" -o "$path_tmp_bin_uninstall" && chmod +x "$path_tmp_bin_uninstall"
+  sed -i -- "s|local_version_${server}=.*|local_version_${server}='${new_ver}'|" "$path_conf_info/release"
+}
 
-  if ! check_sanity "$path_tmp_bin_uninstall" 'string: /usr/bin/env'; then
-    printf "${RED}Something went wrong when downloading ${YLW}Uninstall script${NC}: either you don't have connection to Github or you're rate-limited.\n"
+# Sets local/remote versions and "apps" variables
+check_versions() {
+  # Sets:
+  # - ver
+  # - bin_url
+  # - remote_version
+  # - local_version
+  # - apps
+
+  ver="${VER:-latest}"
+
+  case "$ver" in 
+    latest)
+      bin_url="https://github.com/simplex-chat/simplexmq/releases/latest/download"
+      remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest 2>/dev/null | grep -i "tag_name" | awk -F \" '{print $4}')"
+
+      if [ -z "$remote_version" ]; then
+        printf "${RED}Something went wrong when ${YLW}resolving the lastest version${NC}: either you don't have connection to Github or you're rate-limited.\n"
+        exit 1
+      fi
+      ;;
+    *)
+      bin_url="https://github.com/simplex-chat/simplexmq/releases/download/${ver}"
+      remote_version="${ver}"
+      ;;
+  esac
+
+  set +u
+  for i in smp xftp; do
+    if command -v "$i-server" >/dev/null; then
+      apps="$i $apps"
+    fi
+  done
+  set -u
+
+  if [ -z "$apps" ]; then
+    printf "${RED}No simplex servers installed! Aborting.${NC}\n"
     exit 1
   fi
 
-  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_stopscript" -o "$path_tmp_bin_stopscript" && chmod +x "$path_tmp_bin_stopscript"
+  for server in $apps; do
+    if [ -f "$path_conf_info/release" ]; then
+      . "$path_conf_info/release" 2>/dev/null
 
-  if ! check_sanity "$path_tmp_bin_stopscript" 'string: /usr/bin/env'; then
-    printf "${RED}Something went wrong when downloading ${YLW}Update script${NC}: either you don't have connection to Github or you're rate-limited.\n"
+      set +u
+      eval "local_version=\$local_version_${server}"
+      set -u
+
+      if [ -z "${local_version}" ]; then
+        update_local_version "$server" 'unset'
+      fi
+    else
+      printf "local_version_${server}=unset\n" > "$path_conf_info/release"
+    fi
+  done
+}
+
+# Checks the distro and sets the urls variables
+check_distro() {
+  . /etc/os-release
+
+  case "$VERSION_ID" in
+    20.04|22.04) : ;;
+    24.04) VERSION_ID='22.04' ;;
+    *) printf "${RED}Unsupported Ubuntu version!${NC}\nPlease file Github issue with request to support Ubuntu %s: https://github.com/simplex-chat/simplexmq/issues/new\n" "$VERSION_ID" && exit 1 ;;
+  esac
+
+  version="$(printf '%s' "$VERSION_ID" | tr '.' '_')"
+  arch="$(uname -p)"
+
+  case "$arch" in
+    x86_64) arch="$(printf '%s' "$arch" | tr '_' '-')" ;;
+    *)  printf "${RED}Unsupported architecture!${NC}\nPlease file Github issue with request to support %s architecture: https://github.com/simplex-chat/simplexmq/issues/new" "$arch" && exit 1 ;;
+  esac
+
+  bin_url_smp="$bin_url/smp-server-ubuntu-${version}-${arch}"
+  bin_url_xftp="$bin_url/xftp-server-ubuntu-${version}-${arch}"
+}
+
+# General checks that must be performed on the initial execution of script
+checks() {
+  if [ "$(id -u)" -ne 0 ]; then
+    printf "This script is intended to be run with root privileges. Please re-run script using sudo.\n"
     exit 1
   fi
 
+  check_variables
+  check_distro
+
+  mkdir -p $path_conf_info $path_tmp_bin
+}
+
+#############################
+### Support functions END ###
+#############################
+
+######################
+### Main functions ###
+######################
+
+# Downloads thing to directory and checks its sanity
+download_thing() {
+  thing="$1"
+  path="$2"
+  check_pattern="$3"
+  err_msg="$4"
+  
+  curl --proto '=https' --tlsv1.2 -sSf -L "$thing" -o "$path"
+
+  type="$(file "$path")"
+
+  case "$type" in
+    *script*|*executable*) chmod +x "$path" ;;
+  esac
+
+  if ! check_sanity "$path" "$check_pattern"; then
+    printf "${RED}Something went wrong when downloading ${YLW}%s${NC}: either you don't have connection to Github or you're rate-limited.\n" "$err_msg"
+    exit 1
+  fi
+}
+
+# Downloads all necessary files to temp dir
+download_all() {
+  update_thing "$scripts_url_update" "$path_tmp_bin_update" 'string: /usr/bin/env' 'Update script'
+  update_thing "$scripts_url_uninstall" "$path_tmp_bin_uninstall" 'string: /usr/bin/env' 'Uninstall script'
+  update_thing "$scripts_url_stopscript" "$path_tmp_bin_stopscript" 'string: /usr/bin/env' 'Stop script'
+
+  for i in $apps; do
+    service="${1}-server"
+    eval "scripts_url_systemd_final=\$scripts_url_systemd_${1}"
+    eval "path_tmp_systemd_final=\$path_tmp_systemd_${1}"
+   
+    update_thing "$scripts_url_systemd_final" "$path_tmp_systemd_final" 'string: /usr/bin/env' "$service systemd service"
+  done
+
+  for i in $apps; do
+    service="${1}-server"
+    eval "bin_url_final=\$bin_url_${1}"
+    eval "path_bin=\$path_bin_${1}"
+
+    update_thing "$bin_url_final" "$path_tmp_bin_final" 'file: ELF' "$service"
+  done
+}
+
+
+----------update_scripts() {
   if diff -q "$path_bin_uninstall" "$path_tmp_bin_uninstall" > /dev/null 2>&1; then
     printf -- "- ${YLW}Uninstall script is up-to-date${NC}.\n"
     rm "$path_tmp_bin_uninstall"
@@ -220,19 +332,7 @@ update_scripts() {
   fi
 }
 
-update_systemd() {
-  service="${1}-server"
-  eval "scripts_systemd=\$scripts_systemd_${1}"
-  eval "path_systemd=\$path_systemd_${1}"
-  eval "path_tmp_systemd=\$path_tmp_systemd_${1}"
-   
-  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_systemd" -o "$path_tmp_systemd"
-
-  if ! check_sanity "$path_tmp_systemd" 'string: [Service]'; then
-    printf "${RED}Something went wrong when downloading ${YLW}Systemd service${NC}: either you don't have connection to Github or you're rate-limited.\n"
-    exit 1
-  fi
-
+-------------update_systemd() {
   if diff -q "$path_systemd" "$path_tmp_systemd" > /dev/null 2>&1; then
     printf -- "- ${YLW}%s service is up-to-date${NC}.\n" "$service"
     rm "$path_tmp_systemd"
@@ -242,50 +342,17 @@ update_systemd() {
     systemctl daemon-reload
     printf "${GRN}Done!${NC}\n"
   fi
-
-  unset service scripts_systemd path_systemd path_tmp_systemd
 }
 
-update_bins() {
+-------------------update_bins() {
   service="${1}-server"
   eval "bin=\$bin_${1}"
   eval "path_bin=\$path_bin_${1}"
 
-  set_ver() {
-    local_version='unset'
-    sed -i -- "s/local_version_${1}=.*/local_version_${1}='${remote_version}'/" "$path_conf_info/release"
-  }
-
-  if [ -f "$path_conf_info/release" ]; then
-    . "$path_conf_info/release" 2>/dev/null
-
-    set +u
-    eval "local_version=\$local_version_${1}"
-    set -u
-
-    if [ -z "${local_version}" ]; then
-            set_ver "$1"
-    fi
-  else
-    printf 'local_version_xftp=\nlocal_version_smp=\n' > "$path_conf_info/release"
-    set_ver "$1"
-  fi
-
-  update_submenu() {
-    printf "This will update ${YLW}%s${NC} from ${BLU}%s${NC} to ${BLU}%s${NC}. Proceed? (${GRN}yes${NC}/${RED}no${NC}): " "$service" "$local_version" "$remote_version"
-    read proceed
-    
-    case "$proceed" in
-      yes) : ;;
-      no) printf '\n'; exit 0 ;;
-      *) unset proceed; erase_lines 1; update_submenu ;;
-    esac
-  }
 
   update_bin() {
     printf -- "- Updating %s to %s..." "$service" "$remote_version"
 
-    curl --proto '=https' --tlsv1.2 -sSf -L "$bin" -o "$path_bin.new" && chmod +x "$path_bin.new"
     if ! check_sanity "$path_bin.new" 'file: ELF'; then
       printf "\n${RED}Something went wrong when downloading ${YLW}%s binary${NC}: either you don't have connection to Github or you're rate-limited.\n" "$service"
       rm -f "$path_bin.new"
@@ -322,61 +389,7 @@ update_bins() {
   unset service bin path_bin local_version
 }
 
-checks() {
-  if [ "$(id -u)" -ne 0 ]; then
-    printf "This script is intended to be run with root privileges. Please re-run script using sudo.\n"
-    exit 1
-  fi
-
-  set_version
-  os_test
-
-  if [ -z "$apps" ]; then
-    printf 'No simplex servers installed! Aborting...\n'
-    exit 1
-  fi
-
-  mkdir -p $path_conf_info
-}
-
-menu_one() {
-  set +u
-  if [ -z "$choose_one" ]; then
-    printf '%b' "$menu_one"
-    read choose_one
-  fi
-  set -u
-
-  case "$choose_one" in
-    yes) : ;;
-    no) printf '\n'; exit 0 ;;
-    *) unset choose_one; erase_lines 8; menu_one ;;
-  esac
-}
-
-menu_two() {
-  set +u
-  if [ -z "$choose_two" ]; then
-    printf '%b' "$menu_two"
-    read choose_two
-  fi
-  set -u
-
-  case "$choose_two" in
-    yes) : ;;
-    no) printf '\n'; exit 0 ;;
-    *) unset choose_two; erase_lines 6; menu_two ;;
-  esac
-}
-
 main() {
-  set +u
-  if [ -z "$choose" ]; then
-    printf '%b' "$menu"
-    read choose
-  fi
-  set -u
-
   case "$choose" in
     1)
       set +u
