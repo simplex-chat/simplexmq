@@ -45,18 +45,7 @@ YLW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-menu="Select option:
-- ${GRN}1${NC}) Update everything: ${YLW}systemd services${NC}, ${YLW}update/backup/install scripts${NC}, ${YLW}binaries${NC}
-- ${GRN}2${NC}) Update ${YLW}only binaries${NC}
-- ${RED}3${NC}) Exit the update script
-
-For non-interactive usage rerun the script the following way:
-${BLU}CHOOSE=1${NC} simplex-servers-update
-
-To specify version:
-${BLU}VER=vX.X.X${NC} CHOOSE=1 simplex-servers-update
-
-Selection: "
+menu=""
 
 # Set CHOOSe globally and only once
 choose="${CHOOSE:-}"
@@ -279,16 +268,16 @@ download_thing() {
 
 # Downloads all necessary files to temp dir
 download_all() {
-  update_thing "$scripts_url_update" "$path_tmp_bin_update" 'string: /usr/bin/env' 'Update script'
-  update_thing "$scripts_url_uninstall" "$path_tmp_bin_uninstall" 'string: /usr/bin/env' 'Uninstall script'
-  update_thing "$scripts_url_stopscript" "$path_tmp_bin_stopscript" 'string: /usr/bin/env' 'Stop script'
+  download_thing "$scripts_url_update" "$path_tmp_bin_update" 'string: /usr/bin/env' 'Update script'
+  download_thing "$scripts_url_stopscript" "$path_tmp_bin_stopscript" 'string: /usr/bin/env' 'Stop script'
+  download_thing "$scripts_url_uninstall" "$path_tmp_bin_uninstall" 'string: /usr/bin/env' 'Uninstall script'
 
   for i in $apps; do
     service="${1}-server"
     eval "scripts_url_systemd_final=\$scripts_url_systemd_${1}"
     eval "path_tmp_systemd_final=\$path_tmp_systemd_${1}"
    
-    update_thing "$scripts_url_systemd_final" "$path_tmp_systemd_final" 'string: /usr/bin/env' "$service systemd service"
+    download_thing "$scripts_url_systemd_final" "$path_tmp_systemd_final" 'string: /usr/bin/env' "$service systemd service"
   done
 
   for i in $apps; do
@@ -296,7 +285,7 @@ download_all() {
     eval "bin_url_final=\$bin_url_${1}"
     eval "path_bin=\$path_bin_${1}"
 
-    update_thing "$bin_url_final" "$path_tmp_bin_final" 'file: ELF' "$service"
+    download_thing "$bin_url_final" "$path_tmp_bin_final" 'file: ELF' "$service"
   done
 }
 
@@ -390,65 +379,17 @@ download_all() {
 }
 
 main() {
-  case "$choose" in
-    1)
-      set +u
-      case "$CHOOSE" in
-        1) choose_one=yes ;;
-        *) : ;;
-      esac
-      set -u
+  printf 'Please wait while script is downloading files...\n'
 
-      menu_one
-      
-      set +u
-      if [ -z "$SCRIPTS_DONE" ]; then
-        set -u
+  script_msg=""
+  download_all
 
-        printf "Updating scripts...\n"
-        update_scripts
-      else
-        printf "${GRN}Done!${NC}\n"
-      fi
-      set -u
+  if change_check "$path_tmp_bin_update" "$path_bin_update" ||
+     change_check "$path_tmp_bin_uninstall" "$path_bin_update" ||
+     change_check "$path_tmp_bin_stopscript" "$path_bin_stopscript"; then
 
-      printf "Updating systemd services...\n"
-      for i in $apps; do
-        update_systemd "$i"
-      done
-  
-      printf "Updating simplex servers...\n"
-      for i in $apps; do
-        update_bins "$i"
-      done
-      ;;
-      
-    2)
-      set +u
-      case "$CHOOSE" in
-        2) choose_two=yes ;;
-        *) : ;;
-      esac
-      set -u
-
-      menu_two
-      
-      printf "Updating simplex servers...\n"
-      for i in $apps; do
-        update_bins "$i"
-      done
-      ;;
-      
-    3)
-      printf '\n'
-      exit 0
-      ;;
-    *)
-      unset choose
-      erase_lines 12
-      main "$@"
-      ;;
-  esac
+     echo test
+  fi
 }
 
 checks
