@@ -46,7 +46,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..), newMsgStore)
-import Simplex.Messaging.Server.QueueStore.STM (readQueueStore)
+import Simplex.Messaging.Server.QueueStore.STM (readSTMQueueStore)
 import Simplex.Messaging.Transport (simplexMQVersion, supportedProxyClientSMPRelayVRange, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
@@ -107,7 +107,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 ("WARNING: message log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir)
                 "Messages not imported"
               ms <- newJournalMsgStore
-              readQueueStore storeLogFile ms
+              readSTMQueueStore storeLogFile ms
               msgStats <- importMessages True ms storeMsgsFilePath Nothing -- no expiration
               putStrLn "Import completed"
               printMessageStats "Messages" msgStats
@@ -125,7 +125,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
                 "Journal not exported"
               ms <- newJournalMsgStore
-              readQueueStore storeLogFile ms
+              readSTMQueueStore storeLogFile ms
               exportMessages True ms storeMsgsFilePath False
               putStrLn "Export completed"
               putStrLn $ case readMsgStoreType ini of

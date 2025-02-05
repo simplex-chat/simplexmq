@@ -25,7 +25,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.StoreLog.Types
 import Simplex.Messaging.TMap (TMap)
-import Simplex.Messaging.Util ((<$$>))
+import Simplex.Messaging.Util ((<$$>), ($>>=))
 import System.IO (IOMode (..))
 
 data STMQueueStore q = STMQueueStore
@@ -37,8 +37,7 @@ data STMQueueStore q = STMQueueStore
 
 class MsgStoreClass s => STMStoreClass s where
   stmQueueStore :: s -> STMQueueStore (StoreQueue s)
-  mkQueue :: s -> RecipientId -> QueueRec -> STM (StoreQueue s)
-  msgQueue_' :: StoreQueue s -> TVar (Maybe (MsgQueue s))
+  mkQueue :: s -> RecipientId -> QueueRec -> IO (StoreQueue s)
 
 class Monad (StoreMonad s) => MsgStoreClass s where
   type StoreMonad s = (m :: Type -> Type) | m -> s
@@ -53,6 +52,21 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   logQueueState :: StoreQueue s -> StoreMonad s ()
   recipientId' :: StoreQueue s -> RecipientId
   queueRec' :: StoreQueue s -> TVar (Maybe QueueRec)
+  msgQueue_' :: StoreQueue s -> TVar (Maybe (MsgQueue s))
+
+  -- Queue store methods
+  addQueue :: s -> RecipientId -> QueueRec -> IO (Either ErrorType (StoreQueue s))
+  getQueue :: DirectParty p => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s))
+  secureQueue :: s -> StoreQueue s -> SndPublicAuthKey -> IO (Either ErrorType ())
+  addQueueNotifier :: s -> StoreQueue s -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
+  deleteQueueNotifier :: s -> StoreQueue s -> IO (Either ErrorType (Maybe NotifierId))
+  suspendQueue :: s -> StoreQueue s -> IO (Either ErrorType ())
+  blockQueue :: s -> StoreQueue s -> BlockingInfo -> IO (Either ErrorType ())
+  unblockQueue :: s -> StoreQueue s -> IO (Either ErrorType ())
+  updateQueueTime :: s -> StoreQueue s -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
+  deleteQueue' :: s -> StoreQueue s -> IO (Either ErrorType (QueueRec, Maybe (MsgQueue s)))
+
+  -- message store methods
   getPeekMsgQueue :: s -> StoreQueue s -> StoreMonad s (Maybe (MsgQueue s, Message))
   getMsgQueue :: s -> StoreQueue s -> StoreMonad s (MsgQueue s)
 
@@ -75,6 +89,11 @@ data SMSType :: MSType -> Type where
   SMSJournal :: SMSType 'MSJournal
 
 data AMSType = forall s. AMSType (SMSType s)
+
+getQueueRec :: (MsgStoreClass s, DirectParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s, QueueRec))
+getQueueRec st party qId =
+  getQueue st party qId
+    $>>= (\q -> maybe (Left AUTH) (Right . (q,)) <$> readTVarIO (queueRec' q))
 
 withActiveMsgQueues :: (STMStoreClass s, Monoid a) => s -> (StoreQueue s -> IO a) -> IO a
 withActiveMsgQueues st f = readTVarIO (queues $ stmQueueStore st) >>= foldM run mempty

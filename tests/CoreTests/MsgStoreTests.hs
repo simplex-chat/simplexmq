@@ -30,12 +30,11 @@ import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), Message (..), RecipientId, SParty (..), noMsgFlags)
 import Simplex.Messaging.Server (MessageStats (..), exportMessages, importMessages, printMessageStats)
-import Simplex.Messaging.Server.Env.STM (journalMsgStoreDepth, readWriteQueueStore)
+import Simplex.Messaging.Server.Env.STM (journalMsgStoreDepth, readWriteSTMQueueStore)
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue)
 import SMPClient (testStoreLogFile, testStoreMsgsDir, testStoreMsgsDir2, testStoreMsgsFile, testStoreMsgsFile2)
 import System.Directory (copyFile, createDirectoryIfMissing, listDirectory, removeFile, renameFile)
@@ -182,7 +181,7 @@ testExportImportStore ms = do
   g <- C.newRandom
   (rId1, qr1) <- testNewQueueRec g True
   (rId2, qr2) <- testNewQueueRec g True
-  sl <- readWriteQueueStore testStoreLogFile ms
+  sl <- readWriteSTMQueueStore testStoreLogFile ms
   runRight_ $ do
     let write q s = writeMsg ms q True =<< mkMessage s
     q1 <- ExceptT $ addQueue ms rId1 qr1
@@ -210,7 +209,7 @@ testExportImportStore ms = do
   (B.readFile testStoreMsgsFile `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".copy")
   let cfg = (testJournalStoreCfg :: JournalStoreConfig) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
-  readWriteQueueStore testStoreLogFile ms' >>= closeStoreLog
+  readWriteSTMQueueStore testStoreLogFile ms' >>= closeStoreLog
   stats@MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages False ms' testStoreMsgsFile Nothing
   printMessageStats "Messages" stats
@@ -219,7 +218,7 @@ testExportImportStore ms = do
   exportMessages False ms' testStoreMsgsFile2 False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
-  readWriteQueueStore testStoreLogFile stmStore >>= closeStoreLog
+  readWriteSTMQueueStore testStoreLogFile stmStore >>= closeStoreLog
   MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages False stmStore testStoreMsgsFile2 Nothing
   exportMessages False stmStore testStoreMsgsFile False

@@ -102,7 +102,6 @@ import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.Prometheus
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
-import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM

@@ -27,7 +27,7 @@ module Simplex.Messaging.Server.StoreLog
     logDeleteNotifier,
     logUpdateQueueTime,
     readWriteStoreLog,
-    writeQueueStore,
+    writeSTMQueueStore,
   )
 where
 
@@ -246,8 +246,8 @@ readWriteStoreLog readStore writeStore f st =
       renameFile tempBackup timedBackup
       logInfo $ "original state preserved as " <> T.pack timedBackup
 
-writeQueueStore :: STMStoreClass s => StoreLog 'WriteMode -> s -> IO ()
-writeQueueStore s st = readTVarIO qs >>= mapM_ writeQueue . M.assocs
+writeSTMQueueStore :: STMStoreClass s => StoreLog 'WriteMode -> s -> IO ()
+writeSTMQueueStore s st = readTVarIO qs >>= mapM_ writeQueue . M.assocs
   where
     qs = queues $ stmQueueStore st
     writeQueue (rId, q) =

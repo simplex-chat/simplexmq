@@ -19,7 +19,7 @@ import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.Env.STM (readWriteQueueStore)
+import Simplex.Messaging.Server.Env.STM (readWriteSTMQueueStore)
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
@@ -106,7 +106,7 @@ testSMPStoreLog testSuite tests =
   where
     testReadWrite SLTC {compacted, state} = do
       st <- newMsgStore testJournalStoreCfg
-      l <- readWriteQueueStore testStoreLogFile st
+      l <- readWriteSTMQueueStore testStoreLogFile st
       storeState st `shouldReturn` state
       closeStoreLog l
       ([], compacted') <- partitionEithers . map strDecode . B.lines <$> B.readFile testStoreLogFile

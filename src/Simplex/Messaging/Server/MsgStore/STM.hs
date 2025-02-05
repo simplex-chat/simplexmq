@@ -55,8 +55,9 @@ data STMStoreConfig = STMStoreConfig
 
 instance STMStoreClass STMMsgStore where
   stmQueueStore = queueStore
-  mkQueue _ rId qr = STMQueue rId <$> newTVar (Just qr) <*> newTVar Nothing
-  msgQueue_' = msgQueue_
+  {-# INLINE stmQueueStore #-}
+  mkQueue _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
+  {-# INLINE mkQueue #-}
 
 instance MsgStoreClass STMMsgStore where
   type StoreMonad STMMsgStore = STM
@@ -66,7 +67,7 @@ instance MsgStoreClass STMMsgStore where
 
   newMsgStore :: STMStoreConfig -> IO STMMsgStore
   newMsgStore storeConfig = do
-    queueStore <- newQueueStore
+    queueStore <- newSTMQueueStore
     pure STMMsgStore {storeConfig, queueStore}
 
   setStoreLog :: STMMsgStore -> StoreLog 'WriteMode -> IO ()
@@ -76,18 +77,36 @@ instance MsgStoreClass STMMsgStore where
 
   withAllMsgQueues _ = withActiveMsgQueues
   {-# INLINE withAllMsgQueues #-}
-
   logQueueStates _ = pure ()
   {-# INLINE logQueueStates #-}
-
   logQueueState _ = pure ()
   {-# INLINE logQueueState #-}
-
   recipientId' = recipientId
   {-# INLINE recipientId' #-}
-
   queueRec' = queueRec
   {-# INLINE queueRec' #-}
+  msgQueue_' = msgQueue_
+  {-# INLINE msgQueue_' #-}
+  addQueue = stmAddQueue
+  {-# INLINE addQueue #-}
+  getQueue = stmGetQueue . queueStore
+  {-# INLINE getQueue #-}
+  secureQueue = stmSecureQueue . queueStore
+  {-# INLINE secureQueue #-}
+  addQueueNotifier = stmAddQueueNotifier . queueStore
+  {-# INLINE addQueueNotifier #-}
+  deleteQueueNotifier = stmDeleteQueueNotifier . queueStore
+  {-# INLINE deleteQueueNotifier #-}
+  suspendQueue = stmSuspendQueue . queueStore
+  {-# INLINE suspendQueue #-}
+  blockQueue = stmBlockQueue . queueStore
+  {-# INLINE blockQueue #-}
+  unblockQueue = stmUnblockQueue . queueStore
+  {-# INLINE unblockQueue #-}
+  updateQueueTime = stmUpdateQueueTime . queueStore
+  {-# INLINE updateQueueTime #-}
+  deleteQueue' = stmDeleteQueue . queueStore
+  {-# INLINE deleteQueue' #-}
 
   getMsgQueue :: STMMsgStore -> STMQueue -> STM STMMsgQueue
   getMsgQueue _ STMQueue {msgQueue_} = readTVar msgQueue_ >>= maybe newQ pure

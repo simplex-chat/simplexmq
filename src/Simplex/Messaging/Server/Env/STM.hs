@@ -305,7 +305,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
   random <- C.newRandom
   forM_ storeLogFile $ \f -> do
     logInfo $ "restoring queues from file " <> T.pack f
-    sl <- readWriteQueueStore f store
+    sl <- readWriteSTMQueueStore f store
     setStoreLog store sl
   tlsServerCreds <- getCredentials "SMP" smpCredentials
   httpServerCreds <- mapM (getCredentials "HTTPS") httpCredentials
@@ -362,5 +362,5 @@ newSMPProxyAgent smpAgentCfg random = do
   smpAgent <- newSMPClientAgent smpAgentCfg random
   pure ProxyAgent {smpAgent}
 
-readWriteQueueStore :: STMStoreClass s => FilePath -> s -> IO (StoreLog 'WriteMode)
-readWriteQueueStore = readWriteStoreLog readQueueStore writeQueueStore
+readWriteSTMQueueStore :: STMStoreClass s => FilePath -> s -> IO (StoreLog 'WriteMode)
+readWriteSTMQueueStore = readWriteStoreLog readSTMQueueStore writeSTMQueueStore

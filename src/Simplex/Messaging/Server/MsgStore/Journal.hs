@@ -218,14 +218,14 @@ newtype StoreIO a = StoreIO {unStoreIO :: IO a}
 
 instance STMStoreClass JournalMsgStore where
   stmQueueStore JournalMsgStore {queueStore} = queueStore
+  {-# INLINE stmQueueStore #-}
   mkQueue st rId qr = do
-    lock <- getMapLock (queueLocks st) rId
-    q <- newTVar $ Just qr
-    mq <- newTVar Nothing
-    activeAt <- newTVar 0
-    isEmpty <- newTVar Nothing
+    lock <- atomically $ getMapLock (queueLocks st) rId
+    q <- newTVarIO $ Just qr
+    mq <- newTVarIO Nothing
+    activeAt <- newTVarIO 0
+    isEmpty <- newTVarIO Nothing
     pure $ JournalQueue rId lock q mq activeAt isEmpty
-  msgQueue_' = msgQueue_
 
 instance MsgStoreClass JournalMsgStore where
   type StoreMonad JournalMsgStore = StoreIO
@@ -237,7 +237,7 @@ instance MsgStoreClass JournalMsgStore where
   newMsgStore config = do
     random <- newTVarIO =<< newStdGen
     queueLocks <- TM.emptyIO
-    queueStore <- newQueueStore
+    queueStore <- newSTMQueueStore
     pure JournalMsgStore {config, random, queueLocks, queueStore}
 
   setStoreLog :: JournalMsgStore -> StoreLog 'WriteMode -> IO ()
@@ -303,9 +303,30 @@ instance MsgStoreClass JournalMsgStore where
 
   recipientId' = recipientId
   {-# INLINE recipientId' #-}
-
   queueRec' = queueRec
   {-# INLINE queueRec' #-}
+  msgQueue_' = msgQueue_
+  {-# INLINE msgQueue_' #-}
+  addQueue = stmAddQueue
+  {-# INLINE addQueue #-}
+  getQueue = stmGetQueue . queueStore
+  {-# INLINE getQueue #-}
+  secureQueue = stmSecureQueue . queueStore
+  {-# INLINE secureQueue #-}
+  addQueueNotifier = stmAddQueueNotifier . queueStore
+  {-# INLINE addQueueNotifier #-}
+  deleteQueueNotifier = stmDeleteQueueNotifier . queueStore
+  {-# INLINE deleteQueueNotifier #-}
+  suspendQueue = stmSuspendQueue . queueStore
+  {-# INLINE suspendQueue #-}
+  blockQueue = stmBlockQueue . queueStore
+  {-# INLINE blockQueue #-}
+  unblockQueue = stmUnblockQueue . queueStore
+  {-# INLINE unblockQueue #-}
+  updateQueueTime = stmUpdateQueueTime . queueStore
+  {-# INLINE updateQueueTime #-}
+  deleteQueue' = stmDeleteQueue . queueStore
+  {-# INLINE deleteQueue' #-}
 
   getMsgQueue :: JournalMsgStore -> JournalQueue -> StoreIO JournalMsgQueue
   getMsgQueue ms@JournalMsgStore {random} JournalQueue {recipientId = rId, msgQueue_} =
