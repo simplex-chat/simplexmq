@@ -2034,7 +2034,10 @@ checkNtfToken' c deviceToken =
     Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId, ntfTknAction} -> do
       when (deviceToken /= savedDeviceToken) . throwE $ CMD PROHIBITED "checkNtfToken: different token"
       status <- agentNtfCheckToken c tknId tkn
-      let action = if status == NTInvalid || status == NTExpired then Nothing else ntfTknAction
+      let action = case status of
+            NTInvalid _ -> Nothing
+            NTExpired -> Nothing
+            _ -> ntfTknAction
       withStore' c $ \db -> updateNtfToken db tkn status action
       pure status
     _ -> throwE $ CMD PROHIBITED "checkNtfToken: no token"
