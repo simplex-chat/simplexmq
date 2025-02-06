@@ -32,7 +32,7 @@ import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Transport (NTFVersion, ntfClientHandshake)
+import Simplex.Messaging.Notifications.Transport (NTFVersion, invalidReasonNTFVersion, ntfClientHandshake)
 import Simplex.Messaging.Parsers (fromTextField_)
 import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
 import Simplex.Messaging.Util (eitherToMaybe, (<$?>))
@@ -305,7 +305,7 @@ instance ProtocolEncoding NTFVersion ErrorType NtfResponse where
       where
         stat'
           | v >= invalidReasonNTFVersion = stat
-          | otherwise -> case stat of
+          | otherwise = case stat of
               NTInvalid _ -> NTInvalid Nothing
               _ -> stat
     NRSub stat -> e (NRSub_, ' ', stat)

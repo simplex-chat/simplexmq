@@ -512,13 +512,17 @@ receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ
   where
     cmdAction t@(_, _, (corrId, entId, cmdOrError)) =
       case cmdOrError of
-        Left e -> pure $ Left (corrId, entId, NRErr e)
+        Left e -> do
+          logError $ "invalid client request: " <> tshow e
+          pure $ Left (corrId, entId, NRErr e)
         Right cmd ->
-          verified <$> verifyNtfTransmission ((,C.cbNonce (SMP.bs corrId)) <$> thAuth) t cmd
+          verified =<< verifyNtfTransmission ((,C.cbNonce (SMP.bs corrId)) <$> thAuth) t cmd
           where
             verified = \case
-              VRVerified req -> Right req
-              VRFailed -> Left (corrId, entId, NRErr AUTH)
+              VRVerified req -> pure $ Right req
+              VRFailed -> do
+                logError "unauthorized client request"
+                pure $ Left (corrId, entId, NRErr AUTH)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> IO ()
