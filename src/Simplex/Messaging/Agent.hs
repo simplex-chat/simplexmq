@@ -1946,7 +1946,6 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
         -- possible improvement: add minimal time before repeat registration
         (Just tknId, Nothing)
           | savedDeviceToken == suppliedDeviceToken ->
-              -- when (ntfTknStatus == NTRegistered) (registerToken tkn) $> NTRegistered
               registerToken tkn $> NTRegistered
           | otherwise -> replaceToken tknId
         (Just tknId, Just (NTAVerify code))
