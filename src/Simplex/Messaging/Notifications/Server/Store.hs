@@ -25,6 +25,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Protocol (NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer)
+import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (whenM, ($>>=))
@@ -57,14 +58,16 @@ data NtfTknData = NtfTknData
     tknDhKeys :: C.KeyPair 'C.X25519,
     tknDhSecret :: C.DhSecretX25519,
     tknRegCode :: NtfRegCode,
-    tknCronInterval :: TVar Word16
+    tknCronInterval :: TVar Word16,
+    tknUpdatedAt :: TVar RoundedSystemTime
   }
 
-mkNtfTknData :: NtfTokenId -> NewNtfEntity 'Token -> C.KeyPair 'C.X25519 -> C.DhSecretX25519 -> NtfRegCode -> STM NtfTknData
-mkNtfTknData ntfTknId (NewNtfTkn token tknVerifyKey _) tknDhKeys tknDhSecret tknRegCode = do
-  tknStatus <- newTVar NTRegistered
-  tknCronInterval <- newTVar 0
-  pure NtfTknData {ntfTknId, token, tknStatus, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval}
+mkNtfTknData :: NtfTokenId -> NewNtfEntity 'Token -> C.KeyPair 'C.X25519 -> C.DhSecretX25519 -> NtfRegCode -> RoundedSystemTime -> IO NtfTknData
+mkNtfTknData ntfTknId (NewNtfTkn token tknVerifyKey _) tknDhKeys tknDhSecret tknRegCode ts = do
+  tknStatus <- newTVarIO NTRegistered
+  tknCronInterval <- newTVarIO 0
+  tknUpdatedAt <- newTVarIO ts
+  pure NtfTknData {ntfTknId, token, tknStatus, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval, tknUpdatedAt}
 
 data NtfSubData = NtfSubData
   { ntfSubId :: NtfSubscriptionId,
@@ -156,9 +159,8 @@ deleteTokenSubs st tknId = do
         $>>= \NtfSubData {smpQueue} ->
           TM.delete smpQueue (subscriptionLookup st) $> Just smpQueue
 
-getNtfSubscription :: NtfStore -> NtfSubscriptionId -> STM (Maybe NtfSubData)
-getNtfSubscription st subId =
-  TM.lookup subId (subscriptions st)
+getNtfSubscriptionIO :: NtfStore -> NtfSubscriptionId -> IO (Maybe NtfSubData)
+getNtfSubscriptionIO st subId = TM.lookupIO subId (subscriptions st)
 
 findNtfSubscription :: NtfStore -> SMPQueueNtf -> STM (Maybe NtfSubData)
 findNtfSubscription st smpQueue = do

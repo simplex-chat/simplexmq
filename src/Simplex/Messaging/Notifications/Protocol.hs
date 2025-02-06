@@ -11,7 +11,7 @@
 
 module Simplex.Messaging.Notifications.Protocol where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (optional, (<|>))
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
@@ -520,7 +520,7 @@ data NtfTknStatus
   | -- | state after registration (TNEW)
     NTRegistered
   | -- | if initial notification failed (push provider error) or verification failed
-    NTInvalid
+    NTInvalid (Maybe NTInvalidReason)
   | -- | Token confirmed via notification (accepted by push provider or verification code received by client)
     NTConfirmed
   | -- | after successful verification (TVFY)
@@ -533,7 +533,7 @@ instance Encoding NtfTknStatus where
   smpEncode = \case
     NTNew -> "NEW"
     NTRegistered -> "REGISTERED"
-    NTInvalid -> "INVALID"
+    NTInvalid r_ -> "INVALID" <> maybe "" (\r -> ',' `B.cons` strEncode r) r_
     NTConfirmed -> "CONFIRMED"
     NTActive -> "ACTIVE"
     NTExpired -> "EXPIRED"
@@ -541,11 +541,30 @@ instance Encoding NtfTknStatus where
     A.takeTill (== ' ') >>= \case
       "NEW" -> pure NTNew
       "REGISTERED" -> pure NTRegistered
-      "INVALID" -> pure NTInvalid
+      "INVALID" -> NTInvalid <$> optional (A.char ',' *> strP)
       "CONFIRMED" -> pure NTConfirmed
       "ACTIVE" -> pure NTActive
       "EXPIRED" -> pure NTExpired
       _ -> fail "bad NtfTknStatus"
+
+instance StrEncoding NTInvalidReason where
+  strEncode = smpEncode
+  strP = smpP
+
+data NTInvalidReason = NTIRBadToken | NTIRTokenNotForTopic | NTIRGone410
+  deriving (Eq, Show)
+
+instance Encoding NTInvalidReason where
+  smpEncode = \case
+    NTIRBadToken -> "BAD"
+    NTIRTokenNotForTopic -> "TOPIC"
+    NTIRGone410 -> "410"
+  smpP =
+    A.takeTill (== ' ') >>= \case
+      "BAD" -> pure NTIRBadToken
+      "TOPIC" -> pure NTIRTokenNotForTopic
+      "410" -> pure NTIRGone410
+      _ -> fail "bad NTInvalidReason"
 
 instance StrEncoding NtfTknStatus where
   strEncode = smpEncode

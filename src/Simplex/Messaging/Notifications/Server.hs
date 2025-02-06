@@ -58,6 +58,7 @@ import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), ProtocolServer
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Control (CPClientRole (..))
+import Simplex.Messaging.Server.QueueStore (getSystemDate)
 import Simplex.Messaging.Server.Stats (PeriodStats (..), PeriodStatCounts (..), periodStatCounts, updatePeriodStats)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -435,17 +436,19 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
   status <- readTVarIO tknStatus
   case ntf of
-    PNVerification _
-      | status /= NTInvalid && status /= NTExpired ->
-          deliverNotification pp tkn ntf >>= \case
-            Right _ -> do
-              status_ <- atomically $ stateTVar tknStatus $ \case
-                NTActive -> (Nothing, NTActive)
-                NTConfirmed -> (Nothing, NTConfirmed)
-                _ -> (Just NTConfirmed, NTConfirmed)
-              forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
-            _ -> pure ()
-      | otherwise -> logError "bad notification token status"
+    PNVerification _ -> case status of
+      NTInvalid _ -> logError $ "bad notification token status: " <> tshow status
+      -- TODO nothing makes token "expired" on the server
+      NTExpired -> logError $ "bad notification token status: " <> tshow status
+      _ ->
+        deliverNotification pp tkn ntf >>= \case
+          Right _ -> do
+            status_ <- atomically $ stateTVar tknStatus $ \case
+              NTActive -> (Nothing, NTActive)
+              NTConfirmed -> (Nothing, NTConfirmed)
+              _ -> (Just NTConfirmed, NTConfirmed)
+            forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
+          _ -> pure ()
     PNCheckMessages -> checkActiveTkn status $ do
       void $ deliverNotification pp tkn ntf
     PNMessage {} -> checkActiveTkn status $ do
@@ -468,7 +471,7 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
           PPRetryLater -> retryDeliver
           PPCryptoError _ -> err e
           PPResponseError _ _ -> err e
-          PPTokenInvalid -> updateTknStatus tkn NTInvalid >> err e
+          PPTokenInvalid r -> updateTknStatus tkn (NTInvalid $ Just r) >> err e
           PPPermanentError -> err e
       where
         retryDeliver :: M (Either PushProviderError ())
@@ -557,7 +560,7 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
             else pure $ maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
     NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
     NtfCmd SSubscription c -> do
-      s_ <- atomically $ getNtfSubscription st entId
+      s_ <- liftIO $ getNtfSubscriptionIO st entId
       case s_ of
         Just s@NtfSubData {tokenId = subTknId} -> do
           t_ <- atomically $ getActiveNtfToken st subTknId
@@ -593,7 +596,8 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         let dhSecret = C.dh' dhPubKey srvDhPrivKey
         tknId <- getId
         regCode <- getRegCode
-        tkn <- atomically $ mkNtfTknData tknId newTkn ks dhSecret regCode
+        ts <- liftIO $ getSystemDate
+        tkn <- liftIO $ mkNtfTknData tknId newTkn ks dhSecret regCode ts
         atomically $ addNtfToken st tknId tkn
         atomically $ writeTBQueue pushQ (tkn, PNVerification regCode)
         withNtfLog (`logCreateToken` tkn)
