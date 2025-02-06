@@ -262,15 +262,19 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
 #else
                   hPutStrLn h "Threads: not available on GHC 8.10"
 #endif
-                  NtfSubscriber {smpSubscribers, smpAgent = a} <- unliftIO u $ asks subscriber
+                  NtfEnv {subscriber, pushServer} <-  unliftIO u ask
+                  let NtfSubscriber {smpSubscribers, smpAgent = a} = subscriber
+                      NtfPushServer {pushQ} = pushServer
+                      SMPClientAgent {smpClients, smpSessions, srvSubs, pendingSrvSubs, smpSubWorkers} = a
                   putSMPWorkers a "SMP subcscribers" smpSubscribers
-                  let SMPClientAgent {smpClients, smpSessions, srvSubs, pendingSrvSubs, smpSubWorkers} = a
                   putSMPWorkers a "SMP clients" smpClients
                   putSMPWorkers a "SMP subscription workers" smpSubWorkers
                   sessions <- readTVarIO smpSessions
                   hPutStrLn h $ "SMP sessions count: " <> show (M.size sessions)
                   putSMPSubs a "SMP subscriptions" srvSubs
                   putSMPSubs a "Pending SMP subscriptions" pendingSrvSubs
+                  sz <- atomically $ lengthTBQueue pushQ
+                  hPutStrLn h $ "Push notifications queue length: " <> show sz
                   where
                     putSMPSubs :: SMPClientAgent -> String -> TMap SMPServer (TMap SMPSub a) -> IO ()
                     putSMPSubs a name v = do
