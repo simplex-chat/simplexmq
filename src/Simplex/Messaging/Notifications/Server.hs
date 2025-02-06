@@ -476,12 +476,12 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
           Left _ -> incNtfStat ntfVrfFailed
     PNCheckMessages -> checkActiveTkn status $ do
       deliverNotification pp tkn ntf
-        >>= incNtfStat . (\case Right () -> ntfCronDelivered; Left _ -> ntfCronFailed)
+        >>= incNtfStat . (\case Left _ -> ntfCronFailed; Right () -> ntfCronDelivered)
     PNMessage {} -> checkActiveTkn status $ do
       stats <- asks serverStats
       liftIO $ updatePeriodStats (activeTokens stats) ntfTknId
       deliverNotification pp tkn ntf
-        >>= incNtfStat . (\case Right () -> ntfDelivered; Left _ -> ntfFailed)
+        >>= incNtfStat . (\case Left _ -> ntfFailed; Right () -> ntfDelivered)
   where
     checkActiveTkn :: NtfTknStatus -> M () -> M ()
     checkActiveTkn status action
