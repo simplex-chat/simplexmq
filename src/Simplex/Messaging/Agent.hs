@@ -2033,9 +2033,12 @@ verifyNtfToken' c deviceToken nonce code =
 checkNtfToken' :: AgentClient -> DeviceToken -> AM NtfTknStatus
 checkNtfToken' c deviceToken =
   withStore' c getSavedNtfToken >>= \case
-    Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId} -> do
+    Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId, ntfTknAction} -> do
       when (deviceToken /= savedDeviceToken) . throwE $ CMD PROHIBITED "checkNtfToken: different token"
-      agentNtfCheckToken c tknId tkn
+      status <- agentNtfCheckToken c tknId tkn
+      let action = if status == NTInvalid || status == NTExpired then Nothing else ntfTknAction
+      withStore' c $ \db -> updateNtfToken db tkn status action
+      pure status
     _ -> throwE $ CMD PROHIBITED "checkNtfToken: no token"
 
 deleteNtfToken' :: AgentClient -> DeviceToken -> AM ()
