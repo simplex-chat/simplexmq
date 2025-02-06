@@ -59,14 +59,14 @@ data NtfTknData = NtfTknData
     tknDhSecret :: C.DhSecretX25519,
     tknRegCode :: NtfRegCode,
     tknCronInterval :: TVar Word16,
-    tknUpdatedAt :: TVar RoundedSystemTime
+    tknUpdatedAt :: TVar (Maybe RoundedSystemTime)
   }
 
 mkNtfTknData :: NtfTokenId -> NewNtfEntity 'Token -> C.KeyPair 'C.X25519 -> C.DhSecretX25519 -> NtfRegCode -> RoundedSystemTime -> IO NtfTknData
 mkNtfTknData ntfTknId (NewNtfTkn token tknVerifyKey _) tknDhKeys tknDhSecret tknRegCode ts = do
   tknStatus <- newTVarIO NTRegistered
   tknCronInterval <- newTVarIO 0
-  tknUpdatedAt <- newTVarIO ts
+  tknUpdatedAt <- newTVarIO $ Just ts
   pure NtfTknData {ntfTknId, token, tknStatus, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval, tknUpdatedAt}
 
 data NtfSubData = NtfSubData

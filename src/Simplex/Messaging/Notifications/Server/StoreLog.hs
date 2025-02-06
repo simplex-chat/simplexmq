@@ -31,7 +31,6 @@ import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
-import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
@@ -39,7 +38,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Protocol (NtfPrivateAuthKey)
-import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, getSystemDate)
+import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (safeDecodeUtf8)
 import System.IO
@@ -69,18 +68,18 @@ data NtfTknRec = NtfTknRec
   }
   deriving (Show)
 
-mkTknData :: NtfTknRec -> RoundedSystemTime -> IO NtfTknData
-mkTknData NtfTknRec {ntfTknId, token, tknStatus = status, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval = cronInt, tknUpdatedAt = updatedAt} ts = do
+mkTknData :: NtfTknRec -> IO NtfTknData
+mkTknData NtfTknRec {ntfTknId, token, tknStatus = status, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval = cronInt, tknUpdatedAt = updatedAt} = do
   tknStatus <- newTVarIO status
   tknCronInterval <- newTVarIO cronInt
-  tknUpdatedAt <- newTVarIO $ fromMaybe ts updatedAt
+  tknUpdatedAt <- newTVarIO updatedAt
   pure NtfTknData {ntfTknId, token, tknStatus, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval, tknUpdatedAt}
 
 mkTknRec :: NtfTknData -> IO NtfTknRec
 mkTknRec NtfTknData {ntfTknId, token, tknStatus = status, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval = cronInt, tknUpdatedAt = updatedAt} = do
   tknStatus <- readTVarIO status
   tknCronInterval <- readTVarIO cronInt
-  tknUpdatedAt <- Just <$> readTVarIO updatedAt
+  tknUpdatedAt <- readTVarIO updatedAt
   pure NtfTknRec {ntfTknId, token, tknStatus, tknVerifyKey, tknDhKeys, tknDhSecret, tknRegCode, tknCronInterval, tknUpdatedAt}
 
 data NtfSubRec = NtfSubRec
@@ -205,15 +204,13 @@ readWriteNtfStore :: FilePath -> NtfStore -> IO (StoreLog 'WriteMode)
 readWriteNtfStore = readWriteStoreLog readNtfStore writeNtfStore
 
 readNtfStore :: FilePath -> NtfStore -> IO ()
-readNtfStore f st = do
-  ts <- getSystemDate
-  mapM_ (addNtfLogRecord ts . LB.toStrict) . LB.lines =<< LB.readFile f
+readNtfStore f st = mapM_ (addNtfLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f
   where
-    addNtfLogRecord ts s = case strDecode s of
+    addNtfLogRecord s = case strDecode s of
       Left e -> logError $ "Log parsing error (" <> T.pack e <> "): " <> safeDecodeUtf8 (B.take 100 s)
       Right lr -> case lr of
         CreateToken r@NtfTknRec {ntfTknId} -> do
-          tkn <- mkTknData r ts
+          tkn <- mkTknData r
           atomically $ addNtfToken st ntfTknId tkn
         TokenStatus tknId status -> do
           tkn_ <- getNtfTokenIO st tknId
@@ -235,7 +232,7 @@ readNtfStore f st = do
           atomically $ void $ deleteNtfToken st tknId
         UpdateTokenTime tknId t ->
           getNtfTokenIO st tknId
-            >>= mapM_ (\NtfTknData {tknUpdatedAt} -> atomically $ writeTVar tknUpdatedAt t)
+            >>= mapM_ (\NtfTknData {tknUpdatedAt} -> atomically $ writeTVar tknUpdatedAt $ Just t)
         CreateSubscription r@NtfSubRec {ntfSubId} -> do
           sub <- mkSubData r
           void $ atomically $ addNtfSubscription st ntfSubId sub

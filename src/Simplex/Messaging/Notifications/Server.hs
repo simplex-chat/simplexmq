@@ -589,9 +589,10 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
       >>= atomically . writeTBQueue sndQ
   where
     updateTokenDate :: RoundedSystemTime -> Maybe NtfTknData -> M ()
-    updateTokenDate t' = mapM_ $ \NtfTknData {ntfTknId, tknUpdatedAt} -> do
+    updateTokenDate ts' = mapM_ $ \NtfTknData {ntfTknId, tknUpdatedAt} -> do
+      let t' = Just ts'
       t <- atomically $ swapTVar tknUpdatedAt t'
-      unless (t' == t) $ withNtfLog $ \s -> logUpdateTokenTime s ntfTknId t'
+      unless (t' == t) $ withNtfLog $ \s -> logUpdateTokenTime s ntfTknId ts'
       
     processCommand :: NtfRequest -> M (Transmission NtfResponse)
     processCommand = \case
