@@ -462,7 +462,7 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
       | status == NTActive = action
       | otherwise = liftIO $ logError "bad notification token status"
     deliverNotification :: PushProvider -> NtfTknData -> PushNotification -> M (Either PushProviderError ())
-    deliverNotification pp tkn ntf = do
+    deliverNotification pp tkn@NtfTknData {ntfTknId} ntf = do
       deliver <- liftIO $ getPushClient s pp
       liftIO (runExceptT $ deliver tkn ntf) >>= \case
         Right _ -> pure $ Right ()
@@ -478,7 +478,7 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
         retryDeliver = do
           deliver <- liftIO $ newPushClient s pp
           liftIO (runExceptT $ deliver tkn ntf) >>= either err (pure . Right)
-        err e = logError (T.pack $ "Push provider error (" <> show pp <> "): " <> show e) $> Left e
+        err e = logError ("Push provider error (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> tshow e) $> Left e
 
 updateTknStatus :: NtfTknData -> NtfTknStatus -> M ()
 updateTknStatus NtfTknData {ntfTknId, tknStatus} status = do
