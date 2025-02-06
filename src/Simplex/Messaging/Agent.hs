@@ -1955,18 +1955,16 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
         (Just tknId, Just NTACheck)
           | savedDeviceToken == suppliedDeviceToken -> do
               ns <- asks ntfSupervisor
-              atomically $ nsUpdateToken ns tkn {ntfMode = suppliedNtfMode}
               let tkn' = tkn {ntfMode = suppliedNtfMode}
-              status <- agentNtfCheckToken c tknId tkn'
-              if status == NTActive
-                then do
+              atomically $ nsUpdateToken ns tkn'
+              agentNtfCheckToken c tknId tkn' >>= \case
+                NTActive -> do
                   cron <- asks $ ntfCron . config
                   agentNtfEnableCron c tknId tkn cron
                   when (suppliedNtfMode == NMInstant) $ initializeNtfSubs c
                   when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ deleteNtfSubs c NSCSmpDelete
-                  t tkn' (status, Just NTACheck) $ pure ()
-                else
-                  t tkn' (status, Nothing) $ pure ()
+                  t tkn' (NTActive, Just NTACheck) $ pure ()
+                status -> t tkn' (status, Nothing) $ pure ()
           | otherwise -> replaceToken tknId
         -- deprecated
         (Just _tknId, Just NTADelete) -> deleteToken c tkn $> NTExpired
