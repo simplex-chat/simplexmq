@@ -11,7 +11,7 @@
 
 module Simplex.Messaging.Notifications.Protocol where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (optional, (<|>))
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
@@ -32,7 +32,7 @@ import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Transport (NTFVersion, ntfClientHandshake)
+import Simplex.Messaging.Notifications.Transport (NTFVersion, invalidReasonNTFVersion, ntfClientHandshake)
 import Simplex.Messaging.Parsers (fromTextField_)
 import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
 import Simplex.Messaging.Util (eitherToMaybe, (<$?>))
@@ -296,12 +296,18 @@ data NtfResponse
 
 instance ProtocolEncoding NTFVersion ErrorType NtfResponse where
   type Tag NtfResponse = NtfResponseTag
-  encodeProtocol _v = \case
+  encodeProtocol v = \case
     NRTknId entId dhKey -> e (NRTknId_, ' ', entId, dhKey)
     NRSubId entId -> e (NRSubId_, ' ', entId)
     NROk -> e NROk_
     NRErr err -> e (NRErr_, ' ', err)
-    NRTkn stat -> e (NRTkn_, ' ', stat)
+    NRTkn stat -> e (NRTkn_, ' ', stat')
+      where
+        stat'
+          | v >= invalidReasonNTFVersion = stat
+          | otherwise = case stat of
+              NTInvalid _ -> NTInvalid Nothing
+              _ -> stat
     NRSub stat -> e (NRSub_, ' ', stat)
     NRPong -> e NRPong_
     where
@@ -520,7 +526,7 @@ data NtfTknStatus
   | -- | state after registration (TNEW)
     NTRegistered
   | -- | if initial notification failed (push provider error) or verification failed
-    NTInvalid
+    NTInvalid (Maybe NTInvalidReason)
   | -- | Token confirmed via notification (accepted by push provider or verification code received by client)
     NTConfirmed
   | -- | after successful verification (TVFY)
@@ -533,7 +539,7 @@ instance Encoding NtfTknStatus where
   smpEncode = \case
     NTNew -> "NEW"
     NTRegistered -> "REGISTERED"
-    NTInvalid -> "INVALID"
+    NTInvalid r_ -> "INVALID" <> maybe "" (\r -> ',' `B.cons` strEncode r) r_
     NTConfirmed -> "CONFIRMED"
     NTActive -> "ACTIVE"
     NTExpired -> "EXPIRED"
@@ -541,11 +547,30 @@ instance Encoding NtfTknStatus where
     A.takeTill (== ' ') >>= \case
       "NEW" -> pure NTNew
       "REGISTERED" -> pure NTRegistered
-      "INVALID" -> pure NTInvalid
+      "INVALID" -> NTInvalid <$> optional (A.char ',' *> strP)
       "CONFIRMED" -> pure NTConfirmed
       "ACTIVE" -> pure NTActive
       "EXPIRED" -> pure NTExpired
       _ -> fail "bad NtfTknStatus"
+
+instance StrEncoding NTInvalidReason where
+  strEncode = smpEncode
+  strP = smpP
+
+data NTInvalidReason = NTIRBadToken | NTIRTokenNotForTopic | NTIRGone410
+  deriving (Eq, Show)
+
+instance Encoding NTInvalidReason where
+  smpEncode = \case
+    NTIRBadToken -> "BAD"
+    NTIRTokenNotForTopic -> "TOPIC"
+    NTIRGone410 -> "GONE"
+  smpP =
+    A.takeTill (== ' ') >>= \case
+      "BAD" -> pure NTIRBadToken
+      "TOPIC" -> pure NTIRTokenNotForTopic
+      "GONE" -> pure NTIRGone410
+      _ -> fail "bad NTInvalidReason"
 
 instance StrEncoding NtfTknStatus where
   strEncode = smpEncode
