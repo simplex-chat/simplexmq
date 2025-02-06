@@ -558,12 +558,12 @@ instance Encoding NTInvalidReason where
   smpEncode = \case
     NTIRBadToken -> "BAD"
     NTIRTokenNotForTopic -> "TOPIC"
-    NTIRGone410 -> "410"
+    NTIRGone410 -> "GONE"
   smpP =
     A.takeTill (== ' ') >>= \case
       "BAD" -> pure NTIRBadToken
       "TOPIC" -> pure NTIRTokenNotForTopic
-      "410" -> pure NTIRGone410
+      "GONE" -> pure NTIRGone410
       _ -> fail "bad NTInvalidReason"
 
 instance StrEncoding NtfTknStatus where
