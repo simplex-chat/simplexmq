@@ -58,7 +58,7 @@ import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), ProtocolServer
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Control (CPClientRole (..))
-import Simplex.Messaging.Server.QueueStore (getSystemDate)
+import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, getSystemDate)
 import Simplex.Messaging.Server.Stats (PeriodStats (..), PeriodStatCounts (..), periodStatCounts, updatePeriodStats)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -527,7 +527,7 @@ send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
   void . liftIO $ tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
   atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
 
-data VerificationResult = VRVerified NtfRequest | VRFailed
+data VerificationResult = VRVerified (Maybe NtfTknData, NtfRequest) | VRFailed
 
 verifyNtfTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
 verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
@@ -541,34 +541,34 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
             Just t@NtfTknData {tknVerifyKey}
               | k == tknVerifyKey -> verifiedTknCmd t c
               | otherwise -> VRFailed
-            _ -> VRVerified (NtfReqNew corrId (ANE SToken tkn))
+            Nothing -> VRVerified (Nothing, NtfReqNew corrId (ANE SToken tkn))
           else VRFailed
     NtfCmd SToken c -> do
-      t_ <- atomically $ getNtfToken st entId
+      t_ <- liftIO $ getNtfTokenIO st entId
       verifyToken t_ (`verifiedTknCmd` c)
     NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId smpQueue _)) -> do
       s_ <- atomically $ findNtfSubscription st smpQueue
       case s_ of
         Nothing -> do
           t_ <- atomically $ getActiveNtfToken st tknId
-          verifyToken' t_ $ VRVerified (NtfReqNew corrId (ANE SSubscription sub))
+          verifyToken' t_ $ VRVerified (t_, NtfReqNew corrId (ANE SSubscription sub))
         Just s@NtfSubData {tokenId = subTknId} ->
           if subTknId == tknId
             then do
               t_ <- atomically $ getActiveNtfToken st subTknId
-              verifyToken' t_ $ verifiedSubCmd s c
+              verifyToken' t_ $ verifiedSubCmd t_ s c
             else pure $ maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
-    NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
+    NtfCmd SSubscription PING -> pure $ VRVerified (Nothing, NtfReqPing corrId entId)
     NtfCmd SSubscription c -> do
       s_ <- liftIO $ getNtfSubscriptionIO st entId
       case s_ of
         Just s@NtfSubData {tokenId = subTknId} -> do
           t_ <- atomically $ getActiveNtfToken st subTknId
-          verifyToken' t_ $ verifiedSubCmd s c
+          verifyToken' t_ $ verifiedSubCmd t_ s c
         _ -> pure $ maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
   where
-    verifiedTknCmd t c = VRVerified (NtfReqCmd SToken (NtfTkn t) (corrId, entId, c))
-    verifiedSubCmd s c = VRVerified (NtfReqCmd SSubscription (NtfSub s) (corrId, entId, c))
+    verifiedTknCmd t c = VRVerified (Just t, NtfReqCmd SToken (NtfTkn t) (corrId, entId, c))
+    verifiedSubCmd t_ s c = VRVerified (t_, NtfReqCmd SSubscription (NtfSub s) (corrId, entId, c))
     verifyToken :: Maybe NtfTknData -> (NtfTknData -> VerificationResult) -> M VerificationResult
     verifyToken t_ positiveVerificationResult =
       pure $ case t_ of
@@ -582,11 +582,17 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
 
 client :: NtfServerClient -> NtfSubscriber -> NtfPushServer -> M ()
 client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPushServer {pushQ, intervalNotifiers} =
-  forever $
+  forever $ do
+    ts <- liftIO getSystemDate
     atomically (readTBQueue rcvQ)
-      >>= mapM processCommand
+      >>= mapM (\(tkn_, req) -> updateTokenDate ts tkn_ >> processCommand req)
       >>= atomically . writeTBQueue sndQ
   where
+    updateTokenDate :: RoundedSystemTime -> Maybe NtfTknData -> M ()
+    updateTokenDate t' = mapM_ $ \NtfTknData {ntfTknId, tknUpdatedAt} -> do
+      t <- atomically $ swapTVar tknUpdatedAt t'
+      unless (t' == t) $ withNtfLog $ \s -> logUpdateTokenTime s ntfTknId t'
+      
     processCommand :: NtfRequest -> M (Transmission NtfResponse)
     processCommand = \case
       NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> do

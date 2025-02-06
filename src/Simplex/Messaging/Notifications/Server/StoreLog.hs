@@ -16,6 +16,7 @@ module Simplex.Messaging.Notifications.Server.StoreLog
     logUpdateToken,
     logTokenCron,
     logDeleteToken,
+    logUpdateTokenTime,
     logCreateSubscription,
     logSubscriptionStatus,
     logDeleteSubscription,
@@ -49,6 +50,7 @@ data NtfStoreLogRecord
   | UpdateToken NtfTokenId DeviceToken NtfRegCode
   | TokenCron NtfTokenId Word16
   | DeleteToken NtfTokenId
+  | UpdateTokenTime NtfTokenId RoundedSystemTime
   | CreateSubscription NtfSubRec
   | SubscriptionStatus NtfSubscriptionId NtfSubStatus
   | DeleteSubscription NtfSubscriptionId
@@ -107,6 +109,7 @@ instance StrEncoding NtfStoreLogRecord where
     UpdateToken tknId token regCode -> strEncode (Str "TUPDATE", tknId, token, regCode)
     TokenCron tknId cronInt -> strEncode (Str "TCRON", tknId, cronInt)
     DeleteToken tknId -> strEncode (Str "TDELETE", tknId)
+    UpdateTokenTime tknId ts -> strEncode (Str "TTIME", tknId, ts)
     CreateSubscription subRec -> strEncode (Str "SCREATE", subRec)
     SubscriptionStatus subId subStatus -> strEncode (Str "SSTATUS", subId, subStatus)
     DeleteSubscription subId -> strEncode (Str "SDELETE", subId)
@@ -117,6 +120,7 @@ instance StrEncoding NtfStoreLogRecord where
         "TUPDATE " *> (UpdateToken <$> strP_ <*> strP_ <*> strP),
         "TCRON " *> (TokenCron <$> strP_ <*> strP),
         "TDELETE " *> (DeleteToken <$> strP),
+        "TTIME " *> (UpdateTokenTime <$> strP_ <*> strP),
         "SCREATE " *> (CreateSubscription <$> strP),
         "SSTATUS " *> (SubscriptionStatus <$> strP_ <*> strP),
         "SDELETE " *> (DeleteSubscription <$> strP)
@@ -185,6 +189,9 @@ logTokenCron s tknId cronInt = logNtfStoreRecord s $ TokenCron tknId cronInt
 logDeleteToken :: StoreLog 'WriteMode -> NtfTokenId -> IO ()
 logDeleteToken s tknId = logNtfStoreRecord s $ DeleteToken tknId
 
+logUpdateTokenTime :: StoreLog 'WriteMode -> NtfTokenId -> RoundedSystemTime -> IO ()
+logUpdateTokenTime s tknId t = logNtfStoreRecord s $ UpdateTokenTime tknId t
+
 logCreateSubscription :: StoreLog 'WriteMode -> NtfSubData -> IO ()
 logCreateSubscription s sub = logNtfStoreRecord s . CreateSubscription =<< atomically (mkSubRec sub)
 
@@ -221,11 +228,14 @@ readNtfStore f st = do
                   atomically $ writeTVar tknStatus NTRegistered
                   atomically $ addNtfToken st tknId tkn {token = token', tknRegCode}
               )
-        TokenCron tknId cronInt -> do
+        TokenCron tknId cronInt ->
           getNtfTokenIO st tknId
             >>= mapM_ (\NtfTknData {tknCronInterval} -> atomically $ writeTVar tknCronInterval cronInt)
         DeleteToken tknId ->
           atomically $ void $ deleteNtfToken st tknId
+        UpdateTokenTime tknId t ->
+          getNtfTokenIO st tknId
+            >>= mapM_ (\NtfTknData {tknUpdatedAt} -> atomically $ writeTVar tknUpdatedAt t)
         CreateSubscription r@NtfSubRec {ntfSubId} -> do
           sub <- mkSubData r
           void $ atomically $ addNtfSubscription st ntfSubId sub

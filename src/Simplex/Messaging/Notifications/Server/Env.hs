@@ -159,7 +159,7 @@ data NtfRequest
   | NtfReqPing CorrId NtfEntityId
 
 data NtfServerClient = NtfServerClient
-  { rcvQ :: TBQueue (NonEmpty NtfRequest),
+  { rcvQ :: TBQueue (NonEmpty (Maybe NtfTknData, NtfRequest)),
     sndQ :: TBQueue (NonEmpty (Transmission NtfResponse)),
     ntfThParams :: THandleParams NTFVersion 'TServer,
     connected :: TVar Bool,
