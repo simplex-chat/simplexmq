@@ -1946,7 +1946,8 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
         -- possible improvement: add minimal time before repeat registration
         (Just tknId, Nothing)
           | savedDeviceToken == suppliedDeviceToken ->
-              when (ntfTknStatus == NTRegistered) (registerToken tkn) $> NTRegistered
+              -- when (ntfTknStatus == NTRegistered) (registerToken tkn) $> NTRegistered
+              registerToken tkn $> NTRegistered
           | otherwise -> replaceToken tknId
         (Just tknId, Just (NTAVerify code))
           | savedDeviceToken == suppliedDeviceToken ->
@@ -1956,13 +1957,17 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
           | savedDeviceToken == suppliedDeviceToken -> do
               ns <- asks ntfSupervisor
               atomically $ nsUpdateToken ns tkn {ntfMode = suppliedNtfMode}
-              when (ntfTknStatus == NTActive) $ do
-                cron <- asks $ ntfCron . config
-                agentNtfEnableCron c tknId tkn cron
-                when (suppliedNtfMode == NMInstant) $ initializeNtfSubs c
-                when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ deleteNtfSubs c NSCSmpDelete
-              -- possible improvement: get updated token status from the server, or maybe TCRON could return the current status
-              pure ntfTknStatus
+              let tkn' = tkn {ntfMode = suppliedNtfMode}
+              status <- agentNtfCheckToken c tknId tkn'
+              if status == NTActive
+                then do
+                  cron <- asks $ ntfCron . config
+                  agentNtfEnableCron c tknId tkn cron
+                  when (suppliedNtfMode == NMInstant) $ initializeNtfSubs c
+                  when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ deleteNtfSubs c NSCSmpDelete
+                  t tkn' (status, Just NTACheck) $ pure ()
+                else
+                  t tkn' (status, Nothing) $ pure ()
           | otherwise -> replaceToken tknId
         -- deprecated
         (Just _tknId, Just NTADelete) -> deleteToken c tkn $> NTExpired
