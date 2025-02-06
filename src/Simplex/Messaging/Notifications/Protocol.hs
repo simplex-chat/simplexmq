@@ -296,12 +296,18 @@ data NtfResponse
 
 instance ProtocolEncoding NTFVersion ErrorType NtfResponse where
   type Tag NtfResponse = NtfResponseTag
-  encodeProtocol _v = \case
+  encodeProtocol v = \case
     NRTknId entId dhKey -> e (NRTknId_, ' ', entId, dhKey)
     NRSubId entId -> e (NRSubId_, ' ', entId)
     NROk -> e NROk_
     NRErr err -> e (NRErr_, ' ', err)
-    NRTkn stat -> e (NRTkn_, ' ', stat)
+    NRTkn stat -> e (NRTkn_, ' ', stat')
+      where
+        stat'
+          | v >= invalidReasonNTFVersion = stat
+          | otherwise -> case stat of
+              NTInvalid _ -> NTInvalid Nothing
+              _ -> stat
     NRSub stat -> e (NRSub_, ' ', stat)
     NRPong -> e NRPong_
     where
