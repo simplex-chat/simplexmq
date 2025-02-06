@@ -136,7 +136,8 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       logInfo $ "server stats log enabled: " <> T.pack statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, activeTokens, activeSubs} <- asks serverStats
+      NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, ntfFailed, ntfCronDelivered, ntfCronFailed, ntfVrfDelivered, ntfVrfFailed, ntfVrfInvalidTkn, activeTokens, activeSubs} <-
+        asks serverStats
       let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -150,6 +151,12 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
           subDeleted' <- atomicSwapIORef subDeleted 0
           ntfReceived' <- atomicSwapIORef ntfReceived 0
           ntfDelivered' <- atomicSwapIORef ntfDelivered 0
+          ntfFailed' <- atomicSwapIORef ntfFailed 0
+          ntfCronDelivered' <- atomicSwapIORef ntfCronDelivered 0
+          ntfCronFailed' <- atomicSwapIORef ntfCronFailed 0
+          ntfVrfDelivered' <- atomicSwapIORef ntfVrfDelivered 0
+          ntfVrfFailed' <- atomicSwapIORef ntfVrfFailed 0
+          ntfVrfInvalidTkn' <- atomicSwapIORef ntfVrfInvalidTkn 0
           tkn <- liftIO $ periodStatCounts activeTokens ts
           sub <- liftIO $ periodStatCounts activeSubs ts
           hPutStrLn h $
@@ -168,7 +175,13 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
                 monthCount tkn,
                 dayCount sub,
                 weekCount sub,
-                monthCount sub
+                monthCount sub,
+                show ntfFailed',
+                show ntfCronDelivered',
+                show ntfCronFailed',
+                show ntfVrfDelivered',
+                show ntfVrfFailed',
+                show ntfVrfInvalidTkn'
               ]
         liftIO $ threadDelay' interval
 
@@ -228,6 +241,13 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
                 putStat "subCreated" subCreated
                 putStat "subDeleted" subDeleted
                 putStat "ntfReceived" ntfReceived
+                putStat "ntfDelivered" ntfDelivered
+                putStat "ntfFailed" ntfFailed
+                putStat "ntfCronDelivered" ntfCronDelivered
+                putStat "ntfCronFailed" ntfCronFailed
+                putStat "ntfVrfDelivered" ntfVrfDelivered
+                putStat "ntfVrfFailed" ntfVrfFailed
+                putStat "ntfVrfInvalidTkn" ntfVrfInvalidTkn
                 getStat (day . activeTokens) >>= \v -> hPutStrLn h $ "daily active tokens: " <> show (IS.size v)
                 getStat (day . activeSubs) >>= \v -> hPutStrLn h $ "daily active subscriptions: " <> show (IS.size v)
               CPStatsRTS -> tryAny getRTSStats >>= either (hPrint h) (hPrint h)
@@ -437,9 +457,13 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
   status <- readTVarIO tknStatus
   case ntf of
     PNVerification _ -> case status of
-      NTInvalid _ -> logError $ "bad notification token status: " <> tshow status
+      NTInvalid _ -> do
+        logError $ "bad notification token status: " <> tshow status
+        incNtfStat ntfVrfInvalidTkn
       -- TODO nothing makes token "expired" on the server
-      NTExpired -> logError $ "bad notification token status: " <> tshow status
+      NTExpired -> do
+        logError $ "bad notification token status: " <> tshow status
+        incNtfStat ntfVrfInvalidTkn
       _ ->
         deliverNotification pp tkn ntf >>= \case
           Right _ -> do
@@ -448,14 +472,16 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
               NTConfirmed -> (Nothing, NTConfirmed)
               _ -> (Just NTConfirmed, NTConfirmed)
             forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
-          _ -> pure ()
+            incNtfStat ntfVrfDelivered
+          Left _ -> incNtfStat ntfVrfFailed
     PNCheckMessages -> checkActiveTkn status $ do
-      void $ deliverNotification pp tkn ntf
+      deliverNotification pp tkn ntf
+        >>= incNtfStat . (\case Right () -> ntfCronDelivered; Left _ -> ntfCronFailed)
     PNMessage {} -> checkActiveTkn status $ do
       stats <- asks serverStats
       liftIO $ updatePeriodStats (activeTokens stats) ntfTknId
-      void $ deliverNotification pp tkn ntf
-      incNtfStat ntfDelivered
+      deliverNotification pp tkn ntf
+        >>= incNtfStat . (\case Right () -> ntfDelivered; Left _ -> ntfFailed)
   where
     checkActiveTkn :: NtfTknStatus -> M () -> M ()
     checkActiveTkn status action
