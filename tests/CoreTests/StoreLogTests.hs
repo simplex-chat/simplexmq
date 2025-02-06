@@ -19,10 +19,12 @@ import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.Env.STM (readWriteSTMQueueStore)
+import Simplex.Messaging.Server.Env.STM (readWriteQueueStore)
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
+import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Test.Hspec
 
@@ -106,10 +108,10 @@ testSMPStoreLog testSuite tests =
   where
     testReadWrite SLTC {compacted, state} = do
       st <- newMsgStore $ testJournalStoreCfg SQSMemory
-      l <- readWriteSTMQueueStore testStoreLogFile st
+      l <- readWriteQueueStore testStoreLogFile st
       storeState st `shouldReturn` state
       closeStoreLog l
       ([], compacted') <- partitionEithers . map strDecode . B.lines <$> B.readFile testStoreLogFile
       compacted' `shouldBe` compacted
     storeState :: JournalMsgStore 'QSMemory -> IO (M.Map RecipientId QueueRec)
-    storeState st = M.mapMaybe id <$> (readTVarIO (queues $ stmQueueStore st) >>= mapM (readTVarIO . queueRec'))
+    storeState st = M.mapMaybe id <$> (readTVarIO (queues $ stmQueueStore st) >>= mapM (readTVarIO . queueRec))

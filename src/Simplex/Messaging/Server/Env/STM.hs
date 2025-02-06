@@ -45,9 +45,9 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
+import Simplex.Messaging.Server.StoreLog.ReadWrite
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
@@ -62,7 +62,7 @@ data ServerConfig = ServerConfig
   { transports :: [(ServiceName, ATransport, AddHTTP)],
     smpHandshakeTimeout :: Int,
     tbqSize :: Natural,
-    msgStoreType :: AMSType,
+    msgStoreType :: AStoreType,
     msgQueueQuota :: Int,
     maxJournalMsgCount :: Int,
     maxJournalStateLines :: Int,
@@ -186,19 +186,19 @@ data Env = Env
     proxyAgent :: ProxyAgent -- senders served on this proxy
   }
 
+data StoreType = STMemory | STJournalMemory
+
+data SStoreType (s :: StoreType) where
+  SSTMemory :: SStoreType 'STMemory
+  SSTJournalMemory :: SStoreType 'STJournalMemory
+
+data AStoreType = forall s. ASType (SStoreType s)
+
 type family MsgStore s where
-  MsgStore 'MSMemory = STMMsgStore
-  MsgStore 'MSJournal = JournalMsgStore 'QSMemory
+  MsgStore 'STMemory = STMMsgStore
+  MsgStore 'STJournalMemory = JournalMsgStore 'QSMemory
 
-data AMsgStore = forall s. MsgStoreClass (MsgStore s) => AMS (SMSType s) (MsgStore s)
-
-data AStoreQueue = forall s. MsgStoreClass (MsgStore s) => ASQ (SMSType s) (StoreQueue (MsgStore s))
-
-data AMsgStoreCfg = forall s. MsgStoreClass (MsgStore s) => AMSC (SMSType s) (MsgStoreConfig (MsgStore s))
-
-msgPersistence :: AMsgStoreCfg -> Bool
-msgPersistence (AMSC SMSMemory (STMStoreConfig {storePath})) = isJust storePath
-msgPersistence (AMSC SMSJournal _) = True
+data AMsgStore = forall s. MsgStoreClass (MsgStore s) => AMS (SStoreType s) (MsgStore s)
 
 type Subscribed = Bool
 
@@ -220,7 +220,7 @@ newtype ProxyAgent = ProxyAgent
 
 type ClientId = Int
 
-data AClient = forall s. MsgStoreClass (MsgStore s) => AClient (SMSType s) (Client (MsgStore s))
+data AClient = forall s. MsgStoreClass (MsgStore s) => AClient (SStoreType s) (Client (MsgStore s))
 
 clientId' :: AClient -> ClientId
 clientId' (AClient _ Client {clientId}) = clientId
@@ -265,7 +265,7 @@ newServer = do
   savingLock <- createLockIO
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, subClients, ntfSubClients, pendingSubEvents, pendingNtfSubEvents, savingLock}
 
-newClient :: SMSType s -> ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO (Client (MsgStore s))
+newClient :: SStoreType s -> ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO (Client (MsgStore s))
 newClient _msType clientId qSize thVersion sessionId createdAt = do
   subscriptions <- TM.emptyIO
   ntfSubscriptions <- TM.emptyIO
@@ -296,14 +296,14 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
   serverActive <- newTVarIO True
   server <- newServer
   msgStore <- case msgStoreType of
-    AMSType SMSMemory -> do
+    ASType SSTMemory -> do
       st <- newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
-      loadStoreLog st $> AMS SMSMemory st
-    AMSType SMSJournal -> case storeMsgsFile of
+      loadStoreLog st $> AMS SSTMemory st
+    ASType SSTJournalMemory -> case storeMsgsFile of
       Just storePath -> do
         let cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreType = SQSMemory, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
         st <- newMsgStore cfg
-        loadStoreLog st $> AMS SMSJournal st
+        loadStoreLog st $> AMS SSTJournalMemory st
       Nothing -> putStrLn "Error: journal msg store requires that restore_messages is enabled in [STORE_LOG]" >> exitFailure
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
@@ -320,21 +320,21 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
   pure Env {serverActive, config, serverInfo, server, serverIdentity, msgStore, ntfStore, random, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
     -- createMsgStore = case (msgStoreType, storeMsgsFile) of
-    --   (AMSType SMSMemory, _) -> do
+    --   (AMSType SSTMemory, _) -> do
     --     st <- newMsgStore STMStoreConfig {storePath = storeLogFile, quota = msgQueueQuota}
-    --     loadStoreLog st $> AMS SMSMemory st
-    --   (AMSType SMSJournal, Just storePath) -> do
+    --     loadStoreLog st $> AMS SSTMemory st
+    --   (AMSType SSTJournalMemory, Just storePath) -> do
     --     st <- newMsgStore $ storeCfg SQSMemory storePath
-    --     loadStoreLog st $> AMS SMSJournal st
+    --     loadStoreLog st $> AMS SSTJournalMemory st
     --   (_, Nothing) -> putStrLn "Error: journal msg store requires that restore_messages is enabled in [STORE_LOG]" >> exitFailure
     --   where
     --     storeCfg :: SQSType s -> FilePath -> JournalStoreConfig s
     --     storeCfg queueStoreType storePath =
     --       JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreType, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
-    loadStoreLog :: STMStoreClass s => s -> IO ()
+    loadStoreLog :: MsgStoreClass s => s -> IO ()
     loadStoreLog st = forM_ storeLogFile $ \f -> do
       logInfo $ "restoring queues from file " <> T.pack f
-      sl <- readWriteSTMQueueStore f st
+      sl <- readWriteQueueStore f st
       setStoreLog st sl
     getCredentials protocol creds = do
       files <- missingCreds
@@ -379,5 +379,5 @@ newSMPProxyAgent smpAgentCfg random = do
   smpAgent <- newSMPClientAgent smpAgentCfg random
   pure ProxyAgent {smpAgent}
 
-readWriteSTMQueueStore :: STMStoreClass s => FilePath -> s -> IO (StoreLog 'WriteMode)
-readWriteSTMQueueStore = readWriteStoreLog readSTMQueueStore writeSTMQueueStore
+readWriteQueueStore :: MsgStoreClass s => FilePath -> s -> IO (StoreLog 'WriteMode)
+readWriteQueueStore = readWriteStoreLog readQueueStore writeQueueStore

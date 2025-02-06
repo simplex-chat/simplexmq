@@ -30,11 +30,12 @@ import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), Message (..), RecipientId, SParty (..), noMsgFlags)
 import Simplex.Messaging.Server (MessageStats (..), exportMessages, importMessages, printMessageStats)
-import Simplex.Messaging.Server.Env.STM (journalMsgStoreDepth, readWriteSTMQueueStore)
+import Simplex.Messaging.Server.Env.STM (journalMsgStoreDepth, readWriteQueueStore)
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue)
 import SMPClient (testStoreLogFile, testStoreMsgsDir, testStoreMsgsDir2, testStoreMsgsFile, testStoreMsgsFile2)
 import System.Directory (copyFile, createDirectoryIfMissing, listDirectory, removeFile, renameFile)
@@ -57,12 +58,13 @@ msgStoreTests = do
       it "should create write file when missing" testWriteFileMissing
       it "should create read file when read and write files are missing" testReadAndWriteFilesMissing
   where
-    someMsgStoreTests :: STMStoreClass s => SpecWith s
+    someMsgStoreTests :: MsgStoreClass s => SpecWith s
     someMsgStoreTests = do
       it "should get queue and store/read messages" testGetQueue
       it "should not fail on EOF when changing read journal" testChangeReadJournal
 
-withMsgStore :: STMStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
+-- TODO constrain to STM stores?
+withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
 withMsgStore cfg = bracket (newMsgStore cfg) closeMsgStore
 
 testSMTStoreConfig :: STMStoreConfig
@@ -116,7 +118,8 @@ testNewQueueRec g sndSecure = do
           }
   pure (rId, qr)
 
-testGetQueue :: STMStoreClass s => s -> IO ()
+-- TODO constrain to STM stores
+testGetQueue :: MsgStoreClass s => s -> IO ()
 testGetQueue ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
@@ -158,7 +161,8 @@ testGetQueue ms = do
     (Nothing, Nothing) <- tryDelPeekMsg ms q mId8
     void $ ExceptT $ deleteQueue ms q
 
-testChangeReadJournal :: STMStoreClass s => s -> IO ()
+-- TODO constrain to STM stores
+testChangeReadJournal :: MsgStoreClass s => s -> IO ()
 testChangeReadJournal ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
@@ -182,7 +186,7 @@ testExportImportStore ms = do
   g <- C.newRandom
   (rId1, qr1) <- testNewQueueRec g True
   (rId2, qr2) <- testNewQueueRec g True
-  sl <- readWriteSTMQueueStore testStoreLogFile ms
+  sl <- readWriteQueueStore testStoreLogFile ms
   runRight_ $ do
     let write q s = writeMsg ms q True =<< mkMessage s
     q1 <- ExceptT $ addQueue ms rId1 qr1
@@ -210,7 +214,7 @@ testExportImportStore ms = do
   (B.readFile testStoreMsgsFile `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".copy")
   let cfg = (testJournalStoreCfg SQSMemory :: JournalStoreConfig 'QSMemory) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
-  readWriteSTMQueueStore testStoreLogFile ms' >>= closeStoreLog
+  readWriteQueueStore testStoreLogFile ms' >>= closeStoreLog
   stats@MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages False ms' testStoreMsgsFile Nothing
   printMessageStats "Messages" stats
@@ -219,7 +223,7 @@ testExportImportStore ms = do
   exportMessages False ms' testStoreMsgsFile2 False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
-  readWriteSTMQueueStore testStoreLogFile stmStore >>= closeStoreLog
+  readWriteQueueStore testStoreLogFile stmStore >>= closeStoreLog
   MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages False stmStore testStoreMsgsFile2 Nothing
   exportMessages False stmStore testStoreMsgsFile False
@@ -309,7 +313,7 @@ testMessageState ms = do
   B.writeFile statePath $ B.unlines $ take (length ls - 1) ls
 
   runRight_ $ do
-    q <- ExceptT $ getQueue ms SRecipient rId
+    q <- ExceptT $ getQueue (queueStore ms) SRecipient rId
     Just (Message {msgId = mId3}, False) <- write q "message 3"
     (Msg "message 1", Msg "message 3") <- tryDelPeekMsg ms q mId1
     (Msg "message 3", Nothing) <- tryDelPeekMsg ms q mId3
@@ -326,14 +330,14 @@ testReadFileMissing ms = do
     Msg "message 1" <- tryPeekMsg ms q
     pure q
 
-  mq <- fromJust <$> readTVarIO (msgQueue_' q)
+  mq <- fromJust <$> readTVarIO (msgQueue q)
   MsgQueueState {readState = rs} <- readTVarIO $ state mq
   closeMsgStore ms
   let path = journalFilePath (queueDirectory $ queue mq) $ journalId rs
   removeFile path
 
   runRight_ $ do
-    q' <- ExceptT $ getQueue ms SRecipient rId
+    q' <- ExceptT $ getQueue (queueStore ms) SRecipient rId
     Nothing <- tryPeekMsg ms q'
     Just (Message {}, True) <- write q' "message 2"
     Msg "message 2" <- tryPeekMsg ms q'
@@ -345,14 +349,14 @@ testReadFileMissingSwitch ms = do
   (rId, qr) <- testNewQueueRec g True
   q <- writeMessages ms rId qr
 
-  mq <- fromJust <$> readTVarIO (msgQueue_' q)
+  mq <- fromJust <$> readTVarIO (msgQueue q)
   MsgQueueState {readState = rs} <- readTVarIO $ state mq
   closeMsgStore ms
   let path = journalFilePath (queueDirectory $ queue mq) $ journalId rs
   removeFile path
 
   runRight_ $ do
-    q' <- ExceptT $ getQueue ms SRecipient rId
+    q' <- ExceptT $ getQueue (queueStore ms) SRecipient rId
     Just (Message {}, False) <- writeMsg ms q' True =<< mkMessage "message 6"
     Msg "message 5" <- tryPeekMsg ms q'
     pure ()
@@ -363,7 +367,7 @@ testWriteFileMissing ms = do
   (rId, qr) <- testNewQueueRec g True
   q <- writeMessages ms rId qr
 
-  mq <- fromJust <$> readTVarIO (msgQueue_' q)
+  mq <- fromJust <$> readTVarIO (msgQueue q)
   MsgQueueState {writeState = ws} <- readTVarIO $ state mq
   closeMsgStore ms
   let path = journalFilePath (queueDirectory $ queue mq) $ journalId ws
@@ -371,7 +375,7 @@ testWriteFileMissing ms = do
   removeFile path
 
   runRight_ $ do
-    q' <- ExceptT $ getQueue ms SRecipient rId
+    q' <- ExceptT $ getQueue (queueStore ms) SRecipient rId
     Just Message {msgId = mId3} <- tryPeekMsg ms q'
     (Msg "message 3", Msg "message 4") <- tryDelPeekMsg ms q' mId3
     Just Message {msgId = mId4} <- tryPeekMsg ms q'
@@ -386,14 +390,14 @@ testReadAndWriteFilesMissing ms = do
   (rId, qr) <- testNewQueueRec g True
   q <- writeMessages ms rId qr
 
-  mq <- fromJust <$> readTVarIO (msgQueue_' q)
+  mq <- fromJust <$> readTVarIO (msgQueue q)
   MsgQueueState {readState = rs, writeState = ws} <- readTVarIO $ state mq
   closeMsgStore ms
   removeFile $ journalFilePath (queueDirectory $ queue mq) $ journalId rs
   removeFile $ journalFilePath (queueDirectory $ queue mq) $ journalId ws
 
   runRight_ $ do
-    q' <- ExceptT $ getQueue ms SRecipient rId
+    q' <- ExceptT $ getQueue (queueStore ms) SRecipient rId
     Nothing <- tryPeekMsg ms q'
     Just (Message {}, True) <- writeMsg ms q' True =<< mkMessage "message 6"
     Msg "message 6" <- tryPeekMsg ms q'
