@@ -494,12 +494,15 @@ main() {
 
       case "$selection_parse" in
         'Update misc:')
+          selection_check='pass'
           update_misc
           ;;
         'Update binaries:')
+          selection_check='pass'
           update_bins
           ;;
         'Update all:')
+          selection_check='pass'
           update_all
           ;;
         'Exit the script')
