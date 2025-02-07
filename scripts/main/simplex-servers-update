@@ -3,8 +3,7 @@ set -eu
 
 # TODO:
 # 1. CHOOSE -> UPDATE: ALL/BINARY
-# 2. Exit early if there's only exit option
-# 3. Determine if version is actually available
+# 2. Update logic
 
 # Links to scripts/configs
 scripts_url="https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/scripts/main"
@@ -463,6 +462,12 @@ main() {
     if [ -n "$menu_option_misc" ]; then
       menu_option_all="${GRN}X${NC}) Update all:${NL}${menu_option_misc_raw}${NL}${msg_bins}${NL}"
     fi
+  fi
+
+  # Abort early if there's neither update binaries, nor update scripts options
+  if [ -z "$menu_option_bins" ] && [ -z "$menu_option_misc" ]; then
+    printf "${YLW}Everything is up-to-date${NC}.\n"
+    exit 0
   fi
 
   menu="${menu_option_all:-}${menu_option_bins}${menu_option_misc:-}${menu_end}"
