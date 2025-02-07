@@ -65,6 +65,11 @@ erase_lines() {
   done
 }
 
+# Cleans string from ANSI colors
+clean_colors() {
+  sed 's|\x1B\[[0-9;]*m||g'
+}
+
 # Replaces every X in variable with incrementing integer
 replace_x() {
   counter=0
@@ -336,50 +341,50 @@ download_all() {
   done
 }
 
-changeme_update_scripts() {
-  if diff -q "$path_bin_uninstall" "$path_tmp_bin_uninstall" > /dev/null 2>&1; then
-    printf -- "- ${YLW}Uninstall script is up-to-date${NC}.\n"
-    rm "$path_tmp_bin_uninstall"
-  else
-    printf -- "- Updating uninstall script..."
-    mv "$path_tmp_bin_uninstall" "$path_bin_uninstall"
-    printf "${GRN}Done!${NC}\n"
-  fi
+# Updates systemd and scripts. This function depends om variables from "download_all"
+update_misc() {
+  OLD_IFS="$IFS"
 
-  if diff -q "$path_bin_stopscript" "$path_tmp_bin_stopscript" > /dev/null 2>&1; then
-    printf -- "- ${YLW}Stopscript script is up-to-date${NC}.\n"
-    rm "$path_tmp_bin_stopscript"
-  else
-    printf -- "- Updating stopscript script..."
-    mv "$path_tmp_bin_stopscript" "$path_bin_stopscript"
-    printf "${GRN}Done!${NC}\n"
-  fi
+  IFS='/'
+  for script in $msg_scripts; do
+    script="$(printf '%b' "$script" | clean_colors)"
+    case "$script" in
+      update)
+        printf -- "- Updating update script..."
+        mv "$path_tmp_bin_update" "$path_bin_update"
+        printf "${GRN}Done!${NC}\n"
+        printf -- "- Re-executing Update script..."
+        exec env CHOOSE="$choose" "$path_bin_update"
+        ;;
+      stop)
+        printf -- "- Updating stopscript script..."
+        mv "$path_tmp_bin_stopscript" "$path_bin_stopscript"
+        printf "${GRN}Done!${NC}\n"
+        ;;
+      uninstall)
+        printf -- "- Updating uninstall script..."
+        mv "$path_tmp_bin_uninstall" "$path_bin_uninstall"
+        printf "${GRN}Done!${NC}\n"
+        ;;
+    esac
+  done
 
-  if diff -q "$path_bin_update" "$path_tmp_bin_update" > /dev/null 2>&1; then
-    printf -- "- ${YLW}Update script is up-to-date${NC}.\n"
-    rm "$path_tmp_bin_update"
-  else
-    printf -- "- Updating update script..."
-    mv "$path_tmp_bin_update" "$path_bin_update"
-    printf "${GRN}Done!${NC}\n"
-    printf -- "- Re-executing Update script..."
-    exec env CHOOSE="$choose" SCRIPTS_DONE=1 "$path_bin_update"
-  fi
-}
+  for service in $msg_services; do
+    service="$(printf '%b' "$service" | clean_colors)"
+    app="${service%%-*}"
+    eval "path_systemd=\$path_systemd_${app}"
+    eval "path_tmp_systemd=\$path_tmp_systemd_${app}"
 
-changeme_update_systemd() {
-  if diff -q "$path_systemd" "$path_tmp_systemd" > /dev/null 2>&1; then
-    printf -- "- ${YLW}%s service is up-to-date${NC}.\n" "$service"
-    rm "$path_tmp_systemd"
-  else
     printf -- "- Updating %s service..." "$service"
     mv "$path_tmp_systemd" "$path_systemd"
     systemctl daemon-reload
     printf "${GRN}Done!${NC}\n"
-  fi
+  done
+  IFS="$OLF_IFS"
 }
 
-changeme_update_bins() {
+# Updates binaries. This function depends on variables from "download_all"
+update_bins() {
   service="${1}-server"
   eval "bin=\$bin_${1}"
   eval "path_bin=\$path_bin_${1}"
@@ -482,7 +487,7 @@ main() {
     printf '%b' "$menu"
     read selection
 
-    line="$(printf '%s' "$menu" | sed 's|\x1b\[[0-9;]*m||g' | grep "$selection)" || :)"
+    line="$(printf '%b' "$menu" | clean_colors | grep "$selection)" || :)"
 
     if [ -n "$line" ]; then
       selection_parse="$(printf '%s' "$line" | sed 's|^.*) ||')"
