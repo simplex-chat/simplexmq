@@ -466,24 +466,16 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
   status <- readTVarIO tknStatus
   case ntf of
-    PNVerification _ -> case status of
-      NTInvalid _ -> do
-        logError $ "bad notification token status: " <> tshow status
-        incNtfStatT t ntfVrfInvalidTkn
-      -- TODO nothing makes token "expired" on the server
-      NTExpired -> do
-        logError $ "bad notification token status: " <> tshow status
-        incNtfStatT t ntfVrfInvalidTkn
-      _ ->
-        deliverNotification pp tkn ntf >>= \case
-          Right _ -> do
-            status_ <- atomically $ stateTVar tknStatus $ \case
-              NTActive -> (Nothing, NTActive)
-              NTConfirmed -> (Nothing, NTConfirmed)
-              _ -> (Just NTConfirmed, NTConfirmed)
-            forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
-            incNtfStatT t ntfVrfDelivered
-          Left _ -> incNtfStatT t ntfVrfFailed
+    PNVerification _ ->
+      deliverNotification pp tkn ntf >>= \case
+        Right _ -> do
+          status_ <- atomically $ stateTVar tknStatus $ \case
+            NTActive -> (Nothing, NTActive)
+            NTConfirmed -> (Nothing, NTConfirmed)
+            _ -> (Just NTConfirmed, NTConfirmed)
+          forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
+          incNtfStatT t ntfVrfDelivered
+        Left _ -> incNtfStatT t ntfVrfFailed
     PNCheckMessages -> checkActiveTkn status $ do
       deliverNotification pp tkn ntf
         >>= incNtfStatT t . (\case Left _ -> ntfCronFailed; Right () -> ntfCronDelivered)
