@@ -170,8 +170,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
 import Simplex.Messaging.Agent.Store.Common (DBStore)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
-import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL)
-import qualified Simplex.Messaging.Agent.Store.Migrations as Migrations
+import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL, getCurrentMigrations)
 import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
 import Simplex.Messaging.Client (SMPClientError, ServerTransmission (..), ServerTransmissionBatch, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
@@ -2180,7 +2179,7 @@ execAgentStoreSQL :: AgentClient -> Text -> AE [Text]
 execAgentStoreSQL c sql = withAgentEnv c $ withStore' c (`execSQL` sql)
 
 getAgentMigrations :: AgentClient -> AE [UpMigration]
-getAgentMigrations c = withAgentEnv c $ map upMigration <$> withStore' c Migrations.getCurrent
+getAgentMigrations c = withAgentEnv c $ map upMigration <$> withStore' c getCurrentMigrations
 
 debugAgentLocks :: AgentClient -> IO AgentLocks
 debugAgentLocks AgentClient {connLocks = cs, invLocks = is, deleteLock = d} = do
