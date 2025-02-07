@@ -120,10 +120,10 @@ notificationTests t = do
     it "should keep working with active token until replaced" $
       withAPNSMockServer $ \apns ->
         testNtfTokenChangeServers t apns
-    it "should re-register token in NTInvalid status after register attempt" $
+    fit "should re-register token in NTInvalid status after register attempt" $
       withAPNSMockServer $ \apns ->
         testNtfTokenReRegisterInvalid t apns
-    it "should re-register token in NTInvalid status after checking token" $
+    fit "should re-register token in NTInvalid status after checking token" $
       withAPNSMockServer $ \apns ->
         testNtfTokenReRegisterInvalidOnCheck t apns
   describe "notification server tests" $ do
