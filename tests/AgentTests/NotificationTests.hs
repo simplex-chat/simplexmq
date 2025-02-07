@@ -53,18 +53,21 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
+import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import qualified Data.Text.IO as TIO
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testNtfServer, testNtfServer2)
-import SMPClient (cfg, cfgVPrev, testPort, testPort2, testStoreLogFile2, testStoreMsgsDir2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfg, cfgVPrev, testPort, testPort2, testStoreLogFile2, testStoreMsgsDir2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, xit'')
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, SENT)
 import Simplex.Messaging.Agent.Store.AgentStore (getSavedNtfToken)
 import Simplex.Messaging.Agent.Store.Common (withTransaction)
-import Simplex.Messaging.Agent.Store.Interface (closeDBStore, reopenDBStore)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
+import Simplex.Messaging.Agent.Store.Interface (closeDBStore, reopenDBStore)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
@@ -117,6 +120,12 @@ notificationTests t = do
     it "should keep working with active token until replaced" $
       withAPNSMockServer $ \apns ->
         testNtfTokenChangeServers t apns
+    xit'' "should re-register token in NTInvalid status after register attempt" $
+      withAPNSMockServer $ \apns ->
+        testNtfTokenReRegisterInvalid t apns
+    xit'' "should re-register token in NTInvalid status after checking token" $
+      withAPNSMockServer $ \apns ->
+        testNtfTokenReRegisterInvalidOnCheck t apns
   describe "notification server tests" $ do
     it "should pass" $ testRunNTFServerTests t testNtfServer `shouldReturn` Nothing
     let srv1 = testNtfServer {keyHash = "1234"}
@@ -458,6 +467,58 @@ testNtfTokenChangeServers t apns =
         liftIO $ threadDelay 1000000 -- for notification server to reconnect
         tkn <- registerTestToken a "qwer" NMInstant apns
         checkNtfToken a tkn >>= \r -> liftIO $ r `shouldBe` NTActive
+
+testNtfTokenReRegisterInvalid :: ATransport -> APNSMockServer -> IO ()
+testNtfTokenReRegisterInvalid t apns = do
+  tkn <- withNtfServerStoreLog t $ \_ -> do
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ do
+      tkn <- registerTestToken a "abcd" NMInstant apns
+      NTActive <- checkNtfToken a tkn
+      pure tkn
+
+  threadDelay 250000
+  -- start server to compact
+  withNtfServerStoreLog t $ \_ -> pure ()
+
+  threadDelay 250000
+  replaceSubstringInFile ntfTestStoreLogFile "tokenStatus=ACTIVE" "tokenStatus=INVALID"
+
+  threadDelay 250000
+  withNtfServerStoreLog t $ \_ -> do
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
+      NTInvalid Nothing <- registerNtfToken a tkn NMInstant
+      tkn1 <- registerTestToken a "abcd" NMInstant apns
+      NTActive <- checkNtfToken a tkn1
+      pure ()
+
+replaceSubstringInFile :: FilePath -> Text -> Text -> IO ()
+replaceSubstringInFile filePath oldText newText = do
+  content <- TIO.readFile filePath
+  let newContent = T.replace oldText newText content
+  TIO.writeFile filePath newContent
+
+testNtfTokenReRegisterInvalidOnCheck :: ATransport -> APNSMockServer -> IO ()
+testNtfTokenReRegisterInvalidOnCheck t apns = do
+  tkn <- withNtfServerStoreLog t $ \_ -> do
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ do
+      tkn <- registerTestToken a "abcd" NMInstant apns
+      NTActive <- checkNtfToken a tkn
+      pure tkn
+
+  threadDelay 250000
+  -- start server to compact
+  withNtfServerStoreLog t $ \_ -> pure ()
+
+  threadDelay 250000
+  replaceSubstringInFile ntfTestStoreLogFile "tokenStatus=ACTIVE" "tokenStatus=INVALID"
+
+  threadDelay 250000
+  withNtfServerStoreLog t $ \_ -> do
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
+      NTInvalid Nothing <- checkNtfToken a tkn
+      tkn1 <- registerTestToken a "abcd" NMInstant apns
+      NTActive <- checkNtfToken a tkn1
+      pure ()
 
 testRunNTFServerTests :: ATransport -> NtfServer -> IO (Maybe ProtocolTestFailure)
 testRunNTFServerTests t srv =

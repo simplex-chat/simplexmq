@@ -44,11 +44,14 @@ initialNTFVersion = VersionNTF 1
 authBatchCmdsNTFVersion :: VersionNTF
 authBatchCmdsNTFVersion = VersionNTF 2
 
+invalidReasonNTFVersion :: VersionNTF
+invalidReasonNTFVersion = VersionNTF 3
+
 currentClientNTFVersion :: VersionNTF
-currentClientNTFVersion = VersionNTF 2
+currentClientNTFVersion = VersionNTF 3
 
 currentServerNTFVersion :: VersionNTF
-currentServerNTFVersion = VersionNTF 2
+currentServerNTFVersion = VersionNTF 3
 
 supportedClientNTFVRange :: VersionRangeNTF
 supportedClientNTFVRange = mkVersionRange initialNTFVersion currentClientNTFVersion

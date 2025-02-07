@@ -58,6 +58,7 @@ import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), ProtocolServer
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Control (CPClientRole (..))
+import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, getSystemDate)
 import Simplex.Messaging.Server.Stats (PeriodStats (..), PeriodStatCounts (..), periodStatCounts, updatePeriodStats)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -135,7 +136,8 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       logInfo $ "server stats log enabled: " <> T.pack statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, subCreated, subDeleted, ntfReceived, ntfDelivered, activeTokens, activeSubs} <- asks serverStats
+      NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, tknReplaced, subCreated, subDeleted, ntfReceived, ntfDelivered, ntfFailed, ntfCronDelivered, ntfCronFailed, ntfVrfQueued, ntfVrfDelivered, ntfVrfFailed, ntfVrfInvalidTkn, activeTokens, activeSubs} <-
+        asks serverStats
       let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -145,10 +147,18 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
           tknCreated' <- atomicSwapIORef tknCreated 0
           tknVerified' <- atomicSwapIORef tknVerified 0
           tknDeleted' <- atomicSwapIORef tknDeleted 0
+          tknReplaced' <- atomicSwapIORef tknReplaced 0
           subCreated' <- atomicSwapIORef subCreated 0
           subDeleted' <- atomicSwapIORef subDeleted 0
           ntfReceived' <- atomicSwapIORef ntfReceived 0
           ntfDelivered' <- atomicSwapIORef ntfDelivered 0
+          ntfFailed' <- atomicSwapIORef ntfFailed 0
+          ntfCronDelivered' <- atomicSwapIORef ntfCronDelivered 0
+          ntfCronFailed' <- atomicSwapIORef ntfCronFailed 0
+          ntfVrfQueued' <- atomicSwapIORef ntfVrfQueued 0
+          ntfVrfDelivered' <- atomicSwapIORef ntfVrfDelivered 0
+          ntfVrfFailed' <- atomicSwapIORef ntfVrfFailed 0
+          ntfVrfInvalidTkn' <- atomicSwapIORef ntfVrfInvalidTkn 0
           tkn <- liftIO $ periodStatCounts activeTokens ts
           sub <- liftIO $ periodStatCounts activeSubs ts
           hPutStrLn h $
@@ -167,7 +177,15 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
                 monthCount tkn,
                 dayCount sub,
                 weekCount sub,
-                monthCount sub
+                monthCount sub,
+                show tknReplaced',
+                show ntfFailed',
+                show ntfCronDelivered',
+                show ntfCronFailed',
+                show ntfVrfQueued',
+                show ntfVrfDelivered',
+                show ntfVrfFailed',
+                show ntfVrfInvalidTkn'
               ]
         liftIO $ threadDelay' interval
 
@@ -224,9 +242,18 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
                 putStat "tknCreated" tknCreated
                 putStat "tknVerified" tknVerified
                 putStat "tknDeleted" tknDeleted
+                putStat "tknReplaced" tknReplaced
                 putStat "subCreated" subCreated
                 putStat "subDeleted" subDeleted
                 putStat "ntfReceived" ntfReceived
+                putStat "ntfDelivered" ntfDelivered
+                putStat "ntfFailed" ntfFailed
+                putStat "ntfCronDelivered" ntfCronDelivered
+                putStat "ntfCronFailed" ntfCronFailed
+                putStat "ntfVrfQueued" ntfVrfQueued
+                putStat "ntfVrfDelivered" ntfVrfDelivered
+                putStat "ntfVrfFailed" ntfVrfFailed
+                putStat "ntfVrfInvalidTkn" ntfVrfInvalidTkn
                 getStat (day . activeTokens) >>= \v -> hPutStrLn h $ "daily active tokens: " <> show (IS.size v)
                 getStat (day . activeSubs) >>= \v -> hPutStrLn h $ "daily active subscriptions: " <> show (IS.size v)
               CPStatsRTS -> tryAny getRTSStats >>= either (hPrint h) (hPrint h)
@@ -241,15 +268,19 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
 #else
                   hPutStrLn h "Threads: not available on GHC 8.10"
 #endif
-                  NtfSubscriber {smpSubscribers, smpAgent = a} <- unliftIO u $ asks subscriber
+                  NtfEnv {subscriber, pushServer} <-  unliftIO u ask
+                  let NtfSubscriber {smpSubscribers, smpAgent = a} = subscriber
+                      NtfPushServer {pushQ} = pushServer
+                      SMPClientAgent {smpClients, smpSessions, srvSubs, pendingSrvSubs, smpSubWorkers} = a
                   putSMPWorkers a "SMP subcscribers" smpSubscribers
-                  let SMPClientAgent {smpClients, smpSessions, srvSubs, pendingSrvSubs, smpSubWorkers} = a
                   putSMPWorkers a "SMP clients" smpClients
                   putSMPWorkers a "SMP subscription workers" smpSubWorkers
                   sessions <- readTVarIO smpSessions
                   hPutStrLn h $ "SMP sessions count: " <> show (M.size sessions)
                   putSMPSubs a "SMP subscriptions" srvSubs
                   putSMPSubs a "Pending SMP subscriptions" pendingSrvSubs
+                  sz <- atomically $ lengthTBQueue pushQ
+                  hPutStrLn h $ "Push notifications queue length: " <> show sz
                   where
                     putSMPSubs :: SMPClientAgent -> String -> TMap SMPServer (TMap SMPSub a) -> IO ()
                     putSMPSubs a name v = do
@@ -431,35 +462,35 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
 ntfPush :: NtfPushServer -> M ()
 ntfPush s@NtfPushServer {pushQ} = forever $ do
-  (tkn@NtfTknData {ntfTknId, token = DeviceToken pp _, tknStatus}, ntf) <- atomically (readTBQueue pushQ)
+  (tkn@NtfTknData {ntfTknId, token = t@(DeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue pushQ)
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
   status <- readTVarIO tknStatus
   case ntf of
-    PNVerification _
-      | status /= NTInvalid && status /= NTExpired ->
-          deliverNotification pp tkn ntf >>= \case
-            Right _ -> do
-              status_ <- atomically $ stateTVar tknStatus $ \case
-                NTActive -> (Nothing, NTActive)
-                NTConfirmed -> (Nothing, NTConfirmed)
-                _ -> (Just NTConfirmed, NTConfirmed)
-              forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
-            _ -> pure ()
-      | otherwise -> logError "bad notification token status"
+    PNVerification _ ->
+      deliverNotification pp tkn ntf >>= \case
+        Right _ -> do
+          status_ <- atomically $ stateTVar tknStatus $ \case
+            NTActive -> (Nothing, NTActive)
+            NTConfirmed -> (Nothing, NTConfirmed)
+            _ -> (Just NTConfirmed, NTConfirmed)
+          forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
+          incNtfStatT t ntfVrfDelivered
+        Left _ -> incNtfStatT t ntfVrfFailed
     PNCheckMessages -> checkActiveTkn status $ do
-      void $ deliverNotification pp tkn ntf
+      deliverNotification pp tkn ntf
+        >>= incNtfStatT t . (\case Left _ -> ntfCronFailed; Right () -> ntfCronDelivered)
     PNMessage {} -> checkActiveTkn status $ do
       stats <- asks serverStats
       liftIO $ updatePeriodStats (activeTokens stats) ntfTknId
-      void $ deliverNotification pp tkn ntf
-      incNtfStat ntfDelivered
+      deliverNotification pp tkn ntf
+        >>= incNtfStatT t . (\case Left _ -> ntfFailed; Right () -> ntfDelivered)
   where
     checkActiveTkn :: NtfTknStatus -> M () -> M ()
     checkActiveTkn status action
       | status == NTActive = action
       | otherwise = liftIO $ logError "bad notification token status"
     deliverNotification :: PushProvider -> NtfTknData -> PushNotification -> M (Either PushProviderError ())
-    deliverNotification pp tkn ntf = do
+    deliverNotification pp tkn@NtfTknData {ntfTknId} ntf = do
       deliver <- liftIO $ getPushClient s pp
       liftIO (runExceptT $ deliver tkn ntf) >>= \case
         Right _ -> pure $ Right ()
@@ -467,15 +498,19 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
           PPConnection _ -> retryDeliver
           PPRetryLater -> retryDeliver
           PPCryptoError _ -> err e
-          PPResponseError _ _ -> err e
-          PPTokenInvalid -> updateTknStatus tkn NTInvalid >> err e
+          PPResponseError {} -> err e
+          PPTokenInvalid r -> updateTknStatus tkn (NTInvalid $ Just r) >> err e
           PPPermanentError -> err e
       where
         retryDeliver :: M (Either PushProviderError ())
         retryDeliver = do
           deliver <- liftIO $ newPushClient s pp
-          liftIO (runExceptT $ deliver tkn ntf) >>= either err (pure . Right)
-        err e = logError (T.pack $ "Push provider error (" <> show pp <> "): " <> show e) $> Left e
+          liftIO (runExceptT $ deliver tkn ntf) >>= \case
+            Right _ -> pure $ Right ()
+            Left e -> case e of
+              PPTokenInvalid r -> updateTknStatus tkn (NTInvalid $ Just r) >> err e
+              _ -> err e
+        err e = logError ("Push provider error (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> tshow e) $> Left e
 
 updateTknStatus :: NtfTknData -> NtfTknStatus -> M ()
 updateTknStatus NtfTknData {ntfTknId, tknStatus} status = do
@@ -509,13 +544,17 @@ receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ
   where
     cmdAction t@(_, _, (corrId, entId, cmdOrError)) =
       case cmdOrError of
-        Left e -> pure $ Left (corrId, entId, NRErr e)
+        Left e -> do
+          logError $ "invalid client request: " <> tshow e
+          pure $ Left (corrId, entId, NRErr e)
         Right cmd ->
-          verified <$> verifyNtfTransmission ((,C.cbNonce (SMP.bs corrId)) <$> thAuth) t cmd
+          verified =<< verifyNtfTransmission ((,C.cbNonce (SMP.bs corrId)) <$> thAuth) t cmd
           where
             verified = \case
-              VRVerified req -> Right req
-              VRFailed -> Left (corrId, entId, NRErr AUTH)
+              VRVerified req -> pure $ Right req
+              VRFailed -> do
+                logError "unauthorized client request"
+                pure $ Left (corrId, entId, NRErr AUTH)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> IO ()
@@ -524,7 +563,7 @@ send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
   void . liftIO $ tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
   atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
 
-data VerificationResult = VRVerified NtfRequest | VRFailed
+data VerificationResult = VRVerified (Maybe NtfTknData, NtfRequest) | VRFailed
 
 verifyNtfTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
 verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
@@ -538,34 +577,34 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
             Just t@NtfTknData {tknVerifyKey}
               | k == tknVerifyKey -> verifiedTknCmd t c
               | otherwise -> VRFailed
-            _ -> VRVerified (NtfReqNew corrId (ANE SToken tkn))
+            Nothing -> VRVerified (Nothing, NtfReqNew corrId (ANE SToken tkn))
           else VRFailed
     NtfCmd SToken c -> do
-      t_ <- atomically $ getNtfToken st entId
+      t_ <- liftIO $ getNtfTokenIO st entId
       verifyToken t_ (`verifiedTknCmd` c)
     NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId smpQueue _)) -> do
       s_ <- atomically $ findNtfSubscription st smpQueue
       case s_ of
         Nothing -> do
           t_ <- atomically $ getActiveNtfToken st tknId
-          verifyToken' t_ $ VRVerified (NtfReqNew corrId (ANE SSubscription sub))
+          verifyToken' t_ $ VRVerified (t_, NtfReqNew corrId (ANE SSubscription sub))
         Just s@NtfSubData {tokenId = subTknId} ->
           if subTknId == tknId
             then do
               t_ <- atomically $ getActiveNtfToken st subTknId
-              verifyToken' t_ $ verifiedSubCmd s c
+              verifyToken' t_ $ verifiedSubCmd t_ s c
             else pure $ maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
-    NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
+    NtfCmd SSubscription PING -> pure $ VRVerified (Nothing, NtfReqPing corrId entId)
     NtfCmd SSubscription c -> do
-      s_ <- atomically $ getNtfSubscription st entId
+      s_ <- liftIO $ getNtfSubscriptionIO st entId
       case s_ of
         Just s@NtfSubData {tokenId = subTknId} -> do
           t_ <- atomically $ getActiveNtfToken st subTknId
-          verifyToken' t_ $ verifiedSubCmd s c
+          verifyToken' t_ $ verifiedSubCmd t_ s c
         _ -> pure $ maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
   where
-    verifiedTknCmd t c = VRVerified (NtfReqCmd SToken (NtfTkn t) (corrId, entId, c))
-    verifiedSubCmd s c = VRVerified (NtfReqCmd SSubscription (NtfSub s) (corrId, entId, c))
+    verifiedTknCmd t c = VRVerified (Just t, NtfReqCmd SToken (NtfTkn t) (corrId, entId, c))
+    verifiedSubCmd t_ s c = VRVerified (t_, NtfReqCmd SSubscription (NtfSub s) (corrId, entId, c))
     verifyToken :: Maybe NtfTknData -> (NtfTknData -> VerificationResult) -> M VerificationResult
     verifyToken t_ positiveVerificationResult =
       pure $ case t_ of
@@ -579,11 +618,17 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
 
 client :: NtfServerClient -> NtfSubscriber -> NtfPushServer -> M ()
 client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPushServer {pushQ, intervalNotifiers} =
-  forever $
+  forever $ do
+    ts <- liftIO getSystemDate
     atomically (readTBQueue rcvQ)
-      >>= mapM processCommand
+      >>= mapM (\(tkn_, req) -> updateTokenDate ts tkn_ >> processCommand req)
       >>= atomically . writeTBQueue sndQ
   where
+    updateTokenDate :: RoundedSystemTime -> Maybe NtfTknData -> M ()
+    updateTokenDate ts' = mapM_ $ \NtfTknData {ntfTknId, tknUpdatedAt} -> do
+      let t' = Just ts'
+      t <- atomically $ swapTVar tknUpdatedAt t'
+      unless (t' == t) $ withNtfLog $ \s -> logUpdateTokenTime s ntfTknId ts'
     processCommand :: NtfRequest -> M (Transmission NtfResponse)
     processCommand = \case
       NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> do
@@ -593,9 +638,11 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         let dhSecret = C.dh' dhPubKey srvDhPrivKey
         tknId <- getId
         regCode <- getRegCode
-        tkn <- atomically $ mkNtfTknData tknId newTkn ks dhSecret regCode
+        ts <- liftIO $ getSystemDate
+        tkn <- liftIO $ mkNtfTknData tknId newTkn ks dhSecret regCode ts
         atomically $ addNtfToken st tknId tkn
         atomically $ writeTBQueue pushQ (tkn, PNVerification regCode)
+        incNtfStatT token ntfVrfQueued
         withNtfLog (`logCreateToken` tkn)
         incNtfStatT token tknCreated
         pure (corrId, NoEntity, NRTknId tknId srvDhPubKey)
@@ -609,6 +656,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             if tknDhSecret == dhSecret
               then do
                 atomically $ writeTBQueue pushQ (tkn, PNVerification tknRegCode)
+                incNtfStatT token ntfVrfQueued
                 pure $ NRTknId ntfTknId srvDhPubKey
               else pure $ NRErr AUTH
           TVFY code -- this allows repeated verification for cases when client connection dropped before server response
@@ -636,9 +684,9 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               let tkn' = tkn {token = token', tknRegCode = regCode}
               addNtfToken st tknId tkn'
               writeTBQueue pushQ (tkn', PNVerification regCode)
+            incNtfStatT token ntfVrfQueued
             withNtfLog $ \s -> logUpdateToken s tknId token' regCode
-            incNtfStatT token tknDeleted
-            incNtfStatT token tknCreated
+            incNtfStatT token tknReplaced
             pure NROk
           TDEL -> do
             logDebug "TDEL"
