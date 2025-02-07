@@ -498,14 +498,18 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
           PPConnection _ -> retryDeliver
           PPRetryLater -> retryDeliver
           PPCryptoError _ -> err e
-          PPResponseError _ _ -> err e
+          PPResponseError {} -> err e
           PPTokenInvalid r -> updateTknStatus tkn (NTInvalid $ Just r) >> err e
           PPPermanentError -> err e
       where
         retryDeliver :: M (Either PushProviderError ())
         retryDeliver = do
           deliver <- liftIO $ newPushClient s pp
-          liftIO (runExceptT $ deliver tkn ntf) >>= either err (pure . Right)
+          liftIO (runExceptT $ deliver tkn ntf) >>= \case
+            Right _ -> pure $ Right ()
+            Left e -> case e of
+              PPTokenInvalid r -> updateTknStatus tkn (NTInvalid $ Just r) >> err e
+              _ -> err e
         err e = logError ("Push provider error (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> tshow e) $> Left e
 
 updateTknStatus :: NtfTknData -> NtfTknStatus -> M ()
