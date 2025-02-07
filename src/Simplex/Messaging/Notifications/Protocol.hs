@@ -557,19 +557,21 @@ instance StrEncoding NTInvalidReason where
   strEncode = smpEncode
   strP = smpP
 
-data NTInvalidReason = NTIRBadToken | NTIRTokenNotForTopic | NTIRGone410
+data NTInvalidReason = NTIRBadToken | NTIRTokenNotForTopic | NTIRExpiredToken | NTIRUnregistered
   deriving (Eq, Show)
 
 instance Encoding NTInvalidReason where
   smpEncode = \case
     NTIRBadToken -> "BAD"
     NTIRTokenNotForTopic -> "TOPIC"
-    NTIRGone410 -> "GONE"
+    NTIRExpiredToken -> "EXPIRED"
+    NTIRUnregistered -> "UNREGISTERED"
   smpP =
     A.takeTill (== ' ') >>= \case
       "BAD" -> pure NTIRBadToken
       "TOPIC" -> pure NTIRTokenNotForTopic
-      "GONE" -> pure NTIRGone410
+      "EXPIRED" -> pure NTIRExpiredToken
+      "UNREGISTERED" -> pure NTIRUnregistered
       _ -> fail "bad NTInvalidReason"
 
 instance StrEncoding NtfTknStatus where

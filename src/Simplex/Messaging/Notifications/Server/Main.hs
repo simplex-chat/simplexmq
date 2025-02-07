@@ -154,7 +154,7 @@ ntfServerCLI cfgPath logPath =
               regCodeBytes = 32,
               clientQSize = 64,
               subQSize = 512,
-              pushQSize = 1048,
+              pushQSize = 16384,
               smpAgentCfg =
                 defaultSMPClientAgentConfig
                   { smpCfg =
