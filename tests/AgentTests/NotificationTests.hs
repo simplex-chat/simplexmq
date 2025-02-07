@@ -476,14 +476,14 @@ testNtfTokenReRegisterInvalid t apns = do
       NTActive <- checkNtfToken a tkn
       pure tkn
 
-  threadDelay 250000
+  threadDelay 1000000
   -- start server to compact
   withNtfServerStoreLog t $ \_ -> pure ()
 
-  threadDelay 250000
+  threadDelay 1000000
   replaceSubstringInFile ntfTestStoreLogFile "tokenStatus=ACTIVE" "tokenStatus=INVALID"
 
-  threadDelay 250000
+  threadDelay 1000000
   withNtfServerStoreLog t $ \_ -> do
     withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
       NTInvalid Nothing <- registerNtfToken a tkn NMInstant
@@ -505,14 +505,14 @@ testNtfTokenReRegisterInvalidOnCheck t apns = do
       NTActive <- checkNtfToken a tkn
       pure tkn
 
-  threadDelay 250000
+  threadDelay 1000000
   -- start server to compact
   withNtfServerStoreLog t $ \_ -> pure ()
 
-  threadDelay 250000
+  threadDelay 1000000
   replaceSubstringInFile ntfTestStoreLogFile "tokenStatus=ACTIVE" "tokenStatus=INVALID"
 
-  threadDelay 250000
+  threadDelay 1000000
   withNtfServerStoreLog t $ \_ -> do
     withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
       NTInvalid Nothing <- checkNtfToken a tkn
