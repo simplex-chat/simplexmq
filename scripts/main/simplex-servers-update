@@ -4,6 +4,7 @@ set -eu
 # TODO:
 # 1. CHOOSE -> UPDATE: ALL/BINARY
 # 2. Exit early if there's only exit option
+# 3. Determine if version is actually available
 
 # Links to scripts/configs
 scripts_url="https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/scripts/main"
@@ -188,8 +189,18 @@ check_versions() {
       fi
       ;;
     *)
-      bin_url="https://github.com/simplex-chat/simplexmq/releases/download/${VER}"
-      remote_version="${VER}"
+      # Check if this version really exist
+      ver_check="https://github.com/simplex-chat/simplexmq/releases/tag/${VER}"
+      
+      if curl -o /dev/null --proto '=https' --tlsv1.2 -sf -L "${ver_check}"; then
+        bin_url="https://github.com/simplex-chat/simplexmq/releases/download/${VER}"
+        remote_version="${VER}"
+      else
+        printf "Provided version ${BLU}%s${NC} ${RED}doesn't exist${NC}! Switching to ${BLU}latest${NC}.\n" "${VER}"
+        VER='latest'
+        check_versions
+        return 0
+      fi
       ;;
   esac
 
