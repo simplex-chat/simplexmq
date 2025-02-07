@@ -188,7 +188,7 @@ check_versions() {
       fi
       ;;
     *)
-      bin_url="https://github.com/simplex-chat/simplexmq/releases/download/${ver}"
+      bin_url="https://github.com/simplex-chat/simplexmq/releases/download/${VER}"
       remote_version="${VER}"
       ;;
   esac
