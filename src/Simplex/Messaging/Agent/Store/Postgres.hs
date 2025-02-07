@@ -6,6 +6,8 @@
 
 module Simplex.Messaging.Agent.Store.Postgres
   ( DBOpts (..),
+    Migrations.appMigrations,
+    Migrations.getCurrentMigrations,
     createDBStore,
     closeDBStore,
     reopenDBStore,
@@ -22,7 +24,8 @@ import Data.Text (Text)
 import Database.PostgreSQL.Simple (Only (..))
 import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.SqlQQ (sql)
-import Simplex.Messaging.Agent.Store.Migrations (migrateSchema)
+import Simplex.Messaging.Agent.Store.Migrations (DBMigrate (..), sharedMigrateSchema)
+import Simplex.Messaging.Agent.Store.Postgres.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationError (..))
@@ -43,10 +46,16 @@ data DBOpts = DBOpts
 createDBStore :: DBOpts -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createDBStore DBOpts {connstr, schema} migrations confirmMigrations = do
   st <- connectPostgresStore connstr schema
-  r <- migrateSchema st migrations confirmMigrations True `onException` closeDBStore st
+  r <- migrateSchema st `onException` closeDBStore st
   case r of
     Right () -> pure $ Right st
     Left e -> closeDBStore st $> Left e
+  where
+    migrateSchema st =
+      let initialize = Migrations.initialize st
+          getCurrent = withTransaction st Migrations.getCurrentMigrations
+          dbm = DBMigrate {initialize, getCurrent, run = Migrations.run st, backup = pure ()}
+       in sharedMigrateSchema dbm (dbNew st) migrations confirmMigrations
 
 connectPostgresStore :: ByteString -> String -> IO DBStore
 connectPostgresStore dbConnstr dbSchema = do
