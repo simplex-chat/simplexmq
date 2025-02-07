@@ -26,6 +26,8 @@
 
 module Simplex.Messaging.Agent.Store.SQLite
   ( DBOpts (..),
+    Migrations.appMigrations,
+    Migrations.getCurrentMigrations,
     createDBStore,
     closeDBStore,
     reopenDBStore,
@@ -52,12 +54,13 @@ import Database.SQLite.Simple (Query (..))
 import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
-import Simplex.Messaging.Agent.Store.Migrations (migrateSchema)
+import Simplex.Messaging.Agent.Store.Migrations (DBMigrate (..), sharedMigrateSchema)
+import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.SQLite.Common
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationError (..))
 import Simplex.Messaging.Util (ifM, safeDecodeUtf8)
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.FilePath (takeDirectory)
 import UnliftIO.Exception (bracketOnError, onException)
 import UnliftIO.MVar
@@ -78,10 +81,18 @@ createDBStore DBOpts {dbFilePath, dbKey, keepKey, track, vacuum} migrations conf
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing True dbDir
   st <- connectSQLiteStore dbFilePath dbKey keepKey track
-  r <- migrateSchema st migrations confirmMigrations vacuum `onException` closeDBStore st
+  r <- migrateSchema st `onException` closeDBStore st
   case r of
     Right () -> pure $ Right st
     Left e -> closeDBStore st $> Left e
+  where
+    migrateSchema st =
+      let initialize = Migrations.initialize st
+          getCurrent = withTransaction st Migrations.getCurrentMigrations
+          run = Migrations.run st vacuum
+          backup = copyFile dbFilePath (dbFilePath <> ".bak")
+          dbm = DBMigrate {initialize, getCurrent, run, backup}
+       in sharedMigrateSchema dbm (dbNew st) migrations confirmMigrations
 
 connectSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> DB.TrackQueries -> IO DBStore
 connectSQLiteStore dbFilePath key keepKey track = do

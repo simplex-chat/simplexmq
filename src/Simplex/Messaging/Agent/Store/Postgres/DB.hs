@@ -17,7 +17,7 @@ module Simplex.Messaging.Agent.Store.Postgres.DB
 where
 
 import Control.Monad (void)
-import Data.Int (Int32, Int64)
+import Data.Int (Int64)
 import Data.Word (Word16, Word32)
 import Database.PostgreSQL.Simple (ResultError (..))
 import qualified Database.PostgreSQL.Simple as PSQL
