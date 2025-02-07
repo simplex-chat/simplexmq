@@ -2,7 +2,6 @@
 set -eu
 
 # TODO:
-# 1. CHOOSE -> UPDATE: ALL/BINARY
 # 2. Update logic
 
 # Links to scripts/configs
@@ -47,8 +46,8 @@ NC='\033[0m'
 NL='
 '
 
-# Set UPDATE variable globally and only once
-UPDATE="${UPDATE:-}"
+# Set CHOOSE variable globally and only once
+CHOOSE="${CHOOSE:-}"
 # Set VER globally and only once
 VER="${VER:-latest}"
 
@@ -354,7 +353,7 @@ update_misc() {
         mv "$path_tmp_bin_update" "$path_bin_update"
         printf "${GRN}Done!${NC}\n"
         printf -- "- Re-executing Update script..."
-        exec env UPDATE="${selection_parse}" UPDATE_SCRIPT_DONE=1 "$path_bin_update"
+        exec env CHOOSE="${selection_parse}" UPDATE_SCRIPT_DONE=1 "$path_bin_update"
         ;;
       stop)
         printf -- "- Updating stopscript script..."
@@ -444,8 +443,16 @@ uupdate_bins() {
 }
 
 main() {
+  if [ "${1:-}" = 'help' ]; then
+    menu_help="${BLU}VER=vX.X.X-beta.1${NC} ${YLW}simplex-servers-update${NC}: update to specified version.${NL}"
+    menu_help="${menu_help}${BLU}CHOOSE='Update all'${NC} ${YLW}simplex-servers-update${NC}: non-interactive usage. Values: 'Update all', 'Update binaries', 'Update misc' ${NL}"
+    printf '%b' "$menu_help"
+    exit 0
+  fi
+    
   download_all
   
+  menu_start="Help: ${YLW}simplex-servers-update${NC} ${BLU}help${NC}${NL}"
   menu_end="${RED}X${NC}) Exit the script${NL}${NL}Selection: "
 
   set +u
@@ -479,7 +486,7 @@ main() {
     exit 0
   fi
 
-  menu="${menu_option_all:-}${menu_option_bins}${menu_option_misc:-}${menu_end}"
+  menu="${menu_start}${menu_option_all:-}${menu_option_bins}${menu_option_misc:-}${menu_end}"
 
   menu="$(replace_x "$menu")"
   menu_lc=$(printf '%b' "$menu" | tr -cd '\n' | wc -c)
@@ -491,14 +498,14 @@ main() {
   while [ "$selection_check" != 'pass' ]; do
 
     # Non-interactive usage
-    if [ -z "$UPDATE" ]; then
+    if [ -z "$CHOOSE" ]; then
       printf '%b' "$menu"
       read selection
       line="$(printf '%b' "$menu" | clean_colors | grep "$selection)" || :)"
     else
-      case "$UPDATE" in
-        *:) line="X) ${UPDATE}" ;;
-        *) line="X) ${UPDATE}:" ;;
+      case "$CHOOSE" in
+        *:) line="X) ${CHOOSE}" ;;
+        *) line="X) ${CHOOSE}:" ;;
       esac
     fi
 
@@ -548,10 +555,10 @@ main() {
           ;;
         *)
           selection_check='nopass'
-          if [ -z "$UPDATE" ]; then
+          if [ -z "$CHOOSE" ]; then
             erase_lines "$menu_lc"
           else
-            UPDATE=''
+            CHOOSE=''
           fi
           ;;
       esac
