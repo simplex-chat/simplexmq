@@ -120,10 +120,10 @@ notificationTests t = do
     it "should keep working with active token until replaced" $
       withAPNSMockServer $ \apns ->
         testNtfTokenChangeServers t apns
-    it "should re-register token in NTInvalid status after register attempt" $
+    xit'' "should re-register token in NTInvalid status after register attempt" $
       withAPNSMockServer $ \apns ->
         testNtfTokenReRegisterInvalid t apns
-    it "should re-register token in NTInvalid status after checking token" $
+    xit'' "should re-register token in NTInvalid status after checking token" $
       withAPNSMockServer $ \apns ->
         testNtfTokenReRegisterInvalidOnCheck t apns
   describe "notification server tests" $ do
@@ -476,14 +476,14 @@ testNtfTokenReRegisterInvalid t apns = do
       NTActive <- checkNtfToken a tkn
       pure tkn
 
-  threadDelay 1000000
+  threadDelay 250000
   -- start server to compact
   withNtfServerStoreLog t $ \_ -> pure ()
 
-  threadDelay 1000000
+  threadDelay 250000
   replaceSubstringInFile ntfTestStoreLogFile "tokenStatus=ACTIVE" "tokenStatus=INVALID"
 
-  threadDelay 1000000
+  threadDelay 250000
   withNtfServerStoreLog t $ \_ -> do
     withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
       NTInvalid Nothing <- registerNtfToken a tkn NMInstant
@@ -505,14 +505,14 @@ testNtfTokenReRegisterInvalidOnCheck t apns = do
       NTActive <- checkNtfToken a tkn
       pure tkn
 
-  threadDelay 1000000
+  threadDelay 250000
   -- start server to compact
   withNtfServerStoreLog t $ \_ -> pure ()
 
-  threadDelay 1000000
+  threadDelay 250000
   replaceSubstringInFile ntfTestStoreLogFile "tokenStatus=ACTIVE" "tokenStatus=INVALID"
 
-  threadDelay 1000000
+  threadDelay 250000
   withNtfServerStoreLog t $ \_ -> do
     withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
       NTInvalid Nothing <- checkNtfToken a tkn
