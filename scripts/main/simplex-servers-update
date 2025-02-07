@@ -354,7 +354,7 @@ update_misc() {
         mv "$path_tmp_bin_update" "$path_bin_update"
         printf "${GRN}Done!${NC}\n"
         printf -- "- Re-executing Update script..."
-        exec env CHOOSE="$choose" "$path_bin_update"
+        exec env UPDATE="${selection_parse}" UPDATE_SCRIPT_DONE=1 "$path_bin_update"
         ;;
       stop)
         printf -- "- Updating stopscript script..."
@@ -384,7 +384,7 @@ update_misc() {
 }
 
 # Updates binaries. This function depends on variables from "download_all"
-update_bins() {
+uupdate_bins() {
   service="${1}-server"
   eval "bin=\$bin_${1}"
   eval "path_bin=\$path_bin_${1}"
@@ -444,7 +444,6 @@ update_bins() {
 }
 
 main() {
-  printf 'Please wait while script is downloading files...\n'
   download_all
   
   menu_end="${RED}X${NC}) Exit the script${NL}${NL}Selection: "
@@ -469,6 +468,11 @@ main() {
     fi
   fi
 
+  # Early hook to print Done after script re-execution
+  if [ -n "$UPDATE_SCRIPT_DONE" ]; then
+    printf "${GRN}Done!${NC}\n"
+  fi
+
   # Abort early if there's neither update binaries, nor update scripts options
   if [ -z "$menu_option_bins" ] && [ -z "$menu_option_misc" ]; then
     printf "${YLW}Everything is up-to-date${NC}.\n"
@@ -481,13 +485,22 @@ main() {
   menu_lc=$(printf '%b' "$menu" | tr -cd '\n' | wc -c)
   menu_lc=$((menu_lc + 1))
 
+  set -u
+
   selection_check=''
   while [ "$selection_check" != 'pass' ]; do
 
-    printf '%b' "$menu"
-    read selection
-
-    line="$(printf '%b' "$menu" | clean_colors | grep "$selection)" || :)"
+    # Non-interactive usage
+    if [ -z "$UPDATE" ]; then
+      printf '%b' "$menu"
+      read selection
+      line="$(printf '%b' "$menu" | clean_colors | grep "$selection)" || :)"
+    else
+      case "$UPDATE" in
+        *:) line="X) ${UPDATE}" ;;
+        *) line="X) ${UPDATE}:" ;;
+      esac
+    fi
 
     if [ -n "$line" ]; then
       selection_parse="$(printf '%s' "$line" | sed 's|^.*) ||')"
@@ -495,22 +508,51 @@ main() {
       case "$selection_parse" in
         'Update misc:')
           selection_check='pass'
-          update_misc
+          set +u
+          if [ -n "$menu_option_misc" ]; then
+            set -u
+            update_misc
+          else
+            printf "${YLW}Misc is up-to-date${NC}.\n"
+            exit 0
+          fi
           ;;
         'Update binaries:')
           selection_check='pass'
-          update_bins
+          set +u
+          if [ -n "$menu_option_bins" ]; then
+            set -u
+            update_bins
+          else
+            printf "${YLW}Binaries is up-to-date${NC}.\n"
+            exit 0
+          fi
           ;;
         'Update all:')
           selection_check='pass'
-          update_all
+          set +u
+          if [ -n "$menu_option_bins" ]; then
+            if [ -n "$menu_option_misc" ]; then
+              set -u
+              update_misc
+            fi
+            set -u
+            update_bins
+          else
+            printf "${YLW}Everything is up-to-date${NC}.\n"
+            exit 0
+          fi
           ;;
         'Exit the script')
           exit 0
           ;;
         *)
-          erase_lines "$menu_lc"
           selection_check='nopass'
+          if [ -z "$UPDATE" ]; then
+            erase_lines "$menu_lc"
+          else
+            UPDATE=''
+          fi
           ;;
       esac
     else
