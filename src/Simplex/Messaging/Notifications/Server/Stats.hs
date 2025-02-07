@@ -17,6 +17,7 @@ data NtfServerStats = NtfServerStats
     tknCreated :: IORef Int,
     tknVerified :: IORef Int,
     tknDeleted :: IORef Int,
+    tknReplaced :: IORef Int,
     subCreated :: IORef Int,
     subDeleted :: IORef Int,
     ntfReceived :: IORef Int,
@@ -24,6 +25,7 @@ data NtfServerStats = NtfServerStats
     ntfFailed :: IORef Int,
     ntfCronDelivered :: IORef Int,
     ntfCronFailed :: IORef Int,
+    ntfVrfQueued :: IORef Int,
     ntfVrfDelivered :: IORef Int,
     ntfVrfFailed :: IORef Int,
     ntfVrfInvalidTkn :: IORef Int,
@@ -36,6 +38,7 @@ data NtfServerStatsData = NtfServerStatsData
     _tknCreated :: Int,
     _tknVerified :: Int,
     _tknDeleted :: Int,
+    _tknReplaced :: Int,
     _subCreated :: Int,
     _subDeleted :: Int,
     _ntfReceived :: Int,
@@ -43,6 +46,7 @@ data NtfServerStatsData = NtfServerStatsData
     _ntfFailed :: Int,
     _ntfCronDelivered :: Int,
     _ntfCronFailed :: Int,
+    _ntfVrfQueued :: Int,
     _ntfVrfDelivered :: Int,
     _ntfVrfFailed :: Int,
     _ntfVrfInvalidTkn :: Int,
@@ -56,6 +60,7 @@ newNtfServerStats ts = do
   tknCreated <- newIORef 0
   tknVerified <- newIORef 0
   tknDeleted <- newIORef 0
+  tknReplaced <- newIORef 0
   subCreated <- newIORef 0
   subDeleted <- newIORef 0
   ntfReceived <- newIORef 0
@@ -63,6 +68,7 @@ newNtfServerStats ts = do
   ntfFailed <- newIORef 0
   ntfCronDelivered <- newIORef 0
   ntfCronFailed <- newIORef 0
+  ntfVrfQueued <- newIORef 0
   ntfVrfDelivered <- newIORef 0
   ntfVrfFailed <- newIORef 0
   ntfVrfInvalidTkn <- newIORef 0
@@ -74,6 +80,7 @@ newNtfServerStats ts = do
         tknCreated,
         tknVerified,
         tknDeleted,
+        tknReplaced,
         subCreated,
         subDeleted,
         ntfReceived,
@@ -81,6 +88,7 @@ newNtfServerStats ts = do
         ntfFailed,
         ntfCronDelivered,
         ntfCronFailed,
+        ntfVrfQueued,
         ntfVrfDelivered,
         ntfVrfFailed,
         ntfVrfInvalidTkn,
@@ -94,6 +102,7 @@ getNtfServerStatsData s@NtfServerStats {fromTime} = do
   _tknCreated <- readIORef $ tknCreated s
   _tknVerified <- readIORef $ tknVerified s
   _tknDeleted <- readIORef $ tknDeleted s
+  _tknReplaced <- readIORef $ tknReplaced s
   _subCreated <- readIORef $ subCreated s
   _subDeleted <- readIORef $ subDeleted s
   _ntfReceived <- readIORef $ ntfReceived s
@@ -101,6 +110,7 @@ getNtfServerStatsData s@NtfServerStats {fromTime} = do
   _ntfFailed <- readIORef $ ntfFailed s
   _ntfCronDelivered <- readIORef $ ntfCronDelivered s
   _ntfCronFailed <- readIORef $ ntfCronFailed s
+  _ntfVrfQueued <- readIORef $ ntfVrfQueued s
   _ntfVrfDelivered <- readIORef $ ntfVrfDelivered s
   _ntfVrfFailed <- readIORef $ ntfVrfFailed s
   _ntfVrfInvalidTkn <- readIORef $ ntfVrfInvalidTkn s
@@ -112,6 +122,7 @@ getNtfServerStatsData s@NtfServerStats {fromTime} = do
         _tknCreated,
         _tknVerified,
         _tknDeleted,
+        _tknReplaced,
         _subCreated,
         _subDeleted,
         _ntfReceived,
@@ -119,6 +130,7 @@ getNtfServerStatsData s@NtfServerStats {fromTime} = do
         _ntfFailed,
         _ntfCronDelivered,
         _ntfCronFailed,
+        _ntfVrfQueued,
         _ntfVrfDelivered,
         _ntfVrfFailed,
         _ntfVrfInvalidTkn,
@@ -133,6 +145,7 @@ setNtfServerStats s@NtfServerStats {fromTime} d@NtfServerStatsData {_fromTime} =
   writeIORef (tknCreated s) $! _tknCreated d
   writeIORef (tknVerified s) $! _tknVerified d
   writeIORef (tknDeleted s) $! _tknDeleted d
+  writeIORef (tknReplaced s) $! _tknReplaced d
   writeIORef (subCreated s) $! _subCreated d
   writeIORef (subDeleted s) $! _subDeleted d
   writeIORef (ntfReceived s) $! _ntfReceived d
@@ -140,6 +153,7 @@ setNtfServerStats s@NtfServerStats {fromTime} d@NtfServerStatsData {_fromTime} =
   writeIORef (ntfFailed s) $! _ntfFailed d
   writeIORef (ntfCronDelivered s) $! _ntfCronDelivered d
   writeIORef (ntfCronFailed s) $! _ntfCronFailed d
+  writeIORef (ntfVrfQueued s) $! _ntfVrfQueued d
   writeIORef (ntfVrfDelivered s) $! _ntfVrfDelivered d
   writeIORef (ntfVrfFailed s) $! _ntfVrfFailed d
   writeIORef (ntfVrfInvalidTkn s) $! _ntfVrfInvalidTkn d
@@ -153,6 +167,7 @@ instance StrEncoding NtfServerStatsData where
         _tknCreated,
         _tknVerified,
         _tknDeleted,
+        _tknReplaced,
         _subCreated,
         _subDeleted,
         _ntfReceived,
@@ -160,6 +175,7 @@ instance StrEncoding NtfServerStatsData where
         _ntfFailed,
         _ntfCronDelivered,
         _ntfCronFailed,
+        _ntfVrfQueued,
         _ntfVrfDelivered,
         _ntfVrfFailed,
         _ntfVrfInvalidTkn,
@@ -171,6 +187,7 @@ instance StrEncoding NtfServerStatsData where
         "tknCreated=" <> strEncode _tknCreated,
         "tknVerified=" <> strEncode _tknVerified,
         "tknDeleted=" <> strEncode _tknDeleted,
+        "tknReplaced=" <> strEncode _tknReplaced,
         "subCreated=" <> strEncode _subCreated,
         "subDeleted=" <> strEncode _subDeleted,
         "ntfReceived=" <> strEncode _ntfReceived,
@@ -178,6 +195,7 @@ instance StrEncoding NtfServerStatsData where
         "ntfFailed=" <> strEncode _ntfFailed,
         "ntfCronDelivered=" <> strEncode _ntfCronDelivered,
         "ntfCronFailed=" <> strEncode _ntfCronFailed,
+        "ntfVrfQueued=" <> strEncode _ntfVrfQueued,
         "ntfVrfDelivered=" <> strEncode _ntfVrfDelivered,
         "ntfVrfFailed=" <> strEncode _ntfVrfFailed,
         "ntfVrfInvalidTkn=" <> strEncode _ntfVrfInvalidTkn,
@@ -191,6 +209,7 @@ instance StrEncoding NtfServerStatsData where
     _tknCreated <- "tknCreated=" *> strP <* A.endOfLine
     _tknVerified <- "tknVerified=" *> strP <* A.endOfLine
     _tknDeleted <- "tknDeleted=" *> strP <* A.endOfLine
+    _tknReplaced <- opt "tknReplaced="
     _subCreated <- "subCreated=" *> strP <* A.endOfLine
     _subDeleted <- "subDeleted=" *> strP <* A.endOfLine
     _ntfReceived <- "ntfReceived=" *> strP <* A.endOfLine
@@ -198,6 +217,7 @@ instance StrEncoding NtfServerStatsData where
     _ntfFailed <- opt "ntfFailed="
     _ntfCronDelivered <- opt "ntfCronDelivered="
     _ntfCronFailed <- opt "ntfCronFailed="
+    _ntfVrfQueued <- opt "ntfVrfQueued="
     _ntfVrfDelivered <- opt "ntfVrfDelivered="
     _ntfVrfFailed <- opt "ntfVrfFailed="
     _ntfVrfInvalidTkn <- opt "ntfVrfInvalidTkn="
@@ -211,6 +231,7 @@ instance StrEncoding NtfServerStatsData where
           _tknCreated,
           _tknVerified,
           _tknDeleted,
+          _tknReplaced,
           _subCreated,
           _subDeleted,
           _ntfReceived,
@@ -218,6 +239,7 @@ instance StrEncoding NtfServerStatsData where
           _ntfFailed,
           _ntfCronDelivered,
           _ntfCronFailed,
+          _ntfVrfQueued,
           _ntfVrfDelivered,
           _ntfVrfFailed,
           _ntfVrfInvalidTkn,
