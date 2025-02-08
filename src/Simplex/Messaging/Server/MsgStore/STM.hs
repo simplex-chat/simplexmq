@@ -14,6 +14,7 @@
 module Simplex.Messaging.Server.MsgStore.STM
   ( STMMsgStore (..),
     STMStoreConfig (..),
+    STMQueue,
   )
 where
 
@@ -28,8 +29,7 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Util ((<$$), (<$$>), ($>>=))
-import System.IO (IOMode (..))
+import Simplex.Messaging.Util ((<$$>), ($>>=))
 
 data STMMsgStore = STMMsgStore
   { storeConfig :: STMStoreConfig,
@@ -63,6 +63,8 @@ instance StoreQueueClass STMQueue where
   {-# INLINE queueRec #-}
   msgQueue = msgQueue'
   {-# INLINE msgQueue #-}
+  mkQueue rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
+  {-# INLINE mkQueue #-}
 
 instance MsgStoreClass STMMsgStore where
   type StoreMonad STMMsgStore = STM
@@ -72,29 +74,21 @@ instance MsgStoreClass STMMsgStore where
 
   newMsgStore :: STMStoreConfig -> IO STMMsgStore
   newMsgStore storeConfig = do
-    queueStore_ <- newSTMQueueStore
+    queueStore_ <- newQueueStore @STMQueue ()
     pure STMMsgStore {storeConfig, queueStore_}
-
-  setStoreLog :: STMMsgStore -> StoreLog 'WriteMode -> IO ()
-  setStoreLog st sl = atomically $ writeTVar (storeLog $ queueStore_ st) (Just sl)
 
   closeMsgStore st = readTVarIO (storeLog $ queueStore_ st) >>= mapM_ closeStoreLog
 
-  withActiveMsgQueues = withQueues . queueStore_
+  withActiveMsgQueues = withLoadedQueues . queueStore_
   {-# INLINE withActiveMsgQueues #-}
-  withAllMsgQueues _ = withQueues . queueStore_
+  withAllMsgQueues _ = withLoadedQueues . queueStore_
   {-# INLINE withAllMsgQueues #-}
   logQueueStates _ = pure ()
   {-# INLINE logQueueStates #-}
   logQueueState _ = pure ()
   {-# INLINE logQueueState #-}
-
   queueStore = queueStore_
   {-# INLINE queueStore #-}
-  addQueue ms rId qr = mkQueue ms rId qr >>= \q -> q <$$ addStoreQueue (queueStore_ ms) qr q
-  {-# INLINE addQueue #-}
-  mkQueue _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
-  {-# INLINE mkQueue #-}
 
   getMsgQueue :: STMMsgStore -> STMQueue -> STM STMMsgQueue
   getMsgQueue _ STMQueue {msgQueue'} = readTVar msgQueue' >>= maybe newQ pure
@@ -170,5 +164,5 @@ instance MsgStoreClass STMMsgStore where
       Just _ -> modifyTVar' size (subtract 1)
       _ -> pure ()
 
-  isolateQueue :: STMQueue -> String -> STM a -> ExceptT ErrorType IO a
-  isolateQueue _ _ = liftIO . atomically
+  isolateQueue :: STMMsgStore -> STMQueue -> String -> STM a -> ExceptT ErrorType IO a
+  isolateQueue _ _ _ = liftIO . atomically

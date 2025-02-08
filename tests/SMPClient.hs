@@ -130,6 +130,7 @@ cfgMS msType =
       storeLogFile = Just testStoreLogFile,
       storeMsgsFile = Just $ case msType of
         ASType SSTJournalMemory -> testStoreMsgsDir
+        ASType SSTJournalPostgres -> testStoreMsgsDir
         ASType SSTMemory -> testStoreMsgsFile,
       storeNtfsFile = Nothing,
       allowNewQueues = True,

@@ -124,7 +124,7 @@ testGetQueue ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
   runRight_ $ do
-    q <- ExceptT $ addQueue ms rId qr
+    q <- ExceptT $ addQueue (queueStore ms) rId qr
     let write s = writeMsg ms q True =<< mkMessage s
     Just (Message {msgId = mId1}, True) <- write "message 1"
     Just (Message {msgId = mId2}, False) <- write "message 2"
@@ -167,7 +167,7 @@ testChangeReadJournal ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
   runRight_ $ do
-    q <- ExceptT $ addQueue ms rId qr
+    q <- ExceptT $ addQueue (queueStore ms) rId qr
     let write s = writeMsg ms q True =<< mkMessage s
     Just (Message {msgId = mId1}, True) <- write "message 1"
     (Msg "message 1", Nothing) <- tryDelPeekMsg ms q mId1
@@ -189,11 +189,11 @@ testExportImportStore ms = do
   sl <- readWriteQueueStore testStoreLogFile ms
   runRight_ $ do
     let write q s = writeMsg ms q True =<< mkMessage s
-    q1 <- ExceptT $ addQueue ms rId1 qr1
+    q1 <- ExceptT $ addQueue (queueStore ms) rId1 qr1
     liftIO $ logCreateQueue sl rId1 qr1
     Just (Message {}, True) <- write q1 "message 1"
     Just (Message {}, False) <- write q1 "message 2"
-    q2 <- ExceptT $ addQueue ms rId2 qr2
+    q2 <- ExceptT $ addQueue (queueStore ms) rId2 qr2
     liftIO $ logCreateQueue sl rId2 qr2
     Just (Message {msgId = mId3}, True) <- write q2 "message 3"
     Just (Message {msgId = mId4}, False) <- write q2 "message 4"
@@ -303,7 +303,7 @@ testMessageState ms = do
       write q s = writeMsg ms q True =<< mkMessage s
 
   mId1 <- runRight $ do
-    q <- ExceptT $ addQueue ms rId qr
+    q <- ExceptT $ addQueue (queueStore ms) rId qr
     Just (Message {msgId = mId1}, True) <- write q "message 1"
     Just (Message {}, False) <- write q "message 2"
     liftIO $ closeMsgQueue q
@@ -325,7 +325,7 @@ testReadFileMissing ms = do
   (rId, qr) <- testNewQueueRec g True
   let write q s = writeMsg ms q True =<< mkMessage s
   q <- runRight $ do
-    q <- ExceptT $ addQueue ms rId qr
+    q <- ExceptT $ addQueue (queueStore ms) rId qr
     Just (Message {}, True) <- write q "message 1"
     Msg "message 1" <- tryPeekMsg ms q
     pure q
@@ -405,7 +405,7 @@ testReadAndWriteFilesMissing ms = do
 
 writeMessages :: JournalMsgStore s -> RecipientId -> QueueRec -> IO (JournalQueue s)
 writeMessages ms rId qr = runRight $ do
-  q <- ExceptT $ addQueue ms rId qr
+  q <- ExceptT $ addQueue (queueStore ms) rId qr
   let write s = writeMsg ms q True =<< mkMessage s
   Just (Message {msgId = mId1}, True) <- write "message 1"
   Just (Message {msgId = mId2}, False) <- write "message 2"

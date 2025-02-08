@@ -1,7 +1,10 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Server.StoreLog.ReadWrite where
 
@@ -16,32 +19,31 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (tshow)
 import System.IO
 
-writeQueueStore :: MsgStoreClass s => StoreLog 'WriteMode -> s -> IO ()
-writeQueueStore s st = withActiveMsgQueues st $ writeQueue
+writeQueueStore :: forall q s. QueueStoreClass q s => StoreLog 'WriteMode -> s -> IO ()
+writeQueueStore s st = withLoadedQueues st $ writeQueue
   where
+    writeQueue :: q -> IO ()
     writeQueue q = do
       let rId = recipientId q
       readTVarIO (queueRec q) >>= \case
         Just q' -> logCreateQueue s rId q'
         Nothing -> pure ()
 
-readQueueStore :: forall s. MsgStoreClass s => FilePath -> s -> IO ()
-readQueueStore f ms = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . LB.lines
+readQueueStore :: forall q s. QueueStoreClass q s => FilePath -> s -> IO ()
+readQueueStore f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . LB.lines
   where
-    st = queueStore ms
     processLine :: LB.ByteString -> IO ()
     processLine s' = either printError procLogRecord (strDecode s)
       where
         s = LB.toStrict s'
         procLogRecord :: StoreLogRecord -> IO ()
         procLogRecord = \case
-          CreateQueue rId q -> mkQueue ms rId q >>= addStoreQueue st q >>= qError rId "CreateQueue"
+          CreateQueue rId q -> addQueue @q st rId q >>= qError rId "CreateQueue"
           SecureQueue qId sKey -> withQueue qId "SecureQueue" $ \q -> secureQueue st q sKey
           AddNotifier qId ntfCreds -> withQueue qId "AddNotifier" $ \q -> addQueueNotifier st q ntfCreds
           SuspendQueue qId -> withQueue qId "SuspendQueue" $ suspendQueue st
@@ -52,7 +54,7 @@ readQueueStore f ms = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLin
           UpdateTime qId t -> withQueue qId "UpdateTime" $ \q -> updateQueueTime st q t
         printError :: String -> IO ()
         printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
-        withQueue :: forall a. RecipientId -> T.Text -> (StoreQueue s -> IO (Either ErrorType a)) -> IO ()
+        withQueue :: forall a. RecipientId -> T.Text -> (q -> IO (Either ErrorType a)) -> IO ()
         withQueue qId op a = runExceptT go >>= qError qId op
           where
             go = do

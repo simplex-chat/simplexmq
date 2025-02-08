@@ -814,12 +814,15 @@ testRestoreExpireMessages =
   where
     exportStoreMessages :: AStoreType -> IO ()
     exportStoreMessages = \case
-      ASType SSTJournalMemory -> do
-        ms <- newMsgStore (testJournalStoreCfg SQSMemory) {quota = 4}
-        readWriteQueueStore testStoreLogFile ms >>= closeStoreLog
-        removeFileIfExists testStoreMsgsFile
-        exportMessages False ms testStoreMsgsFile False
+      ASType SSTJournalMemory -> export
+      ASType SSTJournalPostgres -> export
       ASType SSTMemory -> pure ()
+      where
+        export = do
+          ms <- newMsgStore (testJournalStoreCfg SQSMemory) {quota = 4}
+          readWriteQueueStore testStoreLogFile ms >>= closeStoreLog
+          removeFileIfExists testStoreMsgsFile
+          exportMessages False ms testStoreMsgsFile False
     runTest :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()

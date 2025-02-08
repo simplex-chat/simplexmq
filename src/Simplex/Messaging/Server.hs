@@ -906,13 +906,13 @@ runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessio
   nextClientId <- asks clientSeq
   clientId <- atomically $ stateTVar nextClientId $ \next -> (next, next + 1)
   atomically $ modifyTVar' active $ IM.insert clientId Nothing
-  AMS msType ms <- asks msgStore
-  c <- liftIO $ newClient msType clientId q thVersion sessionId ts
-  runClientThreads msType ms active c clientId `finally` clientDisconnected c
+  AMS sType ms <- asks msgStore
+  c <- liftIO $ newClient sType clientId q thVersion sessionId ts
+  runClientThreads sType ms active c clientId `finally` clientDisconnected c
   where
-    runClientThreads :: MsgStoreClass (MsgStore s) => SStoreType s -> MsgStore s -> TVar (IM.IntMap (Maybe AClient)) -> Client (MsgStore s) -> IS.Key -> M ()
-    runClientThreads msType ms active c clientId = do
-      atomically $ modifyTVar' active $ IM.insert clientId $ Just (AClient msType c)
+    runClientThreads :: MsgStoreClass (MsgStore qs ms) => StoreType qs ms -> MsgStore qs ms -> TVar (IM.IntMap (Maybe AClient)) -> Client (MsgStore qs ms) -> IS.Key -> M ()
+    runClientThreads sType ms active c clientId = do
+      atomically $ modifyTVar' active $ IM.insert clientId $ Just (AClient sType c)
       s <- asks server
       expCfg <- asks $ inactiveClientExpiration . config
       th <- newMVar h -- put TH under a fair lock to interleave messages and command responses
@@ -1295,7 +1295,7 @@ client
             addQueueRetry n qik qRec = do
               ids@(rId, sId) <- getIds
               let qr = qRec sId
-              liftIO (addQueue ms rId qr) >>= \case
+              liftIO (addQueue (queueStore ms) rId qr) >>= \case
                 Left DUPLICATE_ -> addQueueRetry (n - 1) qik qRec
                 Left e -> pure $ ERR e
                 Right q -> do
@@ -1787,10 +1787,10 @@ randomId = fmap EntityId . randomId'
 
 saveServerMessages :: Bool -> AMsgStore -> IO ()
 saveServerMessages drainMsgs = \case
-  AMS SSTMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
+  AMS (SType SQSMemory SMSMemory) ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
     Just f -> exportMessages False ms f drainMsgs
     Nothing -> logInfo "undelivered messages are not saved"
-  AMS SSTJournalMemory _ -> logInfo "closed journal message storage"
+  AMS (SType _ SMSJournal) _ -> logInfo "closed journal message storage"
 
 exportMessages :: MsgStoreClass s => Bool -> s -> FilePath -> Bool -> IO ()
 exportMessages tty ms f drainMsgs = do
@@ -1819,10 +1819,11 @@ processServerMessages = do
     where
       processMessages :: Maybe Int64 -> Bool -> AMsgStore -> IO (Maybe MessageStats)
       processMessages old_ expire = \case
-        AMS SSTMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
+        AMS (SType SQSMemory SMSMemory) ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
           Just f -> ifM (doesFileExist f) (Just <$> importMessages False ms f old_) (pure Nothing)
           Nothing -> pure Nothing
-        AMS SSTJournalMemory ms -> processJournalMessages old_ expire ms
+        AMS (SType _ SMSJournal) ms -> processJournalMessages old_ expire ms
+        -- AMS (SType SQSPostgres SMSJournal) ms -> processJournalMessages old_ expire ms
       processJournalMessages :: forall s. Maybe Int64 -> Bool -> JournalMsgStore s -> IO (Maybe MessageStats)
       processJournalMessages old_ expire ms
         | expire = Just <$> case old_ of
@@ -1870,7 +1871,6 @@ importMessages tty ms f old_ = do
       renameFile f $ f <> ".bak"
       mapM_ setOverQuota_ overQuota
       logQueueStates ms
-      -- storedQueues <- M.size <$> readTVarIO (queues $ stmQueueStore ms)
       QueueCounts {queueCount} <- liftIO $ queueCounts @(StoreQueue s) $ queueStore ms
       pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues = queueCount}
   where
