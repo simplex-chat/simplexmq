@@ -544,7 +544,8 @@ data SndMsgData = SndMsgData
     internalHash :: MsgHash,
     prevMsgHash :: MsgHash,
     encryptKey_ :: Maybe MsgEncryptKeyX448,
-    paddedLen_ :: Maybe Int
+    paddedLen_ :: Maybe Int,
+    sndMsgBodyId_ :: Maybe Int64
   }
 
 data SndMsg = SndMsg
@@ -563,8 +564,11 @@ data PendingMsgData = PendingMsgData
     pqEncryption :: PQEncryption,
     msgRetryState :: Maybe RI2State,
     internalTs :: InternalTs,
+    internalSndId :: InternalSndId,
+    prevMsgHash :: PrevSndMsgHash,
     encryptKey_ :: Maybe MsgEncryptKeyX448,
-    paddedLen_ :: Maybe Int
+    paddedLen_ :: Maybe Int,
+    sndMsgBody_ :: Maybe AMessage
   }
   deriving (Show)
 

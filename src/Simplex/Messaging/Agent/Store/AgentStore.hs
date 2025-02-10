@@ -92,6 +92,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     updateRcvIds,
     createRcvMsg,
     updateRcvMsgHash,
+    createSndMsgBody,
     updateSndIds,
     createSndMsg,
     updateSndMsgHash,
@@ -770,6 +771,14 @@ createRcvMsg db connId rq@RcvQueue {dbQueueId} rcvMsgData@RcvMsgData {msgMeta = 
   updateRcvMsgHash db connId sndMsgId internalRcvId internalHash
   DB.execute db "UPDATE rcv_queues SET last_broker_ts = ? WHERE conn_id = ? AND rcv_queue_id = ?" (brokerTs, connId, dbQueueId)
 
+createSndMsgBody :: DB.Connection -> AMessage -> IO Int64
+createSndMsgBody db aMessage =
+  fromOnly . head <$>
+    DB.query
+      db
+      "INSERT INTO snd_message_bodies (agent_msg) VALUES (?) RETURNING snd_message_body_id"
+      (Only aMessage)
+
 updateSndIds :: DB.Connection -> ConnId -> IO (Either StoreError (InternalId, InternalSndId, PrevSndMsgHash))
 updateSndIds db connId = runExceptT $ do
   (lastInternalId, lastInternalSndId, prevSndHash) <- ExceptT $ retrieveLastIdsAndHashSnd_ db connId
@@ -844,18 +853,21 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
           DB.query
             db
             [sql|
-              SELECT m.msg_type, m.msg_flags, m.msg_body, m.pq_encryption, m.internal_ts, s.retry_int_slow, s.retry_int_fast, s.msg_encrypt_key, s.padded_msg_len
+              SELECT
+                m.msg_type, m.msg_flags, m.msg_body, m.pq_encryption, m.internal_ts, m.internal_snd_id, s.previous_msg_hash,
+                s.retry_int_slow, s.retry_int_fast, s.msg_encrypt_key, s.padded_msg_len, sb.agent_msg
               FROM messages m
               JOIN snd_messages s ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
+              LEFT JOIN snd_message_bodies sb ON sb.snd_message_body_id = s.snd_message_body_id
               WHERE m.conn_id = ? AND m.internal_id = ?
             |]
             (connId, msgId)
         err = SEInternal $ "msg delivery " <> bshow msgId <> " returned []"
-        pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, PQEncryption, InternalTs, Maybe Int64, Maybe Int64, Maybe CR.MsgEncryptKeyX448, Maybe Int) -> PendingMsgData
-        pendingMsgData (msgType, msgFlags_, msgBody, pqEncryption, internalTs, riSlow_, riFast_, encryptKey_, paddedLen_) =
+        pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, PQEncryption, InternalTs, InternalSndId, PrevSndMsgHash, Maybe Int64, Maybe Int64, Maybe CR.MsgEncryptKeyX448, Maybe Int, Maybe AMessage) -> PendingMsgData
+        pendingMsgData (msgType, msgFlags_, msgBody, pqEncryption, internalTs, internalSndId, prevMsgHash, riSlow_, riFast_, encryptKey_, paddedLen_, sndMsgBody_) =
           let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
               msgRetryState = RI2State <$> riSlow_ <*> riFast_
-           in PendingMsgData {msgId, msgType, msgFlags, msgBody, pqEncryption, msgRetryState, internalTs, encryptKey_, paddedLen_}
+           in PendingMsgData {msgId, msgType, msgFlags, msgBody, pqEncryption, msgRetryState, internalTs, internalSndId, prevMsgHash, encryptKey_, paddedLen_, sndMsgBody_}
     markMsgFailed msgId = DB.execute db "UPDATE snd_message_deliveries SET failed = 1 WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 
 getWorkItem :: Show i => ByteString -> IO (Maybe i) -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError (Maybe a))
@@ -997,7 +1009,6 @@ deleteDeliveredSndMsg db connId msgId = do
   cnt <- countPendingSndDeliveries_ db connId msgId
   when (cnt == 0) $ deleteMsg db connId msgId
 
--- TODO [save once] Delete from shared message bodies if no deliveries reference it. (`when (cnt == 0)`)
 deleteSndMsgDelivery :: DB.Connection -> ConnId -> SndQueue -> InternalId -> Bool -> IO ()
 deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
   DB.execute
@@ -1006,11 +1017,19 @@ deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
     (connId, dbQueueId, msgId)
   cnt <- countPendingSndDeliveries_ db connId msgId
   when (cnt == 0) $ do
-    del <-
-      maybeFirstRow id (DB.query db "SELECT rcpt_internal_id, rcpt_status FROM snd_messages WHERE conn_id = ? AND internal_id = ?" (connId, msgId)) >>= \case
-        Just (Just (_ :: Int64), Just MROk) -> pure deleteMsg
-        _ -> pure $ if keepForReceipt then deleteMsgContent else deleteMsg
-    del db connId msgId
+    maybeFirstRow id (DB.query db "SELECT rcpt_internal_id, rcpt_status, snd_message_body_id FROM snd_messages WHERE conn_id = ? AND internal_id = ?" (connId, msgId)) >>= \case
+      Just (Just (_ :: Int64), Just MROk, sndMsgBodyId_) -> do
+        deleteSndMsgBody sndMsgBodyId_
+        deleteMsg db connId msgId
+      Just (_, _, sndMsgBodyId_) -> do
+        deleteSndMsgBody sndMsgBodyId_
+        if keepForReceipt then deleteMsgContent db connId msgId else deleteMsg db connId msgId
+      Nothing ->
+        if keepForReceipt then deleteMsgContent db connId msgId else deleteMsg db connId msgId
+  where
+    deleteSndMsgBody :: Maybe Int64 -> IO ()
+    deleteSndMsgBody sndMsgBodyId_ = forM_ sndMsgBodyId_ $ \sndMsgBodyId ->
+      DB.execute db "DELETE FROM snd_message_bodies WHERE snd_message_body_id = ?" (Only sndMsgBodyId)
 
 countPendingSndDeliveries_ :: DB.Connection -> ConnId -> InternalId -> IO Int
 countPendingSndDeliveries_ db connId msgId = do
@@ -2207,11 +2226,11 @@ insertSndMsgDetails_ dbConn connId SndMsgData {..} =
     dbConn
     [sql|
       INSERT INTO snd_messages
-        ( conn_id, internal_snd_id, internal_id, internal_hash, previous_msg_hash, msg_encrypt_key, padded_msg_len)
+        ( conn_id, internal_snd_id, internal_id, internal_hash, previous_msg_hash, msg_encrypt_key, padded_msg_len, snd_message_body_id)
       VALUES
-        (?,?,?,?,?,?,?)
+        (?,?,?,?,?,?,?,?)
     |]
-    (connId, internalSndId, internalId, Binary internalHash, Binary prevMsgHash, encryptKey_, paddedLen_)
+    (connId, internalSndId, internalId, Binary internalHash, Binary prevMsgHash, encryptKey_, paddedLen_, sndMsgBodyId_)
 
 updateSndMsgHash :: DB.Connection -> ConnId -> InternalSndId -> MsgHash -> IO ()
 updateSndMsgHash db connId internalSndId internalHash =
