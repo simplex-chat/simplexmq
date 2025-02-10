@@ -1019,17 +1019,16 @@ deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
   when (cnt == 0) $ do
     maybeFirstRow id (DB.query db "SELECT rcpt_internal_id, rcpt_status, snd_message_body_id FROM snd_messages WHERE conn_id = ? AND internal_id = ?" (connId, msgId)) >>= \case
       Just (Just (_ :: Int64), Just MROk, sndMsgBodyId_) -> do
-        deleteSndMsgBody sndMsgBodyId_
+        forM_ sndMsgBodyId_ deleteSndMsgBody
         deleteMsg db connId msgId
-      Just (_, _, sndMsgBodyId_) -> do
-        deleteSndMsgBody sndMsgBodyId_
+      Just (_, _, Just (sndMsgBodyId :: Int64)) -> do
+        deleteSndMsgBody sndMsgBodyId
         delKeepForReceipt
-      Nothing ->
+      _ ->
         delKeepForReceipt
   where
     delKeepForReceipt = if keepForReceipt then deleteMsgContent db connId msgId else deleteMsg db connId msgId
-    deleteSndMsgBody :: Maybe Int64 -> IO ()
-    deleteSndMsgBody sndMsgBodyId_ = forM_ sndMsgBodyId_ $ \sndMsgBodyId ->
+    deleteSndMsgBody sndMsgBodyId =
       DB.execute db "DELETE FROM snd_message_bodies WHERE snd_message_body_id = ?" (Only sndMsgBodyId)
 
 countPendingSndDeliveries_ :: DB.Connection -> ConnId -> InternalId -> IO Int
