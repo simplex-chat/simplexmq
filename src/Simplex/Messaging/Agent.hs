@@ -1387,12 +1387,12 @@ enqueueMessage c cData sq msgFlags aMessage =
 
 -- this function is used only for sending messages in batch, it returns the list of successes to enqueue additional deliveries
 enqueueMessageB :: forall t. Traversable t => AgentClient -> IntMap AMessage -> t (Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, MsgBodyKey)) -> AM' (t (Either AgentErrorType ((AgentMsgId, PQEncryption), Maybe (ConnData, [SndQueue], AgentMsgId))))
-enqueueMessageB c msgBodies reqs = do
+enqueueMessageB c aMsgBodies reqs = do
   cfg <- asks config
   -- TODO save bodies and messages in one transaction
-  (_errs, msgBodiesIds) <- IM.mapEither id <$> withStoreBatch' c (\db -> IM.map (createSndMsgBody' db) msgBodies)
+  (_errs, aMsgBodiesIds) <- IM.mapEither id <$> withStoreBatch' c (\db -> IM.map (createSndMsgBody' db) aMsgBodies)
   -- unless (IM.null errs) $ throwE $ INTERNAL "enqueueMessageB: error saving message bodies"
-  reqMids <- withStoreBatch c $ \db -> fmap (bindRight $ storeSentMsg db cfg msgBodiesIds) reqs
+  reqMids <- withStoreBatch c $ \db -> fmap (bindRight $ storeSentMsg db cfg aMsgBodiesIds) reqs
   forME reqMids $ \((cData, sq :| sqs, _, _, _), InternalId msgId, pqSecr) -> do
     submitPendingMsg c cData sq
     let sqs' = filter isActiveSndQ sqs
@@ -1401,8 +1401,8 @@ enqueueMessageB c msgBodies reqs = do
     createSndMsgBody' :: DB.Connection -> AMessage -> IO (AMessage, Int64)
     createSndMsgBody' db aMessage = (aMessage,) <$> createSndMsgBody db aMessage
     storeSentMsg :: DB.Connection -> AgentConfig -> IntMap (AMessage, Int64) -> (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, MsgBodyKey) -> IO (Either AgentErrorType ((ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, MsgBodyKey), InternalId, PQEncryption))
-    storeSentMsg db cfg msgBodiesIds req@(cData@ConnData {connId}, sq :| _, pqEnc_, msgFlags, msgBodyKey) =
-      case IM.lookup msgBodyKey msgBodiesIds of
+    storeSentMsg db cfg aMsgBodiesIds req@(cData@ConnData {connId}, sq :| _, pqEnc_, msgFlags, msgBodyKey) =
+      case IM.lookup msgBodyKey aMsgBodiesIds of
         Nothing -> pure $ Left (INTERNAL "enqueueMessageB: storeSentMsg missing saved message body id")
         Just (aMessage, sndMsgBodyId) -> fmap (first storeError) $ runExceptT $ do
           let AgentConfig {e2eEncryptVRange} = cfg
