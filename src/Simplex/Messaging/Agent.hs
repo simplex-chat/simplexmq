@@ -170,8 +170,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
 import Simplex.Messaging.Agent.Store.Common (DBStore)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
-import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL)
-import qualified Simplex.Messaging.Agent.Store.Migrations as Migrations
+import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL, getCurrentMigrations)
 import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
 import Simplex.Messaging.Client (SMPClientError, ServerTransmission (..), ServerTransmissionBatch, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
@@ -1957,7 +1956,7 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
         -- possible improvement: add minimal time before repeat registration
         (Just tknId, Nothing)
           | savedDeviceToken == suppliedDeviceToken ->
-              when (ntfTknStatus == NTRegistered) (registerToken tkn) $> NTRegistered
+              registerToken tkn $> NTRegistered
           | otherwise -> replaceToken tknId
         (Just tknId, Just (NTAVerify code))
           | savedDeviceToken == suppliedDeviceToken ->
@@ -1966,14 +1965,16 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
         (Just tknId, Just NTACheck)
           | savedDeviceToken == suppliedDeviceToken -> do
               ns <- asks ntfSupervisor
-              atomically $ nsUpdateToken ns tkn {ntfMode = suppliedNtfMode}
-              when (ntfTknStatus == NTActive) $ do
-                cron <- asks $ ntfCron . config
-                agentNtfEnableCron c tknId tkn cron
-                when (suppliedNtfMode == NMInstant) $ initializeNtfSubs c
-                when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ deleteNtfSubs c NSCSmpDelete
-              -- possible improvement: get updated token status from the server, or maybe TCRON could return the current status
-              pure ntfTknStatus
+              let tkn' = tkn {ntfMode = suppliedNtfMode}
+              atomically $ nsUpdateToken ns tkn'
+              agentNtfCheckToken c tknId tkn' >>= \case
+                NTActive -> do
+                  cron <- asks $ ntfCron . config
+                  agentNtfEnableCron c tknId tkn cron
+                  when (suppliedNtfMode == NMInstant) $ initializeNtfSubs c
+                  when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ deleteNtfSubs c NSCSmpDelete
+                  t tkn' (NTActive, Just NTACheck) $ pure ()
+                status -> t tkn' (status, Nothing) $ pure ()
           | otherwise -> replaceToken tknId
         -- deprecated
         (Just _tknId, Just NTADelete) -> deleteToken c tkn $> NTExpired
@@ -2040,9 +2041,15 @@ verifyNtfToken' c deviceToken nonce code =
 checkNtfToken' :: AgentClient -> DeviceToken -> AM NtfTknStatus
 checkNtfToken' c deviceToken =
   withStore' c getSavedNtfToken >>= \case
-    Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId} -> do
+    Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId, ntfTknAction} -> do
       when (deviceToken /= savedDeviceToken) . throwE $ CMD PROHIBITED "checkNtfToken: different token"
-      agentNtfCheckToken c tknId tkn
+      status <- agentNtfCheckToken c tknId tkn
+      let action = case status of
+            NTInvalid _ -> Nothing
+            NTExpired -> Nothing
+            _ -> ntfTknAction
+      withStore' c $ \db -> updateNtfToken db tkn status action
+      pure status
     _ -> throwE $ CMD PROHIBITED "checkNtfToken: no token"
 
 deleteNtfToken' :: AgentClient -> DeviceToken -> AM ()
@@ -2183,7 +2190,7 @@ execAgentStoreSQL :: AgentClient -> Text -> AE [Text]
 execAgentStoreSQL c sql = withAgentEnv c $ withStore' c (`execSQL` sql)
 
 getAgentMigrations :: AgentClient -> AE [UpMigration]
-getAgentMigrations c = withAgentEnv c $ map upMigration <$> withStore' c Migrations.getCurrent
+getAgentMigrations c = withAgentEnv c $ map upMigration <$> withStore' c getCurrentMigrations
 
 debugAgentLocks :: AgentClient -> IO AgentLocks
 debugAgentLocks AgentClient {connLocks = cs, invLocks = is, deleteLock = d} = do

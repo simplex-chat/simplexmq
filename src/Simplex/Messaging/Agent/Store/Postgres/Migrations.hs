@@ -5,10 +5,10 @@
 {-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Agent.Store.Postgres.Migrations
-  ( app,
+  ( appMigrations,
     initialize,
     run,
-    getCurrent,
+    getCurrentMigrations,
   )
 where
 
@@ -34,8 +34,8 @@ schemaMigrations =
   ]
 
 -- | The list of migrations in ascending order by date
-app :: [Migration]
-app = sortOn name $ map migration schemaMigrations
+appMigrations :: [Migration]
+appMigrations = sortOn name $ map migration schemaMigrations
   where
     migration (name, up, down) = Migration {name, up, down = down}
 
@@ -53,8 +53,8 @@ initialize st = withTransaction' st $ \db ->
       )
     |]
 
-run :: DBStore -> Bool -> MigrationsToRun -> IO ()
-run st _vacuum = \case
+run :: DBStore -> MigrationsToRun -> IO ()
+run st = \case
   MTRUp [] -> pure ()
   MTRUp ms -> mapM_ runUp ms
   MTRDown ms -> mapM_ runDown $ reverse ms
@@ -72,7 +72,7 @@ run st _vacuum = \case
       withMVar (connectionHandle db) $ \pqConn ->
         void $ LibPQ.exec pqConn (TE.encodeUtf8 query)
 
-getCurrent :: PSQL.Connection -> IO [Migration]
-getCurrent db = map toMigration <$> PSQL.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
+getCurrentMigrations :: PSQL.Connection -> IO [Migration]
+getCurrentMigrations db = map toMigration <$> PSQL.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
   where
     toMigration (name, down) = Migration {name, up = T.pack "", down}

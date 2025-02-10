@@ -8,10 +8,10 @@
 {-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Agent.Store.SQLite.Migrations
-  ( app,
+  ( appMigrations,
     initialize,
     run,
-    getCurrent,
+    getCurrentMigrations,
   )
 where
 
@@ -114,13 +114,13 @@ schemaMigrations =
   ]
 
 -- | The list of migrations in ascending order by date
-app :: [Migration]
-app = sortOn name $ map migration schemaMigrations
+appMigrations :: [Migration]
+appMigrations = sortOn name $ map migration schemaMigrations
   where
     migration (name, up, down) = Migration {name, up = fromQuery up, down = fromQuery <$> down}
 
-getCurrent :: DB.Connection -> IO [Migration]
-getCurrent DB.Connection {DB.conn} = map toMigration <$> SQL.query_ conn "SELECT name, down FROM migrations ORDER BY name ASC;"
+getCurrentMigrations :: DB.Connection -> IO [Migration]
+getCurrentMigrations DB.Connection {DB.conn} = map toMigration <$> SQL.query_ conn "SELECT name, down FROM migrations ORDER BY name ASC;"
   where
     toMigration (name, down) = Migration {name, up = "", down}
 

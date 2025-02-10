@@ -308,7 +308,7 @@ data PushProviderError
   = PPConnection HTTP2ClientError
   | PPCryptoError C.CryptoError
   | PPResponseError (Maybe Status) Text
-  | PPTokenInvalid
+  | PPTokenInvalid NTInvalidReason
   | PPRetryLater
   | PPPermanentError
   deriving (Show, Exception)
@@ -337,19 +337,20 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {toke
     result status reason'
       | status == Just N.ok200 = pure ()
       | status == Just N.badRequest400 =
-          case reason' of
-            "BadDeviceToken" -> throwE PPTokenInvalid
-            "DeviceTokenNotForTopic" -> throwE PPTokenInvalid
-            "TopicDisallowed" -> throwE PPPermanentError
-            _ -> err status reason'
-      | status == Just N.forbidden403 = case reason' of
-          "ExpiredProviderToken" -> throwE PPPermanentError -- there should be no point retrying it as the token was refreshed
-          "InvalidProviderToken" -> throwE PPPermanentError
-          _ -> err status reason'
-      | status == Just N.gone410 = throwE PPTokenInvalid
+          throwE $ case reason' of
+            "BadDeviceToken" -> PPTokenInvalid NTIRBadToken
+            "DeviceTokenNotForTopic" -> PPTokenInvalid NTIRTokenNotForTopic
+            "TopicDisallowed" -> PPPermanentError
+            _ -> PPResponseError status reason'
+      | status == Just N.forbidden403 = throwE $ case reason' of
+          "ExpiredProviderToken" -> PPPermanentError -- there should be no point retrying it as the token was refreshed
+          "InvalidProviderToken" -> PPPermanentError
+          _ -> PPResponseError status reason'
+      | status == Just N.gone410 = throwE $ case reason' of
+          "ExpiredToken" -> PPTokenInvalid NTIRExpiredToken
+          "Unregistered" -> PPTokenInvalid NTIRUnregistered
+          _ -> PPRetryLater
       | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwE PPRetryLater
       -- Just tooManyRequests429 -> TooManyRequests - too many requests for the same token
-      | otherwise = err status reason'
-    err :: Maybe Status -> Text -> ExceptT PushProviderError IO ()
-    err s r = throwE $ PPResponseError s r
+      | otherwise = throwE $ PPResponseError status reason'
     liftHTTPS2 a = ExceptT $ first PPConnection <$> a
