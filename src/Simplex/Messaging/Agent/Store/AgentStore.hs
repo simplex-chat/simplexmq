@@ -1023,10 +1023,11 @@ deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
         deleteMsg db connId msgId
       Just (_, _, sndMsgBodyId_) -> do
         deleteSndMsgBody sndMsgBodyId_
-        if keepForReceipt then deleteMsgContent db connId msgId else deleteMsg db connId msgId
+        delKeepForReceipt
       Nothing ->
-        if keepForReceipt then deleteMsgContent db connId msgId else deleteMsg db connId msgId
+        delKeepForReceipt
   where
+    delKeepForReceipt = if keepForReceipt then deleteMsgContent db connId msgId else deleteMsg db connId msgId
     deleteSndMsgBody :: Maybe Int64 -> IO ()
     deleteSndMsgBody sndMsgBodyId_ = forM_ sndMsgBodyId_ $ \sndMsgBodyId ->
       DB.execute db "DELETE FROM snd_message_bodies WHERE snd_message_body_id = ?" (Only sndMsgBodyId)
