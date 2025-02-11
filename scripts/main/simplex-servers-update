@@ -1,9 +1,6 @@
 #!/usr/bin/env sh
 set -eu
 
-# TODO:
-# 2. Update logic
-
 # Links to scripts/configs
 scripts_url="https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/scripts/main"
 scripts_url_systemd_smp="$scripts_url/smp-server.service"
@@ -164,14 +161,6 @@ change_check() {
 ### Support functions ###
 #########################
 
-# Updates stored local version of server
-update_local_version() {
-  server="$1"
-  new_ver="$2"
-  
-  sed -i -- "s|local_version_${server}=.*|local_version_${server}='${new_ver}'|" "$path_conf_info/release"
-}
-
 # Sets local/remote versions and "apps" variables
 check_versions() {
   # Sets:
@@ -220,21 +209,27 @@ check_versions() {
     exit 1
   fi
 
-  if [ -f "$path_conf_info/release" ]; then
-    . "$path_conf_info/release" 2>/dev/null
+  for server in $apps; do
+    # Check if info file is present
+    if [ -f "$path_conf_info/release" ]; then
+      # If present, source it
+      . "$path_conf_info/release" 2>/dev/null
 
-    for server in $apps; do
-      eval "local_version=\$local_version_${server}"
-
-      if [ -z "${local_version}" ]; then
-        update_local_version "$server" 'unset'
+      # Check if line containing local version exists in file
+      if grep -q "local_version_${server}" "$path_conf_info/release"; then
+        # if exists, set the var
+        eval "local_version=\$local_version_${server}"
+      else
+        # If it doesn't, append it to file
+        printf "local_version_${server}=unset\n" >> "$path_conf_info/release"
+        # And set it in script (so we don't have to re-source the file)
+        eval "local_version_${server}=unset"
       fi
-    done
-  else
-    for server in $apps; do
-      printf "local_version_${server}=unset\n" > "$path_conf_info/release"
-    done
-  fi
+    else
+      # If there isn't info file, populate it
+      printf "local_version_${server}=unset\n" >> "$path_conf_info/release"
+    fi
+  done
 }
 
 # Checks the distro and sets the urls variables
@@ -306,16 +301,19 @@ download_all() {
   download_thing "$scripts_url_update" "$path_tmp_bin_update" 'string: /usr/bin/env' 'Update script'
   if change_check "$path_tmp_bin_update" "$path_bin_update"; then
     msg_scripts="${msg_scripts+$msg_scripts/}${YLW}update${NC}"
+    msg_scripts_raw="${msg_scripts_raw+$msg_scripts_raw/}update"
   fi
 
   download_thing "$scripts_url_stopscript" "$path_tmp_bin_stopscript" 'string: /usr/bin/env' 'Stop script'
   if change_check "$path_tmp_bin_stopscript" "$path_bin_stopscript"; then
     msg_scripts="${msg_scripts+$msg_scripts/}${YLW}stop${NC}"
+    msg_scripts_raw="${msg_scripts_raw+$msg_scripts_raw/}stop"
   fi
 
   download_thing "$scripts_url_uninstall" "$path_tmp_bin_uninstall" 'string: /usr/bin/env' 'Uninstall script'
   if change_check "$path_tmp_bin_uninstall" "$path_bin_uninstall"; then
     msg_scripts="${msg_scripts+$msg_scripts/}${YLW}uninstall${NC}"
+    msg_scripts_raw="${msg_scripts_raw+$msg_scripts_raw/}uninstall"
   fi
 
   for i in $apps; do
@@ -327,15 +325,17 @@ download_all() {
     download_thing "$scripts_url_systemd_final" "$path_tmp_systemd_final" 'string: [Unit]' "$service systemd service"
     if change_check "$path_tmp_systemd_final" "$path_systemd_final"; then
       msg_services="${msg_services+$msg_services/}${YLW}$service${NC}"
+      msg_services_raw="${msg_services_raw+$msg_services_raw/}$service"
     fi
   done
 
   for i in $apps; do
     service="${i}-server"
-    eval "local_version=\$local_version_${server}"
+    eval "local_version=\$local_version_${i}"
 
     if change_check "$local_version" "$remote_version"; then
-      msg_bins="${msg_bins+$msg_bins$NC}  - ${YLW}$service${NC}: from ${BLU}$local_version${NC} to ${BLU}$remote_version${NC}"
+      msg_bins="${msg_bins+$msg_bins$NL}  - ${YLW}$service${NC}: from ${BLU}$local_version${NC} to ${BLU}$remote_version${NC}"
+      msg_bins_raw="${msg_bins_raw+$msg_bins_raw/}$service"
     fi
   done
 }
@@ -345,8 +345,7 @@ update_misc() {
   OLD_IFS="$IFS"
 
   IFS='/'
-  for script in $msg_scripts; do
-    script="$(printf '%b' "$script" | clean_colors)"
+  for script in $msg_scripts_raw; do
     case "$script" in
       update)
         printf -- "- Updating update script..."
@@ -368,8 +367,7 @@ update_misc() {
     esac
   done
 
-  for service in $msg_services; do
-    service="$(printf '%b' "$service" | clean_colors)"
+  for service in $msg_services_raw; do
     app="${service%%-*}"
     eval "path_systemd=\$path_systemd_${app}"
     eval "path_tmp_systemd=\$path_tmp_systemd_${app}"
@@ -383,63 +381,42 @@ update_misc() {
 }
 
 # Updates binaries. This function depends on variables from "download_all"
-uupdate_bins() {
-  service="${1}-server"
-  eval "bin=\$bin_${1}"
-  eval "path_bin=\$path_bin_${1}"
+update_bins() {
+  OLD_IFS="$IFS"
 
+  IFS='/'
+  for bin in $msg_bins_raw; do
+    app="${bin%%-*}"
+    eval "local_version=\$local_version_${app}"
+    eval "bin_url_final=\$bin_url_${app}"
+    eval "path_tmp_bin_final=\$path_tmp_bin_${app}"
+    eval "path_bin_final=\$path_bin_${app}"
 
-  update_bin() {
-    printf -- "- Updating %s to %s..." "$service" "$remote_version"
-
-    if ! check_sanity "$path_bin.new" 'file: ELF'; then
-      printf "\n${RED}Something went wrong when downloading ${YLW}%s binary${NC}: either you don't have connection to Github or you're rate-limited.\n" "$service"
-      rm -f "$path_bin.new"
-      exit 1
-    else
-      mv "$path_bin.new" "$path_bin"
-    fi
-      
-    printf "${GRN}Done!${NC}\n"
-  }
-
-  if [ "$local_version" != "$remote_version" ]; then
-    update_submenu
-
-# -----------------------------------------------------------
-  for i in $apps; do
-    service="${i}-server"
-    eval "bin_url_final=\$bin_url_${i}"
-    eval "path_tmp_bin_final=\$path_tmp_bin_${i}"
-    eval "path_bin_final=\$path_bin_${i}"
-
-    download_thing "$bin_url_final" "$path_tmp_bin_final" 'file: ELF' "$service"
-    if change_check "$path_tmp_bin_final" "$path_bin_final"; then
-      msg_bins="${msg_bins+$msg_bins$NC}  - ${YLW}$service${NC}: from ${BLU}$local_version${NC} to ${BLU}$remote_version${NC}"
-    fi
-  done
-# ------------------------------------------------------------
-
-    if systemctl is-active --quiet "$service"; then
-      printf -- "- Stopping %s service..." "$service"
+    # If systemd service is active
+    if systemctl is-active --quiet "$bin"; then
+      printf -- "- Stopping %s service..." "$bin"
       systemctl stop "$service"
       printf "${GRN}Done!${NC}\n"
 
-      update_bin
+      printf -- "- Updating ${YLW}%s${NC} from ${BLU}%s${NC} to ${BLU}%s${NC}..." "$service" "$local_version" "$remote_version"
+      download_thing "$bin_url_final" "$path_tmp_bin_final" 'file: ELF' "$service"
+      mv "$path_tmp_bin_final" "$path_bin_final"
+      printf "${GRN}Done!${NC}\n"
       
       printf -- "- Starting %s service..." "$service"
       systemctl start "$service"
       printf "${GRN}Done!${NC}\n"
     else
-      update_bin
+      # If systemd service is NOT active
+      printf -- "- Updating ${YLW}%s${NC} from ${BLU}%s${NC} to ${BLU}%s${NC}..." "$service" "$local_version" "$remote_version"
+      download_thing "$bin_url_final" "$path_tmp_bin_final" 'file: ELF' "$service"
+      mv "$path_tmp_bin_final" "$path_bin_final"
+      printf "${GRN}Done!${NC}\n"
     fi
-  else
-    printf -- "- ${YLW}%s is up-to-date${NC}.\n" "$service"
-  fi
 
-  set_ver "$1"
-
-  unset service bin path_bin local_version
+    # Don't forget to set version
+    sed -i -- "s|local_version_${app}=.*|local_version_${app}='${remote_version}'|" "$path_conf_info/release"
+  done
 }
 
 main() {
