@@ -989,8 +989,8 @@ withInvLock' :: AgentClient -> ByteString -> String -> AM' a -> AM' a
 withInvLock' AgentClient {invLocks} = withLockMap invLocks
 {-# INLINE withInvLock' #-}
 
-withConnLocks :: AgentClient -> Set ConnId -> String -> AM' a -> AM' a
-withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks
+withConnLocks :: AgentClient -> Set ConnId -> String -> AM a -> AM a
+withConnLocks AgentClient {connLocks} key name = ExceptT . withLocksMap_ connLocks key name . runExceptT
 {-# INLINE withConnLocks #-}
 
 withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
