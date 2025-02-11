@@ -381,7 +381,8 @@ update_misc() {
     systemctl daemon-reload
     printf "${GRN}Done!${NC}\n"
   done
-  IFS="$OLF_IFS"
+
+  IFS="$OLD_IFS"
 }
 
 # Updates binaries. This function depends on variables from "download_all"
@@ -421,6 +422,8 @@ update_bins() {
     # Don't forget to set version
     sed -i -- "s|local_version_${app}=.*|local_version_${app}='${remote_version}'|" "$path_conf_info/release"
   done
+
+  IFS="$OLD_IFS"
 }
 
 main() {
