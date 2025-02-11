@@ -193,7 +193,11 @@ check_versions() {
       else
         printf "Provided version ${BLU}%s${NC} ${RED}doesn't exist${NC}! Switching to ${BLU}latest${NC}.\n" "${VER}"
         VER='latest'
+
+        # Re-execute check
         check_versions
+
+        # Everything has been done, so return from the function
         return 0
       fi
       ;;
@@ -234,6 +238,9 @@ check_versions() {
       printf "local_version_${server}=unset\n" >> "$path_conf_info/release"
     fi
   done
+
+  # Return 
+  return 0
 }
 
 # Checks the distro and sets the urls variables
@@ -256,6 +263,8 @@ check_distro() {
 
   bin_url_smp="$bin_url/smp-server-ubuntu-${version}-${arch}"
   bin_url_xftp="$bin_url/xftp-server-ubuntu-${version}-${arch}"
+
+  return 0
 }
 
 # General checks that must be performed on the initial execution of script
@@ -269,6 +278,8 @@ checks() {
   check_distro
 
   mkdir -p $path_conf_info $path_tmp_bin
+
+  return 0
 }
 
 #############################
@@ -298,6 +309,8 @@ download_thing() {
     printf "${RED}Something went wrong when downloading ${YLW}%s${NC}: either you don't have connection to Github or you're rate-limited.\n" "$err_msg"
     exit 1
   fi
+
+  return 0
 }
 
 # Downloads all necessary files to temp dir and set update messages for the menu
@@ -342,6 +355,8 @@ download_all() {
       msg_bins_raw="${msg_bins_raw+$msg_bins_raw/}$service"
     fi
   done
+
+  return 0
 }
 
 # Updates systemd and scripts. This function depends om variables from "download_all"
@@ -383,6 +398,7 @@ update_misc() {
   done
 
   IFS="$OLD_IFS"
+  return 0
 }
 
 # Updates binaries. This function depends on variables from "download_all"
@@ -390,16 +406,16 @@ update_bins() {
   OLD_IFS="$IFS"
 
   IFS='/'
-  for bin in $msg_bins_raw; do
-    app="${bin%%-*}"
+  for service in $msg_bins_raw; do
+    app="${service%%-*}"
     eval "local_version=\$local_version_${app}"
     eval "bin_url_final=\$bin_url_${app}"
     eval "path_tmp_bin_final=\$path_tmp_bin_${app}"
     eval "path_bin_final=\$path_bin_${app}"
 
     # If systemd service is active
-    if systemctl is-active --quiet "$bin"; then
-      printf -- "- Stopping %s service..." "$bin"
+    if systemctl is-active --quiet "$service"; then
+      printf -- "- Stopping %s service..." "$service"
       systemctl stop "$service"
       printf "${GRN}Done!${NC}\n"
 
@@ -424,6 +440,7 @@ update_bins() {
   done
 
   IFS="$OLD_IFS"
+  return 0
 }
 
 main() {
