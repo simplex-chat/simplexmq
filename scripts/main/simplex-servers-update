@@ -1,6 +1,9 @@
 #!/usr/bin/env sh
 set -eu
 
+# Make sure that PATH variable contains /usr/local/bin
+PATH="/usr/local/bin:$PATH"
+
 # Links to scripts/configs
 scripts_url="https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/scripts/main"
 scripts_url_systemd_smp="$scripts_url/smp-server.service"
@@ -198,7 +201,8 @@ check_versions() {
 
   set +u
   for i in smp xftp; do
-    if command -v "$i-server" >/dev/null; then
+    # Only check local directory where binaries are installed by the script
+    if command -v "/usr/local/bin/$i-server" >/dev/null; then
       apps="$i $apps"
     fi
   done
