@@ -137,7 +137,7 @@ change_check() {
   fi
 
   case "$type" in
-    *script*)
+    *script*|*text*)
       if diff -q "$old" "$new" > /dev/null 2>&1; then
         changed=1
       else
