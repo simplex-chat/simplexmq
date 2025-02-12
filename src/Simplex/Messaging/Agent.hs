@@ -1405,9 +1405,10 @@ enqueueMessageB c aMsgBodies reqs = do
           let AgentConfig {e2eEncryptVRange} = cfg
           internalTs <- liftIO getCurrentTime
           (internalId, internalSndId, prevMsgHash) <- ExceptT $ updateSndIds db connId
-          -- To avoid double encoding - here and on delivery - we could calculate message length by formula.
-          -- (We use encoded message length to check if there is enough space left for pad)
-          -- Also - if agentMsgStr is not created here, internalHash has to be computed and saved on delivery.
+          -- We need to do pre-flight encoding that is not stored in database
+          -- to calculate its hash and remember it on connection (createSndMsg -> updateSndMsgHash)
+          -- to enable next enqueue.
+          -- (As encoding is different per connection, we can't store shared body, so it's repeated on delivery)
           let agentMsgStr = encodeAgentMsgStr aMessage internalSndId prevMsgHash
               internalHash = C.sha256Hash agentMsgStr
               currentE2EVersion = maxVersion e2eEncryptVRange
