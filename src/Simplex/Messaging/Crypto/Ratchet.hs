@@ -876,7 +876,7 @@ rcEncryptHeader rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, r
   let emHeader = smpEncode EncMessageHeader {ehVersion = v, ehBody, ehAuthTag, ehIV}
       msgEncryptKey =
         MsgEncryptKey
-          { msgRcCurrentVersion = v,
+          { msgRcVersion = v,
             msgKey = MessageKey mk iv,
             msgRcAD = rcAD,
             msgEncHeader = emHeader
@@ -916,7 +916,7 @@ rcEncryptHeader rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, r
 type MsgEncryptKeyX448 = MsgEncryptKey 'X448
 
 data MsgEncryptKey a = MsgEncryptKey
-  { msgRcCurrentVersion :: VersionE2E,
+  { msgRcVersion :: VersionE2E,
     msgKey :: MessageKey,
     msgRcAD :: ByteString,
     msgEncHeader :: ByteString
@@ -924,7 +924,7 @@ data MsgEncryptKey a = MsgEncryptKey
   deriving (Show)
 
 rcEncryptMsg :: AlgorithmI a => MsgEncryptKey a -> Int -> ByteString -> ExceptT CryptoError IO ByteString
-rcEncryptMsg MsgEncryptKey {msgKey = MessageKey mk iv, msgRcAD, msgEncHeader, msgRcCurrentVersion = v} paddedMsgLen msg = do
+rcEncryptMsg MsgEncryptKey {msgKey = MessageKey mk iv, msgRcAD, msgEncHeader, msgRcVersion = v} paddedMsgLen msg = do
   -- return ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
   (emAuthTag, emBody) <- encryptAEAD mk iv paddedMsgLen (msgRcAD <> msgEncHeader) msg
   let msg' = encodeEncRatchetMessage v EncRatchetMessage {emHeader = msgEncHeader, emBody, emAuthTag}
@@ -1178,11 +1178,11 @@ instance FromField PQSupport where
 #endif
 
 instance Encoding (MsgEncryptKey a) where
-  smpEncode MsgEncryptKey {msgRcCurrentVersion = v, msgKey, msgRcAD, msgEncHeader} =
+  smpEncode MsgEncryptKey {msgRcVersion = v, msgKey, msgRcAD, msgEncHeader} =
     smpEncode (v, msgRcAD, msgKey, Large msgEncHeader)
   smpP = do
     (v, msgRcAD, msgKey, Large msgEncHeader) <- smpP
-    pure MsgEncryptKey {msgRcCurrentVersion = v, msgRcAD, msgKey, msgEncHeader}
+    pure MsgEncryptKey {msgRcVersion = v, msgRcAD, msgKey, msgEncHeader}
 
 instance AlgorithmI a => ToField (MsgEncryptKey a) where toField = toField . Binary . smpEncode
 
