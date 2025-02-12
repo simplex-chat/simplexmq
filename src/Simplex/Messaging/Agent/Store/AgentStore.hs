@@ -845,7 +845,7 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
           (connId, dbQueueId)
     getMsgData :: InternalId -> IO (Either StoreError (Maybe RcvQueue, PendingMsgData))
     getMsgData msgId = runExceptT $ do
-      msg <- ExceptT $ firstRow pendingMsgData err getMsgData_
+      msg <- ExceptT $ firstRow' pendingMsgData err getMsgData_
       rq_ <- liftIO $ L.head <$$> getRcvQueuesByConnId_ db connId
       pure (rq_, msg)
       where
@@ -863,11 +863,17 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
             |]
             (connId, msgId)
         err = SEInternal $ "msg delivery " <> bshow msgId <> " returned []"
-        pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, PQEncryption, InternalTs, InternalSndId, PrevSndMsgHash, Maybe Int64, Maybe Int64, Maybe CR.MsgEncryptKeyX448, Maybe Int, Maybe AMessage) -> PendingMsgData
-        pendingMsgData (msgType, msgFlags_, msgBody, pqEncryption, internalTs, internalSndId, prevMsgHash, riSlow_, riFast_, encryptKey_, paddedLen_, sndMsgBody_) =
+        pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, PQEncryption, InternalTs, InternalSndId, PrevSndMsgHash, Maybe Int64, Maybe Int64, Maybe CR.MsgEncryptKeyX448, Maybe Int, Maybe AMessage) -> Either StoreError PendingMsgData
+        pendingMsgData (msgType, msgFlags_, msgBody, pqEncryption, internalTs, internalSndId, prevMsgHash, riSlow_, riFast_, encryptKey_, paddedLen_, sndMsgBody_) = do
           let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
               msgRetryState = RI2State <$> riSlow_ <*> riFast_
-           in PendingMsgData {msgId, msgType, msgFlags, msgBody, pqEncryption, msgRetryState, internalTs, internalSndId, prevMsgHash, encryptKey_, paddedLen_, sndMsgBody_}
+          case (encryptKey_, paddedLen_, sndMsgBody_) of
+            (Nothing, Nothing, Nothing) ->
+              Right PendingMsgData {msgId, msgType, msgFlags, msgBody, pqEncryption, msgRetryState, internalTs, internalSndId, prevMsgHash, deliveryPrepData_ = Nothing}
+            (Just encryptKey, Just paddedLen, Just sndMsgBody) ->
+              let deliveryPrepData_ = Just DeliveryPrepMsgData {encryptKey, paddedLen, sndMsgBody}
+               in Right PendingMsgData {msgId, msgType, msgFlags, msgBody, pqEncryption, msgRetryState, internalTs, internalSndId, prevMsgHash, deliveryPrepData_}
+            _ -> Left $ SEInternal "unexpected snd msg data"
     markMsgFailed msgId = DB.execute db "UPDATE snd_message_deliveries SET failed = 1 WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 
 getWorkItem :: Show i => ByteString -> IO (Maybe i) -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError (Maybe a))

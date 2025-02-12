@@ -1470,7 +1470,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
     liftIO $ throwWhenNoDelivery c sq
     atomically $ beginAgentOperation c AOSndNetwork
     withWork c doWork (\db -> getPendingQueueMsg db connId sq) $
-      \(rq_, PendingMsgData {msgId, msgType, msgBody, pqEncryption, msgFlags, msgRetryState, internalTs, internalSndId, prevMsgHash, encryptKey_, paddedLen_, sndMsgBody_}) -> do
+      \(rq_, PendingMsgData {msgId, msgType, msgBody, pqEncryption, msgFlags, msgRetryState, internalTs, internalSndId, prevMsgHash, deliveryPrepData_}) -> do
         atomically $ endAgentOperation c AOMsgDelivery -- this operation begins in submitPendingMsg
         let mId = unId msgId
             ri' = maybe id updateRetryInterval2 msgRetryState ri
@@ -1480,16 +1480,15 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c sq msgBody
-            _ -> case (encryptKey_, paddedLen_, sndMsgBody_) of
-              (Nothing, Nothing, Nothing) -> sendAgentMessage c sq msgFlags msgBody
-              (Just mek, Just paddedLen, Just aMessage) -> do
-                let agentMsgStr = encodeAgentMsgStr aMessage internalSndId prevMsgHash
+            _ -> case deliveryPrepData_ of
+              Nothing -> sendAgentMessage c sq msgFlags msgBody
+              Just DeliveryPrepMsgData {encryptKey, paddedLen, sndMsgBody} -> do
+                let agentMsgStr = encodeAgentMsgStr sndMsgBody internalSndId prevMsgHash
                 AgentConfig {smpAgentVRange} <- asks config
-                encAgentMessage <- liftError cryptoError $ CR.rcEncryptMsg mek paddedLen agentMsgStr
+                encAgentMessage <- liftError cryptoError $ CR.rcEncryptMsg encryptKey paddedLen agentMsgStr
                 let agentVersion = maxVersion smpAgentVRange
                     msgBody' = smpEncode $ AgentMsgEnvelope {agentVersion, encAgentMessage}
                 sendAgentMessage c sq msgFlags msgBody'
-              _ -> throwE $ INTERNAL "runSmpQueueMsgDelivery: missing encryption data"
           case resp of
             Left e -> do
               let err = if msgType == AM_A_MSG_ then MERR mId e else ERR e

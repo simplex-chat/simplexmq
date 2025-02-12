@@ -566,9 +566,14 @@ data PendingMsgData = PendingMsgData
     internalTs :: InternalTs,
     internalSndId :: InternalSndId,
     prevMsgHash :: PrevSndMsgHash,
-    encryptKey_ :: Maybe MsgEncryptKeyX448,
-    paddedLen_ :: Maybe Int,
-    sndMsgBody_ :: Maybe AMessage
+    deliveryPrepData_ :: Maybe DeliveryPrepMsgData
+  }
+  deriving (Show)
+
+data DeliveryPrepMsgData = DeliveryPrepMsgData
+  { encryptKey :: MsgEncryptKeyX448,
+    paddedLen :: Int,
+    sndMsgBody :: AMessage
   }
   deriving (Show)
 
