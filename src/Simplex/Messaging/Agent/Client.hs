@@ -207,7 +207,6 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
--- import GHC.Utils.Monad (mapAccumLM)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -2029,16 +2028,6 @@ withStoreBatch c actions = do
 withStoreBatch' :: Traversable t => AgentClient -> (DB.Connection -> t (IO a)) -> AM' (t (Either AgentErrorType a))
 withStoreBatch' c actions = withStoreBatch c (fmap (fmap Right) . actions)
 {-# INLINE withStoreBatch' #-}
-
--- withStoreBatchAccumL :: forall t s a b. Traversable t => AgentClient -> s -> t a -> (DB.Connection -> s -> a -> IO (s, Either AgentErrorType b)) -> AM' (s, t (Either AgentErrorType b))
--- withStoreBatchAccumL c s as f = do
---   st <- asks store
---   liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
---     withTransaction st $ \db ->
---       mapAccumLM (\s a -> f db s a `E.catch` handleInternal s) s as
---   where
---     handleInternal :: s -> E.SomeException -> IO (s, Either AgentErrorType b)
---     handleInternal s = pure . (s,) . Left . INTERNAL . show
 
 storeError :: StoreError -> AgentErrorType
 storeError = \case
