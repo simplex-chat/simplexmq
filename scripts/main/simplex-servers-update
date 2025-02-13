@@ -1,6 +1,11 @@
 #!/usr/bin/env sh
 set -eu
 
+# TODO:
+# 2) Fix edgecases
+# 3) Recommended tag
+# 4) printf that downloaded files saved here
+
 # Make sure that PATH variable contains /usr/local/bin
 PATH="/usr/local/bin:$PATH"
 
@@ -64,11 +69,6 @@ erase_lines() {
   for i in $(seq 1 "${1}"); do
     printf '\e[A\e[K'
   done
-}
-
-# Cleans string from ANSI colors
-clean_colors() {
-  sed 's|\x1B\[[0-9;]*m||g'
 }
 
 # Checks "sanity" of downloaded thing, e.g. if it's really a script or binary
@@ -422,47 +422,49 @@ update_bins() {
   return 0
 }
 
-menu_init() {
+menu_init_help() {
   menu_help="Update script for SimpleX servers and scripts.${NL}${NL}"
-  menu_help="${menu_help}${BLD}${UNDRL}Usage:${NC} [<VARIABLE>] ${BLD}simplex-servers-update${NC}${NL}  [<VARIABLE>] ${BLD}simplex-servers-update${NC} [<SUBCOMMAND>]${NL}${NL}"
+  menu_help="${menu_help}${BLD}${UNDRL}Usage:${NC} [<VARIABLE>] ${BLD}simplex-servers-update${NC}${NL}       [<VARIABLE>] ${BLD}simplex-servers-update${NC} [<SUBCOMMAND>]${NL}${NL}"
   menu_help="${menu_help}${BLD}${UNDRL}Subcommands:${NC}${NL}"
-  menu_help="${menu_help}${BLD}[a]ll${NC}	Update everything without confirmation${NL}"
-  menu_help="${menu_help}${BLD}[b]ins${NC}	Update binaries only without confirmation${NL}"
-  menu_help="${menu_help}${BLD}[d]ownload${NC}	Download everything without updating${NL}"
-  menu_help="${menu_help}${BLD}[h]elp${NC}	Print this message${NL}${NL}"
-  menu_help="${menu_help}${BLD}${UNDRL}Variables${NC}${NL}"
-  menu_help="${menu_help}${BLD}VER=v3.2.1-beta.0${NC}	Update binaries to specified version${NL}"
+  menu_help_sub="  ${BLD}[a]ll${NC}		Update everything without confirmation${NL}"
+  menu_help_sub="${menu_help_sub}  ${BLD}[b]ins${NC}	Update binaries only without confirmation${NL}"
+  menu_help_sub="${menu_help_sub}  ${BLD}[d]ownload${NC}	Download everything without updating${NL}"
+  menu_help_sub="${menu_help_sub}  ${BLD}[h]elp${NC}	Print this message${NL}${NL}"
+  menu_help="${menu_help}${menu_help_sub}"
+  menu_help="${menu_help}${BLD}${UNDRL}Variables:${NC}${NL}"
+  menu_help="${menu_help}  ${BLD}VER=v3.2.1-beta.0${NC}	Update binaries to specified version${NL}"
 
+  return 0
+}
+
+menu_init() {
   menu_end="${RED}x${NC}) Exit${NL}${NL}Selection: "
   menu_option_download="${GRN}d${NC}) Download files only${NL}"
 
-  set +u
-  if [ -n "$msg_scripts" ]; then
+  if [ -n "${msg_scripts:-}" ]; then
     menu_option_misc_raw="${menu_option_misc_raw+${menu_option_misc_raw}${NL}}  - script(s): ${msg_scripts}"
   fi
 
-  if [ -n "$msg_services" ]; then
+  if [ -n "${msg_services:-}" ]; then
     menu_option_misc_raw="${menu_option_misc_raw+${menu_option_misc_raw}${NL}}  - systemd service file(s): ${msg_services}"
   fi
 
-  if [ -n "$msg_bins" ]; then
+  if [ -n "${menu_option_misc_raw:-}" ]; then
+    menu_option_all="${GRN}a${NC}) Update all:${NL}${menu_option_misc_raw}${NL}"
+  fi
+
+  if [ -n "${msg_bins:-}" ]; then
     menu_option_bins="${GRN}b${NC}) Update server binaries: ${msg_bins_alt}${NL}"
-    if [ -n "$menu_option_misc_raw" ]; then
-      menu_option_all="${GRN}a${NC}) Update all:${NL}${menu_option_misc_raw}${NL}${msg_bins}${NL}"
-    else
-      menu_option_all="${GRN}a${NC}) Update all:${NL}${msg_bins}${NL}"
-    fi
+    menu_option_all="${menu_option_all}${msg_bins}${NL}"
   fi
 
   # Abort early if there's neither update binaries, nor update scripts options
-  if [ -z "$menu_option_bins" ] && [ -z "$menu_option_misc_raw" ]; then
+  if [ -z "${menu_option_bins:-}" ] && [ -z "${menu_option_all:-}" ]; then
     printf "${YLW}Everything is up-to-date${NC}.\n"
     exit 0
   fi
 
   menu="${menu_option_all}${menu_option_bins:-}${menu_option_download}${menu_end}"
-
-  set -u
 
   menu_lc=$(printf '%b' "$menu" | tr -cd '\n' | wc -c)
   menu_lc=$((menu_lc + 1))
@@ -488,8 +490,9 @@ options_parse() {
         printf "${YLW}Everything is up-to-date${NC}.\n"
       fi
       ;;
-    d|download)
+    b|bins)
       check=0
+      printf 'Not implemented yet.\n'
       set +u
       if [ -n "$menu_option_bins" ]; then
         set -u
@@ -498,9 +501,9 @@ options_parse() {
         printf "${YLW}Binaries is up-to-date${NC}.\n"
       fi
       ;;
-    h|help)
+    d|download)
       check=0
-      printf '%b' "$menu_help"
+      printf 'Not implemented yet.\n'
       ;;
     x)
       check=0
@@ -515,9 +518,18 @@ options_parse() {
 
 main() {
   # Early hook to print Done after script re-execution
-  if [ -n "$UPDATE_SCRIPT_DONE" ]; then
+  if [ -n "${UPDATE_SCRIPT_DONE:-}" ]; then
     printf "${GRN}Done!${NC}\n"
   fi
+
+  # Early help menu
+  menu_init_help
+
+  case "${1:-}" in
+    h|help)
+      printf '%b' "$menu_help"
+      exit 0
+  esac
 
   download_all
 
@@ -525,11 +537,11 @@ main() {
 
   onetime=0
   while true; do
-    printf '%b' "$menu"
-    if [ -n "$1" ] && [ "$onetime" = 0 ]; then
+    if [ -n "${1:-}" ] && [ "$onetime" = 0 ]; then
       selection="$1"
       onetime=1
     else
+      printf '%b' "$menu"
       read selection
     fi
     
