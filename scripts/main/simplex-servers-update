@@ -42,6 +42,8 @@ BLU='\033[1;36m'
 YLW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
+BLD='\033[1m'
+UNDRL='\033[4m'
 
 NL='
 '
@@ -67,30 +69,6 @@ erase_lines() {
 # Cleans string from ANSI colors
 clean_colors() {
   sed 's|\x1B\[[0-9;]*m||g'
-}
-
-# Replaces every X in variable with incrementing integer
-replace_x() {
-  counter=0
-  result=""
-  text="$1"
-
-  # Loop until there are no more "X" characters in the text.
-  while [ "${text#*X}" != "$text" ]; do
-    # Extract everything before the first "X"
-    prefix=${text%%X*}
-    # Increment the counter.
-    counter=$((counter + 1))
-    # Append the prefix and the current counter value to the result.
-    result="${result}${prefix}${counter}"
-    # Remove the processed part (prefix and the first "X") from text.
-    text=${text#*X}
-  done
-
-  # Append any remaining text.
-  result="${result}${text}"
-
-  printf '%b' "$result"
 }
 
 # Checks "sanity" of downloaded thing, e.g. if it's really a script or binary
@@ -317,19 +295,19 @@ download_thing() {
 download_all() {
   download_thing "$scripts_url_update" "$path_tmp_bin_update" 'string: /usr/bin/env' 'Update script'
   if change_check "$path_tmp_bin_update" "$path_bin_update"; then
-    msg_scripts="${msg_scripts+$msg_scripts/}${YLW}update${NC}"
+    msg_scripts="${msg_scripts+$msg_scripts, }${YLW}simplex-servers-update${NC}"
     msg_scripts_raw="${msg_scripts_raw+$msg_scripts_raw/}update"
   fi
 
   download_thing "$scripts_url_stopscript" "$path_tmp_bin_stopscript" 'string: /usr/bin/env' 'Stop script'
   if change_check "$path_tmp_bin_stopscript" "$path_bin_stopscript"; then
-    msg_scripts="${msg_scripts+$msg_scripts/}${YLW}stop${NC}"
+    msg_scripts="${msg_scripts+$msg_scripts, }${YLW}simplex-servers-stopscript${NC}"
     msg_scripts_raw="${msg_scripts_raw+$msg_scripts_raw/}stop"
   fi
 
   download_thing "$scripts_url_uninstall" "$path_tmp_bin_uninstall" 'string: /usr/bin/env' 'Uninstall script'
   if change_check "$path_tmp_bin_uninstall" "$path_bin_uninstall"; then
-    msg_scripts="${msg_scripts+$msg_scripts/}${YLW}uninstall${NC}"
+    msg_scripts="${msg_scripts+$msg_scripts, }${YLW}simplex-servers-uninstall${NC}"
     msg_scripts_raw="${msg_scripts_raw+$msg_scripts_raw/}uninstall"
   fi
 
@@ -341,7 +319,7 @@ download_all() {
    
     download_thing "$scripts_url_systemd_final" "$path_tmp_systemd_final" 'string: [Unit]' "$service systemd service"
     if change_check "$path_tmp_systemd_final" "$path_systemd_final"; then
-      msg_services="${msg_services+$msg_services/}${YLW}$service${NC}"
+      msg_services="${msg_services+$msg_services, }${YLW}$service.service${NC}"
       msg_services_raw="${msg_services_raw+$msg_services_raw/}$service"
     fi
   done
@@ -352,6 +330,7 @@ download_all() {
 
     if change_check "$local_version" "$remote_version"; then
       msg_bins="${msg_bins+$msg_bins$NL}  - ${YLW}$service${NC}: from ${BLU}$local_version${NC} to ${BLU}$remote_version${NC}"
+      msg_bins_alt="${msg_bins_alt+$msg_bins_alt, }${YLW}$service${NC}"
       msg_bins_raw="${msg_bins_raw+$msg_bins_raw/}$service"
     fi
   done
@@ -371,7 +350,7 @@ update_misc() {
         mv "$path_tmp_bin_update" "$path_bin_update"
         printf "${GRN}Done!${NC}\n"
         printf -- "- Re-executing Update script..."
-        exec env CHOOSE="${selection_parse}" UPDATE_SCRIPT_DONE=1 "$path_bin_update"
+        exec env UPDATE_SCRIPT_DONE=1 "$path_bin_update" "${selection}"
         ;;
       stop)
         printf -- "- Updating stopscript script..."
@@ -443,129 +422,121 @@ update_bins() {
   return 0
 }
 
-main() {
-  if [ "${1:-}" = 'help' ]; then
-    menu_help="${BLU}VER=vX.X.X-beta.1${NC} ${YLW}simplex-servers-update${NC}: update to specified version.${NL}"
-    menu_help="${menu_help}${BLU}CHOOSE='Update all'${NC} ${YLW}simplex-servers-update${NC}: non-interactive usage. Values: 'Update all', 'Update binaries', 'Update misc' ${NL}"
-    printf '%b' "$menu_help"
-    exit 0
-  fi
-    
-  download_all
-  
-  menu_start="Help: ${YLW}simplex-servers-update${NC} ${BLU}help${NC}${NL}"
-  menu_end="${RED}X${NC}) Exit the script${NL}${NL}Selection: "
+menu_init() {
+  menu_help="Update script for SimpleX servers and scripts.${NL}${NL}"
+  menu_help="${menu_help}${BLD}${UNDRL}Usage:${NC} [<VARIABLE>] ${BLD}simplex-servers-update${NC}${NL}  [<VARIABLE>] ${BLD}simplex-servers-update${NC} [<SUBCOMMAND>]${NL}${NL}"
+  menu_help="${menu_help}${BLD}${UNDRL}Subcommands:${NC}${NL}"
+  menu_help="${menu_help}${BLD}[a]ll${NC}	Update everything without confirmation${NL}"
+  menu_help="${menu_help}${BLD}[b]ins${NC}	Update binaries only without confirmation${NL}"
+  menu_help="${menu_help}${BLD}[d]ownload${NC}	Download everything without updating${NL}"
+  menu_help="${menu_help}${BLD}[h]elp${NC}	Print this message${NL}${NL}"
+  menu_help="${menu_help}${BLD}${UNDRL}Variables${NC}${NL}"
+  menu_help="${menu_help}${BLD}VER=v3.2.1-beta.0${NC}	Update binaries to specified version${NL}"
+
+  menu_end="${RED}x${NC}) Exit${NL}${NL}Selection: "
+  menu_option_download="${GRN}d${NC}) Download files only${NL}"
 
   set +u
   if [ -n "$msg_scripts" ]; then
-    menu_option_misc_raw="${menu_option_misc_raw+${menu_option_misc_raw}${NL}}  - ${msg_scripts} scripts"
+    menu_option_misc_raw="${menu_option_misc_raw+${menu_option_misc_raw}${NL}}  - script(s): ${msg_scripts}"
   fi
 
   if [ -n "$msg_services" ]; then
-    menu_option_misc_raw="${menu_option_misc_raw+${menu_option_misc_raw}${NL}}  - ${msg_services} services"
-  fi
-
-  if [ -n "$menu_option_misc_raw" ]; then
-    menu_option_misc="${GRN}X${NC}) Update misc:${NL}${menu_option_misc_raw}${NL}"
+    menu_option_misc_raw="${menu_option_misc_raw+${menu_option_misc_raw}${NL}}  - systemd service file(s): ${msg_services}"
   fi
 
   if [ -n "$msg_bins" ]; then
-    menu_option_bins="${GRN}X${NC}) Update binaries:${NL}${msg_bins}${NL}"
-    if [ -n "$menu_option_misc" ]; then
-      menu_option_all="${GRN}X${NC}) Update all:${NL}${menu_option_misc_raw}${NL}${msg_bins}${NL}"
+    menu_option_bins="${GRN}b${NC}) Update server binaries: ${msg_bins_alt}${NL}"
+    if [ -n "$menu_option_misc_raw" ]; then
+      menu_option_all="${GRN}a${NC}) Update all:${NL}${menu_option_misc_raw}${NL}${msg_bins}${NL}"
+    else
+      menu_option_all="${GRN}a${NC}) Update all:${NL}${msg_bins}${NL}"
     fi
   fi
 
+  # Abort early if there's neither update binaries, nor update scripts options
+  if [ -z "$menu_option_bins" ] && [ -z "$menu_option_misc_raw" ]; then
+    printf "${YLW}Everything is up-to-date${NC}.\n"
+    exit 0
+  fi
+
+  menu="${menu_option_all}${menu_option_bins:-}${menu_option_download}${menu_end}"
+
+  set -u
+
+  menu_lc=$(printf '%b' "$menu" | tr -cd '\n' | wc -c)
+  menu_lc=$((menu_lc + 1))
+
+  return 0
+}
+
+options_parse() {
+  selection="$1"
+  
+  case "$selection" in
+    a|all)
+      check=0
+      set +u
+      if [ -n "$menu_option_bins" ]; then
+        if [ -n "$menu_option_misc_raw" ]; then
+          set -u
+          update_misc
+        fi
+        set -u
+        update_bins
+      else
+        printf "${YLW}Everything is up-to-date${NC}.\n"
+      fi
+      ;;
+    d|download)
+      check=0
+      set +u
+      if [ -n "$menu_option_bins" ]; then
+        set -u
+        update_bins
+      else
+        printf "${YLW}Binaries is up-to-date${NC}.\n"
+      fi
+      ;;
+    h|help)
+      check=0
+      printf '%b' "$menu_help"
+      ;;
+    x)
+      check=0
+      ;;
+    *)
+      check=1
+      ;;
+  esac
+
+  return "$check"
+}
+
+main() {
   # Early hook to print Done after script re-execution
   if [ -n "$UPDATE_SCRIPT_DONE" ]; then
     printf "${GRN}Done!${NC}\n"
   fi
 
-  # Abort early if there's neither update binaries, nor update scripts options
-  if [ -z "$menu_option_bins" ] && [ -z "$menu_option_misc" ]; then
-    printf "${YLW}Everything is up-to-date${NC}.\n"
-    exit 0
-  fi
+  download_all
 
-  menu="${menu_start}${menu_option_all:-}${menu_option_bins}${menu_option_misc:-}${menu_end}"
+  menu_init
 
-  menu="$(replace_x "$menu")"
-  menu_lc=$(printf '%b' "$menu" | tr -cd '\n' | wc -c)
-  menu_lc=$((menu_lc + 1))
-
-  set -u
-
-  selection_check=''
-  while [ "$selection_check" != 'pass' ]; do
-
-    # Non-interactive usage
-    if [ -z "$CHOOSE" ]; then
-      printf '%b' "$menu"
-      read selection
-      line="$(printf '%b' "$menu" | clean_colors | grep "$selection)" || :)"
+  onetime=0
+  while true; do
+    printf '%b' "$menu"
+    if [ -n "$1" ] && [ "$onetime" = 0 ]; then
+      selection="$1"
+      onetime=1
     else
-      case "$CHOOSE" in
-        *:) line="X) ${CHOOSE}" ;;
-        *) line="X) ${CHOOSE}:" ;;
-      esac
+      read selection
     fi
-
-    if [ -n "$line" ]; then
-      selection_parse="$(printf '%s' "$line" | sed 's|^.*) ||')"
-
-      case "$selection_parse" in
-        'Update misc:')
-          selection_check='pass'
-          set +u
-          if [ -n "$menu_option_misc" ]; then
-            set -u
-            update_misc
-          else
-            printf "${YLW}Misc is up-to-date${NC}.\n"
-            exit 0
-          fi
-          ;;
-        'Update binaries:')
-          selection_check='pass'
-          set +u
-          if [ -n "$menu_option_bins" ]; then
-            set -u
-            update_bins
-          else
-            printf "${YLW}Binaries is up-to-date${NC}.\n"
-            exit 0
-          fi
-          ;;
-        'Update all:')
-          selection_check='pass'
-          set +u
-          if [ -n "$menu_option_bins" ]; then
-            if [ -n "$menu_option_misc" ]; then
-              set -u
-              update_misc
-            fi
-            set -u
-            update_bins
-          else
-            printf "${YLW}Everything is up-to-date${NC}.\n"
-            exit 0
-          fi
-          ;;
-        'Exit the script')
-          exit 0
-          ;;
-        *)
-          selection_check='nopass'
-          if [ -z "$CHOOSE" ]; then
-            erase_lines "$menu_lc"
-          else
-            CHOOSE=''
-          fi
-          ;;
-      esac
+    
+    if options_parse "$selection"; then
+      break
     else
       erase_lines "$menu_lc"
-      selection_check='nopass'
     fi
   done
 }
