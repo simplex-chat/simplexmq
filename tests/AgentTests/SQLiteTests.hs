@@ -553,9 +553,7 @@ mkSndMsgData internalId internalSndId internalHash =
       pqEncryption = CR.PQEncOn,
       internalHash,
       prevMsgHash = internalHash,
-      encryptKey_ = Nothing,
-      paddedLen_ = Nothing,
-      sndMsgBodyId_ = Nothing
+      sndMsgPrepData_ = Nothing
     }
 
 testCreateSndMsg_ :: DB.Connection -> PrevSndMsgHash -> ConnId -> SndQueue -> SndMsgData -> Expectation

@@ -869,10 +869,10 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
               msgRetryState = RI2State <$> riSlow_ <*> riFast_
           case (encryptKey_, paddedLen_, sndMsgBody_) of
             (Nothing, Nothing, Nothing) ->
-              Right PendingMsgData {msgId, msgType, msgFlags, msgBody, pqEncryption, msgRetryState, internalTs, internalSndId, prevMsgHash, deliveryPrepData_ = Nothing}
+              Right PendingMsgData {msgId, msgType, msgFlags, msgBody, pqEncryption, msgRetryState, internalTs, internalSndId, prevMsgHash, pendingMsgPrepData_ = Nothing}
             (Just encryptKey, Just paddedLen, Just sndMsgBody) ->
-              let deliveryPrepData_ = Just DeliveryPrepMsgData {encryptKey, paddedLen, sndMsgBody}
-               in Right PendingMsgData {msgId, msgType, msgFlags, msgBody, pqEncryption, msgRetryState, internalTs, internalSndId, prevMsgHash, deliveryPrepData_}
+              let pendingMsgPrepData_ = Just PendingMsgPrepData {encryptKey, paddedLen, sndMsgBody}
+               in Right PendingMsgData {msgId, msgType, msgFlags, msgBody, pqEncryption, msgRetryState, internalTs, internalSndId, prevMsgHash, pendingMsgPrepData_}
             _ -> Left $ SEInternal "unexpected snd msg data"
     markMsgFailed msgId = DB.execute db "UPDATE snd_message_deliveries SET failed = 1 WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 
@@ -2237,6 +2237,10 @@ insertSndMsgDetails_ dbConn connId SndMsgData {..} =
         (?,?,?,?,?,?,?,?)
     |]
     (connId, internalSndId, internalId, Binary internalHash, Binary prevMsgHash, encryptKey_, paddedLen_, sndMsgBodyId_)
+  where
+    (encryptKey_, paddedLen_, sndMsgBodyId_) = case sndMsgPrepData_ of
+      Nothing -> (Nothing, Nothing, Nothing)
+      Just SndMsgPrepData {encryptKey, paddedLen, sndMsgBodyId} -> (Just encryptKey, Just paddedLen, Just sndMsgBodyId)
 
 updateSndMsgHash :: DB.Connection -> ConnId -> InternalSndId -> MsgHash -> IO ()
 updateSndMsgHash db connId internalSndId internalHash =

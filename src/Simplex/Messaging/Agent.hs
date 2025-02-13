@@ -1416,7 +1416,7 @@ enqueueMessageB c aMsgBodies reqs = do
           withExceptT (SEAgentError . cryptoError) $ CR.rcCheckCanPad paddedLen agentMsgStr
           let msgType = aMessageType aMessage
               -- msgBody is empty, because snd_messages record is linked to snd_message_bodies
-              msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody = "", pqEncryption = pqEnc, internalHash, prevMsgHash, encryptKey_ = Just mek, paddedLen_ = Just paddedLen, sndMsgBodyId_ = Just sndMsgBodyId}
+              msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody = "", pqEncryption = pqEnc, internalHash, prevMsgHash, sndMsgPrepData_ = Just SndMsgPrepData {encryptKey = mek, paddedLen, sndMsgBodyId}}
           liftIO $ createSndMsg db connId msgData
           liftIO $ createSndMsgDelivery db connId sq internalId
           pure (req, internalId, pqEnc)
@@ -1470,7 +1470,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
     liftIO $ throwWhenNoDelivery c sq
     atomically $ beginAgentOperation c AOSndNetwork
     withWork c doWork (\db -> getPendingQueueMsg db connId sq) $
-      \(rq_, PendingMsgData {msgId, msgType, msgBody, pqEncryption, msgFlags, msgRetryState, internalTs, internalSndId, prevMsgHash, deliveryPrepData_}) -> do
+      \(rq_, PendingMsgData {msgId, msgType, msgBody, pqEncryption, msgFlags, msgRetryState, internalTs, internalSndId, prevMsgHash, pendingMsgPrepData_}) -> do
         atomically $ endAgentOperation c AOMsgDelivery -- this operation begins in submitPendingMsg
         let mId = unId msgId
             ri' = maybe id updateRetryInterval2 msgRetryState ri
@@ -1480,9 +1480,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c sq msgBody
-            _ -> case deliveryPrepData_ of
+            _ -> case pendingMsgPrepData_ of
               Nothing -> sendAgentMessage c sq msgFlags msgBody
-              Just DeliveryPrepMsgData {encryptKey, paddedLen, sndMsgBody} -> do
+              Just PendingMsgPrepData {encryptKey, paddedLen, sndMsgBody} -> do
                 let agentMsgStr = encodeAgentMsgStr sndMsgBody internalSndId prevMsgHash
                 AgentConfig {smpAgentVRange} <- asks config
                 encAgentMessage <- liftError cryptoError $ CR.rcEncryptMsg encryptKey paddedLen agentMsgStr
@@ -2979,7 +2979,7 @@ storeConfirmation c cData@ConnData {connId, pqSupport, connAgentVersion = v} sq 
     (encConnInfo, pqEncryption) <- agentRatchetEncrypt db cData agentMsgStr e2eEncConnInfoLength (Just pqEnc) currentE2EVersion
     let msgBody = smpEncode $ AgentConfirmation {agentVersion = v, e2eEncryption_, encConnInfo}
         msgType = agentMessageType agentMsg
-        msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash, encryptKey_ = Nothing, paddedLen_ = Nothing, sndMsgBodyId_ = Nothing}
+        msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash, sndMsgPrepData_ = Nothing}
     liftIO $ createSndMsg db connId msgData
     liftIO $ createSndMsgDelivery db connId sq internalId
 
@@ -3005,7 +3005,7 @@ enqueueRatchetKey c cData@ConnData {connId} sq e2eEncryption = do
       let msgBody = smpEncode $ AgentRatchetKey {agentVersion, e2eEncryption, info = agentMsgStr}
           msgType = agentMessageType agentMsg
           -- this message is e2e encrypted with queue key, not with double ratchet
-          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption = PQEncOff, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash, encryptKey_ = Nothing, paddedLen_ = Nothing, sndMsgBodyId_ = Nothing}
+          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption = PQEncOff, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash, sndMsgPrepData_ = Nothing}
       liftIO $ createSndMsg db connId msgData
       liftIO $ createSndMsgDelivery db connId sq internalId
       pure internalId
