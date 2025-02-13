@@ -65,7 +65,6 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
-import qualified Data.IntMap.Strict as IM
 import Data.List (find, nub)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
@@ -1972,8 +1971,8 @@ testBatchedPendingMessages nCreate nMsgs =
 testSendMessagesB :: IO ()
 testSendMessagesB = withAgentClients2 $ \a b -> runRight_ $ do
   (aId, bId) <- makeConnection a b
-  let msg cId body = Right (cId, PQEncOn, SMP.noMsgFlags, body)
-  [SentB 2, SentB 3, SentB 4] <- sendMessagesB a (IM.fromList [(1, "msg 1"), (2, "msg 2"), (3, "msg 3")]) ([msg bId 1, msg "" 2, msg "" 3] :: [Either AgentErrorType MsgReq])
+  let msg cId i body = Right (cId, PQEncOn, SMP.noMsgFlags, VRValue i body)
+  [SentB 2, SentB 3, SentB 4] <- sendMessagesB a ([msg bId 1 "msg 1", msg "" 2 "msg 2", msg "" 3 "msg 3"] :: [Either AgentErrorType MsgReq])
   get a ##> ("", bId, SENT 2)
   get a ##> ("", bId, SENT 3)
   get a ##> ("", bId, SENT 4)
@@ -1985,12 +1984,9 @@ testSendMessagesB2 :: IO ()
 testSendMessagesB2 = withAgentClients3 $ \a b c -> runRight_ $ do
   (abId, bId) <- makeConnection a b
   (acId, cId) <- makeConnection a c
-  let msg connId body = Right (connId, PQEncOn, SMP.noMsgFlags, body)
+  let msg connId i body = Right (connId, PQEncOn, SMP.noMsgFlags, VRValue i body)
   [SentB 2, SentB 3, SentB 4, SentB 2, SentB 3] <-
-    sendMessagesB
-      a
-      (IM.fromList [(1, "msg 1"), (2, "msg 2"), (3, "msg 3"), (4, "msg 4"), (5, "msg 5")])
-      ([msg bId 1, msg "" 2, msg "" 3, msg cId 4, msg "" 5] :: [Either AgentErrorType MsgReq])
+    sendMessagesB a ([msg bId 1 "msg 1", msg "" 2 "msg 2", msg "" 3 "msg 3", msg cId 4 "msg 4", msg "" 5 "msg 5"] :: [Either AgentErrorType MsgReq])
   liftIO $
     getInAnyOrder
       a

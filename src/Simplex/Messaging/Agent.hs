@@ -421,16 +421,6 @@ instance Functor ValueOrRef where
     VRValue i a -> VRValue i (f a)
     VRRef i -> VRRef i
 
-instance Applicative ValueOrRef where
-  pure a = VRValue 0 a
-  (<*>) = undefined
-
-instance Traversable ValueOrRef where
-  traverse = undefined
-
-instance Foldable ValueOrRef where
-  foldr = undefined
-
 -- When sending multiple messages to the same connection,
 -- only the first MsgReq for this connection should have non-empty ConnId.
 -- All subsequent MsgReq in traversable for this connection must be empty.
