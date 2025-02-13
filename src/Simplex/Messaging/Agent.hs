@@ -36,6 +36,7 @@ module Simplex.Messaging.Agent
     SubscriptionsInfo (..),
     MsgReq,
     ValueOrRef (..),
+    vrValue,
     getSMPAgentClient,
     getSMPAgentClient_,
     disconnectAgentClient,
@@ -414,12 +415,15 @@ sendMessage :: AgentClient -> ConnId -> PQEncryption -> MsgFlags -> MsgBody -> A
 sendMessage c = withAgentEnv c .:: sendMessage' c
 {-# INLINE sendMessage #-}
 
-data ValueOrRef a = VRValue Int a | VRRef Int
+data ValueOrRef a = VRValue (Maybe Int) a | VRRef Int
 
 instance Functor ValueOrRef where
   fmap f = \case
-    VRValue i a -> VRValue i (f a)
+    VRValue i_ a -> VRValue i_ (f a)
     VRRef i -> VRRef i
+
+vrValue :: a -> ValueOrRef a
+vrValue = VRValue Nothing
 
 -- When sending multiple messages to the same connection,
 -- only the first MsgReq for this connection should have non-empty ConnId.
@@ -1141,7 +1145,7 @@ getNotificationConns' c nonce encNtfInfo =
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: AgentClient -> ConnId -> PQEncryption -> MsgFlags -> MsgBody -> AM (AgentMsgId, PQEncryption)
-sendMessage' c connId pqEnc msgFlags msg = ExceptT $ runIdentity <$> sendMessagesB_ c (Identity (Right (connId, pqEnc, msgFlags, VRValue 0 msg))) (S.singleton connId)
+sendMessage' c connId pqEnc msgFlags msg = ExceptT $ runIdentity <$> sendMessagesB_ c (Identity (Right (connId, pqEnc, msgFlags, vrValue msg))) (S.singleton connId)
 {-# INLINE sendMessage' #-}
 
 -- | Send multiple messages to different connections (SEND command) in Reader monad
@@ -1377,7 +1381,7 @@ enqueueMessages c cData sqs msgFlags aMessage = do
 
 enqueueMessages' :: AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> AM (AgentMsgId, CR.PQEncryption)
 enqueueMessages' c cData sqs msgFlags aMessage =
-  ExceptT $ runIdentity <$> enqueueMessagesB c (Identity (Right (cData, sqs, Nothing, msgFlags, VRValue 0 aMessage)))
+  ExceptT $ runIdentity <$> enqueueMessagesB c (Identity (Right (cData, sqs, Nothing, msgFlags, vrValue aMessage)))
 {-# INLINE enqueueMessages' #-}
 
 enqueueMessagesB :: Traversable t => AgentClient -> t (Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, ValueOrRef AMessage)) -> AM' (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
@@ -1392,7 +1396,7 @@ isActiveSndQ SndQueue {status} = status == Secured || status == Active
 
 enqueueMessage :: AgentClient -> ConnData -> SndQueue -> MsgFlags -> AMessage -> AM (AgentMsgId, PQEncryption)
 enqueueMessage c cData sq msgFlags aMessage =
-  ExceptT $ fmap fst . runIdentity <$> enqueueMessageB c (Identity (Right (cData, [sq], Nothing, msgFlags, VRValue 0 aMessage)))
+  ExceptT $ fmap fst . runIdentity <$> enqueueMessageB c (Identity (Right (cData, [sq], Nothing, msgFlags, vrValue aMessage)))
 {-# INLINE enqueueMessage #-}
 
 -- this function is used only for sending messages in batch, it returns the list of successes to enqueue additional deliveries
@@ -1409,18 +1413,18 @@ enqueueMessageB c reqs = do
     storeSentMsg :: DB.Connection -> AgentConfig -> IntMap (Int64, AMessage) -> Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, ValueOrRef AMessage) -> IO (IntMap (Int64, AMessage), Either AgentErrorType ((ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, ValueOrRef AMessage), InternalId, PQEncryption))
     storeSentMsg db cfg aMessageIds = \case
       Left e -> pure (aMessageIds, Left e)
-      Right req@(cData@ConnData {connId}, sq :| _, pqEnc_, msgFlags, mbr) -> do
-        case mbr of
-          VRValue i aMessage -> case IM.lookup i aMessageIds of
-            Just _ -> pure (aMessageIds, Left $ INTERNAL $ "enqueueMessageB: storeSentMsg duplicate saved message body " <> show i)
-            Nothing -> do
-              mbId <- createSndMsgBody db aMessage
-              (IM.insert i (mbId, aMessage) aMessageIds,) <$> continue mbId aMessage
-          VRRef i -> case IM.lookup i aMessageIds of
-            Just (mbId, aMessage) -> (aMessageIds,) <$> continue mbId aMessage
-            Nothing -> pure (aMessageIds, Left $ INTERNAL "enqueueMessageB: storeSentMsg missing saved message body id")
+      Right req@(cData@ConnData {connId}, sq :| _, pqEnc_, msgFlags, mbr) -> case mbr of
+        VRValue i_ aMessage -> case  i_ >>= (`IM.lookup` aMessageIds) of
+          Just _ -> pure (aMessageIds, Left $ INTERNAL "enqueueMessageB: storeSentMsg duplicate saved message body")
+          Nothing -> do
+            mbId <- createSndMsgBody db aMessage
+            let aMessageIds' = maybe id (`IM.insert` (mbId, aMessage)) i_ aMessageIds
+            (aMessageIds',) <$> storeSentMsg_ mbId aMessage
+        VRRef i -> (aMessageIds,) <$> case IM.lookup i aMessageIds of
+          Just (mbId, aMessage) -> storeSentMsg_ mbId aMessage
+          Nothing -> pure $ Left $ INTERNAL "enqueueMessageB: storeSentMsg missing saved message body id"
         where
-          continue sndMsgBodyId aMessage = fmap (first storeError) $ runExceptT $ do        
+          storeSentMsg_ sndMsgBodyId aMessage = fmap (first storeError) $ runExceptT $ do
             let AgentConfig {e2eEncryptVRange} = cfg
             internalTs <- liftIO getCurrentTime
             (internalId, internalSndId, prevMsgHash) <- ExceptT $ updateSndIds db connId
