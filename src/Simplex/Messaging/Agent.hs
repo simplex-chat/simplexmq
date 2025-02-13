@@ -35,6 +35,7 @@ module Simplex.Messaging.Agent
     AE,
     SubscriptionsInfo (..),
     MsgReq,
+    ValueOrRef (..),
     getSMPAgentClient,
     getSMPAgentClient_,
     disconnectAgentClient,
@@ -157,6 +158,7 @@ import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Traversable (mapAccumL)
 import Data.Word (Word16)
+import GHC.Utils.Monad (mapAccumLM)
 import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPSndWorkers, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
@@ -412,21 +414,40 @@ sendMessage :: AgentClient -> ConnId -> PQEncryption -> MsgFlags -> MsgBody -> A
 sendMessage c = withAgentEnv c .:: sendMessage' c
 {-# INLINE sendMessage #-}
 
+data ValueOrRef a = VRValue Int a | VRRef Int
+
+instance Functor ValueOrRef where
+  fmap f = \case
+    VRValue i a -> VRValue i (f a)
+    VRRef i -> VRRef i
+
+instance Applicative ValueOrRef where
+  pure a = VRValue 0 a
+  (<*>) = undefined
+
+instance Traversable ValueOrRef where
+  traverse = undefined
+
+instance Foldable ValueOrRef where
+  foldr = undefined
+
 -- When sending multiple messages to the same connection,
 -- only the first MsgReq for this connection should have non-empty ConnId.
 -- All subsequent MsgReq in traversable for this connection must be empty.
 -- This is done to optimize processing by grouping all messages to one connection together.
-type MsgBodyKey = Int
-
-type MsgReq = (ConnId, PQEncryption, MsgFlags, MsgBodyKey)
+-- Also, repeated msg bodies should us MBRef constructor to reference previously used body.
+-- It is an error:
+-- - to use MBBody with the same Int
+-- - to use MBRef with Int that wasn't previously used in MBBody
+type MsgReq = (ConnId, PQEncryption, MsgFlags, ValueOrRef MsgBody)
 
 -- | Send multiple messages to different connections (SEND command)
-sendMessages :: AgentClient -> IntMap MsgBody -> [MsgReq] -> AE [Either AgentErrorType (AgentMsgId, PQEncryption)]
-sendMessages c = withAgentEnv c .: sendMessages' c
+sendMessages :: AgentClient -> [MsgReq] -> AE [Either AgentErrorType (AgentMsgId, PQEncryption)]
+sendMessages c = withAgentEnv c . sendMessages' c
 {-# INLINE sendMessages #-}
 
-sendMessagesB :: Traversable t => AgentClient -> IntMap MsgBody -> t (Either AgentErrorType MsgReq) -> AE (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
-sendMessagesB c = withAgentEnv c .: sendMessagesB' c
+sendMessagesB :: Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> AE (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
+sendMessagesB c = withAgentEnv c . sendMessagesB' c
 {-# INLINE sendMessagesB #-}
 
 ackMessage :: AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AE ()
@@ -1130,18 +1151,18 @@ getNotificationConns' c nonce encNtfInfo =
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: AgentClient -> ConnId -> PQEncryption -> MsgFlags -> MsgBody -> AM (AgentMsgId, PQEncryption)
-sendMessage' c connId pqEnc msgFlags msg = either throwE pure . runIdentity =<< sendMessagesB_ c (IM.singleton 1 msg) (Identity (Right (connId, pqEnc, msgFlags, 1))) (S.singleton connId)
+sendMessage' c connId pqEnc msgFlags msg = ExceptT $ runIdentity <$> sendMessagesB_ c (Identity (Right (connId, pqEnc, msgFlags, VRValue 0 msg))) (S.singleton connId)
 {-# INLINE sendMessage' #-}
 
 -- | Send multiple messages to different connections (SEND command) in Reader monad
-sendMessages' :: AgentClient -> IntMap MsgBody -> [MsgReq] -> AM [Either AgentErrorType (AgentMsgId, PQEncryption)]
-sendMessages' c msgBodies = sendMessagesB' c msgBodies . map Right
+sendMessages' :: AgentClient -> [MsgReq] -> AM [Either AgentErrorType (AgentMsgId, PQEncryption)]
+sendMessages' c = sendMessagesB' c . map Right
 {-# INLINE sendMessages' #-}
 
-sendMessagesB' :: forall t. Traversable t => AgentClient -> IntMap MsgBody -> t (Either AgentErrorType MsgReq) -> AM (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
-sendMessagesB' c msgBodies reqs = do
+sendMessagesB' :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> AM (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
+sendMessagesB' c reqs = do
   (_, connIds) <- liftEither $ foldl' addConnId (Right ("", S.empty)) reqs
-  sendMessagesB_ c msgBodies reqs connIds
+  lift $ sendMessagesB_ c reqs connIds
   where
     addConnId acc@(Right (prevId, s)) (Right (connId, _, _, _))
       | B.null connId = if B.null prevId then Left $ INTERNAL "sendMessages: empty first connId" else acc
@@ -1149,14 +1170,13 @@ sendMessagesB' c msgBodies reqs = do
       | otherwise = Right (connId, S.insert connId s)
     addConnId acc _ = acc
 
-sendMessagesB_ :: forall t. Traversable t => AgentClient -> IntMap MsgBody -> t (Either AgentErrorType MsgReq) -> Set ConnId -> AM (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
-sendMessagesB_ c msgBodies reqs connIds = withConnLocks c connIds "sendMessages" $ do
+sendMessagesB_ :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> Set ConnId -> AM' (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
+sendMessagesB_ c reqs connIds = withConnLocks c connIds "sendMessages" $ do
   prev <- newTVarIO Nothing
-  reqs' <- lift $ withStoreBatch c $ \db -> fmap (bindRight $ getConn_ db prev) reqs
+  reqs' <- withStoreBatch c $ \db -> fmap (bindRight $ getConn_ db prev) reqs
   let (toEnable, reqs'') = mapAccumL prepareConn [] reqs'
-      msgBodies' = IM.map A_MSG msgBodies
-  lift $ void $ withStoreBatch' c $ \db -> map (\connId -> setConnPQSupport db connId PQSupportOn) $ S.toList toEnable
-  enqueueMessagesB c msgBodies' reqs''
+  void $ withStoreBatch' c $ \db -> map (\connId -> setConnPQSupport db connId PQSupportOn) $ S.toList toEnable
+  enqueueMessagesB c reqs''
   where
     getConn_ :: DB.Connection -> TVar (Maybe (Either AgentErrorType SomeConn)) -> MsgReq -> IO (Either AgentErrorType (MsgReq, SomeConn))
     getConn_ db prev req@(connId, _, _, _) =
@@ -1166,14 +1186,14 @@ sendMessagesB_ c msgBodies reqs connIds = withConnLocks c connIds "sendMessages"
           else do
             conn <- first storeError <$> getConn db connId
             conn <$ atomically (writeTVar prev $ Just conn)
-    prepareConn :: Set ConnId -> Either AgentErrorType (MsgReq, SomeConn) -> (Set ConnId, Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, MsgBodyKey))
+    prepareConn :: Set ConnId -> Either AgentErrorType (MsgReq, SomeConn) -> (Set ConnId, Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, ValueOrRef AMessage))
     prepareConn s (Left e) = (s, Left e)
-    prepareConn s (Right ((_, pqEnc, msgFlags, msgBodyKey), SomeConn _ conn)) = case conn of
+    prepareConn s (Right ((_, pqEnc, msgFlags, msgOrRef), SomeConn _ conn)) = case conn of
       DuplexConnection cData _ sqs -> prepareMsg cData sqs
       SndConnection cData sq -> prepareMsg cData [sq]
       _ -> (s, Left $ CONN SIMPLEX)
       where
-        prepareMsg :: ConnData -> NonEmpty SndQueue -> (Set ConnId, Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, MsgBodyKey))
+        prepareMsg :: ConnData -> NonEmpty SndQueue -> (Set ConnId, Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, ValueOrRef AMessage))
         prepareMsg cData@ConnData {connId, pqSupport} sqs
           | ratchetSyncSendProhibited cData = (s, Left $ CMD PROHIBITED "sendMessagesB: send prohibited")
           -- connection is only updated if PQ encryption was disabled, and now it has to be enabled.
@@ -1183,7 +1203,7 @@ sendMessagesB_ c msgBodies reqs connIds = withConnLocks c connIds "sendMessages"
                in (S.insert connId s, mkReq cData')
           | otherwise = (s, mkReq cData)
           where
-            mkReq cData' = Right (cData', sqs, Just pqEnc, msgFlags, msgBodyKey)
+            mkReq cData' = Right (cData', sqs, Just pqEnc, msgFlags, A_MSG <$> msgOrRef)
 
 -- / async command processing v v v
 
@@ -1367,13 +1387,13 @@ enqueueMessages c cData sqs msgFlags aMessage = do
 
 enqueueMessages' :: AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> AM (AgentMsgId, CR.PQEncryption)
 enqueueMessages' c cData sqs msgFlags aMessage =
-  either throwE pure . runIdentity =<< enqueueMessagesB c (IM.singleton 1 aMessage) (Identity (Right (cData, sqs, Nothing, msgFlags, 1)))
+  ExceptT $ runIdentity <$> enqueueMessagesB c (Identity (Right (cData, sqs, Nothing, msgFlags, VRValue 0 aMessage)))
 {-# INLINE enqueueMessages' #-}
 
-enqueueMessagesB :: Traversable t => AgentClient -> IntMap AMessage -> t (Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, MsgBodyKey)) -> AM (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
-enqueueMessagesB c aMsgBodies reqs = do
-  reqs' <- enqueueMessageB c aMsgBodies reqs
-  lift $ enqueueSavedMessageB c $ mapMaybe snd $ rights $ toList reqs'
+enqueueMessagesB :: Traversable t => AgentClient -> t (Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, ValueOrRef AMessage)) -> AM' (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
+enqueueMessagesB c reqs = do
+  reqs' <- enqueueMessageB c reqs
+  enqueueSavedMessageB c $ mapMaybe snd $ rights $ toList reqs'
   pure $ fst <$$> reqs'
 
 isActiveSndQ :: SndQueue -> Bool
@@ -1382,44 +1402,56 @@ isActiveSndQ SndQueue {status} = status == Secured || status == Active
 
 enqueueMessage :: AgentClient -> ConnData -> SndQueue -> MsgFlags -> AMessage -> AM (AgentMsgId, PQEncryption)
 enqueueMessage c cData sq msgFlags aMessage =
-  either throwE (pure . fst) . runIdentity =<< enqueueMessageB c (IM.singleton 1 aMessage) (Identity (Right (cData, [sq], Nothing, msgFlags, 1)))
+  ExceptT $ fmap fst . runIdentity <$> enqueueMessageB c (Identity (Right (cData, [sq], Nothing, msgFlags, VRValue 0 aMessage)))
 {-# INLINE enqueueMessage #-}
 
 -- this function is used only for sending messages in batch, it returns the list of successes to enqueue additional deliveries
-enqueueMessageB :: forall t. Traversable t => AgentClient -> IntMap AMessage -> t (Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, MsgBodyKey)) -> AM (t (Either AgentErrorType ((AgentMsgId, PQEncryption), Maybe (ConnData, [SndQueue], AgentMsgId))))
-enqueueMessageB c aMsgBodies reqs = do
+enqueueMessageB :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, ValueOrRef AMessage)) -> AM' (t (Either AgentErrorType ((AgentMsgId, PQEncryption), Maybe (ConnData, [SndQueue], AgentMsgId))))
+enqueueMessageB c reqs = do
   cfg <- asks config
-  reqMids <- withStore' c $ \db -> do
-    aMsgBodiesIds <- IM.traverseWithKey (\_k aMessage -> (aMessage,) <$> createSndMsgBody db aMessage) aMsgBodies
-    mapME (storeSentMsg db cfg aMsgBodiesIds) reqs
+  (_, reqMids) <- unsafeWithStore c $ \db -> do
+    mapAccumLM (\ids r -> storeSentMsg db cfg ids r `E.catchAny` \e -> (ids,) <$> handleInternal e) IM.empty reqs
   forME reqMids $ \((cData, sq :| sqs, _, _, _), InternalId msgId, pqSecr) -> do
-    lift $ submitPendingMsg c cData sq
+    submitPendingMsg c cData sq
     let sqs' = filter isActiveSndQ sqs
     pure $ Right ((msgId, pqSecr), if null sqs' then Nothing else Just (cData, sqs', msgId))
   where
-    storeSentMsg :: DB.Connection -> AgentConfig -> IntMap (AMessage, Int64) -> (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, MsgBodyKey) -> IO (Either AgentErrorType ((ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, MsgBodyKey), InternalId, PQEncryption))
-    storeSentMsg db cfg aMsgBodiesIds req@(cData@ConnData {connId}, sq :| _, pqEnc_, msgFlags, msgBodyKey) =
-      case IM.lookup msgBodyKey aMsgBodiesIds of
-        Nothing -> pure $ Left (INTERNAL "enqueueMessageB: storeSentMsg missing saved message body id")
-        Just (aMessage, sndMsgBodyId) -> fmap (first storeError) $ runExceptT $ do
-          let AgentConfig {e2eEncryptVRange} = cfg
-          internalTs <- liftIO getCurrentTime
-          (internalId, internalSndId, prevMsgHash) <- ExceptT $ updateSndIds db connId
-          -- We need to do pre-flight encoding that is not stored in database
-          -- to calculate its hash and remember it on connection (createSndMsg -> updateSndMsgHash)
-          -- to enable next enqueue.
-          -- (As encoding is different per connection, we can't store shared body, so it's repeated on delivery)
-          let agentMsgStr = encodeAgentMsgStr aMessage internalSndId prevMsgHash
-              internalHash = C.sha256Hash agentMsgStr
-              currentE2EVersion = maxVersion e2eEncryptVRange
-          (mek, paddedLen, pqEnc) <- agentRatchetEncryptHeader db cData e2eEncAgentMsgLength pqEnc_ currentE2EVersion
-          withExceptT (SEAgentError . cryptoError) $ CR.rcCheckCanPad paddedLen agentMsgStr
-          let msgType = aMessageType aMessage
-              -- msgBody is empty, because snd_messages record is linked to snd_message_bodies
-              msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody = "", pqEncryption = pqEnc, internalHash, prevMsgHash, sndMsgPrepData_ = Just SndMsgPrepData {encryptKey = mek, paddedLen, sndMsgBodyId}}
-          liftIO $ createSndMsg db connId msgData
-          liftIO $ createSndMsgDelivery db connId sq internalId
-          pure (req, internalId, pqEnc)
+    storeSentMsg :: DB.Connection -> AgentConfig -> IntMap (Int64, AMessage) -> Either AgentErrorType (ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, ValueOrRef AMessage) -> IO (IntMap (Int64, AMessage), Either AgentErrorType ((ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, ValueOrRef AMessage), InternalId, PQEncryption))
+    storeSentMsg db cfg aMessageIds = \case
+      Left e -> pure (aMessageIds, Left e)
+      Right req@(cData@ConnData {connId}, sq :| _, pqEnc_, msgFlags, mbr) -> do
+        case mbr of
+          VRValue i aMessage -> case IM.lookup i aMessageIds of
+            Just _ -> pure (aMessageIds, Left $ INTERNAL $ "enqueueMessageB: storeSentMsg duplicate saved message body " <> show i)
+            Nothing -> do
+              mbId <- createSndMsgBody db aMessage
+              (IM.insert i (mbId, aMessage) aMessageIds,) <$> continue mbId aMessage
+          VRRef i -> case IM.lookup i aMessageIds of
+            Just (mbId, aMessage) -> (aMessageIds,) <$> continue mbId aMessage
+            Nothing -> pure (aMessageIds, Left $ INTERNAL "enqueueMessageB: storeSentMsg missing saved message body id")
+        where
+          continue sndMsgBodyId aMessage = fmap (first storeError) $ runExceptT $ do        
+            let AgentConfig {e2eEncryptVRange} = cfg
+            internalTs <- liftIO getCurrentTime
+            (internalId, internalSndId, prevMsgHash) <- ExceptT $ updateSndIds db connId
+            -- We need to do pre-flight encoding that is not stored in database
+            -- to calculate its hash and remember it on connection (createSndMsg -> updateSndMsgHash)
+            -- to enable next enqueue.
+            -- (As encoding is different per connection, we can't store shared body, so it's repeated on delivery)
+            let agentMsgStr = encodeAgentMsgStr aMessage internalSndId prevMsgHash
+                internalHash = C.sha256Hash agentMsgStr
+                currentE2EVersion = maxVersion e2eEncryptVRange
+            (mek, paddedLen, pqEnc) <- agentRatchetEncryptHeader db cData e2eEncAgentMsgLength pqEnc_ currentE2EVersion
+            withExceptT (SEAgentError . cryptoError) $ CR.rcCheckCanPad paddedLen agentMsgStr
+            let msgType = aMessageType aMessage
+                -- msgBody is empty, because snd_messages record is linked to snd_message_bodies
+                msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody = "", pqEncryption = pqEnc, internalHash, prevMsgHash, sndMsgPrepData_ = Just SndMsgPrepData {encryptKey = mek, paddedLen, sndMsgBodyId}}
+            liftIO $ createSndMsg db connId msgData
+            liftIO $ createSndMsgDelivery db connId sq internalId
+            pure (req, internalId, pqEnc)
+    handleInternal :: E.SomeException -> IO (Either AgentErrorType b)
+    handleInternal = pure . Left . INTERNAL . show
+
 
 encodeAgentMsgStr :: AMessage -> InternalSndId -> PrevSndMsgHash -> ByteString
 encodeAgentMsgStr aMessage internalSndId prevMsgHash = do

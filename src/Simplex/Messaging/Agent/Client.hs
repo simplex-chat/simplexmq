@@ -146,6 +146,7 @@ module Simplex.Messaging.Agent.Client
     withStore',
     withStoreBatch,
     withStoreBatch',
+    unsafeWithStore,
     storeError,
     userServers,
     pickServer,
@@ -206,6 +207,7 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
+-- import GHC.Utils.Monad (mapAccumLM)
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -989,8 +991,8 @@ withInvLock' :: AgentClient -> ByteString -> String -> AM' a -> AM' a
 withInvLock' AgentClient {invLocks} = withLockMap invLocks
 {-# INLINE withInvLock' #-}
 
-withConnLocks :: AgentClient -> Set ConnId -> String -> AM a -> AM a
-withConnLocks AgentClient {connLocks} key name = ExceptT . withLocksMap_ connLocks key name . runExceptT
+withConnLocks :: AgentClient -> Set ConnId -> String -> AM' a -> AM' a
+withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks
 {-# INLINE withConnLocks #-}
 
 withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
@@ -2009,6 +2011,11 @@ withStore c action = do
       ]
 #endif
 
+unsafeWithStore :: AgentClient -> (DB.Connection -> IO a) -> AM' a
+unsafeWithStore c action = do
+  st <- asks store
+  liftIO $ agentOperationBracket c AODatabase (\_ -> pure ()) $ withTransaction st action
+
 withStoreBatch :: Traversable t => AgentClient -> (DB.Connection -> t (IO (Either AgentErrorType a))) -> AM' (t (Either AgentErrorType a))
 withStoreBatch c actions = do
   st <- asks store
@@ -2022,6 +2029,16 @@ withStoreBatch c actions = do
 withStoreBatch' :: Traversable t => AgentClient -> (DB.Connection -> t (IO a)) -> AM' (t (Either AgentErrorType a))
 withStoreBatch' c actions = withStoreBatch c (fmap (fmap Right) . actions)
 {-# INLINE withStoreBatch' #-}
+
+-- withStoreBatchAccumL :: forall t s a b. Traversable t => AgentClient -> s -> t a -> (DB.Connection -> s -> a -> IO (s, Either AgentErrorType b)) -> AM' (s, t (Either AgentErrorType b))
+-- withStoreBatchAccumL c s as f = do
+--   st <- asks store
+--   liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
+--     withTransaction st $ \db ->
+--       mapAccumLM (\s a -> f db s a `E.catch` handleInternal s) s as
+--   where
+--     handleInternal :: s -> E.SomeException -> IO (s, Either AgentErrorType b)
+--     handleInternal s = pure . (s,) . Left . INTERNAL . show
 
 storeError :: StoreError -> AgentErrorType
 storeError = \case
