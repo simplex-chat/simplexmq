@@ -1391,7 +1391,7 @@ enqueueMessageB c aMsgBodies reqs = do
   cfg <- asks config
   reqMids <- withStore' c $ \db -> do
     aMsgBodiesIds <- IM.traverseWithKey (\_k aMessage -> (aMessage,) <$> createSndMsgBody db aMessage) aMsgBodies
-    traverse (either (pure . Left) (storeSentMsg db cfg aMsgBodiesIds)) reqs
+    mapME (storeSentMsg db cfg aMsgBodiesIds) reqs
   forME reqMids $ \((cData, sq :| sqs, _, _, _), InternalId msgId, pqSecr) -> do
     lift $ submitPendingMsg c cData sq
     let sqs' = filter isActiveSndQ sqs
