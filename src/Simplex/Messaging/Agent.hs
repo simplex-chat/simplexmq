@@ -159,7 +159,6 @@ import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Traversable (mapAccumL)
 import Data.Word (Word16)
-import GHC.Utils.Monad (mapAccumLM)
 import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPSndWorkers, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))

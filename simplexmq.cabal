@@ -318,12 +318,10 @@ library
   if impl(ghc >= 9.6.2)
     build-depends:
         bytestring ==0.11.*
-      , ghc ==9.6.*
       , text >=2.0.1 && <2.2
   if impl(ghc < 9.6.2)
     build-depends:
         bytestring ==0.10.*
-      , ghc ==8.10.7
       , text >=1.2.3.0 && <1.3
 
 executable ntf-server
