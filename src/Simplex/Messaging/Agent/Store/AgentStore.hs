@@ -844,18 +844,18 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
           DB.query
             db
             [sql|
-              SELECT m.msg_type, m.msg_flags, m.msg_body, m.pq_encryption, m.internal_ts, s.retry_int_slow, s.retry_int_fast
+              SELECT m.msg_type, m.msg_flags, m.msg_body, m.pq_encryption, m.internal_ts, s.retry_int_slow, s.retry_int_fast, s.msg_encrypt_key, s.padded_msg_len
               FROM messages m
               JOIN snd_messages s ON s.conn_id = m.conn_id AND s.internal_id = m.internal_id
               WHERE m.conn_id = ? AND m.internal_id = ?
             |]
             (connId, msgId)
         err = SEInternal $ "msg delivery " <> bshow msgId <> " returned []"
-        pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, PQEncryption, InternalTs, Maybe Int64, Maybe Int64) -> PendingMsgData
-        pendingMsgData (msgType, msgFlags_, msgBody, pqEncryption, internalTs, riSlow_, riFast_) =
+        pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, PQEncryption, InternalTs, Maybe Int64, Maybe Int64, Maybe CR.MsgEncryptKeyX448, Maybe Int) -> PendingMsgData
+        pendingMsgData (msgType, msgFlags_, msgBody, pqEncryption, internalTs, riSlow_, riFast_, encryptKey_, paddedLen_) =
           let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
               msgRetryState = RI2State <$> riSlow_ <*> riFast_
-           in PendingMsgData {msgId, msgType, msgFlags, msgBody, pqEncryption, msgRetryState, internalTs}
+           in PendingMsgData {msgId, msgType, msgFlags, msgBody, pqEncryption, msgRetryState, internalTs, encryptKey_, paddedLen_}
     markMsgFailed msgId = DB.execute db "UPDATE snd_message_deliveries SET failed = 1 WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 
 getWorkItem :: Show i => ByteString -> IO (Maybe i) -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError (Maybe a))
@@ -997,6 +997,7 @@ deleteDeliveredSndMsg db connId msgId = do
   cnt <- countPendingSndDeliveries_ db connId msgId
   when (cnt == 0) $ deleteMsg db connId msgId
 
+-- TODO [save once] Delete from shared message bodies if no deliveries reference it. (`when (cnt == 0)`)
 deleteSndMsgDelivery :: DB.Connection -> ConnId -> SndQueue -> InternalId -> Bool -> IO ()
 deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
   DB.execute
@@ -2206,11 +2207,11 @@ insertSndMsgDetails_ dbConn connId SndMsgData {..} =
     dbConn
     [sql|
       INSERT INTO snd_messages
-        ( conn_id, internal_snd_id, internal_id, internal_hash, previous_msg_hash)
+        ( conn_id, internal_snd_id, internal_id, internal_hash, previous_msg_hash, msg_encrypt_key, padded_msg_len)
       VALUES
-        (?,?,?,?,?)
+        (?,?,?,?,?,?,?)
     |]
-    (connId, internalSndId, internalId, Binary internalHash, Binary prevMsgHash)
+    (connId, internalSndId, internalId, Binary internalHash, Binary prevMsgHash, encryptKey_, paddedLen_)
 
 updateSndMsgHash :: DB.Connection -> ConnId -> InternalSndId -> MsgHash -> IO ()
 updateSndMsgHash db connId internalSndId internalHash =

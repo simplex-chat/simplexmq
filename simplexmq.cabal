@@ -198,6 +198,7 @@ library
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240930_ntf_tokens_to_delete
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241224_ratchet_e2e_snd_params
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250203_msg_bodies
   if !flag(client_library)
       exposed-modules:
           Simplex.FileTransfer.Client.Main
