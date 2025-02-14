@@ -867,13 +867,11 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
         pendingMsgData (msgType, msgFlags_, msgBody, pqEncryption, internalTs, internalSndId, prevMsgHash, riSlow_, riFast_, encryptKey_, paddedLen_, sndMsgBody_) = do
           let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
               msgRetryState = RI2State <$> riSlow_ <*> riFast_
-          case (encryptKey_, paddedLen_, sndMsgBody_) of
-            (Nothing, Nothing, Nothing) ->
-              Right PendingMsgData {msgId, msgType, msgFlags, msgBody, pqEncryption, msgRetryState, internalTs, internalSndId, prevMsgHash, pendingMsgPrepData_ = Nothing}
-            (Just encryptKey, Just paddedLen, Just sndMsgBody) ->
-              let pendingMsgPrepData_ = Just PendingMsgPrepData {encryptKey, paddedLen, sndMsgBody}
-               in Right PendingMsgData {msgId, msgType, msgFlags, msgBody, pqEncryption, msgRetryState, internalTs, internalSndId, prevMsgHash, pendingMsgPrepData_}
-            _ -> Left $ SEInternal "unexpected snd msg data"
+              result pendingMsgPrepData_ = PendingMsgData {msgId, msgType, msgFlags, msgBody, pqEncryption, msgRetryState, internalTs, internalSndId, prevMsgHash, pendingMsgPrepData_}
+           in result <$> case (encryptKey_, paddedLen_, sndMsgBody_) of
+                (Nothing, Nothing, Nothing) -> Right Nothing
+                (Just encryptKey, Just paddedLen, Just sndMsgBody) -> Right $ Just PendingMsgPrepData {encryptKey, paddedLen, sndMsgBody}
+                _ -> Left $ SEInternal "unexpected snd msg data"
     markMsgFailed msgId = DB.execute db "UPDATE snd_message_deliveries SET failed = 1 WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 
 getWorkItem :: Show i => ByteString -> IO (Maybe i) -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError (Maybe a))
