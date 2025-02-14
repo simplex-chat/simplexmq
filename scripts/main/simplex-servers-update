@@ -444,7 +444,7 @@ menu_init_help() {
   menu_help="${menu_help}${BLD}${UNDRL}Usage:${NC} [<VARIABLE>] ${BLD}simplex-servers-update${NC}${NL}       [<VARIABLE>] ${BLD}simplex-servers-update${NC} [<SUBCOMMAND>]${NL}${NL}"
   menu_help="${menu_help}${BLD}${UNDRL}Subcommands:${NC}${NL}"
   menu_help_sub="  ${BLD}[a]ll${NC}		Update everything without confirmation${NL}"
-  menu_help_sub="${menu_help_sub}  ${BLD}[b]ins${NC}	Update binaries only without confirmation${NL}"
+  menu_help_sub="${menu_help_sub}  ${BLD}[b]inaries${NC}	Update binaries only without confirmation${NL}"
   menu_help_sub="${menu_help_sub}  ${BLD}[d]ownload${NC}	Download everything without updating${NL}"
   menu_help_sub="${menu_help_sub}  ${BLD}[h]elp${NC}	Print this message${NL}${NL}"
   menu_help="${menu_help}${menu_help_sub}"
@@ -500,7 +500,7 @@ options_parse() {
         fi
       fi
       ;;
-    b|bins)
+    b|binaries)
       check=0
       if [ -n "${menu_option_bins:-}" ]; then
         update_bins
