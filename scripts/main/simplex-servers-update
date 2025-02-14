@@ -3,8 +3,6 @@ set -eu
 
 # TODO:
 # 2) Fix edgecases
-# 3) Recommended tag
-# 4) printf that downloaded files saved here
 
 # Make sure that PATH variable contains /usr/local/bin
 PATH="/usr/local/bin:$PATH"
@@ -422,6 +420,25 @@ update_bins() {
   return 0
 }
 
+# Just download binaries
+download_bins() {
+  OLD_IFS="$IFS"
+
+  IFS='/'
+  for service in $msg_bins_raw; do
+    app="${service%%-*}"
+    eval "local_version=\$local_version_${app}"
+    eval "bin_url_final=\$bin_url_${app}"
+    eval "path_tmp_bin_final=\$path_tmp_bin_${app}"
+    eval "path_bin_final=\$path_bin_${app}"
+
+    download_thing "$bin_url_final" "$path_tmp_bin_final" 'file: ELF' "$service"
+  done
+
+  IFS="$OLD_IFS"
+  return 0
+}
+
 menu_init_help() {
   menu_help="Update script for SimpleX servers and scripts.${NL}${NL}"
   menu_help="${menu_help}${BLD}${UNDRL}Usage:${NC} [<VARIABLE>] ${BLD}simplex-servers-update${NC}${NL}       [<VARIABLE>] ${BLD}simplex-servers-update${NC} [<SUBCOMMAND>]${NL}${NL}"
@@ -449,25 +466,19 @@ menu_init() {
     menu_option_misc_raw="${menu_option_misc_raw+${menu_option_misc_raw}${NL}}  - systemd service file(s): ${msg_services}"
   fi
 
-  if [ -n "${menu_option_misc_raw:-}" ]; then
-    menu_option_all="${GRN}a${NC}) Update all:${NL}${menu_option_misc_raw}${NL}"
-  fi
+  menu_option_all="${GRN}a${NC}) Update all: ${BLU}(recommended)${NC}${NL}${menu_option_misc_raw+${menu_option_misc_raw}${NL}}${msg_bins+${msg_bins}${NL}}"
 
   if [ -n "${msg_bins:-}" ]; then
     menu_option_bins="${GRN}b${NC}) Update server binaries: ${msg_bins_alt}${NL}"
-    menu_option_all="${menu_option_all}${msg_bins}${NL}"
   fi
 
   # Abort early if there's neither update binaries, nor update scripts options
-  if [ -z "${menu_option_bins:-}" ] && [ -z "${menu_option_all:-}" ]; then
+  if [ -z "${menu_option_bins:-}" ] && [ -z "${menu_option_misc_raw:-}" ]; then
     printf "${YLW}Everything is up-to-date${NC}.\n"
     exit 0
   fi
 
   menu="${menu_option_all}${menu_option_bins:-}${menu_option_download}${menu_end}"
-
-  menu_lc=$(printf '%b' "$menu" | tr -cd '\n' | wc -c)
-  menu_lc=$((menu_lc + 1))
 
   return 0
 }
@@ -478,24 +489,20 @@ options_parse() {
   case "$selection" in
     a|all)
       check=0
-      set +u
-      if [ -n "$menu_option_bins" ]; then
-        if [ -n "$menu_option_misc_raw" ]; then
-          set -u
+      if [ -z "${menu_option_misc_raw:-}" ] && [ -z "${menu_option_bins:-}" ]; then
+        printf "${YLW}Everything is up-to-date${NC}.\n"
+      else
+        if [ -n "${menu_option_misc_raw:-}" ]; then
           update_misc
         fi
-        set -u
-        update_bins
-      else
-        printf "${YLW}Everything is up-to-date${NC}.\n"
+        if [ -n "${menu_option_bins:-}" ]; then
+          update_bins
+        fi
       fi
       ;;
     b|bins)
       check=0
-      printf 'Not implemented yet.\n'
-      set +u
-      if [ -n "$menu_option_bins" ]; then
-        set -u
+      if [ -n "${menu_option_bins:-}" ]; then
         update_bins
       else
         printf "${YLW}Binaries is up-to-date${NC}.\n"
@@ -503,7 +510,11 @@ options_parse() {
       ;;
     d|download)
       check=0
-      printf 'Not implemented yet.\n'
+      if [ -n "${menu_option_bins:-}" ]; then
+        download_bins
+      fi
+
+      printf 'Downloaded: %s\n' "$path_tmp_bin"
       ;;
     x)
       check=0
@@ -529,29 +540,37 @@ main() {
     h|help)
       printf '%b' "$menu_help"
       exit 0
+      ;;
   esac
 
+  checks
   download_all
-
   menu_init
 
   onetime=0
   while true; do
-    if [ -n "${1:-}" ] && [ "$onetime" = 0 ]; then
-      selection="$1"
+    if [ "$onetime" = 0 ]; then
       onetime=1
+
+      if [ -n "${1:-}" ]; then
+        selection="$1"
+      else
+        printf '%b' "$menu"
+        read selection
+      fi
     else
-      printf '%b' "$menu"
       read selection
     fi
     
     if options_parse "$selection"; then
       break
     else
-      erase_lines "$menu_lc"
+      # Erase last line
+      printf '\e[A\e[K'
+      # Only rerended selection
+      printf 'Selection: '
     fi
   done
 }
 
-checks
 main "$@"
