@@ -1,9 +1,6 @@
 #!/usr/bin/env sh
 set -eu
 
-# TODO:
-# 2) Fix edgecases
-
 # Make sure that PATH variable contains /usr/local/bin
 PATH="/usr/local/bin:$PATH"
 
@@ -51,8 +48,6 @@ UNDRL='\033[4m'
 NL='
 '
 
-# Set CHOOSE variable globally and only once
-CHOOSE="${CHOOSE:-}"
 # Set VER globally and only once
 VER="${VER:-latest}"
 
@@ -61,13 +56,6 @@ VER="${VER:-latest}"
 ######################
 ### Misc functions ###
 ######################
-
-# Erases specified amount of lines (useful to rerender the menu)
-erase_lines() {
-  for i in $(seq 1 "${1}"); do
-    printf '\e[A\e[K'
-  done
-}
 
 # Checks "sanity" of downloaded thing, e.g. if it's really a script or binary
 check_sanity() {
@@ -529,6 +517,14 @@ options_parse() {
   return "$check"
 }
 
+##########################
+### Main functions END ###
+##########################
+
+############
+### Init ###
+############
+
 main() {
   # Early hook to print Done after script re-execution
   if [ -n "${UPDATE_SCRIPT_DONE:-}" ]; then
@@ -567,10 +563,16 @@ main() {
     if options_parse "$selection"; then
       break
     else
-      # Erase last line
-      printf '\e[A\e[K'
-      # Only rerended selection
-      printf 'Selection: '
+      # Rerender whole menu if the first non-interactive option was bogus
+      if [ -n "${1:-}" ]; then
+        onetime=0
+        shift 1
+      else
+        # Erase last line
+        printf '\e[A\e[K'
+        # Only rerended selection
+        printf 'Selection: '
+      fi
     fi
   done
 }
