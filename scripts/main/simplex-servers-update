@@ -432,7 +432,9 @@ download_bins() {
     eval "path_tmp_bin_final=\$path_tmp_bin_${app}"
     eval "path_bin_final=\$path_bin_${app}"
 
+    printf -- "- Downloading ${YLW}%s${NC} binary..." "$service"
     download_thing "$bin_url_final" "$path_tmp_bin_final" 'file: ELF' "$service"
+    printf "${GRN}Done!${NC}\n"
   done
 
   IFS="$OLD_IFS"
@@ -514,7 +516,7 @@ options_parse() {
         download_bins
       fi
 
-      printf 'Downloaded: %s\n' "$path_tmp_bin"
+      printf "\n${YLW}Scripts${NC}/${YLW}services${NC}/${YLW}binaries${NC} has been downloaded to ${BLU}%s${NC}\n" "$path_tmp_bin"
       ;;
     x)
       check=0
