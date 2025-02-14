@@ -152,6 +152,7 @@ library
           Simplex.Messaging.Agent.Store.Postgres.DB
           Simplex.Messaging.Agent.Store.Postgres.Migrations
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250203_msg_bodies
       if !flag(client_library)
           exposed-modules:
               Simplex.Messaging.Agent.Store.Postgres.Util

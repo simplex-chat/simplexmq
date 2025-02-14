@@ -45,8 +45,6 @@ import Simplex.Messaging.Agent.Store.AgentStore
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Store.SQLite.Common (DBStore (..), withTransaction')
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
-import Simplex.Messaging.Agent.Store.SQLite.Migrations (appMigrations, getCurrentMigrations)
-import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
@@ -555,8 +553,7 @@ mkSndMsgData internalId internalSndId internalHash =
       pqEncryption = CR.PQEncOn,
       internalHash,
       prevMsgHash = internalHash,
-      encryptKey_ = Nothing,
-      paddedLen_ = Nothing
+      sndMsgPrepData_ = Nothing
     }
 
 testCreateSndMsg_ :: DB.Connection -> PrevSndMsgHash -> ConnId -> SndQueue -> SndMsgData -> Expectation
