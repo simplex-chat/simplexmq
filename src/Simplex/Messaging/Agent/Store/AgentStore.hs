@@ -1020,10 +1020,10 @@ deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
     db
     "DELETE FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ? AND internal_id = ?"
     (connId, dbQueueId, msgId)
-  getSndMsgIds >>= mapM_ deleteMsgAndBody
+  getRcptAndBodyId >>= mapM_ deleteMsgAndBody
   where
-    getSndMsgIds :: IO (Maybe (Maybe MsgReceiptStatus, Maybe Int64))
-    getSndMsgIds =
+    getRcptAndBodyId :: IO (Maybe (Maybe MsgReceiptStatus, Maybe Int64))
+    getRcptAndBodyId =
       -- Get snd message IDs if there are no pending deliveries.
       -- The current delivery is deleted above.
       maybeFirstRow id $
