@@ -1024,7 +1024,7 @@ deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
   where
     getRcptAndBodyId :: IO (Maybe (Maybe MsgReceiptStatus, Maybe Int64))
     getRcptAndBodyId =
-      -- Get snd message IDs if there are no pending deliveries.
+      -- Get receipt status and message body ID if there are no pending deliveries.
       -- The current delivery is deleted above.
       maybeFirstRow id $
         DB.query
