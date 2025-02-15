@@ -1007,7 +1007,7 @@ deleteMsgContent db connId msgId = do
 #else
   DB.execute db "UPDATE messages SET msg_body = x'' WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 #endif
-  DB.execute db "UPDATE snd_messages SET snd_msg_body_id = NULL WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
+  DB.execute db "UPDATE snd_messages SET snd_message_body_id = NULL WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 
 deleteDeliveredSndMsg :: DB.Connection -> ConnId -> InternalId -> IO ()
 deleteDeliveredSndMsg db connId msgId = do
@@ -1024,6 +1024,8 @@ deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
   where
     getSndMsgIds :: IO (Maybe (Maybe MsgReceiptStatus, Maybe Int64))
     getSndMsgIds =
+      -- Get snd message IDs if there are no pending deliveries.
+      -- The current delivery is deleted above.
       maybeFirstRow id $
         DB.query
           db
@@ -1041,6 +1043,8 @@ deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
             _ -> if keepForReceipt then deleteMsgContent else deleteMsg
       del db connId msgId
       forM_ sndMsgBodyId_ $ \bodyId ->
+        -- Delete message body if it is not used by any snd message.
+        -- The current snd message is already deleted by deleteMsg or cleared by deleteMsgContent.
         DB.execute
           db
           [sql|
