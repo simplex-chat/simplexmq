@@ -1001,12 +1001,13 @@ deleteMsg db connId msgId =
   DB.execute db "DELETE FROM messages WHERE conn_id = ? AND internal_id = ?;" (connId, msgId)
 
 deleteMsgContent :: DB.Connection -> ConnId -> InternalId -> IO ()
-deleteMsgContent db connId msgId =
+deleteMsgContent db connId msgId = do
 #if defined(dbPostgres)
   DB.execute db "UPDATE messages SET msg_body = ''::BYTEA WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 #else
   DB.execute db "UPDATE messages SET msg_body = x'' WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 #endif
+  DB.execute db "UPDATE snd_messages SET snd_message_body_id = NULL WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 
 deleteDeliveredSndMsg :: DB.Connection -> ConnId -> InternalId -> IO ()
 deleteDeliveredSndMsg db connId msgId = do
@@ -1019,21 +1020,39 @@ deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
     db
     "DELETE FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ? AND internal_id = ?"
     (connId, dbQueueId, msgId)
-  cnt <- countPendingSndDeliveries_ db connId msgId
-  when (cnt == 0) $ do
-    maybeFirstRow id (DB.query db "SELECT rcpt_internal_id, rcpt_status, snd_message_body_id FROM snd_messages WHERE conn_id = ? AND internal_id = ?" (connId, msgId)) >>= \case
-      Just (Just (_ :: Int64), Just MROk, sndMsgBodyId_) -> do
-        forM_ sndMsgBodyId_ deleteSndMsgBody
-        deleteMsg db connId msgId
-      Just (_, _, Just (sndMsgBodyId :: Int64)) -> do
-        deleteSndMsgBody sndMsgBodyId
-        delKeepForReceipt
-      _ ->
-        delKeepForReceipt
+  getRcptAndBodyId >>= mapM_ deleteMsgAndBody
   where
-    delKeepForReceipt = if keepForReceipt then deleteMsgContent db connId msgId else deleteMsg db connId msgId
-    deleteSndMsgBody sndMsgBodyId =
-      DB.execute db "DELETE FROM snd_message_bodies WHERE snd_message_body_id = ?" (Only sndMsgBodyId)
+    getRcptAndBodyId :: IO (Maybe (Maybe MsgReceiptStatus, Maybe Int64))
+    getRcptAndBodyId =
+      -- Get receipt status and message body ID if there are no pending deliveries.
+      -- The current delivery is deleted above.
+      maybeFirstRow id $
+        DB.query
+          db
+          [sql|
+            SELECT rcpt_status, snd_message_body_id FROM snd_messages
+            WHERE NOT EXISTS (SELECT 1 FROM snd_message_deliveries WHERE conn_id = ? AND internal_id = ? AND failed = 0)
+              AND conn_id = ? AND internal_id = ?
+          |]
+          (connId, msgId, connId, msgId)
+    deleteMsgAndBody :: (Maybe MsgReceiptStatus, Maybe Int64) -> IO ()
+    deleteMsgAndBody (rcptStatus_, sndMsgBodyId_) = do
+      let del = case rcptStatus_ of
+            -- we are not deleting message if receipt is not received or had incorrect hash (for debugging).
+            Just MROk -> deleteMsg
+            _ -> if keepForReceipt then deleteMsgContent else deleteMsg
+      del db connId msgId
+      forM_ sndMsgBodyId_ $ \bodyId ->
+        -- Delete message body if it is not used by any snd message.
+        -- The current snd message is already deleted by deleteMsg or cleared by deleteMsgContent.
+        DB.execute
+          db
+          [sql|
+            DELETE FROM snd_message_bodies
+            WHERE NOT EXISTS (SELECT 1 FROM snd_messages WHERE snd_message_body_id = ?)
+              AND snd_message_body_id = ?
+          |]
+          (bodyId, bodyId)
 
 countPendingSndDeliveries_ :: DB.Connection -> ConnId -> InternalId -> IO Int
 countPendingSndDeliveries_ db connId msgId = do
