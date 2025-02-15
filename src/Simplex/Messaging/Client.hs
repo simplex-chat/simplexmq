@@ -105,7 +105,7 @@ module Simplex.Messaging.Client
 where
 
 import Control.Applicative ((<|>))
-import Control.Concurrent (ThreadId, forkFinally, killThread, mkWeakThreadId)
+import Control.Concurrent (ThreadId, forkFinally, forkIO, killThread, mkWeakThreadId)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
@@ -1086,11 +1086,11 @@ sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
       pure [Response entityId $ Left $ PCETransportError e]
     TBTransmissions s n rs
       | n > 0 -> do
-          atomically $ writeTBQueue sndQ (Nothing, s) -- do not expire batched responses
+          nonBlockingWriteTBQueue sndQ (Nothing, s) -- do not expire batched responses
           mapConcurrently (getResponse c Nothing) rs
       | otherwise -> pure []
     TBTransmission s r -> do
-      atomically $ writeTBQueue sndQ (Nothing, s)
+      nonBlockingWriteTBQueue sndQ (Nothing, s)
       (: []) <$> getResponse c Nothing r
 
 -- | Send Protocol command
@@ -1112,12 +1112,17 @@ sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THan
       Right t
         | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
         | otherwise -> do
-            atomically $ writeTBQueue sndQ (Just r, s)
+            nonBlockingWriteTBQueue sndQ (Just r, s)
             response <$> getResponse c tOut r
         where
           s
             | batch = tEncodeBatch1 t
             | otherwise = tEncode t
+
+nonBlockingWriteTBQueue :: TBQueue a -> a -> IO ()
+nonBlockingWriteTBQueue q x = do
+  sent <- atomically $ ifM (isFullTBQueue q) (pure False) (writeTBQueue q x $> True)
+  unless sent $ void $ forkIO $ atomically $ writeTBQueue q x
 
 getResponse :: ProtocolClient v err msg -> Maybe Int -> Request err msg -> IO (Response err msg)
 getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount}} tOut Request {entityId, pending, responseVar} = do
