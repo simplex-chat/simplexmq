@@ -494,23 +494,19 @@ openMsgQueue ms q@JMQueue {queueDirectory = dir, statePath} = do
   let MsgQueueState {readState = rs, writeState = ws, size} = st
   if size == 0
     then E.uninterruptibleMask_ $ do
-      -- If the queue is empty, state is backed up and journals are deleted
-      -- They will be created again if queue is written to.
+      -- If the queue is empty, journals are deleted and state file is closed
+      -- Journal will be created again if queue is written to.
       -- canWrite is set to True.
-      backupQueueState sh
+      st' <- newMsgQueueState <$> newJournalId (random ms)
+      unsafeAppendState sh st'
+      hClose sh
       removeJournalIfExists dir rs
       unless (journalId ws == journalId rs) $ removeJournalIfExists dir ws
-      st' <- newMsgQueueState <$> newJournalId (random ms)
       mkJournalQueue q st' Nothing
     else do
       (st', rh, wh_) <- closeOnException sh $ openJournals ms dir st sh
       let hs = MsgQueueHandles {stateHandle = sh, readHandle = rh, writeHandle = wh_}
       mkJournalQueue q st' (Just hs)
-  where
-    backupQueueState sh = do
-      hClose sh
-      ts <- getCurrentTime
-      renameFile statePath (statePath <> "." <> iso8601Show ts <> ".bak")
 
 mkJournalQueue :: JMQueue -> MsgQueueState -> Maybe MsgQueueHandles -> IO JournalMsgQueue
 mkJournalQueue queue st hs_ = do
@@ -544,7 +540,11 @@ updateQueueState q log' hs st a = do
   atomically $ writeTVar (state q) st >> a
 
 appendState :: Handle -> MsgQueueState -> IO ()
-appendState h st = E.uninterruptibleMask_ $ B.hPutStr h $ strEncode st `B.snoc` '\n'
+appendState h = E.uninterruptibleMask_ . unsafeAppendState h
+{-# INLINE appendState #-}
+
+unsafeAppendState :: Handle -> MsgQueueState -> IO ()
+unsafeAppendState h st = B.hPutStr h $ strEncode st `B.snoc` '\n'
 
 updateReadPos :: JournalMsgQueue -> Bool -> Int64 -> MsgQueueHandles -> IO ()
 updateReadPos q log' len hs = do
