@@ -15,6 +15,7 @@
 module CoreTests.MsgStoreTests where
 
 import AgentTests.FunctionalAPITests (runRight, runRight_)
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Control.Monad
@@ -24,8 +25,10 @@ import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Base64.URL as B64
-import Data.List (isPrefixOf)
+import Data.List (isPrefixOf, isSuffixOf)
 import Data.Maybe (fromJust)
+import Data.Time.Calendar (fromGregorian)
+import Data.Time.Clock (UTCTime (..), addUTCTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
@@ -59,6 +62,8 @@ msgStoreTests = do
       it "should switch to write file when read file missing" testReadFileMissingSwitch
       it "should create write file when missing" testWriteFileMissing
       it "should create read file when read and write files are missing" testReadAndWriteFilesMissing
+  describe "Journal message store: queue state backup expiration" $ do
+    it "should remove old queue state backups" testRemoveQueueStateBackups
   where
     someMsgStoreTests :: STMStoreClass s => SpecWith s
     someMsgStoreTests = do
@@ -80,7 +85,9 @@ testJournalStoreCfg =
       maxMsgCount = 4,
       maxStateLines = 2,
       stateTailSize = 256,
-      idleInterval = 21600
+      idleInterval = 21600,
+      expireBefore = UTCTime (fromGregorian 2025 1 1) 0,
+      keepMinBackups = 3
     }
 
 mkMessage :: MonadIO m => ByteString -> m Message
@@ -328,7 +335,7 @@ testRemoveJournals ms = do
   runRight $ do
     q <- ExceptT $ addQueue ms rId qr
     Just (Message {msgId = mId1}, True) <- write q "message 1"
-    Just (Message {msgId = mId2}, False) <- write q "message 2"
+    Just (Message {msgId = mId2}, False) <- write q "message 2"    
     (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms q mId1
     (Msg "message 2", Nothing) <- tryDelPeekMsg ms q mId2
     liftIO $ closeMsgQueue q
@@ -344,7 +351,7 @@ testRemoveJournals ms = do
     Nothing <- tryPeekMsg ms q
     -- still not removed, queue is empty and not opened
     liftIO $ journalFilesCount dir `shouldReturn` 1
-    _mq <- isolateQueue q "test" $ getMsgQueue ms q
+    _mq <- isolateQueue q "test" $ getMsgQueue ms q False
     -- journal is removed
     liftIO $ journalFilesCount dir `shouldReturn` 0
     Just (Message {msgId = mId3}, True) <- write q "message 3"
@@ -372,10 +379,47 @@ testRemoveJournals ms = do
   journalFilesCount dir `shouldReturn` 1
   runRight $ do
     q <- ExceptT $ getQueue ms SRecipient rId
-    _mq <- isolateQueue q "test" $ getMsgQueue ms q
-    liftIO $ journalFilesCount dir `shouldReturn` 0
+    Just (Message {}, True) <- write q "message 8"
+    liftIO $ journalFilesCount dir `shouldReturn` 1
+    liftIO $ closeMsgQueue q
   where
     journalFilesCount dir = length . filter ("messages." `isPrefixOf`) <$> listDirectory dir
+
+testRemoveQueueStateBackups :: IO ()
+testRemoveQueueStateBackups = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g True
+
+  expireBefore <- addUTCTime 1 <$> getCurrentTime -- expire all backups created withing one second
+  let cfg = testJournalStoreCfg {maxStateLines = 1, expireBefore, keepMinBackups = 0}
+  ms <- newMsgStore cfg  
+
+  let dir = msgQueueDirectory ms rId
+      write q s = writeMsg ms q True =<< mkMessage s
+
+  runRight $ do
+    q <- ExceptT $ addQueue ms rId qr
+    Just (Message {msgId = mId1}, True) <- write q "message 1"
+    Just (Message {msgId = mId2}, False) <- write q "message 2"
+    (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms q mId1
+    (Msg "message 2", Nothing) <- tryDelPeekMsg ms q mId2
+    liftIO $ closeMsgQueue q
+    liftIO $ stateBackupCount dir `shouldReturn` 0
+
+    q1 <- ExceptT $ getQueue ms SRecipient rId
+    Just (Message {}, True) <- write q1 "message 3"
+    Just (Message {}, False) <- write q1 "message 4"
+    liftIO $ closeMsgQueue q1
+    liftIO $ stateBackupCount dir `shouldReturn` 0
+
+    liftIO $ threadDelay 1000000
+    q2 <- ExceptT $ getQueue ms SRecipient rId
+    Just (Message {}, False) <- write q2 "message 5"
+    Nothing <- write q2 "message 5"
+    liftIO $ closeMsgQueue q2
+    liftIO $ stateBackupCount dir `shouldReturn` 1
+  where
+    stateBackupCount dir = length . filter (".bak" `isSuffixOf`) <$> listDirectory dir
 
 testReadFileMissing :: JournalMsgStore -> IO ()
 testReadFileMissing ms = do
