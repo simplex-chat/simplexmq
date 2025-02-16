@@ -683,7 +683,6 @@ handleError cxt path a =
 
 -- This function is supposed to be resilient to crashes while updating state files,
 -- and also resilient to crashes during its execution.
--- TODO expire old state files
 readWriteQueueState :: JournalMsgStore -> FilePath -> IO (MsgQueueState, Handle)
 readWriteQueueState JournalMsgStore {random, config} statePath =
   ifM
