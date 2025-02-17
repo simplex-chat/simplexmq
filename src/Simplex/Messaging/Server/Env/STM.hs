@@ -162,7 +162,7 @@ defaultMaxJournalMsgCount :: Int
 defaultMaxJournalMsgCount = 256
 
 defaultMsgQueueQuota :: Int
-defaultMsgQueueQuota = 128
+defaultMsgQueueQuota = 4
 
 defaultStateTailSize :: Int
 defaultStateTailSize = 512
