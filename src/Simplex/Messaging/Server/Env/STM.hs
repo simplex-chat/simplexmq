@@ -367,7 +367,7 @@ mkJournalStoreConfig storePath msgQueueQuota maxJournalMsgCount maxJournalStateL
       maxStateLines = maxJournalStateLines,
       stateTailSize = defaultStateTailSize,
       idleInterval = idleQueueInterval,
-      expireBackupsAfter = 14 * nominalDay,
+      expireBackupsAfter = 300, -- 14 * nominalDay,
       keepMinBackups = 2
     }
 
