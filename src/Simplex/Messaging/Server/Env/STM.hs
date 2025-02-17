@@ -25,7 +25,7 @@ import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Text as T
-import Data.Time.Clock (addUTCTime, getCurrentTime, nominalDay)
+import Data.Time.Clock (getCurrentTime, nominalDay)
 import Data.Time.Clock.System (SystemTime)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
@@ -297,9 +297,9 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
   msgStore@(AMS _ store) <- case msgStoreType of
     AMSType SMSMemory -> AMS SMSMemory <$> newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
     AMSType SMSJournal -> case storeMsgsFile of
-      Just storePath -> do
-        cfg <- mkJournalStoreConfig storePath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
-        AMS SMSJournal <$> newMsgStore cfg
+      Just storePath ->
+        let cfg = mkJournalStoreConfig storePath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
+         in AMS SMSJournal <$> newMsgStore cfg
       Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
@@ -357,21 +357,19 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
           | isJust storeMsgsFile = SPMMessages
           | otherwise = SPMQueues
 
-mkJournalStoreConfig :: FilePath -> Int -> Int -> Int -> Int64 -> IO JournalStoreConfig
-mkJournalStoreConfig storePath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval = do
-  expireBefore <- addUTCTime (-14 * nominalDay) <$> getCurrentTime
-  pure
-    JournalStoreConfig
-      { storePath,
-        quota = msgQueueQuota,
-        pathParts = journalMsgStoreDepth,
-        maxMsgCount = maxJournalMsgCount,
-        maxStateLines = maxJournalStateLines,
-        stateTailSize = defaultStateTailSize,
-        idleInterval = idleQueueInterval,
-        expireBefore,
-        keepMinBackups = 2
-      }
+mkJournalStoreConfig :: FilePath -> Int -> Int -> Int -> Int64 -> JournalStoreConfig
+mkJournalStoreConfig storePath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval =
+  JournalStoreConfig
+    { storePath,
+      quota = msgQueueQuota,
+      pathParts = journalMsgStoreDepth,
+      maxMsgCount = maxJournalMsgCount,
+      maxStateLines = maxJournalStateLines,
+      stateTailSize = defaultStateTailSize,
+      idleInterval = idleQueueInterval,
+      expireBackupsAfter = 14 * nominalDay,
+      keepMinBackups = 2
+    }
 
 newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO ProxyAgent
 newSMPProxyAgent smpAgentCfg random = do

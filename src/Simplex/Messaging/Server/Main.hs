@@ -146,9 +146,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError a
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
-    newJournalMsgStore = do
-      cfg <- mkJournalStoreConfig storeMsgsJournalDir defaultMsgQueueQuota defaultMaxJournalMsgCount defaultMaxJournalStateLines $ checkInterval defaultMessageExpiration
-      newMsgStore cfg
+    newJournalMsgStore =
+      let cfg = mkJournalStoreConfig storeMsgsJournalDir defaultMsgQueueQuota defaultMaxJournalMsgCount defaultMaxJournalStateLines $ checkInterval defaultMessageExpiration
+       in newMsgStore cfg
     iniFile = combine cfgPath "smp-server.ini"
     serverVersion = "SMP server v" <> simplexMQVersion
     defaultServerPorts = "5223,443"

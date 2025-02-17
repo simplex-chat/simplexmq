@@ -15,7 +15,7 @@
 {-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Server.MsgStore.Journal
-  ( JournalMsgStore (queueStore, random),
+  ( JournalMsgStore (queueStore, random, expireBackupsBefore),
     JournalQueue,
     JournalMsgQueue (queue, state),
     JMQueue (queueDirectory, statePath),
@@ -52,7 +52,7 @@ import Data.List (intercalate, sort)
 import Data.Maybe (catMaybes, fromMaybe, isNothing, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time.Clock (UTCTime, getCurrentTime)
+import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show, iso8601ParseM)
 import GHC.IO (catchAny)
@@ -78,7 +78,8 @@ data JournalMsgStore = JournalMsgStore
   { config :: JournalStoreConfig,
     random :: TVar StdGen,
     queueLocks :: TMap RecipientId Lock,
-    queueStore :: STMQueueStore JournalQueue
+    queueStore :: STMQueueStore JournalQueue,
+    expireBackupsBefore :: UTCTime
   }
 
 data JournalStoreConfig = JournalStoreConfig
@@ -94,7 +95,7 @@ data JournalStoreConfig = JournalStoreConfig
     -- time in seconds after which the queue will be closed after message expiration
     idleInterval :: Int64,
     -- expire state backup files
-    expireBefore :: UTCTime,
+    expireBackupsAfter :: NominalDiffTime,
     keepMinBackups :: Int
   }
 
@@ -242,7 +243,8 @@ instance MsgStoreClass JournalMsgStore where
     random <- newTVarIO =<< newStdGen
     queueLocks <- TM.emptyIO
     queueStore <- newQueueStore
-    pure JournalMsgStore {config, random, queueLocks, queueStore}
+    expireBackupsBefore <- addUTCTime (- expireBackupsAfter config) <$> getCurrentTime
+    pure JournalMsgStore {config, random, queueLocks, queueStore, expireBackupsBefore}
 
   setStoreLog :: JournalMsgStore -> StoreLog 'WriteMode -> IO ()
   setStoreLog st sl = atomically $ writeTVar (storeLog $ queueStore st) (Just sl)
@@ -548,10 +550,9 @@ openMsgQueue ms@JournalMsgStore {config} q@JMQueue {queueDirectory = dir, stateP
       pure sh
     removeBackups = do
       times <- sort . mapMaybe backupPathTime <$> listDirectory dir
-      let toDelete = filter (< expireBefore) $ take (length times - keepMinBackups) times
+      let toDelete = filter (< expireBackupsBefore ms) $ take (length times - keepMinBackups config) times
       mapM_ (safeRemoveFile "removeBackups" . stateBackupPath statePath) toDelete
       where
-        JournalStoreConfig {expireBefore, keepMinBackups} = config
         backupPathTime :: FilePath -> Maybe UTCTime
         backupPathTime = iso8601ParseM . T.unpack <=< T.stripSuffix ".bak" <=< T.stripPrefix statePathPfx . T.pack
         statePathPfx = T.pack $ takeFileName statePath <> "."

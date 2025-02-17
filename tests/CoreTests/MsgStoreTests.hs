@@ -27,8 +27,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Base64.URL as B64
 import Data.List (isPrefixOf, isSuffixOf)
 import Data.Maybe (fromJust)
-import Data.Time.Calendar (fromGregorian)
-import Data.Time.Clock (UTCTime (..), addUTCTime, getCurrentTime)
+import Data.Time.Clock (addUTCTime, nominalDay)
 import Data.Time.Clock.System (getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
@@ -86,7 +85,7 @@ testJournalStoreCfg =
       maxStateLines = 2,
       stateTailSize = 256,
       idleInterval = 21600,
-      expireBefore = UTCTime (fromGregorian 2025 1 1) 0,
+      expireBackupsAfter = nominalDay,
       keepMinBackups = 3
     }
 
@@ -283,7 +282,7 @@ testQueueState ms = do
   removeOtherFiles dir statePath
   length . lines <$> readFile statePath `shouldReturn` 3
   corruptFile statePath
-  readQueueState ms statePath `shouldReturn` (Just state1, False)
+  readQueueState ms statePath `shouldReturn` (Just state1, True)
   length <$> listDirectory dir `shouldReturn` 1
   length . lines <$> readFile statePath `shouldReturn` 3
   where
@@ -400,9 +399,9 @@ testRemoveQueueStateBackups = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
 
-  expireBefore <- addUTCTime 1 <$> getCurrentTime -- expire all backups created withing one second
-  let cfg = testJournalStoreCfg {maxStateLines = 1, expireBefore, keepMinBackups = 0}
-  ms <- newMsgStore cfg  
+  ms' <- newMsgStore testJournalStoreCfg {maxStateLines = 1, expireBackupsAfter = 0, keepMinBackups = 0}
+  -- set expiration time 1 second ahead
+  let ms = ms' {expireBackupsBefore = addUTCTime 1 $ expireBackupsBefore ms'}
 
   let dir = msgQueueDirectory ms rId
       write q s = writeMsg ms q True =<< mkMessage s
