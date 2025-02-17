@@ -28,7 +28,7 @@ module Simplex.Messaging.Server.MsgStore.Journal
     SJournalType (..),
     msgQueueDirectory,
     msgQueueStatePath,
-    readWriteQueueState,
+    readQueueState,
     newMsgQueueState,
     newJournalId,
     appendState,
@@ -429,7 +429,6 @@ instance MsgStoreClass JournalMsgStore where
           createQueueDir = do
             createDirectoryIfMissing True queueDirectory
             sh <- openFile statePath AppendMode
-            B.hPutStr sh ""
             rh <- createNewJournal queueDirectory $ journalId rs
             let hs = MsgQueueHandles {stateHandle = sh, readHandle = rh, writeHandle = Nothing}
             atomically $ writeTVar handles $ Just hs
@@ -493,40 +492,69 @@ isolateQueueId :: String -> JournalMsgStore -> RecipientId -> IO (Either ErrorTy
 isolateQueueId op ms rId = tryStore op rId . withLockMap (queueLocks ms) rId op
 
 openMsgQueue :: JournalMsgStore -> JMQueue -> Bool -> IO JournalMsgQueue
-openMsgQueue ms q@JMQueue {queueDirectory = dir, statePath} forWrite = do
-  (st, sh) <- readWriteQueueState ms statePath
-  removeBackups ms q
-  if size st == 0
-    then do
-      (st', hs_) <- removeJournals st sh
-      mkJournalQueue q st' hs_
-    else do
-      (st', rh, wh_) <- closeOnException sh $ openJournals ms dir st sh
-      let hs = MsgQueueHandles {stateHandle = sh, readHandle = rh, writeHandle = wh_}
-      mkJournalQueue q st' (Just hs)
+openMsgQueue ms@JournalMsgStore {config} q@JMQueue {queueDirectory = dir, statePath} forWrite = do
+  (st_, shouldBackup) <- readQueueState ms statePath
+  case st_ of
+    Nothing -> do
+      st <- newMsgQueueState <$> newJournalId (random ms)
+      when shouldBackup $ backupQueueState statePath
+      mkJournalQueue q st Nothing
+    Just st
+      | size st == 0 -> do
+          (st', hs_) <- removeJournals st shouldBackup
+          mkJournalQueue q st' hs_
+      | otherwise -> do
+          sh <- openBackupQueueState st shouldBackup
+          (st', rh, wh_) <- closeOnException sh $ openJournals ms dir st sh
+          let hs = MsgQueueHandles {stateHandle = sh, readHandle = rh, writeHandle = wh_}
+          mkJournalQueue q st' (Just hs)
   where
     -- If the queue is empty, journals are deleted.
     -- New journal is created if queue is written to.
     -- canWrite is set to True.
-    removeJournals MsgQueueState {readState = rs, writeState = ws} sh = E.uninterruptibleMask_ $ do
+    removeJournals MsgQueueState {readState = rs, writeState = ws} shouldBackup = E.uninterruptibleMask_ $ do
       rjId <- newJournalId $ random ms
-      let st' = newMsgQueueState rjId
+      let st = newMsgQueueState rjId
       hs_ <-
         if forWrite
-          then Just <$> newJournalHandles st' rjId
-          else Nothing <$ backupQueueState
+          then Just <$> newJournalHandles st rjId
+          else Nothing <$ backupQueueState statePath
       removeJournalIfExists dir rs
       unless (journalId ws == journalId rs) $ removeJournalIfExists dir ws
-      pure (st', hs_)
+      pure (st, hs_)
       where
-        newJournalHandles st' rjId = do
-          appendState_ sh st'
+        newJournalHandles st rjId = do
+          sh <- openBackupQueueState st shouldBackup
+          appendState_ sh st
           rh <- closeOnException sh $ createNewJournal dir rjId
           pure MsgQueueHandles {stateHandle = sh, readHandle = rh, writeHandle = Nothing}
-        backupQueueState = do
-          hClose sh
-          ts <- getCurrentTime
-          renameFile statePath $ stateBackupPath statePath ts
+    openBackupQueueState st shouldBackup
+      | shouldBackup = do
+          -- State backup is made in two steps to mitigate the crash during the backup.
+          -- Temporary backup file will be used when it is present.
+          let tempBackup = statePath <> ".bak"
+          renameFile statePath tempBackup -- 1) temp backup
+          sh <- writeQueueState st -- 2) save state
+          backupQueueState tempBackup -- 3) timed backup
+          pure sh
+      | otherwise = openFile statePath AppendMode
+    backupQueueState path = do
+      ts <- getCurrentTime
+      renameFile path $ stateBackupPath statePath ts
+      removeBackups
+    writeQueueState st = do
+      sh <- openFile statePath AppendMode
+      closeOnException sh $ appendState sh st
+      pure sh
+    removeBackups = do
+      times <- sort . mapMaybe backupPathTime <$> listDirectory dir
+      let toDelete = filter (< expireBefore) $ take (length times - keepMinBackups) times
+      mapM_ (safeRemoveFile "removeBackups" . stateBackupPath statePath) toDelete
+      where
+        JournalStoreConfig {expireBefore, keepMinBackups} = config
+        backupPathTime :: FilePath -> Maybe UTCTime
+        backupPathTime = iso8601ParseM . T.unpack <=< T.stripSuffix ".bak" <=< T.stripPrefix statePathPfx . T.pack
+        statePathPfx = T.pack $ takeFileName statePath <> "."
 
 mkJournalQueue :: JMQueue -> MsgQueueState -> Maybe MsgQueueHandles -> IO JournalMsgQueue
 mkJournalQueue queue st hs_ = do
@@ -683,56 +711,39 @@ handleError cxt path a =
 
 -- This function is supposed to be resilient to crashes while updating state files,
 -- and also resilient to crashes during its execution.
-readWriteQueueState :: JournalMsgStore -> FilePath -> IO (MsgQueueState, Handle)
-readWriteQueueState JournalMsgStore {random, config} statePath =
+readQueueState :: JournalMsgStore -> FilePath -> IO (Maybe MsgQueueState, Bool)
+readQueueState JournalMsgStore {config} statePath =
   ifM
     (doesFileExist tempBackup)
-    (renameFile tempBackup statePath >> readQueueState)
-    (ifM (doesFileExist statePath) readQueueState writeNewQueueState)
+    (renameFile tempBackup statePath >> readState)
+    (ifM (doesFileExist statePath) readState $ pure (Nothing, False))
   where
     tempBackup = statePath <> ".bak"
-    readQueueState = do
+    readState = do
       ls <- B.lines <$> readFileTail
       case ls of
-        [] -> writeNewQueueState
+        [] -> do
+          logWarn $ "STORE: readWriteQueueState, empty queue state, " <> T.pack statePath
+          pure (Nothing, False)
         _ -> do
-          r@(st, _) <- useLastLine (length ls) True ls
-          unless (validQueueState st) $ E.throwIO $ userError $ "readWriteQueueState inconsistent state: " <> show st
+          r <- useLastLine (length ls) True ls
+          forM_ (fst r) $ \st ->
+            unless (validQueueState st) $ E.throwIO $ userError $ "readWriteQueueState inconsistent state: " <> show st
           pure r
-    writeNewQueueState = do
-      logWarn $ "STORE: readWriteQueueState, empty queue state - initialized, " <> T.pack statePath
-      st <- newMsgQueueState <$> newJournalId random
-      writeQueueState st
     useLastLine len isLastLine ls = case strDecode $ last ls of
-      Right st
-        | len > maxStateLines config || not isLastLine ->
-            backupWriteQueueState st
-        | otherwise -> do
-            -- when state file has fewer than maxStateLines, we don't compact it
-            sh <- openFile statePath AppendMode
-            pure (st, sh)
+      Right st ->
+        -- when state file has fewer than maxStateLines, we don't compact it
+        let shouldBackup = len > maxStateLines config || not isLastLine
+         in pure (Just st, shouldBackup)
       Left e -- if the last line failed to parse
         | isLastLine -> case init ls of -- or use the previous line
             [] -> do
               logWarn $ "STORE: readWriteQueueState, invalid 1-line queue state - initialized, " <> T.pack statePath
-              st <- newMsgQueueState <$> newJournalId random
-              backupWriteQueueState st
+              pure (Nothing, True) -- backup state file, because last line was invalid
             ls' -> do
               logWarn $ "STORE: readWriteQueueState, invalid last line in queue state - using the previous line, " <> T.pack statePath
               useLastLine len False ls'
         | otherwise -> E.throwIO $ userError $ "readWriteQueueState invalid state " <> statePath <> ": " <> show e
-    backupWriteQueueState st = do
-      -- State backup is made in two steps to mitigate the crash during the backup.
-      -- Temporary backup file will be used when it is present.
-      renameFile statePath tempBackup -- 1) temp backup
-      r <- writeQueueState st -- 2) save state
-      ts <- getCurrentTime
-      renameFile tempBackup $ stateBackupPath statePath ts -- 3) timed backup
-      pure r
-    writeQueueState st = do
-      sh <- openFile statePath AppendMode
-      closeOnException sh $ appendState sh st
-      pure (st, sh)
     readFileTail =
       IO.withFile statePath ReadMode $ \h -> do
         size <- IO.hFileSize h
@@ -741,17 +752,6 @@ readWriteQueueState JournalMsgStore {random, config} statePath =
         if size > sz'
           then IO.hSeek h AbsoluteSeek (size - sz') >> B.hGet h sz
           else B.hGet h (fromIntegral size)
-
-removeBackups :: JournalMsgStore -> JMQueue -> IO ()
-removeBackups ms JMQueue {queueDirectory = dir, statePath} = do
-  times <- sort . mapMaybe backupPathTime <$> listDirectory dir
-  let toDelete = filter (< expireBefore) $ take (length times - keepMinBackups) times
-  mapM_ (safeRemoveFile "removeBackups" . stateBackupPath statePath) toDelete
-  where
-    JournalMsgStore {config = JournalStoreConfig {expireBefore, keepMinBackups}} = ms
-    backupPathTime :: FilePath -> Maybe UTCTime
-    backupPathTime = iso8601ParseM . T.unpack <=< T.stripSuffix ".bak" <=< T.stripPrefix statePathPfx . T.pack
-    statePathPfx = T.pack $ takeFileName statePath <> "."
 
 stateBackupPath :: FilePath -> UTCTime -> FilePath
 stateBackupPath statePath ts = statePath <> "." <> iso8601Show ts <> ".bak"

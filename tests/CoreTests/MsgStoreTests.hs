@@ -44,7 +44,7 @@ import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue)
 import SMPClient (testStoreLogFile, testStoreMsgsDir, testStoreMsgsDir2, testStoreMsgsFile, testStoreMsgsFile2)
 import System.Directory (copyFile, createDirectoryIfMissing, listDirectory, removeFile, renameFile)
 import System.FilePath ((</>))
-import System.IO (IOMode (..), hClose, withFile)
+import System.IO (IOMode (..), withFile)
 import Test.Hspec
 
 msgStoreTests :: Spec
@@ -244,7 +244,7 @@ testQueueState ms = do
   state <- newMsgQueueState <$> newJournalId (random ms)
   withFile statePath WriteMode (`appendState` state)
   length . lines <$> readFile statePath `shouldReturn` 1
-  readQueueState statePath `shouldReturn` state
+  readQueueState ms statePath `shouldReturn` (Just state, False)
   length <$> listDirectory dir `shouldReturn` 1 -- no backup
 
   let state1 =
@@ -255,7 +255,7 @@ testQueueState ms = do
           }
   withFile statePath AppendMode (`appendState` state1)
   length . lines <$> readFile statePath `shouldReturn` 2
-  readQueueState statePath `shouldReturn` state1
+  readQueueState ms statePath `shouldReturn` (Just state1, False)
   length <$> listDirectory dir `shouldReturn` 1 -- no backup
 
   let state2 =
@@ -267,28 +267,26 @@ testQueueState ms = do
   withFile statePath AppendMode (`appendState` state2)
   length . lines <$> readFile statePath `shouldReturn` 3
   copyFile statePath (statePath <> ".2")
-  readQueueState statePath `shouldReturn` state2
-  length <$> listDirectory dir `shouldReturn` 3 -- new state, copy + backup
-  length . lines <$> readFile statePath `shouldReturn` 1
+  readQueueState ms statePath `shouldReturn` (Just state2, True)
+  length <$> listDirectory dir `shouldReturn` 2 -- new state + copy
+  ls <- lines <$> readFile statePath
+  length ls `shouldBe` 3
+  -- mock compacting file
+  writeFile statePath $ last ls
 
   -- corrupt the only line
   corruptFile statePath
-  newState <- readQueueState statePath
-  newState `shouldBe` newMsgQueueState (journalId $ writeState newState)
+  (Nothing, True) <- readQueueState ms statePath
 
   -- corrupt the last line
   renameFile (statePath <> ".2") statePath
   removeOtherFiles dir statePath
   length . lines <$> readFile statePath `shouldReturn` 3
   corruptFile statePath
-  readQueueState statePath `shouldReturn` state1
-  length <$> listDirectory dir `shouldReturn` 2
-  length . lines <$> readFile statePath `shouldReturn` 1
+  readQueueState ms statePath `shouldReturn` (Just state1, False)
+  length <$> listDirectory dir `shouldReturn` 1
+  length . lines <$> readFile statePath `shouldReturn` 3
   where
-    readQueueState statePath = do
-      (state, h) <- readWriteQueueState ms statePath
-      hClose h
-      pure state
     corruptFile f = do
       s <- readFile f
       removeFile f
@@ -343,47 +341,59 @@ testRemoveJournals ms = do
   ls <- B.lines <$> B.readFile statePath
   length ls `shouldBe` 4
   journalFilesCount dir `shouldReturn` 1
+  -- print "1" >> getLine
 
   runRight $ do
     q <- ExceptT $ getQueue ms SRecipient rId
     -- not removed yet
     liftIO $ journalFilesCount dir `shouldReturn` 1
+    -- liftIO $ print "2" >> getLine
     Nothing <- tryPeekMsg ms q
     -- still not removed, queue is empty and not opened
     liftIO $ journalFilesCount dir `shouldReturn` 1
+    -- liftIO $ print "3" >> getLine
     _mq <- isolateQueue q "test" $ getMsgQueue ms q False
     -- journal is removed
     liftIO $ journalFilesCount dir `shouldReturn` 0
+    -- liftIO $ print "4" >> getLine
     Just (Message {msgId = mId3}, True) <- write q "message 3"
     -- journal is created
     liftIO $ journalFilesCount dir `shouldReturn` 1
+    -- liftIO $ print "5" >> getLine
     Just (Message {msgId = mId4}, False) <- write q "message 4"
     (Msg "message 3", Msg "message 4") <- tryDelPeekMsg ms q mId3
     (Msg "message 4", Nothing) <- tryDelPeekMsg ms q mId4
     Just (Message {msgId = mId5}, True) <- write q "message 5"
     Just (Message {msgId = mId6}, False) <- write q "message 6"
     liftIO $ journalFilesCount dir `shouldReturn` 1
+    -- liftIO $ print "6" >> getLine
     Just (Message {msgId = mId7}, False) <- write q "message 7"
     -- separate write journal is created
     liftIO $ journalFilesCount dir `shouldReturn` 2
+    -- liftIO $ print "7" >> getLine
     Nothing <- write q "message 8"
     (Msg "message 5", Msg "message 6") <- tryDelPeekMsg ms q mId5
     liftIO $ journalFilesCount dir `shouldReturn` 2
+    -- liftIO $ print "8" >> getLine
     (Msg "message 6", Msg "message 7") <- tryDelPeekMsg ms q mId6
     -- read journal is removed
     liftIO $ journalFilesCount dir `shouldReturn` 1
+    -- liftIO $ print "9" >> getLine
     (Msg "message 7", Just MessageQuota {msgId = mId8}) <- tryDelPeekMsg ms q mId7
     (Just MessageQuota {}, Nothing) <- tryDelPeekMsg ms q mId8
     liftIO $ closeMsgQueue q
 
   journalFilesCount dir `shouldReturn` 1
+  -- liftIO $ print "10" >> getLine
   runRight $ do
     q <- ExceptT $ getQueue ms SRecipient rId
     Just (Message {}, True) <- write q "message 8"
     liftIO $ journalFilesCount dir `shouldReturn` 1
+    -- liftIO $ print "11" >> getLine
     liftIO $ closeMsgQueue q
   where
     journalFilesCount dir = length . filter ("messages." `isPrefixOf`) <$> listDirectory dir
+    stateBackupCount dir = length . filter (".bak" `isSuffixOf`) <$> listDirectory dir
 
 testRemoveQueueStateBackups :: IO ()
 testRemoveQueueStateBackups = do
