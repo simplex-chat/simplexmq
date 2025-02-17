@@ -162,7 +162,7 @@ defaultMaxJournalMsgCount :: Int
 defaultMaxJournalMsgCount = 256
 
 defaultMsgQueueQuota :: Int
-defaultMsgQueueQuota = 4
+defaultMsgQueueQuota = 128
 
 defaultStateTailSize :: Int
 defaultStateTailSize = 512
@@ -367,7 +367,7 @@ mkJournalStoreConfig storePath msgQueueQuota maxJournalMsgCount maxJournalStateL
       maxStateLines = maxJournalStateLines,
       stateTailSize = defaultStateTailSize,
       idleInterval = idleQueueInterval,
-      expireBackupsAfter = 300, -- 14 * nominalDay,
+      expireBackupsAfter = 14 * nominalDay,
       keepMinBackups = 2
     }
 

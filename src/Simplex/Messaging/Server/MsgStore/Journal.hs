@@ -499,7 +499,7 @@ openMsgQueue ms@JournalMsgStore {config} q@JMQueue {queueDirectory = dir, stateP
   case st_ of
     Nothing -> do
       st <- newMsgQueueState <$> newJournalId (random ms)
-      when shouldBackup $ backupQueueState statePath
+      when shouldBackup $ backupQueueState statePath -- rename invalid state file
       mkJournalQueue q st Nothing
     Just st
       | size st == 0 -> do
@@ -536,19 +536,15 @@ openMsgQueue ms@JournalMsgStore {config} q@JMQueue {queueDirectory = dir, stateP
           -- Temporary backup file will be used when it is present.
           let tempBackup = statePath <> ".bak"
           renameFile statePath tempBackup -- 1) temp backup
-          sh <- writeQueueState st -- 2) save state
+          sh <- openFile statePath AppendMode
+          closeOnException sh $ appendState sh st -- 2) save state to new file
           backupQueueState tempBackup -- 3) timed backup
           pure sh
       | otherwise = openFile statePath AppendMode
     backupQueueState path = do
       ts <- getCurrentTime
       renameFile path $ stateBackupPath statePath ts
-      removeBackups
-    writeQueueState st = do
-      sh <- openFile statePath AppendMode
-      closeOnException sh $ appendState sh st
-      pure sh
-    removeBackups = do
+      -- remove old backups
       times <- sort . mapMaybe backupPathTime <$> listDirectory dir
       let toDelete = filter (< expireBackupsBefore ms) $ take (length times - keepMinBackups config) times
       mapM_ (safeRemoveFile "removeBackups" . stateBackupPath statePath) toDelete
