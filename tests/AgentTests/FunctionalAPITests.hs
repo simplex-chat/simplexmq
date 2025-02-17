@@ -364,6 +364,7 @@ functionalAPITests t = do
     it "should suspend agent on timeout, even if pending messages not sent" $
       testSuspendingAgentTimeout t
   describe "Batching SMP commands" $ do
+    -- disable this and enable the following test to run tests with coverage
     it "should subscribe to multiple (200) subscriptions with batching" $
       testBatchedSubscriptions 200 10 t
     skip "faster version of the previous test (200 subscriptions gets very slow with test coverage)" $
