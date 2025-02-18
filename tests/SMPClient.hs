@@ -24,6 +24,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
+import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import qualified Simplex.Messaging.Transport.Client as Client
@@ -113,7 +114,13 @@ testSMPClient_ host port vr client = do
       | otherwise = Nothing
 
 cfg :: ServerConfig
-cfg = cfgMS (ASType SSTJournalMemory)
+cfg = cfgMS (ASType (SType SQSMemory SMSJournal))
+
+cfgJ2 :: ServerConfig
+cfgJ2 = journalCfg cfg testStoreLogFile2 testStoreMsgsDir2
+
+journalCfg :: ServerConfig -> FilePath -> FilePath -> ServerConfig
+journalCfg cfg' storeLogFile storeMsgsPath = cfg' {serverStoreCfg = ASSCfg (SType SQSMemory SMSJournal) SSCMemoryJournal {storeLogFile, storeMsgsPath}}
 
 cfgMS :: AStoreType -> ServerConfig
 cfgMS msType =
@@ -121,17 +128,18 @@ cfgMS msType =
     { transports = [],
       smpHandshakeTimeout = 60000000,
       tbqSize = 1,
-      msgStoreType = msType,
       msgQueueQuota = 4,
       maxJournalMsgCount = 5,
       maxJournalStateLines = 2,
       queueIdBytes = 24,
       msgIdBytes = 24,
-      storeLogFile = Just testStoreLogFile,
-      storeMsgsFile = Just $ case msType of
-        ASType SSTJournalMemory -> testStoreMsgsDir
-        ASType SSTJournalPostgres -> testStoreMsgsDir
-        ASType SSTMemory -> testStoreMsgsFile,
+      serverStoreCfg = case msType of
+        ASType st@(SType SQSMemory SMSMemory) ->
+          ASSCfg st $ SSCMemory $ Just StorePaths {storeLogFile = testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
+        ASType st@(SType SQSMemory SMSJournal) ->
+          ASSCfg st $ SSCMemoryJournal {storeLogFile = testStoreLogFile, storeMsgsPath = testStoreMsgsDir}
+        ASType st@(SType SQSPostgres SMSJournal) -> -- TODO DB options
+          ASSCfg st $ SSCDatabaseJournal {storeDBOpts = undefined, storeMsgsPath' = testStoreMsgsDir},
       storeNtfsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
@@ -190,18 +198,21 @@ proxyCfg =
   where
     smpAgentCfg' = smpAgentCfg cfg
 
+proxyCfgJ2 :: ServerConfig
+proxyCfgJ2 = journalCfg proxyCfg testStoreLogFile2 testStoreMsgsDir2
+
 proxyVRangeV8 :: VersionRangeSMP
 proxyVRangeV8 = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion
 
 withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerStoreMsgLogOn = (`withSmpServerStoreMsgLogOnMS` ASType SSTJournalMemory)
+withSmpServerStoreMsgLogOn = (`withSmpServerStoreMsgLogOnMS` ASType (SType SQSMemory SMSJournal))
 
 withSmpServerStoreMsgLogOnMS :: HasCallStack => ATransport -> AStoreType -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOnMS t msType =
   withSmpServerConfigOn t (cfgMS msType) {storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
 
 withSmpServerStoreLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerStoreLogOn = (`withSmpServerStoreLogOnMS` ASType SSTJournalMemory)
+withSmpServerStoreLogOn = (`withSmpServerStoreLogOnMS` ASType (SType SQSMemory SMSJournal))
 
 withSmpServerStoreLogOnMS :: HasCallStack => ATransport -> AStoreType -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreLogOnMS t msType = withSmpServerConfigOn t (cfgMS msType) {serverStatsBackupFile = Just testServerStatsBackupFile}
@@ -256,7 +267,7 @@ smpServerTest ::
   TProxy c ->
   (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
   IO (Maybe TransmissionAuth, ByteString, ByteString, BrokerMsg)
-smpServerTest _ t = runSmpTest (ASType SSTJournalMemory) $ \h -> tPut' h t >> tGet' h
+smpServerTest _ t = runSmpTest (ASType (SType SQSMemory SMSJournal)) $ \h -> tPut' h t >> tGet' h
   where
     tPut' :: THandleSMP c 'TClient -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
     tPut' h@THandle {params = THandleParams {sessionId, implySessId}} (sig, corrId, queueId, smp) = do
@@ -274,7 +285,7 @@ smpTestN :: (HasCallStack, Transport c) => AStoreType -> Int -> (HasCallStack =>
 smpTestN msType n test' = runSmpTestN msType n test' `shouldReturn` ()
 
 smpTest2' :: forall c. (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
-smpTest2' = (`smpTest2` ASType SSTJournalMemory)
+smpTest2' = (`smpTest2` ASType (SType SQSMemory SMSJournal))
 
 smpTest2 :: forall c. (HasCallStack, Transport c) => TProxy c -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
 smpTest2 t msType = smpTest2Cfg (cfgMS msType) supportedClientSMPRelayVRange t

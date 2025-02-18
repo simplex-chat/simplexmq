@@ -107,8 +107,8 @@ testSMPStoreLog testSuite tests =
     replicateM_ 3 $ testReadWrite t
   where
     testReadWrite SLTC {compacted, state} = do
-      st <- newMsgStore $ testJournalStoreCfg SQSMemory
-      l <- readWriteQueueStore testStoreLogFile st
+      st <- newMsgStore $ testJournalStoreCfg MQStoreCfg
+      l <- readWriteQueueStore @(JournalQueue 'QSMemory) testStoreLogFile $ queueStore st
       storeState st `shouldReturn` state
       closeStoreLog l
       ([], compacted') <- partitionEithers . map strDecode . B.lines <$> B.readFile testStoreLogFile

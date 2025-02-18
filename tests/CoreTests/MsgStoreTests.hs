@@ -49,7 +49,7 @@ import Test.Hspec
 msgStoreTests :: Spec
 msgStoreTests = do
   around (withMsgStore testSMTStoreConfig) $ describe "STM message store" someMsgStoreTests
-  around (withMsgStore $ testJournalStoreCfg SQSMemory) $ describe "Journal message store" $ do
+  around (withMsgStore $ testJournalStoreCfg MQStoreCfg) $ describe "Journal message store" $ do
     someMsgStoreTests
     it "should export and import journal store" testExportImportStore
     describe "queue state" $ do
@@ -76,12 +76,12 @@ withMsgStore cfg = bracket (newMsgStore cfg) closeMsgStore
 testSMTStoreConfig :: STMStoreConfig
 testSMTStoreConfig = STMStoreConfig {storePath = Nothing, quota = 3}
 
-testJournalStoreCfg :: SQSType s -> JournalStoreConfig s
-testJournalStoreCfg queueStoreType =
+testJournalStoreCfg :: QStoreCfg s -> JournalStoreConfig s
+testJournalStoreCfg queueStoreCfg =
   JournalStoreConfig
     { storePath = testStoreMsgsDir,
       pathParts = journalMsgStoreDepth,
-      queueStoreType,
+      queueStoreCfg,
       quota = 3,
       maxMsgCount = 4,
       maxStateLines = 2,
@@ -194,7 +194,7 @@ testExportImportStore ms = do
   g <- C.newRandom
   (rId1, qr1) <- testNewQueueRec g True
   (rId2, qr2) <- testNewQueueRec g True
-  sl <- readWriteQueueStore testStoreLogFile ms
+  sl <- readWriteQueueStore @(JournalQueue 'QSMemory) testStoreLogFile $ queueStore ms
   runRight_ $ do
     let write q s = writeMsg ms q True =<< mkMessage s
     q1 <- ExceptT $ addQueue (queueStore ms) rId1 qr1
@@ -220,9 +220,9 @@ testExportImportStore ms = do
   closeStoreLog sl
   exportMessages False ms testStoreMsgsFile False
   (B.readFile testStoreMsgsFile `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".copy")
-  let cfg = (testJournalStoreCfg SQSMemory :: JournalStoreConfig 'QSMemory) {storePath = testStoreMsgsDir2}
+  let cfg = (testJournalStoreCfg MQStoreCfg :: JournalStoreConfig 'QSMemory) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
-  readWriteQueueStore testStoreLogFile ms' >>= closeStoreLog
+  readWriteQueueStore @(JournalQueue 'QSMemory) testStoreLogFile (queueStore ms') >>= closeStoreLog
   stats@MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages False ms' testStoreMsgsFile Nothing
   printMessageStats "Messages" stats
@@ -231,7 +231,7 @@ testExportImportStore ms = do
   exportMessages False ms' testStoreMsgsFile2 False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
-  readWriteQueueStore testStoreLogFile stmStore >>= closeStoreLog
+  readWriteQueueStore @STMQueue testStoreLogFile (queueStore stmStore) >>= closeStoreLog
   MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages False stmStore testStoreMsgsFile2 Nothing
   exportMessages False stmStore testStoreMsgsFile False
@@ -334,7 +334,7 @@ testRemoveJournals ms = do
       write q s = writeMsg ms q True =<< mkMessage s
 
   runRight $ do
-    q <- ExceptT $ addQueue ms rId qr
+    q <- ExceptT $ addQueue (queueStore ms) rId qr
     Just (Message {msgId = mId1}, True) <- write q "message 1"
     Just (Message {msgId = mId2}, False) <- write q "message 2"    
     (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms q mId1
@@ -347,14 +347,14 @@ testRemoveJournals ms = do
   stateBackupCount dir `shouldReturn` 0
 
   runRight $ do
-    q <- ExceptT $ getQueue ms SRecipient rId
+    q <- ExceptT $ getQueue (queueStore ms) SRecipient rId
     -- not removed yet
     liftIO $ journalFilesCount dir `shouldReturn` 1
     liftIO $ stateBackupCount dir `shouldReturn` 0
     Nothing <- tryPeekMsg ms q
     -- still not removed, queue is empty and not opened
     liftIO $ journalFilesCount dir `shouldReturn` 1
-    _mq <- isolateQueue q "test" $ getMsgQueue ms q False
+    _mq <- isolateQueue ms q "test" $ getMsgQueue ms q False
     -- journal is removed
     liftIO $ journalFilesCount dir `shouldReturn` 0
     liftIO $ stateBackupCount dir `shouldReturn` 1
@@ -382,7 +382,7 @@ testRemoveJournals ms = do
 
   journalFilesCount dir `shouldReturn` 1
   runRight $ do
-    q <- ExceptT $ getQueue ms SRecipient rId
+    q <- ExceptT $ getQueue (queueStore ms) SRecipient rId
     Just (Message {}, True) <- write q "message 8"
     liftIO $ journalFilesCount dir `shouldReturn` 1
     liftIO $ stateBackupCount dir `shouldReturn` 2
@@ -396,7 +396,7 @@ testRemoveQueueStateBackups = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g True
 
-  ms' <- newMsgStore testJournalStoreCfg {maxStateLines = 1, expireBackupsAfter = 0, keepMinBackups = 0}
+  ms' <- newMsgStore (testJournalStoreCfg MQStoreCfg) {maxStateLines = 1, expireBackupsAfter = 0, keepMinBackups = 0}
   -- set expiration time 1 second ahead
   let ms = ms' {expireBackupsBefore = addUTCTime 1 $ expireBackupsBefore ms'}
 
@@ -404,7 +404,7 @@ testRemoveQueueStateBackups = do
       write q s = writeMsg ms q True =<< mkMessage s
 
   runRight $ do
-    q <- ExceptT $ addQueue ms rId qr
+    q <- ExceptT $ addQueue (queueStore ms) rId qr
     Just (Message {msgId = mId1}, True) <- write q "message 1"
     Just (Message {msgId = mId2}, False) <- write q "message 2"
     (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms q mId1
@@ -412,14 +412,14 @@ testRemoveQueueStateBackups = do
     liftIO $ closeMsgQueue q
     liftIO $ stateBackupCount dir `shouldReturn` 0
 
-    q1 <- ExceptT $ getQueue ms SRecipient rId
+    q1 <- ExceptT $ getQueue (queueStore ms) SRecipient rId
     Just (Message {}, True) <- write q1 "message 3"
     Just (Message {}, False) <- write q1 "message 4"
     liftIO $ closeMsgQueue q1
     liftIO $ stateBackupCount dir `shouldReturn` 0
 
     liftIO $ threadDelay 1000000
-    q2 <- ExceptT $ getQueue ms SRecipient rId
+    q2 <- ExceptT $ getQueue (queueStore ms) SRecipient rId
     Just (Message {}, False) <- write q2 "message 5"
     Nothing <- write q2 "message 5"
     liftIO $ closeMsgQueue q2

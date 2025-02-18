@@ -36,10 +36,10 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (exportMessages)
-import Simplex.Messaging.Server.Env.STM (AStoreType (..), SStoreType (..), ServerConfig (..), readWriteQueueStore)
+import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), AStoreType (..), StoreType (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..))
-import Simplex.Messaging.Server.MsgStore.Types (SQSType (..), newMsgStore)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue, JournalStoreConfig (..), QStoreCfg (..))
+import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), QSType (..), SQSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog)
 import Simplex.Messaging.Transport
@@ -609,7 +609,7 @@ testWithStoreLog =
 
     logSize testStoreLogFile `shouldReturn` 6
 
-    let cfg' = (cfgMS msType) {msgStoreType = ASType SSTMemory, storeLogFile = Nothing, storeMsgsFile = Nothing}
+    let cfg' = cfg {serverStoreCfg = ASSCfg (SType SQSMemory SMSMemory) $ SSCMemory Nothing}
     withSmpServerConfigOn at cfg' testPort . runTest t $ \h -> do
       sId1 <- readTVarIO senderId1
       -- fails if store log is disabled
@@ -814,13 +814,12 @@ testRestoreExpireMessages =
   where
     exportStoreMessages :: AStoreType -> IO ()
     exportStoreMessages = \case
-      ASType SSTJournalMemory -> export
-      ASType SSTJournalPostgres -> export
-      ASType SSTMemory -> pure ()
+      ASType (SType _ SMSJournal) -> export
+      ASType (SType _ SMSMemory) -> pure ()
       where
         export = do
-          ms <- newMsgStore (testJournalStoreCfg SQSMemory) {quota = 4}
-          readWriteQueueStore testStoreLogFile ms >>= closeStoreLog
+          ms <- newMsgStore (testJournalStoreCfg MQStoreCfg) {quota = 4}
+          readWriteQueueStore @(JournalQueue 'QSMemory) testStoreLogFile (queueStore ms) >>= closeStoreLog
           removeFileIfExists testStoreMsgsFile
           exportMessages False ms testStoreMsgsFile False
     runTest :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation

@@ -192,14 +192,16 @@ data Env = Env
     proxyAgent :: ProxyAgent -- senders served on this proxy
   }
 
-type family ValidStoreType (qs :: QSType) (ms :: MSType) :: Constraint where
-  ValidStoreType 'QSMemory 'MSMemory = ()
-  ValidStoreType 'QSMemory 'MSJournal = ()
-  ValidStoreType 'QSPostgres 'MSJournal = ()
-  ValidStoreType 'QSPostgres 'MSMemory =
+type family SupportedStore (qs :: QSType) (ms :: MSType) :: Constraint where
+  SupportedStore 'QSMemory 'MSMemory = ()
+  SupportedStore 'QSMemory 'MSJournal = ()
+  SupportedStore 'QSPostgres 'MSJournal = ()
+  SupportedStore 'QSPostgres 'MSMemory =
     (Int ~ Bool, TypeError ('TE.Text "Storing messages in memory with Postgres DB is not supported"))
 
 data StoreType qs ms = SType (SQSType qs) (SMSType ms)
+
+data AStoreType = forall qs ms. SupportedStore qs ms => ASType (StoreType qs ms)
 
 data ServerStoreCfg qs ms where
   SSCMemory :: Maybe StorePaths -> ServerStoreCfg 'QSMemory 'MSMemory
@@ -208,14 +210,14 @@ data ServerStoreCfg qs ms where
 
 data StorePaths = StorePaths {storeLogFile :: FilePath, storeMsgsFile :: Maybe FilePath}
 
-data AServerStoreCfg = forall qs ms. ValidStoreType qs ms => ASSCfg (StoreType qs ms) (ServerStoreCfg qs ms)
+data AServerStoreCfg = forall qs ms. SupportedStore qs ms => ASSCfg (StoreType qs ms) (ServerStoreCfg qs ms)
 
 type family MsgStore (qs :: QSType) (ms :: MSType) where
   MsgStore 'QSMemory 'MSMemory = STMMsgStore
   MsgStore qs 'MSJournal = JournalMsgStore qs
 
 data AMsgStore =
-  forall qs ms. (ValidStoreType qs ms, MsgStoreClass (MsgStore qs ms)) =>
+  forall qs ms. (SupportedStore qs ms, MsgStoreClass (MsgStore qs ms)) =>
   AMS (StoreType qs ms) (MsgStore qs ms)
 
 type Subscribed = Bool
@@ -320,16 +322,16 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       forM_ storePaths_ $ \StorePaths {storeLogFile = f} ->  loadStoreLog f $ queueStore ms
       pure $ AMS sType ms
     ASSCfg sType SSCMemoryJournal {storeLogFile, storeMsgsPath} -> do
-      let queueStoreCfg = MQStoreCfg
-          cfg = mkJournalStoreConfig queueStoreCfg storeMsgsPath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
+      let qsCfg = MQStoreCfg
+          cfg = mkJournalStoreConfig qsCfg storeMsgsPath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
           -- cfg = JournalStoreConfig {storePath = storeMsgsPath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreCfg, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
       ms <- newMsgStore cfg
       loadStoreLog storeLogFile $ stmQueueStore ms
       pure $ AMS sType ms
     ASSCfg sType SSCDatabaseJournal {storeDBOpts, storeMsgsPath'} -> do
       -- TODO open database
-      let queueStoreCfg = PQStoreCfg undefined
-          cfg = mkJournalStoreConfig queueStoreCfg storeMsgsPath' msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
+      let qsCfg = PQStoreCfg undefined
+          cfg = mkJournalStoreConfig qsCfg storeMsgsPath' msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
           -- cfg = JournalStoreConfig {storePath = storeMsgsPath', quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreCfg, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
       ms <- newMsgStore cfg
       pure $ AMS sType ms

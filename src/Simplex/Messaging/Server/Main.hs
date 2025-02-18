@@ -45,7 +45,7 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), JournalQueue, JournalStoreConfig (..), stmQueueStore)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), JournalQueue, QStoreCfg (..), stmQueueStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), QSType (..), SQSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
 import Simplex.Messaging.Transport (simplexMQVersion, supportedProxyClientSMPRelayVRange, supportedServerSMPRelayVRange)
@@ -107,14 +107,16 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               confirmOrExit
                 ("WARNING: message log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir)
                 "Messages not imported"
-              ms <- newJournalMsgStore SQSMemory
+              -- TODO [postgres]
+              ms <- newJournalMsgStore MQStoreCfg
               readQueueStore @(JournalQueue 'QSMemory) storeLogFile $ stmQueueStore ms
               msgStats <- importMessages True ms storeMsgsFilePath Nothing -- no expiration
               putStrLn "Import completed"
               printMessageStats "Messages" msgStats
-              putStrLn $ case readMsgStoreType ini of
+              putStrLn $ case readStoreType ini of
                 Right (ASType (SType _ SMSMemory)) -> "store_messages set to `memory`, update it to `journal` in INI file"
                 Right (ASType (SType _ SMSJournal)) -> "store_messages set to `journal`"
+                -- TODO [postgres]
                 Left e -> e <> ", update it to `journal` in INI file"
         JCExport
           | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
@@ -125,13 +127,15 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               confirmOrExit
                 ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
                 "Journal not exported"
-              ms <- newJournalMsgStore SQSMemory
+              -- TODO [postgres]
+              ms <- newJournalMsgStore MQStoreCfg
               readQueueStore @(JournalQueue 'QSMemory) storeLogFile $ stmQueueStore ms
               exportMessages True ms storeMsgsFilePath False
               putStrLn "Export completed"
-              putStrLn $ case readMsgStoreType ini of
+              putStrLn $ case readStoreType ini of
                 Right (ASType (SType _ SMSMemory)) -> "store_messages set to `memory`"
                 Right (ASType (SType _ SMSJournal)) -> "store_messages set to `journal`, update it to `memory` in INI file"
+                -- TODO [postgres]
                 Left e -> e <> ", update it to `memory` in INI file"
         JCDelete
           | not msgsDirExists -> do
@@ -148,9 +152,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError a
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
-    newJournalMsgStore :: SQSType s -> IO (JournalMsgStore s)
-    newJournalMsgStore =
-      let cfg = mkJournalStoreConfig storeMsgsJournalDir defaultMsgQueueQuota defaultMaxJournalMsgCount defaultMaxJournalStateLines $ checkInterval defaultMessageExpiration
+    newJournalMsgStore :: QStoreCfg s -> IO (JournalMsgStore s)
+    newJournalMsgStore qsCfg =
+      let cfg = mkJournalStoreConfig qsCfg storeMsgsJournalDir defaultMsgQueueQuota defaultMaxJournalMsgCount defaultMaxJournalStateLines $ checkInterval defaultMessageExpiration
        in newMsgStore cfg
     iniFile = combine cfgPath "smp-server.ini"
     serverVersion = "SMP server v" <> simplexMQVersion
@@ -160,11 +164,12 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
     storeMsgsFilePath = combine logPath "smp-server-messages.log"
     storeMsgsJournalDir = combine logPath "messages"
     storeNtfsFilePath = combine logPath "smp-server-ntfs.log"
-    readMsgStoreType :: Ini -> Either String AStoreType
-    readMsgStoreType = textToMsgStoreType . fromRight "memory" . lookupValue "STORE_LOG" "store_messages"
+    readStoreType :: Ini -> Either String AStoreType
+    readStoreType = textToMsgStoreType . fromRight "memory" . lookupValue "STORE_LOG" "store_messages"
     textToMsgStoreType = \case
       "memory" -> Right $ ASType (SType SQSMemory SMSMemory)
       "journal" -> Right $ ASType (SType SQSMemory SMSJournal)
+      -- TODO [postgres]
       s -> Left $ "invalid store_messages: " <> T.unpack s
     httpsCertFile = combine cfgPath "web.crt"
     httpsKeyFile = combine cfgPath "web.key"
@@ -331,13 +336,13 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       fp <- checkSavedFingerprint cfgPath defaultX509Config
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
-          cfg@ServerConfig {information, storeLogFile, msgStoreType, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
+          cfg@ServerConfig {information, serverStoreCfg, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
           sourceCode' = (\ServerPublicInfo {sourceCode} -> sourceCode) <$> information
           srv = ProtoServerWithAuth (SMPServer [THDomainName host] (if port == "5223" then "" else port) (C.KeyHash fp)) newQueueBasicAuth
       printServiceInfo serverVersion srv
       printSourceCode sourceCode'
-      printServerConfig transports storeLogFile
-      checkMsgStoreMode msgStoreType
+      printSMPServerConfig transports serverStoreCfg
+      checkMsgStoreMode iniStoreType
       putStrLn $ case messageExpiration of
         Just ExpirationConfig {ttl} -> "expiring messages after " <> showTTL ttl
         _ -> "not expiring messages"
@@ -350,10 +355,15 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             then maybe "allowed" (const "requires password") newQueueBasicAuth
             else "NOT allowed"
       -- print information
-      let persistence
-            | isNothing storeLogFile = SPMMemoryOnly
-            | isJust (storeMsgsFile cfg) = SPMMessages
-            | otherwise = SPMQueues
+      let persistence = case serverStoreCfg of
+            ASSCfg _ (SSCMemory Nothing) -> SPMMemoryOnly
+            ASSCfg _ (SSCMemory (Just StorePaths {storeMsgsFile})) | isNothing storeMsgsFile -> SPMQueues
+            -- ASSCfg _ (SSCMemory paths_) -> case paths_ of
+            --   Nothing -> SPMMemoryOnly
+            --   Just StorePaths {storeMsgsFile}
+            --     | isNothing storeMsgsFile -> SPMQueues
+            --     | otherwise -> SPMMessages
+            _ -> SPMMessages
       let config =
             ServerPublicConfig
               { persistence,
@@ -386,13 +396,12 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           _ -> enableStoreLog $> path
         transports = iniTransports ini
         sharedHTTP = any (\(_, _, addHTTP) -> addHTTP) transports
-        iniMsgStoreType = either error id $! readMsgStoreType ini
+        iniStoreType = either error id $! readStoreType ini
         serverConfig =
           ServerConfig
             { transports,
               smpHandshakeTimeout = 120000000,
               tbqSize = 128,
-              msgStoreType = iniMsgStoreType,
               msgQueueQuota = defaultMsgQueueQuota,
               maxJournalMsgCount = defaultMaxJournalMsgCount,
               maxJournalStateLines = defaultMaxJournalStateLines,
@@ -405,10 +414,13 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                     certificateFile = c serverCrtFile
                   },
               httpCredentials = (\WebHttpsParams {key, cert} -> ServerCredentials {caCertificateFile = Nothing, privateKeyFile = key, certificateFile = cert}) <$> webHttpsParams',
-              storeLogFile = enableStoreLog $> storeLogFilePath,
-              storeMsgsFile = case iniMsgStoreType of
-                ASType (SType _ SMSMemory) -> restoreMessagesFile storeMsgsFilePath
-                ASType (SType _ SMSJournal) -> Just storeMsgsJournalDir,
+              serverStoreCfg = case iniStoreType of
+                ASType st@(SType SQSMemory SMSMemory) ->
+                  ASSCfg st $ SSCMemory $ enableStoreLog $> StorePaths {storeLogFile = storeLogFilePath, storeMsgsFile = restoreMessagesFile storeMsgsFilePath}
+                ASType st@(SType SQSMemory SMSJournal) ->
+                  ASSCfg st $ SSCMemoryJournal {storeLogFile = storeLogFilePath, storeMsgsPath = storeMsgsJournalDir}
+                ASType st@(SType SQSPostgres SMSJournal) -> -- TODO DB options
+                  ASSCfg st $ SSCDatabaseJournal {storeDBOpts = undefined, storeMsgsPath' = storeMsgsJournalDir},
               storeNtfsFile = restoreMessagesFile storeNtfsFilePath,
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
