@@ -112,8 +112,8 @@ data JournalQueue = JournalQueue
   }
 
 data QState = QState
-  { pending :: Bool,
-    stored :: Bool
+  { hasPending :: Bool,
+    hasStored :: Bool
   }
 
 data JMQueue = JMQueue
@@ -158,8 +158,8 @@ data JournalState t = JournalState
 
 qState :: MsgQueueState -> QState
 qState MsgQueueState {size, readState = rs, writeState = ws} =
-  let pending = size > 0
-   in QState {pending, stored = pending || msgCount rs > 0 || msgCount ws > 0}
+  let hasPending = size > 0
+   in QState {hasPending, hasStored = hasPending || msgCount rs > 0 || msgCount ws > 0}
 {-# INLINE qState #-}
 
 data JournalType = JTRead | JTWrite
@@ -355,7 +355,7 @@ instance MsgStoreClass JournalMsgStore where
   getPeekMsgQueue :: JournalMsgStore -> JournalQueue -> StoreIO (Maybe (JournalMsgQueue, Message))
   getPeekMsgQueue ms q@JournalQueue {queueState} =
     StoreIO (readTVarIO queueState) >>= \case
-      Just QState {pending} -> if pending then peek else pure Nothing
+      Just QState {hasPending} -> if hasPending then peek else pure Nothing
       Nothing -> do
         -- We only close the queue if we just learnt it's empty.
         -- This is needed to reduce file descriptors and memory usage
@@ -395,12 +395,14 @@ instance MsgStoreClass JournalMsgStore where
       getNonEmptyMsgQueue :: IO (Maybe JournalMsgQueue)
       getNonEmptyMsgQueue =
         readTVarIO queueState >>= \case
-          Just QState {stored} -> if stored then Just <$> unStoreIO (getMsgQueue ms q False) else pure Nothing
+          Just QState {hasStored}
+            | hasStored -> Just <$> unStoreIO (getMsgQueue ms q False)
+            | otherwise -> pure Nothing
           Nothing -> do
             mq <- unStoreIO $ getMsgQueue ms q False
             -- queueState was updated in getMsgQueue
             readTVarIO queueState >>= \case
-              Just QState {stored} | not stored -> closeMsgQueue q $> Nothing
+              Just QState {hasStored} | not hasStored -> closeMsgQueue q $> Nothing
               _ -> pure $ Just mq
 
   deleteQueue :: JournalMsgStore -> JournalQueue -> IO (Either ErrorType QueueRec)
