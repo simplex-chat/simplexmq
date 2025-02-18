@@ -121,8 +121,8 @@ instance MsgStoreClass STMMsgStore where
     where
       getSize = maybe (pure 0) (\STMMsgQueue {size} -> readTVarIO size)
 
-  getQueueMessages_ :: Bool -> STMMsgQueue -> STM [Message]
-  getQueueMessages_ drainMsgs = (if drainMsgs then flushTQueue else snapshotTQueue) . msgQueue
+  getQueueMessages_ :: Bool -> STMQueue -> STMMsgQueue -> STM [Message]
+  getQueueMessages_ drainMsgs _ = (if drainMsgs then flushTQueue else snapshotTQueue) . msgQueue
     where
       snapshotTQueue q = do
         msgs <- flushTQueue q

@@ -28,12 +28,13 @@ import qualified Data.ByteString.Base64.URL as B64
 import Data.List (isPrefixOf, isSuffixOf)
 import Data.Maybe (fromJust)
 import Data.Time.Clock (addUTCTime)
-import Data.Time.Clock.System (getSystemTime)
+import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), Message (..), RecipientId, SParty (..), noMsgFlags)
 import Simplex.Messaging.Server (MessageStats (..), exportMessages, importMessages, printMessageStats)
 import Simplex.Messaging.Server.Env.STM (journalMsgStoreDepth, readWriteQueueStore)
+import Simplex.Messaging.Server.Expiration (ExpirationConfig (..), expireBeforeEpoch)
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
@@ -63,6 +64,7 @@ msgStoreTests = do
       it "should create read file when read and write files are missing" testReadAndWriteFilesMissing
   describe "Journal message store: queue state backup expiration" $ do
     it "should remove old queue state backups" testRemoveQueueStateBackups
+    it "should expire messages in idle queues" testExpireIdleQueues
   where
     someMsgStoreTests :: STMStoreClass s => SpecWith s
     someMsgStoreTests = do
@@ -422,6 +424,39 @@ testRemoveQueueStateBackups = do
     liftIO $ stateBackupCount dir `shouldReturn` 1
   where
     stateBackupCount dir = length . filter (".bak" `isSuffixOf`) <$> listDirectory dir
+
+testExpireIdleQueues :: IO ()
+testExpireIdleQueues = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g True
+
+  ms <- newMsgStore testJournalStoreCfg {idleInterval = 0}
+
+  let dir = msgQueueDirectory ms rId
+      statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
+      write q s = writeMsg ms q True =<< mkMessage s
+
+  q <- runRight $ do
+    q <- ExceptT $ addQueue ms rId qr
+    Just (Message {msgId = mId1}, True) <- write q "message 1"
+    Just (Message {msgId = mId2}, False) <- write q "message 2"
+    (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms q mId1
+    (Msg "message 2", Nothing) <- tryDelPeekMsg ms q mId2
+    liftIO $ closeMsgQueue q
+    pure q
+
+  (Just MsgQueueState {size = 0, readState = rs, writeState = ws}, True) <- readQueueState ms statePath
+  msgCount rs `shouldBe` 2
+  msgCount ws `shouldBe` 2
+
+  old <- expireBeforeEpoch ExpirationConfig {ttl = 1, checkInterval = 1} -- no old messages
+  now <- systemSeconds <$> getSystemTime
+
+  (expired_, stored) <- runRight $ idleDeleteExpiredMsgs now ms q old
+  expired_ `shouldBe` Just 0
+  stored `shouldBe` 0
+  (Nothing, False) <- readQueueState ms statePath
+  pure ()
 
 testReadFileMissing :: JournalMsgStore -> IO ()
 testReadFileMissing ms = do
