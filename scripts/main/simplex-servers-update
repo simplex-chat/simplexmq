@@ -4,14 +4,6 @@ set -eu
 # Make sure that PATH variable contains /usr/local/bin
 PATH="/usr/local/bin:$PATH"
 
-# Links to scripts/configs
-scripts_url="https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/scripts/main"
-scripts_url_systemd_smp="$scripts_url/smp-server.service"
-scripts_url_systemd_xftp="$scripts_url/xftp-server.service"
-scripts_url_update="$scripts_url/simplex-servers-update"
-scripts_url_uninstall="$scripts_url/simplex-servers-uninstall"
-scripts_url_stopscript="$scripts_url/simplex-servers-stopscript"
-
 # Default installation paths
 path_bin="/usr/local/bin"
 path_bin_smp="$path_bin/smp-server"
@@ -139,7 +131,6 @@ check_versions() {
 
   case "$VER" in 
     latest)
-      bin_url="https://github.com/simplex-chat/simplexmq/releases/latest/download"
       remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest 2>/dev/null | grep -i "tag_name" | awk -F \" '{print $4}')"
 
       if [ -z "$remote_version" ]; then
@@ -152,7 +143,6 @@ check_versions() {
       ver_check="https://github.com/simplex-chat/simplexmq/releases/tag/${VER}"
       
       if curl -o /dev/null --proto '=https' --tlsv1.2 -sf -L "${ver_check}"; then
-        bin_url="https://github.com/simplex-chat/simplexmq/releases/download/${VER}"
         remote_version="${VER}"
       else
         printf "Provided version ${BLU}%s${NC} ${RED}doesn't exist${NC}! Switching to ${BLU}latest${NC}.\n" "${VER}"
@@ -166,6 +156,15 @@ check_versions() {
       fi
       ;;
   esac
+
+  # Links to scripts/configs
+  bin_url="https://github.com/simplex-chat/simplexmq/releases/download/${remote_version}"
+  scripts_url="https://raw.githubusercontent.com/simplex-chat/simplexmq/refs/tags/${remote_version}/scripts/main"
+  scripts_url_systemd_smp="$scripts_url/smp-server.service"
+  scripts_url_systemd_xftp="$scripts_url/xftp-server.service"
+  scripts_url_update="$scripts_url/simplex-servers-update"
+  scripts_url_uninstall="$scripts_url/simplex-servers-uninstall"
+  scripts_url_stopscript="$scripts_url/simplex-servers-stopscript"
 
   set +u
   for i in smp xftp; do
