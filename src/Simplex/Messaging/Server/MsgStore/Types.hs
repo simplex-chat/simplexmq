@@ -60,7 +60,7 @@ class Monad (StoreMonad s) => MsgStoreClass s where
   withIdleMsgQueue :: Int64 -> s -> StoreQueue s -> (MsgQueue s -> StoreMonad s a) -> StoreMonad s (Maybe a, Int)
   deleteQueue :: s -> StoreQueue s -> IO (Either ErrorType QueueRec)
   deleteQueueSize :: s -> StoreQueue s -> IO (Either ErrorType (QueueRec, Int))
-  getQueueMessages_ :: Bool -> MsgQueue s -> StoreMonad s [Message]
+  getQueueMessages_ :: Bool -> StoreQueue s -> MsgQueue s -> StoreMonad s [Message]
   writeMsg :: s -> StoreQueue s -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
   setOverQuota_ :: StoreQueue s -> IO () -- can ONLY be used while restoring messages, not while server running
   getQueueSize_ :: MsgQueue s -> StoreMonad s Int
@@ -82,7 +82,7 @@ withActiveMsgQueues st f = readTVarIO (queues $ stmQueueStore st) >>= foldM run 
     run !acc = fmap (acc <>) . f
 
 getQueueMessages :: MsgStoreClass s => Bool -> s -> StoreQueue s -> ExceptT ErrorType IO [Message]
-getQueueMessages drainMsgs st q = withPeekMsgQueue st q "getQueueSize" $ maybe (pure []) (getQueueMessages_ drainMsgs . fst)
+getQueueMessages drainMsgs st q = withPeekMsgQueue st q "getQueueSize" $ maybe (pure []) (getQueueMessages_ drainMsgs q . fst)
 {-# INLINE getQueueMessages #-}
 
 getQueueSize :: MsgStoreClass s => s -> StoreQueue s -> ExceptT ErrorType IO Int
