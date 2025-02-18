@@ -140,6 +140,7 @@ module Simplex.Messaging.Agent.Protocol
     serializeQueueStatus,
     queueStatusT,
     agentMessageType,
+    aMessageType,
     extraSMPServerHosts,
     updateSMPServerHosts,
   )
@@ -167,7 +168,7 @@ import Data.Time.Clock.System (SystemTime)
 import Data.Type.Equality
 import Data.Typeable ()
 import Data.Word (Word16, Word32)
-import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), blobFieldDecoder, fromTextField_)
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder, fromTextField_)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType)
@@ -855,20 +856,7 @@ agentMessageType = \case
   AgentConnInfo _ -> AM_CONN_INFO
   AgentConnInfoReply {} -> AM_CONN_INFO_REPLY
   AgentRatchetInfo _ -> AM_RATCHET_INFO
-  AgentMessage _ aMsg -> case aMsg of
-    -- HELLO is used both in v1 and in v2, but differently.
-    -- - in v1 (and, possibly, in v2 for simplex connections) can be sent multiple times,
-    --   until the queue is secured - the OK response from the server instead of initial AUTH errors confirms it.
-    -- - in v2 duplexHandshake it is sent only once, when it is known that the queue was secured.
-    HELLO -> AM_HELLO_
-    A_MSG _ -> AM_A_MSG_
-    A_RCVD {} -> AM_A_RCVD_
-    A_QCONT _ -> AM_QCONT_
-    QADD _ -> AM_QADD_
-    QKEY _ -> AM_QKEY_
-    QUSE _ -> AM_QUSE_
-    QTEST _ -> AM_QTEST_
-    EREADY _ -> AM_EREADY_
+  AgentMessage _ aMsg -> aMessageType aMsg
 
 data APrivHeader = APrivHeader
   { -- | sequential ID assigned by the sending agent
@@ -946,6 +934,22 @@ data AMessage
     EREADY AgentMsgId
   deriving (Show)
 
+aMessageType :: AMessage -> AgentMessageType
+aMessageType = \case
+  -- HELLO is used both in v1 and in v2, but differently.
+  -- - in v1 (and, possibly, in v2 for simplex connections) can be sent multiple times,
+  --   until the queue is secured - the OK response from the server instead of initial AUTH errors confirms it.
+  -- - in v2 duplexHandshake it is sent only once, when it is known that the queue was secured.
+  HELLO -> AM_HELLO_
+  A_MSG _ -> AM_A_MSG_
+  A_RCVD {} -> AM_A_RCVD_
+  A_QCONT _ -> AM_QCONT_
+  QADD _ -> AM_QADD_
+  QKEY _ -> AM_QKEY_
+  QUSE _ -> AM_QUSE_
+  QTEST _ -> AM_QTEST_
+  EREADY _ -> AM_EREADY_
+
 -- | this type is used to send as part of the protocol between different clients
 -- TODO possibly, rename fields and types referring to external and internal IDs to make them different
 data AMessageReceipt = AMessageReceipt
@@ -1009,6 +1013,10 @@ instance Encoding AMessage where
         QUSE_ -> QUSE <$> smpP
         QTEST_ -> QTEST <$> smpP
         EREADY_ -> EREADY <$> smpP
+
+instance ToField AMessage where toField = toField . Binary . smpEncode
+
+instance FromField AMessage where fromField = blobFieldDecoder smpDecode
 
 instance Encoding AMessageReceipt where
   smpEncode AMessageReceipt {agentMsgId, msgHash, rcptInfo} =

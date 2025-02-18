@@ -146,6 +146,7 @@ module Simplex.Messaging.Agent.Client
     withStore',
     withStoreBatch,
     withStoreBatch',
+    unsafeWithStore,
     storeError,
     userServers,
     pickServer,
@@ -2008,6 +2009,11 @@ withStore c action = do
         E.Handler $ \(E.SomeException e) -> pure . Left $ SEInternal $ bshow e
       ]
 #endif
+
+unsafeWithStore :: AgentClient -> (DB.Connection -> IO a) -> AM' a
+unsafeWithStore c action = do
+  st <- asks store
+  liftIO $ agentOperationBracket c AODatabase (\_ -> pure ()) $ withTransaction st action
 
 withStoreBatch :: Traversable t => AgentClient -> (DB.Connection -> t (IO (Either AgentErrorType a))) -> AM' (t (Either AgentErrorType a))
 withStoreBatch c actions = do

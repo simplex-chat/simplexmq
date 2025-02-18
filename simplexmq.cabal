@@ -1,7 +1,7 @@
 cabal-version: 1.12
 
 name:           simplexmq
-version:        6.3.0.3
+version:        6.3.0.5
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -150,6 +150,7 @@ library
           Simplex.Messaging.Agent.Store.Postgres
           Simplex.Messaging.Agent.Store.Postgres.Migrations
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250203_msg_bodies
       if !flag(client_library)
           exposed-modules:
               Simplex.Messaging.Agent.Store.Postgres.Util
@@ -196,6 +197,7 @@ library
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240930_ntf_tokens_to_delete
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241224_ratchet_e2e_snd_params
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250203_msg_bodies
   if !flag(client_library)
       exposed-modules:
           Simplex.FileTransfer.Client.Main
@@ -459,6 +461,7 @@ test-suite simplexmq-test
       apps/smp-server/web
   default-extensions:
       StrictData
+  -- add -fhpc to ghc-options to run tests with coverage
   ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts -with-rtsopts=-A64M -with-rtsopts=-N1
   build-depends:
       base

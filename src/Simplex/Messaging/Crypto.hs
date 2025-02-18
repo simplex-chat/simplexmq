@@ -169,6 +169,7 @@ module Simplex.Messaging.Crypto
     sha512Hash,
 
     -- * Message padding / un-padding
+    canPad,
     pad,
     unPad,
 
@@ -1009,6 +1010,11 @@ decryptAEADNoPad aesKey iv ad msg (AuthTag tag) = do
 
 maxMsgLen :: Int
 maxMsgLen = 2 ^ (16 :: Int) - 3
+
+canPad :: Int -> Int -> Bool
+canPad msgLen paddedLen = msgLen <= maxMsgLen && padLen >= 0
+  where
+    padLen = paddedLen - msgLen - 2
 
 pad :: ByteString -> Int -> Either CryptoError ByteString
 pad msg paddedLen

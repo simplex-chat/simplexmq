@@ -4,6 +4,7 @@ packages: .
 -- packages: . ../http2
 -- packages: . ../network-transport
 
+-- uncomment two sections below to run tests with coverage
 -- package *
    -- coverage: True
    -- library-coverage: True

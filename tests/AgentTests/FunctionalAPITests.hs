@@ -363,6 +363,7 @@ functionalAPITests t = do
     it "should suspend agent on timeout, even if pending messages not sent" $
       testSuspendingAgentTimeout t
   describe "Batching SMP commands" $ do
+    -- disable this and enable the following test to run tests with coverage
     it "should subscribe to multiple (200) subscriptions with batching" $
       testBatchedSubscriptions 200 10 t
     skip "faster version of the previous test (200 subscriptions gets very slow with test coverage)" $
@@ -1970,7 +1971,7 @@ testBatchedPendingMessages nCreate nMsgs =
 testSendMessagesB :: IO ()
 testSendMessagesB = withAgentClients2 $ \a b -> runRight_ $ do
   (aId, bId) <- makeConnection a b
-  let msg cId body = Right (cId, PQEncOn, SMP.noMsgFlags, body)
+  let msg cId body = Right (cId, PQEncOn, SMP.noMsgFlags, vrValue body)
   [SentB 2, SentB 3, SentB 4] <- sendMessagesB a ([msg bId "msg 1", msg "" "msg 2", msg "" "msg 3"] :: [Either AgentErrorType MsgReq])
   get a ##> ("", bId, SENT 2)
   get a ##> ("", bId, SENT 3)
@@ -1983,7 +1984,7 @@ testSendMessagesB2 :: IO ()
 testSendMessagesB2 = withAgentClients3 $ \a b c -> runRight_ $ do
   (abId, bId) <- makeConnection a b
   (acId, cId) <- makeConnection a c
-  let msg connId body = Right (connId, PQEncOn, SMP.noMsgFlags, body)
+  let msg connId body = msgVR connId $ vrValue body
   [SentB 2, SentB 3, SentB 4, SentB 2, SentB 3] <-
     sendMessagesB a ([msg bId "msg 1", msg "" "msg 2", msg "" "msg 3", msg cId "msg 4", msg "" "msg 5"] :: [Either AgentErrorType MsgReq])
   liftIO $
@@ -2000,6 +2001,23 @@ testSendMessagesB2 = withAgentClients3 $ \a b c -> runRight_ $ do
   receiveMsg b abId 4 "msg 3"
   receiveMsg c acId 2 "msg 4"
   receiveMsg c acId 3 "msg 5"
+  let msg' connId i body = msgVR connId $ VRValue (Just i) body
+  [SentB 5, SentB 6, SentB 4, SentB 5] <-
+    sendMessagesB a ([msg' bId 0 "msg 5", msg' "" 1 "msg 6", msgVR cId (VRRef 0), msgVR "" (VRRef 1)] :: [Either AgentErrorType MsgReq])
+  liftIO $
+    getInAnyOrder
+      a
+      [ \case ("", cId', AEvt SAEConn (SENT 5)) -> cId' == bId; _ -> False,
+        \case ("", cId', AEvt SAEConn (SENT 6)) -> cId' == bId; _ -> False,
+        \case ("", cId', AEvt SAEConn (SENT 4)) -> cId' == cId; _ -> False,
+        \case ("", cId', AEvt SAEConn (SENT 5)) -> cId' == cId; _ -> False
+      ]
+  receiveMsg b abId 5 "msg 5"
+  receiveMsg b abId 6 "msg 6"
+  receiveMsg c acId 4 "msg 5"
+  receiveMsg c acId 5 "msg 6"
+  where
+    msgVR connId mbr = Right (connId, PQEncOn, SMP.noMsgFlags, mbr)
 
 pattern SentB :: AgentMsgId -> Either AgentErrorType (AgentMsgId, PQEncryption)
 pattern SentB msgId <- Right (msgId, PQEncOn)

@@ -127,6 +127,9 @@ CREATE TABLE snd_messages(
   retry_int_fast INTEGER,
   rcpt_internal_id INTEGER,
   rcpt_status TEXT,
+  msg_encrypt_key BLOB,
+  padded_msg_len INTEGER,
+  snd_message_body_id INTEGER REFERENCES snd_message_bodies ON DELETE SET NULL,
   PRIMARY KEY(conn_id, internal_snd_id),
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages
   ON DELETE CASCADE
@@ -415,6 +418,10 @@ CREATE TABLE ntf_tokens_to_delete(
 del_failed INTEGER DEFAULT 0,
 created_at TEXT NOT NULL DEFAULT(datetime('now'))
 );
+CREATE TABLE snd_message_bodies(
+  snd_message_body_id INTEGER PRIMARY KEY,
+  agent_msg BLOB NOT NULL DEFAULT x''
+);
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);
 CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);
 CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(conn_id, snd_queue_id);
@@ -541,3 +548,6 @@ CREATE INDEX idx_snd_message_deliveries_expired ON snd_message_deliveries(
   internal_id
 );
 CREATE INDEX idx_rcv_files_redirect_id on rcv_files(redirect_id);
+CREATE INDEX idx_snd_messages_snd_message_body_id ON snd_messages(
+  snd_message_body_id
+);

@@ -66,6 +66,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240702_servers_stats
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20240930_ntf_tokens_to_delete
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241224_ratchet_e2e_snd_params
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250203_msg_bodies
 import Simplex.Messaging.Agent.Store.Shared
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Transport.Client (TransportHost)
@@ -108,7 +109,8 @@ schemaMigrations =
     ("m20240702_servers_stats", m20240702_servers_stats, Just down_m20240702_servers_stats),
     ("m20240930_ntf_tokens_to_delete", m20240930_ntf_tokens_to_delete, Just down_m20240930_ntf_tokens_to_delete),
     ("m20241007_rcv_queues_last_broker_ts", m20241007_rcv_queues_last_broker_ts, Just down_m20241007_rcv_queues_last_broker_ts),
-    ("m20241224_ratchet_e2e_snd_params", m20241224_ratchet_e2e_snd_params, Just down_m20241224_ratchet_e2e_snd_params)
+    ("m20241224_ratchet_e2e_snd_params", m20241224_ratchet_e2e_snd_params, Just down_m20241224_ratchet_e2e_snd_params),
+    ("m20250203_msg_bodies", m20250203_msg_bodies, Just down_m20250203_msg_bodies)
   ]
 
 -- | The list of migrations in ascending order by date

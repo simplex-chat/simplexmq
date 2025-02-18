@@ -1,13 +1,16 @@
 #!/usr/bin/env sh
 set -eu
 
+# Make sure that PATH variable contains /usr/local/bin
+PATH="/usr/local/bin:$PATH"
+
 # Links to scripts/configs
-scripts="https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/scripts/main"
-scripts_systemd_smp="$scripts/smp-server.service"
-scripts_systemd_xftp="$scripts/xftp-server.service"
-scripts_update="$scripts/simplex-servers-update"
-scripts_uninstall="$scripts/simplex-servers-uninstall"
-scripts_stopscript="$scripts/simplex-servers-stopscript"
+scripts_url="https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/scripts/main"
+scripts_url_systemd_smp="$scripts_url/smp-server.service"
+scripts_url_systemd_xftp="$scripts_url/xftp-server.service"
+scripts_url_update="$scripts_url/simplex-servers-update"
+scripts_url_uninstall="$scripts_url/simplex-servers-uninstall"
+scripts_url_stopscript="$scripts_url/simplex-servers-stopscript"
 
 # Default installation paths
 path_bin="/usr/local/bin"
@@ -22,7 +25,9 @@ path_systemd_smp="$path_systemd/smp-server.service"
 path_systemd_xftp="$path_systemd/xftp-server.service"
 
 # Temporary paths
-path_tmp_bin="$(mktemp -d)"
+path_tmp_bin="/tmp/simplex-servers"
+path_tmp_bin_smp="$path_tmp_bin/smp-server"
+path_tmp_bin_xftp="$path_tmp_bin/xftp-server"
 path_tmp_bin_update="$path_tmp_bin/simplex-servers-update"
 path_tmp_bin_uninstall="$path_tmp_bin/simplex-servers-uninstall"
 path_tmp_bin_stopscript="$path_tmp_bin/simplex-servers-stopscript"
@@ -37,203 +42,539 @@ BLU='\033[1;36m'
 YLW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
+BLD='\033[1m'
+UNDRL='\033[4m'
+
+NL='
+'
+
+# Set VER globally and only once
+VER="${VER:-latest}"
 
 # Currently, XFTP default to v0.1.0, so it doesn't make sense to check its version
 
-os_test() {
- . /etc/os-release
+######################
+### Misc functions ###
+######################
 
- case "$VERSION_ID" in
-  20.04|22.04) : ;;
-  24.04) VERSION_ID='22.04' ;;
-  *) printf "${RED}Unsupported Ubuntu version!${NC}\nPlease file Github issue with request to support Ubuntu %s: https://github.com/simplex-chat/simplexmq/issues/new\n" "$VERSION_ID" && exit 1 ;;
- esac
+# Checks "sanity" of downloaded thing, e.g. if it's really a script or binary
+check_sanity() {
+  path="$1"
+  criteria="$2"
 
- version="$(printf '%s' "$VERSION_ID" | tr '.' '_')"
- arch="$(uname -p)"
+  case "$criteria" in
+    string:*)
+      pattern="$(printf '%s' "$criteria" | awk '{print $2}')"
+      
+      if grep -q "$pattern" "$path"; then
+        sane=0
+      else
+        sane=1
+      fi
+      ;;
+    file:*)
+      pattern="$(printf '%s' "$criteria" | awk '{print $2}')"
 
- case "$arch" in
-  x86_64) arch="$(printf '%s' "$arch" | tr '_' '-')" ;;
-  *)  printf "${RED}Unsupported architecture!${NC}\nPlease file Github issue with request to support %s architecture: https://github.com/simplex-chat/simplexmq/issues/new" "$arch" && exit 1 ;;
- esac
+      if file "$path" | grep -q "$pattern"; then
+        sane=0
+      else
+        sane=1
+      fi
+      ;;
+    *) printf 'Unknown criteria.\n'; sane=1 ;;
+  esac
 
- bin_smp="$bin/smp-server-ubuntu-${version}-${arch}"
- bin_xftp="$bin/xftp-server-ubuntu-${version}-${arch}"
+  unset path string
+
+  return "$sane"
 }
 
-installed_test() {
+# Checks if old thing and new thing is different
+change_check() {
+  old="$1"
+  new="$2"
+
+  if [ -x "$new" ] || [ -f "$new" ]; then
+    type="$(file $new)"
+  else
+    type='string'
+  fi
+
+  case "$type" in
+    *script*|*text*)
+      if diff -q "$old" "$new" > /dev/null 2>&1; then
+        changed=1
+      else
+        changed=0
+      fi
+      ;;
+    string)
+      if [ "$old" = "$new" ]; then
+        changed=1
+      else
+        changed=0
+      fi
+      ;;
+  esac
+
+  return "$changed"
+}
+
+##########################
+### Misc functions END ###
+##########################
+
+#########################
+### Support functions ###
+#########################
+
+# Sets local/remote versions and "apps" variables
+check_versions() {
+  # Sets:
+  # - ver
+  # - bin_url
+  # - remote_version
+  # - local_version
+  # - apps
+
+  case "$VER" in 
+    latest)
+      bin_url="https://github.com/simplex-chat/simplexmq/releases/latest/download"
+      remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest 2>/dev/null | grep -i "tag_name" | awk -F \" '{print $4}')"
+
+      if [ -z "$remote_version" ]; then
+        printf "${RED}Something went wrong when ${YLW}resolving the lastest version${NC}: either you don't have connection to Github or you're rate-limited.\n"
+        exit 1
+      fi
+      ;;
+    *)
+      # Check if this version really exist
+      ver_check="https://github.com/simplex-chat/simplexmq/releases/tag/${VER}"
+      
+      if curl -o /dev/null --proto '=https' --tlsv1.2 -sf -L "${ver_check}"; then
+        bin_url="https://github.com/simplex-chat/simplexmq/releases/download/${VER}"
+        remote_version="${VER}"
+      else
+        printf "Provided version ${BLU}%s${NC} ${RED}doesn't exist${NC}! Switching to ${BLU}latest${NC}.\n" "${VER}"
+        VER='latest'
+
+        # Re-execute check
+        check_versions
+
+        # Everything has been done, so return from the function
+        return 0
+      fi
+      ;;
+  esac
+
   set +u
-  for i in $path_conf_etc/*; do
-    if [ -d "$i" ]; then
-      case "$i" in
-        *simplex) apps="smp $apps" ;;
-        *simplex-xftp) apps="xftp $apps" ;;
-      esac
+  for i in smp xftp; do
+    # Only check local directory where binaries are installed by the script
+    if command -v "/usr/local/bin/$i-server" >/dev/null; then
+      apps="$i $apps"
     fi
   done
   set -u
-}
 
-set_version() {
-  ver="${VER:-latest}"
-
-  case "$ver" in 
-    latest)
-      bin="https://github.com/simplex-chat/simplexmq/releases/latest/download"
-      remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest | grep -i "tag_name" | awk -F \" '{print $4}')"
-      ;;
-    *)
-      bin="https://github.com/simplex-chat/simplexmq/releases/download/${ver}"
-      remote_version="${ver}"
-      ;;
-  esac
-}
-
-update_scripts() {
-  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_update" -o "$path_tmp_bin_update" && chmod +x "$path_tmp_bin_update"
-  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_uninstall" -o "$path_tmp_bin_uninstall" && chmod +x "$path_tmp_bin_uninstall"
-  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_stopscript" -o "$path_tmp_bin_stopscript" && chmod +x "$path_tmp_bin_stopscript"
-
-  if diff -q "$path_bin_uninstall" "$path_tmp_bin_uninstall" > /dev/null 2>&1; then
-    printf -- "- ${YLW}Uninstall script is up-to-date${NC}.\n"
-    rm "$path_tmp_bin_uninstall"
-  else
-    printf -- "- Updating uninstall script..."
-    mv "$path_tmp_bin_uninstall" "$path_bin_uninstall"
-    printf "${GRN}Done!${NC}\n"
+  if [ -z "$apps" ]; then
+    printf "${RED}No simplex servers installed! Aborting.${NC}\n"
+    exit 1
   fi
 
-  if diff -q "$path_bin_stopscript" "$path_tmp_bin_stopscript" > /dev/null 2>&1; then
-    printf -- "- ${YLW}Stopscript script is up-to-date${NC}.\n"
-    rm "$path_tmp_bin_stopscript"
-  else
-    printf -- "- Updating stopscript script..."
-    mv "$path_tmp_bin_stopscript" "$path_bin_stopscript"
-    printf "${GRN}Done!${NC}\n"
-  fi
+  for server in $apps; do
+    # Check if info file is present
+    if [ -f "$path_conf_info/release" ]; then
+      # If present, source it
+      . "$path_conf_info/release" 2>/dev/null
 
-  if diff -q "$path_bin_update" "$path_tmp_bin_update" > /dev/null 2>&1; then
-    printf -- "- ${YLW}Update script is up-to-date${NC}.\n"
-    rm "$path_tmp_bin_update"
-  else
-    printf -- "- Updating update script..."
-    mv "$path_tmp_bin_update" "$path_bin_update"
-    printf "${GRN}Done!${NC}\n"
-    printf -- "- Re-executing Update script with latest updates..."
-    exec sh "$path_bin_update" "continue"
-  fi
-}
-
-update_systemd() {
-  service="${1}-server"
-  eval "scripts_systemd=\$scripts_systemd_${1}"
-  eval "path_systemd=\$path_systemd_${1}"
-  eval "path_tmp_systemd=\$path_tmp_systemd_${1}"
-   
-  curl --proto '=https' --tlsv1.2 -sSf -L "$scripts_systemd" -o "$path_tmp_systemd"
-
-  if diff -q "$path_systemd" "$path_tmp_systemd" > /dev/null 2>&1; then
-    printf -- "- ${YLW}%s service is up-to-date${NC}.\n" "$service"
-    rm "$path_tmp_systemd"
-  else
-    printf -- "- Updating %s service..." "$service"
-    mv "$path_tmp_systemd" "$path_systemd"
-    systemctl daemon-reload
-    printf "${GRN}Done!${NC}\n"
-  fi
-
-  unset service scripts_systemd path_systemd path_tmp_systemd
-}
-
-update_bins() {
-  service="${1}-server"
-  eval "bin=\$bin_${1}"
-  eval "path_bin=\$path_bin_${1}"
-
-  set_ver() {
-    local_version='unset'
-    sed -i -- "s/local_version_${1}=.*/local_version_${1}='${remote_version}'/" "$path_conf_info/release"
-  }
-
-  if [ -f "$path_conf_info/release" ]; then
-    . "$path_conf_info/release" 2>/dev/null
-
-    set +u
-    eval "local_version=\$local_version_${1}"
-    set -u
-
-    if [ -z "${local_version}" ]; then
-            set_ver "$1"
-    fi
-  else
-    printf 'local_version_xftp=\nlocal_version_smp=\n' > "$path_conf_info/release"
-    set_ver "$1"
-  fi
-
-  if [ "$local_version" != "$remote_version" ]; then
-    if systemctl is-active --quiet "$service"; then
-      printf -- "- Stopping %s service..." "$service"
-      systemctl stop "$service"
-      printf "${GRN}Done!${NC}\n"
-
-      printf -- "- Updating %s to %s..." "$service" "$remote_version"
-      curl --proto '=https' --tlsv1.2 -sSf -L "$bin" -o "$path_bin" && chmod +x "$path_bin"
-      printf "${GRN}Done!${NC}\n"
-      
-      printf -- "- Starting %s service..." "$service"
-      systemctl start "$service"
-      printf "${GRN}Done!${NC}\n"
+      # Check if line containing local version exists in file
+      if grep -q "local_version_${server}" "$path_conf_info/release"; then
+        # if exists, set the var
+        eval "local_version=\$local_version_${server}"
+      else
+        # If it doesn't, append it to file
+        printf "local_version_${server}=unset\n" >> "$path_conf_info/release"
+        # And set it in script (so we don't have to re-source the file)
+        eval "local_version_${server}=unset"
+      fi
     else
-      printf -- "- Updating %s to %s..." "$service" "$remote_version"
-      curl --proto '=https' --tlsv1.2 -sSf -L "$bin" -o "$path_bin" && chmod +x "$path_bin"
-      printf "${GRN}Done!${NC}\n"
+      # If there isn't info file, populate it
+      printf "local_version_${server}=unset\n" >> "$path_conf_info/release"
     fi
-  else
-    printf -- "- ${YLW}%s is up-to-date${NC}.\n" "$service"
-  fi
+  done
 
-  set_ver "$1"
-
-  unset service bin path_bin local_version
+  # Return 
+  return 0
 }
 
+# Checks the distro and sets the urls variables
+check_distro() {
+  . /etc/os-release
+
+  case "$VERSION_ID" in
+    20.04|22.04) : ;;
+    24.04) VERSION_ID='22.04' ;;
+    *) printf "${RED}Unsupported Ubuntu version!${NC}\nPlease file Github issue with request to support Ubuntu %s: https://github.com/simplex-chat/simplexmq/issues/new\n" "$VERSION_ID" && exit 1 ;;
+  esac
+
+  version="$(printf '%s' "$VERSION_ID" | tr '.' '_')"
+  arch="$(uname -p)"
+
+  case "$arch" in
+    x86_64) arch="$(printf '%s' "$arch" | tr '_' '-')" ;;
+    *)  printf "${RED}Unsupported architecture!${NC}\nPlease file Github issue with request to support %s architecture: https://github.com/simplex-chat/simplexmq/issues/new" "$arch" && exit 1 ;;
+  esac
+
+  bin_url_smp="$bin_url/smp-server-ubuntu-${version}-${arch}"
+  bin_url_xftp="$bin_url/xftp-server-ubuntu-${version}-${arch}"
+
+  return 0
+}
+
+# General checks that must be performed on the initial execution of script
 checks() {
   if [ "$(id -u)" -ne 0 ]; then
     printf "This script is intended to be run with root privileges. Please re-run script using sudo.\n"
     exit 1
   fi
 
-  set_version
-  os_test
-  installed_test
+  check_versions
+  check_distro
 
-  mkdir -p $path_conf_info
+  mkdir -p $path_conf_info $path_tmp_bin
+
+  return 0
 }
 
-main() {
-  checks
+#############################
+### Support functions END ###
+#############################
 
-  set +u
-  if [ "$1" != "continue" ]; then
-    set -u
-    printf "Updating scripts...\n"
-    update_scripts
-  else
-    set -u
+######################
+### Main functions ###
+######################
+
+# Downloads thing to directory and checks its sanity
+download_thing() {
+  thing="$1"
+  path="$2"
+  check_pattern="$3"
+  err_msg="$4"
+  
+  curl --proto '=https' --tlsv1.2 -sSf -L "$thing" -o "$path"
+
+  type="$(file "$path")"
+
+  case "$type" in
+    *script*|*executable*) chmod +x "$path" ;;
+  esac
+
+  if ! check_sanity "$path" "$check_pattern"; then
+    printf "${RED}Something went wrong when downloading ${YLW}%s${NC}: either you don't have connection to Github or you're rate-limited.\n" "$err_msg"
+    exit 1
+  fi
+
+  return 0
+}
+
+# Downloads all necessary files to temp dir and set update messages for the menu
+download_all() {
+  download_thing "$scripts_url_update" "$path_tmp_bin_update" 'string: /usr/bin/env' 'Update script'
+  if change_check "$path_tmp_bin_update" "$path_bin_update"; then
+    msg_scripts="${msg_scripts+$msg_scripts, }${YLW}simplex-servers-update${NC}"
+    msg_scripts_raw="${msg_scripts_raw+$msg_scripts_raw/}update"
+  fi
+
+  download_thing "$scripts_url_stopscript" "$path_tmp_bin_stopscript" 'string: /usr/bin/env' 'Stop script'
+  if change_check "$path_tmp_bin_stopscript" "$path_bin_stopscript"; then
+    msg_scripts="${msg_scripts+$msg_scripts, }${YLW}simplex-servers-stopscript${NC}"
+    msg_scripts_raw="${msg_scripts_raw+$msg_scripts_raw/}stop"
+  fi
+
+  download_thing "$scripts_url_uninstall" "$path_tmp_bin_uninstall" 'string: /usr/bin/env' 'Uninstall script'
+  if change_check "$path_tmp_bin_uninstall" "$path_bin_uninstall"; then
+    msg_scripts="${msg_scripts+$msg_scripts, }${YLW}simplex-servers-uninstall${NC}"
+    msg_scripts_raw="${msg_scripts_raw+$msg_scripts_raw/}uninstall"
+  fi
+
+  for i in $apps; do
+    service="${i}-server"
+    eval "scripts_url_systemd_final=\$scripts_url_systemd_${i}"
+    eval "path_tmp_systemd_final=\$path_tmp_systemd_${i}"
+    eval "path_systemd_final=\$path_systemd_${i}"
+   
+    download_thing "$scripts_url_systemd_final" "$path_tmp_systemd_final" 'string: [Unit]' "$service systemd service"
+    if change_check "$path_tmp_systemd_final" "$path_systemd_final"; then
+      msg_services="${msg_services+$msg_services, }${YLW}$service.service${NC}"
+      msg_services_raw="${msg_services_raw+$msg_services_raw/}$service"
+    fi
+  done
+
+  for i in $apps; do
+    service="${i}-server"
+    eval "local_version=\$local_version_${i}"
+
+    if change_check "$local_version" "$remote_version"; then
+      msg_bins="${msg_bins+$msg_bins$NL}  - ${YLW}$service${NC}: from ${BLU}$local_version${NC} to ${BLU}$remote_version${NC}"
+      msg_bins_alt="${msg_bins_alt+$msg_bins_alt, }${YLW}$service${NC}"
+      msg_bins_raw="${msg_bins_raw+$msg_bins_raw/}$service"
+    fi
+  done
+
+  return 0
+}
+
+# Updates systemd and scripts. This function depends om variables from "download_all"
+update_misc() {
+  OLD_IFS="$IFS"
+
+  IFS='/'
+  for script in $msg_scripts_raw; do
+    case "$script" in
+      update)
+        printf -- "- Updating update script..."
+        mv "$path_tmp_bin_update" "$path_bin_update"
+        printf "${GRN}Done!${NC}\n"
+        printf -- "- Re-executing Update script..."
+        exec env UPDATE_SCRIPT_DONE=1 "$path_bin_update" "${selection}"
+        ;;
+      stop)
+        printf -- "- Updating stopscript script..."
+        mv "$path_tmp_bin_stopscript" "$path_bin_stopscript"
+        printf "${GRN}Done!${NC}\n"
+        ;;
+      uninstall)
+        printf -- "- Updating uninstall script..."
+        mv "$path_tmp_bin_uninstall" "$path_bin_uninstall"
+        printf "${GRN}Done!${NC}\n"
+        ;;
+    esac
+  done
+
+  for service in $msg_services_raw; do
+    app="${service%%-*}"
+    eval "path_systemd=\$path_systemd_${app}"
+    eval "path_tmp_systemd=\$path_tmp_systemd_${app}"
+
+    printf -- "- Updating %s service..." "$service"
+    mv "$path_tmp_systemd" "$path_systemd"
+    systemctl daemon-reload
+    printf "${GRN}Done!${NC}\n"
+  done
+
+  IFS="$OLD_IFS"
+  return 0
+}
+
+# Updates binaries. This function depends on variables from "download_all"
+update_bins() {
+  OLD_IFS="$IFS"
+
+  IFS='/'
+  for service in $msg_bins_raw; do
+    app="${service%%-*}"
+    eval "local_version=\$local_version_${app}"
+    eval "bin_url_final=\$bin_url_${app}"
+    eval "path_tmp_bin_final=\$path_tmp_bin_${app}"
+    eval "path_bin_final=\$path_bin_${app}"
+
+    # If systemd service is active
+    if systemctl is-active --quiet "$service"; then
+      printf -- "- Stopping %s service..." "$service"
+      systemctl stop "$service"
+      printf "${GRN}Done!${NC}\n"
+
+      printf -- "- Updating ${YLW}%s${NC} from ${BLU}%s${NC} to ${BLU}%s${NC}..." "$service" "$local_version" "$remote_version"
+      download_thing "$bin_url_final" "$path_tmp_bin_final" 'file: ELF' "$service"
+      mv "$path_tmp_bin_final" "$path_bin_final"
+      printf "${GRN}Done!${NC}\n"
+      
+      printf -- "- Starting %s service..." "$service"
+      systemctl start "$service"
+      printf "${GRN}Done!${NC}\n"
+    else
+      # If systemd service is NOT active
+      printf -- "- Updating ${YLW}%s${NC} from ${BLU}%s${NC} to ${BLU}%s${NC}..." "$service" "$local_version" "$remote_version"
+      download_thing "$bin_url_final" "$path_tmp_bin_final" 'file: ELF' "$service"
+      mv "$path_tmp_bin_final" "$path_bin_final"
+      printf "${GRN}Done!${NC}\n"
+    fi
+
+    # Don't forget to set version
+    sed -i -- "s|local_version_${app}=.*|local_version_${app}='${remote_version}'|" "$path_conf_info/release"
+  done
+
+  IFS="$OLD_IFS"
+  return 0
+}
+
+# Just download binaries
+download_bins() {
+  OLD_IFS="$IFS"
+
+  IFS='/'
+  for service in $msg_bins_raw; do
+    app="${service%%-*}"
+    eval "local_version=\$local_version_${app}"
+    eval "bin_url_final=\$bin_url_${app}"
+    eval "path_tmp_bin_final=\$path_tmp_bin_${app}"
+    eval "path_bin_final=\$path_bin_${app}"
+
+    printf -- "- Downloading ${YLW}%s${NC} binary..." "$service"
+    download_thing "$bin_url_final" "$path_tmp_bin_final" 'file: ELF' "$service"
+    printf "${GRN}Done!${NC}\n"
+  done
+
+  IFS="$OLD_IFS"
+  return 0
+}
+
+menu_init_help() {
+  menu_help="Update script for SimpleX servers and scripts.${NL}${NL}"
+  menu_help="${menu_help}${BLD}${UNDRL}Usage:${NC} [<VARIABLE>] ${BLD}simplex-servers-update${NC}${NL}       [<VARIABLE>] ${BLD}simplex-servers-update${NC} [<SUBCOMMAND>]${NL}${NL}"
+  menu_help="${menu_help}${BLD}${UNDRL}Subcommands:${NC}${NL}"
+  menu_help_sub="  ${BLD}[a]ll${NC}		Update everything without confirmation${NL}"
+  menu_help_sub="${menu_help_sub}  ${BLD}[b]inaries${NC}	Update binaries only without confirmation${NL}"
+  menu_help_sub="${menu_help_sub}  ${BLD}[d]ownload${NC}	Download everything without updating${NL}"
+  menu_help_sub="${menu_help_sub}  ${BLD}[h]elp${NC}	Print this message${NL}${NL}"
+  menu_help="${menu_help}${menu_help_sub}"
+  menu_help="${menu_help}${BLD}${UNDRL}Variables:${NC}${NL}"
+  menu_help="${menu_help}  ${BLD}VER=v3.2.1-beta.0${NC}	Update binaries to specified version${NL}"
+
+  return 0
+}
+
+menu_init() {
+  menu_end="${RED}x${NC}) Exit${NL}${NL}Selection: "
+  menu_option_download="${GRN}d${NC}) Download files only${NL}"
+
+  if [ -n "${msg_scripts:-}" ]; then
+    menu_option_misc_raw="${menu_option_misc_raw+${menu_option_misc_raw}${NL}}  - script(s): ${msg_scripts}"
+  fi
+
+  if [ -n "${msg_services:-}" ]; then
+    menu_option_misc_raw="${menu_option_misc_raw+${menu_option_misc_raw}${NL}}  - systemd service file(s): ${msg_services}"
+  fi
+
+  menu_option_all="${GRN}a${NC}) Update all: ${BLU}(recommended)${NC}${NL}${menu_option_misc_raw+${menu_option_misc_raw}${NL}}${msg_bins+${msg_bins}${NL}}"
+
+  if [ -n "${msg_bins:-}" ]; then
+    menu_option_bins="${GRN}b${NC}) Update server binaries: ${msg_bins_alt}${NL}"
+  fi
+
+  # Abort early if there's neither update binaries, nor update scripts options
+  if [ -z "${menu_option_bins:-}" ] && [ -z "${menu_option_misc_raw:-}" ]; then
+    printf "${YLW}Everything is up-to-date${NC}.\n"
+    exit 0
+  fi
+
+  menu="${menu_option_all}${menu_option_bins:-}${menu_option_download}${menu_end}"
+
+  return 0
+}
+
+options_parse() {
+  selection="$1"
+  
+  case "$selection" in
+    a|all)
+      check=0
+      if [ -z "${menu_option_misc_raw:-}" ] && [ -z "${menu_option_bins:-}" ]; then
+        printf "${YLW}Everything is up-to-date${NC}.\n"
+      else
+        if [ -n "${menu_option_misc_raw:-}" ]; then
+          update_misc
+        fi
+        if [ -n "${menu_option_bins:-}" ]; then
+          update_bins
+        fi
+      fi
+      ;;
+    b|binaries)
+      check=0
+      if [ -n "${menu_option_bins:-}" ]; then
+        update_bins
+      else
+        printf "${YLW}Binaries is up-to-date${NC}.\n"
+      fi
+      ;;
+    d|download)
+      check=0
+      if [ -n "${menu_option_bins:-}" ]; then
+        download_bins
+      fi
+
+      printf "\n${YLW}Scripts${NC}/${YLW}services${NC}/${YLW}binaries${NC} has been downloaded to ${BLU}%s${NC}\n" "$path_tmp_bin"
+      ;;
+    x)
+      check=0
+      ;;
+    *)
+      check=1
+      ;;
+  esac
+
+  return "$check"
+}
+
+##########################
+### Main functions END ###
+##########################
+
+############
+### Init ###
+############
+
+main() {
+  # Early hook to print Done after script re-execution
+  if [ -n "${UPDATE_SCRIPT_DONE:-}" ]; then
     printf "${GRN}Done!${NC}\n"
   fi
 
-  printf "Updating systemd services...\n"
-  for i in $apps; do
-    update_systemd "$i"
-  done
-  
-  printf "Updating simplex servers...\n"
-  for i in $apps; do
-    update_bins "$i"
-  done
+  # Early help menu
+  menu_init_help
 
-  rm -rf "$path_tmp_bin"
+  case "${1:-}" in
+    h|help)
+      printf '%b' "$menu_help"
+      exit 0
+      ;;
+  esac
+
+  checks
+  download_all
+  menu_init
+
+  onetime=0
+  while true; do
+    if [ "$onetime" = 0 ]; then
+      onetime=1
+
+      if [ -n "${1:-}" ]; then
+        selection="$1"
+      else
+        printf '%b' "$menu"
+        read selection
+      fi
+    else
+      read selection
+    fi
+    
+    if options_parse "$selection"; then
+      break
+    else
+      # Rerender whole menu if the first non-interactive option was bogus
+      if [ -n "${1:-}" ]; then
+        onetime=0
+        shift 1
+      else
+        # Erase last line
+        printf '\e[A\e[K'
+        # Only rerended selection
+        printf 'Selection: '
+      fi
+    fi
+  done
 }
 
 main "$@"

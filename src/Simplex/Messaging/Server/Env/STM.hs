@@ -29,7 +29,7 @@ import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Maybe (isJust)
 import qualified Data.Text as T
-import Data.Time.Clock (getCurrentTime)
+import Data.Time.Clock (getCurrentTime, nominalDay)
 import Data.Time.Clock.System (SystemTime)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
@@ -321,14 +321,16 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       pure $ AMS sType ms
     ASSCfg sType SSCMemoryJournal {storeLogFile, storeMsgsPath} -> do
       let queueStoreCfg = MQStoreCfg
-          cfg = JournalStoreConfig {storePath = storeMsgsPath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreCfg, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
+          cfg = mkJournalStoreConfig queueStoreCfg storeMsgsPath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
+          -- cfg = JournalStoreConfig {storePath = storeMsgsPath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreCfg, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
       ms <- newMsgStore cfg
       loadStoreLog storeLogFile $ stmQueueStore ms
       pure $ AMS sType ms
     ASSCfg sType SSCDatabaseJournal {storeDBOpts, storeMsgsPath'} -> do
       -- TODO open database
       let queueStoreCfg = PQStoreCfg undefined
-          cfg = JournalStoreConfig {storePath = storeMsgsPath', quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreCfg, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
+          cfg = mkJournalStoreConfig queueStoreCfg storeMsgsPath' msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
+          -- cfg = JournalStoreConfig {storePath = storeMsgsPath', quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreCfg, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
       ms <- newMsgStore cfg
       pure $ AMS sType ms
 
@@ -407,6 +409,21 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
             Just StorePaths {storeMsgsFile = Just _} -> SPMMessages
             _ -> SPMQueues
           _ -> SPMMessages
+
+mkJournalStoreConfig :: QStoreCfg s -> FilePath -> Int -> Int -> Int -> Int64 -> JournalStoreConfig s
+mkJournalStoreConfig queueStoreCfg storePath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval =
+  JournalStoreConfig
+    { storePath,
+      quota = msgQueueQuota,
+      pathParts = journalMsgStoreDepth,
+      queueStoreCfg,
+      maxMsgCount = maxJournalMsgCount,
+      maxStateLines = maxJournalStateLines,
+      stateTailSize = defaultStateTailSize,
+      idleInterval = idleQueueInterval,
+      expireBackupsAfter = 14 * nominalDay,
+      keepMinBackups = 2
+    }
 
 newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO ProxyAgent
 newSMPProxyAgent smpAgentCfg random = do
