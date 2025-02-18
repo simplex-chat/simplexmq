@@ -158,7 +158,8 @@ data JournalState t = JournalState
 
 qState :: MsgQueueState -> QState
 qState MsgQueueState {size, readState = rs, writeState = ws} =
-  QState {pending = size > 0, stored = msgCount rs > 0 || msgCount ws > 0}
+  let pending = size > 0
+   in QState {pending, stored = pending || msgCount rs > 0 || msgCount ws > 0}
 {-# INLINE qState #-}
 
 data JournalType = JTRead | JTWrite
@@ -397,9 +398,10 @@ instance MsgStoreClass JournalMsgStore where
           Just QState {stored} -> if stored then Just <$> unStoreIO (getMsgQueue ms q False) else pure Nothing
           Nothing -> do
             mq <- unStoreIO $ getMsgQueue ms q False
-            qst@QState {stored} <- qState <$> readTVarIO (state mq)
-            atomically $ writeTVar queueState $ Just qst
-            if stored then pure $ Just mq else closeMsgQueue q $> Nothing
+            -- queueState was updated in getMsgQueue
+            readTVarIO queueState >>= \case
+              Just QState {stored} | not stored -> closeMsgQueue q $> Nothing
+              _ -> pure $ Just mq
 
   deleteQueue :: JournalMsgStore -> JournalQueue -> IO (Either ErrorType QueueRec)
   deleteQueue ms q = fst <$$> deleteQueue_ ms q
