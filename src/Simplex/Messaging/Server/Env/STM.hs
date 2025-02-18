@@ -199,9 +199,7 @@ type family SupportedStore (qs :: QSType) (ms :: MSType) :: Constraint where
   SupportedStore 'QSPostgres 'MSMemory =
     (Int ~ Bool, TypeError ('TE.Text "Storing messages in memory with Postgres DB is not supported"))
 
-data StoreType qs ms = SType (SQSType qs) (SMSType ms)
-
-data AStoreType = forall qs ms. SupportedStore qs ms => ASType (StoreType qs ms)
+data AStoreType = forall qs ms. SupportedStore qs ms => ASType (SQSType qs) (SMSType ms)
 
 data ServerStoreCfg qs ms where
   SSCMemory :: Maybe StorePaths -> ServerStoreCfg 'QSMemory 'MSMemory
@@ -210,7 +208,7 @@ data ServerStoreCfg qs ms where
 
 data StorePaths = StorePaths {storeLogFile :: FilePath, storeMsgsFile :: Maybe FilePath}
 
-data AServerStoreCfg = forall qs ms. SupportedStore qs ms => ASSCfg (StoreType qs ms) (ServerStoreCfg qs ms)
+data AServerStoreCfg = forall qs ms. SupportedStore qs ms => ASSCfg (SQSType qs) (SMSType ms) (ServerStoreCfg qs ms)
 
 type family MsgStore (qs :: QSType) (ms :: MSType) where
   MsgStore 'QSMemory 'MSMemory = STMMsgStore
@@ -218,7 +216,7 @@ type family MsgStore (qs :: QSType) (ms :: MSType) where
 
 data AMsgStore =
   forall qs ms. (SupportedStore qs ms, MsgStoreClass (MsgStore qs ms)) =>
-  AMS (StoreType qs ms) (MsgStore qs ms)
+  AMS (SQSType qs) (SMSType ms) (MsgStore qs ms)
 
 type Subscribed = Bool
 
@@ -240,10 +238,11 @@ newtype ProxyAgent = ProxyAgent
 
 type ClientId = Int
 
-data AClient = forall qs ms. MsgStoreClass (MsgStore qs ms) => AClient (StoreType qs ms) (Client (MsgStore qs ms))
+data AClient = forall qs ms. MsgStoreClass (MsgStore qs ms) => AClient (SQSType qs) (SMSType ms) (Client (MsgStore qs ms))
 
 clientId' :: AClient -> ClientId
-clientId' (AClient _ Client {clientId}) = clientId
+clientId' (AClient _ _ Client {clientId}) = clientId
+{-# INLINE clientId' #-}
 
 data Client s = Client
   { clientId :: ClientId,
@@ -285,8 +284,8 @@ newServer = do
   savingLock <- createLockIO
   return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, subClients, ntfSubClients, pendingSubEvents, pendingNtfSubEvents, savingLock}
 
-newClient :: StoreType qs ms -> ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO (Client (MsgStore qs ms))
-newClient _sType clientId qSize thVersion sessionId createdAt = do
+newClient :: SQSType qs -> SMSType ms -> ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO (Client (MsgStore qs ms))
+newClient _ _ clientId qSize thVersion sessionId createdAt = do
   subscriptions <- TM.emptyIO
   ntfSubscriptions <- TM.emptyIO
   rcvQ <- newTBQueueIO qSize
@@ -316,43 +315,23 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
   serverActive <- newTVarIO True
   server <- newServer
   msgStore <- case serverStoreCfg of
-    ASSCfg sType (SSCMemory storePaths_) -> do
+    ASSCfg qt mt (SSCMemory storePaths_) -> do
       let storePath = storeMsgsFile =<< storePaths_
       ms <- newMsgStore STMStoreConfig {storePath, quota = msgQueueQuota}
       forM_ storePaths_ $ \StorePaths {storeLogFile = f} ->  loadStoreLog f $ queueStore ms
-      pure $ AMS sType ms
-    ASSCfg sType SSCMemoryJournal {storeLogFile, storeMsgsPath} -> do
+      pure $ AMS qt mt ms
+    ASSCfg qt mt SSCMemoryJournal {storeLogFile, storeMsgsPath} -> do
       let qsCfg = MQStoreCfg
           cfg = mkJournalStoreConfig qsCfg storeMsgsPath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
-          -- cfg = JournalStoreConfig {storePath = storeMsgsPath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreCfg, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
       ms <- newMsgStore cfg
       loadStoreLog storeLogFile $ stmQueueStore ms
-      pure $ AMS sType ms
-    ASSCfg sType SSCDatabaseJournal {storeDBOpts, storeMsgsPath'} -> do
+      pure $ AMS qt mt ms
+    ASSCfg qt mt SSCDatabaseJournal {storeDBOpts, storeMsgsPath'} -> do
       -- TODO open database
       let qsCfg = PQStoreCfg undefined
           cfg = mkJournalStoreConfig qsCfg storeMsgsPath' msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
-          -- cfg = JournalStoreConfig {storePath = storeMsgsPath', quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreCfg, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
       ms <- newMsgStore cfg
-      pure $ AMS sType ms
-
-
-    -- ASType sType@(SType qsType SMSJournal) -> case storeMsgsFile of
-    --   Just storePath -> case (qsType, serverStoreCfg) of
-    --     (SQSMemory, SSCMemory slFile_)  -> case slFile_ of
-    --       Just slFile -> do
-    --         let queueStoreCfg = MQStoreCfg
-    --             cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreCfg, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
-    --         ms <- newMsgStore cfg
-    --         loadStoreLog slFile (stmQueueStore ms) $> AMS sType ms
-    --       Nothing -> putStrLn "Error: journal msg store requires that `enable` is `on` in [STORE_LOG]" >> exitFailure
-    --     (SQSPostgres, SSCDatabase dbOpts) -> do
-    --       -- TODO open database
-    --       let queueStoreCfg = PQStoreCfg undefined
-    --           cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, queueStoreCfg, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
-    --       ms <- newMsgStore cfg
-    --       pure $ AMS sType ms
-    --   Nothing -> putStrLn "Error: journal msg store requires that `restore_messages` is `on` in [STORE_LOG]" >> exitFailure
+      pure $ AMS qt mt ms
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
   tlsServerCreds <- getCredentials "SMP" smpCredentials
@@ -406,7 +385,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
         }
       where
         persistence = case serverStoreCfg of
-          ASSCfg _ (SSCMemory sp_) -> case sp_ of
+          ASSCfg _ _ (SSCMemory sp_) -> case sp_ of
             Nothing -> SPMMemoryOnly
             Just StorePaths {storeMsgsFile = Just _} -> SPMMessages
             _ -> SPMQueues

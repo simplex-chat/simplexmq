@@ -304,7 +304,7 @@ printServerConfig transports logFile = do
 
 -- TODO [postgres]
 printSMPServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> AServerStoreCfg -> IO ()
-printSMPServerConfig transports (ASSCfg _ cfg) = printServerConfig transports $ case cfg of
+printSMPServerConfig transports (ASSCfg _ _ cfg) = printServerConfig transports $ case cfg of
   SSCMemory sp_ -> (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
   SSCMemoryJournal {storeLogFile} -> Just storeLogFile
   SSCDatabaseJournal {} -> Just "postgres database"

@@ -114,8 +114,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               putStrLn "Import completed"
               printMessageStats "Messages" msgStats
               putStrLn $ case readStoreType ini of
-                Right (ASType (SType _ SMSMemory)) -> "store_messages set to `memory`, update it to `journal` in INI file"
-                Right (ASType (SType _ SMSJournal)) -> "store_messages set to `journal`"
+                Right (ASType _ SMSMemory) -> "store_messages set to `memory`, update it to `journal` in INI file"
+                Right (ASType _ SMSJournal) -> "store_messages set to `journal`"
                 -- TODO [postgres]
                 Left e -> e <> ", update it to `journal` in INI file"
         JCExport
@@ -133,8 +133,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               exportMessages True ms storeMsgsFilePath False
               putStrLn "Export completed"
               putStrLn $ case readStoreType ini of
-                Right (ASType (SType _ SMSMemory)) -> "store_messages set to `memory`"
-                Right (ASType (SType _ SMSJournal)) -> "store_messages set to `journal`, update it to `memory` in INI file"
+                Right (ASType _ SMSMemory) -> "store_messages set to `memory`"
+                Right (ASType _ SMSJournal) -> "store_messages set to `journal`, update it to `memory` in INI file"
                 -- TODO [postgres]
                 Left e -> e <> ", update it to `memory` in INI file"
         JCDelete
@@ -167,8 +167,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
     readStoreType :: Ini -> Either String AStoreType
     readStoreType = textToMsgStoreType . fromRight "memory" . lookupValue "STORE_LOG" "store_messages"
     textToMsgStoreType = \case
-      "memory" -> Right $ ASType (SType SQSMemory SMSMemory)
-      "journal" -> Right $ ASType (SType SQSMemory SMSJournal)
+      "memory" -> Right $ ASType SQSMemory SMSMemory
+      "journal" -> Right $ ASType SQSMemory SMSJournal
       -- TODO [postgres]
       s -> Left $ "invalid store_messages: " <> T.unpack s
     httpsCertFile = combine cfgPath "web.crt"
@@ -356,13 +356,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             else "NOT allowed"
       -- print information
       let persistence = case serverStoreCfg of
-            ASSCfg _ (SSCMemory Nothing) -> SPMMemoryOnly
-            ASSCfg _ (SSCMemory (Just StorePaths {storeMsgsFile})) | isNothing storeMsgsFile -> SPMQueues
-            -- ASSCfg _ (SSCMemory paths_) -> case paths_ of
-            --   Nothing -> SPMMemoryOnly
-            --   Just StorePaths {storeMsgsFile}
-            --     | isNothing storeMsgsFile -> SPMQueues
-            --     | otherwise -> SPMMessages
+            ASSCfg _ _ (SSCMemory Nothing) -> SPMMemoryOnly
+            ASSCfg _ _ (SSCMemory (Just StorePaths {storeMsgsFile})) | isNothing storeMsgsFile -> SPMQueues
             _ -> SPMMessages
       let config =
             ServerPublicConfig
@@ -415,12 +410,12 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   },
               httpCredentials = (\WebHttpsParams {key, cert} -> ServerCredentials {caCertificateFile = Nothing, privateKeyFile = key, certificateFile = cert}) <$> webHttpsParams',
               serverStoreCfg = case iniStoreType of
-                ASType st@(SType SQSMemory SMSMemory) ->
-                  ASSCfg st $ SSCMemory $ enableStoreLog $> StorePaths {storeLogFile = storeLogFilePath, storeMsgsFile = restoreMessagesFile storeMsgsFilePath}
-                ASType st@(SType SQSMemory SMSJournal) ->
-                  ASSCfg st $ SSCMemoryJournal {storeLogFile = storeLogFilePath, storeMsgsPath = storeMsgsJournalDir}
-                ASType st@(SType SQSPostgres SMSJournal) -> -- TODO DB options
-                  ASSCfg st $ SSCDatabaseJournal {storeDBOpts = undefined, storeMsgsPath' = storeMsgsJournalDir},
+                ASType SQSMemory SMSMemory ->
+                  ASSCfg SQSMemory SMSMemory $ SSCMemory $ enableStoreLog $> StorePaths {storeLogFile = storeLogFilePath, storeMsgsFile = restoreMessagesFile storeMsgsFilePath}
+                ASType SQSMemory SMSJournal ->
+                  ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = storeLogFilePath, storeMsgsPath = storeMsgsJournalDir}
+                ASType SQSPostgres SMSJournal -> -- TODO DB options
+                  ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeDBOpts = undefined, storeMsgsPath' = storeMsgsJournalDir},
               storeNtfsFile = restoreMessagesFile storeNtfsFilePath,
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
@@ -506,14 +501,14 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       msgsFileExists <- doesFileExist storeMsgsFilePath
       case mode of
         _ | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
-        ASType (SType _ SMSJournal) -- TODO [postgres]
+        ASType _ SMSJournal -- TODO [postgres]
           | msgsFileExists -> do
               putStrLn $ "Error: store_messages is `journal` with " <> storeMsgsFilePath <> " file present."
               putStrLn "Set store_messages to `memory` or use `smp-server journal export` to migrate."
               exitFailure
           | not msgsDirExists ->
               putStrLn $ "store_messages is `journal`, " <> storeMsgsJournalDir <> " directory will be created."
-        ASType (SType _ SMSMemory)
+        ASType _ SMSMemory
           | msgsDirExists -> do
               putStrLn $ "Error: store_messages is `memory` with " <> storeMsgsJournalDir <> " directory present."
               putStrLn "Set store_messages to `journal` or use `smp-server journal import` to migrate."

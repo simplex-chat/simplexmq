@@ -36,7 +36,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (exportMessages)
-import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), AStoreType (..), StoreType (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
+import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), AStoreType (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue, JournalStoreConfig (..), QStoreCfg (..))
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), QSType (..), SQSType (..), SMSType (..), newMsgStore)
@@ -609,7 +609,7 @@ testWithStoreLog =
 
     logSize testStoreLogFile `shouldReturn` 6
 
-    let cfg' = cfg {serverStoreCfg = ASSCfg (SType SQSMemory SMSMemory) $ SSCMemory Nothing}
+    let cfg' = cfg {serverStoreCfg = ASSCfg SQSMemory SMSMemory $ SSCMemory Nothing}
     withSmpServerConfigOn at cfg' testPort . runTest t $ \h -> do
       sId1 <- readTVarIO senderId1
       -- fails if store log is disabled
@@ -814,8 +814,8 @@ testRestoreExpireMessages =
   where
     exportStoreMessages :: AStoreType -> IO ()
     exportStoreMessages = \case
-      ASType (SType _ SMSJournal) -> export
-      ASType (SType _ SMSMemory) -> pure ()
+      ASType _ SMSJournal -> export
+      ASType _ SMSMemory -> pure ()
       where
         export = do
           ms <- newMsgStore (testJournalStoreCfg MQStoreCfg) {quota = 4}
