@@ -26,7 +26,6 @@
 
 module Simplex.Messaging.Agent.Store.SQLite
   ( DBOpts (..),
-    Migrations.appMigrations,
     Migrations.getCurrentMigrations,
     createDBStore,
     closeDBStore,

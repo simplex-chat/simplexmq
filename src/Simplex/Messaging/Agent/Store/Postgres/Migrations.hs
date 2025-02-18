@@ -5,16 +5,13 @@
 {-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Agent.Store.Postgres.Migrations
-  ( appMigrations,
-    initialize,
+  ( initialize,
     run,
     getCurrentMigrations,
   )
 where
 
 import Control.Monad (void)
-import Data.List (sortOn)
-import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Time.Clock (getCurrentTime)
@@ -24,22 +21,8 @@ import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.Internal (Connection (..))
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 import Simplex.Messaging.Agent.Store.Postgres.Common
-import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
-import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250203_msg_bodies
 import Simplex.Messaging.Agent.Store.Shared
 import UnliftIO.MVar
-
-schemaMigrations :: [(String, Text, Maybe Text)]
-schemaMigrations =
-  [ ("20241210_initial", m20241210_initial, Nothing),
-    ("20250203_msg_bodies", m20250203_msg_bodies, Just down_m20250203_msg_bodies)
-  ]
-
--- | The list of migrations in ascending order by date
-appMigrations :: [Migration]
-appMigrations = sortOn name $ map migration schemaMigrations
-  where
-    migration (name, up, down) = Migration {name, up, down = down}
 
 initialize :: DBStore -> IO ()
 initialize st = withTransaction' st $ \db ->
