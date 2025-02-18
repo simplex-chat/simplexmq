@@ -37,7 +37,7 @@ jobs:
           cabal-version: "3.10.1.0"
 
       - name: Cache dependencies
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         with:
           path: |
             ~/.cabal/store
