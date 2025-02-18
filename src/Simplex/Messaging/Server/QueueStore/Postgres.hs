@@ -23,11 +23,14 @@ import Data.Functor (($>))
 import qualified Data.Text as T
 import Database.PostgreSQL.Simple (Binary (..), Only (..), (:.) (..))
 import Database.PostgreSQL.Simple.SqlQQ (sql)
+import Simplex.Messaging.Agent.Store.Postgres (createDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
 import Simplex.Messaging.Server.QueueStore.STM (setStatus, withQueueRec)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.TMap (TMap)
@@ -45,10 +48,12 @@ data PostgresQueueStore q = PostgresQueueStore
   }
 
 instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
-  type QueueStoreCfg (PostgresQueueStore q) = DBStore
+  type QueueStoreCfg (PostgresQueueStore q) = (DBOpts, MigrationConfirmation)
 
-  newQueueStore :: DBStore -> IO (PostgresQueueStore q)
-  newQueueStore dbStore = do
+  newQueueStore :: (DBOpts, MigrationConfirmation)  -> IO (PostgresQueueStore q)
+  newQueueStore (dbOpts, confirmMigrations) = do
+    -- TODO [postgres] handle error
+    Right dbStore <- createDBStore dbOpts serverMigrations confirmMigrations
     queues <- TM.emptyIO
     senders <- TM.emptyIO
     notifiers <- TM.emptyIO

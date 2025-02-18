@@ -40,6 +40,7 @@ import qualified Network.TLS as T
 import Numeric.Natural
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts)
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client.Agent (SMPClientAgent, SMPClientAgentConfig, newSMPClientAgent)
 import Simplex.Messaging.Crypto (KeyHash (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -327,8 +328,8 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       loadStoreLog storeLogFile $ stmQueueStore ms
       pure $ AMS qt mt ms
     ASSCfg qt mt SSCDatabaseJournal {storeDBOpts, storeMsgsPath'} -> do
-      -- TODO open database
-      let qsCfg = PQStoreCfg undefined
+      -- TODO [postgres] pass migration confirmation mode via environment variable
+      let qsCfg = PQStoreCfg storeDBOpts MCYesUp
           cfg = mkJournalStoreConfig qsCfg storeMsgsPath' msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
       ms <- newMsgStore cfg
       pure $ AMS qt mt ms

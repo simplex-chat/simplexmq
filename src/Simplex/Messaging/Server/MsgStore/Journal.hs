@@ -65,7 +65,8 @@ import Data.Time.Format.ISO8601 (iso8601Show, iso8601ParseM)
 import GHC.IO (catchAny)
 import Simplex.Messaging.Agent.Client (getMapLock, withLockMap)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Agent.Store.Postgres.Common (DBStore)
+import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts)
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
@@ -120,7 +121,7 @@ data JournalStoreConfig s = JournalStoreConfig
 
 data QStoreCfg s where
   MQStoreCfg :: QStoreCfg 'QSMemory
-  PQStoreCfg :: DBStore -> QStoreCfg 'QSPostgres
+  PQStoreCfg :: DBOpts -> MigrationConfirmation -> QStoreCfg 'QSPostgres
 
 data JournalQueue (s :: QSType) = JournalQueue
   { recipientId' :: RecipientId,
@@ -285,7 +286,7 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   newQueueStore :: QStoreCfg s -> IO (QStore s)
   newQueueStore = \case
     MQStoreCfg -> MQStore <$> newQueueStore @(JournalQueue s) ()
-    PQStoreCfg db -> PQStore <$> newQueueStore @(JournalQueue s) db
+    PQStoreCfg dbOpts confirmMigrations -> PQStore <$> newQueueStore @(JournalQueue s) (dbOpts, confirmMigrations)
 
   loadedQueues = \case
     MQStore st -> loadedQueues st

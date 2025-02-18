@@ -6,7 +6,6 @@
 
 module Simplex.Messaging.Agent.Store.Postgres
   ( DBOpts (..),
-    Migrations.appMigrations,
     Migrations.getCurrentMigrations,
     createDBStore,
     closeDBStore,
