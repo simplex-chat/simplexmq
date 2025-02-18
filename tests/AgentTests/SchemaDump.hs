@@ -10,6 +10,7 @@ import Data.List (dropWhileEnd)
 import Data.Maybe (fromJust, isJust)
 import Database.SQLite.Simple (Only (..))
 import qualified Database.SQLite.Simple as SQL
+import Simplex.Messaging.Agent.Store.Migrations.App (appMigrations)
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import Simplex.Messaging.Agent.Store.SQLite.DB (TrackQueries (..))
