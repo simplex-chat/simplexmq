@@ -26,7 +26,7 @@ import Control.Monad
 import Data.Bitraversable (bimapM)
 import Data.Functor (($>))
 import qualified Data.Text as T
-import Database.PostgreSQL.Simple (Binary (..), Only (..), (:.) (..))
+import Database.PostgreSQL.Simple (Binary (..), Only (..), SqlError, (:.) (..))
 import Database.PostgreSQL.Simple.Errors (constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 import Simplex.Messaging.Agent.Client (withLockMap)
@@ -46,7 +46,7 @@ import Simplex.Messaging.Server.QueueStore.STM (readQueueRecIO, setStatus, withQ
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (firstRow, ifM, tshow, ($>>), ($>>=), (<$$))
+import Simplex.Messaging.Util (anyM, firstRow, ifM, tshow, ($>>), ($>>=), (<$$))
 import System.Exit (exitFailure)
 
 data PostgresQueueStore q = PostgresQueueStore
@@ -92,39 +92,45 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           |]
       pure QueueCounts {queueCount, notifierCount}
 
+  -- this implementation assumes that the lock is already taken
+  -- and relies on unique constraints in the database to prevent duplicate IDs.
   addQueueRec :: PostgresQueueStore q -> RecipientId -> QueueLock q -> QueueRec -> IO (Either ErrorType q)
-  addQueueRec st rId lock qr = undefined
-    -- mkQueue rId lock qr >>= \q -> q <$$ addStoreQueue (queueStore_ ms) qr q
-
-  -- addStoreQueue :: PostgresQueueStore q -> QueueRec -> q -> IO (Either ErrorType ())
-  -- addStoreQueue st qr sq = undefined -- do
-  --   withDB' "addStoreQueue" (dbStore st) $ \db ->
-  --     -- TODO handle duplicate IDs
-  --     DB.execute
-  --       db
-  --       [sql|
-  --         WITH inserted AS (
-  --           INSERT INTO msg_queues
-  --             (recipient_id, recipient_key, rcv_dh_secret, sender_id, sender_key, snd_secure, status, updated_at)
-  --           VALUES (?,?,?,?,?,?,?,?)
-  --           RETURNING msg_queue_id
-  --         )
-  --         INSERT INTO msg_notifiers (msg_queue_id, notifier_id, notifier_key, rcv_ntf_dh_secret)
-  --         SELECT inserted.msg_queue_id, ?, ?, ?
-  --         FROM inserted
-  --         WHERE ? IS NOT NULL;
-  --       |]
-  --       (rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, status, updatedAt)
-  --         :. (notifierId, notifierKey, rcvNtfDhSecret, notifierId)
-  --   -- sender's ID is not cached here as many queues are never sent to
-  --   atomically $ TM.insert rId sq $ queues st
-  --   pure $ Right ()
-  --   where
-  --     rId = recipientId sq
-  --     QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt} = qr
-  --     (notifierId, notifierKey, rcvNtfDhSecret) = case notifier of
-  --       Just NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} -> (Just notifierId, Just notifierKey, Just rcvNtfDhSecret)
-  --       Nothing -> (Nothing, Nothing, Nothing)
+  addQueueRec st rId lock qr =
+    addDB $>> (mkQueue rId lock qr >>= add)
+    where
+      PostgresQueueStore {queues, senders, notifiers} = st
+      addDB =
+        withDB "addQueueRec" st $ \db ->
+          E.try (insert db) >>= bimapM handleDuplicate pure
+      add q = do
+        atomically $ TM.insert rId q queues
+        atomically $ TM.insert senderId rId senders
+        pure $ Right q
+      -- Not doing duplicate checks in maps as the probability of duplicates is very low.
+      -- It needs to be reconsidered when IDs are supplied by the users.
+      -- hasId = anyM [TM.memberIO rId queues, TM.memberIO senderId senders, hasNotifier]
+      -- hasNotifier = maybe (pure False) (\NtfCreds {notifierId} -> TM.memberIO notifierId notifiers) notifier
+      insert db =
+        DB.execute
+          db
+          [sql|
+            WITH inserted AS (
+              INSERT INTO msg_queues
+                (recipient_id, recipient_key, rcv_dh_secret, sender_id, sender_key, snd_secure, status, updated_at)
+              VALUES (?,?,?,?,?,?,?,?)
+              RETURNING recipient_id
+            )
+            INSERT INTO msg_notifiers (recipient_id, notifier_id, notifier_key, rcv_ntf_dh_secret)
+            SELECT inserted.recipient_id, ?, ?, ?
+            FROM inserted
+            WHERE ? IS NOT NULL;
+          |]
+          ((rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, status, updatedAt)
+            :. (notifierId_, notifierKey_, rcvNtfDhSecret_, notifierId_))
+      QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt} = qr
+      (notifierId_, notifierKey_, rcvNtfDhSecret_) = case notifier of
+        Just NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} -> (Just notifierId, Just notifierKey, Just rcvNtfDhSecret)
+        Nothing -> (Nothing, Nothing, Nothing)
 
   getQueue :: DirectParty p => PostgresQueueStore q -> SParty p -> QueueId -> IO (Either ErrorType q)
   getQueue st party qId = undefined -- do
@@ -211,7 +217,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
               pure $ Right nId_
       addDB =
         withDB "addQueueNotifier" st $ \db ->
-          E.try (insert db) >>= bimapM duplicate pure
+          E.try (insert db) >>= bimapM handleDuplicate pure
         where
           -- TODO [postgres] test how this query works with duplicate recipient_id (updates) and notifier_id (fails)
           insert db =
@@ -226,9 +232,6 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
                     rcv_ntf_dh_secret = EXCLUDED.rcv_ntf_dh_secret
               |]
               (rId, nId, notifierKey, rcvNtfDhSecret)
-          duplicate e = case constraintViolation e of
-            Just _ -> pure AUTH
-            Nothing -> E.throwIO e
 
   deleteQueueNotifier :: PostgresQueueStore q -> q -> IO (Either ErrorType (Maybe NotifierId))
   deleteQueueNotifier st sq =
@@ -312,6 +315,11 @@ withDB name st' action =
     logErr e = logError ("STORE: " <> T.pack err) $> Left (STORE err)
       where
         err = name <> ", withLog, " <> show e
+
+handleDuplicate :: SqlError -> IO ErrorType
+handleDuplicate e = case constraintViolation e of
+  Just _ -> pure AUTH
+  Nothing -> E.throwIO e
 
 -- The orphan instances below are copy-pasted, but here they are defined specifically for PostgreSQL
 
