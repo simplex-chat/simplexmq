@@ -42,6 +42,7 @@ import Simplex.Messaging.Agent.Client ()
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
+import Simplex.Messaging.Agent.Store.Migrations.App (appMigrations)
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Store.SQLite.Common (DBStore (..), withTransaction')
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB

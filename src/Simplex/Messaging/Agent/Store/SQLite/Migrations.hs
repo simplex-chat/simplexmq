@@ -15,7 +15,6 @@ module Simplex.Messaging.Agent.Store.SQLite.Migrations
 where
 
 import Control.Monad (forM_, when)
-import Data.List (sortOn)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
