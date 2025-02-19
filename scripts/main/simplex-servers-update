@@ -260,7 +260,10 @@ download_thing() {
   check_pattern="$3"
   err_msg="$4"
   
-  curl --proto '=https' --tlsv1.2 -sSf -L "$thing" -o "$path"
+  if ! curl --proto '=https' --tlsv1.2 -sSf -L "$thing" -o "$path"; then
+    printf "${RED}Something went wrong when downloading ${YLW}%s${NC}: either you don't have connection to Github or you're rate-limited.\n" "$err_msg"
+    exit 1
+  fi
 
   type="$(file "$path")"
 
@@ -269,7 +272,7 @@ download_thing() {
   esac
 
   if ! check_sanity "$path" "$check_pattern"; then
-    printf "${RED}Something went wrong when downloading ${YLW}%s${NC}: either you don't have connection to Github or you're rate-limited.\n" "$err_msg"
+    printf "${RED}Something went wrong with downloaded ${YLW}%s${NC}: file is corrupted.\n" "$err_msg"
     exit 1
   fi
 
