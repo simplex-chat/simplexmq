@@ -4,7 +4,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Server.StoreLog.ReadWrite where
 
@@ -19,6 +18,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.QueueStore (QueueRec)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (tshow)
@@ -34,8 +34,8 @@ writeQueueStore s st = withLoadedQueues st $ writeQueue
         Just q' -> logCreateQueue s rId q'
         Nothing -> pure ()
 
-readQueueStore :: forall q s. QueueStoreClass q s => (RecipientId -> IO (QueueLock q)) -> FilePath -> s -> IO ()
-readQueueStore getLock f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . LB.lines
+readQueueStore :: forall q s. QueueStoreClass q s => (RecipientId -> QueueRec -> IO q) -> FilePath -> s -> IO ()
+readQueueStore mkQ f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . LB.lines
   where
     processLine :: LB.ByteString -> IO ()
     processLine s' = either printError procLogRecord (strDecode s)
@@ -43,9 +43,9 @@ readQueueStore getLock f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ pr
         s = LB.toStrict s'
         procLogRecord :: StoreLogRecord -> IO ()
         procLogRecord = \case
-          CreateQueue rId q -> do
-            lock <- getLock rId
-            addQueueRec @q st rId lock q >>= qError rId "CreateQueue"
+          CreateQueue rId qr -> do
+            sq <- mkQ rId qr
+            addQueueRec st sq rId qr >>= qError rId "CreateQueue"
           SecureQueue qId sKey -> withQueue qId "SecureQueue" $ \q -> secureQueue st q sKey
           AddNotifier qId ntfCreds -> withQueue qId "AddNotifier" $ \q -> addQueueNotifier st q ntfCreds
           SuspendQueue qId -> withQueue qId "SuspendQueue" $ suspendQueue st

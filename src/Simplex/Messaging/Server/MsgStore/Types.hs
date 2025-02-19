@@ -41,7 +41,7 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
   queueStore :: s -> QueueStore s
 
   -- message store methods
-  getQueueLock :: s -> RecipientId -> IO (QueueLock (StoreQueue s))
+  mkQueue :: s -> RecipientId -> QueueRec -> IO (StoreQueue s)
   addQueue :: s -> RecipientId -> QueueRec -> IO (Either ErrorType (StoreQueue s))
   getMsgQueue :: s -> StoreQueue s -> Bool -> StoreMonad s (MsgQueue (StoreQueue s))
   getPeekMsgQueue :: s -> StoreQueue s -> StoreMonad s (Maybe (MsgQueue (StoreQueue s), Message))

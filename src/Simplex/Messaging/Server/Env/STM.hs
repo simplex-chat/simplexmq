@@ -319,13 +319,13 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
     ASSCfg qt mt (SSCMemory storePaths_) -> do
       let storePath = storeMsgsFile =<< storePaths_
       ms <- newMsgStore STMStoreConfig {storePath, quota = msgQueueQuota}
-      forM_ storePaths_ $ \StorePaths {storeLogFile = f} ->  loadStoreLog (getQueueLock ms) f $ queueStore ms
+      forM_ storePaths_ $ \StorePaths {storeLogFile = f} ->  loadStoreLog (mkQueue ms) f $ queueStore ms
       pure $ AMS qt mt ms
     ASSCfg qt mt SSCMemoryJournal {storeLogFile, storeMsgsPath} -> do
       let qsCfg = MQStoreCfg
           cfg = mkJournalStoreConfig qsCfg storeMsgsPath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
       ms <- newMsgStore cfg
-      loadStoreLog (getQueueLock ms) storeLogFile $ stmQueueStore ms
+      loadStoreLog (mkQueue ms) storeLogFile $ stmQueueStore ms
       pure $ AMS qt mt ms
     ASSCfg qt mt SSCDatabaseJournal {storeDBOpts, storeMsgsPath'} -> do
       -- TODO [postgres] pass migration confirmation mode via environment variable
@@ -347,10 +347,10 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
   pure Env {serverActive, config, serverInfo, server, serverIdentity, msgStore, ntfStore, random, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
   where
-    loadStoreLog :: forall q. StoreQueueClass q => (RecipientId -> IO (QueueLock q)) -> FilePath -> STMQueueStore q -> IO ()
-    loadStoreLog getLock f st = do
+    loadStoreLog :: StoreQueueClass q => (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO ()
+    loadStoreLog mkQ f st = do
       logInfo $ "restoring queues from file " <> T.pack f
-      sl <- readWriteQueueStore @q getLock f st
+      sl <- readWriteQueueStore mkQ f st
       setStoreLog st sl
     getCredentials protocol creds = do
       files <- missingCreds
@@ -412,5 +412,5 @@ newSMPProxyAgent smpAgentCfg random = do
   smpAgent <- newSMPClientAgent smpAgentCfg random
   pure ProxyAgent {smpAgent}
 
-readWriteQueueStore :: forall q s. QueueStoreClass q s => (RecipientId -> IO (QueueLock q)) -> FilePath -> s -> IO (StoreLog 'WriteMode)
-readWriteQueueStore getLock = readWriteStoreLog (readQueueStore @q getLock) (writeQueueStore @q)
+readWriteQueueStore :: forall q s. QueueStoreClass q s => (RecipientId -> QueueRec -> IO q) -> FilePath -> s -> IO (StoreLog 'WriteMode)
+readWriteQueueStore mkQ = readWriteStoreLog (readQueueStore mkQ) (writeQueueStore @q)

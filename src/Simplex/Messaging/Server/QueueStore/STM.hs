@@ -38,7 +38,7 @@ import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (anyM, ifM, ($>>=), (<$$))
+import Simplex.Messaging.Util (anyM, ifM, ($>>), ($>>=), (<$$))
 import System.IO
 import UnliftIO.STM
 
@@ -72,13 +72,12 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     notifierCount <- M.size <$> readTVarIO (notifiers st)
     pure QueueCounts {queueCount, notifierCount}
 
-  addQueueRec :: STMQueueStore q -> RecipientId -> QueueLock q -> QueueRec -> IO (Either ErrorType q)
-  addQueueRec st rId lock qr@QueueRec {senderId = sId, notifier} =
-    (mkQueue rId lock qr >>= add)
-      $>>= \q -> q <$$ withLog "addStoreQueue" st (\s -> logCreateQueue s rId qr)
+  addQueueRec :: STMQueueStore q -> q -> RecipientId -> QueueRec -> IO (Either ErrorType ())
+  addQueueRec st sq rId qr@QueueRec {senderId = sId, notifier} =
+    add $>> withLog "addStoreQueue" st (\s -> logCreateQueue s rId qr)
     where
       STMQueueStore {queues, senders, notifiers} = st
-      add sq = atomically $ ifM hasId (pure $ Left DUPLICATE_) $ do
+      add = atomically $ ifM hasId (pure $ Left DUPLICATE_) $ do
         TM.insert rId sq queues
         TM.insert sId rId senders
         forM_ notifier $ \NtfCreds {notifierId} -> TM.insert notifierId rId notifiers
@@ -98,7 +97,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
   secureQueue :: STMQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   secureQueue st sq sKey =
     atomically (readQueueRec qr $>>= secure)
-      $>>= \_ -> withLog "secureQueue" st $ \s -> logSecureQueue s (recipientId sq) sKey
+      $>> withLog "secureQueue" st (\s -> logSecureQueue s (recipientId sq) sKey)
     where
       qr = queueRec sq
       secure q = case senderKey q of
@@ -136,17 +135,17 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
   suspendQueue :: STMQueueStore q -> q -> IO (Either ErrorType ())
   suspendQueue st sq =
     setStatus (queueRec sq) EntityOff
-      $>>= \_ -> withLog "suspendQueue" st (`logSuspendQueue` recipientId sq)
+      $>> withLog "suspendQueue" st (`logSuspendQueue` recipientId sq)
 
   blockQueue :: STMQueueStore q -> q -> BlockingInfo -> IO (Either ErrorType ())
   blockQueue st sq info =
     setStatus (queueRec sq) (EntityBlocked info)
-      $>>= \_ -> withLog "blockQueue" st (\sl -> logBlockQueue sl (recipientId sq) info)
+      $>> withLog "blockQueue" st (\sl -> logBlockQueue sl (recipientId sq) info)
 
   unblockQueue :: STMQueueStore q -> q -> IO (Either ErrorType ())
   unblockQueue st sq =
     setStatus (queueRec sq) EntityActive
-      $>>= \_ -> withLog "unblockQueue" st (`logUnblockQueue` recipientId sq)
+      $>> withLog "unblockQueue" st (`logUnblockQueue` recipientId sq)
 
   updateQueueTime :: STMQueueStore q -> q -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
   updateQueueTime st sq t = withQueueRec qr update $>>= log'

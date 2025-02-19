@@ -76,7 +76,7 @@ import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Util (ifM, tshow, whenM, ($>>=), (<$$>))
+import Simplex.Messaging.Util (ifM, tshow, whenM, ($>>=), (<$$), (<$$>))
 import System.Directory
 import System.Exit
 import System.FilePath (takeFileName, (</>))
@@ -256,28 +256,12 @@ newtype StoreIO (s :: QSType) a = StoreIO {unStoreIO :: IO a}
 
 instance StoreQueueClass (JournalQueue s) where
   type MsgQueue (JournalQueue s) = JournalMsgQueue s
-  type QueueLock (JournalQueue s) = Lock
   recipientId = recipientId'
   {-# INLINE recipientId #-}
   queueRec = queueRec'
   {-# INLINE queueRec #-}
   msgQueue = msgQueue'
   {-# INLINE msgQueue #-}
-  mkQueue :: RecipientId -> Lock -> QueueRec -> IO (JournalQueue s)
-  mkQueue rId queueLock qr = do
-    queueRec' <- newTVarIO $ Just qr
-    msgQueue' <- newTVarIO Nothing
-    activeAt <- newTVarIO 0
-    queueState <- newTVarIO Nothing
-    pure $
-      JournalQueue
-        { recipientId' = rId,
-          queueLock,
-          queueRec',
-          msgQueue',
-          activeAt,
-          queueState
-        }
   withQueueLock :: JournalQueue s -> String -> IO a -> IO a
   withQueueLock = withLock' . queueLock
   {-# INLINE withQueueLock #-}
@@ -438,13 +422,27 @@ instance MsgStoreClass (JournalMsgStore s) where
   queueStore = queueStore_
   {-# INLINE queueStore #-}
 
-  getQueueLock :: JournalMsgStore s -> RecipientId -> IO Lock
-  getQueueLock ms = atomically . getMapLock (queueLocks ms)
+  mkQueue :: JournalMsgStore s -> RecipientId -> QueueRec -> IO (JournalQueue s)
+  mkQueue ms rId qr = do
+    queueLock <- atomically $ getMapLock (queueLocks ms) rId
+    queueRec' <- newTVarIO $ Just qr
+    msgQueue' <- newTVarIO Nothing
+    activeAt <- newTVarIO 0
+    queueState <- newTVarIO Nothing
+    pure $
+      JournalQueue
+        { recipientId' = rId,
+          queueLock,
+          queueRec',
+          msgQueue',
+          activeAt,
+          queueState
+        }
 
   addQueue :: JournalMsgStore s -> RecipientId -> QueueRec -> IO (Either ErrorType (JournalQueue s))
   addQueue ms rId qr = do
-    lock <- atomically $ getMapLock (queueLocks ms) rId  
-    isolateLock "addQueue" rId lock $ addQueueRec (queueStore ms) rId lock qr
+    sq <- mkQueue ms rId qr
+    sq <$$ isolateLock "addQueue" rId (queueLock sq) (addQueueRec (queueStore ms) sq rId qr)      
 
   getMsgQueue :: JournalMsgStore s -> JournalQueue s -> Bool -> StoreIO s (JournalMsgQueue s)
   getMsgQueue ms@JournalMsgStore {random} q'@JournalQueue {recipientId' = rId, msgQueue'} forWrite =

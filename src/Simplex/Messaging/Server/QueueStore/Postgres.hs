@@ -94,18 +94,17 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   -- this implementation assumes that the lock is already taken
   -- and relies on unique constraints in the database to prevent duplicate IDs.
-  addQueueRec :: PostgresQueueStore q -> RecipientId -> QueueLock q -> QueueRec -> IO (Either ErrorType q)
-  addQueueRec st rId lock qr =
-    addDB $>> (mkQueue rId lock qr >>= add)
+  addQueueRec :: PostgresQueueStore q -> q -> RecipientId -> QueueRec -> IO (Either ErrorType ())
+  addQueueRec st sq rId qr = addDB $>> add
     where
       PostgresQueueStore {queues, senders, notifiers} = st
       addDB =
         withDB "addQueueRec" st $ \db ->
           E.try (insert db) >>= bimapM handleDuplicate pure
-      add q = do
-        atomically $ TM.insert rId q queues
+      add = do
+        atomically $ TM.insert rId sq queues
         atomically $ TM.insert senderId rId senders
-        pure $ Right q
+        pure $ Right ()
       -- Not doing duplicate checks in maps as the probability of duplicates is very low.
       -- It needs to be reconsidered when IDs are supplied by the users.
       -- hasId = anyM [TM.memberIO rId queues, TM.memberIO senderId senders, hasNotifier]
@@ -125,8 +124,9 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
             FROM inserted
             WHERE ? IS NOT NULL;
           |]
-          ((rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, status, updatedAt)
-            :. (notifierId_, notifierKey_, rcvNtfDhSecret_, notifierId_))
+          ( (rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, status, updatedAt)
+              :. (notifierId_, notifierKey_, rcvNtfDhSecret_, notifierId_)
+          )
       QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt} = qr
       (notifierId_, notifierKey_, rcvNtfDhSecret_) = case notifier of
         Just NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} -> (Just notifierId, Just notifierKey, Just rcvNtfDhSecret)

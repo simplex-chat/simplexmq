@@ -29,7 +29,7 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Util ((<$$>), ($>>=))
+import Simplex.Messaging.Util ((<$$), (<$$>), ($>>=))
 
 data STMMsgStore = STMMsgStore
   { storeConfig :: STMStoreConfig,
@@ -57,15 +57,12 @@ data STMStoreConfig = STMStoreConfig
 
 instance StoreQueueClass STMQueue where
   type MsgQueue STMQueue = STMMsgQueue
-  type QueueLock STMQueue = ()
   recipientId = recipientId'
   {-# INLINE recipientId #-}
   queueRec = queueRec'
   {-# INLINE queueRec #-}
   msgQueue = msgQueue'
   {-# INLINE msgQueue #-}
-  mkQueue rId _ qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
-  {-# INLINE mkQueue #-}
   withQueueLock _ _ = id
   {-# INLINE withQueueLock #-}
 
@@ -92,12 +89,14 @@ instance MsgStoreClass STMMsgStore where
   {-# INLINE logQueueState #-}
   queueStore = queueStore_
   {-# INLINE queueStore #-}
-  getQueueLock _ _ = pure ()
-  {-# INLINE getQueueLock #-}
+
+  mkQueue _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
+  {-# INLINE mkQueue #-}
 
   addQueue :: STMMsgStore -> RecipientId -> QueueRec -> IO (Either ErrorType STMQueue)
-  addQueue st rId = addQueueRec (queueStore st) rId ()
-  {-# INLINE addQueue #-}
+  addQueue st rId qr = do
+    sq <- mkQueue st rId qr
+    sq <$$ addQueueRec (queueStore st) sq rId qr
 
   getMsgQueue :: STMMsgStore -> STMQueue -> Bool -> STM STMMsgQueue
   getMsgQueue _ STMQueue {msgQueue'} _ = readTVar msgQueue' >>= maybe newQ pure
