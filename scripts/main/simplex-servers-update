@@ -335,7 +335,7 @@ update_misc() {
         mv "$path_tmp_bin_update" "$path_bin_update"
         printf "${GRN}Done!${NC}\n"
         printf -- "- Re-executing Update script..."
-        exec env UPDATE_SCRIPT_DONE=1 "$path_bin_update" "${selection}"
+        exec env UPDATE_SCRIPT_DONE=1 VER="$remote_version" "$path_bin_update" "${selection}"
         ;;
       stop)
         printf -- "- Updating stopscript script..."
