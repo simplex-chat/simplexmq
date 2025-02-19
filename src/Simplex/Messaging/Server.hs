@@ -1295,7 +1295,7 @@ client
             addQueueRetry n qik qRec = do
               ids@(rId, sId) <- getIds
               let qr = qRec sId
-              liftIO (addQueue (queueStore ms) rId qr) >>= \case
+              liftIO (addQueue ms rId qr) >>= \case
                 Left DUPLICATE_ -> addQueueRetry (n - 1) qik qRec
                 Left e -> pure $ ERR e
                 Right q -> do

@@ -48,7 +48,6 @@ import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
-import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
@@ -125,7 +124,7 @@ data QStoreCfg s where
 
 data JournalQueue (s :: QSType) = JournalQueue
   { recipientId' :: RecipientId,
-    queueLock :: TVar (Maybe Lock),
+    queueLock :: Lock,
     -- To avoid race conditions and errors when restoring queues,
     -- Nothing is written to TVar when queue is deleted.
     queueRec' :: TVar (Maybe QueueRec),
@@ -257,15 +256,15 @@ newtype StoreIO (s :: QSType) a = StoreIO {unStoreIO :: IO a}
 
 instance StoreQueueClass (JournalQueue s) where
   type MsgQueue (JournalQueue s) = JournalMsgQueue s
+  type QueueLock (JournalQueue s) = Lock
   recipientId = recipientId'
   {-# INLINE recipientId #-}
   queueRec = queueRec'
   {-# INLINE queueRec #-}
   msgQueue = msgQueue'
   {-# INLINE msgQueue #-}
-  mkQueue :: RecipientId -> QueueRec -> IO (JournalQueue s)
-  mkQueue rId qr = do
-    queueLock <- newTVarIO Nothing
+  mkQueue :: RecipientId -> Lock -> QueueRec -> IO (JournalQueue s)
+  mkQueue rId queueLock qr = do
     queueRec' <- newTVarIO $ Just qr
     msgQueue' <- newTVarIO Nothing
     activeAt <- newTVarIO 0
@@ -279,6 +278,9 @@ instance StoreQueueClass (JournalQueue s) where
           activeAt,
           queueState
         }
+  withQueueLock :: JournalQueue s -> String -> IO a -> IO a
+  withQueueLock = withLock' . queueLock
+  {-# INLINE withQueueLock #-}
 
 instance QueueStoreClass (JournalQueue s) (QStore s) where
   type QueueStoreCfg (QStore s) = QStoreCfg s
@@ -298,10 +300,10 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
     PQStore st -> queueCounts @(JournalQueue s) st
   {-# INLINE queueCounts #-}
 
-  addQueue = \case
-    MQStore st -> addQueue st
-    PQStore st -> addQueue st
-  {-# INLINE addQueue #-}
+  addQueueRec = \case
+    MQStore st -> addQueueRec st
+    PQStore st -> addQueueRec st
+  {-# INLINE addQueueRec #-}
 
   getQueue = \case
     MQStore st -> getQueue st
@@ -435,6 +437,14 @@ instance MsgStoreClass (JournalMsgStore s) where
 
   queueStore = queueStore_
   {-# INLINE queueStore #-}
+
+  getQueueLock :: JournalMsgStore s -> RecipientId -> IO Lock
+  getQueueLock ms = atomically . getMapLock (queueLocks ms)
+
+  addQueue :: JournalMsgStore s -> RecipientId -> QueueRec -> IO (Either ErrorType (JournalQueue s))
+  addQueue ms rId qr = do
+    lock <- atomically $ getMapLock (queueLocks ms) rId  
+    isolateLock "addQueue" rId lock $ addQueueRec (queueStore ms) rId lock qr
 
   getMsgQueue :: JournalMsgStore s -> JournalQueue s -> Bool -> StoreIO s (JournalMsgQueue s)
   getMsgQueue ms@JournalMsgStore {random} q'@JournalQueue {recipientId' = rId, msgQueue'} forWrite =
@@ -605,25 +615,26 @@ instance MsgStoreClass (JournalMsgStore s) where
         $>>= \len -> readTVarIO handles
         $>>= \hs -> updateReadPos q mq logState len hs $> Just ()
 
+  -- TODO [postgres] remove `st`
   isolateQueue :: JournalMsgStore s -> JournalQueue s -> String -> StoreIO s a -> ExceptT ErrorType IO a
   isolateQueue st JournalQueue {recipientId' = rId, queueLock} op a = do
-    lock <- lift $ readTVarIO queueLock >>= maybe (atomically getLock) pure
-    tryStore' op rId $ withLock' lock op $ unStoreIO a
-    where
-      getLock = readTVar queueLock >>= maybe newLock pure
-      newLock = do
-        lock <- getMapLock (queueLocks st) rId
-        writeTVar queueLock $ Just lock
-        pure lock
+    -- lock <- lift $ readTVarIO queueLock >>= maybe (atomically getLock) pure
+    tryStore' op rId $ withLock' queueLock op $ unStoreIO a
+    -- where
+    --   getLock = readTVar queueLock >>= maybe newLock pure
+    --   newLock = do
+    --     lock <- getMapLock (queueLocks st) rId
+    --     writeTVar queueLock $ Just lock
+    --     pure lock
 
 updateActiveAt :: JournalQueue s -> IO ()
 updateActiveAt q = atomically . writeTVar (activeAt q) . systemSeconds =<< getSystemTime
 
 tryStore' :: String -> RecipientId -> IO a -> ExceptT ErrorType IO a
-tryStore' op rId = tryStore op rId . fmap Right
+tryStore' op rId = ExceptT . tryStore op rId . fmap Right
 
-tryStore :: forall a. String -> RecipientId -> IO (Either ErrorType a) -> ExceptT ErrorType IO a
-tryStore op rId a = ExceptT $ E.mask_ $ E.try a >>= either storeErr pure
+tryStore :: forall a. String -> RecipientId -> IO (Either ErrorType a) -> IO (Either ErrorType a)
+tryStore op rId a = E.mask_ $ E.try a >>= either storeErr pure
   where
     storeErr :: E.SomeException -> IO (Either ErrorType a)
     storeErr e =
@@ -631,7 +642,10 @@ tryStore op rId a = ExceptT $ E.mask_ $ E.try a >>= either storeErr pure
        in logError ("STORE: " <> T.pack e') $> Left (STORE e')
 
 isolateQueueId :: String -> JournalMsgStore s -> RecipientId -> IO (Either ErrorType a) -> ExceptT ErrorType IO a
-isolateQueueId op ms rId = tryStore op rId . withLockMap (queueLocks ms) rId op
+isolateQueueId op ms rId = ExceptT . tryStore op rId . withLockMap (queueLocks ms) rId op
+
+isolateLock :: String -> RecipientId -> Lock -> IO (Either ErrorType a) -> IO (Either ErrorType a)
+isolateLock op rId lock = tryStore op rId . withLock' lock op
 
 openMsgQueue :: JournalMsgStore s -> JMQueue -> Bool -> IO (JournalMsgQueue s)
 openMsgQueue ms@JournalMsgStore {config} q@JMQueue {queueDirectory = dir, statePath} forWrite = do
@@ -913,6 +927,7 @@ validQueueState MsgQueueState {readState = rs, writeState = ws, size}
         && msgPos ws == msgCount ws
         && bytePos ws == byteCount ws
 
+-- TODO [postgres] possibly, we need to remove the lock from map
 deleteQueue_ :: JournalMsgStore s -> JournalQueue s -> IO (Either ErrorType (QueueRec, Maybe (JournalMsgQueue s)))
 deleteQueue_ ms q =
   runExceptT $ isolateQueueId "deleteQueue_" ms rId $

@@ -34,8 +34,8 @@ writeQueueStore s st = withLoadedQueues st $ writeQueue
         Just q' -> logCreateQueue s rId q'
         Nothing -> pure ()
 
-readQueueStore :: forall q s. QueueStoreClass q s => FilePath -> s -> IO ()
-readQueueStore f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . LB.lines
+readQueueStore :: forall q s. QueueStoreClass q s => (RecipientId -> IO (QueueLock q)) -> FilePath -> s -> IO ()
+readQueueStore getLock f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . LB.lines
   where
     processLine :: LB.ByteString -> IO ()
     processLine s' = either printError procLogRecord (strDecode s)
@@ -43,7 +43,9 @@ readQueueStore f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLin
         s = LB.toStrict s'
         procLogRecord :: StoreLogRecord -> IO ()
         procLogRecord = \case
-          CreateQueue rId q -> addQueue @q st rId q >>= qError rId "CreateQueue"
+          CreateQueue rId q -> do
+            lock <- getLock rId
+            addQueueRec @q st rId lock q >>= qError rId "CreateQueue"
           SecureQueue qId sKey -> withQueue qId "SecureQueue" $ \q -> secureQueue st q sKey
           AddNotifier qId ntfCreds -> withQueue qId "AddNotifier" $ \q -> addQueueNotifier st q ntfCreds
           SuspendQueue qId -> withQueue qId "SuspendQueue" $ suspendQueue st

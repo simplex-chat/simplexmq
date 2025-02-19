@@ -15,17 +15,19 @@ import Simplex.Messaging.TMap (TMap)
 
 class StoreQueueClass q where
   type MsgQueue q = mq | mq -> q
+  type QueueLock q
   recipientId :: q -> RecipientId
   queueRec :: q -> TVar (Maybe QueueRec)
   msgQueue :: q -> TVar (Maybe (MsgQueue q))
-  mkQueue :: RecipientId -> QueueRec -> IO q
+  mkQueue :: RecipientId -> QueueLock q -> QueueRec -> IO q
+  withQueueLock :: q -> String -> IO a -> IO a
 
 class StoreQueueClass q => QueueStoreClass q s where
   type QueueStoreCfg s
   newQueueStore :: QueueStoreCfg s -> IO s
   queueCounts :: s -> IO QueueCounts
   loadedQueues :: s -> TMap RecipientId q
-  addQueue :: s -> RecipientId -> QueueRec -> IO (Either ErrorType q)
+  addQueueRec :: s -> RecipientId -> QueueLock q -> QueueRec -> IO (Either ErrorType q)
   getQueue :: DirectParty p => s -> SParty p -> QueueId -> IO (Either ErrorType q)
   secureQueue :: s -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   addQueueNotifier :: s -> q -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))

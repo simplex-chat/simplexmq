@@ -93,8 +93,15 @@ anyM :: Monad m => [m Bool] -> m Bool
 anyM = foldM (\r a -> if r then pure r else (r ||) <$!> a) False
 {-# INLINE anyM #-}
 
+infixl 1  $>>, $>>=
+
 ($>>=) :: (Monad m, Monad f, Traversable f) => m (f a) -> (a -> m (f b)) -> m (f b)
 f $>>= g = f >>= fmap join . mapM g
+{-# INLINE ($>>=) #-}
+
+($>>) :: (Monad m, Monad f, Traversable f) => m (f a) -> m (f b) -> m (f b)
+f $>> g = f $>>= \_ -> g
+{-# INLINE ($>>) #-}
 
 mapME :: (Monad m, Traversable t) => (a -> m (Either e b)) -> t (Either e a) -> m (t (Either e b))
 mapME f = mapM (bindRight f)

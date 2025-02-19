@@ -25,7 +25,6 @@ m20250207_initial =
   T.pack
     [r|
 CREATE TABLE msg_queues(
-  msg_queue_id BIGINT NOT NULL PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   recipient_id BYTEA NOT NULL,
   recipient_key BYTEA NOT NULL,
   rcv_dh_secret BYTEA NOT NULL,
@@ -37,8 +36,7 @@ CREATE TABLE msg_queues(
 )
 
 CREATE TABLE msg_notifiers(
-  msg_notifier_id BIGINT NOT NULL PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-  msg_queue_id BIGINT NOT NULL REFERENCES msg_queues ON DELETE CASCADE ON UPDATE RESTRICT,
+  recipient_id BYTEA NOT NULL REFERENCES msg_queues ON DELETE CASCADE ON UPDATE RESTRICT,
   notifier_id BYTEA NOT NULL,
   notifier_key BYTEA NOT NULL,
   rcv_ntf_dh_secret BYTEA NOT NULL
@@ -47,4 +45,5 @@ CREATE TABLE msg_notifiers(
 CREATE UNIQUE INDEX idx_msg_queues_recipient_id ON msg_queues(recipient_id);
 CREATE UNIQUE INDEX idx_msg_queues_sender_id ON msg_queues(sender_id);
 CREATE UNIQUE INDEX idx_msg_notifiers_notifier_id ON msg_notifiers(notifier_id);
+CREATE UNIQUE INDEX idx_msg_notifiers_recipient_id ON msg_notifiers(recipient_id);
     |]

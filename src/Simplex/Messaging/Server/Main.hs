@@ -109,7 +109,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 "Messages not imported"
               -- TODO [postgres]
               ms <- newJournalMsgStore MQStoreCfg
-              readQueueStore @(JournalQueue 'QSMemory) storeLogFile $ stmQueueStore ms
+              readQueueStore @(JournalQueue 'QSMemory) (getQueueLock ms) storeLogFile $ stmQueueStore ms
               msgStats <- importMessages True ms storeMsgsFilePath Nothing -- no expiration
               putStrLn "Import completed"
               printMessageStats "Messages" msgStats
@@ -129,7 +129,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 "Journal not exported"
               -- TODO [postgres]
               ms <- newJournalMsgStore MQStoreCfg
-              readQueueStore @(JournalQueue 'QSMemory) storeLogFile $ stmQueueStore ms
+              readQueueStore @(JournalQueue 'QSMemory) (getQueueLock ms) storeLogFile $ stmQueueStore ms
               exportMessages True ms storeMsgsFilePath False
               putStrLn "Export completed"
               putStrLn $ case readStoreType ini of

@@ -1,6 +1,9 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -8,9 +11,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Server.QueueStore.Postgres where
 
@@ -22,20 +27,27 @@ import Data.Bitraversable (bimapM)
 import Data.Functor (($>))
 import qualified Data.Text as T
 import Database.PostgreSQL.Simple (Binary (..), Only (..), (:.) (..))
+import Database.PostgreSQL.Simple.Errors (constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
+import Simplex.Messaging.Agent.Client (withLockMap)
+import Simplex.Messaging.Agent.Lock (Lock)
 import Simplex.Messaging.Agent.Store.Postgres (createDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common
+import Simplex.Messaging.Agent.Store.Postgres.DB (FromField (..), ToField (..), blobFieldDecoder)
 import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation)
+import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
-import Simplex.Messaging.Server.QueueStore.STM (setStatus, withQueueRec)
+import Simplex.Messaging.Server.QueueStore.STM (readQueueRecIO, setStatus, withQueueRec)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (firstRow, ($>>=), (<$$))
+import Simplex.Messaging.Util (firstRow, ifM, tshow, ($>>), ($>>=), (<$$))
+import System.Exit (exitFailure)
 
 data PostgresQueueStore q = PostgresQueueStore
   { dbStore :: DBStore,
@@ -44,7 +56,8 @@ data PostgresQueueStore q = PostgresQueueStore
     -- this map only cashes the queues that were attempted to send messages to,
     senders :: TMap SenderId RecipientId,
     -- this map only cashes the queues that were attempted to be subscribed to,
-    notifiers :: TMap NotifierId RecipientId
+    notifiers :: TMap NotifierId RecipientId,
+    notifierLocks :: TMap NotifierId Lock
   }
 
 instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
@@ -52,32 +65,36 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   newQueueStore :: (DBOpts, MigrationConfirmation)  -> IO (PostgresQueueStore q)
   newQueueStore (dbOpts, confirmMigrations) = do
-    -- TODO [postgres] handle error
-    Right dbStore <- createDBStore dbOpts serverMigrations confirmMigrations
+    dbStore <- either err pure =<< createDBStore dbOpts serverMigrations confirmMigrations
     queues <- TM.emptyIO
     senders <- TM.emptyIO
     notifiers <- TM.emptyIO
-    pure PostgresQueueStore {dbStore, queues, senders, notifiers}
+    notifierLocks <- TM.emptyIO
+    pure PostgresQueueStore {dbStore, queues, senders, notifiers, notifierLocks}
+    where
+      err e = do
+        logError $ "STORE: newQueueStore, error opening PostgreSQL database, " <> tshow e
+        exitFailure
 
   loadedQueues = queues
   {-# INLINE loadedQueues #-}
 
   queueCounts :: PostgresQueueStore q -> IO QueueCounts
-  queueCounts st = undefined
-    -- withConnection (dbStore st) $ \db -> do
-    --   (queueCount, notifierCount) <-
-    --     DB.query_
-    --       db
-    --       [sql|
-    --         SELECT
-    --           (SELECT COUNT(1) FROM msg_queues) AS queue_count, 
-    --           (SELECT COUNT(1) FROM msg_notifiers) AS notifier_count
-    --       |]
-    --   pure QueueCounts {queueCount, notifierCount}
+  queueCounts st =
+    withConnection (dbStore st) $ \db -> do
+      (queueCount, notifierCount) : _ <-
+        DB.query_
+          db
+          [sql|
+            SELECT
+              (SELECT COUNT(1) FROM msg_queues) AS queue_count, 
+              (SELECT COUNT(1) FROM msg_notifiers) AS notifier_count
+          |]
+      pure QueueCounts {queueCount, notifierCount}
 
-  addQueue :: PostgresQueueStore q -> RecipientId -> QueueRec -> IO (Either ErrorType q)
-  addQueue ms rId qr = undefined
-    -- mkQueue rId qr >>= \q -> q <$$ addStoreQueue (queueStore_ ms) qr q
+  addQueueRec :: PostgresQueueStore q -> RecipientId -> QueueLock q -> QueueRec -> IO (Either ErrorType q)
+  addQueueRec st rId lock qr = undefined
+    -- mkQueue rId lock qr >>= \q -> q <$$ addStoreQueue (queueStore_ ms) qr q
 
   -- addStoreQueue :: PostgresQueueStore q -> QueueRec -> q -> IO (Either ErrorType ())
   -- addStoreQueue st qr sq = undefined -- do
@@ -157,60 +174,98 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   --       SNotifier -> " WHERE n.notifier_id = ?"
 
   secureQueue :: PostgresQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
-  secureQueue st sq sKey = undefined
-    -- atomically (readQueueRec qr $>>= secure)
-    --   $>>= \_ -> withLog "secureQueue" st $ \s -> logSecureQueue s (recipientId sq) sKey
-    -- where
-    --   qr = queueRec sq
-    --   secure q = case senderKey q of
-    --     Just k -> pure $ if sKey == k then Right () else Left AUTH
-    --     Nothing -> do
-    --       writeTVar qr $ Just q {senderKey = Just sKey}
-    --       pure $ Right ()
-
-  addQueueNotifier :: PostgresQueueStore q -> q -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
-  addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId} = undefined -- TODO
-    -- atomically (readQueueRec qr $>>= add)
-    --   $>>= \nId_ -> nId_ <$$ withLog "addQueueNotifier" st (\s -> logAddNotifier s rId ntfCreds)
-    -- where
-    --   rId = recipientId sq
-    --   qr = queueRec sq
-    --   PostgresQueueStore {notifiers} = st
-    --   add q = ifM (TM.member nId notifiers) (pure $ Left DUPLICATE_) $ do
-    --     nId_ <- forM (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId notifiers $> notifierId
-    --     let !q' = q {notifier = Just ntfCreds}
-    --     writeTVar qr $ Just q'
-    --     TM.insert nId rId notifiers
-    --     pure $ Right nId_
-
-  deleteQueueNotifier :: PostgresQueueStore q -> q -> IO (Either ErrorType (Maybe NotifierId))
-  deleteQueueNotifier st sq = withQueueRec qr delete $>>= deleteDB
+  secureQueue st sq sKey =
+    withQueueLock sq "secureQueue" $
+      readQueueRecIO qr
+        $>>= \q -> verify q
+        $>> secureDB
+        $>> secure q
     where
       qr = queueRec sq
-      delete q = forM (notifier q) $ \NtfCreds {notifierId} -> do
-        TM.delete notifierId $ notifiers st
-        writeTVar qr $! Just q {notifier = Nothing}
-        pure notifierId
-      deleteDB nId_ = do
-        forM_ nId_ $ \(EntityId nId) -> withDB' "deleteQueueNotifier" st $ \db ->
-          DB.execute db "DELETE FROM msg_notifiers WHERE notifier_id = ?" (Only $ Binary nId)
-        pure $ Right nId_
+      verify q = pure $ case senderKey q of
+        Just k | sKey /= k -> Left AUTH
+        _ -> Right ()
+      secureDB =
+        withDB' "secureQueue" st $ \db ->
+          DB.execute db "UPDATE msg_queues SET sender_key = ? WHERE recipient_id = ?" (sKey, recipientId sq)
+      secure q = do
+        atomically $ writeTVar qr $ Just q {senderKey = Just sKey}
+        pure $ Right ()
 
+  addQueueNotifier :: PostgresQueueStore q -> q -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
+  addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId, notifierKey, rcvNtfDhSecret} =
+    withQueueLock sq "addQueueNotifier" $
+      readQueueRecIO qr $>>= add
+    where
+      PostgresQueueStore {notifiers} = st
+      rId = recipientId sq
+      qr = queueRec sq
+      add q =
+        withLockMap (notifierLocks st) nId "addQueueNotifier" $
+          ifM (TM.memberIO nId notifiers) (pure $ Left DUPLICATE_) $
+            addDB $>> do
+              nId_ <- forM (notifier q) $ \NtfCreds {notifierId} -> atomically (TM.delete notifierId notifiers) $> notifierId
+              let !q' = q {notifier = Just ntfCreds}
+              atomically $ writeTVar qr $ Just q'
+              atomically $ TM.insert nId rId notifiers
+              pure $ Right nId_
+      addDB =
+        withDB "addQueueNotifier" st $ \db ->
+          E.try (insert db) >>= bimapM duplicate pure
+        where
+          -- TODO [postgres] test how this query works with duplicate recipient_id (updates) and notifier_id (fails)
+          insert db =
+            DB.execute
+              db
+              [sql|
+                INSERT INTO msg_notifiers (recipient_id, notifier_id, notifier_key, rcv_ntf_dh_secret)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (recipient_id) DO UPDATE
+                SET notifier_id = EXCLUDED.notifier_id,
+                    notifier_key = EXCLUDED.notifier_key,
+                    rcv_ntf_dh_secret = EXCLUDED.rcv_ntf_dh_secret
+              |]
+              (rId, nId, notifierKey, rcvNtfDhSecret)
+          duplicate e = case constraintViolation e of
+            Just _ -> pure AUTH
+            Nothing -> E.throwIO e
+
+  deleteQueueNotifier :: PostgresQueueStore q -> q -> IO (Either ErrorType (Maybe NotifierId))
+  deleteQueueNotifier st sq =
+    withQueueLock sq "deleteQueueNotifier" $
+      readQueueRecIO qr $>>= fmap sequence . delete
+    where
+      qr = queueRec sq
+      delete :: QueueRec -> IO (Maybe (Either ErrorType NotifierId))
+      delete q = forM (notifier q) $ \NtfCreds {notifierId = nId} ->
+        withLockMap (notifierLocks st) nId "deleteQueueNotifier" $ do
+          deleteDB nId $>> do
+            atomically $ TM.delete nId $ notifiers st
+            atomically $ writeTVar qr $! Just q {notifier = Nothing}
+            pure $ Right nId
+      deleteDB nId =
+        withDB' "deleteQueueNotifier" st $ \db ->
+          DB.execute db "DELETE FROM msg_notifiers WHERE notifier_id = ?" (Only nId)
+
+  -- TODO [postgres] only update STM on DB success
   suspendQueue :: PostgresQueueStore q -> q -> IO (Either ErrorType ())
   suspendQueue st sq =
     setStatus (queueRec sq) EntityOff
-      $>>= \_ -> setStatusDB "suspendQueue" st (recipientId sq) EntityOff
+      $>> setStatusDB "suspendQueue" st (recipientId sq) EntityOff
 
+  -- TODO [postgres] only update STM on DB success
   blockQueue :: PostgresQueueStore q -> q -> BlockingInfo -> IO (Either ErrorType ())
   blockQueue st sq info =
     setStatus (queueRec sq) (EntityBlocked info)
-      $>>= \_ -> setStatusDB "blockQueue" st (recipientId sq) (EntityBlocked info)
+      $>> setStatusDB "blockQueue" st (recipientId sq) (EntityBlocked info)
 
+  -- TODO [postgres] only update STM on DB success
   unblockQueue :: PostgresQueueStore q -> q -> IO (Either ErrorType ())
   unblockQueue st sq =
     setStatus (queueRec sq) EntityActive
-      $>>= \_ -> setStatusDB "unblockQueue" st (recipientId sq) EntityActive
+      $>> setStatusDB "unblockQueue" st (recipientId sq) EntityActive
 
+  -- TODO [postgres] only update STM on DB success
   updateQueueTime :: PostgresQueueStore q -> q -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
   updateQueueTime st sq t = withQueueRec qr update $>>= updateDB
     where
@@ -224,6 +279,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         | changed = q <$$ withDB' "updateQueueTime" st (\db -> DB.execute db "UPDATE msg_queues SET updated_at = ? WHERE recipient_id = ?" (t, Binary $ unEntityId $ recipientId sq))
         | otherwise = pure $ Right q
 
+  -- TODO [postgres] only update STM on DB success
   deleteStoreQueue :: PostgresQueueStore q -> q -> IO (Either ErrorType (QueueRec, Maybe (MsgQueue q)))
   deleteStoreQueue st sq =
     withQueueRec qr delete
@@ -241,9 +297,9 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           DB.execute db "DELETE FROM msg_queues WHERE recipient_id = ?" (Only $ Binary $ unEntityId $ recipientId sq)
 
 setStatusDB :: String -> PostgresQueueStore q -> RecipientId -> ServerEntityStatus -> IO (Either ErrorType ())
-setStatusDB name st (EntityId rId) status =
+setStatusDB name st rId status =
   withDB' name st $ \db ->
-    DB.execute db "UPDATE msg_queues SET status = ? WHERE recipient_id = ?" (status, Binary rId)
+    DB.execute db "UPDATE msg_queues SET status = ? WHERE recipient_id = ?" (status, rId)
 
 withDB' :: String -> PostgresQueueStore q -> (DB.Connection -> IO a) -> IO (Either ErrorType a)
 withDB' name st' action = withDB name st' $ fmap Right . action
@@ -256,3 +312,17 @@ withDB name st' action =
     logErr e = logError ("STORE: " <> T.pack err) $> Left (STORE err)
       where
         err = name <> ", withLog, " <> show e
+
+-- The orphan instances below are copy-pasted, but here they are defined specifically for PostgreSQL
+
+instance ToField EntityId where toField (EntityId s) = toField $ Binary s
+
+deriving newtype instance FromField EntityId
+
+instance ToField (C.DhSecret 'C.X25519) where toField = toField . Binary . C.dhBytes'
+
+instance FromField (C.DhSecret 'C.X25519) where fromField = blobFieldDecoder strDecode
+
+instance ToField C.APublicAuthKey where toField = toField . Binary . C.encodePubKey
+
+instance FromField C.APublicAuthKey where fromField = blobFieldDecoder C.decodePubKey

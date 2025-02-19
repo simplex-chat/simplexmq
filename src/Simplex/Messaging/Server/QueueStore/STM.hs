@@ -20,6 +20,7 @@ module Simplex.Messaging.Server.QueueStore.STM
     setStoreLog,
     withLog',
     withQueueRec,
+    readQueueRecIO,
     setStatus,
   )
 where
@@ -71,9 +72,9 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     notifierCount <- M.size <$> readTVarIO (notifiers st)
     pure QueueCounts {queueCount, notifierCount}
 
-  addQueue :: STMQueueStore q -> RecipientId -> QueueRec -> IO (Either ErrorType q)
-  addQueue st rId qr@QueueRec {senderId = sId, notifier} =
-    (mkQueue rId qr >>= add)
+  addQueueRec :: STMQueueStore q -> RecipientId -> QueueLock q -> QueueRec -> IO (Either ErrorType q)
+  addQueueRec st rId lock qr@QueueRec {senderId = sId, notifier} =
+    (mkQueue rId lock qr >>= add)
       $>>= \q -> q <$$ withLog "addStoreQueue" st (\s -> logCreateQueue s rId qr)
     where
       STMQueueStore {queues, senders, notifiers} = st
@@ -185,6 +186,10 @@ setStatus qr status =
 readQueueRec :: TVar (Maybe QueueRec) -> STM (Either ErrorType QueueRec)
 readQueueRec qr = maybe (Left AUTH) Right <$> readTVar qr
 {-# INLINE readQueueRec #-}
+
+readQueueRecIO :: TVar (Maybe QueueRec) -> IO (Either ErrorType QueueRec)
+readQueueRecIO qr = maybe (Left AUTH) Right <$> readTVarIO qr
+{-# INLINE readQueueRecIO #-}
 
 withLog' :: String -> TVar (Maybe (StoreLog 'WriteMode)) -> (StoreLog 'WriteMode -> IO ()) -> IO (Either ErrorType ())
 withLog' name sl action =
