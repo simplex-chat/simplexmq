@@ -328,7 +328,7 @@ update_misc() {
   OLD_IFS="$IFS"
 
   IFS='/'
-  for script in $msg_scripts_raw; do
+  for script in ${msg_scripts_raw:-}; do
     case "$script" in
       update)
         printf -- "- Updating update script..."
@@ -350,7 +350,7 @@ update_misc() {
     esac
   done
 
-  for service in $msg_services_raw; do
+  for service in ${msg_services_raw:-}; do
     app="${service%%-*}"
     eval "path_systemd=\$path_systemd_${app}"
     eval "path_tmp_systemd=\$path_tmp_systemd_${app}"
@@ -370,7 +370,7 @@ update_bins() {
   OLD_IFS="$IFS"
 
   IFS='/'
-  for service in $msg_bins_raw; do
+  for service in ${msg_bins_raw:-}; do
     app="${service%%-*}"
     eval "local_version=\$local_version_${app}"
     eval "bin_url_final=\$bin_url_${app}"
@@ -412,7 +412,7 @@ download_bins() {
   OLD_IFS="$IFS"
 
   IFS='/'
-  for service in $msg_bins_raw; do
+  for service in ${msg_bins_raw:-}; do
     app="${service%%-*}"
     eval "local_version=\$local_version_${app}"
     eval "bin_url_final=\$bin_url_${app}"
