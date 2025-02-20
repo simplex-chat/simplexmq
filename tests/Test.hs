@@ -81,6 +81,7 @@ main = do
         skipOnCI $
           beforeAll_ (dropDatabaseAndUser testServerDBConnectInfo >> createDBAndUserIfNotExists testServerDBConnectInfo)
             $ afterAll_ (dropDatabaseAndUser testServerDBConnectInfo)
+            -- TODO [postgres] fix store log tests
             $ xdescribe "SMP server via TLS, postgres+jornal message store" $ do
                 describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
                 before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests
