@@ -39,14 +39,13 @@ import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
 import Simplex.Messaging.Server.QueueStore.STM (readQueueRecIO, setStatus, withQueueRec)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (anyM, firstRow, ifM, tshow, ($>>), ($>>=), (<$$))
+import Simplex.Messaging.Util (firstRow, ifM, tshow, ($>>), ($>>=), (<$$))
 import System.Exit (exitFailure)
 
 data PostgresQueueStore q = PostgresQueueStore
@@ -92,12 +91,14 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           |]
       pure QueueCounts {queueCount, notifierCount}
 
-  -- this implementation assumes that the lock is already taken
+  -- this implementation assumes that the lock is already taken by addQueue
   -- and relies on unique constraints in the database to prevent duplicate IDs.
   addQueueRec :: PostgresQueueStore q -> q -> RecipientId -> QueueRec -> IO (Either ErrorType ())
-  addQueueRec st sq rId qr = addDB $>> add
+  addQueueRec st sq rId qr =
+    withQueueLock sq "addQueueRec" $
+      addDB $>> add
     where
-      PostgresQueueStore {queues, senders, notifiers} = st
+      PostgresQueueStore {queues, senders} = st
       addDB =
         withDB "addQueueRec" st $ \db ->
           E.try (insert db) >>= bimapM handleDuplicate pure

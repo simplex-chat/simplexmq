@@ -76,7 +76,7 @@ import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Util (ifM, tshow, whenM, ($>>=), (<$$), (<$$>))
+import Simplex.Messaging.Util (ifM, tshow, whenM, ($>>=), (<$$>))
 import System.Directory
 import System.Exit
 import System.FilePath (takeFileName, (</>))
@@ -439,11 +439,6 @@ instance MsgStoreClass (JournalMsgStore s) where
           queueState
         }
 
-  addQueue :: JournalMsgStore s -> RecipientId -> QueueRec -> IO (Either ErrorType (JournalQueue s))
-  addQueue ms rId qr = do
-    sq <- mkQueue ms rId qr
-    sq <$$ isolateLock "addQueue" rId (queueLock sq) (addQueueRec (queueStore ms) sq rId qr)      
-
   getMsgQueue :: JournalMsgStore s -> JournalQueue s -> Bool -> StoreIO s (JournalMsgQueue s)
   getMsgQueue ms@JournalMsgStore {random} q'@JournalQueue {recipientId' = rId, msgQueue'} forWrite =
     StoreIO $ readTVarIO msgQueue' >>= maybe newQ pure
@@ -540,7 +535,7 @@ instance MsgStoreClass (JournalMsgStore s) where
             (msg :) <$> run msgs
 
   writeMsg :: JournalMsgStore s -> JournalQueue s -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
-  writeMsg ms q' logState msg = isolateQueue ms q' "writeMsg" $ do
+  writeMsg ms q' logState msg = isolateQueue q' "writeMsg" $ do
     q <- getMsgQueue ms q' True
     StoreIO $ (`E.finally` updateActiveAt q') $ do
       st@MsgQueueState {canWrite, size} <- readTVarIO (state q)
@@ -613,26 +608,18 @@ instance MsgStoreClass (JournalMsgStore s) where
         $>>= \len -> readTVarIO handles
         $>>= \hs -> updateReadPos q mq logState len hs $> Just ()
 
-  -- TODO [postgres] remove `st`
-  isolateQueue :: JournalMsgStore s -> JournalQueue s -> String -> StoreIO s a -> ExceptT ErrorType IO a
-  isolateQueue st JournalQueue {recipientId' = rId, queueLock} op a = do
-    -- lock <- lift $ readTVarIO queueLock >>= maybe (atomically getLock) pure
+  isolateQueue :: JournalQueue s -> String -> StoreIO s a -> ExceptT ErrorType IO a
+  isolateQueue JournalQueue {recipientId' = rId, queueLock} op a =
     tryStore' op rId $ withLock' queueLock op $ unStoreIO a
-    -- where
-    --   getLock = readTVar queueLock >>= maybe newLock pure
-    --   newLock = do
-    --     lock <- getMapLock (queueLocks st) rId
-    --     writeTVar queueLock $ Just lock
-    --     pure lock
 
 updateActiveAt :: JournalQueue s -> IO ()
 updateActiveAt q = atomically . writeTVar (activeAt q) . systemSeconds =<< getSystemTime
 
 tryStore' :: String -> RecipientId -> IO a -> ExceptT ErrorType IO a
-tryStore' op rId = ExceptT . tryStore op rId . fmap Right
+tryStore' op rId = tryStore op rId . fmap Right
 
-tryStore :: forall a. String -> RecipientId -> IO (Either ErrorType a) -> IO (Either ErrorType a)
-tryStore op rId a = E.mask_ $ E.try a >>= either storeErr pure
+tryStore :: forall a. String -> RecipientId -> IO (Either ErrorType a) -> ExceptT ErrorType IO a
+tryStore op rId a = ExceptT $ E.mask_ $ E.try a >>= either storeErr pure
   where
     storeErr :: E.SomeException -> IO (Either ErrorType a)
     storeErr e =
@@ -640,10 +627,7 @@ tryStore op rId a = E.mask_ $ E.try a >>= either storeErr pure
        in logError ("STORE: " <> T.pack e') $> Left (STORE e')
 
 isolateQueueId :: String -> JournalMsgStore s -> RecipientId -> IO (Either ErrorType a) -> ExceptT ErrorType IO a
-isolateQueueId op ms rId = ExceptT . tryStore op rId . withLockMap (queueLocks ms) rId op
-
-isolateLock :: String -> RecipientId -> Lock -> IO (Either ErrorType a) -> IO (Either ErrorType a)
-isolateLock op rId lock = tryStore op rId . withLock' lock op
+isolateQueueId op ms rId = tryStore op rId . withLockMap (queueLocks ms) rId op
 
 openMsgQueue :: JournalMsgStore s -> JMQueue -> Bool -> IO (JournalMsgQueue s)
 openMsgQueue ms@JournalMsgStore {config} q@JMQueue {queueDirectory = dir, statePath} forWrite = do

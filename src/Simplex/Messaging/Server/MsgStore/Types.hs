@@ -25,7 +25,7 @@ import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Types
-import Simplex.Messaging.Util ((<$$>), ($>>=))
+import Simplex.Messaging.Util ((<$$), (<$$>), ($>>=))
 
 class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => MsgStoreClass s where
   type StoreMonad s = (m :: Type -> Type) | m -> s
@@ -42,7 +42,6 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
 
   -- message store methods
   mkQueue :: s -> RecipientId -> QueueRec -> IO (StoreQueue s)
-  addQueue :: s -> RecipientId -> QueueRec -> IO (Either ErrorType (StoreQueue s))
   getMsgQueue :: s -> StoreQueue s -> Bool -> StoreMonad s (MsgQueue (StoreQueue s))
   getPeekMsgQueue :: s -> StoreQueue s -> StoreMonad s (Maybe (MsgQueue (StoreQueue s), Message))
 
@@ -56,7 +55,7 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
   getQueueSize_ :: MsgQueue (StoreQueue s) -> StoreMonad s Int
   tryPeekMsg_ :: StoreQueue s -> MsgQueue (StoreQueue s) -> StoreMonad s (Maybe Message)
   tryDeleteMsg_ :: StoreQueue s -> MsgQueue (StoreQueue s) -> Bool -> StoreMonad s ()
-  isolateQueue :: s -> StoreQueue s -> String -> StoreMonad s a -> ExceptT ErrorType IO a
+  isolateQueue :: StoreQueue s -> String -> StoreMonad s a -> ExceptT ErrorType IO a
 
 data MSType = MSMemory | MSJournal
 
@@ -69,6 +68,11 @@ data SMSType :: MSType -> Type where
 data SQSType :: QSType -> Type where
   SQSMemory :: SQSType 'QSMemory
   SQSPostgres :: SQSType 'QSPostgres
+
+addQueue :: MsgStoreClass s => s -> RecipientId -> QueueRec -> IO (Either ErrorType (StoreQueue s))
+addQueue st rId qr = do
+  sq <- mkQueue st rId qr
+  sq <$$ addQueueRec (queueStore st) sq rId qr
 
 getQueueRec :: forall s p. (QueueStoreClass (StoreQueue s) (QueueStore s), DirectParty p) => QueueStore s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s, QueueRec))
 getQueueRec st party qId =
@@ -107,19 +111,19 @@ tryDelPeekMsg st q msgId' =
 
 -- The action is called with Nothing when it is known that the queue is empty
 withPeekMsgQueue :: MsgStoreClass s => s -> StoreQueue s -> String -> (Maybe (MsgQueue (StoreQueue s), Message) -> StoreMonad s a) -> ExceptT ErrorType IO a
-withPeekMsgQueue st q op a = isolateQueue st q op $ getPeekMsgQueue st q >>= a
+withPeekMsgQueue st q op a = isolateQueue q op $ getPeekMsgQueue st q >>= a
 {-# INLINE withPeekMsgQueue #-}
 
 deleteExpiredMsgs :: MsgStoreClass s => s -> StoreQueue s -> Int64 -> ExceptT ErrorType IO Int
 deleteExpiredMsgs st q old =
-  isolateQueue st q "deleteExpiredMsgs" $
+  isolateQueue q "deleteExpiredMsgs" $
     getMsgQueue st q False >>= deleteExpireMsgs_ old q
 
 -- closed and idle queues will be closed after expiration
 -- returns (expired count, queue size after expiration)
 idleDeleteExpiredMsgs :: MsgStoreClass s => Int64 -> s -> StoreQueue s -> Int64 -> ExceptT ErrorType IO (Maybe Int, Int)
 idleDeleteExpiredMsgs now st q old =
-  isolateQueue st q "idleDeleteExpiredMsgs" $
+  isolateQueue q "idleDeleteExpiredMsgs" $
     withIdleMsgQueue now st q (deleteExpireMsgs_ old q)
 
 deleteExpireMsgs_ :: MsgStoreClass s => Int64 -> StoreQueue s -> MsgQueue (StoreQueue s) -> StoreMonad s Int

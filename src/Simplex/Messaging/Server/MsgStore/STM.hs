@@ -29,7 +29,7 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Util ((<$$), (<$$>), ($>>=))
+import Simplex.Messaging.Util ((<$$>), ($>>=))
 
 data STMMsgStore = STMMsgStore
   { storeConfig :: STMStoreConfig,
@@ -92,11 +92,6 @@ instance MsgStoreClass STMMsgStore where
 
   mkQueue _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
   {-# INLINE mkQueue #-}
-
-  addQueue :: STMMsgStore -> RecipientId -> QueueRec -> IO (Either ErrorType STMQueue)
-  addQueue st rId qr = do
-    sq <- mkQueue st rId qr
-    sq <$$ addQueueRec (queueStore st) sq rId qr
 
   getMsgQueue :: STMMsgStore -> STMQueue -> Bool -> STM STMMsgQueue
   getMsgQueue _ STMQueue {msgQueue'} _ = readTVar msgQueue' >>= maybe newQ pure
@@ -172,5 +167,5 @@ instance MsgStoreClass STMMsgStore where
       Just _ -> modifyTVar' size (subtract 1)
       _ -> pure ()
 
-  isolateQueue :: STMMsgStore -> STMQueue -> String -> STM a -> ExceptT ErrorType IO a
-  isolateQueue _ _ _ = liftIO . atomically
+  isolateQueue :: STMQueue -> String -> STM a -> ExceptT ErrorType IO a
+  isolateQueue _ _ = liftIO . atomically
