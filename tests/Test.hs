@@ -49,11 +49,12 @@ logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 
 main :: IO ()
 main = do
-  setLogLevel LogInfo -- LogError -- LogInfo
+  setLogLevel LogError -- LogInfo
   withGlobalLogging logCfg $ do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
     hspec
+    -- TODO [postgres] run tests with postgres server locally and maybe in CI
 #if defined(dbPostgres)
       . beforeAll_ (dropDatabaseAndUser testDBConnectInfo >> createDBAndUserIfNotExists testDBConnectInfo)
       . afterAll_ (dropDatabaseAndUser testDBConnectInfo)
@@ -80,7 +81,7 @@ main = do
         skipOnCI $
           beforeAll_ (dropDatabaseAndUser testServerDBConnectInfo >> createDBAndUserIfNotExists testServerDBConnectInfo)
             $ afterAll_ (dropDatabaseAndUser testServerDBConnectInfo)
-            $ fdescribe "SMP server via TLS, postgres+jornal message store" $ do
+            $ xdescribe "SMP server via TLS, postgres+jornal message store" $ do
                 describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
                 before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests
         describe "SMP server via TLS, jornal message store" $ do

@@ -152,6 +152,8 @@ smpProxyTests = do
     twoServers_ cfg1 cfg2 runTest =
       withSmpServerConfigOn (transport @TLS) cfg1 testPort $ \_ ->
         let cfg2' = journalCfg cfg2 testStoreLogFile2 testStoreMsgsDir2
+        -- TODO [postgres]
+        -- let cfg2' = journalCfg cfg2 testStoreDBOpts2 testStoreMsgsDir2
          in withSmpServerConfigOn (transport @TLS) cfg2' testPort2 $ const runTest
 
 deliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => SMPServer -> SMPServer -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
@@ -390,8 +392,12 @@ agentViaProxyRetryOffline = do
   where
     withServer :: (ThreadId -> IO a) -> IO a
     withServer = withServer_ testStoreLogFile testStoreMsgsDir testStoreNtfsFile testPort
+    -- TODO [postgres]
+    -- withServer = withServer_ testStoreDBOpts testStoreMsgsDir testStoreNtfsFile testPort
     withServer2 :: (ThreadId -> IO a) -> IO a
     withServer2 = withServer_ testStoreLogFile2 testStoreMsgsDir2 testStoreNtfsFile2 testPort2
+    -- TODO [postgres]
+    -- withServer2 = withServer_ testStoreDBOpts2 testStoreMsgsDir2 testStoreNtfsFile2 testPort2
     withServer_ storeLog storeMsgs storeNtfs =
       withSmpServerConfigOn (transport @TLS) (journalCfg proxyCfg storeLog storeMsgs) {storeNtfsFile = Just storeNtfs}
     a `up` cId = nGet a =##> \case ("", "", UP _ [c]) -> c == cId; _ -> False

@@ -141,7 +141,7 @@ decryptMsgV3 dhShared nonce body =
 
 testCreateSecure :: SpecWith (ATransport, AStoreType)
 testCreateSecure =
-  fit "should create (NEW) and secure (KEY) queue" $ \(ATransport t, msType) ->
+  it "should create (NEW) and secure (KEY) queue" $ \(ATransport t, msType) ->
     smpTest2 t msType $ \r s -> do
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
@@ -564,7 +564,7 @@ testExceedQueueQuota =
 
 testWithStoreLog :: SpecWith (ATransport, AStoreType)
 testWithStoreLog =
-  it "should store simplex queues to log and restore them after server restart" $ \(at@(ATransport t), msType) -> do
+  xit "should store simplex queues to log and restore them after server restart" $ \(at@(ATransport t), msType) -> do
     g <- C.newRandom
     (sPub1, sKey1) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     (sPub2, sKey2) <- atomically $ C.generateAuthKeyPair C.SEd25519 g

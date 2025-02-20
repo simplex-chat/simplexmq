@@ -63,12 +63,15 @@ testStoreLogFile = "tests/tmp/smp-server-store.log"
 testStoreLogFile2 :: FilePath
 testStoreLogFile2 = "tests/tmp/smp-server-store.log.2"
 
-testServerStoreDBOpts :: DBOpts
-testServerStoreDBOpts = 
+testStoreDBOpts :: DBOpts
+testStoreDBOpts = 
   DBOpts
     { connstr = testServerDBConnstr,
       schema = "smp_server"
     }
+
+testStoreDBOpts2 :: DBOpts
+testStoreDBOpts2 = testStoreDBOpts {schema = "smp_server2"}
 
 testServerDBConnstr :: ByteString
 testServerDBConnstr = "postgresql://test_server_user@/test_server_db"
@@ -139,11 +142,23 @@ testSMPClient_ host port vr client = do
 cfg :: ServerConfig
 cfg = cfgMS (ASType SQSMemory SMSJournal)
 
+-- TODO [postgres]
+-- cfg :: ServerConfig
+-- cfg = cfgMS (ASType SQSPostgres SMSJournal)
+
 cfgJ2 :: ServerConfig
 cfgJ2 = journalCfg cfg testStoreLogFile2 testStoreMsgsDir2
 
+-- TODO [postgres]
+-- cfgJ2 :: ServerConfig
+-- cfgJ2 = journalCfg cfg testStoreDBOpts2 testStoreMsgsDir2
+
 journalCfg :: ServerConfig -> FilePath -> FilePath -> ServerConfig
 journalCfg cfg' storeLogFile storeMsgsPath = cfg' {serverStoreCfg = ASSCfg SQSMemory SMSJournal SSCMemoryJournal {storeLogFile, storeMsgsPath}}
+
+-- TODO [postgres]
+-- journalCfg :: ServerConfig -> DBOpts -> FilePath -> ServerConfig
+-- journalCfg cfg' storeDBOpts storeMsgsPath' = cfg' {serverStoreCfg = ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeDBOpts, storeMsgsPath'}}
 
 cfgMS :: AStoreType -> ServerConfig
 cfgMS msType =
@@ -162,7 +177,7 @@ cfgMS msType =
         ASType SQSMemory SMSJournal ->
           ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = testStoreLogFile, storeMsgsPath = testStoreMsgsDir}
         ASType SQSPostgres SMSJournal ->
-          ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeDBOpts = testServerStoreDBOpts, storeMsgsPath' = testStoreMsgsDir},
+          ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeDBOpts = testStoreDBOpts, storeMsgsPath' = testStoreMsgsDir},
       storeNtfsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
@@ -223,6 +238,10 @@ proxyCfg =
 
 proxyCfgJ2 :: ServerConfig
 proxyCfgJ2 = journalCfg proxyCfg testStoreLogFile2 testStoreMsgsDir2
+
+-- TODO [postgres]
+-- proxyCfgJ2 :: ServerConfig
+-- proxyCfgJ2 = journalCfg proxyCfg testStoreDBOpts2 testStoreMsgsDir2
 
 proxyVRangeV8 :: VersionRangeSMP
 proxyVRangeV8 = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion

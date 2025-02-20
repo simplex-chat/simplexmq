@@ -27,7 +27,7 @@ import Data.Bitraversable (bimapM)
 import Data.Functor (($>))
 import qualified Data.Text as T
 import Database.PostgreSQL.Simple (Binary (..), Only (..), SqlError, (:.) (..))
-import Database.PostgreSQL.Simple.Errors (constraintViolation)
+import Database.PostgreSQL.Simple.Errors (ConstraintViolation (..), constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 import Simplex.Messaging.Agent.Client (withLockMap)
 import Simplex.Messaging.Agent.Lock (Lock)
@@ -64,10 +64,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   newQueueStore :: (DBOpts, MigrationConfirmation)  -> IO (PostgresQueueStore q)
   newQueueStore (dbOpts, confirmMigrations) = do
-    print serverMigrations
-    print dbOpts
     dbStore <- either err pure =<< createDBStore dbOpts serverMigrations confirmMigrations
-    print "*** created queue store"
     queues <- TM.emptyIO
     senders <- TM.emptyIO
     notifiers <- TM.emptyIO
@@ -98,7 +95,6 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   -- and relies on unique constraints in the database to prevent duplicate IDs.
   addQueue_ :: PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
   addQueue_ st mkQ rId qr = do
-    print "*** addQueue_"
     sq <- mkQ rId qr
     withQueueLock sq "addQueue_" $
       addDB $>> add sq
@@ -318,8 +314,8 @@ withDB name st' action =
 
 handleDuplicate :: SqlError -> IO ErrorType
 handleDuplicate e = case constraintViolation e of
-  Just _ -> pure AUTH
-  Nothing -> E.throwIO e
+  Just (UniqueViolation _) -> pure AUTH
+  _ -> E.throwIO e
 
 -- The orphan instances below are copy-pasted, but here they are defined specifically for PostgreSQL
 
