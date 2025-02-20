@@ -25,7 +25,7 @@ import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Types
-import Simplex.Messaging.Util ((<$$), (<$$>), ($>>=))
+import Simplex.Messaging.Util ((<$$>), ($>>=))
 
 class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => MsgStoreClass s where
   type StoreMonad s = (m :: Type -> Type) | m -> s
@@ -70,13 +70,16 @@ data SQSType :: QSType -> Type where
   SQSPostgres :: SQSType 'QSPostgres
 
 addQueue :: MsgStoreClass s => s -> RecipientId -> QueueRec -> IO (Either ErrorType (StoreQueue s))
-addQueue st rId qr = do
-  sq <- mkQueue st rId qr
-  sq <$$ addQueueRec (queueStore st) sq rId qr
+addQueue st = addQueue_ (queueStore st) (mkQueue st)
+{-# INLINE addQueue #-}
 
-getQueueRec :: forall s p. (QueueStoreClass (StoreQueue s) (QueueStore s), DirectParty p) => QueueStore s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s, QueueRec))
+getQueue :: (MsgStoreClass s, DirectParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s))
+getQueue st = getQueue_ (queueStore st) (mkQueue st)
+{-# INLINE getQueue #-}
+
+getQueueRec :: (MsgStoreClass s, DirectParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s, QueueRec))
 getQueueRec st party qId =
-  getQueue @(StoreQueue s) st party qId
+  getQueue st party qId
     $>>= (\q -> maybe (Left AUTH) (Right . (q,)) <$> readTVarIO (queueRec q))
 
 getQueueMessages :: MsgStoreClass s => Bool -> s -> StoreQueue s -> ExceptT ErrorType IO [Message]

@@ -284,15 +284,15 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
     PQStore st -> queueCounts @(JournalQueue s) st
   {-# INLINE queueCounts #-}
 
-  addQueueRec = \case
-    MQStore st -> addQueueRec st
-    PQStore st -> addQueueRec st
-  {-# INLINE addQueueRec #-}
+  addQueue_ = \case
+    MQStore st -> addQueue_ st
+    PQStore st -> addQueue_ st
+  {-# INLINE addQueue_ #-}
 
-  getQueue = \case
-    MQStore st -> getQueue st
-    PQStore st -> getQueue st
-  {-# INLINE getQueue #-}
+  getQueue_ = \case
+    MQStore st -> getQueue_ st
+    PQStore st -> getQueue_ st
+  {-# INLINE getQueue_ #-}
 
   secureQueue = \case
     MQStore st -> secureQueue st
@@ -382,7 +382,7 @@ instance MsgStoreClass (JournalMsgStore s) where
         when (tty && i `mod` 100 == 0) $ putStr (progress i <> "\r") >> IO.hFlush stdout
         r' <- case strDecode $ B.pack queueId of
           Right rId ->
-            getQueue (queueStore_ ms) SRecipient rId >>= \case
+            getQueue ms SRecipient rId >>= \case
               Right q -> unStoreIO (getMsgQueue ms q False) *> action q <* closeMsgQueue q
               Left AUTH -> do
                 logWarn $ "STORE: processQueue, queue " <> T.pack queueId <> " was removed, removing " <> T.pack dir

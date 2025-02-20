@@ -72,21 +72,21 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     notifierCount <- M.size <$> readTVarIO (notifiers st)
     pure QueueCounts {queueCount, notifierCount}
 
-  addQueueRec :: STMQueueStore q -> q -> RecipientId -> QueueRec -> IO (Either ErrorType ())
-  addQueueRec st sq rId qr@QueueRec {senderId = sId, notifier} =
-    add $>> withLog "addStoreQueue" st (\s -> logCreateQueue s rId qr)
+  addQueue_ :: STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
+  addQueue_ st mkQ rId qr@QueueRec {senderId = sId, notifier} = do
+    sq <- mkQ rId qr
+    add sq $>> withLog "addStoreQueue" st (\s -> logCreateQueue s rId qr) $> Right sq
     where
       STMQueueStore {queues, senders, notifiers} = st
-      add = atomically $ ifM hasId (pure $ Left DUPLICATE_) $ do
-        TM.insert rId sq queues
+      add q = atomically $ ifM hasId (pure $ Left DUPLICATE_) $ Right () <$ do
+        TM.insert rId q queues
         TM.insert sId rId senders
         forM_ notifier $ \NtfCreds {notifierId} -> TM.insert notifierId rId notifiers
-        pure $ Right sq
       hasId = anyM [TM.member rId queues, TM.member sId senders, hasNotifier]
       hasNotifier = maybe (pure False) (\NtfCreds {notifierId} -> TM.member notifierId notifiers) notifier
 
-  getQueue :: DirectParty p => STMQueueStore q -> SParty p -> QueueId -> IO (Either ErrorType q)
-  getQueue st party qId =
+  getQueue_ :: DirectParty p => STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
+  getQueue_ st _ party qId =
     maybe (Left AUTH) Right <$> case party of
       SRecipient -> TM.lookupIO qId queues
       SSender -> TM.lookupIO qId senders $>>= (`TM.lookupIO` queues)

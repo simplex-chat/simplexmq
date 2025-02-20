@@ -846,7 +846,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
               CPDelete sId -> withUserRole $ unliftIO u $ do
                 AMS _ _ st <- asks msgStore
                 r <- liftIO $ runExceptT $ do
-                  q <- ExceptT $ getQueue (queueStore st) SSender sId
+                  q <- ExceptT $ getQueue st SSender sId
                   ExceptT $ deleteQueueSize st q
                 case r of
                   Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
@@ -855,7 +855,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
                     liftIO $ hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
               CPStatus sId -> withUserRole $ unliftIO u $ do
                 AMS _ _ st <- asks msgStore
-                q <- liftIO $ getQueueRec (queueStore st) SSender sId
+                q <- liftIO $ getQueueRec st SSender sId
                 liftIO $ hPutStrLn h $ case q of
                   Left e -> "error: " <> show e
                   Right (_, QueueRec {sndSecure, status, updatedAt}) ->
@@ -863,7 +863,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
               CPBlock sId info -> withUserRole $ unliftIO u $ do
                 AMS _ _ (st :: s) <- asks msgStore
                 r <- liftIO $ runExceptT $ do
-                  q <- ExceptT $ getQueue @(StoreQueue s) (queueStore st) SSender sId
+                  q <- ExceptT $ getQueue st SSender sId
                   ExceptT $ blockQueue (queueStore st) q info
                 case r of
                   Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
@@ -873,7 +873,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHT
               CPUnblock sId -> withUserRole $ unliftIO u $ do
                 AMS _ _ (st :: s) <- asks msgStore
                 r <- liftIO $ runExceptT $ do
-                  q <- ExceptT $ getQueue @(StoreQueue s) (queueStore st) SSender sId
+                  q <- ExceptT $ getQueue st SSender sId
                   ExceptT $ unblockQueue (queueStore st) q
                 liftIO $ hPutStrLn h $ case r of
                   Left e -> "error: " <> show e
@@ -1088,7 +1088,7 @@ verifyTransmission ms auth_ tAuth authorized queueId cmd =
     verifiedWith :: Maybe (StoreQueue s, QueueRec) -> C.APublicAuthKey -> VerificationResult s
     verifiedWith q k = q `verified` verify k
     get :: DirectParty p => SParty p -> M (Either ErrorType (StoreQueue s, QueueRec))
-    get party = liftIO $ getQueueRec (queueStore ms) party queueId
+    get party = liftIO $ getQueueRec ms party queueId
 
 verifyCmdAuthorization :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> C.APublicAuthKey -> Bool
 verifyCmdAuthorization auth_ tAuth authorized key = maybe False (verify key) tAuth
@@ -1886,7 +1886,7 @@ importMessages tty ms f old_ = do
           q <- case q_ of
             -- to avoid lookup when restoring the next message to the same queue
             Just (rId', q') | rId' == rId -> pure q'
-            _ -> ExceptT $ getQueue (queueStore ms) SRecipient rId
+            _ -> ExceptT $ getQueue ms SRecipient rId
           (i + 1,Just (rId, q),) <$> case msg of
             Message {msgTs}
               | maybe True (systemSeconds msgTs >=) old_ -> do

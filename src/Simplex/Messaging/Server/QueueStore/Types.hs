@@ -25,8 +25,8 @@ class StoreQueueClass q => QueueStoreClass q s where
   newQueueStore :: QueueStoreCfg s -> IO s
   queueCounts :: s -> IO QueueCounts
   loadedQueues :: s -> TMap RecipientId q
-  addQueueRec :: s -> q -> RecipientId -> QueueRec -> IO (Either ErrorType ())
-  getQueue :: DirectParty p => s -> SParty p -> QueueId -> IO (Either ErrorType q)
+  addQueue_ :: s -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
+  getQueue_ :: DirectParty p => s -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   secureQueue :: s -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   addQueueNotifier :: s -> q -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
   deleteQueueNotifier :: s -> q -> IO (Either ErrorType (Maybe NotifierId))

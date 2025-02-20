@@ -43,9 +43,7 @@ readQueueStore mkQ f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ proces
         s = LB.toStrict s'
         procLogRecord :: StoreLogRecord -> IO ()
         procLogRecord = \case
-          CreateQueue rId qr -> do
-            sq <- mkQ rId qr
-            addQueueRec st sq rId qr >>= qError rId "CreateQueue"
+          CreateQueue rId qr -> addQueue_ st mkQ rId qr >>= qError rId "CreateQueue"
           SecureQueue qId sKey -> withQueue qId "SecureQueue" $ \q -> secureQueue st q sKey
           AddNotifier qId ntfCreds -> withQueue qId "AddNotifier" $ \q -> addQueueNotifier st q ntfCreds
           SuspendQueue qId -> withQueue qId "SuspendQueue" $ suspendQueue st
@@ -60,7 +58,7 @@ readQueueStore mkQ f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ proces
         withQueue qId op a = runExceptT go >>= qError qId op
           where
             go = do
-              q <- ExceptT $ getQueue st SRecipient qId
+              q <- ExceptT $ getQueue_ st mkQ SRecipient qId
               liftIO (readTVarIO $ queueRec q) >>= \case
                 Nothing -> logWarn $ logPfx qId op <> "already deleted"
                 Just _ -> void $ ExceptT $ a q

@@ -93,19 +93,20 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   -- this implementation assumes that the lock is already taken by addQueue
   -- and relies on unique constraints in the database to prevent duplicate IDs.
-  addQueueRec :: PostgresQueueStore q -> q -> RecipientId -> QueueRec -> IO (Either ErrorType ())
-  addQueueRec st sq rId qr =
-    withQueueLock sq "addQueueRec" $
-      addDB $>> add
+  addQueue_ :: PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
+  addQueue_ st mkQ rId qr = do
+    sq <- mkQ rId qr
+    withQueueLock sq "addQueue_" $
+      addDB $>> add sq
     where
       PostgresQueueStore {queues, senders} = st
       addDB =
-        withDB "addQueueRec" st $ \db ->
+        withDB "addQueue_" st $ \db ->
           E.try (insert db) >>= bimapM handleDuplicate pure
-      add = do
+      add sq = do
         atomically $ TM.insert rId sq queues
         atomically $ TM.insert senderId rId senders
-        pure $ Right ()
+        pure $ Right sq
       -- Not doing duplicate checks in maps as the probability of duplicates is very low.
       -- It needs to be reconsidered when IDs are supplied by the users.
       -- hasId = anyM [TM.memberIO rId queues, TM.memberIO senderId senders, hasNotifier]
@@ -133,52 +134,49 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         Just NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} -> (Just notifierId, Just notifierKey, Just rcvNtfDhSecret)
         Nothing -> (Nothing, Nothing, Nothing)
 
-  getQueue :: DirectParty p => PostgresQueueStore q -> SParty p -> QueueId -> IO (Either ErrorType q)
-  getQueue st party qId = undefined -- do
-  --   case party of
-  --     SRecipient -> getQueue_ qId
-  --     SSender -> TM.lookupIO qId senders >>= maybe loadSndQueue getQueue_
-  --     SNotifier -> loadRefQueue $ \_ -> pure ()
-  --   where
-  --     -- TODO isolate
-  --     PostgresQueueStore {queues, senders, notifiers} = st
-  --     getQueue_ rId = TM.lookupIO rId queues >>= maybe loadQueue (pure . Right)
-  --     loadQueue =
-  --       loadQueueRec $>>= \(rId, qRec) ->  -- isolate by rId
-  --         cacheQueue rId qRec
-  --     loadSndQueue = loadRefQueue $ \rId -> atomically $ TM.insert qId rId senders
-  --     loadRefQueue insertRef =
-  --       loadQueueRec $>>= \(rId, qRec) -> -- isolate by rId
-  --         TM.lookupIO rId queues >>= \case
-  --           Just sq -> pure $ Right sq
-  --           Nothing -> insertRef rId >> cacheQueue rId qRec
-  --     cacheQueue rId qRec = do
-  --       sq <- mkQueue rId qRec
-  --       atomically $ TM.insert rId sq queues
-  --       pure $ Right sq
-  --     loadQueueRec =
-  --       withDB "loadQueueRec" st $ \db -> firstRow toQueueRec AUTH $
-  --         DB.query
-  --           db
-  --           ( [sql|
-  --               SELECT q.recipient_id, q.recipient_key, q.rcv_dh_secret, q.sender_id, q.sender_key, q.snd_secure, q.status, q.updated_at,
-  --                 n.notifier_id, n.notifier_key, n.rcv_ntf_dh_secret
-  --               FROM msg_queues q
-  --               LEFT JOIN msg_notifiers n USING (msg_queue_id)
-  --             |]
-  --               <> cond
-  --           )
-  --            (Only qId)
-  --     toQueueRec :: ( (RecipientId, RcvPublicAuthKey, RcvDhSecret, SenderId, Maybe SndPublicAuthKey, SenderCanSecure, ServerEntityStatus, Maybe RoundedSystemTime)
-  --                      :. (Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret)
-  --                   ) -> (RecipientId, QueueRec)
-  --     toQueueRec ((rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, status, updatedAt) :. (notifierId_, notifierKey_, rcvNtfDhSecret_)) =
-  --       let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
-  --        in (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt})
-  --     cond = case party of
-  --       SRecipient -> " WHERE q.recipient_id = ?"
-  --       SSender -> " WHERE q.sender_id = ?"
-  --       SNotifier -> " WHERE n.notifier_id = ?"
+  getQueue_ :: DirectParty p => PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
+  getQueue_ st mkQ party qId = case party of
+    SRecipient -> getRcvQueue qId
+    SSender -> TM.lookupIO qId senders >>= maybe loadSndQueue getRcvQueue
+    SNotifier -> TM.lookupIO qId notifiers >>= maybe loadNtfQueue getRcvQueue
+    where
+      PostgresQueueStore {queues, senders, notifiers} = st
+      getRcvQueue rId = TM.lookupIO rId queues >>= maybe loadRcvQueue (pure . Right)
+      loadRcvQueue = loadQueue " q.recipient_id = ?" $ \_ -> pure ()
+      loadSndQueue = loadQueue " q.sender_id = ?" $ \rId -> TM.insert qId rId senders
+      loadNtfQueue = loadQueue " n.notifier_id = ?" $ \_ -> pure () -- do NOT cache ref - ntf subscriptions are rare
+      loadQueue condition insertRef =
+        loadQueueRec $>>= \(rId, qRec) -> do
+          sq <- mkQ rId qRec
+          atomically $
+            -- checking the cache again for concurrent reads
+            TM.lookup rId queues >>= \case
+              Just sq' -> pure $ Right sq'
+              Nothing -> do
+                insertRef rId
+                TM.insert rId sq queues
+                pure $ Right sq
+        where
+          loadQueueRec =
+            withDB "getQueue_" st $ \db -> firstRow toQueueRec AUTH $
+              DB.query
+                db
+                ( [sql|
+                    SELECT q.recipient_id, q.recipient_key, q.rcv_dh_secret, q.sender_id, q.sender_key, q.snd_secure, q.status, q.updated_at,
+                      n.notifier_id, n.notifier_key, n.rcv_ntf_dh_secret
+                    FROM msg_queues q
+                    LEFT JOIN msg_notifiers n ON q.recipient_id = n.recipient_id
+                    WHERE
+                  |]
+                    <> condition
+                )
+                (Only qId)
+          toQueueRec :: ( (RecipientId, RcvPublicAuthKey, RcvDhSecret, SenderId, Maybe SndPublicAuthKey, SenderCanSecure, ServerEntityStatus, Maybe RoundedSystemTime)
+                          :. (Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret)
+                        ) -> (RecipientId, QueueRec)
+          toQueueRec ((rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, status, updatedAt) :. (notifierId_, notifierKey_, rcvNtfDhSecret_)) =
+            let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
+            in (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt})
 
   secureQueue :: PostgresQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   secureQueue st sq sKey =
@@ -214,6 +212,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
               nId_ <- forM (notifier q) $ \NtfCreds {notifierId} -> atomically (TM.delete notifierId notifiers) $> notifierId
               let !q' = q {notifier = Just ntfCreds}
               atomically $ writeTVar qr $ Just q'
+              -- cache queue notifier ID – after notifier is added ntf server will likely subscribe
               atomically $ TM.insert nId rId notifiers
               pure $ Right nId_
       addDB =

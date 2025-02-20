@@ -321,7 +321,7 @@ testMessageState ms = do
   B.writeFile statePath $ B.unlines $ take (length ls - 1) ls
 
   runRight_ $ do
-    q <- ExceptT $ getQueue (queueStore ms) SRecipient rId
+    q <- ExceptT $ getQueue ms SRecipient rId
     Just (Message {msgId = mId3}, False) <- write q "message 3"
     (Msg "message 1", Msg "message 3") <- tryDelPeekMsg ms q mId1
     (Msg "message 3", Nothing) <- tryDelPeekMsg ms q mId3
@@ -349,14 +349,14 @@ testRemoveJournals ms = do
   stateBackupCount dir `shouldReturn` 0
 
   runRight $ do
-    q <- ExceptT $ getQueue (queueStore ms) SRecipient rId
+    q <- ExceptT $ getQueue ms SRecipient rId
     -- not removed yet
     liftIO $ journalFilesCount dir `shouldReturn` 1
     liftIO $ stateBackupCount dir `shouldReturn` 0
     Nothing <- tryPeekMsg ms q
     -- still not removed, queue is empty and not opened
     liftIO $ journalFilesCount dir `shouldReturn` 1
-    _mq <- isolateQueue ms q "test" $ getMsgQueue ms q False
+    _mq <- isolateQueue q "test" $ getMsgQueue ms q False
     -- journal is removed
     liftIO $ journalFilesCount dir `shouldReturn` 0
     liftIO $ stateBackupCount dir `shouldReturn` 1
@@ -384,7 +384,7 @@ testRemoveJournals ms = do
 
   journalFilesCount dir `shouldReturn` 1
   runRight $ do
-    q <- ExceptT $ getQueue (queueStore ms) SRecipient rId
+    q <- ExceptT $ getQueue ms SRecipient rId
     Just (Message {}, True) <- write q "message 8"
     liftIO $ journalFilesCount dir `shouldReturn` 1
     liftIO $ stateBackupCount dir `shouldReturn` 2
@@ -414,14 +414,14 @@ testRemoveQueueStateBackups = do
     liftIO $ closeMsgQueue q
     liftIO $ stateBackupCount dir `shouldReturn` 0
 
-    q1 <- ExceptT $ getQueue (queueStore ms) SRecipient rId
+    q1 <- ExceptT $ getQueue ms SRecipient rId
     Just (Message {}, True) <- write q1 "message 3"
     Just (Message {}, False) <- write q1 "message 4"
     liftIO $ closeMsgQueue q1
     liftIO $ stateBackupCount dir `shouldReturn` 0
 
     liftIO $ threadDelay 1000000
-    q2 <- ExceptT $ getQueue (queueStore ms) SRecipient rId
+    q2 <- ExceptT $ getQueue ms SRecipient rId
     Just (Message {}, False) <- write q2 "message 5"
     Nothing <- write q2 "message 5"
     liftIO $ closeMsgQueue q2
@@ -480,7 +480,7 @@ testReadFileMissing ms = do
   removeFile path
 
   runRight_ $ do
-    q' <- ExceptT $ getQueue (queueStore ms) SRecipient rId
+    q' <- ExceptT $ getQueue ms SRecipient rId
     Nothing <- tryPeekMsg ms q'
     Just (Message {}, True) <- write q' "message 2"
     Msg "message 2" <- tryPeekMsg ms q'
@@ -499,7 +499,7 @@ testReadFileMissingSwitch ms = do
   removeFile path
 
   runRight_ $ do
-    q' <- ExceptT $ getQueue (queueStore ms) SRecipient rId
+    q' <- ExceptT $ getQueue ms SRecipient rId
     Just (Message {}, False) <- writeMsg ms q' True =<< mkMessage "message 6"
     Msg "message 5" <- tryPeekMsg ms q'
     pure ()
@@ -518,7 +518,7 @@ testWriteFileMissing ms = do
   removeFile path
 
   runRight_ $ do
-    q' <- ExceptT $ getQueue (queueStore ms) SRecipient rId
+    q' <- ExceptT $ getQueue ms SRecipient rId
     Just Message {msgId = mId3} <- tryPeekMsg ms q'
     (Msg "message 3", Msg "message 4") <- tryDelPeekMsg ms q' mId3
     Just Message {msgId = mId4} <- tryPeekMsg ms q'
@@ -540,7 +540,7 @@ testReadAndWriteFilesMissing ms = do
   removeFile $ journalFilePath (queueDirectory $ queue mq) $ journalId ws
 
   runRight_ $ do
-    q' <- ExceptT $ getQueue (queueStore ms) SRecipient rId
+    q' <- ExceptT $ getQueue ms SRecipient rId
     Nothing <- tryPeekMsg ms q'
     Just (Message {}, True) <- writeMsg ms q' True =<< mkMessage "message 6"
     Msg "message 6" <- tryPeekMsg ms q'
