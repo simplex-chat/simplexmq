@@ -29,6 +29,7 @@ data DBOpts = DBOpts
   { connstr :: ByteString,
     schema :: String
   }
+  deriving (Show)
 
 -- TODO [postgres] connection pool
 withConnectionPriority :: DBStore -> Bool -> (PSQL.Connection -> IO a) -> IO a

@@ -23,8 +23,10 @@ import GHC.IO.Exception (IOException (..))
 import qualified GHC.IO.Exception as IOException
 import NtfServerTests (ntfServerTests)
 import RemoteControl (remoteControlTests)
+import SMPClient (skipOnCI, testServerDBConnectInfo)
 import SMPProxyTests (smpProxyTests)
 import ServerTests
+import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists, dropDatabaseAndUser)
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Transport (TLS, Transport (..))
@@ -47,7 +49,7 @@ logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 
 main :: IO ()
 main = do
-  setLogLevel LogError -- LogInfo
+  setLogLevel LogInfo -- LogError -- LogInfo
   withGlobalLogging logCfg $ do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
@@ -75,6 +77,12 @@ main = do
           describe "Store log tests" storeLogTests
           describe "TRcvQueues tests" tRcvQueuesTests
           describe "Util tests" utilTests
+        skipOnCI $
+          beforeAll_ (dropDatabaseAndUser testServerDBConnectInfo >> createDBAndUserIfNotExists testServerDBConnectInfo)
+            $ afterAll_ (dropDatabaseAndUser testServerDBConnectInfo)
+            $ fdescribe "SMP server via TLS, postgres+jornal message store" $ do
+                describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
+                before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests
         describe "SMP server via TLS, jornal message store" $ do
           describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
           before (pure (transport @TLS, ASType SQSMemory SMSJournal)) serverTests

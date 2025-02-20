@@ -141,7 +141,7 @@ decryptMsgV3 dhShared nonce body =
 
 testCreateSecure :: SpecWith (ATransport, AStoreType)
 testCreateSecure =
-  it "should create (NEW) and secure (KEY) queue" $ \(ATransport t, msType) ->
+  fit "should create (NEW) and secure (KEY) queue" $ \(ATransport t, msType) ->
     smpTest2 t msType $ \r s -> do
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g

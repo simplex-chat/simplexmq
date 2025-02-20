@@ -64,7 +64,10 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   newQueueStore :: (DBOpts, MigrationConfirmation)  -> IO (PostgresQueueStore q)
   newQueueStore (dbOpts, confirmMigrations) = do
+    print serverMigrations
+    print dbOpts
     dbStore <- either err pure =<< createDBStore dbOpts serverMigrations confirmMigrations
+    print "*** created queue store"
     queues <- TM.emptyIO
     senders <- TM.emptyIO
     notifiers <- TM.emptyIO
@@ -95,6 +98,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   -- and relies on unique constraints in the database to prevent duplicate IDs.
   addQueue_ :: PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
   addQueue_ st mkQ rId qr = do
+    print "*** addQueue_"
     sq <- mkQ rId qr
     withQueueLock sq "addQueue_" $
       addDB $>> add sq
@@ -111,28 +115,24 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       -- It needs to be reconsidered when IDs are supplied by the users.
       -- hasId = anyM [TM.memberIO rId queues, TM.memberIO senderId senders, hasNotifier]
       -- hasNotifier = maybe (pure False) (\NtfCreds {notifierId} -> TM.memberIO notifierId notifiers) notifier
-      insert db =
+      insert db = do
         DB.execute
           db
           [sql|
-            WITH inserted AS (
-              INSERT INTO msg_queues
-                (recipient_id, recipient_key, rcv_dh_secret, sender_id, sender_key, snd_secure, status, updated_at)
-              VALUES (?,?,?,?,?,?,?,?)
-              RETURNING recipient_id
-            )
-            INSERT INTO msg_notifiers (recipient_id, notifier_id, notifier_key, rcv_ntf_dh_secret)
-            SELECT inserted.recipient_id, ?, ?, ?
-            FROM inserted
-            WHERE ? IS NOT NULL;
+            INSERT INTO msg_queues
+              (recipient_id, recipient_key, rcv_dh_secret, sender_id, sender_key, snd_secure, status, updated_at)
+            VALUES (?,?,?,?,?,?,?,?)
           |]
-          ( (rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, status, updatedAt)
-              :. (notifierId_, notifierKey_, rcvNtfDhSecret_, notifierId_)
-          )
+          (rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, status, updatedAt)
+        forM_ notifier $ \NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} ->
+          DB.execute
+            db
+            [sql|
+              INSERT INTO msg_notifiers (recipient_id, notifier_id, notifier_key, rcv_ntf_dh_secret)
+              VALUES (?, ?, ?, ?)
+            |]
+            (rId, notifierId, notifierKey, rcvNtfDhSecret)
       QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt} = qr
-      (notifierId_, notifierKey_, rcvNtfDhSecret_) = case notifier of
-        Just NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} -> (Just notifierId, Just notifierKey, Just rcvNtfDhSecret)
-        Nothing -> (Nothing, Nothing, Nothing)
 
   getQueue_ :: DirectParty p => PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   getQueue_ st mkQ party qId = case party of

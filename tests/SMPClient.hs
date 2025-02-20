@@ -16,7 +16,9 @@ module SMPClient where
 import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
+import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
 import Network.Socket
+import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts (..))
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
@@ -61,6 +63,23 @@ testStoreLogFile = "tests/tmp/smp-server-store.log"
 testStoreLogFile2 :: FilePath
 testStoreLogFile2 = "tests/tmp/smp-server-store.log.2"
 
+testServerStoreDBOpts :: DBOpts
+testServerStoreDBOpts = 
+  DBOpts
+    { connstr = testServerDBConnstr,
+      schema = "smp_server"
+    }
+
+testServerDBConnstr :: ByteString
+testServerDBConnstr = "postgresql://test_server_user@/test_server_db"
+
+testServerDBConnectInfo :: ConnectInfo
+testServerDBConnectInfo =
+  defaultConnectInfo {
+    connectUser = "test_server_user",
+    connectDatabase = "test_server_db"
+  }
+
 testStoreMsgsFile :: FilePath
 testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
 
@@ -89,9 +108,13 @@ xit' :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
 xit' d = if os == "linux" then skip "skipped on Linux" . it d else it d
 
 xit'' :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
-xit'' d t = do
-  ci <- runIO $ lookupEnv "CI"
-  (if ci == Just "true" then skip "skipped on CI" . it d else it d) t
+xit'' d = skipOnCI . it d
+
+skipOnCI :: SpecWith a -> SpecWith a
+skipOnCI t =
+  runIO (lookupEnv "CI") >>= \case
+    Just "true" -> skip "skipped on CI" t
+    _ -> t
 
 testSMPClient :: Transport c => (THandleSMP c 'TClient -> IO a) -> IO a
 testSMPClient = testSMPClientVR supportedClientSMPRelayVRange
@@ -138,8 +161,8 @@ cfgMS msType =
           ASSCfg SQSMemory SMSMemory $ SSCMemory $ Just StorePaths {storeLogFile = testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
         ASType SQSMemory SMSJournal ->
           ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = testStoreLogFile, storeMsgsPath = testStoreMsgsDir}
-        ASType SQSPostgres SMSJournal -> -- TODO DB options
-          ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeDBOpts = undefined, storeMsgsPath' = testStoreMsgsDir},
+        ASType SQSPostgres SMSJournal ->
+          ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeDBOpts = testServerStoreDBOpts, storeMsgsPath' = testStoreMsgsDir},
       storeNtfsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,

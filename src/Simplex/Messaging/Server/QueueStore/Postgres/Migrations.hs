@@ -33,14 +33,14 @@ CREATE TABLE msg_queues(
   snd_secure BOOLEAN NOT NULL,
   status TEXT NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
-)
+);
 
 CREATE TABLE msg_notifiers(
-  recipient_id BYTEA NOT NULL REFERENCES msg_queues ON DELETE CASCADE ON UPDATE RESTRICT,
+  recipient_id BYTEA NOT NULL REFERENCES msg_queues(recipient_id) ON DELETE CASCADE ON UPDATE RESTRICT,
   notifier_id BYTEA NOT NULL,
   notifier_key BYTEA NOT NULL,
   rcv_ntf_dh_secret BYTEA NOT NULL
-)
+);
 
 CREATE UNIQUE INDEX idx_msg_queues_recipient_id ON msg_queues(recipient_id);
 CREATE UNIQUE INDEX idx_msg_queues_sender_id ON msg_queues(sender_id);
