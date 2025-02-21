@@ -25,8 +25,12 @@ import Control.Logger.Simple
 import Control.Monad
 import Data.Bitraversable (bimapM)
 import Data.Functor (($>))
+import Data.Int (Int64)
+import qualified Data.Map.Strict as M
+import Data.Maybe (catMaybes, mapMaybe)
 import qualified Data.Text as T
-import Database.PostgreSQL.Simple (Binary (..), Only (..), SqlError, (:.) (..))
+import Database.PostgreSQL.Simple (Binary (..), Only (..), Query, SqlError, (:.) (..))
+import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.Errors (ConstraintViolation (..), constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 import Simplex.Messaging.Agent.Client (withLockMap)
@@ -45,8 +49,9 @@ import Simplex.Messaging.Server.QueueStore.STM (readQueueRecIO, setStatus, withQ
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (firstRow, ifM, tshow, ($>>), ($>>=), (<$$))
+import Simplex.Messaging.Util (firstRow, ifM, tshow, ($>>), ($>>=), (<$$), (<$$>))
 import System.Exit (exitFailure)
+import System.IO (hFlush, stdout)
 
 data PostgresQueueStore q = PostgresQueueStore
   { dbStore :: DBStore,
@@ -102,33 +107,15 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       PostgresQueueStore {queues, senders} = st
       addDB =
         withDB "addQueue_" st $ \db ->
-          E.try (insert db) >>= bimapM handleDuplicate pure
+          E.try (insertQueueDB db rId qr) >>= bimapM handleDuplicate pure
       add sq = do
         atomically $ TM.insert rId sq queues
-        atomically $ TM.insert senderId rId senders
+        atomically $ TM.insert (senderId qr) rId senders
         pure $ Right sq
       -- Not doing duplicate checks in maps as the probability of duplicates is very low.
       -- It needs to be reconsidered when IDs are supplied by the users.
       -- hasId = anyM [TM.memberIO rId queues, TM.memberIO senderId senders, hasNotifier]
       -- hasNotifier = maybe (pure False) (\NtfCreds {notifierId} -> TM.memberIO notifierId notifiers) notifier
-      insert db = do
-        DB.execute
-          db
-          [sql|
-            INSERT INTO msg_queues
-              (recipient_id, recipient_key, rcv_dh_secret, sender_id, sender_key, snd_secure, status, updated_at)
-            VALUES (?,?,?,?,?,?,?,?)
-          |]
-          (rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, status, updatedAt)
-        forM_ notifier $ \NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} ->
-          DB.execute
-            db
-            [sql|
-              INSERT INTO msg_notifiers (recipient_id, notifier_id, notifier_key, rcv_ntf_dh_secret)
-              VALUES (?, ?, ?, ?)
-            |]
-            (rId, notifierId, notifierKey, rcvNtfDhSecret)
-      QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt} = qr
 
   getQueue_ :: DirectParty p => PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   getQueue_ st mkQ party qId = case party of
@@ -295,6 +282,52 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         withDB' "deleteStoreQueue" st $ \db ->
           DB.execute db "DELETE FROM msg_queues WHERE recipient_id = ?" (Only $ Binary $ unEntityId $ recipientId sq)
 
+insertQueueDB :: DB.Connection -> RecipientId -> QueueRec -> IO ()
+insertQueueDB db rId QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt} = do
+  DB.execute db insertQueueQuery (rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, status, updatedAt)
+  forM_ notifier $ \NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} ->
+    DB.execute db insertNotifierQuery (rId, notifierId, notifierKey, rcvNtfDhSecret)
+
+batchInsertQueues :: StoreQueueClass q => Bool -> M.Map RecipientId q -> PostgresQueueStore q' -> IO (Int64, Int64)
+batchInsertQueues tty queues toStore = do
+  qs <- catMaybes <$> mapM (\(rId, q) -> (rId,) <$$> readTVarIO (queueRec q)) (M.assocs queues)
+  let st = dbStore toStore
+  (ns, count) <- foldM (processChunk st) ((0, 0), 0) $ toChunks 10000 qs
+  putStrLn $ progress count
+  pure ns
+  where
+    processChunk st ((qCnt, nCnt), i) qs = do
+      qCnt' <- withConnection st $ \db -> PSQL.executeMany db insertQueueQuery $ map toQueueRow qs
+      nCnt' <- withConnection st $ \db -> PSQL.executeMany db insertNotifierQuery $ mapMaybe toNotifierRow qs
+      let i' = i + length qs
+      when tty $ putStr (progress i' <> "\r") >> hFlush stdout
+      pure ((qCnt + qCnt', nCnt + nCnt'), i')
+    progress i = "Imported: " <> show i <> " queues"
+    toQueueRow (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, status, updatedAt}) =
+      (rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, status, updatedAt)
+    toNotifierRow (rId, QueueRec {notifier}) =
+      (\NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} -> (rId, notifierId, notifierKey, rcvNtfDhSecret)) <$> notifier
+    toChunks :: Int -> [a] -> [[a]]
+    toChunks _ [] = []
+    toChunks n xs =
+      let (ys, xs') = splitAt n xs
+       in ys : toChunks n xs'
+
+insertQueueQuery :: Query
+insertQueueQuery =
+  [sql|
+    INSERT INTO msg_queues
+      (recipient_id, recipient_key, rcv_dh_secret, sender_id, sender_key, snd_secure, status, updated_at)
+    VALUES (?,?,?,?,?,?,?,?)
+  |]
+
+insertNotifierQuery :: Query
+insertNotifierQuery =
+  [sql|
+    INSERT INTO msg_notifiers (recipient_id, notifier_id, notifier_key, rcv_ntf_dh_secret)
+    VALUES (?, ?, ?, ?)
+  |]
+
 setStatusDB :: String -> PostgresQueueStore q -> RecipientId -> ServerEntityStatus -> IO (Either ErrorType ())
 setStatusDB name st rId status =
   withDB' name st $ \db ->
@@ -303,9 +336,10 @@ setStatusDB name st rId status =
 withDB' :: String -> PostgresQueueStore q -> (DB.Connection -> IO a) -> IO (Either ErrorType a)
 withDB' name st' action = withDB name st' $ fmap Right . action
 
+-- TODO [postgres] possibly, use with connection if queries in addQueue_ are combined
 withDB :: forall a q. String -> PostgresQueueStore q -> (DB.Connection -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
 withDB name st' action =
-  E.try (withConnection (dbStore st') action) >>= either logErr pure
+  E.try (withTransaction (dbStore st') action) >>= either logErr pure
   where
     logErr :: E.SomeException -> IO (Either ErrorType a)
     logErr e = logError ("STORE: " <> T.pack err) $> Left (STORE err)

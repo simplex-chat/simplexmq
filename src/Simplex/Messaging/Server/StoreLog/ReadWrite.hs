@@ -13,7 +13,6 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Simplex.Messaging.Encoding.String
@@ -34,13 +33,12 @@ writeQueueStore s st = withLoadedQueues st $ writeQueue
         Just q' -> logCreateQueue s rId q'
         Nothing -> pure ()
 
-readQueueStore :: forall q s. QueueStoreClass q s => (RecipientId -> QueueRec -> IO q) -> FilePath -> s -> IO ()
-readQueueStore mkQ f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . LB.lines
+readQueueStore :: forall q s. QueueStoreClass q s => Bool -> (RecipientId -> QueueRec -> IO q) -> FilePath -> s -> IO ()
+readQueueStore tty mkQ f st = readLogLines tty f $ \_ -> processLine
   where
-    processLine :: LB.ByteString -> IO ()
-    processLine s' = either printError procLogRecord (strDecode s)
+    processLine :: B.ByteString -> IO ()
+    processLine s = either printError procLogRecord (strDecode s)
       where
-        s = LB.toStrict s'
         procLogRecord :: StoreLogRecord -> IO ()
         procLogRecord = \case
           CreateQueue rId qr -> addQueue_ st mkQ rId qr >>= qError rId "CreateQueue"

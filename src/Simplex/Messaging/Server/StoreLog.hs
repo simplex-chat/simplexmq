@@ -6,6 +6,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Server.StoreLog
@@ -26,12 +27,14 @@ module Simplex.Messaging.Server.StoreLog
     logDeleteNotifier,
     logUpdateQueueTime,
     readWriteStoreLog,
+    readLogLines,
   )
 where
 
 import Control.Applicative (optional, (<|>))
 import qualified Control.Exception as E
 import Control.Logger.Simple
+import Control.Monad (when)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -240,3 +243,17 @@ readWriteStoreLog readStore writeStore f st =
       let timedBackup = f <> "." <> iso8601Show ts
       renameFile tempBackup timedBackup
       logInfo $ "original state preserved as " <> T.pack timedBackup
+
+readLogLines :: Bool -> FilePath -> (Bool -> B.ByteString -> IO ()) -> IO ()
+readLogLines tty f action = do
+  count :: Int <- withFile f ReadMode $ \h -> ifM (hIsEOF h) (pure 0) (loop h 0)
+  putStrLn $ progress count
+  where
+    loop h i = do
+      s <- B.hGetLine h
+      eof <- hIsEOF h
+      action eof s
+      let i' = i + 1
+      when (tty && i' `mod` 10000 == 0) $ putStr (progress i' <> "\r") >> hFlush stdout
+      if eof then pure i' else loop h i'
+    progress i = "Processed: " <> show i <> " lines"

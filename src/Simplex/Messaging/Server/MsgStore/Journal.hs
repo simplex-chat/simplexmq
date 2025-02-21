@@ -41,6 +41,7 @@ module Simplex.Messaging.Server.MsgStore.Journal
     journalFilePath,
     logFileExt,
     stmQueueStore,
+    postgresQueueStore,
   )
 where
 
@@ -99,6 +100,10 @@ data QStore (s :: QSType) where
 stmQueueStore :: JournalMsgStore 'QSMemory -> STMQueueStore (JournalQueue 'QSMemory)
 stmQueueStore st = case queueStore_ st of
   MQStore st' -> st'
+
+postgresQueueStore :: JournalMsgStore 'QSPostgres -> PostgresQueueStore (JournalQueue 'QSPostgres)
+postgresQueueStore st = case queueStore_ st of
+  PQStore st' -> st'
 
 data JournalStoreConfig s = JournalStoreConfig
   { storePath :: FilePath,

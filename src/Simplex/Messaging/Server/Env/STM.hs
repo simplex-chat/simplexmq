@@ -350,7 +350,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
     loadStoreLog :: StoreQueueClass q => (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO ()
     loadStoreLog mkQ f st = do
       logInfo $ "restoring queues from file " <> T.pack f
-      sl <- readWriteQueueStore mkQ f st
+      sl <- readWriteQueueStore False mkQ f st
       setStoreLog st sl
     getCredentials protocol creds = do
       files <- missingCreds
@@ -412,5 +412,5 @@ newSMPProxyAgent smpAgentCfg random = do
   smpAgent <- newSMPClientAgent smpAgentCfg random
   pure ProxyAgent {smpAgent}
 
-readWriteQueueStore :: forall q s. QueueStoreClass q s => (RecipientId -> QueueRec -> IO q) -> FilePath -> s -> IO (StoreLog 'WriteMode)
-readWriteQueueStore mkQ = readWriteStoreLog (readQueueStore mkQ) (writeQueueStore @q)
+readWriteQueueStore :: forall q s. QueueStoreClass q s => Bool -> (RecipientId -> QueueRec -> IO q) -> FilePath -> s -> IO (StoreLog 'WriteMode)
+readWriteQueueStore tty mkQ = readWriteStoreLog (readQueueStore tty mkQ) (writeQueueStore @q)

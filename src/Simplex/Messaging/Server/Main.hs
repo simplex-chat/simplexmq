@@ -47,8 +47,10 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), QStoreCfg (..), stmQueueStore)
-import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), JournalQueue, QStoreCfg (..), postgresQueueStore, stmQueueStore)
+import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), QSType (..), SQSType (..), SMSType (..), newMsgStore)
+import Simplex.Messaging.Server.QueueStore.Postgres (batchInsertQueues)
+import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
 import Simplex.Messaging.Transport (simplexMQVersion, supportedProxyClientSMPRelayVRange, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), defaultSocksProxy)
@@ -104,7 +106,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 "Messages not imported"
               -- TODO [postgres]
               ms <- newJournalMsgStore MQStoreCfg
-              readQueueStore (mkQueue ms) storeLogFile $ stmQueueStore ms
+              readQueueStore True (mkQueue ms) storeLogFile $ stmQueueStore ms
               msgStats <- importMessages True ms storeMsgsFilePath Nothing -- no expiration
               putStrLn "Import completed"
               printMessageStats "Messages" msgStats
@@ -123,7 +125,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 "Journal not exported"
               -- TODO [postgres]
               ms <- newJournalMsgStore MQStoreCfg
-              readQueueStore (mkQueue ms) storeLogFile $ stmQueueStore ms
+              readQueueStore True (mkQueue ms) storeLogFile $ stmQueueStore ms
               exportMessages True ms storeMsgsFilePath False
               putStrLn "Export completed"
               putStrLn $ case readStoreType ini of
@@ -147,12 +149,17 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       storeLogFile <- getRequiredStoreLogFile ini
       case cmd of
         SCImport -> do
+          -- TODO [postgres] if schema exists, exit with instructions
           confirmOrExit
             ("WARNING: store log file " <> storeLogFile <> " will be imported to PostrgreSQL database: " <> B.unpack connstr <> ", schema: " <> schema)
             "Queue records not imported"
-          ms <- newJournalMsgStore $ PQStoreCfg dbOpts MCConsole
-          readQueueStore (mkQueue ms) storeLogFile (queueStore ms)
-          putStrLn "Import completed"
+          ms <- newJournalMsgStore MQStoreCfg
+          readQueueStore True (mkQueue ms) storeLogFile (queueStore ms)
+          queues <- readTVarIO $ loadedQueues $ stmQueueStore ms
+          putStrLn $ "Importing " <> show (length queues) <> " queues..." 
+          ps <- newJournalMsgStore $ PQStoreCfg dbOpts MCConsole
+          (qCnt, nCnt) <- batchInsertQueues @(JournalQueue 'QSMemory) True queues $ postgresQueueStore ps
+          putStrLn $ "Import completed: " <> show qCnt <> " queues, " <> show nCnt <> " notifiers"
           putStrLn $ case readStoreType ini of
             Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`.\nImport messages to journal to use PostgreSQL database for queues (`smp-server journal import`)"
             Right (ASType SQSMemory SMSJournal) -> "store_queues set to `memory`, update it to `database` in INI file"
