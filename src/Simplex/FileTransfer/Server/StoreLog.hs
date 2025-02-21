@@ -19,7 +19,7 @@ module Simplex.FileTransfer.Server.StoreLog
   )
 where
 
-import Control.Applicative (optional)
+import Control.Applicative ((<|>))
 import Control.Concurrent.STM
 import Control.Monad.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -58,7 +58,7 @@ instance StrEncoding FileStoreLogRecord where
     AckFile rId -> strEncode (Str "FACK", rId)
   strP =
     A.choice
-      [ "FNEW " *> (AddFile <$> strP_ <*> strP_ <*> strP <*> optional (A.space *> strP)),
+      [ "FNEW " *> (AddFile <$> strP_ <*> strP_ <*> strP <*> (A.space *> strP <|> pure Nothing)),
         "FPUT " *> (PutFile <$> strP_ <*> strP),
         "FADD " *> (AddRecipients <$> strP_ <*> strP),
         "FDEL " *> (DeleteFile <$> strP),
