@@ -4,14 +4,6 @@ set -eu
 # Make sure that PATH variable contains /usr/local/bin
 PATH="/usr/local/bin:$PATH"
 
-# Links to scripts/configs
-scripts_url="https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/scripts/main"
-scripts_url_systemd_smp="$scripts_url/smp-server.service"
-scripts_url_systemd_xftp="$scripts_url/xftp-server.service"
-scripts_url_update="$scripts_url/simplex-servers-update"
-scripts_url_uninstall="$scripts_url/simplex-servers-uninstall"
-scripts_url_stopscript="$scripts_url/simplex-servers-stopscript"
-
 # Default installation paths
 path_bin="/usr/local/bin"
 path_bin_smp="$path_bin/smp-server"
@@ -139,7 +131,6 @@ check_versions() {
 
   case "$VER" in 
     latest)
-      bin_url="https://github.com/simplex-chat/simplexmq/releases/latest/download"
       remote_version="$(curl --proto '=https' --tlsv1.2 -sSf -L https://api.github.com/repos/simplex-chat/simplexmq/releases/latest 2>/dev/null | grep -i "tag_name" | awk -F \" '{print $4}')"
 
       if [ -z "$remote_version" ]; then
@@ -152,7 +143,6 @@ check_versions() {
       ver_check="https://github.com/simplex-chat/simplexmq/releases/tag/${VER}"
       
       if curl -o /dev/null --proto '=https' --tlsv1.2 -sf -L "${ver_check}"; then
-        bin_url="https://github.com/simplex-chat/simplexmq/releases/download/${VER}"
         remote_version="${VER}"
       else
         printf "Provided version ${BLU}%s${NC} ${RED}doesn't exist${NC}! Switching to ${BLU}latest${NC}.\n" "${VER}"
@@ -166,6 +156,15 @@ check_versions() {
       fi
       ;;
   esac
+
+  # Links to scripts/configs
+  bin_url="https://github.com/simplex-chat/simplexmq/releases/download/${remote_version}"
+  scripts_url="https://raw.githubusercontent.com/simplex-chat/simplexmq/refs/tags/${remote_version}/scripts/main"
+  scripts_url_systemd_smp="$scripts_url/smp-server.service"
+  scripts_url_systemd_xftp="$scripts_url/xftp-server.service"
+  scripts_url_update="$scripts_url/simplex-servers-update"
+  scripts_url_uninstall="$scripts_url/simplex-servers-uninstall"
+  scripts_url_stopscript="$scripts_url/simplex-servers-stopscript"
 
   set +u
   for i in smp xftp; do
@@ -261,7 +260,10 @@ download_thing() {
   check_pattern="$3"
   err_msg="$4"
   
-  curl --proto '=https' --tlsv1.2 -sSf -L "$thing" -o "$path"
+  if ! curl --proto '=https' --tlsv1.2 -sSf -L "$thing" -o "$path"; then
+    printf "${RED}Something went wrong when downloading ${YLW}%s${NC}: either you don't have connection to Github or you're rate-limited.\n" "$err_msg"
+    exit 1
+  fi
 
   type="$(file "$path")"
 
@@ -270,7 +272,7 @@ download_thing() {
   esac
 
   if ! check_sanity "$path" "$check_pattern"; then
-    printf "${RED}Something went wrong when downloading ${YLW}%s${NC}: either you don't have connection to Github or you're rate-limited.\n" "$err_msg"
+    printf "${RED}Something went wrong with downloaded ${YLW}%s${NC}: file is corrupted.\n" "$err_msg"
     exit 1
   fi
 
@@ -329,14 +331,14 @@ update_misc() {
   OLD_IFS="$IFS"
 
   IFS='/'
-  for script in $msg_scripts_raw; do
+  for script in ${msg_scripts_raw:-}; do
     case "$script" in
       update)
         printf -- "- Updating update script..."
         mv "$path_tmp_bin_update" "$path_bin_update"
         printf "${GRN}Done!${NC}\n"
         printf -- "- Re-executing Update script..."
-        exec env UPDATE_SCRIPT_DONE=1 "$path_bin_update" "${selection}"
+        exec env UPDATE_SCRIPT_DONE=1 VER="$remote_version" "$path_bin_update" "${selection}"
         ;;
       stop)
         printf -- "- Updating stopscript script..."
@@ -351,7 +353,7 @@ update_misc() {
     esac
   done
 
-  for service in $msg_services_raw; do
+  for service in ${msg_services_raw:-}; do
     app="${service%%-*}"
     eval "path_systemd=\$path_systemd_${app}"
     eval "path_tmp_systemd=\$path_tmp_systemd_${app}"
@@ -371,7 +373,7 @@ update_bins() {
   OLD_IFS="$IFS"
 
   IFS='/'
-  for service in $msg_bins_raw; do
+  for service in ${msg_bins_raw:-}; do
     app="${service%%-*}"
     eval "local_version=\$local_version_${app}"
     eval "bin_url_final=\$bin_url_${app}"
@@ -413,7 +415,7 @@ download_bins() {
   OLD_IFS="$IFS"
 
   IFS='/'
-  for service in $msg_bins_raw; do
+  for service in ${msg_bins_raw:-}; do
     app="${service%%-*}"
     eval "local_version=\$local_version_${app}"
     eval "bin_url_final=\$bin_url_${app}"
