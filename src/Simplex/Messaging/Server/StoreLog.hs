@@ -254,6 +254,6 @@ readLogLines tty f action = do
       eof <- hIsEOF h
       action eof s
       let i' = i + 1
-      when (tty && i' `mod` 10000 == 0) $ putStr (progress i' <> "\r") >> hFlush stdout
+      when (tty && i' `mod` 100000 == 0) $ putStr (progress i' <> "\r") >> hFlush stdout
       if eof then pure i' else loop h i'
     progress i = "Processed: " <> show i <> " lines"
