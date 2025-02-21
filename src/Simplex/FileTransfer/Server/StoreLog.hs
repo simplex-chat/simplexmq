@@ -58,7 +58,7 @@ instance StrEncoding FileStoreLogRecord where
     AckFile rId -> strEncode (Str "FACK", rId)
   strP =
     A.choice
-      [ "FNEW " *> (AddFile <$> strP_ <*> strP_ <*> strP <*> (A.space *> strP <|> pure EntityActive)),
+      [ "FNEW " *> (AddFile <$> strP_ <*> strP_ <*> strP <*> (_strP <|> pure EntityActive)),
         "FPUT " *> (PutFile <$> strP_ <*> strP),
         "FADD " *> (AddRecipients <$> strP_ <*> strP),
         "FDEL " *> (DeleteFile <$> strP),
