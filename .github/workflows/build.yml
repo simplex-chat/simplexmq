@@ -69,7 +69,6 @@ jobs:
         run: cabal test --test-show-details=direct
         env:
           PGHOST: localhost
-          POSTGRES_PORT: 5432
 
       - name: Prepare binaries
         if: startsWith(github.ref, 'refs/tags/v')
