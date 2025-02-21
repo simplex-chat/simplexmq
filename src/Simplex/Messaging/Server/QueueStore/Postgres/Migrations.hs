@@ -32,7 +32,7 @@ CREATE TABLE msg_queues(
   sender_key BYTEA,
   snd_secure BOOLEAN NOT NULL,
   status TEXT NOT NULL,
-  updated_at BIGINT NOT NULL,
+  updated_at BIGINT,
   PRIMARY KEY (recipient_id)
 );
 
