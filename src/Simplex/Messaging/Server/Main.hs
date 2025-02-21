@@ -156,7 +156,6 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           ms <- newJournalMsgStore MQStoreCfg
           readQueueStore True (mkQueue ms) storeLogFile (queueStore ms)
           queues <- readTVarIO $ loadedQueues $ stmQueueStore ms
-          putStrLn $ "Importing " <> show (length queues) <> " queues..." 
           ps <- newJournalMsgStore $ PQStoreCfg dbOpts MCConsole
           (qCnt, nCnt) <- batchInsertQueues @(JournalQueue 'QSMemory) True queues $ postgresQueueStore ps
           putStrLn $ "Import completed: " <> show qCnt <> " queues, " <> show nCnt <> " notifiers"

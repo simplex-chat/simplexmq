@@ -291,6 +291,7 @@ insertQueueDB db rId QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, s
 batchInsertQueues :: StoreQueueClass q => Bool -> M.Map RecipientId q -> PostgresQueueStore q' -> IO (Int64, Int64)
 batchInsertQueues tty queues toStore = do
   qs <- catMaybes <$> mapM (\(rId, q) -> (rId,) <$$> readTVarIO (queueRec q)) (M.assocs queues)
+  putStrLn $ "Importing " <> show (length qs) <> " queues..."
   let st = dbStore toStore
   (ns, count) <- foldM (processChunk st) ((0, 0), 0) $ toChunks 10000 qs
   putStrLn $ progress count
