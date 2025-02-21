@@ -819,7 +819,7 @@ testRestoreExpireMessages =
       where
         export = do
           ms <- newMsgStore (testJournalStoreCfg MQStoreCfg) {quota = 4}
-          readWriteQueueStore (mkQueue ms) testStoreLogFile (queueStore ms) >>= closeStoreLog
+          readWriteQueueStore True (mkQueue ms) testStoreLogFile (queueStore ms) >>= closeStoreLog
           removeFileIfExists testStoreMsgsFile
           exportMessages False ms testStoreMsgsFile False
     runTest :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
