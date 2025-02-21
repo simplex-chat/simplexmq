@@ -58,9 +58,6 @@ jobs:
             ~/.cabal/store
             dist-newstyle
           key: ${{ matrix.os }}-${{ hashFiles('cabal.project', 'simplexmq.cabal') }}
-        # Ensures cache is saved even if the job fails.
-        # This is beneficial for us because when job fails it's usually due to sporadic test failures.
-        post-if: always()
 
       - name: Build
         shell: bash
