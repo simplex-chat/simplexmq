@@ -46,6 +46,11 @@ data ServerEntityStatus
   | EntityOff
   deriving (Eq, Show)
 
+blockingInfo :: ServerEntityStatus -> Maybe BlockingInfo
+blockingInfo = \case
+  EntityBlocked info -> Just info
+  _ -> Nothing
+
 instance StrEncoding ServerEntityStatus where
   strEncode = \case
     EntityActive -> "active"
