@@ -34,13 +34,13 @@ import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BlockingInfo, RcvPublicAuthKey, RecipientId, SenderId)
-import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, blockingInfo)
+import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, ServerEntityStatus (..))
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (bshow)
 import System.IO
 
 data FileStoreLogRecord
-  = AddFile SenderId FileInfo RoundedSystemTime (Maybe BlockingInfo)
+  = AddFile SenderId FileInfo RoundedSystemTime ServerEntityStatus
   | PutFile SenderId FilePath
   | AddRecipients SenderId (NonEmpty FileRecipient)
   | DeleteFile SenderId
@@ -50,7 +50,7 @@ data FileStoreLogRecord
 
 instance StrEncoding FileStoreLogRecord where
   strEncode = \case
-    AddFile sId file createdAt info -> strEncode (Str "FNEW", sId, file, createdAt, info)
+    AddFile sId file createdAt status -> strEncode (Str "FNEW", sId, file, createdAt, status)
     PutFile sId path -> strEncode (Str "FPUT", sId, path)
     AddRecipients sId rcps -> strEncode (Str "FADD", sId, rcps)
     DeleteFile sId -> strEncode (Str "FDEL", sId)
@@ -58,7 +58,7 @@ instance StrEncoding FileStoreLogRecord where
     AckFile rId -> strEncode (Str "FACK", rId)
   strP =
     A.choice
-      [ "FNEW " *> (AddFile <$> strP_ <*> strP_ <*> strP <*> (A.space *> strP <|> pure Nothing)),
+      [ "FNEW " *> (AddFile <$> strP_ <*> strP_ <*> strP <*> (A.space *> strP <|> pure EntityActive)),
         "FPUT " *> (PutFile <$> strP_ <*> strP),
         "FADD " *> (AddRecipients <$> strP_ <*> strP),
         "FDEL " *> (DeleteFile <$> strP),
@@ -69,7 +69,7 @@ instance StrEncoding FileStoreLogRecord where
 logFileStoreRecord :: StoreLog 'WriteMode -> FileStoreLogRecord -> IO ()
 logFileStoreRecord = writeStoreLogRecord
 
-logAddFile :: StoreLog 'WriteMode -> SenderId -> FileInfo -> RoundedSystemTime -> Maybe BlockingInfo -> IO ()
+logAddFile :: StoreLog 'WriteMode -> SenderId -> FileInfo -> RoundedSystemTime -> ServerEntityStatus -> IO ()
 logAddFile s = logFileStoreRecord s .:: AddFile
 
 logPutFile :: StoreLog 'WriteMode -> SenderId -> FilePath -> IO ()
@@ -115,8 +115,8 @@ writeFileStore s FileStore {files, recipients} = do
   where
     logFile :: Map RecipientId (SenderId, RcvPublicAuthKey) -> FileRec -> IO ()
     logFile allRcps FileRec {senderId, fileInfo, filePath, recipientIds, createdAt, fileStatus} = do
-      info <- blockingInfo <$> readTVarIO fileStatus
-      logAddFile s senderId fileInfo createdAt info
+      status <- readTVarIO fileStatus
+      logAddFile s senderId fileInfo createdAt status
       (rcpErrs, rcps) <- M.mapEither getRcp . M.fromSet id <$> readTVarIO recipientIds
       mapM_ (logAddRecipients s senderId) $ L.nonEmpty $ M.elems rcps
       mapM_ (B.putStrLn . ("Error storing log: " <>)) rcpErrs
