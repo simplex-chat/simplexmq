@@ -100,7 +100,7 @@ readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.re
           Left e -> B.putStrLn $ "Log processing error (" <> bshow e <> "): " <> B.take 100 s
           _ -> pure ()
     addToStore = \case
-      AddFile sId file createdAt info -> addFile st sId file createdAt info
+      AddFile sId file createdAt status -> addFile st sId file createdAt status
       PutFile qId path -> setFilePath st qId path
       AddRecipients sId rcps -> runExceptT $ addRecipients sId rcps
       DeleteFile sId -> deleteFile st sId
