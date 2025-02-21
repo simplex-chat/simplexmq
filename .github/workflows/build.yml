@@ -59,6 +59,10 @@ jobs:
             dist-newstyle
           key: ${{ matrix.os }}-${{ hashFiles('cabal.project', 'simplexmq.cabal') }}
 
+      - name: Postgres softlink
+        shell: bash
+        run: ln -s /tmp/.s.PGSQL.5432 /var/run/postgresql/.s.PGSQL.5432
+
       - name: Build
         shell: bash
         run: cabal build --enable-tests
