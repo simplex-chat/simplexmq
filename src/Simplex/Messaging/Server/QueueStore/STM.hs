@@ -38,7 +38,6 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Data.Bitraversable (bimapM)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
@@ -48,7 +47,8 @@ import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.StoreLog
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (ifM, tshow, ($>>=), (<$$))
+import Simplex.Messaging.Util (ifM, safeDecodeUtf8, tshow, ($>>=), (<$$))
+import System.Exit (exitFailure)
 import System.IO
 import UnliftIO.STM
 
@@ -196,12 +196,11 @@ withLog :: STMStoreClass s => String -> s -> (StoreLog 'WriteMode -> IO ()) -> I
 withLog name = withLog' name . storeLog . stmQueueStore
 
 readQueueStore :: forall s. STMStoreClass s => FilePath -> s -> IO ()
-readQueueStore f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLine . LB.lines
+readQueueStore f st = readLogLines False f processLine
   where
-    processLine :: LB.ByteString -> IO ()
-    processLine s' = either printError procLogRecord (strDecode s)
+    processLine :: Bool -> B.ByteString -> IO ()
+    processLine eof s = either printError procLogRecord (strDecode s)
       where
-        s = LB.toStrict s'
         procLogRecord :: StoreLogRecord -> IO ()
         procLogRecord = \case
           CreateQueue rId q -> addQueue st rId q >>= qError rId "CreateQueue"
@@ -214,7 +213,11 @@ readQueueStore f st = withFile f ReadMode $ LB.hGetContents >=> mapM_ processLin
           DeleteNotifier qId -> withQueue qId "DeleteNotifier" $ deleteQueueNotifier st
           UpdateTime qId t -> withQueue qId "UpdateTime" $ \q -> updateQueueTime st q t
         printError :: String -> IO ()
-        printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
+        printError e
+          | eof = logWarn err
+          | otherwise = logError err >> exitFailure
+          where
+            err = "Error parsing log: " <> T.pack e <> " - " <> safeDecodeUtf8 s
         withQueue :: forall a. RecipientId -> T.Text -> (StoreQueue s -> IO (Either ErrorType a)) -> IO ()
         withQueue qId op a = runExceptT go >>= qError qId op
           where

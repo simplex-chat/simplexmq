@@ -28,6 +28,8 @@ module Simplex.Messaging.Server.StoreLog
     logUpdateQueueTime,
     readWriteStoreLog,
     writeQueueStore,
+    readLogLines,
+    foldLogLines,
   )
 where
 
@@ -35,6 +37,7 @@ import Control.Applicative (optional, (<|>))
 import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Control.Logger.Simple
+import Control.Monad (when)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -254,3 +257,21 @@ writeQueueStore s st = readTVarIO qs >>= mapM_ writeQueue . M.assocs
       readTVarIO (queueRec' q) >>= \case
         Just q' -> logCreateQueue s rId q'
         Nothing -> atomically $ TM.delete rId qs
+
+readLogLines :: Bool -> FilePath -> (Bool -> B.ByteString -> IO ()) -> IO ()
+readLogLines tty f action = foldLogLines tty f (const action) ()
+
+foldLogLines :: Bool -> FilePath -> (a -> Bool -> B.ByteString -> IO a) -> a -> IO a
+foldLogLines tty f action initValue = do
+  (count :: Int, acc) <- withFile f ReadMode $ \h -> ifM (hIsEOF h) (pure (0, initValue)) (loop h 0 initValue)
+  putStrLn $ progress count
+  pure acc
+  where
+    loop h i acc = do
+      s <- B.hGetLine h
+      eof <- hIsEOF h
+      acc' <- action acc eof s
+      let i' = i + 1
+      when (tty && i' `mod` 100000 == 0) $ putStr (progress i' <> "\r") >> hFlush stdout
+      if eof then pure (i', acc') else loop h i' acc'
+    progress i = "Processed: " <> show i <> " lines"
