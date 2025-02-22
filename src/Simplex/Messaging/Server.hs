@@ -69,6 +69,7 @@ import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
 import Data.Semigroup (Sum (..))
+import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import qualified Data.Text.IO as T
@@ -104,6 +105,7 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.Stats
+import Simplex.Messaging.Server.StoreLog (foldLogLines)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -1862,31 +1864,32 @@ processServerMessages StartOptions {skipWarnings} = do
                   logError $ "STORE: processValidateQueue, failed opening message queue, " <> tshow e
                   exitFailure
 
--- TODO this function should be called after importing queues from store log
 importMessages :: forall s. STMStoreClass s => Bool -> s -> FilePath -> Maybe Int64 -> Bool -> IO MessageStats
 importMessages tty ms f old_ skipWarnings  = do
   logInfo $ "restoring messages from file " <> T.pack f
-  LB.readFile f >>= runExceptT . foldM restoreMsg (0, Nothing, (0, 0, M.empty)) . LB.lines >>= \case
-    Left e -> do
-      when tty $ putStrLn ""
-      logError . T.pack $ "error restoring messages: " <> e
-      liftIO exitFailure
-    Right (lineCount, _, (storedMsgsCount, expiredMsgsCount, overQuota)) -> do
-      putStrLn $ progress lineCount
-      renameFile f $ f <> ".bak"
-      mapM_ setOverQuota_ overQuota
-      logQueueStates ms
-      storedQueues <- M.size <$> readTVarIO (queues $ stmQueueStore ms)
-      pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues}
+  (lineCount, _, (storedMsgsCount, expiredMsgsCount, overQuota)) <-
+    foldLogLines tty f restoreMsg (0, Nothing, (0, 0, M.empty))
+  putStrLn $ progress lineCount
+  renameFile f $ f <> ".bak"
+  mapM_ setOverQuota_ overQuota
+  logQueueStates ms
+  storedQueues <- M.size <$> readTVarIO (queues $ stmQueueStore ms)
+  pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues}
   where
     progress i = "Processed " <> show i <> " lines"
-    restoreMsg :: (Int, Maybe (RecipientId, StoreQueue s), (Int, Int, M.Map RecipientId (StoreQueue s))) -> LB.ByteString -> ExceptT String IO (Int, Maybe (RecipientId, StoreQueue s), (Int, Int, M.Map RecipientId (StoreQueue s)))
-    restoreMsg (!i, q_, (!stored, !expired, !overQuota)) s' = do
-      when (tty && i `mod` 1000 == 0) $ liftIO $ putStr (progress i <> "\r") >> hFlush stdout
-      MLRv3 rId msg <- liftEither . first (msgErr "parsing") $ strDecode s
-      liftError show $ addToMsgQueue rId msg
+    restoreMsg :: (Int, Maybe (RecipientId, StoreQueue s), (Int, Int, M.Map RecipientId (StoreQueue s))) -> Bool -> ByteString -> IO (Int, Maybe (RecipientId, StoreQueue s), (Int, Int, M.Map RecipientId (StoreQueue s)))
+    restoreMsg (!i, q_, counts@(!stored, !expired, !overQuota)) eof s = do
+      when (tty && i `mod` 1000 == 0) $ putStr (progress i <> "\r") >> hFlush stdout
+      case strDecode s of
+        Right (MLRv3 rId msg) -> runExceptT (addToMsgQueue rId msg) >>= either (exitErr . tshow) pure
+        Left e
+          | eof -> warnOrExit (msgErr "parsing" e) $> (i + 1, q_, counts)
+          | otherwise -> exitErr $ msgErr "parsing" e
       where
-        s = LB.toStrict s'
+        exitErr e = do
+          when tty $ putStrLn ""
+          logError $ "error restoring messages: " <> e
+          liftIO exitFailure
         addToMsgQueue rId msg = do
           qOrErr <- case q_ of
             -- to avoid lookup when restoring the next message to the same queue
@@ -1896,13 +1899,8 @@ importMessages tty ms f old_ skipWarnings  = do
             Right q -> addToQueue_ q rId msg
             Left AUTH -> liftIO $ do
               when tty $ putStrLn ""
-              if skipWarnings
-                then logWarn errStr $> (i + 1, Nothing, (stored, expired, overQuota))
-                else do
-                  logWarn $ errStr <> ", start with --skip-warnings option to ignore this error"
-                  exitFailure
-              where
-                errStr = "warning restoring messages: queue " <> safeDecodeUtf8 (encode $ unEntityId rId) <> " does not exist"
+              warnOrExit $ "queue " <> safeDecodeUtf8 (encode $ unEntityId rId) <> " does not exist"
+              pure (i + 1, Nothing, counts)
             Left e -> throwE e
         addToQueue_ q rId msg =
           (i + 1,Just (rId, q),) <$> case msg of
@@ -1913,7 +1911,7 @@ importMessages tty ms f old_ skipWarnings  = do
                     Nothing -> liftIO $ do
                       when tty $ putStrLn ""
                       logError $ decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
-                      pure (stored, expired, overQuota)
+                      pure counts
               | otherwise -> pure (stored, expired + 1, overQuota)
             MessageQuota {} ->
               -- queue was over quota at some point,
@@ -1925,8 +1923,15 @@ importMessages tty ms f old_ skipWarnings  = do
                   withPeekMsgQueue ms q "mergeQuotaMsgs" $ maybe (pure ()) $ \case
                     (mq, MessageQuota {}) -> tryDeleteMsg_ q mq False
                     _ -> pure ()
-        msgErr :: Show e => String -> e -> String
-        msgErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
+        msgErr :: Show e => Text -> e -> Text
+        msgErr op e = op <> " error (" <> tshow e <> "): " <> safeDecodeUtf8 (B.take 100 s)
+        warnOrExit e
+          | skipWarnings = logWarn e'
+          | otherwise = do
+              logWarn $ e' <> ", start with --skip-warnings option to ignore this error"
+              exitFailure
+          where
+            e' = "warning restoring messages: " <> e
 
 printMessageStats :: T.Text -> MessageStats -> IO ()
 printMessageStats name MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues} =
