@@ -34,7 +34,9 @@ import qualified Data.Text.IO as T
 import Network.Socket (HostName)
 import Options.Applicative
 import Simplex.Messaging.Agent.Protocol (connReqUriP')
+import Simplex.Messaging.Agent.Store.Postgres (connectDB)
 import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts (..))
+import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig, textToHostMode)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
@@ -147,23 +149,28 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
       msgsFileExists <- doesFileExist storeMsgsFilePath
       storeLogFile <- getRequiredStoreLogFile ini
+      (conn, dbNew) <- connectDB connstr schema True
+      DB.close conn
       case cmd of
-        SCImport -> do
-          -- TODO [postgres] if schema exists, exit with instructions
-          confirmOrExit
-            ("WARNING: store log file " <> storeLogFile <> " will be imported to PostrgreSQL database: " <> B.unpack connstr <> ", schema: " <> schema)
-            "Queue records not imported"
-          ms <- newJournalMsgStore MQStoreCfg
-          readQueueStore True (mkQueue ms) storeLogFile (queueStore ms)
-          queues <- readTVarIO $ loadedQueues $ stmQueueStore ms
-          ps <- newJournalMsgStore $ PQStoreCfg dbOpts MCConsole
-          (qCnt, nCnt) <- batchInsertQueues @(JournalQueue 'QSMemory) True queues $ postgresQueueStore ps
-          putStrLn $ "Import completed: " <> show qCnt <> " queues, " <> show nCnt <> " notifiers"
-          putStrLn $ case readStoreType ini of
-            Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`.\nImport messages to journal to use PostgreSQL database for queues (`smp-server journal import`)"
-            Right (ASType SQSMemory SMSJournal) -> "store_queues set to `memory`, update it to `database` in INI file"
-            Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, start the server."
-            Left e -> e <> ", configure storage correctly"
+        SCImport
+          | not dbNew -> do
+              putStrLn $ "Schema " <> B.unpack schema <> " already exists in PostrgreSQL database: " <> B.unpack connstr
+              exitFailure
+          | otherwise -> do
+              confirmOrExit
+                ("WARNING: store log file " <> storeLogFile <> " will be imported to PostrgreSQL database: " <> B.unpack connstr <> ", schema: " <> B.unpack schema)
+                "Queue records not imported"
+              ms <- newJournalMsgStore MQStoreCfg
+              readQueueStore True (mkQueue ms) storeLogFile (queueStore ms)
+              queues <- readTVarIO $ loadedQueues $ stmQueueStore ms
+              ps <- newJournalMsgStore $ PQStoreCfg dbOpts MCConsole
+              (qCnt, nCnt) <- batchInsertQueues @(JournalQueue 'QSMemory) True queues $ postgresQueueStore ps
+              putStrLn $ "Import completed: " <> show qCnt <> " queues, " <> show nCnt <> " notifiers"
+              putStrLn $ case readStoreType ini of
+                Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`.\nImport messages to journal to use PostgreSQL database for queues (`smp-server journal import`)"
+                Right (ASType SQSMemory SMSJournal) -> "store_queues set to `memory`, update it to `database` in INI file"
+                Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, start the server."
+                Left e -> e <> ", configure storage correctly"
         SCExport -> undefined
         SCDelete -> undefined
   where
@@ -206,7 +213,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
     iniDBOptions ini =
       DBOpts
         { connstr = either (const defaultDBConnStr) encodeUtf8 $ lookupValue "STORE_LOG" "db_connection" ini,
-          schema = either (const defaultDBSchema) T.unpack $ lookupValue "STORE_LOG" "db_schema" ini
+          schema = either (const defaultDBSchema) encodeUtf8 $ lookupValue "STORE_LOG" "db_schema" ini,
+          createSchema = False
         }
     httpsCertFile = combine cfgPath "web.crt"
     httpsKeyFile = combine cfgPath "web.key"
@@ -291,7 +299,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                    \store_queues: memory\n\n\
                    \# Database connection settings for PostgreSQL database (`store_queues: database`).\n"
                 <> (optDisabled dbOptions <> "db_connection: " <> safeDecodeUtf8 (maybe defaultDBConnStr connstr dbOptions) <> "\n")
-                <> (optDisabled dbOptions <> "db_schema: " <> T.pack (maybe defaultDBSchema schema dbOptions) <> "\n\n")
+                <> (optDisabled dbOptions <> "db_schema: " <> safeDecodeUtf8 (maybe defaultDBSchema schema dbOptions) <> "\n\n")
                 <> "# Message storage mode: `memory` or `journal`.\n\
                    \store_messages: memory\n\n\
                    \# When store_messages is `memory`, undelivered messages are optionally saved and restored\n\
@@ -456,8 +464,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   ASSCfg SQSMemory SMSMemory $ SSCMemory $ enableStoreLog $> StorePaths {storeLogFile = storeLogFilePath, storeMsgsFile = restoreMessagesFile storeMsgsFilePath}
                 ASType SQSMemory SMSJournal ->
                   ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = storeLogFilePath, storeMsgsPath = storeMsgsJournalDir}
-                ASType SQSPostgres SMSJournal -> -- TODO DB options
-                  ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeDBOpts = undefined, storeMsgsPath' = storeMsgsJournalDir},
+                ASType SQSPostgres SMSJournal ->
+                  ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeDBOpts = iniDBOptions ini, storeMsgsPath' = storeMsgsJournalDir},
               storeNtfsFile = restoreMessagesFile storeNtfsFilePath,
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
@@ -587,7 +595,7 @@ simplexmqSource = "https://github.com/simplex-chat/simplexmq"
 defaultDBConnStr :: ByteString
 defaultDBConnStr = "postgresql://smp@/smp_server_store"
 
-defaultDBSchema :: String
+defaultDBSchema :: ByteString
 defaultDBSchema = "smp_server"
 
 defaultControlPort :: Int
@@ -907,7 +915,7 @@ cliCommandP cfgPath logPath iniFile =
               <> value defaultDBSchema
               <> showDefault
           )
-      pure DBOpts {connstr, schema}
+      pure DBOpts {connstr, schema, createSchema = False}
 
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack

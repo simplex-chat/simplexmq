@@ -49,7 +49,7 @@ import Simplex.Messaging.Server.QueueStore.STM (readQueueRecIO, setStatus, withQ
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (firstRow, ifM, tshow, ($>>), ($>>=), (<$$), (<$$>))
+import Simplex.Messaging.Util (firstRow, ifM, safeDecodeUtf8, tshow, ($>>), ($>>=), (<$$), (<$$>))
 import System.Exit (exitFailure)
 import System.IO (hFlush, stdout)
 

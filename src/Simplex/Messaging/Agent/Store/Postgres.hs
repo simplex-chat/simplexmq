@@ -10,17 +10,19 @@ module Simplex.Messaging.Agent.Store.Postgres
     createDBStore,
     closeDBStore,
     reopenDBStore,
+    connectDB,
     execSQL,
   )
 where
 
 import Control.Exception (throwIO)
-import Control.Monad (unless, void)
+import Control.Logger.Simple (logError)
+import Control.Monad (void, when)
 import Data.ByteString (ByteString)
 import Data.Functor (($>))
-import Data.String (fromString)
 import Data.Text (Text)
 import Database.PostgreSQL.Simple (Only (..))
+import Database.PostgreSQL.Simple.Types (Query (..))
 import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 import Simplex.Messaging.Agent.Store.Migrations (DBMigrate (..), sharedMigrateSchema)
@@ -28,7 +30,8 @@ import qualified Simplex.Messaging.Agent.Store.Postgres.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationError (..))
-import Simplex.Messaging.Util (ifM)
+import Simplex.Messaging.Util (ifM, safeDecodeUtf8)
+import System.Exit (exitFailure)
 import UnliftIO.Exception (bracketOnError, onException)
 import UnliftIO.MVar
 import UnliftIO.STM
@@ -38,8 +41,8 @@ import UnliftIO.STM
 -- Applies necessary migrations to schema.
 -- TODO [postgres] authentication / user password, db encryption (?)
 createDBStore :: DBOpts -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
-createDBStore DBOpts {connstr, schema} migrations confirmMigrations = do
-  st <- connectPostgresStore connstr schema
+createDBStore opts migrations confirmMigrations = do
+  st <- connectPostgresStore opts
   r <- migrateSchema st `onException` closeDBStore st
   case r of
     Right () -> pure $ Right st
@@ -51,15 +54,19 @@ createDBStore DBOpts {connstr, schema} migrations confirmMigrations = do
           dbm = DBMigrate {initialize, getCurrent, run = Migrations.run st, backup = pure ()}
        in sharedMigrateSchema dbm (dbNew st) migrations confirmMigrations
 
-connectPostgresStore :: ByteString -> String -> IO DBStore
-connectPostgresStore dbConnstr dbSchema = do
-  (dbConn, dbNew) <- connectDB dbConnstr dbSchema -- TODO [postgres] analogue for dbBusyLoop?
+connectPostgresStore :: DBOpts -> IO DBStore
+connectPostgresStore DBOpts {connstr, schema, createSchema} = do
+  (dbConn, dbNew) <- connectDB connstr schema createSchema -- TODO [postgres] analogue for dbBusyLoop?
+  when (dbNew && not createSchema) $ do
+    logError $ "connectPostgresStore, schema " <> safeDecodeUtf8 schema <> " does not exist, exiting."
+    DB.close dbConn
+    exitFailure
   dbConnection <- newMVar dbConn
   dbClosed <- newTVarIO False
-  pure DBStore {dbConnstr, dbSchema, dbConnection, dbNew, dbClosed}
+  pure DBStore {dbConnstr = connstr, dbSchema = schema, dbConnection, dbNew, dbClosed}
 
-connectDB :: ByteString -> String -> IO (DB.Connection, Bool)
-connectDB connstr schema = do
+connectDB :: ByteString -> ByteString -> Bool -> IO (DB.Connection, Bool)
+connectDB connstr schema createSchema = do
   db <- PSQL.connectPostgreSQL connstr
   schemaExists <- prepare db `onException` PSQL.close db
   let dbNew = not schemaExists
@@ -77,9 +84,13 @@ connectDB connstr schema = do
             )
           |]
           (Only schema)
-      unless schemaExists $ void $ PSQL.execute_ db (fromString $ "CREATE SCHEMA " <> schema)
-      void $ PSQL.execute_ db (fromString $ "SET search_path TO " <> schema)
+      if schemaExists
+        then setSearchPath db
+        else when createSchema $ do
+          void $ PSQL.execute_ db $ Query $ "CREATE SCHEMA " <> schema
+          setSearchPath db
       pure schemaExists
+    setSearchPath db = void $ PSQL.execute_ db $ Query $ "SET search_path TO " <> schema
 
 -- can share with SQLite
 closeDBStore :: DBStore -> IO ()
@@ -95,7 +106,7 @@ openPostgresStore_ DBStore {dbConnstr, dbSchema, dbConnection, dbClosed} =
     (takeMVar dbConnection)
     (tryPutMVar dbConnection)
     $ \_dbConn -> do
-      (dbConn, _dbNew) <- connectDB dbConnstr dbSchema
+      (dbConn, _dbNew) <- connectDB dbConnstr dbSchema False
       atomically $ writeTVar dbClosed False
       putMVar dbConnection dbConn
 
