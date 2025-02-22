@@ -259,7 +259,7 @@ writeQueueStore s st = readTVarIO qs >>= mapM_ writeQueue . M.assocs
         Nothing -> atomically $ TM.delete rId qs
 
 readLogLines :: Bool -> FilePath -> (Bool -> B.ByteString -> IO ()) -> IO ()
-readLogLines tty f action = foldLogLines tty f (\_ -> action) ()
+readLogLines tty f action = foldLogLines tty f (const action) ()
 
 foldLogLines :: Bool -> FilePath -> (a -> Bool -> B.ByteString -> IO a) -> a -> IO a
 foldLogLines tty f action initValue = do

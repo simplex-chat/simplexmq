@@ -47,7 +47,7 @@ import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.StoreLog
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (ifM, tshow, ($>>=), (<$$))
+import Simplex.Messaging.Util (ifM, safeDecodeUtf8, tshow, ($>>=), (<$$))
 import System.Exit (exitFailure)
 import System.IO
 import UnliftIO.STM
@@ -196,7 +196,7 @@ withLog :: STMStoreClass s => String -> s -> (StoreLog 'WriteMode -> IO ()) -> I
 withLog name = withLog' name . storeLog . stmQueueStore
 
 readQueueStore :: forall s. STMStoreClass s => FilePath -> s -> IO ()
-readQueueStore f st = readLogLines False f $ processLine
+readQueueStore f st = readLogLines False f processLine
   where
     processLine :: Bool -> B.ByteString -> IO ()
     processLine eof s = either printError procLogRecord (strDecode s)
@@ -213,9 +213,11 @@ readQueueStore f st = readLogLines False f $ processLine
           DeleteNotifier qId -> withQueue qId "DeleteNotifier" $ deleteQueueNotifier st
           UpdateTime qId t -> withQueue qId "UpdateTime" $ \q -> updateQueueTime st q t
         printError :: String -> IO ()
-        printError e = do
-          B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
-          unless eof $ exitFailure
+        printError e
+          | eof = logWarn err
+          | otherwise = logError err >> exitFailure
+          where
+            err = "Error parsing log: " <> T.pack e <> " - " <> safeDecodeUtf8 s
         withQueue :: forall a. RecipientId -> T.Text -> (StoreQueue s -> IO (Either ErrorType a)) -> IO ()
         withQueue qId op a = runExceptT go >>= qError qId op
           where
