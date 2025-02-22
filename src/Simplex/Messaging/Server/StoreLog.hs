@@ -28,6 +28,7 @@ module Simplex.Messaging.Server.StoreLog
     logUpdateQueueTime,
     readWriteStoreLog,
     readLogLines,
+    foldLogLines,
   )
 where
 
@@ -245,15 +246,19 @@ readWriteStoreLog readStore writeStore f st =
       logInfo $ "original state preserved as " <> T.pack timedBackup
 
 readLogLines :: Bool -> FilePath -> (Bool -> B.ByteString -> IO ()) -> IO ()
-readLogLines tty f action = do
-  count :: Int <- withFile f ReadMode $ \h -> ifM (hIsEOF h) (pure 0) (loop h 0)
+readLogLines tty f action = foldLogLines tty f (const action) ()
+
+foldLogLines :: Bool -> FilePath -> (a -> Bool -> B.ByteString -> IO a) -> a -> IO a
+foldLogLines tty f action initValue = do
+  (count :: Int, acc) <- withFile f ReadMode $ \h -> ifM (hIsEOF h) (pure (0, initValue)) (loop h 0 initValue)
   putStrLn $ progress count
+  pure acc
   where
-    loop h i = do
+    loop h !i !acc = do
       s <- B.hGetLine h
       eof <- hIsEOF h
-      action eof s
+      acc' <- action acc eof s
       let i' = i + 1
       when (tty && i' `mod` 100000 == 0) $ putStr (progress i' <> "\r") >> hFlush stdout
-      if eof then pure i' else loop h i'
+      if eof then pure (i', acc') else loop h i' acc'
     progress i = "Processed: " <> show i <> " lines"

@@ -23,7 +23,7 @@ import GHC.IO.Exception (IOException (..))
 import qualified GHC.IO.Exception as IOException
 import NtfServerTests (ntfServerTests)
 import RemoteControl (remoteControlTests)
-import SMPClient (skipOnCI, testServerDBConnectInfo)
+import SMPClient (testServerDBConnectInfo)
 import SMPProxyTests (smpProxyTests)
 import ServerTests
 import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists, dropDatabaseAndUser)

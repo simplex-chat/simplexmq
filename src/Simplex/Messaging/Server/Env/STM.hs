@@ -124,7 +124,13 @@ data ServerConfig = ServerConfig
     allowSMPProxy :: Bool, -- auth is the same with `newQueueBasicAuth`
     serverClientConcurrency :: Int,
     -- | server public information
-    information :: Maybe ServerPublicInfo
+    information :: Maybe ServerPublicInfo,
+    startOptions :: StartOptions
+  }
+
+data StartOptions = StartOptions
+  { maintenance :: Bool,
+    skipWarnings :: Bool
   }
 
 defMsgExpirationDays :: Int64

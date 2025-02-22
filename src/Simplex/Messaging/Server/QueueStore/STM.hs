@@ -4,7 +4,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -129,7 +128,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       qr = queueRec sq
       delete q = forM (notifier q) $ \NtfCreds {notifierId} -> do
         TM.delete notifierId $ notifiers st
-        writeTVar qr $! Just q {notifier = Nothing}
+        writeTVar qr $ Just q {notifier = Nothing}
         pure notifierId
 
   suspendQueue :: STMQueueStore q -> q -> IO (Either ErrorType ())
@@ -155,7 +154,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         | updatedAt == Just t = pure (q, False)
         | otherwise =
             let !q' = q {updatedAt = Just t}
-             in (writeTVar qr $! Just q') $> (q', True)
+             in writeTVar qr (Just q') $> (q', True)
       log' (q, changed)
         | changed = q <$$ withLog "updateQueueTime" st (\sl -> logUpdateQueueTime sl (recipientId sq) t)
         | otherwise = pure $ Right q

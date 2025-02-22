@@ -67,7 +67,8 @@ testStoreDBOpts :: DBOpts
 testStoreDBOpts = 
   DBOpts
     { connstr = testServerDBConnstr,
-      schema = "smp_server"
+      schema = "smp_server",
+      createSchema = True
     }
 
 testStoreDBOpts2 :: DBOpts
@@ -209,7 +210,8 @@ cfgMS msType =
       smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1}, -- seconds
       allowSMPProxy = False,
       serverClientConcurrency = 2,
-      information = Nothing
+      information = Nothing,
+      startOptions = StartOptions {maintenance = False, skipWarnings = False}
     }
 
 cfgV7 :: ServerConfig
