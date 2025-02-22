@@ -73,7 +73,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
         True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `" <> executableName <> " start`."
         _ -> initializeServer opts
     OnlineCert certOpts -> withIniFile $ \_ -> genOnline cfgPath certOpts
-    Start -> withIniFile runServer
+    Start opts -> withIniFile $ runServer opts
     Delete -> do
       confirmOrExit
         "WARNING: deleting the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
@@ -107,7 +107,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 "Messages not imported"
               ms <- newJournalMsgStore
               readQueueStore storeLogFile ms
-              msgStats <- importMessages True ms storeMsgsFilePath Nothing -- no expiration
+              msgStats <- importMessages True ms storeMsgsFilePath Nothing False -- no expiration
               putStrLn "Import completed"
               printMessageStats "Messages" msgStats
               putStrLn $ case readMsgStoreType ini of
@@ -322,7 +322,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 <> (webDisabled <> "key: " <> T.pack httpsKeyFile <> "\n")
               where
                 webDisabled = if disableWeb then "# " else ""
-    runServer ini = do
+    runServer startOptions ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
@@ -463,7 +463,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   },
               allowSMPProxy = True,
               serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini,
-              information = serverPublicInfo ini
+              information = serverPublicInfo ini,
+              startOptions
             }
         textToOwnServers :: Text -> [ByteString]
         textToOwnServers = map encodeUtf8 . T.words
@@ -635,7 +636,7 @@ printSourceCode = \case
 data CliCommand
   = Init InitOptions
   | OnlineCert CertOptions
-  | Start
+  | Start StartOptions
   | Delete
   | Journal JournalCmd
 
@@ -669,7 +670,7 @@ cliCommandP cfgPath logPath iniFile =
   hsubparser
     ( command "init" (info (Init <$> initP) (progDesc $ "Initialize server - creates " <> cfgPath <> " and " <> logPath <> " directories and configuration files"))
         <> command "cert" (info (OnlineCert <$> certOptionsP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
-        <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
+        <> command "start" (info (Start <$> startOptionsP) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
         <> command "journal" (info (Journal <$> journalCmdP) (progDesc "Import/export messages to/from journal storage"))
     )
@@ -811,6 +812,18 @@ cliCommandP cfgPath logPath iniFile =
             disableWeb,
             scripted
           }
+    startOptionsP = do
+      maintenance <-
+        switch
+          ( long "maintenance"
+              <> help "Do not start the server, only perform start and stop tasks"
+          )
+      skipWarnings <-
+        switch
+          ( long "skip-warnings"
+              <> help "Start the server with non-critical start warnings"
+          )
+      pure StartOptions {maintenance, skipWarnings}
     journalCmdP =
       hsubparser
         ( command "import" (info (pure JCImport) (progDesc "Import message log file into a new journal storage"))

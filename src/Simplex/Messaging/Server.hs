@@ -111,7 +111,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
-import System.Exit (exitFailure)
+import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (timeout)
@@ -162,14 +162,18 @@ newMessageStats :: MessageStats
 newMessageStats = MessageStats 0 0 0
 
 smpServer :: TMVar Bool -> ServerConfig -> Maybe AttachHTTP -> M ()
-smpServer started cfg@ServerConfig {transports, transportConfig = tCfg} attachHTTP_ = do
+smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOptions} attachHTTP_ = do
   s <- asks server
   pa <- asks proxyAgent
-  msgStats_ <- processServerMessages
+  msgStats_ <- processServerMessages startOptions
   ntfStats <- restoreServerNtfs
   liftIO $ mapM_ (printMessageStats "messages") msgStats_
   liftIO $ printMessageStats "notifications" ntfStats
   restoreServerStats msgStats_ ntfStats
+  when (maintenance startOptions) $ do
+    liftIO $ putStrLn "Server started in 'maintenance' mode, exiting"
+    stopServer s
+    liftIO $ exitSuccess
   raceAny_
     ( serverThread s "server subscribedQ" subscribedQ subscribers subClients pendingSubEvents subscriptions cancelSub
         : serverThread s "server ntfSubscribedQ" ntfSubscribedQ Env.notifiers ntfSubClients pendingNtfSubEvents ntfSubscriptions (\_ -> pure ())
@@ -1816,8 +1820,8 @@ exportMessages tty ms f drainMsgs = do
           exitFailure
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
 
-processServerMessages :: M (Maybe MessageStats)
-processServerMessages = do
+processServerMessages :: StartOptions -> M (Maybe MessageStats)
+processServerMessages StartOptions {skipWarnings} = do
   old_ <- asks (messageExpiration . config) $>>= (liftIO . fmap Just . expireBeforeEpoch)
   expire <- asks $ expireMessagesOnStart . config
   asks msgStore >>= liftIO . processMessages old_ expire
@@ -1825,7 +1829,7 @@ processServerMessages = do
       processMessages :: Maybe Int64 -> Bool -> AMsgStore -> IO (Maybe MessageStats)
       processMessages old_ expire = \case
         AMS SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-          Just f -> ifM (doesFileExist f) (Just <$> importMessages False ms f old_) (pure Nothing)
+          Just f -> ifM (doesFileExist f) (Just <$> importMessages False ms f old_ skipWarnings) (pure Nothing)
           Nothing -> pure Nothing
         AMS SMSJournal ms
           | expire -> Just <$> case old_ of
@@ -1859,8 +1863,8 @@ processServerMessages = do
                   exitFailure
 
 -- TODO this function should be called after importing queues from store log
-importMessages :: forall s. STMStoreClass s => Bool -> s -> FilePath -> Maybe Int64 -> IO MessageStats
-importMessages tty ms f old_ = do
+importMessages :: forall s. STMStoreClass s => Bool -> s -> FilePath -> Maybe Int64 -> Bool -> IO MessageStats
+importMessages tty ms f old_ skipWarnings  = do
   logInfo $ "restoring messages from file " <> T.pack f
   LB.readFile f >>= runExceptT . foldM restoreMsg (0, Nothing, (0, 0, M.empty)) . LB.lines >>= \case
     Left e -> do
@@ -1884,16 +1888,30 @@ importMessages tty ms f old_ = do
       where
         s = LB.toStrict s'
         addToMsgQueue rId msg = do
-          q <- case q_ of
+          qOrErr <- case q_ of
             -- to avoid lookup when restoring the next message to the same queue
-            Just (rId', q') | rId' == rId -> pure q'
-            _ -> ExceptT $ getQueue ms SRecipient rId
+            Just (rId', q') | rId' == rId -> pure $ Right q'
+            _ -> liftIO $ getQueue ms SRecipient rId
+          case qOrErr of
+            Right q -> addToQueue_ q rId msg
+            Left AUTH -> liftIO $ do
+              when tty $ putStrLn ""
+              if skipWarnings
+                then logWarn errStr $> (i + 1, Nothing, (stored, expired, overQuota))
+                else do
+                  logWarn $ errStr <> ", start with --skip-warnings option to ignore this error"
+                  exitFailure
+              where
+                errStr = "warning restoring messages: queue " <> safeDecodeUtf8 (encode $ unEntityId rId) <> " does not exist"
+            Left e -> throwE e
+        addToQueue_ q rId msg =
           (i + 1,Just (rId, q),) <$> case msg of
             Message {msgTs}
               | maybe True (systemSeconds msgTs >=) old_ -> do
                   writeMsg ms q False msg >>= \case
                     Just _ -> pure (stored + 1, expired, overQuota)
-                    Nothing -> do
+                    Nothing -> liftIO $ do
+                      when tty $ putStrLn ""
                       logError $ decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
                       pure (stored, expired, overQuota)
               | otherwise -> pure (stored, expired + 1, overQuota)

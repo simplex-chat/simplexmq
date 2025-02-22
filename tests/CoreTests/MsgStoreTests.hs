@@ -222,7 +222,7 @@ testExportImportStore ms = do
   ms' <- newMsgStore cfg
   readWriteQueueStore testStoreLogFile ms' >>= closeStoreLog
   stats@MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
-    importMessages False ms' testStoreMsgsFile Nothing
+    importMessages False ms' testStoreMsgsFile Nothing False
   printMessageStats "Messages" stats
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 4 -- state file is backed up, 2 message files
@@ -231,7 +231,7 @@ testExportImportStore ms = do
   stmStore <- newMsgStore testSMTStoreConfig
   readWriteQueueStore testStoreLogFile stmStore >>= closeStoreLog
   MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
-    importMessages False stmStore testStoreMsgsFile2 Nothing
+    importMessages False stmStore testStoreMsgsFile2 Nothing False
   exportMessages False stmStore testStoreMsgsFile False
   (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))
 
