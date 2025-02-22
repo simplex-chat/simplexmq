@@ -1883,13 +1883,15 @@ importMessages tty ms f old_ skipWarnings  = do
       case strDecode s of
         Right (MLRv3 rId msg) -> runExceptT (addToMsgQueue rId msg) >>= either (exitErr . tshow) pure
         Left e
-          | eof -> warnOrExit (msgErr "parsing" e) $> (i + 1, q_, counts)
-          | otherwise -> exitErr $ msgErr "parsing" e
+          | eof -> warnOrExit (parsingErr e) $> (i + 1, q_, counts)
+          | otherwise -> exitErr $ parsingErr e
       where
         exitErr e = do
           when tty $ putStrLn ""
           logError $ "error restoring messages: " <> e
           liftIO exitFailure
+        parsingErr :: String -> Text
+        parsingErr e = "parsing error (" <> T.pack e <> "): " <> safeDecodeUtf8 (B.take 100 s)
         addToMsgQueue rId msg = do
           qOrErr <- case q_ of
             -- to avoid lookup when restoring the next message to the same queue
@@ -1923,8 +1925,6 @@ importMessages tty ms f old_ skipWarnings  = do
                   withPeekMsgQueue ms q "mergeQuotaMsgs" $ maybe (pure ()) $ \case
                     (mq, MessageQuota {}) -> tryDeleteMsg_ q mq False
                     _ -> pure ()
-        msgErr :: Show e => Text -> e -> Text
-        msgErr op e = op <> " error (" <> tshow e <> "): " <> safeDecodeUtf8 (B.take 100 s)
         warnOrExit e
           | skipWarnings = logWarn e'
           | otherwise = do
