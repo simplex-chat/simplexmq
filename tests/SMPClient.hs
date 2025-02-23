@@ -19,6 +19,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
 import Network.Socket
 import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts (..))
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
@@ -178,7 +179,7 @@ cfgMS msType =
         ASType SQSMemory SMSJournal ->
           ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = testStoreLogFile, storeMsgsPath = testStoreMsgsDir}
         ASType SQSPostgres SMSJournal ->
-          ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeDBOpts = testStoreDBOpts, storeMsgsPath' = testStoreMsgsDir},
+          ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeDBOpts = testStoreDBOpts, confirmMigrations = MCYesUp, storeMsgsPath' = testStoreMsgsDir},
       storeNtfsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
@@ -211,7 +212,7 @@ cfgMS msType =
       allowSMPProxy = False,
       serverClientConcurrency = 2,
       information = Nothing,
-      startOptions = StartOptions {maintenance = False, skipWarnings = False}
+      startOptions = StartOptions {maintenance = False, skipWarnings = False, confirmMigrations = MCYesUp}
     }
 
 cfgV7 :: ServerConfig

@@ -489,7 +489,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 ASType SQSMemory SMSJournal ->
                   ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = storeLogFilePath, storeMsgsPath = storeMsgsJournalDir}
                 ASType SQSPostgres SMSJournal ->
-                  ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeDBOpts = iniDBOptions ini, storeMsgsPath' = storeMsgsJournalDir},
+                  ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeDBOpts = iniDBOptions ini, confirmMigrations = MCYesUp, storeMsgsPath' = storeMsgsJournalDir},
               storeNtfsFile = restoreMessagesFile storeNtfsFilePath,
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
@@ -930,7 +930,15 @@ cliCommandP cfgPath logPath iniFile =
           ( long "skip-warnings"
               <> help "Start the server with non-critical start warnings"
           )
-      pure StartOptions {maintenance, skipWarnings}
+      confirmMigrations <-
+        option
+          parseConfirmMigrations
+          ( long "confirm-migrations"
+              <> metavar "CONFIRM_MIGRATIONS"
+              <> help "Confirm PostgreSQL database migration: up, down (default is manual confirmation)"
+              <> value MCConsole
+          )
+      pure StartOptions {maintenance, skipWarnings, confirmMigrations}
     journalCmdP = storeCmdP "message log file" "journal storage"
     databaseCmdP = storeCmdP "queue store log file" "PostgreSQL database schema"
     storeCmdP src dest =
@@ -958,7 +966,11 @@ cliCommandP cfgPath logPath iniFile =
               <> showDefault
           )
       pure DBOpts {connstr, schema, createSchema = False}
-
+    parseConfirmMigrations :: ReadM MigrationConfirmation
+    parseConfirmMigrations = eitherReader $ \case
+      "up" -> Right MCYesUp
+      "down" -> Right MCYesUpDown
+      _ -> Left "invalid migration confirmation, pass 'up' or 'down'"
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
     entityP :: String -> String -> String -> Parser (Maybe Entity, Maybe Text)

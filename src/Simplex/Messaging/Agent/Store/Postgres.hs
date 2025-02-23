@@ -38,7 +38,6 @@ import UnliftIO.MVar
 -- | Create a new Postgres DBStore with the given connection string, schema name and migrations.
 -- If passed schema does not exist in connectInfo database, it will be created.
 -- Applies necessary migrations to schema.
--- TODO [postgres] authentication / user password, db encryption (?)
 createDBStore :: DBOpts -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createDBStore opts migrations confirmMigrations = do
   st <- connectPostgresStore opts
@@ -122,6 +121,6 @@ reopenDBStore st@DBStore {dbClosed} =
   where
     open = openPostgresStore_ st
 
--- TODO [postgres] not necessary for postgres (used for ExecAgentStoreSQL, ExecChatStoreSQL)
+-- not used with postgres client (used for ExecAgentStoreSQL, ExecChatStoreSQL)
 execSQL :: PSQL.Connection -> Text -> IO [Text]
 execSQL _db _query = throwIO (userError "not implemented")

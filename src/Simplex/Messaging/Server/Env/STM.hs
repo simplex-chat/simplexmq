@@ -130,7 +130,8 @@ data ServerConfig = ServerConfig
 
 data StartOptions = StartOptions
   { maintenance :: Bool,
-    skipWarnings :: Bool
+    skipWarnings :: Bool,
+    confirmMigrations :: MigrationConfirmation
   }
 
 defMsgExpirationDays :: Int64
@@ -211,7 +212,7 @@ data AStoreType = forall qs ms. SupportedStore qs ms => ASType (SQSType qs) (SMS
 data ServerStoreCfg qs ms where
   SSCMemory :: Maybe StorePaths -> ServerStoreCfg 'QSMemory 'MSMemory
   SSCMemoryJournal :: {storeLogFile :: FilePath, storeMsgsPath :: FilePath} -> ServerStoreCfg 'QSMemory 'MSJournal
-  SSCDatabaseJournal :: {storeDBOpts :: DBOpts, storeMsgsPath' :: FilePath} -> ServerStoreCfg 'QSPostgres 'MSJournal
+  SSCDatabaseJournal :: {storeDBOpts :: DBOpts, confirmMigrations :: MigrationConfirmation, storeMsgsPath' :: FilePath} -> ServerStoreCfg 'QSPostgres 'MSJournal
 
 data StorePaths = StorePaths {storeLogFile :: FilePath, storeMsgsFile :: Maybe FilePath}
 
@@ -318,7 +319,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines, startOptions} = do
   serverActive <- newTVarIO True
   server <- newServer
   msgStore <- case serverStoreCfg of
@@ -334,8 +335,8 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       loadStoreLog (mkQueue ms) storeLogFile $ stmQueueStore ms
       pure $ AMS qt mt ms
     ASSCfg qt mt SSCDatabaseJournal {storeDBOpts, storeMsgsPath'} -> do
-      -- TODO [postgres] pass migration confirmation mode via environment variable
-      let qsCfg = PQStoreCfg storeDBOpts MCYesUp
+      let StartOptions {confirmMigrations} = startOptions
+          qsCfg = PQStoreCfg storeDBOpts confirmMigrations
           cfg = mkJournalStoreConfig qsCfg storeMsgsPath' msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
       ms <- newMsgStore cfg
       pure $ AMS qt mt ms
