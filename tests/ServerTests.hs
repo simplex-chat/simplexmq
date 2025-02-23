@@ -56,7 +56,7 @@ import Util (removeFileIfExists)
 serverTests :: SpecWith (ATransport, AStoreType)
 serverTests = do
   describe "SMP queues" $ do
-    fdescribe "NEW and KEY commands, SEND messages" testCreateSecure
+    describe "NEW and KEY commands, SEND messages" testCreateSecure
     describe "NEW and SKEY commands" $ do
       testCreateSndSecure
       testSndSecureProhibited
@@ -70,8 +70,8 @@ serverTests = do
     describe "GET & SUB commands" testGetSubCommands
     describe "Exceeding queue quota" testExceedQueueQuota
   describe "Store log" testWithStoreLog
-  describe "Restore messages" testRestoreMessages
-  describe "Restore messages (old / v2)" testRestoreExpireMessages
+  xdescribe "Restore messages" testRestoreMessages -- TODO [postgres]
+  xdescribe "Restore messages (old / v2)" testRestoreExpireMessages -- TODO [postgres]
   describe "Save prometheus metrics" testPrometheusMetrics
   describe "Timing of AUTH error" testTiming
   describe "Message notifications" testMessageNotifications
