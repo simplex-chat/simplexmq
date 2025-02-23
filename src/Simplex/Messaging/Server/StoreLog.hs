@@ -261,4 +261,4 @@ foldLogLines tty f action initValue = do
       let i' = i + 1
       when (tty && i' `mod` 100000 == 0) $ putStr (progress i' <> "\r") >> hFlush stdout
       if eof then pure (i', acc') else loop h i' acc'
-    progress i = "Processed: " <> show i <> " lines"
+    progress i = "Processed: " <> show i <> " log lines"

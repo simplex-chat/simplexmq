@@ -49,7 +49,7 @@ import Simplex.Messaging.Server.QueueStore.STM (readQueueRecIO, setStatus, withQ
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (firstRow, ifM, safeDecodeUtf8, tshow, ($>>), ($>>=), (<$$), (<$$>))
+import Simplex.Messaging.Util (firstRow, ifM, tshow, ($>>), ($>>=), (<$$), (<$$>))
 import System.Exit (exitFailure)
 import System.IO (hFlush, stdout)
 
@@ -125,9 +125,9 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     where
       PostgresQueueStore {queues, senders, notifiers} = st
       getRcvQueue rId = TM.lookupIO rId queues >>= maybe loadRcvQueue (pure . Right)
-      loadRcvQueue = loadQueue " q.recipient_id = ?" $ \_ -> pure ()
-      loadSndQueue = loadQueue " q.sender_id = ?" $ \rId -> TM.insert qId rId senders
-      loadNtfQueue = loadQueue " n.notifier_id = ?" $ \_ -> pure () -- do NOT cache ref - ntf subscriptions are rare
+      loadRcvQueue = loadQueue " WHERE q.recipient_id = ?" $ \_ -> pure ()
+      loadSndQueue = loadQueue " WHERE q.sender_id = ?" $ \rId -> TM.insert qId rId senders
+      loadNtfQueue = loadQueue " WHERE n.notifier_id = ?" $ \_ -> pure () -- do NOT cache ref - ntf subscriptions are rare
       loadQueue condition insertRef =
         loadQueueRec $>>= \(rId, qRec) -> do
           sq <- mkQ rId qRec
@@ -141,25 +141,8 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
                 pure $ Right sq
         where
           loadQueueRec =
-            withDB "getQueue_" st $ \db -> firstRow toQueueRec AUTH $
-              DB.query
-                db
-                ( [sql|
-                    SELECT q.recipient_id, q.recipient_key, q.rcv_dh_secret, q.sender_id, q.sender_key, q.snd_secure, q.status, q.updated_at,
-                      n.notifier_id, n.notifier_key, n.rcv_ntf_dh_secret
-                    FROM msg_queues q
-                    LEFT JOIN msg_notifiers n ON q.recipient_id = n.recipient_id
-                    WHERE
-                  |]
-                    <> condition
-                )
-                (Only qId)
-          toQueueRec :: ( (RecipientId, RcvPublicAuthKey, RcvDhSecret, SenderId, Maybe SndPublicAuthKey, SenderCanSecure, ServerEntityStatus, Maybe RoundedSystemTime)
-                          :. (Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret)
-                        ) -> (RecipientId, QueueRec)
-          toQueueRec ((rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, status, updatedAt) :. (notifierId_, notifierKey_, rcvNtfDhSecret_)) =
-            let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
-            in (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt})
+            withDB "getQueue_" st $ \db -> firstRow rowToQueueRec AUTH $
+              DB.query db (queueRecQuery <> condition) (Only qId)
 
   secureQueue :: PostgresQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   secureQueue st sq sKey =
@@ -328,6 +311,31 @@ insertNotifierQuery =
     INSERT INTO msg_notifiers (recipient_id, notifier_id, notifier_key, rcv_ntf_dh_secret)
     VALUES (?, ?, ?, ?)
   |]
+
+foldQueueRecs :: Monoid a => Bool -> PostgresQueueStore q -> (RecipientId -> QueueRec -> IO a) -> IO a
+foldQueueRecs tty st f = do
+  fmap snd $ withConnection (dbStore st) $ \db ->
+    PSQL.fold_ db queueRecQuery (0 :: Int, mempty) $ \(!i, !acc) row -> do
+      r <- uncurry f (rowToQueueRec row)
+      let i' = i + 1
+      when (tty && i' `mod` 100000 == 0) $ putStr ("Processed: " <> show i <> " records\r") >> hFlush stdout
+      pure (i', acc <> r)
+
+queueRecQuery :: Query
+queueRecQuery =
+  [sql|
+    SELECT q.recipient_id, q.recipient_key, q.rcv_dh_secret, q.sender_id, q.sender_key, q.snd_secure, q.status, q.updated_at,
+      n.notifier_id, n.notifier_key, n.rcv_ntf_dh_secret
+    FROM msg_queues q
+    LEFT JOIN msg_notifiers n ON q.recipient_id = n.recipient_id
+  |]
+
+rowToQueueRec :: ( (RecipientId, RcvPublicAuthKey, RcvDhSecret, SenderId, Maybe SndPublicAuthKey, SenderCanSecure, ServerEntityStatus, Maybe RoundedSystemTime)
+                :. (Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret)
+              ) -> (RecipientId, QueueRec)
+rowToQueueRec ((rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, status, updatedAt) :. (notifierId_, notifierKey_, rcvNtfDhSecret_)) =
+  let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
+  in (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt})
 
 setStatusDB :: String -> PostgresQueueStore q -> RecipientId -> ServerEntityStatus -> IO (Either ErrorType ())
 setStatusDB name st rId status =

@@ -27,6 +27,7 @@ import Data.Ini (Ini, lookupValue, readIniFile)
 import Data.List (find, isPrefixOf)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Semigroup (Sum (..))
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -34,9 +35,8 @@ import qualified Data.Text.IO as T
 import Network.Socket (HostName)
 import Options.Applicative
 import Simplex.Messaging.Agent.Protocol (connReqUriP')
-import Simplex.Messaging.Agent.Store.Postgres (connectDB)
+import Simplex.Messaging.Agent.Store.Postgres (checkSchemaExists)
 import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts (..))
-import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig, textToHostMode)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
@@ -51,14 +51,15 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), JournalQueue, QStoreCfg (..), postgresQueueStore, stmQueueStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), QSType (..), SQSType (..), SMSType (..), newMsgStore)
-import Simplex.Messaging.Server.QueueStore.Postgres (batchInsertQueues)
+import Simplex.Messaging.Server.QueueStore.Postgres (batchInsertQueues, foldQueueRecs)
 import Simplex.Messaging.Server.QueueStore.Types
+import Simplex.Messaging.Server.StoreLog (logCreateQueue, openWriteStoreLog)
 import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
 import Simplex.Messaging.Transport (simplexMQVersion, supportedProxyClientSMPRelayVRange, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, ifM, safeDecodeUtf8, tshow)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, renameFile)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
@@ -145,32 +146,56 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               deleteDirIfExists storeMsgsJournalDir
               putStrLn $ "Deleted all messages in journal " <> storeMsgsJournalDir
     Database cmd dbOpts@DBOpts {connstr, schema} -> withIniFile $ \ini -> do
-      msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
-      msgsFileExists <- doesFileExist storeMsgsFilePath
-      storeLogFile <- getRequiredStoreLogFile ini
-      (conn, dbNew) <- connectDB connstr schema True
-      DB.close conn
+      -- msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
+      -- msgsFileExists <- doesFileExist storeMsgsFilePath
+      schemaExists <- checkSchemaExists connstr schema
+      storeLogExists <- doesFileExist storeLogFilePath
       case cmd of
         SCImport
-          | not dbNew -> do
+          | schemaExists && storeLogExists -> exitConfigureQueueStore connstr schema
+          | schemaExists -> do
               putStrLn $ "Schema " <> B.unpack schema <> " already exists in PostrgreSQL database: " <> B.unpack connstr
               exitFailure
+          | not storeLogExists -> do
+              putStrLn $ storeLogFilePath <> " file does not exists."
+              exitFailure
           | otherwise -> do
+              storeLogFile <- getRequiredStoreLogFile ini
               confirmOrExit
                 ("WARNING: store log file " <> storeLogFile <> " will be imported to PostrgreSQL database: " <> B.unpack connstr <> ", schema: " <> B.unpack schema)
                 "Queue records not imported"
               ms <- newJournalMsgStore MQStoreCfg
               readQueueStore True (mkQueue ms) storeLogFile (queueStore ms)
               queues <- readTVarIO $ loadedQueues $ stmQueueStore ms
-              ps <- newJournalMsgStore $ PQStoreCfg dbOpts MCConsole
+              ps <- newJournalMsgStore $ PQStoreCfg dbOpts {createSchema = True} MCConsole
               (qCnt, nCnt) <- batchInsertQueues @(JournalQueue 'QSMemory) True queues $ postgresQueueStore ps
+              renameFile storeLogFile $ storeLogFile <> ".bak"
               putStrLn $ "Import completed: " <> show qCnt <> " queues, " <> show nCnt <> " notifiers"
               putStrLn $ case readStoreType ini of
                 Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`.\nImport messages to journal to use PostgreSQL database for queues (`smp-server journal import`)"
                 Right (ASType SQSMemory SMSJournal) -> "store_queues set to `memory`, update it to `database` in INI file"
                 Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, start the server."
                 Left e -> e <> ", configure storage correctly"
-        SCExport -> undefined
+        SCExport
+          | schemaExists && storeLogExists -> exitConfigureQueueStore connstr schema
+          | not schemaExists -> do
+              putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
+              exitFailure
+          | storeLogExists -> do
+              putStrLn $ storeLogFilePath <> " file already exists."
+              exitFailure
+          | otherwise -> do
+              confirmOrExit
+                ("WARNING: PostrgreSQL database schema " <> B.unpack schema <> " (database: " <> B.unpack connstr <> ") will be exported to store log file " <> storeLogFilePath)
+                "Queue records not exported"
+              ps <- newJournalMsgStore $ PQStoreCfg dbOpts MCConsole
+              sl <- openWriteStoreLog storeLogFilePath
+              Sum qCnt <- foldQueueRecs True (postgresQueueStore ps) $ \rId qr -> logCreateQueue sl rId qr $> Sum (1 :: Int)
+              putStrLn $ "Export completed: " <> show qCnt <> " queues"
+              putStrLn $ case readStoreType ini of
+                Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, update it to `memory` in INI file."
+                Right (ASType SQSMemory _) -> "store_queues set to `memory`, start the server"
+                Left e -> e <> ", configure storage correctly"
         SCDelete -> undefined
   where
     withIniFile a =
@@ -568,6 +593,11 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
     exitConfigureMsgStorage = do
       putStrLn $ "Error: both " <> storeMsgsFilePath <> " file and " <> storeMsgsJournalDir <> " directory are present."
       putStrLn "Configure memory storage."
+      exitFailure
+
+    exitConfigureQueueStore connstr schema = do
+      putStrLn $ "Error: both " <> storeLogFilePath <> " file and " <> B.unpack schema <> " schema are present (database: " <> B.unpack connstr <> ")."
+      putStrLn "Configure queue storage."
       exitFailure
 
 data EmbeddedWebParams = EmbeddedWebParams

@@ -7,15 +7,16 @@
 module Simplex.Messaging.Agent.Store.Postgres
   ( DBOpts (..),
     Migrations.getCurrentMigrations,
+    checkSchemaExists,
     createDBStore,
     closeDBStore,
     reopenDBStore,
-    connectDB,
     execSQL,
   )
 where
 
-import Control.Exception (throwIO)
+import Control.Concurrent.STM
+import Control.Exception (bracketOnError, finally, onException, throwIO)
 import Control.Logger.Simple (logError)
 import Control.Monad (void, when)
 import Data.ByteString (ByteString)
@@ -32,9 +33,7 @@ import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationError (..))
 import Simplex.Messaging.Util (ifM, safeDecodeUtf8)
 import System.Exit (exitFailure)
-import UnliftIO.Exception (bracketOnError, onException)
 import UnliftIO.MVar
-import UnliftIO.STM
 
 -- | Create a new Postgres DBStore with the given connection string, schema name and migrations.
 -- If passed schema does not exist in connectInfo database, it will be created.
@@ -57,10 +56,6 @@ createDBStore opts migrations confirmMigrations = do
 connectPostgresStore :: DBOpts -> IO DBStore
 connectPostgresStore DBOpts {connstr, schema, createSchema} = do
   (dbConn, dbNew) <- connectDB connstr schema createSchema -- TODO [postgres] analogue for dbBusyLoop?
-  when (dbNew && not createSchema) $ do
-    logError $ "connectPostgresStore, schema " <> safeDecodeUtf8 schema <> " does not exist, exiting."
-    DB.close dbConn
-    exitFailure
   dbConnection <- newMVar dbConn
   dbClosed <- newTVarIO False
   pure DBStore {dbConnstr = connstr, dbSchema = schema, dbConnection, dbNew, dbClosed}
@@ -68,29 +63,40 @@ connectPostgresStore DBOpts {connstr, schema, createSchema} = do
 connectDB :: ByteString -> ByteString -> Bool -> IO (DB.Connection, Bool)
 connectDB connstr schema createSchema = do
   db <- PSQL.connectPostgreSQL connstr
-  schemaExists <- prepare db `onException` PSQL.close db
-  let dbNew = not schemaExists
+  dbNew <- prepare db `onException` PSQL.close db
   pure (db, dbNew)
   where
     prepare db = do
       void $ PSQL.execute_ db "SET client_min_messages TO WARNING"
-      [Only schemaExists] <-
-        PSQL.query
-          db
-          [sql|
-            SELECT EXISTS (
-              SELECT 1 FROM pg_catalog.pg_namespace
-              WHERE nspname = ?
-            )
-          |]
-          (Only schema)
-      if schemaExists
-        then setSearchPath db
-        else when createSchema $ do
-          void $ PSQL.execute_ db $ Query $ "CREATE SCHEMA " <> schema
-          setSearchPath db
-      pure schemaExists
-    setSearchPath db = void $ PSQL.execute_ db $ Query $ "SET search_path TO " <> schema
+      dbNew <- not <$> doesSchemaExist db schema
+      when dbNew $
+        if createSchema
+          then void $ PSQL.execute_ db $ Query $ "CREATE SCHEMA " <> schema
+          else do
+            logError $ "connectPostgresStore, schema " <> safeDecodeUtf8 schema <> " does not exist, exiting."
+            PSQL.close db
+            exitFailure
+      void $ PSQL.execute_ db $ Query $ "SET search_path TO " <> schema
+      pure dbNew
+
+checkSchemaExists :: ByteString -> ByteString -> IO Bool
+checkSchemaExists connstr schema = do
+  db <- PSQL.connectPostgreSQL connstr
+  doesSchemaExist db schema `finally` DB.close db
+
+doesSchemaExist :: DB.Connection -> ByteString -> IO Bool
+doesSchemaExist db schema = do
+  [Only schemaExists] <-
+    PSQL.query
+      db
+      [sql|
+        SELECT EXISTS (
+          SELECT 1 FROM pg_catalog.pg_namespace
+          WHERE nspname = ?
+        )
+      |]
+      (Only schema)
+  pure schemaExists
 
 -- can share with SQLite
 closeDBStore :: DBStore -> IO ()
