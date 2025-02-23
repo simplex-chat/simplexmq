@@ -1866,24 +1866,20 @@ processServerMessages StartOptions {skipWarnings} = do
 importMessages :: forall s. MsgStoreClass s => Bool -> s -> FilePath -> Maybe Int64 -> Bool -> IO MessageStats
 importMessages tty ms f old_ skipWarnings  = do
   logInfo $ "restoring messages from file " <> T.pack f
-  (lineCount, _, (storedMsgsCount, expiredMsgsCount, overQuota)) <-
-    foldLogLines tty f restoreMsg (0, Nothing, (0, 0, M.empty))
-  putStrLn $ progress lineCount
+  (_, (storedMsgsCount, expiredMsgsCount, overQuota)) <-
+    foldLogLines tty f restoreMsg (Nothing, (0, 0, M.empty))
   renameFile f $ f <> ".bak"
   mapM_ setOverQuota_ overQuota
   logQueueStates ms
   QueueCounts {queueCount} <- liftIO $ queueCounts @(StoreQueue s) $ queueStore ms
   pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues = queueCount}
   where
-    progress i = "Processed " <> show i <> " lines"
-    restoreMsg :: (Int, Maybe (RecipientId, StoreQueue s), (Int, Int, M.Map RecipientId (StoreQueue s))) -> Bool -> ByteString -> IO (Int, Maybe (RecipientId, StoreQueue s), (Int, Int, M.Map RecipientId (StoreQueue s)))
-    restoreMsg (!i, q_, counts@(!stored, !expired, !overQuota)) eof s = do
-      when (tty && i `mod` 1000 == 0) $ putStr (progress i <> "\r") >> hFlush stdout
-      case strDecode s of
-        Right (MLRv3 rId msg) -> runExceptT (addToMsgQueue rId msg) >>= either (exitErr . tshow) pure
-        Left e
-          | eof -> warnOrExit (parsingErr e) $> (i + 1, q_, counts)
-          | otherwise -> exitErr $ parsingErr e
+    restoreMsg :: (Maybe (RecipientId, StoreQueue s), (Int, Int, M.Map RecipientId (StoreQueue s))) -> Bool -> ByteString -> IO (Maybe (RecipientId, StoreQueue s), (Int, Int, M.Map RecipientId (StoreQueue s)))
+    restoreMsg (q_, counts@(!stored, !expired, !overQuota)) eof s = case strDecode s of
+      Right (MLRv3 rId msg) -> runExceptT (addToMsgQueue rId msg) >>= either (exitErr . tshow) pure
+      Left e
+        | eof -> warnOrExit (parsingErr e) $> (q_, counts)
+        | otherwise -> exitErr $ parsingErr e
       where
         exitErr e = do
           when tty $ putStrLn ""
@@ -1901,10 +1897,10 @@ importMessages tty ms f old_ skipWarnings  = do
             Left AUTH -> liftIO $ do
               when tty $ putStrLn ""
               warnOrExit $ "queue " <> safeDecodeUtf8 (encode $ unEntityId rId) <> " does not exist"
-              pure (i + 1, Nothing, counts)
+              pure (Nothing, counts)
             Left e -> throwE e
         addToQueue_ q rId msg =
-          (i + 1,Just (rId, q),) <$> case msg of
+          (Just (rId, q),) <$> case msg of
             Message {msgTs}
               | maybe True (systemSeconds msgTs >=) old_ -> do
                   writeMsg ms q False msg >>= \case
