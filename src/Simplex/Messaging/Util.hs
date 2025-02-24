@@ -156,6 +156,13 @@ mapAccumLM_NonEmpty
 mapAccumLM_NonEmpty f s (x :| xs) =
   [(s2, x' :| xs') | (s1, x') <- f s x, (s2, xs') <- mapAccumLM_List f s1 xs]
 
+tryWriteTBQueue :: TBQueue a -> a -> STM Bool
+tryWriteTBQueue q a = do
+  full <- isFullTBQueue q
+  unless full $ writeTBQueue q a
+  pure $ not full
+{-# INLINE tryWriteTBQueue #-}
+
 catchAll :: IO a -> (E.SomeException -> IO a) -> IO a
 catchAll = E.catch
 {-# INLINE catchAll #-}
