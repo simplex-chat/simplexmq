@@ -69,6 +69,7 @@ testStoreDBOpts =
   DBOpts
     { connstr = testServerDBConnstr,
       schema = "smp_server",
+      poolSize = 3,
       createSchema = True
     }
 

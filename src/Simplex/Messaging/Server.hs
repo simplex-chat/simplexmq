@@ -354,7 +354,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             mapM_ (queueEvts qEvts) . join . IM.lookup cId =<< readTVarIO cls
         queueEvts qEvts (AClient _ _ c@Client {connected, sndQ = q}) =
           whenM (readTVarIO connected) $ do
-            sent <- atomically $ ifM (isFullTBQueue q) (pure False) (writeTBQueue q ts $> True)
+            sent <- atomically $ tryWriteTBQueue q ts
             if sent
               then updateEndStats
               else -- if queue is full it can block

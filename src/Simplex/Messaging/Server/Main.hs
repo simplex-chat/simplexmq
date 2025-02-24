@@ -33,6 +33,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import qualified Data.Text.IO as T
 import Network.Socket (HostName)
+import Numeric.Natural (Natural)
 import Options.Applicative
 import Simplex.Messaging.Agent.Protocol (connReqUriP')
 import Simplex.Messaging.Agent.Store.Postgres (checkSchemaExists)
@@ -236,8 +237,14 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       DBOpts
         { connstr = either (const defaultDBConnStr) encodeUtf8 $ lookupValue "STORE_LOG" "db_connection" ini,
           schema = either (const defaultDBSchema) encodeUtf8 $ lookupValue "STORE_LOG" "db_schema" ini,
+          poolSize = either (const defaultDBPoolSize) (read . T.unpack) $ lookupValue "STORE_LOG" "db_pool_size" ini,
           createSchema = False
         }
+    dbOptsIniContent :: DBOpts -> Text
+    dbOptsIniContent DBOpts {connstr, schema, poolSize } =
+      (optDisabled' (connstr == defaultDBConnStr) <> "db_connection: " <> safeDecodeUtf8 connstr <> "\n")
+        <> (optDisabled' (schema == defaultDBSchema) <> "db_schema: " <> safeDecodeUtf8 schema <> "\n")
+        <> (optDisabled' (poolSize == defaultDBPoolSize) <> "db_pool_size: " <> tshow poolSize <> "\n\n")
     httpsCertFile = combine cfgPath "web.crt"
     httpsKeyFile = combine cfgPath "web.key"
     defaultStaticPath = combine logPath "www"
@@ -320,8 +327,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                    \# `database`- PostgreSQL databass (requires `store_messages: journal`).\n\
                    \store_queues: memory\n\n\
                    \# Database connection settings for PostgreSQL database (`store_queues: database`).\n"
-                <> (optDisabled dbOptions <> "db_connection: " <> safeDecodeUtf8 (maybe defaultDBConnStr connstr dbOptions) <> "\n")
-                <> (optDisabled dbOptions <> "db_schema: " <> safeDecodeUtf8 (maybe defaultDBSchema schema dbOptions) <> "\n\n")
+                <> dbOptsIniContent dbOptions
                 <> "# Message storage mode: `memory` or `journal`.\n\
                    \store_messages: memory\n\n\
                    \# When store_messages is `memory`, undelivered messages are optionally saved and restored\n\
@@ -626,6 +632,9 @@ defaultDBConnStr = "postgresql://smp@/smp_server_store"
 defaultDBSchema :: ByteString
 defaultDBSchema = "smp_server"
 
+defaultDBPoolSize :: Natural
+defaultDBPoolSize = 10
+
 defaultControlPort :: Int
 defaultControlPort = 5224
 
@@ -712,7 +721,12 @@ serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
             (_, _, pkURI, pkFingerprint) -> Just ServerContactAddress {simplex, email, pgp = PGPKey <$> pkURI <*> pkFingerprint}
 
 optDisabled :: Maybe a -> Text
-optDisabled p = if isNothing p then "# " else ""
+optDisabled = optDisabled' . isNothing
+{-# INLINE optDisabled #-}
+
+optDisabled' :: Bool -> Text
+optDisabled' cond = if cond then "# " else ""
+{-# INLINE optDisabled' #-}
 
 validCountryValue :: String -> String -> Either String Text
 validCountryValue field s
@@ -738,7 +752,7 @@ data StoreCmd = SCImport | SCExport | SCDelete
 
 data InitOptions = InitOptions
   { enableStoreLog :: Bool,
-    dbOptions :: Maybe DBOpts,
+    dbOptions :: DBOpts,
     dbMigrateUp :: Bool,
     logStats :: Bool,
     signAlgorithm :: SignAlgorithm,
@@ -780,7 +794,8 @@ cliCommandP cfgPath logPath iniFile =
               <> short 'l'
               <> help "Enable store log for persistence"
           )
-      dbOptions <- optional dbOptsP
+      dbOptions <- dbOptsP
+      -- TODO [postgresql] remove
       dbMigrateUp <-
         switch
           ( long "db-migrate-up"
@@ -963,7 +978,16 @@ cliCommandP cfgPath logPath iniFile =
               <> value defaultDBSchema
               <> showDefault
           )
-      pure DBOpts {connstr, schema, createSchema = False}
+      poolSize <-
+        option
+          auto
+          ( long "pool-size"
+              <> metavar "POOL_SIZE"
+              <> help "Database pool size"
+              <> value defaultDBPoolSize
+              <> showDefault
+          )
+      pure DBOpts {connstr, schema, poolSize, createSchema = False}
     parseConfirmMigrations :: ReadM MigrationConfirmation
     parseConfirmMigrations = eitherReader $ \case
       "up" -> Right MCYesUp
