@@ -2,6 +2,7 @@
 
 module Simplex.Messaging.Agent.Store.Postgres.Common
   ( DBStore (..),
+    DBOpts (..),
     withConnection,
     withConnection',
     withTransaction,
@@ -18,25 +19,36 @@ import UnliftIO.STM
 -- TODO [postgres] use log_min_duration_statement instead of custom slow queries (SQLite's Connection type)
 data DBStore = DBStore
   { dbConnstr :: ByteString,
-    dbSchema :: String,
+    dbSchema :: ByteString,
     dbConnection :: MVar PSQL.Connection,
     dbClosed :: TVar Bool,
     dbNew :: Bool
   }
 
+data DBOpts = DBOpts
+  { connstr :: ByteString,
+    schema :: ByteString,
+    createSchema :: Bool
+  }
+  deriving (Show)
+
 -- TODO [postgres] connection pool
 withConnectionPriority :: DBStore -> Bool -> (PSQL.Connection -> IO a) -> IO a
 withConnectionPriority DBStore {dbConnection} _priority action =
   withMVar dbConnection action
+{-# INLINE withConnectionPriority #-}
 
 withConnection :: DBStore -> (PSQL.Connection -> IO a) -> IO a
 withConnection st = withConnectionPriority st False
+{-# INLINE withConnection #-}
 
 withConnection' :: DBStore -> (PSQL.Connection -> IO a) -> IO a
 withConnection' = withConnection
+{-# INLINE withConnection' #-}
 
 withTransaction' :: DBStore -> (PSQL.Connection -> IO a) -> IO a
 withTransaction' = withTransaction
+{-# INLINE withTransaction' #-}
 
 withTransaction :: DBStore -> (PSQL.Connection -> IO a) -> IO a
 withTransaction st = withTransactionPriority st False

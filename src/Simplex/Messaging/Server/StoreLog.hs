@@ -27,31 +27,27 @@ module Simplex.Messaging.Server.StoreLog
     logDeleteNotifier,
     logUpdateQueueTime,
     readWriteStoreLog,
-    writeQueueStore,
     readLogLines,
     foldLogLines,
   )
 where
 
 import Control.Applicative (optional, (<|>))
-import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad (when)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
-import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import GHC.IO (catchAny)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.MsgStore.Types
+-- import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.StoreLog.Types
-import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM, tshow, unlessM, whenM)
 import System.Directory (doesFileExist, renameFile)
 import System.IO
@@ -249,15 +245,6 @@ readWriteStoreLog readStore writeStore f st =
       renameFile tempBackup timedBackup
       logInfo $ "original state preserved as " <> T.pack timedBackup
 
-writeQueueStore :: STMStoreClass s => StoreLog 'WriteMode -> s -> IO ()
-writeQueueStore s st = readTVarIO qs >>= mapM_ writeQueue . M.assocs
-  where
-    qs = queues $ stmQueueStore st
-    writeQueue (rId, q) =
-      readTVarIO (queueRec' q) >>= \case
-        Just q' -> logCreateQueue s rId q'
-        Nothing -> atomically $ TM.delete rId qs
-
 readLogLines :: Bool -> FilePath -> (Bool -> B.ByteString -> IO ()) -> IO ()
 readLogLines tty f action = foldLogLines tty f (const action) ()
 
@@ -267,11 +254,11 @@ foldLogLines tty f action initValue = do
   putStrLn $ progress count
   pure acc
   where
-    loop h i acc = do
+    loop h !i !acc = do
       s <- B.hGetLine h
       eof <- hIsEOF h
       acc' <- action acc eof s
       let i' = i + 1
       when (tty && i' `mod` 100000 == 0) $ putStr (progress i' <> "\r") >> hFlush stdout
       if eof then pure (i', acc') else loop h i' acc'
-    progress i = "Processed: " <> show i <> " lines"
+    progress i = "Processed: " <> show i <> " log lines"
