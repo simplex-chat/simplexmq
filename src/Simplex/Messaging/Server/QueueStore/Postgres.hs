@@ -259,6 +259,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       delete q = do
         writeTVar qr Nothing
         TM.delete (senderId q) $ senders st
+        -- TODO [postgres] probably we should delete it?
         -- forM_ (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId $ notifiers st
         pure q
       deleteDB =

@@ -285,6 +285,7 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   {-# INLINE loadedQueues #-}
 
   queueCounts = \case
+    -- TODO [postgres] combine these functions
     MQStore st -> queueCounts @(JournalQueue s) st
     PQStore st -> queueCounts @(JournalQueue s) st
   {-# INLINE queueCounts #-}

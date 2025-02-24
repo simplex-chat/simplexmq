@@ -101,7 +101,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               putStrLn $ storeMsgsJournalDir <> " directory already exists."
               exitFailure
           | not msgsFileExists -> do
-              putStrLn $ storeMsgsFilePath <> " file does not exists."
+              putStrLn $ storeMsgsFilePath <> " file does not exist."
               exitFailure
           | otherwise -> do
               confirmOrExit
@@ -146,8 +146,6 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               deleteDirIfExists storeMsgsJournalDir
               putStrLn $ "Deleted all messages in journal " <> storeMsgsJournalDir
     Database cmd dbOpts@DBOpts {connstr, schema} -> withIniFile $ \ini -> do
-      -- msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
-      -- msgsFileExists <- doesFileExist storeMsgsFilePath
       schemaExists <- checkSchemaExists connstr schema
       storeLogExists <- doesFileExist storeLogFilePath
       case cmd of
@@ -157,7 +155,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               putStrLn $ "Schema " <> B.unpack schema <> " already exists in PostrgreSQL database: " <> B.unpack connstr
               exitFailure
           | not storeLogExists -> do
-              putStrLn $ storeLogFilePath <> " file does not exists."
+              putStrLn $ storeLogFilePath <> " file does not exist."
               exitFailure
           | otherwise -> do
               storeLogFile <- getRequiredStoreLogFile ini
@@ -196,7 +194,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, update it to `memory` in INI file."
                 Right (ASType SQSMemory _) -> "store_queues set to `memory`, start the server"
                 Left e -> e <> ", configure storage correctly"
-        SCDelete -> undefined
+        SCDelete -> undefined -- TODO [postgres]
   where
     withIniFile a =
       doesFileExist iniFile >>= \case
