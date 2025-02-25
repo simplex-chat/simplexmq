@@ -16,9 +16,9 @@ module Simplex.Messaging.Agent.Store.Postgres
 where
 
 import Control.Concurrent.STM
-import Control.Exception (bracketOnError, finally, onException, throwIO)
+import Control.Exception (finally, onException, throwIO, uninterruptibleMask_)
 import Control.Logger.Simple (logError)
-import Control.Monad (void, unless, when)
+import Control.Monad
 import Data.ByteString (ByteString)
 import Data.Functor (($>))
 import Data.Text (Text)
@@ -26,7 +26,6 @@ import Database.PostgreSQL.Simple (Only (..))
 import Database.PostgreSQL.Simple.Types (Query (..))
 import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.SqlQQ (sql)
-import GHC.IO (catchAny)
 import Simplex.Messaging.Agent.Store.Migrations (DBMigrate (..), sharedMigrateSchema)
 import qualified Simplex.Messaging.Agent.Store.Postgres.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.Postgres.Common
@@ -55,47 +54,74 @@ createDBStore opts migrations confirmMigrations = do
 
 connectPostgresStore :: DBOpts -> IO DBStore
 connectPostgresStore DBOpts {connstr, schema, poolSize, createSchema} = do
-  (dbConn, dbNew) <- connectDB connstr schema createSchema -- TODO [postgres] analogue for dbBusyLoop?
-  dbConnCount <- newMVar 1
+  dbSem <- newMVar ()
   dbPool <- newTBQueueIO poolSize
-  dbClosed <- newTVarIO False
-  pure DBStore {dbConnstr = connstr, dbSchema = schema, dbPoolSize = poolSize, dbConnCount, dbPool, dbNew, dbClosed}
+  dbClosed <- newTVarIO True
+  let db = DBStore {dbConnstr = connstr, dbSchema = schema, dbPoolSize = fromIntegral poolSize, dbPool, dbSem, dbNew = False, dbClosed}
+  dbNew <- connectPool db createSchema
+  pure db {dbNew}
+
+-- uninterruptibleMask_ here and below is used here so that it is not interrupted half-way,
+-- it relies on the assumption that when dbClosed = True, the queue is empty,
+-- and when it is False, the queue is full (or will have connections returned to it by the threads that use them).
+connectPool :: DBStore -> Bool -> IO Bool
+connectPool DBStore {dbConnstr, dbSchema, dbPoolSize, dbPool, dbClosed} createSchema = uninterruptibleMask_ $ do
+  (conn, dbNew) <- connectDB dbConnstr dbSchema createSchema -- TODO [postgres] analogue for dbBusyLoop?
+  conns <- replicateM (dbPoolSize - 1) $ fst <$> connectDB dbConnstr dbSchema False
+  mapM_ (atomically . writeTBQueue dbPool) (conn : conns)
+  atomically $ writeTVar dbClosed False
+  pure dbNew
 
 connectDB :: ByteString -> ByteString -> Bool -> IO (DB.Connection, Bool)
-connectDB connstr schema createSchema =
-  connectDB_ connstr schema createSchema `catchAny` \e -> do
-    putStrLn $ "connectPostgresStore error: " <> show e
-    exitFailure
+connectDB connstr schema createSchema = do
+  db <- PSQL.connectPostgreSQL connstr
+  dbNew <- prepare db `onException` PSQL.close db
+  pure (db, dbNew)
+  where
+    prepare db = do
+      void $ PSQL.execute_ db "SET client_min_messages TO WARNING"
+      dbNew <- not <$> doesSchemaExist db schema
+      when dbNew $
+        if createSchema
+          then void $ PSQL.execute_ db $ Query $ "CREATE SCHEMA " <> schema
+          else do
+            logError $ "connectPostgresStore, schema " <> safeDecodeUtf8 schema <> " does not exist, exiting."
+            PSQL.close db
+            exitFailure
+      void $ PSQL.execute_ db $ Query $ "SET search_path TO " <> schema
+      pure dbNew
 
 checkSchemaExists :: ByteString -> ByteString -> IO Bool
 checkSchemaExists connstr schema = do
   db <- PSQL.connectPostgreSQL connstr
   doesSchemaExist db schema `finally` DB.close db
 
--- can share with SQLite
-closeDBStore :: DBStore -> IO ()
-closeDBStore st@DBStore {dbConnCount, dbPool, dbClosed} =
-  ifM (readTVarIO dbClosed) (putStrLn "closeDBStore: already closed") $ do
-    atomically $ writeTVar dbClosed True
-    closeConn
-  where
-    closeConn = do
-      closed <-
-        modifyMVar dbConnCount $ \case
-          0 -> pure (0, True)
-          n -> (n - 1, False) <$ (DB.close =<< atomically (readTBQueue dbPool))
-      unless closed closeConn
+doesSchemaExist :: DB.Connection -> ByteString -> IO Bool
+doesSchemaExist db schema = do
+  [Only schemaExists] <-
+    PSQL.query
+      db
+      [sql|
+        SELECT EXISTS (
+          SELECT 1 FROM pg_catalog.pg_namespace
+          WHERE nspname = ?
+        )
+      |]
+      (Only schema)
+  pure schemaExists
 
-openPostgresStore_ :: DBStore -> IO ()
-openPostgresStore_ st@DBStore {dbClosed} = do
-  atomically $ writeTVar dbClosed False
-  withConnection st $ \_ -> pure ()
+closeDBStore :: DBStore -> IO ()
+closeDBStore DBStore {dbPool, dbPoolSize, dbClosed} =
+  ifM (readTVarIO dbClosed) (putStrLn "closeDBStore: already closed") $ uninterruptibleMask_ $ do
+    replicateM_ dbPoolSize $ atomically $ readTBQueue dbPool
+    atomically $ writeTVar dbClosed True
 
 reopenDBStore :: DBStore -> IO ()
-reopenDBStore st@DBStore {dbClosed} =
-  ifM (readTVarIO dbClosed) open (putStrLn "reopenDBStore: already opened")
-  where
-    open = openPostgresStore_ st
+reopenDBStore db =
+  ifM
+    (readTVarIO $ dbClosed db)
+    (void $ connectPool db False)
+    (putStrLn "reopenDBStore: already opened")
 
 -- not used with postgres client (used for ExecAgentStoreSQL, ExecChatStoreSQL)
 execSQL :: PSQL.Connection -> Text -> IO [Text]
