@@ -17,17 +17,10 @@ where
 
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
-import Control.Exception (bracket, onException, throwIO)
-import Control.Logger.Simple
-import Control.Monad (void, unless, when)
+import Control.Exception (bracket)
 import Data.ByteString (ByteString)
-import Database.PostgreSQL.Simple (Only (..))
 import qualified Database.PostgreSQL.Simple as PSQL
-import Database.PostgreSQL.Simple.SqlQQ (sql)
-import Database.PostgreSQL.Simple.Types (Query (..))
-import qualified Data.Text as T
 import Numeric.Natural
-import Simplex.Messaging.Util (safeDecodeUtf8, tryWriteTBQueue, whenM)
 
 -- TODO [postgres] use log_min_duration_statement instead of custom slow queries (SQLite's Connection type)
 data DBStore = DBStore
