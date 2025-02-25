@@ -1,4 +1,8 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Agent.Store.Postgres.Common
   ( DBStore (..),
@@ -11,16 +15,22 @@ module Simplex.Messaging.Agent.Store.Postgres.Common
   )
 where
 
+import Control.Concurrent.MVar
+import Control.Concurrent.STM
+import Control.Exception (bracket)
 import Data.ByteString (ByteString)
 import qualified Database.PostgreSQL.Simple as PSQL
-import UnliftIO.MVar
-import UnliftIO.STM
+import Numeric.Natural
 
 -- TODO [postgres] use log_min_duration_statement instead of custom slow queries (SQLite's Connection type)
 data DBStore = DBStore
   { dbConnstr :: ByteString,
     dbSchema :: ByteString,
-    dbConnection :: MVar PSQL.Connection,
+    dbPoolSize :: Int,
+    dbPool :: TBQueue PSQL.Connection,
+    -- MVar is needed for fair pool distribution, without STM retry contention.
+    -- Only one thread can be blocked on STM read.
+    dbSem :: MVar (),
     dbClosed :: TVar Bool,
     dbNew :: Bool
   }
@@ -28,15 +38,16 @@ data DBStore = DBStore
 data DBOpts = DBOpts
   { connstr :: ByteString,
     schema :: ByteString,
+    poolSize :: Natural,
     createSchema :: Bool
   }
   deriving (Show)
 
--- TODO [postgres] connection pool
 withConnectionPriority :: DBStore -> Bool -> (PSQL.Connection -> IO a) -> IO a
-withConnectionPriority DBStore {dbConnection} _priority action =
-  withMVar dbConnection action
-{-# INLINE withConnectionPriority #-}
+withConnectionPriority DBStore {dbPool, dbSem} _priority =
+  bracket
+    (withMVar dbSem $ \_ -> atomically $ readTBQueue dbPool)
+    (atomically . writeTBQueue dbPool)
 
 withConnection :: DBStore -> (PSQL.Connection -> IO a) -> IO a
 withConnection st = withConnectionPriority st False

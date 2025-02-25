@@ -16,9 +16,9 @@ module Simplex.Messaging.Agent.Store.Postgres
 where
 
 import Control.Concurrent.STM
-import Control.Exception (bracketOnError, finally, onException, throwIO)
+import Control.Exception (finally, onException, throwIO, uninterruptibleMask_)
 import Control.Logger.Simple (logError)
-import Control.Monad (void, when)
+import Control.Monad
 import Data.ByteString (ByteString)
 import Data.Functor (($>))
 import Data.Text (Text)
@@ -53,11 +53,24 @@ createDBStore opts migrations confirmMigrations = do
        in sharedMigrateSchema dbm (dbNew st) migrations confirmMigrations
 
 connectPostgresStore :: DBOpts -> IO DBStore
-connectPostgresStore DBOpts {connstr, schema, createSchema} = do
-  (dbConn, dbNew) <- connectDB connstr schema createSchema -- TODO [postgres] analogue for dbBusyLoop?
-  dbConnection <- newMVar dbConn
-  dbClosed <- newTVarIO False
-  pure DBStore {dbConnstr = connstr, dbSchema = schema, dbConnection, dbNew, dbClosed}
+connectPostgresStore DBOpts {connstr, schema, poolSize, createSchema} = do
+  dbSem <- newMVar ()
+  dbPool <- newTBQueueIO poolSize
+  dbClosed <- newTVarIO True
+  let st = DBStore {dbConnstr = connstr, dbSchema = schema, dbPoolSize = fromIntegral poolSize, dbPool, dbSem, dbNew = False, dbClosed}
+  dbNew <- connectPool st createSchema
+  pure st {dbNew}
+
+-- uninterruptibleMask_ here and below is used here so that it is not interrupted half-way,
+-- it relies on the assumption that when dbClosed = True, the queue is empty,
+-- and when it is False, the queue is full (or will have connections returned to it by the threads that use them).
+connectPool :: DBStore -> Bool -> IO Bool
+connectPool DBStore {dbConnstr, dbSchema, dbPoolSize, dbPool, dbClosed} createSchema = uninterruptibleMask_ $ do
+  (conn, dbNew) <- connectDB dbConnstr dbSchema createSchema -- TODO [postgres] analogue for dbBusyLoop?
+  conns <- replicateM (dbPoolSize - 1) $ fst <$> connectDB dbConnstr dbSchema False
+  mapM_ (atomically . writeTBQueue dbPool) (conn : conns)
+  atomically $ writeTVar dbClosed False
+  pure dbNew
 
 connectDB :: ByteString -> ByteString -> Bool -> IO (DB.Connection, Bool)
 connectDB connstr schema createSchema = do
@@ -97,29 +110,18 @@ doesSchemaExist db schema = do
       (Only schema)
   pure schemaExists
 
--- can share with SQLite
 closeDBStore :: DBStore -> IO ()
-closeDBStore st@DBStore {dbClosed} =
-  ifM (readTVarIO dbClosed) (putStrLn "closeDBStore: already closed") $
-    withConnection st $ \conn -> do
-      DB.close conn
-      atomically $ writeTVar dbClosed True
-
-openPostgresStore_ :: DBStore -> IO ()
-openPostgresStore_ DBStore {dbConnstr, dbSchema, dbConnection, dbClosed} =
-  bracketOnError
-    (takeMVar dbConnection)
-    (tryPutMVar dbConnection)
-    $ \_dbConn -> do
-      (dbConn, _dbNew) <- connectDB dbConnstr dbSchema False
-      atomically $ writeTVar dbClosed False
-      putMVar dbConnection dbConn
+closeDBStore DBStore {dbPool, dbPoolSize, dbClosed} =
+  ifM (readTVarIO dbClosed) (putStrLn "closeDBStore: already closed") $ uninterruptibleMask_ $ do
+    replicateM_ dbPoolSize $ atomically $ readTBQueue dbPool
+    atomically $ writeTVar dbClosed True
 
 reopenDBStore :: DBStore -> IO ()
-reopenDBStore st@DBStore {dbClosed} =
-  ifM (readTVarIO dbClosed) open (putStrLn "reopenDBStore: already opened")
-  where
-    open = openPostgresStore_ st
+reopenDBStore st =
+  ifM
+    (readTVarIO $ dbClosed st)
+    (void $ connectPool st False)
+    (putStrLn "reopenDBStore: already opened")
 
 -- not used with postgres client (used for ExecAgentStoreSQL, ExecChatStoreSQL)
 execSQL :: PSQL.Connection -> Text -> IO [Text]

@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
@@ -37,11 +38,9 @@ import Simplex.Messaging.Agent.Client (withLockMap)
 import Simplex.Messaging.Agent.Lock (Lock)
 import Simplex.Messaging.Agent.Store.Postgres (createDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common
-import Simplex.Messaging.Agent.Store.Postgres.DB (FromField (..), ToField (..), blobFieldDecoder)
+import Simplex.Messaging.Agent.Store.Postgres.DB (FromField (..), ToField (..))
 import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation)
-import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
@@ -52,6 +51,11 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (firstRow, ifM, tshow, ($>>), ($>>=), (<$$), (<$$>))
 import System.Exit (exitFailure)
 import System.IO (hFlush, stdout)
+#if !defined(dbPostgres)
+import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder)
+import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String
+#endif
 
 data PostgresQueueStore q = PostgresQueueStore
   { dbStore :: DBStore,
@@ -367,6 +371,7 @@ instance ToField EntityId where toField (EntityId s) = toField $ Binary s
 
 deriving newtype instance FromField EntityId
 
+#if !defined(dbPostgres)
 instance ToField (C.DhSecret 'C.X25519) where toField = toField . Binary . C.dhBytes'
 
 instance FromField (C.DhSecret 'C.X25519) where fromField = blobFieldDecoder strDecode
@@ -374,3 +379,4 @@ instance FromField (C.DhSecret 'C.X25519) where fromField = blobFieldDecoder str
 instance ToField C.APublicAuthKey where toField = toField . Binary . C.encodePubKey
 
 instance FromField C.APublicAuthKey where fromField = blobFieldDecoder C.decodePubKey
+#endif
