@@ -2,6 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -11,6 +12,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
@@ -94,8 +96,18 @@ data JournalMsgStore s = JournalMsgStore
   }
 
 data QStore (s :: QSType) where
-  MQStore :: STMQueueStore (JournalQueue 'QSMemory) -> QStore 'QSMemory
-  PQStore :: PostgresQueueStore (JournalQueue 'QSPostgres) -> QStore 'QSPostgres
+  MQStore :: QStoreType 'QSMemory -> QStore 'QSMemory
+  PQStore :: QStoreType 'QSPostgres -> QStore 'QSPostgres
+
+type family QStoreType s where
+  QStoreType 'QSMemory = STMQueueStore (JournalQueue 'QSMemory)
+  QStoreType 'QSPostgres = PostgresQueueStore (JournalQueue 'QSPostgres)
+
+withQS :: (QueueStoreClass (JournalQueue s) (QStoreType s) => QStoreType s -> r) -> QStore s -> r
+withQS f = \case
+  MQStore st -> f st
+  PQStore st -> f st
+{-# INLINE withQS #-}
 
 stmQueueStore :: JournalMsgStore 'QSMemory -> STMQueueStore (JournalQueue 'QSMemory)
 stmQueueStore st = case queueStore_ st of
@@ -279,67 +291,30 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
     MQStoreCfg -> MQStore <$> newQueueStore @(JournalQueue s) ()
     PQStoreCfg dbOpts confirmMigrations -> PQStore <$> newQueueStore @(JournalQueue s) (dbOpts, confirmMigrations)
 
-  loadedQueues = \case
-    MQStore st -> loadedQueues st
-    PQStore st -> loadedQueues st
+  loadedQueues = withQS loadedQueues
   {-# INLINE loadedQueues #-}
-
-  queueCounts = \case
-    -- TODO [postgres] combine these functions
-    MQStore st -> queueCounts @(JournalQueue s) st
-    PQStore st -> queueCounts @(JournalQueue s) st
+  queueCounts = withQS (queueCounts @(JournalQueue s))
   {-# INLINE queueCounts #-}
-
-  addQueue_ = \case
-    MQStore st -> addQueue_ st
-    PQStore st -> addQueue_ st
+  addQueue_ = withQS addQueue_
   {-# INLINE addQueue_ #-}
-
-  getQueue_ = \case
-    MQStore st -> getQueue_ st
-    PQStore st -> getQueue_ st
+  getQueue_ = withQS getQueue_
   {-# INLINE getQueue_ #-}
-
-  secureQueue = \case
-    MQStore st -> secureQueue st
-    PQStore st -> secureQueue st
+  secureQueue = withQS secureQueue
   {-# INLINE secureQueue #-}
-
-  addQueueNotifier = \case
-    MQStore st -> addQueueNotifier st
-    PQStore st -> addQueueNotifier st
+  addQueueNotifier = withQS addQueueNotifier
   {-# INLINE addQueueNotifier #-}
-
-  deleteQueueNotifier = \case
-    MQStore st -> deleteQueueNotifier st
-    PQStore st -> deleteQueueNotifier st
+  deleteQueueNotifier = withQS deleteQueueNotifier
   {-# INLINE deleteQueueNotifier #-}
-
-  suspendQueue = \case
-    MQStore st -> suspendQueue st
-    PQStore st -> suspendQueue st
+  suspendQueue = withQS suspendQueue
   {-# INLINE suspendQueue #-}
-
-  blockQueue = \case
-    MQStore st -> blockQueue st
-    PQStore st -> blockQueue st
+  blockQueue = withQS blockQueue
   {-# INLINE blockQueue #-}
-
-  unblockQueue = \case
-    MQStore st -> unblockQueue st
-    PQStore st -> unblockQueue st
+  unblockQueue = withQS unblockQueue
   {-# INLINE unblockQueue #-}
-
-  updateQueueTime = \case
-    MQStore st -> updateQueueTime st
-    PQStore st -> updateQueueTime st
+  updateQueueTime = withQS updateQueueTime
   {-# INLINE updateQueueTime #-}
-
-  deleteStoreQueue = \case
-    MQStore st -> deleteStoreQueue st
-    PQStore st -> deleteStoreQueue st
+  deleteStoreQueue = withQS deleteStoreQueue
   {-# INLINE deleteStoreQueue #-}
-
 
 instance MsgStoreClass (JournalMsgStore s) where
   type StoreMonad (JournalMsgStore s) = StoreIO s
