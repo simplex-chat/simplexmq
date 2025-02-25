@@ -126,7 +126,6 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               confirmOrExit
                 ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
                 "Journal not exported"
-              -- TODO [postgres]
               ms <- newJournalMsgStore MQStoreCfg
               readQueueStore True (mkQueue ms) storeLogFile $ stmQueueStore ms
               exportMessages True ms storeMsgsFilePath False
@@ -195,7 +194,13 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, update it to `memory` in INI file."
                 Right (ASType SQSMemory _) -> "store_queues set to `memory`, start the server"
                 Left e -> e <> ", configure storage correctly"
-        SCDelete -> undefined -- TODO [postgres]
+        SCDelete
+          | not schemaExists -> do
+              putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
+              exitFailure
+          | otherwise -> do
+              putStrLn $ "Open database: psql " <> B.unpack connstr
+              putStrLn $ "Delete schema: DELETE SCHEMA " <> B.unpack schema <> " CASCADE;"
   where
     withIniFile a =
       doesFileExist iniFile >>= \case
