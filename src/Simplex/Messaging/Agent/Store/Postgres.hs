@@ -57,9 +57,9 @@ connectPostgresStore DBOpts {connstr, schema, poolSize, createSchema} = do
   dbSem <- newMVar ()
   dbPool <- newTBQueueIO poolSize
   dbClosed <- newTVarIO True
-  let db = DBStore {dbConnstr = connstr, dbSchema = schema, dbPoolSize = fromIntegral poolSize, dbPool, dbSem, dbNew = False, dbClosed}
-  dbNew <- connectPool db createSchema
-  pure db {dbNew}
+  let st = DBStore {dbConnstr = connstr, dbSchema = schema, dbPoolSize = fromIntegral poolSize, dbPool, dbSem, dbNew = False, dbClosed}
+  dbNew <- connectPool st createSchema
+  pure st {dbNew}
 
 -- uninterruptibleMask_ here and below is used here so that it is not interrupted half-way,
 -- it relies on the assumption that when dbClosed = True, the queue is empty,
@@ -117,10 +117,10 @@ closeDBStore DBStore {dbPool, dbPoolSize, dbClosed} =
     atomically $ writeTVar dbClosed True
 
 reopenDBStore :: DBStore -> IO ()
-reopenDBStore db =
+reopenDBStore st =
   ifM
-    (readTVarIO $ dbClosed db)
-    (void $ connectPool db False)
+    (readTVarIO $ dbClosed st)
+    (void $ connectPool st False)
     (putStrLn "reopenDBStore: already opened")
 
 -- not used with postgres client (used for ExecAgentStoreSQL, ExecChatStoreSQL)
