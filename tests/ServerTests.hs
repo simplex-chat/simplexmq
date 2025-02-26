@@ -821,7 +821,7 @@ testRestoreExpireMessages =
           ms <- newMsgStore (testJournalStoreCfg MQStoreCfg) {quota = 4}
           readWriteQueueStore True (mkQueue ms) testStoreLogFile (queueStore ms) >>= closeStoreLog
           removeFileIfExists testStoreMsgsFile
-          exportMessages ms testStoreMsgsFile False
+          exportMessages False ms testStoreMsgsFile False
     runTest :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()

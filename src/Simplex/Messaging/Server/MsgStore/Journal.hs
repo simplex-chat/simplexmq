@@ -342,10 +342,10 @@ instance MsgStoreClass (JournalMsgStore s) where
   withActiveMsgQueues :: Monoid a => JournalMsgStore s -> (JournalQueue s -> IO a) -> IO a
   withActiveMsgQueues = withQS withLoadedQueues . queueStore_
 
-  withAllMsgQueues :: forall a. Monoid a => JournalMsgStore s -> (JournalQueue s -> IO a) -> IO a
-  withAllMsgQueues ms action = case queueStore_ ms of
+  withAllMsgQueues :: Monoid a => Bool -> JournalMsgStore s -> (JournalQueue s -> IO a) -> IO a
+  withAllMsgQueues tty ms action = case queueStore_ ms of
     MQStore st -> withLoadedQueues st action
-    PQStore st -> foldQueues False st (mkQueue ms) action
+    PQStore st -> foldQueues tty st (mkQueue ms) action
 
   logQueueStates :: JournalMsgStore s -> IO ()
   logQueueStates ms = withActiveMsgQueues ms $ unStoreIO . logQueueState

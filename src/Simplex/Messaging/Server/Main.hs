@@ -128,7 +128,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 "Journal not exported"
               ms <- newJournalMsgStore MQStoreCfg
               readQueueStore True (mkQueue ms) storeLogFile $ stmQueueStore ms
-              exportMessages ms storeMsgsFilePath False
+              exportMessages True ms storeMsgsFilePath False
               putStrLn "Export completed"
               putStrLn $ case readStoreType ini of
                 Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`, start the server."
