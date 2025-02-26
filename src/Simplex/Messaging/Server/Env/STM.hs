@@ -16,6 +16,7 @@
 #if __GLASGOW_HASKELL__ == 810
 {-# LANGUAGE UndecidableInstances #-}
 #endif
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Server.Env.STM where
 
@@ -43,7 +44,6 @@ import Network.Socket (ServiceName)
 import qualified Network.TLS as T
 import Numeric.Natural
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client.Agent (SMPClientAgent, SMPClientAgentConfig, newSMPClientAgent)
 import Simplex.Messaging.Crypto (KeyHash (..))
@@ -56,6 +56,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Server.QueueStore.Postgres (PostgresStoreCfg (..))
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore, setStoreLog)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.Stats
@@ -216,7 +217,7 @@ data AStoreType = forall qs ms. SupportedStore qs ms => ASType (SQSType qs) (SMS
 data ServerStoreCfg qs ms where
   SSCMemory :: Maybe StorePaths -> ServerStoreCfg 'QSMemory 'MSMemory
   SSCMemoryJournal :: {storeLogFile :: FilePath, storeMsgsPath :: FilePath} -> ServerStoreCfg 'QSMemory 'MSJournal
-  SSCDatabaseJournal :: {storeDBOpts :: DBOpts, confirmMigrations :: MigrationConfirmation, storeMsgsPath' :: FilePath} -> ServerStoreCfg 'QSPostgres 'MSJournal
+  SSCDatabaseJournal :: {storeCfg :: PostgresStoreCfg, storeMsgsPath' :: FilePath} -> ServerStoreCfg 'QSPostgres 'MSJournal
 
 data StorePaths = StorePaths {storeLogFile :: FilePath, storeMsgsFile :: Maybe FilePath}
 
@@ -338,9 +339,9 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       ms <- newMsgStore cfg
       loadStoreLog (mkQueue ms) storeLogFile $ stmQueueStore ms
       pure $ AMS qt mt ms
-    ASSCfg qt mt SSCDatabaseJournal {storeDBOpts, storeMsgsPath'} -> do
+    ASSCfg qt mt SSCDatabaseJournal {storeCfg, storeMsgsPath'} -> do
       let StartOptions {confirmMigrations} = startOptions
-          qsCfg = PQStoreCfg storeDBOpts confirmMigrations
+          qsCfg = PQStoreCfg (storeCfg {confirmMigrations} :: PostgresStoreCfg)
           cfg = mkJournalStoreConfig qsCfg storeMsgsPath' msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
       ms <- newMsgStore cfg
       pure $ AMS qt mt ms

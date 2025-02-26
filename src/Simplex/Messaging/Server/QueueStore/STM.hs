@@ -64,8 +64,8 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
 
   loadedQueues = queues
   {-# INLINE loadedQueues #-}
-  -- foldAllQueues = withLoadedQueues
-  -- {-# INLINE foldAllQueues #-}
+  compactQueues _ = pure 0
+  {-# INLINE compactQueues #-}
 
   queueCounts :: STMQueueStore q -> IO QueueCounts
   queueCounts st = do

@@ -9,6 +9,7 @@ module Simplex.Messaging.Server.QueueStore.Types where
 
 import Control.Concurrent.STM
 import Control.Monad
+import Data.Int (Int64)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.TMap (TMap)
@@ -25,7 +26,7 @@ class StoreQueueClass q => QueueStoreClass q s where
   newQueueStore :: QueueStoreCfg s -> IO s
   queueCounts :: s -> IO QueueCounts
   loadedQueues :: s -> TMap RecipientId q
-  -- foldAllQueues :: Monoid a => s -> (q -> IO a) -> IO a
+  compactQueues :: s -> IO Int64
   addQueue_ :: s -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
   getQueue_ :: DirectParty p => s -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   secureQueue :: s -> q -> SndPublicAuthKey -> IO (Either ErrorType ())

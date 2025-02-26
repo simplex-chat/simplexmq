@@ -24,6 +24,7 @@ import Data.Char (isAlpha, isAscii, toUpper)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
+import Data.Int (Int64)
 import Data.List (find, isPrefixOf)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe, isJust, isNothing)
@@ -52,7 +53,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), JournalQueue, QStoreCfg (..), postgresQueueStore, stmQueueStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), QSType (..), SQSType (..), SMSType (..), newMsgStore)
-import Simplex.Messaging.Server.QueueStore.Postgres (batchInsertQueues, foldQueueRecs)
+import Simplex.Messaging.Server.QueueStore.Postgres (PostgresStoreCfg (..), batchInsertQueues, foldQueueRecs)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog (logCreateQueue, openWriteStoreLog)
 import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
@@ -165,10 +166,11 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               ms <- newJournalMsgStore MQStoreCfg
               readQueueStore True (mkQueue ms) storeLogFile (queueStore ms)
               queues <- readTVarIO $ loadedQueues $ stmQueueStore ms
-              ps <- newJournalMsgStore $ PQStoreCfg dbOpts {createSchema = True} MCConsole
-              (qCnt, nCnt) <- batchInsertQueues @(JournalQueue 'QSMemory) True queues $ postgresQueueStore ps
+              let storeCfg = PostgresStoreCfg {dbOpts = dbOpts {createSchema = True}, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}
+              ps <- newJournalMsgStore $ PQStoreCfg storeCfg
+              qCnt <- batchInsertQueues @(JournalQueue 'QSMemory) True queues $ postgresQueueStore ps
               renameFile storeLogFile $ storeLogFile <> ".bak"
-              putStrLn $ "Import completed: " <> show qCnt <> " queues, " <> show nCnt <> " notifiers"
+              putStrLn $ "Import completed: " <> show qCnt <> " queues"
               putStrLn $ case readStoreType ini of
                 Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`.\nImport messages to journal to use PostgreSQL database for queues (`smp-server journal import`)"
                 Right (ASType SQSMemory SMSJournal) -> "store_queues set to `memory`, update it to `database` in INI file"
@@ -186,9 +188,10 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               confirmOrExit
                 ("WARNING: PostrgreSQL database schema " <> B.unpack schema <> " (database: " <> B.unpack connstr <> ") will be exported to store log file " <> storeLogFilePath)
                 "Queue records not exported"
-              ps <- newJournalMsgStore $ PQStoreCfg dbOpts MCConsole
+              let storeCfg = PostgresStoreCfg {dbOpts, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}
+              ps <- newJournalMsgStore $ PQStoreCfg storeCfg
               sl <- openWriteStoreLog storeLogFilePath
-              Sum qCnt <- foldQueueRecs True (postgresQueueStore ps) $ \rId qr -> logCreateQueue sl rId qr $> Sum (1 :: Int)
+              Sum qCnt <- foldQueueRecs True (postgresQueueStore ps) $ \(rId, qr) -> logCreateQueue sl rId qr $> Sum (1 :: Int)
               putStrLn $ "Export completed: " <> show qCnt <> " queues"
               putStrLn $ case readStoreType ini of
                 Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, update it to `memory` in INI file."
@@ -242,14 +245,15 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       DBOpts
         { connstr = either (const defaultDBConnStr) encodeUtf8 $ lookupValue "STORE_LOG" "db_connection" ini,
           schema = either (const defaultDBSchema) encodeUtf8 $ lookupValue "STORE_LOG" "db_schema" ini,
-          poolSize = either (const defaultDBPoolSize) (read . T.unpack) $ lookupValue "STORE_LOG" "db_pool_size" ini,
+          poolSize = readIniDefault defaultDBPoolSize "STORE_LOG" "db_pool_size" ini,
           createSchema = False
         }
     dbOptsIniContent :: DBOpts -> Text
-    dbOptsIniContent DBOpts {connstr, schema, poolSize } =
+    dbOptsIniContent DBOpts {connstr, schema, poolSize} =
       (optDisabled' (connstr == defaultDBConnStr) <> "db_connection: " <> safeDecodeUtf8 connstr <> "\n")
         <> (optDisabled' (schema == defaultDBSchema) <> "db_schema: " <> safeDecodeUtf8 schema <> "\n")
         <> (optDisabled' (poolSize == defaultDBPoolSize) <> "db_pool_size: " <> tshow poolSize <> "\n\n")
+    iniDeletedTTL ini = readIniDefault (86400 * defaultDeletedTTL) "STORE_LOG" "db_deleted_ttl" ini
     httpsCertFile = combine cfgPath "web.crt"
     httpsKeyFile = combine cfgPath "web.key"
     defaultStaticPath = combine logPath "www"
@@ -333,6 +337,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                    \store_queues: memory\n\n\
                    \# Database connection settings for PostgreSQL database (`store_queues: database`).\n"
                 <> dbOptsIniContent dbOptions
+                <> "# Time to retain deleted queues in the database, days.\n"
+                <> ("db_deleted_ttl: " <> tshow defaultDeletedTTL <> "\n\n")
                 <> "# Message storage mode: `memory` or `journal`.\n\
                    \store_messages: memory\n\n\
                    \# When store_messages is `memory`, undelivered messages are optionally saved and restored\n\
@@ -498,7 +504,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 ASType SQSMemory SMSJournal ->
                   ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = storeLogFilePath, storeMsgsPath = storeMsgsJournalDir}
                 ASType SQSPostgres SMSJournal ->
-                  ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeDBOpts = iniDBOptions ini, confirmMigrations = MCYesUp, storeMsgsPath' = storeMsgsJournalDir},
+                  let storeCfg = PostgresStoreCfg {dbOpts = iniDBOptions ini, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
+                   in ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeCfg, storeMsgsPath' = storeMsgsJournalDir},
               storeNtfsFile = restoreMessagesFile storeNtfsFilePath,
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
@@ -639,6 +646,10 @@ defaultDBSchema = "smp_server"
 
 defaultDBPoolSize :: Natural
 defaultDBPoolSize = 10
+
+-- time to retain deleted queues in the database (days), for debugging
+defaultDeletedTTL :: Int64
+defaultDeletedTTL = 21
 
 defaultControlPort :: Int
 defaultControlPort = 5224

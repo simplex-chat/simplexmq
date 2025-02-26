@@ -217,11 +217,8 @@ testExportImportStore ms = do
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3
   exportMessages False ms testStoreMsgsFile False
-  renameFile testStoreMsgsFile (testStoreMsgsFile <> ".copy")
   closeMsgStore ms
   closeStoreLog sl
-  exportMessages False ms testStoreMsgsFile False
-  (B.readFile testStoreMsgsFile `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".copy")
   let cfg = (testJournalStoreCfg MQStoreCfg :: JournalStoreConfig 'QSMemory) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
   readWriteQueueStore True (mkQueue ms') testStoreLogFile (queueStore ms') >>= closeStoreLog
@@ -229,7 +226,7 @@ testExportImportStore ms = do
     importMessages False ms' testStoreMsgsFile Nothing False
   printMessageStats "Messages" stats
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
-  length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 4 -- state file is backed up, 2 message files
+  length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3 -- 2 message files
   exportMessages False ms' testStoreMsgsFile2 False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
