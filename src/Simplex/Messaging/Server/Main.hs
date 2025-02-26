@@ -200,7 +200,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               exitFailure
           | otherwise -> do
               putStrLn $ "Open database: psql " <> B.unpack connstr
-              putStrLn $ "Delete schema: DELETE SCHEMA " <> B.unpack schema <> " CASCADE;"
+              putStrLn $ "Delete schema: DROP SCHEMA " <> B.unpack schema <> " CASCADE;"
   where
     withIniFile a =
       doesFileExist iniFile >>= \case
