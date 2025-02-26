@@ -399,7 +399,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         old <- expireBeforeEpoch expCfg
         now <- systemSeconds <$> getSystemTime
         msgStats@MessageStats {storedMsgsCount = stored, expiredMsgsCount = expired} <-
-          withActiveMsgQueues ms $ expireQueueMsgs now ms old
+          withAllMsgQueues ms $ expireQueueMsgs now ms old
         atomicWriteIORef (msgCount stats) stored
         atomicModifyIORef'_ (msgExpired stats) (+ expired)
         printMessageStats "STORE: messages" msgStats
@@ -1794,15 +1794,15 @@ randomId = fmap EntityId . randomId'
 saveServerMessages :: Bool -> AMsgStore -> IO ()
 saveServerMessages drainMsgs = \case
   AMS SQSMemory SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-    Just f -> exportMessages False ms f drainMsgs
+    Just f -> exportMessages ms f drainMsgs
     Nothing -> logInfo "undelivered messages are not saved"
   AMS _ SMSJournal _ -> logInfo "closed journal message storage"
 
-exportMessages :: MsgStoreClass s => Bool -> s -> FilePath -> Bool -> IO ()
-exportMessages tty ms f drainMsgs = do
+exportMessages :: MsgStoreClass s => s -> FilePath -> Bool -> IO ()
+exportMessages ms f drainMsgs = do
   logInfo $ "saving messages to file " <> T.pack f
   liftIO $ withFile f WriteMode $ \h ->
-    tryAny (withAllMsgQueues tty ms $ saveQueueMsgs h) >>= \case
+    tryAny (withAllMsgQueues ms $ saveQueueMsgs h) >>= \case
       Right (Sum total) -> logInfo $ "messages saved: " <> tshow total
       Left e -> do
         logError $ "error exporting messages: " <> tshow e
@@ -1834,10 +1834,10 @@ processServerMessages StartOptions {skipWarnings} = do
         | expire = Just <$> case old_ of
             Just old -> do
               logInfo "expiring journal store messages..."
-              withAllMsgQueues False ms $ processExpireQueue old
+              withAllMsgQueues ms $ processExpireQueue old
             Nothing -> do
               logInfo "validating journal store messages..."
-              withAllMsgQueues False ms $ processValidateQueue
+              withAllMsgQueues ms $ processValidateQueue
         | otherwise = logWarn "skipping message expiration" $> Nothing
         where
           processExpireQueue :: Int64 -> JournalQueue s -> IO MessageStats

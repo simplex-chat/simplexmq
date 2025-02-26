@@ -35,7 +35,7 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
   newMsgStore :: MsgStoreConfig s -> IO s
   closeMsgStore :: s -> IO ()
   withActiveMsgQueues :: Monoid a => s -> (StoreQueue s -> IO a) -> IO a
-  withAllMsgQueues :: Monoid a => Bool -> s -> (StoreQueue s -> IO a) -> IO a
+  withAllMsgQueues :: Monoid a => s -> (StoreQueue s -> IO a) -> IO a
   logQueueStates :: s -> IO ()
   logQueueState :: StoreQueue s -> StoreMonad s ()
   queueStore :: s -> QueueStore s

@@ -128,7 +128,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 "Journal not exported"
               ms <- newJournalMsgStore MQStoreCfg
               readQueueStore True (mkQueue ms) storeLogFile $ stmQueueStore ms
-              exportMessages True ms storeMsgsFilePath False
+              exportMessages ms storeMsgsFilePath False
               putStrLn "Export completed"
               putStrLn $ case readStoreType ini of
                 Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`, start the server."
@@ -166,9 +166,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               readQueueStore True (mkQueue ms) storeLogFile (queueStore ms)
               queues <- readTVarIO $ loadedQueues $ stmQueueStore ms
               ps <- newJournalMsgStore $ PQStoreCfg dbOpts {createSchema = True} MCConsole
-              (qCnt, nCnt) <- batchInsertQueues @(JournalQueue 'QSMemory) True queues $ postgresQueueStore ps
+              qCnt <- batchInsertQueues @(JournalQueue 'QSMemory) True queues $ postgresQueueStore ps
               renameFile storeLogFile $ storeLogFile <> ".bak"
-              putStrLn $ "Import completed: " <> show qCnt <> " queues, " <> show nCnt <> " notifiers"
+              putStrLn $ "Import completed: " <> show qCnt <> " queues"
               putStrLn $ case readStoreType ini of
                 Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`.\nImport messages to journal to use PostgreSQL database for queues (`smp-server journal import`)"
                 Right (ASType SQSMemory SMSJournal) -> "store_queues set to `memory`, update it to `database` in INI file"
@@ -188,7 +188,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 "Queue records not exported"
               ps <- newJournalMsgStore $ PQStoreCfg dbOpts MCConsole
               sl <- openWriteStoreLog storeLogFilePath
-              Sum qCnt <- foldQueueRecs True (postgresQueueStore ps) $ \rId qr -> logCreateQueue sl rId qr $> Sum (1 :: Int)
+              Sum qCnt <- foldQueueRecs True (postgresQueueStore ps) $ \(rId, qr) -> logCreateQueue sl rId qr $> Sum (1 :: Int)
               putStrLn $ "Export completed: " <> show qCnt <> " queues"
               putStrLn $ case readStoreType ini of
                 Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, update it to `memory` in INI file."
