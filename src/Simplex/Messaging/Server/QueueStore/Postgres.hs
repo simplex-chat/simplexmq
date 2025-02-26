@@ -39,15 +39,15 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
 import qualified Data.Text as T
 import Database.PostgreSQL.Simple (Binary (..), Only (..), Query, SqlError)
-import qualified Database.PostgreSQL.Simple as PSQL
+import qualified Database.PostgreSQL.Simple as DB
+import Database.PostgreSQL.Simple.FromField (FromField (..))
+import Database.PostgreSQL.Simple.ToField (ToField (..))
 import Database.PostgreSQL.Simple.Errors (ConstraintViolation (..), constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 import Simplex.Messaging.Agent.Client (withLockMap)
 import Simplex.Messaging.Agent.Lock (Lock)
 import Simplex.Messaging.Agent.Store.Postgres (createDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common
-import Simplex.Messaging.Agent.Store.Postgres.DB (FromField (..), ToField (..))
-import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
@@ -149,8 +149,8 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   secureQueue st sq sKey =
     withQueueDB sq "secureQueue" $ \q -> do
       verify q
-      withDB' "secureQueue" st $ \db ->
-        DB.execute db "UPDATE msg_queues SET sender_key = ? WHERE recipient_id = ?" (sKey, recipientId sq)
+      assertUpdated $ withDB' "secureQueue" st $ \db ->
+        DB.execute db "UPDATE msg_queues SET sender_key = ? WHERE recipient_id = ? AND deleted_at IS NULL" (sKey, recipientId sq)
       atomically $ writeTVar (queueRec sq) $ Just q {senderKey = Just sKey}
     where
       verify q = case senderKey q of
@@ -162,7 +162,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     withQueueDB sq "addQueueNotifier" $ \q ->
       ExceptT $ withLockMap (notifierLocks st) nId "addQueueNotifier" $
         ifM (TM.memberIO nId notifiers) (pure $ Left DUPLICATE_) $ runExceptT $ do
-          withDB "addQueueNotifier" st $ \db ->
+          assertUpdated $ withDB "addQueueNotifier" st $ \db ->
             E.try (update db) >>= bimapM handleDuplicate pure
           nId_ <- forM (notifier q) $ \NtfCreds {notifierId} -> atomically (TM.delete notifierId notifiers) $> notifierId
           let !q' = q {notifier = Just ntfCreds}
@@ -180,7 +180,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           [sql|
             UPDATE msg_queues
             SET notifier_id = ?, notifier_key = ?, rcv_ntf_dh_secret = ?
-            WHERE recipient_id = ?
+            WHERE recipient_id = ? AND deleted_at IS NULL
           |]
           (nId, notifierKey, rcvNtfDhSecret, rId)
 
@@ -189,7 +189,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     withQueueDB sq "deleteQueueNotifier" $ \q ->
       ExceptT $ fmap sequence $ forM (notifier q) $ \NtfCreds {notifierId = nId} ->
         withLockMap (notifierLocks st) nId "deleteQueueNotifier" $ runExceptT $ do
-          withDB' "deleteQueueNotifier" st update
+          assertUpdated $ withDB' "deleteQueueNotifier" st update
           atomically $ TM.delete nId $ notifiers st
           atomically $ writeTVar (queueRec sq) $ Just q {notifier = Nothing}
           pure nId
@@ -200,7 +200,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           [sql|
             UPDATE msg_queues
             SET notifier_id = NULL, notifier_key = NULL, rcv_ntf_dh_secret = NULL
-            WHERE recipient_id = ?
+            WHERE recipient_id = ? AND deleted_at IS NULL
           |]
           (Only $ recipientId sq)
 
@@ -219,8 +219,8 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       if updatedAt == Just t
         then pure q
         else do
-          withDB' "updateQueueTime" st $ \db ->
-            DB.execute db "UPDATE msg_queues SET updated_at = ? WHERE recipient_id = ?" (t, recipientId sq)
+          assertUpdated $ withDB' "updateQueueTime" st $ \db ->
+            DB.execute db "UPDATE msg_queues SET updated_at = ? WHERE recipient_id = ? AND deleted_at IS NULL" (t, recipientId sq)
           let !q' = q {updatedAt = Just t}
           atomically $ writeTVar (queueRec sq) $ Just q'
           pure q'
@@ -230,8 +230,8 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   deleteStoreQueue st sq = runExceptT $ do
     q <- ExceptT $ readQueueRecIO qr
     RoundedSystemTime ts <- liftIO getSystemDate
-    withDB' "deleteStoreQueue" st $ \db ->
-      DB.execute db "UPDATE msg_queues SET deleted_at = ? WHERE recipient_id = ?" (ts, recipientId sq)
+    assertUpdated $ withDB' "deleteStoreQueue" st $ \db ->
+      DB.execute db "UPDATE msg_queues SET deleted_at = ? WHERE recipient_id = ? AND deleted_at IS NULL" (ts, recipientId sq)
     atomically $ writeTVar qr Nothing
     atomically $ TM.delete (senderId q) $ senders st
     forM_ (notifier q) $ \NtfCreds {notifierId} -> atomically $ TM.delete notifierId $ notifiers st
@@ -249,7 +249,7 @@ batchInsertQueues tty queues toStore = do
   pure qCnt
   where
     processChunk st (qCnt, i) qs = do
-      qCnt' <- withConnection st $ \db -> PSQL.executeMany db insertQueueQuery $ map queueRecToRow qs
+      qCnt' <- withConnection st $ \db -> DB.executeMany db insertQueueQuery $ map queueRecToRow qs
       let i' = i + length qs
       when tty $ putStr (progress i' <> "\r") >> hFlush stdout
       pure (qCnt + qCnt', i')
@@ -274,12 +274,16 @@ foldQueues tty st mkQ f =
 
 foldQueueRecs :: Monoid a => Bool -> PostgresQueueStore q -> ((RecipientId, QueueRec) -> IO a) -> IO a
 foldQueueRecs tty st f = do
-  fmap snd $ withConnection (dbStore st) $ \db ->
-    PSQL.fold_ db queueRecQuery (0 :: Int, mempty) $ \(!i, !acc) row -> do
+  (n, r) <- withConnection (dbStore st) $ \db ->
+    DB.fold_ db queueRecQuery (0 :: Int, mempty) $ \(!i, !acc) row -> do
       r <- f $ rowToQueueRec row
       let i' = i + 1
-      when (tty && i' `mod` 100000 == 0) $ putStr ("Processed: " <> show i <> " records\r") >> hFlush stdout
+      when (tty && i' `mod` 100000 == 0) $ putStr (progress i <> "\r") >> hFlush stdout
       pure (i', acc <> r)
+  when tty $ putStrLn $ progress n
+  pure r
+  where
+    progress i = "Processed: " <> show i <> " records"
 
 queueRecQuery :: Query
 queueRecQuery =
@@ -318,15 +322,16 @@ rowToQueueRec (rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, n
 setStatusDB :: StoreQueueClass q => String -> PostgresQueueStore q -> q -> ServerEntityStatus -> IO (Either ErrorType ())
 setStatusDB op st sq status =
   withQueueDB sq op $ \q -> do
-    withDB' op st $ \db ->
-      DB.execute db "UPDATE msg_queues SET status = ? WHERE recipient_id = ?" (status, recipientId sq)
+    assertUpdated $ withDB' op st $ \db ->
+      DB.execute db "UPDATE msg_queues SET status = ? WHERE recipient_id = ? AND deleted_at IS NULL" (status, recipientId sq)
     atomically $ writeTVar (queueRec sq) $ Just q {status}
 
 withQueueDB :: StoreQueueClass q => q -> String -> (QueueRec -> ExceptT ErrorType IO a) -> IO (Either ErrorType a)
 withQueueDB sq op action =
-  withQueueLock sq op $ runExceptT $ do
-    q <- ExceptT $ readQueueRecIO $ queueRec sq
-    action q
+  withQueueLock sq op $ runExceptT $ ExceptT (readQueueRecIO $ queueRec sq) >>= action
+
+assertUpdated :: ExceptT ErrorType IO Int64 -> ExceptT ErrorType IO ()
+assertUpdated = (>>= \n -> when (n == 0) (throwE AUTH))
 
 withDB' :: String -> PostgresQueueStore q -> (DB.Connection -> IO a) -> ExceptT ErrorType IO a
 withDB' op st' action = withDB op st' $ fmap Right . action
