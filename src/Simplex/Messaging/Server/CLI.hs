@@ -27,6 +27,7 @@ import qualified Data.X509.File as XF
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (HostName, ServiceName)
 import Options.Applicative
+import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
 import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), ServerStoreCfg (..), StorePaths (..))
@@ -297,17 +298,21 @@ printServerConfig transports logFile = do
   putStrLn $ case logFile of
     Just f -> "Store log: " <> f
     _ -> "Store log disabled."
-  forM_ transports $ \(p, ATransport t, addHTTP) -> do
-    let descr = p <> " (" <> transportName t <> ")..."
-    putStrLn $ "Serving SMP protocol on port " <> descr
-    when addHTTP $ putStrLn $ "Serving static site on port " <> descr
+  printServerTransports transports
 
--- TODO [postgres]
+printServerTransports :: [(ServiceName, ATransport, AddHTTP)] -> IO ()
+printServerTransports = mapM_ $ \(p, ATransport t, addHTTP) -> do
+  let descr = p <> " (" <> transportName t <> ")..."
+  putStrLn $ "Serving SMP protocol on port " <> descr
+  when addHTTP $ putStrLn $ "Serving static site on port " <> descr
+
 printSMPServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> AServerStoreCfg -> IO ()
-printSMPServerConfig transports (ASSCfg _ _ cfg) = printServerConfig transports $ case cfg of
-  SSCMemory sp_ -> (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
-  SSCMemoryJournal {storeLogFile} -> Just storeLogFile
-  SSCDatabaseJournal {} -> Just "postgres database"
+printSMPServerConfig transports (ASSCfg _ _ cfg) = case cfg of
+  SSCMemory sp_ -> printServerConfig transports $ (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
+  SSCMemoryJournal {storeLogFile} -> printServerConfig transports $ Just storeLogFile
+  SSCDatabaseJournal {storeDBOpts = DBOpts {connstr, schema}} -> do
+    B.putStrLn $ "PostgreSQL database: " <> connstr <> ", schema: " <> schema
+    printServerTransports transports
 
 deleteDirIfExists :: FilePath -> IO ()
 deleteDirIfExists path = whenM (doesDirectoryExist path) $ removeDirectoryRecursive path

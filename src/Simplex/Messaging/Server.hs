@@ -1829,8 +1829,6 @@ processServerMessages StartOptions {skipWarnings} = do
           Just f -> ifM (doesFileExist f) (Just <$> importMessages False ms f old_ skipWarnings) (pure Nothing)
           Nothing -> pure Nothing
         AMS _ SMSJournal ms -> processJournalMessages old_ expire ms
-        -- TODO [postgres] is it needed?
-        -- AMS (SType SQSPostgres SMSJournal) ms -> processJournalMessages old_ expire ms
       processJournalMessages :: forall s. Maybe Int64 -> Bool -> JournalMsgStore s -> IO (Maybe MessageStats)
       processJournalMessages old_ expire ms
         | expire = Just <$> case old_ of
