@@ -20,6 +20,7 @@
 
 module Simplex.Messaging.Server.QueueStore.Postgres
   ( PostgresQueueStore (..),
+    PostgresStoreCfg (..),
     batchInsertQueues,
     foldQueueRecs,
     foldQueues,
@@ -33,11 +34,13 @@ import Control.Monad.Except
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Data.Bitraversable (bimapM)
+import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
 import qualified Data.Text as T
+import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Database.PostgreSQL.Simple (Binary (..), Only (..), Query, SqlError)
 import qualified Database.PostgreSQL.Simple as DB
 import Database.PostgreSQL.Simple.FromField (FromField (..))
@@ -74,20 +77,27 @@ data PostgresQueueStore q = PostgresQueueStore
     senders :: TMap SenderId RecipientId,
     -- this map only cashes the queues that were attempted to be subscribed to,
     notifiers :: TMap NotifierId RecipientId,
-    notifierLocks :: TMap NotifierId Lock
+    notifierLocks :: TMap NotifierId Lock,
+    deletedTTL :: Int64
+  }
+
+data PostgresStoreCfg = PostgresStoreCfg
+  { dbOpts :: DBOpts,
+    confirmMigrations :: MigrationConfirmation,
+    deletedTTL :: Int64
   }
 
 instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
-  type QueueStoreCfg (PostgresQueueStore q) = (DBOpts, MigrationConfirmation)
+  type QueueStoreCfg (PostgresQueueStore q) = PostgresStoreCfg
 
-  newQueueStore :: (DBOpts, MigrationConfirmation)  -> IO (PostgresQueueStore q)
-  newQueueStore (dbOpts, confirmMigrations) = do
+  newQueueStore :: PostgresStoreCfg  -> IO (PostgresQueueStore q)
+  newQueueStore PostgresStoreCfg {dbOpts, confirmMigrations, deletedTTL} = do
     dbStore <- either err pure =<< createDBStore dbOpts serverMigrations confirmMigrations
     queues <- TM.emptyIO
     senders <- TM.emptyIO
     notifiers <- TM.emptyIO
     notifierLocks <- TM.emptyIO
-    pure PostgresQueueStore {dbStore, queues, senders, notifiers, notifierLocks}
+    pure PostgresQueueStore {dbStore, queues, senders, notifiers, notifierLocks, deletedTTL}
     where
       err e = do
         logError $ "STORE: newQueueStore, error opening PostgreSQL database, " <> tshow e
@@ -95,6 +105,12 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   loadedQueues = queues
   {-# INLINE loadedQueues #-}
+
+  compactQueues :: PostgresQueueStore q -> IO Int64
+  compactQueues st@PostgresQueueStore {deletedTTL} = do
+    old <- subtract deletedTTL . systemSeconds <$> liftIO getSystemTime
+    fmap (fromRight 0) $ runExceptT $ withDB' "removeDeletedQueues" st $ \db ->
+      DB.execute db "DELETE FROM msg_queues WHERE deleted_at < ? RETURNING recipient_id" (Only old)
 
   queueCounts :: PostgresQueueStore q -> IO QueueCounts
   queueCounts st =
@@ -115,7 +131,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   addQueue_ st mkQ rId qr = do
     sq <- mkQ rId qr
     withQueueLock sq "addQueue_" $ runExceptT $ do
-      withDB "addQueue_" st $ \db ->
+      void $ withDB "addQueue_" st $ \db ->
         E.try (DB.execute db insertQueueQuery $ queueRecToRow (rId, qr))
           >>= bimapM handleDuplicate pure
       atomically $ TM.insert rId sq queues
@@ -334,11 +350,11 @@ assertUpdated :: ExceptT ErrorType IO Int64 -> ExceptT ErrorType IO ()
 assertUpdated = (>>= \n -> when (n == 0) (throwE AUTH))
 
 withDB' :: String -> PostgresQueueStore q -> (DB.Connection -> IO a) -> ExceptT ErrorType IO a
-withDB' op st' action = withDB op st' $ fmap Right . action
+withDB' op st action = withDB op st $ fmap Right . action
 
 withDB :: forall a q. String -> PostgresQueueStore q -> (DB.Connection -> IO (Either ErrorType a)) -> ExceptT ErrorType IO a
-withDB op st' action =
-  ExceptT $ E.try (withConnection (dbStore st') action) >>= either logErr pure
+withDB op st action =
+  ExceptT $ E.try (withConnection (dbStore st) action) >>= either logErr pure
   where
     logErr :: E.SomeException -> IO (Either ErrorType a)
     logErr e = logError ("STORE: " <> T.pack err) $> Left (STORE err)

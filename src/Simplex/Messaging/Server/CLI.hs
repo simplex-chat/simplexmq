@@ -31,6 +31,7 @@ import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
 import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), ServerStoreCfg (..), StorePaths (..))
+import Simplex.Messaging.Server.QueueStore.Postgres (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
 import Simplex.Messaging.Transport.Server (AddHTTP, loadFileFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
@@ -310,7 +311,7 @@ printSMPServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> AServerStoreCfg 
 printSMPServerConfig transports (ASSCfg _ _ cfg) = case cfg of
   SSCMemory sp_ -> printServerConfig transports $ (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
   SSCMemoryJournal {storeLogFile} -> printServerConfig transports $ Just storeLogFile
-  SSCDatabaseJournal {storeDBOpts = DBOpts {connstr, schema}} -> do
+  SSCDatabaseJournal {storeCfg = PostgresStoreCfg {dbOpts = DBOpts {connstr, schema}}} -> do
     B.putStrLn $ "PostgreSQL database: " <> connstr <> ", schema: " <> schema
     printServerTransports transports
 

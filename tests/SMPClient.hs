@@ -28,6 +28,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
+import Simplex.Messaging.Server.QueueStore.Postgres (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import qualified Simplex.Messaging.Transport.Client as Client
@@ -180,7 +181,8 @@ cfgMS msType =
         ASType SQSMemory SMSJournal ->
           ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = testStoreLogFile, storeMsgsPath = testStoreMsgsDir}
         ASType SQSPostgres SMSJournal ->
-          ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeDBOpts = testStoreDBOpts, confirmMigrations = MCYesUp, storeMsgsPath' = testStoreMsgsDir},
+          let storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts, confirmMigrations = MCYesUp, deletedTTL = 86400}
+           in ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath' = testStoreMsgsDir},
       storeNtfsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
