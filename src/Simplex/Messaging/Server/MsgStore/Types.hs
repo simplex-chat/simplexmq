@@ -83,7 +83,7 @@ getQueueRec st party qId =
     $>>= (\q -> maybe (Left AUTH) (Right . (q,)) <$> readTVarIO (queueRec q))
 
 getQueueMessages :: MsgStoreClass s => Bool -> s -> StoreQueue s -> ExceptT ErrorType IO [Message]
-getQueueMessages drainMsgs st q = withPeekMsgQueue st q "getQueueSize" $ maybe (pure []) (getQueueMessages_ drainMsgs q . fst)
+getQueueMessages drainMsgs st q = withPeekMsgQueue st q "getQueueMessages" $ maybe (pure []) (getQueueMessages_ drainMsgs q . fst)
 {-# INLINE getQueueMessages #-}
 
 getQueueSize :: MsgStoreClass s => s -> StoreQueue s -> ExceptT ErrorType IO Int
