@@ -37,14 +37,16 @@ import Control.Applicative (optional, (<|>))
 import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Control.Logger.Simple
-import Control.Monad (when)
+import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import Data.List (sort, stripPrefix)
 import qualified Data.Map.Strict as M
+import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
-import Data.Time.Clock (getCurrentTime)
-import Data.Time.Format.ISO8601 (iso8601Show)
+import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime, nominalDay)
+import Data.Time.Format.ISO8601 (iso8601Show, iso8601ParseM)
 import GHC.IO (catchAny)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
@@ -53,8 +55,9 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.StoreLog.Types
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM, tshow, unlessM, whenM)
-import System.Directory (doesFileExist, renameFile)
+import System.Directory (doesFileExist, listDirectory, removeFile, renameFile)
 import System.IO
+import System.FilePath (takeDirectory, takeFileName)
 
 data StoreLogRecord
   = CreateQueue RecipientId QueueRec
@@ -237,6 +240,7 @@ readWriteStoreLog readStore writeStore f st =
       renameFile f tempBackup -- 1) make temp backup
       s <- writeLog "compacting store log (do not terminate)..." -- 2) save state
       renameBackup -- 3) timed backup
+      removeStoreLogBackups f
       pure s
     writeLog msg = do
       s <- openWriteStoreLog f
@@ -257,6 +261,27 @@ writeQueueStore s st = readTVarIO qs >>= mapM_ writeQueue . M.assocs
       readTVarIO (queueRec' q) >>= \case
         Just q' -> logCreateQueue s rId q'
         Nothing -> atomically $ TM.delete rId qs
+
+removeStoreLogBackups :: FilePath -> IO ()
+removeStoreLogBackups f = do
+  ts <- getCurrentTime
+  times <- sort . mapMaybe backupPathTime <$> listDirectory (takeDirectory f)
+  let new = addUTCTime (- nominalDay) ts
+      old = addUTCTime (- oldBackupTTL) ts
+      times1 = filter (< new) times -- exclude backups newer than 24 hours
+      times2 = take (length times1 - minOldBackups) times1 -- keep 3 backups older than 24 hours
+      toDelete = filter (< old) times2 -- remove all backups older than 21 day
+  mapM_ (removeFile . backupPath) toDelete
+  putStrLn $ "Removed " <> show (length toDelete) <> " backups:"
+  mapM_ (putStrLn . backupPath) toDelete
+  where
+    backupPathTime :: FilePath -> Maybe UTCTime
+    backupPathTime = iso8601ParseM <=< stripPrefix backupPathPfx
+    backupPath :: UTCTime -> FilePath
+    backupPath ts = f <> "." <> iso8601Show ts
+    backupPathPfx = takeFileName f <> "."
+    minOldBackups = 3
+    oldBackupTTL = 21 * nominalDay
 
 readLogLines :: Bool -> FilePath -> (Bool -> B.ByteString -> IO ()) -> IO ()
 readLogLines tty f action = foldLogLines tty f (const action) ()
