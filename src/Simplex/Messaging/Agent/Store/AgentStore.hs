@@ -86,6 +86,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     createInvitation,
     getInvitation,
     acceptInvitation,
+    rejectInvitation,
     unacceptInvitation,
     deleteInvitation,
     -- Messages
@@ -727,6 +728,7 @@ getInvitation db cxt invitationId =
         FROM conn_invitations
         WHERE invitation_id = ?
           AND accepted = 0
+          AND rejected = 0
       |]
       (Only (Binary invitationId))
   where
@@ -748,6 +750,13 @@ acceptInvitation db invitationId ownConnInfo =
 unacceptInvitation :: DB.Connection -> InvitationId -> IO ()
 unacceptInvitation db invitationId =
   DB.execute db "UPDATE conn_invitations SET accepted = 0, own_conn_info = NULL WHERE invitation_id = ?" (Only (Binary invitationId))
+
+rejectInvitation :: DB.Connection -> InvitationId -> ByteString -> IO ()
+rejectInvitation db invitationId rejectionInfo = do
+  DB.execute
+    db
+    "UPDATE conn_invitations SET rejected = 1, rejection_info = ? WHERE invitation_id = ?"
+    (Binary rejectionInfo, Binary invitationId)
 
 deleteInvitation :: DB.Connection -> ConnId -> InvitationId -> IO (Either StoreError ())
 deleteInvitation db contactConnId invId =

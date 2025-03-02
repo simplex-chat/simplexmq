@@ -334,6 +334,8 @@ deriving instance Show AEvt
 
 type ConnInfo = ByteString
 
+type RejectionInfo = ByteString
+
 type SndQueueSecured = Bool
 
 -- | Parameterized type for SMP agent events
@@ -343,6 +345,7 @@ data AEvent (e :: AEntity) where
   REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
   CON :: PQEncryption -> AEvent AEConn -- notification that connection is established
+  RJCT :: AEvent AEConn
   END :: AEvent AEConn
   DELD :: AEvent AEConn
   CONNECT :: AProtocolType -> TransportHost -> AEvent AENone
@@ -730,6 +733,10 @@ data AgentMsgEnvelope
         e2eEncryption_ :: Maybe (SndE2ERatchetParams 'C.X448),
         encConnInfo :: ByteString
       }
+  | AgentRjctEnvelope
+      { agentVersion :: VersionSMPA,
+        rejectionInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
+      }
   | AgentMsgEnvelope
       { agentVersion :: VersionSMPA,
         encAgentMessage :: ByteString
@@ -750,6 +757,8 @@ instance Encoding AgentMsgEnvelope where
   smpEncode = \case
     AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo} ->
       smpEncode (agentVersion, 'C', e2eEncryption_, Tail encConnInfo)
+    AgentRjctEnvelope {agentVersion, rejectionInfo} ->
+      smpEncode (agentVersion, 'J', Tail rejectionInfo)
     AgentMsgEnvelope {agentVersion, encAgentMessage} ->
       smpEncode (agentVersion, 'M', Tail encAgentMessage)
     AgentInvitation {agentVersion, connReq, connInfo} ->
@@ -762,6 +771,9 @@ instance Encoding AgentMsgEnvelope where
       'C' -> do
         (e2eEncryption_, Tail encConnInfo) <- smpP
         pure AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo}
+      'J' -> do
+        Tail encConnInfo <- smpP
+        pure AgentRjctEnvelope {agentVersion, rejectionInfo}
       'M' -> do
         Tail encAgentMessage <- smpP
         pure AgentMsgEnvelope {agentVersion, encAgentMessage}
@@ -784,6 +796,7 @@ data AgentMessage
   | -- AgentConnInfoReply is used by accepting party in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
     -- It made removed REPLY message unnecessary.
     AgentConnInfoReply (NonEmpty SMPQueueInfo) ConnInfo
+  | AgentRejection ConnRejection
   | AgentRatchetInfo ByteString
   | AgentMessage APrivHeader AMessage
   deriving (Show)
@@ -792,12 +805,14 @@ instance Encoding AgentMessage where
   smpEncode = \case
     AgentConnInfo cInfo -> smpEncode ('I', Tail cInfo)
     AgentConnInfoReply smpQueues cInfo -> smpEncode ('D', smpQueues, Tail cInfo) -- 'D' stands for "duplex"
+    AgentRejection info -> smpEncode ('J', Tail info)
     AgentRatchetInfo info -> smpEncode ('R', Tail info)
     AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
   smpP =
     smpP >>= \case
       'I' -> AgentConnInfo . unTail <$> smpP
       'D' -> AgentConnInfoReply <$> smpP <*> (unTail <$> smpP)
+      'J' -> AgentRejection . unTail <$> smpP
       'R' -> AgentRatchetInfo . unTail <$> smpP
       'M' -> AgentMessage <$> smpP <*> smpP
       _ -> fail "bad AgentMessage"
@@ -806,6 +821,7 @@ instance Encoding AgentMessage where
 data AgentMessageType
   = AM_CONN_INFO
   | AM_CONN_INFO_REPLY
+  | AM_REJECTION
   | AM_RATCHET_INFO
   | AM_HELLO_
   | AM_A_MSG_
@@ -822,6 +838,7 @@ instance Encoding AgentMessageType where
   smpEncode = \case
     AM_CONN_INFO -> "C"
     AM_CONN_INFO_REPLY -> "D"
+    AM_REJECTION -> "J"
     AM_RATCHET_INFO -> "S"
     AM_HELLO_ -> "H"
     AM_A_MSG_ -> "M"
@@ -836,6 +853,7 @@ instance Encoding AgentMessageType where
     A.anyChar >>= \case
       'C' -> pure AM_CONN_INFO
       'D' -> pure AM_CONN_INFO_REPLY
+      'J' -> pure AM_REJECTION
       'S' -> pure AM_RATCHET_INFO
       'H' -> pure AM_HELLO_
       'M' -> pure AM_A_MSG_
@@ -855,6 +873,7 @@ agentMessageType :: AgentMessage -> AgentMessageType
 agentMessageType = \case
   AgentConnInfo _ -> AM_CONN_INFO
   AgentConnInfoReply {} -> AM_CONN_INFO_REPLY
+  AgentRejection -> AM_REJECTION
   AgentRatchetInfo _ -> AM_RATCHET_INFO
   AgentMessage _ aMsg -> aMessageType aMsg
 

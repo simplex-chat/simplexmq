@@ -63,6 +63,7 @@ module Simplex.Messaging.Agent
     allowConnection,
     acceptContact,
     rejectContact,
+    rejectNotifyContact,
     subscribeConnection,
     subscribeConnections,
     getConnectionMessages,
@@ -305,7 +306,7 @@ createConnectionAsync c userId aCorrId enableNtfs = withAgentEnv c .:. newConnAs
 {-# INLINE createConnectionAsync #-}
 
 -- | Join SMP agent connection (JOIN command) asynchronously, synchronous response is new connection id
-joinConnectionAsync :: AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ConnId
+joinConnectionAsync :: AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ConnId
 joinConnectionAsync c userId aCorrId enableNtfs = withAgentEnv c .:: joinConnAsync c userId aCorrId enableNtfs
 {-# INLINE joinConnectionAsync #-}
 
@@ -315,7 +316,7 @@ allowConnectionAsync c = withAgentEnv c .:: allowConnectionAsync' c
 {-# INLINE allowConnectionAsync #-}
 
 -- | Accept contact after REQ notification (ACPT command) asynchronously, synchronous response is new connection id
-acceptContactAsync :: AgentClient -> ACorrId -> Bool -> ConfirmationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ConnId
+acceptContactAsync :: AgentClient -> ACorrId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ConnId
 acceptContactAsync c aCorrId enableNtfs = withAgentEnv c .:: acceptContactAsync' c aCorrId enableNtfs
 {-# INLINE acceptContactAsync #-}
 
@@ -372,14 +373,19 @@ allowConnection c = withAgentEnv c .:. allowConnection' c
 {-# INLINE allowConnection #-}
 
 -- | Accept contact after REQ notification (ACPT command)
-acceptContact :: AgentClient -> ConnId -> Bool -> ConfirmationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AE SndQueueSecured
+acceptContact :: AgentClient -> ConnId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AE SndQueueSecured
 acceptContact c connId enableNtfs = withAgentEnv c .:: acceptContact' c connId enableNtfs
 {-# INLINE acceptContact #-}
 
 -- | Reject contact (RJCT command)
-rejectContact :: AgentClient -> ConnId -> ConfirmationId -> AE ()
+rejectContact :: AgentClient -> ConnId -> InvitationId -> AE ()
 rejectContact c = withAgentEnv c .: rejectContact' c
 {-# INLINE rejectContact #-}
+
+-- | Reject contact after REQ notification (RJCT command) asynchronously
+rejectNotifyContact :: AgentClient -> ACorrId -> InvitationId -> RejectionInfo -> AE ConnId
+rejectNotifyContact c = withAgentEnv c .:. rejectNotifyContact' c
+{-# INLINE rejectContactAsync #-}
 
 -- | Subscribe to receive connection messages (SUB command)
 subscribeConnection :: AgentClient -> ConnId -> AE ()
@@ -686,8 +692,8 @@ newConnNoQueues c userId enableNtfs cMode pqSupport = do
   let cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
   withStore c $ \db -> createNewConn db g cData cMode
 
-joinConnAsync :: AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
-joinConnAsync c userId corrId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup subMode = do
+joinConnAsync :: AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
+joinConnAsync c userId corrId enableNtfs cReqUri cInfo pqSup subMode = do
   withInvLock c (strEncode cReqUri) "joinConnAsync" $ do
     lift (compatibleInvitationUri cReqUri) >>= \case
       Just (_, Compatible (CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
@@ -698,8 +704,6 @@ joinConnAsync c userId corrId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup 
         enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN enableNtfs (ACR sConnectionMode cReqUri) pqSupport subMode cInfo
         pure connId
       Nothing -> throwE $ AGENT A_VERSION
-joinConnAsync _c _userId _corrId _enableNtfs (CRContactUri _) _subMode _cInfo _pqEncryption =
-  throwE $ CMD PROHIBITED "joinConnAsync"
 
 allowConnectionAsync' :: AgentClient -> ACorrId -> ConnId -> ConfirmationId -> ConnInfo -> AM ()
 allowConnectionAsync' c corrId connId confId ownConnInfo =
@@ -716,14 +720,36 @@ allowConnectionAsync' c corrId connId confId ownConnInfo =
 -- while marking invitation as accepted inside "lock level transaction" after successful `joinConnAsync`.
 acceptContactAsync' :: AgentClient -> ACorrId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
 acceptContactAsync' c corrId enableNtfs invId ownConnInfo pqSupport subMode = do
-  Invitation {contactConnId, connReq} <- withStore c $ \db -> getInvitation db "acceptContactAsync'" invId
-  withStore c (`getConn` contactConnId) >>= \case
-    SomeConn _ (ContactConnection ConnData {userId} _) -> do
-      withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-      joinConnAsync c userId corrId enableNtfs connReq ownConnInfo pqSupport subMode `catchAgentError` \err -> do
-        withStore' c (`unacceptInvitation` invId)
-        throwE err
-    _ -> throwE $ CMD PROHIBITED "acceptContactAsync"
+  (connReq, ContactConnection ConnData {userId} _) <- getContactRequest c invId
+  withStore' c $ \db -> acceptInvitation db invId ownConnInfo
+  joinConnAsync c userId corrId enableNtfs connReq ownConnInfo pqSupport subMode `catchAgentError` \err -> do
+    withStore' c (`unacceptInvitation` invId)
+    throwE err
+
+rejectNotifyContact' :: AgentClient -> ACorrId -> InvitationId -> RejectionInfo -> AM ConnId
+rejectNotifyContact' c corrId enableNtfs invId rejectionInfo = do
+  (connReq, ContactConnection ConnData {userId} _) <- getContactRequest c invId
+  withInvLock c (strEncode connReq) "rejectNotifyContact" $ do
+    withStore' c $ \db -> rejectInvitation db invId rejectionInfo
+    lift (compatibleInvitationUri connReq) >>= \case
+      Just (qInfo@(Compatible qInfo'), Compatible (CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
+        let cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
+        q <- newSndQueue userId "" qInfo
+        g <- asks random
+        (connId, sq) <- createSndConn db g cData q
+        storeRejection c cData sq =<< mkAgentRejection c cData sq srv rejectionInfo
+        lift $ submitPendingMsg c cData sq
+        pure connId
+      Nothing -> throwE $ AGENT A_VERSION
+
+getContactRequest :: AgentClient -> InvitationId -> AM (ConnectionRequestUri 'CMInvitation, Connection 'CContact)
+getContactRequest c invId = do
+  (connReq, SomeConn _ conn) <- withStore c $ \db -> do
+    Invitation {contactConnId, connReq} <- getInvitation db "acceptContactAsync'" invId
+    (connReq,) <$> getConn db contactConnId
+  case conn of
+    ContactConnection {} -> pure (connReq, conn)
+    _ -> throwE $ CMD PROHIBITED "getContactRequest"
 
 ackMessageAsync' :: AgentClient -> ACorrId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
 ackMessageAsync' c corrId connId msgId rcptInfo_ = do
@@ -1505,6 +1531,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c sq msgBody
+            AM_REJECTION -> sendRejection c sq msgBody
             _ -> case pendingMsgPrepData_ of
               Nothing -> sendAgentMessage c sq msgFlags msgBody
               Just PendingMsgPrepData {encryptKey, paddedLen, sndMsgBody} -> do
@@ -1523,6 +1550,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                   case msgType of
                     AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                     AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
+                    AM_REJECTION -> connError msgId NOT_AVAILABLE
                     _ -> do
                       expireTs <- addUTCTime (-quotaExceededTimeout) <$> liftIO getCurrentTime
                       if internalTs < expireTs
@@ -1535,6 +1563,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                   case msgType of
                     AM_CONN_INFO -> connError msgId NOT_AVAILABLE
                     AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
+                    AM_REJECTION -> connError msgId NOT_AVAILABLE
                     AM_RATCHET_INFO -> connError msgId NOT_AVAILABLE
                     -- in duplexHandshake mode (v2) HELLO is only sent once, without retrying,
                     -- because the queue must be secured by the time the confirmation or the first HELLO is received
@@ -1575,6 +1604,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                   | sndSecure -> notify (CON pqEncryption) >> setStatus Active
                   | otherwise -> setStatus Confirmed
                 AM_CONN_INFO_REPLY -> setStatus Confirmed
+                AM_REJECTION -> setStatus Rejected -- TODO notify
                 AM_RATCHET_INFO -> pure ()
                 AM_HELLO_ -> do
                   withStore' c $ \db -> setSndQueueStatus db sq Active

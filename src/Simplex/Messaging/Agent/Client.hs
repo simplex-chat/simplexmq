@@ -1565,6 +1565,13 @@ sendConfirmation c sq@SndQueue {userId, server, connId, sndId, sndSecure, sndPub
   sendOrProxySMPMessage c userId server connId "<CONF>" spKey sndId (MsgFlags {notification = True}) msg
 sendConfirmation _ _ _ = throwE $ INTERNAL "sendConfirmation called without snd_queue public key(s) in the database"
 
+sendRejection :: AgentClient -> SndQueue -> ByteString -> AM (Maybe SMPServer)
+sendRejection c sq@SndQueue {userId, server, connId, sndId, sndSecure, sndPublicKey, sndPrivateKey, e2ePubKey = e2ePubKey@Just {}} agentRejection = do
+  let clientMsg = SMP.ClientMessage SMP.PHEmpty agentRejection
+  msg <- agentCbEncrypt sq e2ePubKey $ smpEncode clientMsg
+  sendOrProxySMPMessage c userId server connId "<CONF>" Nothing sndId SMP.noMsgFlags msg
+sendConfirmation _ _ _ = throwE $ INTERNAL "sendConfirmation called without snd_queue public key(s) in the database"
+
 sendInvitation :: AgentClient -> UserId -> ConnId -> Compatible SMPQueueInfo -> Compatible VersionSMPA -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> AM (Maybe SMPServer)
 sendInvitation c userId connId (Compatible (SMPQueueInfo v SMPQueueAddress {smpServer, senderId, dhPublicKey})) (Compatible agentVersion) connReq connInfo = do
   msg <- mkInvitation
