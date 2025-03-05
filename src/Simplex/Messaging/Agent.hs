@@ -832,6 +832,7 @@ newConnToJoin c userId connId enableNtfs cReq pqSup = case cReq of
       g <- asks random
       let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion e2eV_
           cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
+      liftIO $ print "##### AGENT: newConnToJoin, createNewConn"
       withStore c $ \db -> createNewConn db g cData SCMInvitation
 
 newConnToAccept :: AgentClient -> ConnId -> Bool -> ConfirmationId -> PQSupport -> AM ConnId
@@ -844,7 +845,9 @@ newConnToAccept c connId enableNtfs invId pqSup = do
 
 joinConn :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
 joinConn c userId connId enableNtfs cReq cInfo pqSupport subMode = do
+  liftIO $ print "##### AGENT: joinConn, getNextSMPServer"
   srv <- getNextSMPServer c userId [qServer cReqQueue]
+  liftIO $ print "##### AGENT: joinConn, joinConnSrv"
   joinConnSrv c userId connId enableNtfs cReq cInfo pqSupport subMode srv
   where
     cReqQueue :: SMPQueueUri
@@ -853,7 +856,8 @@ joinConn c userId connId enableNtfs cReq cInfo pqSupport subMode = do
       CRContactUri ConnReqUriData {crSmpQueues = q :| _} -> q
 
 startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM (ConnData, SndQueue, CR.SndE2ERatchetParams 'C.X448)
-startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
+startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup = do
+  liftIO $ print "##### AGENT: startJoinInvitation"
   lift (compatibleInvitationUri cReqUri) >>= \case
     Just (qInfo, Compatible e2eRcvParams@(CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
       -- this case avoids re-generating queue keys and subsequent failure of SKEY that timed out
@@ -861,19 +865,23 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
       let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (Just v)
       (sq', e2eSndParams) <- case sq_ of
         Just sq@SndQueue {e2ePubKey = Just _k} -> do
+          liftIO $ print "##### AGENT: startJoinInvitation, Just e2ePubKey -> getSndRatchet"
           e2eSndParams <-
             withStore' c (\db -> getSndRatchet db connId v) >>= \case
               Right r -> pure $ snd r
               Left e -> do
                 atomically $ writeTBQueue (subQ c) ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no snd ratchet " <> show e))
+                liftIO $ print "##### AGENT: startJoinInvitation, Just e2ePubKey, createRatchet_"
                 createRatchet_ pqSupport e2eRcvParams
           pure (sq, e2eSndParams)
         _ -> do
+          liftIO $ print "##### AGENT: startJoinInvitation, e2ePubKey is Nothing -> createRatchet_"
           q <- lift $ fst <$> newSndQueue userId "" qInfo
           e2eSndParams <- createRatchet_ pqSupport e2eRcvParams
           withStore c $ \db -> runExceptT $ do
             sq' <- maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
             pure (sq', e2eSndParams)
+      liftIO $ print "##### AGENT: startJoinInvitation, after (sq', e2eSndParams) <- ..."
       let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
       pure (cData, sq', e2eSndParams)
     Nothing -> throwE $ AGENT A_VERSION
@@ -920,19 +928,30 @@ versionPQSupport_ agentV e2eV_ = PQSupport $ agentV >= pqdrSMPAgentVersion && ma
 {-# INLINE versionPQSupport_ #-}
 
 joinConnSrv :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
-joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMode srv =
+joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMode srv = do
+  liftIO $ print "##### AGENT: joinConnSrv, withInvLock"
   withInvLock c (strEncode inv) "joinConnSrv" $ do
     SomeConn cType conn <- withStore c (`getConn` connId)
     case conn of
-      NewConnection _ -> doJoin Nothing
-      SndConnection _ sq -> doJoin $ Just sq
-      DuplexConnection _ (RcvQueue {status = New} :| _) (sq@SndQueue {status = New} :| _) -> doJoin $ Just sq
+      NewConnection _ -> do
+        liftIO $ print "##### AGENT: joinConnSrv, NewConnection"
+        doJoin Nothing
+      SndConnection _ sq -> do
+        liftIO $ print "##### AGENT: joinConnSrv, SndConnection"
+        doJoin $ Just sq
+      DuplexConnection _ (RcvQueue {status = New} :| _) (sq@SndQueue {status = New} :| _) -> do
+        liftIO $ print "##### AGENT: joinConnSrv, DuplexConnection (SndQueue status = New)"
+        doJoin $ Just sq
       _ -> throwE $ CMD PROHIBITED $ "joinConnSrv: bad connection " <> show cType
   where
     doJoin :: Maybe SndQueue -> AM SndQueueSecured
     doJoin sq_ = do
+      liftIO $ print "##### AGENT: joinConnSrv, doJoin, startJoinInvitation"
       (cData, sq, e2eSndParams) <- startJoinInvitation c userId connId sq_ enableNtfs inv pqSup
-      secureConfirmQueue c cData sq srv cInfo (Just e2eSndParams) subMode
+      liftIO $ print "##### AGENT: joinConnSrv, doJoin, secureConfirmQueue"
+      secured <- secureConfirmQueue c cData sq srv cInfo (Just e2eSndParams) subMode
+      liftIO $ print $ "##### AGENT: joinConnSrv, after secureConfirmQueue - secured = " <> show secured
+      pure secured
 joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode srv =
   lift (compatibleContactUri cReqUri) >>= \case
     Just (qInfo, vrsn) -> do
@@ -1489,10 +1508,14 @@ runSmpQueueMsgDelivery :: AgentClient -> ConnData -> SndQueue -> (Worker, TMVar 
 runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userId, server, sndSecure} (Worker {doWork}, qLock) = do
   AgentConfig {messageRetryInterval = ri, messageTimeout, helloTimeout, quotaExceededTimeout} <- asks config
   forever $ do
+    liftIO $ print "##### AGENT: runSmpQueueMsgDelivery loop start"
     atomically $ endAgentOperation c AOSndNetwork
     lift $ waitForWork doWork
+    liftIO $ print "##### AGENT: runSmpQueueMsgDelivery, throwWhenInactive"
     liftIO $ throwWhenInactive c
+    liftIO $ print "##### AGENT: runSmpQueueMsgDelivery, throwWhenNoDelivery"
     liftIO $ throwWhenNoDelivery c sq
+    liftIO $ print "##### AGENT: runSmpQueueMsgDelivery, beginAgentOperation AOSndNetwork"
     atomically $ beginAgentOperation c AOSndNetwork
     withWork c doWork (\db -> getPendingQueueMsg db connId sq) $
       \(rq_, PendingMsgData {msgId, msgType, msgBody, pqEncryption, msgFlags, msgRetryState, internalTs, internalSndId, prevMsgHash, pendingMsgPrepData_}) -> do
@@ -1500,8 +1523,11 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
         let mId = unId msgId
             ri' = maybe id updateRetryInterval2 msgRetryState ri
         withRetryLock2 ri' qLock $ \riState loop -> do
+          liftIO $ print $ "##### AGENT: runSmpQueueMsgDelivery " <> show msgType <> ", waitWhileSuspended"
           liftIO $ waitWhileSuspended c
+          liftIO $ print $ "##### AGENT: runSmpQueueMsgDelivery " <> show msgType <> ", waitForUserNetwork"
           liftIO $ waitForUserNetwork c
+          liftIO $ print $ "##### AGENT: runSmpQueueMsgDelivery " <> show msgType <> ", try send"
           resp <- tryError $ case msgType of
             AM_CONN_INFO -> sendConfirmation c sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c sq msgBody
@@ -2953,10 +2979,15 @@ secureConfirmQueueAsync c cData sq srv connInfo e2eEncryption_ subMode = do
 
 secureConfirmQueue :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> SubscriptionMode -> AM SndQueueSecured
 secureConfirmQueue c cData@ConnData {connId, connAgentVersion, pqSupport} sq srv connInfo e2eEncryption_ subMode = do
+  liftIO $ print "##### AGENT: secureConfirmQueue, agentSecureSndQueue"
   sqSecured <- agentSecureSndQueue c cData sq
+  liftIO $ print "##### AGENT: secureConfirmQueue, mkAgentConfirmation"
   msg <- mkConfirmation =<< mkAgentConfirmation c cData sq srv connInfo subMode
+  liftIO $ print "##### AGENT: secureConfirmQueue, sendConfirmation"
   void $ sendConfirmation c sq msg
+  liftIO $ print "##### AGENT: secureConfirmQueue, setSndQueueStatus Confirmed"
   withStore' c $ \db -> setSndQueueStatus db sq Confirmed
+  liftIO $ print $ "##### AGENT: secureConfirmQueue sqSecured " <> show sqSecured
   pure sqSecured
   where
     mkConfirmation :: AgentMessage -> AM MsgBody
@@ -2973,12 +3004,18 @@ secureConfirmQueue c cData@ConnData {connId, connAgentVersion, pqSupport} sq srv
 agentSecureSndQueue :: AgentClient -> ConnData -> SndQueue -> AM SndQueueSecured
 agentSecureSndQueue c ConnData {connAgentVersion} sq@SndQueue {sndSecure, status}
   | sndSecure && status == New = do
+      liftIO $ print "##### AGENT: agentSecureSndQueue, sndSecure && status == New -> secureSndQueue"
       secureSndQueue c sq
+      liftIO $ print "##### AGENT: agentSecureSndQueue, setSndQueueStatus Secured"
       withStore' c $ \db -> setSndQueueStatus db sq Secured
       pure initiatorRatchetOnConf
   -- on repeat JOIN processing (e.g. previous attempt to create reply queue failed)
-  | sndSecure && status == Secured = pure initiatorRatchetOnConf
-  | otherwise = pure False
+  | sndSecure && status == Secured = do
+      liftIO $ print $ "##### AGENT: agentSecureSndQueue, sndSecure && status == Secured -> pure " <> show initiatorRatchetOnConf
+      pure initiatorRatchetOnConf
+  | otherwise = do
+      liftIO $ print "##### AGENT: agentSecureSndQueue, otherwise -> pure False"
+      pure False
   where
     initiatorRatchetOnConf = connAgentVersion >= ratchetOnConfSMPAgentVersion
 
@@ -2989,7 +3026,9 @@ mkAgentConfirmation c cData sq srv connInfo subMode = do
 
 enqueueConfirmation :: AgentClient -> ConnData -> SndQueue -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> AM ()
 enqueueConfirmation c cData sq connInfo e2eEncryption_ = do
+  liftIO $ print "##### AGENT: secureConfirmQueue, storeConfirmation"
   storeConfirmation c cData sq e2eEncryption_ $ AgentConnInfo connInfo
+  liftIO $ print "##### AGENT: secureConfirmQueue, submitPendingMsg"
   lift $ submitPendingMsg c cData sq
 
 storeConfirmation :: AgentClient -> ConnData -> SndQueue -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> AgentMessage -> AM ()

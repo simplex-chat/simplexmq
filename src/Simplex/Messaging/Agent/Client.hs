@@ -1559,9 +1559,12 @@ logSecret' = B64.encode . B.take 3
 
 sendConfirmation :: AgentClient -> SndQueue -> ByteString -> AM (Maybe SMPServer)
 sendConfirmation c sq@SndQueue {userId, server, connId, sndId, sndSecure, sndPublicKey, sndPrivateKey, e2ePubKey = e2ePubKey@Just {}} agentConfirmation = do
+  liftIO $ print "##### AGENT: sendConfirmation"
   let (privHdr, spKey) = if sndSecure then (SMP.PHEmpty, Just sndPrivateKey) else (SMP.PHConfirmation sndPublicKey, Nothing)
       clientMsg = SMP.ClientMessage privHdr agentConfirmation
+  liftIO $ print "##### AGENT: sendConfirmation, agentCbEncrypt"
   msg <- agentCbEncrypt sq e2ePubKey $ smpEncode clientMsg
+  liftIO $ print "##### AGENT: sendConfirmation, sendOrProxySMPMessage CONF"
   sendOrProxySMPMessage c userId server connId "<CONF>" spKey sndId (MsgFlags {notification = True}) msg
 sendConfirmation _ _ _ = throwE $ INTERNAL "sendConfirmation called without snd_queue public key(s) in the database"
 
