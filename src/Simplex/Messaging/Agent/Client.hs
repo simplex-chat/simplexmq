@@ -1077,6 +1077,7 @@ sendOrProxySMPCommand ::
   (SMPClient -> ExceptT SMPClientError IO ()) ->
   AM (Maybe SMPServer)
 sendOrProxySMPCommand c userId destSrv@ProtocolServer {host = destHosts} connId cmdStr senderId sendCmdViaProxy sendCmdDirectly = do
+  liftIO $ print "##### AGENT CLIENT: sendOrProxySMPCommand"
   tSess <- mkTransportSession c userId destSrv connId
   ifM shouldUseProxy (sendViaProxy Nothing tSess) (sendDirectly tSess $> Nothing)
   where
@@ -1098,21 +1099,28 @@ sendOrProxySMPCommand c userId destSrv@ProtocolServer {host = destHosts} connId 
     unknownServer = liftIO $ maybe True (\srvs -> all (`S.notMember` knownHosts srvs) destHosts) <$> TM.lookupIO userId (smpServers c)
     sendViaProxy :: Maybe SMPServerWithAuth -> SMPTransportSession -> AM (Maybe SMPServer)
     sendViaProxy proxySrv_ destSess@(_, _, connId_) = do
+      liftIO $ print "##### AGENT CLIENT: sendOrProxySMPCommand, sendViaProxy"
       r <- tryAgentError . withProxySession c proxySrv_ destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess@ProxiedRelay {prBasicAuth}) -> do
+        liftIO $ print "##### AGENT CLIENT: sendOrProxySMPCommand, sendCmdViaProxy"
         r' <- liftClient SMP (clientServer smp) $ sendCmdViaProxy smp proxySess
         let proxySrv = protocolClientServer' smp
         case r' of
-          Right () -> pure $ Just proxySrv
+          Right () -> do
+            liftIO $ print "##### AGENT CLIENT: sendOrProxySMPCommand, sendCmdViaProxy -> Right"
+            pure $ Just proxySrv
           Left proxyErr -> do
             case proxyErr of
               ProxyProtocolError (SMP.PROXY SMP.NO_SESSION) -> do
+                liftIO $ print $ "##### AGENT CLIENT: sendOrProxySMPCommand, sendCmdViaProxy -> NO_SESSION, proxySrv_ = " <> show proxySrv_
                 atomically deleteRelaySession
                 case proxySrv_ of
                   Just _ -> proxyError
                   -- sendViaProxy is called recursively here to re-create the session via the same server
                   -- to avoid failure in interactive calls that don't retry after the session disconnection.
                   Nothing -> sendViaProxy (Just $ ProtoServerWithAuth proxySrv prBasicAuth) destSess
-              _ -> proxyError
+              _ -> do
+                liftIO $ print $ "##### AGENT CLIENT: sendOrProxySMPCommand, sendCmdViaProxy -> Left proxyErr = " <> show proxyErr
+                proxyError
             where
               proxyError =
                 throwE
@@ -1137,18 +1145,34 @@ sendOrProxySMPCommand c userId destSrv@ProtocolServer {host = destHosts} connId 
               sameProxiedRelay proxySess' = prSessionId proxySess == prSessionId proxySess'
       case r of
         Right r' -> do
+          liftIO $ print "##### AGENT CLIENT: sendOrProxySMPCommand, sendViaProxy r = Right"
           atomically $ incSMPServerStat c userId destSrv sentViaProxy
           forM_ r' $ \proxySrv -> atomically $ incSMPServerStat c userId proxySrv sentProxied
           pure r'
         Left e
-          | serverHostError e -> ifM directAllowed (sendDirectly destSess $> Nothing) (throwE e)
-          | otherwise -> throwE e
-    sendDirectly tSess =
+          | serverHostError e -> do
+            ifM
+              directAllowed
+              ( do
+                  liftIO $ print $ "##### AGENT CLIENT: sendOrProxySMPCommand, sendViaProxy r = Left serverHostError, e = " <> show e <> ", directAllowed"
+                  sendDirectly destSess $> Nothing
+              )
+              ( do
+                  liftIO $ print $ "##### AGENT CLIENT: sendOrProxySMPCommand, sendViaProxy r = Left serverHostError, e = " <> show e <> ", throw"
+                  throwE e
+              )
+          | otherwise -> do
+              liftIO $ print $ "##### AGENT CLIENT: sendOrProxySMPCommand, sendViaProxy r = Left, e = " <> show e <> ", throw"
+              throwE e
+    sendDirectly tSess = do
+      liftIO $ print "##### AGENT CLIENT: sendOrProxySMPCommand, sendDirectly"
       withLogClient_ c tSess (unEntityId senderId) ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) -> do
         r <- tryAgentError $ liftClient SMP (clientServer smp) $ sendCmdDirectly smp
         case r of
           Right () -> atomically $ incSMPServerStat c userId destSrv sentDirect
-          Left e -> throwE e
+          Left e -> do
+            liftIO $ print $ "##### AGENT CLIENT: sendOrProxySMPCommand, sendDirectly error: " <> show e
+            throwE e
 
 ipAddressProtected :: NetworkConfig -> ProtocolServer p -> Bool
 ipAddressProtected NetworkConfig {socksProxy, hostMode} (ProtocolServer _ hosts _ _) = do

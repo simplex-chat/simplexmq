@@ -1523,7 +1523,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
         let mId = unId msgId
             ri' = maybe id updateRetryInterval2 msgRetryState ri
         withRetryLock2 ri' qLock $ \riState loop -> do
-          liftIO $ print $ "##### AGENT: runSmpQueueMsgDelivery " <> show msgType <> ", waitWhileSuspended"
+          ts <- liftIO getCurrentTime
+          liftIO $ print $ "##### AGENT: runSmpQueueMsgDelivery " <> show msgType <> " start loop " <> show ts <> ", waitWhileSuspended"
           liftIO $ waitWhileSuspended c
           liftIO $ print $ "##### AGENT: runSmpQueueMsgDelivery " <> show msgType <> ", waitForUserNetwork"
           liftIO $ waitForUserNetwork c
@@ -1542,6 +1543,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                 sendAgentMessage c sq msgFlags msgBody'
           case resp of
             Left e -> do
+              liftIO $ print $ "##### AGENT: runSmpQueueMsgDelivery " <> show msgType <> ", error " <> show e
               let err = if msgType == AM_A_MSG_ then MERR mId e else ERR e
               case e of
                 SMP _ SMP.QUOTA -> do
@@ -3026,9 +3028,7 @@ mkAgentConfirmation c cData sq srv connInfo subMode = do
 
 enqueueConfirmation :: AgentClient -> ConnData -> SndQueue -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> AM ()
 enqueueConfirmation c cData sq connInfo e2eEncryption_ = do
-  liftIO $ print "##### AGENT: secureConfirmQueue, storeConfirmation"
   storeConfirmation c cData sq e2eEncryption_ $ AgentConnInfo connInfo
-  liftIO $ print "##### AGENT: secureConfirmQueue, submitPendingMsg"
   lift $ submitPendingMsg c cData sq
 
 storeConfirmation :: AgentClient -> ConnData -> SndQueue -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> AgentMessage -> AM ()

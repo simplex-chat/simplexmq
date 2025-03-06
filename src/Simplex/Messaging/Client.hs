@@ -795,11 +795,15 @@ secureSMPQueue c rpKey rId senderKey = okSMPCommand (KEY senderKey) c rpKey rId
 
 -- | Secure the SMP queue via sender queue ID.
 secureSndSMPQueue :: SMPClient -> SndPrivateAuthKey -> SenderId -> SndPublicAuthKey -> ExceptT SMPClientError IO ()
-secureSndSMPQueue c spKey sId senderKey = okSMPCommand (SKEY senderKey) c spKey sId
+secureSndSMPQueue c spKey sId senderKey = do
+  liftIO $ print "##### SMP CLIENT: secureSndSMPQueue (SKEY)"
+  okSMPCommand (SKEY senderKey) c spKey sId
 {-# INLINE secureSndSMPQueue #-}
 
 proxySecureSndSMPQueue :: SMPClient -> ProxiedRelay -> SndPrivateAuthKey -> SenderId -> SndPublicAuthKey -> ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySecureSndSMPQueue c proxiedRelay spKey sId senderKey = proxySMPCommand c proxiedRelay (Just spKey) sId (SKEY senderKey)
+proxySecureSndSMPQueue c proxiedRelay spKey sId senderKey = do
+  liftIO $ print "##### SMP CLIENT: proxySecureSndSMPQueue (SKEY)"
+  proxySMPCommand c proxiedRelay (Just spKey) sId (SKEY senderKey)
 {-# INLINE proxySecureSndSMPQueue #-}
 
 -- | Enable notifications for the queue for push notifications server.
@@ -965,6 +969,7 @@ proxySMPCommand ::
   Command 'Sender ->
   ExceptT SMPClientError IO (Either ProxyClientError ())
 proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g, tcpTimeout}} (ProxiedRelay sessionId v _ serverKey) spKey sId command = do
+  liftIO $ print "##### SMP CLIENT: proxySMPCommand"
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
       serverThParams = smpTHParamsSetVersion v proxyThParams {sessionId, thAuth = serverThAuth}
@@ -982,26 +987,37 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
   et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedTLength
   -- proxy interaction errors are wrapped
   let tOut = Just $ 2 * tcpTimeout
+  liftIO $ print "##### SMP CLIENT: proxySMPCommand, sendProtocolCommand_"
   tryE (sendProtocolCommand_ c (Just nonce) tOut Nothing (EntityId sessionId) (Cmd SProxiedClient (PFWD v cmdPubKey et))) >>= \case
-    Right r -> case r of
-      PRES (EncResponse er) -> do
-        -- server interaction errors are thrown directly
-        t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.reverseNonce nonce) er
-        case tParse serverThParams t' of
-          t'' :| [] -> case tDecodeParseValidate serverThParams t'' of
-            (_auth, _signed, (_c, _e, cmd)) -> case cmd of
-              Right OK -> pure $ Right ()
-              Right (ERR e) -> throwE $ PCEProtocolError e -- this is the error from the destination relay
-              Right r' -> throwE $ unexpectedResponse r'
-              Left e -> throwE $ PCEResponseError e
-          _ -> throwE $ PCETransportError TEBadBlock
-      ERR e -> pure . Left $ ProxyProtocolError e -- this will not happen, this error is returned via Left
-      _ -> pure . Left $ ProxyUnexpectedResponse $ take 32 $ show r
+    Right r -> do
+      liftIO $ print $ "##### SMP CLIENT: proxySMPCommand, sendProtocolCommand_ Right r = " <> show r
+      case r of
+        PRES (EncResponse er) -> do
+          -- server interaction errors are thrown directly
+          t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.reverseNonce nonce) er
+          case tParse serverThParams t' of
+            t'' :| [] -> case tDecodeParseValidate serverThParams t'' of
+              (_auth, _signed, (_c, _e, cmd)) -> case cmd of
+                Right OK -> pure $ Right ()
+                Right (ERR e) -> throwE $ PCEProtocolError e -- this is the error from the destination relay
+                Right r' -> throwE $ unexpectedResponse r'
+                Left e -> throwE $ PCEResponseError e
+            _ -> throwE $ PCETransportError TEBadBlock
+        ERR e -> pure . Left $ ProxyProtocolError e -- this will not happen, this error is returned via Left
+        _ -> pure . Left $ ProxyUnexpectedResponse $ take 32 $ show r
     Left e -> case e of
-      PCEProtocolError e' -> pure . Left $ ProxyProtocolError e'
-      PCEUnexpectedResponse e' -> pure . Left $ ProxyUnexpectedResponse $ B.unpack e'
-      PCEResponseError e' -> pure . Left $ ProxyResponseError e'
-      _ -> throwE e
+      PCEProtocolError e' -> do
+        liftIO $ print $ "##### SMP CLIENT: proxySMPCommand, sendProtocolCommand_ Left PCEProtocolError e = " <> show e'
+        pure . Left $ ProxyProtocolError e'
+      PCEUnexpectedResponse e' -> do
+        liftIO $ print $ "##### SMP CLIENT: proxySMPCommand, sendProtocolCommand_ Left PCEUnexpectedResponse e = " <> show e'
+        pure . Left $ ProxyUnexpectedResponse $ B.unpack e'
+      PCEResponseError e' -> do
+        liftIO $ print $ "##### SMP CLIENT: proxySMPCommand, sendProtocolCommand_ Left PCEResponseError e = " <> show e'
+        pure . Left $ ProxyResponseError e'
+      _ -> do
+        liftIO $ print $ "##### SMP CLIENT: proxySMPCommand, sendProtocolCommand_ Left otherwise e = " <> show e <> " -> throw"
+        throwE e
 
 -- this method is used in the proxy
 -- sends RFWD :: EncFwdTransmission -> Command Sender
@@ -1033,10 +1049,15 @@ getSMPQueueInfo c pKey qId =
     r -> throwE $ unexpectedResponse r
 
 okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateAuthKey -> QueueId -> ExceptT SMPClientError IO ()
-okSMPCommand cmd c pKey qId =
+okSMPCommand cmd c pKey qId = do
+  liftIO $ print "##### SMP CLIENT: okSMPCommand"
   sendSMPCommand c (Just pKey) qId cmd >>= \case
-    OK -> return ()
-    r -> throwE $ unexpectedResponse r
+    OK -> do
+      liftIO $ print "##### SMP CLIENT: okSMPCommand OK"
+      return ()
+    r -> do
+      liftIO $ print $ "##### SMP CLIENT: okSMPCommand unexpectedResponse r = " <> show r
+      throwE $ unexpectedResponse r
 
 okSMPCommands :: PartyI p => Command p -> SMPClient -> NonEmpty (C.APrivateAuthKey, QueueId) -> IO (NonEmpty (Either SMPClientError ()))
 okSMPCommands cmd c qs = L.map process <$> sendProtocolCommands c cs
@@ -1102,16 +1123,22 @@ sendProtocolCommand c = sendProtocolCommand_ c Nothing Nothing
 -- We could expire a batch of deletes, for example, either when the first response expires or when the last one does.
 -- But a better solution is to process delayed delete responses.
 sendProtocolCommand_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.CbNonce -> Maybe Int -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize}} nonce_ tOut pKey entId cmd =
+sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize}} nonce_ tOut pKey entId cmd = do
+  liftIO $ print "##### SMP CLIENT: sendProtocolCommand_"
   ExceptT $ uncurry sendRecv =<< mkTransmission_ c nonce_ (pKey, entId, cmd)
   where
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: Either TransportError SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
     sendRecv t_ r = case t_ of
-      Left e -> pure . Left $ PCETransportError e
+      Left e -> do
+        liftIO $ print $ "##### SMP CLIENT: sendProtocolCommand_, sendRecv Left e = " <> show e
+        pure . Left $ PCETransportError e
       Right t
-        | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
+        | B.length s > blockSize - 2 -> do
+            liftIO $ print $ "##### SMP CLIENT: sendProtocolCommand_, sendRecv Right -> TELargeMsg"
+            pure . Left $ PCETransportError TELargeMsg
         | otherwise -> do
+            liftIO $ print $ "##### SMP CLIENT: sendProtocolCommand_, sendRecv Right otherwise"
             nonBlockingWriteTBQueue sndQ (Just r, s)
             response <$> getResponse c tOut r
         where
