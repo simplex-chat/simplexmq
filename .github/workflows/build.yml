@@ -14,7 +14,7 @@ jobs:
     name: "Ubuntu: ${{ matrix.os }}, GHC: ${{ matrix.ghc }}"
     env:
       apps: "smp-server xftp-server ntf-server xftp"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -88,4 +88,7 @@ jobs:
 
       - name: Test
         shell: bash
-        run: docker exec -t builder cabal test
+        run:
+          docker exec -t builder sh -c 'mv $(find /project/dist-newstyle -name "simplexmq-test" -type f -executable) /out/'
+          docker cp builder:/out/simplexmq-test .
+          ./simplexmq-test
