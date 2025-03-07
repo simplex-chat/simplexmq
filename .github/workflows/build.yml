@@ -88,7 +88,7 @@ jobs:
 
       - name: Test
         shell: bash
-        run:
+        run: |
           docker exec -t builder sh -c 'mv $(find /project/dist-newstyle -name "simplexmq-test" -type f -executable) /out/'
           docker cp builder:/out/simplexmq-test .
           ./simplexmq-test
