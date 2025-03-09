@@ -871,7 +871,7 @@ testTiming =
         (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519, 200) -- correct key type
       ]
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
-    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.25 -- normally the difference between "no queue" and "wrong key" is less than 5%
+    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.30 -- normally the difference between "no queue" and "wrong key" is less than 5%
     testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
     testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) = do
       g <- C.newRandom

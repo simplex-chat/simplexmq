@@ -1818,9 +1818,9 @@ tDecodeParseValidate THandleParams {sessionId, thVersion = v, implySessId} = \ca
 
 $(J.deriveJSON defaultJSON ''MsgFlags)
 
-$(J.deriveJSON (taggedObjectJSON id) ''CommandError)
+$(J.deriveJSON (sumTypeJSON id) ''CommandError)
 
-$(J.deriveJSON (taggedObjectJSON id) ''BrokerErrorType)
+$(J.deriveJSON (sumTypeJSON id) ''BrokerErrorType)
 
 $(J.deriveJSON defaultJSON ''BlockingInfo)
 
