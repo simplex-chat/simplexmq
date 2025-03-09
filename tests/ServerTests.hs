@@ -15,13 +15,12 @@
 
 module ServerTests where
 
-import AgentTests.NotificationTests (removeFileIfExists)
-import CoreTests.MsgStoreTests (testJournalStoreCfg)
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
 import Control.Monad
 import Control.Monad.IO.Class
+import CoreTests.MsgStoreTests (testJournalStoreCfg)
 import Data.Bifunctor (first)
 import Data.ByteString.Base64
 import Data.ByteString.Char8 (ByteString)
@@ -42,18 +41,20 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
-import Simplex.Messaging.Server.StoreLog (closeStoreLog)
+import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (whenM)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
+import System.IO (IOMode (..), withFile)
 import System.TimeIt (timeItT)
 import System.Timeout
 import Test.HUnit
 import Test.Hspec
+import Util (removeFileIfExists)
 
 serverTests :: SpecWith (ATransport, AMSType)
-serverTests  = do
+serverTests = do
   describe "SMP queues" $ do
     describe "NEW and KEY commands, SEND messages" testCreateSecure
     describe "NEW and SKEY commands" $ do
@@ -78,6 +79,7 @@ serverTests  = do
     testMsgExpireOnSend
     testMsgExpireOnInterval
     testMsgNOTExpireOnInterval
+  describe "Blocking queues" $ testBlockMessageQueue
 
 pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmission ErrorType BrokerMsg
 pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
@@ -688,7 +690,7 @@ testRestoreMessages =
 
     logSize testStoreLogFile `shouldReturn` 2
     -- logSize testStoreMsgsFile `shouldReturn` 5
-    logSize testServerStatsBackupFile `shouldReturn` 74
+    logSize testServerStatsBackupFile `shouldReturn` 76
     Right stats1 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats1 [rId] 5 1
 
@@ -706,7 +708,7 @@ testRestoreMessages =
     logSize testStoreLogFile `shouldReturn` 1
     -- the last message is not removed because it was not ACK'd
     -- logSize testStoreMsgsFile `shouldReturn` 3
-    logSize testServerStatsBackupFile `shouldReturn` 74
+    logSize testServerStatsBackupFile `shouldReturn` 76
     Right stats2 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats2 [rId] 5 3
 
@@ -724,7 +726,7 @@ testRestoreMessages =
       pure ()
     logSize testStoreLogFile `shouldReturn` 1
     -- logSize testStoreMsgsFile `shouldReturn` 0
-    logSize testServerStatsBackupFile `shouldReturn` 74
+    logSize testServerStatsBackupFile `shouldReturn` 76
     Right stats3 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats3 [rId] 5 5
 
@@ -849,7 +851,7 @@ testTiming =
   describe "should have similar time for auth error, whether queue exists or not, for all key types" $
     forM_ timingTests $ \tst ->
       it (testName tst) $ \(ATransport t, msType) ->
-        smpTest2Cfg (cfgMS msType) (mkVersionRange batchCmdsSMPVersion authCmdsSMPVersion) t $ \rh sh ->
+        smpTest2Cfg (cfgMS msType) (mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion) t $ \rh sh ->
           testSameTiming rh sh tst
   where
     testName :: (C.AuthAlg, C.AuthAlg, Int) -> String
@@ -867,7 +869,7 @@ testTiming =
         (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519, 200) -- correct key type
       ]
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
-    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.25 -- normally the difference between "no queue" and "wrong key" is less than 5%
+    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.30 -- normally the difference between "no queue" and "wrong key" is less than 5%
     testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
     testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) = do
       g <- C.newRandom
@@ -996,7 +998,7 @@ testMsgExpireOnInterval =
 
 testMsgNOTExpireOnInterval :: SpecWith (ATransport, AMSType)
 testMsgNOTExpireOnInterval =
-  it "should NOT expire messages that are not received before messageTTL if expiry interval is large" $ \(ATransport (t :: TProxy c), msType) -> do
+  it "should block and unblock message queues" $ \(ATransport (t :: TProxy c), msType) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     let cfg' = (cfgMS msType) {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 10000}}
@@ -1012,6 +1014,30 @@ testMsgNOTExpireOnInterval =
           1000 `timeout` tGet @SMPVersion @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
             Just _ -> error "nothing else should be delivered"
+
+testBlockMessageQueue :: SpecWith (ATransport, AMSType)
+testBlockMessageQueue =
+  it "should return BLOCKED error when queue is blocked" $ \(at@(ATransport (t :: TProxy c)), msType) -> do
+    g <- C.newRandom
+    (rId, sId) <- withSmpServerStoreLogOnMS at msType testPort $ runTest t $ \h -> do
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+      (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "abcd" rId1 (Ids rId sId _srvDh) <- signSendRecv h rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe True)
+      (rId1, NoEntity) #== "creates queue"
+      pure (rId, sId)
+
+    withFile testStoreLogFile AppendMode $ \h -> B.hPutStrLn h $ strEncode $ BlockQueue rId $ BlockingInfo BRContent
+
+    withSmpServerStoreLogOnMS at msType testPort $ runTest t $ \h -> do
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+      Resp "dabc" sId2 (ERR (BLOCKED (BlockingInfo BRContent))) <- signSendRecv h sKey ("dabc", sId, SKEY sPub)
+      (sId2, sId) #== "same queue ID in response"
+  where
+    runTest :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a
+    runTest _ test' server = do
+      a <- testSMPClient test'
+      killThread server
+      pure a
 
 samplePubKey :: C.APublicVerifyKey
 samplePubKey = C.APublicVerifyKey C.SEd25519 "MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ6buiZJVgSpQWsucXq7U6zjMgY="

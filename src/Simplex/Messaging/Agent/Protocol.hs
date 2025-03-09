@@ -140,6 +140,7 @@ module Simplex.Messaging.Agent.Protocol
     serializeQueueStatus,
     queueStatusT,
     agentMessageType,
+    aMessageType,
     extraSMPServerHosts,
     updateSMPServerHosts,
   )
@@ -167,8 +168,7 @@ import Data.Time.Clock.System (SystemTime)
 import Data.Type.Equality
 import Data.Typeable ()
 import Data.Word (Word16, Word32)
-import Database.SQLite.Simple.FromField
-import Database.SQLite.Simple.ToField
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..))
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType)
@@ -359,8 +359,8 @@ data AEvent (e :: AEntity) where
   MSGNTF :: MsgId -> Maybe UTCTime -> AEvent AEConn
   RCVD :: MsgMeta -> NonEmpty MsgReceipt -> AEvent AEConn
   QCONT :: AEvent AEConn
-  DEL_RCVQ :: SMPServer -> SMP.RecipientId -> Maybe AgentErrorType -> AEvent AEConn
-  DEL_CONN :: AEvent AEConn
+  DEL_RCVQS :: NonEmpty (ConnId, SMPServer, SMP.RecipientId, Maybe AgentErrorType) -> AEvent AEConn
+  DEL_CONNS :: NonEmpty ConnId -> AEvent AEConn
   DEL_USER :: Int64 -> AEvent AENone
   STAT :: ConnectionStats -> AEvent AEConn
   OK :: AEvent AEConn
@@ -430,8 +430,8 @@ data AEventTag (e :: AEntity) where
   MSGNTF_ :: AEventTag AEConn
   RCVD_ :: AEventTag AEConn
   QCONT_ :: AEventTag AEConn
-  DEL_RCVQ_ :: AEventTag AEConn
-  DEL_CONN_ :: AEventTag AEConn
+  DEL_RCVQS_ :: AEventTag AEConn
+  DEL_CONNS_ :: AEventTag AEConn
   DEL_USER_ :: AEventTag AENone
   STAT_ :: AEventTag AEConn
   OK_ :: AEventTag AEConn
@@ -485,8 +485,8 @@ aEventTag = \case
   MSGNTF {} -> MSGNTF_
   RCVD {} -> RCVD_
   QCONT -> QCONT_
-  DEL_RCVQ {} -> DEL_RCVQ_
-  DEL_CONN -> DEL_CONN_
+  DEL_RCVQS _ -> DEL_RCVQS_
+  DEL_CONNS _ -> DEL_CONNS_
   DEL_USER _ -> DEL_USER_
   STAT _ -> STAT_
   OK -> OK_
@@ -856,20 +856,7 @@ agentMessageType = \case
   AgentConnInfo _ -> AM_CONN_INFO
   AgentConnInfoReply {} -> AM_CONN_INFO_REPLY
   AgentRatchetInfo _ -> AM_RATCHET_INFO
-  AgentMessage _ aMsg -> case aMsg of
-    -- HELLO is used both in v1 and in v2, but differently.
-    -- - in v1 (and, possibly, in v2 for simplex connections) can be sent multiple times,
-    --   until the queue is secured - the OK response from the server instead of initial AUTH errors confirms it.
-    -- - in v2 duplexHandshake it is sent only once, when it is known that the queue was secured.
-    HELLO -> AM_HELLO_
-    A_MSG _ -> AM_A_MSG_
-    A_RCVD {} -> AM_A_RCVD_
-    A_QCONT _ -> AM_QCONT_
-    QADD _ -> AM_QADD_
-    QKEY _ -> AM_QKEY_
-    QUSE _ -> AM_QUSE_
-    QTEST _ -> AM_QTEST_
-    EREADY _ -> AM_EREADY_
+  AgentMessage _ aMsg -> aMessageType aMsg
 
 data APrivHeader = APrivHeader
   { -- | sequential ID assigned by the sending agent
@@ -947,6 +934,22 @@ data AMessage
     EREADY AgentMsgId
   deriving (Show)
 
+aMessageType :: AMessage -> AgentMessageType
+aMessageType = \case
+  -- HELLO is used both in v1 and in v2, but differently.
+  -- - in v1 (and, possibly, in v2 for simplex connections) can be sent multiple times,
+  --   until the queue is secured - the OK response from the server instead of initial AUTH errors confirms it.
+  -- - in v2 duplexHandshake it is sent only once, when it is known that the queue was secured.
+  HELLO -> AM_HELLO_
+  A_MSG _ -> AM_A_MSG_
+  A_RCVD {} -> AM_A_RCVD_
+  A_QCONT _ -> AM_QCONT_
+  QADD _ -> AM_QADD_
+  QKEY _ -> AM_QKEY_
+  QUSE _ -> AM_QUSE_
+  QTEST _ -> AM_QTEST_
+  EREADY _ -> AM_EREADY_
+
 -- | this type is used to send as part of the protocol between different clients
 -- TODO possibly, rename fields and types referring to external and internal IDs to make them different
 data AMessageReceipt = AMessageReceipt
@@ -1010,6 +1013,10 @@ instance Encoding AMessage where
         QUSE_ -> QUSE <$> smpP
         QTEST_ -> QTEST <$> smpP
         EREADY_ -> EREADY <$> smpP
+
+instance ToField AMessage where toField = toField . Binary . smpEncode
+
+instance FromField AMessage where fromField = blobFieldParser smpP
 
 instance Encoding AMessageReceipt where
   smpEncode AMessageReceipt {agentMsgId, msgHash, rcptInfo} =

@@ -1,25 +1,28 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Server.QueueStore where
 
+import Control.Applicative ((<|>))
+import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 
 data QueueRec = QueueRec
-  { recipientId :: !RecipientId,
-    recipientKey :: !RcvPublicAuthKey,
+  { recipientKey :: !RcvPublicAuthKey,
     rcvDhSecret :: !RcvDhSecret,
     senderId :: !SenderId,
     senderKey :: !(Maybe SndPublicAuthKey),
     sndSecure :: !SenderCanSecure,
     notifier :: !(Maybe NtfCreds),
-    status :: !ServerQueueStatus,
+    status :: !ServerEntityStatus,
     updatedAt :: !(Maybe RoundedSystemTime)
   }
   deriving (Show)
@@ -37,7 +40,21 @@ instance StrEncoding NtfCreds where
     (notifierId, notifierKey, rcvNtfDhSecret) <- strP
     pure NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}
 
-data ServerQueueStatus = QueueActive | QueueOff deriving (Eq, Show)
+data ServerEntityStatus
+  = EntityActive
+  | EntityBlocked BlockingInfo
+  | EntityOff
+  deriving (Eq, Show)
+
+instance StrEncoding ServerEntityStatus where
+  strEncode = \case
+    EntityActive -> "active"
+    EntityBlocked info -> "blocked," <> strEncode info
+    EntityOff -> "off"
+  strP =
+    "active" $> EntityActive
+      <|> "blocked," *> (EntityBlocked <$> strP)
+      <|> "off" $> EntityOff
 
 newtype RoundedSystemTime = RoundedSystemTime Int64
   deriving (Eq, Ord, Show)

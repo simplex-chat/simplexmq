@@ -25,7 +25,7 @@ import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Text as T
-import Data.Time.Clock (getCurrentTime)
+import Data.Time.Clock (getCurrentTime, nominalDay)
 import Data.Time.Clock.System (SystemTime)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
@@ -116,7 +116,13 @@ data ServerConfig = ServerConfig
     allowSMPProxy :: Bool, -- auth is the same with `newQueueBasicAuth`
     serverClientConcurrency :: Int,
     -- | server public information
-    information :: Maybe ServerPublicInfo
+    information :: Maybe ServerPublicInfo,
+    startOptions :: StartOptions
+  }
+
+data StartOptions = StartOptions
+  { maintenance :: Bool,
+    skipWarnings :: Bool
   }
 
 defMsgExpirationDays :: Int64
@@ -189,7 +195,7 @@ type family MsgStore s where
   MsgStore 'MSMemory = STMMsgStore
   MsgStore 'MSJournal = JournalMsgStore
 
-data AMsgStore = forall s. (STMQueueStore (MsgStore s), MsgStoreClass (MsgStore s)) => AMS (SMSType s) (MsgStore s)
+data AMsgStore = forall s. (STMStoreClass (MsgStore s), MsgStoreClass (MsgStore s)) => AMS (SMSType s) (MsgStore s)
 
 data AStoreQueue = forall s. MsgStoreClass (MsgStore s) => ASQ (SMSType s) (StoreQueue (MsgStore s))
 
@@ -297,8 +303,8 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
   msgStore@(AMS _ store) <- case msgStoreType of
     AMSType SMSMemory -> AMS SMSMemory <$> newMsgStore STMStoreConfig {storePath = storeMsgsFile, quota = msgQueueQuota}
     AMSType SMSJournal -> case storeMsgsFile of
-      Just storePath -> 
-        let cfg = JournalStoreConfig {storePath, quota = msgQueueQuota, pathParts = journalMsgStoreDepth, maxMsgCount = maxJournalMsgCount, maxStateLines = maxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = idleQueueInterval}
+      Just storePath ->
+        let cfg = mkJournalStoreConfig storePath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
          in AMS SMSJournal <$> newMsgStore cfg
       Nothing -> putStrLn "Error: journal msg store require path in [STORE_LOG], restore_messages" >> exitFailure
   ntfStore <- NtfStore <$> TM.emptyIO
@@ -357,10 +363,24 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, storeLogFile, msgSt
           | isJust storeMsgsFile = SPMMessages
           | otherwise = SPMQueues
 
+mkJournalStoreConfig :: FilePath -> Int -> Int -> Int -> Int64 -> JournalStoreConfig
+mkJournalStoreConfig storePath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval =
+  JournalStoreConfig
+    { storePath,
+      quota = msgQueueQuota,
+      pathParts = journalMsgStoreDepth,
+      maxMsgCount = maxJournalMsgCount,
+      maxStateLines = maxJournalStateLines,
+      stateTailSize = defaultStateTailSize,
+      idleInterval = idleQueueInterval,
+      expireBackupsAfter = 14 * nominalDay,
+      keepMinBackups = 2
+    }
+
 newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO ProxyAgent
 newSMPProxyAgent smpAgentCfg random = do
   smpAgent <- newSMPClientAgent smpAgentCfg random
   pure ProxyAgent {smpAgent}
 
-readWriteQueueStore :: STMQueueStore s => FilePath -> s -> IO (StoreLog 'WriteMode)
+readWriteQueueStore :: STMStoreClass s => FilePath -> s -> IO (StoreLog 'WriteMode)
 readWriteQueueStore = readWriteStoreLog readQueueStore writeQueueStore

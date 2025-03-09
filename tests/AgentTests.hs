@@ -1,12 +1,10 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE PostfixOperators #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 
 module AgentTests (agentTests) where
 
@@ -15,17 +13,29 @@ import AgentTests.DoubleRatchetTests (doubleRatchetTests)
 import AgentTests.FunctionalAPITests (functionalAPITests)
 import AgentTests.MigrationTests (migrationTests)
 import AgentTests.NotificationTests (notificationTests)
-import AgentTests.SQLiteTests (storeTests)
 import AgentTests.ServerChoice (serverChoiceTests)
 import Simplex.Messaging.Transport (ATransport (..))
 import Test.Hspec
+#if defined(dbPostgres)
+import Fixtures
+import Simplex.Messaging.Agent.Store.Postgres.Util (dropAllSchemasExceptSystem)
+#else
+import AgentTests.SQLiteTests (storeTests)
+#endif
 
 agentTests :: ATransport -> Spec
 agentTests (ATransport t) = do
+  describe "Migration tests" migrationTests
   describe "Connection request" connectionRequestTests
   describe "Double ratchet tests" doubleRatchetTests
-  describe "Functional API" $ functionalAPITests (ATransport t)
-  describe "Notification tests" $ notificationTests (ATransport t)
+#if defined(dbPostgres)
+  after_ (dropAllSchemasExceptSystem testDBConnectInfo) $ do
+#else
+  do
+#endif
+    describe "Functional API" $ functionalAPITests (ATransport t)
+    describe "Chosen servers" serverChoiceTests
+    describe "Notification tests" $ notificationTests (ATransport t)
+#if !defined(dbPostgres)
   describe "SQLite store" storeTests
-  describe "Chosen servers" serverChoiceTests
-  describe "Migration tests" migrationTests
+#endif

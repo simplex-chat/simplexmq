@@ -25,7 +25,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
-import Simplex.FileTransfer.Transport (XFTPErrorType (..), XFTPVersion, xftpClientHandshakeStub)
+import Simplex.FileTransfer.Transport (XFTPErrorType (..), XFTPVersion, blockedFilesXFTPVersion, xftpClientHandshakeStub)
 import Simplex.Messaging.Client (authTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -276,12 +276,14 @@ data FileResponse
 
 instance ProtocolEncoding XFTPVersion XFTPErrorType FileResponse where
   type Tag FileResponse = FileResponseTag
-  encodeProtocol _v = \case
+  encodeProtocol v = \case
     FRSndIds fId rIds -> e (FRSndIds_, ' ', fId, rIds)
     FRRcvIds rIds -> e (FRRcvIds_, ' ', rIds)
     FRFile rDhKey nonce -> e (FRFile_, ' ', rDhKey, nonce)
     FROk -> e FROk_
-    FRErr err -> e (FRErr_, ' ', err)
+    FRErr err -> case err of
+      BLOCKED _ | v < blockedFilesXFTPVersion -> e (FRErr_, ' ', AUTH)
+      _ -> e (FRErr_, ' ', err)
     FRPong -> e FRPong_
     where
       e :: Encoding a => a -> ByteString

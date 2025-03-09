@@ -13,8 +13,6 @@ import Data.Int (Int64)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word32)
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
 import qualified Simplex.Messaging.Crypto as C
@@ -24,6 +22,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (XFTPServer)
 import System.FilePath ((</>))
+import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..))
 
 type RcvFileId = ByteString -- Agent entity ID
 

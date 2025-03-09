@@ -21,11 +21,15 @@ module Simplex.Messaging.Server.StoreLog
     logSecureQueue,
     logAddNotifier,
     logSuspendQueue,
+    logBlockQueue,
+    logUnblockQueue,
     logDeleteQueue,
     logDeleteNotifier,
     logUpdateQueueTime,
     readWriteStoreLog,
     writeQueueStore,
+    readLogLines,
+    foldLogLines,
   )
 where
 
@@ -36,10 +40,13 @@ import Control.Logger.Simple
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
+import Data.Functor (($>))
+import Data.List (sort, stripPrefix)
 import qualified Data.Map.Strict as M
+import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
-import Data.Time.Clock (getCurrentTime)
-import Data.Time.Format.ISO8601 (iso8601Show)
+import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime, nominalDay)
+import Data.Time.Format.ISO8601 (iso8601Show, iso8601ParseM)
 import GHC.IO (catchAny)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
@@ -48,14 +55,17 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.StoreLog.Types
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM, tshow, unlessM, whenM)
-import System.Directory (doesFileExist, renameFile)
+import System.Directory (doesFileExist, listDirectory, removeFile, renameFile)
 import System.IO
+import System.FilePath (takeDirectory, takeFileName)
 
 data StoreLogRecord
-  = CreateQueue QueueRec
+  = CreateQueue RecipientId QueueRec
   | SecureQueue QueueId SndPublicAuthKey
   | AddNotifier QueueId NtfCreds
   | SuspendQueue QueueId
+  | BlockQueue QueueId BlockingInfo
+  | UnblockQueue QueueId
   | DeleteQueue QueueId
   | DeleteNotifier QueueId
   | UpdateTime QueueId RoundedSystemTime
@@ -66,15 +76,16 @@ data SLRTag
   | SecureQueue_
   | AddNotifier_
   | SuspendQueue_
+  | BlockQueue_
+  | UnblockQueue_
   | DeleteQueue_
   | DeleteNotifier_
   | UpdateTime_
 
 instance StrEncoding QueueRec where
-  strEncode QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, updatedAt} =
+  strEncode QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt} =
     B.unwords
-      [ "rid=" <> strEncode recipientId,
-        "rk=" <> strEncode recipientKey,
+      [ "rk=" <> strEncode recipientKey,
         "rdh=" <> strEncode rcvDhSecret,
         "sid=" <> strEncode senderId,
         "sk=" <> strEncode senderKey
@@ -82,13 +93,16 @@ instance StrEncoding QueueRec where
       <> sndSecureStr
       <> maybe "" notifierStr notifier
       <> maybe "" updatedAtStr updatedAt
+      <> statusStr
     where
       sndSecureStr = if sndSecure then " sndSecure=" <> strEncode sndSecure else ""
       notifierStr ntfCreds = " notifier=" <> strEncode ntfCreds
       updatedAtStr t = " updated_at=" <> strEncode t
+      statusStr = case status of
+        EntityActive -> ""
+        _ -> " status=" <> strEncode status
 
   strP = do
-    recipientId <- "rid=" *> strP_
     recipientKey <- "rk=" *> strP_
     rcvDhSecret <- "rdh=" *> strP_
     senderId <- "sid=" *> strP_
@@ -96,7 +110,8 @@ instance StrEncoding QueueRec where
     sndSecure <- (" sndSecure=" *> strP) <|> pure False
     notifier <- optional $ " notifier=" *> strP
     updatedAt <- optional $ " updated_at=" *> strP
-    pure QueueRec {recipientId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status = QueueActive, updatedAt}
+    status <- (" status=" *> strP) <|> pure EntityActive
+    pure QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt}
 
 instance StrEncoding SLRTag where
   strEncode = \case
@@ -104,37 +119,45 @@ instance StrEncoding SLRTag where
     SecureQueue_ -> "SECURE"
     AddNotifier_ -> "NOTIFIER"
     SuspendQueue_ -> "SUSPEND"
+    BlockQueue_ -> "BLOCK"
+    UnblockQueue_ -> "UNBLOCK"
     DeleteQueue_ -> "DELETE"
     DeleteNotifier_ -> "NDELETE"
     UpdateTime_ -> "TIME"
 
   strP =
-    A.takeTill (== ' ') >>= \case
-      "CREATE" -> pure CreateQueue_
-      "SECURE" -> pure SecureQueue_
-      "NOTIFIER" -> pure AddNotifier_
-      "SUSPEND" -> pure SuspendQueue_
-      "DELETE" -> pure DeleteQueue_
-      "NDELETE" -> pure DeleteNotifier_
-      "TIME" -> pure UpdateTime_
-      s -> fail $ "invalid log record tag: " <> B.unpack s
+    A.choice
+      [ "CREATE" $> CreateQueue_,
+        "SECURE" $> SecureQueue_,
+        "NOTIFIER" $> AddNotifier_,
+        "SUSPEND" $> SuspendQueue_,
+        "BLOCK" $> BlockQueue_,
+        "UNBLOCK" $> UnblockQueue_,
+        "DELETE" $> DeleteQueue_,
+        "NDELETE" $> DeleteNotifier_,
+        "TIME" $> UpdateTime_
+      ]
 
 instance StrEncoding StoreLogRecord where
   strEncode = \case
-    CreateQueue q -> strEncode (CreateQueue_, q)
+    CreateQueue rId q -> B.unwords [strEncode CreateQueue_, "rid=" <> strEncode rId, strEncode q]
     SecureQueue rId sKey -> strEncode (SecureQueue_, rId, sKey)
     AddNotifier rId ntfCreds -> strEncode (AddNotifier_, rId, ntfCreds)
     SuspendQueue rId -> strEncode (SuspendQueue_, rId)
+    BlockQueue rId info -> strEncode (BlockQueue_, rId, info)
+    UnblockQueue rId -> strEncode (UnblockQueue_, rId)
     DeleteQueue rId -> strEncode (DeleteQueue_, rId)
     DeleteNotifier rId -> strEncode (DeleteNotifier_, rId)
     UpdateTime rId t ->  strEncode (UpdateTime_, rId, t)
 
   strP =
     strP_ >>= \case
-      CreateQueue_ -> CreateQueue <$> strP
+      CreateQueue_ -> CreateQueue <$> ("rid=" *> strP_) <*> strP
       SecureQueue_ -> SecureQueue <$> strP_ <*> strP
       AddNotifier_ -> AddNotifier <$> strP_ <*> strP
       SuspendQueue_ -> SuspendQueue <$> strP
+      BlockQueue_ -> BlockQueue <$> strP_ <*> strP
+      UnblockQueue_ -> UnblockQueue <$> strP
       DeleteQueue_ -> DeleteQueue <$> strP
       DeleteNotifier_ -> DeleteNotifier <$> strP
       UpdateTime_ -> UpdateTime <$> strP_ <*> strP
@@ -167,8 +190,8 @@ writeStoreLogRecord (WriteStoreLog _ h) r = E.uninterruptibleMask_ $ do
   B.hPut h $ strEncode r `B.snoc` '\n' -- hPutStrLn makes write non-atomic for length > 1024
   hFlush h
 
-logCreateQueue :: StoreLog 'WriteMode -> QueueRec -> IO ()
-logCreateQueue s = writeStoreLogRecord s . CreateQueue
+logCreateQueue :: StoreLog 'WriteMode -> RecipientId -> QueueRec -> IO ()
+logCreateQueue s rId q = writeStoreLogRecord s $ CreateQueue rId q
 
 logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SndPublicAuthKey -> IO ()
 logSecureQueue s qId sKey = writeStoreLogRecord s $ SecureQueue qId sKey
@@ -178,6 +201,12 @@ logAddNotifier s qId ntfCreds = writeStoreLogRecord s $ AddNotifier qId ntfCreds
 
 logSuspendQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
 logSuspendQueue s = writeStoreLogRecord s . SuspendQueue
+
+logBlockQueue :: StoreLog 'WriteMode -> QueueId -> BlockingInfo -> IO ()
+logBlockQueue s qId info = writeStoreLogRecord s $ BlockQueue qId info
+
+logUnblockQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
+logUnblockQueue s = writeStoreLogRecord s . UnblockQueue
 
 logDeleteQueue :: StoreLog 'WriteMode -> QueueId -> IO ()
 logDeleteQueue s = writeStoreLogRecord s . DeleteQueue
@@ -211,6 +240,7 @@ readWriteStoreLog readStore writeStore f st =
       renameFile f tempBackup -- 1) make temp backup
       s <- writeLog "compacting store log (do not terminate)..." -- 2) save state
       renameBackup -- 3) timed backup
+      removeStoreLogBackups f
       pure s
     writeLog msg = do
       s <- openWriteStoreLog f
@@ -223,11 +253,50 @@ readWriteStoreLog readStore writeStore f st =
       renameFile tempBackup timedBackup
       logInfo $ "original state preserved as " <> T.pack timedBackup
 
-writeQueueStore :: STMQueueStore s => StoreLog 'WriteMode -> s -> IO ()
-writeQueueStore s st = readTVarIO (activeMsgQueues st) >>= mapM_ writeQueue . M.assocs
+writeQueueStore :: STMStoreClass s => StoreLog 'WriteMode -> s -> IO ()
+writeQueueStore s st = readTVarIO qs >>= mapM_ writeQueue . M.assocs
   where
+    qs = queues $ stmQueueStore st
     writeQueue (rId, q) =
       readTVarIO (queueRec' q) >>= \case
-        Just q' -> when (active q') $ logCreateQueue s q' -- TODO we should log suspended queues when we use them
-        Nothing -> atomically $ TM.delete rId $ activeMsgQueues st
-    active QueueRec {status} = status == QueueActive
+        Just q' -> logCreateQueue s rId q'
+        Nothing -> atomically $ TM.delete rId qs
+
+removeStoreLogBackups :: FilePath -> IO ()
+removeStoreLogBackups f = do
+  ts <- getCurrentTime
+  times <- sort . mapMaybe backupPathTime <$> listDirectory (takeDirectory f)
+  let new = addUTCTime (- nominalDay) ts
+      old = addUTCTime (- oldBackupTTL) ts
+      times1 = filter (< new) times -- exclude backups newer than 24 hours
+      times2 = take (length times1 - minOldBackups) times1 -- keep 3 backups older than 24 hours
+      toDelete = filter (< old) times2 -- remove all backups older than 21 day
+  mapM_ (removeFile . backupPath) toDelete
+  putStrLn $ "Removed " <> show (length toDelete) <> " backups:"
+  mapM_ (putStrLn . backupPath) toDelete
+  where
+    backupPathTime :: FilePath -> Maybe UTCTime
+    backupPathTime = iso8601ParseM <=< stripPrefix backupPathPfx
+    backupPath :: UTCTime -> FilePath
+    backupPath ts = f <> "." <> iso8601Show ts
+    backupPathPfx = takeFileName f <> "."
+    minOldBackups = 3
+    oldBackupTTL = 21 * nominalDay
+
+readLogLines :: Bool -> FilePath -> (Bool -> B.ByteString -> IO ()) -> IO ()
+readLogLines tty f action = foldLogLines tty f (const action) ()
+
+foldLogLines :: Bool -> FilePath -> (a -> Bool -> B.ByteString -> IO a) -> a -> IO a
+foldLogLines tty f action initValue = do
+  (count :: Int, acc) <- withFile f ReadMode $ \h -> ifM (hIsEOF h) (pure (0, initValue)) (loop h 0 initValue)
+  putStrLn $ progress count
+  pure acc
+  where
+    loop h i acc = do
+      s <- B.hGetLine h
+      eof <- hIsEOF h
+      acc' <- action acc eof s
+      let i' = i + 1
+      when (tty && i' `mod` 100000 == 0) $ putStr (progress i' <> "\r") >> hFlush stdout
+      if eof then pure (i', acc') else loop h i' acc'
+    progress i = "Processed: " <> show i <> " lines"

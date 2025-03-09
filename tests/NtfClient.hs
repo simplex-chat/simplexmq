@@ -82,7 +82,7 @@ testNtfClient :: Transport c => (THandleNTF c 'TClient -> IO a) -> IO a
 testNtfClient client = do
   Right host <- pure $ chooseTransportHost defaultNetworkConfig testHost
   runTransportClient defaultTransportClientConfig Nothing host ntfTestPort (Just testKeyHash) $ \h ->
-    runExceptT (ntfClientHandshake h testKeyHash supportedClientNTFVRange) >>= \case
+    runExceptT (ntfClientHandshake h testKeyHash supportedClientNTFVRange False) >>= \case
       Right th -> client th
       Left e -> error $ show e
 

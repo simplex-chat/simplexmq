@@ -1,5 +1,6 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
@@ -20,12 +21,19 @@ import qualified Data.Text as T
 import Data.Time.Clock (UTCTime)
 import Data.Time.ISO8601 (parseISO8601)
 import Data.Typeable (Typeable)
+import Simplex.Messaging.Util (safeDecodeUtf8, (<$?>))
+import Text.Read (readMaybe)
+#if defined(dbPostgres)
+import Database.PostgreSQL.Simple (ResultError (..))
+import Database.PostgreSQL.Simple.FromField (FromField(..), FieldParser, returnError, Field (..))
+import Database.PostgreSQL.Simple.TypeInfo.Static (textOid, varcharOid)
+import qualified Data.Text.Encoding as TE
+#else
 import Database.SQLite.Simple (ResultError (..), SQLData (..))
 import Database.SQLite.Simple.FromField (FieldParser, returnError)
 import Database.SQLite.Simple.Internal (Field (..))
 import Database.SQLite.Simple.Ok (Ok (Ok))
-import Simplex.Messaging.Util (safeDecodeUtf8, (<$?>))
-import Text.Read (readMaybe)
+#endif
 
 base64P :: Parser ByteString
 base64P = decode <$?> paddedBase64 rawBase64P
@@ -70,6 +78,7 @@ parseRead2 = parseRead $ do
 
 wordEnd :: Char -> Bool
 wordEnd c = c == ' ' || c == '\n'
+{-# INLINE wordEnd #-}
 
 parseString :: (ByteString -> Either String a) -> (String -> a)
 parseString p = either error id . p . B.pack
@@ -77,6 +86,14 @@ parseString p = either error id . p . B.pack
 blobFieldParser :: Typeable k => Parser k -> FieldParser k
 blobFieldParser = blobFieldDecoder . parseAll
 
+#if defined(dbPostgres)
+blobFieldDecoder :: Typeable k => (ByteString -> Either String k) -> FieldParser k
+blobFieldDecoder dec f val = do
+  x <- fromField f val
+  case dec x of
+    Right k -> pure k
+    Left e -> returnError ConversionFailed f ("couldn't parse field: " ++ e)
+#else
 blobFieldDecoder :: Typeable k => (ByteString -> Either String k) -> FieldParser k
 blobFieldDecoder dec = \case
   f@(Field (SQLBlob b) _) ->
@@ -84,7 +101,20 @@ blobFieldDecoder dec = \case
       Right k -> Ok k
       Left e -> returnError ConversionFailed f ("couldn't parse field: " ++ e)
   f -> returnError ConversionFailed f "expecting SQLBlob column type"
+#endif
 
+-- TODO [postgres] review
+#if defined(dbPostgres)
+fromTextField_ :: Typeable a => (Text -> Maybe a) -> FieldParser a
+fromTextField_ fromText f val =
+  if typeOid f `elem` [textOid, varcharOid]
+    then case val of
+      Just t -> case fromText (TE.decodeUtf8 t) of
+        Just x -> pure x
+        _ -> returnError ConversionFailed f "invalid text value"
+      Nothing -> returnError UnexpectedNull f "NULL value found for non-NULL field"
+    else returnError Incompatible f "expecting TEXT or VARCHAR column type"
+#else
 fromTextField_ :: Typeable a => (Text -> Maybe a) -> Field -> Ok a
 fromTextField_ fromText = \case
   f@(Field (SQLText t) _) ->
@@ -92,6 +122,7 @@ fromTextField_ fromText = \case
       Just x -> Ok x
       _ -> returnError ConversionFailed f ("invalid text: " <> T.unpack t)
   f -> returnError ConversionFailed f "expecting SQLText column type"
+#endif
 
 fstToLower :: String -> String
 fstToLower "" = ""

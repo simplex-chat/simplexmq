@@ -44,14 +44,12 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Server.QueueStore.STM (readQueueStore)
-import Simplex.Messaging.Transport (batchCmdsSMPVersion, sendingProxySMPVersion, simplexMQVersion, supportedServerSMPRelayVRange)
+import Simplex.Messaging.Transport (simplexMQVersion, supportedProxyClientSMPRelayVRange, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, ifM, safeDecodeUtf8, tshow)
-import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
@@ -75,7 +73,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
         True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `" <> executableName <> " start`."
         _ -> initializeServer opts
     OnlineCert certOpts -> withIniFile $ \_ -> genOnline cfgPath certOpts
-    Start -> withIniFile runServer
+    Start opts -> withIniFile $ runServer opts
     Delete -> do
       confirmOrExit
         "WARNING: deleting the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
@@ -109,7 +107,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 "Messages not imported"
               ms <- newJournalMsgStore
               readQueueStore storeLogFile ms
-              msgStats <- importMessages True ms storeMsgsFilePath Nothing -- no expiration
+              msgStats <- importMessages True ms storeMsgsFilePath Nothing False -- no expiration
               putStrLn "Import completed"
               printMessageStats "Messages" msgStats
               putStrLn $ case readMsgStoreType ini of
@@ -148,7 +146,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError a
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
-    newJournalMsgStore = newMsgStore JournalStoreConfig {storePath = storeMsgsJournalDir, pathParts = journalMsgStoreDepth, quota = defaultMsgQueueQuota, maxMsgCount = defaultMaxJournalMsgCount, maxStateLines = defaultMaxJournalStateLines, stateTailSize = defaultStateTailSize, idleInterval = checkInterval defaultMessageExpiration}
+    newJournalMsgStore =
+      let cfg = mkJournalStoreConfig storeMsgsJournalDir defaultMsgQueueQuota defaultMaxJournalMsgCount defaultMaxJournalStateLines $ checkInterval defaultMessageExpiration
+       in newMsgStore cfg
     iniFile = combine cfgPath "smp-server.ini"
     serverVersion = "SMP server v" <> simplexMQVersion
     defaultServerPorts = "5223,443"
@@ -322,7 +322,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 <> (webDisabled <> "key: " <> T.pack httpsKeyFile <> "\n")
               where
                 webDisabled = if disableWeb then "# " else ""
-    runServer ini = do
+    runServer startOptions ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
@@ -447,8 +447,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 defaultSMPClientAgentConfig
                   { smpCfg =
                       (smpCfg defaultSMPClientAgentConfig)
-                        { serverVRange = mkVersionRange batchCmdsSMPVersion sendingProxySMPVersion,
+                        { serverVRange = supportedProxyClientSMPRelayVRange,
                           agreeSecret = True,
+                          proxyServer = True,
                           networkConfig =
                             defaultNetworkConfig
                               { socksProxy = either error id <$!> strDecodeIni "PROXY" "socks_proxy" ini,
@@ -462,7 +463,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   },
               allowSMPProxy = True,
               serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini,
-              information = serverPublicInfo ini
+              information = serverPublicInfo ini,
+              startOptions
             }
         textToOwnServers :: Text -> [ByteString]
         textToOwnServers = map encodeUtf8 . T.words
@@ -634,7 +636,7 @@ printSourceCode = \case
 data CliCommand
   = Init InitOptions
   | OnlineCert CertOptions
-  | Start
+  | Start StartOptions
   | Delete
   | Journal JournalCmd
 
@@ -668,7 +670,7 @@ cliCommandP cfgPath logPath iniFile =
   hsubparser
     ( command "init" (info (Init <$> initP) (progDesc $ "Initialize server - creates " <> cfgPath <> " and " <> logPath <> " directories and configuration files"))
         <> command "cert" (info (OnlineCert <$> certOptionsP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
-        <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
+        <> command "start" (info (Start <$> startOptionsP) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
         <> command "journal" (info (Journal <$> journalCmdP) (progDesc "Import/export messages to/from journal storage"))
     )
@@ -810,6 +812,18 @@ cliCommandP cfgPath logPath iniFile =
             disableWeb,
             scripted
           }
+    startOptionsP = do
+      maintenance <-
+        switch
+          ( long "maintenance"
+              <> help "Do not start the server, only perform start and stop tasks"
+          )
+      skipWarnings <-
+        switch
+          ( long "skip-warnings"
+              <> help "Start the server with non-critical start warnings"
+          )
+      pure StartOptions {maintenance, skipWarnings}
     journalCmdP =
       hsubparser
         ( command "import" (info (pure JCImport) (progDesc "Import message log file into a new journal storage"))

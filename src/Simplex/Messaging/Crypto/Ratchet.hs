@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -20,6 +21,8 @@
 module Simplex.Messaging.Crypto.Ratchet
   ( Ratchet (..),
     RatchetX448,
+    MsgEncryptKey (..),
+    MsgEncryptKeyX448,
     SkippedMsgDiff (..),
     SkippedMsgKeys,
     InitialKeys (..),
@@ -63,7 +66,9 @@ module Simplex.Messaging.Crypto.Ratchet
     pqX3dhRcv,
     initSndRatchet,
     initRcvRatchet,
-    rcEncrypt,
+    rcCheckCanPad,
+    rcEncryptHeader,
+    rcEncryptMsg,
     rcDecrypt,
     -- used in tests
     MsgHeader (..),
@@ -84,6 +89,7 @@ module Simplex.Messaging.Crypto.Ratchet
 where
 
 import Control.Applicative ((<|>))
+import Control.Monad (unless)
 import Control.Monad.Except
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
@@ -109,14 +115,13 @@ import Data.Maybe (fromMaybe, isJust)
 import Data.Type.Equality
 import Data.Typeable (Typeable)
 import Data.Word (Word16, Word32)
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.QueryString
+import Simplex.Messaging.Agent.Store.DB (Binary (..), BoolInt (..), FromField (..), ToField (..))
 import Simplex.Messaging.Crypto
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (blobFieldDecoder, defaultJSON, parseE, parseE')
+import Simplex.Messaging.Parsers (blobFieldDecoder, blobFieldParser, defaultJSON, parseE, parseE')
 import Simplex.Messaging.Util (($>>=), (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
@@ -205,6 +210,10 @@ instance Encoding ARKEMParams where
       'P' -> ARKP SRKSProposed . RKParamsProposed <$> smpP
       'A' -> ARKP SRKSAccepted .: RKParamsAccepted <$> smpP <*> smpP
       _ -> fail "bad ratchet KEM params"
+
+instance ToField ARKEMParams where toField = toField . Binary . smpEncode
+
+instance FromField ARKEMParams where fromField = blobFieldDecoder smpDecode
 
 data E2ERatchetParams (s :: RatchetKEMState) (a :: Algorithm)
   = E2ERatchetParams VersionE2E (PublicKey a) (PublicKey a) (Maybe (RKEMParams s))
@@ -359,7 +368,7 @@ instance Encoding APrivRKEMParams where
       'A' -> APRKP SRKSAccepted .:. PrivateRKParamsAccepted <$> smpP <*> smpP <*> smpP
       _ -> fail "bad APrivRKEMParams"
 
-instance RatchetKEMStateI s => ToField (PrivRKEMParams s) where toField = toField . smpEncode
+instance RatchetKEMStateI s => ToField (PrivRKEMParams s) where toField = toField . Binary . smpEncode
 
 instance (Typeable s, RatchetKEMStateI s) => FromField (PrivRKEMParams s) where fromField = blobFieldDecoder smpDecode
 
@@ -560,6 +569,7 @@ applySMDiff smks = \case
 type HeaderKey = Key
 
 data MessageKey = MessageKey Key IV
+  deriving (Show)
 
 instance Encoding MessageKey where
   smpEncode (MessageKey (Key key) (IV iv)) = smpEncode (key, iv)
@@ -576,7 +586,7 @@ instance ToJSON RatchetKey where
 instance FromJSON RatchetKey where
   parseJSON = fmap RatchetKey . strParseJSON "Key"
 
-instance ToField MessageKey where toField = toField . smpEncode
+instance ToField MessageKey where toField = toField . Binary . smpEncode
 
 instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 
@@ -841,9 +851,13 @@ connPQEncryption = \case
   IKUsePQ -> PQSupportOn
   IKNoPQ pq -> pq -- default for creating connection is IKNoPQ PQEncOn
 
-rcEncrypt :: AlgorithmI a => Ratchet a -> Int -> ByteString -> Maybe PQEncryption -> VersionE2E -> ExceptT CryptoError IO (ByteString, Ratchet a)
-rcEncrypt Ratchet {rcSnd = Nothing} _ _ _ _ = throwE CERatchetState
-rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcSupportKEM, rcEnableKEM, rcVersion} paddedMsgLen msg pqEnc_ supportedE2EVersion = do
+rcCheckCanPad :: Int -> ByteString -> ExceptT CryptoError IO ()
+rcCheckCanPad paddedMsgLen msg =
+  unless (canPad (B.length msg) paddedMsgLen) $ throwE CryptoLargeMsgError
+
+rcEncryptHeader :: AlgorithmI a => Ratchet a -> Maybe PQEncryption -> VersionE2E -> ExceptT CryptoError IO (MsgEncryptKey a, Ratchet a)
+rcEncryptHeader Ratchet {rcSnd = Nothing} _ _ = throwE CERatchetState
+rcEncryptHeader rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcSupportKEM, rcEnableKEM, rcVersion} pqEnc_ supportedE2EVersion = do
   -- state.CKs, mk = KDF_CK(state.CKs)
   let (ck', mk, iv, ehIV) = chainKdf rcCKs
       v = current rcVersion
@@ -858,11 +872,15 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
       rcVersion' = rcVersion {maxSupported = maxSupported'}
   -- enc_header = HENCRYPT(state.HKs, header)
   (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV (paddedHeaderLen v rcSupportKEM') rcAD (msgHeader v maxSupported')
-  -- return enc_header, ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
+  -- return enc_header
   let emHeader = smpEncode EncMessageHeader {ehVersion = v, ehBody, ehAuthTag, ehIV}
-  (emAuthTag, emBody) <- encryptAEAD mk iv paddedMsgLen (rcAD <> emHeader) msg
-  let msg' = encodeEncRatchetMessage v EncRatchetMessage {emHeader, emBody, emAuthTag}
-      -- state.Ns += 1
+      msgEncryptKey =
+        MsgEncryptKey
+          { msgRcVersion = v,
+            msgKey = MessageKey mk iv,
+            msgRcAD = rcAD,
+            msgEncHeader = emHeader
+          }
       rc' =
         rc
           { rcSnd = Just sr {rcCKs = ck'},
@@ -872,7 +890,7 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
             rcVersion = rcVersion',
             rcKEM = if pqEnc_ == Just PQEncOff then (\rck -> rck {rcKEMs = Nothing}) <$> rcKEM else rcKEM
           }
-  pure (msg', rc')
+  pure (msgEncryptKey, rc')
   where
     -- header = HEADER_PQ2(
     --   dh = state.DHRs.public,
@@ -894,6 +912,23 @@ rcEncrypt rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, 
     msgKEMParams RatchetKEM {rcPQRs = (k, _), rcKEMs} = case rcKEMs of
       Nothing -> ARKP SRKSProposed $ RKParamsProposed k
       Just RatchetKEMAccepted {rcPQRct} -> ARKP SRKSAccepted $ RKParamsAccepted rcPQRct k
+
+type MsgEncryptKeyX448 = MsgEncryptKey 'X448
+
+data MsgEncryptKey a = MsgEncryptKey
+  { msgRcVersion :: VersionE2E,
+    msgKey :: MessageKey,
+    msgRcAD :: ByteString,
+    msgEncHeader :: ByteString
+  }
+  deriving (Show)
+
+rcEncryptMsg :: AlgorithmI a => MsgEncryptKey a -> Int -> ByteString -> ExceptT CryptoError IO ByteString
+rcEncryptMsg MsgEncryptKey {msgKey = MessageKey mk iv, msgRcAD, msgEncHeader, msgRcVersion = v} paddedMsgLen msg = do
+  -- return ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
+  (emAuthTag, emBody) <- encryptAEAD mk iv paddedMsgLen (msgRcAD <> msgEncHeader) msg
+  let msg' = encodeEncRatchetMessage v EncRatchetMessage {emHeader = msgEncHeader, emBody, emAuthTag}
+  pure msg'
 
 data SkippedMessage a
   = SMMessage (DecryptResult a)
@@ -1120,14 +1155,35 @@ instance AlgorithmI a => ToJSON (Ratchet a) where
 instance AlgorithmI a => FromJSON (Ratchet a) where
   parseJSON = $(JQ.mkParseJSON defaultJSON ''Ratchet)
 
-instance AlgorithmI a => ToField (Ratchet a) where toField = toField . LB.toStrict . J.encode
+instance AlgorithmI a => ToField (Ratchet a) where toField = toField . Binary . LB.toStrict . J.encode
 
 instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = blobFieldDecoder J.eitherDecodeStrict'
 
-instance ToField PQEncryption where toField (PQEncryption pqEnc) = toField pqEnc
+instance ToField PQEncryption where toField (PQEncryption pqEnc) = toField (BI pqEnc)
 
-instance FromField PQEncryption where fromField f = PQEncryption <$> fromField f
+instance FromField PQEncryption where 
+#if defined(dbPostgres)
+  fromField f dat = PQEncryption . unBI <$> fromField f dat
+#else
+  fromField f = PQEncryption . unBI <$> fromField f
+#endif
 
-instance ToField PQSupport where toField (PQSupport pqEnc) = toField pqEnc
+instance ToField PQSupport where toField (PQSupport pqEnc) = toField (BI pqEnc)
 
-instance FromField PQSupport where fromField f = PQSupport <$> fromField f
+instance FromField PQSupport where
+#if defined(dbPostgres)
+  fromField f dat = PQSupport . unBI <$> fromField f dat
+#else
+  fromField f = PQSupport . unBI <$> fromField f
+#endif
+
+instance Encoding (MsgEncryptKey a) where
+  smpEncode MsgEncryptKey {msgRcVersion = v, msgKey, msgRcAD, msgEncHeader} =
+    smpEncode (v, msgRcAD, msgKey, Large msgEncHeader)
+  smpP = do
+    (v, msgRcAD, msgKey, Large msgEncHeader) <- smpP
+    pure MsgEncryptKey {msgRcVersion = v, msgRcAD, msgKey, msgEncHeader}
+
+instance AlgorithmI a => ToField (MsgEncryptKey a) where toField = toField . Binary . smpEncode
+
+instance (AlgorithmI a, Typeable a) => FromField (MsgEncryptKey a) where fromField = blobFieldParser smpP

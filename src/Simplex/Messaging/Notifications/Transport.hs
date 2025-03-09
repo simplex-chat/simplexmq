@@ -44,11 +44,14 @@ initialNTFVersion = VersionNTF 1
 authBatchCmdsNTFVersion :: VersionNTF
 authBatchCmdsNTFVersion = VersionNTF 2
 
+invalidReasonNTFVersion :: VersionNTF
+invalidReasonNTFVersion = VersionNTF 3
+
 currentClientNTFVersion :: VersionNTF
-currentClientNTFVersion = VersionNTF 2
+currentClientNTFVersion = VersionNTF 3
 
 currentServerNTFVersion :: VersionNTF
-currentServerNTFVersion = VersionNTF 2
+currentServerNTFVersion = VersionNTF 3
 
 supportedClientNTFVRange :: VersionRangeNTF
 supportedClientNTFVRange = mkVersionRange initialNTFVersion currentClientNTFVersion
@@ -123,8 +126,8 @@ ntfServerHandshake serverSignKey c (k, pk) kh ntfVRange = do
             Nothing -> throwE TEVersion
 
 -- | Notifcations server client transport handshake.
-ntfClientHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRangeNTF -> ExceptT TransportError IO (THandleNTF c 'TClient)
-ntfClientHandshake c keyHash ntfVRange = do
+ntfClientHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRangeNTF -> Bool -> ExceptT TransportError IO (THandleNTF c 'TClient)
+ntfClientHandshake c keyHash ntfVRange _proxyServer = do
   let th@THandle {params = THandleParams {sessionId}} = ntfTHandle c
   NtfServerHandshake {sessionId = sessId, ntfVersionRange, authPubKey = sk'} <- getHandshake th
   if sessionId /= sessId

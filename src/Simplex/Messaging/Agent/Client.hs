@@ -1,5 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -145,6 +146,7 @@ module Simplex.Messaging.Agent.Client
     withStore',
     withStoreBatch,
     withStoreBatch',
+    unsafeWithStore,
     storeError,
     userServers,
     pickServer,
@@ -205,7 +207,6 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
-import qualified Database.SQLite.Simple as SQL
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -221,8 +222,8 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.SQLite (SQLiteStore (..), withTransaction)
-import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
+import Simplex.Messaging.Agent.Store.Common (DBStore, withTransaction)
+import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues (getRcvQueues))
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import Simplex.Messaging.Client
@@ -282,6 +283,9 @@ import UnliftIO.Concurrent (forkIO, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+#if !defined(dbPostgres)
+import qualified Database.SQLite.Simple as SQL
+#endif
 
 type ClientVar msg = SessionVar (Either (AgentErrorType, Maybe UTCTime) (Client msg))
 
@@ -555,7 +559,7 @@ slowNetworkConfig cfg@NetworkConfig {tcpConnectTimeout, tcpTimeout, tcpTimeoutPe
     slow :: Integral a => a -> a
     slow t = (t * 3) `div` 2
 
-agentClientStore :: AgentClient -> SQLiteStore
+agentClientStore :: AgentClient -> DBStore
 agentClientStore AgentClient {agentEnv = Env {store}} = store
 {-# INLINE agentClientStore #-}
 
@@ -1649,7 +1653,7 @@ disableQueuesNtfs = sendTSessionBatches "NDEL" snd disableQueues_
 sendAck :: AgentClient -> RcvQueue -> MsgId -> AM ()
 sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId =
   withSMPClient c rq ("ACK:" <> logSecret' msgId) $ \smp ->
-    ackSMPMessage smp rcvPrivateKey rcvId msgId      
+    ackSMPMessage smp rcvPrivateKey rcvId msgId
 
 hasGetLock :: AgentClient -> RcvQueue -> IO Bool
 hasGetLock c RcvQueue {server, rcvId} =
@@ -1989,6 +1993,13 @@ withStore c action = do
   withExceptT storeError . ExceptT . liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
     withTransaction st action `E.catches` handleDBErrors
   where
+#if defined(dbPostgres)
+    -- TODO [postgres] postgres specific error handling
+    handleDBErrors :: [E.Handler IO (Either StoreError a)]
+    handleDBErrors =
+      [ E.Handler $ \(E.SomeException e) -> pure . Left $ SEInternal $ bshow e
+      ]
+#else
     handleDBErrors :: [E.Handler IO (Either StoreError a)]
     handleDBErrors =
       [ E.Handler $ \(e :: SQL.SQLError) ->
@@ -1997,6 +2008,12 @@ withStore c action = do
            in pure . Left . (if busy then SEDatabaseBusy else SEInternal) $ bshow se,
         E.Handler $ \(E.SomeException e) -> pure . Left $ SEInternal $ bshow e
       ]
+#endif
+
+unsafeWithStore :: AgentClient -> (DB.Connection -> IO a) -> AM' a
+unsafeWithStore c action = do
+  st <- asks store
+  liftIO $ agentOperationBracket c AODatabase (\_ -> pure ()) $ withTransaction st action
 
 withStoreBatch :: Traversable t => AgentClient -> (DB.Connection -> t (IO (Either AgentErrorType a))) -> AM' (t (Either AgentErrorType a))
 withStoreBatch c actions = do
@@ -2044,7 +2061,7 @@ pickServer = \case
 getNextServer ::
   (ProtocolTypeI p, UserProtocol p) =>
   AgentClient ->
-  UserId -> 
+  UserId ->
   (UserServers p -> NonEmpty (Maybe OperatorId, ProtoServerWithAuth p)) ->
   [ProtocolServer p] ->
   AM (ProtoServerWithAuth p)
@@ -2097,7 +2114,7 @@ withNextSrv ::
   UserId ->
   (UserServers p -> NonEmpty (Maybe OperatorId, ProtoServerWithAuth p)) ->
   TVar (Set TransportHost) ->
-  [ProtocolServer p] -> 
+  [ProtocolServer p] ->
   (ProtoServerWithAuth p -> AM a) ->
   AM a
 withNextSrv c userId srvsSel triedHosts usedSrvs action = do

@@ -9,9 +9,8 @@ module Simplex.Messaging.Notifications.Types where
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time (UTCTime)
-import Database.SQLite.Simple.FromField (FromField (..))
-import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.Protocol (ConnId, NotificationsMode (..), UserId)
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
@@ -41,7 +40,7 @@ instance Encoding NtfTknAction where
 
 instance FromField NtfTknAction where fromField = blobFieldDecoder smpDecode
 
-instance ToField NtfTknAction where toField = toField . smpEncode
+instance ToField NtfTknAction where toField = toField . Binary . smpEncode
 
 data NtfToken = NtfToken
   { deviceToken :: DeviceToken,
@@ -119,7 +118,7 @@ instance Encoding NtfSubNTFAction where
 
 instance FromField NtfSubNTFAction where fromField = blobFieldDecoder smpDecode
 
-instance ToField NtfSubNTFAction where toField = toField . smpEncode
+instance ToField NtfSubNTFAction where toField = toField . Binary . smpEncode
 
 data NtfSubSMPAction
   = NSASmpKey
@@ -138,7 +137,7 @@ instance Encoding NtfSubSMPAction where
 
 instance FromField NtfSubSMPAction where fromField = blobFieldDecoder smpDecode
 
-instance ToField NtfSubSMPAction where toField = toField . smpEncode
+instance ToField NtfSubSMPAction where toField = toField . Binary . smpEncode
 
 data NtfAgentSubStatus
   = -- | subscription started

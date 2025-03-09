@@ -105,7 +105,7 @@ module Simplex.Messaging.Client
 where
 
 import Control.Applicative ((<|>))
-import Control.Concurrent (ThreadId, forkFinally, killThread, mkWeakThreadId)
+import Control.Concurrent (ThreadId, forkFinally, forkIO, killThread, mkWeakThreadId)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception
@@ -171,7 +171,7 @@ data PClient v err msg = PClient
     timeoutErrorCount :: TVar Int,
     clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
-    sndQ :: TBQueue (Maybe (TVar Bool), ByteString),
+    sndQ :: TBQueue (Maybe (Request err msg), ByteString),
     rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmissionBatch v err msg))
   }
@@ -406,6 +406,8 @@ data ProtocolClientConfig v = ProtocolClientConfig
     serverVRange :: VersionRange v,
     -- | agree shared session secret (used in SMP proxy for additional encryption layer)
     agreeSecret :: Bool,
+    -- | Whether connecting client is a proxy server. See comment in ClientHandshake
+    proxyServer :: Bool,
     -- | send SNI to server, False for SMP
     useSNI :: Bool
   }
@@ -420,6 +422,7 @@ defaultClientConfig clientALPN useSNI serverVRange =
       clientALPN,
       serverVRange,
       agreeSecret = False,
+      proxyServer = False,
       useSNI
     }
 {-# INLINE defaultClientConfig #-}
@@ -489,7 +492,7 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe ByteString)
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret, useSNI} msgQ proxySessTs disconnected = do
+getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret, proxyServer, useSNI} msgQ proxySessTs disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
@@ -548,7 +551,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     client :: forall c. Transport c => TProxy c -> PClient v err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient v err msg)) -> c -> IO ()
     client _ c cVar h = do
       ks <- if agreeSecret then Just <$> atomically (C.generateKeyPair g) else pure Nothing
-      runExceptT (protocolClientHandshake @v @err @msg h ks (keyHash srv) serverVRange) >>= \case
+      runExceptT (protocolClientHandshake @v @err @msg h ks (keyHash srv) serverVRange proxyServer) >>= \case
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
         Right th@THandle {params} -> do
           sessionTs <- getCurrentTime
@@ -563,9 +566,12 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= sendPending
       where
-        sendPending (Nothing, s) = send_ s
-        sendPending (Just pending, s) = whenM (readTVarIO pending) $ send_ s
-        send_ = void . tPutLog h
+        sendPending (r, s) = case r of
+          Nothing -> void $ tPutLog h s
+          Just Request {pending, responseVar} ->
+            whenM (readTVarIO pending) $ tPutLog h s >>= either responseErr pure
+            where
+              responseErr = atomically . putTMVar responseVar . Left . PCETransportError
 
     receive :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     receive ProtocolClient {client_ = PClient {rcvQ, lastReceived, timeoutErrorCount}} h = forever $ do
@@ -1080,11 +1086,11 @@ sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
       pure [Response entityId $ Left $ PCETransportError e]
     TBTransmissions s n rs
       | n > 0 -> do
-          atomically $ writeTBQueue sndQ (Nothing, s) -- do not expire batched responses
+          nonBlockingWriteTBQueue sndQ (Nothing, s) -- do not expire batched responses
           mapConcurrently (getResponse c Nothing) rs
       | otherwise -> pure []
     TBTransmission s r -> do
-      atomically $ writeTBQueue sndQ (Nothing, s)
+      nonBlockingWriteTBQueue sndQ (Nothing, s)
       (: []) <$> getResponse c Nothing r
 
 -- | Send Protocol command
@@ -1101,17 +1107,22 @@ sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THan
   where
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: Either TransportError SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
-    sendRecv t_ r@Request {pending} = case t_ of
+    sendRecv t_ r = case t_ of
       Left e -> pure . Left $ PCETransportError e
       Right t
         | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
         | otherwise -> do
-            atomically $ writeTBQueue sndQ (Just pending, s)
+            nonBlockingWriteTBQueue sndQ (Just r, s)
             response <$> getResponse c tOut r
         where
           s
             | batch = tEncodeBatch1 t
             | otherwise = tEncode t
+
+nonBlockingWriteTBQueue :: TBQueue a -> a -> IO ()
+nonBlockingWriteTBQueue q x = do
+  sent <- atomically $ ifM (isFullTBQueue q) (pure False) (writeTBQueue q x $> True)
+  unless sent $ void $ forkIO $ atomically $ writeTBQueue q x
 
 getResponse :: ProtocolClient v err msg -> Maybe Int -> Request err msg -> IO (Response err msg)
 getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount}} tOut Request {entityId, pending, responseVar} = do

@@ -70,6 +70,8 @@ module Simplex.Messaging.Protocol
     CommandError (..),
     ProxyError (..),
     BrokerErrorType (..),
+    BlockingInfo (..),
+    BlockingReason (..),
     Transmission,
     TransmissionAuth (..),
     SignedTransmission,
@@ -258,7 +260,7 @@ supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClie
 -- TODO v6.0 remove dependency on version
 maxMessageLength :: VersionSMP -> Int
 maxMessageLength v
-  | v >= encryptedBlockSMPVersion = 16048 -- max 16051
+  | v >= encryptedBlockSMPVersion = 16048 -- max 16048
   | v >= sendingProxySMPVersion = 16064 -- max 16067
   | otherwise = 16088 -- 16048 - always use this size to determine allowed ranges
 
@@ -1194,6 +1196,8 @@ data ErrorType
     PROXY {proxyErr :: ProxyError}
   | -- | command authorization error - bad signature or non-existing SMP queue
     AUTH
+  | -- | command with the entity that was blocked
+    BLOCKED {blockInfo :: BlockingInfo}
   | -- | encryption/decryption error in proxy protocol
     CRYPTO
   | -- | SMP queue capacity is exceeded on the server
@@ -1210,17 +1214,41 @@ data ErrorType
     INTERNAL
   | -- | used internally, never returned by the server (to be removed)
     DUPLICATE_ -- not part of SMP protocol, used internally
-  deriving (Eq, Read, Show)
+  deriving (Eq, Show)
 
 instance StrEncoding ErrorType where
   strEncode = \case
+    BLOCK -> "BLOCK"
+    SESSION -> "SESSION"
     CMD e -> "CMD " <> bshow e
     PROXY e -> "PROXY " <> strEncode e
-    e -> bshow e
+    AUTH -> "AUTH"
+    BLOCKED info -> "BLOCKED " <> strEncode info
+    CRYPTO -> "CRYPTO"
+    QUOTA -> "QUOTA"
+    STORE e -> "STORE " <> encodeUtf8 (T.pack e)
+    NO_MSG -> "NO_MSG"
+    LARGE_MSG -> "LARGE_MSG"
+    EXPIRED -> "EXPIRED"
+    INTERNAL -> "INTERNAL"
+    DUPLICATE_ -> "DUPLICATE_"
   strP =
-    "CMD " *> (CMD <$> parseRead1)
-      <|> "PROXY " *> (PROXY <$> strP)
-      <|> parseRead1
+    A.choice
+      [ "BLOCK" $> BLOCK,
+        "SESSION" $> SESSION,
+        "CMD " *> (CMD <$> parseRead1),
+        "PROXY " *> (PROXY <$> strP),
+        "AUTH" $> AUTH,
+        "BLOCKED " *> strP,
+        "CRYPTO" $> CRYPTO,
+        "QUOTA" $> QUOTA,
+        "STORE " *> (STORE . T.unpack . safeDecodeUtf8 <$> A.takeByteString),
+        "NO_MSG" $> NO_MSG,
+        "LARGE_MSG" $> LARGE_MSG,
+        "EXPIRED" $> EXPIRED,
+        "INTERNAL" $> INTERNAL,
+        "DUPLICATE_" $> DUPLICATE_
+      ]
 
 -- | SMP command error type.
 data CommandError
@@ -1248,7 +1276,7 @@ data ProxyError
     BASIC_AUTH
   | -- no destination server error
     NO_SESSION
-  deriving (Eq, Read, Show)
+  deriving (Eq, Show)
 
 -- | SMP server errors.
 data BrokerErrorType
@@ -1265,6 +1293,37 @@ data BrokerErrorType
   | -- | command response timeout
     TIMEOUT
   deriving (Eq, Read, Show, Exception)
+
+data BlockingInfo = BlockingInfo
+  { reason :: BlockingReason
+  }
+  deriving (Eq, Show)
+
+data BlockingReason = BRSpam | BRContent
+  deriving (Eq, Show)
+
+instance StrEncoding BlockingInfo where
+  strEncode BlockingInfo {reason} = "reason=" <> strEncode reason
+  strP = do
+    reason <- "reason=" *> strP
+    pure BlockingInfo {reason}
+
+instance Encoding BlockingInfo where
+  smpEncode = strEncode
+  smpP = strP
+
+instance StrEncoding BlockingReason where
+  strEncode = \case
+    BRSpam -> "spam"
+    BRContent -> "content"
+  strP = "spam" $> BRSpam <|> "content" $> BRContent
+
+instance ToJSON BlockingReason where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON BlockingReason where
+  parseJSON = strParseJSON "BlockingReason"
 
 -- | SMP transmission parser.
 transmissionP :: THandleParams v p -> Parser RawTransmission
@@ -1284,7 +1343,7 @@ transmissionP THandleParams {sessionId, implySessId} = do
 class (ProtocolTypeI (ProtoType msg), ProtocolEncoding v err msg, ProtocolEncoding v err (ProtoCommand msg), Show err, Show msg) => Protocol v err msg | msg -> v, msg -> err where
   type ProtoCommand msg = cmd | cmd -> msg
   type ProtoType msg = (sch :: ProtocolType) | sch -> msg
-  protocolClientHandshake :: forall c. Transport c => c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> ExceptT TransportError IO (THandle v c 'TClient)
+  protocolClientHandshake :: forall c. Transport c => c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> Bool -> ExceptT TransportError IO (THandle v c 'TClient)
   protocolPing :: ProtoCommand msg
   protocolError :: msg -> Maybe err
 
@@ -1311,9 +1370,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   encodeProtocol v = \case
     NEW rKey dhKey auth_ subMode sndSecure
       | v >= sndAuthKeySMPVersion -> new <> e (auth_, subMode, sndSecure)
-      | v >= subModeSMPVersion -> new <> auth <> e subMode
-      | v == basicAuthSMPVersion -> new <> auth
-      | otherwise -> new
+      | otherwise -> new <> auth <> e subMode
       where
         new = e (NEW_, ' ', rKey, dhKey)
         auth = maybe "" (e . ('A',)) auth_
@@ -1382,9 +1439,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
       Cmd SRecipient <$> case tag of
         NEW_
           | v >= sndAuthKeySMPVersion -> new <*> smpP <*> smpP <*> smpP
-          | v >= subModeSMPVersion -> new <*> auth <*> smpP <*> pure False
-          | v == basicAuthSMPVersion -> new <*> auth <*> pure SMSubscribe <*> pure False
-          | otherwise -> new <*> pure Nothing <*> pure SMSubscribe <*> pure False
+          | otherwise -> new <*> auth <*> smpP <*> pure False
           where
             new = NEW <$> _smpP <*> smpP
             auth = optional (A.char 'A' *> smpP)
@@ -1435,7 +1490,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       | otherwise -> e END_
     INFO info -> e (INFO_, ' ', info)
     OK -> e OK_
-    ERR err -> e (ERR_, ' ', err)
+    ERR err -> case err of
+      BLOCKED _ | v < blockedEntitySMPVersion -> e (ERR_, ' ', AUTH)
+      _ -> e (ERR_, ' ', err)
     PONG -> e PONG_
     where
       e :: Encoding a => a -> ByteString
@@ -1513,6 +1570,7 @@ instance Encoding ErrorType where
     CMD err -> "CMD " <> smpEncode err
     PROXY err -> "PROXY " <> smpEncode err
     AUTH -> "AUTH"
+    BLOCKED info -> "BLOCKED " <> smpEncode info
     CRYPTO -> "CRYPTO"
     QUOTA -> "QUOTA"
     STORE err -> "STORE " <> smpEncode err
@@ -1529,6 +1587,7 @@ instance Encoding ErrorType where
       "CMD" -> CMD <$> _smpP
       "PROXY" -> PROXY <$> _smpP
       "AUTH" -> pure AUTH
+      "BLOCKED" -> BLOCKED <$> _smpP
       "CRYPTO" -> pure CRYPTO
       "QUOTA" -> pure QUOTA
       "STORE" -> STORE <$> _smpP
@@ -1762,6 +1821,8 @@ $(J.deriveJSON defaultJSON ''MsgFlags)
 $(J.deriveJSON (sumTypeJSON id) ''CommandError)
 
 $(J.deriveJSON (sumTypeJSON id) ''BrokerErrorType)
+
+$(J.deriveJSON defaultJSON ''BlockingInfo)
 
 -- run deriveJSON in one TH splice to allow mutual instance
 $(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''ErrorType])

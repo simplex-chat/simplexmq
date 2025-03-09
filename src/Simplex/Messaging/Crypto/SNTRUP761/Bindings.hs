@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Crypto.SNTRUP761.Bindings where
@@ -9,9 +10,8 @@ import Data.Bifunctor (bimap)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
-import Database.SQLite.Simple.FromField
-import Database.SQLite.Simple.ToField
 import Foreign (nullPtr)
+import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..))
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG (withDRG)
@@ -121,7 +121,11 @@ instance ToField KEMSharedKey where
   toField (KEMSharedKey k) = toField (BA.convert k :: ByteString)
 
 instance FromField KEMSharedKey where
+#if defined(dbPostgres)
+  fromField f dat = KEMSharedKey . BA.convert @ByteString <$> fromField f dat
+#else
   fromField f = KEMSharedKey . BA.convert @ByteString <$> fromField f
+#endif
 
 instance ToJSON KEMSharedKey where
   toJSON = strToJSON

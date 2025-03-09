@@ -29,8 +29,12 @@ import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
+import Simplex.Messaging.Agent.Store.Common
+import Simplex.Messaging.Agent.Store.Interface (DBOpts, createDBStore)
+import Simplex.Messaging.Agent.Store.Migrations.App (appMigrations)
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..), MigrationError (..))
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport, RatchetX448)
+import Simplex.Messaging.Crypto.Ratchet (MsgEncryptKeyX448, PQEncryption, PQSupport, RatchetX448)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( MsgBody,
@@ -42,12 +46,15 @@ import Simplex.Messaging.Protocol
     RcvDhSecret,
     RcvNtfDhSecret,
     RcvPrivateAuthKey,
+    SenderCanSecure,
     SndPrivateAuthKey,
     SndPublicAuthKey,
-    SenderCanSecure,
     VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
+
+createStore :: DBOpts -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createStore dbOpts = createDBStore dbOpts appMigrations
 
 -- * Queue types
 
@@ -536,8 +543,16 @@ data SndMsgData = SndMsgData
     msgBody :: MsgBody,
     pqEncryption :: PQEncryption,
     internalHash :: MsgHash,
-    prevMsgHash :: MsgHash
+    prevMsgHash :: MsgHash,
+    sndMsgPrepData_ :: Maybe SndMsgPrepData
   }
+
+data SndMsgPrepData = SndMsgPrepData
+  { encryptKey :: MsgEncryptKeyX448,
+    paddedLen :: Int,
+    sndMsgBodyId :: Int64
+  }
+  deriving (Show)
 
 data SndMsg = SndMsg
   { internalId :: InternalId,
@@ -554,7 +569,17 @@ data PendingMsgData = PendingMsgData
     msgBody :: MsgBody,
     pqEncryption :: PQEncryption,
     msgRetryState :: Maybe RI2State,
-    internalTs :: InternalTs
+    internalTs :: InternalTs,
+    internalSndId :: InternalSndId,
+    prevMsgHash :: PrevSndMsgHash,
+    pendingMsgPrepData_ :: Maybe PendingMsgPrepData
+  }
+  deriving (Show)
+
+data PendingMsgPrepData = PendingMsgPrepData
+  { encryptKey :: MsgEncryptKeyX448,
+    paddedLen :: Int,
+    sndMsgBody :: AMessage
   }
   deriving (Show)
 
