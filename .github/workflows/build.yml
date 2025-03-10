@@ -15,6 +15,19 @@ jobs:
     env:
       apps: "smp-server xftp-server ntf-server xftp"
     runs-on: ubuntu-${{ matrix.os }}
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust # Allows passwordless access
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          # Maps tcp port 5432 on service container to the host
+          - 5432:5432
     strategy:
       fail-fast: false
       matrix:
@@ -88,6 +101,8 @@ jobs:
 
       - name: Test
         shell: bash
+        env:
+          PGHOST: localhost
         run: |
           docker exec -t builder sh -c 'mv $(find /project/dist-newstyle -name "simplexmq-test" -type f -executable) /out/'
           docker cp builder:/out/simplexmq-test .

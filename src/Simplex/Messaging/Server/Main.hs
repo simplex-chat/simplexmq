@@ -1,7 +1,9 @@
 {-# LANGUAGE ApplicativeDo #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -23,16 +25,22 @@ import Data.Char (isAlpha, isAscii, toUpper)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
+import Data.Int (Int64)
 import Data.List (find, isPrefixOf)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Semigroup (Sum (..))
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import qualified Data.Text.IO as T
 import Network.Socket (HostName)
+import Numeric.Natural (Natural)
 import Options.Applicative
 import Simplex.Messaging.Agent.Protocol (connReqUriP')
+import Simplex.Messaging.Agent.Store.Postgres (checkSchemaExists)
+import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts (..))
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig, textToHostMode)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
@@ -44,13 +52,17 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..), newMsgStore)
-import Simplex.Messaging.Server.QueueStore.STM (readQueueStore)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), JournalQueue, QStoreCfg (..), postgresQueueStore, stmQueueStore)
+import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), QSType (..), SQSType (..), SMSType (..), newMsgStore)
+import Simplex.Messaging.Server.QueueStore.Postgres (PostgresStoreCfg (..), batchInsertQueues, foldQueueRecs)
+import Simplex.Messaging.Server.QueueStore.Types
+import Simplex.Messaging.Server.StoreLog (logCreateQueue, openWriteStoreLog)
+import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
 import Simplex.Messaging.Transport (simplexMQVersion, supportedProxyClientSMPRelayVRange, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, ifM, safeDecodeUtf8, tshow)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, renameFile)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
@@ -84,37 +96,30 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
     Journal cmd -> withIniFile $ \ini -> do
       msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
       msgsFileExists <- doesFileExist storeMsgsFilePath
-      let enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
-      storeLogFile <- case enableStoreLog $> storeLogFilePath of
-        Just storeLogFile -> do
-          ifM
-            (doesFileExist storeLogFile)
-            (pure storeLogFile)
-            (putStrLn ("Store log file " <> storeLogFile <> " not found") >> exitFailure)
-        Nothing -> putStrLn "Store log disabled, see `[STORE_LOG] enable`" >> exitFailure
+      storeLogFile <- getRequiredStoreLogFile ini
       case cmd of
-        JCImport
+        SCImport
           | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
           | msgsDirExists -> do
               putStrLn $ storeMsgsJournalDir <> " directory already exists."
               exitFailure
           | not msgsFileExists -> do
-              putStrLn $ storeMsgsFilePath <> " file does not exists."
+              putStrLn $ storeMsgsFilePath <> " file does not exist."
               exitFailure
           | otherwise -> do
               confirmOrExit
                 ("WARNING: message log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir)
                 "Messages not imported"
-              ms <- newJournalMsgStore
-              readQueueStore storeLogFile ms
+              ms <- newJournalMsgStore MQStoreCfg
+              readQueueStore True (mkQueue ms) storeLogFile $ stmQueueStore ms
               msgStats <- importMessages True ms storeMsgsFilePath Nothing False -- no expiration
               putStrLn "Import completed"
               printMessageStats "Messages" msgStats
-              putStrLn $ case readMsgStoreType ini of
-                Right (AMSType SMSMemory) -> "store_messages set to `memory`, update it to `journal` in INI file"
-                Right (AMSType SMSJournal) -> "store_messages set to `journal`"
-                Left e -> e <> ", update it to `journal` in INI file"
-        JCExport
+              putStrLn $ case readStoreType ini of
+                Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`, update it to `journal` in INI file"
+                Right (ASType _ SMSJournal) -> "store_messages set to `journal`"
+                Left e -> e <> ", configure storage correctly"
+        SCExport
           | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
           | msgsFileExists -> do
               putStrLn $ storeMsgsFilePath <> " file already exists."
@@ -123,15 +128,16 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               confirmOrExit
                 ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
                 "Journal not exported"
-              ms <- newJournalMsgStore
-              readQueueStore storeLogFile ms
+              ms <- newJournalMsgStore MQStoreCfg
+              readQueueStore True (mkQueue ms) storeLogFile $ stmQueueStore ms
               exportMessages True ms storeMsgsFilePath False
               putStrLn "Export completed"
-              putStrLn $ case readMsgStoreType ini of
-                Right (AMSType SMSMemory) -> "store_messages set to `memory`"
-                Right (AMSType SMSJournal) -> "store_messages set to `journal`, update it to `memory` in INI file"
-                Left e -> e <> ", update it to `memory` in INI file"
-        JCDelete
+              putStrLn $ case readStoreType ini of
+                Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`, start the server."
+                Right (ASType SQSMemory SMSJournal) -> "store_messages set to `journal`, update it to `memory` in INI file"
+                Right (ASType SQSPostgres SMSJournal) -> "store_messages set to `journal`, store_queues is set to `database`.\nExport queues to store log to use memory storage for messages (`smp-server database export`)."
+                Left e -> e <> ", configure storage correctly"
+        SCDelete
           | not msgsDirExists -> do
               putStrLn $ storeMsgsJournalDir <> " directory does not exists."
               exitFailure
@@ -141,13 +147,81 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 "Messages NOT deleted"
               deleteDirIfExists storeMsgsJournalDir
               putStrLn $ "Deleted all messages in journal " <> storeMsgsJournalDir
+    Database cmd dbOpts@DBOpts {connstr, schema} -> withIniFile $ \ini -> do
+      schemaExists <- checkSchemaExists connstr schema
+      storeLogExists <- doesFileExist storeLogFilePath
+      case cmd of
+        SCImport
+          | schemaExists && storeLogExists -> exitConfigureQueueStore connstr schema
+          | schemaExists -> do
+              putStrLn $ "Schema " <> B.unpack schema <> " already exists in PostrgreSQL database: " <> B.unpack connstr
+              exitFailure
+          | not storeLogExists -> do
+              putStrLn $ storeLogFilePath <> " file does not exist."
+              exitFailure
+          | otherwise -> do
+              storeLogFile <- getRequiredStoreLogFile ini
+              confirmOrExit
+                ("WARNING: store log file " <> storeLogFile <> " will be imported to PostrgreSQL database: " <> B.unpack connstr <> ", schema: " <> B.unpack schema)
+                "Queue records not imported"
+              ms <- newJournalMsgStore MQStoreCfg
+              readQueueStore True (mkQueue ms) storeLogFile (queueStore ms)
+              queues <- readTVarIO $ loadedQueues $ stmQueueStore ms
+              let storeCfg = PostgresStoreCfg {dbOpts = dbOpts {createSchema = True}, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}
+              ps <- newJournalMsgStore $ PQStoreCfg storeCfg
+              qCnt <- batchInsertQueues @(JournalQueue 'QSMemory) True queues $ postgresQueueStore ps
+              renameFile storeLogFile $ storeLogFile <> ".bak"
+              putStrLn $ "Import completed: " <> show qCnt <> " queues"
+              putStrLn $ case readStoreType ini of
+                Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`.\nImport messages to journal to use PostgreSQL database for queues (`smp-server journal import`)"
+                Right (ASType SQSMemory SMSJournal) -> "store_queues set to `memory`, update it to `database` in INI file"
+                Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, start the server."
+                Left e -> e <> ", configure storage correctly"
+        SCExport
+          | schemaExists && storeLogExists -> exitConfigureQueueStore connstr schema
+          | not schemaExists -> do
+              putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
+              exitFailure
+          | storeLogExists -> do
+              putStrLn $ storeLogFilePath <> " file already exists."
+              exitFailure
+          | otherwise -> do
+              confirmOrExit
+                ("WARNING: PostrgreSQL database schema " <> B.unpack schema <> " (database: " <> B.unpack connstr <> ") will be exported to store log file " <> storeLogFilePath)
+                "Queue records not exported"
+              let storeCfg = PostgresStoreCfg {dbOpts, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}
+              ps <- newJournalMsgStore $ PQStoreCfg storeCfg
+              sl <- openWriteStoreLog storeLogFilePath
+              Sum qCnt <- foldQueueRecs True (postgresQueueStore ps) $ \(rId, qr) -> logCreateQueue sl rId qr $> Sum (1 :: Int)
+              putStrLn $ "Export completed: " <> show qCnt <> " queues"
+              putStrLn $ case readStoreType ini of
+                Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, update it to `memory` in INI file."
+                Right (ASType SQSMemory _) -> "store_queues set to `memory`, start the server"
+                Left e -> e <> ", configure storage correctly"
+        SCDelete
+          | not schemaExists -> do
+              putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
+              exitFailure
+          | otherwise -> do
+              putStrLn $ "Open database: psql " <> B.unpack connstr
+              putStrLn $ "Delete schema: DROP SCHEMA " <> B.unpack schema <> " CASCADE;"
   where
     withIniFile a =
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError a
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
-    newJournalMsgStore =
-      let cfg = mkJournalStoreConfig storeMsgsJournalDir defaultMsgQueueQuota defaultMaxJournalMsgCount defaultMaxJournalStateLines $ checkInterval defaultMessageExpiration
+    getRequiredStoreLogFile ini = do
+      let enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
+      case enableStoreLog $> storeLogFilePath of
+        Just storeLogFile -> do
+          ifM
+            (doesFileExist storeLogFile)
+            (pure storeLogFile)
+            (putStrLn ("Store log file " <> storeLogFile <> " not found") >> exitFailure)
+        Nothing -> putStrLn "Store log disabled, see `[STORE_LOG] enable`" >> exitFailure
+    newJournalMsgStore :: QStoreCfg s -> IO (JournalMsgStore s)
+    newJournalMsgStore qsCfg =
+      let cfg = mkJournalStoreConfig qsCfg storeMsgsJournalDir defaultMsgQueueQuota defaultMaxJournalMsgCount defaultMaxJournalStateLines $ checkInterval defaultMessageExpiration
        in newMsgStore cfg
     iniFile = combine cfgPath "smp-server.ini"
     serverVersion = "SMP server v" <> simplexMQVersion
@@ -157,12 +231,30 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
     storeMsgsFilePath = combine logPath "smp-server-messages.log"
     storeMsgsJournalDir = combine logPath "messages"
     storeNtfsFilePath = combine logPath "smp-server-ntfs.log"
-    readMsgStoreType :: Ini -> Either String AMSType
-    readMsgStoreType = textToMsgStoreType . fromRight "memory" . lookupValue "STORE_LOG" "store_messages"
-    textToMsgStoreType = \case
-      "memory" -> Right $ AMSType SMSMemory
-      "journal" -> Right $ AMSType SMSJournal
-      s -> Left $ "invalid store_messages: " <> T.unpack s
+    readStoreType :: Ini -> Either String AStoreType
+    readStoreType ini = case (iniStoreQueues, iniStoreMessage) of
+      ("memory", "memory") -> Right $ ASType SQSMemory SMSMemory
+      ("memory", "journal") -> Right $ ASType SQSMemory SMSJournal
+      ("database", "journal") -> Right $ ASType SQSPostgres SMSJournal
+      ("database", "memory") -> Left "Using PostgreSQL database requires journal memory storage."
+      (q, m) -> Left $ T.unpack $ "Invalid storage settings: store_queues: " <> q <> ", store_messages: " <> m
+      where
+        iniStoreQueues = fromRight "memory" $ lookupValue "STORE_LOG" "store_queues" ini
+        iniStoreMessage = fromRight "memory" $ lookupValue "STORE_LOG" "store_messages" ini
+    iniDBOptions :: Ini -> DBOpts
+    iniDBOptions ini =
+      DBOpts
+        { connstr = either (const defaultDBConnStr) encodeUtf8 $ lookupValue "STORE_LOG" "db_connection" ini,
+          schema = either (const defaultDBSchema) encodeUtf8 $ lookupValue "STORE_LOG" "db_schema" ini,
+          poolSize = readIniDefault defaultDBPoolSize "STORE_LOG" "db_pool_size" ini,
+          createSchema = False
+        }
+    dbOptsIniContent :: DBOpts -> Text
+    dbOptsIniContent DBOpts {connstr, schema, poolSize} =
+      (optDisabled' (connstr == defaultDBConnStr) <> "db_connection: " <> safeDecodeUtf8 connstr <> "\n")
+        <> (optDisabled' (schema == defaultDBSchema) <> "db_schema: " <> safeDecodeUtf8 schema <> "\n")
+        <> (optDisabled' (poolSize == defaultDBPoolSize) <> "db_pool_size: " <> tshow poolSize <> "\n\n")
+    iniDeletedTTL ini = readIniDefault (86400 * defaultDeletedTTL) "STORE_LOG" "db_deleted_ttl" ini
     httpsCertFile = combine cfgPath "web.crt"
     httpsKeyFile = combine cfgPath "web.key"
     defaultStaticPath = combine logPath "www"
@@ -210,7 +302,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                     Just "Error: passing --hosting-country requires passing --hosting"
                 | otherwise = Nothing
           forM_ err_ $ \err -> putStrLn err >> exitFailure
-        initialize opts'@InitOptions {enableStoreLog, logStats, signAlgorithm, password, controlPort, socksProxy, ownDomains, sourceCode, webStaticPath, disableWeb} = do
+        initialize opts'@InitOptions {enableStoreLog, dbOptions, logStats, signAlgorithm, password, controlPort, socksProxy, ownDomains, sourceCode, webStaticPath, disableWeb} = do
           checkInitOptions opts'
           clearDirIfExists cfgPath
           clearDirIfExists logPath
@@ -236,12 +328,18 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             iniFileContent host basicAuth controlPortPwds =
               informationIniContent opts'
                 <> "[STORE_LOG]\n\
-                   \# The server uses STM memory for persistence,\n\
-                   \# that will be lost on restart (e.g., as with redis).\n\
-                   \# This option enables saving memory to append only log,\n\
-                   \# and restoring it when the server is started.\n\
+                   \# The server uses memory or PostgreSQL database for persisting queue records.\n\
+                   \# Use `enable: on` to use append-only log to preserve and restore queue records on restart.\n\
                    \# Log is compacted on start (deleted objects are removed).\n"
                 <> ("enable: " <> onOff enableStoreLog <> "\n\n")
+                <> "# Queue storage mode: `memory` or `database` (to store queue records in PostgreSQL database).\n\
+                   \# `memory` - in-memory persistence, with optional append-only log (`enable: on`).\n\
+                   \# `database`- PostgreSQL databass (requires `store_messages: journal`).\n\
+                   \store_queues: memory\n\n\
+                   \# Database connection settings for PostgreSQL database (`store_queues: database`).\n"
+                <> dbOptsIniContent dbOptions
+                <> "# Time to retain deleted queues in the database, days.\n"
+                <> ("db_deleted_ttl: " <> tshow defaultDeletedTTL <> "\n\n")
                 <> "# Message storage mode: `memory` or `journal`.\n\
                    \store_messages: memory\n\n\
                    \# When store_messages is `memory`, undelivered messages are optionally saved and restored\n\
@@ -328,13 +426,13 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       fp <- checkSavedFingerprint cfgPath defaultX509Config
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
-          cfg@ServerConfig {information, storeLogFile, msgStoreType, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
+          cfg@ServerConfig {information, serverStoreCfg, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
           sourceCode' = (\ServerPublicInfo {sourceCode} -> sourceCode) <$> information
           srv = ProtoServerWithAuth (SMPServer [THDomainName host] (if port == "5223" then "" else port) (C.KeyHash fp)) newQueueBasicAuth
       printServiceInfo serverVersion srv
       printSourceCode sourceCode'
-      printServerConfig transports storeLogFile
-      checkMsgStoreMode msgStoreType
+      printSMPServerConfig transports serverStoreCfg
+      checkMsgStoreMode ini iniStoreType
       putStrLn $ case messageExpiration of
         Just ExpirationConfig {ttl} -> "expiring messages after " <> showTTL ttl
         _ -> "not expiring messages"
@@ -347,10 +445,10 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             then maybe "allowed" (const "requires password") newQueueBasicAuth
             else "NOT allowed"
       -- print information
-      let persistence
-            | isNothing storeLogFile = SPMMemoryOnly
-            | isJust (storeMsgsFile cfg) = SPMMessages
-            | otherwise = SPMQueues
+      let persistence = case serverStoreCfg of
+            ASSCfg _ _ (SSCMemory Nothing) -> SPMMemoryOnly
+            ASSCfg _ _ (SSCMemory (Just StorePaths {storeMsgsFile})) | isNothing storeMsgsFile -> SPMQueues
+            _ -> SPMMessages
       let config =
             ServerPublicConfig
               { persistence,
@@ -383,13 +481,12 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           _ -> enableStoreLog $> path
         transports = iniTransports ini
         sharedHTTP = any (\(_, _, addHTTP) -> addHTTP) transports
-        iniMsgStoreType = either error id $! readMsgStoreType ini
+        iniStoreType = either error id $! readStoreType ini
         serverConfig =
           ServerConfig
             { transports,
               smpHandshakeTimeout = 120000000,
               tbqSize = 128,
-              msgStoreType = iniMsgStoreType,
               msgQueueQuota = defaultMsgQueueQuota,
               maxJournalMsgCount = defaultMaxJournalMsgCount,
               maxJournalStateLines = defaultMaxJournalStateLines,
@@ -402,10 +499,14 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                     certificateFile = c serverCrtFile
                   },
               httpCredentials = (\WebHttpsParams {key, cert} -> ServerCredentials {caCertificateFile = Nothing, privateKeyFile = key, certificateFile = cert}) <$> webHttpsParams',
-              storeLogFile = enableStoreLog $> storeLogFilePath,
-              storeMsgsFile = case iniMsgStoreType of
-                AMSType SMSMemory -> restoreMessagesFile storeMsgsFilePath
-                AMSType SMSJournal -> Just storeMsgsJournalDir,
+              serverStoreCfg = case iniStoreType of
+                ASType SQSMemory SMSMemory ->
+                  ASSCfg SQSMemory SMSMemory $ SSCMemory $ enableStoreLog $> StorePaths {storeLogFile = storeLogFilePath, storeMsgsFile = restoreMessagesFile storeMsgsFilePath}
+                ASType SQSMemory SMSJournal ->
+                  ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = storeLogFilePath, storeMsgsPath = storeMsgsJournalDir}
+                ASType SQSPostgres SMSJournal ->
+                  let storeCfg = PostgresStoreCfg {dbOpts = iniDBOptions ini, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
+                   in ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeCfg, storeMsgsPath' = storeMsgsJournalDir},
               storeNtfsFile = restoreMessagesFile storeNtfsFilePath,
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
@@ -486,29 +587,52 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             pure WebHttpsParams {port, cert, key}
         webStaticPath' = eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini
 
-    checkMsgStoreMode :: AMSType -> IO ()
-    checkMsgStoreMode mode = do
+    checkMsgStoreMode :: Ini -> AStoreType -> IO ()
+    checkMsgStoreMode ini mode = do
       msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
       msgsFileExists <- doesFileExist storeMsgsFilePath
+      storeLogExists <- doesFileExist storeLogFilePath
       case mode of
-        _ | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
-        AMSType SMSJournal
+        ASType qs SMSJournal
+          | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
           | msgsFileExists -> do
               putStrLn $ "Error: store_messages is `journal` with " <> storeMsgsFilePath <> " file present."
               putStrLn "Set store_messages to `memory` or use `smp-server journal export` to migrate."
               exitFailure
           | not msgsDirExists ->
               putStrLn $ "store_messages is `journal`, " <> storeMsgsJournalDir <> " directory will be created."
-        AMSType SMSMemory
+          | otherwise -> case qs of
+              SQSMemory ->
+                unless (storeLogExists) $ putStrLn $ "store_queues is `memory`, " <> storeLogFilePath <> " file will be created."
+              SQSPostgres -> do
+                let DBOpts {connstr, schema} = iniDBOptions ini
+                schemaExists <- checkSchemaExists connstr schema
+                if
+                  | storeLogExists && schemaExists -> exitConfigureQueueStore connstr schema
+                  | storeLogExists -> do
+                      putStrLn $ "Error: store_queues is `database` with " <> storeLogFilePath <> " file present."
+                      putStrLn "Set store_queues to `memory` or use `smp-server database import` to migrate."
+                      exitFailure
+                  | not schemaExists -> do
+                      putStrLn $ "Error: store_queues is `database`, create schema " <> B.unpack schema <> " in PostgreSQL database " <> B.unpack connstr
+                      exitFailure
+                  | otherwise -> pure ()
+        ASType SQSMemory SMSMemory
+          | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
           | msgsDirExists -> do
               putStrLn $ "Error: store_messages is `memory` with " <> storeMsgsJournalDir <> " directory present."
               putStrLn "Set store_messages to `journal` or use `smp-server journal import` to migrate."
               exitFailure
-        _ -> pure ()
+          | otherwise -> pure ()
 
     exitConfigureMsgStorage = do
       putStrLn $ "Error: both " <> storeMsgsFilePath <> " file and " <> storeMsgsJournalDir <> " directory are present."
       putStrLn "Configure memory storage."
+      exitFailure
+
+    exitConfigureQueueStore connstr schema = do
+      putStrLn $ "Error: both " <> storeLogFilePath <> " file and " <> B.unpack schema <> " schema are present (database: " <> B.unpack connstr <> ")."
+      putStrLn "Configure queue storage."
       exitFailure
 
 data EmbeddedWebParams = EmbeddedWebParams
@@ -532,6 +656,19 @@ getServerSourceCode =
 
 simplexmqSource :: String
 simplexmqSource = "https://github.com/simplex-chat/simplexmq"
+
+defaultDBConnStr :: ByteString
+defaultDBConnStr = "postgresql://smp@/smp_server_store"
+
+defaultDBSchema :: ByteString
+defaultDBSchema = "smp_server"
+
+defaultDBPoolSize :: Natural
+defaultDBPoolSize = 10
+
+-- time to retain deleted queues in the database (days), for debugging
+defaultDeletedTTL :: Int64
+defaultDeletedTTL = 21
 
 defaultControlPort :: Int
 defaultControlPort = 5224
@@ -619,7 +756,12 @@ serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
             (_, _, pkURI, pkFingerprint) -> Just ServerContactAddress {simplex, email, pgp = PGPKey <$> pkURI <*> pkFingerprint}
 
 optDisabled :: Maybe a -> Text
-optDisabled p = if isNothing p then "# " else ""
+optDisabled = optDisabled' . isNothing
+{-# INLINE optDisabled #-}
+
+optDisabled' :: Bool -> Text
+optDisabled' cond = if cond then "# " else ""
+{-# INLINE optDisabled' #-}
 
 validCountryValue :: String -> String -> Either String Text
 validCountryValue field s
@@ -638,12 +780,15 @@ data CliCommand
   | OnlineCert CertOptions
   | Start StartOptions
   | Delete
-  | Journal JournalCmd
+  | Journal StoreCmd
+  | Database StoreCmd DBOpts
 
-data JournalCmd = JCImport | JCExport | JCDelete
+data StoreCmd = SCImport | SCExport | SCDelete
 
 data InitOptions = InitOptions
   { enableStoreLog :: Bool,
+    dbOptions :: DBOpts,
+    dbMigrateUp :: Bool,
     logStats :: Bool,
     signAlgorithm :: SignAlgorithm,
     ip :: HostName,
@@ -673,6 +818,7 @@ cliCommandP cfgPath logPath iniFile =
         <> command "start" (info (Start <$> startOptionsP) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
         <> command "journal" (info (Journal <$> journalCmdP) (progDesc "Import/export messages to/from journal storage"))
+        <> command "database" (info (Database <$> databaseCmdP <*> dbOptsP) (progDesc "Import/export queues to/from PostgreSQL database storage"))
     )
   where
     initP :: Parser InitOptions
@@ -682,6 +828,13 @@ cliCommandP cfgPath logPath iniFile =
           ( long "store-log"
               <> short 'l'
               <> help "Enable store log for persistence"
+          )
+      dbOptions <- dbOptsP
+      -- TODO [postgresql] remove
+      dbMigrateUp <-
+        switch
+          ( long "db-migrate-up"
+              <> help "Automatically confirm \"up\" database migrations"
           )
       logStats <-
         switch
@@ -785,6 +938,8 @@ cliCommandP cfgPath logPath iniFile =
       pure
         InitOptions
           { enableStoreLog,
+            dbOptions,
+            dbMigrateUp,
             logStats,
             signAlgorithm,
             ip,
@@ -823,14 +978,56 @@ cliCommandP cfgPath logPath iniFile =
           ( long "skip-warnings"
               <> help "Start the server with non-critical start warnings"
           )
-      pure StartOptions {maintenance, skipWarnings}
-    journalCmdP =
+      confirmMigrations <-
+        option
+          parseConfirmMigrations
+          ( long "confirm-migrations"
+              <> metavar "CONFIRM_MIGRATIONS"
+              <> help "Confirm PostgreSQL database migration: up, down (default is manual confirmation)"
+              <> value MCConsole
+          )
+      pure StartOptions {maintenance, skipWarnings, confirmMigrations}
+    journalCmdP = storeCmdP "message log file" "journal storage"
+    databaseCmdP = storeCmdP "queue store log file" "PostgreSQL database schema"
+    storeCmdP src dest =
       hsubparser
-        ( command "import" (info (pure JCImport) (progDesc "Import message log file into a new journal storage"))
-            <> command "export" (info (pure JCExport) (progDesc "Export journal storage to message log file"))
-            <> command "delete" (info (pure JCDelete) (progDesc "Delete journal storage"))
+        ( command "import" (info (pure SCImport) (progDesc $ "Import " <> src <> " into a new " <> dest))
+            <> command "export" (info (pure SCExport) (progDesc $ "Export " <> dest <> " to " <> src))
+            <> command "delete" (info (pure SCDelete) (progDesc $ "Delete " <> dest))
         )
-
+    dbOptsP = do
+      connstr <-
+        strOption
+          ( long "database"
+              <> short 'd'
+              <> metavar "DB_CONN"
+              <> help "Database connection string"
+              <> value defaultDBConnStr
+              <> showDefault
+          )
+      schema <-
+        strOption
+          ( long "schema"
+              <> metavar "DB_SCHEMA"
+              <> help "Database schema"
+              <> value defaultDBSchema
+              <> showDefault
+          )
+      poolSize <-
+        option
+          auto
+          ( long "pool-size"
+              <> metavar "POOL_SIZE"
+              <> help "Database pool size"
+              <> value defaultDBPoolSize
+              <> showDefault
+          )
+      pure DBOpts {connstr, schema, poolSize, createSchema = False}
+    parseConfirmMigrations :: ReadM MigrationConfirmation
+    parseConfirmMigrations = eitherReader $ \case
+      "up" -> Right MCYesUp
+      "down" -> Right MCYesUpDown
+      _ -> Left "invalid migration confirmation, pass 'up' or 'down'"
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
     entityP :: String -> String -> String -> Parser (Maybe Entity, Maybe Text)

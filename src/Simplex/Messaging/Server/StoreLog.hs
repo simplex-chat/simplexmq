@@ -27,14 +27,12 @@ module Simplex.Messaging.Server.StoreLog
     logDeleteNotifier,
     logUpdateQueueTime,
     readWriteStoreLog,
-    writeQueueStore,
     readLogLines,
     foldLogLines,
   )
 where
 
 import Control.Applicative (optional, (<|>))
-import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -50,10 +48,9 @@ import Data.Time.Format.ISO8601 (iso8601Show, iso8601ParseM)
 import GHC.IO (catchAny)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.MsgStore.Types
+-- import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.StoreLog.Types
-import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM, tshow, unlessM, whenM)
 import System.Directory (doesFileExist, listDirectory, removeFile, renameFile)
 import System.IO
@@ -253,15 +250,6 @@ readWriteStoreLog readStore writeStore f st =
       renameFile tempBackup timedBackup
       logInfo $ "original state preserved as " <> T.pack timedBackup
 
-writeQueueStore :: STMStoreClass s => StoreLog 'WriteMode -> s -> IO ()
-writeQueueStore s st = readTVarIO qs >>= mapM_ writeQueue . M.assocs
-  where
-    qs = queues $ stmQueueStore st
-    writeQueue (rId, q) =
-      readTVarIO (queueRec' q) >>= \case
-        Just q' -> logCreateQueue s rId q'
-        Nothing -> atomically $ TM.delete rId qs
-
 removeStoreLogBackups :: FilePath -> IO ()
 removeStoreLogBackups f = do
   ts <- getCurrentTime
@@ -292,11 +280,11 @@ foldLogLines tty f action initValue = do
   putStrLn $ progress count
   pure acc
   where
-    loop h i acc = do
+    loop h !i !acc = do
       s <- B.hGetLine h
       eof <- hIsEOF h
       acc' <- action acc eof s
       let i' = i + 1
       when (tty && i' `mod` 100000 == 0) $ putStr (progress i' <> "\r") >> hFlush stdout
       if eof then pure (i', acc') else loop h i' acc'
-    progress i = "Processed: " <> show i <> " lines"
+    progress i = "Processed: " <> show i <> " log lines"
