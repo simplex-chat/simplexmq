@@ -11,7 +11,9 @@ module Simplex.Messaging.Agent.Store.Postgres.Migrations
   )
 where
 
+import Control.Exception (throwIO)
 import Control.Monad (void)
+import qualified Data.ByteString.Char8 as B
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Time.Clock (getCurrentTime)
@@ -22,6 +24,7 @@ import Database.PostgreSQL.Simple.Internal (Connection (..))
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Shared
+import Simplex.Messaging.Util (($>>=))
 import UnliftIO.MVar
 
 initialize :: DBStore -> IO ()
@@ -55,7 +58,9 @@ run st = \case
       void $ PSQL.execute db "DELETE FROM migrations WHERE name = ?" (Only downName)
     execSQL db query =
       withMVar (connectionHandle db) $ \pqConn ->
-        void $ LibPQ.exec pqConn (TE.encodeUtf8 query)
+        LibPQ.exec pqConn (TE.encodeUtf8 query) $>>= LibPQ.resultErrorMessage >>= \case
+          Just e | not (B.null e) -> throwIO $ userError $ B.unpack e
+          _ -> pure ()
 
 getCurrentMigrations :: PSQL.Connection -> IO [Migration]
 getCurrentMigrations db = map toMigration <$> PSQL.query_ db "SELECT name, down FROM migrations ORDER BY name ASC;"
