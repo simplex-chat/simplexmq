@@ -40,7 +40,7 @@ import System.Info (os)
 import Test.Hspec
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
-import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, takeTMVar)
+import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, putTMVar, takeTMVar)
 import UnliftIO.Timeout (timeout)
 import Util
 
@@ -278,10 +278,15 @@ serverBracket :: HasCallStack => (TMVar Bool -> IO ()) -> IO () -> (HasCallStack
 serverBracket process afterProcess f = do
   started <- newEmptyTMVarIO
   E.bracket
-    (forkIOWithUnmask ($ process started))
+    (forkIOWithUnmask (\unmask -> unmask (process started) `E.catchAny` handleStartError started))
     (\t -> killThread t >> afterProcess >> waitFor started "stop")
     (\t -> waitFor started "start" >> f t >>= \r -> r <$ threadDelay 100000)
   where
+    -- it putTMVar is called twise to unlock both parts of the bracket in case of start failure
+    handleStartError started e = do
+      atomically $ putTMVar started False
+      atomically $ putTMVar started False
+      E.throwIO e
     waitFor started s =
       5_000_000 `timeout` atomically (takeTMVar started) >>= \case
         Nothing -> error $ "server did not " <> s
