@@ -3,6 +3,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -431,7 +432,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       printServiceInfo serverVersion srv
       printSourceCode sourceCode'
       printSMPServerConfig transports serverStoreCfg
-      checkMsgStoreMode iniStoreType
+      checkMsgStoreMode ini iniStoreType
       putStrLn $ case messageExpiration of
         Just ExpirationConfig {ttl} -> "expiring messages after " <> showTTL ttl
         _ -> "not expiring messages"
@@ -586,25 +587,43 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             pure WebHttpsParams {port, cert, key}
         webStaticPath' = eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini
 
-    checkMsgStoreMode :: AStoreType -> IO ()
-    checkMsgStoreMode mode = do
+    checkMsgStoreMode :: Ini -> AStoreType -> IO ()
+    checkMsgStoreMode ini mode = do
       msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
       msgsFileExists <- doesFileExist storeMsgsFilePath
+      storeLogExists <- doesFileExist storeLogFilePath
       case mode of
-        _ | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
-        ASType _ SMSJournal -- TODO [postgres]
+        ASType qs SMSJournal
+          | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
           | msgsFileExists -> do
               putStrLn $ "Error: store_messages is `journal` with " <> storeMsgsFilePath <> " file present."
               putStrLn "Set store_messages to `memory` or use `smp-server journal export` to migrate."
               exitFailure
           | not msgsDirExists ->
               putStrLn $ "store_messages is `journal`, " <> storeMsgsJournalDir <> " directory will be created."
-        ASType _ SMSMemory
+          | otherwise -> case qs of
+              SQSMemory ->
+                unless (storeLogExists) $ putStrLn $ "store_queues is `memory`, " <> storeLogFilePath <> " file will be created."
+              SQSPostgres -> do
+                let DBOpts {connstr, schema} = iniDBOptions ini
+                schemaExists <- checkSchemaExists connstr schema
+                if
+                  | storeLogExists && schemaExists -> exitConfigureQueueStore connstr schema
+                  | storeLogExists -> do
+                      putStrLn $ "Error: store_queues is `database` with " <> storeLogFilePath <> " file present."
+                      putStrLn "Set store_queues to `memory` or use `smp-server database import` to migrate."
+                      exitFailure
+                  | not schemaExists -> do
+                      putStrLn $ "Error: store_queues is `database`, create schema " <> B.unpack schema <> " in PostgreSQL database " <> B.unpack connstr
+                      exitFailure
+                  | otherwise -> pure ()
+        ASType SQSMemory SMSMemory
+          | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
           | msgsDirExists -> do
               putStrLn $ "Error: store_messages is `memory` with " <> storeMsgsJournalDir <> " directory present."
               putStrLn "Set store_messages to `journal` or use `smp-server journal import` to migrate."
               exitFailure
-        _ -> pure ()
+          | otherwise -> pure ()
 
     exitConfigureMsgStorage = do
       putStrLn $ "Error: both " <> storeMsgsFilePath <> " file and " <> storeMsgsJournalDir <> " directory are present."
