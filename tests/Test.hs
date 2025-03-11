@@ -26,7 +26,6 @@ import RemoteControl (remoteControlTests)
 import SMPClient (testServerDBConnectInfo)
 import SMPProxyTests (smpProxyTests)
 import ServerTests
-import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists, dropDatabaseAndUser)
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Transport (TLS, Transport (..))
@@ -34,12 +33,12 @@ import Simplex.Messaging.Transport (TLS, Transport (..))
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Environment (setEnv)
 import Test.Hspec
+import Util (postgressBracket)
 import XFTPAgent
 import XFTPCLI
 import XFTPServerTests (xftpServerTests)
 #if defined(dbPostgres)
 import Fixtures
-import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists, dropDatabaseAndUser)
 #else
 import AgentTests.SchemaDump (schemaDumpTest)
 #endif
@@ -56,8 +55,7 @@ main = do
     hspec
     -- TODO [postgres] run tests with postgres server locally and maybe in CI
 #if defined(dbPostgres)
-      . beforeAll_ (dropDatabaseAndUser testDBConnectInfo >> createDBAndUserIfNotExists testDBConnectInfo)
-      . afterAll_ (dropDatabaseAndUser testDBConnectInfo)
+      . aroundAll_ (postgressBracket testDBConnectInfo)
 #endif
       . before_ (createDirectoryIfMissing False "tests/tmp")
       . after_ (eventuallyRemove "tests/tmp" 3)
@@ -78,8 +76,7 @@ main = do
           describe "Store log tests" storeLogTests
           describe "TRcvQueues tests" tRcvQueuesTests
           describe "Util tests" utilTests
-        beforeAll_ (dropDatabaseAndUser testServerDBConnectInfo >> createDBAndUserIfNotExists testServerDBConnectInfo)
-          $ afterAll_ (dropDatabaseAndUser testServerDBConnectInfo)
+        aroundAll_ (postgressBracket testServerDBConnectInfo)
           -- TODO [postgres] fix store log tests
           $ describe "SMP server via TLS, postgres+jornal message store" $ do
               describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
@@ -93,11 +90,13 @@ main = do
         --   describe "SMP syntax" $ serverSyntaxTests (transport @WS)
         --   before (pure (transport @WS, ASType SQSMemory SMSJournal)) serverTests
         describe "Notifications server" $ ntfServerTests (transport @TLS)
-        beforeAll_ (dropDatabaseAndUser testServerDBConnectInfo >> createDBAndUserIfNotExists testServerDBConnectInfo)
-          $ afterAll_ (dropDatabaseAndUser testServerDBConnectInfo)
-          $ describe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
+        aroundAll_ (postgressBracket testServerDBConnectInfo) $ do
+          describe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
+          describe "SMP proxy, postgres+jornal message store" $
+            before (pure $ ASType SQSPostgres SMSJournal) smpProxyTests
         describe "SMP client agent, jornal message store" $ agentTests (transport @TLS, ASType SQSMemory SMSJournal)
-        describe "SMP proxy" smpProxyTests
+        describe "SMP proxy, jornal message store" $
+          before (pure $ ASType SQSMemory SMSJournal) smpProxyTests
         describe "XFTP" $ do
           describe "XFTP server" xftpServerTests
           describe "XFTP file description" fileDescriptionTests

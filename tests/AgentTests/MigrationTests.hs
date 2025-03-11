@@ -13,6 +13,7 @@ import Simplex.Messaging.Agent.Store.Shared
 import System.Random (randomIO)
 import Test.Hspec
 #if defined(dbPostgres)
+import qualified Data.ByteString.Char8 as B
 import Database.PostgreSQL.Simple (fromOnly)
 import Fixtures
 import Simplex.Messaging.Agent.Store.Postgres.Util (dropSchema)
@@ -206,7 +207,9 @@ createStore randSuffix migrations confirmMigrations = do
   let dbOpts =
         DBOpts {
           connstr = testDBConnstr,
-          schema = testSchema randSuffix
+          schema = B.pack $ testSchema randSuffix,
+          poolSize = 1,
+          createSchema = True
         }
   createDBStore dbOpts migrations confirmMigrations
 

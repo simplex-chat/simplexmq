@@ -564,7 +564,7 @@ testExceedQueueQuota =
 
 testWithStoreLog :: SpecWith (ATransport, AStoreType)
 testWithStoreLog =
-  xit "should store simplex queues to log and restore them after server restart" $ \(at@(ATransport t), msType) -> do
+  xit "should store simplex queues to log and restore them after server restart" $ \ps@(at@(ATransport t), _) -> do
     g <- C.newRandom
     (sPub1, sKey1) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     (sPub2, sKey2) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -576,7 +576,7 @@ testWithStoreLog =
     senderId2 <- newTVarIO NoEntity
     notifierId <- newTVarIO NoEntity
 
-    withSmpServerStoreLogOnMS at msType testPort . runTest t $ \h -> runClient t $ \h1 -> do
+    withSmpServerStoreLogOn ps testPort . runTest t $ \h -> runClient t $ \h1 -> do
       (sId1, rId1, rKey1, dhShared) <- createAndSecureQueue h sPub1
       (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
       Resp "abcd" _ (NID nId _) <- signSendRecv h rKey1 ("abcd", rId1, NKEY nPub rcvNtfPubDhKey)
@@ -616,7 +616,7 @@ testWithStoreLog =
       Resp "bcda" _ (ERR AUTH) <- signSendRecv h sKey1 ("bcda", sId1, _SEND "hello")
       pure ()
 
-    withSmpServerStoreLogOnMS at msType testPort . runTest t $ \h -> runClient t $ \h1 -> do
+    withSmpServerStoreLogOn ps testPort . runTest t $ \h -> runClient t $ \h1 -> do
       -- this queue is restored
       rId1 <- readTVarIO recipientId1
       Just rKey1 <- readTVarIO recipientKey1
@@ -652,7 +652,7 @@ logSize f =
 
 testRestoreMessages :: SpecWith (ATransport, AStoreType)
 testRestoreMessages =
-  it "should store messages on exit and restore on start" $ \(at@(ATransport t), msType) -> do
+  it "should store messages on exit and restore on start" $ \ps@(ATransport t, _) -> do
     removeFileIfExists testStoreLogFile
     removeFileIfExists testStoreMsgsFile
     whenM (doesDirectoryExist testStoreMsgsDir) $ removeDirectoryRecursive testStoreMsgsDir
@@ -665,7 +665,7 @@ testRestoreMessages =
     dhShared <- newTVarIO Nothing
     senderId <- newTVarIO NoEntity
 
-    withSmpServerStoreMsgLogOnMS at msType testPort . runTest t $ \h -> do
+    withSmpServerStoreMsgLogOn ps testPort . runTest t $ \h -> do
       runClient t $ \h1 -> do
         (sId, rId, rKey, dh) <- createAndSecureQueue h1 sPub
         atomically $ do
@@ -694,7 +694,7 @@ testRestoreMessages =
     Right stats1 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats1 [rId] 5 1
 
-    withSmpServerStoreMsgLogOnMS at msType testPort . runTest t $ \h -> do
+    withSmpServerStoreMsgLogOn ps testPort . runTest t $ \h -> do
       Just rKey <- readTVarIO recipientKey
       Just dh <- readTVarIO dhShared
       let dec = decryptMsgV3 dh
@@ -712,7 +712,7 @@ testRestoreMessages =
     Right stats2 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats2 [rId] 5 3
 
-    withSmpServerStoreMsgLogOnMS at msType testPort . runTest t $ \h -> do
+    withSmpServerStoreMsgLogOn ps testPort . runTest t $ \h -> do
       Just rKey <- readTVarIO recipientKey
       Just dh <- readTVarIO dhShared
       let dec = decryptMsgV3 dh
@@ -761,7 +761,7 @@ checkStats s qs sent received = do
 
 testRestoreExpireMessages :: SpecWith (ATransport, AStoreType)
 testRestoreExpireMessages =
-  it "should store messages on exit and restore on start" $ \(at@(ATransport t), msType) -> do
+  it "should store messages on exit and restore on start" $ \ps@(at@(ATransport t), msType) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     recipientId <- newTVarIO NoEntity
@@ -769,7 +769,7 @@ testRestoreExpireMessages =
     dhShared <- newTVarIO Nothing
     senderId <- newTVarIO NoEntity
 
-    withSmpServerStoreMsgLogOnMS at msType testPort . runTest t $ \h -> do
+    withSmpServerStoreMsgLogOn ps testPort . runTest t $ \h -> do
       runClient t $ \h1 -> do
         (sId, rId, rKey, dh) <- createAndSecureQueue h1 sPub
         atomically $ do
@@ -1020,9 +1020,9 @@ testMsgNOTExpireOnInterval =
 testBlockMessageQueue :: SpecWith (ATransport, AStoreType)
 testBlockMessageQueue =
   -- TODO [postgres]
-  xit "should return BLOCKED error when queue is blocked" $ \(at@(ATransport (t :: TProxy c)), msType) -> do
+  xit "should return BLOCKED error when queue is blocked" $ \ps@(ATransport (t :: TProxy c), _) -> do
     g <- C.newRandom
-    (rId, sId) <- withSmpServerStoreLogOnMS at msType testPort $ runTest t $ \h -> do
+    (rId, sId) <- withSmpServerStoreLogOn ps testPort $ runTest t $ \h -> do
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "abcd" rId1 (Ids rId sId _srvDh) <- signSendRecv h rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe True)
@@ -1032,7 +1032,7 @@ testBlockMessageQueue =
     -- TODO [postgres] block via control port
     withFile testStoreLogFile AppendMode $ \h -> B.hPutStrLn h $ strEncode $ BlockQueue rId $ BlockingInfo BRContent
 
-    withSmpServerStoreLogOnMS at msType testPort $ runTest t $ \h -> do
+    withSmpServerStoreLogOn ps testPort $ runTest t $ \h -> do
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       Resp "dabc" sId2 (ERR (BLOCKED (BlockingInfo BRContent))) <- signSendRecv h sKey ("dabc", sId, SKEY sPub)
       (sId2, sId) #== "same queue ID in response"
