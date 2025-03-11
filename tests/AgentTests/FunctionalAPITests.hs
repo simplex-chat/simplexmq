@@ -293,7 +293,7 @@ functionalAPITests ps = do
   it "should support rejecting contact request" $
     withSmpServer ps testRejectContactRequest
   describe "Changing connection user id" $ do
-    xit "should change user id for new connections" $ do
+    it "should change user id for new connections" $ do
       withSmpServer ps testUpdateConnectionUserId
   describe "Establishing connection asynchronously" $ do
     it "should connect with initiating client going offline" $
@@ -315,7 +315,7 @@ functionalAPITests ps = do
       it "should increase when connection was negotiated on different versions" $
         testIncreaseConnAgentVersionStartDifferentVersion ps
     -- TODO PQ tests for upgrading connection to PQ encryption
-    xit "should deliver message after client restart" $
+    it "should deliver message after client restart" $
       testDeliverClientRestart ps
     it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
       testDuplicateMessage ps
