@@ -93,7 +93,10 @@ main = do
         --   describe "SMP syntax" $ serverSyntaxTests (transport @WS)
         --   before (pure (transport @WS, ASType SQSMemory SMSJournal)) serverTests
         describe "Notifications server" $ ntfServerTests (transport @TLS)
-        describe "SMP client agent" $ agentTests (transport @TLS)
+        beforeAll_ (dropDatabaseAndUser testServerDBConnectInfo >> createDBAndUserIfNotExists testServerDBConnectInfo)
+          $ afterAll_ (dropDatabaseAndUser testServerDBConnectInfo)
+          $ describe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
+        describe "SMP client agent, jornal message store" $ agentTests (transport @TLS, ASType SQSMemory SMSJournal)
         describe "SMP proxy" smpProxyTests
         describe "XFTP" $ do
           describe "XFTP server" xftpServerTests

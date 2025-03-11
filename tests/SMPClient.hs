@@ -146,23 +146,24 @@ testSMPClient_ host port vr client = do
 cfg :: ServerConfig
 cfg = cfgMS (ASType SQSMemory SMSJournal)
 
--- TODO [postgres]
--- cfg :: ServerConfig
--- cfg = cfgMS (ASType SQSPostgres SMSJournal)
+cfgDB :: ServerConfig
+cfgDB = cfgMS (ASType SQSPostgres SMSJournal)
 
 cfgJ2 :: ServerConfig
 cfgJ2 = journalCfg cfg testStoreLogFile2 testStoreMsgsDir2
 
--- TODO [postgres]
--- cfgJ2 :: ServerConfig
--- cfgJ2 = journalCfg cfg testStoreDBOpts2 testStoreMsgsDir2
+cfgJ2QS :: SQSType s -> ServerConfig
+cfgJ2QS = \case
+  SQSMemory -> journalCfg cfg testStoreLogFile2 testStoreMsgsDir2
+  SQSPostgres ->
+    let storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts2, confirmMigrations = MCYesUp, deletedTTL = 86400}
+     in journalCfgDB (cfgMS (ASType SQSPostgres SMSJournal)) storeCfg testStoreMsgsDir2
 
 journalCfg :: ServerConfig -> FilePath -> FilePath -> ServerConfig
 journalCfg cfg' storeLogFile storeMsgsPath = cfg' {serverStoreCfg = ASSCfg SQSMemory SMSJournal SSCMemoryJournal {storeLogFile, storeMsgsPath}}
 
--- TODO [postgres]
--- journalCfg :: ServerConfig -> DBOpts -> FilePath -> ServerConfig
--- journalCfg cfg' storeDBOpts storeMsgsPath' = cfg' {serverStoreCfg = ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeDBOpts, storeMsgsPath'}}
+journalCfgDB :: ServerConfig -> PostgresStoreCfg -> FilePath -> ServerConfig
+journalCfgDB cfg' storeCfg storeMsgsPath' = cfg' {serverStoreCfg = ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath'}}
 
 cfgMS :: AStoreType -> ServerConfig
 cfgMS msType =
@@ -274,6 +275,9 @@ withSmpServerConfigOn t cfg' port' =
 withSmpServerThreadOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerThreadOn t = withSmpServerConfigOn t cfg
 
+withSmpServerThreadOn' :: HasCallStack => (ATransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
+withSmpServerThreadOn' (t, msType) = withSmpServerConfigOn t (cfgMS msType)
+
 serverBracket :: HasCallStack => (TMVar Bool -> IO ()) -> IO () -> (HasCallStack => ThreadId -> IO a) -> IO a
 serverBracket process afterProcess f = do
   started <- newEmptyTMVarIO
@@ -292,11 +296,11 @@ serverBracket process afterProcess f = do
         Nothing -> error $ "server did not " <> s
         _ -> pure ()
 
-withSmpServerOn :: HasCallStack => ATransport -> ServiceName -> IO a -> IO a
-withSmpServerOn t port' = withSmpServerThreadOn t port' . const
+withSmpServerOn :: HasCallStack => (ATransport, AStoreType) -> ServiceName -> IO a -> IO a
+withSmpServerOn ps port' = withSmpServerThreadOn' ps port' . const
 
-withSmpServer :: HasCallStack => ATransport -> IO a -> IO a
-withSmpServer t = withSmpServerOn t testPort
+withSmpServer :: HasCallStack => (ATransport, AStoreType) -> IO a -> IO a
+withSmpServer ps = withSmpServerOn ps testPort
 
 withSmpServerProxy :: HasCallStack => ATransport -> IO a -> IO a
 withSmpServerProxy t = withSmpServerConfigOn t proxyCfg testPort . const

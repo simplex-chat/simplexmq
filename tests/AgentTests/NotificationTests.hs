@@ -77,7 +77,7 @@ import Simplex.Messaging.Notifications.Types (NtfTknAction (..), NtfToken (..))
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), NtfServer, ProtocolServer (..), SMPMsgMeta (..), SubscriptionMode (..))
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
+import Simplex.Messaging.Server.Env.STM (AStoreType, ServerConfig (..))
 import Simplex.Messaging.Transport (ATransport)
 import Test.Hspec
 import UnliftIO
@@ -87,8 +87,8 @@ import Database.PostgreSQL.Simple.SqlQQ (sql)
 import Database.SQLite.Simple.QQ (sql)
 #endif
 
-notificationTests :: ATransport -> Spec
-notificationTests t = do
+notificationTests :: (ATransport, AStoreType) -> Spec
+notificationTests ps@(t, _) = do
   describe "Managing notification tokens" $ do
     it "should register and verify notification token" $
       withAPNSMockServer $ \apns ->
@@ -137,11 +137,11 @@ notificationTests t = do
     describe "should create notification subscription for new connection" $
       testNtfMatrix t testNotificationSubscriptionNewConnection
     it "should change notifications mode" $
-      withSmpServer t $
+      withSmpServer ps $
         withAPNSMockServer $ \apns ->
           withNtfServer t $ testChangeNotificationsMode apns
     it "should change token" $
-      withSmpServer t $
+      withSmpServer ps $
         withAPNSMockServer $ \apns ->
           withNtfServer t $ testChangeToken apns
   describe "Notifications server store log" $
@@ -157,16 +157,16 @@ notificationTests t = do
       withAPNSMockServer $ \apns ->
         withNtfServer t $ testNotificationsSMPRestartBatch 100 t apns
   describe "should switch notifications to the new queue" $
-    testServerMatrix2 t $ \servers ->
+    testServerMatrix2 ps $ \servers ->
       withAPNSMockServer $ \apns ->
         withNtfServer t $ testSwitchNotifications servers apns
   it "should keep sending notifications for old token" $
-    withSmpServer t $
+    withSmpServer ps $
       withAPNSMockServer $ \apns ->
         withNtfServerOn t ntfTestPort $
           testNotificationsOldToken apns
   it "should update server from new token" $
-    withSmpServer t $
+    withSmpServer ps $
       withAPNSMockServer $ \apns ->
         withNtfServerOn t ntfTestPort2 . withNtfServerThreadOn t ntfTestPort $ \ntf ->
           testNotificationsNewToken apns ntf

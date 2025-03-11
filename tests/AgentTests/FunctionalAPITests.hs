@@ -77,7 +77,7 @@ import Data.Type.Equality (testEquality, (:~:) (Refl))
 import Data.Word (Word16)
 import GHC.Stack (withFrozenCallStack)
 import SMPAgentClient
-import SMPClient (cfg, cfgJ2, prevRange, prevVersion, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerConfigOn, withSmpServerProxy, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfg, cfgJ2, cfgJ2QS, prevRange, prevVersion, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServerConfigOn, withSmpServerProxy, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), waitForUserNetwork)
@@ -96,7 +96,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (NTFVersion, pattern VersionNTF)
 import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
+import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo
@@ -263,45 +263,45 @@ sendMessage c connId msgFlags msgBody = do
   liftIO $ pqEnc `shouldBe` PQEncOn
   pure msgId
 
-functionalAPITests :: ATransport -> Spec
-functionalAPITests t = do
+functionalAPITests :: (ATransport, AStoreType) -> Spec
+functionalAPITests ps@(t, _msType) = do
   describe "Establishing duplex connection" $ do
-    testMatrix2 t runAgentClientTest
+    testMatrix2 ps runAgentClientTest
     it "should connect when server with multiple identities is stored" $
-      withSmpServer t testServerMultipleIdentities
+      withSmpServer ps testServerMultipleIdentities
     it "should connect with two peers" $
-      withSmpServer t testAgentClient3
+      withSmpServer ps testAgentClient3
     it "should establish connection without PQ encryption and enable it" $
-      withSmpServer t testEnablePQEncryption
+      withSmpServer ps testEnablePQEncryption
   describe "Duplex connection - delivery stress test" $ do
-    describe "one way (50)" $ testMatrix2Stress t $ runAgentClientStressTestOneWay 50
-    xdescribe "one way (1000)" $ testMatrix2Stress t $ runAgentClientStressTestOneWay 1000
-    describe "two way concurrently (50)" $ testMatrix2Stress t $ runAgentClientStressTestConc 25
-    xdescribe "two way concurrently (1000)" $ testMatrix2Stress t $ runAgentClientStressTestConc 500
+    describe "one way (50)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 50
+    xdescribe "one way (1000)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 1000
+    describe "two way concurrently (50)" $ testMatrix2Stress ps $ runAgentClientStressTestConc 25
+    xdescribe "two way concurrently (1000)" $ testMatrix2Stress ps $ runAgentClientStressTestConc 500
   describe "Establishing duplex connection, different PQ settings" $ do
     testPQMatrix2 t $ runAgentClientTestPQ False True
   describe "Establishing duplex connection v2, different Ratchet versions" $
-    testRatchetMatrix2 t runAgentClientTest
+    testRatchetMatrix2 ps runAgentClientTest
   describe "Establish duplex connection via contact address" $
-    testMatrix2 t runAgentClientContactTest
+    testMatrix2 ps runAgentClientContactTest
   describe "Establish duplex connection via contact address, different PQ settings" $ do
     testPQMatrix2NoInv t $ runAgentClientContactTestPQ False True PQSupportOn
   describe "Establish duplex connection via contact address v2, different Ratchet versions" $
-    testRatchetMatrix2 t runAgentClientContactTest
+    testRatchetMatrix2 ps runAgentClientContactTest
   describe "Establish duplex connection via contact address, different PQ settings" $ do
     testPQMatrix3 t $ runAgentClientContactTestPQ3 True
   it "should support rejecting contact request" $
-    withSmpServer t testRejectContactRequest
+    withSmpServer ps testRejectContactRequest
   describe "Changing connection user id" $ do
     it "should change user id for new connections" $ do
-      withSmpServer t testUpdateConnectionUserId
+      withSmpServer ps testUpdateConnectionUserId
   describe "Establishing connection asynchronously" $ do
     it "should connect with initiating client going offline" $
-      withSmpServer t testAsyncInitiatingOffline
+      withSmpServer ps testAsyncInitiatingOffline
     it "should connect with joining client going offline before its queue activation" $
-      withSmpServer t testAsyncJoiningOfflineBeforeActivation
+      withSmpServer ps testAsyncJoiningOfflineBeforeActivation
     it "should connect with both clients going offline" $
-      withSmpServer t testAsyncBothOffline
+      withSmpServer ps testAsyncBothOffline
     it "should connect on the second attempt if server was offline" $
       testAsyncServerOffline t
     it "should restore confirmation after client restart" $
@@ -346,9 +346,9 @@ functionalAPITests t = do
 #endif
     describe "Subscription mode OnlyCreate" $ do
       it "messages delivered only when polled (v8 - slow handshake)" $
-        withSmpServer t testOnlyCreatePullSlowHandshake
+        withSmpServer ps testOnlyCreatePullSlowHandshake
       it "messages delivered only when polled" $
-        withSmpServer t testOnlyCreatePull
+        withSmpServer ps testOnlyCreatePull
   describe "Inactive client disconnection" $ do
     it "should disconnect clients without subs if they were inactive longer than TTL" $
       testInactiveNoSubs t
@@ -358,11 +358,11 @@ functionalAPITests t = do
       testActiveClientNotDisconnected t
   describe "Suspending agent" $ do
     it "should update client when agent is suspended" $
-      withSmpServer t testSuspendingAgent
+      withSmpServer ps testSuspendingAgent
     it "should complete sending messages when agent is suspended" $
       testSuspendingAgentCompleteSending t
     it "should suspend agent on timeout, even if pending messages not sent" $
-      testSuspendingAgentTimeout t
+      testSuspendingAgentTimeout ps
   describe "Batching SMP commands" $ do
     -- disable this and enable the following test to run tests with coverage
     it "should subscribe to multiple (200) subscriptions with batching" $
@@ -371,18 +371,18 @@ functionalAPITests t = do
       it "should subscribe to multiple (6) subscriptions with batching" $
         testBatchedSubscriptions 6 3 t
     it "should subscribe to multiple connections with pending messages" $
-      withSmpServer t $
+      withSmpServer ps $
         testBatchedPendingMessages 10 5
   describe "Batch send messages" $ do
-    it "should send multiple messages to the same connection" $ withSmpServer t testSendMessagesB
-    it "should send messages to the 2 connections" $ withSmpServer t testSendMessagesB2
+    it "should send multiple messages to the same connection" $ withSmpServer ps testSendMessagesB
+    it "should send messages to the 2 connections" $ withSmpServer ps testSendMessagesB2
   describe "Async agent commands" $ do
     describe "connect using async agent commands" $
-      testBasicMatrix2 t testAsyncCommands
+      testBasicMatrix2 ps testAsyncCommands
     it "should restore and complete async commands on restart" $
       testAsyncCommandsRestore t
     describe "accept connection using async command" $
-      testBasicMatrix2 t testAcceptContactAsync
+      testBasicMatrix2 ps testAcceptContactAsync
     it "should delete connections using async command when server connection fails" $
       testDeleteConnectionAsync t
     it "join connection when reply queue creation fails (v8 - slow handshake)" $
@@ -402,30 +402,30 @@ functionalAPITests t = do
         testWaitDeliveryTimeout2 t
   describe "Users" $ do
     it "should create and delete user with connections" $
-      withSmpServer t testUsers
+      withSmpServer ps testUsers
     it "should create and delete user without connections" $
-      withSmpServer t testDeleteUserQuietly
+      withSmpServer ps testDeleteUserQuietly
     it "should create and delete user with connections when server connection fails" $
       testUsersNoServer t
     it "should connect two users and switch session mode" $
-      withSmpServer t testTwoUsers
+      withSmpServer ps testTwoUsers
   describe "Connection switch" $ do
     describe "should switch delivery to the new queue" $
-      testServerMatrix2 t testSwitchConnection
+      testServerMatrix2 ps testSwitchConnection
     describe "should switch to new queue asynchronously" $
-      testServerMatrix2 t testSwitchAsync
+      testServerMatrix2 ps testSwitchAsync
     describe "should delete connection during switch" $
-      testServerMatrix2 t testSwitchDelete
+      testServerMatrix2 ps testSwitchDelete
     describe "should abort switch in Started phase" $
-      testServerMatrix2 t testAbortSwitchStarted
+      testServerMatrix2 ps testAbortSwitchStarted
     describe "should abort switch in Started phase, reinitiate immediately" $
-      testServerMatrix2 t testAbortSwitchStartedReinitiate
+      testServerMatrix2 ps testAbortSwitchStartedReinitiate
     describe "should prohibit to abort switch in Secured phase" $
-      testServerMatrix2 t testCannotAbortSwitchSecured
+      testServerMatrix2 ps testCannotAbortSwitchSecured
     describe "should switch two connections simultaneously" $
-      testServerMatrix2 t testSwitch2Connections
+      testServerMatrix2 ps testSwitch2Connections
     describe "should switch two connections simultaneously, abort one" $
-      testServerMatrix2 t testSwitch2ConnectionsAbort1
+      testServerMatrix2 ps testSwitch2ConnectionsAbort1
   describe "SMP basic auth" $ do
     forM_ (nub [prevVersion authCmdsSMPVersion, authCmdsSMPVersion, currentServerSMPRelayVersion]) $ \v -> do
       let baseId = if v >= sndAuthKeySMPVersion then 1 else 3
@@ -459,9 +459,9 @@ functionalAPITests t = do
       it "should fail with incorrect password" $ testSMPServerConnectionTest t auth (srv $ Just "wrong") `shouldReturn` authErr
   describe "getRatchetAdHash" $
     it "should return the same data for both peers" $
-      withSmpServer t testRatchetAdHash
+      withSmpServer ps testRatchetAdHash
   describe "Delivery receipts" $ do
-    it "should send and receive delivery receipt" $ withSmpServer t testDeliveryReceipts
+    it "should send and receive delivery receipt" $ withSmpServer ps testDeliveryReceipts
     it "should send delivery receipt only in connection v3+" $ testDeliveryReceiptsVersion t
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent t
   describe "user network info" $ do
@@ -470,7 +470,7 @@ functionalAPITests t = do
     it "should resume multiple threads" testResumeMultipleThreads
   describe "SMP queue info" $ do
     it "server should respond with queue and subscription information" $
-      withSmpServer t testServerQueueInfo
+      withSmpServer ps testServerQueueInfo
 
 testBasicAuth :: ATransport -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> SndQueueSecured -> AgentMsgId -> IO Int
 testBasicAuth t allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 sqSecured baseId = do
@@ -489,48 +489,48 @@ canCreateQueue :: Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, Ver
 canCreateQueue allowNew (srvAuth, _) (clntAuth, _) =
   allowNew && (isNothing srvAuth || srvAuth == clntAuth)
 
-testMatrix2 :: HasCallStack => ATransport -> (PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
-testMatrix2 t runTest = do
+testMatrix2 :: HasCallStack => (ATransport, AStoreType) -> (PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testMatrix2 ps@(t, _) runTest = do
   it "current, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentCfg agentCfg (initAgentServersProxy SPMAlways SPFProhibit) 1 $ runTest PQSupportOn True True
   it "v8, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentProxyCfgV8 agentProxyCfgV8 (initAgentServersProxy SPMAlways SPFProhibit) 3 $ runTest PQSupportOn False True
-  it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 1 $ runTest PQSupportOn True False
-  it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 $ runTest PQSupportOff False False
-  it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrev agentCfg 3 $ runTest PQSupportOff False False
-  it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrev 3 $ runTest PQSupportOff False False
+  it "current" $ withSmpServer ps $ runTestCfg2 agentCfg agentCfg 1 $ runTest PQSupportOn True False
+  it "prev" $ withSmpServer ps $ runTestCfg2 agentCfgVPrev agentCfgVPrev 3 $ runTest PQSupportOff False False
+  it "prev to current" $ withSmpServer ps $ runTestCfg2 agentCfgVPrev agentCfg 3 $ runTest PQSupportOff False False
+  it "current to prev" $ withSmpServer ps $ runTestCfg2 agentCfg agentCfgVPrev 3 $ runTest PQSupportOff False False
 
-testMatrix2Stress :: HasCallStack => ATransport -> (PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
-testMatrix2Stress t runTest = do
+testMatrix2Stress :: HasCallStack => (ATransport, AStoreType) -> (PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testMatrix2Stress ps@(t, _) runTest = do
   it "current, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 aCfg aCfg (initAgentServersProxy SPMAlways SPFProhibit) 1 $ runTest PQSupportOn True True
   it "v8, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 aProxyCfgV8 aProxyCfgV8 (initAgentServersProxy SPMAlways SPFProhibit) 3 $ runTest PQSupportOn False True
-  it "current" $ withSmpServer t $ runTestCfg2 aCfg aCfg 1 $ runTest PQSupportOn True False
-  it "prev" $ withSmpServer t $ runTestCfg2 aCfgVPrev aCfgVPrev 3 $ runTest PQSupportOff False False
-  it "prev to current" $ withSmpServer t $ runTestCfg2 aCfgVPrev aCfg 3 $ runTest PQSupportOff False False
-  it "current to prev" $ withSmpServer t $ runTestCfg2 aCfg aCfgVPrev 3 $ runTest PQSupportOff False False
+  it "current" $ withSmpServer ps $ runTestCfg2 aCfg aCfg 1 $ runTest PQSupportOn True False
+  it "prev" $ withSmpServer ps $ runTestCfg2 aCfgVPrev aCfgVPrev 3 $ runTest PQSupportOff False False
+  it "prev to current" $ withSmpServer ps $ runTestCfg2 aCfgVPrev aCfg 3 $ runTest PQSupportOff False False
+  it "current to prev" $ withSmpServer ps $ runTestCfg2 aCfg aCfgVPrev 3 $ runTest PQSupportOff False False
   where
     aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
     aProxyCfgV8 = agentProxyCfgV8 {messageRetryInterval = fastMessageRetryInterval}
     aCfgVPrev = agentCfgVPrev {messageRetryInterval = fastMessageRetryInterval}
 
-testBasicMatrix2 :: HasCallStack => ATransport -> (SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
-testBasicMatrix2 t runTest = do
-  it "current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 1 $ runTest True
-  it "prev" $ withSmpServer t $ runTestCfg2 agentCfgVPrevPQ agentCfgVPrevPQ 3 $ runTest False
-  it "prev to current" $ withSmpServer t $ runTestCfg2 agentCfgVPrevPQ agentCfg 3 $ runTest False
-  it "current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgVPrevPQ 3 $ runTest False
+testBasicMatrix2 :: HasCallStack => (ATransport, AStoreType) -> (SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testBasicMatrix2 ps runTest = do
+  it "current" $ withSmpServer ps $ runTestCfg2 agentCfg agentCfg 1 $ runTest True
+  it "prev" $ withSmpServer ps $ runTestCfg2 agentCfgVPrevPQ agentCfgVPrevPQ 3 $ runTest False
+  it "prev to current" $ withSmpServer ps $ runTestCfg2 agentCfgVPrevPQ agentCfg 3 $ runTest False
+  it "current to prev" $ withSmpServer ps $ runTestCfg2 agentCfg agentCfgVPrevPQ 3 $ runTest False
 
-testRatchetMatrix2 :: HasCallStack => ATransport -> (PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
-testRatchetMatrix2 t runTest = do
+testRatchetMatrix2 :: HasCallStack => (ATransport, AStoreType) -> (PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
+testRatchetMatrix2 ps@(t, _) runTest = do
   it "current, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentCfg agentCfg (initAgentServersProxy SPMAlways SPFProhibit) 1 $ runTest PQSupportOn True True
   it "v8, via proxy" $ withSmpServerProxy t $ runTestCfgServers2 agentProxyCfgV8 agentProxyCfgV8 (initAgentServersProxy SPMAlways SPFProhibit) 3 $ runTest PQSupportOn False True
-  it "ratchet current" $ withSmpServer t $ runTestCfg2 agentCfg agentCfg 1 $ runTest PQSupportOn True False
-  it "ratchet prev" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 1 $ runTest PQSupportOff True False
-  it "ratchets prev to current" $ withSmpServer t $ runTestCfg2 agentCfgRatchetVPrev agentCfg 1 $ runTest PQSupportOff True False
-  it "ratchets current to prev" $ withSmpServer t $ runTestCfg2 agentCfg agentCfgRatchetVPrev 1 $ runTest PQSupportOff True False
+  it "ratchet current" $ withSmpServer ps $ runTestCfg2 agentCfg agentCfg 1 $ runTest PQSupportOn True False
+  it "ratchet prev" $ withSmpServer ps $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 1 $ runTest PQSupportOff True False
+  it "ratchets prev to current" $ withSmpServer ps $ runTestCfg2 agentCfgRatchetVPrev agentCfg 1 $ runTest PQSupportOff True False
+  it "ratchets current to prev" $ withSmpServer ps $ runTestCfg2 agentCfg agentCfgRatchetVPrev 1 $ runTest PQSupportOff True False
 
-testServerMatrix2 :: HasCallStack => ATransport -> (InitialAgentServers -> IO ()) -> Spec
-testServerMatrix2 t runTest = do
-  it "1 server" $ withSmpServer t $ runTest initAgentServers
-  it "2 servers" $ withSmpServer t $ withSmpServerConfigOn t cfgJ2 testPort2 $ \_ -> runTest initAgentServers2
+testServerMatrix2 :: HasCallStack => (ATransport, AStoreType) -> (InitialAgentServers -> IO ()) -> Spec
+testServerMatrix2 ps@(t, ASType qs _ms) runTest = do
+  it "1 server" $ withSmpServer ps $ runTest initAgentServers
+  it "2 servers" $ withSmpServer ps $ withSmpServerConfigOn t (cfgJ2QS qs) testPort2 $ \_ -> runTest initAgentServers2
 
 testPQMatrix2 :: HasCallStack => ATransport -> (HasCallStack => (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()) -> Spec
 testPQMatrix2 = pqMatrix2_ True
@@ -1868,9 +1868,9 @@ testSuspendingAgentCompleteSending t = withAgentClients2 $ \a b -> do
     get a =##> \case ("", c, Msg "how are you?") -> c == bId; _ -> False
     ackMessage a bId 4 Nothing
 
-testSuspendingAgentTimeout :: ATransport -> IO ()
-testSuspendingAgentTimeout t = withAgentClients2 $ \a b -> do
-  (aId, _) <- withSmpServer t . runRight $ do
+testSuspendingAgentTimeout :: (ATransport, AStoreType) -> IO ()
+testSuspendingAgentTimeout ps = withAgentClients2 $ \a b -> do
+  (aId, _) <- withSmpServer ps . runRight $ do
     (aId, bId) <- makeConnection a b
     2 <- sendMessage a bId SMP.noMsgFlags "hello"
     get a ##> ("", bId, SENT 2)
