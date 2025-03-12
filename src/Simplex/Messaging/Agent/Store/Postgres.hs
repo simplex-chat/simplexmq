@@ -113,7 +113,7 @@ doesSchemaExist db schema = do
 closeDBStore :: DBStore -> IO ()
 closeDBStore DBStore {dbPool, dbPoolSize, dbClosed} =
   ifM (readTVarIO dbClosed) (putStrLn "closeDBStore: already closed") $ uninterruptibleMask_ $ do
-    replicateM_ dbPoolSize $ atomically $ readTBQueue dbPool
+    replicateM_ dbPoolSize $ atomically (readTBQueue dbPool) >>= DB.close
     atomically $ writeTVar dbClosed True
 
 reopenDBStore :: DBStore -> IO ()

@@ -59,7 +59,7 @@ import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.IO as TIO
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testNtfServer, testNtfServer2)
-import SMPClient (cfg, cfgJ2, cfgVPrev, testPort, testPort2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, xit'')
+import SMPClient (cfgMS, cfgJ2QS, cfgVPrev, serverStoreConfig, testPort, testPort2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, xit'')
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
@@ -77,7 +77,7 @@ import Simplex.Messaging.Notifications.Types (NtfTknAction (..), NtfToken (..))
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), NtfServer, ProtocolServer (..), SMPMsgMeta (..), SubscriptionMode (..))
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
 import Simplex.Messaging.Transport (ATransport)
 import Test.Hspec
 import UnliftIO
@@ -87,8 +87,8 @@ import Database.PostgreSQL.Simple.SqlQQ (sql)
 import Database.SQLite.Simple.QQ (sql)
 #endif
 
-notificationTests :: ATransport -> Spec
-notificationTests t = do
+notificationTests :: (ATransport, AStoreType) -> Spec
+notificationTests ps@(t, _) = do
   describe "Managing notification tokens" $ do
     it "should register and verify notification token" $
       withAPNSMockServer $ \apns ->
@@ -133,61 +133,65 @@ notificationTests t = do
       testRunNTFServerTests t srv1 `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
   describe "Managing notification subscriptions" $ do
     describe "should create notification subscription for existing connection" $
-      testNtfMatrix t testNotificationSubscriptionExistingConnection
+      testNtfMatrix ps testNotificationSubscriptionExistingConnection
     describe "should create notification subscription for new connection" $
-      testNtfMatrix t testNotificationSubscriptionNewConnection
+      testNtfMatrix ps testNotificationSubscriptionNewConnection
     it "should change notifications mode" $
-      withSmpServer t $
+      withSmpServer ps $
         withAPNSMockServer $ \apns ->
           withNtfServer t $ testChangeNotificationsMode apns
     it "should change token" $
-      withSmpServer t $
+      withSmpServer ps $
         withAPNSMockServer $ \apns ->
           withNtfServer t $ testChangeToken apns
   describe "Notifications server store log" $
     it "should save and restore tokens and subscriptions" $
       withAPNSMockServer $ \apns ->
-        testNotificationsStoreLog t apns
+        testNotificationsStoreLog ps apns
   describe "Notifications after SMP server restart" $
     it "should resume subscriptions after SMP server is restarted" $
       withAPNSMockServer $ \apns ->
-        withNtfServer t $ testNotificationsSMPRestart t apns
+        withNtfServer t $ testNotificationsSMPRestart ps apns
   describe "Notifications after SMP server restart" $
     it "should resume batched subscriptions after SMP server is restarted" $
       withAPNSMockServer $ \apns ->
-        withNtfServer t $ testNotificationsSMPRestartBatch 100 t apns
+        withNtfServer t $ testNotificationsSMPRestartBatch 100 ps apns
   describe "should switch notifications to the new queue" $
-    testServerMatrix2 t $ \servers ->
+    testServerMatrix2 ps $ \servers ->
       withAPNSMockServer $ \apns ->
         withNtfServer t $ testSwitchNotifications servers apns
   it "should keep sending notifications for old token" $
-    withSmpServer t $
+    withSmpServer ps $
       withAPNSMockServer $ \apns ->
         withNtfServerOn t ntfTestPort $
           testNotificationsOldToken apns
   it "should update server from new token" $
-    withSmpServer t $
+    withSmpServer ps $
       withAPNSMockServer $ \apns ->
         withNtfServerOn t ntfTestPort2 . withNtfServerThreadOn t ntfTestPort $ \ntf ->
           testNotificationsNewToken apns ntf
 
-testNtfMatrix :: HasCallStack => ATransport -> (APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()) -> Spec
-testNtfMatrix t runTest = do
+testNtfMatrix :: HasCallStack => (ATransport, AStoreType) -> (APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()) -> Spec
+testNtfMatrix ps@(_, msType) runTest = do
   describe "next and current" $ do
-    it "curr servers; curr clients" $ runNtfTestCfg t 1 cfg ntfServerCfg agentCfg agentCfg runTest
-    it "curr servers; prev clients" $ runNtfTestCfg t 3 cfg ntfServerCfg agentCfgVPrevPQ agentCfgVPrevPQ runTest
-    it "prev servers; prev clients" $ runNtfTestCfg t 3 cfgVPrev ntfServerCfgVPrev agentCfgVPrevPQ agentCfgVPrevPQ runTest
-    it "prev servers; curr clients" $ runNtfTestCfg t 1 cfgVPrev ntfServerCfgVPrev agentCfg agentCfg runTest
+    it "curr servers; curr clients" $ runNtfTestCfg ps 1 cfg' ntfServerCfg agentCfg agentCfg runTest
+    it "curr servers; prev clients" $ runNtfTestCfg ps 3 cfg' ntfServerCfg agentCfgVPrevPQ agentCfgVPrevPQ runTest
+    it "prev servers; prev clients" $ runNtfTestCfg ps 3 cfgVPrev' ntfServerCfgVPrev agentCfgVPrevPQ agentCfgVPrevPQ runTest
+    it "prev servers; curr clients" $ runNtfTestCfg ps 1 cfgVPrev' ntfServerCfgVPrev agentCfg agentCfg runTest
     -- servers can be upgraded in any order
-    it "servers: curr SMP, prev NTF; prev clients" $ runNtfTestCfg t 3 cfg ntfServerCfgVPrev agentCfgVPrevPQ agentCfgVPrevPQ runTest
-    it "servers: prev SMP, curr NTF; prev clients" $ runNtfTestCfg t 3 cfgVPrev ntfServerCfg agentCfgVPrevPQ agentCfgVPrevPQ runTest
+    it "servers: curr SMP, prev NTF; prev clients" $ runNtfTestCfg ps 3 cfg' ntfServerCfgVPrev agentCfgVPrevPQ agentCfgVPrevPQ runTest
+    it "servers: prev SMP, curr NTF; prev clients" $ runNtfTestCfg ps 3 cfgVPrev' ntfServerCfg agentCfgVPrevPQ agentCfgVPrevPQ runTest
     -- one of two clients can be upgraded
-    it "servers: curr SMP, curr NTF; clients: curr/prev" $ runNtfTestCfg t 3 cfg ntfServerCfg agentCfg agentCfgVPrevPQ runTest
-    it "servers: curr SMP, curr NTF; clients: prev/curr" $ runNtfTestCfg t 3 cfg ntfServerCfg agentCfgVPrevPQ agentCfg runTest
+    it "servers: curr SMP, curr NTF; clients: curr/prev" $ runNtfTestCfg ps 3 cfg' ntfServerCfg agentCfg agentCfgVPrevPQ runTest
+    it "servers: curr SMP, curr NTF; clients: prev/curr" $ runNtfTestCfg ps 3 cfg' ntfServerCfg agentCfgVPrevPQ agentCfg runTest
+  where
+    cfg' = cfgMS msType
+    cfgVPrev' = cfgVPrev msType
 
-runNtfTestCfg :: HasCallStack => ATransport -> AgentMsgId -> ServerConfig -> NtfServerConfig -> AgentConfig -> AgentConfig -> (APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()) -> IO ()
-runNtfTestCfg t baseId smpCfg ntfCfg aCfg bCfg runTest = do
-  withSmpServerConfigOn t smpCfg testPort $ \_ ->
+runNtfTestCfg :: HasCallStack => (ATransport, AStoreType) -> AgentMsgId -> ServerConfig -> NtfServerConfig -> AgentConfig -> AgentConfig -> (APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()) -> IO ()
+runNtfTestCfg (t, msType) baseId smpCfg ntfCfg aCfg bCfg runTest = do
+  let smpCfg' = smpCfg {serverStoreCfg = serverStoreConfig msType}
+  withSmpServerConfigOn t smpCfg' testPort $ \_ ->
     withAPNSMockServer $ \apns ->
       withNtfServerCfg ntfCfg {transports = [(ntfTestPort, t, False)]} $ \_ ->
         withAgentClientsCfg2 aCfg bCfg $ runTest apns baseId
@@ -746,9 +750,9 @@ testChangeToken apns = withAgent 1 agentCfg initAgentServers testDB2 $ \bob -> d
     baseId = 1
     msgId = subtract baseId
 
-testNotificationsStoreLog :: ATransport -> APNSMockServer -> IO ()
-testNotificationsStoreLog t apns = withAgentClients2 $ \alice bob -> do
-  withSmpServerStoreMsgLogOn t testPort $ \_ -> do
+testNotificationsStoreLog :: (ATransport, AStoreType) -> APNSMockServer -> IO ()
+testNotificationsStoreLog ps@(t, _) apns = withAgentClients2 $ \alice bob -> do
+  withSmpServerStoreMsgLogOn ps testPort $ \_ -> do
     (aliceId, bobId) <- withNtfServerStoreLog t $ \threadId -> runRight $ do
       (aliceId, bobId) <- makeConnection alice bob
       _ <- registerTestToken alice "abcd" NMInstant apns
@@ -779,13 +783,13 @@ testNotificationsStoreLog t apns = withAgentClients2 $ \alice bob -> do
       ackMessage alice bobId 4 Nothing
       noNotifications apns
 
-  withSmpServerStoreMsgLogOn t testPort $ \_ ->
+  withSmpServerStoreMsgLogOn ps testPort $ \_ ->
     withNtfServerStoreLog t $ \_ -> runRight_ $ do
       void $ messageNotificationData alice apns
 
-testNotificationsSMPRestart :: ATransport -> APNSMockServer -> IO ()
-testNotificationsSMPRestart t apns = withAgentClients2 $ \alice bob -> do
-  (aliceId, bobId) <- withSmpServerStoreLogOn t testPort $ \threadId -> runRight $ do
+testNotificationsSMPRestart :: (ATransport, AStoreType) -> APNSMockServer -> IO ()
+testNotificationsSMPRestart ps apns = withAgentClients2 $ \alice bob -> do
+  (aliceId, bobId) <- withSmpServerStoreLogOn ps testPort $ \threadId -> runRight $ do
     (aliceId, bobId) <- makeConnection alice bob
     _ <- registerTestToken alice "abcd" NMInstant apns
     liftIO $ threadDelay 250000
@@ -801,7 +805,7 @@ testNotificationsSMPRestart t apns = withAgentClients2 $ \alice bob -> do
     nGet alice =##> \case ("", "", DOWN _ [c]) -> c == bobId; _ -> False
     nGet bob =##> \case ("", "", DOWN _ [c]) -> c == aliceId; _ -> False
 
-  withSmpServerStoreLogOn t testPort $ \threadId -> runRight_ $ do
+  withSmpServerStoreLogOn ps testPort $ \threadId -> runRight_ $ do
     nGet alice =##> \case ("", "", UP _ [c]) -> c == bobId; _ -> False
     nGet bob =##> \case ("", "", UP _ [c]) -> c == aliceId; _ -> False
     liftIO $ threadDelay 1000000
@@ -811,8 +815,8 @@ testNotificationsSMPRestart t apns = withAgentClients2 $ \alice bob -> do
     get alice =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
     liftIO $ killThread threadId
 
-testNotificationsSMPRestartBatch :: Int -> ATransport -> APNSMockServer -> IO ()
-testNotificationsSMPRestartBatch n t apns =
+testNotificationsSMPRestartBatch :: Int -> (ATransport, AStoreType) -> APNSMockServer -> IO ()
+testNotificationsSMPRestartBatch n ps@(t, ASType qsType _) apns =
   withAgentClientsCfgServers2 agentCfg agentCfg initAgentServers2 $ \a b -> do
     threadDelay 1000000
     conns <- runServers $ do
@@ -851,8 +855,8 @@ testNotificationsSMPRestartBatch n t apns =
   where
     runServers :: ExceptT AgentErrorType IO a -> IO a
     runServers a = do
-      withSmpServerStoreLogOn t testPort $ \t1 -> do
-        res <- withSmpServerConfigOn t cfgJ2 testPort2 $ \t2 ->
+      withSmpServerStoreLogOn ps testPort $ \t1 -> do
+        res <- withSmpServerConfigOn t (cfgJ2QS qsType) testPort2 $ \t2 ->
           runRight a `finally` killThread t2
         killThread t1
         pure res

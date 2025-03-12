@@ -146,23 +146,24 @@ testSMPClient_ host port vr client = do
 cfg :: ServerConfig
 cfg = cfgMS (ASType SQSMemory SMSJournal)
 
--- TODO [postgres]
--- cfg :: ServerConfig
--- cfg = cfgMS (ASType SQSPostgres SMSJournal)
+cfgDB :: ServerConfig
+cfgDB = cfgMS (ASType SQSPostgres SMSJournal)
 
 cfgJ2 :: ServerConfig
 cfgJ2 = journalCfg cfg testStoreLogFile2 testStoreMsgsDir2
 
--- TODO [postgres]
--- cfgJ2 :: ServerConfig
--- cfgJ2 = journalCfg cfg testStoreDBOpts2 testStoreMsgsDir2
+cfgJ2QS :: SQSType s -> ServerConfig
+cfgJ2QS = \case
+  SQSMemory -> journalCfg (cfgMS $ ASType SQSMemory SMSJournal) testStoreLogFile2 testStoreMsgsDir2
+  SQSPostgres -> journalCfgDB (cfgMS $ ASType SQSPostgres SMSJournal) testStoreDBOpts2 testStoreMsgsDir2
 
 journalCfg :: ServerConfig -> FilePath -> FilePath -> ServerConfig
 journalCfg cfg' storeLogFile storeMsgsPath = cfg' {serverStoreCfg = ASSCfg SQSMemory SMSJournal SSCMemoryJournal {storeLogFile, storeMsgsPath}}
 
--- TODO [postgres]
--- journalCfg :: ServerConfig -> DBOpts -> FilePath -> ServerConfig
--- journalCfg cfg' storeDBOpts storeMsgsPath' = cfg' {serverStoreCfg = ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeDBOpts, storeMsgsPath'}}
+journalCfgDB :: ServerConfig -> DBOpts -> FilePath -> ServerConfig
+journalCfgDB cfg' dbOpts storeMsgsPath' = 
+  let storeCfg = PostgresStoreCfg {dbOpts, confirmMigrations = MCYesUp, deletedTTL = 86400}
+   in cfg' {serverStoreCfg = ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath'}}
 
 cfgMS :: AStoreType -> ServerConfig
 cfgMS msType =
@@ -175,14 +176,7 @@ cfgMS msType =
       maxJournalStateLines = 2,
       queueIdBytes = 24,
       msgIdBytes = 24,
-      serverStoreCfg = case msType of
-        ASType SQSMemory SMSMemory ->
-          ASSCfg SQSMemory SMSMemory $ SSCMemory $ Just StorePaths {storeLogFile = testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
-        ASType SQSMemory SMSJournal ->
-          ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = testStoreLogFile, storeMsgsPath = testStoreMsgsDir}
-        ASType SQSPostgres SMSJournal ->
-          let storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts, confirmMigrations = MCYesUp, deletedTTL = 86400}
-           in ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath' = testStoreMsgsDir},
+      serverStoreCfg = serverStoreConfig msType,
       storeNtfsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
@@ -218,14 +212,24 @@ cfgMS msType =
       startOptions = StartOptions {maintenance = False, skipWarnings = False, confirmMigrations = MCYesUp}
     }
 
+serverStoreConfig :: AStoreType -> AServerStoreCfg
+serverStoreConfig = \case
+  ASType SQSMemory SMSMemory ->
+    ASSCfg SQSMemory SMSMemory $ SSCMemory $ Just StorePaths {storeLogFile = testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
+  ASType SQSMemory SMSJournal ->
+    ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = testStoreLogFile, storeMsgsPath = testStoreMsgsDir}
+  ASType SQSPostgres SMSJournal ->
+    let storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts, confirmMigrations = MCYesUp, deletedTTL = 86400}
+     in ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath' = testStoreMsgsDir}
+
 cfgV7 :: ServerConfig
 cfgV7 = cfg {smpServerVRange = mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion}
 
-cfgV8 :: ServerConfig
-cfgV8 = cfg {smpServerVRange = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion}
+cfgV8 :: AStoreType -> ServerConfig
+cfgV8 msType = (cfgMS msType) {smpServerVRange = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion}
 
-cfgVPrev :: ServerConfig
-cfgVPrev = cfg {smpServerVRange = prevRange $ smpServerVRange cfg}
+cfgVPrev :: AStoreType -> ServerConfig
+cfgVPrev msType = (cfgMS msType) {smpServerVRange = prevRange $ smpServerVRange cfg}
 
 prevRange :: VersionRange v -> VersionRange v
 prevRange vr = vr {maxVersion = max (minVersion vr) (prevVersion $ maxVersion vr)}
@@ -234,8 +238,11 @@ prevVersion :: Version v -> Version v
 prevVersion (Version v) = Version (v - 1)
 
 proxyCfg :: ServerConfig
-proxyCfg =
-  cfg
+proxyCfg = proxyCfgMS (ASType SQSMemory SMSJournal)
+
+proxyCfgMS :: AStoreType -> ServerConfig
+proxyCfgMS msType =
+  (cfgMS msType)
     { allowSMPProxy = True,
       smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {agreeSecret = True, proxyServer = True, serverVRange = supportedProxyClientSMPRelayVRange}}
     }
@@ -252,18 +259,12 @@ proxyCfgJ2 = journalCfg proxyCfg testStoreLogFile2 testStoreMsgsDir2
 proxyVRangeV8 :: VersionRangeSMP
 proxyVRangeV8 = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion
 
-withSmpServerStoreMsgLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerStoreMsgLogOn = (`withSmpServerStoreMsgLogOnMS` ASType SQSMemory SMSJournal)
-
-withSmpServerStoreMsgLogOnMS :: HasCallStack => ATransport -> AStoreType -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerStoreMsgLogOnMS t msType =
+withSmpServerStoreMsgLogOn :: HasCallStack => (ATransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
+withSmpServerStoreMsgLogOn (t, msType) =
   withSmpServerConfigOn t (cfgMS msType) {storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
 
-withSmpServerStoreLogOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerStoreLogOn = (`withSmpServerStoreLogOnMS` ASType SQSMemory SMSJournal)
-
-withSmpServerStoreLogOnMS :: HasCallStack => ATransport -> AStoreType -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerStoreLogOnMS t msType = withSmpServerConfigOn t (cfgMS msType) {serverStatsBackupFile = Just testServerStatsBackupFile}
+withSmpServerStoreLogOn :: HasCallStack => (ATransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
+withSmpServerStoreLogOn (t, msType) = withSmpServerConfigOn t (cfgMS msType) {serverStatsBackupFile = Just testServerStatsBackupFile}
 
 withSmpServerConfigOn :: HasCallStack => ATransport -> ServerConfig -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerConfigOn t cfg' port' =
@@ -271,8 +272,8 @@ withSmpServerConfigOn t cfg' port' =
     (\started -> runSMPServerBlocking started cfg' {transports = [(port', t, False)]} Nothing)
     (threadDelay 10000)
 
-withSmpServerThreadOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerThreadOn t = withSmpServerConfigOn t cfg
+withSmpServerThreadOn :: HasCallStack => (ATransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
+withSmpServerThreadOn (t, msType) = withSmpServerConfigOn t (cfgMS msType)
 
 serverBracket :: HasCallStack => (TMVar Bool -> IO ()) -> IO () -> (HasCallStack => ThreadId -> IO a) -> IO a
 serverBracket process afterProcess f = do
@@ -292,14 +293,14 @@ serverBracket process afterProcess f = do
         Nothing -> error $ "server did not " <> s
         _ -> pure ()
 
-withSmpServerOn :: HasCallStack => ATransport -> ServiceName -> IO a -> IO a
-withSmpServerOn t port' = withSmpServerThreadOn t port' . const
+withSmpServerOn :: HasCallStack => (ATransport, AStoreType) -> ServiceName -> IO a -> IO a
+withSmpServerOn ps port' = withSmpServerThreadOn ps port' . const
 
-withSmpServer :: HasCallStack => ATransport -> IO a -> IO a
-withSmpServer t = withSmpServerOn t testPort
+withSmpServer :: HasCallStack => (ATransport, AStoreType) -> IO a -> IO a
+withSmpServer ps = withSmpServerOn ps testPort
 
-withSmpServerProxy :: HasCallStack => ATransport -> IO a -> IO a
-withSmpServerProxy t = withSmpServerConfigOn t proxyCfg testPort . const
+withSmpServerProxy :: HasCallStack => (ATransport, AStoreType) -> IO a -> IO a
+withSmpServerProxy (t, msType) = withSmpServerConfigOn t (proxyCfgMS msType) testPort . const
 
 runSmpTest :: forall c a. (HasCallStack, Transport c) => AStoreType -> (HasCallStack => THandleSMP c 'TClient -> IO a) -> IO a
 runSmpTest msType test = withSmpServerConfigOn (transport @c) (cfgMS msType) testPort $ \_ -> testSMPClient test
