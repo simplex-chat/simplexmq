@@ -829,6 +829,7 @@ testRestoreExpireMessages =
           readWriteQueueStore True (mkQueue ms) testStoreLogFile (queueStore ms) >>= closeStoreLog
           removeFileIfExists testStoreMsgsFile
           exportMessages False ms testStoreMsgsFile False
+          closeMsgStore ms
     runTest :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
