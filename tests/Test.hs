@@ -53,7 +53,6 @@ main = do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
     hspec
-    -- TODO [postgres] run tests with postgres server locally and maybe in CI
 #if defined(dbPostgres)
       . aroundAll_ (postgressBracket testDBConnectInfo)
 #endif
