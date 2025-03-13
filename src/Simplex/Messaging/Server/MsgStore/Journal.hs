@@ -76,7 +76,6 @@ import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (ifM, tshow, whenM, ($>>=), (<$$>))
 import System.Directory
 import System.FilePath (takeFileName, (</>))
@@ -288,6 +287,8 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
     MQStoreCfg -> MQStore <$> newQueueStore @(JournalQueue s) ()
     PQStoreCfg cfg -> PQStore <$> newQueueStore @(JournalQueue s) cfg
 
+  closeQueueStore = withQS (closeQueueStore @(JournalQueue s))
+  {-# INLINE closeQueueStore #-}
   loadedQueues = withQS loadedQueues
   {-# INLINE loadedQueues #-}
   compactQueues = withQS (compactQueues @(JournalQueue s))
@@ -330,12 +331,17 @@ instance MsgStoreClass (JournalMsgStore s) where
     pure JournalMsgStore {config, random, queueLocks, queueStore_, expireBackupsBefore}
 
   closeMsgStore :: JournalMsgStore s -> IO ()
-  closeMsgStore ms = case queueStore_ ms of
-    MQStore st -> do
-      readTVarIO (storeLog st) >>= mapM_ closeStoreLog
-      closeQueues $ loadedQueues @(JournalQueue s) st
-    PQStore st ->
-      closeQueues $ loadedQueues @(JournalQueue s) st
+  closeMsgStore ms = do
+    let st = queueStore_ ms
+    closeQueues $ loadedQueues @(JournalQueue s) st
+    closeQueueStore @(JournalQueue s) st
+    -- case queueStore_ ms of
+    -- MQStore st -> do
+    --   closeQueues $ loadedQueues @(JournalQueue s) st
+    --   closeQueueStore @(JournalQueue s) st
+    -- PQStore st -> do
+    --   closeQueues $ loadedQueues @(JournalQueue s) st
+    --   closeQueueStore @(JournalQueue s) st
     where
       closeQueues qs = readTVarIO qs >>= mapM_ closeMsgQueue
 

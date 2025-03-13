@@ -101,7 +101,7 @@ storeLogTests =
 testSMPStoreLog :: String -> [SMPStoreLogTestCase] -> Spec
 testSMPStoreLog testSuite tests =
   describe testSuite $ forM_ tests $ \t@SLTC {name, saved} -> it name $ do
-    l <- openWriteStoreLog testStoreLogFile
+    l <- openWriteStoreLog False testStoreLogFile
     mapM_ (writeStoreLogRecord l) saved
     closeStoreLog l
     replicateM_ 3 $ testReadWrite t

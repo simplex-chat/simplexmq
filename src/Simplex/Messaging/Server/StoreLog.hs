@@ -158,9 +158,9 @@ instance StrEncoding StoreLogRecord where
       DeleteNotifier_ -> DeleteNotifier <$> strP
       UpdateTime_ -> UpdateTime <$> strP_ <*> strP
 
-openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
-openWriteStoreLog f = do
-  h <- openFile f WriteMode
+openWriteStoreLog :: Bool -> FilePath -> IO (StoreLog 'WriteMode)
+openWriteStoreLog append f = do
+  h <- openFile f $ if append then AppendMode else WriteMode
   hSetBuffering h LineBuffering
   pure $ WriteStoreLog f h
 
@@ -239,7 +239,7 @@ readWriteStoreLog readStore writeStore f st =
       removeStoreLogBackups f
       pure s
     writeLog msg = do
-      s <- openWriteStoreLog f
+      s <- openWriteStoreLog False f
       logInfo msg
       writeStore s st
       pure s
