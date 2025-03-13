@@ -800,7 +800,6 @@ data StoreCmd = SCImport | SCExport | SCDelete
 data InitOptions = InitOptions
   { enableStoreLog :: Bool,
     dbOptions :: DBOpts,
-    dbMigrateUp :: Bool,
     logStats :: Bool,
     signAlgorithm :: SignAlgorithm,
     ip :: HostName,
@@ -842,12 +841,6 @@ cliCommandP cfgPath logPath iniFile =
               <> help "Enable store log for persistence"
           )
       dbOptions <- dbOptsP
-      -- TODO [postgresql] remove
-      dbMigrateUp <-
-        switch
-          ( long "db-migrate-up"
-              <> help "Automatically confirm \"up\" database migrations"
-          )
       logStats <-
         switch
           ( long "daily-stats"
@@ -951,7 +944,6 @@ cliCommandP cfgPath logPath iniFile =
         InitOptions
           { enableStoreLog,
             dbOptions,
-            dbMigrateUp,
             logStats,
             signAlgorithm,
             ip,

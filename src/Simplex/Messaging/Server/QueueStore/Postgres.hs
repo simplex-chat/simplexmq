@@ -203,7 +203,6 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     where
       PostgresQueueStore {notifiers} = st
       rId = recipientId sq
-      -- TODO [postgres] test how this query works with duplicate recipient_id (updates) and notifier_id (fails)
       update db =
         DB.execute
           db
