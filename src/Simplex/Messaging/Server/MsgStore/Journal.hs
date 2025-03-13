@@ -335,13 +335,6 @@ instance MsgStoreClass (JournalMsgStore s) where
     let st = queueStore_ ms
     closeQueues $ loadedQueues @(JournalQueue s) st
     closeQueueStore @(JournalQueue s) st
-    -- case queueStore_ ms of
-    -- MQStore st -> do
-    --   closeQueues $ loadedQueues @(JournalQueue s) st
-    --   closeQueueStore @(JournalQueue s) st
-    -- PQStore st -> do
-    --   closeQueues $ loadedQueues @(JournalQueue s) st
-    --   closeQueueStore @(JournalQueue s) st
     where
       closeQueues qs = readTVarIO qs >>= mapM_ closeMsgQueue
 
