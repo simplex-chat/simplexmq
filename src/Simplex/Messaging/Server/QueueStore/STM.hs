@@ -62,6 +62,9 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     storeLog <- newTVarIO Nothing
     pure STMQueueStore {queues, senders, notifiers, storeLog}
 
+  closeQueueStore :: STMQueueStore q -> IO ()
+  closeQueueStore st = readTVarIO (storeLog st) >>= mapM_ closeStoreLog
+
   loadedQueues = queues
   {-# INLINE loadedQueues #-}
   compactQueues _ = pure 0
@@ -194,7 +197,7 @@ readQueueRecIO qr = maybe (Left AUTH) Right <$> readTVarIO qr
 withLog' :: String -> TVar (Maybe (StoreLog 'WriteMode)) -> (StoreLog 'WriteMode -> IO ()) -> IO (Either ErrorType ())
 withLog' name sl action =
   readTVarIO sl
-    >>= maybe (pure $ Right ()) (E.try . action >=> bimapM logErr pure)
+    >>= maybe (pure $ Right ()) (E.try . E.uninterruptibleMask_ . action >=> bimapM logErr pure)
   where
     logErr :: E.SomeException -> IO ErrorType
     logErr e = logError ("STORE: " <> T.pack err) $> STORE err

@@ -24,6 +24,7 @@ class StoreQueueClass q where
 class StoreQueueClass q => QueueStoreClass q s where
   type QueueStoreCfg s
   newQueueStore :: QueueStoreCfg s -> IO s
+  closeQueueStore :: s -> IO ()
   queueCounts :: s -> IO QueueCounts
   loadedQueues :: s -> TMap RecipientId q
   compactQueues :: s -> IO Int64

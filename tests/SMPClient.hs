@@ -162,7 +162,7 @@ journalCfg cfg' storeLogFile storeMsgsPath = cfg' {serverStoreCfg = ASSCfg SQSMe
 
 journalCfgDB :: ServerConfig -> DBOpts -> FilePath -> ServerConfig
 journalCfgDB cfg' dbOpts storeMsgsPath' = 
-  let storeCfg = PostgresStoreCfg {dbOpts, confirmMigrations = MCYesUp, deletedTTL = 86400}
+  let storeCfg = PostgresStoreCfg {dbOpts, dbStoreLogPath = Nothing, confirmMigrations = MCYesUp, deletedTTL = 86400}
    in cfg' {serverStoreCfg = ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath'}}
 
 cfgMS :: AStoreType -> ServerConfig
@@ -213,13 +213,17 @@ cfgMS msType =
     }
 
 serverStoreConfig :: AStoreType -> AServerStoreCfg
-serverStoreConfig = \case
+serverStoreConfig = serverStoreConfig_ False
+
+serverStoreConfig_ :: Bool -> AStoreType -> AServerStoreCfg
+serverStoreConfig_ useDbStoreLog = \case
   ASType SQSMemory SMSMemory ->
     ASSCfg SQSMemory SMSMemory $ SSCMemory $ Just StorePaths {storeLogFile = testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
   ASType SQSMemory SMSJournal ->
     ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = testStoreLogFile, storeMsgsPath = testStoreMsgsDir}
   ASType SQSPostgres SMSJournal ->
-    let storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts, confirmMigrations = MCYesUp, deletedTTL = 86400}
+    let dbStoreLogPath = if useDbStoreLog then Just testStoreLogFile else Nothing
+        storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = 86400}
      in ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath' = testStoreMsgsDir}
 
 cfgV7 :: ServerConfig

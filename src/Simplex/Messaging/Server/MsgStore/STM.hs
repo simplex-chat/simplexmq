@@ -28,7 +28,6 @@ import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.QueueStore.Types
-import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util ((<$$>), ($>>=))
 
 data STMMsgStore = STMMsgStore
@@ -77,8 +76,8 @@ instance MsgStoreClass STMMsgStore where
     queueStore_ <- newQueueStore @STMQueue ()
     pure STMMsgStore {storeConfig, queueStore_}
 
-  closeMsgStore st = readTVarIO (storeLog $ queueStore_ st) >>= mapM_ closeStoreLog
-
+  closeMsgStore = closeQueueStore @STMQueue . queueStore_
+  {-# INLINE closeMsgStore #-}
   withActiveMsgQueues = withLoadedQueues . queueStore_
   {-# INLINE withActiveMsgQueues #-}
   withAllMsgQueues _ = withLoadedQueues . queueStore_
