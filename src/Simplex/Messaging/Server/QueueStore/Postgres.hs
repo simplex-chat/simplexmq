@@ -140,7 +140,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   addQueue_ :: PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
   addQueue_ st mkQ rId qr = do
     sq <- mkQ rId qr
-    withQueueLock sq "addQueue_" $ runExceptT $ do
+    withQueueLock sq "addQueue_" $ E.uninterruptibleMask_ $ runExceptT $ do
       void $ withDB "addQueue_" st $ \db ->
         E.try (DB.execute db insertQueueQuery $ queueRecToRow (rId, qr))
           >>= bimapM handleDuplicate pure
@@ -268,7 +268,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   -- this method is called from JournalMsgStore deleteQueue that already locks the queue
   deleteStoreQueue :: PostgresQueueStore q -> q -> IO (Either ErrorType (QueueRec, Maybe (MsgQueue q)))
-  deleteStoreQueue st sq = runExceptT $ do
+  deleteStoreQueue st sq = E.uninterruptibleMask_ $ runExceptT $ do
     q <- ExceptT $ readQueueRecIO qr
     RoundedSystemTime ts <- liftIO getSystemDate
     assertUpdated $ withDB' "deleteStoreQueue" st $ \db ->
@@ -373,7 +373,7 @@ setStatusDB op st sq status writeLog =
 
 withQueueDB :: StoreQueueClass q => q -> String -> (QueueRec -> ExceptT ErrorType IO a) -> IO (Either ErrorType a)
 withQueueDB sq op action =
-  withQueueLock sq op $ runExceptT $ ExceptT (readQueueRecIO $ queueRec sq) >>= action
+  withQueueLock sq op $ E.uninterruptibleMask_ $ runExceptT $ ExceptT (readQueueRecIO $ queueRec sq) >>= action
 
 assertUpdated :: ExceptT ErrorType IO Int64 -> ExceptT ErrorType IO ()
 assertUpdated = (>>= \n -> when (n == 0) (throwE AUTH))
@@ -392,7 +392,7 @@ withDB op st action =
 
 withLog :: MonadIO m => String -> PostgresQueueStore q -> (StoreLog 'WriteMode -> IO ()) -> m ()
 withLog op PostgresQueueStore {dbStoreLog} action =
-  forM_ dbStoreLog $ \sl -> liftIO $ E.uninterruptibleMask_ (action sl) `catchAny` \e ->
+  forM_ dbStoreLog $ \sl -> liftIO $ action sl `catchAny` \e ->
     logWarn $ "STORE: " <> T.pack (op <> ", withLog, " <> show e)
 
 handleDuplicate :: SqlError -> IO ErrorType
