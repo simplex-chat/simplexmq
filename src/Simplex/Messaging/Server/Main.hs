@@ -167,7 +167,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               ms <- newJournalMsgStore MQStoreCfg
               readQueueStore True (mkQueue ms) storeLogFile (queueStore ms)
               queues <- readTVarIO $ loadedQueues $ stmQueueStore ms
-              let storeCfg = PostgresStoreCfg {dbOpts = dbOpts {createSchema = True}, useStoreLog = Nothing, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}
+              let storeCfg = PostgresStoreCfg {dbOpts = dbOpts {createSchema = True}, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}
               ps <- newJournalMsgStore $ PQStoreCfg storeCfg
               qCnt <- batchInsertQueues @(JournalQueue 'QSMemory) True queues $ postgresQueueStore ps
               renameFile storeLogFile $ storeLogFile <> ".bak"
@@ -189,7 +189,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               confirmOrExit
                 ("WARNING: PostrgreSQL database schema " <> B.unpack schema <> " (database: " <> B.unpack connstr <> ") will be exported to store log file " <> storeLogFilePath)
                 "Queue records not exported"
-              let storeCfg = PostgresStoreCfg {dbOpts, useStoreLog = Nothing, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}
+              let storeCfg = PostgresStoreCfg {dbOpts, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}
               ps <- newJournalMsgStore $ PQStoreCfg storeCfg
               sl <- openWriteStoreLog False storeLogFilePath
               Sum qCnt <- foldQueueRecs True (postgresQueueStore ps) $ \(rId, qr) -> logCreateQueue sl rId qr $> Sum (1 :: Int)
@@ -211,8 +211,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
         True -> readIniFile iniFile >>= either exitError a
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     getRequiredStoreLogFile ini = do
-      let enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
-      case enableStoreLog $> storeLogFilePath of
+      case enableStoreLog' ini $> storeLogFilePath of
         Just storeLogFile -> do
           ifM
             (doesFileExist storeLogFile)
@@ -258,6 +257,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
     httpsCertFile = combine cfgPath "web.crt"
     httpsKeyFile = combine cfgPath "web.key"
     defaultStaticPath = combine logPath "www"
+    enableStoreLog' = settingIsOn "STORE_LOG" "enable"
+    enableDbStoreLog' = settingIsOn "STORE_LOG" "db_store_log"
     initializeServer opts@InitOptions {ip, fqdn, sourceCode = src', webStaticPath = sp', disableWeb = noWeb', scripted}
       | scripted = initialize opts
       | otherwise = do
@@ -473,15 +474,13 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           runSMPServer cfg Nothing
       logDebug "Bye"
       where
-        enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
-        useDbStoreLog = settingIsOn "STORE_LOG" "db_store_log" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
         restoreMessagesFile path = case iniOnOff "STORE_LOG" "restore_messages" ini of
           Just True -> Just path
           Just False -> Nothing
           -- if the setting is not set, it is enabled when store log is enabled
-          _ -> enableStoreLog $> path
+          _ -> enableStoreLog' ini $> path
         transports = iniTransports ini
         sharedHTTP = any (\(_, _, addHTTP) -> addHTTP) transports
         iniStoreType = either error id $! readStoreType ini
@@ -504,12 +503,12 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               httpCredentials = (\WebHttpsParams {key, cert} -> ServerCredentials {caCertificateFile = Nothing, privateKeyFile = key, certificateFile = cert}) <$> webHttpsParams',
               serverStoreCfg = case iniStoreType of
                 ASType SQSMemory SMSMemory ->
-                  ASSCfg SQSMemory SMSMemory $ SSCMemory $ enableStoreLog $> StorePaths {storeLogFile = storeLogFilePath, storeMsgsFile = restoreMessagesFile storeMsgsFilePath}
+                  ASSCfg SQSMemory SMSMemory $ SSCMemory $ enableStoreLog' ini $> StorePaths {storeLogFile = storeLogFilePath, storeMsgsFile = restoreMessagesFile storeMsgsFilePath}
                 ASType SQSMemory SMSJournal ->
                   ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = storeLogFilePath, storeMsgsPath = storeMsgsJournalDir}
                 ASType SQSPostgres SMSJournal ->
-                  let useStoreLog = useDbStoreLog $> storeLogFilePath
-                      storeCfg = PostgresStoreCfg {dbOpts = iniDBOptions ini, useStoreLog, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
+                  let dbStoreLogPath = enableDbStoreLog' ini $> storeLogFilePath
+                      storeCfg = PostgresStoreCfg {dbOpts = iniDBOptions ini, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
                    in ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeCfg, storeMsgsPath' = storeMsgsJournalDir},
               storeNtfsFile = restoreMessagesFile storeNtfsFilePath,
               -- allow creating new queues by default
@@ -611,7 +610,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               SQSPostgres -> do
                 let DBOpts {connstr, schema} = iniDBOptions ini
                 schemaExists <- checkSchemaExists connstr schema
-                case settingIsOn "STORE_LOG" "db_store_log" ini of
+                case enableDbStoreLog' ini of
                   Just ()
                     | not schemaExists -> noDatabaseSchema connstr schema
                     | not storeLogExists -> do

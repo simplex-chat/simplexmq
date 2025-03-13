@@ -86,7 +86,7 @@ data PostgresQueueStore q = PostgresQueueStore
 
 data PostgresStoreCfg = PostgresStoreCfg
   { dbOpts :: DBOpts,
-    useStoreLog :: Maybe FilePath,
+    dbStoreLogPath :: Maybe FilePath,
     confirmMigrations :: MigrationConfirmation,
     deletedTTL :: Int64
   }
@@ -95,9 +95,9 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   type QueueStoreCfg (PostgresQueueStore q) = PostgresStoreCfg
 
   newQueueStore :: PostgresStoreCfg  -> IO (PostgresQueueStore q)
-  newQueueStore PostgresStoreCfg {dbOpts, useStoreLog, confirmMigrations, deletedTTL} = do
+  newQueueStore PostgresStoreCfg {dbOpts, dbStoreLogPath, confirmMigrations, deletedTTL} = do
     dbStore <- either err pure =<< createDBStore dbOpts serverMigrations confirmMigrations
-    dbStoreLog <- mapM (openWriteStoreLog True) useStoreLog
+    dbStoreLog <- mapM (openWriteStoreLog True) dbStoreLogPath
     queues <- TM.emptyIO
     senders <- TM.emptyIO
     notifiers <- TM.emptyIO
