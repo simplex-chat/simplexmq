@@ -23,7 +23,6 @@ module Simplex.Messaging.Server.QueueStore.Postgres
     PostgresStoreCfg (..),
     batchInsertQueues,
     foldQueueRecs,
-    foldQueues,
   )
 where
 
@@ -166,11 +165,27 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       loadRcvQueue = loadQueue " WHERE recipient_id = ?" $ \_ -> pure ()
       loadSndQueue = loadQueue " WHERE sender_id = ?" $ \rId -> TM.insert qId rId senders
       loadNtfQueue = loadQueue " WHERE notifier_id = ?" $ \_ -> pure () -- do NOT cache ref - ntf subscriptions are rare
-      loadQueue condition insertRef = runExceptT $ loadQueueRec >>= liftIO . cachedOrLoadedQueue st mkQ insertRef
+      loadQueue condition insertRef = runExceptT $ loadQueueRec >>= liftIO . cachedOrLoadedQueue
         where
           loadQueueRec =
             withDB "getQueue_" st $ \db -> firstRow rowToQueueRec AUTH $
               DB.query db (queueRecQuery <> condition <> " AND deleted_at IS NULL") (Only qId)
+          cachedOrLoadedQueue (rId, qRec) = do
+            sq <- liftIO $ mkQ rId qRec -- loaded queue
+            -- This lock prevents the scenario when the queue is added to cache,
+            -- and potentially an attempt to read/write message is made,
+            -- while another thread is proccessing the same queue
+            -- without adding it to cache in withAllMsgQueues.
+            -- Alse see comment in idleDeleteExpiredMsgs.
+            withQueueLock sq "getQueue_" $ atomically $
+              -- checking the cache again for concurrent reads,
+              -- use previously loaded queue if exists.
+              TM.lookup rId queues >>= \case
+                Just sq' -> pure sq'
+                Nothing -> do
+                  insertRef rId
+                  TM.insert rId sq queues
+                  pure sq
 
   secureQueue :: PostgresQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   secureQueue st sq sKey =
@@ -311,17 +326,13 @@ insertQueueQuery =
     VALUES (?,?,?,?,?,?,?,?,?,?,?)
   |]
 
-foldQueues :: Monoid a => Bool -> PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> (q -> IO a) -> IO a
-foldQueues tty st mkQ f =
-  foldQueueRecs tty st $ cachedOrLoadedQueue st mkQ (\_ -> pure ()) >=> f
-
 foldQueueRecs :: Monoid a => Bool -> PostgresQueueStore q -> ((RecipientId, QueueRec) -> IO a) -> IO a
 foldQueueRecs tty st f = do
   (n, r) <- withConnection (dbStore st) $ \db ->
     DB.fold_ db (queueRecQuery <> " WHERE deleted_at IS NULL") (0 :: Int, mempty) $ \(!i, !acc) row -> do
       r <- f $ rowToQueueRec row
       let i' = i + 1
-      when (tty && i' `mod` 100000 == 0) $ putStr (progress i <> "\r") >> hFlush stdout
+      when (tty && i' `mod` 100000 == 0) $ putStr (progress i' <> "\r") >> hFlush stdout
       pure (i', acc <> r)
   when tty $ putStrLn $ progress n
   pure r
@@ -337,19 +348,6 @@ queueRecQuery =
       status, updated_at
     FROM msg_queues
   |]
-
-cachedOrLoadedQueue :: PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> (RecipientId -> STM ()) -> (RecipientId, QueueRec) -> IO q
-cachedOrLoadedQueue PostgresQueueStore {queues} mkQ insertRef (rId, qRec) = do
-  sq <- liftIO $ mkQ rId qRec -- loaded queue
-  atomically $
-    -- checking the cache again for concurrent reads,
-    -- use previously loaded queue if exists.
-    TM.lookup rId queues >>= \case
-      Just sq' -> pure sq'
-      Nothing -> do
-        insertRef rId
-        TM.insert rId sq queues
-        pure sq
 
 type QueueRecRow = (RecipientId, RcvPublicAuthKey, RcvDhSecret, SenderId, Maybe SndPublicAuthKey, SenderCanSecure, Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret, ServerEntityStatus, Maybe RoundedSystemTime)
 

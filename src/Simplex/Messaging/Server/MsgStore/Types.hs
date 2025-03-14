@@ -21,6 +21,7 @@ import Control.Monad.Trans.Except
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind
+import Data.Maybe (fromMaybe)
 import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
@@ -42,6 +43,7 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
 
   -- message store methods
   mkQueue :: s -> RecipientId -> QueueRec -> IO (StoreQueue s)
+  getCachedQueue :: s -> StoreQueue s -> StoreMonad s (Maybe (StoreQueue s))
   getMsgQueue :: s -> StoreQueue s -> Bool -> StoreMonad s (MsgQueue (StoreQueue s))
   getPeekMsgQueue :: s -> StoreQueue s -> StoreMonad s (Maybe (MsgQueue (StoreQueue s), Message))
 
@@ -126,8 +128,13 @@ deleteExpiredMsgs st q old =
 -- returns (expired count, queue size after expiration)
 idleDeleteExpiredMsgs :: MsgStoreClass s => Int64 -> s -> StoreQueue s -> Int64 -> ExceptT ErrorType IO (Maybe Int, Int)
 idleDeleteExpiredMsgs now st q old =
-  isolateQueue q "idleDeleteExpiredMsgs" $
-    withIdleMsgQueue now st q (deleteExpireMsgs_ old q)
+  isolateQueue q "idleDeleteExpiredMsgs" $ do
+    -- This check of the queue in the cache after the lock is taken prevents processing
+    -- of the queue instance that may have been cached by another thread
+    -- between reading queueRec in withAllMessages and taking this lock.
+    -- Also see the comment in cachedOrLoadedQueue
+    q' <- fromMaybe q <$> getCachedQueue st q
+    withIdleMsgQueue now st q' $ deleteExpireMsgs_ old q'
 
 deleteExpireMsgs_ :: MsgStoreClass s => Int64 -> StoreQueue s -> MsgQueue (StoreQueue s) -> StoreMonad s Int
 deleteExpireMsgs_ old q mq = do

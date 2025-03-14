@@ -344,7 +344,7 @@ instance MsgStoreClass (JournalMsgStore s) where
   withAllMsgQueues :: Monoid a => Bool -> JournalMsgStore s -> (JournalQueue s -> IO a) -> IO a
   withAllMsgQueues tty ms action = case queueStore_ ms of
     MQStore st -> withLoadedQueues st action
-    PQStore st -> foldQueues tty st (mkQueue ms) action
+    PQStore st -> foldQueueRecs tty st $ uncurry (mkQueue ms) >=> action
 
   logQueueStates :: JournalMsgStore s -> IO ()
   logQueueStates ms = withActiveMsgQueues ms $ unStoreIO . logQueueState
@@ -375,6 +375,10 @@ instance MsgStoreClass (JournalMsgStore s) where
           activeAt,
           queueState
         }
+
+  getCachedQueue :: JournalMsgStore s -> JournalQueue s -> StoreIO s (Maybe (JournalQueue s))
+  getCachedQueue ms sq = StoreIO $ TM.lookupIO (recipientId sq) (loadedQueues $ queueStore_ ms)
+  {-# INLINE getCachedQueue #-}
 
   getMsgQueue :: JournalMsgStore s -> JournalQueue s -> Bool -> StoreIO s (JournalMsgQueue s)
   getMsgQueue ms@JournalMsgStore {random} q'@JournalQueue {recipientId' = rId, msgQueue'} forWrite =
