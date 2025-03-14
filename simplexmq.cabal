@@ -73,9 +73,9 @@ flag client_postgres
   default: False
 
 flag server_postgres
-  description: Build server without support of PostgreSQL.
+  description: Build server with support of PostgreSQL.
   manual: True
-  default: False
+  default: True
 
 library
   exposed-modules:
@@ -536,3 +536,4 @@ test-suite simplexmq-test
   if flag(server_postgres)
     build-depends:
         postgresql-simple ==0.7.*
+    cpp-options: -DdbServerPostgres
