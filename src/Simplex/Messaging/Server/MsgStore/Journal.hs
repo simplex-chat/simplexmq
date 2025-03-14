@@ -376,9 +376,8 @@ instance MsgStoreClass (JournalMsgStore s) where
           queueState
         }
 
-  getCachedQueue :: JournalMsgStore s -> JournalQueue s -> StoreIO s (Maybe (JournalQueue s))
-  getCachedQueue ms sq = StoreIO $ TM.lookupIO (recipientId sq) (loadedQueues $ queueStore_ ms)
-  {-# INLINE getCachedQueue #-}
+  getLoadedQueue :: JournalMsgStore s -> JournalQueue s -> StoreIO s (JournalQueue s)
+  getLoadedQueue ms sq = StoreIO $ fromMaybe sq <$> TM.lookupIO (recipientId sq) (loadedQueues $ queueStore_ ms)
 
   getMsgQueue :: JournalMsgStore s -> JournalQueue s -> Bool -> StoreIO s (JournalMsgQueue s)
   getMsgQueue ms@JournalMsgStore {random} q'@JournalQueue {recipientId' = rId, msgQueue'} forWrite =

@@ -165,17 +165,16 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       loadRcvQueue = loadQueue " WHERE recipient_id = ?" $ \_ -> pure ()
       loadSndQueue = loadQueue " WHERE sender_id = ?" $ \rId -> TM.insert qId rId senders
       loadNtfQueue = loadQueue " WHERE notifier_id = ?" $ \_ -> pure () -- do NOT cache ref - ntf subscriptions are rare
-      loadQueue condition insertRef = runExceptT $ loadQueueRec >>= liftIO . cachedOrLoadedQueue
-        where
-          loadQueueRec =
+      loadQueue condition insertRef =
+        runExceptT $ do
+          (rId, qRec) <-
             withDB "getQueue_" st $ \db -> firstRow rowToQueueRec AUTH $
               DB.query db (queueRecQuery <> condition <> " AND deleted_at IS NULL") (Only qId)
-          cachedOrLoadedQueue (rId, qRec) = do
-            sq <- liftIO $ mkQ rId qRec -- loaded queue
+          liftIO $ do
+            sq <- mkQ rId qRec -- loaded queue
             -- This lock prevents the scenario when the queue is added to cache,
-            -- and potentially an attempt to read/write message is made,
-            -- while another thread is proccessing the same queue
-            -- without adding it to cache in withAllMsgQueues.
+            -- while another thread is proccessing the same queue in withAllMsgQueues
+            -- without adding it to cache, possibly trying to open the same files twice.
             -- Alse see comment in idleDeleteExpiredMsgs.
             withQueueLock sq "getQueue_" $ atomically $
               -- checking the cache again for concurrent reads,

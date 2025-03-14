@@ -92,9 +92,9 @@ instance MsgStoreClass STMMsgStore where
   mkQueue _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
   {-# INLINE mkQueue #-}
 
-  getCachedQueue :: STMMsgStore -> STMQueue -> STM (Maybe STMQueue)
-  getCachedQueue _ = pure . Just
-  {-# INLINE getCachedQueue #-}
+  getLoadedQueue :: STMMsgStore -> STMQueue -> STM STMQueue
+  getLoadedQueue _ = pure
+  {-# INLINE getLoadedQueue #-}
 
   getMsgQueue :: STMMsgStore -> STMQueue -> Bool -> STM STMMsgQueue
   getMsgQueue _ STMQueue {msgQueue'} _ = readTVar msgQueue' >>= maybe newQ pure
