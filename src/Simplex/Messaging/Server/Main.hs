@@ -1,4 +1,5 @@
 {-# LANGUAGE ApplicativeDo #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
@@ -25,21 +26,16 @@ import Data.Char (isAlpha, isAscii, toUpper)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
-import Data.Int (Int64)
 import Data.List (find, isPrefixOf)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe, isJust, isNothing)
-import Data.Semigroup (Sum (..))
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import qualified Data.Text.IO as T
-import Network.Socket (HostName)
-import Numeric.Natural (Natural)
+import Network.Socket (ServiceName)
 import Options.Applicative
 import Simplex.Messaging.Agent.Protocol (connReqUriP')
-import Simplex.Messaging.Agent.Store.Postgres (checkSchemaExists)
-import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig, textToHostMode)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
@@ -52,21 +48,34 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), JournalQueue, QStoreCfg (..), postgresQueueStore, stmQueueStore)
-import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), QSType (..), SQSType (..), SMSType (..), newMsgStore)
-import Simplex.Messaging.Server.QueueStore.Postgres (PostgresStoreCfg (..), batchInsertQueues, foldQueueRecs)
-import Simplex.Messaging.Server.QueueStore.Types
-import Simplex.Messaging.Server.StoreLog (logCreateQueue, openWriteStoreLog)
+import Simplex.Messaging.Server.Main.Options
+import Simplex.Messaging.Server.Main.INI
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), QStoreCfg (..), stmQueueStore)
+import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
-import Simplex.Messaging.Transport (simplexMQVersion, supportedProxyClientSMPRelayVRange, supportedServerSMPRelayVRange)
-import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost (..), defaultSocksProxy)
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
-import Simplex.Messaging.Util (eitherToMaybe, ifM, safeDecodeUtf8, tshow)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, renameFile)
+import Simplex.Messaging.Transport (ATransport, simplexMQVersion, supportedProxyClientSMPRelayVRange, supportedServerSMPRelayVRange)
+import Simplex.Messaging.Transport.Client (TransportHost (..), defaultSocksProxy)
+import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
+import Simplex.Messaging.Util (eitherToMaybe, ifM)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
+
+#if defined(dbServerPostgres)
+import Data.Semigroup (Sum (..))
+import Simplex.Messaging.Agent.Store.Postgres (checkSchemaExists)
+import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts (..))
+import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue)
+import Simplex.Messaging.Server.MsgStore.Types (QSType (..))
+import Simplex.Messaging.Server.Main.Postgres
+import Simplex.Messaging.Server.MsgStore.Journal (postgresQueueStore)
+import Simplex.Messaging.Server.QueueStore.Postgres (PostgresStoreCfg (..), batchInsertQueues, foldQueueRecs)
+import Simplex.Messaging.Server.QueueStore.Types
+import Simplex.Messaging.Server.StoreLog (logCreateQueue, openWriteStoreLog)
+import System.Directory (renameFile)
+#endif
 
 smpServerCLI :: FilePath -> FilePath -> IO ()
 smpServerCLI = smpServerCLI_ (\_ _ _ -> pure ()) (\_ -> pure ()) (\_ -> error "attachStaticFiles not available")
@@ -135,7 +144,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               putStrLn $ case readStoreType ini of
                 Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`, start the server."
                 Right (ASType SQSMemory SMSJournal) -> "store_messages set to `journal`, update it to `memory` in INI file"
+#if defined(dbServerPostgres)
                 Right (ASType SQSPostgres SMSJournal) -> "store_messages set to `journal`, store_queues is set to `database`.\nExport queues to store log to use memory storage for messages (`smp-server database export`)."
+#endif
                 Left e -> e <> ", configure storage correctly"
         SCDelete
           | not msgsDirExists -> do
@@ -147,12 +158,13 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 "Messages NOT deleted"
               deleteDirIfExists storeMsgsJournalDir
               putStrLn $ "Deleted all messages in journal " <> storeMsgsJournalDir
+#if defined(dbServerPostgres)              
     Database cmd dbOpts@DBOpts {connstr, schema} -> withIniFile $ \ini -> do
       schemaExists <- checkSchemaExists connstr schema
       storeLogExists <- doesFileExist storeLogFilePath
       case cmd of
         SCImport
-          | schemaExists && storeLogExists -> exitConfigureQueueStore connstr schema
+          | schemaExists && storeLogExists -> exitConfigureQueueStore storeLogFilePath connstr schema
           | schemaExists -> do
               putStrLn $ "Schema " <> B.unpack schema <> " already exists in PostrgreSQL database: " <> B.unpack connstr
               exitFailure
@@ -178,7 +190,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, start the server."
                 Left e -> e <> ", configure storage correctly"
         SCExport
-          | schemaExists && storeLogExists -> exitConfigureQueueStore connstr schema
+          | schemaExists && storeLogExists -> exitConfigureQueueStore storeLogFilePath connstr schema
           | not schemaExists -> do
               putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
               exitFailure
@@ -205,6 +217,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           | otherwise -> do
               putStrLn $ "Open database: psql " <> B.unpack connstr
               putStrLn $ "Delete schema: DROP SCHEMA " <> B.unpack schema <> " CASCADE;"
+#endif
   where
     withIniFile a =
       doesFileExist iniFile >>= \case
@@ -224,7 +237,6 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
        in newMsgStore cfg
     iniFile = combine cfgPath "smp-server.ini"
     serverVersion = "SMP server v" <> simplexMQVersion
-    defaultServerPorts = "5223,443"
     executableName = "smp-server"
     storeLogFilePath = combine logPath "smp-server-store.log"
     storeMsgsFilePath = combine logPath "smp-server-messages.log"
@@ -234,34 +246,23 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
     readStoreType ini = case (iniStoreQueues, iniStoreMessage) of
       ("memory", "memory") -> Right $ ASType SQSMemory SMSMemory
       ("memory", "journal") -> Right $ ASType SQSMemory SMSJournal
+#if defined(dbServerPostgres)
       ("database", "journal") -> Right $ ASType SQSPostgres SMSJournal
       ("database", "memory") -> Left "Using PostgreSQL database requires journal memory storage."
+#endif
       (q, m) -> Left $ T.unpack $ "Invalid storage settings: store_queues: " <> q <> ", store_messages: " <> m
       where
         iniStoreQueues = fromRight "memory" $ lookupValue "STORE_LOG" "store_queues" ini
         iniStoreMessage = fromRight "memory" $ lookupValue "STORE_LOG" "store_messages" ini
-    iniDBOptions :: Ini -> DBOpts
-    iniDBOptions ini =
-      DBOpts
-        { connstr = either (const defaultDBConnStr) encodeUtf8 $ lookupValue "STORE_LOG" "db_connection" ini,
-          schema = either (const defaultDBSchema) encodeUtf8 $ lookupValue "STORE_LOG" "db_schema" ini,
-          poolSize = readIniDefault defaultDBPoolSize "STORE_LOG" "db_pool_size" ini,
-          createSchema = False
-        }
-    dbOptsIniContent :: DBOpts -> Text
-    dbOptsIniContent DBOpts {connstr, schema, poolSize} =
-      (optDisabled' (connstr == defaultDBConnStr) <> "db_connection: " <> safeDecodeUtf8 connstr <> "\n")
-        <> (optDisabled' (schema == defaultDBSchema) <> "db_schema: " <> safeDecodeUtf8 schema <> "\n")
-        <> (optDisabled' (poolSize == defaultDBPoolSize) <> "db_pool_size: " <> tshow poolSize <> "\n\n")
-    iniDeletedTTL ini = readIniDefault (86400 * defaultDeletedTTL) "STORE_LOG" "db_deleted_ttl" ini
-    httpsCertFile = combine cfgPath "web.crt"
-    httpsKeyFile = combine cfgPath "web.key"
     defaultStaticPath = combine logPath "www"
     enableStoreLog' = settingIsOn "STORE_LOG" "enable"
+#if defined(dbServerPostgres)
     enableDbStoreLog' = settingIsOn "STORE_LOG" "db_store_log"
-    initializeServer opts@InitOptions {ip, fqdn, sourceCode = src', webStaticPath = sp', disableWeb = noWeb', scripted}
-      | scripted = initialize opts
+#endif
+    initializeServer opts
+      | scripted opts = initialize opts
       | otherwise = do
+          let InitOptions {ip, fqdn, sourceCode = src', webStaticPath = sp', disableWeb = noWeb'} = opts
           putStrLn "Use `smp-server init -h` for available options."
           checkInitOptions opts
           void $ withPrompt "SMP server will be initialized (press Enter)" getLine
@@ -303,7 +304,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                     Just "Error: passing --hosting-country requires passing --hosting"
                 | otherwise = Nothing
           forM_ err_ $ \err -> putStrLn err >> exitFailure
-        initialize opts'@InitOptions {enableStoreLog, dbOptions, logStats, signAlgorithm, password, controlPort, socksProxy, ownDomains, sourceCode, webStaticPath, disableWeb} = do
+        initialize opts'@InitOptions {ip, fqdn, signAlgorithm, password, controlPort, sourceCode} = do
           checkInitOptions opts'
           clearDirIfExists cfgPath
           clearDirIfExists logPath
@@ -315,7 +316,12 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           controlPortPwds <- forM controlPort $ \_ -> let pwd = decodeLatin1 <$> randomBase64 18 in (,) <$> pwd <*> pwd
           let host = fromMaybe (if ip == "127.0.0.1" then "<hostnames>" else ip) fqdn
               srv = ProtoServerWithAuth (SMPServer [THDomainName host] "" (C.KeyHash fp)) basicAuth
-          T.writeFile iniFile $ iniFileContent host basicAuth controlPortPwds
+#if defined(dbServerPostgres)
+              dbIniContent = iniDbFileContent opts'
+#else
+              dbIniContent = ""
+#endif
+          T.writeFile iniFile $ iniFileContent cfgPath logPath opts' host basicAuth controlPortPwds dbIniContent
           putStrLn $ "Server initialized, please provide additional server information in " <> iniFile <> "."
           putStrLn $ "Run `" <> executableName <> " start` to start server."
           warnCAPrivateKeyFile cfgPath x509cfg
@@ -326,103 +332,103 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               ServerPassword s -> pure s
               SPRandom -> BasicAuth <$> randomBase64 32
             randomBase64 n = strEncode <$> (atomically . C.randomBytes n =<< C.newRandom)
-            iniFileContent host basicAuth controlPortPwds =
-              informationIniContent opts'
-                <> "[STORE_LOG]\n\
-                   \# The server uses memory or PostgreSQL database for persisting queue records.\n\
-                   \# Use `enable: on` to use append-only log to preserve and restore queue records on restart.\n\
-                   \# Log is compacted on start (deleted objects are removed).\n"
-                <> ("enable: " <> onOff enableStoreLog <> "\n\n")
-                <> "# Queue storage mode: `memory` or `database` (to store queue records in PostgreSQL database).\n\
-                   \# `memory` - in-memory persistence, with optional append-only log (`enable: on`).\n\
-                   \# `database`- PostgreSQL databass (requires `store_messages: journal`).\n\
-                   \store_queues: memory\n\n\
-                   \# Database connection settings for PostgreSQL database (`store_queues: database`).\n"
-                <> dbOptsIniContent dbOptions
-                <> "# Write database changes to store log file\n\
-                   \# db_store_log: off\n\n\
-                   \# Time to retain deleted queues in the database, days.\n"
-                <> ("db_deleted_ttl: " <> tshow defaultDeletedTTL <> "\n\n")
-                <> "# Message storage mode: `memory` or `journal`.\n\
-                   \store_messages: memory\n\n\
-                   \# When store_messages is `memory`, undelivered messages are optionally saved and restored\n\
-                   \# when the server restarts, they are preserved in the .bak file until the next restart.\n"
-                <> ("restore_messages: " <> onOff enableStoreLog <> "\n\n")
-                <> "# Messages and notifications expiration periods.\n"
-                <> ("expire_messages_days: " <> tshow defMsgExpirationDays <> "\n")
-                <> "expire_messages_on_start: on\n"
-                <> ("expire_ntfs_hours: " <> tshow defNtfExpirationHours <> "\n\n")
-                <> "# Log daily server statistics to CSV file\n"
-                <> ("log_stats: " <> onOff logStats <> "\n\n")
-                <> "# Log interval for real-time Prometheus metrics\n\
-                   \# prometheus_interval: 300\n\n\
-                   \[AUTH]\n\
-                   \# Set new_queues option to off to completely prohibit creating new messaging queues.\n\
-                   \# This can be useful when you want to decommission the server, but not all connections are switched yet.\n\
-                   \new_queues: on\n\n\
-                   \# Use create_password option to enable basic auth to create new messaging queues.\n\
-                   \# The password should be used as part of server address in client configuration:\n\
-                   \# smp://fingerprint:password@host1,host2\n\
-                   \# The password will not be shared with the connecting contacts, you must share it only\n\
-                   \# with the users who you want to allow creating messaging queues on your server.\n"
-                <> ( let noPassword = "password to create new queues and forward messages (any printable ASCII characters without whitespace, '@', ':' and '/')"
-                      in optDisabled basicAuth <> "create_password: " <> maybe noPassword (safeDecodeUtf8 . strEncode) basicAuth
-                   )
-                <> "\n\n"
-                <> (optDisabled controlPortPwds <> "control_port_admin_password: " <> maybe "" fst controlPortPwds <> "\n")
-                <> (optDisabled controlPortPwds <> "control_port_user_password: " <> maybe "" snd controlPortPwds <> "\n")
-                <> "\n\
-                   \[TRANSPORT]\n\
-                   \# Host is only used to print server address on start.\n\
-                   \# You can specify multiple server ports.\n"
-                <> ("host: " <> T.pack host <> "\n")
-                <> ("port: " <> T.pack defaultServerPorts <> "\n")
-                <> "log_tls_errors: off\n\n\
-                   \# Use `websockets: 443` to run websockets server in addition to plain TLS.\n\
-                   \# This option is deprecated and should be used for testing only.\n\
-                   \# , port 443 should be specified in port above\n\
-                   \websockets: off\n"
-                <> (optDisabled controlPort <> "control_port: " <> tshow (fromMaybe defaultControlPort controlPort))
-                <> "\n\n\
-                   \[PROXY]\n\
-                   \# Network configuration for SMP proxy client.\n\
-                   \# `host_mode` can be 'public' (default) or 'onion'.\n\
-                   \# It defines prefferred hostname for destination servers with multiple hostnames.\n\
-                   \# host_mode: public\n\
-                   \# required_host_mode: off\n\n\
-                   \# The domain suffixes of the relays you operate (space-separated) to count as separate proxy statistics.\n"
-                <> (optDisabled ownDomains <> "own_server_domains: " <> maybe "" (safeDecodeUtf8 . strEncode) ownDomains)
-                <> "\n\n\
-                   \# SOCKS proxy port for forwarding messages to destination servers.\n\
-                   \# You may need a separate instance of SOCKS proxy for incoming single-hop requests.\n"
-                <> (optDisabled socksProxy <> "socks_proxy: " <> maybe "localhost:9050" (safeDecodeUtf8 . strEncode) socksProxy)
-                <> "\n\n\
-                   \# `socks_mode` can be 'onion' for SOCKS proxy to be used for .onion destination hosts only (default)\n\
-                   \# or 'always' to be used for all destination hosts (can be used if it is an .onion server).\n\
-                   \# socks_mode: onion\n\n\
-                   \# Limit number of threads a client can spawn to process proxy commands in parrallel.\n"
-                <> ("# client_concurrency: " <> tshow defaultProxyClientConcurrency)
-                <> "\n\n\
-                   \[INACTIVE_CLIENTS]\n\
-                   \# TTL and interval to check inactive clients\n\
-                   \disconnect: on\n"
-                <> ("ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
-                <> ("check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration))
-                <> "\n\n\
-                   \[WEB]\n\
-                   \# Set path to generate static mini-site for server information and qr codes/links\n"
-                <> ("static_path: " <> T.pack (fromMaybe defaultStaticPath webStaticPath) <> "\n\n")
-                <> "# Run an embedded server on this port\n\
-                   \# Onion sites can use any port and register it in the hidden service config.\n\
-                   \# Running on a port 80 may require setting process capabilities.\n\
-                   \# http: 8000\n\n\
-                   \# You can run an embedded TLS web server too if you provide port and cert and key files.\n\
-                   \# Not required for running relay on onion address.\n"
-                <> (webDisabled <> "https: 443\n")
-                <> (webDisabled <> "cert: " <> T.pack httpsCertFile <> "\n")
-                <> (webDisabled <> "key: " <> T.pack httpsKeyFile <> "\n")
-              where
-                webDisabled = if disableWeb then "# " else ""
+            -- iniFileContent host basicAuth controlPortPwds =
+            --   informationIniContent opts'
+            --     <> "[STORE_LOG]\n\
+            --        \# The server uses memory or PostgreSQL database for persisting queue records.\n\
+            --        \# Use `enable: on` to use append-only log to preserve and restore queue records on restart.\n\
+            --        \# Log is compacted on start (deleted objects are removed).\n"
+            --     <> ("enable: " <> onOff enableStoreLog <> "\n\n")
+            --     <> "# Queue storage mode: `memory` or `database` (to store queue records in PostgreSQL database).\n\
+            --        \# `memory` - in-memory persistence, with optional append-only log (`enable: on`).\n\
+            --        \# `database`- PostgreSQL databass (requires `store_messages: journal`).\n\
+            --        \store_queues: memory\n\n\
+            --        \# Database connection settings for PostgreSQL database (`store_queues: database`).\n"
+            --     <> dbOptsIniContent dbOptions
+            --     <> "# Write database changes to store log file\n\
+            --        \# db_store_log: off\n\n\
+            --        \# Time to retain deleted queues in the database, days.\n"
+            --     <> ("db_deleted_ttl: " <> tshow defaultDeletedTTL <> "\n\n")
+            --     <> "# Message storage mode: `memory` or `journal`.\n\
+            --        \store_messages: memory\n\n\
+            --        \# When store_messages is `memory`, undelivered messages are optionally saved and restored\n\
+            --        \# when the server restarts, they are preserved in the .bak file until the next restart.\n"
+            --     <> ("restore_messages: " <> onOff enableStoreLog <> "\n\n")
+            --     <> "# Messages and notifications expiration periods.\n"
+            --     <> ("expire_messages_days: " <> tshow defMsgExpirationDays <> "\n")
+            --     <> "expire_messages_on_start: on\n"
+            --     <> ("expire_ntfs_hours: " <> tshow defNtfExpirationHours <> "\n\n")
+            --     <> "# Log daily server statistics to CSV file\n"
+            --     <> ("log_stats: " <> onOff logStats <> "\n\n")
+            --     <> "# Log interval for real-time Prometheus metrics\n\
+            --        \# prometheus_interval: 300\n\n\
+            --        \[AUTH]\n\
+            --        \# Set new_queues option to off to completely prohibit creating new messaging queues.\n\
+            --        \# This can be useful when you want to decommission the server, but not all connections are switched yet.\n\
+            --        \new_queues: on\n\n\
+            --        \# Use create_password option to enable basic auth to create new messaging queues.\n\
+            --        \# The password should be used as part of server address in client configuration:\n\
+            --        \# smp://fingerprint:password@host1,host2\n\
+            --        \# The password will not be shared with the connecting contacts, you must share it only\n\
+            --        \# with the users who you want to allow creating messaging queues on your server.\n"
+            --     <> ( let noPassword = "password to create new queues and forward messages (any printable ASCII characters without whitespace, '@', ':' and '/')"
+            --           in optDisabled basicAuth <> "create_password: " <> maybe noPassword (safeDecodeUtf8 . strEncode) basicAuth
+            --        )
+            --     <> "\n\n"
+            --     <> (optDisabled controlPortPwds <> "control_port_admin_password: " <> maybe "" fst controlPortPwds <> "\n")
+            --     <> (optDisabled controlPortPwds <> "control_port_user_password: " <> maybe "" snd controlPortPwds <> "\n")
+            --     <> "\n\
+            --        \[TRANSPORT]\n\
+            --        \# Host is only used to print server address on start.\n\
+            --        \# You can specify multiple server ports.\n"
+            --     <> ("host: " <> T.pack host <> "\n")
+            --     <> ("port: " <> T.pack defaultServerPorts <> "\n")
+            --     <> "log_tls_errors: off\n\n\
+            --        \# Use `websockets: 443` to run websockets server in addition to plain TLS.\n\
+            --        \# This option is deprecated and should be used for testing only.\n\
+            --        \# , port 443 should be specified in port above\n\
+            --        \websockets: off\n"
+            --     <> (optDisabled controlPort <> "control_port: " <> tshow (fromMaybe defaultControlPort controlPort))
+            --     <> "\n\n\
+            --        \[PROXY]\n\
+            --        \# Network configuration for SMP proxy client.\n\
+            --        \# `host_mode` can be 'public' (default) or 'onion'.\n\
+            --        \# It defines prefferred hostname for destination servers with multiple hostnames.\n\
+            --        \# host_mode: public\n\
+            --        \# required_host_mode: off\n\n\
+            --        \# The domain suffixes of the relays you operate (space-separated) to count as separate proxy statistics.\n"
+            --     <> (optDisabled ownDomains <> "own_server_domains: " <> maybe "" (safeDecodeUtf8 . strEncode) ownDomains)
+            --     <> "\n\n\
+            --        \# SOCKS proxy port for forwarding messages to destination servers.\n\
+            --        \# You may need a separate instance of SOCKS proxy for incoming single-hop requests.\n"
+            --     <> (optDisabled socksProxy <> "socks_proxy: " <> maybe "localhost:9050" (safeDecodeUtf8 . strEncode) socksProxy)
+            --     <> "\n\n\
+            --        \# `socks_mode` can be 'onion' for SOCKS proxy to be used for .onion destination hosts only (default)\n\
+            --        \# or 'always' to be used for all destination hosts (can be used if it is an .onion server).\n\
+            --        \# socks_mode: onion\n\n\
+            --        \# Limit number of threads a client can spawn to process proxy commands in parrallel.\n"
+            --     <> ("# client_concurrency: " <> tshow defaultProxyClientConcurrency)
+            --     <> "\n\n\
+            --        \[INACTIVE_CLIENTS]\n\
+            --        \# TTL and interval to check inactive clients\n\
+            --        \disconnect: on\n"
+            --     <> ("ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
+            --     <> ("check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration))
+            --     <> "\n\n\
+            --        \[WEB]\n\
+            --        \# Set path to generate static mini-site for server information and qr codes/links\n"
+            --     <> ("static_path: " <> T.pack (fromMaybe defaultStaticPath webStaticPath) <> "\n\n")
+            --     <> "# Run an embedded server on this port\n\
+            --        \# Onion sites can use any port and register it in the hidden service config.\n\
+            --        \# Running on a port 80 may require setting process capabilities.\n\
+            --        \# http: 8000\n\n\
+            --        \# You can run an embedded TLS web server too if you provide port and cert and key files.\n\
+            --        \# Not required for running relay on onion address.\n"
+            --     <> (webDisabled <> "https: 443\n")
+            --     <> (webDisabled <> "cert: " <> T.pack httpsCertFile <> "\n")
+            --     <> (webDisabled <> "key: " <> T.pack httpsKeyFile <> "\n")
+            --   where
+            --     webDisabled = if disableWeb then "# " else ""
     runServer startOptions ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -506,11 +512,13 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   ASSCfg SQSMemory SMSMemory $ SSCMemory $ enableStoreLog' ini $> StorePaths {storeLogFile = storeLogFilePath, storeMsgsFile = restoreMessagesFile storeMsgsFilePath}
                 ASType SQSMemory SMSJournal ->
                   ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = storeLogFilePath, storeMsgsPath = storeMsgsJournalDir}
+#if defined(dbServerPostgres)
                 ASType SQSPostgres SMSJournal ->
                   let dbStoreLogPath = enableDbStoreLog' ini $> storeLogFilePath
                       storeCfg = PostgresStoreCfg {dbOpts = iniDBOptions ini, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
-                   in ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeCfg, storeMsgsPath' = storeMsgsJournalDir},
-              storeNtfsFile = restoreMessagesFile storeNtfsFilePath,
+                   in ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeCfg, storeMsgsPath' = storeMsgsJournalDir}
+#endif
+              , storeNtfsFile = restoreMessagesFile storeNtfsFilePath,
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
               newQueueBasicAuth = either error id <$!> strDecodeIni "AUTH" "create_password" ini,
@@ -607,6 +615,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           | otherwise -> case qs of
               SQSMemory ->
                 unless (storeLogExists) $ putStrLn $ "store_queues is `memory`, " <> storeLogFilePath <> " file will be created."
+#if defined(dbServerPostgres)
               SQSPostgres -> do
                 let DBOpts {connstr, schema} = iniDBOptions ini
                 schemaExists <- checkSchemaExists connstr schema
@@ -618,7 +627,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                         exitFailure
                     | otherwise -> pure ()
                   Nothing
-                    | storeLogExists && schemaExists -> exitConfigureQueueStore connstr schema
+                    | storeLogExists && schemaExists -> exitConfigureQueueStore storeLogFilePath connstr schema
                     | storeLogExists -> do
                         putStrLn $ "Error: store_queues is `database` with " <> storeLogFilePath <> " file present."
                         putStrLn "Set store_queues to `memory` or use `smp-server database import` to migrate."
@@ -629,6 +638,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   noDatabaseSchema connstr schema = do
                     putStrLn $ "Error: store_queues is `database`, create schema " <> B.unpack schema <> " in PostgreSQL database " <> B.unpack connstr
                     exitFailure
+#endif
         ASType SQSMemory SMSMemory
           | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
           | msgsDirExists -> do
@@ -640,11 +650,6 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
     exitConfigureMsgStorage = do
       putStrLn $ "Error: both " <> storeMsgsFilePath <> " file and " <> storeMsgsJournalDir <> " directory are present."
       putStrLn "Configure memory storage."
-      exitFailure
-
-    exitConfigureQueueStore connstr schema = do
-      putStrLn $ "Error: both " <> storeLogFilePath <> " file and " <> B.unpack schema <> " schema are present (database: " <> B.unpack connstr <> ")."
-      putStrLn "Configure queue storage."
       exitFailure
 
 data EmbeddedWebParams = EmbeddedWebParams
@@ -668,72 +673,6 @@ getServerSourceCode =
 
 simplexmqSource :: String
 simplexmqSource = "https://github.com/simplex-chat/simplexmq"
-
-defaultDBConnStr :: ByteString
-defaultDBConnStr = "postgresql://smp@/smp_server_store"
-
-defaultDBSchema :: ByteString
-defaultDBSchema = "smp_server"
-
-defaultDBPoolSize :: Natural
-defaultDBPoolSize = 10
-
--- time to retain deleted queues in the database (days), for debugging
-defaultDeletedTTL :: Int64
-defaultDeletedTTL = 21
-
-defaultControlPort :: Int
-defaultControlPort = 5224
-
-informationIniContent :: InitOptions -> Text
-informationIniContent InitOptions {sourceCode, serverInfo} =
-  "[INFORMATION]\n\
-  \# AGPLv3 license requires that you make any source code modifications\n\
-  \# available to the end users of the server.\n\
-  \# LICENSE: https://github.com/simplex-chat/simplexmq/blob/stable/LICENSE\n\
-  \# Include correct source code URI in case the server source code is modified in any way.\n\
-  \# If any other information fields are present, source code property also MUST be present.\n\n"
-    <> (optDisabled sourceCode <> "source_code: " <> fromMaybe "URI" sourceCode)
-    <> "\n\n\
-       \# Declaring all below information is optional, any of these fields can be omitted.\n\
-       \\n\
-       \# Server usage conditions and amendments.\n\
-       \# It is recommended to use standard conditions with any amendments in a separate document.\n\
-       \# usage_conditions: https://github.com/simplex-chat/simplex-chat/blob/stable/PRIVACY.md\n\
-       \# condition_amendments: link\n\
-       \\n\
-       \# Server location and operator.\n"
-    <> countryStr "server" serverCountry
-    <> enitiyStrs "operator" operator
-    <> (optDisabled website <> "website: " <> fromMaybe "" website)
-    <> "\n\n\
-       \# Administrative contacts.\n\
-       \# admin_simplex: SimpleX address\n\
-       \# admin_email:\n\
-       \# admin_pgp:\n\
-       \# admin_pgp_fingerprint:\n\
-       \\n\
-       \# Contacts for complaints and feedback.\n\
-       \# complaints_simplex: SimpleX address\n\
-       \# complaints_email:\n\
-       \# complaints_pgp:\n\
-       \# complaints_pgp_fingerprint:\n\
-       \\n\
-       \# Hosting provider.\n"
-    <> enitiyStrs "hosting" hosting
-    <> "\n\
-       \# Hosting type can be `virtual`, `dedicated`, `colocation`, `owned`\n"
-    <> ("hosting_type: " <> maybe "virtual" (decodeLatin1 . strEncode) hostingType <> "\n\n")
-  where
-    ServerPublicInfo {operator, website, hosting, hostingType, serverCountry} = serverInfo
-    countryStr optName country = optDisabled country <> optName <> "_country: " <> fromMaybe "ISO-3166 2-letter code" country <> "\n"
-    enitiyStrs optName entity =
-      optDisabled entity
-        <> optName
-        <> ": "
-        <> maybe "entity (organization or person name)" name entity
-        <> "\n"
-        <> countryStr optName (country =<< entity)
 
 serverPublicInfo :: Ini -> Maybe ServerPublicInfo
 serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
@@ -767,14 +706,6 @@ serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
             (Nothing, Nothing, _, Nothing) -> Nothing
             (_, _, pkURI, pkFingerprint) -> Just ServerContactAddress {simplex, email, pgp = PGPKey <$> pkURI <*> pkFingerprint}
 
-optDisabled :: Maybe a -> Text
-optDisabled = optDisabled' . isNothing
-{-# INLINE optDisabled #-}
-
-optDisabled' :: Bool -> Text
-optDisabled' cond = if cond then "# " else ""
-{-# INLINE optDisabled' #-}
-
 validCountryValue :: String -> String -> Either String Text
 validCountryValue field s
   | length s == 2 && all (\c -> isAscii c && isAlpha c) s = Right $ T.pack $ map toUpper s
@@ -787,39 +718,27 @@ printSourceCode = \case
     putStrLn "Warning: server source code is not specified."
     putStrLn "Add 'source_code' property to [INFORMATION] section of INI file."
 
+printSMPServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> AServerStoreCfg -> IO ()
+printSMPServerConfig transports (ASSCfg _ _ cfg) = case cfg of
+  SSCMemory sp_ -> printServerConfig transports $ (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
+  SSCMemoryJournal {storeLogFile} -> printServerConfig transports $ Just storeLogFile
+#if defined(dbServerPostgres)
+  SSCDatabaseJournal {storeCfg = PostgresStoreCfg {dbOpts = DBOpts {connstr, schema}}} -> do
+    B.putStrLn $ "PostgreSQL database: " <> connstr <> ", schema: " <> schema
+    printServerTransports transports
+#endif
+
 data CliCommand
   = Init InitOptions
   | OnlineCert CertOptions
   | Start StartOptions
   | Delete
   | Journal StoreCmd
+#if defined(dbServerPostgres)
   | Database StoreCmd DBOpts
+#endif
 
 data StoreCmd = SCImport | SCExport | SCDelete
-
-data InitOptions = InitOptions
-  { enableStoreLog :: Bool,
-    dbOptions :: DBOpts,
-    logStats :: Bool,
-    signAlgorithm :: SignAlgorithm,
-    ip :: HostName,
-    fqdn :: Maybe HostName,
-    password :: Maybe ServerPassword,
-    controlPort :: Maybe Int,
-    socksProxy :: Maybe SocksProxy,
-    ownDomains :: Maybe (L.NonEmpty TransportHost),
-    sourceCode :: Maybe Text,
-    serverInfo :: ServerPublicInfo,
-    operatorCountry :: Maybe Text,
-    hostingCountry :: Maybe Text,
-    webStaticPath :: Maybe FilePath,
-    disableWeb :: Bool,
-    scripted :: Bool
-  }
-  deriving (Show)
-
-data ServerPassword = ServerPassword BasicAuth | SPRandom
-  deriving (Show)
 
 cliCommandP :: FilePath -> FilePath -> FilePath -> Parser CliCommand
 cliCommandP cfgPath logPath iniFile =
@@ -829,7 +748,9 @@ cliCommandP cfgPath logPath iniFile =
         <> command "start" (info (Start <$> startOptionsP) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
         <> command "journal" (info (Journal <$> journalCmdP) (progDesc "Import/export messages to/from journal storage"))
+#if defined(dbServerPostgres)
         <> command "database" (info (Database <$> databaseCmdP <*> dbOptsP) (progDesc "Import/export queues to/from PostgreSQL database storage"))
+#endif
     )
   where
     initP :: Parser InitOptions
@@ -840,7 +761,9 @@ cliCommandP cfgPath logPath iniFile =
               <> short 'l'
               <> help "Enable store log for persistence"
           )
+#if defined(dbServerPostgres)
       dbOptions <- dbOptsP
+#endif
       logStats <-
         switch
           ( long "daily-stats"
@@ -943,7 +866,9 @@ cliCommandP cfgPath logPath iniFile =
       pure
         InitOptions
           { enableStoreLog,
+#if defined(dbServerPostgres)
             dbOptions,
+#endif
             logStats,
             signAlgorithm,
             ip,
@@ -992,41 +917,15 @@ cliCommandP cfgPath logPath iniFile =
           )
       pure StartOptions {maintenance, skipWarnings, confirmMigrations}
     journalCmdP = storeCmdP "message log file" "journal storage"
+#if defined(dbServerPostgres)
     databaseCmdP = storeCmdP "queue store log file" "PostgreSQL database schema"
+#endif
     storeCmdP src dest =
       hsubparser
         ( command "import" (info (pure SCImport) (progDesc $ "Import " <> src <> " into a new " <> dest))
             <> command "export" (info (pure SCExport) (progDesc $ "Export " <> dest <> " to " <> src))
             <> command "delete" (info (pure SCDelete) (progDesc $ "Delete " <> dest))
         )
-    dbOptsP = do
-      connstr <-
-        strOption
-          ( long "database"
-              <> short 'd'
-              <> metavar "DB_CONN"
-              <> help "Database connection string"
-              <> value defaultDBConnStr
-              <> showDefault
-          )
-      schema <-
-        strOption
-          ( long "schema"
-              <> metavar "DB_SCHEMA"
-              <> help "Database schema"
-              <> value defaultDBSchema
-              <> showDefault
-          )
-      poolSize <-
-        option
-          auto
-          ( long "pool-size"
-              <> metavar "POOL_SIZE"
-              <> help "Database pool size"
-              <> value defaultDBPoolSize
-              <> showDefault
-          )
-      pure DBOpts {connstr, schema, poolSize, createSchema = False}
     parseConfirmMigrations :: ReadM MigrationConfirmation
     parseConfirmMigrations = eitherReader $ \case
       "up" -> Right MCYesUp

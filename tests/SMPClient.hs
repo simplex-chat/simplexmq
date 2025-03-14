@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -16,9 +17,7 @@ module SMPClient where
 import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
-import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
 import Network.Socket
-import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
@@ -28,7 +27,6 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
-import Simplex.Messaging.Server.QueueStore.Postgres (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import qualified Simplex.Messaging.Transport.Client as Client
@@ -43,6 +41,12 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, putTMVar, takeTMVar)
 import UnliftIO.Timeout (timeout)
 import Util
+
+#if defined(dbServerPostgres)
+import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
+import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts (..))
+import Simplex.Messaging.Server.QueueStore.Postgres (PostgresStoreCfg (..))
+#endif
 
 testHost :: NonEmpty TransportHost
 testHost = "localhost"
@@ -65,6 +69,7 @@ testStoreLogFile = "tests/tmp/smp-server-store.log"
 testStoreLogFile2 :: FilePath
 testStoreLogFile2 = "tests/tmp/smp-server-store.log.2"
 
+#if defined(dbServerPostgres)
 testStoreDBOpts :: DBOpts
 testStoreDBOpts = 
   DBOpts
@@ -86,6 +91,7 @@ testServerDBConnectInfo =
     connectUser = "test_server_user",
     connectDatabase = "test_server_db"
   }
+#endif
 
 testStoreMsgsFile :: FilePath
 testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
@@ -146,24 +152,25 @@ testSMPClient_ host port vr client = do
 cfg :: ServerConfig
 cfg = cfgMS (ASType SQSMemory SMSJournal)
 
-cfgDB :: ServerConfig
-cfgDB = cfgMS (ASType SQSPostgres SMSJournal)
-
 cfgJ2 :: ServerConfig
 cfgJ2 = journalCfg cfg testStoreLogFile2 testStoreMsgsDir2
 
 cfgJ2QS :: SQSType s -> ServerConfig
 cfgJ2QS = \case
   SQSMemory -> journalCfg (cfgMS $ ASType SQSMemory SMSJournal) testStoreLogFile2 testStoreMsgsDir2
+#if defined(dbServerPostgres)
   SQSPostgres -> journalCfgDB (cfgMS $ ASType SQSPostgres SMSJournal) testStoreDBOpts2 testStoreMsgsDir2
+#endif
 
 journalCfg :: ServerConfig -> FilePath -> FilePath -> ServerConfig
 journalCfg cfg' storeLogFile storeMsgsPath = cfg' {serverStoreCfg = ASSCfg SQSMemory SMSJournal SSCMemoryJournal {storeLogFile, storeMsgsPath}}
 
+#if defined(dbServerPostgres)
 journalCfgDB :: ServerConfig -> DBOpts -> FilePath -> ServerConfig
 journalCfgDB cfg' dbOpts storeMsgsPath' = 
   let storeCfg = PostgresStoreCfg {dbOpts, dbStoreLogPath = Nothing, confirmMigrations = MCYesUp, deletedTTL = 86400}
    in cfg' {serverStoreCfg = ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath'}}
+#endif
 
 cfgMS :: AStoreType -> ServerConfig
 cfgMS msType =
@@ -221,10 +228,12 @@ serverStoreConfig_ useDbStoreLog = \case
     ASSCfg SQSMemory SMSMemory $ SSCMemory $ Just StorePaths {storeLogFile = testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
   ASType SQSMemory SMSJournal ->
     ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = testStoreLogFile, storeMsgsPath = testStoreMsgsDir}
+#if defined(dbServerPostgres)
   ASType SQSPostgres SMSJournal ->
     let dbStoreLogPath = if useDbStoreLog then Just testStoreLogFile else Nothing
         storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = 86400}
      in ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath' = testStoreMsgsDir}
+#endif
 
 cfgV7 :: ServerConfig
 cfgV7 = cfg {smpServerVRange = mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion}

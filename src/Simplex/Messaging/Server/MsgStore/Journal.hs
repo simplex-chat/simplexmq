@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -43,7 +44,9 @@ module Simplex.Messaging.Server.MsgStore.Journal
     journalFilePath,
     logFileExt,
     stmQueueStore,
+#if defined(dbServerPostgres)
     postgresQueueStore,
+#endif
   )
 where
 
@@ -71,7 +74,9 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
+#if defined(dbServerPostgres)
 import Simplex.Messaging.Server.QueueStore.Postgres
+#endif
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.TMap (TMap)
@@ -93,25 +98,33 @@ data JournalMsgStore s = JournalMsgStore
 
 data QStore (s :: QSType) where
   MQStore :: QStoreType 'QSMemory -> QStore 'QSMemory
+#if defined(dbServerPostgres)
   PQStore :: QStoreType 'QSPostgres -> QStore 'QSPostgres
+#endif
 
 type family QStoreType s where
   QStoreType 'QSMemory = STMQueueStore (JournalQueue 'QSMemory)
+#if defined(dbServerPostgres)
   QStoreType 'QSPostgres = PostgresQueueStore (JournalQueue 'QSPostgres)
+#endif
 
 withQS :: (QueueStoreClass (JournalQueue s) (QStoreType s) => QStoreType s -> r) -> QStore s -> r
 withQS f = \case
   MQStore st -> f st
+#if defined(dbServerPostgres)
   PQStore st -> f st
+#endif
 {-# INLINE withQS #-}
 
 stmQueueStore :: JournalMsgStore 'QSMemory -> STMQueueStore (JournalQueue 'QSMemory)
 stmQueueStore st = case queueStore_ st of
   MQStore st' -> st'
 
+#if defined(dbServerPostgres)
 postgresQueueStore :: JournalMsgStore 'QSPostgres -> PostgresQueueStore (JournalQueue 'QSPostgres)
 postgresQueueStore st = case queueStore_ st of
   PQStore st' -> st'
+#endif
 
 data JournalStoreConfig s = JournalStoreConfig
   { storePath :: FilePath,
@@ -133,7 +146,9 @@ data JournalStoreConfig s = JournalStoreConfig
 
 data QStoreCfg s where
   MQStoreCfg :: QStoreCfg 'QSMemory
+#if defined(dbServerPostgres)
   PQStoreCfg :: PostgresStoreCfg -> QStoreCfg 'QSPostgres
+#endif
 
 data JournalQueue (s :: QSType) = JournalQueue
   { recipientId' :: RecipientId,
@@ -285,7 +300,9 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   newQueueStore :: QStoreCfg s -> IO (QStore s)
   newQueueStore = \case
     MQStoreCfg -> MQStore <$> newQueueStore @(JournalQueue s) ()
+#if defined(dbServerPostgres)
     PQStoreCfg cfg -> PQStore <$> newQueueStore @(JournalQueue s) cfg
+#endif
 
   closeQueueStore = withQS (closeQueueStore @(JournalQueue s))
   {-# INLINE closeQueueStore #-}
@@ -344,7 +361,9 @@ instance MsgStoreClass (JournalMsgStore s) where
   withAllMsgQueues :: Monoid a => Bool -> JournalMsgStore s -> (JournalQueue s -> IO a) -> IO a
   withAllMsgQueues tty ms action = case queueStore_ ms of
     MQStore st -> withLoadedQueues st action
+#if defined(dbServerPostgres)
     PQStore st -> foldQueues tty st (mkQueue ms) action
+#endif
 
   logQueueStates :: JournalMsgStore s -> IO ()
   logQueueStates ms = withActiveMsgQueues ms $ unStoreIO . logQueueState
