@@ -80,7 +80,9 @@ instance MsgStoreClass STMMsgStore where
   {-# INLINE closeMsgStore #-}
   withActiveMsgQueues = withLoadedQueues . queueStore_
   {-# INLINE withActiveMsgQueues #-}
-  withAllMsgQueues _ = withLoadedQueues . queueStore_
+  unsafeWithAllMsgQueues _ = withLoadedQueues . queueStore_
+  {-# INLINE unsafeWithAllMsgQueues #-}
+  withAllMsgQueues _tty _op ms action = withLoadedQueues (queueStore_ ms) $ atomically . action
   {-# INLINE withAllMsgQueues #-}
   logQueueStates _ = pure ()
   {-# INLINE logQueueStates #-}
@@ -91,6 +93,10 @@ instance MsgStoreClass STMMsgStore where
 
   mkQueue _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
   {-# INLINE mkQueue #-}
+
+  getLoadedQueue :: STMMsgStore -> STMQueue -> STM STMQueue
+  getLoadedQueue _ = pure
+  {-# INLINE getLoadedQueue #-}
 
   getMsgQueue :: STMMsgStore -> STMQueue -> Bool -> STM STMMsgQueue
   getMsgQueue _ STMQueue {msgQueue'} _ = readTVar msgQueue' >>= maybe newQ pure
@@ -168,3 +174,8 @@ instance MsgStoreClass STMMsgStore where
 
   isolateQueue :: STMQueue -> String -> STM a -> ExceptT ErrorType IO a
   isolateQueue _ _ = liftIO . atomically
+  {-# INLINE isolateQueue #-}
+
+  unsafeRunStore :: STMQueue -> String -> STM a -> IO a
+  unsafeRunStore _ _ = atomically
+  {-# INLINE unsafeRunStore #-}

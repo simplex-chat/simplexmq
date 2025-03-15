@@ -453,7 +453,7 @@ testExpireIdleQueues = do
   old <- expireBeforeEpoch ExpirationConfig {ttl = 1, checkInterval = 1} -- no old messages
   now <- systemSeconds <$> getSystemTime
 
-  (expired_, stored) <- runRight $ idleDeleteExpiredMsgs now ms q old
+  (expired_, stored) <- runRight $ isolateQueue q "" $ idleDeleteExpiredMsgs now ms q old
   expired_ `shouldBe` Just 0
   stored `shouldBe` 0
   (Nothing, False) <- readQueueState ms statePath

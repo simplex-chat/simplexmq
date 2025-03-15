@@ -36,13 +36,16 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
   newMsgStore :: MsgStoreConfig s -> IO s
   closeMsgStore :: s -> IO ()
   withActiveMsgQueues :: Monoid a => s -> (StoreQueue s -> IO a) -> IO a
-  withAllMsgQueues :: Monoid a => Bool -> s -> (StoreQueue s -> IO a) -> IO a
+  -- This function can only be used in server CLI commands or before server is started.
+  unsafeWithAllMsgQueues :: Monoid a => Bool -> s -> (StoreQueue s -> IO a) -> IO a
+  withAllMsgQueues :: Monoid a => Bool -> String -> s -> (StoreQueue s -> StoreMonad s a) -> IO a
   logQueueStates :: s -> IO ()
   logQueueState :: StoreQueue s -> StoreMonad s ()
   queueStore :: s -> QueueStore s
 
   -- message store methods
   mkQueue :: s -> RecipientId -> QueueRec -> IO (StoreQueue s)
+  getLoadedQueue :: s -> StoreQueue s -> StoreMonad s (StoreQueue s)
   getMsgQueue :: s -> StoreQueue s -> Bool -> StoreMonad s (MsgQueue (StoreQueue s))
   getPeekMsgQueue :: s -> StoreQueue s -> StoreMonad s (Maybe (MsgQueue (StoreQueue s), Message))
 
@@ -57,6 +60,7 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
   tryPeekMsg_ :: StoreQueue s -> MsgQueue (StoreQueue s) -> StoreMonad s (Maybe Message)
   tryDeleteMsg_ :: StoreQueue s -> MsgQueue (StoreQueue s) -> Bool -> StoreMonad s ()
   isolateQueue :: StoreQueue s -> String -> StoreMonad s a -> ExceptT ErrorType IO a
+  unsafeRunStore :: StoreQueue s -> String -> StoreMonad s a -> IO a
 
 data MSType = MSMemory | MSJournal
 
@@ -84,10 +88,6 @@ getQueueRec :: (MsgStoreClass s, DirectParty p) => s -> SParty p -> QueueId -> I
 getQueueRec st party qId =
   getQueue st party qId
     $>>= (\q -> maybe (Left AUTH) (Right . (q,)) <$> readTVarIO (queueRec q))
-
-getQueueMessages :: MsgStoreClass s => Bool -> s -> StoreQueue s -> ExceptT ErrorType IO [Message]
-getQueueMessages drainMsgs st q = withPeekMsgQueue st q "getQueueMessages" $ maybe (pure []) (getQueueMessages_ drainMsgs q . fst)
-{-# INLINE getQueueMessages #-}
 
 getQueueSize :: MsgStoreClass s => s -> StoreQueue s -> ExceptT ErrorType IO Int
 getQueueSize st q = withPeekMsgQueue st q "getQueueSize" $ maybe (pure 0) (getQueueSize_ . fst)
@@ -127,10 +127,12 @@ deleteExpiredMsgs st q old =
 
 -- closed and idle queues will be closed after expiration
 -- returns (expired count, queue size after expiration)
-idleDeleteExpiredMsgs :: MsgStoreClass s => Int64 -> s -> StoreQueue s -> Int64 -> ExceptT ErrorType IO (Maybe Int, Int)
-idleDeleteExpiredMsgs now st q old =
-  isolateQueue q "idleDeleteExpiredMsgs" $
-    withIdleMsgQueue now st q (deleteExpireMsgs_ old q)
+idleDeleteExpiredMsgs :: MsgStoreClass s => Int64 -> s -> StoreQueue s -> Int64 -> StoreMonad s (Maybe Int, Int)
+idleDeleteExpiredMsgs now st q old = do
+  -- Use cached queue if available.
+  -- Also see the comment in loadQueue in PostgresQueueStore
+  q' <- getLoadedQueue st q
+  withIdleMsgQueue now st q' $ deleteExpireMsgs_ old q'
 
 deleteExpireMsgs_ :: MsgStoreClass s => Int64 -> StoreQueue s -> MsgQueue (StoreQueue s) -> StoreMonad s Int
 deleteExpireMsgs_ old q mq = do
