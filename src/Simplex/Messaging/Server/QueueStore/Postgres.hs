@@ -328,7 +328,7 @@ insertQueueQuery =
 foldQueueRecs :: Monoid a => Bool -> PostgresQueueStore q -> ((RecipientId, QueueRec) -> IO a) -> IO a
 foldQueueRecs tty st f = do
   (n, r) <- withConnection (dbStore st) $ \db ->
-    DB.foldWithOptions_ opts db (queueRecQuery <> " WHERE deleted_at IS NULL") (0 :: Int, mempty) $ \(i, acc) row -> do
+    DB.fold_ db (queueRecQuery <> " WHERE deleted_at IS NULL") (0 :: Int, mempty) $ \(i, acc) row -> do
       r <- f $ rowToQueueRec row
       let !i' = i + 1
           !acc' = acc <> r
@@ -337,7 +337,6 @@ foldQueueRecs tty st f = do
   when tty $ putStrLn $ progress n
   pure r
   where
-    opts = DB.defaultFoldOptions {DB.fetchQuantity = DB.Fixed 16}
     progress i = "Processed: " <> show i <> " records"
 
 queueRecQuery :: Query
