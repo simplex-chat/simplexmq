@@ -398,8 +398,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       where
         expire :: forall s. MsgStoreClass s => s -> ServerStats -> Int64 -> IO ()
         expire ms stats interval = do
-          threadDelay' 10000000
-          logInfo "expiring"
+          threadDelay' interval
           n <- compactQueues @(StoreQueue s) $ queueStore ms
           when (n > 0) $ logInfo $ "Removed " <> tshow n <> " old deleted queues from the database."
           old <- expireBeforeEpoch expCfg
@@ -409,7 +408,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           atomicWriteIORef (msgCount stats) stored
           atomicModifyIORef'_ (msgExpired stats) (+ expired)
           printMessageStats "STORE: messages" msgStats
-          threadDelay' interval
         expireQueueMsgs now ms old q = do
           (expired_, stored) <- idleDeleteExpiredMsgs now ms q old
           pure MessageStats {storedMsgsCount = stored, expiredMsgsCount = fromMaybe 0 expired_, storedQueues = 1}
