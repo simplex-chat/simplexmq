@@ -2,35 +2,88 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Server.Main.INI where
+module Simplex.Messaging.Server.Main.Init where
 
+import Data.ByteString.Char8 (ByteString)
+import Data.Int (Int64)
+import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe, isNothing)
+import Numeric.Natural (Natural)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Network.Socket (HostName)
+import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth)
-import Simplex.Messaging.Server.CLI (onOff)
+import Simplex.Messaging.Server.CLI (SignAlgorithm, onOff)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Server.Information (Entity (..), ServerPublicInfo (..))
-import Simplex.Messaging.Server.Main.Options
+import Simplex.Messaging.Transport.Client (SocksProxy, TransportHost)
 import Simplex.Messaging.Util (safeDecodeUtf8, tshow)
 import System.FilePath ((</>))
 
 defaultControlPort :: Int
 defaultControlPort = 5224
 
-iniFileContent :: FilePath -> FilePath -> InitOptions -> HostName -> Maybe BasicAuth -> Maybe (Text, Text) -> Text -> Text
-iniFileContent cfgPath logPath opts host basicAuth controlPortPwds dbIniContent =
+defaultDBConnStr :: ByteString
+defaultDBConnStr = "postgresql://smp@/smp_server_store"
+
+defaultDBSchema :: ByteString
+defaultDBSchema = "smp_server"
+
+defaultDBPoolSize :: Natural
+defaultDBPoolSize = 10
+
+-- time to retain deleted queues in the database (days), for debugging
+defaultDeletedTTL :: Int64
+defaultDeletedTTL = 21
+
+data InitOptions = InitOptions
+  { enableStoreLog :: Bool,
+    dbOptions :: DBOpts,
+    logStats :: Bool,
+    signAlgorithm :: SignAlgorithm,
+    ip :: HostName,
+    fqdn :: Maybe HostName,
+    password :: Maybe ServerPassword,
+    controlPort :: Maybe Int,
+    socksProxy :: Maybe SocksProxy,
+    ownDomains :: Maybe (L.NonEmpty TransportHost),
+    sourceCode :: Maybe Text,
+    serverInfo :: ServerPublicInfo,
+    operatorCountry :: Maybe Text,
+    hostingCountry :: Maybe Text,
+    webStaticPath :: Maybe FilePath,
+    disableWeb :: Bool,
+    scripted :: Bool
+  }
+  deriving (Show)
+
+data ServerPassword = ServerPassword BasicAuth | SPRandom
+  deriving (Show)
+
+iniFileContent :: FilePath -> FilePath -> InitOptions -> HostName -> Maybe BasicAuth -> Maybe (Text, Text) -> Text
+iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
   informationIniContent opts
     <> "[STORE_LOG]\n\
         \# The server uses memory or PostgreSQL database for persisting queue records.\n\
         \# Use `enable: on` to use append-only log to preserve and restore queue records on restart.\n\
         \# Log is compacted on start (deleted objects are removed).\n"
     <> ("enable: " <> onOff enableStoreLog <> "\n\n")
-    <> dbIniContent
+    <> "# Queue storage mode: `memory` or `database` (to store queue records in PostgreSQL database).\n\
+        \# `memory` - in-memory persistence, with optional append-only log (`enable: on`).\n\
+        \# `database`- PostgreSQL databass (requires `store_messages: journal`).\n\
+        \store_queues: memory\n\n\
+        \# Database connection settings for PostgreSQL database (`store_queues: database`).\n"
+    <> (optDisabled' (connstr == defaultDBConnStr) <> "db_connection: " <> safeDecodeUtf8 connstr <> "\n")
+    <> (optDisabled' (schema == defaultDBSchema) <> "db_schema: " <> safeDecodeUtf8 schema <> "\n")
+    <> (optDisabled' (poolSize == defaultDBPoolSize) <> "db_pool_size: " <> tshow poolSize <> "\n\n")
+    <> "# Write database changes to store log file\n\
+        \# db_store_log: off\n\n\
+        \# Time to retain deleted queues in the database, days.\n"
+    <> ("db_deleted_ttl: " <> tshow defaultDeletedTTL <> "\n\n")
     <> "# Message storage mode: `memory` or `journal`.\n\
         \store_messages: memory\n\n\
         \# When store_messages is `memory`, undelivered messages are optionally saved and restored\n\
@@ -110,7 +163,8 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds dbIniContent 
     <> (webDisabled <> "cert: " <> T.pack httpsCertFile <> "\n")
     <> (webDisabled <> "key: " <> T.pack httpsKeyFile <> "\n")
   where
-    InitOptions {enableStoreLog, socksProxy, ownDomains, controlPort, webStaticPath, disableWeb, logStats} = opts
+    InitOptions {enableStoreLog, dbOptions, socksProxy, ownDomains, controlPort, webStaticPath, disableWeb, logStats} = opts
+    DBOpts {connstr, schema, poolSize} = dbOptions
     defaultServerPorts = "5223,443"
     defaultStaticPath = logPath </> "www"
     httpsCertFile = cfgPath </> "web.crt"

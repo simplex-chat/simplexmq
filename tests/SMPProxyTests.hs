@@ -156,9 +156,7 @@ smpProxyTests = do
       withSmpServerConfigOn (transport @TLS) cfg1 testPort $ \_ ->
         let cfg2' = case qsType of
               SQSMemory -> journalCfg cfg2 testStoreLogFile2 testStoreMsgsDir2
-#if defined(dbServerPostgres)
               SQSPostgres -> journalCfgDB cfg2 testStoreDBOpts2 testStoreMsgsDir2
-#endif
          in withSmpServerConfigOn (transport @TLS) cfg2' testPort2 $ const runTest
 
 deliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => SMPServer -> SMPServer -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()

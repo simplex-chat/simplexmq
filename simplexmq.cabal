@@ -106,6 +106,7 @@ library
       Simplex.Messaging.Agent.Store.Interface
       Simplex.Messaging.Agent.Store.Migrations
       Simplex.Messaging.Agent.Store.Migrations.App
+      Simplex.Messaging.Agent.Store.Postgres.Options
       Simplex.Messaging.Agent.Store.Shared
       Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Client
@@ -129,6 +130,7 @@ library
       Simplex.Messaging.Parsers
       Simplex.Messaging.Protocol
       Simplex.Messaging.Server.Expiration
+      Simplex.Messaging.Server.QueueStore.Postgres.Config
       Simplex.Messaging.Server.QueueStore.QueueInfo
       Simplex.Messaging.ServiceScheme
       Simplex.Messaging.Session
@@ -226,8 +228,7 @@ library
           Simplex.Messaging.Server.Env.STM
           Simplex.Messaging.Server.Information
           Simplex.Messaging.Server.Main
-          Simplex.Messaging.Server.Main.Options
-          Simplex.Messaging.Server.Main.INI
+          Simplex.Messaging.Server.Main.Init
           Simplex.Messaging.Server.MsgStore
           Simplex.Messaging.Server.MsgStore.Journal
           Simplex.Messaging.Server.MsgStore.Journal.SharedLock
@@ -250,7 +251,6 @@ library
               Simplex.Messaging.Agent.Store.Postgres.DB
               Simplex.Messaging.Agent.Store.Postgres.Migrations
               Simplex.Messaging.Agent.Store.Postgres.Util
-              Simplex.Messaging.Server.Main.Postgres
               Simplex.Messaging.Server.QueueStore.Postgres
               Simplex.Messaging.Server.QueueStore.Postgres.Migrations
   other-modules:

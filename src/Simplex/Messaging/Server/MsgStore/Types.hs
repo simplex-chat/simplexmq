@@ -1,5 +1,4 @@
 {-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -72,9 +71,7 @@ data SMSType :: MSType -> Type where
 
 data SQSType :: QSType -> Type where
   SQSMemory :: SQSType 'QSMemory
-#if defined(dbServerPostgres)
   SQSPostgres :: SQSType 'QSPostgres
-#endif
 
 addQueue :: MsgStoreClass s => s -> RecipientId -> QueueRec -> IO (Either ErrorType (StoreQueue s))
 addQueue st = addQueue_ (queueStore st) (mkQueue st)

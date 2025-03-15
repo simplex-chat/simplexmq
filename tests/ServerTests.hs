@@ -651,9 +651,7 @@ serverStoreLogCfg msType =
   let serverStoreCfg = serverStoreConfig_ True msType
       cfg' = (cfgMS msType) {serverStoreCfg, storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
       compacting = case msType of
-#if defined(dbServerPostgres)
         ASType SQSPostgres _ -> False
-#endif
         _ -> True
    in (cfg', compacting)
 

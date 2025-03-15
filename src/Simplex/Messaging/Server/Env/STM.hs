@@ -56,9 +56,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
-#if defined(dbServerPostgres)
-import Simplex.Messaging.Server.QueueStore.Postgres (PostgresStoreCfg (..))
-#endif
+import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore, setStoreLog)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.Stats
@@ -219,9 +217,7 @@ data AStoreType = forall qs ms. SupportedStore qs ms => ASType (SQSType qs) (SMS
 data ServerStoreCfg qs ms where
   SSCMemory :: Maybe StorePaths -> ServerStoreCfg 'QSMemory 'MSMemory
   SSCMemoryJournal :: {storeLogFile :: FilePath, storeMsgsPath :: FilePath} -> ServerStoreCfg 'QSMemory 'MSJournal
-#if defined(dbServerPostgres)
   SSCDatabaseJournal :: {storeCfg :: PostgresStoreCfg, storeMsgsPath' :: FilePath} -> ServerStoreCfg 'QSPostgres 'MSJournal
-#endif
 
 data StorePaths = StorePaths {storeLogFile :: FilePath, storeMsgsFile :: Maybe FilePath}
 
@@ -350,6 +346,8 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
           cfg = mkJournalStoreConfig qsCfg storeMsgsPath' msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
       ms <- newMsgStore cfg
       pure $ AMS qt mt ms
+#else
+    ASSCfg _ _ SSCDatabaseJournal {} -> noPostgresExit
 #endif
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
@@ -409,6 +407,12 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
             Just StorePaths {storeMsgsFile = Just _} -> SPMMessages
             _ -> SPMQueues
           _ -> SPMMessages
+
+noPostgresExit :: IO a
+noPostgresExit = do
+  putStrLn "Error: server binary is compiled without support for PostgreSQL database."
+  putStrLn "Please download `smp-server-postgres` or re-compile with `cabal build -fserver_postgres`."
+  exitFailure
 
 mkJournalStoreConfig :: QStoreCfg s -> FilePath -> Int -> Int -> Int -> Int64 -> JournalStoreConfig s
 mkJournalStoreConfig queueStoreCfg storePath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval =

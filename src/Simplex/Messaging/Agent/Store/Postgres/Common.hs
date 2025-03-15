@@ -20,7 +20,7 @@ import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Data.ByteString (ByteString)
 import qualified Database.PostgreSQL.Simple as PSQL
-import Numeric.Natural
+import Simplex.Messaging.Agent.Store.Postgres.Options
 
 -- TODO [postgres] use log_min_duration_statement instead of custom slow queries (SQLite's Connection type)
 data DBStore = DBStore
@@ -34,14 +34,6 @@ data DBStore = DBStore
     dbClosed :: TVar Bool,
     dbNew :: Bool
   }
-
-data DBOpts = DBOpts
-  { connstr :: ByteString,
-    schema :: ByteString,
-    poolSize :: Natural,
-    createSchema :: Bool
-  }
-  deriving (Show)
 
 withConnectionPriority :: DBStore -> Bool -> (PSQL.Connection -> IO a) -> IO a
 withConnectionPriority DBStore {dbPool, dbSem} _priority =
