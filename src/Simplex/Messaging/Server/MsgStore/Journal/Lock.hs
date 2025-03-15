@@ -10,26 +10,29 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (($>>), ($>>=))
 
-withLockAndShared :: RecipientId -> Lock -> TVar (Maybe RecipientId) -> String -> IO a -> IO a
-withLockAndShared rId lock shared name =
+-- wait until shared lock with passed ID is released and take lock
+withLockWaitShared :: RecipientId -> Lock -> TMVar RecipientId -> String -> IO a -> IO a
+withLockWaitShared rId lock shared name =
   E.bracket_
-    (atomically $ retrySharedLocked rId shared >> putTMVar lock name)
+    (atomically $ waitShared rId shared >> putTMVar lock name)
     (void $ atomically $ takeTMVar lock)
 
-withLockMapAndShared :: RecipientId -> TMap RecipientId Lock -> TVar (Maybe RecipientId) -> String -> IO a -> IO a
-withLockMapAndShared rId locks shared name a =
+-- wait until shared lock with passed ID is released and take lock from Map for this ID
+withLockMapWaitShared :: RecipientId -> TMap RecipientId Lock -> TMVar RecipientId -> String -> IO a -> IO a
+withLockMapWaitShared rId locks shared name a =
   E.bracket
-    (atomically $ retrySharedLocked rId shared >> getPutLock (getMapLock locks) rId name)
+    (atomically $ waitShared rId shared >> getPutLock (getMapLock locks) rId name)
     (atomically . takeTMVar)
     (const a)
 
-retrySharedLocked :: RecipientId -> TVar (Maybe RecipientId) -> STM ()
-retrySharedLocked rId shared = readTVar shared >>= mapM_ (\rId' -> when (rId == rId') retry)
+waitShared :: RecipientId -> TMVar RecipientId -> STM ()
+waitShared rId shared = tryReadTMVar shared >>= mapM_ (\rId' -> when (rId == rId') retry)
 
-withSharedLock :: RecipientId -> TMap RecipientId Lock -> TVar (Maybe RecipientId) -> String -> IO a -> IO a
-withSharedLock rId locks shared name =
+-- wait until lock with passed ID in Map is released and take shared lock for this ID
+withSharedLock :: RecipientId -> TMap RecipientId Lock -> TMVar RecipientId -> IO a -> IO a
+withSharedLock rId locks shared =
   E.bracket_
-    (atomically $ retryLocked >> writeTVar shared (Just rId))
-    (atomically $ writeTVar shared Nothing)
+    (atomically $ waitLock >> putTMVar shared rId)
+    (atomically $ takeTMVar shared)
   where
-    retryLocked = TM.lookup rId locks $>>= tryReadTMVar $>> retry
+    waitLock = TM.lookup rId locks $>>= tryReadTMVar $>> retry

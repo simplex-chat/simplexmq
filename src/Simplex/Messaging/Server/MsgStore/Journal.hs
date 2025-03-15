@@ -89,7 +89,7 @@ data JournalMsgStore s = JournalMsgStore
   { config :: JournalStoreConfig s,
     random :: TVar StdGen,
     queueLocks :: TMap RecipientId Lock,
-    sharedLock :: TVar (Maybe RecipientId),
+    sharedLock :: TMVar RecipientId,
     queueStore_ :: QStore s,
     expireBackupsBefore :: UTCTime
   }
@@ -141,7 +141,7 @@ data QStoreCfg s where
 data JournalQueue (s :: QSType) = JournalQueue
   { recipientId' :: RecipientId,
     queueLock :: Lock,
-    sharedLock :: TVar (Maybe RecipientId),
+    sharedLock :: TMVar RecipientId,
     -- To avoid race conditions and errors when restoring queues,
     -- Nothing is written to TVar when queue is deleted.
     queueRec' :: TVar (Maybe QueueRec),
@@ -281,7 +281,7 @@ instance StoreQueueClass (JournalQueue s) where
   {-# INLINE msgQueue #-}
   withQueueLock :: JournalQueue s -> String -> IO a -> IO a
   withQueueLock JournalQueue {recipientId', queueLock, sharedLock} =
-    withLockAndShared recipientId' queueLock sharedLock
+    withLockWaitShared recipientId' queueLock sharedLock
   {-# INLINE withQueueLock #-}
 
 instance QueueStoreClass (JournalQueue s) (QStore s) where
@@ -331,7 +331,7 @@ instance MsgStoreClass (JournalMsgStore s) where
   newMsgStore config@JournalStoreConfig {queueStoreCfg} = do
     random <- newTVarIO =<< newStdGen
     queueLocks <- TM.emptyIO
-    sharedLock <- newTVarIO Nothing
+    sharedLock <- newEmptyTMVarIO
     queueStore_ <- newQueueStore @(JournalQueue s) queueStoreCfg
     expireBackupsBefore <- addUTCTime (- expireBackupsAfter config) <$> getCurrentTime
     pure JournalMsgStore {config, random, queueLocks, sharedLock, queueStore_, expireBackupsBefore}
@@ -368,7 +368,7 @@ instance MsgStoreClass (JournalMsgStore s) where
     PQStore st ->
       foldQueueRecs tty st $ \(rId, qr) -> do
         q <- mkQueue ms rId qr
-        withSharedLock rId queueLocks sharedLock op $
+        withSharedLock rId queueLocks sharedLock $
           run $ tryStore' op rId $ unStoreIO $ action q
     where
       run :: ExceptT ErrorType IO a -> IO a
@@ -600,7 +600,7 @@ storeError op rId e =
 
 isolateQueueId :: String -> JournalMsgStore s -> RecipientId -> IO (Either ErrorType a) -> ExceptT ErrorType IO a
 isolateQueueId op JournalMsgStore {queueLocks, sharedLock} rId =
-  tryStore op rId . withLockMapAndShared rId queueLocks sharedLock op
+  tryStore op rId . withLockMapWaitShared rId queueLocks sharedLock op
 
 openMsgQueue :: JournalMsgStore s -> JMQueue -> Bool -> IO (JournalMsgQueue s)
 openMsgQueue ms@JournalMsgStore {config} q@JMQueue {queueDirectory = dir, statePath} forWrite = do
