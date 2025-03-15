@@ -321,6 +321,27 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   deleteStoreQueue = withQS deleteStoreQueue
   {-# INLINE deleteStoreQueue #-}
 
+mkTempQueue :: JournalMsgStore s -> RecipientId -> QueueRec -> IO (JournalQueue s)
+mkTempQueue ms rId qr = createLockIO >>= makeQueue_ ms rId qr
+{-# INLINE mkTempQueue #-}
+
+makeQueue_ :: JournalMsgStore s -> RecipientId -> QueueRec -> Lock -> IO (JournalQueue s)
+makeQueue_ JournalMsgStore {sharedLock} rId qr queueLock = do
+  queueRec' <- newTVarIO $ Just qr
+  msgQueue' <- newTVarIO Nothing
+  activeAt <- newTVarIO 0
+  queueState <- newTVarIO Nothing
+  pure $
+    JournalQueue
+      { recipientId' = rId,
+        queueLock,
+        sharedLock,
+        queueRec',
+        msgQueue',
+        activeAt,
+        queueState
+      }
+
 instance MsgStoreClass (JournalMsgStore s) where
   type StoreMonad (JournalMsgStore s) = StoreIO s
   type QueueStore (JournalMsgStore s) = QStore s
@@ -352,7 +373,7 @@ instance MsgStoreClass (JournalMsgStore s) where
   unsafeWithAllMsgQueues :: Monoid a => Bool -> JournalMsgStore s -> (JournalQueue s -> IO a) -> IO a
   unsafeWithAllMsgQueues tty ms action = case queueStore_ ms of
     MQStore st -> withLoadedQueues st run 
-    PQStore st -> foldQueueRecs tty st $ uncurry (mkQueue ms) >=> run
+    PQStore st -> foldQueueRecs tty st $ uncurry (mkTempQueue ms) >=> run
     where
       run q = do
         r <- action q
@@ -367,7 +388,7 @@ instance MsgStoreClass (JournalMsgStore s) where
         run $ isolateQueue q op $ action q
     PQStore st ->
       foldQueueRecs tty st $ \(rId, qr) -> do
-        q <- mkQueue ms rId qr
+        q <- mkTempQueue ms rId qr
         withSharedWaitLock rId queueLocks sharedLock $
           run $ tryStore' op rId $ unStoreIO $ action q
     where
@@ -388,22 +409,9 @@ instance MsgStoreClass (JournalMsgStore s) where
   {-# INLINE queueStore #-}
 
   mkQueue :: JournalMsgStore s -> RecipientId -> QueueRec -> IO (JournalQueue s)
-  mkQueue ms@JournalMsgStore {sharedLock} rId qr = do
-    queueLock <- atomically $ getMapLock (queueLocks ms) rId
-    queueRec' <- newTVarIO $ Just qr
-    msgQueue' <- newTVarIO Nothing
-    activeAt <- newTVarIO 0
-    queueState <- newTVarIO Nothing
-    pure $
-      JournalQueue
-        { recipientId' = rId,
-          queueLock,
-          sharedLock,
-          queueRec',
-          msgQueue',
-          activeAt,
-          queueState
-        }
+  mkQueue ms rId qr = do
+    lock <- atomically $ getMapLock (queueLocks ms) rId
+    makeQueue_ ms rId qr lock
 
   getLoadedQueue :: JournalMsgStore s -> JournalQueue s -> StoreIO s (JournalQueue s)
   getLoadedQueue ms sq = StoreIO $ fromMaybe sq <$> TM.lookupIO (recipientId sq) (loadedQueues $ queueStore_ ms)
