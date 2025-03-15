@@ -97,7 +97,7 @@ import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue, closeMsgQueue)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -404,11 +404,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           old <- expireBeforeEpoch expCfg
           now <- systemSeconds <$> getSystemTime
           msgStats@MessageStats {storedMsgsCount = stored, expiredMsgsCount = expired} <-
-            withAllMsgQueues False ms $ expireQueueMsgs now ms old
+            withAllMsgQueues False "idleDeleteExpiredMsgs" ms $ expireQueueMsgs now ms old
           atomicWriteIORef (msgCount stats) stored
           atomicModifyIORef'_ (msgExpired stats) (+ expired)
           printMessageStats "STORE: messages" msgStats
-        expireQueueMsgs now ms old q = fmap (fromRight newMessageStats) . runExceptT $ do
+        expireQueueMsgs now ms old q = do
           (expired_, stored) <- idleDeleteExpiredMsgs now ms q old
           pure MessageStats {storedMsgsCount = stored, expiredMsgsCount = fromMaybe 0 expired_, storedQueues = 1}
 
@@ -1806,19 +1806,18 @@ exportMessages :: MsgStoreClass s => Bool -> s -> FilePath -> Bool -> IO ()
 exportMessages tty ms f drainMsgs = do
   logInfo $ "saving messages to file " <> T.pack f
   liftIO $ withFile f WriteMode $ \h ->
-    tryAny (withAllMsgQueues tty ms $ saveQueueMsgs h) >>= \case
+    tryAny (unsafeWithAllMsgQueues tty ms $ saveQueueMsgs h) >>= \case
       Right (Sum total) -> logInfo $ "messages saved: " <> tshow total
       Left e -> do
         logError $ "error exporting messages: " <> tshow e
         exitFailure
   where
     saveQueueMsgs h q = do
-      let rId = recipientId q
-      runExceptT (getQueueMessages drainMsgs ms q) >>= \case
-        Right msgs -> Sum (length msgs) <$ BLD.hPutBuilder h (encodeMessages rId msgs)
-        Left e -> do
-          logError $ "STORE: saveQueueMsgs, error exporting messages from queue " <> decodeLatin1 (strEncode rId) <> ", " <> tshow e
-          exitFailure
+      msgs <-
+        unsafeRunStore q "saveQueueMsgs" $
+          getQueueMessages_ drainMsgs q =<< getMsgQueue ms q False
+      BLD.hPutBuilder h $ encodeMessages (recipientId q) msgs
+      pure $ Sum $ length msgs
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
 
 processServerMessages :: StartOptions -> M (Maybe MessageStats)
@@ -1838,33 +1837,23 @@ processServerMessages StartOptions {skipWarnings} = do
         | expire = Just <$> case old_ of
             Just old -> do
               logInfo "expiring journal store messages..."
-              withAllMsgQueues False ms $ processExpireQueue old
+              run $ processExpireQueue old
             Nothing -> do
               logInfo "validating journal store messages..."
-              withAllMsgQueues False ms $ processValidateQueue
+              run processValidateQueue
         | otherwise = logWarn "skipping message expiration" $> Nothing
         where
+          run a = unsafeWithAllMsgQueues False ms a `catchAny` \_ -> exitFailure
           processExpireQueue :: Int64 -> JournalQueue s -> IO MessageStats
-          processExpireQueue old q =
-            runExceptT expireQueue >>= \case
-              Right (storedMsgsCount, expiredMsgsCount) ->
-                pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues = 1}
-              Left e -> do
-                logError $ "STORE: processExpireQueue, failed expiring messages in queue, " <> tshow e
-                exitFailure
-            where
-              expireQueue = do
-                expired'' <- deleteExpiredMsgs ms q old
-                stored'' <- getQueueSize ms q
-                liftIO $ closeMsgQueue q
-                pure (stored'', expired'')
+          processExpireQueue old q = unsafeRunStore q "processExpireQueue" $ do
+            mq <- getMsgQueue ms q False
+            expiredMsgsCount <- deleteExpireMsgs_ old q mq
+            storedMsgsCount <- getQueueSize_ mq
+            pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues = 1}
           processValidateQueue :: JournalQueue s -> IO MessageStats
-          processValidateQueue q =
-            runExceptT (getQueueSize ms q) >>= \case
-              Right storedMsgsCount -> pure newMessageStats {storedMsgsCount, storedQueues = 1}
-              Left e -> do
-                logError $ "STORE: processValidateQueue, failed opening message queue, " <> tshow e
-                exitFailure
+          processValidateQueue q = unsafeRunStore q "processValidateQueue" $ do
+            storedMsgsCount <- getQueueSize_ =<< getMsgQueue ms q False
+            pure newMessageStats {storedMsgsCount, storedQueues = 1}
 
 importMessages :: forall s. MsgStoreClass s => Bool -> s -> FilePath -> Maybe Int64 -> Bool -> IO MessageStats
 importMessages tty ms f old_ skipWarnings  = do

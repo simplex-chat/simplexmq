@@ -228,6 +228,7 @@ library
           Simplex.Messaging.Server.Main
           Simplex.Messaging.Server.MsgStore
           Simplex.Messaging.Server.MsgStore.Journal
+          Simplex.Messaging.Server.MsgStore.Journal.SharedLock
           Simplex.Messaging.Server.MsgStore.STM
           Simplex.Messaging.Server.MsgStore.Types
           Simplex.Messaging.Server.NtfStore
