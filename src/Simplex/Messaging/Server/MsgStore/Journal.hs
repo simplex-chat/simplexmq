@@ -70,7 +70,7 @@ import Simplex.Messaging.Agent.Client (getMapLock)
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.MsgStore.Journal.Lock
+import Simplex.Messaging.Server.MsgStore.Journal.SharedLock
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Postgres
@@ -368,7 +368,7 @@ instance MsgStoreClass (JournalMsgStore s) where
     PQStore st ->
       foldQueueRecs tty st $ \(rId, qr) -> do
         q <- mkQueue ms rId qr
-        withSharedLock rId queueLocks sharedLock $
+        withSharedWaitLock rId queueLocks sharedLock $
           run $ tryStore' op rId $ unStoreIO $ action q
     where
       run :: ExceptT ErrorType IO a -> IO a

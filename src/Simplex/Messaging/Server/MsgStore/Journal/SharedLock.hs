@@ -1,4 +1,9 @@
-module Simplex.Messaging.Server.MsgStore.Journal.Lock where
+module Simplex.Messaging.Server.MsgStore.Journal.SharedLock
+  ( withLockWaitShared,
+    withLockMapWaitShared,
+    withSharedWaitLock,
+  )
+where
 
 import Control.Concurrent.STM
 import qualified Control.Exception as E
@@ -29,8 +34,8 @@ waitShared :: RecipientId -> TMVar RecipientId -> STM ()
 waitShared rId shared = tryReadTMVar shared >>= mapM_ (\rId' -> when (rId == rId') retry)
 
 -- wait until lock with passed ID in Map is released and take shared lock for this ID
-withSharedLock :: RecipientId -> TMap RecipientId Lock -> TMVar RecipientId -> IO a -> IO a
-withSharedLock rId locks shared =
+withSharedWaitLock :: RecipientId -> TMap RecipientId Lock -> TMVar RecipientId -> IO a -> IO a
+withSharedWaitLock rId locks shared =
   E.bracket_
     (atomically $ waitLock >> putTMVar shared rId)
     (atomically $ takeTMVar shared)
