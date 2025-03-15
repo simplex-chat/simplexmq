@@ -127,7 +127,7 @@ deleteExpiredMsgs st q old =
 idleDeleteExpiredMsgs :: MsgStoreClass s => Int64 -> s -> StoreQueue s -> Int64 -> StoreMonad s (Maybe Int, Int)
 idleDeleteExpiredMsgs now st q old = do
   -- Use cached queue if available.
-  -- Also see the comment in cachedOrLoadedQueue
+  -- Also see the comment in loadQueue in PostgresQueueStore
   q' <- getLoadedQueue st q
   withIdleMsgQueue now st q' $ deleteExpireMsgs_ old q'
 
