@@ -795,7 +795,13 @@ cliCommandP cfgPath logPath iniFile =
       maintenance <-
         switch
           ( long "maintenance"
+              <> short 'm'
               <> help "Do not start the server, only perform start and stop tasks"
+          )
+      compactLog <-
+        switch
+          ( long "compact-log"
+              <> help "Compact store log (always enabled with `memory` storage for queues)"
           )
       skipWarnings <-
         switch
@@ -810,7 +816,7 @@ cliCommandP cfgPath logPath iniFile =
               <> help "Confirm PostgreSQL database migration: up, down (default is manual confirmation)"
               <> value MCConsole
           )
-      pure StartOptions {maintenance, skipWarnings, confirmMigrations}
+      pure StartOptions {maintenance, compactLog, skipWarnings, confirmMigrations}
     journalCmdP = storeCmdP "message log file" "journal storage"
     databaseCmdP = storeCmdP "queue store log file" "PostgreSQL database schema"
     storeCmdP src dest =

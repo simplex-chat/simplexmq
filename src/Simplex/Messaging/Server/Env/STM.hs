@@ -135,6 +135,7 @@ data ServerConfig = ServerConfig
 
 data StartOptions = StartOptions
   { maintenance :: Bool,
+    compactLog :: Bool,
     skipWarnings :: Bool,
     confirmMigrations :: MigrationConfirmation
   }
@@ -331,7 +332,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
     ASSCfg qt mt (SSCMemory storePaths_) -> do
       let storePath = storeMsgsFile =<< storePaths_
       ms <- newMsgStore STMStoreConfig {storePath, quota = msgQueueQuota}
-      forM_ storePaths_ $ \StorePaths {storeLogFile = f} ->  loadStoreLog (mkQueue ms) f $ queueStore ms
+      forM_ storePaths_ $ \StorePaths {storeLogFile = f} -> loadStoreLog (mkQueue ms) f $ queueStore ms
       pure $ AMS qt mt ms
     ASSCfg qt mt SSCMemoryJournal {storeLogFile, storeMsgsPath} -> do
       let qsCfg = MQStoreCfg
@@ -341,9 +342,10 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       pure $ AMS qt mt ms
 #if defined(dbServerPostgres)
     ASSCfg qt mt SSCDatabaseJournal {storeCfg, storeMsgsPath'} -> do
-      let StartOptions {confirmMigrations} = startOptions config
+      let StartOptions {compactLog, confirmMigrations} = startOptions config
           qsCfg = PQStoreCfg (storeCfg {confirmMigrations} :: PostgresStoreCfg)
           cfg = mkJournalStoreConfig qsCfg storeMsgsPath' msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
+      when compactLog $ compactDbStoreLog $ dbStoreLogPath storeCfg
       ms <- newMsgStore cfg
       pure $ AMS qt mt ms
 #else
@@ -368,6 +370,16 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       logInfo $ "restoring queues from file " <> T.pack f
       sl <- readWriteQueueStore False mkQ f st
       setStoreLog st sl
+    compactDbStoreLog = \case
+      Just f -> do
+        logInfo $ "compacting queues in file " <> T.pack f
+        st <- newMsgStore STMStoreConfig {storePath = Nothing, quota = msgQueueQuota}
+        sl <- readWriteQueueStore False (mkQueue st) f (queueStore st)
+        setStoreLog (queueStore st) sl
+        closeMsgStore st
+      Nothing -> do
+        logError "Error: `--compact-log` used without `db_store_log` INI option"
+        exitFailure
     getCredentials protocol creds = do
       files <- missingCreds
       unless (null files) $ do
