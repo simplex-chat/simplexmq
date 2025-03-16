@@ -212,7 +212,7 @@ cfgMS msType =
       allowSMPProxy = False,
       serverClientConcurrency = 2,
       information = Nothing,
-      startOptions = StartOptions {maintenance = False, skipWarnings = False, confirmMigrations = MCYesUp}
+      startOptions = StartOptions {maintenance = False, compactLog = False, skipWarnings = False, confirmMigrations = MCYesUp}
     }
 
 serverStoreConfig :: AStoreType -> AServerStoreCfg

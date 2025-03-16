@@ -63,7 +63,11 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     pure STMQueueStore {queues, senders, notifiers, storeLog}
 
   closeQueueStore :: STMQueueStore q -> IO ()
-  closeQueueStore st = readTVarIO (storeLog st) >>= mapM_ closeStoreLog
+  closeQueueStore STMQueueStore {queues, senders, notifiers, storeLog} = do
+    readTVarIO storeLog >>= mapM_ closeStoreLog
+    atomically $ TM.clear queues
+    atomically $ TM.clear senders
+    atomically $ TM.clear notifiers
 
   loadedQueues = queues
   {-# INLINE loadedQueues #-}
