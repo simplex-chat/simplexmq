@@ -51,9 +51,9 @@ import Simplex.Messaging.Agent.Client (withLockMap)
 import Simplex.Messaging.Agent.Lock (Lock)
 import Simplex.Messaging.Agent.Store.Postgres (createDBStore, closeDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common
-import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
 import Simplex.Messaging.Server.QueueStore.STM (readQueueRecIO)
 import Simplex.Messaging.Server.QueueStore.Types
@@ -64,6 +64,7 @@ import Simplex.Messaging.Util (firstRow, ifM, tshow, (<$$>))
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hFlush, stdout)
 import UnliftIO.STM
+
 #if !defined(dbPostgres)
 import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder)
 import qualified Simplex.Messaging.Crypto as C
@@ -80,13 +81,6 @@ data PostgresQueueStore q = PostgresQueueStore
     -- this map only cashes the queues that were attempted to be subscribed to,
     notifiers :: TMap NotifierId RecipientId,
     notifierLocks :: TMap NotifierId Lock,
-    deletedTTL :: Int64
-  }
-
-data PostgresStoreCfg = PostgresStoreCfg
-  { dbOpts :: DBOpts,
-    dbStoreLogPath :: Maybe FilePath,
-    confirmMigrations :: MigrationConfirmation,
     deletedTTL :: Int64
   }
 

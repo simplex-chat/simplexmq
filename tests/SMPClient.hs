@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -16,9 +17,8 @@ module SMPClient where
 import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
-import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
 import Network.Socket
-import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts (..))
+import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
@@ -28,7 +28,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
-import Simplex.Messaging.Server.QueueStore.Postgres (PostgresStoreCfg (..))
+import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import qualified Simplex.Messaging.Transport.Client as Client
@@ -43,6 +43,10 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, putTMVar, takeTMVar)
 import UnliftIO.Timeout (timeout)
 import Util
+
+#if defined(dbServerPostgres)
+import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
+#endif
 
 testHost :: NonEmpty TransportHost
 testHost = "localhost"
@@ -80,12 +84,14 @@ testStoreDBOpts2 = testStoreDBOpts {schema = "smp_server2"}
 testServerDBConnstr :: ByteString
 testServerDBConnstr = "postgresql://test_server_user@/test_server_db"
 
+#if defined(dbServerPostgres)
 testServerDBConnectInfo :: ConnectInfo
 testServerDBConnectInfo =
   defaultConnectInfo {
     connectUser = "test_server_user",
     connectDatabase = "test_server_db"
   }
+#endif
 
 testStoreMsgsFile :: FilePath
 testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
@@ -145,9 +151,6 @@ testSMPClient_ host port vr client = do
 
 cfg :: ServerConfig
 cfg = cfgMS (ASType SQSMemory SMSJournal)
-
-cfgDB :: ServerConfig
-cfgDB = cfgMS (ASType SQSPostgres SMSJournal)
 
 cfgJ2 :: ServerConfig
 cfgJ2 = journalCfg cfg testStoreLogFile2 testStoreMsgsDir2

@@ -23,7 +23,6 @@ import GHC.IO.Exception (IOException (..))
 import qualified GHC.IO.Exception as IOException
 import NtfServerTests (ntfServerTests)
 import RemoteControl (remoteControlTests)
-import SMPClient (testServerDBConnectInfo)
 import SMPProxyTests (smpProxyTests)
 import ServerTests
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
@@ -33,14 +32,23 @@ import Simplex.Messaging.Transport (TLS, Transport (..))
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Environment (setEnv)
 import Test.Hspec
-import Util (postgressBracket)
 import XFTPAgent
 import XFTPCLI
 import XFTPServerTests (xftpServerTests)
+
 #if defined(dbPostgres)
 import Fixtures
 #else
 import AgentTests.SchemaDump (schemaDumpTest)
+#endif
+
+#if defined(dbServerPostgres)
+import SMPClient (testServerDBConnectInfo)
+#endif
+
+#if defined(dbPostgres) || defined(dbServerPostgres)
+import Database.PostgreSQL.Simple (ConnectInfo (..))
+import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists, dropDatabaseAndUser)
 #endif
 
 logCfg :: LogConfig
@@ -75,11 +83,12 @@ main = do
           describe "Store log tests" storeLogTests
           describe "TRcvQueues tests" tRcvQueuesTests
           describe "Util tests" utilTests
+#if defined(dbServerPostgres)
         aroundAll_ (postgressBracket testServerDBConnectInfo)
-          -- TODO [postgres] fix store log tests
           $ describe "SMP server via TLS, postgres+jornal message store" $ do
               describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
               before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests
+#endif
         describe "SMP server via TLS, jornal message store" $ do
           describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
           before (pure (transport @TLS, ASType SQSMemory SMSJournal)) serverTests
@@ -89,10 +98,12 @@ main = do
         --   describe "SMP syntax" $ serverSyntaxTests (transport @WS)
         --   before (pure (transport @WS, ASType SQSMemory SMSJournal)) serverTests
         describe "Notifications server" $ ntfServerTests (transport @TLS)
+#if defined(dbServerPostgres)
         aroundAll_ (postgressBracket testServerDBConnectInfo) $ do
           describe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
           describe "SMP proxy, postgres+jornal message store" $
             before (pure $ ASType SQSPostgres SMSJournal) smpProxyTests
+#endif
         describe "SMP client agent, jornal message store" $ agentTests (transport @TLS, ASType SQSMemory SMSJournal)
         describe "SMP proxy, jornal message store" $
           before (pure $ ASType SQSMemory SMSJournal) smpProxyTests
@@ -113,3 +124,11 @@ eventuallyRemove path retries = case retries of
       _ -> E.throwIO ioe
   where
     action = removeDirectoryRecursive path
+
+#if defined(dbPostgres) || defined(dbServerPostgres)
+postgressBracket :: ConnectInfo -> IO a -> IO a
+postgressBracket connInfo =
+  E.bracket_
+    (dropDatabaseAndUser connInfo >> createDBAndUserIfNotExists connInfo)
+    (dropDatabaseAndUser connInfo)
+#endif

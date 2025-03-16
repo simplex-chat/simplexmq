@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -43,7 +44,9 @@ module Simplex.Messaging.Server.MsgStore.Journal
     journalFilePath,
     logFileExt,
     stmQueueStore,
+#if defined(dbServerPostgres)
     postgresQueueStore,
+#endif
   )
 where
 
@@ -73,7 +76,9 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Journal.SharedLock
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
+#if defined(dbServerPostgres)
 import Simplex.Messaging.Server.QueueStore.Postgres
+#endif
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.TMap (TMap)
@@ -96,25 +101,33 @@ data JournalMsgStore s = JournalMsgStore
 
 data QStore (s :: QSType) where
   MQStore :: QStoreType 'QSMemory -> QStore 'QSMemory
+#if defined(dbServerPostgres)
   PQStore :: QStoreType 'QSPostgres -> QStore 'QSPostgres
+#endif
 
 type family QStoreType s where
   QStoreType 'QSMemory = STMQueueStore (JournalQueue 'QSMemory)
+#if defined(dbServerPostgres)
   QStoreType 'QSPostgres = PostgresQueueStore (JournalQueue 'QSPostgres)
+#endif
 
 withQS :: (QueueStoreClass (JournalQueue s) (QStoreType s) => QStoreType s -> r) -> QStore s -> r
 withQS f = \case
   MQStore st -> f st
+#if defined(dbServerPostgres)
   PQStore st -> f st
+#endif
 {-# INLINE withQS #-}
 
 stmQueueStore :: JournalMsgStore 'QSMemory -> STMQueueStore (JournalQueue 'QSMemory)
 stmQueueStore st = case queueStore_ st of
   MQStore st' -> st'
 
+#if defined(dbServerPostgres)
 postgresQueueStore :: JournalMsgStore 'QSPostgres -> PostgresQueueStore (JournalQueue 'QSPostgres)
 postgresQueueStore st = case queueStore_ st of
   PQStore st' -> st'
+#endif
 
 data JournalStoreConfig s = JournalStoreConfig
   { storePath :: FilePath,
@@ -136,7 +149,9 @@ data JournalStoreConfig s = JournalStoreConfig
 
 data QStoreCfg s where
   MQStoreCfg :: QStoreCfg 'QSMemory
+#if defined(dbServerPostgres)
   PQStoreCfg :: PostgresStoreCfg -> QStoreCfg 'QSPostgres
+#endif
 
 data JournalQueue (s :: QSType) = JournalQueue
   { recipientId' :: RecipientId,
@@ -290,7 +305,9 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   newQueueStore :: QStoreCfg s -> IO (QStore s)
   newQueueStore = \case
     MQStoreCfg -> MQStore <$> newQueueStore @(JournalQueue s) ()
+#if defined(dbServerPostgres)
     PQStoreCfg cfg -> PQStore <$> newQueueStore @(JournalQueue s) cfg
+#endif
 
   closeQueueStore = withQS (closeQueueStore @(JournalQueue s))
   {-# INLINE closeQueueStore #-}
@@ -321,9 +338,11 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   deleteStoreQueue = withQS deleteStoreQueue
   {-# INLINE deleteStoreQueue #-}
 
+#if defined(dbServerPostgres)
 mkTempQueue :: JournalMsgStore s -> RecipientId -> QueueRec -> IO (JournalQueue s)
 mkTempQueue ms rId qr = createLockIO >>= makeQueue_ ms rId qr
 {-# INLINE mkTempQueue #-}
+#endif
 
 makeQueue_ :: JournalMsgStore s -> RecipientId -> QueueRec -> Lock -> IO (JournalQueue s)
 makeQueue_ JournalMsgStore {sharedLock} rId qr queueLock = do
@@ -373,7 +392,9 @@ instance MsgStoreClass (JournalMsgStore s) where
   unsafeWithAllMsgQueues :: Monoid a => Bool -> JournalMsgStore s -> (JournalQueue s -> IO a) -> IO a
   unsafeWithAllMsgQueues tty ms action = case queueStore_ ms of
     MQStore st -> withLoadedQueues st run 
+#if defined(dbServerPostgres)
     PQStore st -> foldQueueRecs tty st $ uncurry (mkTempQueue ms) >=> run
+#endif
     where
       run q = do
         r <- action q
@@ -382,15 +403,18 @@ instance MsgStoreClass (JournalMsgStore s) where
 
   -- This function is concurrency safe, it is used to expire queues.
   withAllMsgQueues :: forall a. Monoid a => Bool -> String -> JournalMsgStore s -> (JournalQueue s -> StoreIO s a) -> IO a
-  withAllMsgQueues tty op ms@JournalMsgStore {queueLocks, sharedLock} action = case queueStore_ ms of
+  withAllMsgQueues tty op ms action = case queueStore_ ms of
     MQStore st ->
       withLoadedQueues st $ \q ->
         run $ isolateQueue q op $ action q
-    PQStore st ->
+#if defined(dbServerPostgres)
+    PQStore st -> do
+      let JournalMsgStore {queueLocks, sharedLock} = ms
       foldQueueRecs tty st $ \(rId, qr) -> do
         q <- mkTempQueue ms rId qr
         withSharedWaitLock rId queueLocks sharedLock $
           run $ tryStore' op rId $ unStoreIO $ action q
+#endif
     where
       run :: ExceptT ErrorType IO a -> IO a
       run = fmap (fromRight mempty) . runExceptT

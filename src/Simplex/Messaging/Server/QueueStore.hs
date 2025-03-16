@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -12,14 +13,16 @@ module Simplex.Messaging.Server.QueueStore where
 import Control.Applicative ((<|>))
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
+import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Protocol
+#if defined(dbServerPostgres)
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Database.PostgreSQL.Simple.FromField (FromField (..))
 import Database.PostgreSQL.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.Store.Postgres.DB (fromTextField_)
-import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol
 import Simplex.Messaging.Util (eitherToMaybe)
+#endif
 
 data QueueRec = QueueRec
   { recipientKey :: !RcvPublicAuthKey,
@@ -62,13 +65,17 @@ instance StrEncoding ServerEntityStatus where
       <|> "blocked," *> (EntityBlocked <$> strP)
       <|> "off" $> EntityOff
 
+#if defined(dbServerPostgres)
 instance FromField ServerEntityStatus where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
 instance ToField ServerEntityStatus where toField = toField . decodeLatin1 . strEncode
+#endif
 
 newtype RoundedSystemTime = RoundedSystemTime Int64
   deriving (Eq, Ord, Show)
+#if defined(dbServerPostgres)
   deriving newtype (FromField, ToField)
+#endif
 
 instance StrEncoding RoundedSystemTime where
   strEncode (RoundedSystemTime t) = strEncode t

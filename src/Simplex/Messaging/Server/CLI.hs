@@ -27,11 +27,11 @@ import qualified Data.X509.File as XF
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (HostName, ServiceName)
 import Options.Applicative
-import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts (..))
+import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
 import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), ServerStoreCfg (..), StorePaths (..))
-import Simplex.Messaging.Server.QueueStore.Postgres (PostgresStoreCfg (..))
+import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
 import Simplex.Messaging.Transport.Server (AddHTTP, loadFileFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)

@@ -58,7 +58,7 @@ jobs:
 
       - name: Build binaries
         shell: bash
-        run: docker exec -t -e apps="$apps" builder sh -c 'cabal build --enable-tests && mkdir /out && for i in $apps; do bin=$(find /project/dist-newstyle -name "$i" -type f -executable); strip "$bin"; chmod +x "$bin"; mv "$bin" /out/; done'
+        run: docker exec -t -e apps="$apps" builder sh -c 'cabal build --enable-tests -fserver_postgres && mkdir /out && for i in $apps; do bin=$(find /project/dist-newstyle -name "$i" -type f -executable); strip "$bin"; chmod +x "$bin"; mv "$bin" /out/; done'
 
       - name: Copy binaries from container and prepare them
         if: startsWith(github.ref, 'refs/tags/v')

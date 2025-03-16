@@ -56,7 +56,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.Server.QueueStore.Postgres (PostgresStoreCfg (..))
+import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore, setStoreLog)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.Stats
@@ -324,7 +324,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig -> IO Env
-newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines, startOptions} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines} = do
   serverActive <- newTVarIO True
   server <- newServer
   msgStore <- case serverStoreCfg of
@@ -339,12 +339,16 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       ms <- newMsgStore cfg
       loadStoreLog (mkQueue ms) storeLogFile $ stmQueueStore ms
       pure $ AMS qt mt ms
+#if defined(dbServerPostgres)
     ASSCfg qt mt SSCDatabaseJournal {storeCfg, storeMsgsPath'} -> do
-      let StartOptions {confirmMigrations} = startOptions
+      let StartOptions {confirmMigrations} = startOptions config
           qsCfg = PQStoreCfg (storeCfg {confirmMigrations} :: PostgresStoreCfg)
           cfg = mkJournalStoreConfig qsCfg storeMsgsPath' msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
       ms <- newMsgStore cfg
       pure $ AMS qt mt ms
+#else
+    ASSCfg _ _ SSCDatabaseJournal {} -> noPostgresExit
+#endif
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
   tlsServerCreds <- getCredentials "SMP" smpCredentials
@@ -403,6 +407,12 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
             Just StorePaths {storeMsgsFile = Just _} -> SPMMessages
             _ -> SPMQueues
           _ -> SPMMessages
+
+noPostgresExit :: IO a
+noPostgresExit = do
+  putStrLn "Error: server binary is compiled without support for PostgreSQL database."
+  putStrLn "Please download `smp-server-postgres` or re-compile with `cabal build -fserver_postgres`."
+  exitFailure
 
 mkJournalStoreConfig :: QStoreCfg s -> FilePath -> Int -> Int -> Int -> Int64 -> JournalStoreConfig s
 mkJournalStoreConfig queueStoreCfg storePath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval =
