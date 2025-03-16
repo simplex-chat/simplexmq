@@ -166,7 +166,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       storeLogExists <- doesFileExist storeLogFilePath
       case cmd of
         SCImport
-          | schemaExists && storeLogExists -> exitConfigureQueueStore storeLogFilePath connstr schema
+          | schemaExists && storeLogExists -> exitConfigureQueueStore connstr schema
           | schemaExists -> do
               putStrLn $ "Schema " <> B.unpack schema <> " already exists in PostrgreSQL database: " <> B.unpack connstr
               exitFailure
@@ -192,7 +192,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, start the server."
                 Left e -> e <> ", configure storage correctly"
         SCExport
-          | schemaExists && storeLogExists -> exitConfigureQueueStore storeLogFilePath connstr schema
+          | schemaExists && storeLogExists -> exitConfigureQueueStore connstr schema
           | not schemaExists -> do
               putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
               exitFailure
@@ -531,7 +531,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                         exitFailure
                     | otherwise -> pure ()
                   Nothing
-                    | storeLogExists && schemaExists -> exitConfigureQueueStore storeLogFilePath connstr schema
+                    | storeLogExists && schemaExists -> exitConfigureQueueStore connstr schema
                     | storeLogExists -> do
                         putStrLn $ "Error: store_queues is `database` with " <> storeLogFilePath <> " file present."
                         putStrLn "Set store_queues to `memory` or use `smp-server database import` to migrate."
@@ -559,8 +559,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       exitFailure
 
 #if defined(dbServerPostgres)
-    exitConfigureQueueStore logFilePath connstr schema = do
-      putStrLn $ "Error: both " <> logFilePath <> " file and " <> B.unpack schema <> " schema are present (database: " <> B.unpack connstr <> ")."
+    exitConfigureQueueStore connstr schema = do
+      putStrLn $ "Error: both " <> storeLogFilePath <> " file and " <> B.unpack schema <> " schema are present (database: " <> B.unpack connstr <> ")."
       putStrLn "Configure queue storage."
       exitFailure
 #endif
