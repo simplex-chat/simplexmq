@@ -472,7 +472,7 @@ testReadFileMissing ms = do
 
   mq <- fromJust <$> readTVarIO (msgQueue q)
   MsgQueueState {readState = rs} <- readTVarIO $ state mq
-  closeMsgStore ms
+  closeMsgQueue q
   let path = journalFilePath (queueDirectory $ queue mq) $ journalId rs
   removeFile path
 
@@ -491,7 +491,7 @@ testReadFileMissingSwitch ms = do
 
   mq <- fromJust <$> readTVarIO (msgQueue q)
   MsgQueueState {readState = rs} <- readTVarIO $ state mq
-  closeMsgStore ms
+  closeMsgQueue q
   let path = journalFilePath (queueDirectory $ queue mq) $ journalId rs
   removeFile path
 
@@ -509,7 +509,7 @@ testWriteFileMissing ms = do
 
   mq <- fromJust <$> readTVarIO (msgQueue q)
   MsgQueueState {writeState = ws} <- readTVarIO $ state mq
-  closeMsgStore ms
+  closeMsgQueue q
   let path = journalFilePath (queueDirectory $ queue mq) $ journalId ws
   print path
   removeFile path
@@ -532,7 +532,7 @@ testReadAndWriteFilesMissing ms = do
 
   mq <- fromJust <$> readTVarIO (msgQueue q)
   MsgQueueState {readState = rs, writeState = ws} <- readTVarIO $ state mq
-  closeMsgStore ms
+  closeMsgQueue q
   removeFile $ journalFilePath (queueDirectory $ queue mq) $ journalId rs
   removeFile $ journalFilePath (queueDirectory $ queue mq) $ journalId ws
 
