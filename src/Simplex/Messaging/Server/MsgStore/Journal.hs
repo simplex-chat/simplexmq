@@ -338,9 +338,11 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   deleteStoreQueue = withQS deleteStoreQueue
   {-# INLINE deleteStoreQueue #-}
 
+#if defined(dbServerPostgres)
 mkTempQueue :: JournalMsgStore s -> RecipientId -> QueueRec -> IO (JournalQueue s)
 mkTempQueue ms rId qr = createLockIO >>= makeQueue_ ms rId qr
 {-# INLINE mkTempQueue #-}
+#endif
 
 makeQueue_ :: JournalMsgStore s -> RecipientId -> QueueRec -> Lock -> IO (JournalQueue s)
 makeQueue_ JournalMsgStore {sharedLock} rId qr queueLock = do
@@ -401,12 +403,13 @@ instance MsgStoreClass (JournalMsgStore s) where
 
   -- This function is concurrency safe, it is used to expire queues.
   withAllMsgQueues :: forall a. Monoid a => Bool -> String -> JournalMsgStore s -> (JournalQueue s -> StoreIO s a) -> IO a
-  withAllMsgQueues tty op ms@JournalMsgStore {queueLocks, sharedLock} action = case queueStore_ ms of
+  withAllMsgQueues tty op ms action = case queueStore_ ms of
     MQStore st ->
       withLoadedQueues st $ \q ->
         run $ isolateQueue q op $ action q
 #if defined(dbServerPostgres)
-    PQStore st ->
+    PQStore st -> do
+      let JournalMsgStore {queueLocks, sharedLock} = ms
       foldQueueRecs tty st $ \(rId, qr) -> do
         q <- mkTempQueue ms rId qr
         withSharedWaitLock rId queueLocks sharedLock $

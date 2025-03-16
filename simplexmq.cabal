@@ -75,7 +75,7 @@ flag client_postgres
 flag server_postgres
   description: Build server with support of PostgreSQL.
   manual: True
-  default: True
+  default: False
 
 library
   exposed-modules:
@@ -244,13 +244,16 @@ library
           Simplex.Messaging.Server.StoreLog.ReadWrite
           Simplex.Messaging.Server.StoreLog.Types
           Simplex.Messaging.Transport.WebSockets
-      if flag(server_postgres)
+      if flag(client_postgres) || flag(server_postgres)
           exposed-modules:
               Simplex.Messaging.Agent.Store.Postgres
               Simplex.Messaging.Agent.Store.Postgres.Common
               Simplex.Messaging.Agent.Store.Postgres.DB
               Simplex.Messaging.Agent.Store.Postgres.Migrations
               Simplex.Messaging.Agent.Store.Postgres.Util
+
+      if flag(server_postgres)
+          exposed-modules:
               Simplex.Messaging.Server.QueueStore.Postgres
               Simplex.Messaging.Server.QueueStore.Postgres.Migrations
   other-modules:
@@ -317,15 +320,15 @@ library
         case-insensitive ==1.2.*
       , hashable ==1.4.*
       , ini ==0.4.1
-      , postgresql-simple ==0.7.*
       , optparse-applicative >=0.15 && <0.17
       , process ==1.6.*
-      , raw-strings-qq ==1.1.*
       , temporary ==1.3.*
       , websockets ==0.12.*
   if flag(client_postgres) || flag(server_postgres)
     build-depends:
         postgresql-libpq >=0.10.0.0
+      , postgresql-simple ==0.7.*
+      , raw-strings-qq ==1.1.*
   if flag(client_postgres)
     cpp-options: -DdbPostgres
   else
@@ -451,7 +454,6 @@ test-suite simplexmq-test
       CoreTests.UtilTests
       CoreTests.VersionRangeTests
       FileDescriptionTests
-      Fixtures
       NtfClient
       NtfServerTests
       RemoteControl
@@ -467,7 +469,10 @@ test-suite simplexmq-test
       Static
       Static.Embedded
       Paths_simplexmq
-  if !flag(client_postgres)
+  if flag(client_postgres)
+      other-modules:
+          Fixtures
+  else
       other-modules:
           AgentTests.SchemaDump
           AgentTests.SQLiteTests
@@ -489,7 +494,6 @@ test-suite simplexmq-test
     , crypton-x509
     , crypton-x509-store
     , crypton-x509-validation
-    , deepseq ==1.4.*
     , directory
     , file-embed
     , filepath
@@ -503,10 +507,8 @@ test-suite simplexmq-test
     , ini
     , iso8601-time
     , main-tester ==0.2.*
-    , memory
     , mtl
     , network
-    , process
     , QuickCheck ==2.14.*
     , random
     , silently ==1.2.*
@@ -527,14 +529,15 @@ test-suite simplexmq-test
     , yaml
   default-language: Haskell2010
   if flag(client_postgres)
-    build-depends:
-        postgresql-libpq >=0.10.0.0
-      , raw-strings-qq ==1.1.*
     cpp-options: -DdbPostgres
   else
     build-depends:
-        sqlcipher-simple
-  if flag(server_postgres)
+        deepseq ==1.4.*
+      , memory
+      , process
+      , sqlcipher-simple
+  if flag(client_postgres) || flag(server_postgres)
     build-depends:
         postgresql-simple ==0.7.*
+  if flag(server_postgres)
     cpp-options: -DdbServerPostgres

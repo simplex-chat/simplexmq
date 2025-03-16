@@ -43,8 +43,11 @@ import AgentTests.SchemaDump (schemaDumpTest)
 #endif
 
 #if defined(dbServerPostgres)
-import Database.PostgreSQL.Simple (ConnectInfo (..))
 import SMPClient (testServerDBConnectInfo)
+#endif
+
+#if defined(dbPostgres) || defined(dbServerPostgres)
+import Database.PostgreSQL.Simple (ConnectInfo (..))
 import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists, dropDatabaseAndUser)
 #endif
 
@@ -122,7 +125,7 @@ eventuallyRemove path retries = case retries of
   where
     action = removeDirectoryRecursive path
 
-#if defined(dbServerPostgres)
+#if defined(dbPostgres) || defined(dbServerPostgres)
 postgressBracket :: ConnectInfo -> IO a -> IO a
 postgressBracket connInfo =
   E.bracket_

@@ -558,10 +558,12 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       putStrLn "Configure memory storage."
       exitFailure
 
+#if defined(dbServerPostgres)
     exitConfigureQueueStore logFilePath connstr schema = do
       putStrLn $ "Error: both " <> logFilePath <> " file and " <> B.unpack schema <> " schema are present (database: " <> B.unpack connstr <> ")."
       putStrLn "Configure queue storage."
       exitFailure
+#endif
 
 data EmbeddedWebParams = EmbeddedWebParams
   { webStaticPath :: FilePath,
