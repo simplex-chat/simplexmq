@@ -56,9 +56,24 @@ jobs:
         shell: bash
         run: docker run -t -d --name builder local
 
-      - name: Build binaries
+      - name: Build smp-server (postgresql) and tests
         shell: bash
-        run: docker exec -t -e apps="$apps" builder sh -c 'cabal build --enable-tests -fserver_postgres && mkdir /out && for i in $apps; do bin=$(find /project/dist-newstyle -name "$i" -type f -executable); strip "$bin"; chmod +x "$bin"; mv "$bin" /out/; done'
+        run: docker exec -t builder sh -c 'cabal build --enable-tests -fserver_postgres && mkdir -p /out &&  for i in smp-server simplexmq-test; do bin=$(find /project/dist-newstyle -name "$i" -type f -executable); chmod +x "$bin"; mv "$bin" /out/; done; strip /out/smp-server'
+
+      - name: Copy simplexmq-test from container
+        shell: bash
+        run: |
+          docker cp builder:/out/simplexmq-test .
+
+      - name: Copy smp-server (postgresql) from container and prepare it
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          docker cp builder:/out/smp-server ./smp-server-postgres-ubuntu-${{ matrix.platform_name }}
+
+      - name: Build everything else (standard)
+        shell: bash
+        run: docker exec -t -e apps="$apps" builder sh -c 'cabal build && mkdir -p /out && for i in $apps; do bin=$(find /project/dist-newstyle -name "$i" -type f -executable); strip "$bin"; chmod +x "$bin"; mv "$bin" /out/; done'
 
       - name: Copy binaries from container and prepare them
         if: startsWith(github.ref, 'refs/tags/v')
@@ -92,6 +107,7 @@ jobs:
           files: |
             LICENSE
             smp-server-ubuntu-${{ matrix.platform_name }}
+            smp-server-postgres-ubuntu-${{ matrix.platform_name }}
             ntf-server-ubuntu-${{ matrix.platform_name }}
             xftp-server-ubuntu-${{ matrix.platform_name }}
             xftp-ubuntu-${{ matrix.platform_name }}
@@ -104,6 +120,4 @@ jobs:
         env:
           PGHOST: localhost
         run: |
-          docker exec -t builder sh -c 'mv $(find /project/dist-newstyle -name "simplexmq-test" -type f -executable) /out/'
-          docker cp builder:/out/simplexmq-test .
           ./simplexmq-test
