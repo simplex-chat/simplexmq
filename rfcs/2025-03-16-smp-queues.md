@@ -149,3 +149,15 @@ https://smp8.simplex.im/c/#abcdefghij0123456789abcdefghij0123456789abc
 ```
 
 For the above to work in the browser the servers should serve server pages.
+
+## Questions
+
+SenderId determination:
+- random, as proposed. Pros: no linkability of observed link to queue. Cons: it can be different from the queue, without the accepting party knowing. Potentially, an attack vector?
+- derived from LinkId, and not changeable: Pros: accepting party can verify. Cons: observed link is linkable to the queue.
+
+Possibly, we could split data blobs to mutable and immutable parts, where SenderId would be immutable, so while it preserves constant SenderId it remains unlinkable.
+
+On another hand, having mutable sender ID may allow delegating the reception of messages to chat relay - when initially messages are received by the user, different contact request URI could point to another SMP client of chat relay, similar to how we plan to do with the group links.
+
+This is probably a better approach than supporting delegation on SMP protocol level.
