@@ -25,7 +25,8 @@ import NtfServerTests (ntfServerTests)
 import RemoteControl (remoteControlTests)
 import SMPProxyTests (smpProxyTests)
 import ServerTests
-import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..))
+import Simplex.Messaging.Server.Env.STM (AStoreType (..))
+import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Transport (TLS, Transport (..))
 -- import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
@@ -34,11 +35,20 @@ import Test.Hspec
 import XFTPAgent
 import XFTPCLI
 import XFTPServerTests (xftpServerTests)
+
 #if defined(dbPostgres)
 import Fixtures
-import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists, dropDatabaseAndUser)
 #else
 import AgentTests.SchemaDump (schemaDumpTest)
+#endif
+
+#if defined(dbServerPostgres)
+import SMPClient (testServerDBConnectInfo)
+#endif
+
+#if defined(dbPostgres) || defined(dbServerPostgres)
+import Database.PostgreSQL.Simple (ConnectInfo (..))
+import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists, dropDatabaseAndUser)
 #endif
 
 logCfg :: LogConfig
@@ -52,8 +62,7 @@ main = do
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
     hspec
 #if defined(dbPostgres)
-      . beforeAll_ (dropDatabaseAndUser testDBConnectInfo >> createDBAndUserIfNotExists testDBConnectInfo)
-      . afterAll_ (dropDatabaseAndUser testDBConnectInfo)
+      . aroundAll_ (postgressBracket testDBConnectInfo)
 #endif
       . before_ (createDirectoryIfMissing False "tests/tmp")
       . after_ (eventuallyRemove "tests/tmp" 3)
@@ -74,17 +83,30 @@ main = do
           describe "Store log tests" storeLogTests
           describe "TRcvQueues tests" tRcvQueuesTests
           describe "Util tests" utilTests
+#if defined(dbServerPostgres)
+        aroundAll_ (postgressBracket testServerDBConnectInfo)
+          $ describe "SMP server via TLS, postgres+jornal message store" $ do
+              describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
+              before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests
+#endif
         describe "SMP server via TLS, jornal message store" $ do
           describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
-          before (pure (transport @TLS, AMSType SMSJournal)) serverTests
+          before (pure (transport @TLS, ASType SQSMemory SMSJournal)) serverTests
         describe "SMP server via TLS, memory message store" $
-          before (pure (transport @TLS, AMSType SMSMemory)) serverTests
+          before (pure (transport @TLS, ASType SQSMemory SMSMemory)) serverTests
         -- xdescribe "SMP server via WebSockets" $ do
         --   describe "SMP syntax" $ serverSyntaxTests (transport @WS)
-        --   before (pure (transport @WS, AMSType SMSJournal)) serverTests
+        --   before (pure (transport @WS, ASType SQSMemory SMSJournal)) serverTests
         describe "Notifications server" $ ntfServerTests (transport @TLS)
-        describe "SMP client agent" $ agentTests (transport @TLS)
-        describe "SMP proxy" smpProxyTests
+#if defined(dbServerPostgres)
+        aroundAll_ (postgressBracket testServerDBConnectInfo) $ do
+          describe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
+          describe "SMP proxy, postgres+jornal message store" $
+            before (pure $ ASType SQSPostgres SMSJournal) smpProxyTests
+#endif
+        describe "SMP client agent, jornal message store" $ agentTests (transport @TLS, ASType SQSMemory SMSJournal)
+        describe "SMP proxy, jornal message store" $
+          before (pure $ ASType SQSMemory SMSJournal) smpProxyTests
         describe "XFTP" $ do
           describe "XFTP server" xftpServerTests
           describe "XFTP file description" fileDescriptionTests
@@ -102,3 +124,11 @@ eventuallyRemove path retries = case retries of
       _ -> E.throwIO ioe
   where
     action = removeDirectoryRecursive path
+
+#if defined(dbPostgres) || defined(dbServerPostgres)
+postgressBracket :: ConnectInfo -> IO a -> IO a
+postgressBracket connInfo =
+  E.bracket_
+    (dropDatabaseAndUser connInfo >> createDBAndUserIfNotExists connInfo)
+    (dropDatabaseAndUser connInfo)
+#endif

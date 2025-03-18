@@ -38,7 +38,8 @@ import Simplex.Messaging.Crypto.Ratchet (pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Protocol (EncRcvMsgBody (..), MsgBody, RcvMessage (..), SubscriptionMode (..), maxMessageLength, noMsgFlags, pattern NoEntity)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
+import Simplex.Messaging.Server.MsgStore.Types (SQSType (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
@@ -52,7 +53,7 @@ import Fixtures
 import Simplex.Messaging.Agent.Store.Postgres.Util (dropAllSchemasExceptSystem)
 #endif
 
-smpProxyTests :: Spec
+smpProxyTests :: SpecWith AStoreType
 smpProxyTests = do
   describe "server configuration" $ do
     it "refuses proxy handshake unless enabled" testNoProxy
@@ -117,8 +118,9 @@ smpProxyTests = do
         it "without proxy" . oneServer $
           agentDeliverMessageViaProxy ([srv1], SPMNever, False) ([srv1], SPMNever, False) C.SEd448 "hello 1" "hello 2" 1
       describe "two servers" $ do
-        it "always via proxy" . twoServers $
-          agentDeliverMessageViaProxy ([srv1], SPMAlways, True) ([srv2], SPMAlways, True) C.SEd448 "hello 1" "hello 2" 1
+        it "always via proxy" $ \msType -> twoServers
+          (agentDeliverMessageViaProxy ([srv1], SPMAlways, True) ([srv2], SPMAlways, True) C.SEd448 "hello 1" "hello 2" 1)
+          msType
         it "both via proxy" . twoServers $
           agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv2], SPMUnknown, True) C.SEd448 "hello 1" "hello 2" 1
         it "first via proxy" . twoServers $
@@ -131,9 +133,9 @@ smpProxyTests = do
           agentDeliverMessageViaProxy ([srv1], SPMUnknown, False) ([srv2], SPMUnknown, False) C.SEd448 "hello 1" "hello 2" 3
         it "fails when fallback is prohibited" . twoServers_ proxyCfg cfgV7 $
           agentViaProxyVersionError
-        it "retries sending when destination or proxy relay is offline" $
+        it "retries sending when destination or proxy relay is offline" $ \_ ->
           agentViaProxyRetryOffline
-        it "retries sending when destination relay session disconnects in proxy" $
+        it "retries sending when destination relay session disconnects in proxy" $ \_ ->
           agentViaProxyRetryNoSession
       describe "stress test 1k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
@@ -144,14 +146,17 @@ smpProxyTests = do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "25 agents, 300 pairs, 17 messages" . oneServer . withNumCapabilities 4 $ deliver 25 17
   where
-    oneServer = withSmpServerConfigOn (transport @TLS) proxyCfg {msgQueueQuota = 128, maxJournalMsgCount = 256} testPort . const
-    twoServers = twoServers_ proxyCfg proxyCfg
-    twoServersFirstProxy = twoServers_ proxyCfg cfgV8 {msgQueueQuota = 128, maxJournalMsgCount = 256}
-    twoServersMoreConc = twoServers_ proxyCfg {serverClientConcurrency = 128} cfgV8 {msgQueueQuota = 128, maxJournalMsgCount = 256}
-    twoServersNoConc = twoServers_ proxyCfg {serverClientConcurrency = 1} cfgV8 {msgQueueQuota = 128, maxJournalMsgCount = 256}
-    twoServers_ cfg1 cfg2 runTest =
+    oneServer test msType = withSmpServerConfigOn (transport @TLS) (proxyCfgMS msType) {msgQueueQuota = 128, maxJournalMsgCount = 256} testPort $ const test
+    twoServers test msType = twoServers_ (proxyCfgMS msType) (proxyCfgMS msType) test msType
+    twoServersFirstProxy test msType = twoServers_ (proxyCfgMS msType) (cfgV8 msType) {msgQueueQuota = 128, maxJournalMsgCount = 256} test msType
+    twoServersMoreConc test msType = twoServers_ (proxyCfgMS msType) {serverClientConcurrency = 128} (cfgV8 msType) {msgQueueQuota = 128, maxJournalMsgCount = 256} test msType
+    twoServersNoConc test msType = twoServers_ (proxyCfgMS msType) {serverClientConcurrency = 1} (cfgV8 msType) {msgQueueQuota = 128, maxJournalMsgCount = 256} test msType
+    twoServers_ :: ServerConfig -> ServerConfig -> IO () -> AStoreType -> IO ()
+    twoServers_ cfg1 cfg2 runTest (ASType qsType _) =
       withSmpServerConfigOn (transport @TLS) cfg1 testPort $ \_ ->
-        let cfg2' = cfg2 {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsDir2}
+        let cfg2' = case qsType of
+              SQSMemory -> journalCfg cfg2 testStoreLogFile2 testStoreMsgsDir2
+              SQSPostgres -> journalCfgDB cfg2 testStoreDBOpts2 testStoreMsgsDir2
          in withSmpServerConfigOn (transport @TLS) cfg2' testPort2 $ const runTest
 
 deliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => SMPServer -> SMPServer -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
@@ -390,10 +395,14 @@ agentViaProxyRetryOffline = do
   where
     withServer :: (ThreadId -> IO a) -> IO a
     withServer = withServer_ testStoreLogFile testStoreMsgsDir testStoreNtfsFile testPort
+    -- TODO [postgres]
+    -- withServer = withServer_ testStoreDBOpts testStoreMsgsDir testStoreNtfsFile testPort
     withServer2 :: (ThreadId -> IO a) -> IO a
     withServer2 = withServer_ testStoreLogFile2 testStoreMsgsDir2 testStoreNtfsFile2 testPort2
+    -- TODO [postgres]
+    -- withServer2 = withServer_ testStoreDBOpts2 testStoreMsgsDir2 testStoreNtfsFile2 testPort2
     withServer_ storeLog storeMsgs storeNtfs =
-      withSmpServerConfigOn (transport @TLS) proxyCfg {storeLogFile = Just storeLog, storeMsgsFile = Just storeMsgs, storeNtfsFile = Just storeNtfs}
+      withSmpServerConfigOn (transport @TLS) (journalCfg proxyCfg storeLog storeMsgs) {storeNtfsFile = Just storeNtfs}
     a `up` cId = nGet a =##> \case ("", "", UP _ [c]) -> c == cId; _ -> False
     a `down` cId = nGet a =##> \case ("", "", DOWN _ [c]) -> c == cId; _ -> False
     aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
@@ -418,28 +427,27 @@ agentViaProxyRetryNoSession = do
           _ <- runRight $ makeConnection b a
           pure ()
   where
-    withServer2 = withSmpServerConfigOn (transport @TLS) proxyCfg {storeLogFile = Just testStoreLogFile2, storeMsgsFile = Just testStoreMsgsFile2} testPort2
+    withServer2 = withSmpServerConfigOn (transport @TLS) proxyCfgJ2 testPort2
     servers srv = (initAgentServersProxy SPMAlways SPFProhibit) {smp = userServers [srv]}
 
-testNoProxy :: IO ()
-testNoProxy = do
-  withSmpServerConfigOn (transport @TLS) cfg testPort2 $ \_ -> do
+testNoProxy :: AStoreType -> IO ()
+testNoProxy msType = do
+  withSmpServerConfigOn (transport @TLS) (cfgMS msType) testPort2 $ \_ -> do
     testSMPClient_ "127.0.0.1" testPort2 proxyVRangeV8 $ \(th :: THandleSMP TLS 'TClient) -> do
       (_, _, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", NoEntity, SMP.PRXY testSMPServer Nothing)
       reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
 
-testProxyAuth :: IO ()
-testProxyAuth = do
+testProxyAuth :: AStoreType -> IO ()
+testProxyAuth msType = do
   withSmpServerConfigOn (transport @TLS) proxyCfgAuth testPort $ \_ -> do
     testSMPClient_ "127.0.0.1" testPort proxyVRangeV8 $ \(th :: THandleSMP TLS 'TClient) -> do
       (_, _s, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", NoEntity, SMP.PRXY testSMPServer2 $ Just "wrong")
       reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
   where
-    proxyCfgAuth = proxyCfg {newQueueBasicAuth = Just "correct"}
+    proxyCfgAuth = (proxyCfgMS msType) {newQueueBasicAuth = Just "correct"}
 
-todo :: IO ()
-todo = do
-  fail "TODO"
+todo :: AStoreType -> IO ()
+todo _ = fail "TODO"
 
 runExceptT' :: Exception e => ExceptT e IO a -> IO a
 runExceptT' a = runExceptT a >>= either throwIO pure

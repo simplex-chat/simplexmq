@@ -27,14 +27,12 @@ module Simplex.Messaging.Server.StoreLog
     logDeleteNotifier,
     logUpdateQueueTime,
     readWriteStoreLog,
-    writeQueueStore,
     readLogLines,
     foldLogLines,
   )
 where
 
 import Control.Applicative (optional, (<|>))
-import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -42,7 +40,6 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.List (sort, stripPrefix)
-import qualified Data.Map.Strict as M
 import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime, nominalDay)
@@ -50,10 +47,9 @@ import Data.Time.Format.ISO8601 (iso8601Show, iso8601ParseM)
 import GHC.IO (catchAny)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.MsgStore.Types
+-- import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.StoreLog.Types
-import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM, tshow, unlessM, whenM)
 import System.Directory (doesFileExist, listDirectory, removeFile, renameFile)
 import System.IO
@@ -162,9 +158,9 @@ instance StrEncoding StoreLogRecord where
       DeleteNotifier_ -> DeleteNotifier <$> strP
       UpdateTime_ -> UpdateTime <$> strP_ <*> strP
 
-openWriteStoreLog :: FilePath -> IO (StoreLog 'WriteMode)
-openWriteStoreLog f = do
-  h <- openFile f WriteMode
+openWriteStoreLog :: Bool -> FilePath -> IO (StoreLog 'WriteMode)
+openWriteStoreLog append f = do
+  h <- openFile f $ if append then AppendMode else WriteMode
   hSetBuffering h LineBuffering
   pure $ WriteStoreLog f h
 
@@ -243,7 +239,7 @@ readWriteStoreLog readStore writeStore f st =
       removeStoreLogBackups f
       pure s
     writeLog msg = do
-      s <- openWriteStoreLog f
+      s <- openWriteStoreLog False f
       logInfo msg
       writeStore s st
       pure s
@@ -252,15 +248,6 @@ readWriteStoreLog readStore writeStore f st =
       let timedBackup = f <> "." <> iso8601Show ts
       renameFile tempBackup timedBackup
       logInfo $ "original state preserved as " <> T.pack timedBackup
-
-writeQueueStore :: STMStoreClass s => StoreLog 'WriteMode -> s -> IO ()
-writeQueueStore s st = readTVarIO qs >>= mapM_ writeQueue . M.assocs
-  where
-    qs = queues $ stmQueueStore st
-    writeQueue (rId, q) =
-      readTVarIO (queueRec' q) >>= \case
-        Just q' -> logCreateQueue s rId q'
-        Nothing -> atomically $ TM.delete rId qs
 
 removeStoreLogBackups :: FilePath -> IO ()
 removeStoreLogBackups f = do
@@ -272,8 +259,9 @@ removeStoreLogBackups f = do
       times2 = take (length times1 - minOldBackups) times1 -- keep 3 backups older than 24 hours
       toDelete = filter (< old) times2 -- remove all backups older than 21 day
   mapM_ (removeFile . backupPath) toDelete
-  putStrLn $ "Removed " <> show (length toDelete) <> " backups:"
-  mapM_ (putStrLn . backupPath) toDelete
+  when (length toDelete > 0) $ do
+    putStrLn $ "Removed " <> show (length toDelete) <> " backups:"
+    mapM_ (putStrLn . backupPath) toDelete
   where
     backupPathTime :: FilePath -> Maybe UTCTime
     backupPathTime = iso8601ParseM <=< stripPrefix backupPathPfx
@@ -292,11 +280,11 @@ foldLogLines tty f action initValue = do
   putStrLn $ progress count
   pure acc
   where
-    loop h i acc = do
+    loop h !i !acc = do
       s <- B.hGetLine h
       eof <- hIsEOF h
       acc' <- action acc eof s
       let i' = i + 1
       when (tty && i' `mod` 100000 == 0) $ putStr (progress i' <> "\r") >> hFlush stdout
       if eof then pure (i', acc') else loop h i' acc'
-    progress i = "Processed: " <> show i <> " lines"
+    progress i = "Processed: " <> show i <> " log lines"

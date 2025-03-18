@@ -27,8 +27,11 @@ import qualified Data.X509.File as XF
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (HostName, ServiceName)
 import Options.Applicative
+import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
+import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), ServerStoreCfg (..), StorePaths (..))
+import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
 import Simplex.Messaging.Transport.Server (AddHTTP, loadFileFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
@@ -296,10 +299,21 @@ printServerConfig transports logFile = do
   putStrLn $ case logFile of
     Just f -> "Store log: " <> f
     _ -> "Store log disabled."
-  forM_ transports $ \(p, ATransport t, addHTTP) -> do
-    let descr = p <> " (" <> transportName t <> ")..."
-    putStrLn $ "Serving SMP protocol on port " <> descr
-    when addHTTP $ putStrLn $ "Serving static site on port " <> descr
+  printServerTransports transports
+
+printServerTransports :: [(ServiceName, ATransport, AddHTTP)] -> IO ()
+printServerTransports = mapM_ $ \(p, ATransport t, addHTTP) -> do
+  let descr = p <> " (" <> transportName t <> ")..."
+  putStrLn $ "Serving SMP protocol on port " <> descr
+  when addHTTP $ putStrLn $ "Serving static site on port " <> descr
+
+printSMPServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> AServerStoreCfg -> IO ()
+printSMPServerConfig transports (ASSCfg _ _ cfg) = case cfg of
+  SSCMemory sp_ -> printServerConfig transports $ (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
+  SSCMemoryJournal {storeLogFile} -> printServerConfig transports $ Just storeLogFile
+  SSCDatabaseJournal {storeCfg = PostgresStoreCfg {dbOpts = DBOpts {connstr, schema}}} -> do
+    B.putStrLn $ "PostgreSQL database: " <> connstr <> ", schema: " <> schema
+    printServerTransports transports
 
 deleteDirIfExists :: FilePath -> IO ()
 deleteDirIfExists path = whenM (doesDirectoryExist path) $ removeDirectoryRecursive path

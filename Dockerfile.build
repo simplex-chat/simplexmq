@@ -8,7 +8,7 @@ ARG GHC=9.6.3
 ARG CABAL=3.14.1.1
 
 # Install curl, git and and simplexmq dependencies
-RUN apt-get update && apt-get install -y curl git sqlite3 libsqlite3-dev build-essential libgmp3-dev zlib1g-dev llvm llvm-dev libnuma-dev libssl-dev
+RUN apt-get update && apt-get install -y curl libpq-dev git sqlite3 libsqlite3-dev build-essential libgmp3-dev zlib1g-dev llvm llvm-dev libnuma-dev libssl-dev
 
 # Specify bootstrap Haskell versions
 ENV BOOTSTRAP_HASKELL_GHC_VERSION=${GHC}
