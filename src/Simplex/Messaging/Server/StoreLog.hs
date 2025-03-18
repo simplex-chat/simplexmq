@@ -259,8 +259,9 @@ removeStoreLogBackups f = do
       times2 = take (length times1 - minOldBackups) times1 -- keep 3 backups older than 24 hours
       toDelete = filter (< old) times2 -- remove all backups older than 21 day
   mapM_ (removeFile . backupPath) toDelete
-  putStrLn $ "Removed " <> show (length toDelete) <> " backups:"
-  mapM_ (putStrLn . backupPath) toDelete
+  when (length toDelete > 0) $ do
+    putStrLn $ "Removed " <> show (length toDelete) <> " backups:"
+    mapM_ (putStrLn . backupPath) toDelete
   where
     backupPathTime :: FilePath -> Maybe UTCTime
     backupPathTime = iso8601ParseM <=< stripPrefix backupPathPfx

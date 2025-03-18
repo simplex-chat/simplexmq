@@ -32,18 +32,25 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
+import Data.ByteString.Builder (Builder)
+import qualified Data.ByteString.Builder as BB
+import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.Bitraversable (bimapM)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Int (Int64)
+import Data.List (intersperse)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
 import qualified Data.Text as T
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Database.PostgreSQL.Simple (Binary (..), Only (..), Query, SqlError)
 import qualified Database.PostgreSQL.Simple as DB
+import qualified Database.PostgreSQL.Simple.Copy as DB
 import Database.PostgreSQL.Simple.FromField (FromField (..))
-import Database.PostgreSQL.Simple.ToField (ToField (..))
+import Database.PostgreSQL.Simple.ToField (Action (..), ToField (..))
 import Database.PostgreSQL.Simple.Errors (ConstraintViolation (..), constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 import GHC.IO (catchAny)
@@ -160,7 +167,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       loadSndQueue = loadQueue " WHERE sender_id = ?" $ \rId -> TM.insert qId rId senders
       loadNtfQueue = loadQueue " WHERE notifier_id = ?" $ \_ -> pure () -- do NOT cache ref - ntf subscriptions are rare
       loadQueue condition insertRef =
-        runExceptT $ do
+        E.uninterruptibleMask_ $ runExceptT $ do
           (rId, qRec) <-
             withDB "getQueue_" st $ \db -> firstRow rowToQueueRec AUTH $
               DB.query db (queueRecQuery <> condition <> " AND deleted_at IS NULL") (Only qId)
@@ -182,7 +189,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   secureQueue :: PostgresQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   secureQueue st sq sKey =
-    withQueueDB sq "secureQueue" $ \q -> do
+    withQueueRec sq "secureQueue" $ \q -> do
       verify q
       assertUpdated $ withDB' "secureQueue" st $ \db ->
         DB.execute db "UPDATE msg_queues SET sender_key = ? WHERE recipient_id = ? AND deleted_at IS NULL" (sKey, rId)
@@ -196,7 +203,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   addQueueNotifier :: PostgresQueueStore q -> q -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
   addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId, notifierKey, rcvNtfDhSecret} =
-    withQueueDB sq "addQueueNotifier" $ \q ->
+    withQueueRec sq "addQueueNotifier" $ \q ->
       ExceptT $ withLockMap (notifierLocks st) nId "addQueueNotifier" $
         ifM (TM.memberIO nId notifiers) (pure $ Left DUPLICATE_) $ runExceptT $ do
           assertUpdated $ withDB "addQueueNotifier" st $ \db ->
@@ -223,7 +230,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   deleteQueueNotifier :: PostgresQueueStore q -> q -> IO (Either ErrorType (Maybe NotifierId))
   deleteQueueNotifier st sq =
-    withQueueDB sq "deleteQueueNotifier" $ \q ->
+    withQueueRec sq "deleteQueueNotifier" $ \q ->
       ExceptT $ fmap sequence $ forM (notifier q) $ \NtfCreds {notifierId = nId} ->
         withLockMap (notifierLocks st) nId "deleteQueueNotifier" $ runExceptT $ do
           assertUpdated $ withDB' "deleteQueueNotifier" st update
@@ -260,7 +267,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   
   updateQueueTime :: PostgresQueueStore q -> q -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
   updateQueueTime st sq t =
-    withQueueDB sq "updateQueueTime" $ \q@QueueRec {updatedAt} ->
+    withQueueRec sq "updateQueueTime" $ \q@QueueRec {updatedAt} ->
       if updatedAt == Just t
         then pure q
         else do
@@ -295,21 +302,19 @@ batchInsertQueues tty queues toStore = do
   qs <- catMaybes <$> mapM (\(rId, q) -> (rId,) <$$> readTVarIO (queueRec q)) (M.assocs queues)
   putStrLn $ "Importing " <> show (length qs) <> " queues..."
   let st = dbStore toStore
-  (qCnt, count) <- foldM (processChunk st) (0, 0) $ toChunks 1000000 qs
+  count <-
+    withConnection st $ \db -> do
+      DB.copy_ db "COPY msg_queues (recipient_id, recipient_key, rcv_dh_secret, sender_id, sender_key, snd_secure, notifier_id, notifier_key, rcv_ntf_dh_secret, status, updated_at) FROM STDIN WITH (FORMAT CSV)"
+      mapM_ (putQueue db) (zip [1..] qs)
+      DB.putCopyEnd db
+  Only qCnt : _ <- withConnection st (`DB.query_` "SELECT count(*) FROM msg_queues")
   putStrLn $ progress count
   pure qCnt
   where
-    processChunk st (qCnt, i) qs = do
-      qCnt' <- withConnection st $ \db -> DB.executeMany db insertQueueQuery $ map queueRecToRow qs
-      let i' = i + length qs
-      when tty $ putStr (progress i' <> "\r") >> hFlush stdout
-      pure (qCnt + qCnt', i')
+    putQueue db (i :: Int, q) = do
+      DB.putCopyData db $ queueRecToText q
+      when (tty && i `mod` 100000 == 0) $ putStr (progress i <> "\r") >> hFlush stdout
     progress i = "Imported: " <> show i <> " queues"
-    toChunks :: Int -> [a] -> [[a]]
-    toChunks _ [] = []
-    toChunks n xs =
-      let (ys, xs') = splitAt n xs
-       in ys : toChunks n xs'
 
 insertQueueQuery :: Query
 insertQueueQuery =
@@ -349,6 +354,34 @@ queueRecToRow :: (RecipientId, QueueRec) -> QueueRecRow
 queueRecToRow (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier = n, status, updatedAt}) =
   (rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifierId <$> n, notifierKey <$> n, rcvNtfDhSecret <$> n, status, updatedAt)
 
+queueRecToText :: (RecipientId, QueueRec) -> ByteString
+queueRecToText (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier = n, status, updatedAt}) =
+  LB.toStrict $ BB.toLazyByteString $ mconcat tabFields <> BB.char7 '\n'
+  where
+    tabFields = BB.char7 ',' `intersperse` fields
+    fields =
+      [ renderField (toField rId),
+        renderField (toField recipientKey),
+        renderField (toField rcvDhSecret),
+        renderField (toField senderId),
+        nullable senderKey,
+        renderField (toField sndSecure),
+        nullable (notifierId <$> n),
+        nullable (notifierKey <$> n),
+        nullable (rcvNtfDhSecret <$> n),
+        BB.char7 '"' <> renderField (toField status) <> BB.char7 '"',
+        nullable updatedAt
+      ]
+    nullable :: ToField a => Maybe a -> Builder
+    nullable = maybe mempty (renderField . toField)
+    renderField :: Action -> Builder
+    renderField = \case
+      Plain bld -> bld
+      Escape s -> BB.byteString s
+      EscapeByteA s -> BB.string7 "\\x" <> BB.byteStringHex s
+      EscapeIdentifier s -> BB.byteString s -- Not used in COPY data
+      Many as -> mconcat (map renderField as)
+
 rowToQueueRec :: QueueRecRow -> (RecipientId, QueueRec)
 rowToQueueRec (rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt) =
   let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
@@ -356,14 +389,14 @@ rowToQueueRec (rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, n
 
 setStatusDB :: StoreQueueClass q => String -> PostgresQueueStore q -> q -> ServerEntityStatus -> ExceptT ErrorType IO () -> IO (Either ErrorType ())
 setStatusDB op st sq status writeLog =
-  withQueueDB sq op $ \q -> do
+  withQueueRec sq op $ \q -> do
     assertUpdated $ withDB' op st $ \db ->
       DB.execute db "UPDATE msg_queues SET status = ? WHERE recipient_id = ? AND deleted_at IS NULL" (status, recipientId sq)
     atomically $ writeTVar (queueRec sq) $ Just q {status}
     writeLog
 
-withQueueDB :: StoreQueueClass q => q -> String -> (QueueRec -> ExceptT ErrorType IO a) -> IO (Either ErrorType a)
-withQueueDB sq op action =
+withQueueRec :: StoreQueueClass q => q -> String -> (QueueRec -> ExceptT ErrorType IO a) -> IO (Either ErrorType a)
+withQueueRec sq op action =
   withQueueLock sq op $ E.uninterruptibleMask_ $ runExceptT $ ExceptT (readQueueRecIO $ queueRec sq) >>= action
 
 assertUpdated :: ExceptT ErrorType IO Int64 -> ExceptT ErrorType IO ()
@@ -379,7 +412,7 @@ withDB op st action =
     logErr :: E.SomeException -> IO (Either ErrorType a)
     logErr e = logError ("STORE: " <> T.pack err) $> Left (STORE err)
       where
-        err = op <> ", withLog, " <> show e
+        err = op <> ", withDB, " <> show e
 
 withLog :: MonadIO m => String -> PostgresQueueStore q -> (StoreLog 'WriteMode -> IO ()) -> m ()
 withLog op PostgresQueueStore {dbStoreLog} action =

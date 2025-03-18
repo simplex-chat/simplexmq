@@ -71,7 +71,7 @@ import Simplex.Messaging.Server.MsgStore.Types (QSType (..))
 import Simplex.Messaging.Server.MsgStore.Journal (postgresQueueStore)
 import Simplex.Messaging.Server.QueueStore.Postgres (batchInsertQueues, foldQueueRecs)
 import Simplex.Messaging.Server.QueueStore.Types
-import Simplex.Messaging.Server.StoreLog (logCreateQueue, openWriteStoreLog)
+import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue, openWriteStoreLog)
 import System.Directory (renameFile)
 #endif
 
@@ -176,10 +176,11 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           | otherwise -> do
               storeLogFile <- getRequiredStoreLogFile ini
               confirmOrExit
-                ("WARNING: store log file " <> storeLogFile <> " will be imported to PostrgreSQL database: " <> B.unpack connstr <> ", schema: " <> B.unpack schema)
+                ("WARNING: store log file " <> storeLogFile <> " will be compacted and imported to PostrgreSQL database: " <> B.unpack connstr <> ", schema: " <> B.unpack schema)
                 "Queue records not imported"
               ms <- newJournalMsgStore MQStoreCfg
-              readQueueStore True (mkQueue ms) storeLogFile (queueStore ms)
+              sl <- readWriteQueueStore True (mkQueue ms) storeLogFile (queueStore ms)
+              closeStoreLog sl
               queues <- readTVarIO $ loadedQueues $ stmQueueStore ms
               let storeCfg = PostgresStoreCfg {dbOpts = dbOpts {createSchema = True}, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}
               ps <- newJournalMsgStore $ PQStoreCfg storeCfg
@@ -187,10 +188,13 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               renameFile storeLogFile $ storeLogFile <> ".bak"
               putStrLn $ "Import completed: " <> show qCnt <> " queues"
               putStrLn $ case readStoreType ini of
-                Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`.\nImport messages to journal to use PostgreSQL database for queues (`smp-server journal import`)"
-                Right (ASType SQSMemory SMSJournal) -> "store_queues set to `memory`, update it to `database` in INI file"
+                Right (ASType SQSMemory SMSMemory) -> setToDbStr <> "\nstore_messages set to `memory`, import messages to journal to use PostgreSQL database for queues (`smp-server journal import`)"
+                Right (ASType SQSMemory SMSJournal) -> setToDbStr
                 Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, start the server."
                 Left e -> e <> ", configure storage correctly"
+          where
+            setToDbStr :: String
+            setToDbStr = "store_queues set to `memory`, update it to `database` in INI file"
         SCExport
           | schemaExists && storeLogExists -> exitConfigureQueueStore connstr schema
           | not schemaExists -> do
