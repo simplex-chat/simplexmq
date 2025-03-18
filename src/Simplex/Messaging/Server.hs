@@ -405,7 +405,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           old <- expireBeforeEpoch expCfg
           now <- systemSeconds <$> getSystemTime
           tryAny (withAllMsgQueues False "idleDeleteExpiredMsgs" ms $ expireQueueMsgs now ms old) >>= \case
-            Right msgStats@MessageStats {storedMsgsCount = stored, expiredMsgsCount = expired} -> do            
+            Right msgStats@MessageStats {storedMsgsCount = stored, expiredMsgsCount = expired} -> do
               atomicWriteIORef (msgCount stats) stored
               atomicModifyIORef'_ (msgExpired stats) (+ expired)
               printMessageStats "STORE: messages" msgStats
