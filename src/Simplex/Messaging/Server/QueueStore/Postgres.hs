@@ -373,7 +373,7 @@ queueRecToText (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, s
         nullable updatedAt
       ]
     nullable :: ToField a => Maybe a -> Builder
-    nullable = maybe (BB.string7 "") (renderField . toField)
+    nullable = maybe mempty (renderField . toField)
     renderField :: Action -> Builder
     renderField = \case
       Plain bld -> bld
