@@ -167,7 +167,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       loadSndQueue = loadQueue " WHERE sender_id = ?" $ \rId -> TM.insert qId rId senders
       loadNtfQueue = loadQueue " WHERE notifier_id = ?" $ \_ -> pure () -- do NOT cache ref - ntf subscriptions are rare
       loadQueue condition insertRef =
-        runExceptT $ do
+        E.uninterruptibleMask_ $ runExceptT $ do
           (rId, qRec) <-
             withDB "getQueue_" st $ \db -> firstRow rowToQueueRec AUTH $
               DB.query db (queueRecQuery <> condition <> " AND deleted_at IS NULL") (Only qId)
@@ -189,7 +189,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   secureQueue :: PostgresQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   secureQueue st sq sKey =
-    withQueueDB sq "secureQueue" $ \q -> do
+    withQueueRec sq "secureQueue" $ \q -> do
       verify q
       assertUpdated $ withDB' "secureQueue" st $ \db ->
         DB.execute db "UPDATE msg_queues SET sender_key = ? WHERE recipient_id = ? AND deleted_at IS NULL" (sKey, rId)
@@ -203,7 +203,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   addQueueNotifier :: PostgresQueueStore q -> q -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
   addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId, notifierKey, rcvNtfDhSecret} =
-    withQueueDB sq "addQueueNotifier" $ \q ->
+    withQueueRec sq "addQueueNotifier" $ \q ->
       ExceptT $ withLockMap (notifierLocks st) nId "addQueueNotifier" $
         ifM (TM.memberIO nId notifiers) (pure $ Left DUPLICATE_) $ runExceptT $ do
           assertUpdated $ withDB "addQueueNotifier" st $ \db ->
@@ -230,7 +230,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   deleteQueueNotifier :: PostgresQueueStore q -> q -> IO (Either ErrorType (Maybe NotifierId))
   deleteQueueNotifier st sq =
-    withQueueDB sq "deleteQueueNotifier" $ \q ->
+    withQueueRec sq "deleteQueueNotifier" $ \q ->
       ExceptT $ fmap sequence $ forM (notifier q) $ \NtfCreds {notifierId = nId} ->
         withLockMap (notifierLocks st) nId "deleteQueueNotifier" $ runExceptT $ do
           assertUpdated $ withDB' "deleteQueueNotifier" st update
@@ -267,7 +267,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   
   updateQueueTime :: PostgresQueueStore q -> q -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
   updateQueueTime st sq t =
-    withQueueDB sq "updateQueueTime" $ \q@QueueRec {updatedAt} ->
+    withQueueRec sq "updateQueueTime" $ \q@QueueRec {updatedAt} ->
       if updatedAt == Just t
         then pure q
         else do
@@ -389,14 +389,14 @@ rowToQueueRec (rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, n
 
 setStatusDB :: StoreQueueClass q => String -> PostgresQueueStore q -> q -> ServerEntityStatus -> ExceptT ErrorType IO () -> IO (Either ErrorType ())
 setStatusDB op st sq status writeLog =
-  withQueueDB sq op $ \q -> do
+  withQueueRec sq op $ \q -> do
     assertUpdated $ withDB' op st $ \db ->
       DB.execute db "UPDATE msg_queues SET status = ? WHERE recipient_id = ? AND deleted_at IS NULL" (status, recipientId sq)
     atomically $ writeTVar (queueRec sq) $ Just q {status}
     writeLog
 
-withQueueDB :: StoreQueueClass q => q -> String -> (QueueRec -> ExceptT ErrorType IO a) -> IO (Either ErrorType a)
-withQueueDB sq op action =
+withQueueRec :: StoreQueueClass q => q -> String -> (QueueRec -> ExceptT ErrorType IO a) -> IO (Either ErrorType a)
+withQueueRec sq op action =
   withQueueLock sq op $ E.uninterruptibleMask_ $ runExceptT $ ExceptT (readQueueRecIO $ queueRec sq) >>= action
 
 assertUpdated :: ExceptT ErrorType IO Int64 -> ExceptT ErrorType IO ()
@@ -412,7 +412,7 @@ withDB op st action =
     logErr :: E.SomeException -> IO (Either ErrorType a)
     logErr e = logError ("STORE: " <> T.pack err) $> Left (STORE err)
       where
-        err = op <> ", withLog, " <> show e
+        err = op <> ", withDB, " <> show e
 
 withLog :: MonadIO m => String -> PostgresQueueStore q -> (StoreLog 'WriteMode -> IO ()) -> m ()
 withLog op PostgresQueueStore {dbStoreLog} action =

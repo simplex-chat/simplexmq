@@ -399,15 +399,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         expire :: forall s. MsgStoreClass s => s -> ServerStats -> Int64 -> IO ()
         expire ms stats interval = do
           threadDelay' interval
+          logInfo "Started expiring messages..."
           n <- compactQueues @(StoreQueue s) $ queueStore ms
           when (n > 0) $ logInfo $ "Removed " <> tshow n <> " old deleted queues from the database."
           old <- expireBeforeEpoch expCfg
           now <- systemSeconds <$> getSystemTime
-          msgStats@MessageStats {storedMsgsCount = stored, expiredMsgsCount = expired} <-
-            withAllMsgQueues False "idleDeleteExpiredMsgs" ms $ expireQueueMsgs now ms old
-          atomicWriteIORef (msgCount stats) stored
-          atomicModifyIORef'_ (msgExpired stats) (+ expired)
-          printMessageStats "STORE: messages" msgStats
+          tryAny (withAllMsgQueues False "idleDeleteExpiredMsgs" ms $ expireQueueMsgs now ms old) >>= \case
+            Right msgStats@MessageStats {storedMsgsCount = stored, expiredMsgsCount = expired} -> do            
+              atomicWriteIORef (msgCount stats) stored
+              atomicModifyIORef'_ (msgExpired stats) (+ expired)
+              printMessageStats "STORE: messages" msgStats
+            Left e -> logError $ "STORE: withAllMsgQueues, error expiring messages, " <> tshow e
         expireQueueMsgs now ms old q = do
           (expired_, stored) <- idleDeleteExpiredMsgs now ms q old
           pure MessageStats {storedMsgsCount = stored, expiredMsgsCount = fromMaybe 0 expired_, storedQueues = 1}
