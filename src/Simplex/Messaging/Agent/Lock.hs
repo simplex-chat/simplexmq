@@ -6,6 +6,7 @@ module Simplex.Messaging.Agent.Lock
     withLock',
     withGetLock,
     withGetLocks,
+    getPutLock,
   )
 where
 

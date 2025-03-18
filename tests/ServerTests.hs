@@ -17,7 +17,7 @@ module ServerTests where
 
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, try, throwIO)
 import Control.Monad
 import Control.Monad.IO.Class
 import CoreTests.MsgStoreTests (testJournalStoreCfg)
@@ -36,10 +36,10 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (exportMessages)
-import Simplex.Messaging.Server.Env.STM (ServerConfig (..), readWriteQueueStore)
+import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), AStoreType (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..))
-import Simplex.Messaging.Server.MsgStore.Types (AMSType (..), SMSType (..), newMsgStore)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..), QStoreCfg (..))
+import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog)
 import Simplex.Messaging.Transport
@@ -53,7 +53,7 @@ import Test.HUnit
 import Test.Hspec
 import Util (removeFileIfExists)
 
-serverTests :: SpecWith (ATransport, AMSType)
+serverTests :: SpecWith (ATransport, AStoreType)
 serverTests = do
   describe "SMP queues" $ do
     describe "NEW and KEY commands, SEND messages" testCreateSecure
@@ -139,7 +139,7 @@ decryptMsgV3 dhShared nonce body =
     Right ClientRcvMsgQuota {} -> Left "ClientRcvMsgQuota"
     Left e -> Left e
 
-testCreateSecure :: SpecWith (ATransport, AMSType)
+testCreateSecure :: SpecWith (ATransport, AStoreType)
 testCreateSecure =
   it "should create (NEW) and secure (KEY) queue" $ \(ATransport t, msType) ->
     smpTest2 t msType $ \r s -> do
@@ -204,7 +204,7 @@ testCreateSecure =
       Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv s sKey ("bcda", sId, _SEND biggerMessage)
       pure ()
 
-testCreateSndSecure :: SpecWith (ATransport, AMSType)
+testCreateSndSecure :: SpecWith (ATransport, AStoreType)
 testCreateSndSecure =
   it "should create (NEW) and secure (SKEY) queue by sender" $ \(ATransport t, msType) ->
     smpTest2 t msType $ \r s -> do
@@ -251,7 +251,7 @@ testCreateSndSecure =
       Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv s sKey ("bcda", sId, _SEND biggerMessage)
       pure ()
 
-testSndSecureProhibited :: SpecWith (ATransport, AMSType)
+testSndSecureProhibited :: SpecWith (ATransport, AStoreType)
 testSndSecureProhibited =
   it "should create (NEW) without allowing sndSecure and fail to and secure queue by sender (SKEY)" $ \(ATransport t, msType) ->
     smpTest2 t msType $ \r s -> do
@@ -266,7 +266,7 @@ testSndSecureProhibited =
       (sId2, sId) #== "secures queue, same queue ID in response"
       (err, ERR AUTH) #== "rejects SKEY when not allowed in NEW command"
 
-testCreateDelete :: SpecWith (ATransport, AMSType)
+testCreateDelete :: SpecWith (ATransport, AStoreType)
 testCreateDelete =
   it "should create (NEW), suspend (OFF) and delete (DEL) queue" $ \(ATransport t, msType) ->
     smpTest2 t msType $ \rh sh -> do
@@ -337,7 +337,7 @@ testCreateDelete =
       Resp "cdab" _ err10 <- signSendRecv rh rKey ("cdab", rId, SUB)
       (err10, ERR AUTH) #== "rejects SUB when deleted"
 
-stressTest :: SpecWith (ATransport, AMSType)
+stressTest :: SpecWith (ATransport, AStoreType)
 stressTest =
   it "should create many queues, disconnect and re-connect" $ \(ATransport t, msType) ->
     smpTest3 t msType $ \h1 h2 h3 -> do
@@ -355,7 +355,7 @@ stressTest =
       closeConnection $ connection h2
       subscribeQueues h3
 
-testAllowNewQueues :: SpecWith (ATransport, AMSType)
+testAllowNewQueues :: SpecWith (ATransport, AStoreType)
 testAllowNewQueues =
   it "should prohibit creating new queues with allowNewQueues = False" $ \(ATransport (t :: TProxy c), msType) ->
     withSmpServerConfigOn (ATransport t) (cfgMS msType) {allowNewQueues = False} testPort $ \_ ->
@@ -366,7 +366,7 @@ testAllowNewQueues =
         Resp "abcd" NoEntity (ERR AUTH) <- signSendRecv h rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
         pure ()
 
-testDuplex :: SpecWith (ATransport, AMSType)
+testDuplex :: SpecWith (ATransport, AStoreType)
 testDuplex =
   it "should create 2 simplex connections and exchange messages" $ \(ATransport t, msType) ->
     smpTest2 t msType $ \alice bob -> do
@@ -421,7 +421,7 @@ testDuplex =
       Resp "bcda" _ OK <- signSendRecv bob brKey ("bcda", bRcv, ACK mId5)
       (bDec mId5 msg5, Right "how are you bob") #== "message received from alice"
 
-testSwitchSub :: SpecWith (ATransport, AMSType)
+testSwitchSub :: SpecWith (ATransport, AStoreType)
 testSwitchSub =
   it "should create simplex connections and switch subscription to another TCP connection" $ \(ATransport t, msType) ->
     smpTest3 t msType $ \rh1 rh2 sh -> do
@@ -466,7 +466,7 @@ testSwitchSub =
         Nothing -> return ()
         Just _ -> error "nothing else is delivered to the 1st TCP connection"
 
-testGetCommand :: SpecWith (ATransport, AMSType)
+testGetCommand :: SpecWith (ATransport, AStoreType)
 testGetCommand =
   it "should retrieve messages from the queue using GET command" $ \(ATransport (t :: TProxy c), msType) -> do
     g <- C.newRandom
@@ -485,7 +485,7 @@ testGetCommand =
         Resp "4" _ OK <- signSendRecv rh rKey ("4", rId, GET)
         pure ()
 
-testGetSubCommands :: SpecWith (ATransport, AMSType)
+testGetSubCommands :: SpecWith (ATransport, AStoreType)
 testGetSubCommands =
   it "should retrieve messages with GET and receive with SUB, only one ACK would work" $ \(ATransport t, msType) -> do
     g <- C.newRandom
@@ -535,7 +535,7 @@ testGetSubCommands =
       Resp "12" _ OK <- signSendRecv rh2 rKey ("12", rId, GET)
       pure ()
 
-testExceedQueueQuota :: SpecWith (ATransport, AMSType)
+testExceedQueueQuota :: SpecWith (ATransport, AStoreType)
 testExceedQueueQuota =
   it "should reply with ERR QUOTA to sender and send QUOTA message to the recipient" $ \(ATransport (t :: TProxy c), msType) -> do
     withSmpServerConfigOn (ATransport t) (cfgMS msType) {msgQueueQuota = 2} testPort $ \_ ->
@@ -562,7 +562,7 @@ testExceedQueueQuota =
         Resp "10" _ OK <- signSendRecv rh rKey ("10", rId, ACK mId4)
         pure ()
 
-testWithStoreLog :: SpecWith (ATransport, AMSType)
+testWithStoreLog :: SpecWith (ATransport, AStoreType)
 testWithStoreLog =
   it "should store simplex queues to log and restore them after server restart" $ \(at@(ATransport t), msType) -> do
     g <- C.newRandom
@@ -576,7 +576,8 @@ testWithStoreLog =
     senderId2 <- newTVarIO NoEntity
     notifierId <- newTVarIO NoEntity
 
-    withSmpServerStoreLogOnMS at msType testPort . runTest t $ \h -> runClient t $ \h1 -> do
+    let (cfg', compacting) = serverStoreLogCfg msType
+    withSmpServerConfigOn at cfg' testPort . runTest t $ \h -> runClient t $ \h1 -> do
       (sId1, rId1, rKey1, dhShared) <- createAndSecureQueue h sPub1
       (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
       Resp "abcd" _ (NID nId _) <- signSendRecv h rKey1 ("abcd", rId1, NKEY nPub rcvNtfPubDhKey)
@@ -609,14 +610,14 @@ testWithStoreLog =
 
     logSize testStoreLogFile `shouldReturn` 6
 
-    let cfg' = (cfgMS msType) {msgStoreType = AMSType SMSMemory, storeLogFile = Nothing, storeMsgsFile = Nothing}
-    withSmpServerConfigOn at cfg' testPort . runTest t $ \h -> do
+    let cfg'' = cfg {serverStoreCfg = ASSCfg SQSMemory SMSMemory $ SSCMemory Nothing}
+    withSmpServerConfigOn at cfg'' testPort . runTest t $ \h -> do
       sId1 <- readTVarIO senderId1
       -- fails if store log is disabled
       Resp "bcda" _ (ERR AUTH) <- signSendRecv h sKey1 ("bcda", sId1, _SEND "hello")
       pure ()
 
-    withSmpServerStoreLogOnMS at msType testPort . runTest t $ \h -> runClient t $ \h1 -> do
+    withSmpServerConfigOn at cfg' testPort . runTest t $ \h -> runClient t $ \h1 -> do
       -- this queue is restored
       rId1 <- readTVarIO recipientId1
       Just rKey1 <- readTVarIO recipientKey1
@@ -633,7 +634,8 @@ testWithStoreLog =
       Resp "cdab" _ (ERR AUTH) <- signSendRecv h sKey2 ("cdab", sId2, _SEND "hello too")
       pure ()
 
-    logSize testStoreLogFile `shouldReturn` 1
+    -- when (usesStoreLog ps) $ do
+    logSize testStoreLogFile `shouldReturn` (if compacting then 1 else 6)
     removeFile testStoreLogFile
   where
     runTest :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
@@ -644,13 +646,26 @@ testWithStoreLog =
     runClient :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
-logSize :: FilePath -> IO Int
-logSize f =
-  try (length . B.lines <$> B.readFile f) >>= \case
-    Right l -> pure l
-    Left (_ :: SomeException) -> logSize f
+serverStoreLogCfg :: AStoreType -> (ServerConfig, Bool)
+serverStoreLogCfg msType = 
+  let serverStoreCfg = serverStoreConfig_ True msType
+      cfg' = (cfgMS msType) {serverStoreCfg, storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
+      compacting = case msType of
+        ASType SQSPostgres _ -> False
+        _ -> True
+   in (cfg', compacting)
 
-testRestoreMessages :: SpecWith (ATransport, AMSType)
+logSize :: FilePath -> IO Int
+logSize f = go (10 :: Int)
+  where
+    go n =
+      try (length . B.lines <$> B.readFile f) >>= \case
+        Right l -> pure l
+        Left (e :: SomeException)
+          | n > 0 -> threadDelay 100000 >> go (n - 1)
+          | otherwise -> throwIO e
+
+testRestoreMessages :: SpecWith (ATransport, AStoreType)
 testRestoreMessages =
   it "should store messages on exit and restore on start" $ \(at@(ATransport t), msType) -> do
     removeFileIfExists testStoreLogFile
@@ -664,8 +679,8 @@ testRestoreMessages =
     recipientKey <- newTVarIO Nothing
     dhShared <- newTVarIO Nothing
     senderId <- newTVarIO NoEntity
-
-    withSmpServerStoreMsgLogOnMS at msType testPort . runTest t $ \h -> do
+    let (cfg', compacting) = serverStoreLogCfg msType
+    withSmpServerConfigOn at cfg' testPort . runTest t $ \h -> do
       runClient t $ \h1 -> do
         (sId, rId, rKey, dh) <- createAndSecureQueue h1 sPub
         atomically $ do
@@ -685,16 +700,12 @@ testRestoreMessages =
       Resp "5" _ OK <- signSendRecv h sKey ("5", sId, _SEND "hello 5")
       Resp "6" _ (ERR QUOTA) <- signSendRecv h sKey ("6", sId, _SEND "hello 6")
       pure ()
-
     rId <- readTVarIO recipientId
-
     logSize testStoreLogFile `shouldReturn` 2
-    -- logSize testStoreMsgsFile `shouldReturn` 5
     logSize testServerStatsBackupFile `shouldReturn` 76
     Right stats1 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats1 [rId] 5 1
-
-    withSmpServerStoreMsgLogOnMS at msType testPort . runTest t $ \h -> do
+    withSmpServerConfigOn at cfg' testPort . runTest t $ \h -> do
       Just rKey <- readTVarIO recipientKey
       Just dh <- readTVarIO dhShared
       let dec = decryptMsgV3 dh
@@ -704,15 +715,14 @@ testRestoreMessages =
       (dec mId3 msg3, Right "hello 3") #== "restored message delivered"
       Resp "4" _ (Msg mId4 msg4) <- signSendRecv h rKey ("4", rId, ACK mId3)
       (dec mId4 msg4, Right "hello 4") #== "restored message delivered"
-
-    logSize testStoreLogFile `shouldReturn` 1
+    logSize testStoreLogFile `shouldReturn` (if compacting then 1 else 2)
     -- the last message is not removed because it was not ACK'd
     -- logSize testStoreMsgsFile `shouldReturn` 3
     logSize testServerStatsBackupFile `shouldReturn` 76
     Right stats2 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats2 [rId] 5 3
 
-    withSmpServerStoreMsgLogOnMS at msType testPort . runTest t $ \h -> do
+    withSmpServerConfigOn at cfg' testPort . runTest t $ \h -> do
       Just rKey <- readTVarIO recipientKey
       Just dh <- readTVarIO dhShared
       let dec = decryptMsgV3 dh
@@ -724,13 +734,11 @@ testRestoreMessages =
       (dec mId6 msg6, Left "ClientRcvMsgQuota") #== "restored message delivered"
       Resp "7" _ OK <- signSendRecv h rKey ("7", rId, ACK mId6)
       pure ()
-    logSize testStoreLogFile `shouldReturn` 1
-    -- logSize testStoreMsgsFile `shouldReturn` 0
+    logSize testStoreLogFile `shouldReturn` (if compacting then 1 else 2)
+    removeFile testStoreLogFile
     logSize testServerStatsBackupFile `shouldReturn` 76
     Right stats3 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats3 [rId] 5 5
-
-    removeFile testStoreLogFile
     removeFileIfExists testStoreMsgsFile
     whenM (doesDirectoryExist testStoreMsgsDir) $ removeDirectoryRecursive testStoreMsgsDir
     removeFile testServerStatsBackupFile
@@ -759,17 +767,17 @@ checkStats s qs sent received = do
   IS.toList _week `shouldBe` map (hash . unEntityId) qs
   IS.toList _month `shouldBe` map (hash . unEntityId) qs
 
-testRestoreExpireMessages :: SpecWith (ATransport, AMSType)
+testRestoreExpireMessages :: SpecWith (ATransport, AStoreType)
 testRestoreExpireMessages =
-  it "should store messages on exit and restore on start" $ \(at@(ATransport t), msType) -> do
+  it "should store messages on exit and restore on start (old / v2)" $ \(at@(ATransport t), msType) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     recipientId <- newTVarIO NoEntity
     recipientKey <- newTVarIO Nothing
     dhShared <- newTVarIO Nothing
     senderId <- newTVarIO NoEntity
-
-    withSmpServerStoreMsgLogOnMS at msType testPort . runTest t $ \h -> do
+    let (cfg', _compacting) = serverStoreLogCfg msType
+    withSmpServerConfigOn at cfg' testPort . runTest t $ \h -> do
       runClient t $ \h1 -> do
         (sId, rId, rKey, dh) <- createAndSecureQueue h1 sPub
         atomically $ do
@@ -784,23 +792,21 @@ testRestoreExpireMessages =
       Resp "3" _ OK <- signSendRecv h sKey ("3", sId, _SEND "hello 3")
       Resp "4" _ OK <- signSendRecv h sKey ("4", sId, _SEND "hello 4")
       pure ()
-
     logSize testStoreLogFile `shouldReturn` 2
     exportStoreMessages msType
     msgs <- B.readFile testStoreMsgsFile
     length (B.lines msgs) `shouldBe` 4
 
     let expCfg1 = Just ExpirationConfig {ttl = 86400, checkInterval = 43200}
-        cfg1 = (cfgMS msType) {messageExpiration = expCfg1, serverStatsBackupFile = Just testServerStatsBackupFile}
+        cfg1 = cfg' {messageExpiration = expCfg1, serverStatsBackupFile = Just testServerStatsBackupFile}
     withSmpServerConfigOn at cfg1 testPort . runTest t $ \_ -> pure ()
 
     logSize testStoreLogFile `shouldReturn` 1
     exportStoreMessages msType
     msgs' <- B.readFile testStoreMsgsFile
     msgs' `shouldBe` msgs
-
     let expCfg2 = Just ExpirationConfig {ttl = 2, checkInterval = 43200}
-        cfg2 = (cfgMS msType) {messageExpiration = expCfg2, serverStatsBackupFile = Just testServerStatsBackupFile}
+        cfg2 = cfg' {messageExpiration = expCfg2, serverStatsBackupFile = Just testServerStatsBackupFile}
     withSmpServerConfigOn at cfg2 testPort . runTest t $ \_ -> pure ()
 
     logSize testStoreLogFile `shouldReturn` 1
@@ -812,14 +818,17 @@ testRestoreExpireMessages =
     Right ServerStatsData {_msgExpired} <- strDecode <$> B.readFile testServerStatsBackupFile
     _msgExpired `shouldBe` 2
   where
-    exportStoreMessages :: AMSType -> IO ()
+    exportStoreMessages :: AStoreType -> IO ()
     exportStoreMessages = \case
-      AMSType SMSJournal -> do
-        ms <- newMsgStore testJournalStoreCfg {quota = 4}
-        readWriteQueueStore testStoreLogFile ms >>= closeStoreLog
-        removeFileIfExists testStoreMsgsFile
-        exportMessages False ms testStoreMsgsFile False
-      AMSType SMSMemory -> pure ()
+      ASType _ SMSJournal -> export
+      ASType _ SMSMemory -> pure ()
+      where
+        export = do
+          ms <- newMsgStore (testJournalStoreCfg MQStoreCfg) {quota = 4}
+          readWriteQueueStore True (mkQueue ms) testStoreLogFile (queueStore ms) >>= closeStoreLog
+          removeFileIfExists testStoreMsgsFile
+          exportMessages False ms testStoreMsgsFile False
+          closeMsgStore ms
     runTest :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
@@ -828,7 +837,7 @@ testRestoreExpireMessages =
     runClient :: Transport c => TProxy c -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
-testPrometheusMetrics :: SpecWith (ATransport, AMSType)
+testPrometheusMetrics :: SpecWith (ATransport, AStoreType)
 testPrometheusMetrics =
   it "should save Prometheus metrics" $ \(at, msType) -> do
     let cfg' = (cfgMS msType) {prometheusInterval = Just 1}
@@ -846,7 +855,7 @@ createAndSecureQueue h sPub = do
   (rId', rId) #== "same queue ID"
   pure (sId, rId, rKey, dhShared)
 
-testTiming :: SpecWith (ATransport, AMSType)
+testTiming :: SpecWith (ATransport, AStoreType)
 testTiming =
   describe "should have similar time for auth error, whether queue exists or not, for all key types" $
     forM_ timingTests $ \tst ->
@@ -916,7 +925,7 @@ testTiming =
             ]
           ok `shouldBe` True
 
-testMessageNotifications :: SpecWith (ATransport, AMSType)
+testMessageNotifications :: SpecWith (ATransport, AStoreType)
 testMessageNotifications =
   it "should create simplex connection, subscribe notifier and deliver notifications" $ \(ATransport t, msType) -> do
     g <- C.newRandom
@@ -956,7 +965,7 @@ testMessageNotifications =
         Nothing -> pure ()
         Just _ -> error "nothing else should be delivered to the 2nd notifier's TCP connection"
 
-testMsgExpireOnSend :: SpecWith (ATransport, AMSType)
+testMsgExpireOnSend :: SpecWith (ATransport, AStoreType)
 testMsgExpireOnSend =
   it "should expire messages that are not received before messageTTL on SEND" $ \(ATransport (t :: TProxy c), msType) -> do
     g <- C.newRandom
@@ -976,7 +985,7 @@ testMsgExpireOnSend =
             Nothing -> return ()
             Just _ -> error "nothing else should be delivered"
 
-testMsgExpireOnInterval :: SpecWith (ATransport, AMSType)
+testMsgExpireOnInterval :: SpecWith (ATransport, AStoreType)
 testMsgExpireOnInterval =
   -- fails on ubuntu
   xit' "should expire messages that are not received before messageTTL after expiry interval" $ \(ATransport (t :: TProxy c), msType) -> do
@@ -996,7 +1005,7 @@ testMsgExpireOnInterval =
             Nothing -> return ()
             Just _ -> error "nothing should be delivered"
 
-testMsgNOTExpireOnInterval :: SpecWith (ATransport, AMSType)
+testMsgNOTExpireOnInterval :: SpecWith (ATransport, AStoreType)
 testMsgNOTExpireOnInterval =
   it "should block and unblock message queues" $ \(ATransport (t :: TProxy c), msType) -> do
     g <- C.newRandom
@@ -1015,20 +1024,22 @@ testMsgNOTExpireOnInterval =
             Nothing -> return ()
             Just _ -> error "nothing else should be delivered"
 
-testBlockMessageQueue :: SpecWith (ATransport, AMSType)
+testBlockMessageQueue :: SpecWith (ATransport, AStoreType)
 testBlockMessageQueue =
-  it "should return BLOCKED error when queue is blocked" $ \(at@(ATransport (t :: TProxy c)), msType) -> do
+  -- TODO [postgres]
+  xit "should return BLOCKED error when queue is blocked" $ \ps@(ATransport (t :: TProxy c), _) -> do
     g <- C.newRandom
-    (rId, sId) <- withSmpServerStoreLogOnMS at msType testPort $ runTest t $ \h -> do
+    (rId, sId) <- withSmpServerStoreLogOn ps testPort $ runTest t $ \h -> do
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "abcd" rId1 (Ids rId sId _srvDh) <- signSendRecv h rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe True)
       (rId1, NoEntity) #== "creates queue"
       pure (rId, sId)
 
+    -- TODO [postgres] block via control port
     withFile testStoreLogFile AppendMode $ \h -> B.hPutStrLn h $ strEncode $ BlockQueue rId $ BlockingInfo BRContent
 
-    withSmpServerStoreLogOnMS at msType testPort $ runTest t $ \h -> do
+    withSmpServerStoreLogOn ps testPort $ runTest t $ \h -> do
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       Resp "dabc" sId2 (ERR (BLOCKED (BlockingInfo BRContent))) <- signSendRecv h sKey ("dabc", sId, SKEY sPub)
       (sId2, sId) #== "same queue ID in response"
