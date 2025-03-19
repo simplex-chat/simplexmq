@@ -393,7 +393,7 @@ instance MsgStoreClass (JournalMsgStore s) where
   unsafeWithAllMsgQueues tty ms action = case queueStore_ ms of
     MQStore st -> withLoadedQueues st run 
 #if defined(dbServerPostgres)
-    PQStore st -> foldQueueRecs tty st $ uncurry (mkTempQueue ms) >=> run
+    PQStore st -> foldQueueRecs tty st Nothing $ uncurry (mkTempQueue ms) >=> run
 #endif
     where
       run q = do
@@ -401,23 +401,32 @@ instance MsgStoreClass (JournalMsgStore s) where
         closeMsgQueue q
         pure r
 
-  -- This function is concurrency safe, it is used to expire queues.
-  withAllMsgQueues :: forall a. Monoid a => Bool -> String -> JournalMsgStore s -> (JournalQueue s -> StoreIO s a) -> IO a
-  withAllMsgQueues tty op ms action = case queueStore_ ms of
+  -- This function is concurrency safe
+  expireOldMessages :: Bool -> JournalMsgStore s -> Int64 -> Int64 -> IO MessageStats
+  expireOldMessages tty ms now ttl = case queueStore_ ms of
     MQStore st ->
-      withLoadedQueues st $ \q ->
-        run $ isolateQueue q op $ action q
+      withLoadedQueues st $ \q -> run $ isolateQueue q "deleteExpiredMsgs" $ do
+        StoreIO (readTVarIO $ queueRec q) >>= \case
+          Just QueueRec {updatedAt = Just (RoundedSystemTime t)} | t > veryOld ->
+            expireQueueMsgs ms now old q
+          _ -> pure newMessageStats
 #if defined(dbServerPostgres)
     PQStore st -> do
       let JournalMsgStore {queueLocks, sharedLock} = ms
-      foldQueueRecs tty st $ \(rId, qr) -> do
+      foldQueueRecs tty st (Just veryOld) $ \(rId, qr) -> do
         q <- mkTempQueue ms rId qr
-        withSharedWaitLock rId queueLocks sharedLock $
-          run $ tryStore' op rId $ unStoreIO $ action q
+        withSharedWaitLock rId queueLocks sharedLock $ run $ tryStore' "deleteExpiredMsgs" rId $
+          getLoadedQueue q >>= unStoreIO . expireQueueMsgs ms now old
 #endif
     where
-      run :: ExceptT ErrorType IO a -> IO a
-      run = fmap (fromRight mempty) . runExceptT
+      old = now - ttl
+      veryOld = now - 2 * ttl
+      run :: ExceptT ErrorType IO MessageStats -> IO MessageStats
+      run = fmap (fromRight newMessageStats) . runExceptT
+      -- Use cached queue if available.
+      -- Also see the comment in loadQueue in PostgresQueueStore
+      getLoadedQueue :: JournalQueue s -> IO (JournalQueue s)
+      getLoadedQueue q = fromMaybe q <$> TM.lookupIO (recipientId q) (loadedQueues $ queueStore_ ms)
 
   logQueueStates :: JournalMsgStore s -> IO ()
   logQueueStates ms = withActiveMsgQueues ms $ unStoreIO . logQueueState
@@ -436,9 +445,6 @@ instance MsgStoreClass (JournalMsgStore s) where
   mkQueue ms rId qr = do
     lock <- atomically $ getMapLock (queueLocks ms) rId
     makeQueue_ ms rId qr lock
-
-  getLoadedQueue :: JournalMsgStore s -> JournalQueue s -> StoreIO s (JournalQueue s)
-  getLoadedQueue ms sq = StoreIO $ fromMaybe sq <$> TM.lookupIO (recipientId sq) (loadedQueues $ queueStore_ ms)
 
   getMsgQueue :: JournalMsgStore s -> JournalQueue s -> Bool -> StoreIO s (JournalMsgQueue s)
   getMsgQueue ms@JournalMsgStore {random} q'@JournalQueue {recipientId' = rId, msgQueue'} forWrite =

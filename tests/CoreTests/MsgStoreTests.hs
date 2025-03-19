@@ -32,7 +32,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), Message (..), RecipientId, SParty (..), noMsgFlags)
-import Simplex.Messaging.Server (MessageStats (..), exportMessages, importMessages, printMessageStats)
+import Simplex.Messaging.Server (exportMessages, importMessages, printMessageStats)
 import Simplex.Messaging.Server.Env.STM (journalMsgStoreDepth, readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..), expireBeforeEpoch)
 import Simplex.Messaging.Server.MsgStore.Journal
@@ -453,7 +453,7 @@ testExpireIdleQueues = do
   old <- expireBeforeEpoch ExpirationConfig {ttl = 1, checkInterval = 1} -- no old messages
   now <- systemSeconds <$> getSystemTime
 
-  (expired_, stored) <- runRight $ isolateQueue q "" $ idleDeleteExpiredMsgs now ms q old
+  (expired_, stored) <- runRight $ isolateQueue q "" $ withIdleMsgQueue now ms q $ deleteExpireMsgs_ old q
   expired_ `shouldBe` Just 0
   stored `shouldBe` 0
   (Nothing, False) <- readQueueState ms statePath
