@@ -75,7 +75,7 @@ data NewQueueRequest = NewQueueRequest
   }
 
 -- To allow updating the existing contact addresses without changing them.
--- This command would fail on queues that support sndSecure and also on new queues created with QLInvitation.
+-- This command would fail on queues that support sndSecure and also on new queues created with QLMessaging.
 -- RecipientId is entity ID.
 -- The response to this command is `OK`.
 LNEW :: LinkId -> QueueLinkData -> Command Recipient
@@ -85,10 +85,10 @@ LNEW :: LinkId -> QueueLinkData -> Command Recipient
 -- Further changes would move NotifierId generation to the client, and including a signed and encrypted command to be forwarded by SMP server to notification server.
 data NtfRequest = NtfRequest NtfPublicAuthKey RcvNtfPublicDhKey
 
--- QLInvitation implies that sender can secure the queue.
--- LinkId is not used with QLInvitation, to prevent the possibility of checking when connection is established by re-using the same link ID when creating another queue – the creating would have to fail if it is used.
+-- QLMessaging implies that sender can secure the queue.
+-- LinkId is not used with QLMessaging, to prevent the possibility of checking when connection is established by re-using the same link ID when creating another queue – the creating would have to fail if it is used.
 -- LinkId is required with QLContact, to have shorter link - it will be derived from the link_uri. And in this case we do not need to prevent checks that this queue exists.
-data QueueLink = QLInvitation QueueLinkData | QLContact LinkId QueueLinkData
+data QueueLink = QLMessaging QueueLinkData | QLContact LinkId QueueLinkData
 
 data QueueLinkData = QueueLinkData EncImmutableDataBytes EncUserDataBytes
 
@@ -140,7 +140,7 @@ LSET :: EncUserDataBytes -> Command Recipient
 -- Entity ID is LinkId here
 LKEY :: SndPublicAuthKey -> Command Sender
 
--- If queue mode is QLInvitation the command will fail.
+-- If queue mode is QLMessaging the command will fail.
 -- Entity ID is LinkId here
 LGET :: Command Sender
 
@@ -185,8 +185,8 @@ can:
 - access original unencrypted link data for contact address links.
 
 cannot:
-- undetectably access observed link data, accessing the link would make the link inaccessible to the sender (objective 5).
-- undetectbly check the existense of queue or link (objective 8).
+- undetectably access observed 1-time link data, accessing the link would make the link inaccessible to the sender (objective 5).
+- undetectbly check the existense of messaging queue or 1-time link (objective 8).
 - replace or delete the link data.
 
 **Queue owner who did not comprmise the server**:
