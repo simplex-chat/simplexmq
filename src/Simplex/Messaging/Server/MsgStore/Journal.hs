@@ -420,7 +420,7 @@ instance MsgStoreClass (JournalMsgStore s) where
 #endif
     where
       old = now - ttl
-      veryOld = now - 2 * ttl
+      veryOld = now - 2 * ttl - 86400
       run :: ExceptT ErrorType IO MessageStats -> IO MessageStats
       run = fmap (fromRight newMessageStats) . runExceptT
       -- Use cached queue if available.
