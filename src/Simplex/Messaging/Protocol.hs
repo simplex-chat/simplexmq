@@ -58,6 +58,9 @@ module Simplex.Messaging.Protocol
     Command (..),
     SubscriptionMode (..),
     SenderCanSecure,
+    NewQueueReq (..),
+    QueueModeData (..),
+    NewNtfCreds (..),
     Party (..),
     Cmd (..),
     DirectParty,
@@ -140,6 +143,7 @@ module Simplex.Messaging.Protocol
     MsgFlags (..),
     initialSMPClientVersion,
     currentSMPClientVersion,
+    senderCanSecure,
     userProtocol,
     rcvMessageMeta,
     noMsgFlags,
@@ -377,6 +381,8 @@ type SenderId = QueueId
 -- | SMP queue ID for notifications.
 type NotifierId = QueueId
 
+type LinkId = QueueId
+
 -- | SMP queue ID on the server.
 type QueueId = EntityId
 
@@ -395,7 +401,7 @@ data Command (p :: Party) where
   -- v6 of SMP servers only support signature algorithm for command authorization.
   -- v7 of SMP servers additionally support additional layer of authenticated encryption.
   -- RcvPublicAuthKey is defined as C.APublicKey - it can be either signature or DH public keys.
-  NEW :: RcvPublicAuthKey -> RcvPublicDhKey -> Maybe BasicAuth -> SubscriptionMode -> SenderCanSecure -> Command Recipient
+  NEW :: NewQueueReq -> Command Recipient
   SUB :: Command Recipient
   KEY :: SndPublicAuthKey -> Command Recipient
   NKEY :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> Command Recipient
@@ -427,8 +433,34 @@ data Command (p :: Party) where
 
 deriving instance Show (Command p)
 
+data NewQueueReq = NewQueueReq
+  { rcvAuthKey :: RcvPublicAuthKey,
+    rcvDhKey :: RcvPublicDhKey,
+    auth_ :: Maybe BasicAuth,
+    subMode :: SubscriptionMode,
+    queueData :: Maybe QueueModeData,
+    ntfCreds :: Maybe NewNtfCreds
+  }
+  deriving (Show)
+
 data SubscriptionMode = SMSubscribe | SMOnlyCreate
   deriving (Eq, Show)
+
+data QueueModeData = QMMessaging (Maybe QueueLinkData) | QMContact (Maybe (LinkId, QueueLinkData))
+  deriving (Show)
+
+senderCanSecure :: Maybe QueueModeData -> Bool
+senderCanSecure = \case
+  Just QMMessaging {} -> True
+  _ -> False
+
+data QueueLinkData = QueueLinkData EncImmutableDataBytes EncUserDataBytes deriving (Show)
+
+newtype EncImmutableDataBytes = EncImmutableDataBytes ByteString deriving (Show)
+
+newtype EncUserDataBytes = EncUserDataBytes ByteString deriving (Show)
+
+data NewNtfCreds = NewNtfCreds NtfPublicAuthKey RcvNtfPublicDhKey deriving (Show)
 
 instance StrEncoding SubscriptionMode where
   strEncode = \case
@@ -448,6 +480,24 @@ instance Encoding SubscriptionMode where
       'S' -> pure SMSubscribe
       'C' -> pure SMOnlyCreate
       _ -> fail "bad SubscriptionMode"
+
+instance Encoding QueueModeData where
+  smpEncode = \case
+    QMMessaging d -> smpEncode ('M', d)
+    QMContact d -> smpEncode ('C', d)
+  smpP =
+    A.anyChar >>= \case
+      'M' -> QMMessaging <$> smpP
+      'C' -> QMContact <$> smpP
+      _ -> fail "bad QueueModeData"
+
+instance Encoding QueueLinkData where
+  smpEncode (QueueLinkData (EncImmutableDataBytes d1) (EncUserDataBytes d2)) = smpEncode (Large d1, Large d2)
+  smpP = QueueLinkData <$> (EncImmutableDataBytes <$> smpP) <*> (EncUserDataBytes <$> smpP)
+
+instance Encoding NewNtfCreds where
+  smpEncode (NewNtfCreds authKey dhKey) = smpEncode (authKey, dhKey)
+  smpP = NewNtfCreds <$> smpP <*> smpP
 
 type SenderCanSecure = Bool
 
@@ -1138,9 +1188,18 @@ data QueueIdsKeys = QIK
   { rcvId :: RecipientId,
     sndId :: SenderId,
     rcvPublicDhKey :: RcvPublicDhKey,
-    sndSecure :: SenderCanSecure
+    sndSecure :: SenderCanSecure,
+    linkId :: Maybe LinkId,
+    serverNtfCreds :: Maybe ServerNtfCreds
   }
   deriving (Eq, Show)
+
+data ServerNtfCreds = ServerNtfCreds NotifierId RcvNtfPublicDhKey
+  deriving (Eq, Show)
+
+instance Encoding ServerNtfCreds where
+  smpEncode (ServerNtfCreds nId dhKey) = smpEncode (nId, dhKey)
+  smpP = ServerNtfCreds <$> smpP <*> smpP
 
 -- | Recipient's private key used by the recipient to authorize (v6: sign, v7: encrypt hash) SMP commands.
 --
@@ -1368,8 +1427,9 @@ class ProtocolMsgTag (Tag msg) => ProtocolEncoding v err msg | msg -> err, msg -
 instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol v = \case
-    NEW rKey dhKey auth_ subMode sndSecure
-      | v >= sndAuthKeySMPVersion -> new <> e (auth_, subMode, sndSecure)
+    NEW NewQueueReq {rcvAuthKey = rKey, rcvDhKey = dhKey, auth_, subMode, queueData, ntfCreds}
+      | v >= shortLinksSMPVersion -> new <> e (auth_, subMode, queueData, ntfCreds)
+      | v >= sndAuthKeySMPVersion -> new <> e (auth_, subMode, senderCanSecure queueData)
       | otherwise -> new <> auth <> e subMode
       where
         new = e (NEW_, ' ', rKey, dhKey)
@@ -1438,11 +1498,20 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
         NEW_
-          | v >= sndAuthKeySMPVersion -> new <*> smpP <*> smpP <*> smpP
-          | otherwise -> new <*> auth <*> smpP <*> pure False
+          | v >= shortLinksSMPVersion -> NEW <$> new smpP smpP smpP
+          | v >= sndAuthKeySMPVersion -> NEW <$> new smpP (queueReq <$> smpP) (pure Nothing)
+          | otherwise -> NEW <$> new auth (pure Nothing) (pure Nothing)
           where
-            new = NEW <$> _smpP <*> smpP
+            new p1 p2 p3 = do
+              rcvAuthKey <- _smpP
+              rcvDhKey <- smpP
+              auth_ <- p1
+              subMode <- smpP
+              queueData <- p2
+              ntfCreds <- p3
+              pure NewQueueReq {rcvAuthKey, rcvDhKey, auth_, subMode, queueData, ntfCreds}
             auth = optional (A.char 'A' *> smpP)
+            queueReq sndSecure = Just $ if sndSecure then QMMessaging Nothing else QMContact Nothing
         SUB_ -> pure SUB
         KEY_ -> KEY <$> _smpP
         NKEY_ -> NKEY <$> _smpP <*> smpP
@@ -1472,7 +1541,8 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
 instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
   encodeProtocol v = \case
-    IDS (QIK rcvId sndId srvDh sndSecure)
+    IDS QIK {rcvId, sndId, rcvPublicDhKey = srvDh, sndSecure, linkId, serverNtfCreds}
+      | v >= shortLinksSMPVersion -> ids <> e sndSecure <> e linkId <> e serverNtfCreds
       | v >= sndAuthKeySMPVersion -> ids <> e sndSecure
       | otherwise -> ids
       where
@@ -1505,10 +1575,12 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       where
         bodyP = EncRcvMsgBody . unTail <$> smpP
     IDS_
-      | v >= sndAuthKeySMPVersion -> ids smpP
-      | otherwise -> ids $ pure False
+      | v >= shortLinksSMPVersion -> ids smpP smpP smpP
+      | v >= sndAuthKeySMPVersion -> ids smpP nothing nothing
+      | otherwise -> ids (pure False) nothing nothing
       where
-        ids p = IDS <$> (QIK <$> _smpP <*> smpP <*> smpP <*> p)
+        nothing = pure Nothing
+        ids p1 p2 p3 = IDS <$> (QIK <$> _smpP <*> smpP <*> smpP <*> p1 <*> p2 <*> p3)
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> ((,) <$> C.certChainP <*> (C.getSignedExact <$> smpP))

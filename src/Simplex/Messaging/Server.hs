@@ -1081,7 +1081,7 @@ data VerificationResult s = VRVerified (Maybe (StoreQueue s, QueueRec)) | VRFail
 verifyTransmission :: forall s. MsgStoreClass s => s -> Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> QueueId -> Cmd -> M (VerificationResult s)
 verifyTransmission ms auth_ tAuth authorized queueId cmd =
   case cmd of
-    Cmd SRecipient (NEW k _ _ _ _) -> pure $ Nothing `verifiedWith` k
+    Cmd SRecipient (NEW NewQueueReq {rcvAuthKey = k}) -> pure $ Nothing `verifiedWith` k
     Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWith` recipientKey (snd q)) <$> get SRecipient
     -- SEND will be accepted without authorization before the queue is secured with KEY or SKEY command
     Cmd SSender (SKEY k) -> verifyQueue (\q -> if maybe True (k ==) (senderKey $ snd q) then Just q `verifiedWith` k else dummyVerify) <$> get SSender
@@ -1263,15 +1263,16 @@ client
       Cmd SNotifier NSUB -> Just <$> subscribeNotifications
       Cmd SRecipient command ->
         Just <$> case command of
-          NEW rKey dhKey auth subMode sndSecure ->
+          -- TODO [short links] ntf, store queue data
+          NEW nqr@NewQueueReq {rcvAuthKey = rKey, rcvDhKey = dhKey, auth_, subMode, queueData, ntfCreds} ->
             ifM
               allowNew
-              (createQueue rKey dhKey subMode sndSecure)
+              (createQueue nqr)
               (pure (corrId, entId, ERR AUTH))
             where
               allowNew = do
                 ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
-                pure $ allowNewQueues && maybe True ((== auth) . Just) newQueueBasicAuth
+                pure $ allowNewQueues && maybe True ((== auth_) . Just) newQueueBasicAuth
           SUB -> withQueue subscribeQueue
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
@@ -1282,16 +1283,18 @@ client
           DEL -> maybe (pure $ err INTERNAL) delQueueAndMsgs q_
           QUE -> withQueue $ \q qr -> (corrId,entId,) <$> getQueueInfo q qr
       where
-        createQueue :: RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> SenderCanSecure -> M (Transmission BrokerMsg)
-        createQueue recipientKey dhKey subMode sndSecure = time "NEW" $ do
+        createQueue :: NewQueueReq -> M (Transmission BrokerMsg)
+        createQueue NewQueueReq {rcvAuthKey, rcvDhKey, subMode, queueData, ntfCreds} = time "NEW" $ do
           (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
           updatedAt <- Just <$> liftIO getSystemDate
-          let rcvDhSecret = C.dh' dhKey privDhKey
-              qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey, sndSecure}
+          let rcvDhSecret = C.dh' rcvDhKey privDhKey
+              -- TODO [short links] ntf credentials, link ID
+              sndSecure = senderCanSecure queueData
+              qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey, sndSecure, linkId = Nothing, serverNtfCreds = Nothing}
               qRec senderId =
                 QueueRec
                   { senderId,
-                    recipientKey,
+                    recipientKey = rcvAuthKey,
                     rcvDhSecret,
                     senderKey = Nothing,
                     notifier = Nothing,

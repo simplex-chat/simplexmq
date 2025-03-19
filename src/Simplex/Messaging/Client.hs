@@ -710,10 +710,11 @@ createSMPQueue ::
   RcvPublicDhKey ->
   Maybe BasicAuth ->
   SubscriptionMode ->
-  Bool ->
+  QueueModeData ->
+  Maybe NewNtfCreds ->
   ExceptT SMPClientError IO QueueIdsKeys
-createSMPQueue c (rKey, rpKey) dhKey auth subMode sndSecure =
-  sendSMPCommand c (Just rpKey) NoEntity (NEW rKey dhKey auth subMode sndSecure) >>= \case
+createSMPQueue c (rKey, rpKey) dhKey auth subMode qmd ntfCreds =
+  sendSMPCommand c (Just rpKey) NoEntity (NEW $ NewQueueReq rKey dhKey auth subMode (Just qmd) ntfCreds) >>= \case
     IDS qik -> pure qik
     r -> throwE $ unexpectedResponse r
 

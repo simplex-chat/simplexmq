@@ -1287,6 +1287,17 @@ data ConnReqUriData = ConnReqUriData
 
 type CRClientData = Text
 
+data ImmutableLinkData = ImmutableLinkData
+  { signature :: C.Signature 'C.Ed25519, -- signature of the remaining part of immutable data
+    connReq :: AConnectionRequestUri,
+    sigKey :: C.PublicKeyEd25519
+  }
+
+data UserLinkData = UserLinkData
+  { signature :: C.Signature 'C.Ed25519, -- signs the remaining part of the data
+    userData :: ByteString
+  }
+
 -- | SMP queue status.
 data QueueStatus
   = -- | queue is created

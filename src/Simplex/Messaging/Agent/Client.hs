@@ -256,9 +256,10 @@ import Simplex.Messaging.Protocol
     RcvNtfPublicDhKey,
     SMPMsgMeta (..),
     SProtocolType (..),
-    SenderCanSecure,
     SndPublicAuthKey,
     SubscriptionMode (..),
+    QueueModeData (..),
+    NewNtfCreds,
     UserProtocol,
     VersionRangeSMPC,
     VersionSMPC,
@@ -1222,7 +1223,7 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
         (sKey, spKey) <- atomically $ C.generateAuthKeyPair sa g
         (dhKey, _) <- atomically $ C.generateKeyPair g
         r <- runExceptT $ do
-          SMP.QIK {rcvId, sndId, sndSecure} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey auth SMSubscribe True
+          SMP.QIK {rcvId, sndId, sndSecure} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey auth SMSubscribe (QMMessaging Nothing) Nothing
           liftError (testErr TSSecureQueue) $
             if sndSecure
               then secureSndSMPQueue smp spKey sndId sKey
@@ -1333,8 +1334,9 @@ getSessionMode :: MonadIO m => AgentClient -> m TransportSessionMode
 getSessionMode = fmap sessionMode . getNetworkConfig
 {-# INLINE getSessionMode #-}
 
-newRcvQueue :: AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SubscriptionMode -> SenderCanSecure -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
-newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode senderCanSecure = do
+-- TODO [short links] add ntf credentials too RcvQueue
+newRcvQueue :: AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SubscriptionMode -> QueueModeData -> Maybe NewNtfCreds -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
+newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode qmd ntfCreds = do
   C.AuthAlg a <- asks (rcvAuthAlg . config)
   g <- asks random
   rKeys@(_, rcvPrivateKey) <- atomically $ C.generateAuthKeyPair a g
@@ -1344,7 +1346,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode sender
   tSess <- mkTransportSession c userId srv connId
   (sessId, QIK {rcvId, sndId, rcvPublicDhKey, sndSecure}) <-
     withClient c tSess $ \(SMPConnectedClient smp _) ->
-      (sessionId $ thParams smp,) <$> createSMPQueue smp rKeys dhKey auth subMode senderCanSecure
+      (sessionId $ thParams smp,) <$> createSMPQueue smp rKeys dhKey auth subMode qmd ntfCreds
   liftIO . logServer "<--" c srv NoEntity $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue
@@ -1364,7 +1366,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode sender
             dbReplaceQueueId = Nothing,
             rcvSwchStatus = Nothing,
             smpClientVersion = maxVersion vRange,
-            clientNtfCreds = Nothing,
+            clientNtfCreds = Nothing, -- TODO [short links]
             deleteErrors = 0
           }
       qUri = SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey sndSecure
