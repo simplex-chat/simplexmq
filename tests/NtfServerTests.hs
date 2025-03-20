@@ -98,7 +98,7 @@ v .-> key =
 testNotificationSubscription :: ATransport -> CreateQueueFunc -> Spec
 testNotificationSubscription (ATransport t) createQueue =
   -- hangs on Ubuntu 20/22
-  fit "should create notification subscription and notify when message is received" $ do
+  it "should create notification subscription and notify when message is received" $ do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
