@@ -35,15 +35,27 @@ for os in 20.04 22.04 24.04; do
 	
 	
 	apps='smp-server xftp-server ntf-server xftp'
+	# Regular build
 	docker exec \
 		-t \
 		-e apps="$apps" \
 		builder-${os} \
-		sh -c 'ln -s /dist-newstyle ./dist-newstyle && cabal update && cabal build && mkdir /out && for i in $apps; do bin=$(find /dist-newstyle -name "$i" -type f -executable); strip "$bin"; chmod +x "$bin"; mv "$bin" /out/; done'
+		sh -c 'ln -s /dist-newstyle ./dist-newstyle && cabal update && cabal build && mkdir -p /out && for i in $apps; do bin=$(find /dist-newstyle -name "$i" -type f -executable); strip "$bin"; chmod +x "$bin"; mv "$bin" /out/; done'
 
 	docker cp \
 		builder-${os}:/out \
 		out-${os}
+
+	# PostgreSQL build (only smp-server)
+	docker exec \
+		-t \
+		-e apps="$apps" \
+		builder-${os} \
+		sh -c 'ln -s /dist-newstyle ./dist-newstyle && cabal update && cabal build -fserver_postgres exe:smp-server && mkdir -p /out && for i in $apps; do bin=$(find /dist-newstyle -name "$i" -type f -executable); strip "$bin"; chmod +x "$bin"; mv "$bin" /out/; done'
+
+	docker cp \
+		builder-${os}:/out/smp-server \
+		"$init_dir/$TAG/from-source/smp-server-postgres-ubuntu-${os_url}-x86-64"
 	
 	for app in $apps; do
 		curl -L \
