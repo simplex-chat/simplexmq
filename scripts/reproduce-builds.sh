@@ -35,7 +35,8 @@ for os in 20.04 22.04 24.04; do
 	
 	
 	apps='smp-server xftp-server ntf-server xftp'
-	# Regular build
+
+	# Regular build (all)
 	docker exec \
 		-t \
 		-e apps="$apps" \
@@ -49,13 +50,17 @@ for os in 20.04 22.04 24.04; do
 	# PostgreSQL build (only smp-server)
 	docker exec \
 		-t \
-		-e apps="$apps" \
 		builder-${os} \
-		sh -c 'ln -fs /dist-newstyle ./dist-newstyle && cabal update && cabal build -fserver_postgres exe:smp-server && mkdir -p /out && for i in $apps; do bin=$(find /dist-newstyle -name "$i" -type f -executable); strip "$bin"; chmod +x "$bin"; mv "$bin" /out/; done'
+		sh -c 'ln -fs /dist-newstyle ./dist-newstyle && cabal update && cabal build -fserver_postgres exe:smp-server && mkdir -p /out && bin=$(find /dist-newstyle -name "$i" -type f -executable); strip "$bin"; chmod +x "$bin"; mv "$bin" /out/'
 
 	docker cp \
 		builder-${os}:/out/smp-server \
 		"$init_dir/$TAG/from-source/smp-server-postgres-ubuntu-${os_url}-x86-64"
+
+	curl -L \
+		--output-dir "$init_dir/$TAG/prebuilt/" \
+		-O \
+		"https://github.com/simplex-chat/simplexmq/releases/download/${TAG}/smp-server-postgres-ubuntu-${os_url}-x86-64"
 	
 	for app in $apps; do
 		curl -L \
