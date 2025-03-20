@@ -35,7 +35,6 @@ import Control.Monad.Trans.Except
 import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as BB
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Bitraversable (bimapM)
 import Data.Either (fromRight)
@@ -43,10 +42,10 @@ import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (intersperse)
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.Text as T
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
-import Database.PostgreSQL.Simple (Binary (..), Only (..), Query, SqlError)
+import Database.PostgreSQL.Simple (Binary (..), Only (..), Query, SqlError, (:.) (..))
 import qualified Database.PostgreSQL.Simple as DB
 import qualified Database.PostgreSQL.Simple.Copy as DB
 import Database.PostgreSQL.Simple.FromField (FromField (..))
@@ -320,15 +319,15 @@ insertQueueQuery :: Query
 insertQueueQuery =
   [sql|
     INSERT INTO msg_queues
-      (recipient_id, recipient_key, rcv_dh_secret, sender_id, sender_key, snd_secure, notifier_id, notifier_key, rcv_ntf_dh_secret, status, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      (recipient_id, recipient_key, rcv_dh_secret, sender_id, sender_key, queue_mode, notifier_id, notifier_key, rcv_ntf_dh_secret, status, updated_at, link_id, immutable_data, user_data)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   |]
 
-foldQueueRecs :: Monoid a => Bool -> PostgresQueueStore q -> Maybe Int64 -> ((RecipientId, QueueRec) -> IO a) -> IO a
-foldQueueRecs tty st skipOld_ f = do
+foldQueueRecs :: forall a q. Monoid a => Bool -> Bool -> PostgresQueueStore q -> Maybe Int64 -> ((RecipientId, QueueRec) -> IO a) -> IO a
+foldQueueRecs tty withData st skipOld_ f = do
   (n, r) <- withConnection (dbStore st) $ \db ->
-    foldRecs db (0 :: Int, mempty) $ \(i, acc) row -> do
-      r <- f $ rowToQueueRec row
+    foldRecs db (0 :: Int, mempty) $ \(i, acc) qr -> do
+      r <- f qr
       let !i' = i + 1
           !acc' = acc <> r
       when (tty && i' `mod` 100000 == 0) $ putStr (progress i' <> "\r") >> hFlush stdout
@@ -336,29 +335,49 @@ foldQueueRecs tty st skipOld_ f = do
   when tty $ putStrLn $ progress n
   pure r
   where
-    foldRecs db = case skipOld_ of
-      Nothing -> DB.fold_ db (queueRecQuery <> " WHERE deleted_at IS NULL")
-      Just old -> DB.fold db (queueRecQuery <> " WHERE deleted_at IS NULL AND updated_at > ?") (Only old)
+    foldRecs db acc f' = case skipOld_ of
+      Nothing
+        | withData -> DB.fold_ db (query <> " WHERE deleted_at IS NULL") acc $ \acc' -> f' acc' . rowToQueueRecWithData
+        | otherwise -> DB.fold_ db (query <> " WHERE deleted_at IS NULL") acc $ \acc' -> f' acc' . rowToQueueRec
+      Just old
+        | withData -> DB.fold db (query <> " WHERE deleted_at IS NULL AND updated_at > ?") (Only old) acc $ \acc' -> f' acc' . rowToQueueRecWithData
+        | otherwise -> DB.fold db (query <> " WHERE deleted_at IS NULL AND updated_at > ?") (Only old) acc $ \acc' -> f' acc' . rowToQueueRec
+    query = if withData then queueRecQueryWithData else queueRecQuery
     progress i = "Processed: " <> show i <> " records"
 
 queueRecQuery :: Query
 queueRecQuery =
   [sql|
     SELECT recipient_id, recipient_key, rcv_dh_secret,
-      sender_id, sender_key, snd_secure,
+      sender_id, sender_key, queue_mode,
       notifier_id, notifier_key, rcv_ntf_dh_secret,
-      status, updated_at
+      status, updated_at,
+      link_id
     FROM msg_queues
   |]
 
-type QueueRecRow = (RecipientId, RcvPublicAuthKey, RcvDhSecret, SenderId, Maybe SndPublicAuthKey, SenderCanSecure, Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret, ServerEntityStatus, Maybe RoundedSystemTime)
+queueRecQueryWithData :: Query
+queueRecQueryWithData =
+  [sql|
+    SELECT recipient_id, recipient_key, rcv_dh_secret,
+      sender_id, sender_key, queue_mode,
+      notifier_id, notifier_key, rcv_ntf_dh_secret,
+      status, updated_at,
+      link_id, immutable_data, user_data
+    FROM msg_queues
+  |]
 
-queueRecToRow :: (RecipientId, QueueRec) -> QueueRecRow
-queueRecToRow (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier = n, status, updatedAt}) =
-  (rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifierId <$> n, notifierKey <$> n, rcvNtfDhSecret <$> n, status, updatedAt)
+type QueueRecRow = (RecipientId, RcvPublicAuthKey, RcvDhSecret, SenderId, Maybe SndPublicAuthKey, Maybe QueueMode, Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret, ServerEntityStatus, Maybe RoundedSystemTime, Maybe LinkId)
+
+queueRecToRow :: (RecipientId, QueueRec) -> QueueRecRow :. (Maybe ByteString, Maybe ByteString)
+queueRecToRow (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier = n, status, updatedAt}) =
+  (rId, recipientKey, rcvDhSecret, senderId, senderKey, queueMode, notifierId <$> n, notifierKey <$> n, rcvNtfDhSecret <$> n, status, updatedAt, linkId_)
+    :. (immutableData_, userData_)
+  where
+    (linkId_, immutableData_, userData_) = queueDataColumns queueData
 
 queueRecToText :: (RecipientId, QueueRec) -> ByteString
-queueRecToText (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier = n, status, updatedAt}) =
+queueRecToText (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier = n, status, updatedAt}) =
   LB.toStrict $ BB.toLazyByteString $ mconcat tabFields <> BB.char7 '\n'
   where
     tabFields = BB.char7 ',' `intersperse` fields
@@ -368,13 +387,17 @@ queueRecToText (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, s
         renderField (toField rcvDhSecret),
         renderField (toField senderId),
         nullable senderKey,
-        renderField (toField sndSecure),
+        nullable queueMode,
         nullable (notifierId <$> n),
         nullable (notifierKey <$> n),
         nullable (rcvNtfDhSecret <$> n),
         BB.char7 '"' <> renderField (toField status) <> BB.char7 '"',
-        nullable updatedAt
+        nullable updatedAt,
+        nullable linkId_,
+        nullable immutableData_,
+        nullable userData_
       ]
+    (linkId_, immutableData_, userData_) = queueDataColumns queueData
     nullable :: ToField a => Maybe a -> Builder
     nullable = maybe mempty (renderField . toField)
     renderField :: Action -> Builder
@@ -385,10 +408,23 @@ queueRecToText (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, s
       EscapeIdentifier s -> BB.byteString s -- Not used in COPY data
       Many as -> mconcat (map renderField as)
 
+queueDataColumns :: Maybe (LinkId, QueueLinkData) -> (Maybe LinkId, Maybe ByteString, Maybe ByteString)
+queueDataColumns = \case
+  Just (linkId, QueueLinkData (EncImmutableDataBytes d1) (EncUserDataBytes d2)) ->
+    (Just linkId, Just d1, Just d2)
+  Nothing -> (Nothing, Nothing, Nothing)
+
 rowToQueueRec :: QueueRecRow -> (RecipientId, QueueRec)
-rowToQueueRec (rId, recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt) =
+rowToQueueRec (rId, recipientKey, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) =
   let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
-   in (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt})
+      queueData = (,QueueLinkData (EncImmutableDataBytes "") (EncUserDataBytes "")) <$> linkId_
+   in (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt})
+
+rowToQueueRecWithData :: QueueRecRow :. (Maybe ByteString, Maybe ByteString) -> (RecipientId, QueueRec)
+rowToQueueRecWithData ((rId, recipientKey, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) :. (immutableData_, userData_)) =
+  let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
+      queueData = (,QueueLinkData (EncImmutableDataBytes $ fromMaybe "" immutableData_) (EncUserDataBytes $ fromMaybe "" userData_)) <$> linkId_
+   in (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt})
 
 setStatusDB :: StoreQueueClass q => String -> PostgresQueueStore q -> q -> ServerEntityStatus -> ExceptT ErrorType IO () -> IO (Either ErrorType ())
 setStatusDB op st sq status writeLog =

@@ -48,18 +48,26 @@ type SMPStoreLogTestCase = StoreLogTestCase StoreLogRecord (M.Map RecipientId Qu
 
 deriving instance Eq QueueRec
 
+deriving instance Eq QueueMode
+
+deriving instance Eq QueueLinkData
+
+deriving instance Eq EncImmutableDataBytes
+
+deriving instance Eq EncUserDataBytes
+
 deriving instance Eq StoreLogRecord
 
 deriving instance Eq NtfCreds
 
 storeLogTests :: Spec
 storeLogTests =
-  forM_ [False, True] $ \sndSecure -> do
+  forM_ [QMMessaging, QMContact] $ \qm -> do
     ((rId, qr), ntfCreds, date) <- runIO $ do
       g <- C.newRandom
-      (,,) <$> testNewQueueRec g sndSecure <*> testNtfCreds g <*> getSystemDate
+      (,,) <$> testNewQueueRec g qm <*> testNtfCreds g <*> getSystemDate
     testSMPStoreLog
-      ("SMP server store log, sndSecure = " <> show sndSecure)
+      ("SMP server store log, queueMode = " <> show qm)
       [ SLTC
           { name = "create new queue",
             saved = [CreateQueue rId qr],

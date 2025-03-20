@@ -12,7 +12,8 @@ import Text.RawString.QQ (r)
 serverSchemaMigrations :: [(String, Text, Maybe Text)]
 serverSchemaMigrations =
   [ ("20250207_initial", m20250207_initial, Nothing),
-    ("20250319_updated_index", m20250319_updated_index, Just down_m20250319_updated_index)
+    ("20250319_updated_index", m20250319_updated_index, Just down_m20250319_updated_index),
+    ("20250320_short_links", m20250320_short_links, Just down_m20250320_short_links)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -60,4 +61,38 @@ down_m20250319_updated_index =
     [r|
 DROP INDEX idx_msg_queues_updated_at;
 CREATE INDEX idx_msg_queues_deleted_at ON msg_queues (deleted_at);
+    |]
+
+m20250320_short_links :: Text
+m20250320_short_links =
+  T.pack
+    [r|
+ALTER TABLE msg_queues
+  ADD COLUMN queue_mode TEXT,
+  ADD COLUMN link_id BYTEA,
+  ADD COLUMN immutable_data BYTEA,
+  ADD COLUMN user_data BYTEA;
+
+UPDATE msg_queues SET queue_mode = 'M' WHERE snd_secure IS TRUE;
+
+ALTER TABLE msg_queues DROP COLUMN snd_secure;
+
+CREATE UNIQUE INDEX idx_msg_queues_link_id ON msg_queues(link_id);
+    |]
+
+down_m20250320_short_links :: Text
+down_m20250320_short_links =
+  T.pack
+    [r|
+ALTER TABLE msg_queues ADD COLUMN snd_secure BOOLEAN NOT NULL DEFAULT FALSE;
+
+UPDATE msg_queues SET snd_secure = TRUE WHERE queue_mode = 'M';
+
+ALTER TABLE
+  DROP COLUMN queue_mode,
+  DROP COLUMN link_id,
+  DROP COLUMN immutable_data,
+  DROP COLUMN user_data;
+
+DROP INDEX idx_msg_queues_link_id;
     |]

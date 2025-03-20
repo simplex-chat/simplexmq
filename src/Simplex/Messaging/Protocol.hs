@@ -60,6 +60,10 @@ module Simplex.Messaging.Protocol
     SenderCanSecure,
     NewQueueReq (..),
     QueueModeData (..),
+    QueueMode (..),
+    QueueLinkData (..),
+    EncImmutableDataBytes (..),
+    EncUserDataBytes (..),
     NewNtfCreds (..),
     Party (..),
     Cmd (..),
@@ -111,6 +115,7 @@ module Simplex.Messaging.Protocol
     QueueId,
     RecipientId,
     SenderId,
+    LinkId,
     NotifierId,
     RcvPrivateAuthKey,
     RcvPublicAuthKey,
@@ -144,6 +149,7 @@ module Simplex.Messaging.Protocol
     initialSMPClientVersion,
     currentSMPClientVersion,
     senderCanSecure,
+    senderCanSecure',
     userProtocol,
     rcvMessageMeta,
     noMsgFlags,
@@ -446,12 +452,17 @@ data NewQueueReq = NewQueueReq
 data SubscriptionMode = SMSubscribe | SMOnlyCreate
   deriving (Eq, Show)
 
-data QueueModeData = QMMessaging (Maybe QueueLinkData) | QMContact (Maybe (LinkId, QueueLinkData))
+data QueueModeData = QDMessaging (Maybe QueueLinkData) | QDContact (Maybe (LinkId, QueueLinkData))
   deriving (Show)
 
 senderCanSecure :: Maybe QueueModeData -> Bool
 senderCanSecure = \case
-  Just QMMessaging {} -> True
+  Just (QDMessaging _) -> True
+  _ -> False
+
+senderCanSecure' :: Maybe QueueMode -> Bool
+senderCanSecure' = \case
+  Just QMMessaging -> True
   _ -> False
 
 data QueueLinkData = QueueLinkData EncImmutableDataBytes EncUserDataBytes deriving (Show)
@@ -483,17 +494,21 @@ instance Encoding SubscriptionMode where
 
 instance Encoding QueueModeData where
   smpEncode = \case
-    QMMessaging d -> smpEncode ('M', d)
-    QMContact d -> smpEncode ('C', d)
+    QDMessaging d -> smpEncode ('M', d)
+    QDContact d -> smpEncode ('C', d)
   smpP =
     A.anyChar >>= \case
-      'M' -> QMMessaging <$> smpP
-      'C' -> QMContact <$> smpP
+      'M' -> QDMessaging <$> smpP
+      'C' -> QDContact <$> smpP
       _ -> fail "bad QueueModeData"
 
 instance Encoding QueueLinkData where
   smpEncode (QueueLinkData (EncImmutableDataBytes d1) (EncUserDataBytes d2)) = smpEncode (Large d1, Large d2)
   smpP = QueueLinkData <$> (EncImmutableDataBytes <$> smpP) <*> (EncUserDataBytes <$> smpP)
+
+instance StrEncoding QueueLinkData where
+  strEncode (QueueLinkData (EncImmutableDataBytes d1) (EncUserDataBytes d2)) = strEncode (d1, d2)
+  strP = QueueLinkData <$> (EncImmutableDataBytes <$> strP) <*> (EncUserDataBytes <$> _strP)
 
 instance Encoding NewNtfCreds where
   smpEncode (NewNtfCreds authKey dhKey) = smpEncode (authKey, dhKey)
@@ -1511,7 +1526,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
               ntfCreds <- p3
               pure NewQueueReq {rcvAuthKey, rcvDhKey, auth_, subMode, queueData, ntfCreds}
             auth = optional (A.char 'A' *> smpP)
-            queueReq sndSecure = Just $ if sndSecure then QMMessaging Nothing else QMContact Nothing
+            queueReq sndSecure = Just $ if sndSecure then QDMessaging Nothing else QDContact Nothing
         SUB_ -> pure SUB
         KEY_ -> KEY <$> _smpP
         NKEY_ -> NKEY <$> _smpP <*> smpP

@@ -849,8 +849,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 q <- liftIO $ getQueueRec st SSender sId
                 liftIO $ hPutStrLn h $ case q of
                   Left e -> "error: " <> show e
-                  Right (_, QueueRec {sndSecure, status, updatedAt}) ->
-                    "status: " <> show status <> ", updatedAt: " <> show updatedAt <> ", sndSecure: " <> show sndSecure
+                  Right (_, QueueRec {queueMode, status, updatedAt}) ->
+                    "status: " <> show status <> ", updatedAt: " <> show updatedAt <> ", queueMode: " <> show queueMode
               CPBlock sId info -> withUserRole $ unliftIO u $ do
                 AMS _ _ (st :: s) <- asks msgStore
                 r <- liftIO $ runExceptT $ do
@@ -1234,8 +1234,8 @@ client
       Cmd SProxiedClient command -> processProxiedCmd (corrId, entId, command)
       Cmd SSender command -> Just <$> case command of
         SKEY sKey ->
-          withQueue $ \q QueueRec {sndSecure} ->
-            (corrId,entId,) <$> if sndSecure then secureQueue_ q sKey else pure $ ERR AUTH
+          withQueue $ \q QueueRec {queueMode} ->
+            (corrId,entId,) <$> if senderCanSecure' queueMode then secureQueue_ q sKey else pure $ ERR AUTH
         SEND flags msgBody -> withQueue_ False $ sendMessage flags msgBody
         PING -> pure (corrId, NoEntity, PONG)
         RFWD encBlock -> (corrId, NoEntity,) <$> processForwardedCommand encBlock
@@ -1269,6 +1269,7 @@ client
           let rcvDhSecret = C.dh' rcvDhKey privDhKey
               -- TODO [short links] ntf credentials, link ID
               sndSecure = senderCanSecure queueData
+              queueMode = (\case QDMessaging _ -> QMMessaging; QDContact _ -> QMContact) <$> queueData
               qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey, sndSecure, linkId = Nothing, serverNtfCreds = Nothing}
               qRec senderId =
                 QueueRec
@@ -1276,9 +1277,10 @@ client
                     recipientKey = rcvAuthKey,
                     rcvDhSecret,
                     senderKey = Nothing,
+                    queueMode,
+                    queueData = Nothing, -- TODO [short links]
                     notifier = Nothing,
                     status = EntityActive,
-                    sndSecure,
                     updatedAt
                   }
           (corrId,entId,) <$> addQueueRetry 3 qik qRec
@@ -1790,7 +1792,7 @@ exportMessages :: MsgStoreClass s => Bool -> s -> FilePath -> Bool -> IO ()
 exportMessages tty ms f drainMsgs = do
   logInfo $ "saving messages to file " <> T.pack f
   liftIO $ withFile f WriteMode $ \h ->
-    tryAny (unsafeWithAllMsgQueues tty ms $ saveQueueMsgs h) >>= \case
+    tryAny (unsafeWithAllMsgQueues tty True ms $ saveQueueMsgs h) >>= \case
       Right (Sum total) -> logInfo $ "messages saved: " <> tshow total
       Left e -> do
         logError $ "error exporting messages: " <> tshow e
@@ -1827,7 +1829,7 @@ processServerMessages StartOptions {skipWarnings} = do
               run processValidateQueue
         | otherwise = logWarn "skipping message expiration" $> Nothing
         where
-          run a = unsafeWithAllMsgQueues False ms a `catchAny` \_ -> exitFailure
+          run a = unsafeWithAllMsgQueues False False ms a `catchAny` \_ -> exitFailure
           processExpireQueue :: Int64 -> JournalQueue s -> IO MessageStats
           processExpireQueue old q = unsafeRunStore q "processExpireQueue" $ do
             mq <- getMsgQueue ms q False

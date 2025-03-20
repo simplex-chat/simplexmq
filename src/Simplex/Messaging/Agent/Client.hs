@@ -1223,7 +1223,7 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
         (sKey, spKey) <- atomically $ C.generateAuthKeyPair sa g
         (dhKey, _) <- atomically $ C.generateKeyPair g
         r <- runExceptT $ do
-          SMP.QIK {rcvId, sndId, sndSecure} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey auth SMSubscribe (QMMessaging Nothing) Nothing
+          SMP.QIK {rcvId, sndId, sndSecure} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey auth SMSubscribe (QDMessaging Nothing) Nothing
           liftError (testErr TSSecureQueue) $
             if sndSecure
               then secureSndSMPQueue smp spKey sndId sKey
