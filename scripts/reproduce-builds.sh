@@ -17,8 +17,8 @@ for os in 20.04 22.04 24.04; do
 	mkdir -p "$init_dir/cache/cabal/builder-${os}" "$init_dir/cache/dist-newstyle/builder-${os}"
 	chmod g+wX "$init_dir/cache"
 
-		#--no-cache \
 	docker build \
+		--no-cache \
 		-f "$tempdir/simplexmq/Dockerfile.build" \
 		--build-arg TAG=${os} \
 		-t repro-${os} \
