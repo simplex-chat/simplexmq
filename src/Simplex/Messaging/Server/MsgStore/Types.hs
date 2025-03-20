@@ -21,6 +21,7 @@ import Control.Monad.Trans.Except
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind
+import Data.Maybe (fromMaybe)
 import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
@@ -37,14 +38,14 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
   withActiveMsgQueues :: Monoid a => s -> (StoreQueue s -> IO a) -> IO a
   -- This function can only be used in server CLI commands or before server is started.
   unsafeWithAllMsgQueues :: Monoid a => Bool -> s -> (StoreQueue s -> IO a) -> IO a
-  withAllMsgQueues :: Monoid a => Bool -> String -> s -> (StoreQueue s -> StoreMonad s a) -> IO a
+  -- tty, store, now, ttl
+  expireOldMessages :: Bool -> s -> Int64 -> Int64 -> IO MessageStats
   logQueueStates :: s -> IO ()
   logQueueState :: StoreQueue s -> StoreMonad s ()
   queueStore :: s -> QueueStore s
 
   -- message store methods
   mkQueue :: s -> RecipientId -> QueueRec -> IO (StoreQueue s)
-  getLoadedQueue :: s -> StoreQueue s -> StoreMonad s (StoreQueue s)
   getMsgQueue :: s -> StoreQueue s -> Bool -> StoreMonad s (MsgQueue (StoreQueue s))
   getPeekMsgQueue :: s -> StoreQueue s -> StoreMonad s (Maybe (MsgQueue (StoreQueue s), Message))
 
@@ -72,6 +73,23 @@ data SMSType :: MSType -> Type where
 data SQSType :: QSType -> Type where
   SQSMemory :: SQSType 'QSMemory
   SQSPostgres :: SQSType 'QSPostgres
+
+data MessageStats = MessageStats
+  { storedMsgsCount :: Int,
+    expiredMsgsCount :: Int,
+    storedQueues :: Int
+  }
+
+instance Monoid MessageStats where
+  mempty = MessageStats 0 0 0
+  {-# INLINE mempty #-}
+
+instance Semigroup MessageStats where
+  MessageStats a b c <> MessageStats x y z = MessageStats (a + x) (b + y) (c + z)
+  {-# INLINE (<>) #-}
+
+newMessageStats :: MessageStats
+newMessageStats = MessageStats 0 0 0
 
 addQueue :: MsgStoreClass s => s -> RecipientId -> QueueRec -> IO (Either ErrorType (StoreQueue s))
 addQueue st = addQueue_ (queueStore st) (mkQueue st)
@@ -122,14 +140,10 @@ deleteExpiredMsgs st q old =
   isolateQueue q "deleteExpiredMsgs" $
     getMsgQueue st q False >>= deleteExpireMsgs_ old q
 
--- closed and idle queues will be closed after expiration
--- returns (expired count, queue size after expiration)
-idleDeleteExpiredMsgs :: MsgStoreClass s => Int64 -> s -> StoreQueue s -> Int64 -> StoreMonad s (Maybe Int, Int)
-idleDeleteExpiredMsgs now st q old = do
-  -- Use cached queue if available.
-  -- Also see the comment in loadQueue in PostgresQueueStore
-  q' <- getLoadedQueue st q
-  withIdleMsgQueue now st q' $ deleteExpireMsgs_ old q'
+expireQueueMsgs :: MsgStoreClass s => s -> Int64 -> Int64 -> StoreQueue s -> StoreMonad s MessageStats
+expireQueueMsgs st now old q = do
+  (expired_, stored) <- withIdleMsgQueue now st q $ deleteExpireMsgs_ old q
+  pure MessageStats {storedMsgsCount = stored, expiredMsgsCount = fromMaybe 0 expired_, storedQueues = 1}
 
 deleteExpireMsgs_ :: MsgStoreClass s => Int64 -> StoreQueue s -> MsgQueue (StoreQueue s) -> StoreMonad s Int
 deleteExpireMsgs_ old q mq = do

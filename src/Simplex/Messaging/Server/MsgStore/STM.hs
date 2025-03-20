@@ -82,8 +82,11 @@ instance MsgStoreClass STMMsgStore where
   {-# INLINE withActiveMsgQueues #-}
   unsafeWithAllMsgQueues _ = withLoadedQueues . queueStore_
   {-# INLINE unsafeWithAllMsgQueues #-}
-  withAllMsgQueues _tty _op ms action = withLoadedQueues (queueStore_ ms) $ atomically . action
-  {-# INLINE withAllMsgQueues #-}
+
+  expireOldMessages :: Bool -> STMMsgStore -> Int64 -> Int64 -> IO MessageStats
+  expireOldMessages _tty ms now ttl =
+    withLoadedQueues (queueStore_ ms) $ atomically . expireQueueMsgs ms now (now - ttl)
+
   logQueueStates _ = pure ()
   {-# INLINE logQueueStates #-}
   logQueueState _ = pure ()
@@ -93,10 +96,6 @@ instance MsgStoreClass STMMsgStore where
 
   mkQueue _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
   {-# INLINE mkQueue #-}
-
-  getLoadedQueue :: STMMsgStore -> STMQueue -> STM STMQueue
-  getLoadedQueue _ = pure
-  {-# INLINE getLoadedQueue #-}
 
   getMsgQueue :: STMMsgStore -> STMQueue -> Bool -> STM STMMsgQueue
   getMsgQueue _ STMQueue {msgQueue'} _ = readTVar msgQueue' >>= maybe newQ pure
