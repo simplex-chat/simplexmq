@@ -147,11 +147,11 @@ defaultMessageExpiration :: ExpirationConfig
 defaultMessageExpiration =
   ExpirationConfig
     { ttl = defMsgExpirationDays * 86400, -- seconds
-      checkInterval = 14400 -- seconds, 4 hours
+      checkInterval = 7200 -- seconds, 2 hours
     }
 
 defaultIdleQueueInterval :: Int64
-defaultIdleQueueInterval = 28800 -- seconds, 8 hours
+defaultIdleQueueInterval = 14400 -- seconds, 4 hours
 
 defNtfExpirationHours :: Int64
 defNtfExpirationHours = 24

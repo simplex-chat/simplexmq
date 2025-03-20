@@ -147,23 +147,6 @@ runSMPServerBlocking started cfg attachHTTP_ = newEnv cfg >>= runReaderT (smpSer
 type M a = ReaderT Env IO a
 type AttachHTTP = Socket -> TLS.Context -> IO ()
 
-data MessageStats = MessageStats
-  { storedMsgsCount :: Int,
-    expiredMsgsCount :: Int,
-    storedQueues :: Int
-  }
-
-instance Monoid MessageStats where
-  mempty = MessageStats 0 0 0
-  {-# INLINE mempty #-}
-
-instance Semigroup MessageStats where
-  MessageStats a b c <> MessageStats x y z = MessageStats (a + x) (b + y) (c + z)
-  {-# INLINE (<>) #-}
-
-newMessageStats :: MessageStats
-newMessageStats = MessageStats 0 0 0
-
 smpServer :: TMVar Bool -> ServerConfig -> Maybe AttachHTTP -> M ()
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOptions} attachHTTP_ = do
   s <- asks server
@@ -389,9 +372,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     expireMessagesThread_ _ = []
 
     expireMessagesThread :: ExpirationConfig -> M ()
-    expireMessagesThread expCfg = do
+    expireMessagesThread ExpirationConfig {checkInterval, ttl} = do
       AMS _ _ ms <- asks msgStore
-      let interval = checkInterval expCfg * 1000000
+      let interval = checkInterval * 1000000
       stats <- asks serverStats
       labelMyThread "expireMessagesThread"
       liftIO $ forever $ expire ms stats interval
@@ -402,17 +385,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           logInfo "Started expiring messages..."
           n <- compactQueues @(StoreQueue s) $ queueStore ms
           when (n > 0) $ logInfo $ "Removed " <> tshow n <> " old deleted queues from the database."
-          old <- expireBeforeEpoch expCfg
           now <- systemSeconds <$> getSystemTime
-          tryAny (withAllMsgQueues False "idleDeleteExpiredMsgs" ms $ expireQueueMsgs now ms old) >>= \case
+          tryAny (expireOldMessages False ms now ttl) >>= \case
             Right msgStats@MessageStats {storedMsgsCount = stored, expiredMsgsCount = expired} -> do
               atomicWriteIORef (msgCount stats) stored
               atomicModifyIORef'_ (msgExpired stats) (+ expired)
               printMessageStats "STORE: messages" msgStats
             Left e -> logError $ "STORE: withAllMsgQueues, error expiring messages, " <> tshow e
-        expireQueueMsgs now ms old q = do
-          (expired_, stored) <- idleDeleteExpiredMsgs now ms q old
-          pure MessageStats {storedMsgsCount = stored, expiredMsgsCount = fromMaybe 0 expired_, storedQueues = 1}
 
     expireNtfsThread :: ServerConfig -> M ()
     expireNtfsThread ServerConfig {notificationExpiration = expCfg} = do

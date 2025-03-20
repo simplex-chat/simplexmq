@@ -11,7 +11,8 @@ import Text.RawString.QQ (r)
 
 serverSchemaMigrations :: [(String, Text, Maybe Text)]
 serverSchemaMigrations =
-  [ ("20250207_initial", m20250207_initial, Nothing)
+  [ ("20250207_initial", m20250207_initial, Nothing),
+    ("20250319_updated_index", m20250319_updated_index, Just down_m20250319_updated_index)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -42,5 +43,21 @@ CREATE TABLE msg_queues(
 
 CREATE UNIQUE INDEX idx_msg_queues_sender_id ON msg_queues(sender_id);
 CREATE UNIQUE INDEX idx_msg_queues_notifier_id ON msg_queues(notifier_id);
+CREATE INDEX idx_msg_queues_deleted_at ON msg_queues (deleted_at);
+    |]
+
+m20250319_updated_index :: Text
+m20250319_updated_index = 
+  T.pack
+    [r|
+DROP INDEX idx_msg_queues_deleted_at;
+CREATE INDEX idx_msg_queues_updated_at ON msg_queues (deleted_at, updated_at);
+    |]
+
+down_m20250319_updated_index :: Text
+down_m20250319_updated_index =
+  T.pack
+    [r|
+DROP INDEX idx_msg_queues_updated_at;
 CREATE INDEX idx_msg_queues_deleted_at ON msg_queues (deleted_at);
     |]

@@ -324,10 +324,10 @@ insertQueueQuery =
     VALUES (?,?,?,?,?,?,?,?,?,?,?)
   |]
 
-foldQueueRecs :: Monoid a => Bool -> PostgresQueueStore q -> ((RecipientId, QueueRec) -> IO a) -> IO a
-foldQueueRecs tty st f = do
+foldQueueRecs :: Monoid a => Bool -> PostgresQueueStore q -> Maybe Int64 -> ((RecipientId, QueueRec) -> IO a) -> IO a
+foldQueueRecs tty st skipOld_ f = do
   (n, r) <- withConnection (dbStore st) $ \db ->
-    DB.fold_ db (queueRecQuery <> " WHERE deleted_at IS NULL") (0 :: Int, mempty) $ \(i, acc) row -> do
+    foldRecs db (0 :: Int, mempty) $ \(i, acc) row -> do
       r <- f $ rowToQueueRec row
       let !i' = i + 1
           !acc' = acc <> r
@@ -336,6 +336,9 @@ foldQueueRecs tty st f = do
   when tty $ putStrLn $ progress n
   pure r
   where
+    foldRecs db = case skipOld_ of
+      Nothing -> DB.fold_ db (queueRecQuery <> " WHERE deleted_at IS NULL")
+      Just old -> DB.fold db (queueRecQuery <> " WHERE deleted_at IS NULL AND updated_at > ?") (Only old)
     progress i = "Processed: " <> show i <> " records"
 
 queueRecQuery :: Query
