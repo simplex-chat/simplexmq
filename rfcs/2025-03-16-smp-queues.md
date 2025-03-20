@@ -62,6 +62,14 @@ data QueueIdsKeys = QIK
 
 Proposed NEW command replaces SenderCanSecure with QueueMode, adds link data, and combines NKEY command:
 
+The problem: at a point of preparing immutable data we do not yet have sender_id for the primary queue (the only queue at the moment), and we cannot simply use ID returned from the server in LINK response, as it would not mitigate server changing it. Which was the original reason to supply sender_id. So it seems that the only option is to either accept that the sender_id existence can be checked (by creating the queue with passed ID) or that the link data will be passed in a separate command, requiring additional roundtrip.
+
+For contact addresses we could user-generate sender_id, but for 1-time invitations it is a bad trade-off - sending the additional command is better. It also simplifies the protocol, as adding link data at the point of creating the queue does not need to be supported.
+
+Is server changing the ID in the response a risk? Does the queue recipient even need to know sender_id? Potentially the server could return sender_id in LINK response, and the queue recipient would include some placeholder in the address that the queue sender would replace with ID from LINK response. This would avoid both the extra roundtrip to save queue data and the possibility of checking for queue existense (by creating the queue using sender-defined ID).
+
+So, possibly, for contact addresses user will provide both sender_id and link_id, as it's possible to check address existense anyway, without creating the queue, and for 1-time invitations it may be ok to use placeholder ID for primary queue in the address. It may be "cleaner" from protocol design point of view to have the extra roundtrip though.
+
 ```haskell
 NEW :: NewQueueRequest -> Command Recipient
 
@@ -166,6 +174,42 @@ For contact addresses this approach follows the design proposed in [Short links]
 - for one time links the sender must authorize the request to retrieve the data, the key is provided with the first request, preventing undetected access by link observers.
 - having received the link data, the client can now decrypt it using secret_box.
 
+## Improved algorithm to prepare and to interpret queue link data.
+
+This scheme reduces the size of the binary in the link from 48 bytes (72 in case of 1-time links) to 32 bytes (56 bytes for 1-time links).
+
+For immutable data.
+
+1. `link_key = SHA3-256(immutable_data)` - used as part of link, and to encrypt content.
+2. HKDF:
+  1) contact address: `(link_id, key) = HKDF(link_key, 56 bytes)`.
+  2) 1-time invitation: `key = HKDF(link_key, 32 bytes)`, `link-id` - server-generated. 
+3. 
+3. Random `nonce1` (for immutable data), to be stored with the link data.
+4. Encrypt: `(ct1, tag1) = secret_box(immutable_data, key, nonce1)`.
+5. Store: `(nonce1, ct1, tag1)` stored as immutable link data.
+
+For mutable user data:
+
+1. Random `nonce2` and the same key are used.
+2. Sign `user_data` with key included in `immutable_data`.
+3. Encrypt: `(ct2, tag2) = secret_box(signed_used_data, key, nonce2)`.
+4. Sotre: `(nonce2, ct2, tag2)`
+
+Link recipient:
+
+1. Receives `link_key` in the link, for 1-time invitations also `link_id`.
+2. HKDF:
+  1) contact address: `(link_id, key) = HKDF(link_key, 56 bytes)`.
+  2) 1-time invitation: `key = HKDF(link_key, 32 bytes)`.
+3. Retrieves via `link_id`: `(nonce1, ct1, tag1)` and `(nonce2, ct2, tag2)`.
+4. Decrypt: `immutable_data = decrypt (nonce1, ct1, tag1)`.
+5. Verify: `SHA3-256(immutable_data) == link_key`, abort if not.
+6. Decrypt: `signed_used_data = decrypt(nonce2, ct2, tag2)`
+7. Verify signature with key in immutable data.
+
+While using content hash as encryption key is unconventional, it is not completely unheard of - e.g., it is used in convergent encryption (although in our case using random nonce makes it not convergent, but it means that it preserves encryption security). It is particularly acceptable for our use case, as `immutable_data` contains mostly random keys.
+
 ## Threat model
 
 **Compromised SMP server**
@@ -214,11 +258,10 @@ The proposed syntax:
 shortConnectionLink = %s"https://" smpServerHost "/" linkUri [ "?" param *( "&" param ) ]
 smpServerHost = <hostname> ; RFC1123, RFC5891
 linkUri = %s"i#" serverInfo oneTimeLinkBytes / %s"c#" serverInfo contactLinkBytes
-oneTimeLinkBytes = <base64url(linkId | linkKey | linkAuthTag)> ; 60 bytes / 80 base64 encoded characters
-contactLinkBytes = <base64url(linkKey | linkAuthTag)> ; 48 bytes / 64 base64 encoded characters
+oneTimeLinkBytes = <base64url(linkId | linkKey)> ; 56 bytes / 75 base64 encoded characters
+contactLinkBytes = <base64url(linkKey)> ; 32 bytes / 43 base64 encoded characters
 ; linkId - 96 bits/24 bytes
 ; linkKey - 256 bits/32 bytes
-; linkAuthTag - 128 bits/16 bytes auth tag from encryption of immutable link data>
 
 serverInfo = [fingerprint "@" [hostnames "/"]] ; not needed for preset servers, required otherwise - the clients must refuse to connect if they don't have fingerprint in the code.
 
@@ -228,28 +271,28 @@ hostnames = "h=" <hostname> *( "," <hostname> ) ; additional hostnames, e.g. oni
 
 To have shorter links fingerpring and additional server hostnames do not need to be specified for preconfigured servers, even if they are disabled - they can be used from the client code. Any user defined servers will require including additional hosts and server fingerprint.
 
-Example one-time link for preset server (108 characters):
+Example one-time link for preset server (103 characters):
 
 ```
-https://smp12.simplex.im/i#abcdefghij0123456789abcdefghij0123456789abcdefghij0123456789abcdefghij0123456789
+https://smp12.simplex.im/i#abcdefghij0123456789abcdefghij0123456789abcdefghij0123456789abcdefghij01234
 ```
 
-Example contact link for preset server (92 characters):
+Example contact link for preset server (71 characters):
 
 ```
-https://smp12.simplex.im/c#abcdefghij0123456789abcdefghij0123456789abcdefghij0123456789abcd
+https://smp12.simplex.im/c#abcdefghij0123456789abcdefghij0123456789abc
 ```
 
-Example contact link for user-defined server (with fingerprint, but without onion hostname - 136 characters):
+Example contact link for user-defined server (with fingerprint, but without onion hostname - 115 characters):
 
 ```
-https://smp1.example.com/c#0YuTwO05YJWS8rkjn9eLJDjQhFKvIYd8d4xG8X1blIU@abcdefghij0123456789abcdefghij0123456789abcdefghij0123456789abcd
+https://smp1.example.com/c#0YuTwO05YJWS8rkjn9eLJDjQhFKvIYd8d4xG8X1blIU@abcdefghij0123456789abcdefghij0123456789abc
 ```
 
-Example contact link for user-defined server (with fingerprint ant onion hostname - 199 characters):
+Example contact link for user-defined server (with fingerprint ant onion hostname - 178 characters):
 
 ```
-https://smp1.example.com/c#0YuTwO05YJWS8rkjn9eLJDjQhFKvIYd8d4xG8X1blIU@beccx4yfxxbvyhqypaavemqurytl6hozr47wfc7uuecacjqdvwpw2xid.onion/abcdefghij0123456789abcdefghij0123456789abcdefghij0123456789abcd
+https://smp1.example.com/c#0YuTwO05YJWS8rkjn9eLJDjQhFKvIYd8d4xG8X1blIU@beccx4yfxxbvyhqypaavemqurytl6hozr47wfc7uuecacjqdvwpw2xid.onion/abcdefghij0123456789abcdefghij0123456789abc
 ```
 
 For the links to work in the browser the servers must provide server pages.

@@ -373,9 +373,9 @@ type QueueRecRow = (RecipientId, RcvPublicAuthKey, RcvDhSecret, SenderId, Maybe 
 queueRecToRow :: (RecipientId, QueueRec) -> QueueRecRow :. (Maybe ByteString, Maybe ByteString)
 queueRecToRow (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier = n, status, updatedAt}) =
   (rId, recipientKey, rcvDhSecret, senderId, senderKey, queueMode, notifierId <$> n, notifierKey <$> n, rcvNtfDhSecret <$> n, status, updatedAt, linkId_)
-    :. (immutableData_, userData_)
+    :. (fst <$> queueData_, snd <$> queueData_)
   where
-    (linkId_, immutableData_, userData_) = queueDataColumns queueData
+    (linkId_, queueData_) = queueDataColumns queueData
 
 queueRecToText :: (RecipientId, QueueRec) -> ByteString
 queueRecToText (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier = n, status, updatedAt}) =
@@ -395,10 +395,10 @@ queueRecToText (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, q
         BB.char7 '"' <> renderField (toField status) <> BB.char7 '"',
         nullable updatedAt,
         nullable linkId_,
-        nullable immutableData_,
-        nullable userData_
+        nullable (fst <$> queueData_),
+        nullable (snd <$> queueData_)
       ]
-    (linkId_, immutableData_, userData_) = queueDataColumns queueData
+    (linkId_, queueData_) = queueDataColumns queueData
     nullable :: ToField a => Maybe a -> Builder
     nullable = maybe mempty (renderField . toField)
     renderField :: Action -> Builder
@@ -409,22 +409,21 @@ queueRecToText (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, q
       EscapeIdentifier s -> BB.byteString s -- Not used in COPY data
       Many as -> mconcat (map renderField as)
 
-queueDataColumns :: Maybe (LinkId, QueueLinkData) -> (Maybe LinkId, Maybe ByteString, Maybe ByteString)
+queueDataColumns :: Maybe (LinkId, QueueLinkData) -> (Maybe LinkId, Maybe (ByteString, ByteString))
 queueDataColumns = \case
-  Just (linkId, QueueLinkData (EncImmutableDataBytes d1) (EncUserDataBytes d2)) ->
-    (Just linkId, Just d1, Just d2)
-  Nothing -> (Nothing, Nothing, Nothing)
+  Just (linkId, queueData) -> (Just linkId, Just queueData)
+  Nothing -> (Nothing, Nothing)
 
 rowToQueueRec :: QueueRecRow -> (RecipientId, QueueRec)
 rowToQueueRec (rId, recipientKey, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) =
   let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
-      queueData = (,QueueLinkData (EncImmutableDataBytes "") (EncUserDataBytes "")) <$> linkId_
+      queueData = (,("", "")) <$> linkId_
    in (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt})
 
 rowToQueueRecWithData :: QueueRecRow :. (Maybe ByteString, Maybe ByteString) -> (RecipientId, QueueRec)
 rowToQueueRecWithData ((rId, recipientKey, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) :. (immutableData_, userData_)) =
   let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
-      queueData = (,QueueLinkData (EncImmutableDataBytes $ fromMaybe "" immutableData_) (EncUserDataBytes $ fromMaybe "" userData_)) <$> linkId_
+      queueData = (,(fromMaybe "" immutableData_, fromMaybe "" userData_)) <$> linkId_
    in (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt})
 
 setStatusDB :: StoreQueueClass q => String -> PostgresQueueStore q -> q -> ServerEntityStatus -> ExceptT ErrorType IO () -> IO (Either ErrorType ())

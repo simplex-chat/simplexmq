@@ -50,12 +50,6 @@ deriving instance Eq QueueRec
 
 deriving instance Eq QueueMode
 
-deriving instance Eq QueueLinkData
-
-deriving instance Eq EncImmutableDataBytes
-
-deriving instance Eq EncUserDataBytes
-
 deriving instance Eq StoreLogRecord
 
 deriving instance Eq NtfCreds

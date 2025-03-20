@@ -61,9 +61,9 @@ module Simplex.Messaging.Protocol
     NewQueueReq (..),
     QueueModeData (..),
     QueueMode (..),
-    QueueLinkData (..),
-    EncImmutableDataBytes (..),
-    EncUserDataBytes (..),
+    QueueLinkData,
+    EncImmutableDataBytes,
+    EncUserDataBytes,
     NewNtfCreds (..),
     Party (..),
     Cmd (..),
@@ -466,11 +466,11 @@ senderCanSecure' = \case
   Just QMMessaging -> True
   _ -> False
 
-data QueueLinkData = QueueLinkData EncImmutableDataBytes EncUserDataBytes deriving (Show)
+type QueueLinkData = (EncImmutableDataBytes, EncUserDataBytes)
 
-newtype EncImmutableDataBytes = EncImmutableDataBytes ByteString deriving (Show)
+type EncImmutableDataBytes = ByteString
 
-newtype EncUserDataBytes = EncUserDataBytes ByteString deriving (Show)
+type EncUserDataBytes = ByteString
 
 data NewNtfCreds = NewNtfCreds NtfPublicAuthKey RcvNtfPublicDhKey deriving (Show)
 
@@ -502,14 +502,6 @@ instance Encoding QueueModeData where
       'M' -> QDMessaging <$> smpP
       'C' -> QDContact <$> smpP
       _ -> fail "bad QueueModeData"
-
-instance Encoding QueueLinkData where
-  smpEncode (QueueLinkData (EncImmutableDataBytes d1) (EncUserDataBytes d2)) = smpEncode (Large d1, Large d2)
-  smpP = QueueLinkData <$> (EncImmutableDataBytes <$> smpP) <*> (EncUserDataBytes <$> smpP)
-
-instance StrEncoding QueueLinkData where
-  strEncode (QueueLinkData (EncImmutableDataBytes d1) (EncUserDataBytes d2)) = strEncode (d1, d2)
-  strP = QueueLinkData <$> (EncImmutableDataBytes <$> strP) <*> (EncUserDataBytes <$> _strP)
 
 instance Encoding NewNtfCreds where
   smpEncode (NewNtfCreds authKey dhKey) = smpEncode (authKey, dhKey)
