@@ -51,7 +51,7 @@ for os in 20.04 22.04 24.04; do
 	docker exec \
 		-t \
 		builder-${os} \
-		sh -c 'ln -fs /dist-newstyle ./dist-newstyle && cabal update && cabal build -fserver_postgres exe:smp-server && mkdir -p /out && bin=$(find /dist-newstyle -name "$i" -type f -executable); strip "$bin"; chmod +x "$bin"; mv "$bin" /out/'
+		sh -c 'ln -fs /dist-newstyle ./dist-newstyle && cabal update && cabal build -fserver_postgres exe:smp-server && mkdir -p /out && bin=$(find /dist-newstyle -name "smp-server" -type f -executable); strip "$bin"; chmod +x "$bin"; mv "$bin" /out/'
 
 	docker cp \
 		builder-${os}:/out/smp-server \
