@@ -72,6 +72,7 @@ module Simplex.Messaging.Protocol
     SParty (..),
     PartyI (..),
     QueueIdsKeys (..),
+    ServerNtfCreds (..),
     ProtocolErrorType (..),
     ErrorType (..),
     CommandError (..),

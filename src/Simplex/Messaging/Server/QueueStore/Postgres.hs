@@ -145,10 +145,11 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           >>= bimapM handleDuplicate pure
       atomically $ TM.insert rId sq queues
       atomically $ TM.insert (senderId qr) rId senders
+      forM_ (notifier qr) $ \NtfCreds {notifierId = nId} -> atomically $ TM.insert nId rId notifiers
       withLog "addStoreQueue" st $ \s -> logCreateQueue s rId qr
       pure sq
     where
-      PostgresQueueStore {queues, senders} = st
+      PostgresQueueStore {queues, senders, notifiers} = st
       -- Not doing duplicate checks in maps as the probability of duplicates is very low.
       -- It needs to be reconsidered when IDs are supplied by the users.
       -- hasId = anyM [TM.memberIO rId queues, TM.memberIO senderId senders, hasNotifier]

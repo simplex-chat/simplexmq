@@ -136,6 +136,8 @@ notificationTests ps@(t, _) = do
       testNtfMatrix ps testNotificationSubscriptionExistingConnection
     describe "should create notification subscription for new connection" $
       testNtfMatrix ps testNotificationSubscriptionNewConnection
+    -- describe "should create new connection with notification subscription" $
+    --   testNtfMatrix ps testNewConnectionWithNotificationSubscription
     it "should change notifications mode" $
       withSmpServer ps $
         withAPNSMockServer $ \apns ->
