@@ -62,29 +62,21 @@ data QueueIdsKeys = QIK
 
 Proposed NEW command replaces SenderCanSecure with QueueMode, adds link data, and combines NKEY command:
 
-The problem: at a point of preparing immutable data we do not yet have sender_id for the primary queue (the only queue at the moment), and we cannot simply use ID returned from the server in LINK response, as it would not mitigate server changing it. Which was the original reason to supply sender_id. So it seems that the only option is to either accept that the sender_id existence can be checked (by creating the queue with passed ID) or that the link data will be passed in a separate command, requiring additional roundtrip.
-
-For contact addresses we could user-generate sender_id, but for 1-time invitations it is a bad trade-off - sending the additional command is better. It also simplifies the protocol, as adding link data at the point of creating the queue does not need to be supported.
-
-Is server changing the ID in the response a risk? Does the queue recipient even need to know sender_id? Potentially the server could return sender_id in LINK response, and the queue recipient would include some placeholder in the address that the queue sender would replace with ID from LINK response. This would avoid both the extra roundtrip to save queue data and the possibility of checking for queue existense (by creating the queue using sender-defined ID).
-
-So, possibly, for contact addresses user will provide both sender_id and link_id, as it's possible to check address existense anyway, without creating the queue, and for 1-time invitations it may be ok to use placeholder ID for primary queue in the address. It may be "cleaner" from protocol design point of view to have the extra roundtrip though.
-
 ```haskell
 NEW :: NewQueueRequest -> Command Recipient
 
-data NewQueueRequest = NewQueueRequest
+data NewQueueReq = NewQueueReq
   { rcvAuthKey :: RcvPublicAuthKey,
     rcvDhKey :: RcvPublicDhKey,
-    basicAuth :: Maybe BasicAuth,
+    auth_ :: Maybe BasicAuth,
     subMode :: SubscriptionMode,
-    ntfRequest :: Maybe NtfRequest,
-    queueLink :: Maybe QueueLink -- it is Maybe to allow testing and staged roll-out
+    queueData :: Maybe QueueModeData,
+    ntfCreds :: Maybe NewNtfCreds
   }
 
 -- To allow updating the existing contact addresses without changing them.
--- This command would fail on queues that support sndSecure and also on new queues created with QLMessaging.
--- RecipientId is entity ID.
+-- This command would fail on queues that support sndSecure and also on new queues created with QDMessaging.
+-- RecipientId is entity ID for this command.
 -- The response to this command is `OK`.
 LNEW :: LinkId -> QueueLinkData -> Command Recipient
 
@@ -93,16 +85,18 @@ LNEW :: LinkId -> QueueLinkData -> Command Recipient
 -- Further changes would move NotifierId generation to the client, and including a signed and encrypted command to be forwarded by SMP server to notification server.
 data NtfRequest = NtfRequest NtfPublicAuthKey RcvNtfPublicDhKey
 
--- QLMessaging implies that sender can secure the queue.
--- LinkId is not used with QLMessaging, to prevent the possibility of checking when connection is established by re-using the same link ID when creating another queue – the creating would have to fail if it is used.
--- LinkId is required with QLContact, to have shorter link - it will be derived from the link_uri. And in this case we do not need to prevent checks that this queue exists.
-data QueueLink = QLMessaging QueueLinkData | QLContact LinkId QueueLinkData
+-- QDMessaging implies that sender can secure the queue.
+-- LinkId is not used with QDMessaging, to prevent the possibility of checking when connection is established by re-using the same link ID when creating another queue – the creating would have to fail if it is used.
+-- LinkId is required with QDContact, to have shorter link - it will be derived from the link_uri. And in this case we do not need to prevent checks that this queue exists.
+data QueueModeData = QDMessaging (Maybe QueueLinkData) | QDContact (Maybe (LinkId, QueueLinkData))
 
-data QueueLinkData = QueueLinkData EncImmutableDataBytes EncUserDataBytes
+-- SenderId should be computed client-side as sha3-256(correlation_id),
+-- The server must verify it and reject if it is not.
+type QueueLinkData = (SenderId, EncImmutableDataBytes, EncUserDataBytes)
 
-newtype EncImmutableDataBytes = EncImmutableDataBytes ByteString
+type EncImmutableDataBytes = ByteString
 
-newtype EncUserDataBytes = EncUserDataBytes ByteString
+type EncUserDataBytes = ByteString
 
 -- We need to use binary encoding for AConnectionRequestUri to reduce its size
 -- connReq including the full link allows connection redundancy.
@@ -142,13 +136,13 @@ LSET :: EncUserDataBytes -> Command Recipient
 
 -- To be used with 1-time links.
 -- Sender's key provided on the first request prevents observers from undetectably accessing 1-time link data.
--- If queue mode is QLContact (and queue does NOT allow sndSecure) the command will fail, same as SKEY.
+-- If queue mode is QDContact (and queue does NOT allow sndSecure) the command will fail, same as SKEY.
 -- Once queue is secured, the key must be the same in subsequent requests - to allow retries in case of network failures, and to prevent passive attacks.
 -- The difference with securing queues is that queues allow sending unsecured messages to queues that allow sndSecure (for backwards compatibility), and 1-time links will NOT allow retrieving link data without securing the queue at the same time, preventing undetected access by observers.
 -- Entity ID is LinkId here
 LKEY :: SndPublicAuthKey -> Command Sender
 
--- If queue mode is QLMessaging the command will fail.
+-- If queue mode is QDMessaging the command will fail.
 -- Entity ID is LinkId here
 LGET :: Command Sender
 
@@ -156,6 +150,15 @@ LGET :: Command Sender
 -- Entity ID is LinkId here
 LINK :: SenderId -> QueueLinkData -> BrokerMsg
 ```
+
+To both include sender_id into the full link before the server response, and to prevent "oracle attack" when a failure to create the queue with the supplied `sender_id` can be used as a proof of queue existense, it is proposed that `sender_id` is computed client-side as `sha3-256(correlation_id)` and validated server-side, where `corelation_id` is the transmission correlation ID.
+
+To allow retries and to avoid regenerating all queue data, NEW command must be idempotent, and `correlation_id` must be preserved in command for queue creation, so that the same `correlation_id` and all other data is used in retries. `correlation_id` should be removed after queue creation success.
+
+Alternative solutions considered and rejected:
+- additional request to save queue data, after `sender_id` is returned by the server.
+- include empty sender_id in the immutable data and have it replaced by the accepting party with `sender_id` received in `LINK` response - both a weird design, and might create possibility for some attacks via server, especially for contact addresses.
+- use random `correlation_id` and new `sender_id` in retries. While it would remove the need for `NEW` command to be idempotent, it would increase the cost of retries and would require regenerating the whole immutable data of the queue on each retry.
 
 ## Algorithm to prepare and to interpret queue link data.
 
@@ -208,7 +211,7 @@ Link recipient:
 6. Decrypt: `signed_used_data = decrypt(nonce2, ct2, tag2)`
 7. Verify signature with key in immutable data.
 
-While using content hash as encryption key is unconventional, it is not completely unheard of - e.g., it is used in convergent encryption (although in our case using random nonce makes it not convergent, but it means that it preserves encryption security). It is particularly acceptable for our use case, as `immutable_data` contains mostly random keys.
+While using content hash as encryption key is unconventional, it is not completely unheard of - e.g., it is used in convergent encryption (although in our case using random nonce makes it not convergent, but other use cases suggest that this approach preserves encryption security). It is particularly acceptable for our use case, as `immutable_data` contains mostly random keys.
 
 ## Threat model
 
