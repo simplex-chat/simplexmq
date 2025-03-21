@@ -85,7 +85,7 @@ pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmission ErrorType B
 pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
 
 pattern New :: RcvPublicAuthKey -> RcvPublicDhKey -> Command 'Recipient
-pattern New rPub dhPub = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QDMessaging Nothing)) Nothing)
+pattern New rPub dhPub = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRMessaging Nothing)) Nothing)
 
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> BrokerMsg
 pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure _linkId _srvNtfCreds)
@@ -261,7 +261,7 @@ testSndSecureProhibited =
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" rId1 (Ids _rId sId _srvDh) <- signSendRecv r rKey ("abcd", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QDContact Nothing)) Nothing))
+      Resp "abcd" rId1 (Ids _rId sId _srvDh) <- signSendRecv r rKey ("abcd", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRContact Nothing)) Nothing))
       (rId1, NoEntity) #== "creates queue"
 
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
@@ -1078,8 +1078,8 @@ serverSyntaxTests (ATransport t) = do
   describe "NEW" $ do
     it "no parameters" $ (sampleSig, "bcda", "", NEW_) >#> ("", "bcda", "", ERR $ CMD SYNTAX)
     it "many parameters" $ (sampleSig, "cdab", "", (NEW_, ' ', ('\x01', 'A'), samplePubKey, sampleDhPubKey)) >#> ("", "cdab", "", ERR $ CMD SYNTAX)
-    it "no signature" $ ("", "dabc", "", ((NEW_, ' ', samplePubKey, sampleDhPubKey), ('0', SMSubscribe, Just (QDMessaging Nothing), '0'))) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
-    it "queue ID" $ (sampleSig, "abcd", "12345678", ((NEW_, ' ', samplePubKey, sampleDhPubKey), ('0', SMSubscribe, Just (QDMessaging Nothing), '0'))) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
+    it "no signature" $ ("", "dabc", "", ((NEW_, ' ', samplePubKey, sampleDhPubKey), ('0', SMSubscribe, Just (QRMessaging Nothing), '0'))) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
+    it "queue ID" $ (sampleSig, "abcd", "12345678", ((NEW_, ' ', samplePubKey, sampleDhPubKey), ('0', SMSubscribe, Just (QRMessaging Nothing), '0'))) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
   describe "KEY" $ do
     it "valid syntax" $ (sampleSig, "bcda", "12345678", (KEY_, ' ', samplePubKey)) >#> ("", "bcda", "12345678", ERR AUTH)
     it "no parameters" $ (sampleSig, "cdab", "12345678", KEY_) >#> ("", "cdab", "12345678", ERR $ CMD SYNTAX)

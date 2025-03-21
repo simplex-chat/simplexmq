@@ -51,7 +51,9 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Control.Monad.STM (retry)
+import Crypto.Hash (Digest, SHA3_256, hash)
 import Data.Bifunctor (first)
+import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Builder as BLD
 import Data.ByteString.Char8 (ByteString)
@@ -1242,7 +1244,7 @@ client
       Cmd SNotifier NSUB -> Just <$> subscribeNotifications
       Cmd SRecipient command ->
         Just <$> case command of
-          -- TODO [short links] ntf, store queue data
+          -- TODO [short links] idempotent NEW
           NEW nqr@NewQueueReq {auth_} ->
             ifM allowNew (createQueue nqr) (pure (corrId, entId, ERR AUTH))
             where
@@ -1260,55 +1262,59 @@ client
           QUE -> withQueue $ \q qr -> (corrId,entId,) <$> getQueueInfo q qr
       where
         createQueue :: NewQueueReq -> M (Transmission BrokerMsg)
-        createQueue NewQueueReq {rcvAuthKey, rcvDhKey, subMode, queueData, ntfCreds} = time "NEW" $ do
-          (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
+        createQueue NewQueueReq {rcvAuthKey, rcvDhKey, subMode, queueReqData, ntfCreds} = time "NEW" $ do
+          g <- asks random
+          idSize <- asks $ queueIdBytes . config
           updatedAt <- Just <$> liftIO getSystemDate
+          (rcvPublicDhKey, privDhKey) <- atomically $ C.generateKeyPair g
           ntfKeys_ <- forM ntfCreds $ \(NewNtfCreds notifierKey dhKey) -> do
-            (ntfPubDhKey, ntfPrivDhKey) <- atomically . C.generateKeyPair =<< asks random
+            (ntfPubDhKey, ntfPrivDhKey) <- atomically $ C.generateKeyPair g
             pure (notifierKey, C.dh' dhKey ntfPrivDhKey, ntfPubDhKey)
-          let rcvDhSecret = C.dh' rcvDhKey privDhKey
-              -- TODO [short links] ntf credentials, link ID
-              queueMode = queueDataMode <$> queueData
-              qik rcvId sndId linkId serverNtfCreds = QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId, serverNtfCreds}
-              qRec senderId qd notifier =
-                QueueRec
-                  { senderId,
-                    recipientKey = rcvAuthKey,
-                    rcvDhSecret,
-                    senderKey = Nothing,
-                    queueMode,
-                    queueData = qd, -- TODO [short links]
-                    notifier,
-                    status = EntityActive,
-                    updatedAt
-                  }
-          (corrId,entId,) <$> addQueueRetry 3 qik qRec ntfKeys_
-          where
-            addQueueRetry ::
-              Int -> (RecipientId -> SenderId -> Maybe LinkId -> Maybe ServerNtfCreds -> QueueIdsKeys) -> (SenderId -> Maybe (LinkId, QueueLinkData) -> Maybe NtfCreds -> QueueRec) -> Maybe (NtfPublicAuthKey, RcvNtfDhSecret, RcvNtfPublicDhKey) -> M BrokerMsg
-            addQueueRetry 0 _ _ _ = pure $ ERR INTERNAL
-            addQueueRetry n qik qRec ntfKeys_= do
-              g <- asks random
-              idSize <- asks $ queueIdBytes . config
-              let randId = EntityId <$> atomically (C.randomBytes idSize g)
-              rId <- randId
-              sId <- randId
-              ntf <- forM ntfKeys_ $ \(notifierKey, rcvNtfDhSecret, rcvPubDhKey) -> do
-                notifierId <- randId
-                pure (NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}, ServerNtfCreds notifierId rcvPubDhKey)
-              let qr = qRec sId Nothing (fst <$> ntf)
-              liftIO (addQueue ms rId qr) >>= \case
-                Left DUPLICATE_ -> addQueueRetry (n - 1) qik qRec ntfKeys_
-                Left e -> pure $ ERR e
-                Right q -> do
-                  stats <- asks serverStats
-                  incStat $ qCreated stats
-                  incStat $ qCount stats
-                  when (isJust ntf) $ incStat $ ntfCreated stats
-                  case subMode of
-                    SMOnlyCreate -> pure ()
-                    SMSubscribe -> void $ subscribeQueue q qr
-                  pure $ IDS $ qik rId sId Nothing (snd <$> ntf)
+          let randId = EntityId <$> atomically (C.randomBytes idSize g)
+              tryCreate 0 = pure $ ERR INTERNAL
+              tryCreate n = do
+                (sndId, clntIds, queueData) <- case queueReqData of
+                  Just (QRMessaging (Just (sId, d))) -> (\linkId -> (sId, True, Just (linkId, d))) <$> randId
+                  Just (QRContact (Just (linkId, (sId, d)))) -> pure (sId, True, Just (linkId, d))
+                  _ -> (,False,Nothing) <$> randId
+                -- The condition that client-provided sender ID must match hash of correlation ID
+                -- prevents "ID oracle" attack, when creating queue with supplied ID can be used to check
+                -- if queue with this ID still exists.
+                if clntIds && unEntityId sndId /= BA.convert (hash (bs corrId) :: Digest SHA3_256)
+                  then pure $ ERR $ CMD PROHIBITED
+                  else do
+                    rcvId <- randId
+                    ntf <- forM ntfKeys_ $ \(notifierKey, rcvNtfDhSecret, rcvPubDhKey) -> do
+                      notifierId <- randId
+                      pure (NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}, ServerNtfCreds notifierId rcvPubDhKey)
+                    let queueMode = queueReqMode <$> queueReqData
+                        qr =
+                          QueueRec
+                            { senderId = sndId,
+                              recipientKey = rcvAuthKey,
+                              rcvDhSecret = C.dh' rcvDhKey privDhKey,
+                              senderKey = Nothing,
+                              queueMode,
+                              queueData,
+                              notifier = fst <$> ntf,
+                              status = EntityActive,
+                              updatedAt
+                            }
+                    liftIO (addQueue ms rcvId qr) >>= \case
+                      Left DUPLICATE_ -- TODO [short links] possibly, we somehow need to understand which IDs caused collision to retry if it's not client-supplied?
+                        | clntIds -> pure $ ERR AUTH -- no retry on collision if sender ID is client-supplied
+                        | otherwise -> tryCreate (n - 1)
+                      Left e -> pure $ ERR e
+                      Right q -> do
+                        stats <- asks serverStats
+                        incStat $ qCreated stats
+                        incStat $ qCount stats
+                        when (isJust ntf) $ incStat $ ntfCreated stats
+                        case subMode of
+                          SMOnlyCreate -> pure ()
+                          SMSubscribe -> void $ subscribeQueue q qr
+                        pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId = fst <$> queueData, serverNtfCreds = snd <$> ntf}
+          (corrId,entId,) <$> tryCreate (3 :: Int)
 
         secureQueue_ :: StoreQueue s -> SndPublicAuthKey -> M BrokerMsg
         secureQueue_ q sKey = do

@@ -187,7 +187,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, PNMessageData (..), pnMessagesP)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolType (..), ProtocolTypeI (..), QueueModeData (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC)
+import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolType (..), ProtocolTypeI (..), QueueReqData (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import qualified Simplex.Messaging.TMap as TM
@@ -799,9 +799,9 @@ newRcvConnSrv c userId connId enableNtfs cMode clientData pqInitKeys subMode srv
     (SCMContact, CR.IKUsePQ) -> throwE $ CMD PROHIBITED "newRcvConnSrv"
     _ -> pure ()
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
-  let qmd = case cMode of SCMInvitation -> QDMessaging Nothing; SCMContact -> QDContact Nothing
+  let qrd = case cMode of SCMInvitation -> QRMessaging Nothing; SCMContact -> QRContact Nothing
   -- TODO [short links] ntf credentials
-  (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srvWithAuth smpClientVRange subMode qmd Nothing `catchAgentError` \e -> liftIO (print e) >> throwE e
+  (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srvWithAuth smpClientVRange subMode qrd Nothing `catchAgentError` \e -> liftIO (print e) >> throwE e
   atomically $ incSMPServerStat c userId srv connCreated
   rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
   lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
@@ -960,7 +960,7 @@ joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode
 createReplyQueue :: AgentClient -> ConnData -> SndQueue -> SubscriptionMode -> SMPServerWithAuth -> AM SMPQueueInfo
 createReplyQueue c ConnData {userId, connId, enableNtfs} SndQueue {smpClientVersion} subMode srv = do
   -- TODO [short links] ntf credentials
-  (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srv (versionToRange smpClientVersion) subMode (QDMessaging Nothing) Nothing
+  (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srv (versionToRange smpClientVersion) subMode (QRMessaging Nothing) Nothing
   atomically $ incSMPServerStat c userId (qServer rq) connCreated
   let qInfo = toVersionT qUri smpClientVersion
   rq' <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq
@@ -1729,7 +1729,7 @@ switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs s
   srvAuth@(ProtoServerWithAuth srv _) <- getNextSMPServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
   srv' <- if srv == server then getNextSMPServer c userId [server] else pure srvAuth
   -- TODO [short links] send correct NTF credentials here
-  (q, qUri, tSess, sessId) <- newRcvQueue c userId connId srv' clientVRange SMSubscribe (QDMessaging Nothing) Nothing
+  (q, qUri, tSess, sessId) <- newRcvQueue c userId connId srv' clientVRange SMSubscribe (QRMessaging Nothing) Nothing
   let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
   rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq'
   lift $ addNewQueueSubscription c rq'' tSess sessId

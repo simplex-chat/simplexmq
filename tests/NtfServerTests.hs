@@ -191,7 +191,7 @@ createNtfQueueNEW h sPub nPub = do
   (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
   (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
   (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- atomically $ C.generateKeyPair g
-  let cmd = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QDMessaging Nothing)) (Just (NewNtfCreds nPub rcvNtfPubDhKey)))
+  let cmd = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRMessaging Nothing)) (Just (NewNtfCreds nPub rcvNtfPubDhKey)))
   Resp "abcd" NoEntity (IDS (QIK rId sId srvDh _sndSecure _linkId (Just (ServerNtfCreds nId rcvNtfSrvPubDhKey)))) <-
     signSendRecv h rKey ("abcd", NoEntity, cmd)
   let dhShared = C.dh' srvDh dhPriv

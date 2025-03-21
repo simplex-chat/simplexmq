@@ -36,7 +36,7 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
-import Simplex.Messaging.Protocol (EncRcvMsgBody (..), MsgBody, QueueModeData (..), RcvMessage (..), SubscriptionMode (..), maxMessageLength, noMsgFlags, pattern NoEntity)
+import Simplex.Messaging.Protocol (EncRcvMsgBody (..), MsgBody, QueueReqData (..), RcvMessage (..), SubscriptionMode (..), maxMessageLength, noMsgFlags, pattern NoEntity)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (SQSType (..))
@@ -177,7 +177,7 @@ deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   -- prepare receiving queue
   (rPub, rPriv) <- atomically $ C.generateAuthKeyPair alg g
   (rdhPub, rdhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-  SMP.QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- runExceptT' $ createSMPQueue rc (rPub, rPriv) rdhPub (Just "correct") SMSubscribe (QDMessaging Nothing) Nothing
+  SMP.QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- runExceptT' $ createSMPQueue rc (rPub, rPriv) rdhPub (Just "correct") SMSubscribe (QRMessaging Nothing) Nothing
   let dec = decryptMsgV3 $ C.dh' srvDh rdhPriv
   -- get proxy session
   sess0 <- runExceptT' $ connectSMPProxiedRelay pc relayServ (Just "correct")

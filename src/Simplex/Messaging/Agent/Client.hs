@@ -258,7 +258,7 @@ import Simplex.Messaging.Protocol
     SProtocolType (..),
     SndPublicAuthKey,
     SubscriptionMode (..),
-    QueueModeData (..),
+    QueueReqData (..),
     NewNtfCreds,
     UserProtocol,
     VersionRangeSMPC,
@@ -1224,7 +1224,7 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
         (sKey, spKey) <- atomically $ C.generateAuthKeyPair sa g
         (dhKey, _) <- atomically $ C.generateKeyPair g
         r <- runExceptT $ do
-          SMP.QIK {rcvId, sndId, queueMode} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey auth SMSubscribe (QDMessaging Nothing) Nothing
+          SMP.QIK {rcvId, sndId, queueMode} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey auth SMSubscribe (QRMessaging Nothing) Nothing
           liftError (testErr TSSecureQueue) $
             if senderCanSecure queueMode
               then secureSndSMPQueue smp spKey sndId sKey
@@ -1336,8 +1336,8 @@ getSessionMode = fmap sessionMode . getNetworkConfig
 {-# INLINE getSessionMode #-}
 
 -- TODO [short links] add ntf credentials too RcvQueue
-newRcvQueue :: AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SubscriptionMode -> QueueModeData -> Maybe NewNtfCreds -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
-newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode qmd ntfCreds = do
+newRcvQueue :: AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SubscriptionMode -> QueueReqData -> Maybe NewNtfCreds -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
+newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode qrd ntfCreds = do
   C.AuthAlg a <- asks (rcvAuthAlg . config)
   g <- asks random
   rKeys@(_, rcvPrivateKey) <- atomically $ C.generateAuthKeyPair a g
@@ -1347,7 +1347,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode qmd nt
   tSess <- mkTransportSession c userId srv connId
   (sessId, QIK {rcvId, sndId, rcvPublicDhKey, queueMode}) <-
     withClient c tSess $ \(SMPConnectedClient smp _) ->
-      (sessionId $ thParams smp,) <$> createSMPQueue smp rKeys dhKey auth subMode qmd ntfCreds
+      (sessionId $ thParams smp,) <$> createSMPQueue smp rKeys dhKey auth subMode qrd ntfCreds
   liftIO . logServer "<--" c srv NoEntity $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   let rq =
         RcvQueue
