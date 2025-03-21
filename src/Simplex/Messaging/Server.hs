@@ -1235,7 +1235,7 @@ client
       Cmd SSender command -> Just <$> case command of
         SKEY sKey ->
           withQueue $ \q QueueRec {queueMode} ->
-            (corrId,entId,) <$> if senderCanSecure' queueMode then secureQueue_ q sKey else pure $ ERR AUTH
+            (corrId,entId,) <$> if senderCanSecure queueMode then secureQueue_ q sKey else pure $ ERR AUTH
         SEND flags msgBody -> withQueue_ False $ sendMessage flags msgBody
         PING -> pure (corrId, NoEntity, PONG)
         RFWD encBlock -> (corrId, NoEntity,) <$> processForwardedCommand encBlock
@@ -1268,9 +1268,8 @@ client
             pure (notifierKey, C.dh' dhKey ntfPrivDhKey, ntfPubDhKey)
           let rcvDhSecret = C.dh' rcvDhKey privDhKey
               -- TODO [short links] ntf credentials, link ID
-              sndSecure = senderCanSecure queueData
-              queueMode = (\case QDMessaging _ -> QMMessaging; QDContact _ -> QMContact) <$> queueData
-              qik rcvId sndId linkId serverNtfCreds = QIK {rcvId, sndId, rcvPublicDhKey, sndSecure, linkId, serverNtfCreds}
+              queueMode = queueDataMode <$> queueData
+              qik rcvId sndId linkId serverNtfCreds = QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId, serverNtfCreds}
               qRec senderId qd notifier =
                 QueueRec
                   { senderId,

@@ -46,6 +46,7 @@ import qualified Data.Text as T
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime, nominalDay)
 import Data.Time.Format.ISO8601 (iso8601Show, iso8601ParseM)
 import GHC.IO (catchAny)
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 -- import Simplex.Messaging.Server.MsgStore.Types
@@ -87,7 +88,7 @@ instance StrEncoding QueueRec where
         "sid=" <> strEncode senderId,
         "sk=" <> strEncode senderKey
       ]
-      <> opt " queue_mode=" queueMode
+      <> maybe "" ((" queue_mode=" <>) . smpEncode) queueMode
       <> opt " link_id=" (fst <$> queueData)
       <> opt " queue_data=" (snd <$> queueData)
       <> opt " notifier=" notifier
@@ -107,7 +108,7 @@ instance StrEncoding QueueRec where
     senderKey <- "sk=" *> strP
     queueMode <-
       toQueueMode <$> (" sndSecure=" *> strP)
-        <|> Just <$> (" queue_mode=" *> strP)
+        <|> Just <$> (" queue_mode=" *> smpP)
         <|> pure Nothing -- unknown queue mode, we cannot imply that it is contact address
     queueData <- optional $ (,) <$> (" link_id" *> strP) <*> (" queue_data" *> strP)
     notifier <- optional $ " notifier=" *> strP

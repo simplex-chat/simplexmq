@@ -1188,7 +1188,7 @@ data SMPQueueAddress = SMPQueueAddress
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,
     dhPublicKey :: C.PublicKeyX25519,
-    sndSecure :: Bool
+    sndSecure :: Bool -- TODO [short links] replace with queueMode?
   }
   deriving (Eq, Show)
 

@@ -48,8 +48,6 @@ type SMPStoreLogTestCase = StoreLogTestCase StoreLogRecord (M.Map RecipientId Qu
 
 deriving instance Eq QueueRec
 
-deriving instance Eq QueueMode
-
 deriving instance Eq StoreLogRecord
 
 deriving instance Eq NtfCreds

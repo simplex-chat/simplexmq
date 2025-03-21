@@ -12,7 +12,6 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
 import Simplex.Messaging.Util ((<$?>))
 
@@ -52,22 +51,22 @@ data MsgInfo = MsgInfo
 data MsgType = MTMessage | MTQuota
   deriving (Eq, Show)
 
-data QueueMode = QMMessaging | QMContact deriving (Show)
+data QueueMode = QMMessaging | QMContact deriving (Eq, Show)
 
-instance StrEncoding QueueMode where
-  strEncode = \case
+instance Encoding QueueMode where
+  smpEncode = \case
     QMMessaging -> "M"
     QMContact -> "C"
-  strP =
+  smpP =
     A.anyChar >>= \case
       'M' -> pure QMMessaging
       'C' -> pure QMContact
       _ -> fail "bad QueueMode"
 
 #if defined(dbServerPostgres)
-instance FromField QueueMode where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
+instance FromField QueueMode where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
 
-instance ToField QueueMode where toField = toField . decodeLatin1 . strEncode
+instance ToField QueueMode where toField = toField . decodeLatin1 . smpEncode
 #endif
 
 $(JQ.deriveJSON (enumJSON $ dropPrefix "Q") ''QSubThread)

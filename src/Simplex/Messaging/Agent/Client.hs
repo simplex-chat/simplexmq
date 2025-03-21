@@ -266,6 +266,7 @@ import Simplex.Messaging.Protocol
     XFTPServer,
     XFTPServerWithAuth,
     pattern NoEntity,
+    senderCanSecure,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.QueueStore.QueueInfo
@@ -1223,9 +1224,9 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
         (sKey, spKey) <- atomically $ C.generateAuthKeyPair sa g
         (dhKey, _) <- atomically $ C.generateKeyPair g
         r <- runExceptT $ do
-          SMP.QIK {rcvId, sndId, sndSecure} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey auth SMSubscribe (QDMessaging Nothing) Nothing
+          SMP.QIK {rcvId, sndId, queueMode} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey auth SMSubscribe (QDMessaging Nothing) Nothing
           liftError (testErr TSSecureQueue) $
-            if sndSecure
+            if senderCanSecure queueMode
               then secureSndSMPQueue smp spKey sndId sKey
               else secureSMPQueue smp rpKey rcvId sKey
           liftError (testErr TSDeleteQueue) $ deleteSMPQueue smp rpKey rcvId
@@ -1344,7 +1345,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode qmd nt
   (e2eDhKey, e2ePrivKey) <- atomically $ C.generateKeyPair g
   logServer "-->" c srv NoEntity "NEW"
   tSess <- mkTransportSession c userId srv connId
-  (sessId, QIK {rcvId, sndId, rcvPublicDhKey, sndSecure}) <-
+  (sessId, QIK {rcvId, sndId, rcvPublicDhKey, queueMode}) <-
     withClient c tSess $ \(SMPConnectedClient smp _) ->
       (sessionId $ thParams smp,) <$> createSMPQueue smp rKeys dhKey auth subMode qmd ntfCreds
   liftIO . logServer "<--" c srv NoEntity $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
@@ -1370,6 +1371,8 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode qmd nt
             deleteErrors = 0
           }
       qUri = SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey sndSecure
+      -- TODO [short links]
+      sndSecure = senderCanSecure queueMode
   pure (rq, qUri, tSess, sessId)
 
 processSubResult :: AgentClient -> SessionId -> RcvQueue -> Either SMPClientError () -> STM ()
