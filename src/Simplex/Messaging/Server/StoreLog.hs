@@ -37,6 +37,7 @@ import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.List (sort, stripPrefix)
@@ -45,6 +46,7 @@ import qualified Data.Text as T
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime, nominalDay)
 import Data.Time.Format.ISO8601 (iso8601Show, iso8601ParseM)
 import GHC.IO (catchAny)
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 -- import Simplex.Messaging.Server.MsgStore.Types
@@ -79,21 +81,22 @@ data SLRTag
   | UpdateTime_
 
 instance StrEncoding QueueRec where
-  strEncode QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt} =
+  strEncode QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt} =
     B.unwords
       [ "rk=" <> strEncode recipientKey,
         "rdh=" <> strEncode rcvDhSecret,
         "sid=" <> strEncode senderId,
         "sk=" <> strEncode senderKey
       ]
-      <> sndSecureStr
-      <> maybe "" notifierStr notifier
-      <> maybe "" updatedAtStr updatedAt
+      <> maybe "" ((" queue_mode=" <>) . smpEncode) queueMode
+      <> opt " link_id=" (fst <$> queueData)
+      <> opt " queue_data=" (snd <$> queueData)
+      <> opt " notifier=" notifier
+      <> opt " updated_at=" updatedAt
       <> statusStr
     where
-      sndSecureStr = if sndSecure then " sndSecure=" <> strEncode sndSecure else ""
-      notifierStr ntfCreds = " notifier=" <> strEncode ntfCreds
-      updatedAtStr t = " updated_at=" <> strEncode t
+      opt :: StrEncoding a => ByteString -> Maybe a -> ByteString
+      opt param = maybe "" ((param <>) . strEncode)
       statusStr = case status of
         EntityActive -> ""
         _ -> " status=" <> strEncode status
@@ -103,11 +106,17 @@ instance StrEncoding QueueRec where
     rcvDhSecret <- "rdh=" *> strP_
     senderId <- "sid=" *> strP_
     senderKey <- "sk=" *> strP
-    sndSecure <- (" sndSecure=" *> strP) <|> pure False
+    queueMode <-
+      toQueueMode <$> (" sndSecure=" *> strP)
+        <|> Just <$> (" queue_mode=" *> smpP)
+        <|> pure Nothing -- unknown queue mode, we cannot imply that it is contact address
+    queueData <- optional $ (,) <$> (" link_id" *> strP) <*> (" queue_data" *> strP)
     notifier <- optional $ " notifier=" *> strP
     updatedAt <- optional $ " updated_at=" *> strP
     status <- (" status=" *> strP) <|> pure EntityActive
-    pure QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt}
+    pure QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt}
+    where
+      toQueueMode sndSecure = Just $ if sndSecure then QMMessaging else QMContact
 
 instance StrEncoding SLRTag where
   strEncode = \case

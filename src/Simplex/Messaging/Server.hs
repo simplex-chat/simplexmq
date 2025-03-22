@@ -51,7 +51,9 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Control.Monad.STM (retry)
+import Crypto.Hash (Digest, SHA3_256, hash)
 import Data.Bifunctor (first)
+import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Builder as BLD
 import Data.ByteString.Char8 (ByteString)
@@ -849,8 +851,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 q <- liftIO $ getQueueRec st SSender sId
                 liftIO $ hPutStrLn h $ case q of
                   Left e -> "error: " <> show e
-                  Right (_, QueueRec {sndSecure, status, updatedAt}) ->
-                    "status: " <> show status <> ", updatedAt: " <> show updatedAt <> ", sndSecure: " <> show sndSecure
+                  Right (_, QueueRec {queueMode, status, updatedAt}) ->
+                    "status: " <> show status <> ", updatedAt: " <> show updatedAt <> ", queueMode: " <> show queueMode
               CPBlock sId info -> withUserRole $ unliftIO u $ do
                 AMS _ _ (st :: s) <- asks msgStore
                 r <- liftIO $ runExceptT $ do
@@ -1060,7 +1062,7 @@ data VerificationResult s = VRVerified (Maybe (StoreQueue s, QueueRec)) | VRFail
 verifyTransmission :: forall s. MsgStoreClass s => s -> Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> QueueId -> Cmd -> M (VerificationResult s)
 verifyTransmission ms auth_ tAuth authorized queueId cmd =
   case cmd of
-    Cmd SRecipient (NEW k _ _ _ _) -> pure $ Nothing `verifiedWith` k
+    Cmd SRecipient (NEW NewQueueReq {rcvAuthKey = k}) -> pure $ Nothing `verifiedWith` k
     Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWith` recipientKey (snd q)) <$> get SRecipient
     -- SEND will be accepted without authorization before the queue is secured with KEY or SKEY command
     Cmd SSender (SKEY k) -> verifyQueue (\q -> if maybe True (k ==) (senderKey $ snd q) then Just q `verifiedWith` k else dummyVerify) <$> get SSender
@@ -1234,23 +1236,21 @@ client
       Cmd SProxiedClient command -> processProxiedCmd (corrId, entId, command)
       Cmd SSender command -> Just <$> case command of
         SKEY sKey ->
-          withQueue $ \q QueueRec {sndSecure} ->
-            (corrId,entId,) <$> if sndSecure then secureQueue_ q sKey else pure $ ERR AUTH
+          withQueue $ \q QueueRec {queueMode} ->
+            (corrId,entId,) <$> if senderCanSecure queueMode then secureQueue_ q sKey else pure $ ERR AUTH
         SEND flags msgBody -> withQueue_ False $ sendMessage flags msgBody
         PING -> pure (corrId, NoEntity, PONG)
         RFWD encBlock -> (corrId, NoEntity,) <$> processForwardedCommand encBlock
       Cmd SNotifier NSUB -> Just <$> subscribeNotifications
       Cmd SRecipient command ->
         Just <$> case command of
-          NEW rKey dhKey auth subMode sndSecure ->
-            ifM
-              allowNew
-              (createQueue rKey dhKey subMode sndSecure)
-              (pure (corrId, entId, ERR AUTH))
+          -- TODO [short links] idempotent NEW
+          NEW nqr@NewQueueReq {auth_} ->
+            ifM allowNew (createQueue nqr) (pure (corrId, entId, ERR AUTH))
             where
               allowNew = do
                 ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
-                pure $ allowNewQueues && maybe True ((== auth) . Just) newQueueBasicAuth
+                pure $ allowNewQueues && maybe True ((== auth_) . Just) newQueueBasicAuth
           SUB -> withQueue subscribeQueue
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
@@ -1261,47 +1261,60 @@ client
           DEL -> maybe (pure $ err INTERNAL) delQueueAndMsgs q_
           QUE -> withQueue $ \q qr -> (corrId,entId,) <$> getQueueInfo q qr
       where
-        createQueue :: RcvPublicAuthKey -> RcvPublicDhKey -> SubscriptionMode -> SenderCanSecure -> M (Transmission BrokerMsg)
-        createQueue recipientKey dhKey subMode sndSecure = time "NEW" $ do
-          (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
+        createQueue :: NewQueueReq -> M (Transmission BrokerMsg)
+        createQueue NewQueueReq {rcvAuthKey, rcvDhKey, subMode, queueReqData, ntfCreds} = time "NEW" $ do
+          g <- asks random
+          idSize <- asks $ queueIdBytes . config
           updatedAt <- Just <$> liftIO getSystemDate
-          let rcvDhSecret = C.dh' dhKey privDhKey
-              qik (rcvId, sndId) = QIK {rcvId, sndId, rcvPublicDhKey, sndSecure}
-              qRec senderId =
-                QueueRec
-                  { senderId,
-                    recipientKey,
-                    rcvDhSecret,
-                    senderKey = Nothing,
-                    notifier = Nothing,
-                    status = EntityActive,
-                    sndSecure,
-                    updatedAt
-                  }
-          (corrId,entId,) <$> addQueueRetry 3 qik qRec
-          where
-            addQueueRetry ::
-              Int -> ((RecipientId, SenderId) -> QueueIdsKeys) -> (SenderId -> QueueRec) -> M BrokerMsg
-            addQueueRetry 0 _ _ = pure $ ERR INTERNAL
-            addQueueRetry n qik qRec = do
-              ids@(rId, sId) <- getIds
-              let qr = qRec sId
-              liftIO (addQueue ms rId qr) >>= \case
-                Left DUPLICATE_ -> addQueueRetry (n - 1) qik qRec
-                Left e -> pure $ ERR e
-                Right q -> do
-                  stats <- asks serverStats
-                  incStat $ qCreated stats
-                  incStat $ qCount stats
-                  case subMode of
-                    SMOnlyCreate -> pure ()
-                    SMSubscribe -> void $ subscribeQueue q qr
-                  pure $ IDS (qik ids)
-
-            getIds :: M (RecipientId, SenderId)
-            getIds = do
-              n <- asks $ queueIdBytes . config
-              liftM2 (,) (randomId n) (randomId n)
+          (rcvPublicDhKey, privDhKey) <- atomically $ C.generateKeyPair g
+          ntfKeys_ <- forM ntfCreds $ \(NewNtfCreds notifierKey dhKey) -> do
+            (ntfPubDhKey, ntfPrivDhKey) <- atomically $ C.generateKeyPair g
+            pure (notifierKey, C.dh' dhKey ntfPrivDhKey, ntfPubDhKey)
+          let randId = EntityId <$> atomically (C.randomBytes idSize g)
+              tryCreate 0 = pure $ ERR INTERNAL
+              tryCreate n = do
+                (sndId, clntIds, queueData) <- case queueReqData of
+                  Just (QRMessaging (Just (sId, d))) -> (\linkId -> (sId, True, Just (linkId, d))) <$> randId
+                  Just (QRContact (Just (linkId, (sId, d)))) -> pure (sId, True, Just (linkId, d))
+                  _ -> (,False,Nothing) <$> randId
+                -- The condition that client-provided sender ID must match hash of correlation ID
+                -- prevents "ID oracle" attack, when creating queue with supplied ID can be used to check
+                -- if queue with this ID still exists.
+                if clntIds && unEntityId sndId /= BA.convert (hash (bs corrId) :: Digest SHA3_256)
+                  then pure $ ERR $ CMD PROHIBITED
+                  else do
+                    rcvId <- randId
+                    ntf <- forM ntfKeys_ $ \(notifierKey, rcvNtfDhSecret, rcvPubDhKey) -> do
+                      notifierId <- randId
+                      pure (NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}, ServerNtfCreds notifierId rcvPubDhKey)
+                    let queueMode = queueReqMode <$> queueReqData
+                        qr =
+                          QueueRec
+                            { senderId = sndId,
+                              recipientKey = rcvAuthKey,
+                              rcvDhSecret = C.dh' rcvDhKey privDhKey,
+                              senderKey = Nothing,
+                              queueMode,
+                              queueData,
+                              notifier = fst <$> ntf,
+                              status = EntityActive,
+                              updatedAt
+                            }
+                    liftIO (addQueue ms rcvId qr) >>= \case
+                      Left DUPLICATE_ -- TODO [short links] possibly, we somehow need to understand which IDs caused collision to retry if it's not client-supplied?
+                        | clntIds -> pure $ ERR AUTH -- no retry on collision if sender ID is client-supplied
+                        | otherwise -> tryCreate (n - 1)
+                      Left e -> pure $ ERR e
+                      Right q -> do
+                        stats <- asks serverStats
+                        incStat $ qCreated stats
+                        incStat $ qCount stats
+                        when (isJust ntf) $ incStat $ ntfCreated stats
+                        case subMode of
+                          SMOnlyCreate -> pure ()
+                          SMSubscribe -> void $ subscribeQueue q qr
+                        pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId = fst <$> queueData, serverNtfCreds = snd <$> ntf}
+          (corrId,entId,) <$> tryCreate (3 :: Int)
 
         secureQueue_ :: StoreQueue s -> SndPublicAuthKey -> M BrokerMsg
         secureQueue_ q sKey = do
@@ -1787,7 +1800,7 @@ exportMessages :: MsgStoreClass s => Bool -> s -> FilePath -> Bool -> IO ()
 exportMessages tty ms f drainMsgs = do
   logInfo $ "saving messages to file " <> T.pack f
   liftIO $ withFile f WriteMode $ \h ->
-    tryAny (unsafeWithAllMsgQueues tty ms $ saveQueueMsgs h) >>= \case
+    tryAny (unsafeWithAllMsgQueues tty True ms $ saveQueueMsgs h) >>= \case
       Right (Sum total) -> logInfo $ "messages saved: " <> tshow total
       Left e -> do
         logError $ "error exporting messages: " <> tshow e
@@ -1824,7 +1837,7 @@ processServerMessages StartOptions {skipWarnings} = do
               run processValidateQueue
         | otherwise = logWarn "skipping message expiration" $> Nothing
         where
-          run a = unsafeWithAllMsgQueues False ms a `catchAny` \_ -> exitFailure
+          run a = unsafeWithAllMsgQueues False False ms a `catchAny` \_ -> exitFailure
           processExpireQueue :: Int64 -> JournalQueue s -> IO MessageStats
           processExpireQueue old q = unsafeRunStore q "processExpireQueue" $ do
             mq <- getMsgQueue ms q False

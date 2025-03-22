@@ -37,7 +37,8 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
   closeMsgStore :: s -> IO ()
   withActiveMsgQueues :: Monoid a => s -> (StoreQueue s -> IO a) -> IO a
   -- This function can only be used in server CLI commands or before server is started.
-  unsafeWithAllMsgQueues :: Monoid a => Bool -> s -> (StoreQueue s -> IO a) -> IO a
+  -- tty, withData, store
+  unsafeWithAllMsgQueues :: Monoid a => Bool -> Bool -> s -> (StoreQueue s -> IO a) -> IO a
   -- tty, store, now, ttl
   expireOldMessages :: Bool -> s -> Int64 -> Int64 -> IO MessageStats
   logQueueStates :: s -> IO ()

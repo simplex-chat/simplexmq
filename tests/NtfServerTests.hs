@@ -4,6 +4,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
@@ -48,7 +49,8 @@ import UnliftIO.STM
 ntfServerTests :: ATransport -> Spec
 ntfServerTests t = do
   describe "Notifications server protocol syntax" $ ntfSyntaxTests t
-  describe "Notification subscriptions" $ testNotificationSubscription t
+  describe "Notification subscriptions (NKEY)" $ testNotificationSubscription t createNtfQueueNKEY
+  describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription t createNtfQueueNEW
 
 ntfSyntaxTests :: ATransport -> Spec
 ntfSyntaxTests (ATransport t) = do
@@ -93,10 +95,9 @@ v .-> key =
   let J.Object o = v
    in U.decodeLenient . encodeUtf8 <$> JT.parseEither (J..: key) o
 
-testNotificationSubscription :: ATransport -> Spec
-testNotificationSubscription (ATransport t) =
-  -- hangs on Ubuntu 20/22
-  xit' "should create notification subscription and notify when message is received" $ do
+testNotificationSubscription :: ATransport -> CreateQueueFunc -> Spec
+testNotificationSubscription (ATransport t) createQueue =
+  it "should create notification subscription and notify when message is received" $ do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -106,8 +107,7 @@ testNotificationSubscription (ATransport t) =
     withAPNSMockServer $ \apns ->
       smpTest2' t $ \rh sh ->
         ntfTest t $ \nh -> do
-          -- create queue
-          (sId, rId, rKey, rcvDhSecret) <- createAndSecureQueue rh sPub
+          ((sId, rId, rKey, rcvDhSecret), nId, rcvNtfDhSecret) <- createQueue rh sPub nPub
           -- register and verify token
           RespNtf "1" NoEntity (NRTknId tId ntfDh) <- signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
           APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
@@ -118,12 +118,9 @@ testNotificationSubscription (ATransport t) =
               Right code = NtfRegCode <$> C.cbDecrypt dhSecret nonce verification
           RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey ("2", tId, TVFY code)
           RespNtf "2a" _ (NRTkn NTActive) <- signSendRecvNtf nh tknKey ("2a", tId, TCHK)
-          -- enable queue notifications
-          (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- atomically $ C.generateKeyPair g
-          Resp "3" _ (NID nId rcvNtfSrvPubDhKey) <- signSendRecv rh rKey ("3", rId, NKEY nPub rcvNtfPubDhKey)
+          -- ntf server subscribes to queue notifications
           let srv = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
               q = SMPQueueNtf srv nId
-              rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
           RespNtf "4" _ (NRSubId _subId) <- signSendRecvNtf nh tknKey ("4", NoEntity, SNEW $ NewNtfSub tId q nKey)
           -- send message
           threadDelay 50000
@@ -169,3 +166,36 @@ testNotificationSubscription (ATransport t) =
               PNMessageData {smpQueue = SMPQueueNtf {smpServer = smpServer3, notifierId = notifierId3}} = L.last pnMsgs2
           smpServer3 `shouldBe` srv
           notifierId3 `shouldBe` nId
+
+type CreateQueueFunc =
+  forall c.
+  Transport c =>
+  THandleSMP c 'TClient ->
+  SndPublicAuthKey ->
+  NtfPublicAuthKey ->
+  IO ((SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret), NotifierId, C.DhSecret 'C.X25519)
+
+createNtfQueueNKEY :: CreateQueueFunc
+createNtfQueueNKEY h sPub nPub = do
+  g <- C.newRandom
+  (sId, rId, rKey, rcvDhSecret) <- createAndSecureQueue h sPub
+  -- enable queue notifications
+  (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- atomically $ C.generateKeyPair g
+  Resp "3" _ (NID nId rcvNtfSrvPubDhKey) <- signSendRecv h rKey ("3", rId, NKEY nPub rcvNtfPubDhKey)
+  let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
+  pure ((sId, rId, rKey, rcvDhSecret), nId, rcvNtfDhSecret)
+
+createNtfQueueNEW :: CreateQueueFunc
+createNtfQueueNEW h sPub nPub = do
+  g <- C.newRandom
+  (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+  (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+  (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- atomically $ C.generateKeyPair g
+  let cmd = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRMessaging Nothing)) (Just (NewNtfCreds nPub rcvNtfPubDhKey)))
+  Resp "abcd" NoEntity (IDS (QIK rId sId srvDh _sndSecure _linkId (Just (ServerNtfCreds nId rcvNtfSrvPubDhKey)))) <-
+    signSendRecv h rKey ("abcd", NoEntity, cmd)
+  let dhShared = C.dh' srvDh dhPriv
+  Resp "dabc" rId' OK <- signSendRecv h rKey ("dabc", rId, KEY sPub)
+  (rId', rId) #== "same queue ID"
+  let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
+  pure ((sId, rId, rKey, dhShared), nId, rcvNtfDhSecret)

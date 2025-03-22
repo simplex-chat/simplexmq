@@ -85,8 +85,7 @@ main = do
           describe "Util tests" utilTests
 #if defined(dbServerPostgres)
         aroundAll_ (postgressBracket testServerDBConnectInfo)
-          $ describe "SMP server via TLS, postgres+jornal message store" $ do
-              describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
+          $ describe "SMP server via TLS, postgres+jornal message store" $
               before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests
 #endif
         describe "SMP server via TLS, jornal message store" $ do
