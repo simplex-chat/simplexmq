@@ -108,6 +108,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnReqUriData (..),
     CRClientData,
     ServiceScheme,
+    ConnShortLink (..),
     sameConnReqContact,
     simplexChat,
     connReqUriP',
@@ -1271,6 +1272,18 @@ instance Eq AConnectionRequestUri where
 
 deriving instance Show AConnectionRequestUri
 
+data ConnShortLink (m :: ConnectionMode) where
+  CSLInvitation :: SMPServer -> SMP.LinkId -> LinkKey -> ConnShortLink 'CMInvitation
+  CSLContact :: SMPServer -> ContactConnType -> LinkKey -> ConnShortLink 'CMContact
+
+newtype LinkKey = LinkKey ByteString -- sha3-256(immutable_data)
+
+data ContactConnType = CCTContact | CCTGroup
+
+data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
+
+data AConnectionLink = ACLFull AConnectionRequestUri | ACLShort AConnShortLink
+
 sameConnReqContact :: ConnectionRequestUri 'CMContact -> ConnectionRequestUri 'CMContact -> Bool
 sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUri ConnReqUriData {crSmpQueues = qs'}) =
   L.length qs == L.length qs' && all same (L.zip qs qs')
@@ -1287,15 +1300,15 @@ data ConnReqUriData = ConnReqUriData
 
 type CRClientData = Text
 
-data ImmutableLinkData = ImmutableLinkData
+data ImmutableConnData c = ImmutableConnData
   { signature :: C.Signature 'C.Ed25519, -- signature of the remaining part of immutable data
-    connReq :: AConnectionRequestUri,
+    connReq :: ConnectionRequestUri c,
     sigKey :: C.PublicKeyEd25519
   }
 
-data UserLinkData = UserLinkData
+data UserConnData = UserConnData
   { signature :: C.Signature 'C.Ed25519, -- signs the remaining part of the data
-    userData :: ByteString
+    userData :: ConnInfo
   }
 
 -- | SMP queue status.

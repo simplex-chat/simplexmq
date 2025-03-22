@@ -344,6 +344,31 @@ createConnection :: AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe 
 createConnection c userId enableNtfs = withAgentEnv c .:: newConn c userId enableNtfs
 {-# INLINE createConnection #-}
 
+-- | Create SMP agent connection with short link (NEW command)
+createConnShortLink :: AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> ConnInfo -> AE (ConnId, ConnShortLink c, ConnectionRequestUri c)
+createConnShortLink c userId enableNtfs = withAgentEnv c .::. createConnShortLink' c userId enableNtfs
+{-# INLINE createConnShortLink #-}
+
+-- | Create user's contact connection short link - for contact addresses that were created without short link
+-- TODO [short links]
+addConnShortLink :: AgentClient -> ConnId -> ConnInfo -> AE (ConnShortLink 'CMContact)
+addConnShortLink c = withAgentEnv c .: addConnShortLink' c
+{-# INLINE addConnShortLink #-}
+
+-- | Update user's contact connection short link which must exist
+-- TODO [short links] possibly this and addConnShortLink should be one function
+updateUserShortLinkData :: AgentClient -> ConnId -> ConnInfo -> AE ()
+updateUserShortLinkData c = withAgentEnv c .: updateUserShortLinkData' c
+{-# INLINE updateUserShortLinkData #-}
+
+-- | Get and verify data from short link. For 1-time invitations this should preserve the key to allow retry and repeat retrieval
+-- TODO [short links] we probably need the function to delete this data permanently for 1-time invitations.
+-- Either a separate ID or the link itself could be used as a lookup key.
+-- Possibly, there should be two different functions for invitations and contacts
+getConnShortLinkData :: AgentClient -> ConnShortLink c -> AE (ConnectionRequestUri c, ConnInfo)
+getConnShortLinkData c = withAgentEnv c . getConnShortLinkData' c
+{-# INLINE getConnShortLinkData #-}
+
 -- | Changes the user id associated with a connection
 changeConnectionUser :: AgentClient -> UserId -> ConnId -> UserId -> AE ()
 changeConnectionUser c oldUserId connId newUserId = withAgentEnv c $ changeConnectionUser' c oldUserId connId newUserId
@@ -782,6 +807,18 @@ newConn c userId enableNtfs cMode clientData pqInitKeys subMode = do
   connId <- newConnNoQueues c userId enableNtfs cMode (CR.connPQEncryption pqInitKeys)
   cReq <- newRcvConnSrv c userId connId enableNtfs cMode clientData pqInitKeys subMode srv
   pure (connId, cReq)
+
+createConnShortLink' :: AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> ConnInfo -> AM (ConnId, ConnShortLink c, ConnectionRequestUri c)
+createConnShortLink' = undefined
+
+addConnShortLink' :: AgentClient -> ConnId -> ConnInfo -> AM (ConnShortLink 'CMContact)
+addConnShortLink' = undefined
+
+updateUserShortLinkData' :: AgentClient -> ConnId -> ConnInfo -> AM ()
+updateUserShortLinkData' = undefined
+
+getConnShortLinkData' :: AgentClient -> ConnShortLink c -> AM (ConnectionRequestUri c, ConnInfo)
+getConnShortLinkData' = undefined
 
 changeConnectionUser' :: AgentClient -> UserId -> ConnId -> UserId -> AM ()
 changeConnectionUser' c oldUserId connId newUserId = do

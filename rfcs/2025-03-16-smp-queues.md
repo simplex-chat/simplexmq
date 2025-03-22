@@ -199,7 +199,7 @@ For mutable user data:
 1. Random `nonce2` and the same key are used.
 2. Sign `user_data` with key included in `immutable_data`.
 3. Encrypt: `(ct2, tag2) = secret_box(signed_used_data, key, nonce2)`.
-4. Sotre: `(nonce2, ct2, tag2)`
+4. Store: `(nonce2, ct2, tag2)`
 
 Link recipient:
 
