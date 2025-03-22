@@ -155,10 +155,12 @@ To both include sender_id into the full link before the server response, and to 
 
 To allow retries and to avoid regenerating all queue data, NEW command must be idempotent, and `correlation_id` must be preserved in command for queue creation, so that the same `correlation_id` and all other data is used in retries. `correlation_id` should be removed after queue creation success.
 
+To allow retries, every time the command is sent a new random `correlation_id` and new `sender_id` / `link_id` should be used on each attempt, because other IDs would be generated randomly on the server, and in case the previous command succeeded on the server but failed to be communicated to the client, the retry will fail if the same ID is used.
+
 Alternative solutions considered and rejected:
-- additional request to save queue data, after `sender_id` is returned by the server.
+- additional request to save queue data, after `sender_id` is returned by the server. The scenarios that require short links are interactive - creating user addresses and 1-time invitations - so making two requests instead of one would make the UX worse.
 - include empty sender_id in the immutable data and have it replaced by the accepting party with `sender_id` received in `LINK` response - both a weird design, and might create possibility for some attacks via server, especially for contact addresses.
-- use random `correlation_id` and new `sender_id` in retries. While it would remove the need for `NEW` command to be idempotent, it would increase the cost of retries and would require regenerating the whole immutable data of the queue on each retry.
+- making NEW commands idempotent. Doing it would require generating all IDs client-side, not only `sender_id`. It increases complexity, and it is not really necessary as the only scenarios when retries are needed are async NEW commands, that do not require short links. For future short links of chat relays the retries are much less likely, as chat relays will have good network connections.
 
 ## Algorithm to prepare and to interpret queue link data.
 
