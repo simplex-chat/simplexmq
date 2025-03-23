@@ -101,3 +101,38 @@ done
 # Cleanup
 rm -rf -- "$tempdir"
 cd "$init_dir"
+
+# Final stage: compare hashes
+
+# Path to binaries
+path_bin="$init_dir/$TAG"
+
+# Assume everything is okay for now
+bad=0
+
+# Check hashes for all binaries
+for file in "$path_bin"/from-source/*; do
+	# Extract binary name
+	app="$(basename $file)"
+
+	# Compute hash for compiled binary
+	compiled=$(sha256sum "$path_bin/from-source/$app" | awk '{print $1}')
+	# Compute hash for prebuilt binary
+	prebuilt=$(sha256sum "$path_bin/prebuilt/$app" | awk '{print $1}')
+
+	# Compare
+	if [ "$compiled" != "$prebuilt" ]; then
+		# If hashes doesn't match, sed bad...
+		bad=1
+
+		# ... and print affected binary
+		printf "%s - sha256sum hash doesn't match\n" "$app"
+	fi
+done
+
+# If everything is still okay, compute checksums file
+if [ "$bad" = 0 ]; then
+	sha256sum "$path_bin"/from-source/* | sed -e "s|$PWD/||g" -e 's|from-source/||g' > "$path_bin/_sha256sums"
+
+	printf 'Checksums computed - %s\n' "$path_bin/_sha256sums"
+fi
