@@ -45,24 +45,6 @@ jobs:
       - name: Clone project
         uses: actions/checkout@v3
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and cache Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          file: Dockerfile.build
-          tags: build/${{ matrix.platform_name }}:latest
-          cache-from: |
-            type=gha
-            type=gha,scope=master
-          cache-to: type=gha,mode=max
-          build-args: |
-            TAG=${{ matrix.os }}
-            GHC=${{ matrix.ghc }}
-
       - name: Cache dependencies
         uses: actions/cache@v4
         with:
@@ -70,6 +52,15 @@ jobs:
             ~/.cabal/store
             dist-newstyle
           key: ${{ matrix.os }}-${{ hashFiles('cabal.project', 'simplexmq.cabal') }}
+
+      - name: Prepare image
+        shell: bash
+        run: |
+          docker build -f Dockerfile.build \
+            --build-arg TAG=${{ matrix.os }} \
+            --build-arg GHC=${{ matrix.ghc }} \
+            -t local \
+            .
 
       - name: Start container
         shell: bash
@@ -79,7 +70,7 @@ jobs:
             -v ~/.cabal:/root/.cabal \
             -v /home/runner/work/_temp:/home/runner/work/_temp \
             -v ${{ github.workspace }}:/project \
-            build/${{ matrix.platform_name }}:latest
+            local
 
       - name: Build smp-server (postgresql) and tests
         shell: docker exec -t builder sh {0}
