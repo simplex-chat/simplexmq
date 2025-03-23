@@ -85,7 +85,7 @@ jobs:
         shell: docker exec -t builder sh {0}
         run: |
           cabal update
-          cabal build --enable-tests -fserver_postgres
+          cabal build --jobs=$(nproc) --enable-tests -fserver_postgres
           mkdir -p /out
           for i in smp-server simplexmq-test; do
             bin=$(find /project/dist-newstyle -name "$i" -type f -executable)
@@ -108,7 +108,7 @@ jobs:
       - name: Build everything else (standard)
         shell: docker exec -t builder sh {0}
         run: |
-          cabal build
+          cabal build --jobs=$(nproc)
           mkdir -p /out
           for i in ${{ env.apps }}; do
             bin=$(find /project/dist-newstyle -name "$i" -type f -executable)
