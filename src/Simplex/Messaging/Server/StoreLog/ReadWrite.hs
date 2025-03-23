@@ -42,6 +42,8 @@ readQueueStore tty mkQ f st = readLogLines tty f $ \_ -> processLine
         procLogRecord :: StoreLogRecord -> IO ()
         procLogRecord = \case
           CreateQueue rId qr -> addQueue_ st mkQ rId qr >>= qError rId "CreateQueue"
+          CreateLink rId lnkId d -> withQueue rId "CreateLink" $ \q -> addQueueLink st q lnkId d
+          DeleteLink rId -> withQueue rId "DeleteLink" $ \q -> deleteQueueLink st q
           SecureQueue qId sKey -> withQueue qId "SecureQueue" $ \q -> secureQueue st q sKey
           AddNotifier qId ntfCreds -> withQueue qId "AddNotifier" $ \q -> addQueueNotifier st q ntfCreds
           SuspendQueue qId -> withQueue qId "SuspendQueue" $ suspendQueue st

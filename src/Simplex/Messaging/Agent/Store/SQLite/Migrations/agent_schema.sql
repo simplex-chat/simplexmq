@@ -57,6 +57,10 @@ CREATE TABLE rcv_queues(
   deleted INTEGER NOT NULL DEFAULT 0,
   snd_secure INTEGER NOT NULL DEFAULT 0,
   last_broker_ts TEXT,
+  link_id BLOB,
+  link_key BLOB,
+  link_sig_key BLOB,
+  link_enc_immutable_data BLOB,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -422,6 +426,16 @@ CREATE TABLE snd_message_bodies(
   snd_message_body_id INTEGER PRIMARY KEY,
   agent_msg BLOB NOT NULL DEFAULT x''
 );
+CREATE TABLE inv_short_links(
+  inv_short_link_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  host TEXT NOT NULL,
+  port TEXT NOT NULL,
+  link_id BLOB NOT NULL,
+  link_key BLOB NOT NULL,
+  snd_private_key BLOB NOT NULL,
+  conn_req BLOB,
+  FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT ON UPDATE CASCADE
+);
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);
 CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);
 CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(conn_id, snd_queue_id);
@@ -550,4 +564,10 @@ CREATE INDEX idx_snd_message_deliveries_expired ON snd_message_deliveries(
 CREATE INDEX idx_rcv_files_redirect_id on rcv_files(redirect_id);
 CREATE INDEX idx_snd_messages_snd_message_body_id ON snd_messages(
   snd_message_body_id
+);
+CREATE UNIQUE INDEX idx_rcv_queues_link_id ON rcv_queues(host, port, link_id);
+CREATE UNIQUE INDEX idx_inv_short_links_link_id ON inv_short_links(
+  host,
+  port,
+  link_id
 );

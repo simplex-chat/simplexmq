@@ -93,6 +93,8 @@ data StoredRcvQueue (q :: QueueStored) = RcvQueue
     sndId :: SMP.SenderId,
     -- | sender can secure the queue
     sndSecure :: SenderCanSecure,
+    -- | short link ID and credentials
+    shortLink :: Maybe ShortLinkCreds,
     -- | queue status
     status :: QueueStatus,
     -- | database queue ID (within connection)
@@ -107,6 +109,14 @@ data StoredRcvQueue (q :: QueueStored) = RcvQueue
     -- | credentials used in context of notifications
     clientNtfCreds :: Maybe ClientNtfCreds,
     deleteErrors :: Int
+  }
+  deriving (Show)
+
+data ShortLinkCreds = ShortLinkCreds
+  { linkId :: SMP.LinkId,
+    linkKey :: LinkKey,
+    linkSigKey :: C.PublicKeyEd25519,
+    linkEncImmutableData :: SMP.EncImmutableDataBytes
   }
   deriving (Show)
 
@@ -134,6 +144,18 @@ data ClientNtfCreds = ClientNtfCreds
     notifierId :: NotifierId,
     -- | shared DH secret used to encrypt/decrypt notification metadata (NMsgMeta) from server to recipient
     rcvNtfDhSecret :: RcvNtfDhSecret
+  }
+  deriving (Show)
+
+-- This record is stored in inv_short_links table.
+-- It is needed only for 1-time invitation links because of "secure-on-read" property of link data,
+-- that prevents undetected access to link data from link observers.
+data InvShortLink = InvShortLink
+  { smpServer :: SMPServer,
+    linkId :: SMP.LinkId,
+    linkKey :: LinkKey,
+    sndPrivateKey :: SndPrivateAuthKey, -- stored to allow retries
+    connReq :: Maybe (ConnectionRequestUri 'CMInvitation) -- to connect without additional requests
   }
   deriving (Show)
 

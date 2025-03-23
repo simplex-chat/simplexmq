@@ -1064,11 +1064,13 @@ verifyTransmission ms auth_ tAuth authorized queueId cmd =
   case cmd of
     Cmd SRecipient (NEW NewQueueReq {rcvAuthKey = k}) -> pure $ Nothing `verifiedWith` k
     Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWith` recipientKey (snd q)) <$> get SRecipient
-    -- SEND will be accepted without authorization before the queue is secured with KEY or SKEY command
-    Cmd SSender (SKEY k) -> verifyQueue (\q -> if maybe True (k ==) (senderKey $ snd q) then Just q `verifiedWith` k else dummyVerify) <$> get SSender
-    Cmd SSender SEND {} -> verifyQueue (\q -> Just q `verified` maybe (isNothing tAuth) verify (senderKey $ snd q)) <$> get SSender
+    Cmd SSender (SKEY k) -> verifySecure SSender k
+    -- SEND will be accepted without authorization before the queue is secured with KEY, SKEY or LSKEY command
+    Cmd SSender SEND {} -> verifyQueue (\q -> if maybe (isNothing tAuth) verify (senderKey $ snd q) then VRVerified (Just q) else VRFailed) <$> get SSender
     Cmd SSender PING -> pure $ VRVerified Nothing
     Cmd SSender RFWD {} -> pure $ VRVerified Nothing
+    Cmd SLinkClient (LKEY k) -> verifySecure SLinkClient k
+    Cmd SLinkClient LGET -> verifyQueue (\q -> if isContact (snd q) then VRVerified (Just q) else VRFailed) <$> get SLinkClient
     -- NSUB will not be accepted without authorization
     Cmd SNotifier NSUB -> verifyQueue (\q -> maybe dummyVerify (\n -> Just q `verifiedWith` notifierKey n) (notifier $ snd q)) <$> get SNotifier
     Cmd SProxiedClient _ -> pure $ VRVerified Nothing
@@ -1077,9 +1079,16 @@ verifyTransmission ms auth_ tAuth authorized queueId cmd =
     dummyVerify = verify (dummyAuthKey tAuth) `seq` VRFailed
     verifyQueue :: ((StoreQueue s, QueueRec) -> VerificationResult s) -> Either ErrorType (StoreQueue s, QueueRec) -> VerificationResult s
     verifyQueue = either (const dummyVerify)
-    verified q cond = if cond then VRVerified q else VRFailed
+    verifySecure :: DirectParty p => SParty p -> SndPublicAuthKey -> M (VerificationResult s)
+    verifySecure p k = verifyQueue (\q -> if k `allowedKey` snd q then Just q `verifiedWith` k else dummyVerify) <$> get p
     verifiedWith :: Maybe (StoreQueue s, QueueRec) -> C.APublicAuthKey -> VerificationResult s
-    verifiedWith q k = q `verified` verify k
+    verifiedWith q_ k = if verify k then VRVerified q_ else VRFailed
+    allowedKey k = \case
+      QueueRec {queueMode = Just QMMessaging, senderKey} -> maybe True (k ==) senderKey
+      _ -> False
+    isContact = \case
+      QueueRec {queueMode = Just QMContact} -> True
+      _ -> False
     get :: DirectParty p => SParty p -> M (Either ErrorType (StoreQueue s, QueueRec))
     get party = liftIO $ getQueueRec ms party queueId
 
@@ -1235,12 +1244,13 @@ client
     processCommand clntVersion (q_, (corrId, entId, cmd)) = case cmd of
       Cmd SProxiedClient command -> processProxiedCmd (corrId, entId, command)
       Cmd SSender command -> Just <$> case command of
-        SKEY sKey ->
-          withQueue $ \q QueueRec {queueMode} ->
-            (corrId,entId,) <$> if senderCanSecure queueMode then secureQueue_ q sKey else pure $ ERR AUTH
+        SKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k
         SEND flags msgBody -> withQueue_ False $ sendMessage flags msgBody
         PING -> pure (corrId, NoEntity, PONG)
         RFWD encBlock -> (corrId, NoEntity,) <$> processForwardedCommand encBlock
+      Cmd SLinkClient command -> Just <$> case command of
+        LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
+        LGET -> withQueue $ \q qr -> checkMode QMContact qr $ getQueueLink_ q qr
       Cmd SNotifier NSUB -> Just <$> subscribeNotifications
       Cmd SRecipient command ->
         Just <$> case command of
@@ -1254,7 +1264,13 @@ client
           SUB -> withQueue subscribeQueue
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
-          KEY sKey -> withQueue $ \q _ -> (corrId,entId,) <$> secureQueue_ q sKey
+          KEY sKey -> withQueue $ \q _ -> (corrId,entId,) . either ERR id <$> secureQueue_ q sKey
+          LSET lnkId d ->
+            withQueue $ \q qr -> checkMode QMContact qr $ liftIO $
+              OK <$$ addQueueLink (queueStore ms) q lnkId d
+          LDEL ->
+            withQueue $ \q _ -> liftIO $ (corrId,entId,) . either ERR (const OK) <$>
+              deleteQueueLink (queueStore ms) q
           NKEY nKey dhKey -> withQueue $ \q _ -> addQueueNotifier_ q nKey dhKey
           NDEL -> withQueue $ \q _ -> deleteQueueNotifier_ q
           OFF -> maybe (pure $ err INTERNAL) suspendQueue_ q_
@@ -1316,14 +1332,18 @@ client
                         pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId = fst <$> queueData, serverNtfCreds = snd <$> ntf}
           (corrId,entId,) <$> tryCreate (3 :: Int)
 
-        secureQueue_ :: StoreQueue s -> SndPublicAuthKey -> M BrokerMsg
+        checkMode :: QueueMode -> QueueRec -> M (Either ErrorType BrokerMsg) -> M (Transmission BrokerMsg)
+        checkMode qm QueueRec {queueMode} a =
+          (corrId,entId,) . either ERR id
+            <$> if queueMode == Just qm then a else pure $ Left AUTH
+
+        secureQueue_ :: StoreQueue s -> SndPublicAuthKey -> M (Either ErrorType BrokerMsg)
         secureQueue_ q sKey = do
-          liftIO (secureQueue (queueStore ms) q sKey) >>= \case
-            Left e -> pure $ ERR e
-            Right () -> do
-              stats <- asks serverStats
-              incStat $ qSecured stats
-              pure OK
+          liftIO (secureQueue (queueStore ms) q sKey)
+            $>> (asks serverStats >>= incStat . qSecured) $> Right OK
+
+        getQueueLink_ :: StoreQueue s -> QueueRec -> M (Either ErrorType BrokerMsg)
+        getQueueLink_ q qr = liftIO $ LNK (senderId qr) <$$> getQueueLink (queueStore ms) q entId
 
         addQueueNotifier_ :: StoreQueue s -> NtfPublicAuthKey -> RcvNtfPublicDhKey -> M (Transmission BrokerMsg)
         addQueueNotifier_ q notifierKey dhKey = time "NKEY" $ do
@@ -1630,7 +1650,7 @@ client
               pure $ MsgNtf {ntfMsgId = msgId, ntfTs = msgTs, ntfNonce, ntfEncMeta = fromRight "" encNMsgMeta}
 
         processForwardedCommand :: EncFwdTransmission -> M BrokerMsg
-        processForwardedCommand (EncFwdTransmission s) = fmap (either ERR id) . runExceptT $ do
+        processForwardedCommand (EncFwdTransmission s) = fmap (either ERR RRES) . runExceptT $ do
           THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE $ transportErr TENoServerAuth) pure (thAuth thParams')
           sessSecret <- maybe (throwE $ transportErr TENoServerAuth) pure sessSecret'
           let proxyNonce = C.cbNonce $ bs corrId
@@ -1665,7 +1685,7 @@ client
               r3 = EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
-          pure $ RRES r3
+          pure r3
           where
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmission ErrorType Cmd -> M (Either (Transmission BrokerMsg) (Maybe (StoreQueue s, QueueRec), Transmission Cmd))
             rejectOrVerify clntThAuth (tAuth, authorized, (corrId', entId', cmdOrError)) =
@@ -1678,6 +1698,8 @@ client
                     allowed = case cmd' of
                       Cmd SSender SEND {} -> True
                       Cmd SSender (SKEY _) -> True
+                      Cmd SLinkClient (LKEY _) -> True
+                      Cmd SLinkClient LGET -> True
                       _ -> False
                     verified = \case
                       VRVerified q -> Right (q, (corrId', entId', cmd'))
@@ -1733,12 +1755,12 @@ client
 
         getQueueInfo :: StoreQueue s -> QueueRec -> M BrokerMsg
         getQueueInfo q QueueRec {senderKey, notifier} = do
-          fmap (either ERR id) $ liftIO $ runExceptT $ do
+          fmap (either ERR INFO) $ liftIO $ runExceptT $ do
             qiSub <- liftIO $ TM.lookupIO entId subscriptions >>= mapM mkQSub
             qiSize <- getQueueSize ms q
             qiMsg <- toMsgInfo <$$> tryPeekMsg ms q
             let info = QueueInfo {qiSnd = isJust senderKey, qiNtf = isJust notifier, qiSub, qiSize, qiMsg}
-            pure $ INFO info
+            pure info
           where
             mkQSub Sub {subThread, delivered} = do
               qSubThread <- case subThread of

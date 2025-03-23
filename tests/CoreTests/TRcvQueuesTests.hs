@@ -198,6 +198,7 @@ dummyRQ userId server connId rcvId =
       e2eDhSecret = Nothing,
       sndId = NoEntity,
       sndSecure = True,
+      shortLink = Nothing,
       status = New,
       dbQueueId = DBQueueId 0,
       primary = True,

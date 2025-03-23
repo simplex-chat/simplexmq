@@ -18,6 +18,8 @@ module Simplex.Messaging.Server.StoreLog
     closeStoreLog,
     writeStoreLogRecord,
     logCreateQueue,
+    logCreateLink,
+    logDeleteLink,
     logSecureQueue,
     logAddNotifier,
     logSuspendQueue,
@@ -59,6 +61,8 @@ import System.FilePath (takeDirectory, takeFileName)
 
 data StoreLogRecord
   = CreateQueue RecipientId QueueRec
+  | CreateLink RecipientId LinkId QueueLinkData
+  | DeleteLink RecipientId
   | SecureQueue QueueId SndPublicAuthKey
   | AddNotifier QueueId NtfCreds
   | SuspendQueue QueueId
@@ -71,6 +75,8 @@ data StoreLogRecord
 
 data SLRTag
   = CreateQueue_
+  | CreateLink_
+  | DeleteLink_
   | SecureQueue_
   | AddNotifier_
   | SuspendQueue_
@@ -121,6 +127,8 @@ instance StrEncoding QueueRec where
 instance StrEncoding SLRTag where
   strEncode = \case
     CreateQueue_ -> "CREATE"
+    CreateLink_ -> "CREATE_LINK"
+    DeleteLink_ -> "DELETE_LINK"
     SecureQueue_ -> "SECURE"
     AddNotifier_ -> "NOTIFIER"
     SuspendQueue_ -> "SUSPEND"
@@ -133,6 +141,8 @@ instance StrEncoding SLRTag where
   strP =
     A.choice
       [ "CREATE" $> CreateQueue_,
+        "CREATE_LINK" $> CreateLink_,
+        "DELETE_LINK" $> DeleteLink_,
         "SECURE" $> SecureQueue_,
         "NOTIFIER" $> AddNotifier_,
         "SUSPEND" $> SuspendQueue_,
@@ -146,6 +156,8 @@ instance StrEncoding SLRTag where
 instance StrEncoding StoreLogRecord where
   strEncode = \case
     CreateQueue rId q -> B.unwords [strEncode CreateQueue_, "rid=" <> strEncode rId, strEncode q]
+    CreateLink rId lnkId d -> strEncode (CreateLink_, rId, lnkId, d)
+    DeleteLink rId -> strEncode (DeleteLink_, rId)
     SecureQueue rId sKey -> strEncode (SecureQueue_, rId, sKey)
     AddNotifier rId ntfCreds -> strEncode (AddNotifier_, rId, ntfCreds)
     SuspendQueue rId -> strEncode (SuspendQueue_, rId)
@@ -158,6 +170,8 @@ instance StrEncoding StoreLogRecord where
   strP =
     strP_ >>= \case
       CreateQueue_ -> CreateQueue <$> ("rid=" *> strP_) <*> strP
+      CreateLink_ -> CreateLink <$> strP_ <*> strP_ <*> strP
+      DeleteLink_ -> DeleteLink <$> strP
       SecureQueue_ -> SecureQueue <$> strP_ <*> strP
       AddNotifier_ -> AddNotifier <$> strP_ <*> strP
       SuspendQueue_ -> SuspendQueue <$> strP
@@ -197,6 +211,12 @@ writeStoreLogRecord (WriteStoreLog _ h) r = E.uninterruptibleMask_ $ do
 
 logCreateQueue :: StoreLog 'WriteMode -> RecipientId -> QueueRec -> IO ()
 logCreateQueue s rId q = writeStoreLogRecord s $ CreateQueue rId q
+
+logCreateLink :: StoreLog 'WriteMode -> RecipientId -> LinkId -> QueueLinkData -> IO ()
+logCreateLink s rId lnkId d = writeStoreLogRecord s $ CreateLink rId lnkId d
+
+logDeleteLink :: StoreLog 'WriteMode -> RecipientId -> IO ()
+logDeleteLink s = writeStoreLogRecord s . DeleteLink
 
 logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SndPublicAuthKey -> IO ()
 logSecureQueue s qId sKey = writeStoreLogRecord s $ SecureQueue qId sKey

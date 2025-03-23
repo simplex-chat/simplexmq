@@ -74,21 +74,15 @@ data NewQueueReq = NewQueueReq
     ntfCreds :: Maybe NewNtfCreds
   }
 
--- To allow updating the existing contact addresses without changing them.
--- This command would fail on queues that support sndSecure and also on new queues created with QDMessaging.
--- RecipientId is entity ID for this command.
--- The response to this command is `OK`.
-LNEW :: LinkId -> QueueLinkData -> Command Recipient
-
 -- Replaces NKEY command
 -- This avoids additional command required from the client to enable notifications.
 -- Further changes would move NotifierId generation to the client, and including a signed and encrypted command to be forwarded by SMP server to notification server.
 data NtfRequest = NtfRequest NtfPublicAuthKey RcvNtfPublicDhKey
 
--- QDMessaging implies that sender can secure the queue.
--- LinkId is not used with QDMessaging, to prevent the possibility of checking when connection is established by re-using the same link ID when creating another queue – the creating would have to fail if it is used.
--- LinkId is required with QDContact, to have shorter link - it will be derived from the link_uri. And in this case we do not need to prevent checks that this queue exists.
-data QueueModeData = QDMessaging (Maybe QueueLinkData) | QDContact (Maybe (LinkId, QueueLinkData))
+-- QRMessaging implies that sender can secure the queue.
+-- LinkId is not used with QRMessaging, to prevent the possibility of checking when connection is established by re-using the same link ID when creating another queue – the creating would have to fail if it is used.
+-- LinkId is required with QRContact, to have shorter link - it will be derived from the link_uri. And in this case we do not need to prevent checks that this queue exists.
+data QueueModeData = QRMessaging (Maybe QueueLinkData) | QRContact (Maybe (LinkId, QueueLinkData))
 
 -- SenderId should be computed client-side as sha3-256(correlation_id),
 -- The server must verify it and reject if it is not.
@@ -130,24 +124,31 @@ data ServerNtfCreds = ServerNtfCreds NotifierId RcvNtfPublicDhKey -- NotifierId 
 In addition to that we add the command allowing to update and also to retrieve and, optionally, secure the queue and get link data in one request, to have only one request:
 
 ```haskell
--- With RecipientId as entity ID, the command to update mutable part of link data
--- The response is OK here.
-LSET :: EncUserDataBytes -> Command Recipient
+-- This command allows to set all data or to update mutlable part of contact address queue.
+-- This command should fail on queues that support sndSecure and also on new queues created with QRMessaging.
+-- This should fail if LinkId or immutable part of data is changed with the update, but will succeed if only mutable part is updated, so it can be retried.
+-- Entity ID is RecipientId.
+-- The response to this command is `OK`.
+LSET :: LinkId -> QueueLinkData -> Command Recipient
+
+
+-- Entity ID is RecipientId
+LGET :: Command Recipient
 
 -- To be used with 1-time links.
 -- Sender's key provided on the first request prevents observers from undetectably accessing 1-time link data.
--- If queue mode is QDContact (and queue does NOT allow sndSecure) the command will fail, same as SKEY.
+-- If queue mode is QRContact (and queue does NOT allow sndSecure) the command will fail, same as SKEY.
 -- Once queue is secured, the key must be the same in subsequent requests - to allow retries in case of network failures, and to prevent passive attacks.
 -- The difference with securing queues is that queues allow sending unsecured messages to queues that allow sndSecure (for backwards compatibility), and 1-time links will NOT allow retrieving link data without securing the queue at the same time, preventing undetected access by observers.
--- Entity ID is LinkId here
+-- Entity ID is LinkId
 LKEY :: SndPublicAuthKey -> Command Sender
 
--- If queue mode is QDMessaging the command will fail.
--- Entity ID is LinkId here
-LGET :: Command Sender
+-- If queue mode is QRMessaging the command will fail.
+-- Entity ID is LinkId
+LCON :: Command Sender
 
--- Response to LKEY and LGET
--- Entity ID is LinkId here
+-- Response to LGET, LSKEY and LSGET
+-- Entity ID is the same as in the command
 LINK :: SenderId -> QueueLinkData -> BrokerMsg
 ```
 

@@ -109,6 +109,7 @@ module Simplex.Messaging.Agent.Protocol
     CRClientData,
     ServiceScheme,
     ConnShortLink (..),
+    LinkKey (..),
     sameConnReqContact,
     simplexChat,
     connReqUriP',
@@ -1276,7 +1277,7 @@ data ConnShortLink (m :: ConnectionMode) where
   CSLInvitation :: SMPServer -> SMP.LinkId -> LinkKey -> ConnShortLink 'CMInvitation
   CSLContact :: SMPServer -> ContactConnType -> LinkKey -> ConnShortLink 'CMContact
 
-newtype LinkKey = LinkKey ByteString -- sha3-256(immutable_data)
+newtype LinkKey = LinkKey ByteString deriving (Show) -- sha3-256(immutable_data)
 
 data ContactConnType = CCTContact | CCTGroup
 

@@ -160,12 +160,14 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     SRecipient -> getRcvQueue qId
     SSender -> TM.lookupIO qId senders >>= maybe loadSndQueue getRcvQueue
     SNotifier -> TM.lookupIO qId notifiers >>= maybe loadNtfQueue getRcvQueue
+    SLinkClient -> loadLinkQueue
     where
       PostgresQueueStore {queues, senders, notifiers} = st
       getRcvQueue rId = TM.lookupIO rId queues >>= maybe loadRcvQueue (pure . Right)
       loadRcvQueue = loadQueue " WHERE recipient_id = ?" $ \_ -> pure ()
       loadSndQueue = loadQueue " WHERE sender_id = ?" $ \rId -> TM.insert qId rId senders
       loadNtfQueue = loadQueue " WHERE notifier_id = ?" $ \_ -> pure () -- do NOT cache ref - ntf subscriptions are rare
+      loadLinkQueue = loadQueue " WHERE link_id = ?" $ \_ -> pure ()
       loadQueue condition insertRef =
         E.uninterruptibleMask_ $ runExceptT $ do
           (rId, qRec) <-
@@ -186,6 +188,43 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
                   insertRef rId
                   TM.insert rId sq queues
                   pure sq
+
+  getQueueLink :: PostgresQueueStore q -> q -> LinkId -> IO (Either ErrorType QueueLinkData)
+  getQueueLink st sq lnkId = runExceptT $ do
+    qr <- ExceptT $ readQueueRecIO $ queueRec sq
+    case queueData qr of
+      Just (lnkId', _) | lnkId' == lnkId ->
+        withDB "getQueueLink" st $ \db -> firstRow id AUTH $
+          DB.query db "SELECT immutable_data, user_data FROM msg_queues WHERE link_id = ? AND deleted_at IS NULL" (Only lnkId)
+      _ -> throwE AUTH
+
+  addQueueLink :: PostgresQueueStore q -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
+  addQueueLink st sq lnkId d = 
+    withQueueRec sq "addQueueLink" $ \q -> case queueData q of
+      Nothing ->
+        addLink q $ \db -> DB.execute db qry (d :. (lnkId, rId))
+      Just (lnkId', _) | lnkId' == lnkId ->
+        addLink q $ \db -> DB.execute db (qry <> " AND (immutable_data IS NULL OR immutable_data != ?)") (d :. (lnkId, rId, fst d))
+      _ -> throwE AUTH
+    where
+      rId = recipientId sq
+      addLink q update = do
+        assertUpdated $ withDB' "addQueueLink" st update
+        atomically $ writeTVar (queueRec sq) $ Just q {queueData = Just (lnkId, d)}
+        withLog "addQueueLink" st $ \s -> logCreateLink s rId lnkId d
+      qry = "UPDATE msg_queues SET immutable_data = ?, user_data = ?, link_id = ? WHERE recipient_id = ? AND deleted_at IS NULL"
+
+  deleteQueueLink :: PostgresQueueStore q -> q -> IO (Either ErrorType ())
+  deleteQueueLink st sq =
+    withQueueRec sq "deleteQueueLink" $ \q -> case queueData q of
+      Just _ -> do
+        assertUpdated $ withDB' "deleteQueueLink" st $ \db ->
+          DB.execute db "UPDATE msg_queues SET link_id = NULL, immutable_data = NULL, user_data = NULL WHERE recipient_id = ? AND deleted_at IS NULL" (Only rId)
+        atomically $ writeTVar (queueRec sq) $ Just q {queueData = Nothing}
+        withLog "deleteQueueLink" st (`logDeleteLink` rId)
+      _ -> throwE AUTH
+    where
+      rId = recipientId sq
 
   secureQueue :: PostgresQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   secureQueue st sq sKey =

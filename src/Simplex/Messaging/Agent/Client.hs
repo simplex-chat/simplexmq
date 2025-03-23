@@ -1226,9 +1226,9 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
         r <- runExceptT $ do
           SMP.QIK {rcvId, sndId, queueMode} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp rKeys dhKey auth SMSubscribe (QRMessaging Nothing) Nothing
           liftError (testErr TSSecureQueue) $
-            if senderCanSecure queueMode
-              then secureSndSMPQueue smp spKey sndId sKey
-              else secureSMPQueue smp rpKey rcvId sKey
+            case queueMode of
+              Just QMMessaging -> secureSndSMPQueue smp spKey sndId sKey
+              _ -> secureSMPQueue smp rpKey rcvId sKey
           liftError (testErr TSDeleteQueue) $ deleteSMPQueue smp rpKey rcvId
         ok <- tcpTimeout (networkConfig cfg) `timeout` closeProtocolClient smp
         pure $ either Just (const Nothing) r <|> maybe (Just (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const Nothing) ok
@@ -1361,6 +1361,7 @@ newRcvQueue c userId connId (ProtoServerWithAuth srv auth) vRange subMode qrd nt
             e2eDhSecret = Nothing,
             sndId,
             sndSecure,
+            shortLink = Nothing, -- TODO [short links]
             status = New,
             dbQueueId = DBNewQueue,
             primary = True,
