@@ -46,7 +46,7 @@ for os in 22.04 24.04; do
 	docker exec \
 		-t \
 		builder \
-		sh -c 'cabal update && cabal build --enable-tests -fserver_postgres && mkdir -p /out && for i in smp-server simplexmq-test; do bin=$(find /project/dist-newstyle -name "$i" -type f -executable) && chmod +x "$bin" && mv "$bin" /out/; done && strip /out/smp-server'
+		sh -c 'cabal update && cabal build --jobs=$(nproc) --enable-tests -fserver_postgres && mkdir -p /out && for i in smp-server simplexmq-test; do bin=$(find /project/dist-newstyle -name "$i" -type f -executable) && chmod +x "$bin" && mv "$bin" /out/; done && strip /out/smp-server'
 
 	# Copy smp-server postgresql binary and prepare it
 	docker cp \
@@ -66,7 +66,7 @@ for os in 22.04 24.04; do
 		-t \
 		-e apps="$apps" \
 		builder \
-		sh -c 'cabal build && mkdir -p /out && for i in $apps; do bin=$(find /project/dist-newstyle -name "$i" -type f -executable) && strip "$bin" && chmod +x "$bin" && mv "$bin" /out/; done'
+		sh -c 'cabal build --jobs=$(nproc) && mkdir -p /out && for i in $apps; do bin=$(find /project/dist-newstyle -name "$i" -type f -executable) && strip "$bin" && chmod +x "$bin" && mv "$bin" /out/; done'
 
 	# Copy regular binaries
 	docker cp \
