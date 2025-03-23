@@ -10,10 +10,10 @@ repo="https://github.com/simplex-chat/simplexmq"
 export DOCKER_BUILDKIT=1
 
 cleanup() {
-	docker exec -t builder sh -c 'rm -rf ./dist-newstyle'
+	docker exec -t builder sh -c 'rm -rf ./dist-newstyle' 2>/dev/null || :
 	rm -rf -- "$tempdir"
-	docker rm --force builder
-	docker image rm local
+	docker rm --force builder 2>/dev/null || :
+	docker image rm local 2>/dev/null || :
 	cd "$init_dir"
 }
 trap 'cleanup' EXIT INT
