@@ -115,7 +115,7 @@ data StoredRcvQueue (q :: QueueStored) = RcvQueue
 data ShortLinkCreds = ShortLinkCreds
   { linkId :: SMP.LinkId,
     linkKey :: LinkKey,
-    linkSigKey :: C.PublicKeyEd25519,
+    linkPrivSigKey :: C.PrivateKeyEd25519,
     linkEncImmutableData :: SMP.EncImmutableDataBytes
   }
   deriving (Show)

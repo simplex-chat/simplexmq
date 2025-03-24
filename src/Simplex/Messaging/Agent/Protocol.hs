@@ -108,7 +108,10 @@ module Simplex.Messaging.Agent.Protocol
     ConnReqUriData (..),
     CRClientData,
     ServiceScheme,
+    ImmutableConnData (..),
+    UserConnData (..),
     ConnShortLink (..),
+    ContactConnType (..),
     LinkKey (..),
     sameConnReqContact,
     simplexChat,
@@ -1044,6 +1047,11 @@ instance ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
                 <> maybe [] (\cd -> [("data", encodeUtf8 cd)]) crClientData
   strP = connReqUriP' (Just SSSimplex)
 
+-- TODO [short links] do not use StrEncoding instance
+instance ConnectionModeI m => Encoding (ConnectionRequestUri m) where
+  smpEncode = smpEncode . strEncode
+  smpP = strDecode <$?> smpP
+
 connReqUriP' :: forall m. ConnectionModeI m => Maybe ServiceScheme -> Parser (ConnectionRequestUri m)
 connReqUriP' overrideScheme = do
   ACR m cr <- connReqUriP overrideScheme
@@ -1302,15 +1310,29 @@ data ConnReqUriData = ConnReqUriData
 type CRClientData = Text
 
 data ImmutableConnData c = ImmutableConnData
-  { signature :: C.Signature 'C.Ed25519, -- signature of the remaining part of immutable data
-    connReq :: ConnectionRequestUri c,
-    sigKey :: C.PublicKeyEd25519
+  { agentVRange :: VersionRangeSMPA,
+    sigKey :: C.PublicKeyEd25519,
+    connReq :: ConnectionRequestUri c
   }
 
 data UserConnData = UserConnData
-  { signature :: C.Signature 'C.Ed25519, -- signs the remaining part of the data
+  { agentVRange :: VersionRangeSMPA,
     userData :: ConnInfo
   }
+
+instance ConnectionModeI c => Encoding (ImmutableConnData c) where
+  smpEncode ImmutableConnData {agentVRange, sigKey, connReq} =
+    smpEncode (agentVRange, sigKey, connReq)
+  smpP = do
+    (agentVRange, sigKey, connReq) <- smpP
+    pure ImmutableConnData {agentVRange, sigKey, connReq}
+
+instance Encoding UserConnData where
+  smpEncode UserConnData {agentVRange, userData} =
+    smpEncode (agentVRange, userData)
+  smpP = do
+    (agentVRange, userData) <- smpP
+    pure UserConnData {agentVRange, userData}
 
 -- | SMP queue status.
 data QueueStatus

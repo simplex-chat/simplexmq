@@ -58,6 +58,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getRcvQueueById,
     getSndQueueById,
     deleteConn,
+    deleteConnRecord,
     upgradeRcvConnToDuplex,
     upgradeSndConnToDuplex,
     addConnRcvQueue,
@@ -410,6 +411,9 @@ createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSup
     |]
     (userId, connId, cMode, connAgentVersion, BI enableNtfs, pqSupport, BI True)
 
+deleteConnRecord :: DB.Connection -> ConnId -> IO ()
+deleteConnRecord db connId = DB.execute db "DELETE FROM connections WHERE conn_id = ?" (Only connId)
+
 checkConfirmedSndQueueExists_ :: DB.Connection -> NewSndQueue -> IO Bool
 checkConfirmedSndQueueExists_ db SndQueue {server, sndId} = do
   fromMaybe False
@@ -442,7 +446,7 @@ deleteConn db waitDeliveryTimeout_ connId = case waitDeliveryTimeout_ of
           (pure Nothing)
       )
   where
-    delete = DB.execute db "DELETE FROM connections WHERE conn_id = ?" (Only connId) $> Just connId
+    delete = deleteConnRecord db connId $> Just connId
     checkNoPendingDeliveries_ = do
       r :: (Maybe Int64) <-
         maybeFirstRow fromOnly $
@@ -1874,6 +1878,7 @@ upsertNtfServer_ db ProtocolServer {host, port, keyHash} = do
 
 -- * createRcvConn helpers
 
+-- TODO [short links] save shortLink
 insertRcvQueue_ :: DB.Connection -> ConnId -> NewRcvQueue -> Maybe C.KeyHash -> IO RcvQueue
 insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
   -- to preserve ID if the queue already exists.

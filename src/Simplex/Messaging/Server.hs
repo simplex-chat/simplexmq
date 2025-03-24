@@ -51,9 +51,7 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Control.Monad.STM (retry)
-import Crypto.Hash (Digest, SHA3_256, hash)
 import Data.Bifunctor (first)
-import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Builder as BLD
 import Data.ByteString.Char8 (ByteString)
@@ -1296,7 +1294,7 @@ client
                 -- The condition that client-provided sender ID must match hash of correlation ID
                 -- prevents "ID oracle" attack, when creating queue with supplied ID can be used to check
                 -- if queue with this ID still exists.
-                if clntIds && unEntityId sndId /= BA.convert (hash (bs corrId) :: Digest SHA3_256)
+                if clntIds && unEntityId sndId /= C.sha3_256 (bs corrId)
                   then pure $ ERR $ CMD PROHIBITED
                   else do
                     rcvId <- randId

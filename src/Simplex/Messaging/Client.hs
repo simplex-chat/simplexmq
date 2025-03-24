@@ -712,6 +712,7 @@ smpProxyError = \case
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#create-queue-command
 createSMPQueue ::
   SMPClient ->
+  Maybe C.CbNonce -> -- used as correlation ID to allow deriving SenderId from it for short links
   C.AAuthKeyPair -> -- SMP v6 - signature key pair, SMP v7 - DH key pair
   RcvPublicDhKey ->
   Maybe BasicAuth ->
@@ -719,8 +720,8 @@ createSMPQueue ::
   QueueReqData ->
   Maybe NewNtfCreds ->
   ExceptT SMPClientError IO QueueIdsKeys
-createSMPQueue c (rKey, rpKey) dhKey auth subMode qrd ntfCreds =
-  sendSMPCommand c (Just rpKey) NoEntity (NEW $ NewQueueReq rKey dhKey auth subMode (Just qrd) ntfCreds) >>= \case
+createSMPQueue c nonce_ (rKey, rpKey) dhKey auth subMode qrd ntfCreds =
+  sendProtocolCommand_ c nonce_ Nothing (Just rpKey) NoEntity (Cmd SRecipient $ NEW $ NewQueueReq rKey dhKey auth subMode (Just qrd) ntfCreds) >>= \case
     IDS qik -> pure qik
     r -> throwE $ unexpectedResponse r
 
@@ -1154,6 +1155,8 @@ sendProtocolCommand c = sendProtocolCommand_ c Nothing Nothing
 -- This is to reflect the fact that we send subscriptions only as batches, and also because we do not track a separate timeout for the whole batch, so it is not obvious when should we expire it.
 -- We could expire a batch of deletes, for example, either when the first response expires or when the last one does.
 -- But a better solution is to process delayed delete responses.
+--
+-- Please note: if nonce is passed it is also used as a correlation ID
 sendProtocolCommand_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.CbNonce -> Maybe Int -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
 sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize}} nonce_ tOut pKey entId cmd =
   ExceptT $ uncurry sendRecv =<< mkTransmission_ c nonce_ (pKey, entId, cmd)

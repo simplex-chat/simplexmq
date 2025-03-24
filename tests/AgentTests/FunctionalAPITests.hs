@@ -59,7 +59,7 @@ import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
-import Data.Bifunctor (first)
+import Data.Bifunctor (first, second)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -249,8 +249,9 @@ inAnyOrder g rs = withFrozenCallStack $ do
     expected :: a -> (a -> Bool) -> Bool
     expected r rp = rp r
 
-createConnection :: AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> AE (ConnId, ConnectionRequestUri c)
-createConnection c userId enableNtfs cMode clientData = A.createConnection c userId enableNtfs cMode clientData (IKNoPQ PQSupportOn)
+createConnection :: ConnectionModeI c => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> AE (ConnId, ConnectionRequestUri c)
+createConnection c userId enableNtfs cMode clientData =
+  fmap (second fst) . A.createConnection c userId enableNtfs cMode Nothing clientData (IKNoPQ PQSupportOn)
 
 joinConnection :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> AE (ConnId, SndQueueSecured)
 joinConnection c userId enableNtfs cReq connInfo subMode = do
@@ -607,7 +608,7 @@ runAgentClientTest pqSupport sqSecured viaProxy alice bob baseId =
 runAgentClientTestPQ :: HasCallStack => SndQueueSecured -> Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientTestPQ sqSecured viaProxy (alice, aPQ) (bob, bPQ) baseId =
   runRight_ $ do
-    (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing aPQ SMSubscribe
+    (bobId, (qInfo, Nothing)) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing aPQ SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo bPQ
     sqSecured' <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" bPQ SMSubscribe
     liftIO $ sqSecured' `shouldBe` sqSecured
@@ -809,7 +810,7 @@ runAgentClientContactTest pqSupport sqSecured viaProxy alice bob baseId =
 runAgentClientContactTestPQ :: HasCallStack => SndQueueSecured -> Bool -> PQSupport -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, bPQ) baseId =
   runRight_ $ do
-    (_, qInfo) <- A.createConnection alice 1 True SCMContact Nothing aPQ SMSubscribe
+    (_, (qInfo, Nothing)) <- A.createConnection alice 1 True SCMContact Nothing Nothing aPQ SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo bPQ
     sqSecuredJoin <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" bPQ SMSubscribe
     liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
@@ -853,7 +854,7 @@ runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, b
 
 runAgentClientContactTestPQ3 :: HasCallStack => Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId = runRight_ $ do
-  (_, qInfo) <- A.createConnection alice 1 True SCMContact Nothing aPQ SMSubscribe
+  (_, (qInfo, Nothing)) <- A.createConnection alice 1 True SCMContact Nothing Nothing aPQ SMSubscribe
   (bAliceId, bobId, abPQEnc) <- connectViaContact bob bPQ qInfo
   sentMessages abPQEnc alice bobId bob bAliceId
   (tAliceId, tomId, atPQEnc) <- connectViaContact tom tPQ qInfo
@@ -906,7 +907,7 @@ noMessages_ ingoreQCONT c err = tryGet `shouldReturn` ()
 testRejectContactRequest :: HasCallStack => IO ()
 testRejectContactRequest =
   withAgentClients2 $ \alice bob -> runRight_ $ do
-    (addrConnId, qInfo) <- A.createConnection alice 1 True SCMContact Nothing IKPQOn SMSubscribe
+    (addrConnId, (qInfo, Nothing)) <- A.createConnection alice 1 True SCMContact Nothing Nothing IKPQOn SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
     sqSecured <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ sqSecured `shouldBe` False -- joining via contact address connection
@@ -1760,7 +1761,7 @@ makeConnectionForUsers = makeConnectionForUsers_ PQSupportOn True
 
 makeConnectionForUsers_ :: HasCallStack => PQSupport -> SndQueueSecured -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnectionForUsers_ pqSupport sqSecured alice aliceUserId bob bobUserId = do
-  (bobId, qInfo) <- A.createConnection alice aliceUserId True SCMInvitation Nothing (CR.IKNoPQ pqSupport) SMSubscribe
+  (bobId, (qInfo, Nothing)) <- A.createConnection alice aliceUserId True SCMInvitation Nothing Nothing (CR.IKNoPQ pqSupport) SMSubscribe
   aliceId <- A.prepareConnectionToJoin bob bobUserId True qInfo pqSupport
   sqSecured' <- A.joinConnection bob bobUserId aliceId True qInfo "bob's connInfo" pqSupport SMSubscribe
   liftIO $ sqSecured' `shouldBe` sqSecured

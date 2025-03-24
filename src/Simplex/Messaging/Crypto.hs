@@ -160,6 +160,7 @@ module Simplex.Messaging.Crypto
     SbKeyNonce,
     sbcInit,
     sbcHkdf,
+    hkdf,
 
     -- * pseudo-random bytes
     randomBytes,
@@ -167,6 +168,7 @@ module Simplex.Messaging.Crypto
     -- * digests
     sha256Hash,
     sha512Hash,
+    sha3_256,
 
     -- * Message padding / un-padding
     canPad,
@@ -207,7 +209,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256 (..), SHA512 (..), hash, hashDigestSize)
+import Crypto.Hash (Digest, SHA256 (..), SHA3_256, SHA512 (..), hash, hashDigestSize)
 import qualified Crypto.KDF.HKDF as H
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
@@ -966,6 +968,10 @@ sha256Hash = BA.convert . (hash :: ByteString -> Digest SHA256)
 sha512Hash :: ByteString -> ByteString
 sha512Hash = BA.convert . (hash :: ByteString -> Digest SHA512)
 
+-- | SHA3-256 digest.
+sha3_256 :: ByteString -> ByteString
+sha3_256 = BA.convert . (hash :: ByteString -> Digest SHA3_256)
+
 -- | AEAD-GCM encryption with associated data.
 --
 -- Used as part of double ratchet encryption.
@@ -1356,19 +1362,22 @@ newtype SbChainKey = SecretBoxChainKey {unSbChainKey :: ByteString}
 sbcInit :: ByteArrayAccess secret => ByteString -> secret -> (SbChainKey, SbChainKey)
 sbcInit salt secret = (SecretBoxChainKey ck1, SecretBoxChainKey ck2)
   where
-    prk = H.extract salt secret :: H.PRK SHA512
-    out = H.expand prk ("SimpleXSbChainInit" :: ByteString) 64
-    (ck1, ck2) = B.splitAt 32 out
+    (ck1, ck2) = B.splitAt 32 $ hkdf salt secret "SimpleXSbChainInit" 64
 
 type SbKeyNonce = (SbKey, CbNonce)
 
 sbcHkdf :: SbChainKey -> (SbKeyNonce, SbChainKey)
 sbcHkdf (SecretBoxChainKey ck) = ((SecretBoxKey sk, CryptoBoxNonce nonce), SecretBoxChainKey ck')
   where
-    prk = H.extract B.empty ck :: H.PRK SHA512
-    out = H.expand prk ("SimpleXSbChain" :: ByteString) 88 -- = 32 (new chain key) + 32 (secret_box key) + 24 (nonce)
+    out = hkdf "" ck "SimpleXSbChain" 88 -- = 32 (new chain key) + 32 (secret_box key) + 24 (nonce)
     (ck', rest) = B.splitAt 32 out
     (sk, nonce) = B.splitAt 32 rest
+
+hkdf :: ByteArrayAccess secret => ByteString -> secret -> ByteString -> Int -> ByteString
+hkdf salt ikm info n =
+  let prk = H.extract salt ikm :: H.PRK SHA512
+   in H.expand prk info n
+{-# INLINE hkdf #-}
 
 xSalsa20 :: ByteArrayAccess key => key -> ByteString -> ByteString -> (ByteString, ByteString)
 xSalsa20 secret nonce msg = (rs, msg')
