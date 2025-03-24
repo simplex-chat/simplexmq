@@ -49,6 +49,12 @@ module Simplex.Messaging.Client
     secureSMPQueue,
     secureSndSMPQueue,
     proxySecureSndSMPQueue,
+    addSMPQueueLink,
+    deleteSMPQueueLink,
+    secureSMPQueueLink,
+    proxySecureSMPQueueLink,
+    getSMPQueueLink,
+    proxyGetSMPQueueLink,
     enableSMPQueueNotifications,
     disableSMPQueueNotifications,
     enableSMPQueuesNtfs,
@@ -800,8 +806,44 @@ secureSndSMPQueue c spKey sId senderKey = okSMPCommand (SKEY senderKey) c spKey 
 {-# INLINE secureSndSMPQueue #-}
 
 proxySecureSndSMPQueue :: SMPClient -> ProxiedRelay -> SndPrivateAuthKey -> SenderId -> SndPublicAuthKey -> ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySecureSndSMPQueue c proxiedRelay spKey sId senderKey = proxySMPCommand c proxiedRelay (Just spKey) sId (SKEY senderKey)
+proxySecureSndSMPQueue c proxiedRelay spKey sId senderKey = proxyOKSMPCommand c proxiedRelay (Just spKey) sId (SKEY senderKey)
 {-# INLINE proxySecureSndSMPQueue #-}
+
+addSMPQueueLink :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> LinkId -> QueueLinkData -> ExceptT SMPClientError IO ()
+addSMPQueueLink c rpKey rId lnkId d = okSMPCommand (LSET lnkId d) c rpKey rId
+{-# INLINE addSMPQueueLink #-}
+
+deleteSMPQueueLink :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO ()
+deleteSMPQueueLink = okSMPCommand LDEL
+{-# INLINE deleteSMPQueueLink #-}
+
+-- | Get 1-time inviation SMP queue link data and secure the queue via queue link ID.
+secureSMPQueueLink :: SMPClient -> SndPrivateAuthKey -> LinkId -> SndPublicAuthKey -> ExceptT SMPClientError IO (SenderId, QueueLinkData)
+secureSMPQueueLink c spKey lnkId senderKey =
+  sendSMPCommand c (Just spKey) lnkId (LKEY senderKey) >>= \case
+    LNK sId d -> pure (sId, d)
+    r -> throwE $ unexpectedResponse r
+
+proxySecureSMPQueueLink :: SMPClient -> ProxiedRelay -> SndPrivateAuthKey -> LinkId -> SndPublicAuthKey -> ExceptT SMPClientError IO (Either ProxyClientError (SenderId, QueueLinkData))
+proxySecureSMPQueueLink c proxiedRelay spKey lnkId senderKey =
+  proxySMPCommand  c proxiedRelay (Just spKey) lnkId (LKEY senderKey) >>= \case
+    Right (LNK sId d) -> pure $ Right (sId, d)
+    Right r -> throwE $ unexpectedResponse r
+    Left e -> pure $ Left e
+
+-- | Get contact address SMP queue link data.
+getSMPQueueLink :: SMPClient -> LinkId -> ExceptT SMPClientError IO (SenderId, QueueLinkData)
+getSMPQueueLink c lnkId =
+  sendSMPCommand c Nothing lnkId LGET >>= \case
+    LNK sId d -> pure (sId, d)
+    r -> throwE $ unexpectedResponse r
+
+proxyGetSMPQueueLink :: SMPClient -> ProxiedRelay -> LinkId -> ExceptT SMPClientError IO (Either ProxyClientError (SenderId, QueueLinkData))
+proxyGetSMPQueueLink c proxiedRelay lnkId =
+  proxySMPCommand  c proxiedRelay Nothing lnkId LGET >>= \case
+    Right (LNK sId d) -> pure $ Right (sId, d)
+    Right r -> throwE $ unexpectedResponse r
+    Left e -> pure $ Left e
 
 -- | Enable notifications for the queue for push notifications server.
 --
@@ -844,7 +886,7 @@ sendSMPMessage c spKey sId flags msg =
     r -> throwE $ unexpectedResponse r
 
 proxySMPMessage :: SMPClient -> ProxiedRelay -> Maybe SndPrivateAuthKey -> SenderId -> MsgFlags -> MsgBody -> ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySMPMessage c proxiedRelay spKey sId flags msg = proxySMPCommand c proxiedRelay spKey sId (SEND flags msg)
+proxySMPMessage c proxiedRelay spKey sId flags msg = proxyOKSMPCommand c proxiedRelay spKey sId (SEND flags msg)
 
 -- | Acknowledge message delivery (server deletes the message).
 --
@@ -956,15 +998,24 @@ instance StrEncoding ProxyClientError where
 -- - other errors from the client running on proxy and connected to relay in PREProxiedRelayError
 
 -- This function proxies Sender commands that return OK or ERR
+proxyOKSMPCommand :: SMPClient -> ProxiedRelay -> Maybe SndPrivateAuthKey -> SenderId -> Command 'Sender -> ExceptT SMPClientError IO (Either ProxyClientError ())
+proxyOKSMPCommand c proxiedRelay spKey sId command =
+  proxySMPCommand  c proxiedRelay spKey sId command >>= \case
+    Right OK -> pure $ Right ()
+    Right r -> throwE $ unexpectedResponse r
+    Left e -> pure $ Left e
+
 proxySMPCommand ::
+  forall p.
+  PartyI p =>
   SMPClient ->
   -- proxy session from PKEY
   ProxiedRelay ->
   -- message to deliver
   Maybe SndPrivateAuthKey ->
   SenderId ->
-  Command 'Sender ->
-  ExceptT SMPClientError IO (Either ProxyClientError ())
+  Command p ->
+  ExceptT SMPClientError IO (Either ProxyClientError BrokerMsg)
 proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g, tcpTimeout}} (ProxiedRelay sessionId v _ serverKey) spKey sId command = do
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
@@ -973,7 +1024,7 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
   let cmdSecret = C.dh' serverKey cmdPrivKey
   nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
   -- encode
-  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId corrId, sId, Cmd SSender command)
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId corrId, sId, Cmd (sParty @p) command)
   auth <- liftEitherWith PCETransportError $ authTransmission serverThAuth spKey nonce tForAuth
   b <- case batchTransmissions (batch serverThParams) (blockSize serverThParams) [Right (auth, tToSend)] of
     [] -> throwE $ PCETransportError TELargeMsg
@@ -991,9 +1042,8 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
         case tParse serverThParams t' of
           t'' :| [] -> case tDecodeParseValidate serverThParams t'' of
             (_auth, _signed, (_c, _e, cmd)) -> case cmd of
-              Right OK -> pure $ Right ()
               Right (ERR e) -> throwE $ PCEProtocolError e -- this is the error from the destination relay
-              Right r' -> throwE $ unexpectedResponse r'
+              Right r' -> pure $ Right r'
               Left e -> throwE $ PCEResponseError e
           _ -> throwE $ PCETransportError TEBadBlock
       ERR e -> pure . Left $ ProxyProtocolError e -- this will not happen, this error is returned via Left
