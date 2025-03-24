@@ -189,18 +189,18 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
                   TM.insert rId sq queues
                   pure sq
 
-  getQueueLink :: PostgresQueueStore q -> q -> LinkId -> IO (Either ErrorType QueueLinkData)
-  getQueueLink st sq lnkId = runExceptT $ do
+  getQueueLinkData :: PostgresQueueStore q -> q -> LinkId -> IO (Either ErrorType QueueLinkData)
+  getQueueLinkData st sq lnkId = runExceptT $ do
     qr <- ExceptT $ readQueueRecIO $ queueRec sq
     case queueData qr of
       Just (lnkId', _) | lnkId' == lnkId ->
-        withDB "getQueueLink" st $ \db -> firstRow id AUTH $
+        withDB "getQueueLinkData" st $ \db -> firstRow id AUTH $
           DB.query db "SELECT immutable_data, user_data FROM msg_queues WHERE link_id = ? AND deleted_at IS NULL" (Only lnkId)
       _ -> throwE AUTH
 
-  addQueueLink :: PostgresQueueStore q -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
-  addQueueLink st sq lnkId d = 
-    withQueueRec sq "addQueueLink" $ \q -> case queueData q of
+  addQueueLinkData :: PostgresQueueStore q -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
+  addQueueLinkData st sq lnkId d = 
+    withQueueRec sq "addQueueLinkData" $ \q -> case queueData q of
       Nothing ->
         addLink q $ \db -> DB.execute db qry (d :. (lnkId, rId))
       Just (lnkId', _) | lnkId' == lnkId ->
@@ -209,19 +209,19 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     where
       rId = recipientId sq
       addLink q update = do
-        assertUpdated $ withDB' "addQueueLink" st update
+        assertUpdated $ withDB' "addQueueLinkData" st update
         atomically $ writeTVar (queueRec sq) $ Just q {queueData = Just (lnkId, d)}
-        withLog "addQueueLink" st $ \s -> logCreateLink s rId lnkId d
+        withLog "addQueueLinkData" st $ \s -> logCreateLink s rId lnkId d
       qry = "UPDATE msg_queues SET immutable_data = ?, user_data = ?, link_id = ? WHERE recipient_id = ? AND deleted_at IS NULL"
 
-  deleteQueueLink :: PostgresQueueStore q -> q -> IO (Either ErrorType ())
-  deleteQueueLink st sq =
-    withQueueRec sq "deleteQueueLink" $ \q -> case queueData q of
+  deleteQueueLinkData :: PostgresQueueStore q -> q -> IO (Either ErrorType ())
+  deleteQueueLinkData st sq =
+    withQueueRec sq "deleteQueueLinkData" $ \q -> case queueData q of
       Just _ -> do
-        assertUpdated $ withDB' "deleteQueueLink" st $ \db ->
+        assertUpdated $ withDB' "deleteQueueLinkData" st $ \db ->
           DB.execute db "UPDATE msg_queues SET link_id = NULL, immutable_data = NULL, user_data = NULL WHERE recipient_id = ? AND deleted_at IS NULL" (Only rId)
         atomically $ writeTVar (queueRec sq) $ Just q {queueData = Nothing}
-        withLog "deleteQueueLink" st (`logDeleteLink` rId)
+        withLog "deleteQueueLinkData" st (`logDeleteLink` rId)
       _ -> throwE AUTH
     where
       rId = recipientId sq

@@ -51,8 +51,8 @@ module Simplex.Messaging.Client
     proxySecureSndSMPQueue,
     addSMPQueueLink,
     deleteSMPQueueLink,
-    secureSMPQueueLink,
-    proxySecureSMPQueueLink,
+    secureGetSMPQueueLink,
+    proxySecureGetSMPQueueLink,
     getSMPQueueLink,
     proxyGetSMPQueueLink,
     enableSMPQueueNotifications,
@@ -809,23 +809,25 @@ proxySecureSndSMPQueue :: SMPClient -> ProxiedRelay -> SndPrivateAuthKey -> Send
 proxySecureSndSMPQueue c proxiedRelay spKey sId senderKey = proxyOKSMPCommand c proxiedRelay (Just spKey) sId (SKEY senderKey)
 {-# INLINE proxySecureSndSMPQueue #-}
 
+-- | Add or update date for queue link
 addSMPQueueLink :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> LinkId -> QueueLinkData -> ExceptT SMPClientError IO ()
 addSMPQueueLink c rpKey rId lnkId d = okSMPCommand (LSET lnkId d) c rpKey rId
 {-# INLINE addSMPQueueLink #-}
 
+-- | Delete queue link
 deleteSMPQueueLink :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO ()
 deleteSMPQueueLink = okSMPCommand LDEL
 {-# INLINE deleteSMPQueueLink #-}
 
 -- | Get 1-time inviation SMP queue link data and secure the queue via queue link ID.
-secureSMPQueueLink :: SMPClient -> SndPrivateAuthKey -> LinkId -> SndPublicAuthKey -> ExceptT SMPClientError IO (SenderId, QueueLinkData)
-secureSMPQueueLink c spKey lnkId senderKey =
+secureGetSMPQueueLink :: SMPClient -> SndPrivateAuthKey -> LinkId -> SndPublicAuthKey -> ExceptT SMPClientError IO (SenderId, QueueLinkData)
+secureGetSMPQueueLink c spKey lnkId senderKey =
   sendSMPCommand c (Just spKey) lnkId (LKEY senderKey) >>= \case
     LNK sId d -> pure (sId, d)
     r -> throwE $ unexpectedResponse r
 
-proxySecureSMPQueueLink :: SMPClient -> ProxiedRelay -> SndPrivateAuthKey -> LinkId -> SndPublicAuthKey -> ExceptT SMPClientError IO (Either ProxyClientError (SenderId, QueueLinkData))
-proxySecureSMPQueueLink c proxiedRelay spKey lnkId senderKey =
+proxySecureGetSMPQueueLink :: SMPClient -> ProxiedRelay -> SndPrivateAuthKey -> LinkId -> SndPublicAuthKey -> ExceptT SMPClientError IO (Either ProxyClientError (SenderId, QueueLinkData))
+proxySecureGetSMPQueueLink c proxiedRelay spKey lnkId senderKey =
   proxySMPCommand  c proxiedRelay (Just spKey) lnkId (LKEY senderKey) >>= \case
     Right (LNK sId d) -> pure $ Right (sId, d)
     Right r -> throwE $ unexpectedResponse r

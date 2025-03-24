@@ -321,12 +321,12 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   {-# INLINE addQueue_ #-}
   getQueue_ = withQS getQueue_
   {-# INLINE getQueue_ #-}
-  addQueueLink = withQS addQueueLink
-  {-# INLINE addQueueLink #-}
-  getQueueLink = withQS getQueueLink
-  {-# INLINE getQueueLink #-}
-  deleteQueueLink = withQS deleteQueueLink
-  {-# INLINE deleteQueueLink #-}
+  addQueueLinkData = withQS addQueueLinkData
+  {-# INLINE addQueueLinkData #-}
+  getQueueLinkData = withQS getQueueLinkData
+  {-# INLINE getQueueLinkData #-}
+  deleteQueueLinkData = withQS deleteQueueLinkData
+  {-# INLINE deleteQueueLinkData #-}
   secureQueue = withQS secureQueue
   {-# INLINE secureQueue #-}
   addQueueNotifier = withQS addQueueNotifier

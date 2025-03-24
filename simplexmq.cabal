@@ -367,6 +367,8 @@ executable ntf-server
 executable smp-server
   if flag(client_library)
       buildable: False
+  if flag(server_postgres)
+    cpp-options: -DdbServerPostgres
   main-is: Main.hs
   other-modules:
       Static

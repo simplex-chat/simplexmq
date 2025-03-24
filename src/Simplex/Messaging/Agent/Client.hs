@@ -57,6 +57,10 @@ module Simplex.Messaging.Agent.Client
     serverHostError,
     secureQueue,
     secureSndQueue,
+    addQueueLink,
+    deleteQueueLink,
+    secureGetQueueLink,
+    getQueueLink,
     enableQueueNotifications,
     EnableQueueNtfReq (..),
     enableQueuesNtfs,
@@ -259,6 +263,7 @@ import Simplex.Messaging.Protocol
     SndPublicAuthKey,
     SubscriptionMode (..),
     QueueReqData (..),
+    QueueLinkData,
     NewNtfCreds,
     UserProtocol,
     VersionRangeSMPC,
@@ -1078,9 +1083,24 @@ sendOrProxySMPCommand ::
   (SMPClient -> ProxiedRelay -> ExceptT SMPClientError IO (Either ProxyClientError ())) ->
   (SMPClient -> ExceptT SMPClientError IO ()) ->
   AM (Maybe SMPServer)
-sendOrProxySMPCommand c userId destSrv@ProtocolServer {host = destHosts} connId cmdStr senderId sendCmdViaProxy sendCmdDirectly = do
+sendOrProxySMPCommand c userId destSrv connId cmdStr entId sendCmdViaProxy sendCmdDirectly =
+  fst <$> sendOrProxySMPCommand_ c userId destSrv connId cmdStr entId sendCmdViaProxy sendCmdDirectly
+{-# INLINE sendOrProxySMPCommand #-}
+
+sendOrProxySMPCommand_ ::
+  forall a.
+  AgentClient ->
+  UserId ->
+  SMPServer ->
+  ConnId -> -- session entity ID, for short links LinkId is used
+  ByteString -> 
+  SMP.EntityId -> -- sender or link ID
+  (SMPClient -> ProxiedRelay -> ExceptT SMPClientError IO (Either ProxyClientError a)) ->
+  (SMPClient -> ExceptT SMPClientError IO a) ->
+  AM (Maybe SMPServer, a)
+sendOrProxySMPCommand_ c userId destSrv@ProtocolServer {host = destHosts} connId cmdStr entId sendCmdViaProxy sendCmdDirectly = do
   tSess <- mkTransportSession c userId destSrv connId
-  ifM shouldUseProxy (sendViaProxy Nothing tSess) (sendDirectly tSess $> Nothing)
+  ifM shouldUseProxy (sendViaProxy Nothing tSess) ((Nothing,) <$> sendDirectly tSess)
   where
     shouldUseProxy = do
       cfg <- getNetworkConfig c
@@ -1098,13 +1118,13 @@ sendOrProxySMPCommand c userId destSrv@ProtocolServer {host = destHosts} connId 
         SPFAllowProtected -> ipAddressProtected cfg destSrv
         SPFProhibit -> False
     unknownServer = liftIO $ maybe True (\srvs -> all (`S.notMember` knownHosts srvs) destHosts) <$> TM.lookupIO userId (smpServers c)
-    sendViaProxy :: Maybe SMPServerWithAuth -> SMPTransportSession -> AM (Maybe SMPServer)
+    sendViaProxy :: Maybe SMPServerWithAuth -> SMPTransportSession -> AM (Maybe SMPServer, a)
     sendViaProxy proxySrv_ destSess@(_, _, connId_) = do
-      r <- tryAgentError . withProxySession c proxySrv_ destSess senderId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess@ProxiedRelay {prBasicAuth}) -> do
+      r <- tryAgentError . withProxySession c proxySrv_ destSess entId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess@ProxiedRelay {prBasicAuth}) -> do
         r' <- liftClient SMP (clientServer smp) $ sendCmdViaProxy smp proxySess
         let proxySrv = protocolClientServer' smp
         case r' of
-          Right () -> pure $ Just proxySrv
+          Right r -> pure (Just proxySrv, r)
           Left proxyErr -> do
             case proxyErr of
               ProxyProtocolError (SMP.PROXY SMP.NO_SESSION) -> do
@@ -1138,18 +1158,17 @@ sendOrProxySMPCommand c userId destSrv@ProtocolServer {host = destHosts} connId 
               sameClient smp' = sessionId (thParams smp) == sessionId (thParams smp')
               sameProxiedRelay proxySess' = prSessionId proxySess == prSessionId proxySess'
       case r of
-        Right r' -> do
+        Right r'@(srv_, _) -> do
           atomically $ incSMPServerStat c userId destSrv sentViaProxy
-          forM_ r' $ \proxySrv -> atomically $ incSMPServerStat c userId proxySrv sentProxied
+          forM_ srv_ $ \proxySrv -> atomically $ incSMPServerStat c userId proxySrv sentProxied
           pure r'
         Left e
-          | serverHostError e -> ifM directAllowed (sendDirectly destSess $> Nothing) (throwE e)
+          | serverHostError e -> ifM directAllowed ((Nothing,) <$> sendDirectly destSess) (throwE e)
           | otherwise -> throwE e
     sendDirectly tSess =
-      withLogClient_ c tSess (unEntityId senderId) ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) -> do
-        r <- tryAgentError $ liftClient SMP (clientServer smp) $ sendCmdDirectly smp
-        case r of
-          Right () -> atomically $ incSMPServerStat c userId destSrv sentDirect
+      withLogClient_ c tSess (unEntityId entId) ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) -> do
+        tryAgentError (liftClient SMP (clientServer smp) $ sendCmdDirectly smp) >>= \case
+          Right r -> r <$ atomically (incSMPServerStat c userId destSrv sentDirect)
           Left e -> throwE e
 
 ipAddressProtected :: NetworkConfig -> ProtocolServer p -> Bool
@@ -1616,6 +1635,28 @@ secureSndQueue c SndQueue {userId, connId, server, sndId, sndPrivateKey, sndPubl
     -- TODO track statistics
     secureViaProxy smp proxySess = proxySecureSndSMPQueue smp proxySess sndPrivateKey sndId sndPublicKey
     secureDirectly smp = secureSndSMPQueue smp sndPrivateKey sndId sndPublicKey
+
+addQueueLink :: AgentClient -> RcvQueue -> SMP.LinkId -> QueueLinkData -> AM ()
+addQueueLink c rq@RcvQueue {rcvId, rcvPrivateKey} lnkId d =
+  withSMPClient c rq "LSET" $ \smp -> addSMPQueueLink smp rcvPrivateKey rcvId lnkId d
+
+deleteQueueLink :: AgentClient -> RcvQueue -> AM ()
+deleteQueueLink c rq@RcvQueue {rcvId, rcvPrivateKey} =
+  withSMPClient c rq "LDEL" $ \smp -> deleteSMPQueueLink smp rcvPrivateKey rcvId
+
+secureGetQueueLink :: AgentClient -> UserId -> InvShortLink -> AM (SMP.SenderId, QueueLinkData)
+secureGetQueueLink c userId InvShortLink {server, linkId, sndPrivateKey, sndPublicKey} =
+  snd <$> sendOrProxySMPCommand_ c userId server (unEntityId linkId) "LKEY <key>" linkId secureGetViaProxy secureGetDirectly
+  where
+    secureGetViaProxy smp proxySess = proxySecureGetSMPQueueLink smp proxySess sndPrivateKey linkId sndPublicKey
+    secureGetDirectly smp = secureGetSMPQueueLink smp sndPrivateKey linkId sndPublicKey
+
+getQueueLink :: AgentClient -> UserId -> SMPServer -> SMP.LinkId -> AM (SMP.SenderId, QueueLinkData)
+getQueueLink c userId server lnkId =
+  snd <$> sendOrProxySMPCommand_ c userId server (unEntityId lnkId) "LGET" lnkId getViaProxy getDirectly
+  where
+    getViaProxy smp proxySess = proxyGetSMPQueueLink smp proxySess lnkId
+    getDirectly smp = getSMPQueueLink smp lnkId
 
 enableQueueNotifications :: AgentClient -> RcvQueue -> SMP.NtfPublicAuthKey -> SMP.RcvNtfPublicDhKey -> AM (SMP.NotifierId, SMP.RcvNtfPublicDhKey)
 enableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} notifierKey rcvNtfPublicDhKey =

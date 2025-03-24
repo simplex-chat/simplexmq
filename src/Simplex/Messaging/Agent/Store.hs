@@ -151,10 +151,11 @@ data ClientNtfCreds = ClientNtfCreds
 -- It is needed only for 1-time invitation links because of "secure-on-read" property of link data,
 -- that prevents undetected access to link data from link observers.
 data InvShortLink = InvShortLink
-  { smpServer :: SMPServer,
+  { server :: SMPServer,
     linkId :: SMP.LinkId,
     linkKey :: LinkKey,
     sndPrivateKey :: SndPrivateAuthKey, -- stored to allow retries
+    sndPublicKey :: SndPublicAuthKey,
     connReq :: Maybe (ConnectionRequestUri 'CMInvitation) -- to connect without additional requests
   }
   deriving (Show)

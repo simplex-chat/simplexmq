@@ -106,17 +106,17 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     where
       STMQueueStore {queues, senders, notifiers, links} = st
 
-  getQueueLink :: STMQueueStore q -> q -> LinkId -> IO (Either ErrorType QueueLinkData)
-  getQueueLink _ q lnkId = atomically $ readQueueRec (queueRec q) $>>= pure . getData
+  getQueueLinkData :: STMQueueStore q -> q -> LinkId -> IO (Either ErrorType QueueLinkData)
+  getQueueLinkData _ q lnkId = atomically $ readQueueRec (queueRec q) $>>= pure . getData
     where
       getData qr = case queueData qr of
         Just (lnkId', d) | lnkId' == lnkId -> Right d
         _ -> Left AUTH
 
-  addQueueLink :: STMQueueStore q -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
-  addQueueLink st sq lnkId d =
+  addQueueLinkData :: STMQueueStore q -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
+  addQueueLinkData st sq lnkId d =
     atomically (readQueueRec qr $>>= add)
-      $>> withLog "addQueueLink" st (\s -> logCreateLink s rId lnkId d)
+      $>> withLog "addQueueLinkData" st (\s -> logCreateLink s rId lnkId d)
     where
       rId = recipientId sq
       qr = queueRec sq
@@ -131,10 +131,10 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
             TM.insert lnkId rId $ links st
             pure $ Right ()
 
-  deleteQueueLink :: STMQueueStore q -> q -> IO (Either ErrorType ())
-  deleteQueueLink st sq =
+  deleteQueueLinkData :: STMQueueStore q -> q -> IO (Either ErrorType ())
+  deleteQueueLinkData st sq =
     withQueueRec qr delete
-      $>> withLog "deleteQueueLink" st (`logDeleteLink` recipientId sq)
+      $>> withLog "deleteQueueLinkData" st (`logDeleteLink` recipientId sq)
     where
       qr = queueRec sq
       delete q = forM (queueData q) $ \(lnkId, _) -> do

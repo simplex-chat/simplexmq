@@ -1267,10 +1267,10 @@ client
           KEY sKey -> withQueue $ \q _ -> (corrId,entId,) . either ERR id <$> secureQueue_ q sKey
           LSET lnkId d ->
             withQueue $ \q qr -> checkMode QMContact qr $ liftIO $
-              OK <$$ addQueueLink (queueStore ms) q lnkId d
+              OK <$$ addQueueLinkData (queueStore ms) q lnkId d
           LDEL ->
             withQueue $ \q _ -> liftIO $ (corrId,entId,) . either ERR (const OK) <$>
-              deleteQueueLink (queueStore ms) q
+              deleteQueueLinkData (queueStore ms) q
           NKEY nKey dhKey -> withQueue $ \q _ -> addQueueNotifier_ q nKey dhKey
           NDEL -> withQueue $ \q _ -> deleteQueueNotifier_ q
           OFF -> maybe (pure $ err INTERNAL) suspendQueue_ q_
@@ -1343,7 +1343,7 @@ client
             $>> (asks serverStats >>= incStat . qSecured) $> Right OK
 
         getQueueLink_ :: StoreQueue s -> QueueRec -> M (Either ErrorType BrokerMsg)
-        getQueueLink_ q qr = liftIO $ LNK (senderId qr) <$$> getQueueLink (queueStore ms) q entId
+        getQueueLink_ q qr = liftIO $ LNK (senderId qr) <$$> getQueueLinkData (queueStore ms) q entId
 
         addQueueNotifier_ :: StoreQueue s -> NtfPublicAuthKey -> RcvNtfPublicDhKey -> M (Transmission BrokerMsg)
         addQueueNotifier_ q notifierKey dhKey = time "NKEY" $ do
