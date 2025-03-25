@@ -70,7 +70,7 @@ m20250320_short_links =
 ALTER TABLE msg_queues
   ADD COLUMN queue_mode TEXT,
   ADD COLUMN link_id BYTEA,
-  ADD COLUMN immutable_data BYTEA,
+  ADD COLUMN fixed_data BYTEA,
   ADD COLUMN user_data BYTEA;
 
 UPDATE msg_queues SET queue_mode = 'M' WHERE snd_secure IS TRUE;
@@ -91,7 +91,7 @@ UPDATE msg_queues SET snd_secure = TRUE WHERE queue_mode = 'M';
 ALTER TABLE
   DROP COLUMN queue_mode,
   DROP COLUMN link_id,
-  DROP COLUMN immutable_data,
+  DROP COLUMN fixed_data,
   DROP COLUMN user_data;
 
 DROP INDEX idx_msg_queues_link_id;

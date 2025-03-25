@@ -307,6 +307,8 @@ functionalAPITests ps = do
       testAsyncServerOffline ps
     it "should restore confirmation after client restart" $
       testAllowConnectionClientRestart ps
+  describe "Short connection links" $ do
+    xit "establish connection via 1-time short link" $ testInviationShortLink ps
   describe "Message delivery" $ do
     describe "update connection agent version on received messages" $ do
       it "should increase if compatible, shouldn'ps decrease" $
@@ -1073,6 +1075,13 @@ testAllowConnectionClientRestart ps@(t, ASType qsType _) = do
         exchangeGreetings alice2 bobId bob aliceId
     disposeAgentClient alice2
     disposeAgentClient bob
+
+testInviationShortLink :: HasCallStack => (ATransport, AStoreType) -> IO ()
+testInviationShortLink ps =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    (bobId, (connReq, shortLink)) <- A.createConnection alice 1 True SCMInvitation (Just "user data") Nothing CR.IKUsePQ SMSubscribe
+    liftIO $ print connReq
+    liftIO $ print shortLink
 
 testIncreaseConnAgentVersion :: HasCallStack => (ATransport, AStoreType) -> IO ()
 testIncreaseConnAgentVersion ps = do

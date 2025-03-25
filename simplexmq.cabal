@@ -158,6 +158,7 @@ library
           Simplex.Messaging.Agent.Store.Postgres.Migrations.App
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250203_msg_bodies
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250322_short_links
   else
       exposed-modules:
           Simplex.Messaging.Agent.Store.SQLite

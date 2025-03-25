@@ -187,7 +187,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, PNMessageData (..), pnMessagesP)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolType (..), ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC)
+import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), EncDataBytes (..), ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolType (..), ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import qualified Simplex.Messaging.TMap as TM
@@ -874,32 +874,31 @@ newRcvConnSrv_ c userId connId enableNtfs cMode userData_ clientData pqInitKeys 
           sndSecure = case cMode of SCMContact -> False; SCMInvitation -> True
           qUri = SMPQueueUri vr $ SMPQueueAddress srv sndId e2eDhKey sndSecure
       connReq <- createConnReq qUri
-      let immutableData = signData privSigKey $ smpEncode ImmutableConnData {agentVRange, sigKey, connReq}
-          userConnData = signData privSigKey $ smpEncode UserConnData {agentVRange, userData}
-          lk = C.sha3_256 immutableData
+      let fixedData = signData privSigKey $ smpEncode FixedLinkData {agentVRange, sigKey, connReq}
+          userConnData = signData privSigKey $ smpEncode UserLinkData {agentVRange, userData}
+          lk = C.sha3_256 fixedData
           linkKey = LinkKey lk
       qd <- case cMode of
         SCMContact -> do
           let (linkId, k) = B.splitAt 24 $ C.hkdf "" lk "SimpleXContactLink" 56
-          srvData <- (,) <$> encryptData g k immutableData <*> encryptData g k userConnData
+          srvData <- (,) <$> encryptData g k fixedData <*> encryptData g k userConnData
           pure $ CQRContact $ Just CQRData {linkKey, privSigKey, srvReq = (SMP.EntityId linkId, (sndId, srvData))}
         SCMInvitation -> do
           let k = C.hkdf "" lk "SimpleXInvLink" 32
-          srvData <- (,) <$> encryptData g k immutableData <*> encryptData g k userConnData
+          srvData <- (,) <$> encryptData g k fixedData <*> encryptData g k userConnData
           pure $ CQRMessaging $ Just CQRData {linkKey, privSigKey, srvReq = (sndId, srvData)}
       pure (nonce, qUri, connReq, qd)
     signData pk s = smpEncode (C.signatureBytes (C.sign' pk s), s)
-    encryptData g k d = do
+    encryptData g k s = do
       nonce <- atomically $ C.randomCbNonce g
-      ct :: ByteString <- undefined -- (ct, tag) = secret_box(immutable_data, key, nonce)
-      pure $ smpEncode (nonce, ct)
+      pure $ EncDataBytes $ smpEncode (nonce, C.sbEncryptNoPad_ k nonce s)
     connReqWithShortLink :: SMPQueueUri -> ConnectionRequestUri c -> SMPQueueUri -> Maybe ShortLinkCreds -> AM (ConnectionRequestUri c, Maybe (ConnShortLink c))
     connReqWithShortLink qUri cReq qUri' shortLink = case shortLink of
-      Just ShortLinkCreds {linkId, linkKey}
+      Just ShortLinkCreds {shortLinkId, shortLinkKey}
         | qUri == qUri'  ->
             let link = case cReq of
-                  CRContactUri _ -> CSLContact srv CCTContact linkKey
-                  CRInvitationUri {} -> CSLInvitation srv linkId linkKey
+                  CRContactUri _ -> CSLContact srv CCTContact shortLinkKey
+                  CRInvitationUri {} -> CSLInvitation srv shortLinkId shortLinkKey
              in pure (cReq, Just link)
         | otherwise -> throwE $ INTERNAL "different rcv queue address"
       Nothing ->

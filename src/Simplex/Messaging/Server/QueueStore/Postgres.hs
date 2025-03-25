@@ -195,7 +195,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     case queueData qr of
       Just (lnkId', _) | lnkId' == lnkId ->
         withDB "getQueueLinkData" st $ \db -> firstRow id AUTH $
-          DB.query db "SELECT immutable_data, user_data FROM msg_queues WHERE link_id = ? AND deleted_at IS NULL" (Only lnkId)
+          DB.query db "SELECT fixed_data, user_data FROM msg_queues WHERE link_id = ? AND deleted_at IS NULL" (Only lnkId)
       _ -> throwE AUTH
 
   addQueueLinkData :: PostgresQueueStore q -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
@@ -204,7 +204,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       Nothing ->
         addLink q $ \db -> DB.execute db qry (d :. (lnkId, rId))
       Just (lnkId', _) | lnkId' == lnkId ->
-        addLink q $ \db -> DB.execute db (qry <> " AND (immutable_data IS NULL OR immutable_data != ?)") (d :. (lnkId, rId, fst d))
+        addLink q $ \db -> DB.execute db (qry <> " AND (fixed_data IS NULL OR fixed_data != ?)") (d :. (lnkId, rId, fst d))
       _ -> throwE AUTH
     where
       rId = recipientId sq
@@ -212,14 +212,14 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         assertUpdated $ withDB' "addQueueLinkData" st update
         atomically $ writeTVar (queueRec sq) $ Just q {queueData = Just (lnkId, d)}
         withLog "addQueueLinkData" st $ \s -> logCreateLink s rId lnkId d
-      qry = "UPDATE msg_queues SET immutable_data = ?, user_data = ?, link_id = ? WHERE recipient_id = ? AND deleted_at IS NULL"
+      qry = "UPDATE msg_queues SET fixed_data = ?, user_data = ?, link_id = ? WHERE recipient_id = ? AND deleted_at IS NULL"
 
   deleteQueueLinkData :: PostgresQueueStore q -> q -> IO (Either ErrorType ())
   deleteQueueLinkData st sq =
     withQueueRec sq "deleteQueueLinkData" $ \q -> case queueData q of
       Just _ -> do
         assertUpdated $ withDB' "deleteQueueLinkData" st $ \db ->
-          DB.execute db "UPDATE msg_queues SET link_id = NULL, immutable_data = NULL, user_data = NULL WHERE recipient_id = ? AND deleted_at IS NULL" (Only rId)
+          DB.execute db "UPDATE msg_queues SET link_id = NULL, fixed_data = NULL, user_data = NULL WHERE recipient_id = ? AND deleted_at IS NULL" (Only rId)
         atomically $ writeTVar (queueRec sq) $ Just q {queueData = Nothing}
         withLog "deleteQueueLinkData" st (`logDeleteLink` rId)
       _ -> throwE AUTH
@@ -359,7 +359,7 @@ insertQueueQuery :: Query
 insertQueueQuery =
   [sql|
     INSERT INTO msg_queues
-      (recipient_id, recipient_key, rcv_dh_secret, sender_id, sender_key, queue_mode, notifier_id, notifier_key, rcv_ntf_dh_secret, status, updated_at, link_id, immutable_data, user_data)
+      (recipient_id, recipient_key, rcv_dh_secret, sender_id, sender_key, queue_mode, notifier_id, notifier_key, rcv_ntf_dh_secret, status, updated_at, link_id, fixed_data, user_data)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   |]
 
@@ -403,13 +403,13 @@ queueRecQueryWithData =
       sender_id, sender_key, queue_mode,
       notifier_id, notifier_key, rcv_ntf_dh_secret,
       status, updated_at,
-      link_id, immutable_data, user_data
+      link_id, fixed_data, user_data
     FROM msg_queues
   |]
 
 type QueueRecRow = (RecipientId, RcvPublicAuthKey, RcvDhSecret, SenderId, Maybe SndPublicAuthKey, Maybe QueueMode, Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret, ServerEntityStatus, Maybe RoundedSystemTime, Maybe LinkId)
 
-queueRecToRow :: (RecipientId, QueueRec) -> QueueRecRow :. (Maybe ByteString, Maybe ByteString)
+queueRecToRow :: (RecipientId, QueueRec) -> QueueRecRow :. (Maybe EncDataBytes, Maybe EncDataBytes)
 queueRecToRow (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier = n, status, updatedAt}) =
   (rId, recipientKey, rcvDhSecret, senderId, senderKey, queueMode, notifierId <$> n, notifierKey <$> n, rcvNtfDhSecret <$> n, status, updatedAt, linkId_)
     :. (fst <$> queueData_, snd <$> queueData_)
@@ -448,21 +448,22 @@ queueRecToText (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, q
       EscapeIdentifier s -> BB.byteString s -- Not used in COPY data
       Many as -> mconcat (map renderField as)
 
-queueDataColumns :: Maybe (LinkId, QueueLinkData) -> (Maybe LinkId, Maybe (ByteString, ByteString))
+queueDataColumns :: Maybe (LinkId, QueueLinkData) -> (Maybe LinkId, Maybe QueueLinkData)
 queueDataColumns = \case
-  Just (linkId, queueData) -> (Just linkId, Just queueData)
+  Just (linkId, linkData) -> (Just linkId, Just linkData)
   Nothing -> (Nothing, Nothing)
 
 rowToQueueRec :: QueueRecRow -> (RecipientId, QueueRec)
 rowToQueueRec (rId, recipientKey, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) =
   let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
-      queueData = (,("", "")) <$> linkId_
+      queueData = (,(EncDataBytes "", EncDataBytes "")) <$> linkId_
    in (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt})
 
-rowToQueueRecWithData :: QueueRecRow :. (Maybe ByteString, Maybe ByteString) -> (RecipientId, QueueRec)
+rowToQueueRecWithData :: QueueRecRow :. (Maybe EncDataBytes, Maybe EncDataBytes) -> (RecipientId, QueueRec)
 rowToQueueRecWithData ((rId, recipientKey, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) :. (immutableData_, userData_)) =
   let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
-      queueData = (,(fromMaybe "" immutableData_, fromMaybe "" userData_)) <$> linkId_
+      encData =  fromMaybe (EncDataBytes "")
+      queueData = (,(encData immutableData_, encData userData_)) <$> linkId_
    in (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt})
 
 setStatusDB :: StoreQueueClass q => String -> PostgresQueueStore q -> q -> ServerEntityStatus -> ExceptT ErrorType IO () -> IO (Either ErrorType ())
@@ -516,4 +517,8 @@ instance FromField (C.DhSecret 'C.X25519) where fromField = blobFieldDecoder str
 instance ToField C.APublicAuthKey where toField = toField . Binary . C.encodePubKey
 
 instance FromField C.APublicAuthKey where fromField = blobFieldDecoder C.decodePubKey
+
+instance ToField EncDataBytes where toField (EncDataBytes s) = toField (Binary s)
+
+deriving newtype instance FromField EncDataBytes
 #endif

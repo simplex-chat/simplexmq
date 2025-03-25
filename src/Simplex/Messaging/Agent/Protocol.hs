@@ -1,8 +1,10 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -108,8 +110,8 @@ module Simplex.Messaging.Agent.Protocol
     ConnReqUriData (..),
     CRClientData,
     ServiceScheme,
-    ImmutableConnData (..),
-    UserConnData (..),
+    FixedLinkData (..),
+    UserLinkData (..),
     ConnShortLink (..),
     ContactConnType (..),
     LinkKey (..),
@@ -1285,9 +1287,15 @@ data ConnShortLink (m :: ConnectionMode) where
   CSLInvitation :: SMPServer -> SMP.LinkId -> LinkKey -> ConnShortLink 'CMInvitation
   CSLContact :: SMPServer -> ContactConnType -> LinkKey -> ConnShortLink 'CMContact
 
-newtype LinkKey = LinkKey ByteString deriving (Show) -- sha3-256(immutable_data)
+deriving instance Show (ConnShortLink m)
 
-data ContactConnType = CCTContact | CCTGroup
+newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
+  deriving (Show)
+  deriving newtype (FromField)
+
+instance ToField LinkKey where toField (LinkKey s) = toField $ Binary s
+
+data ContactConnType = CCTContact | CCTGroup deriving (Show)
 
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
 
@@ -1309,30 +1317,30 @@ data ConnReqUriData = ConnReqUriData
 
 type CRClientData = Text
 
-data ImmutableConnData c = ImmutableConnData
+data FixedLinkData c = FixedLinkData
   { agentVRange :: VersionRangeSMPA,
     sigKey :: C.PublicKeyEd25519,
     connReq :: ConnectionRequestUri c
   }
 
-data UserConnData = UserConnData
+data UserLinkData = UserLinkData
   { agentVRange :: VersionRangeSMPA,
     userData :: ConnInfo
   }
 
-instance ConnectionModeI c => Encoding (ImmutableConnData c) where
-  smpEncode ImmutableConnData {agentVRange, sigKey, connReq} =
+instance ConnectionModeI c => Encoding (FixedLinkData c) where
+  smpEncode FixedLinkData {agentVRange, sigKey, connReq} =
     smpEncode (agentVRange, sigKey, connReq)
   smpP = do
     (agentVRange, sigKey, connReq) <- smpP
-    pure ImmutableConnData {agentVRange, sigKey, connReq}
+    pure FixedLinkData {agentVRange, sigKey, connReq}
 
-instance Encoding UserConnData where
-  smpEncode UserConnData {agentVRange, userData} =
-    smpEncode (agentVRange, userData)
+instance Encoding UserLinkData where
+  smpEncode UserLinkData {agentVRange, userData} =
+    smpEncode (agentVRange, Large userData)
   smpP = do
-    (agentVRange, userData) <- smpP
-    pure UserConnData {agentVRange, userData}
+    (agentVRange, Large userData) <- smpP
+    pure UserLinkData {agentVRange, userData}
 
 -- | SMP queue status.
 data QueueStatus

@@ -59,8 +59,8 @@ CREATE TABLE rcv_queues(
   last_broker_ts TEXT,
   link_id BLOB,
   link_key BLOB,
-  link_sig_key BLOB,
-  link_enc_immutable_data BLOB,
+  link_priv_sig_key BLOB,
+  link_enc_fixed_data BLOB,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,

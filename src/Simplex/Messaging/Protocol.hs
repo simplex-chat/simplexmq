@@ -62,8 +62,9 @@ module Simplex.Messaging.Protocol
     QueueReqData (..),
     QueueMode (..),
     QueueLinkData,
-    EncImmutableDataBytes,
+    EncFixedDataBytes,
     EncUserDataBytes,
+    EncDataBytes (..),
     NewNtfCreds (..),
     Party (..),
     Cmd (..),
@@ -226,6 +227,7 @@ import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import qualified GHC.TypeLits as TE
 import qualified GHC.TypeLits as Type
 import Network.Socket (ServiceName)
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -465,7 +467,7 @@ data SubscriptionMode = SMSubscribe | SMOnlyCreate
 
 -- SenderId must be computed client-side as `sha3-256(corr_id)`, `corr_id` - a random transmission ID.
 -- The server must verify and reject it if it does not match (and in case of collision).
--- This allows to include SenderId in ImmutableDataBytes in full connection request,
+-- This allows to include SenderId in FixedDataBytes in full connection request,
 -- and at the same time prevents the possibility of checking whether a queue with a known ID exists.
 data QueueReqData = QRMessaging (Maybe (SenderId, QueueLinkData)) | QRContact (Maybe (LinkId, (SenderId, QueueLinkData)))
   deriving (Show)
@@ -480,11 +482,25 @@ senderCanSecure = \case
   Just QMMessaging -> True
   _ -> False
 
-type QueueLinkData = (EncImmutableDataBytes, EncUserDataBytes)
+type QueueLinkData = (EncFixedDataBytes, EncUserDataBytes)
 
-type EncImmutableDataBytes = ByteString
+type EncFixedDataBytes = EncDataBytes
 
-type EncUserDataBytes = ByteString
+type EncUserDataBytes = EncDataBytes
+
+newtype EncDataBytes = EncDataBytes ByteString
+  deriving (Eq, Show)
+  deriving newtype (FromField, StrEncoding)
+
+instance Encoding EncDataBytes where
+  smpEncode (EncDataBytes s) = smpEncode (Large s)
+  {-# INLINE smpEncode #-}
+  smpP = EncDataBytes . unLarge <$> smpP
+  {-# INLINE smpP #-}
+
+instance ToField EncDataBytes where
+  toField (EncDataBytes s) = toField (Binary s)
+  {-# INLINE toField #-}
 
 data NewNtfCreds = NewNtfCreds NtfPublicAuthKey RcvNtfPublicDhKey deriving (Show)
 
