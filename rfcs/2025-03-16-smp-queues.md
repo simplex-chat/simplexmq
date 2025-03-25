@@ -70,7 +70,7 @@ data NewQueueReq = NewQueueReq
     rcvDhKey :: RcvPublicDhKey,
     auth_ :: Maybe BasicAuth,
     subMode :: SubscriptionMode,
-    queueData :: Maybe QueueModeData,
+    queueData :: Maybe QueueReqData,
     ntfCreds :: Maybe NewNtfCreds
   }
 
@@ -82,7 +82,7 @@ data NtfRequest = NtfRequest NtfPublicAuthKey RcvNtfPublicDhKey
 -- QRMessaging implies that sender can secure the queue.
 -- LinkId is not used with QRMessaging, to prevent the possibility of checking when connection is established by re-using the same link ID when creating another queue – the creating would have to fail if it is used.
 -- LinkId is required with QRContact, to have shorter link - it will be derived from the link_uri. And in this case we do not need to prevent checks that this queue exists.
-data QueueModeData = QRMessaging (Maybe QueueLinkData) | QRContact (Maybe (LinkId, QueueLinkData))
+data QueueReqData = QRMessaging (Maybe QueueLinkData) | QRContact (Maybe (LinkId, QueueLinkData))
 
 -- SenderId should be computed client-side as sha3-256(correlation_id),
 -- The server must verify it and reject if it is not.

@@ -158,8 +158,10 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Char (isDigit)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Type)
@@ -1291,7 +1293,7 @@ deriving instance Show (ConnShortLink m)
 
 newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
   deriving (Show)
-  deriving newtype (FromField)
+  deriving newtype (FromField, StrEncoding)
 
 instance ToField LinkKey where toField (LinkKey s) = toField $ Binary s
 
@@ -1300,6 +1302,48 @@ data ContactConnType = CCTContact | CCTGroup deriving (Show)
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
 
 data AConnectionLink = ACLFull AConnectionRequestUri | ACLShort AConnShortLink
+
+instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
+  strEncode = \case
+    CSLInvitation srv (SMP.EntityId lnkId) (LinkKey k) -> encLink srv (lnkId <> k) "i"
+    CSLContact srv ct (LinkKey k) -> encLink srv k $ case ct of CCTContact -> "c"; CCTGroup -> "g"
+    where
+      encLink (SMPServer (h :| hs) port (C.KeyHash kh)) linkUri linkType =
+        "https://" <> strEncode h <> port' <> "/" <> linkType <> "#" <> B64.encodeUnpadded kh <> "@" <> hosts <> B64.encodeUnpadded linkUri
+        where
+          port' = if null port then "" else B.pack (':' : port)
+          hosts = if null hs then "" else strEncode (TransportHosts_ hs) <> "/"
+  strP = do
+    ACSL m l <- strP
+    case testEquality m $ sConnectionMode @m of
+      Just Refl -> pure l
+      _ -> fail "bad short link mode"
+
+instance StrEncoding AConnShortLink where
+  strEncode (ACSL _ l) = strEncode l
+  strP = do
+    h <- "https://" *> strP
+    port <- A.char ':' *> (B.unpack <$> A.takeWhile1 isDigit) <|> pure ""
+    linkType <- A.char '/' *> A.anyChar
+    keyHash <- optional (A.char '/') *> A.char '#' *> strP <* A.char '@'
+    TransportHosts_ hs <- strP <* "/" <|> pure (TransportHosts_ [])
+    linkUri <- strP
+    let srv = SMPServer (h :| hs) port keyHash
+    case linkType of
+      'i'
+        | B.length linkUri == 56 ->
+            let (lnkId, k) = B.splitAt 24 linkUri
+             in pure $ ACSL SCMInvitation $ CSLInvitation srv (SMP.EntityId lnkId) (LinkKey k)
+        | otherwise -> fail "bad ConnShortLink: incorrect linkID and key length"
+      'c' -> contactP srv CCTContact linkUri
+      'g' -> contactP srv CCTGroup linkUri
+      _ -> fail "bad ConnShortLink: unknown link type"
+    where
+      contactP srv ct k
+        | B.length k == 32 = pure $ ACSL SCMContact $ CSLContact srv ct (LinkKey k)
+        | otherwise = fail "bad ConnShortLink: incorrect key length"
+
+
 
 sameConnReqContact :: ConnectionRequestUri 'CMContact -> ConnectionRequestUri 'CMContact -> Bool
 sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUri ConnReqUriData {crSmpQueues = qs'}) =

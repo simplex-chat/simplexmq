@@ -28,6 +28,10 @@ deriving instance Eq ClientNtfCreds
 
 deriving instance Eq ShortLinkCreds
 
+deriving instance Eq ContactConnType
+
+deriving instance Eq (ConnShortLink m)
+
 deriving instance Eq LinkKey
 
 deriving instance Show ProxiedRelay
