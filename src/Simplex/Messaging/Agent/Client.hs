@@ -281,7 +281,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPVersion, SessionId, THandleParams (sessionId, thVersion), TransportError (..), sndAuthKeySMPVersion, shortLinksSMPVersion)
+import Simplex.Messaging.Transport (SMPVersion, SessionId, THandleParams (sessionId, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -1416,10 +1416,11 @@ newRcvQueue_ c userId connId (ProtoServerWithAuth srv auth) vRange cqrd subMode 
             deleteErrors = 0
           }
       qUri = SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey sndSecure
-      -- TODO [short links]
+      -- TODO [short links] maybe switch to queue mode?
       sndSecure = senderCanSecure queueMode
   pure (rq, qUri, tSess, sessionId thParams')
   where
+    mkShortLinkCreds :: (THandleParams SMPVersion 'TClient, QueueIdsKeys) -> AM (Maybe ShortLinkCreds)
     mkShortLinkCreds (thParams', QIK {sndId, queueMode, linkId}) = case (cqrd, queueMode) of
       (CQRMessaging ld, Just QMMessaging) -> 
         withLinkData ld $ \lnkId CQRData {linkKey, privSigKey, srvReq = (sndId', d)} ->
