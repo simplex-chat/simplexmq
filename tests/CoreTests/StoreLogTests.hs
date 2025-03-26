@@ -52,6 +52,7 @@ deriving instance Eq StoreLogRecord
 
 deriving instance Eq NtfCreds
 
+-- TODO [short links] test store log with queue data
 storeLogTests :: Spec
 storeLogTests =
   forM_ [QMMessaging, QMContact] $ \qm -> do

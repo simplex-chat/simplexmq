@@ -1357,7 +1357,7 @@ getSessionMode :: MonadIO m => AgentClient -> m TransportSessionMode
 getSessionMode = fmap sessionMode . getNetworkConfig
 {-# INLINE getSessionMode #-}
 
--- TODO [short links] add ntf credentials too RcvQueue
+-- TODO [short links] add ntf credentials to RcvQueue
 newRcvQueue :: AgentClient -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SConnectionMode c -> SubscriptionMode -> Maybe NewNtfCreds -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
 newRcvQueue c userId connId srv vRange cMode subMode ntfCreds = do
   let qrd = case cMode of SCMInvitation -> CQRMessaging Nothing; SCMContact -> CQRContact Nothing

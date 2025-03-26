@@ -131,9 +131,9 @@ In addition to that we add the command allowing to update and also to retrieve a
 -- The response to this command is `OK`.
 LSET :: LinkId -> QueueLinkData -> Command Recipient
 
-
+-- Delete should link and associated data
 -- Entity ID is RecipientId
-LGET :: Command Recipient
+LDEL :: Command Recipient
 
 -- To be used with 1-time links.
 -- Sender's key provided on the first request prevents observers from undetectably accessing 1-time link data.
@@ -145,11 +145,11 @@ LKEY :: SndPublicAuthKey -> Command Sender
 
 -- If queue mode is QRMessaging the command will fail.
 -- Entity ID is LinkId
-LCON :: Command Sender
+LGET :: Command Sender
 
 -- Response to LGET, LSKEY and LSGET
 -- Entity ID is the same as in the command
-LINK :: SenderId -> QueueLinkData -> BrokerMsg
+LNK :: SenderId -> QueueLinkData -> BrokerMsg
 ```
 
 To both include sender_id into the full link before the server response, and to prevent "oracle attack" when a failure to create the queue with the supplied `sender_id` can be used as a proof of queue existense, it is proposed that `sender_id` is computed client-side as `sha3-256(correlation_id)` and validated server-side, where `corelation_id` is the transmission correlation ID.

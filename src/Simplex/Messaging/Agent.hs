@@ -353,7 +353,6 @@ setConnShortLink c = withAgentEnv c .: setConnShortLink' c
 {-# INLINE setConnShortLink #-}
 
 -- | Get and verify data from short link. For 1-time invitations it preserves the key to allow retries
--- TODO [short links]
 getConnShortLink :: AgentClient -> UserId -> ConnShortLink c -> AE (ConnectionRequestUri c, ConnInfo)
 getConnShortLink c = withAgentEnv c .: getConnShortLink' c
 {-# INLINE getConnShortLink #-}
@@ -900,9 +899,6 @@ newRcvConnSrv_ c userId connId enableNtfs cMode userData_ clientData pqInitKeys 
           sndSecure = case cMode of SCMContact -> False; SCMInvitation -> True
           qUri = SMPQueueUri vr $ SMPQueueAddress srv sndId e2eDhKey sndSecure
       connReq <- createConnReq qUri
-      -- let fixedData = signData privSigKey $ smpEncode FixedLinkData {agentVRange, sigKey, connReq}
-      --     userConnData = signData privSigKey $ smpEncode UserLinkData {agentVRange, userData}
-      --     linkKey = LinkKey $ C.sha3_256 fixedData
       let (linkKey, linkData) = SL.encodeSignLinkData sigKeys agentVRange connReq userData
       qd <- case cMode of
         SCMContact -> do
@@ -914,10 +910,6 @@ newRcvConnSrv_ c userId connId enableNtfs cMode userData_ clientData pqInitKeys 
           srvData <- liftIO $ SL.encryptLinkData g k linkData
           pure $ CQRMessaging $ Just CQRData {linkKey, privSigKey, srvReq = (sndId, srvData)}
       pure (nonce, qUri, connReq, qd)
-    -- signData pk s = smpEncode (C.signatureBytes (C.sign' pk s), s)
-    -- encryptData g k s = do
-    --   nonce <- atomically $ C.randomCbNonce g
-    --   pure $ EncDataBytes $ smpEncode (nonce, C.sbEncryptNoPad k nonce s)
     connReqWithShortLink :: SMPQueueUri -> ConnectionRequestUri c -> SMPQueueUri -> Maybe ShortLinkCreds -> AM (ConnectionRequestUri c, Maybe (ConnShortLink c))
     connReqWithShortLink qUri cReq qUri' shortLink = case shortLink of
       Just ShortLinkCreds {shortLinkId, shortLinkKey}
@@ -960,6 +952,7 @@ newConnToAccept c connId enableNtfs invId pqSup = do
       newConnToJoin c userId connId enableNtfs connReq pqSup
     _ -> throwE $ CMD PROHIBITED "newConnToAccept"
 
+-- TODO [short link] joining queue that was already secured with LKEY
 joinConn :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
 joinConn c userId connId enableNtfs cReq cInfo pqSupport subMode = do
   srv <- getNextSMPServer c userId [qServer cReqQueue]

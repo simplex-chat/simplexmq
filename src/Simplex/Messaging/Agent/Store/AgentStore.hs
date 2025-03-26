@@ -1914,7 +1914,6 @@ upsertNtfServer_ db ProtocolServer {host, port, keyHash} = do
 
 -- * createRcvConn helpers
 
--- TODO [short links] save shortLink
 insertRcvQueue_ :: DB.Connection -> ConnId -> NewRcvQueue -> Maybe C.KeyHash -> IO RcvQueue
 insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
   -- to preserve ID if the queue already exists.
