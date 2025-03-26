@@ -12,6 +12,8 @@ module AgentTests.ConnectionRequestTests
     connReqData,
     queueAddr,
     testE2ERatchetParams12,
+    contactConnRequest,
+    invConnRequest,
   ) where
 
 import Data.ByteString (ByteString)
@@ -146,7 +148,10 @@ testE2ERatchetParams12 :: RcvE2ERatchetParamsUri 'C.X448
 testE2ERatchetParams12 = E2ERatchetParamsUri supportedE2EEncryptVRange testDhPubKey testDhPubKey Nothing
 
 connectionRequest :: AConnectionRequestUri
-connectionRequest = ACR SCMInvitation $ CRInvitationUri connReqData testE2ERatchetParams
+connectionRequest = ACR SCMInvitation invConnRequest
+
+invConnRequest :: ConnectionRequestUri 'CMInvitation
+invConnRequest = CRInvitationUri connReqData testE2ERatchetParams
 
 connectionRequestSK :: AConnectionRequestUri
 connectionRequestSK = ACR SCMInvitation $ CRInvitationUri connReqDataSK testE2ERatchetParams
@@ -164,7 +169,10 @@ connectionRequestNew1 :: AConnectionRequestUri
 connectionRequestNew1 = ACR SCMInvitation $ CRInvitationUri connReqDataNew1 testE2ERatchetParams
 
 contactAddress :: AConnectionRequestUri
-contactAddress = ACR SCMContact $ CRContactUri connReqData
+contactAddress = ACR SCMContact $ contactConnRequest
+
+contactConnRequest :: ConnectionRequestUri 'CMContact
+contactConnRequest = CRContactUri connReqData
 
 contactAddressV2 :: AConnectionRequestUri
 contactAddressV2 = ACR SCMContact $ CRContactUri connReqDataV2

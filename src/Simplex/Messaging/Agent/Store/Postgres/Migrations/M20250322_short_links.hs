@@ -21,10 +21,10 @@ CREATE TABLE inv_short_links(
   inv_short_link_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   host TEXT NOT NULL,
   port TEXT NOT NULL,
+  server_key_hash BYTEA,
   link_id BYTEA NOT NULL,
   link_key BYTEA NOT NULL,
   snd_private_key BYTEA NOT NULL,
-  conn_req BYTEA,
   FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT ON UPDATE CASCADE
 );
 

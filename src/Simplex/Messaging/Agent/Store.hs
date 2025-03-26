@@ -155,8 +155,7 @@ data InvShortLink = InvShortLink
     linkId :: SMP.LinkId,
     linkKey :: LinkKey,
     sndPrivateKey :: SndPrivateAuthKey, -- stored to allow retries
-    sndPublicKey :: SndPublicAuthKey,
-    connReq :: Maybe (ConnectionRequestUri 'CMInvitation) -- to connect without additional requests
+    sndPublicKey :: SndPublicAuthKey
   }
   deriving (Show)
 

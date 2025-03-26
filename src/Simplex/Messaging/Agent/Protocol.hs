@@ -1053,8 +1053,8 @@ instance ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
 
 -- TODO [short links] do not use StrEncoding instance
 instance ConnectionModeI m => Encoding (ConnectionRequestUri m) where
-  smpEncode = smpEncode . strEncode
-  smpP = strDecode <$?> smpP
+  smpEncode = smpEncode . Large . strEncode
+  smpP = strDecode . unLarge <$?> smpP
 
 connReqUriP' :: forall m. ConnectionModeI m => Maybe ServiceScheme -> Parser (ConnectionRequestUri m)
 connReqUriP' overrideScheme = do
@@ -1292,7 +1292,7 @@ data ConnShortLink (m :: ConnectionMode) where
 deriving instance Show (ConnShortLink m)
 
 newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
-  deriving (Show)
+  deriving (Eq, Show)
   deriving newtype (FromField, StrEncoding)
 
 instance ToField LinkKey where toField (LinkKey s) = toField $ Binary s
@@ -1301,6 +1301,7 @@ data ContactConnType = CCTContact | CCTGroup deriving (Show)
 
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
 
+-- TODO [short link] parser, parsing tests
 data AConnectionLink = ACLFull AConnectionRequestUri | ACLShort AConnShortLink
 
 instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
@@ -1342,8 +1343,6 @@ instance StrEncoding AConnShortLink where
       contactP srv ct k
         | B.length k == 32 = pure $ ACSL SCMContact $ CSLContact srv ct (LinkKey k)
         | otherwise = fail "bad ConnShortLink: incorrect key length"
-
-
 
 sameConnReqContact :: ConnectionRequestUri 'CMContact -> ConnectionRequestUri 'CMContact -> Bool
 sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUri ConnReqUriData {crSmpQueues = qs'}) =
@@ -1518,6 +1517,8 @@ data SMPAgentError
     A_PROHIBITED {prohibitedErr :: String}
   | -- | incompatible version of SMP client, agent or encryption protocols
     A_VERSION
+  | -- | failed signature, hash or senderId verification of retrieved link data
+    A_LINK {linkErr :: String}
   | -- | cannot decrypt message
     A_CRYPTO {cryptoErr :: AgentCryptoError}
   | -- | duplicate message - this error is detected by ratchet decryption - this message will be ignored and not shown

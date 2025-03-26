@@ -121,6 +121,7 @@ library
       Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
       Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI
       Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
+      Simplex.Messaging.Crypto.ShortLink
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
       Simplex.Messaging.Notifications.Client
@@ -445,6 +446,7 @@ test-suite simplexmq-test
       AgentTests.MigrationTests
       AgentTests.NotificationTests
       AgentTests.ServerChoice
+      AgentTests.ShortLinkTests
       CLITests
       CoreTests.BatchingTests
       CoreTests.CryptoFileTests

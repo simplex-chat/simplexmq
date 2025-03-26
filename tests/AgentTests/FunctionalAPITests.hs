@@ -309,7 +309,8 @@ functionalAPITests ps = do
     it "should restore confirmation after client restart" $
       testAllowConnectionClientRestart ps
   describe "Short connection links" $ do
-    it "establish connection via 1-time short link" $ testInviationShortLink ps
+    it "create and get 1-time short link" $ testInviationShortLink ps
+    it "create and get contact short link" $ testContactShortLink ps
   describe "Message delivery" $ do
     describe "update connection agent version on received messages" $ do
       it "should increase if compatible, shouldn'ps decrease" $
@@ -1079,10 +1080,39 @@ testAllowConnectionClientRestart ps@(t, ASType qsType _) = do
 
 testInviationShortLink :: HasCallStack => (ATransport, AStoreType) -> IO ()
 testInviationShortLink ps =
-  withAgentClients2 $ \alice _bob -> withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
-    (_bobId, (_connReq, shortLink)) <- A.createConnection alice 1 True SCMInvitation (Just "user data") Nothing CR.IKUsePQ SMSubscribe
-    let sl = strEncode shortLink
-    liftIO $ strDecode sl `shouldBe` Right shortLink
+  withAgentClients3 $ \a b c -> withSmpServer ps $ do
+    let userData = "some user data"
+    (_bobId, (connReq, Just shortLink)) <- runRight $ A.createConnection a 1 True SCMInvitation (Just userData) Nothing CR.IKUsePQ SMSubscribe
+    (connReq', userData') <- runRight $ getConnShortLink b 1 shortLink
+    strDecode (strEncode shortLink) `shouldBe` Right shortLink
+    connReq' `shouldBe` connReq
+    userData' `shouldBe` userData
+    -- same user can get invitation link again
+    (connReq2, userData2) <- runRight $ getConnShortLink b 1 shortLink
+    connReq2 `shouldBe` connReq
+    userData2 `shouldBe` userData
+    -- another user cannot get the same invitation link
+    runExceptT (getConnShortLink c 1 shortLink) >>= \case
+      Left (SMP _ AUTH) -> pure ()
+      r -> liftIO $ expectationFailure ("unexpected result " <> show r)
+
+testContactShortLink :: HasCallStack => (ATransport, AStoreType) -> IO ()
+testContactShortLink ps =
+  withAgentClients3 $ \a b c -> withSmpServer ps $ do
+    let userData = "some user data"
+    (_bobId, (connReq, Just shortLink)) <- runRight $ A.createConnection a 1 True SCMContact (Just userData) Nothing CR.IKPQOn SMSubscribe
+    (connReq', userData') <- runRight $ getConnShortLink b 1 shortLink
+    strDecode (strEncode shortLink) `shouldBe` Right shortLink
+    connReq' `shouldBe` connReq
+    userData' `shouldBe` userData
+    -- same user can get contact link again
+    (connReq2, userData2) <- runRight $ getConnShortLink b 1 shortLink
+    connReq2 `shouldBe` connReq
+    userData2 `shouldBe` userData
+    -- another user can get the same contact link
+    (connReq3, userData3) <- runRight $ getConnShortLink c 1 shortLink
+    connReq3 `shouldBe` connReq
+    userData3 `shouldBe` userData
 
 testIncreaseConnAgentVersion :: HasCallStack => (ATransport, AStoreType) -> IO ()
 testIncreaseConnAgentVersion ps = do

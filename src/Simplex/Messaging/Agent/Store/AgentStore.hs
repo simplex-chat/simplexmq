@@ -89,6 +89,8 @@ module Simplex.Messaging.Agent.Store.AgentStore
     acceptInvitation,
     unacceptInvitation,
     deleteInvitation,
+    getInvShortLink,
+    createInvShortLink,
     -- Messages
     updateRcvIds,
     createRcvMsg,
@@ -759,6 +761,40 @@ deleteInvitation db contactConnId invId =
     SomeConn SCContact _ ->
       Right <$> DB.execute db "DELETE FROM conn_invitations WHERE contact_conn_id = ? AND invitation_id = ?" (contactConnId, Binary invId)
     _ -> pure $ Left SEConnNotFound
+
+getInvShortLink :: DB.Connection -> SMPServer -> LinkId -> IO (Maybe InvShortLink)
+getInvShortLink db server linkId =
+  maybeFirstRow toInvShortLink $
+    DB.query
+      db
+      [sql|
+        SELECT link_key, snd_private_key
+        FROM inv_short_links
+        WHERE host = ? AND port = ? AND link_id = ?
+      |]
+      (host server, port server, linkId)
+  where
+    toInvShortLink :: (LinkKey, C.APrivateAuthKey) -> InvShortLink
+    toInvShortLink (linkKey, sndPrivateKey@(C.APrivateAuthKey a pk)) =
+      let sndPublicKey = C.APublicAuthKey a $ C.publicKey pk
+       in InvShortLink {server, linkId, linkKey, sndPrivateKey, sndPublicKey}
+
+createInvShortLink :: DB.Connection -> InvShortLink -> IO ()
+createInvShortLink db InvShortLink {server, linkId, linkKey, sndPrivateKey} = do
+  serverKeyHash_ <- createServer_ db server
+  DB.execute
+    db
+    [sql|
+      INSERT INTO inv_short_links
+        (host, port, server_key_hash, link_id, link_key, snd_private_key)
+      VALUES (?,?,?,?,?,?)
+      ON CONFLICT (host, port, link_id)
+      DO UPDATE SET
+        server_key_hash = EXCLUDED.server_key_hash,
+        link_key = EXCLUDED.link_key,
+        snd_private_key = EXCLUDED.snd_private_key
+    |]
+    (host server, port server, serverKeyHash_, linkId, linkKey, sndPrivateKey)
 
 updateRcvIds :: DB.Connection -> ConnId -> IO (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
 updateRcvIds db connId = do

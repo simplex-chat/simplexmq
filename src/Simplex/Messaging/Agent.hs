@@ -56,6 +56,7 @@ module Simplex.Messaging.Agent
     deleteConnectionAsync,
     deleteConnectionsAsync,
     createConnection,
+    getConnShortLink,
     changeConnectionUser,
     prepareConnectionToJoin,
     prepareConnectionToAccept,
@@ -181,13 +182,14 @@ import Simplex.Messaging.Client (SMPClientError, ServerTransmission (..), Server
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
+import qualified Simplex.Messaging.Crypto.ShortLink as SL
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, PNMessageData (..), pnMessagesP)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), EncDataBytes (..), ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolType (..), ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC)
+import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolType (..), ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import qualified Simplex.Messaging.TMap as TM
@@ -352,8 +354,8 @@ setConnShortLink c = withAgentEnv c .: setConnShortLink' c
 
 -- | Get and verify data from short link. For 1-time invitations it preserves the key to allow retries
 -- TODO [short links]
-getConnShortLink :: AgentClient -> ConnShortLink c -> AE (ConnectionRequestUri c, ConnInfo)
-getConnShortLink c = withAgentEnv c . getConnShortLink' c
+getConnShortLink :: AgentClient -> UserId -> ConnShortLink c -> AE (ConnectionRequestUri c, ConnInfo)
+getConnShortLink c = withAgentEnv c .: getConnShortLink' c
 {-# INLINE getConnShortLink #-}
 
 -- | This irreversible deletes short link data, and it won't be retrievable again
@@ -804,8 +806,32 @@ newConn c userId enableNtfs cMode userData_ clientData pqInitKeys subMode = do
 setConnShortLink' :: AgentClient -> ConnId -> ConnInfo -> AM (ConnShortLink 'CMContact)
 setConnShortLink' = undefined
 
-getConnShortLink' :: AgentClient -> ConnShortLink c -> AM (ConnectionRequestUri c, ConnInfo)
-getConnShortLink' = undefined
+getConnShortLink' :: forall c. AgentClient -> UserId -> ConnShortLink c -> AM (ConnectionRequestUri c, ConnInfo)
+getConnShortLink' c userId = \case
+  CSLInvitation srv linkId linkKey -> do
+    g <- asks random
+    invLink <- withStore' c $ \db -> do
+      getInvShortLink db srv linkId >>= \case
+        Just sl@InvShortLink {linkKey = lk} | linkKey == lk -> pure sl
+        _ -> do
+          (sndPublicKey, sndPrivateKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+          let sl = InvShortLink {server = srv, linkId, linkKey, sndPrivateKey, sndPublicKey}
+          createInvShortLink db sl
+          pure sl
+    let k = SL.invShortLinkKdf linkKey
+    secureGetQueueLink c userId invLink >>= decryptData srv linkKey k
+  CSLContact srv _ linkKey -> do
+    let (linkId, k) = SL.contactShortLinkKdf linkKey
+    getQueueLink c userId srv linkId >>= decryptData srv linkKey k
+  where
+    decryptData :: ConnectionModeI c => SMPServer -> LinkKey -> C.SbKey -> (SMP.SenderId, SMP.QueueLinkData) -> AM (ConnectionRequestUri c, ConnInfo)
+    decryptData srv linkKey k (sndId, d) = do
+      r <- liftEither $ SL.decryptLinkData @c linkKey k d
+      checkSameQueue $ case fst r of CRInvitationUri crd _ -> crd; CRContactUri crd -> crd
+      pure r
+      where
+        checkSameQueue ConnReqUriData {crSmpQueues = SMPQueueUri {queueAddress = SMPQueueAddress srv' sndId' _ _} :| _} =
+          unless (srv == srv' && sndId == sndId') $ throwE $ AGENT $ A_LINK "different address"
 
 delInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
 delInvShortLink' = undefined
@@ -868,30 +894,30 @@ newRcvConnSrv_ c userId connId enableNtfs cMode userData_ clientData pqInitKeys 
     prepareLinkData userData e2eDhKey = do
       g <- asks random
       nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
-      (sigKey, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
+      sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
       AgentConfig {smpClientVRange = vr, smpAgentVRange = agentVRange} <- asks config
       let sndId = SMP.EntityId $ C.sha3_256 corrId
           sndSecure = case cMode of SCMContact -> False; SCMInvitation -> True
           qUri = SMPQueueUri vr $ SMPQueueAddress srv sndId e2eDhKey sndSecure
       connReq <- createConnReq qUri
-      let fixedData = signData privSigKey $ smpEncode FixedLinkData {agentVRange, sigKey, connReq}
-          userConnData = signData privSigKey $ smpEncode UserLinkData {agentVRange, userData}
-          lk = C.sha3_256 fixedData
-          linkKey = LinkKey lk
+      -- let fixedData = signData privSigKey $ smpEncode FixedLinkData {agentVRange, sigKey, connReq}
+      --     userConnData = signData privSigKey $ smpEncode UserLinkData {agentVRange, userData}
+      --     linkKey = LinkKey $ C.sha3_256 fixedData
+      let (linkKey, linkData) = SL.encodeSignLinkData sigKeys agentVRange connReq userData
       qd <- case cMode of
         SCMContact -> do
-          let (linkId, k) = B.splitAt 24 $ C.hkdf "" lk "SimpleXContactLink" 56
-          srvData <- (,) <$> encryptData g k fixedData <*> encryptData g k userConnData
-          pure $ CQRContact $ Just CQRData {linkKey, privSigKey, srvReq = (SMP.EntityId linkId, (sndId, srvData))}
+          let (linkId, k) = SL.contactShortLinkKdf linkKey
+          srvData <- liftIO $ SL.encryptLinkData g k linkData
+          pure $ CQRContact $ Just CQRData {linkKey, privSigKey, srvReq = (linkId, (sndId, srvData))}
         SCMInvitation -> do
-          let k = C.hkdf "" lk "SimpleXInvLink" 32
-          srvData <- (,) <$> encryptData g k fixedData <*> encryptData g k userConnData
+          let k = SL.invShortLinkKdf linkKey
+          srvData <- liftIO $ SL.encryptLinkData g k linkData
           pure $ CQRMessaging $ Just CQRData {linkKey, privSigKey, srvReq = (sndId, srvData)}
       pure (nonce, qUri, connReq, qd)
-    signData pk s = smpEncode (C.signatureBytes (C.sign' pk s), s)
-    encryptData g k s = do
-      nonce <- atomically $ C.randomCbNonce g
-      pure $ EncDataBytes $ smpEncode (nonce, C.sbEncryptNoPad_ k nonce s)
+    -- signData pk s = smpEncode (C.signatureBytes (C.sign' pk s), s)
+    -- encryptData g k s = do
+    --   nonce <- atomically $ C.randomCbNonce g
+    --   pure $ EncDataBytes $ smpEncode (nonce, C.sbEncryptNoPad k nonce s)
     connReqWithShortLink :: SMPQueueUri -> ConnectionRequestUri c -> SMPQueueUri -> Maybe ShortLinkCreds -> AM (ConnectionRequestUri c, Maybe (ConnShortLink c))
     connReqWithShortLink qUri cReq qUri' shortLink = case shortLink of
       Just ShortLinkCreds {shortLinkId, shortLinkKey}

@@ -2,7 +2,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeApplications #-}
 
-import AgentTests (agentTests)
+import AgentTests (agentCoreTests, agentTests)
 import CLITests
 import Control.Concurrent (threadDelay)
 import qualified Control.Exception as E
@@ -83,6 +83,7 @@ main = do
           describe "Store log tests" storeLogTests
           describe "TRcvQueues tests" tRcvQueuesTests
           describe "Util tests" utilTests
+          describe "Agent core tests" agentCoreTests
 #if defined(dbServerPostgres)
         aroundAll_ (postgressBracket testServerDBConnectInfo)
           $ describe "SMP server via TLS, postgres+jornal message store" $

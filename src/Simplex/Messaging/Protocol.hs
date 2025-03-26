@@ -1524,14 +1524,13 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
       | not (B.null entId) -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     -- SEND must have queue ID, signature is not always required
-    SEND {} -> entityCmd
+    SEND {}
+      | B.null entId -> Left $ CMD NO_ENTITY
+      | otherwise -> Right cmd
     LGET -> entityCmd
     PING -> noAuthCmd
     PRXY {} -> noAuthCmd
-    PFWD {}
-      | B.null entId -> Left $ CMD NO_ENTITY
-      | isNothing auth -> Right cmd
-      | otherwise -> Left $ CMD HAS_AUTH
+    PFWD {} -> entityCmd
     RFWD _ -> noAuthCmd
     -- other client commands must have both signature and queue ID
     _
@@ -1546,7 +1545,8 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
       entityCmd :: Either ErrorType (Command p)
       entityCmd
         | B.null entId = Left $ CMD NO_ENTITY
-        | otherwise = Right cmd
+        | isNothing auth = Right cmd
+        | otherwise = Left $ CMD HAS_AUTH
 
 instance ProtocolEncoding SMPVersion ErrorType Cmd where
   type Tag Cmd = CmdTag

@@ -19,10 +19,10 @@ CREATE TABLE inv_short_links(
   inv_short_link_id INTEGER PRIMARY KEY AUTOINCREMENT,
   host TEXT NOT NULL,
   port TEXT NOT NULL,
+  server_key_hash BLOB,
   link_id BLOB NOT NULL,
   link_key BLOB NOT NULL,
   snd_private_key BLOB NOT NULL,
-  conn_req BLOB,
   FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT ON UPDATE CASCADE
 );
 

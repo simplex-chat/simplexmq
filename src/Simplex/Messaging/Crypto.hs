@@ -142,8 +142,8 @@ module Simplex.Messaging.Crypto
     cbDecryptNoPad,
     sbDecrypt_,
     sbEncrypt_,
-    sbDecryptNoPad_,
-    sbEncryptNoPad_,
+    sbEncryptNoPad,
+    sbDecryptNoPad,
     cbNonce,
     randomCbNonce,
     reverseNonce,
@@ -1255,14 +1255,16 @@ sbEncrypt (SbKey key) = sbEncrypt_ key
 
 sbEncrypt_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
 sbEncrypt_ secret (CbNonce nonce) msg paddedLen = cryptoBox secret nonce <$> pad msg paddedLen
+{-# INLINE sbEncrypt_ #-}
 
-sbEncryptNoPad_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> ByteString
-sbEncryptNoPad_ secret (CbNonce nonce) = cryptoBox secret nonce
-{-# INLINE sbEncryptNoPad_ #-}
+sbEncryptNoPad :: SbKey -> CbNonce -> ByteString -> ByteString
+sbEncryptNoPad (SbKey key) (CbNonce nonce) = cryptoBox key nonce
+{-# INLINE sbEncryptNoPad #-}
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
 cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> ByteString
 cbEncryptMaxLenBS (DhSecretX25519 secret) (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
+{-# INLINE cbEncryptMaxLenBS #-}
 
 cryptoBox :: ByteArrayAccess key => key -> ByteString -> ByteString -> ByteString
 cryptoBox secret nonce s = BA.convert tag <> c
@@ -1288,6 +1290,11 @@ sbDecrypt (SbKey key) = sbDecrypt_ key
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 sbDecrypt_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Either CryptoError ByteString
 sbDecrypt_ secret nonce = unPad <=< sbDecryptNoPad_ secret nonce
+{-# INLINE sbDecrypt_ #-}
+
+sbDecryptNoPad :: SbKey -> CbNonce -> ByteString -> Either CryptoError ByteString
+sbDecryptNoPad (SbKey key) = sbDecryptNoPad_ key
+{-# INLINE sbDecryptNoPad #-}
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce (without unpadding).
 sbDecryptNoPad_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Either CryptoError ByteString
