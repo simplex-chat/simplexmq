@@ -56,6 +56,7 @@ module Simplex.Messaging.Agent
     deleteConnectionAsync,
     deleteConnectionsAsync,
     createConnection,
+    getConnShortLink,
     changeConnectionUser,
     prepareConnectionToJoin,
     prepareConnectionToAccept,
@@ -181,13 +182,14 @@ import Simplex.Messaging.Client (SMPClientError, ServerTransmission (..), Server
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
+import qualified Simplex.Messaging.Crypto.ShortLink as SL
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, PNMessageData (..), pnMessagesP)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolType (..), ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC, sndAuthKeySMPClientVersion)
+import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth, ProtocolType (..), ProtocolTypeI (..), SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import qualified Simplex.Messaging.TMap as TM
@@ -340,9 +342,26 @@ deleteConnectionsAsync c waitDelivery = withAgentEnv c . deleteConnectionsAsync'
 {-# INLINE deleteConnectionsAsync #-}
 
 -- | Create SMP agent connection (NEW command)
-createConnection :: AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, ConnectionRequestUri c)
-createConnection c userId enableNtfs = withAgentEnv c .:: newConn c userId enableNtfs
+createConnection :: ConnectionModeI c => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe ConnInfo -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, (ConnectionRequestUri c, Maybe (ConnShortLink c)))
+createConnection c userId enableNtfs = withAgentEnv c .::. newConn c userId enableNtfs
 {-# INLINE createConnection #-}
+
+-- | Create or update user's contact connection short link
+-- TODO [short links]
+setConnShortLink :: AgentClient -> ConnId -> ConnInfo -> AE (ConnShortLink 'CMContact)
+setConnShortLink c = withAgentEnv c .: setConnShortLink' c
+{-# INLINE setConnShortLink #-}
+
+-- | Get and verify data from short link. For 1-time invitations it preserves the key to allow retries
+getConnShortLink :: AgentClient -> UserId -> ConnShortLink c -> AE (ConnectionRequestUri c, ConnInfo)
+getConnShortLink c = withAgentEnv c .: getConnShortLink' c
+{-# INLINE getConnShortLink #-}
+
+-- | This irreversible deletes short link data, and it won't be retrievable again
+-- TODO [short links]
+delInvShortLink :: AgentClient -> ConnShortLink 'CMInvitation -> AE ()
+delInvShortLink c = withAgentEnv c . delInvShortLink' c
+{-# INLINE delInvShortLink #-}
 
 -- | Changes the user id associated with a connection
 changeConnectionUser :: AgentClient -> UserId -> ConnId -> UserId -> AE ()
@@ -776,12 +795,45 @@ switchConnectionAsync' c corrId connId =
             pure . connectionStats $ DuplexConnection cData rqs' sqs
       _ -> throwE $ CMD PROHIBITED "switchConnectionAsync: not duplex"
 
-newConn :: AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AM (ConnId, ConnectionRequestUri c)
-newConn c userId enableNtfs cMode clientData pqInitKeys subMode = do
+newConn :: ConnectionModeI c => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe ConnInfo -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AM (ConnId, (ConnectionRequestUri c, Maybe (ConnShortLink c)))
+newConn c userId enableNtfs cMode userData_ clientData pqInitKeys subMode = do
   srv <- getSMPServer c userId
   connId <- newConnNoQueues c userId enableNtfs cMode (CR.connPQEncryption pqInitKeys)
-  cReq <- newRcvConnSrv c userId connId enableNtfs cMode clientData pqInitKeys subMode srv
-  pure (connId, cReq)
+  (connId,) <$> newRcvConnSrv_ c userId connId enableNtfs cMode userData_ clientData pqInitKeys subMode srv
+    `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
+
+setConnShortLink' :: AgentClient -> ConnId -> ConnInfo -> AM (ConnShortLink 'CMContact)
+setConnShortLink' = undefined
+
+getConnShortLink' :: forall c. AgentClient -> UserId -> ConnShortLink c -> AM (ConnectionRequestUri c, ConnInfo)
+getConnShortLink' c userId = \case
+  CSLInvitation srv linkId linkKey -> do
+    g <- asks random
+    invLink <- withStore' c $ \db -> do
+      getInvShortLink db srv linkId >>= \case
+        Just sl@InvShortLink {linkKey = lk} | linkKey == lk -> pure sl
+        _ -> do
+          (sndPublicKey, sndPrivateKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+          let sl = InvShortLink {server = srv, linkId, linkKey, sndPrivateKey, sndPublicKey}
+          createInvShortLink db sl
+          pure sl
+    let k = SL.invShortLinkKdf linkKey
+    secureGetQueueLink c userId invLink >>= decryptData srv linkKey k
+  CSLContact srv _ linkKey -> do
+    let (linkId, k) = SL.contactShortLinkKdf linkKey
+    getQueueLink c userId srv linkId >>= decryptData srv linkKey k
+  where
+    decryptData :: ConnectionModeI c => SMPServer -> LinkKey -> C.SbKey -> (SMP.SenderId, SMP.QueueLinkData) -> AM (ConnectionRequestUri c, ConnInfo)
+    decryptData srv linkKey k (sndId, d) = do
+      r <- liftEither $ SL.decryptLinkData @c linkKey k d
+      checkSameQueue $ case fst r of CRInvitationUri crd _ -> crd; CRContactUri crd -> crd
+      pure r
+      where
+        checkSameQueue ConnReqUriData {crSmpQueues = SMPQueueUri {queueAddress = SMPQueueAddress srv' sndId' _ _} :| _} =
+          unless (srv == srv' && sndId == sndId') $ throwE $ AGENT $ A_LINK "different address"
+
+delInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
+delInvShortLink' = undefined
 
 changeConnectionUser' :: AgentClient -> UserId -> ConnId -> UserId -> AM ()
 changeConnectionUser' c oldUserId connId newUserId = do
@@ -793,28 +845,86 @@ changeConnectionUser' c oldUserId connId newUserId = do
   where
     updateConn = withStore' c $ \db -> setConnUserId db oldUserId connId newUserId
 
-newRcvConnSrv :: AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> SMPServerWithAuth -> AM (ConnectionRequestUri c)
-newRcvConnSrv c userId connId enableNtfs cMode clientData pqInitKeys subMode srvWithAuth@(ProtoServerWithAuth srv _) = do
+newRcvConnSrv :: ConnectionModeI c => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> SMPServerWithAuth -> AM (ConnectionRequestUri c)
+newRcvConnSrv c userId connId enableNtfs cMode =
+  fmap fst .:: newRcvConnSrv_ c userId connId enableNtfs cMode Nothing
+{-# INLINE newRcvConnSrv #-}
+
+newRcvConnSrv_ :: forall c. ConnectionModeI c => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe ConnInfo -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> SMPServerWithAuth -> AM (ConnectionRequestUri c, Maybe (ConnShortLink c))
+newRcvConnSrv_ c userId connId enableNtfs cMode userData_ clientData pqInitKeys subMode srvWithAuth@(ProtoServerWithAuth srv _) = do
   case (cMode, pqInitKeys) of
     (SCMContact, CR.IKUsePQ) -> throwE $ CMD PROHIBITED "newRcvConnSrv"
     _ -> pure ()
-  AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
-  let sndSecure = case cMode of SCMInvitation -> True; SCMContact -> False
-  (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srvWithAuth smpClientVRange subMode sndSecure `catchAgentError` \e -> liftIO (print e) >> throwE e
-  atomically $ incSMPServerStat c userId srv connCreated
-  rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
-  lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
-  when enableNtfs $ do
-    ns <- asks ntfSupervisor
-    atomically $ sendNtfSubCommand ns (NSCCreate, [connId])
-  let crData = ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
-  case cMode of
-    SCMContact -> pure $ CRContactUri crData
-    SCMInvitation -> do
+  e2eKeys <- atomically . C.generateKeyPair =<< asks random
+  case userData_ of
+    Just d -> do
+      (nonce, qUri, cReq, qd) <- prepareLinkData d $ fst e2eKeys
+      (rq, qUri') <- createRcvQueue (Just nonce) qd e2eKeys
+      connReqWithShortLink qUri cReq qUri' (shortLink rq)
+    Nothing -> do
+      let qd = case cMode of SCMContact -> CQRContact Nothing; SCMInvitation -> CQRMessaging Nothing
+      (_, qUri) <- createRcvQueue Nothing qd e2eKeys
+      (,Nothing) <$> createConnReq qUri
+  where
+    createRcvQueue :: Maybe C.CbNonce -> ClntQueueReqData -> C.KeyPairX25519 -> AM (RcvQueue, SMPQueueUri)
+    createRcvQueue nonce_ qd e2eKeys = do
+      AgentConfig {smpClientVRange = vr} <- asks config
+      let ntfCreds_ = Nothing -- TODO [short links]
+      (rq, qUri, tSess, sessId) <- newRcvQueue_ c userId connId srvWithAuth vr qd subMode ntfCreds_ nonce_ e2eKeys `catchAgentError` \e -> liftIO (print e) >> throwE e
+      atomically $ incSMPServerStat c userId srv connCreated
+      rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
+      lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
+      when enableNtfs $ do
+        ns <- asks ntfSupervisor
+        atomically $ sendNtfSubCommand ns (NSCCreate, [connId])
+      pure (rq', qUri)
+    createConnReq :: SMPQueueUri -> AM (ConnectionRequestUri c)
+    createConnReq qUri = do
+      AgentConfig {smpAgentVRange, e2eEncryptVRange} <- asks config
+      let crData = ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
+      case cMode of
+        SCMContact -> pure $ CRContactUri crData
+        SCMInvitation -> do
+          g <- asks random
+          (pk1, pk2, pKem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) (CR.initialPQEncryption pqInitKeys)
+          withStore' c $ \db -> createRatchetX3dhKeys db connId pk1 pk2 pKem
+          pure $ CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eEncryptVRange
+    prepareLinkData :: ConnInfo -> C.PublicKeyX25519 -> AM (C.CbNonce, SMPQueueUri, ConnectionRequestUri c, ClntQueueReqData)
+    prepareLinkData userData e2eDhKey = do
       g <- asks random
-      (pk1, pk2, pKem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) (CR.initialPQEncryption pqInitKeys)
-      withStore' c $ \db -> createRatchetX3dhKeys db connId pk1 pk2 pKem
-      pure $ CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eEncryptVRange
+      nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
+      sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
+      AgentConfig {smpClientVRange = vr, smpAgentVRange = agentVRange} <- asks config
+      let sndId = SMP.EntityId $ C.sha3_256 corrId
+          sndSecure = case cMode of SCMContact -> False; SCMInvitation -> True
+          qUri = SMPQueueUri vr $ SMPQueueAddress srv sndId e2eDhKey sndSecure
+      connReq <- createConnReq qUri
+      let (linkKey, linkData) = SL.encodeSignLinkData sigKeys agentVRange connReq userData
+      qd <- case cMode of
+        SCMContact -> do
+          let (linkId, k) = SL.contactShortLinkKdf linkKey
+          srvData <- liftIO $ SL.encryptLinkData g k linkData
+          pure $ CQRContact $ Just CQRData {linkKey, privSigKey, srvReq = (linkId, (sndId, srvData))}
+        SCMInvitation -> do
+          let k = SL.invShortLinkKdf linkKey
+          srvData <- liftIO $ SL.encryptLinkData g k linkData
+          pure $ CQRMessaging $ Just CQRData {linkKey, privSigKey, srvReq = (sndId, srvData)}
+      pure (nonce, qUri, connReq, qd)
+    connReqWithShortLink :: SMPQueueUri -> ConnectionRequestUri c -> SMPQueueUri -> Maybe ShortLinkCreds -> AM (ConnectionRequestUri c, Maybe (ConnShortLink c))
+    connReqWithShortLink qUri cReq qUri' shortLink = case shortLink of
+      Just ShortLinkCreds {shortLinkId, shortLinkKey}
+        | qUri == qUri'  ->
+            let link = case cReq of
+                  CRContactUri _ -> CSLContact srv CCTContact shortLinkKey
+                  CRInvitationUri {} -> CSLInvitation srv shortLinkId shortLinkKey
+             in pure (cReq, Just link)
+        | otherwise -> throwE $ INTERNAL "different rcv queue address"
+      Nothing ->
+        let updated (ConnReqUriData _ vr _ _) = (ConnReqUriData SSSimplex vr [qUri] clientData)
+            cReq' = case cReq of
+              CRContactUri crData -> CRContactUri (updated crData)
+              CRInvitationUri crData e2eParams -> CRInvitationUri (updated crData) e2eParams
+         in pure (cReq', Nothing)
 
 newConnToJoin :: forall c. AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> PQSupport -> AM ConnId
 newConnToJoin c userId connId enableNtfs cReq pqSup = case cReq of
@@ -842,6 +952,7 @@ newConnToAccept c connId enableNtfs invId pqSup = do
       newConnToJoin c userId connId enableNtfs connReq pqSup
     _ -> throwE $ CMD PROHIBITED "newConnToAccept"
 
+-- TODO [short link] joining queue that was already secured with LKEY
 joinConn :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
 joinConn c userId connId enableNtfs cReq cInfo pqSupport subMode = do
   srv <- getNextSMPServer c userId [qServer cReqQueue]
@@ -958,8 +1069,8 @@ joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode
 
 createReplyQueue :: AgentClient -> ConnData -> SndQueue -> SubscriptionMode -> SMPServerWithAuth -> AM SMPQueueInfo
 createReplyQueue c ConnData {userId, connId, enableNtfs} SndQueue {smpClientVersion} subMode srv = do
-  let sndSecure = smpClientVersion >= sndAuthKeySMPClientVersion
-  (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srv (versionToRange smpClientVersion) subMode sndSecure
+  -- TODO [short links] ntf credentials
+  (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srv (versionToRange smpClientVersion) SCMInvitation subMode Nothing
   atomically $ incSMPServerStat c userId (qServer rq) connCreated
   let qInfo = toVersionT qUri smpClientVersion
   rq' <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq
@@ -1727,7 +1838,8 @@ switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs s
   -- try to get the server that is different from all queues, or at least from the primary rcv queue
   srvAuth@(ProtoServerWithAuth srv _) <- getNextSMPServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
   srv' <- if srv == server then getNextSMPServer c userId [server] else pure srvAuth
-  (q, qUri, tSess, sessId) <- newRcvQueue c userId connId srv' clientVRange SMSubscribe False
+  -- TODO [short links] send correct NTF credentials here
+  (q, qUri, tSess, sessId) <- newRcvQueue c userId connId srv' clientVRange SCMInvitation SMSubscribe Nothing
   let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
   rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq'
   lift $ addNewQueueSubscription c rq'' tSess sessId

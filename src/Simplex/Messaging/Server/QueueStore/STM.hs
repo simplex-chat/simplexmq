@@ -44,6 +44,7 @@ data STMQueueStore q = STMQueueStore
   { queues :: TMap RecipientId q,
     senders :: TMap SenderId RecipientId,
     notifiers :: TMap NotifierId RecipientId,
+    links :: TMap LinkId RecipientId,
     storeLog :: TVar (Maybe (StoreLog 'WriteMode))
   }
 
@@ -58,8 +59,9 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     queues <- TM.emptyIO
     senders <- TM.emptyIO
     notifiers <- TM.emptyIO
+    links <- TM.emptyIO
     storeLog <- newTVarIO Nothing
-    pure STMQueueStore {queues, senders, notifiers, storeLog}
+    pure STMQueueStore {queues, senders, notifiers, links, storeLog}
 
   closeQueueStore :: STMQueueStore q -> IO ()
   closeQueueStore STMQueueStore {queues, senders, notifiers, storeLog} = do
@@ -80,17 +82,19 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     pure QueueCounts {queueCount, notifierCount}
 
   addQueue_ :: STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
-  addQueue_ st mkQ rId qr@QueueRec {senderId = sId, notifier} = do
+  addQueue_ st mkQ rId qr@QueueRec {senderId = sId, notifier, queueData} = do
     sq <- mkQ rId qr
     add sq $>> withLog "addStoreQueue" st (\s -> logCreateQueue s rId qr) $> Right sq
     where
-      STMQueueStore {queues, senders, notifiers} = st
+      STMQueueStore {queues, senders, notifiers, links} = st
       add q = atomically $ ifM hasId (pure $ Left DUPLICATE_) $ Right () <$ do
         TM.insert rId q queues
         TM.insert sId rId senders
         forM_ notifier $ \NtfCreds {notifierId} -> TM.insert notifierId rId notifiers
-      hasId = anyM [TM.member rId queues, TM.member sId senders, hasNotifier]
+        forM_ queueData $ \(lnkId, _) -> TM.insert lnkId rId links
+      hasId = anyM [TM.member rId queues, TM.member sId senders, hasNotifier, hasLink]
       hasNotifier = maybe (pure False) (\NtfCreds {notifierId} -> TM.member notifierId notifiers) notifier
+      hasLink = maybe (pure False) (\(lnkId, _) -> TM.member lnkId links) queueData
 
   getQueue_ :: DirectParty p => STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   getQueue_ st _ party qId =
@@ -98,8 +102,44 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       SRecipient -> TM.lookupIO qId queues
       SSender -> TM.lookupIO qId senders $>>= (`TM.lookupIO` queues)
       SNotifier -> TM.lookupIO qId notifiers $>>= (`TM.lookupIO` queues)
+      SLinkClient -> TM.lookupIO qId links $>>= (`TM.lookupIO` queues)
     where
-      STMQueueStore {queues, senders, notifiers} = st
+      STMQueueStore {queues, senders, notifiers, links} = st
+
+  getQueueLinkData :: STMQueueStore q -> q -> LinkId -> IO (Either ErrorType QueueLinkData)
+  getQueueLinkData _ q lnkId = atomically $ readQueueRec (queueRec q) $>>= pure . getData
+    where
+      getData qr = case queueData qr of
+        Just (lnkId', d) | lnkId' == lnkId -> Right d
+        _ -> Left AUTH
+
+  addQueueLinkData :: STMQueueStore q -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
+  addQueueLinkData st sq lnkId d =
+    atomically (readQueueRec qr $>>= add)
+      $>> withLog "addQueueLinkData" st (\s -> logCreateLink s rId lnkId d)
+    where
+      rId = recipientId sq
+      qr = queueRec sq
+      add q = case queueData q of
+        Nothing -> addLink
+        Just (lnkId', d') | lnkId' == lnkId && fst d' == fst d -> addLink
+        _ -> pure $ Left AUTH
+        where
+          addLink = do
+            let !q' = q {queueData = Just (lnkId, d)}
+            writeTVar qr $ Just q'
+            TM.insert lnkId rId $ links st
+            pure $ Right ()
+
+  deleteQueueLinkData :: STMQueueStore q -> q -> IO (Either ErrorType ())
+  deleteQueueLinkData st sq =
+    withQueueRec qr delete
+      $>> withLog "deleteQueueLinkData" st (`logDeleteLink` recipientId sq)
+    where
+      qr = queueRec sq
+      delete q = forM (queueData q) $ \(lnkId, _) -> do
+        TM.delete lnkId $ links st
+        writeTVar qr $ Just q {queueData = Nothing}
 
   secureQueue :: STMQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   secureQueue st sq sKey =

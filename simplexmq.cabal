@@ -121,6 +121,7 @@ library
       Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
       Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI
       Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG
+      Simplex.Messaging.Crypto.ShortLink
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
       Simplex.Messaging.Notifications.Client
@@ -158,6 +159,7 @@ library
           Simplex.Messaging.Agent.Store.Postgres.Migrations.App
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250203_msg_bodies
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250322_short_links
   else
       exposed-modules:
           Simplex.Messaging.Agent.Store.SQLite
@@ -203,6 +205,7 @@ library
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241007_rcv_queues_last_broker_ts
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241224_ratchet_e2e_snd_params
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250203_msg_bodies
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250322_short_links
   if !flag(client_library)
       exposed-modules:
           Simplex.FileTransfer.Client.Main
@@ -366,6 +369,8 @@ executable ntf-server
 executable smp-server
   if flag(client_library)
       buildable: False
+  if flag(server_postgres)
+    cpp-options: -DdbServerPostgres
   main-is: Main.hs
   other-modules:
       Static
@@ -441,6 +446,7 @@ test-suite simplexmq-test
       AgentTests.MigrationTests
       AgentTests.NotificationTests
       AgentTests.ServerChoice
+      AgentTests.ShortLinkTests
       CLITests
       CoreTests.BatchingTests
       CoreTests.CryptoFileTests

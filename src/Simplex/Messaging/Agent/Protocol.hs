@@ -1,8 +1,10 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -108,6 +110,11 @@ module Simplex.Messaging.Agent.Protocol
     ConnReqUriData (..),
     CRClientData,
     ServiceScheme,
+    FixedLinkData (..),
+    UserLinkData (..),
+    ConnShortLink (..),
+    ContactConnType (..),
+    LinkKey (..),
     sameConnReqContact,
     simplexChat,
     connReqUriP',
@@ -151,8 +158,10 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Char (isDigit)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Type)
@@ -1042,6 +1051,11 @@ instance ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
                 <> maybe [] (\cd -> [("data", encodeUtf8 cd)]) crClientData
   strP = connReqUriP' (Just SSSimplex)
 
+-- TODO [short links] do not use StrEncoding instance
+instance ConnectionModeI m => Encoding (ConnectionRequestUri m) where
+  smpEncode = smpEncode . Large . strEncode
+  smpP = strDecode . unLarge <$?> smpP
+
 connReqUriP' :: forall m. ConnectionModeI m => Maybe ServiceScheme -> Parser (ConnectionRequestUri m)
 connReqUriP' overrideScheme = do
   ACR m cr <- connReqUriP overrideScheme
@@ -1188,7 +1202,7 @@ data SMPQueueAddress = SMPQueueAddress
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,
     dhPublicKey :: C.PublicKeyX25519,
-    sndSecure :: Bool
+    sndSecure :: Bool -- TODO [short links] replace with queueMode?
   }
   deriving (Eq, Show)
 
@@ -1271,6 +1285,65 @@ instance Eq AConnectionRequestUri where
 
 deriving instance Show AConnectionRequestUri
 
+data ConnShortLink (m :: ConnectionMode) where
+  CSLInvitation :: SMPServer -> SMP.LinkId -> LinkKey -> ConnShortLink 'CMInvitation
+  CSLContact :: SMPServer -> ContactConnType -> LinkKey -> ConnShortLink 'CMContact
+
+deriving instance Show (ConnShortLink m)
+
+newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
+  deriving (Eq, Show)
+  deriving newtype (FromField, StrEncoding)
+
+instance ToField LinkKey where toField (LinkKey s) = toField $ Binary s
+
+data ContactConnType = CCTContact | CCTGroup deriving (Show)
+
+data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
+
+-- TODO [short link] parser, parsing tests
+data AConnectionLink = ACLFull AConnectionRequestUri | ACLShort AConnShortLink
+
+instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
+  strEncode = \case
+    CSLInvitation srv (SMP.EntityId lnkId) (LinkKey k) -> encLink srv (lnkId <> k) "i"
+    CSLContact srv ct (LinkKey k) -> encLink srv k $ case ct of CCTContact -> "c"; CCTGroup -> "g"
+    where
+      encLink (SMPServer (h :| hs) port (C.KeyHash kh)) linkUri linkType =
+        "https://" <> strEncode h <> port' <> "/" <> linkType <> "#" <> B64.encodeUnpadded kh <> "@" <> hosts <> B64.encodeUnpadded linkUri
+        where
+          port' = if null port then "" else B.pack (':' : port)
+          hosts = if null hs then "" else strEncode (TransportHosts_ hs) <> "/"
+  strP = do
+    ACSL m l <- strP
+    case testEquality m $ sConnectionMode @m of
+      Just Refl -> pure l
+      _ -> fail "bad short link mode"
+
+instance StrEncoding AConnShortLink where
+  strEncode (ACSL _ l) = strEncode l
+  strP = do
+    h <- "https://" *> strP
+    port <- A.char ':' *> (B.unpack <$> A.takeWhile1 isDigit) <|> pure ""
+    linkType <- A.char '/' *> A.anyChar
+    keyHash <- optional (A.char '/') *> A.char '#' *> strP <* A.char '@'
+    TransportHosts_ hs <- strP <* "/" <|> pure (TransportHosts_ [])
+    linkUri <- strP
+    let srv = SMPServer (h :| hs) port keyHash
+    case linkType of
+      'i'
+        | B.length linkUri == 56 ->
+            let (lnkId, k) = B.splitAt 24 linkUri
+             in pure $ ACSL SCMInvitation $ CSLInvitation srv (SMP.EntityId lnkId) (LinkKey k)
+        | otherwise -> fail "bad ConnShortLink: incorrect linkID and key length"
+      'c' -> contactP srv CCTContact linkUri
+      'g' -> contactP srv CCTGroup linkUri
+      _ -> fail "bad ConnShortLink: unknown link type"
+    where
+      contactP srv ct k
+        | B.length k == 32 = pure $ ACSL SCMContact $ CSLContact srv ct (LinkKey k)
+        | otherwise = fail "bad ConnShortLink: incorrect key length"
+
 sameConnReqContact :: ConnectionRequestUri 'CMContact -> ConnectionRequestUri 'CMContact -> Bool
 sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUri ConnReqUriData {crSmpQueues = qs'}) =
   L.length qs == L.length qs' && all same (L.zip qs qs')
@@ -1286,6 +1359,31 @@ data ConnReqUriData = ConnReqUriData
   deriving (Eq, Show)
 
 type CRClientData = Text
+
+data FixedLinkData c = FixedLinkData
+  { agentVRange :: VersionRangeSMPA,
+    sigKey :: C.PublicKeyEd25519,
+    connReq :: ConnectionRequestUri c
+  }
+
+data UserLinkData = UserLinkData
+  { agentVRange :: VersionRangeSMPA,
+    userData :: ConnInfo
+  }
+
+instance ConnectionModeI c => Encoding (FixedLinkData c) where
+  smpEncode FixedLinkData {agentVRange, sigKey, connReq} =
+    smpEncode (agentVRange, sigKey, connReq)
+  smpP = do
+    (agentVRange, sigKey, connReq) <- smpP
+    pure FixedLinkData {agentVRange, sigKey, connReq}
+
+instance Encoding UserLinkData where
+  smpEncode UserLinkData {agentVRange, userData} =
+    smpEncode (agentVRange, Large userData)
+  smpP = do
+    (agentVRange, Large userData) <- smpP
+    pure UserLinkData {agentVRange, userData}
 
 -- | SMP queue status.
 data QueueStatus
@@ -1419,6 +1517,8 @@ data SMPAgentError
     A_PROHIBITED {prohibitedErr :: String}
   | -- | incompatible version of SMP client, agent or encryption protocols
     A_VERSION
+  | -- | failed signature, hash or senderId verification of retrieved link data
+    A_LINK {linkErr :: String}
   | -- | cannot decrypt message
     A_CRYPTO {cryptoErr :: AgentCryptoError}
   | -- | duplicate message - this error is detected by ratchet decryption - this message will be ignored and not shown

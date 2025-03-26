@@ -49,6 +49,12 @@ module Simplex.Messaging.Client
     secureSMPQueue,
     secureSndSMPQueue,
     proxySecureSndSMPQueue,
+    addSMPQueueLink,
+    deleteSMPQueueLink,
+    secureGetSMPQueueLink,
+    proxySecureGetSMPQueueLink,
+    getSMPQueueLink,
+    proxyGetSMPQueueLink,
     enableSMPQueueNotifications,
     disableSMPQueueNotifications,
     enableSMPQueuesNtfs,
@@ -706,14 +712,16 @@ smpProxyError = \case
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#create-queue-command
 createSMPQueue ::
   SMPClient ->
+  Maybe C.CbNonce -> -- used as correlation ID to allow deriving SenderId from it for short links
   C.AAuthKeyPair -> -- SMP v6 - signature key pair, SMP v7 - DH key pair
   RcvPublicDhKey ->
   Maybe BasicAuth ->
   SubscriptionMode ->
-  Bool ->
+  QueueReqData ->
+  Maybe NewNtfCreds ->
   ExceptT SMPClientError IO QueueIdsKeys
-createSMPQueue c (rKey, rpKey) dhKey auth subMode sndSecure =
-  sendSMPCommand c (Just rpKey) NoEntity (NEW rKey dhKey auth subMode sndSecure) >>= \case
+createSMPQueue c nonce_ (rKey, rpKey) dhKey auth subMode qrd ntfCreds =
+  sendProtocolCommand_ c nonce_ Nothing (Just rpKey) NoEntity (Cmd SRecipient $ NEW $ NewQueueReq rKey dhKey auth subMode (Just qrd) ntfCreds) >>= \case
     IDS qik -> pure qik
     r -> throwE $ unexpectedResponse r
 
@@ -799,8 +807,46 @@ secureSndSMPQueue c spKey sId senderKey = okSMPCommand (SKEY senderKey) c spKey 
 {-# INLINE secureSndSMPQueue #-}
 
 proxySecureSndSMPQueue :: SMPClient -> ProxiedRelay -> SndPrivateAuthKey -> SenderId -> SndPublicAuthKey -> ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySecureSndSMPQueue c proxiedRelay spKey sId senderKey = proxySMPCommand c proxiedRelay (Just spKey) sId (SKEY senderKey)
+proxySecureSndSMPQueue c proxiedRelay spKey sId senderKey = proxyOKSMPCommand c proxiedRelay (Just spKey) sId (SKEY senderKey)
 {-# INLINE proxySecureSndSMPQueue #-}
+
+-- | Add or update date for queue link
+addSMPQueueLink :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> LinkId -> QueueLinkData -> ExceptT SMPClientError IO ()
+addSMPQueueLink c rpKey rId lnkId d = okSMPCommand (LSET lnkId d) c rpKey rId
+{-# INLINE addSMPQueueLink #-}
+
+-- | Delete queue link
+deleteSMPQueueLink :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO ()
+deleteSMPQueueLink = okSMPCommand LDEL
+{-# INLINE deleteSMPQueueLink #-}
+
+-- | Get 1-time inviation SMP queue link data and secure the queue via queue link ID.
+secureGetSMPQueueLink :: SMPClient -> SndPrivateAuthKey -> LinkId -> SndPublicAuthKey -> ExceptT SMPClientError IO (SenderId, QueueLinkData)
+secureGetSMPQueueLink c spKey lnkId senderKey =
+  sendSMPCommand c (Just spKey) lnkId (LKEY senderKey) >>= \case
+    LNK sId d -> pure (sId, d)
+    r -> throwE $ unexpectedResponse r
+
+proxySecureGetSMPQueueLink :: SMPClient -> ProxiedRelay -> SndPrivateAuthKey -> LinkId -> SndPublicAuthKey -> ExceptT SMPClientError IO (Either ProxyClientError (SenderId, QueueLinkData))
+proxySecureGetSMPQueueLink c proxiedRelay spKey lnkId senderKey =
+  proxySMPCommand  c proxiedRelay (Just spKey) lnkId (LKEY senderKey) >>= \case
+    Right (LNK sId d) -> pure $ Right (sId, d)
+    Right r -> throwE $ unexpectedResponse r
+    Left e -> pure $ Left e
+
+-- | Get contact address SMP queue link data.
+getSMPQueueLink :: SMPClient -> LinkId -> ExceptT SMPClientError IO (SenderId, QueueLinkData)
+getSMPQueueLink c lnkId =
+  sendSMPCommand c Nothing lnkId LGET >>= \case
+    LNK sId d -> pure (sId, d)
+    r -> throwE $ unexpectedResponse r
+
+proxyGetSMPQueueLink :: SMPClient -> ProxiedRelay -> LinkId -> ExceptT SMPClientError IO (Either ProxyClientError (SenderId, QueueLinkData))
+proxyGetSMPQueueLink c proxiedRelay lnkId =
+  proxySMPCommand  c proxiedRelay Nothing lnkId LGET >>= \case
+    Right (LNK sId d) -> pure $ Right (sId, d)
+    Right r -> throwE $ unexpectedResponse r
+    Left e -> pure $ Left e
 
 -- | Enable notifications for the queue for push notifications server.
 --
@@ -843,7 +889,7 @@ sendSMPMessage c spKey sId flags msg =
     r -> throwE $ unexpectedResponse r
 
 proxySMPMessage :: SMPClient -> ProxiedRelay -> Maybe SndPrivateAuthKey -> SenderId -> MsgFlags -> MsgBody -> ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySMPMessage c proxiedRelay spKey sId flags msg = proxySMPCommand c proxiedRelay spKey sId (SEND flags msg)
+proxySMPMessage c proxiedRelay spKey sId flags msg = proxyOKSMPCommand c proxiedRelay spKey sId (SEND flags msg)
 
 -- | Acknowledge message delivery (server deletes the message).
 --
@@ -955,15 +1001,24 @@ instance StrEncoding ProxyClientError where
 -- - other errors from the client running on proxy and connected to relay in PREProxiedRelayError
 
 -- This function proxies Sender commands that return OK or ERR
+proxyOKSMPCommand :: SMPClient -> ProxiedRelay -> Maybe SndPrivateAuthKey -> SenderId -> Command 'Sender -> ExceptT SMPClientError IO (Either ProxyClientError ())
+proxyOKSMPCommand c proxiedRelay spKey sId command =
+  proxySMPCommand  c proxiedRelay spKey sId command >>= \case
+    Right OK -> pure $ Right ()
+    Right r -> throwE $ unexpectedResponse r
+    Left e -> pure $ Left e
+
 proxySMPCommand ::
+  forall p.
+  PartyI p =>
   SMPClient ->
   -- proxy session from PKEY
   ProxiedRelay ->
   -- message to deliver
   Maybe SndPrivateAuthKey ->
   SenderId ->
-  Command 'Sender ->
-  ExceptT SMPClientError IO (Either ProxyClientError ())
+  Command p ->
+  ExceptT SMPClientError IO (Either ProxyClientError BrokerMsg)
 proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g, tcpTimeout}} (ProxiedRelay sessionId v _ serverKey) spKey sId command = do
   -- prepare params
   let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
@@ -972,7 +1027,7 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
   let cmdSecret = C.dh' serverKey cmdPrivKey
   nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
   -- encode
-  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId corrId, sId, Cmd SSender command)
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId corrId, sId, Cmd (sParty @p) command)
   auth <- liftEitherWith PCETransportError $ authTransmission serverThAuth spKey nonce tForAuth
   b <- case batchTransmissions (batch serverThParams) (blockSize serverThParams) [Right (auth, tToSend)] of
     [] -> throwE $ PCETransportError TELargeMsg
@@ -990,9 +1045,8 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
         case tParse serverThParams t' of
           t'' :| [] -> case tDecodeParseValidate serverThParams t'' of
             (_auth, _signed, (_c, _e, cmd)) -> case cmd of
-              Right OK -> pure $ Right ()
               Right (ERR e) -> throwE $ PCEProtocolError e -- this is the error from the destination relay
-              Right r' -> throwE $ unexpectedResponse r'
+              Right r' -> pure $ Right r'
               Left e -> throwE $ PCEResponseError e
           _ -> throwE $ PCETransportError TEBadBlock
       ERR e -> pure . Left $ ProxyProtocolError e -- this will not happen, this error is returned via Left
@@ -1101,6 +1155,8 @@ sendProtocolCommand c = sendProtocolCommand_ c Nothing Nothing
 -- This is to reflect the fact that we send subscriptions only as batches, and also because we do not track a separate timeout for the whole batch, so it is not obvious when should we expire it.
 -- We could expire a batch of deletes, for example, either when the first response expires or when the last one does.
 -- But a better solution is to process delayed delete responses.
+--
+-- Please note: if nonce is passed it is also used as a correlation ID
 sendProtocolCommand_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.CbNonce -> Maybe Int -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
 sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize}} nonce_ tOut pKey entId cmd =
   ExceptT $ uncurry sendRecv =<< mkTransmission_ c nonce_ (pKey, entId, cmd)

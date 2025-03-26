@@ -30,6 +30,9 @@ class StoreQueueClass q => QueueStoreClass q s where
   compactQueues :: s -> IO Int64
   addQueue_ :: s -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
   getQueue_ :: DirectParty p => s -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
+  getQueueLinkData :: s -> q -> LinkId -> IO (Either ErrorType QueueLinkData)
+  addQueueLinkData :: s -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
+  deleteQueueLinkData :: s -> q -> IO (Either ErrorType ())
   secureQueue :: s -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   addQueueNotifier :: s -> q -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
   deleteQueueNotifier :: s -> q -> IO (Either ErrorType (Maybe NotifierId))

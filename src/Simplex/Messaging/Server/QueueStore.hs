@@ -25,14 +25,15 @@ import Simplex.Messaging.Util (eitherToMaybe)
 #endif
 
 data QueueRec = QueueRec
-  { recipientKey :: !RcvPublicAuthKey,
-    rcvDhSecret :: !RcvDhSecret,
-    senderId :: !SenderId,
-    senderKey :: !(Maybe SndPublicAuthKey),
-    sndSecure :: !SenderCanSecure,
-    notifier :: !(Maybe NtfCreds),
-    status :: !ServerEntityStatus,
-    updatedAt :: !(Maybe RoundedSystemTime)
+  { recipientKey :: RcvPublicAuthKey,
+    rcvDhSecret :: RcvDhSecret,
+    senderId :: SenderId,
+    senderKey :: Maybe SndPublicAuthKey,
+    queueMode :: Maybe QueueMode,
+    queueData :: Maybe (LinkId, QueueLinkData),
+    notifier :: Maybe NtfCreds,
+    status :: ServerEntityStatus,
+    updatedAt :: Maybe RoundedSystemTime
   }
   deriving (Show)
 
