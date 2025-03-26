@@ -381,8 +381,8 @@ prepareConnectionToAccept :: AgentClient -> Bool -> ConfirmationId -> PQSupport 
 prepareConnectionToAccept c enableNtfs = withAgentEnv c .: newConnToAccept c "" enableNtfs
 
 -- | Join SMP agent connection (JOIN command).
-joinConnection :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE SndQueueSecured
-joinConnection c userId connId enableNtfs = withAgentEnv c .:: joinConn c userId connId enableNtfs
+joinConnection :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe (ConnShortLink c) -> ConnInfo -> PQSupport -> SubscriptionMode -> AE SndQueueSecured
+joinConnection c userId connId enableNtfs = withAgentEnv c .::. joinConn c userId connId enableNtfs
 {-# INLINE joinConnection #-}
 
 -- | Allow connection to continue after CONF notification (LET command)
@@ -814,23 +814,24 @@ getConnShortLink' c userId = \case
         Just sl@InvShortLink {linkKey = lk} | linkKey == lk -> pure sl
         _ -> do
           (sndPublicKey, sndPrivateKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-          let sl = InvShortLink {server = srv, linkId, linkKey, sndPrivateKey, sndPublicKey}
+          let sl = InvShortLink {server = srv, linkId, linkKey, sndPrivateKey, sndPublicKey, sndId = Nothing}
           createInvShortLink db sl
           pure sl
     let k = SL.invShortLinkKdf linkKey
-    secureGetQueueLink c userId invLink >>= decryptData srv linkKey k
+    ld@(sndId, _) <- secureGetQueueLink c userId invLink
+    withStore' c $ \db -> setInvShortLinkSndId db invLink sndId
+    decryptData srv linkKey k ld
   CSLContact srv _ linkKey -> do
     let (linkId, k) = SL.contactShortLinkKdf linkKey
-    getQueueLink c userId srv linkId >>= decryptData srv linkKey k
+    ld <- getQueueLink c userId srv linkId
+    decryptData srv linkKey k ld
   where
     decryptData :: ConnectionModeI c => SMPServer -> LinkKey -> C.SbKey -> (SMP.SenderId, SMP.QueueLinkData) -> AM (ConnectionRequestUri c, ConnInfo)
     decryptData srv linkKey k (sndId, d) = do
-      r <- liftEither $ SL.decryptLinkData @c linkKey k d
-      checkSameQueue $ case fst r of CRInvitationUri crd _ -> crd; CRContactUri crd -> crd
+      r@(cReq, _) <- liftEither $ SL.decryptLinkData @c linkKey k d
+      unless ((srv, sndId) `sameQAddress` qAddress (connReqQueue cReq)) $
+        throwE $ AGENT $ A_LINK "different address"
       pure r
-      where
-        checkSameQueue ConnReqUriData {crSmpQueues = SMPQueueUri {queueAddress = SMPQueueAddress srv' sndId' _ _} :| _} =
-          unless (srv == srv' && sndId == sndId') $ throwE $ AGENT $ A_LINK "different address"
 
 delInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
 delInvShortLink' = undefined
@@ -952,19 +953,20 @@ newConnToAccept c connId enableNtfs invId pqSup = do
       newConnToJoin c userId connId enableNtfs connReq pqSup
     _ -> throwE $ CMD PROHIBITED "newConnToAccept"
 
--- TODO [short link] joining queue that was already secured with LKEY
-joinConn :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
-joinConn c userId connId enableNtfs cReq cInfo pqSupport subMode = do
-  srv <- getNextSMPServer c userId [qServer cReqQueue]
-  joinConnSrv c userId connId enableNtfs cReq cInfo pqSupport subMode srv
-  where
-    cReqQueue :: SMPQueueUri
-    cReqQueue = case cReq of
-      CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _ -> q
-      CRContactUri ConnReqUriData {crSmpQueues = q :| _} -> q
+-- Short link MUST be passed again to joinConnection so that the same sender key is used.
+-- The alternative design would be to create connection ID and SndQueue when short link is read.
+joinConn :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe (ConnShortLink c) -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
+joinConn c userId connId enableNtfs cReq shortLink_ cInfo pqSupport subMode = do
+  srv <- getNextSMPServer c userId [qServer $ connReqQueue cReq]
+  joinConnSrv c userId connId enableNtfs cReq shortLink_ cInfo pqSupport subMode srv
 
-startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM (ConnData, SndQueue, CR.SndE2ERatchetParams 'C.X448)
-startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
+connReqQueue :: ConnectionRequestUri c -> SMPQueueUri
+connReqQueue = \case
+  CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _ -> q
+  CRContactUri ConnReqUriData {crSmpQueues = q :| _} -> q
+
+startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> Maybe (ConnShortLink 'CMInvitation) -> PQSupport -> AM (ConnData, SndQueue, CR.SndE2ERatchetParams 'C.X448)
+startJoinInvitation c userId connId sq_ enableNtfs cReqUri shortLink_ pqSup =
   lift (compatibleInvitationUri cReqUri) >>= \case
     Just (qInfo, Compatible e2eRcvParams@(CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
       -- this case avoids re-generating queue keys and subsequent failure of SKEY that timed out
@@ -980,7 +982,7 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
                 createRatchet_ pqSupport e2eRcvParams
           pure (sq, e2eSndParams)
         _ -> do
-          q <- lift $ fst <$> newSndQueue userId "" qInfo
+          (q, _) <- lift . newSndQueue userId "" qInfo =<< shortLinkSndKeys qInfo
           e2eSndParams <- createRatchet_ pqSupport e2eRcvParams
           withStore c $ \db -> runExceptT $ do
             sq' <- maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
@@ -989,6 +991,11 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
       pure (cData, sq', e2eSndParams)
     Nothing -> throwE $ AGENT A_VERSION
   where
+    shortLinkSndKeys (Compatible qInfo) =
+      pure shortLink_
+        $>>= \(CSLInvitation srv linkId linkKey) -> withStore' c (\db -> getInvShortLink db srv linkId)
+        $>>= \InvShortLink {linkKey = lk, sndId, sndPublicKey, sndPrivateKey} ->
+          pure (if linkKey == lk && maybe True (queueId qInfo ==) sndId then Just (sndPublicKey, sndPrivateKey) else Nothing)
     createRatchet_ pqSupport e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_) = do
       g <- asks random
       (pk1, pk2, pKem, e2eSndParams) <- liftIO $ CR.generateSndE2EParams g v (CR.replyKEM_ v kem_ pqSupport)
@@ -1030,8 +1037,8 @@ versionPQSupport_ :: VersionSMPA -> Maybe CR.VersionE2E -> PQSupport
 versionPQSupport_ agentV e2eV_ = PQSupport $ agentV >= pqdrSMPAgentVersion && maybe True (>= CR.pqRatchetE2EEncryptVersion) e2eV_
 {-# INLINE versionPQSupport_ #-}
 
-joinConnSrv :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
-joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMode srv =
+joinConnSrv :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe (ConnShortLink c) -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
+joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} shortLink_ cInfo pqSup subMode srv =
   withInvLock c (strEncode inv) "joinConnSrv" $ do
     SomeConn cType conn <- withStore c (`getConn` connId)
     case conn of
@@ -1042,9 +1049,9 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMod
   where
     doJoin :: Maybe SndQueue -> AM SndQueueSecured
     doJoin sq_ = do
-      (cData, sq, e2eSndParams) <- startJoinInvitation c userId connId sq_ enableNtfs inv pqSup
+      (cData, sq, e2eSndParams) <- startJoinInvitation c userId connId sq_ enableNtfs inv shortLink_ pqSup
       secureConfirmQueue c cData sq srv cInfo (Just e2eSndParams) subMode
-joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode srv =
+joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} _ cInfo pqSup subMode srv =
   lift (compatibleContactUri cReqUri) >>= \case
     Just (qInfo, vrsn) -> do
       cReq <- newRcvConnSrv c userId connId enableNtfs SCMInvitation Nothing (CR.IKNoPQ pqSup) subMode srv
@@ -1062,7 +1069,7 @@ joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSuppo
   where
     doJoin :: Maybe SndQueue -> AM SndQueueSecured
     doJoin sq_ = do
-      (cData, sq, e2eSndParams) <- startJoinInvitation c userId connId sq_ enableNtfs inv pqSupport
+      (cData, sq, e2eSndParams) <- startJoinInvitation c userId connId sq_ enableNtfs inv Nothing pqSupport
       secureConfirmQueueAsync c cData sq srv cInfo (Just e2eSndParams) subMode
 joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode _pqSupport _srv = do
   throwE $ CMD PROHIBITED "joinConnSrvAsync"
@@ -1096,7 +1103,7 @@ acceptContact' c connId enableNtfs invId ownConnInfo pqSupport subMode = withCon
   Invitation {contactConnId, connReq} <- withStore c $ \db -> getInvitation db "acceptContact'" invId
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ (ContactConnection ConnData {userId} _) -> do
-      sqSecured <- joinConn c userId connId enableNtfs connReq ownConnInfo pqSupport subMode
+      sqSecured <- joinConn c userId connId enableNtfs connReq Nothing ownConnInfo pqSupport subMode
       withStore' c $ \db -> acceptInvitation db invId ownConnInfo
       pure sqSecured
     _ -> throwE $ CMD PROHIBITED "acceptContact"
@@ -2861,7 +2868,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                     let (delSqs, keepSqs) = L.partition ((Just dbQueueId ==) . dbReplaceQId) sqs
                     case L.nonEmpty keepSqs of
                       Just sqs' -> do
-                        (sq_@SndQueue {sndPublicKey}, dhPublicKey) <- lift $ newSndQueue userId connId qInfo
+                        (sq_@SndQueue {sndPublicKey}, dhPublicKey) <- lift $ newSndQueue userId connId qInfo Nothing
                         sq2 <- withStore c $ \db -> do
                           liftIO $ mapM_ (deleteConnSndQueue db connId) delSqs
                           addConnSndQueue db connId (sq_ :: NewSndQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
@@ -3053,7 +3060,7 @@ connectReplyQueues c cData@ConnData {userId, connId} ownConnInfo sq_ (qInfo :| _
       enqueueConfirmation c cData sq' ownConnInfo Nothing
       where
         upgradeConn = do
-          (sq, _) <- lift $ newSndQueue userId connId qInfo'
+          (sq, _) <- lift $ newSndQueue userId connId qInfo' Nothing
           withStore c $ \db -> upgradeRcvConnToDuplex db connId sq
 
 secureConfirmQueueAsync :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> SubscriptionMode -> AM SndQueueSecured
@@ -3175,11 +3182,11 @@ agentRatchetDecrypt' g db connId rc encAgentMsg = do
   liftIO $ updateRatchet db connId rc' skippedDiff
   liftEither $ bimap (SEAgentError . cryptoError) (,CR.rcRcvKEM rc') agentMsgBody_
 
-newSndQueue :: UserId -> ConnId -> Compatible SMPQueueInfo -> AM' (NewSndQueue, C.PublicKeyX25519)
-newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, sndSecure, dhPublicKey = rcvE2ePubDhKey})) = do
+newSndQueue :: UserId -> ConnId -> Compatible SMPQueueInfo -> Maybe (C.AAuthKeyPair) -> AM' (NewSndQueue, C.PublicKeyX25519)
+newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, sndSecure, dhPublicKey = rcvE2ePubDhKey})) sndKeys_ = do
   C.AuthAlg a <- asks $ sndAuthAlg . config
   g <- asks random
-  (sndPublicKey, sndPrivateKey) <- atomically $ C.generateAuthKeyPair a g
+  (sndPublicKey, sndPrivateKey) <- maybe (atomically $ C.generateAuthKeyPair a g) pure sndKeys_
   (e2ePubKey, e2ePrivKey) <- atomically $ C.generateKeyPair g
   let sq =
         SndQueue
@@ -3192,7 +3199,8 @@ newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAdd
             sndPrivateKey,
             e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey,
             e2ePubKey = Just e2ePubKey,
-            status = New,
+            -- setting status to Secured prevents SKEY when queue was already secured with LKEY
+            status = if isJust sndKeys_ then Secured else New,
             dbQueueId = DBNewQueue,
             primary = True,
             dbReplaceQueueId = Nothing,

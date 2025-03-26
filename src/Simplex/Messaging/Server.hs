@@ -1252,7 +1252,6 @@ client
       Cmd SNotifier NSUB -> Just <$> subscribeNotifications
       Cmd SRecipient command ->
         Just <$> case command of
-          -- TODO [short links] idempotent NEW
           NEW nqr@NewQueueReq {auth_} ->
             ifM allowNew (createQueue nqr) (pure (corrId, entId, ERR AUTH))
             where
