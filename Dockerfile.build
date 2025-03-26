@@ -28,15 +28,4 @@ ENV PATH="/root/.cabal/bin:/root/.ghcup/bin:$PATH"
 RUN ghcup set ghc "${GHC}" && \
     ghcup set cabal "${CABAL}"
 
-# Copy only the source code
-COPY apps /project/apps/
-COPY cbits /project/cbits/
-COPY src /project/src/
-COPY tests /project/tests/
-
-COPY cabal.project Setup.hs simplexmq.cabal LICENSE /project
-
 WORKDIR /project
-
-# Compile app
-RUN cabal update
