@@ -43,6 +43,7 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
   logQueueStates :: s -> IO ()
   logQueueState :: StoreQueue s -> StoreMonad s ()
   queueStore :: s -> QueueStore s
+  loadedQueueCounts :: s -> IO LoadedQueueCounts
 
   -- message store methods
   mkQueue :: s -> RecipientId -> QueueRec -> IO (StoreQueue s)
@@ -87,6 +88,14 @@ instance Monoid MessageStats where
 instance Semigroup MessageStats where
   MessageStats a b c <> MessageStats x y z = MessageStats (a + x) (b + y) (c + z)
   {-# INLINE (<>) #-}
+
+data LoadedQueueCounts = LoadedQueueCounts
+  { loadedQueueCount :: Int,
+    loadedNotifierCount :: Int,
+    openJournalCount :: Int,
+    queueLockCount :: Int,
+    notifierLockCount :: Int
+  }
 
 newMessageStats :: MessageStats
 newMessageStats = MessageStats 0 0 0

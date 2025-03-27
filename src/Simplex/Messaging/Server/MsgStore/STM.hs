@@ -23,6 +23,7 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Data.Functor (($>))
 import Data.Int (Int64)
+import qualified Data.Map.Strict as M
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
@@ -93,6 +94,12 @@ instance MsgStoreClass STMMsgStore where
   {-# INLINE logQueueState #-}
   queueStore = queueStore_
   {-# INLINE queueStore #-}
+
+  loadedQueueCounts :: STMMsgStore -> IO LoadedQueueCounts
+  loadedQueueCounts STMMsgStore {queueStore_ = st} = do
+    loadedQueueCount <- M.size <$> readTVarIO (queues st)
+    loadedNotifierCount <- M.size <$> readTVarIO (notifiers st)
+    pure LoadedQueueCounts {loadedQueueCount, loadedNotifierCount, openJournalCount = 0, queueLockCount = 0, notifierLockCount = 0}
 
   mkQueue _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
   {-# INLINE mkQueue #-}

@@ -289,7 +289,9 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       DB.execute db "UPDATE msg_queues SET deleted_at = ? WHERE recipient_id = ? AND deleted_at IS NULL" (ts, rId)
     atomically $ writeTVar qr Nothing
     atomically $ TM.delete (senderId q) $ senders st
-    forM_ (notifier q) $ \NtfCreds {notifierId} -> atomically $ TM.delete notifierId $ notifiers st
+    forM_ (notifier q) $ \NtfCreds {notifierId} -> do
+      atomically $ TM.delete notifierId $ notifiers st
+      atomically $ TM.delete notifierId $ notifierLocks st
     mq_ <- atomically $ swapTVar (msgQueue sq) Nothing
     withLog "deleteStoreQueue" st (`logDeleteQueue` rId)
     pure (q, mq_)
