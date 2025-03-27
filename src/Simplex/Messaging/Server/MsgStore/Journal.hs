@@ -340,12 +340,6 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   deleteStoreQueue = withQS deleteStoreQueue
   {-# INLINE deleteStoreQueue #-}
 
-#if defined(dbServerPostgres)
-mkTempQueue :: JournalMsgStore s -> RecipientId -> QueueRec -> IO (JournalQueue s)
-mkTempQueue ms rId qr = createLockIO >>= makeQueue_ ms rId qr
-{-# INLINE mkTempQueue #-}
-#endif
-
 makeQueue_ :: JournalMsgStore s -> RecipientId -> QueueRec -> Lock -> IO (JournalQueue s)
 makeQueue_ JournalMsgStore {sharedLock} rId qr queueLock = do
   queueRec' <- newTVarIO $ Just qr
@@ -396,7 +390,7 @@ instance MsgStoreClass (JournalMsgStore s) where
   unsafeWithAllMsgQueues tty ms action = case queueStore_ ms of
     MQStore st -> withLoadedQueues st run 
 #if defined(dbServerPostgres)
-    PQStore st -> foldQueueRecs tty st Nothing $ uncurry (mkTempQueue ms) >=> run
+    PQStore st -> foldQueueRecs tty st Nothing $ uncurry (mkQueue ms False) >=> run
 #endif
     where
       run q = do
@@ -417,7 +411,7 @@ instance MsgStoreClass (JournalMsgStore s) where
     PQStore st -> do
       let JournalMsgStore {queueLocks, sharedLock} = ms
       foldQueueRecs tty st (Just veryOld) $ \(rId, qr) -> do
-        q <- mkTempQueue ms rId qr
+        q <- mkQueue ms False rId qr
         withSharedWaitLock rId queueLocks sharedLock $ run $ tryStore' "deleteExpiredMsgs" rId $
           getLoadedQueue q >>= unStoreIO . expireQueueMsgs ms now old
 #endif
@@ -461,9 +455,9 @@ instance MsgStoreClass (JournalMsgStore s) where
         PQStore PostgresQueueStore {queues, notifiers, notifierLocks} -> (queues, notifiers, Just notifierLocks)
 #endif
 
-  mkQueue :: JournalMsgStore s -> RecipientId -> QueueRec -> IO (JournalQueue s)
-  mkQueue ms rId qr = do
-    lock <- atomically $ getMapLock (queueLocks ms) rId
+  mkQueue :: JournalMsgStore s -> Bool -> RecipientId -> QueueRec -> IO (JournalQueue s)
+  mkQueue ms keepLock rId qr = do
+    lock <- if keepLock then atomically $ getMapLock (queueLocks ms) rId else createLockIO
     makeQueue_ ms rId qr lock
 
   getMsgQueue :: JournalMsgStore s -> JournalQueue s -> Bool -> StoreIO s (JournalMsgQueue s)

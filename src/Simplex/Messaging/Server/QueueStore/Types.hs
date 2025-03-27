@@ -29,7 +29,7 @@ class StoreQueueClass q => QueueStoreClass q s where
   loadedQueues :: s -> TMap RecipientId q
   compactQueues :: s -> IO Int64
   addQueue_ :: s -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
-  getQueue_ :: DirectParty p => s -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
+  getQueue_ :: DirectParty p => s -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   secureQueue :: s -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   addQueueNotifier :: s -> q -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
   deleteQueueNotifier :: s -> q -> IO (Either ErrorType (Maybe NotifierId))

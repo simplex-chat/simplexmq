@@ -155,24 +155,27 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       -- hasId = anyM [TM.memberIO rId queues, TM.memberIO senderId senders, hasNotifier]
       -- hasNotifier = maybe (pure False) (\NtfCreds {notifierId} -> TM.memberIO notifierId notifiers) notifier
 
-  getQueue_ :: DirectParty p => PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
+  getQueue_ :: DirectParty p => PostgresQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   getQueue_ st mkQ party qId = case party of
     SRecipient -> getRcvQueue qId
     SSender -> TM.lookupIO qId senders >>= maybe loadSndQueue getRcvQueue
-    SNotifier -> TM.lookupIO qId notifiers >>= maybe loadNtfQueue getRcvQueue
+    -- loaded queue is deleted from notifiers map to reduce cache size after queue was subscribed to by ntf server
+    SNotifier -> TM.lookupIO qId notifiers >>= maybe loadNtfQueue (getRcvQueue >=> (atomically (TM.delete qId notifiers) $>))
     where
       PostgresQueueStore {queues, senders, notifiers} = st
       getRcvQueue rId = TM.lookupIO rId queues >>= maybe loadRcvQueue (pure . Right)
-      loadRcvQueue = loadQueue " WHERE recipient_id = ?" $ \_ -> pure ()
-      loadSndQueue = loadQueue " WHERE sender_id = ?" $ \rId -> TM.insert qId rId senders
-      loadNtfQueue = loadQueue " WHERE notifier_id = ?" $ \_ -> pure () -- do NOT cache ref - ntf subscriptions are rare
-      loadQueue condition insertRef =
+      loadRcvQueue = loadQueue True " WHERE recipient_id = ?"
+      loadSndQueue = loadQueue True " WHERE sender_id = ?"
+      -- not caching the queue loaded for ntf subscirption
+      loadNtfQueue = loadQueue False " WHERE notifier_id = ?"
+      loadQueue cache condition =
         E.uninterruptibleMask_ $ runExceptT $ do
           (rId, qRec) <-
             withDB "getQueue_" st $ \db -> firstRow rowToQueueRec AUTH $
               DB.query db (queueRecQuery <> condition <> " AND deleted_at IS NULL") (Only qId)
           liftIO $ do
-            sq <- mkQ rId qRec -- loaded queue
+            -- and not creating lock in map for ntf subscriptions, as the queue is not modified
+            sq <- mkQ cache rId qRec -- loaded queue
             -- This lock prevents the scenario when the queue is added to cache,
             -- while another thread is proccessing the same queue in withAllMsgQueues
             -- without adding it to cache, possibly trying to open the same files twice.
@@ -183,8 +186,9 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
               TM.lookup rId queues >>= \case
                 Just sq' -> pure sq'
                 Nothing -> do
-                  insertRef rId
-                  TM.insert rId sq queues
+                  when cache $ do
+                    TM.insert rId sq queues
+                    TM.insert (senderId qRec) rId senders
                   pure sq
 
   secureQueue :: PostgresQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())

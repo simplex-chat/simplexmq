@@ -1419,6 +1419,7 @@ client
         withQueue :: (StoreQueue s -> QueueRec -> M (Transmission BrokerMsg)) -> M (Transmission BrokerMsg)
         withQueue = withQueue_ True
 
+        -- SEND passes queueNotBlocked False here to update time, but it fails anyway on blocked queues (see code for SEND).
         withQueue_ :: Bool -> (StoreQueue s -> QueueRec -> M (Transmission BrokerMsg)) -> M (Transmission BrokerMsg)
         withQueue_ queueNotBlocked action = case q_ of
           Nothing -> pure $ err INTERNAL

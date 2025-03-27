@@ -196,7 +196,7 @@ testExportImportStore ms = do
   g <- C.newRandom
   (rId1, qr1) <- testNewQueueRec g True
   (rId2, qr2) <- testNewQueueRec g True
-  sl <- readWriteQueueStore True (mkQueue ms) testStoreLogFile $ queueStore ms
+  sl <- readWriteQueueStore True (mkQueue ms True) testStoreLogFile $ queueStore ms
   runRight_ $ do
     let write q s = writeMsg ms q True =<< mkMessage s
     q1 <- ExceptT $ addQueue ms rId1 qr1
@@ -221,7 +221,7 @@ testExportImportStore ms = do
   closeStoreLog sl
   let cfg = (testJournalStoreCfg MQStoreCfg :: JournalStoreConfig 'QSMemory) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
-  readWriteQueueStore True (mkQueue ms') testStoreLogFile (queueStore ms') >>= closeStoreLog
+  readWriteQueueStore True (mkQueue ms' True) testStoreLogFile (queueStore ms') >>= closeStoreLog
   stats@MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages False ms' testStoreMsgsFile Nothing False
   printMessageStats "Messages" stats
@@ -230,7 +230,7 @@ testExportImportStore ms = do
   exportMessages False ms' testStoreMsgsFile2 False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
-  readWriteQueueStore True (mkQueue stmStore) testStoreLogFile (queueStore stmStore) >>= closeStoreLog
+  readWriteQueueStore True (mkQueue stmStore True) testStoreLogFile (queueStore stmStore) >>= closeStoreLog
   MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages False stmStore testStoreMsgsFile2 Nothing False
   exportMessages False stmStore testStoreMsgsFile False
