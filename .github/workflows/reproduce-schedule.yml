@@ -29,9 +29,9 @@ jobs:
 
       - name: Check if build has been reproduced
         env:
-          url: ${{ secrets.WEBHOOK_URL }}
-          user: ${{ secrets.WEBHOOK_USER }}
-          pass: ${{ secrets.WEBHOOK_PASS }}
+          url: ${{ secrets.STATUS_SIMPLEX_WEBHOOK_URL }}
+          user: ${{ secrets.STATUS_SIMPLEX_WEBHOOK_USER }}
+          pass: ${{ secrets.STATUS_SIMPLEX_WEBHOOK_PASS }}
         run: |
           if [ -f "${GITHUB_WORKSPACE}/$TAG/_sha256sums" ]; then
             exit 0
