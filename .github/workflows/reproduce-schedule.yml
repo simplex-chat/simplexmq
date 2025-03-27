@@ -3,7 +3,7 @@ name: Reproduce latest release
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */1 * * *' # every hour
+    - cron: '0 2 * * *' # every day at 02:00 night
 
 jobs:
   reproduce:
@@ -28,9 +28,18 @@ jobs:
           ${GITHUB_WORKSPACE}/scripts/reproduce-builds.sh "$TAG"
 
       - name: Check if build has been reproduced
+        env:
+          url: ${{ secrets.WEBHOOK_URL }}
+          user: ${{ secrets.WEBHOOK_USER }}
+          pass: ${{ secrets.WEBHOOK_PASS }}
         run: |
           if [ -f "${GITHUB_WORKSPACE}/$TAG/_sha256sums" ]; then
             exit 0
           else
+            curl --proto '=https' --tlsv1.2 -sSf \
+              -u "${user}:${pass}" \
+              -H 'Content-Type: application/json' \
+              -d '{"title": "👾 GitHub: Runner", "description": "⛔️ '"$TAG"' did not reproduce."}' \
+              "$url"
             exit 1
           fi
