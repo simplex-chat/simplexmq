@@ -35,7 +35,6 @@ import Control.Monad.Trans.Except
 import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as BB
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Bitraversable (bimapM)
 import Data.Either (fromRight)
@@ -158,38 +157,49 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   getQueue_ :: DirectParty p => PostgresQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   getQueue_ st mkQ party qId = case party of
     SRecipient -> getRcvQueue qId
-    SSender -> TM.lookupIO qId senders >>= maybe loadSndQueue getRcvQueue
+    SSender -> TM.lookupIO qId senders >>= maybe (mask loadSndQueue) getRcvQueue
     -- loaded queue is deleted from notifiers map to reduce cache size after queue was subscribed to by ntf server
-    SNotifier -> TM.lookupIO qId notifiers >>= maybe loadNtfQueue (getRcvQueue >=> (atomically (TM.delete qId notifiers) $>))
+    SNotifier -> TM.lookupIO qId notifiers >>= maybe (mask loadNtfQueue) (getRcvQueue >=> (atomically (TM.delete qId notifiers) $>))
     where
       PostgresQueueStore {queues, senders, notifiers} = st
-      getRcvQueue rId = TM.lookupIO rId queues >>= maybe loadRcvQueue (pure . Right)
-      loadRcvQueue = loadQueue True " WHERE recipient_id = ?"
-      loadSndQueue = loadQueue True " WHERE sender_id = ?"
-      -- not caching the queue loaded for ntf subscirption
-      loadNtfQueue = loadQueue False " WHERE notifier_id = ?"
-      loadQueue cache condition =
-        E.uninterruptibleMask_ $ runExceptT $ do
-          (rId, qRec) <-
-            withDB "getQueue_" st $ \db -> firstRow rowToQueueRec AUTH $
-              DB.query db (queueRecQuery <> condition <> " AND deleted_at IS NULL") (Only qId)
-          liftIO $ do
-            -- and not creating lock in map for ntf subscriptions, as the queue is not modified
-            sq <- mkQ cache rId qRec -- loaded queue
-            -- This lock prevents the scenario when the queue is added to cache,
-            -- while another thread is proccessing the same queue in withAllMsgQueues
-            -- without adding it to cache, possibly trying to open the same files twice.
-            -- Alse see comment in idleDeleteExpiredMsgs.
-            withQueueLock sq "getQueue_" $ atomically $
-              -- checking the cache again for concurrent reads,
-              -- use previously loaded queue if exists.
-              TM.lookup rId queues >>= \case
-                Just sq' -> pure sq'
-                Nothing -> do
-                  when cache $ do
-                    TM.insert rId sq queues
-                    TM.insert (senderId qRec) rId senders
-                  pure sq
+      getRcvQueue rId = TM.lookupIO rId queues >>= maybe (mask loadRcvQueue) (pure . Right)
+      -- loadRcvQueue = loadQueue " WHERE recipient_id = ?" $ \_ -> pure ()
+      -- loadSndQueue = loadQueue " WHERE sender_id = ?" cacheSender
+      -- -- not caching the queue loaded for ntf subscirption
+      -- loadNtfQueue = loadQueue " WHERE notifier_id = ?" $ \_ -> pure ()
+      loadRcvQueue = do
+        (rId, qRec) <- loadQueue " WHERE recipient_id = ?"
+        liftIO $ cacheQueue rId qRec $ \_ -> pure () -- recipient map already checked, not caching sender ref
+      loadSndQueue = do
+        (rId, qRec) <- loadQueue " WHERE sender_id = ?"
+        liftIO $
+          TM.lookupIO rId queues -- checking recipient map first
+            >>= maybe (cacheQueue rId qRec cacheSender) (atomically (cacheSender rId) $>)
+      loadNtfQueue = do
+        (rId, qRec) <- loadQueue " WHERE notifier_id = ?"
+        liftIO $
+          TM.lookupIO rId queues -- checking recipient map first, not creating lock in map, not caching queue
+            >>= maybe (mkQ False rId qRec) pure
+      mask = E.uninterruptibleMask_ . runExceptT
+      cacheSender rId = TM.insert qId rId senders
+      loadQueue condition =
+        withDB "getQueue_" st $ \db -> firstRow rowToQueueRec AUTH $
+          DB.query db (queueRecQuery <> condition <> " AND deleted_at IS NULL") (Only qId)
+      cacheQueue rId qRec insertRef = do
+        sq <- mkQ True rId qRec -- loaded queue
+        -- This lock prevents the scenario when the queue is added to cache,
+        -- while another thread is proccessing the same queue in withAllMsgQueues
+        -- without adding it to cache, possibly trying to open the same files twice.
+        -- Alse see comment in idleDeleteExpiredMsgs.
+        withQueueLock sq "getQueue_" $ atomically $
+          -- checking the cache again for concurrent reads,
+          -- use previously loaded queue if exists.
+          TM.lookup rId queues >>= \case
+            Just sq' -> pure sq'
+            Nothing -> do
+              insertRef rId
+              TM.insert rId sq queues
+              pure sq
 
   secureQueue :: PostgresQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   secureQueue st sq sKey =
