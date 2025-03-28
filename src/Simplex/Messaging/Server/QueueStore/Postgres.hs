@@ -163,10 +163,6 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     where
       PostgresQueueStore {queues, senders, notifiers} = st
       getRcvQueue rId = TM.lookupIO rId queues >>= maybe (mask loadRcvQueue) (pure . Right)
-      -- loadRcvQueue = loadQueue " WHERE recipient_id = ?" $ \_ -> pure ()
-      -- loadSndQueue = loadQueue " WHERE sender_id = ?" cacheSender
-      -- -- not caching the queue loaded for ntf subscirption
-      -- loadNtfQueue = loadQueue " WHERE notifier_id = ?" $ \_ -> pure ()
       loadRcvQueue = do
         (rId, qRec) <- loadQueue " WHERE recipient_id = ?"
         liftIO $ cacheQueue rId qRec $ \_ -> pure () -- recipient map already checked, not caching sender ref
