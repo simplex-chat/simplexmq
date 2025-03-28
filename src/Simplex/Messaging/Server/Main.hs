@@ -118,7 +118,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 ("WARNING: message log file " <> storeMsgsFilePath <> " will be imported to journal directory " <> storeMsgsJournalDir)
                 "Messages not imported"
               ms <- newJournalMsgStore MQStoreCfg
-              readQueueStore True (mkQueue ms) storeLogFile $ stmQueueStore ms
+              readQueueStore True (mkQueue ms False) storeLogFile $ stmQueueStore ms
               msgStats <- importMessages True ms storeMsgsFilePath Nothing False -- no expiration
               putStrLn "Import completed"
               printMessageStats "Messages" msgStats
@@ -137,7 +137,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 "Journal not exported"
               ms <- newJournalMsgStore MQStoreCfg
               -- TODO [postgres] in case postgres configured, queues must be read from database
-              readQueueStore True (mkQueue ms) storeLogFile $ stmQueueStore ms
+              readQueueStore True (mkQueue ms False) storeLogFile $ stmQueueStore ms
               exportMessages True ms storeMsgsFilePath False
               putStrLn "Export completed"
               case readStoreType ini of
@@ -179,7 +179,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 ("WARNING: store log file " <> storeLogFile <> " will be compacted and imported to PostrgreSQL database: " <> B.unpack connstr <> ", schema: " <> B.unpack schema)
                 "Queue records not imported"
               ms <- newJournalMsgStore MQStoreCfg
-              sl <- readWriteQueueStore True (mkQueue ms) storeLogFile (queueStore ms)
+              sl <- readWriteQueueStore True (mkQueue ms False) storeLogFile (queueStore ms)
               closeStoreLog sl
               queues <- readTVarIO $ loadedQueues $ stmQueueStore ms
               let storeCfg = PostgresStoreCfg {dbOpts = dbOpts {createSchema = True}, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}

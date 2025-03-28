@@ -259,10 +259,6 @@ proxyCfgMS msType =
 proxyCfgJ2 :: ServerConfig
 proxyCfgJ2 = journalCfg proxyCfg testStoreLogFile2 testStoreMsgsDir2
 
--- TODO [postgres]
--- proxyCfgJ2 :: ServerConfig
--- proxyCfgJ2 = journalCfg proxyCfg testStoreDBOpts2 testStoreMsgsDir2
-
 proxyVRangeV8 :: VersionRangeSMP
 proxyVRangeV8 = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion
 

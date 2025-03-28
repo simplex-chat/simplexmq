@@ -831,7 +831,7 @@ testRestoreExpireMessages =
       where
         export = do
           ms <- newMsgStore (testJournalStoreCfg MQStoreCfg) {quota = 4}
-          readWriteQueueStore True (mkQueue ms) testStoreLogFile (queueStore ms) >>= closeStoreLog
+          readWriteQueueStore True (mkQueue ms True) testStoreLogFile (queueStore ms) >>= closeStoreLog
           removeFileIfExists testStoreMsgsFile
           exportMessages False ms testStoreMsgsFile False
           closeMsgStore ms
