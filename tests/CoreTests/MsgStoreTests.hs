@@ -198,7 +198,7 @@ testExportImportStore ms = do
   g <- C.newRandom
   (rId1, qr1) <- testNewQueueRec g QMMessaging
   (rId2, qr2) <- testNewQueueRec g QMMessaging
-  sl <- readWriteQueueStore True (mkQueue ms) testStoreLogFile $ queueStore ms
+  sl <- readWriteQueueStore True (mkQueue ms True) testStoreLogFile $ queueStore ms
   runRight_ $ do
     let write q s = writeMsg ms q True =<< mkMessage s
     q1 <- ExceptT $ addQueue ms rId1 qr1
@@ -223,7 +223,7 @@ testExportImportStore ms = do
   closeStoreLog sl
   let cfg = (testJournalStoreCfg MQStoreCfg :: JournalStoreConfig 'QSMemory) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
-  readWriteQueueStore True (mkQueue ms') testStoreLogFile (queueStore ms') >>= closeStoreLog
+  readWriteQueueStore True (mkQueue ms' True) testStoreLogFile (queueStore ms') >>= closeStoreLog
   stats@MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages False ms' testStoreMsgsFile Nothing False
   printMessageStats "Messages" stats
@@ -232,7 +232,7 @@ testExportImportStore ms = do
   exportMessages False ms' testStoreMsgsFile2 False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
-  readWriteQueueStore True (mkQueue stmStore) testStoreLogFile (queueStore stmStore) >>= closeStoreLog
+  readWriteQueueStore True (mkQueue stmStore True) testStoreLogFile (queueStore stmStore) >>= closeStoreLog
   MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages False stmStore testStoreMsgsFile2 Nothing False
   exportMessages False stmStore testStoreMsgsFile False
@@ -313,7 +313,7 @@ testMessageState ms = do
     q <- ExceptT $ addQueue ms rId qr
     Just (Message {msgId = mId1}, True) <- write q "message 1"
     Just (Message {}, False) <- write q "message 2"
-    liftIO $ closeMsgQueue q
+    liftIO $ closeMsgQueue ms q
     pure mId1
 
   ls <- B.lines <$> B.readFile statePath
@@ -324,7 +324,7 @@ testMessageState ms = do
     Just (Message {msgId = mId3}, False) <- write q "message 3"
     (Msg "message 1", Msg "message 3") <- tryDelPeekMsg ms q mId1
     (Msg "message 3", Nothing) <- tryDelPeekMsg ms q mId3
-    liftIO $ closeMsgQueue q
+    liftIO $ closeMsgQueue ms q
 
 testRemoveJournals :: JournalMsgStore s -> IO ()
 testRemoveJournals ms = do
@@ -340,7 +340,7 @@ testRemoveJournals ms = do
     Just (Message {msgId = mId2}, False) <- write q "message 2"    
     (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms q mId1
     (Msg "message 2", Nothing) <- tryDelPeekMsg ms q mId2
-    liftIO $ closeMsgQueue q
+    liftIO $ closeMsgQueue ms q
 
   ls <- B.lines <$> B.readFile statePath
   length ls `shouldBe` 4
@@ -379,7 +379,7 @@ testRemoveJournals ms = do
     liftIO $ journalFilesCount dir `shouldReturn` 1
     (Msg "message 7", Just MessageQuota {msgId = mId8}) <- tryDelPeekMsg ms q mId7
     (Just MessageQuota {}, Nothing) <- tryDelPeekMsg ms q mId8
-    liftIO $ closeMsgQueue q
+    liftIO $ closeMsgQueue ms q
 
   journalFilesCount dir `shouldReturn` 1
   runRight $ do
@@ -387,7 +387,7 @@ testRemoveJournals ms = do
     Just (Message {}, True) <- write q "message 8"
     liftIO $ journalFilesCount dir `shouldReturn` 1
     liftIO $ stateBackupCount dir `shouldReturn` 2
-    liftIO $ closeMsgQueue q
+    liftIO $ closeMsgQueue ms q
   where
     journalFilesCount dir = length . filter ("messages." `isPrefixOf`) <$> listDirectory dir
     stateBackupCount dir = length . filter (".bak" `isSuffixOf`) <$> listDirectory dir
@@ -410,20 +410,20 @@ testRemoveQueueStateBackups = do
     Just (Message {msgId = mId2}, False) <- write q "message 2"
     (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms q mId1
     (Msg "message 2", Nothing) <- tryDelPeekMsg ms q mId2
-    liftIO $ closeMsgQueue q
+    liftIO $ closeMsgQueue ms q
     liftIO $ stateBackupCount dir `shouldReturn` 0
 
     q1 <- ExceptT $ getQueue ms SRecipient rId
     Just (Message {}, True) <- write q1 "message 3"
     Just (Message {}, False) <- write q1 "message 4"
-    liftIO $ closeMsgQueue q1
+    liftIO $ closeMsgQueue ms q1
     liftIO $ stateBackupCount dir `shouldReturn` 0
 
     liftIO $ threadDelay 1000000
     q2 <- ExceptT $ getQueue ms SRecipient rId
     Just (Message {}, False) <- write q2 "message 5"
     Nothing <- write q2 "message 5"
-    liftIO $ closeMsgQueue q2
+    liftIO $ closeMsgQueue ms q2
     liftIO $ stateBackupCount dir `shouldReturn` 1
   where
     stateBackupCount dir = length . filter (".bak" `isSuffixOf`) <$> listDirectory dir
@@ -445,7 +445,7 @@ testExpireIdleQueues = do
     Just (Message {msgId = mId2}, False) <- write q "message 2"
     (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms q mId1
     (Msg "message 2", Nothing) <- tryDelPeekMsg ms q mId2
-    liftIO $ closeMsgQueue q
+    liftIO $ closeMsgQueue ms q
     pure q
 
   (Just MsgQueueState {size = 0, readState = rs, writeState = ws}, True) <- readQueueState ms statePath
@@ -474,7 +474,7 @@ testReadFileMissing ms = do
 
   mq <- fromJust <$> readTVarIO (msgQueue q)
   MsgQueueState {readState = rs} <- readTVarIO $ state mq
-  closeMsgQueue q
+  closeMsgQueue ms q
   let path = journalFilePath (queueDirectory $ queue mq) $ journalId rs
   removeFile path
 
@@ -493,7 +493,7 @@ testReadFileMissingSwitch ms = do
 
   mq <- fromJust <$> readTVarIO (msgQueue q)
   MsgQueueState {readState = rs} <- readTVarIO $ state mq
-  closeMsgQueue q
+  closeMsgQueue ms q
   let path = journalFilePath (queueDirectory $ queue mq) $ journalId rs
   removeFile path
 
@@ -511,7 +511,7 @@ testWriteFileMissing ms = do
 
   mq <- fromJust <$> readTVarIO (msgQueue q)
   MsgQueueState {writeState = ws} <- readTVarIO $ state mq
-  closeMsgQueue q
+  closeMsgQueue ms q
   let path = journalFilePath (queueDirectory $ queue mq) $ journalId ws
   print path
   removeFile path
@@ -534,7 +534,7 @@ testReadAndWriteFilesMissing ms = do
 
   mq <- fromJust <$> readTVarIO (msgQueue q)
   MsgQueueState {readState = rs, writeState = ws} <- readTVarIO $ state mq
-  closeMsgQueue q
+  closeMsgQueue ms q
   removeFile $ journalFilePath (queueDirectory $ queue mq) $ journalId rs
   removeFile $ journalFilePath (queueDirectory $ queue mq) $ journalId ws
 
