@@ -178,7 +178,7 @@ import Simplex.Messaging.Agent.Store.Common (DBStore)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL, getCurrentMigrations)
 import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
-import Simplex.Messaging.Client (SMPClientError, ServerTransmission (..), ServerTransmissionBatch, temporaryClientError, unexpectedResponse)
+import Simplex.Messaging.Client (SMPClientError, ServerTransmission (..), ServerTransmissionBatch, nonBlockingWriteTBQueue, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
@@ -381,8 +381,8 @@ prepareConnectionToAccept :: AgentClient -> Bool -> ConfirmationId -> PQSupport 
 prepareConnectionToAccept c enableNtfs = withAgentEnv c .: newConnToAccept c "" enableNtfs
 
 -- | Join SMP agent connection (JOIN command).
-joinConnection :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe (ConnShortLink c) -> ConnInfo -> PQSupport -> SubscriptionMode -> AE SndQueueSecured
-joinConnection c userId connId enableNtfs = withAgentEnv c .::. joinConn c userId connId enableNtfs
+joinConnection :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE SndQueueSecured
+joinConnection c userId connId enableNtfs = withAgentEnv c .:: joinConn c userId connId enableNtfs
 {-# INLINE joinConnection #-}
 
 -- | Allow connection to continue after CONF notification (LET command)
@@ -955,56 +955,54 @@ newConnToAccept c connId enableNtfs invId pqSup = do
 
 -- Short link MUST be passed again to joinConnection so that the same sender key is used.
 -- The alternative design would be to create connection ID and SndQueue when short link is read.
-joinConn :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe (ConnShortLink c) -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
-joinConn c userId connId enableNtfs cReq shortLink_ cInfo pqSupport subMode = do
+joinConn :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
+joinConn c userId connId enableNtfs cReq cInfo pqSupport subMode = do
   srv <- getNextSMPServer c userId [qServer $ connReqQueue cReq]
-  joinConnSrv c userId connId enableNtfs cReq shortLink_ cInfo pqSupport subMode srv
+  joinConnSrv c userId connId enableNtfs cReq cInfo pqSupport subMode srv
 
 connReqQueue :: ConnectionRequestUri c -> SMPQueueUri
 connReqQueue = \case
   CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _ -> q
   CRContactUri ConnReqUriData {crSmpQueues = q :| _} -> q
 
-startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> Maybe (ConnShortLink 'CMInvitation) -> PQSupport -> AM (ConnData, SndQueue, CR.SndE2ERatchetParams 'C.X448)
-startJoinInvitation c userId connId sq_ enableNtfs cReqUri shortLink_ pqSup =
+startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM (ConnData, SndQueue, CR.SndE2ERatchetParams 'C.X448)
+startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
   lift (compatibleInvitationUri cReqUri) >>= \case
     Just (qInfo, Compatible e2eRcvParams@(CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
       -- this case avoids re-generating queue keys and subsequent failure of SKEY that timed out
       -- e2ePubKey is always present, it's Maybe historically
       let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (Just v)
+      g <- asks random
+      maxSupported <- asks $ maxVersion . e2eEncryptVRange . config
       (sq', e2eSndParams) <- case sq_ of
         Just sq@SndQueue {e2ePubKey = Just _k} -> do
-          e2eSndParams <-
-            withStore' c (\db -> getSndRatchet db connId v) >>= \case
-              Right r -> pure $ snd r
+          e2eSndParams <- withStore c $ \db ->
+            getSndRatchet db connId v >>= \case
+              Right r -> pure $ Right $ snd r
               Left e -> do
-                atomically $ writeTBQueue (subQ c) ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no snd ratchet " <> show e))
-                createRatchet_ pqSupport e2eRcvParams
+                nonBlockingWriteTBQueue (subQ c) ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no snd ratchet " <> show e))
+                runExceptT $ createRatchet_ db g maxSupported pqSupport e2eRcvParams
           pure (sq, e2eSndParams)
         _ -> do
-          (q, _) <- lift . newSndQueue userId "" qInfo =<< shortLinkSndKeys qInfo
-          e2eSndParams <- createRatchet_ pqSupport e2eRcvParams
+          sndKeys_ <- shortLinkSndKeys qInfo
+          (q, _) <- lift $ newSndQueue userId "" qInfo sndKeys_
           withStore c $ \db -> runExceptT $ do
+            e2eSndParams <- createRatchet_ db g maxSupported pqSupport e2eRcvParams
             sq' <- maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
             pure (sq', e2eSndParams)
       let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
       pure (cData, sq', e2eSndParams)
     Nothing -> throwE $ AGENT A_VERSION
   where
-    shortLinkSndKeys (Compatible qInfo) =
-      pure shortLink_
-        $>>= \(CSLInvitation srv linkId linkKey) -> withStore' c (\db -> getInvShortLink db srv linkId)
-        $>>= \InvShortLink {linkKey = lk, sndId, sndPublicKey, sndPrivateKey} ->
-          pure (if linkKey == lk && maybe True (queueId qInfo ==) sndId then Just (sndPublicKey, sndPrivateKey) else Nothing)
-    createRatchet_ pqSupport e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_) = do
-      g <- asks random
+    shortLinkSndKeys (Compatible SMPQueueInfo {queueAddress = SMPQueueAddress {smpServer, senderId}}) =
+      withStore' c $ \db -> getInvSndKeys db smpServer senderId
+    createRatchet_ db g maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_) = do
       (pk1, pk2, pKem, e2eSndParams) <- liftIO $ CR.generateSndE2EParams g v (CR.replyKEM_ v kem_ pqSupport)
       (_, rcDHRs) <- atomically $ C.generateKeyPair g
-      rcParams <- liftEitherWith cryptoError $ CR.pqX3dhSnd pk1 pk2 pKem e2eRcvParams
-      maxSupported <- asks $ maxVersion . e2eEncryptVRange . config
+      rcParams <- liftEitherWith (SEAgentError . cryptoError) $ CR.pqX3dhSnd pk1 pk2 pKem e2eRcvParams
       let rcVs = CR.RatchetVersions {current = v, maxSupported}
           rc = CR.initSndRatchet rcVs rcDHRr rcDHRs rcParams
-      withStore' c $ \db -> createSndRatchet db connId rc e2eSndParams
+      liftIO $ createSndRatchet db connId rc e2eSndParams
       pure e2eSndParams
 
 connRequestPQSupport :: AgentClient -> PQSupport -> ConnectionRequestUri c -> IO (Maybe (VersionSMPA, PQSupport))
@@ -1037,8 +1035,8 @@ versionPQSupport_ :: VersionSMPA -> Maybe CR.VersionE2E -> PQSupport
 versionPQSupport_ agentV e2eV_ = PQSupport $ agentV >= pqdrSMPAgentVersion && maybe True (>= CR.pqRatchetE2EEncryptVersion) e2eV_
 {-# INLINE versionPQSupport_ #-}
 
-joinConnSrv :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe (ConnShortLink c) -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
-joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} shortLink_ cInfo pqSup subMode srv =
+joinConnSrv :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
+joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMode srv =
   withInvLock c (strEncode inv) "joinConnSrv" $ do
     SomeConn cType conn <- withStore c (`getConn` connId)
     case conn of
@@ -1049,9 +1047,9 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} shortLink_ cInfo p
   where
     doJoin :: Maybe SndQueue -> AM SndQueueSecured
     doJoin sq_ = do
-      (cData, sq, e2eSndParams) <- startJoinInvitation c userId connId sq_ enableNtfs inv shortLink_ pqSup
+      (cData, sq, e2eSndParams) <- startJoinInvitation c userId connId sq_ enableNtfs inv pqSup
       secureConfirmQueue c cData sq srv cInfo (Just e2eSndParams) subMode
-joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} _ cInfo pqSup subMode srv =
+joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode srv =
   lift (compatibleContactUri cReqUri) >>= \case
     Just (qInfo, vrsn) -> do
       cReq <- newRcvConnSrv c userId connId enableNtfs SCMInvitation Nothing (CR.IKNoPQ pqSup) subMode srv
@@ -1069,7 +1067,7 @@ joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSuppo
   where
     doJoin :: Maybe SndQueue -> AM SndQueueSecured
     doJoin sq_ = do
-      (cData, sq, e2eSndParams) <- startJoinInvitation c userId connId sq_ enableNtfs inv Nothing pqSupport
+      (cData, sq, e2eSndParams) <- startJoinInvitation c userId connId sq_ enableNtfs inv pqSupport
       secureConfirmQueueAsync c cData sq srv cInfo (Just e2eSndParams) subMode
 joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode _pqSupport _srv = do
   throwE $ CMD PROHIBITED "joinConnSrvAsync"
@@ -1103,7 +1101,7 @@ acceptContact' c connId enableNtfs invId ownConnInfo pqSupport subMode = withCon
   Invitation {contactConnId, connReq} <- withStore c $ \db -> getInvitation db "acceptContact'" invId
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ (ContactConnection ConnData {userId} _) -> do
-      sqSecured <- joinConn c userId connId enableNtfs connReq Nothing ownConnInfo pqSupport subMode
+      sqSecured <- joinConn c userId connId enableNtfs connReq ownConnInfo pqSupport subMode
       withStore' c $ \db -> acceptInvitation db invId ownConnInfo
       pure sqSecured
     _ -> throwE $ CMD PROHIBITED "acceptContact"

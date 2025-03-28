@@ -302,14 +302,14 @@ data SParty :: Party -> Type where
   SRecipient :: SParty Recipient
   SSender :: SParty Sender
   SNotifier :: SParty Notifier
-  SLinkClient :: SParty LinkClient 
+  SSenderLink :: SParty LinkClient 
   SProxiedClient :: SParty ProxiedClient
 
 instance TestEquality SParty where
   testEquality SRecipient SRecipient = Just Refl
   testEquality SSender SSender = Just Refl
   testEquality SNotifier SNotifier = Just Refl
-  testEquality SLinkClient SLinkClient = Just Refl
+  testEquality SSenderLink SSenderLink = Just Refl
   testEquality SProxiedClient SProxiedClient = Just Refl
   testEquality _ _ = Nothing
 
@@ -323,7 +323,7 @@ instance PartyI Sender where sParty = SSender
 
 instance PartyI Notifier where sParty = SNotifier
 
-instance PartyI LinkClient where sParty = SLinkClient
+instance PartyI LinkClient where sParty = SSenderLink
 
 instance PartyI ProxiedClient where sParty = SProxiedClient
 
@@ -860,8 +860,8 @@ instance ProtocolMsgTag CmdTag where
     "SKEY" -> Just $ CT SSender SKEY_
     "SEND" -> Just $ CT SSender SEND_
     "PING" -> Just $ CT SSender PING_
-    "LKEY" -> Just $ CT SLinkClient LKEY_
-    "LGET" -> Just $ CT SLinkClient LGET_
+    "LKEY" -> Just $ CT SSenderLink LKEY_
+    "LGET" -> Just $ CT SSenderLink LGET_
     "PRXY" -> Just $ CT SProxiedClient PRXY_
     "PFWD" -> Just $ CT SProxiedClient PFWD_
     "RFWD" -> Just $ CT SSender RFWD_
@@ -1587,8 +1587,8 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
         SEND_ -> SEND <$> _smpP <*> (unTail <$> _smpP)
         PING_ -> pure PING
         RFWD_ -> RFWD <$> (EncFwdTransmission . unTail <$> _smpP)
-    CT SLinkClient tag ->
-      Cmd SLinkClient <$> case tag of
+    CT SSenderLink tag ->
+      Cmd SSenderLink <$> case tag of
         LKEY_ -> LKEY <$> _smpP
         LGET_ -> pure LGET
     CT SProxiedClient tag ->

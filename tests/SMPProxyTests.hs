@@ -227,7 +227,7 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
     withAgent 2 aCfg (servers bTestCfg) testDB2 $ \bob -> runRight_ $ do
       (bobId, (qInfo, Nothing)) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
       aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-      sqSecured <- A.joinConnection bob 1 aliceId True qInfo Nothing "bob's connInfo" PQSupportOn SMSubscribe
+      sqSecured <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
       ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
       liftIO $ pqSup' `shouldBe` PQSupportOn
@@ -283,7 +283,7 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
     prePair alice bob = do
       (bobId, (qInfo, Nothing)) <- runExceptT' $ A.createConnection alice 1 True SCMInvitation Nothing Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
       aliceId <- runExceptT' $ A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-      sqSecured <- runExceptT' $ A.joinConnection bob 1 aliceId True qInfo Nothing "bob's connInfo" PQSupportOn SMSubscribe
+      sqSecured <- runExceptT' $ A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
       confId <-
         get alice >>= \case
@@ -334,7 +334,7 @@ agentViaProxyVersionError =
       withAgent 2 agentCfg (servers [SMPServer testHost2 testPort2 testKeyHash]) testDB2 $ \bob -> runExceptT $ do
         (_bobId, (qInfo, Nothing)) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
         aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-        A.joinConnection bob 1 aliceId True qInfo Nothing "bob's connInfo" PQSupportOn SMSubscribe
+        A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     pure ()
   where
     servers srvs = (initAgentServersProxy SPMUnknown SPFProhibit) {smp = userServers srvs}
@@ -354,7 +354,7 @@ agentViaProxyRetryOffline = do
         (aliceId, bobId) <- withServer2 $ \_ -> runRight $ do
           (bobId, (qInfo, Nothing)) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
           aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-          sqSecured <- A.joinConnection bob 1 aliceId True qInfo Nothing "bob's connInfo" PQSupportOn SMSubscribe
+          sqSecured <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
           liftIO $ sqSecured `shouldBe` True
           ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
           liftIO $ pqSup' `shouldBe` PQSupportOn

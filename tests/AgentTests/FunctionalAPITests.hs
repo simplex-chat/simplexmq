@@ -257,7 +257,7 @@ createConnection c userId enableNtfs cMode clientData =
 joinConnection :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> AE (ConnId, SndQueueSecured)
 joinConnection c userId enableNtfs cReq connInfo subMode = do
   connId <- A.prepareConnectionToJoin c userId enableNtfs cReq PQSupportOn
-  (connId,) <$> A.joinConnection c userId connId enableNtfs cReq Nothing connInfo PQSupportOn subMode
+  (connId,) <$> A.joinConnection c userId connId enableNtfs cReq connInfo PQSupportOn subMode
 
 sendMessage :: AgentClient -> ConnId -> SMP.MsgFlags -> MsgBody -> AE AgentMsgId
 sendMessage c connId msgFlags msgBody = do
@@ -310,7 +310,7 @@ functionalAPITests ps = do
       testAllowConnectionClientRestart ps
   describe "Short connection links" $ do
     it "should establish connection via 1-time short link" $ testInviationShortLink ps
-    it "should establish connection via contact short link, " $ testContactShortLink ps
+    it "should establish connection via contact short link" $ testContactShortLink ps
   describe "Message delivery" $ do
     describe "update connection agent version on received messages" $ do
       it "should increase if compatible, shouldn'ps decrease" $
@@ -614,7 +614,7 @@ runAgentClientTestPQ sqSecured viaProxy (alice, aPQ) (bob, bPQ) baseId =
   runRight_ $ do
     (bobId, (qInfo, Nothing)) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing aPQ SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo bPQ
-    sqSecured' <- A.joinConnection bob 1 aliceId True qInfo Nothing "bob's connInfo" bPQ SMSubscribe
+    sqSecured' <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" bPQ SMSubscribe
     liftIO $ sqSecured' `shouldBe` sqSecured
     ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` CR.connPQEncryption aPQ
@@ -816,7 +816,7 @@ runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, b
   runRight_ $ do
     (_, (qInfo, Nothing)) <- A.createConnection alice 1 True SCMContact Nothing Nothing aPQ SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo bPQ
-    sqSecuredJoin <- A.joinConnection bob 1 aliceId True qInfo Nothing "bob's connInfo" bPQ SMSubscribe
+    sqSecuredJoin <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" bPQ SMSubscribe
     liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
     ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` reqPQSupport
@@ -867,7 +867,7 @@ runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId 
     msgId = subtract baseId . fst
     connectViaContact b pq qInfo = do
       aId <- A.prepareConnectionToJoin b 1 True qInfo pq
-      sqSecuredJoin <- A.joinConnection b 1 aId True qInfo Nothing "bob's connInfo" pq SMSubscribe
+      sqSecuredJoin <- A.joinConnection b 1 aId True qInfo "bob's connInfo" pq SMSubscribe
       liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
       ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
       liftIO $ pqSup' `shouldBe` PQSupportOn
@@ -913,7 +913,7 @@ testRejectContactRequest =
   withAgentClients2 $ \alice bob -> runRight_ $ do
     (addrConnId, (qInfo, Nothing)) <- A.createConnection alice 1 True SCMContact Nothing Nothing IKPQOn SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-    sqSecured <- A.joinConnection bob 1 aliceId True qInfo Nothing "bob's connInfo" PQSupportOn SMSubscribe
+    sqSecured <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ sqSecured `shouldBe` False -- joining via contact address connection
     ("", _, A.REQ invId PQSupportOn _ "bob's connInfo") <- get alice
     liftIO $ runExceptT (rejectContact alice "abcd" invId) `shouldReturn` Left (CONN NOT_FOUND)
@@ -927,7 +927,7 @@ testUpdateConnectionUserId =
     newUserId <- createUser alice [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
     _ <- changeConnectionUser alice 1 connId newUserId
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-    sqSecured' <- A.joinConnection bob 1 aliceId True qInfo Nothing "bob's connInfo" PQSupportOn SMSubscribe
+    sqSecured' <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ sqSecured' `shouldBe` True
     ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` PQSupportOn
@@ -1097,7 +1097,7 @@ testInviationShortLink ps =
       r -> liftIO $ expectationFailure ("unexpected result " <> show r)
     runRight $ do
       aId <- A.prepareConnectionToJoin b 1 True connReq PQSupportOn
-      sndSecure <- A.joinConnection b 1 aId True connReq (Just shortLink) "bob's connInfo" PQSupportOn SMSubscribe
+      sndSecure <- A.joinConnection b 1 aId True connReq "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sndSecure `shouldBe` True
       ("", _, CONF confId _ "bob's connInfo") <- get a
       allowConnection a bId confId "alice's connInfo"
@@ -1826,7 +1826,7 @@ makeConnectionForUsers_ :: HasCallStack => PQSupport -> SndQueueSecured -> Agent
 makeConnectionForUsers_ pqSupport sqSecured alice aliceUserId bob bobUserId = do
   (bobId, (qInfo, Nothing)) <- A.createConnection alice aliceUserId True SCMInvitation Nothing Nothing (CR.IKNoPQ pqSupport) SMSubscribe
   aliceId <- A.prepareConnectionToJoin bob bobUserId True qInfo pqSupport
-  sqSecured' <- A.joinConnection bob bobUserId aliceId True qInfo Nothing "bob's connInfo" pqSupport SMSubscribe
+  sqSecured' <- A.joinConnection bob bobUserId aliceId True qInfo "bob's connInfo" pqSupport SMSubscribe
   liftIO $ sqSecured' `shouldBe` sqSecured
   ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
   liftIO $ pqSup' `shouldBe` pqSupport

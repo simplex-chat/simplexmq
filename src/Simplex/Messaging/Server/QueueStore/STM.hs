@@ -102,7 +102,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       SRecipient -> TM.lookupIO qId queues
       SSender -> TM.lookupIO qId senders $>>= (`TM.lookupIO` queues)
       SNotifier -> TM.lookupIO qId notifiers $>>= (`TM.lookupIO` queues)
-      SLinkClient -> TM.lookupIO qId links $>>= (`TM.lookupIO` queues)
+      SSenderLink -> TM.lookupIO qId links $>>= (`TM.lookupIO` queues)
     where
       STMQueueStore {queues, senders, notifiers, links} = st
 

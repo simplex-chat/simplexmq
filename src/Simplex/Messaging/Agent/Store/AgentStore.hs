@@ -90,6 +90,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     unacceptInvitation,
     deleteInvitation,
     getInvShortLink,
+    getInvSndKeys,
     createInvShortLink,
     setInvShortLinkSndId,
     -- Messages
@@ -779,6 +780,21 @@ getInvShortLink db server linkId =
     toInvShortLink (linkKey, sndPrivateKey@(C.APrivateAuthKey a pk), sndId) =
       let sndPublicKey = C.APublicAuthKey a $ C.publicKey pk
        in InvShortLink {server, linkId, linkKey, sndPrivateKey, sndPublicKey, sndId}
+
+getInvSndKeys :: DB.Connection -> SMPServer -> LinkId -> IO (Maybe C.AAuthKeyPair)
+getInvSndKeys db srv sndId =
+  maybeFirstRow toSndKeys $
+    DB.query
+      db
+      [sql|
+        SELECT snd_private_key
+        FROM inv_short_links
+        WHERE host = ? AND port = ? AND snd_id = ?
+      |]
+      (host srv, port srv, sndId)
+  where
+    toSndKeys :: Only C.APrivateAuthKey -> C.AAuthKeyPair
+    toSndKeys (Only privKey@(C.APrivateAuthKey a pk)) = (C.APublicAuthKey a $ C.publicKey pk, privKey)
 
 createInvShortLink :: DB.Connection -> InvShortLink -> IO ()
 createInvShortLink db InvShortLink {server, linkId, linkKey, sndPrivateKey, sndId} = do

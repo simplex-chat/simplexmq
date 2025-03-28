@@ -1068,8 +1068,8 @@ verifyTransmission ms auth_ tAuth authorized queueId cmd =
     Cmd SSender SEND {} -> verifyQueue (\q -> if maybe (isNothing tAuth) verify (senderKey $ snd q) then VRVerified (Just q) else VRFailed) <$> get SSender
     Cmd SSender PING -> pure $ VRVerified Nothing
     Cmd SSender RFWD {} -> pure $ VRVerified Nothing
-    Cmd SLinkClient (LKEY k) -> verifySecure SLinkClient k
-    Cmd SLinkClient LGET -> verifyQueue (\q -> if isContact (snd q) then VRVerified (Just q) else VRFailed) <$> get SLinkClient
+    Cmd SSenderLink (LKEY k) -> verifySecure SSenderLink k
+    Cmd SSenderLink LGET -> verifyQueue (\q -> if isContact (snd q) then VRVerified (Just q) else VRFailed) <$> get SSenderLink
     -- NSUB will not be accepted without authorization
     Cmd SNotifier NSUB -> verifyQueue (\q -> maybe dummyVerify (\n -> Just q `verifiedWith` notifierKey n) (notifier $ snd q)) <$> get SNotifier
     Cmd SProxiedClient _ -> pure $ VRVerified Nothing
@@ -1247,7 +1247,7 @@ client
         SEND flags msgBody -> withQueue_ False $ sendMessage flags msgBody
         PING -> pure (corrId, NoEntity, PONG)
         RFWD encBlock -> (corrId, NoEntity,) <$> processForwardedCommand encBlock
-      Cmd SLinkClient command -> Just <$> case command of
+      Cmd SSenderLink command -> Just <$> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkMode QMContact qr $ getQueueLink_ q qr
       Cmd SNotifier NSUB -> Just <$> subscribeNotifications
@@ -1697,8 +1697,8 @@ client
                     allowed = case cmd' of
                       Cmd SSender SEND {} -> True
                       Cmd SSender (SKEY _) -> True
-                      Cmd SLinkClient (LKEY _) -> True
-                      Cmd SLinkClient LGET -> True
+                      Cmd SSenderLink (LKEY _) -> True
+                      Cmd SSenderLink LGET -> True
                       _ -> False
                     verified = \case
                       VRVerified q -> Right (q, (corrId', entId', cmd'))

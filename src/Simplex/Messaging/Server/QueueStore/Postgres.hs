@@ -84,6 +84,7 @@ data PostgresQueueStore q = PostgresQueueStore
     queues :: TMap RecipientId q,
     -- this map only cashes the queues that were attempted to send messages to,
     senders :: TMap SenderId RecipientId,
+    links :: TMap LinkId RecipientId,
     -- this map only cashes the queues that were attempted to be subscribed to,
     notifiers :: TMap NotifierId RecipientId,
     notifierLocks :: TMap NotifierId Lock,
@@ -99,9 +100,10 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     dbStoreLog <- mapM (openWriteStoreLog True) dbStoreLogPath
     queues <- TM.emptyIO
     senders <- TM.emptyIO
+    links <- TM.emptyIO
     notifiers <- TM.emptyIO
     notifierLocks <- TM.emptyIO
-    pure PostgresQueueStore {dbStore, dbStoreLog, queues, senders, notifiers, notifierLocks, deletedTTL}
+    pure PostgresQueueStore {dbStore, dbStoreLog, queues, senders, links, notifiers, notifierLocks, deletedTTL}
     where
       err e = do
         logError $ "STORE: newQueueStore, error opening PostgreSQL database, " <> tshow e
@@ -146,10 +148,11 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       atomically $ TM.insert rId sq queues
       atomically $ TM.insert (senderId qr) rId senders
       forM_ (notifier qr) $ \NtfCreds {notifierId = nId} -> atomically $ TM.insert nId rId notifiers
+      forM_ (queueData qr) $ \(lnkId, _) -> atomically $ TM.insert lnkId rId links
       withLog "addStoreQueue" st $ \s -> logCreateQueue s rId qr
       pure sq
     where
-      PostgresQueueStore {queues, senders, notifiers} = st
+      PostgresQueueStore {queues, senders, links, notifiers} = st
       -- Not doing duplicate checks in maps as the probability of duplicates is very low.
       -- It needs to be reconsidered when IDs are supplied by the users.
       -- hasId = anyM [TM.memberIO rId queues, TM.memberIO senderId senders, hasNotifier]
@@ -159,12 +162,11 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   getQueue_ st mkQ party qId = case party of
     SRecipient -> getRcvQueue qId
     SSender -> TM.lookupIO qId senders >>= maybe (mask loadSndQueue) getRcvQueue
-    -- TODO [short links] use map of link IDs - queue will be added there on creation in case there is data
-    SLinkClient -> mask loadLinkQueue
+    SSenderLink -> TM.lookupIO qId links >>= maybe (mask loadLinkQueue) getRcvQueue
     -- loaded queue is deleted from notifiers map to reduce cache size after queue was subscribed to by ntf server
     SNotifier -> TM.lookupIO qId notifiers >>= maybe (mask loadNtfQueue) (getRcvQueue >=> (atomically (TM.delete qId notifiers) $>))
     where
-      PostgresQueueStore {queues, senders, notifiers} = st
+      PostgresQueueStore {queues, senders, links, notifiers} = st
       getRcvQueue rId = TM.lookupIO rId queues >>= maybe (mask loadRcvQueue) (pure . Right)
       loadRcvQueue = do
         (rId, qRec) <- loadQueue " WHERE recipient_id = ?"
