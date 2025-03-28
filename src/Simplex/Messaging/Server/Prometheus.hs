@@ -12,6 +12,7 @@ import Data.Time.Clock (UTCTime (..), diffUTCTime)
 import Data.Time.Clock.System (systemEpochDay)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Network.Socket (ServiceName)
+import Simplex.Messaging.Server.MsgStore.Types (LoadedQueueCounts (..))
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Transport.Server (SocketStats (..))
 
@@ -30,7 +31,8 @@ data RealTimeMetrics = RealTimeMetrics
     smpSubsCount :: Int,
     smpSubClientsCount :: Int,
     ntfSubsCount :: Int,
-    ntfSubClientsCount :: Int
+    ntfSubClientsCount :: Int,
+    loadedCounts :: LoadedQueueCounts
   }
 
 {-# FOURMOLU_DISABLE\n#-}
@@ -46,7 +48,8 @@ prometheusMetrics sm rtm ts =
         smpSubsCount,
         smpSubClientsCount,
         ntfSubsCount,
-        ntfSubClientsCount
+        ntfSubClientsCount,
+        loadedCounts
       } = rtm
     ServerStatsData
       { _fromTime,
@@ -371,7 +374,28 @@ prometheusMetrics sm rtm ts =
       \\n\
       \# HELP simplex_smp_subscription_ntf_clients_total Total subscribed NTF servers, first counting method\n\
       \# TYPE simplex_smp_subscription_ntf_clients_total gauge\n\
-      \simplex_smp_subscription_ntf_clients_total " <> mshow ntfSubClientsCount <> "\n# ntfSubClients\n"
+      \simplex_smp_subscription_ntf_clients_total " <> mshow ntfSubClientsCount <> "\n# ntfSubClients\n\
+      \\n\
+      \# HELP simplex_smp_loaded_queues_queue_count Total loaded queues count (all queues for memory/journal storage)\n\
+      \# TYPE simplex_smp_loaded_queues_queue_count gauge\n\
+      \simplex_smp_loaded_queues_queue_count " <> mshow (loadedQueueCount loadedCounts) <> "\n# loadedCounts.loadedQueueCount\n\
+      \\n\
+      \# HELP simplex_smp_loaded_queues_ntf_count Total loaded ntf credential references (all ntf credentials for memory/journal storage)\n\
+      \# TYPE simplex_smp_loaded_queues_ntf_count gauge\n\
+      \simplex_smp_loaded_queues_ntf_count " <> mshow (loadedNotifierCount loadedCounts) <> "\n# loadedCounts.loadedNotifierCount\n\
+      \\n\
+      \# HELP simplex_smp_loaded_queues_open_journal_count Total opened queue journals (0 for memory storage)\n\
+      \# TYPE simplex_smp_loaded_queues_open_journal_count gauge\n\
+      \simplex_smp_loaded_queues_open_journal_count " <> mshow (openJournalCount loadedCounts) <> "\n# loadedCounts.openJournalCount\n\
+      \\n\
+      \# HELP simplex_smp_loaded_queues_queue_lock_count Total queue locks (0 for memory storage)\n\
+      \# TYPE simplex_smp_loaded_queues_queue_lock_count gauge\n\
+      \simplex_smp_loaded_queues_queue_lock_count " <> mshow (queueLockCount loadedCounts) <> "\n# loadedCounts.queueLockCount\n\
+      \\n\
+      \# HELP simplex_smp_loaded_queues_ntf_lock_count Total notifier locks (0 for memory/journal storage)\n\
+      \# TYPE simplex_smp_loaded_queues_ntf_lock_count gauge\n\
+      \simplex_smp_loaded_queues_ntf_lock_count " <> mshow (notifierLockCount loadedCounts) <> "\n# loadedCounts.notifierLockCount\n"
+
     socketsMetric :: (SocketStats -> Int) -> Text -> Text -> Text
     socketsMetric sel metric descr =
       "# HELP " <> metric <> " " <> descr <> "\n"

@@ -43,9 +43,10 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
   logQueueStates :: s -> IO ()
   logQueueState :: StoreQueue s -> StoreMonad s ()
   queueStore :: s -> QueueStore s
+  loadedQueueCounts :: s -> IO LoadedQueueCounts
 
   -- message store methods
-  mkQueue :: s -> RecipientId -> QueueRec -> IO (StoreQueue s)
+  mkQueue :: s -> Bool -> RecipientId -> QueueRec -> IO (StoreQueue s)
   getMsgQueue :: s -> StoreQueue s -> Bool -> StoreMonad s (MsgQueue (StoreQueue s))
   getPeekMsgQueue :: s -> StoreQueue s -> StoreMonad s (Maybe (MsgQueue (StoreQueue s), Message))
 
@@ -88,11 +89,19 @@ instance Semigroup MessageStats where
   MessageStats a b c <> MessageStats x y z = MessageStats (a + x) (b + y) (c + z)
   {-# INLINE (<>) #-}
 
+data LoadedQueueCounts = LoadedQueueCounts
+  { loadedQueueCount :: Int,
+    loadedNotifierCount :: Int,
+    openJournalCount :: Int,
+    queueLockCount :: Int,
+    notifierLockCount :: Int
+  }
+
 newMessageStats :: MessageStats
 newMessageStats = MessageStats 0 0 0
 
 addQueue :: MsgStoreClass s => s -> RecipientId -> QueueRec -> IO (Either ErrorType (StoreQueue s))
-addQueue st = addQueue_ (queueStore st) (mkQueue st)
+addQueue st = addQueue_ (queueStore st) (mkQueue st True)
 {-# INLINE addQueue #-}
 
 getQueue :: (MsgStoreClass s, DirectParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s))

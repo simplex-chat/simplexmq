@@ -579,7 +579,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       pure ServerMetrics {statsData = d, activeQueueCounts = ps, activeNtfCounts = psNtf, queueCount, notifierCount}
 
     getRealTimeMetrics :: Env -> IO RealTimeMetrics
-    getRealTimeMetrics Env {clients, sockets, server = Server {subscribers, notifiers, subClients, ntfSubClients}} = do
+    getRealTimeMetrics Env {clients, sockets, msgStore = AMS _ _ ms, server = Server {subscribers, notifiers, subClients, ntfSubClients}} = do
       socketStats <- mapM (traverse getSocketStats) =<< readTVarIO sockets
 #if MIN_VERSION_base(4,18,0)
       threadsCount <- length <$> listThreads
@@ -591,7 +591,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       smpSubClientsCount <- IM.size <$> readTVarIO subClients
       ntfSubsCount <- M.size <$> readTVarIO notifiers
       ntfSubClientsCount <- IM.size <$> readTVarIO ntfSubClients
-      pure RealTimeMetrics {socketStats, threadsCount, clientsCount, smpSubsCount, smpSubClientsCount, ntfSubsCount, ntfSubClientsCount}
+      loadedCounts <- loadedQueueCounts ms
+      pure RealTimeMetrics {socketStats, threadsCount, clientsCount, smpSubsCount, smpSubClientsCount, ntfSubsCount, ntfSubClientsCount, loadedCounts}
 
     runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
     runClient signKey tp h = do
@@ -1418,6 +1419,7 @@ client
         withQueue :: (StoreQueue s -> QueueRec -> M (Transmission BrokerMsg)) -> M (Transmission BrokerMsg)
         withQueue = withQueue_ True
 
+        -- SEND passes queueNotBlocked False here to update time, but it fails anyway on blocked queues (see code for SEND).
         withQueue_ :: Bool -> (StoreQueue s -> QueueRec -> M (Transmission BrokerMsg)) -> M (Transmission BrokerMsg)
         withQueue_ queueNotBlocked action = case q_ of
           Nothing -> pure $ err INTERNAL

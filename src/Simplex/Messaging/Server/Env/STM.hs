@@ -332,13 +332,13 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
     ASSCfg qt mt (SSCMemory storePaths_) -> do
       let storePath = storeMsgsFile =<< storePaths_
       ms <- newMsgStore STMStoreConfig {storePath, quota = msgQueueQuota}
-      forM_ storePaths_ $ \StorePaths {storeLogFile = f} -> loadStoreLog (mkQueue ms) f $ queueStore ms
+      forM_ storePaths_ $ \StorePaths {storeLogFile = f} -> loadStoreLog (mkQueue ms True) f $ queueStore ms
       pure $ AMS qt mt ms
     ASSCfg qt mt SSCMemoryJournal {storeLogFile, storeMsgsPath} -> do
       let qsCfg = MQStoreCfg
           cfg = mkJournalStoreConfig qsCfg storeMsgsPath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
       ms <- newMsgStore cfg
-      loadStoreLog (mkQueue ms) storeLogFile $ stmQueueStore ms
+      loadStoreLog (mkQueue ms True) storeLogFile $ stmQueueStore ms
       pure $ AMS qt mt ms
 #if defined(dbServerPostgres)
     ASSCfg qt mt SSCDatabaseJournal {storeCfg, storeMsgsPath'} -> do
@@ -374,7 +374,8 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       Just f -> do
         logInfo $ "compacting queues in file " <> T.pack f
         st <- newMsgStore STMStoreConfig {storePath = Nothing, quota = msgQueueQuota}
-        sl <- readWriteQueueStore False (mkQueue st) f (queueStore st)
+        -- we don't need to have locks in the map
+        sl <- readWriteQueueStore False (mkQueue st False) f (queueStore st)
         setStoreLog (queueStore st) sl
         closeMsgStore st
       Nothing -> do
