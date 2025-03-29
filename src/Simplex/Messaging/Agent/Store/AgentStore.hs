@@ -795,6 +795,7 @@ getInvShortLinkKeys db srv sndId =
       |]
       (host srv, port srv, sndId)
   where
+    toSndKeys :: (LinkId, C.APrivateAuthKey) -> (LinkId, C.AAuthKeyPair)
     toSndKeys (linkId, privKey@(C.APrivateAuthKey a pk)) = (linkId, (C.APublicAuthKey a $ C.publicKey pk, privKey))
 
 deleteInvShortLink :: DB.Connection -> SMPServer -> LinkId -> IO ()
