@@ -364,7 +364,6 @@ getConnShortLink c = withAgentEnv c .: getConnShortLink' c
 {-# INLINE getConnShortLink #-}
 
 -- | This irreversibly deletes short link data, and it won't be retrievable again
--- TODO [short links]
 deleteLocalInvShortLink :: AgentClient -> ConnShortLink 'CMInvitation -> AE ()
 deleteLocalInvShortLink c = withAgentEnv c . deleteLocalInvShortLink' c
 {-# INLINE deleteLocalInvShortLink #-}
