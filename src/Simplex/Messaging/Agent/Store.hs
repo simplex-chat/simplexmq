@@ -155,7 +155,8 @@ data InvShortLink = InvShortLink
     linkId :: SMP.LinkId,
     linkKey :: LinkKey,
     sndPrivateKey :: SndPrivateAuthKey, -- stored to allow retries
-    sndPublicKey :: SndPublicAuthKey
+    sndPublicKey :: SndPublicAuthKey,
+    sndId :: Maybe SMP.SenderId
   }
   deriving (Show)
 

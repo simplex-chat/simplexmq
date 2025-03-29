@@ -309,8 +309,9 @@ functionalAPITests ps = do
     it "should restore confirmation after client restart" $
       testAllowConnectionClientRestart ps
   describe "Short connection links" $ do
-    it "create and get 1-time short link" $ testInviationShortLink ps
-    it "create and get contact short link" $ testContactShortLink ps
+    it "should connect via 1-time short link" $ testInviationShortLink ps
+    it "should connect via 1-time short link with async join" $ testInviationShortLinkAsync ps
+    it "should connect via contact short link" $ testContactShortLink ps
   describe "Message delivery" $ do
     describe "update connection agent version on received messages" $ do
       it "should increase if compatible, shouldn'ps decrease" $
@@ -1082,7 +1083,7 @@ testInviationShortLink :: HasCallStack => (ATransport, AStoreType) -> IO ()
 testInviationShortLink ps =
   withAgentClients3 $ \a b c -> withSmpServer ps $ do
     let userData = "some user data"
-    (_bobId, (connReq, Just shortLink)) <- runRight $ A.createConnection a 1 True SCMInvitation (Just userData) Nothing CR.IKUsePQ SMSubscribe
+    (bId, (connReq, Just shortLink)) <- runRight $ A.createConnection a 1 True SCMInvitation (Just userData) Nothing CR.IKUsePQ SMSubscribe
     (connReq', userData') <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
     connReq' `shouldBe` connReq
@@ -1095,12 +1096,41 @@ testInviationShortLink ps =
     runExceptT (getConnShortLink c 1 shortLink) >>= \case
       Left (SMP _ AUTH) -> pure ()
       r -> liftIO $ expectationFailure ("unexpected result " <> show r)
+    runRight $ do
+      aId <- A.prepareConnectionToJoin b 1 True connReq PQSupportOn
+      sndSecure <- A.joinConnection b 1 aId True connReq "bob's connInfo" PQSupportOn SMSubscribe
+      liftIO $ sndSecure `shouldBe` True
+      ("", _, CONF confId _ "bob's connInfo") <- get a
+      allowConnection a bId confId "alice's connInfo"
+      get a ##> ("", bId, CON)
+      get b ##> ("", aId, INFO "alice's connInfo")
+      get b ##> ("", aId, CON)
+      exchangeGreetings a bId b aId
+
+testInviationShortLinkAsync :: HasCallStack => (ATransport, AStoreType) -> IO ()
+testInviationShortLinkAsync ps =
+  withAgentClients2 $ \a b -> withSmpServer ps $ do
+    let userData = "some user data"
+    (bId, (connReq, Just shortLink)) <- runRight $ A.createConnection a 1 True SCMInvitation (Just userData) Nothing CR.IKUsePQ SMSubscribe
+    (connReq', userData') <- runRight $ getConnShortLink b 1 shortLink
+    strDecode (strEncode shortLink) `shouldBe` Right shortLink
+    connReq' `shouldBe` connReq
+    userData' `shouldBe` userData
+    runRight $ do
+      aId <- A.joinConnectionAsync b 1 "123" True connReq "bob's connInfo" PQSupportOn SMSubscribe
+      get b =##> \case ("123", c, JOINED sndSecure) -> c == aId && sndSecure; _ -> False
+      ("", _, CONF confId _ "bob's connInfo") <- get a
+      allowConnection a bId confId "alice's connInfo"
+      get a ##> ("", bId, CON)
+      get b ##> ("", aId, INFO "alice's connInfo")
+      get b ##> ("", aId, CON)
+      exchangeGreetings a bId b aId
 
 testContactShortLink :: HasCallStack => (ATransport, AStoreType) -> IO ()
 testContactShortLink ps =
   withAgentClients3 $ \a b c -> withSmpServer ps $ do
     let userData = "some user data"
-    (_bobId, (connReq, Just shortLink)) <- runRight $ A.createConnection a 1 True SCMContact (Just userData) Nothing CR.IKPQOn SMSubscribe
+    (_contactId, (connReq, Just shortLink)) <- runRight $ A.createConnection a 1 True SCMContact (Just userData) Nothing CR.IKPQOn SMSubscribe
     (connReq', userData') <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
     connReq' `shouldBe` connReq
@@ -1113,6 +1143,19 @@ testContactShortLink ps =
     (connReq3, userData3) <- runRight $ getConnShortLink c 1 shortLink
     connReq3 `shouldBe` connReq
     userData3 `shouldBe` userData
+    runRight $ do
+      (aId, sndSecure) <- joinConnection b 1 True connReq "bob's connInfo" SMSubscribe
+      liftIO $ sndSecure `shouldBe` False
+      ("", _, REQ invId _ "bob's connInfo") <- get a
+      bId <- A.prepareConnectionToAccept a True invId PQSupportOn
+      sndSecure' <- acceptContact a bId True invId "alice's connInfo" PQSupportOn SMSubscribe
+      liftIO $ sndSecure' `shouldBe` True
+      ("", _, CONF confId  _ "alice's connInfo") <- get b
+      allowConnection b aId confId "bob's connInfo"
+      get a ##> ("", bId, INFO "bob's connInfo")
+      get a ##> ("", bId, CON)
+      get b ##> ("", aId, CON)
+      exchangeGreetings a bId b aId
 
 testIncreaseConnAgentVersion :: HasCallStack => (ATransport, AStoreType) -> IO ()
 testIncreaseConnAgentVersion ps = do

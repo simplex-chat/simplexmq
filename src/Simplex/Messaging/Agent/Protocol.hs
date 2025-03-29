@@ -1302,7 +1302,9 @@ data ContactConnType = CCTContact | CCTGroup deriving (Show)
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
 
 -- TODO [short link] parser, parsing tests
-data AConnectionLink = ACLFull AConnectionRequestUri | ACLShort AConnShortLink
+data ConnectionLink m = CLFull (ConnectionRequestUri m) | CLShort (ConnShortLink m)
+
+data AConnectionLink = forall m. ConnectionModeI m => ACL (SConnectionMode m) (ConnectionLink m)
 
 instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
   strEncode = \case

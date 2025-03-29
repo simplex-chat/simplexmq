@@ -25,6 +25,7 @@ CREATE TABLE inv_short_links(
   link_id BYTEA NOT NULL,
   link_key BYTEA NOT NULL,
   snd_private_key BYTEA NOT NULL,
+  snd_id BYTEA,
   FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT ON UPDATE CASCADE
 );
 

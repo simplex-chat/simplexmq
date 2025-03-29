@@ -434,6 +434,7 @@ CREATE TABLE inv_short_links(
   link_id BLOB NOT NULL,
   link_key BLOB NOT NULL,
   snd_private_key BLOB NOT NULL,
+  snd_id BLOB,
   FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT ON UPDATE CASCADE
 );
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);

@@ -90,7 +90,10 @@ module Simplex.Messaging.Agent.Store.AgentStore
     unacceptInvitation,
     deleteInvitation,
     getInvShortLink,
+    getInvShortLinkKeys,
+    deleteInvShortLink,
     createInvShortLink,
+    setInvShortLinkSndId,
     -- Messages
     updateRcvIds,
     createRcvMsg,
@@ -768,33 +771,64 @@ getInvShortLink db server linkId =
     DB.query
       db
       [sql|
-        SELECT link_key, snd_private_key
+        SELECT link_key, snd_private_key, snd_id
         FROM inv_short_links
         WHERE host = ? AND port = ? AND link_id = ?
       |]
       (host server, port server, linkId)
   where
-    toInvShortLink :: (LinkKey, C.APrivateAuthKey) -> InvShortLink
-    toInvShortLink (linkKey, sndPrivateKey@(C.APrivateAuthKey a pk)) =
+    toInvShortLink :: (LinkKey, C.APrivateAuthKey, Maybe SenderId) -> InvShortLink
+    toInvShortLink (linkKey, sndPrivateKey@(C.APrivateAuthKey a pk), sndId) =
       let sndPublicKey = C.APublicAuthKey a $ C.publicKey pk
-       in InvShortLink {server, linkId, linkKey, sndPrivateKey, sndPublicKey}
+       in InvShortLink {server, linkId, linkKey, sndPrivateKey, sndPublicKey, sndId}
+
+getInvShortLinkKeys :: DB.Connection -> SMPServer -> SenderId -> IO (Maybe C.AAuthKeyPair)
+getInvShortLinkKeys db srv sndId =
+  maybeFirstRow toSndKeys $
+    DB.query
+      db
+      [sql|
+        SELECT snd_private_key
+        FROM inv_short_links
+        WHERE host = ? AND port = ? AND snd_id = ?
+      |]
+      (host srv, port srv, sndId)
+  where
+    toSndKeys :: Only C.APrivateAuthKey -> C.AAuthKeyPair
+    toSndKeys (Only privKey@(C.APrivateAuthKey a pk)) = (C.APublicAuthKey a $ C.publicKey pk, privKey)
+
+deleteInvShortLink :: DB.Connection -> SMPServer -> SenderId -> IO ()
+deleteInvShortLink db srv sndId =
+  DB.execute db "DELETE FROM inv_short_links WHERE host = ? AND port = ? AND snd_id = ?" (host srv, port srv, sndId)
 
 createInvShortLink :: DB.Connection -> InvShortLink -> IO ()
-createInvShortLink db InvShortLink {server, linkId, linkKey, sndPrivateKey} = do
+createInvShortLink db InvShortLink {server, linkId, linkKey, sndPrivateKey, sndId} = do
   serverKeyHash_ <- createServer_ db server
   DB.execute
     db
     [sql|
       INSERT INTO inv_short_links
-        (host, port, server_key_hash, link_id, link_key, snd_private_key)
-      VALUES (?,?,?,?,?,?)
+        (host, port, server_key_hash, link_id, link_key, snd_private_key, snd_id)
+      VALUES (?,?,?,?,?,?,?)
       ON CONFLICT (host, port, link_id)
       DO UPDATE SET
         server_key_hash = EXCLUDED.server_key_hash,
         link_key = EXCLUDED.link_key,
-        snd_private_key = EXCLUDED.snd_private_key
+        snd_private_key = EXCLUDED.snd_private_key,
+        snd_id = EXCLUDED.snd_id
     |]
-    (host server, port server, serverKeyHash_, linkId, linkKey, sndPrivateKey)
+    (host server, port server, serverKeyHash_, linkId, linkKey, sndPrivateKey, sndId)
+
+setInvShortLinkSndId :: DB.Connection -> InvShortLink -> SenderId -> IO ()
+setInvShortLinkSndId db InvShortLink {server, linkId} sndId =
+  DB.execute
+    db
+    [sql|
+      UPDATE inv_short_links
+      SET snd_id = ?
+      WHERE host = ? AND port = ? AND link_id = ?
+    |]
+    (sndId, host server, port server, linkId)
 
 updateRcvIds :: DB.Connection -> ConnId -> IO (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
 updateRcvIds db connId = do

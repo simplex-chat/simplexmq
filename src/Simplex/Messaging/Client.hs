@@ -107,6 +107,7 @@ module Simplex.Messaging.Client
     TBQueueInfo (..),
     getTBQueueInfo,
     getProtocolClientQueuesInfo,
+    nonBlockingWriteTBQueue,
   )
 where
 
