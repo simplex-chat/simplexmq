@@ -90,7 +90,8 @@ module Simplex.Messaging.Agent.Store.AgentStore
     unacceptInvitation,
     deleteInvitation,
     getInvShortLink,
-    getInvSndKeys,
+    getInvShortLinkKeys,
+    deleteInvShortLink,
     createInvShortLink,
     setInvShortLinkSndId,
     -- Messages
@@ -781,8 +782,8 @@ getInvShortLink db server linkId =
       let sndPublicKey = C.APublicAuthKey a $ C.publicKey pk
        in InvShortLink {server, linkId, linkKey, sndPrivateKey, sndPublicKey, sndId}
 
-getInvSndKeys :: DB.Connection -> SMPServer -> LinkId -> IO (Maybe C.AAuthKeyPair)
-getInvSndKeys db srv sndId =
+getInvShortLinkKeys :: DB.Connection -> SMPServer -> SenderId -> IO (Maybe C.AAuthKeyPair)
+getInvShortLinkKeys db srv sndId =
   maybeFirstRow toSndKeys $
     DB.query
       db
@@ -795,6 +796,10 @@ getInvSndKeys db srv sndId =
   where
     toSndKeys :: Only C.APrivateAuthKey -> C.AAuthKeyPair
     toSndKeys (Only privKey@(C.APrivateAuthKey a pk)) = (C.APublicAuthKey a $ C.publicKey pk, privKey)
+
+deleteInvShortLink :: DB.Connection -> SMPServer -> SenderId -> IO ()
+deleteInvShortLink db srv sndId =
+  DB.execute db "DELETE FROM inv_short_links WHERE host = ? AND port = ? AND snd_id = ?" (host srv, port srv, sndId)
 
 createInvShortLink :: DB.Connection -> InvShortLink -> IO ()
 createInvShortLink db InvShortLink {server, linkId, linkKey, sndPrivateKey, sndId} = do
