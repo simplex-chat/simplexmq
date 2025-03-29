@@ -94,8 +94,6 @@ import Control.Monad.Except
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import Crypto.Cipher.AES (AES256)
-import Crypto.Hash (SHA512)
-import qualified Crypto.KDF.HKDF as H
 import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
@@ -1130,8 +1128,7 @@ chainKdf (RatchetKey ck) =
 hkdf3 :: ByteString -> ByteString -> ByteString -> (ByteString, ByteString, ByteString)
 hkdf3 salt ikm info = (s1, s2, s3)
   where
-    prk = H.extract salt ikm :: H.PRK SHA512
-    out = H.expand prk info 96
+    out = hkdf salt ikm info 96
     (s1, rest) = B.splitAt 32 out
     (s2, s3) = B.splitAt 32 rest
 

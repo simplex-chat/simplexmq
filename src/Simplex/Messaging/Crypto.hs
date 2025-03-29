@@ -142,6 +142,8 @@ module Simplex.Messaging.Crypto
     cbDecryptNoPad,
     sbDecrypt_,
     sbEncrypt_,
+    sbEncryptNoPad,
+    sbDecryptNoPad,
     cbNonce,
     randomCbNonce,
     reverseNonce,
@@ -160,6 +162,7 @@ module Simplex.Messaging.Crypto
     SbKeyNonce,
     sbcInit,
     sbcHkdf,
+    hkdf,
 
     -- * pseudo-random bytes
     randomBytes,
@@ -167,6 +170,7 @@ module Simplex.Messaging.Crypto
     -- * digests
     sha256Hash,
     sha512Hash,
+    sha3_256,
 
     -- * Message padding / un-padding
     canPad,
@@ -207,7 +211,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA256 (..), SHA512 (..), hash, hashDigestSize)
+import Crypto.Hash (Digest, SHA256 (..), SHA3_256, SHA512 (..), hash, hashDigestSize)
 import qualified Crypto.KDF.HKDF as H
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
@@ -887,6 +891,7 @@ x448_size = 448 `quot` 8
 validSignatureSize :: Int -> Bool
 validSignatureSize n =
   n == Ed25519.signatureSize || n == Ed448.signatureSize
+{-# INLINE validSignatureSize #-}
 
 -- | AES key newtype.
 newtype Key = Key {unKey :: ByteString}
@@ -961,10 +966,17 @@ instance FromField KeyHash where fromField = blobFieldDecoder $ parseAll strP
 -- | SHA256 digest.
 sha256Hash :: ByteString -> ByteString
 sha256Hash = BA.convert . (hash :: ByteString -> Digest SHA256)
+{-# INLINE sha256Hash #-}
 
 -- | SHA512 digest.
 sha512Hash :: ByteString -> ByteString
 sha512Hash = BA.convert . (hash :: ByteString -> Digest SHA512)
+{-# INLINE sha512Hash #-}
+
+-- | SHA3-256 digest.
+sha3_256 :: ByteString -> ByteString
+sha3_256 = BA.convert . (hash :: ByteString -> Digest SHA3_256)
+{-# INLINE sha3_256 #-}
 
 -- | AEAD-GCM encryption with associated data.
 --
@@ -981,6 +993,7 @@ encryptAEAD aesKey ivBytes paddedLen ad msg = do
 -- This function requires 12 bytes IV, it does not transform IV.
 encryptAESNoPad :: Key -> GCMIV -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
 encryptAESNoPad key iv = encryptAEADNoPad key iv ""
+{-# INLINE encryptAESNoPad #-}
 
 encryptAEADNoPad :: Key -> GCMIV -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
 encryptAEADNoPad aesKey ivBytes ad msg = do
@@ -1002,6 +1015,7 @@ decryptAEAD aesKey ivBytes ad msg (AuthTag authTag) = do
 -- This function requires 12 bytes IV, it does not transform IV.
 decryptAESNoPad :: Key -> GCMIV -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
 decryptAESNoPad key iv = decryptAEADNoPad key iv ""
+{-# INLINE decryptAESNoPad #-}
 
 decryptAEADNoPad :: Key -> GCMIV -> ByteString -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
 decryptAEADNoPad aesKey iv ad msg (AuthTag tag) = do
@@ -1054,6 +1068,7 @@ maxLenBS s
 
 unsafeMaxLenBS :: forall i. KnownNat i => ByteString -> MaxLenBS i
 unsafeMaxLenBS = MLBS
+{-# INLINE unsafeMaxLenBS #-}
 
 padMaxLenBS :: forall i. KnownNat i => MaxLenBS i -> MaxLenBS (i + 2)
 padMaxLenBS (MLBS msg) = MLBS $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
@@ -1066,6 +1081,7 @@ appendMaxLenBS (MLBS s1) (MLBS s2) = MLBS $ s1 <> s2
 
 maxLength :: forall i. KnownNat i => Int
 maxLength = fromIntegral (natVal $ Proxy @i)
+{-# INLINE maxLength #-}
 
 -- this function requires 16 bytes IV, it transforms IV in cryptonite_aes_gcm_init here:
 -- https://github.com/haskell-crypto/cryptonite/blob/master/cbits/cryptonite_aes.c
@@ -1086,12 +1102,15 @@ initAEADGCM (Key aesKey) (GCMIV ivBytes) = cryptoFailable $ do
 -- | Random AES256 key.
 randomAesKey :: TVar ChaChaDRG -> STM Key
 randomAesKey = fmap Key . randomBytes aesKeySize
+{-# INLINE randomAesKey #-}
 
 randomGCMIV :: TVar ChaChaDRG -> STM GCMIV
 randomGCMIV = fmap GCMIV . randomBytes gcmIVSize
+{-# INLINE randomGCMIV #-}
 
 ivSize :: forall c. AES.BlockCipher c => Int
 ivSize = AES.blockSize (undefined :: c)
+{-# INLINE ivSize #-}
 
 gcmIVSize :: Int
 gcmIVSize = 12
@@ -1101,6 +1120,7 @@ makeIV bs = maybeError CryptoIVError $ AES.makeIV bs
 
 maybeError :: CryptoError -> Maybe a -> ExceptT CryptoError IO a
 maybeError e = maybe (throwE e) return
+{-# INLINE maybeError #-}
 
 cryptoFailable :: CE.CryptoFailable a -> ExceptT CryptoError IO a
 cryptoFailable = liftEither . first AESCipherError . CE.eitherCryptoError
@@ -1111,12 +1131,15 @@ cryptoFailable = liftEither . first AESCipherError . CE.eitherCryptoError
 sign' :: SignatureAlgorithm a => PrivateKey a -> ByteString -> Signature a
 sign' (PrivateKeyEd25519 pk k) msg = SignatureEd25519 $ Ed25519.sign pk k msg
 sign' (PrivateKeyEd448 pk k) msg = SignatureEd448 $ Ed448.sign pk k msg
+{-# INLINE sign' #-}
 
 sign :: APrivateSignKey -> ByteString -> ASignature
 sign (APrivateSignKey a k) = ASignature a . sign' k
+{-# INLINE sign #-}
 
 signCertificate :: APrivateSignKey -> Certificate -> SignedCertificate
 signCertificate = signX509
+{-# INLINE signCertificate #-}
 
 signX509 :: (ASN1Object o, Eq o, Show o) => APrivateSignKey -> o -> SignedExact o
 signX509 key = fst . objectToSignedExact f
@@ -1141,6 +1164,7 @@ verifyX509 key exact = do
 
 certificateFingerprint :: SignedCertificate -> KeyHash
 certificateFingerprint = signedFingerprint
+{-# INLINE certificateFingerprint #-}
 
 signedFingerprint :: (ASN1Object o, Eq o, Show o) => SignedExact o -> KeyHash
 signedFingerprint o = KeyHash fp
@@ -1154,16 +1178,20 @@ instance SignatureAlgorithm a => SignatureAlgorithmX509 (SAlgorithm a) where
   signatureAlgorithmX509 = \case
     SEd25519 -> SignatureALG_IntrinsicHash PubKeyALG_Ed25519
     SEd448 -> SignatureALG_IntrinsicHash PubKeyALG_Ed448
+  {-# INLINE signatureAlgorithmX509 #-}
 
 instance SignatureAlgorithmX509 APrivateSignKey where
   signatureAlgorithmX509 (APrivateSignKey a _) = signatureAlgorithmX509 a
+  {-# INLINE signatureAlgorithmX509 #-}
 
 instance SignatureAlgorithmX509 APublicVerifyKey where
   signatureAlgorithmX509 (APublicVerifyKey a _) = signatureAlgorithmX509 a
+  {-# INLINE signatureAlgorithmX509 #-}
 
 -- | An instance for 'ASignatureKeyPair' / ('PublicKeyType' pk, pk), without touching its type family.
 instance SignatureAlgorithmX509 pk => SignatureAlgorithmX509 (a, pk) where
   signatureAlgorithmX509 = signatureAlgorithmX509 . snd
+  {-# INLINE signatureAlgorithmX509 #-}
 
 -- | A wrapper to marshall signed ASN1 objects, like certificates.
 newtype SignedObject a = SignedObject {getSignedExact :: SignedExact a}
@@ -1198,6 +1226,7 @@ certChainP = do
 verify' :: SignatureAlgorithm a => PublicKey a -> Signature a -> ByteString -> Bool
 verify' (PublicKeyEd25519 k) (SignatureEd25519 sig) msg = Ed25519.verify k msg sig
 verify' (PublicKeyEd448 k) (SignatureEd448 sig) msg = Ed448.verify k msg sig
+{-# INLINE verify' #-}
 
 verify :: APublicVerifyKey -> ASignature -> ByteString -> Bool
 verify (APublicVerifyKey a k) (ASignature a' sig) msg = case testEquality a a' of
@@ -1207,25 +1236,35 @@ verify (APublicVerifyKey a k) (ASignature a' sig) msg = case testEquality a a' o
 dh' :: DhAlgorithm a => PublicKey a -> PrivateKey a -> DhSecret a
 dh' (PublicKeyX25519 k) (PrivateKeyX25519 pk _) = DhSecretX25519 $ X25519.dh k pk
 dh' (PublicKeyX448 k) (PrivateKeyX448 pk _) = DhSecretX448 $ X448.dh k pk
+{-# INLINE dh' #-}
 
 -- | NaCl @crypto_box@ encrypt with padding with a shared DH secret and 192-bit nonce.
 cbEncrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
 cbEncrypt (DhSecretX25519 secret) = sbEncrypt_ secret
+{-# INLINE cbEncrypt #-}
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce (without padding).
 cbEncryptNoPad :: DhSecret X25519 -> CbNonce -> ByteString -> ByteString
 cbEncryptNoPad (DhSecretX25519 secret) (CbNonce nonce) = cryptoBox secret nonce
+{-# INLINE cbEncryptNoPad #-}
 
 -- | NaCl @secret_box@ encrypt with a symmetric 256-bit key and 192-bit nonce.
 sbEncrypt :: SbKey -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
 sbEncrypt (SbKey key) = sbEncrypt_ key
+{-# INLINE sbEncrypt #-}
 
 sbEncrypt_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
 sbEncrypt_ secret (CbNonce nonce) msg paddedLen = cryptoBox secret nonce <$> pad msg paddedLen
+{-# INLINE sbEncrypt_ #-}
+
+sbEncryptNoPad :: SbKey -> CbNonce -> ByteString -> ByteString
+sbEncryptNoPad (SbKey key) (CbNonce nonce) = cryptoBox key nonce
+{-# INLINE sbEncryptNoPad #-}
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
 cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> ByteString
 cbEncryptMaxLenBS (DhSecretX25519 secret) (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
+{-# INLINE cbEncryptMaxLenBS #-}
 
 cryptoBox :: ByteArrayAccess key => key -> ByteString -> ByteString -> ByteString
 cryptoBox secret nonce s = BA.convert tag <> c
@@ -1236,18 +1275,26 @@ cryptoBox secret nonce s = BA.convert tag <> c
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 cbDecrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
 cbDecrypt (DhSecretX25519 secret) = sbDecrypt_ secret
+{-# INLINE cbDecrypt #-}
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce (without unpadding).
 cbDecryptNoPad :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
 cbDecryptNoPad (DhSecretX25519 secret) = sbDecryptNoPad_ secret
+{-# INLINE cbDecryptNoPad #-}
 
 -- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce.
 sbDecrypt :: SbKey -> CbNonce -> ByteString -> Either CryptoError ByteString
 sbDecrypt (SbKey key) = sbDecrypt_ key
+{-# INLINE sbDecrypt #-}
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 sbDecrypt_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Either CryptoError ByteString
 sbDecrypt_ secret nonce = unPad <=< sbDecryptNoPad_ secret nonce
+{-# INLINE sbDecrypt_ #-}
+
+sbDecryptNoPad :: SbKey -> CbNonce -> ByteString -> Either CryptoError ByteString
+sbDecryptNoPad (SbKey key) = sbDecryptNoPad_ key
+{-# INLINE sbDecryptNoPad #-}
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce (without unpadding).
 sbDecryptNoPad_ :: ByteArrayAccess key => key -> CbNonce -> ByteString -> Either CryptoError ByteString
@@ -1356,19 +1403,22 @@ newtype SbChainKey = SecretBoxChainKey {unSbChainKey :: ByteString}
 sbcInit :: ByteArrayAccess secret => ByteString -> secret -> (SbChainKey, SbChainKey)
 sbcInit salt secret = (SecretBoxChainKey ck1, SecretBoxChainKey ck2)
   where
-    prk = H.extract salt secret :: H.PRK SHA512
-    out = H.expand prk ("SimpleXSbChainInit" :: ByteString) 64
-    (ck1, ck2) = B.splitAt 32 out
+    (ck1, ck2) = B.splitAt 32 $ hkdf salt secret "SimpleXSbChainInit" 64
 
 type SbKeyNonce = (SbKey, CbNonce)
 
 sbcHkdf :: SbChainKey -> (SbKeyNonce, SbChainKey)
 sbcHkdf (SecretBoxChainKey ck) = ((SecretBoxKey sk, CryptoBoxNonce nonce), SecretBoxChainKey ck')
   where
-    prk = H.extract B.empty ck :: H.PRK SHA512
-    out = H.expand prk ("SimpleXSbChain" :: ByteString) 88 -- = 32 (new chain key) + 32 (secret_box key) + 24 (nonce)
+    out = hkdf "" ck "SimpleXSbChain" 88 -- = 32 (new chain key) + 32 (secret_box key) + 24 (nonce)
     (ck', rest) = B.splitAt 32 out
     (sk, nonce) = B.splitAt 32 rest
+
+hkdf :: ByteArrayAccess secret => ByteString -> secret -> ByteString -> Int -> ByteString
+hkdf salt ikm info n =
+  let prk = H.extract salt ikm :: H.PRK SHA512
+   in H.expand prk info n
+{-# INLINE hkdf #-}
 
 xSalsa20 :: ByteArrayAccess key => key -> ByteString -> ByteString -> (ByteString, ByteString)
 xSalsa20 secret nonce msg = (rs, msg')

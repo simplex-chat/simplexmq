@@ -55,11 +55,12 @@ module AgentTests.FunctionalAPITests
 where
 
 import AgentTests.ConnectionRequestTests (connReqData, queueAddr, testE2ERatchetParams12)
+import AgentTests.EqInstances ()
 import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
-import Data.Bifunctor (first)
+import Data.Bifunctor (first, second)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -249,8 +250,9 @@ inAnyOrder g rs = withFrozenCallStack $ do
     expected :: a -> (a -> Bool) -> Bool
     expected r rp = rp r
 
-createConnection :: AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> AE (ConnId, ConnectionRequestUri c)
-createConnection c userId enableNtfs cMode clientData = A.createConnection c userId enableNtfs cMode clientData (IKNoPQ PQSupportOn)
+createConnection :: ConnectionModeI c => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> AE (ConnId, ConnectionRequestUri c)
+createConnection c userId enableNtfs cMode clientData =
+  fmap (second fst) . A.createConnection c userId enableNtfs cMode Nothing clientData (IKNoPQ PQSupportOn)
 
 joinConnection :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> AE (ConnId, SndQueueSecured)
 joinConnection c userId enableNtfs cReq connInfo subMode = do
@@ -306,6 +308,10 @@ functionalAPITests ps = do
       testAsyncServerOffline ps
     it "should restore confirmation after client restart" $
       testAllowConnectionClientRestart ps
+  describe "Short connection links" $ do
+    it "should connect via 1-time short link" $ testInviationShortLink ps
+    it "should connect via 1-time short link with async join" $ testInviationShortLinkAsync ps
+    it "should connect via contact short link" $ testContactShortLink ps
   describe "Message delivery" $ do
     describe "update connection agent version on received messages" $ do
       it "should increase if compatible, shouldn'ps decrease" $
@@ -607,7 +613,7 @@ runAgentClientTest pqSupport sqSecured viaProxy alice bob baseId =
 runAgentClientTestPQ :: HasCallStack => SndQueueSecured -> Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientTestPQ sqSecured viaProxy (alice, aPQ) (bob, bPQ) baseId =
   runRight_ $ do
-    (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing aPQ SMSubscribe
+    (bobId, (qInfo, Nothing)) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing aPQ SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo bPQ
     sqSecured' <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" bPQ SMSubscribe
     liftIO $ sqSecured' `shouldBe` sqSecured
@@ -809,7 +815,7 @@ runAgentClientContactTest pqSupport sqSecured viaProxy alice bob baseId =
 runAgentClientContactTestPQ :: HasCallStack => SndQueueSecured -> Bool -> PQSupport -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, bPQ) baseId =
   runRight_ $ do
-    (_, qInfo) <- A.createConnection alice 1 True SCMContact Nothing aPQ SMSubscribe
+    (_, (qInfo, Nothing)) <- A.createConnection alice 1 True SCMContact Nothing Nothing aPQ SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo bPQ
     sqSecuredJoin <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" bPQ SMSubscribe
     liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
@@ -853,7 +859,7 @@ runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, b
 
 runAgentClientContactTestPQ3 :: HasCallStack => Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId = runRight_ $ do
-  (_, qInfo) <- A.createConnection alice 1 True SCMContact Nothing aPQ SMSubscribe
+  (_, (qInfo, Nothing)) <- A.createConnection alice 1 True SCMContact Nothing Nothing aPQ SMSubscribe
   (bAliceId, bobId, abPQEnc) <- connectViaContact bob bPQ qInfo
   sentMessages abPQEnc alice bobId bob bAliceId
   (tAliceId, tomId, atPQEnc) <- connectViaContact tom tPQ qInfo
@@ -906,7 +912,7 @@ noMessages_ ingoreQCONT c err = tryGet `shouldReturn` ()
 testRejectContactRequest :: HasCallStack => IO ()
 testRejectContactRequest =
   withAgentClients2 $ \alice bob -> runRight_ $ do
-    (addrConnId, qInfo) <- A.createConnection alice 1 True SCMContact Nothing IKPQOn SMSubscribe
+    (addrConnId, (qInfo, Nothing)) <- A.createConnection alice 1 True SCMContact Nothing Nothing IKPQOn SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
     sqSecured <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ sqSecured `shouldBe` False -- joining via contact address connection
@@ -1072,6 +1078,84 @@ testAllowConnectionClientRestart ps@(t, ASType qsType _) = do
         exchangeGreetings alice2 bobId bob aliceId
     disposeAgentClient alice2
     disposeAgentClient bob
+
+testInviationShortLink :: HasCallStack => (ATransport, AStoreType) -> IO ()
+testInviationShortLink ps =
+  withAgentClients3 $ \a b c -> withSmpServer ps $ do
+    let userData = "some user data"
+    (bId, (connReq, Just shortLink)) <- runRight $ A.createConnection a 1 True SCMInvitation (Just userData) Nothing CR.IKUsePQ SMSubscribe
+    (connReq', userData') <- runRight $ getConnShortLink b 1 shortLink
+    strDecode (strEncode shortLink) `shouldBe` Right shortLink
+    connReq' `shouldBe` connReq
+    userData' `shouldBe` userData
+    -- same user can get invitation link again
+    (connReq2, userData2) <- runRight $ getConnShortLink b 1 shortLink
+    connReq2 `shouldBe` connReq
+    userData2 `shouldBe` userData
+    -- another user cannot get the same invitation link
+    runExceptT (getConnShortLink c 1 shortLink) >>= \case
+      Left (SMP _ AUTH) -> pure ()
+      r -> liftIO $ expectationFailure ("unexpected result " <> show r)
+    runRight $ do
+      aId <- A.prepareConnectionToJoin b 1 True connReq PQSupportOn
+      sndSecure <- A.joinConnection b 1 aId True connReq "bob's connInfo" PQSupportOn SMSubscribe
+      liftIO $ sndSecure `shouldBe` True
+      ("", _, CONF confId _ "bob's connInfo") <- get a
+      allowConnection a bId confId "alice's connInfo"
+      get a ##> ("", bId, CON)
+      get b ##> ("", aId, INFO "alice's connInfo")
+      get b ##> ("", aId, CON)
+      exchangeGreetings a bId b aId
+
+testInviationShortLinkAsync :: HasCallStack => (ATransport, AStoreType) -> IO ()
+testInviationShortLinkAsync ps =
+  withAgentClients2 $ \a b -> withSmpServer ps $ do
+    let userData = "some user data"
+    (bId, (connReq, Just shortLink)) <- runRight $ A.createConnection a 1 True SCMInvitation (Just userData) Nothing CR.IKUsePQ SMSubscribe
+    (connReq', userData') <- runRight $ getConnShortLink b 1 shortLink
+    strDecode (strEncode shortLink) `shouldBe` Right shortLink
+    connReq' `shouldBe` connReq
+    userData' `shouldBe` userData
+    runRight $ do
+      aId <- A.joinConnectionAsync b 1 "123" True connReq "bob's connInfo" PQSupportOn SMSubscribe
+      get b =##> \case ("123", c, JOINED sndSecure) -> c == aId && sndSecure; _ -> False
+      ("", _, CONF confId _ "bob's connInfo") <- get a
+      allowConnection a bId confId "alice's connInfo"
+      get a ##> ("", bId, CON)
+      get b ##> ("", aId, INFO "alice's connInfo")
+      get b ##> ("", aId, CON)
+      exchangeGreetings a bId b aId
+
+testContactShortLink :: HasCallStack => (ATransport, AStoreType) -> IO ()
+testContactShortLink ps =
+  withAgentClients3 $ \a b c -> withSmpServer ps $ do
+    let userData = "some user data"
+    (_contactId, (connReq, Just shortLink)) <- runRight $ A.createConnection a 1 True SCMContact (Just userData) Nothing CR.IKPQOn SMSubscribe
+    (connReq', userData') <- runRight $ getConnShortLink b 1 shortLink
+    strDecode (strEncode shortLink) `shouldBe` Right shortLink
+    connReq' `shouldBe` connReq
+    userData' `shouldBe` userData
+    -- same user can get contact link again
+    (connReq2, userData2) <- runRight $ getConnShortLink b 1 shortLink
+    connReq2 `shouldBe` connReq
+    userData2 `shouldBe` userData
+    -- another user can get the same contact link
+    (connReq3, userData3) <- runRight $ getConnShortLink c 1 shortLink
+    connReq3 `shouldBe` connReq
+    userData3 `shouldBe` userData
+    runRight $ do
+      (aId, sndSecure) <- joinConnection b 1 True connReq "bob's connInfo" SMSubscribe
+      liftIO $ sndSecure `shouldBe` False
+      ("", _, REQ invId _ "bob's connInfo") <- get a
+      bId <- A.prepareConnectionToAccept a True invId PQSupportOn
+      sndSecure' <- acceptContact a bId True invId "alice's connInfo" PQSupportOn SMSubscribe
+      liftIO $ sndSecure' `shouldBe` True
+      ("", _, CONF confId  _ "alice's connInfo") <- get b
+      allowConnection b aId confId "bob's connInfo"
+      get a ##> ("", bId, INFO "bob's connInfo")
+      get a ##> ("", bId, CON)
+      get b ##> ("", aId, CON)
+      exchangeGreetings a bId b aId
 
 testIncreaseConnAgentVersion :: HasCallStack => (ATransport, AStoreType) -> IO ()
 testIncreaseConnAgentVersion ps = do
@@ -1760,7 +1844,7 @@ makeConnectionForUsers = makeConnectionForUsers_ PQSupportOn True
 
 makeConnectionForUsers_ :: HasCallStack => PQSupport -> SndQueueSecured -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnectionForUsers_ pqSupport sqSecured alice aliceUserId bob bobUserId = do
-  (bobId, qInfo) <- A.createConnection alice aliceUserId True SCMInvitation Nothing (CR.IKNoPQ pqSupport) SMSubscribe
+  (bobId, (qInfo, Nothing)) <- A.createConnection alice aliceUserId True SCMInvitation Nothing Nothing (CR.IKNoPQ pqSupport) SMSubscribe
   aliceId <- A.prepareConnectionToJoin bob bobUserId True qInfo pqSupport
   sqSecured' <- A.joinConnection bob bobUserId aliceId True qInfo "bob's connInfo" pqSupport SMSubscribe
   liftIO $ sqSecured' `shouldBe` sqSecured

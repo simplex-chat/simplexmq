@@ -1,3 +1,6 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.Messaging.Server.QueueStore.QueueInfo where
@@ -11,6 +14,14 @@ import Data.Time.Clock (UTCTime)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
 import Simplex.Messaging.Util ((<$?>))
+
+#if defined(dbServerPostgres)
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Database.PostgreSQL.Simple.FromField (FromField (..))
+import Database.PostgreSQL.Simple.ToField (ToField (..))
+import Simplex.Messaging.Agent.Store.Postgres.DB (fromTextField_)
+import Simplex.Messaging.Util (eitherToMaybe)
+#endif
 
 data QueueInfo = QueueInfo
   { qiSnd :: Bool,
@@ -39,6 +50,24 @@ data MsgInfo = MsgInfo
 
 data MsgType = MTMessage | MTQuota
   deriving (Eq, Show)
+
+data QueueMode = QMMessaging | QMContact deriving (Eq, Show)
+
+instance Encoding QueueMode where
+  smpEncode = \case
+    QMMessaging -> "M"
+    QMContact -> "C"
+  smpP =
+    A.anyChar >>= \case
+      'M' -> pure QMMessaging
+      'C' -> pure QMContact
+      _ -> fail "bad QueueMode"
+
+#if defined(dbServerPostgres)
+instance FromField QueueMode where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
+
+instance ToField QueueMode where toField = toField . decodeLatin1 . smpEncode
+#endif
 
 $(JQ.deriveJSON (enumJSON $ dropPrefix "Q") ''QSubThread)
 

@@ -18,6 +18,8 @@ module Simplex.Messaging.Server.StoreLog
     closeStoreLog,
     writeStoreLogRecord,
     logCreateQueue,
+    logCreateLink,
+    logDeleteLink,
     logSecureQueue,
     logAddNotifier,
     logSuspendQueue,
@@ -37,6 +39,7 @@ import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.List (sort, stripPrefix)
@@ -45,6 +48,7 @@ import qualified Data.Text as T
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime, nominalDay)
 import Data.Time.Format.ISO8601 (iso8601Show, iso8601ParseM)
 import GHC.IO (catchAny)
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 -- import Simplex.Messaging.Server.MsgStore.Types
@@ -57,6 +61,8 @@ import System.FilePath (takeDirectory, takeFileName)
 
 data StoreLogRecord
   = CreateQueue RecipientId QueueRec
+  | CreateLink RecipientId LinkId QueueLinkData
+  | DeleteLink RecipientId
   | SecureQueue QueueId SndPublicAuthKey
   | AddNotifier QueueId NtfCreds
   | SuspendQueue QueueId
@@ -69,6 +75,8 @@ data StoreLogRecord
 
 data SLRTag
   = CreateQueue_
+  | CreateLink_
+  | DeleteLink_
   | SecureQueue_
   | AddNotifier_
   | SuspendQueue_
@@ -79,21 +87,22 @@ data SLRTag
   | UpdateTime_
 
 instance StrEncoding QueueRec where
-  strEncode QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt} =
+  strEncode QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt} =
     B.unwords
       [ "rk=" <> strEncode recipientKey,
         "rdh=" <> strEncode rcvDhSecret,
         "sid=" <> strEncode senderId,
         "sk=" <> strEncode senderKey
       ]
-      <> sndSecureStr
-      <> maybe "" notifierStr notifier
-      <> maybe "" updatedAtStr updatedAt
+      <> maybe "" ((" queue_mode=" <>) . smpEncode) queueMode
+      <> opt " link_id=" (fst <$> queueData)
+      <> opt " queue_data=" (snd <$> queueData)
+      <> opt " notifier=" notifier
+      <> opt " updated_at=" updatedAt
       <> statusStr
     where
-      sndSecureStr = if sndSecure then " sndSecure=" <> strEncode sndSecure else ""
-      notifierStr ntfCreds = " notifier=" <> strEncode ntfCreds
-      updatedAtStr t = " updated_at=" <> strEncode t
+      opt :: StrEncoding a => ByteString -> Maybe a -> ByteString
+      opt param = maybe "" ((param <>) . strEncode)
       statusStr = case status of
         EntityActive -> ""
         _ -> " status=" <> strEncode status
@@ -103,15 +112,23 @@ instance StrEncoding QueueRec where
     rcvDhSecret <- "rdh=" *> strP_
     senderId <- "sid=" *> strP_
     senderKey <- "sk=" *> strP
-    sndSecure <- (" sndSecure=" *> strP) <|> pure False
+    queueMode <-
+      toQueueMode <$> (" sndSecure=" *> strP)
+        <|> Just <$> (" queue_mode=" *> smpP)
+        <|> pure Nothing -- unknown queue mode, we cannot imply that it is contact address
+    queueData <- optional $ (,) <$> (" link_id" *> strP) <*> (" queue_data" *> strP)
     notifier <- optional $ " notifier=" *> strP
     updatedAt <- optional $ " updated_at=" *> strP
     status <- (" status=" *> strP) <|> pure EntityActive
-    pure QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, sndSecure, notifier, status, updatedAt}
+    pure QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt}
+    where
+      toQueueMode sndSecure = Just $ if sndSecure then QMMessaging else QMContact
 
 instance StrEncoding SLRTag where
   strEncode = \case
     CreateQueue_ -> "CREATE"
+    CreateLink_ -> "CREATE_LINK"
+    DeleteLink_ -> "DELETE_LINK"
     SecureQueue_ -> "SECURE"
     AddNotifier_ -> "NOTIFIER"
     SuspendQueue_ -> "SUSPEND"
@@ -124,6 +141,8 @@ instance StrEncoding SLRTag where
   strP =
     A.choice
       [ "CREATE" $> CreateQueue_,
+        "CREATE_LINK" $> CreateLink_,
+        "DELETE_LINK" $> DeleteLink_,
         "SECURE" $> SecureQueue_,
         "NOTIFIER" $> AddNotifier_,
         "SUSPEND" $> SuspendQueue_,
@@ -137,6 +156,8 @@ instance StrEncoding SLRTag where
 instance StrEncoding StoreLogRecord where
   strEncode = \case
     CreateQueue rId q -> B.unwords [strEncode CreateQueue_, "rid=" <> strEncode rId, strEncode q]
+    CreateLink rId lnkId d -> strEncode (CreateLink_, rId, lnkId, d)
+    DeleteLink rId -> strEncode (DeleteLink_, rId)
     SecureQueue rId sKey -> strEncode (SecureQueue_, rId, sKey)
     AddNotifier rId ntfCreds -> strEncode (AddNotifier_, rId, ntfCreds)
     SuspendQueue rId -> strEncode (SuspendQueue_, rId)
@@ -149,6 +170,8 @@ instance StrEncoding StoreLogRecord where
   strP =
     strP_ >>= \case
       CreateQueue_ -> CreateQueue <$> ("rid=" *> strP_) <*> strP
+      CreateLink_ -> CreateLink <$> strP_ <*> strP_ <*> strP
+      DeleteLink_ -> DeleteLink <$> strP
       SecureQueue_ -> SecureQueue <$> strP_ <*> strP
       AddNotifier_ -> AddNotifier <$> strP_ <*> strP
       SuspendQueue_ -> SuspendQueue <$> strP
@@ -188,6 +211,12 @@ writeStoreLogRecord (WriteStoreLog _ h) r = E.uninterruptibleMask_ $ do
 
 logCreateQueue :: StoreLog 'WriteMode -> RecipientId -> QueueRec -> IO ()
 logCreateQueue s rId q = writeStoreLogRecord s $ CreateQueue rId q
+
+logCreateLink :: StoreLog 'WriteMode -> RecipientId -> LinkId -> QueueLinkData -> IO ()
+logCreateLink s rId lnkId d = writeStoreLogRecord s $ CreateLink rId lnkId d
+
+logDeleteLink :: StoreLog 'WriteMode -> RecipientId -> IO ()
+logDeleteLink s = writeStoreLogRecord s . DeleteLink
 
 logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SndPublicAuthKey -> IO ()
 logSecureQueue s qId sKey = writeStoreLogRecord s $ SecureQueue qId sKey
