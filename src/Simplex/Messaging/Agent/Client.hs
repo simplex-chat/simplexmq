@@ -1066,7 +1066,7 @@ withSMPClient c q cmdStr action = do
 
 sendOrProxySMPMessage :: AgentClient -> UserId -> SMPServer -> ConnId -> ByteString -> Maybe SMP.SndPrivateAuthKey -> SMP.SenderId -> MsgFlags -> SMP.MsgBody -> AM (Maybe SMPServer)
 sendOrProxySMPMessage c userId destSrv connId cmdStr spKey_ senderId msgFlags msg =
-  sendOrProxySMPCommand c userId destSrv connId cmdStr senderId sendViaProxy sendDirectly
+  fst <$> sendOrProxySMPCommand c userId destSrv connId cmdStr senderId sendViaProxy sendDirectly
   where
     sendViaProxy smp proxySess = do
       atomically $ incSMPServerStat c userId destSrv sentViaProxyAttempts
@@ -1077,20 +1077,6 @@ sendOrProxySMPMessage c userId destSrv connId cmdStr spKey_ senderId msgFlags ms
       sendSMPMessage smp spKey_ senderId msgFlags msg
 
 sendOrProxySMPCommand ::
-  AgentClient ->
-  UserId ->
-  SMPServer ->
-  ConnId ->
-  ByteString ->
-  SMP.SenderId ->
-  (SMPClient -> ProxiedRelay -> ExceptT SMPClientError IO (Either ProxyClientError ())) ->
-  (SMPClient -> ExceptT SMPClientError IO ()) ->
-  AM (Maybe SMPServer)
-sendOrProxySMPCommand c userId destSrv connId cmdStr entId sendCmdViaProxy sendCmdDirectly =
-  fst <$> sendOrProxySMPCommand_ c userId destSrv connId cmdStr entId sendCmdViaProxy sendCmdDirectly
-{-# INLINE sendOrProxySMPCommand #-}
-
-sendOrProxySMPCommand_ ::
   forall a.
   AgentClient ->
   UserId ->
@@ -1101,7 +1087,7 @@ sendOrProxySMPCommand_ ::
   (SMPClient -> ProxiedRelay -> ExceptT SMPClientError IO (Either ProxyClientError a)) ->
   (SMPClient -> ExceptT SMPClientError IO a) ->
   AM (Maybe SMPServer, a)
-sendOrProxySMPCommand_ c userId destSrv@ProtocolServer {host = destHosts} connId cmdStr entId sendCmdViaProxy sendCmdDirectly = do
+sendOrProxySMPCommand c userId destSrv@ProtocolServer {host = destHosts} connId cmdStr entId sendCmdViaProxy sendCmdDirectly = do
   tSess <- mkTransportSession c userId destSrv connId
   ifM shouldUseProxy (sendViaProxy Nothing tSess) ((Nothing,) <$> sendDirectly tSess)
   where
@@ -1698,14 +1684,14 @@ deleteQueueLink c rq@RcvQueue {rcvId, rcvPrivateKey} =
 
 secureGetQueueLink :: AgentClient -> UserId -> InvShortLink -> AM (SMP.SenderId, QueueLinkData)
 secureGetQueueLink c userId InvShortLink {server, linkId, sndPrivateKey, sndPublicKey} =
-  snd <$> sendOrProxySMPCommand_ c userId server (unEntityId linkId) "LKEY <key>" linkId secureGetViaProxy secureGetDirectly
+  snd <$> sendOrProxySMPCommand c userId server (unEntityId linkId) "LKEY <key>" linkId secureGetViaProxy secureGetDirectly
   where
     secureGetViaProxy smp proxySess = proxySecureGetSMPQueueLink smp proxySess sndPrivateKey linkId sndPublicKey
     secureGetDirectly smp = secureGetSMPQueueLink smp sndPrivateKey linkId sndPublicKey
 
 getQueueLink :: AgentClient -> UserId -> SMPServer -> SMP.LinkId -> AM (SMP.SenderId, QueueLinkData)
 getQueueLink c userId server lnkId =
-  snd <$> sendOrProxySMPCommand_ c userId server (unEntityId lnkId) "LGET" lnkId getViaProxy getDirectly
+  snd <$> sendOrProxySMPCommand c userId server (unEntityId lnkId) "LGET" lnkId getViaProxy getDirectly
   where
     getViaProxy smp proxySess = proxyGetSMPQueueLink smp proxySess lnkId
     getDirectly smp = getSMPQueueLink smp lnkId

@@ -213,13 +213,14 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           DB.query db "SELECT fixed_data, user_data FROM msg_queues WHERE link_id = ? AND deleted_at IS NULL" (Only lnkId)
       _ -> throwE AUTH
 
+  -- TODO [short link] link ID should be validated earlier
   addQueueLinkData :: PostgresQueueStore q -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
   addQueueLinkData st sq lnkId d = 
     withQueueRec sq "addQueueLinkData" $ \q -> case queueData q of
       Nothing ->
         addLink q $ \db -> DB.execute db qry (d :. (lnkId, rId))
       Just (lnkId', _) | lnkId' == lnkId ->
-        addLink q $ \db -> DB.execute db (qry <> " AND (fixed_data IS NULL OR fixed_data != ?)") (d :. (lnkId, rId, fst d))
+        addLink q $ \db -> DB.execute db (qry <> " AND (fixed_data IS NULL OR fixed_data = ?)") (d :. (lnkId, rId, fst d))
       _ -> throwE AUTH
     where
       rId = recipientId sq

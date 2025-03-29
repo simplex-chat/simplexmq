@@ -94,6 +94,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     deleteInvShortLink,
     createInvShortLink,
     setInvShortLinkSndId,
+    saveShortLinkCreds,
     -- Messages
     updateRcvIds,
     createRcvMsg,
@@ -829,6 +830,17 @@ setInvShortLinkSndId db InvShortLink {server, linkId} sndId =
       WHERE host = ? AND port = ? AND link_id = ?
     |]
     (sndId, host server, port server, linkId)
+
+saveShortLinkCreds :: DB.Connection -> RcvQueue -> ShortLinkCreds -> IO ()
+saveShortLinkCreds db RcvQueue {server, rcvId} ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData} =
+  DB.execute
+    db
+    [sql|
+      UPDATE inv_short_links
+      SET link_id = ?, link_key = ?, link_priv_sig_key = ?, link_enc_fixed_data = ?
+      WHERE host = ? AND port = ? AND rcv_id = ?
+    |]
+    (shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData, host server, port server, rcvId)
 
 updateRcvIds :: DB.Connection -> ConnId -> IO (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
 updateRcvIds db connId = do
