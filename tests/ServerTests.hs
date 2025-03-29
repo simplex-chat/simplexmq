@@ -1102,6 +1102,13 @@ testInvQueueLinkData =
       sId3 `shouldBe` sId
       ld2 `shouldBe` ld
 
+      let newLD = (EncDataBytes "fixed data", EncDataBytes "updated user data")
+      Resp "8" rId' (ERR AUTH) <- signSendRecv r rKey ("8", rId, LSET lnkId newLD)
+      rId' `shouldBe` rId
+
+      Resp "9" rId2 (ERR AUTH) <- signSendRecv r rKey ("9", rId, LDEL)
+      rId2 `shouldBe` rId
+
 testContactQueueLinkData :: SpecWith (ATransport, AStoreType)
 testContactQueueLinkData = 
   it "create and access queue short link data for contact address"  $ \(ATransport t, msType) ->
@@ -1140,6 +1147,27 @@ testContactQueueLinkData =
       Resp "6" _ (LNK sId3 ld2) <- sendRecv s ("", "6", lnkId, LGET)
       sId3 `shouldBe` sId
       ld2 `shouldBe` ld
+
+      let newLD = (EncDataBytes "fixed data", EncDataBytes "updated user data")
+      Resp "7" rId' OK <- signSendRecv r rKey ("7", rId, LSET lnkId newLD)
+      rId' `shouldBe` rId
+
+      Resp "8" _ (LNK sId4 ld3) <- sendRecv s ("", "8", lnkId, LGET)
+      sId4 `shouldBe` sId
+      ld3 `shouldBe` newLD
+
+      badLnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      Resp "9" _ (ERR AUTH) <- signSendRecv r rKey ("9", rId, LSET badLnkId newLD)
+
+      let badLD = (EncDataBytes "changed fixed data", EncDataBytes "updated user data 2")
+      Resp "10" _ (ERR AUTH) <- signSendRecv r rKey ("10", rId, LSET lnkId badLD)
+
+      Resp "11" rId2 OK <- signSendRecv r rKey ("11", rId, LDEL)
+      rId2 `shouldBe` rId
+      Resp "11a" _ OK <- signSendRecv r rKey ("11a", rId, LDEL)
+
+      Resp "12" lnkId3 (ERR AUTH) <- sendRecv s ("", "12", lnkId, LGET)
+      lnkId3 `shouldBe` lnkId
 
 samplePubKey :: C.APublicVerifyKey
 samplePubKey = C.APublicVerifyKey C.SEd25519 "MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ6buiZJVgSpQWsucXq7U6zjMgY="

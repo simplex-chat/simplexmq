@@ -31,17 +31,25 @@ encodeSignLinkData :: ConnectionModeI c => C.KeyPair 'C.Ed25519 -> VersionRangeS
 encodeSignLinkData (sigKey, pk) agentVRange connReq userData =
   let fd = smpEncode FixedLinkData {agentVRange, sigKey, connReq}
       ud = smpEncode UserLinkData {agentVRange, userData}
-   in (LinkKey (C.sha3_256 fd), (sign fd, sign ud))
-  where
-    sign s = smpEncode (C.signatureBytes $ C.sign' pk s) <> s
+   in (LinkKey (C.sha3_256 fd), (encodeSign pk fd, encodeSign pk ud))
+
+encodeSignUserData :: C.PrivateKeyEd25519 -> VersionRangeSMPA -> ConnInfo -> ByteString
+encodeSignUserData pk agentVRange userData =
+  encodeSign pk $ smpEncode UserLinkData {agentVRange, userData}
+
+encodeSign :: C.PrivateKeyEd25519 -> ByteString -> ByteString
+encodeSign pk s = smpEncode (C.signatureBytes $ C.sign' pk s) <> s
 
 -- TODO [short links] possibly use padded encryption for fixed and for user data
 encryptLinkData :: TVar ChaChaDRG -> C.SbKey -> (ByteString, ByteString) -> IO QueueLinkData
 encryptLinkData g k = bimapM encrypt encrypt
   where
-    encrypt s = do
-      nonce <- atomically $ C.randomCbNonce g
-      pure $ EncDataBytes $ smpEncode nonce <> C.sbEncryptNoPad k nonce s
+    encrypt = encryptData g k
+
+encryptData :: TVar ChaChaDRG -> C.SbKey -> ByteString -> IO EncDataBytes
+encryptData g k s = do
+  nonce <- atomically $ C.randomCbNonce g
+  pure $ EncDataBytes $ smpEncode nonce <> C.sbEncryptNoPad k nonce s
 
 decryptLinkData :: ConnectionModeI c => LinkKey -> C.SbKey -> QueueLinkData -> Either AgentErrorType (ConnectionRequestUri c, ConnInfo)
 decryptLinkData linkKey k (encFD, encUD) = do

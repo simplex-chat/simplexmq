@@ -1264,11 +1264,13 @@ client
           ACK msgId -> withQueue $ acknowledgeMsg msgId
           KEY sKey -> withQueue $ \q _ -> (corrId,entId,) . either ERR id <$> secureQueue_ q sKey
           LSET lnkId d ->
-            withQueue $ \q qr -> checkMode QMContact qr $ liftIO $
-              OK <$$ addQueueLinkData (queueStore ms) q lnkId d
+            withQueue $ \q qr -> checkMode QMContact qr $ liftIO $ case queueData qr of
+              Just (lnkId', _) | lnkId' /= lnkId -> pure $ Left AUTH
+              _ -> OK <$$ addQueueLinkData (queueStore ms) q lnkId d
           LDEL ->
-            withQueue $ \q _ -> liftIO $ (corrId,entId,) . either ERR (const OK) <$>
-              deleteQueueLinkData (queueStore ms) q
+            withQueue $ \q qr -> checkMode QMContact qr $ liftIO $ case queueData qr of
+              Just _ -> OK <$$ deleteQueueLinkData (queueStore ms) q
+              Nothing -> pure $ Right OK
           NKEY nKey dhKey -> withQueue $ \q _ -> addQueueNotifier_ q nKey dhKey
           NDEL -> withQueue $ \q _ -> deleteQueueNotifier_ q
           OFF -> maybe (pure $ err INTERNAL) suspendQueue_ q_
