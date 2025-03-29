@@ -312,6 +312,7 @@ functionalAPITests ps = do
     it "should connect via 1-time short link" $ testInviationShortLink ps
     it "should connect via 1-time short link with async join" $ testInviationShortLinkAsync ps
     it "should connect via contact short link" $ testContactShortLink ps
+    it "should add short link to existing contact and connect" $ testAddContactShortLink ps
   describe "Message delivery" $ do
     describe "update connection agent version on received messages" $ do
       it "should increase if compatible, shouldn'ps decrease" $
@@ -1130,7 +1131,7 @@ testContactShortLink :: HasCallStack => (ATransport, AStoreType) -> IO ()
 testContactShortLink ps =
   withAgentClients3 $ \a b c -> withSmpServer ps $ do
     let userData = "some user data"
-    (_contactId, (connReq, Just shortLink)) <- runRight $ A.createConnection a 1 True SCMContact (Just userData) Nothing CR.IKPQOn SMSubscribe
+    (contactId, (connReq, Just shortLink)) <- runRight $ A.createConnection a 1 True SCMContact (Just userData) Nothing CR.IKPQOn SMSubscribe
     (connReq', userData') <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
     connReq' `shouldBe` connReq
@@ -1156,6 +1157,59 @@ testContactShortLink ps =
       get a ##> ("", bId, CON)
       get b ##> ("", aId, CON)
       exchangeGreetings a bId b aId
+    -- update user data
+    let updatedData = "updated user data"
+    shortLink' <- runRight $ setContactShortLink a contactId updatedData
+    shortLink' `shouldBe` shortLink
+    (connReq4, updatedData') <- runRight $ getConnShortLink c 1 shortLink
+    connReq4 `shouldBe` connReq
+    updatedData' `shouldBe` updatedData
+    -- one more time
+    shortLink2 <- runRight $ setContactShortLink a contactId updatedData
+    shortLink2 `shouldBe` shortLink
+    -- delete short link
+    runRight_ $ deleteContactShortLink a contactId
+    Left (SMP _ AUTH) <- runExceptT $ getConnShortLink c 1 shortLink
+    pure ()
+
+testAddContactShortLink :: HasCallStack => (ATransport, AStoreType) -> IO ()
+testAddContactShortLink ps =
+  withAgentClients3 $ \a b c -> withSmpServer ps $ do
+    (contactId, (connReq, Nothing)) <- runRight $ A.createConnection a 1 True SCMContact Nothing Nothing CR.IKPQOn SMSubscribe
+    let userData = "some user data"
+    shortLink <- runRight $ setContactShortLink a contactId userData
+    (connReq', userData') <- runRight $ getConnShortLink b 1 shortLink
+    strDecode (strEncode shortLink) `shouldBe` Right shortLink
+    connReq' `shouldBe` connReq
+    userData' `shouldBe` userData
+    -- same user can get contact link again
+    (connReq2, userData2) <- runRight $ getConnShortLink b 1 shortLink
+    connReq2 `shouldBe` connReq
+    userData2 `shouldBe` userData
+    -- another user can get the same contact link
+    (connReq3, userData3) <- runRight $ getConnShortLink c 1 shortLink
+    connReq3 `shouldBe` connReq
+    userData3 `shouldBe` userData
+    runRight $ do
+      (aId, sndSecure) <- joinConnection b 1 True connReq "bob's connInfo" SMSubscribe
+      liftIO $ sndSecure `shouldBe` False
+      ("", _, REQ invId _ "bob's connInfo") <- get a
+      bId <- A.prepareConnectionToAccept a True invId PQSupportOn
+      sndSecure' <- acceptContact a bId True invId "alice's connInfo" PQSupportOn SMSubscribe
+      liftIO $ sndSecure' `shouldBe` True
+      ("", _, CONF confId  _ "alice's connInfo") <- get b
+      allowConnection b aId confId "bob's connInfo"
+      get a ##> ("", bId, INFO "bob's connInfo")
+      get a ##> ("", bId, CON)
+      get b ##> ("", aId, CON)
+      exchangeGreetings a bId b aId
+    -- update user data
+    let updatedData = "updated user data"
+    shortLink' <- runRight $ setContactShortLink a contactId updatedData
+    shortLink' `shouldBe` shortLink
+    (connReq4, updatedData') <- runRight $ getConnShortLink c 1 shortLink
+    connReq4 `shouldBe` connReq
+    updatedData' `shouldBe` updatedData
 
 testIncreaseConnAgentVersion :: HasCallStack => (ATransport, AStoreType) -> IO ()
 testIncreaseConnAgentVersion ps = do

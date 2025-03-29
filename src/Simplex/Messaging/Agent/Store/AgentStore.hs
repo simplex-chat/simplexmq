@@ -94,7 +94,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     deleteInvShortLink,
     createInvShortLink,
     setInvShortLinkSndId,
-    saveShortLinkCreds,
+    updateShortLinkCreds,
     -- Messages
     updateRcvIds,
     createRcvMsg,
@@ -783,24 +783,23 @@ getInvShortLink db server linkId =
       let sndPublicKey = C.APublicAuthKey a $ C.publicKey pk
        in InvShortLink {server, linkId, linkKey, sndPrivateKey, sndPublicKey, sndId}
 
-getInvShortLinkKeys :: DB.Connection -> SMPServer -> SenderId -> IO (Maybe C.AAuthKeyPair)
+getInvShortLinkKeys :: DB.Connection -> SMPServer -> SenderId -> IO (Maybe (LinkId, C.AAuthKeyPair))
 getInvShortLinkKeys db srv sndId =
   maybeFirstRow toSndKeys $
     DB.query
       db
       [sql|
-        SELECT snd_private_key
+        SELECT link_id, snd_private_key
         FROM inv_short_links
         WHERE host = ? AND port = ? AND snd_id = ?
       |]
       (host srv, port srv, sndId)
   where
-    toSndKeys :: Only C.APrivateAuthKey -> C.AAuthKeyPair
-    toSndKeys (Only privKey@(C.APrivateAuthKey a pk)) = (C.APublicAuthKey a $ C.publicKey pk, privKey)
+    toSndKeys (linkId, privKey@(C.APrivateAuthKey a pk)) = (linkId, (C.APublicAuthKey a $ C.publicKey pk, privKey))
 
-deleteInvShortLink :: DB.Connection -> SMPServer -> SenderId -> IO ()
-deleteInvShortLink db srv sndId =
-  DB.execute db "DELETE FROM inv_short_links WHERE host = ? AND port = ? AND snd_id = ?" (host srv, port srv, sndId)
+deleteInvShortLink :: DB.Connection -> SMPServer -> LinkId -> IO ()
+deleteInvShortLink db srv lnkId =
+  DB.execute db "DELETE FROM inv_short_links WHERE host = ? AND port = ? AND link_id = ?" (host srv, port srv, lnkId)
 
 createInvShortLink :: DB.Connection -> InvShortLink -> IO ()
 createInvShortLink db InvShortLink {server, linkId, linkKey, sndPrivateKey, sndId} = do
@@ -831,12 +830,12 @@ setInvShortLinkSndId db InvShortLink {server, linkId} sndId =
     |]
     (sndId, host server, port server, linkId)
 
-saveShortLinkCreds :: DB.Connection -> RcvQueue -> ShortLinkCreds -> IO ()
-saveShortLinkCreds db RcvQueue {server, rcvId} ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData} =
+updateShortLinkCreds :: DB.Connection -> RcvQueue -> ShortLinkCreds -> IO ()
+updateShortLinkCreds db RcvQueue {server, rcvId} ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData} =
   DB.execute
     db
     [sql|
-      UPDATE inv_short_links
+      UPDATE rcv_queues
       SET link_id = ?, link_key = ?, link_priv_sig_key = ?, link_enc_fixed_data = ?
       WHERE host = ? AND port = ? AND rcv_id = ?
     |]
