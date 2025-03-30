@@ -219,7 +219,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       Nothing ->
         addLink q $ \db -> DB.execute db qry (d :. (lnkId, rId))
       Just (lnkId', _) | lnkId' == lnkId ->
-        addLink q $ \db -> DB.execute db (qry <> " AND (fixed_data IS NULL OR fixed_data != ?)") (d :. (lnkId, rId, fst d))
+        addLink q $ \db -> DB.execute db (qry <> " AND (fixed_data IS NULL OR fixed_data = ?)") (d :. (lnkId, rId, fst d))
       _ -> throwE AUTH
     where
       rId = recipientId sq
