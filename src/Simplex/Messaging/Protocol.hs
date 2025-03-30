@@ -65,7 +65,6 @@ module Simplex.Messaging.Protocol
     EncFixedDataBytes,
     EncUserDataBytes,
     EncDataBytes (..),
-    NewNtfCreds (..),
     Party (..),
     Cmd (..),
     DirectParty,
@@ -73,7 +72,6 @@ module Simplex.Messaging.Protocol
     SParty (..),
     PartyI (..),
     QueueIdsKeys (..),
-    ServerNtfCreds (..),
     ProtocolErrorType (..),
     ErrorType (..),
     CommandError (..),
@@ -457,8 +455,9 @@ data NewQueueReq = NewQueueReq
     rcvDhKey :: RcvPublicDhKey,
     auth_ :: Maybe BasicAuth,
     subMode :: SubscriptionMode,
-    queueReqData :: Maybe QueueReqData,
-    ntfCreds :: Maybe NewNtfCreds
+    queueReqData :: Maybe QueueReqData
+    -- TODO [notifications]
+    -- ntfCreds :: Maybe NewNtfCreds
   }
   deriving (Show)
 
@@ -502,7 +501,8 @@ instance ToField EncDataBytes where
   toField (EncDataBytes s) = toField (Binary s)
   {-# INLINE toField #-}
 
-data NewNtfCreds = NewNtfCreds NtfPublicAuthKey RcvNtfPublicDhKey deriving (Show)
+-- TODO [notifications]
+-- data NewNtfCreds = NewNtfCreds NtfPublicAuthKey RcvNtfPublicDhKey deriving (Show)
 
 instance StrEncoding SubscriptionMode where
   strEncode = \case
@@ -533,9 +533,10 @@ instance Encoding QueueReqData where
       'C' -> QRContact <$> smpP
       _ -> fail "bad QueueReqData"
 
-instance Encoding NewNtfCreds where
-  smpEncode (NewNtfCreds authKey dhKey) = smpEncode (authKey, dhKey)
-  smpP = NewNtfCreds <$> smpP <*> smpP
+-- TODO [notifications]
+-- instance Encoding NewNtfCreds where
+--   smpEncode (NewNtfCreds authKey dhKey) = smpEncode (authKey, dhKey)
+--   smpP = NewNtfCreds <$> smpP <*> smpP
 
 type SenderCanSecure = Bool
 
@@ -1243,17 +1244,19 @@ data QueueIdsKeys = QIK
     sndId :: SenderId,
     rcvPublicDhKey :: RcvPublicDhKey,
     queueMode :: Maybe QueueMode, -- TODO remove Maybe when min version is 9 (sndAuthKeySMPVersion)
-    linkId :: Maybe LinkId,
-    serverNtfCreds :: Maybe ServerNtfCreds
+    linkId :: Maybe LinkId
+    -- TODO [notifications]
+    -- serverNtfCreds :: Maybe ServerNtfCreds
   }
   deriving (Eq, Show)
 
-data ServerNtfCreds = ServerNtfCreds NotifierId RcvNtfPublicDhKey
-  deriving (Eq, Show)
+-- TODO [notifications]
+-- data ServerNtfCreds = ServerNtfCreds NotifierId RcvNtfPublicDhKey
+--   deriving (Eq, Show)
 
-instance Encoding ServerNtfCreds where
-  smpEncode (ServerNtfCreds nId dhKey) = smpEncode (nId, dhKey)
-  smpP = ServerNtfCreds <$> smpP <*> smpP
+-- instance Encoding ServerNtfCreds where
+--   smpEncode (ServerNtfCreds nId dhKey) = smpEncode (nId, dhKey)
+--   smpP = ServerNtfCreds <$> smpP <*> smpP
 
 -- | Recipient's private key used by the recipient to authorize (v6: sign, v7: encrypt hash) SMP commands.
 --
@@ -1481,8 +1484,8 @@ class ProtocolMsgTag (Tag msg) => ProtocolEncoding v err msg | msg -> err, msg -
 instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol v = \case
-    NEW NewQueueReq {rcvAuthKey = rKey, rcvDhKey = dhKey, auth_, subMode, queueReqData, ntfCreds}
-      | v >= shortLinksSMPVersion -> new <> e (auth_, subMode, queueReqData, ntfCreds)
+    NEW NewQueueReq {rcvAuthKey = rKey, rcvDhKey = dhKey, auth_, subMode, queueReqData}
+      | v >= shortLinksSMPVersion -> new <> e (auth_, subMode, queueReqData)
       | v >= sndAuthKeySMPVersion -> new <> e (auth_, subMode, senderCanSecure (queueReqMode <$> queueReqData))
       | otherwise -> new <> auth <> e subMode
       where
@@ -1556,18 +1559,19 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
         NEW_
-          | v >= shortLinksSMPVersion -> NEW <$> new smpP smpP smpP
-          | v >= sndAuthKeySMPVersion -> NEW <$> new smpP (qReq <$> smpP) (pure Nothing)
-          | otherwise -> NEW <$> new auth (pure Nothing) (pure Nothing)
+          | v >= shortLinksSMPVersion -> NEW <$> new smpP smpP
+          | v >= sndAuthKeySMPVersion -> NEW <$> new smpP (qReq <$> smpP)
+          | otherwise -> NEW <$> new auth (pure Nothing)
           where
-            new p1 p2 p3 = do
+            new p1 p2 = do
               rcvAuthKey <- _smpP
               rcvDhKey <- smpP
               auth_ <- p1
               subMode <- smpP
               queueReqData <- p2
-              ntfCreds <- p3
-              pure NewQueueReq {rcvAuthKey, rcvDhKey, auth_, subMode, queueReqData, ntfCreds}
+              -- TODO [notifications]
+              -- ntfCreds <- p3
+              pure NewQueueReq {rcvAuthKey, rcvDhKey, auth_, subMode, queueReqData} -- ntfCreds
             auth = optional (A.char 'A' *> smpP)
             qReq sndSecure = Just $ if sndSecure then QRMessaging Nothing else QRContact Nothing
         SUB_ -> pure SUB
@@ -1605,8 +1609,8 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
 instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
   encodeProtocol v = \case
-    IDS QIK {rcvId, sndId, rcvPublicDhKey = srvDh, queueMode, linkId, serverNtfCreds}
-      | v >= shortLinksSMPVersion -> ids <> e queueMode <> e linkId <> e serverNtfCreds
+    IDS QIK {rcvId, sndId, rcvPublicDhKey = srvDh, queueMode, linkId}
+      | v >= shortLinksSMPVersion -> ids <> e queueMode <> e linkId
       | v >= sndAuthKeySMPVersion -> ids <> e (senderCanSecure queueMode)
       | otherwise -> ids
       where
@@ -1640,13 +1644,21 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       where
         bodyP = EncRcvMsgBody . unTail <$> smpP
     IDS_
-      | v >= shortLinksSMPVersion -> ids smpP smpP smpP
-      | v >= sndAuthKeySMPVersion -> ids (qm <$> smpP) nothing nothing
-      | otherwise -> ids nothing nothing nothing
+      | v >= shortLinksSMPVersion -> ids smpP smpP
+      | v >= sndAuthKeySMPVersion -> ids (qm <$> smpP) nothing
+      | otherwise -> ids nothing nothing
       where
         qm sndSecure = Just $ if sndSecure then QMMessaging else QMContact
         nothing = pure Nothing
-        ids p1 p2 p3 = IDS <$> (QIK <$> _smpP <*> smpP <*> smpP <*> p1 <*> p2 <*> p3)
+        ids p1 p2 = do
+          rcvId <- _smpP
+          sndId <- smpP
+          rcvPublicDhKey <- smpP
+          queueMode <- p1
+          linkId <- p2
+          -- TODO [notifications]
+          -- serverNtfCreds <- p3
+          pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId}
     LNK_ -> LNK <$> _smpP <*> smpP
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP

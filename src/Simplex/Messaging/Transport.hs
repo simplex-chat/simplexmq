@@ -148,7 +148,7 @@ smpBlockSize = 16384
 -- 11 - additional encryption of transport blocks with forward secrecy (10/06/2024)
 -- 12 - BLOCKED error for blocked queues (1/11/2025)
 -- 14 - proxyServer handshake property to disable transport encryption between server and proxy (1/19/2025)
--- 15 - short links, include creating NTF credentials in NEW command
+-- 15 - short links, with associated data passed in NEW of LSET command (3/30/2025)
 
 data SMPVersion
 
