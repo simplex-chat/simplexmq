@@ -88,10 +88,10 @@ pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmission ErrorType B
 pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
 
 pattern New :: RcvPublicAuthKey -> RcvPublicDhKey -> Command 'Recipient
-pattern New rPub dhPub = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRMessaging Nothing)) Nothing)
+pattern New rPub dhPub = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRMessaging Nothing)))
 
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> BrokerMsg
-pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure _linkId _srvNtfCreds)
+pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure _linkId)
 
 pattern Msg :: MsgId -> MsgBody -> BrokerMsg
 pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
@@ -264,7 +264,7 @@ testSndSecureProhibited =
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" rId1 (Ids _rId sId _srvDh) <- signSendRecv r rKey ("abcd", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRContact Nothing)) Nothing))
+      Resp "abcd" rId1 (Ids _rId sId _srvDh) <- signSendRecv r rKey ("abcd", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRContact Nothing))))
       (rId1, NoEntity) #== "creates queue"
 
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
@@ -1064,14 +1064,14 @@ testInvQueueLinkData =
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       C.CbNonce corrId <- atomically $ C.randomCbNonce g
-      let sId = EntityId $ C.sha3_256 corrId
+      let sId = EntityId $ B.take 24 $ C.sha3_384 corrId
           ld = (EncDataBytes "fixed data", EncDataBytes "user data")
           qrd = QRMessaging $ Just (sId, ld)
       -- sender ID must be derived from corrId
       Resp "1" NoEntity (ERR (CMD PROHIBITED)) <-
-        signSendRecv r rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd) Nothing))
-      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMMessaging) (Just lnkId) Nothing)) <-
-        signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd) Nothing))
+        signSendRecv r rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
+      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMMessaging) (Just lnkId))) <-
+        signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
       (sId', sId) #== "should return the same sender ID"
       corrId' `shouldBe` CorrId corrId
       -- can't read link data with LGET
@@ -1118,14 +1118,14 @@ testContactQueueLinkData =
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       C.CbNonce corrId <- atomically $ C.randomCbNonce g
       lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
-      let sId = EntityId $ C.sha3_256 corrId
+      let sId = EntityId $ B.take 24 $ C.sha3_384 corrId
           ld = (EncDataBytes "fixed data", EncDataBytes "user data")
           qrd = QRContact $ Just (lnkId, (sId, ld))
       -- sender ID must be derived from corrId
       Resp "1" NoEntity (ERR (CMD PROHIBITED)) <-
-        signSendRecv r rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd) Nothing))
-      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMContact) (Just lnkId') Nothing)) <-
-        signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd) Nothing))
+        signSendRecv r rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
+      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMContact) (Just lnkId'))) <-
+        signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
       (lnkId', lnkId) #== "should return the same link ID"
       (sId', sId) #== "should return the same sender ID"
       corrId' `shouldBe` CorrId corrId
@@ -1194,8 +1194,8 @@ serverSyntaxTests (ATransport t) = do
   describe "NEW" $ do
     it "no parameters" $ (sampleSig, "bcda", "", NEW_) >#> ("", "bcda", "", ERR $ CMD SYNTAX)
     it "many parameters" $ (sampleSig, "cdab", "", (NEW_, ' ', ('\x01', 'A'), samplePubKey, sampleDhPubKey)) >#> ("", "cdab", "", ERR $ CMD SYNTAX)
-    it "no signature" $ ("", "dabc", "", ((NEW_, ' ', samplePubKey, sampleDhPubKey), ('0', SMSubscribe, Just (QRMessaging Nothing), '0'))) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
-    it "queue ID" $ (sampleSig, "abcd", "12345678", ((NEW_, ' ', samplePubKey, sampleDhPubKey), ('0', SMSubscribe, Just (QRMessaging Nothing), '0'))) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
+    it "no signature" $ ("", "dabc", "", ((NEW_, ' ', samplePubKey, sampleDhPubKey), ('0', SMSubscribe, Just (QRMessaging Nothing)))) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
+    it "queue ID" $ (sampleSig, "abcd", "12345678", ((NEW_, ' ', samplePubKey, sampleDhPubKey), ('0', SMSubscribe, Just (QRMessaging Nothing)))) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
   describe "KEY" $ do
     it "valid syntax" $ (sampleSig, "bcda", "12345678", (KEY_, ' ', samplePubKey)) >#> ("", "bcda", "12345678", ERR AUTH)
     it "no parameters" $ (sampleSig, "cdab", "12345678", KEY_) >#> ("", "cdab", "12345678", ERR $ CMD SYNTAX)

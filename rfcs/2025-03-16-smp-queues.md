@@ -84,7 +84,7 @@ data NtfRequest = NtfRequest NtfPublicAuthKey RcvNtfPublicDhKey
 -- LinkId is required with QRContact, to have shorter link - it will be derived from the link_uri. And in this case we do not need to prevent checks that this queue exists.
 data QueueReqData = QRMessaging (Maybe QueueLinkData) | QRContact (Maybe (LinkId, QueueLinkData))
 
--- SenderId should be computed client-side as sha3-256(correlation_id),
+-- SenderId should be computed client-side as the first 24 bytes of sha3-384(correlation_id),
 -- The server must verify it and reject if it is not.
 type QueueLinkData = (SenderId, EncImmutableDataBytes, EncUserDataBytes)
 
@@ -152,7 +152,7 @@ LGET :: Command Sender
 LNK :: SenderId -> QueueLinkData -> BrokerMsg
 ```
 
-To both include sender_id into the full link before the server response, and to prevent "oracle attack" when a failure to create the queue with the supplied `sender_id` can be used as a proof of queue existense, it is proposed that `sender_id` is computed client-side as `sha3-256(correlation_id)` and validated server-side, where `corelation_id` is the transmission correlation ID.
+To both include sender_id into the full link before the server response, and to prevent "oracle attack" when a failure to create the queue with the supplied `sender_id` can be used as a proof of queue existense, it is proposed that `sender_id` is computed client-side as the first 24 bytes of 48 in `sha3-384(correlation_id)` and validated server-side, where `corelation_id` is the transmission correlation ID.
 
 To allow retries and to avoid regenerating all queue data, NEW command must be idempotent, and `correlation_id` must be preserved in command for queue creation, so that the same `correlation_id` and all other data is used in retries. `correlation_id` should be removed after queue creation success.
 

@@ -1278,15 +1278,18 @@ client
           QUE -> withQueue $ \q qr -> (corrId,entId,) <$> getQueueInfo q qr
       where
         createQueue :: NewQueueReq -> M (Transmission BrokerMsg)
-        createQueue NewQueueReq {rcvAuthKey, rcvDhKey, subMode, queueReqData, ntfCreds} = time "NEW" $ do
+        createQueue NewQueueReq {rcvAuthKey, rcvDhKey, subMode, queueReqData} = time "NEW" $ do
           g <- asks random
           idSize <- asks $ queueIdBytes . config
           updatedAt <- Just <$> liftIO getSystemDate
           (rcvPublicDhKey, privDhKey) <- atomically $ C.generateKeyPair g
-          ntfKeys_ <- forM ntfCreds $ \(NewNtfCreds notifierKey dhKey) -> do
-            (ntfPubDhKey, ntfPrivDhKey) <- atomically $ C.generateKeyPair g
-            pure (notifierKey, C.dh' dhKey ntfPrivDhKey, ntfPubDhKey)
+          -- TODO [notifications]
+          -- ntfKeys_ <- forM ntfCreds $ \(NewNtfCreds notifierKey dhKey) -> do
+          --   (ntfPubDhKey, ntfPrivDhKey) <- atomically $ C.generateKeyPair g
+          --   pure (notifierKey, C.dh' dhKey ntfPrivDhKey, ntfPubDhKey)
           let randId = EntityId <$> atomically (C.randomBytes idSize g)
+              -- TODO [notifications] the remaining 24 bytes are reserver for notifier ID
+              sndId' = B.take 24 $ C.sha3_384 (bs corrId)
               tryCreate 0 = pure $ ERR INTERNAL
               tryCreate n = do
                 (sndId, clntIds, queueData) <- case queueReqData of
@@ -1296,13 +1299,14 @@ client
                 -- The condition that client-provided sender ID must match hash of correlation ID
                 -- prevents "ID oracle" attack, when creating queue with supplied ID can be used to check
                 -- if queue with this ID still exists.
-                if clntIds && unEntityId sndId /= C.sha3_256 (bs corrId)
+                if clntIds && unEntityId sndId /= sndId'
                   then pure $ ERR $ CMD PROHIBITED
                   else do
                     rcvId <- randId
-                    ntf <- forM ntfKeys_ $ \(notifierKey, rcvNtfDhSecret, rcvPubDhKey) -> do
-                      notifierId <- randId
-                      pure (NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}, ServerNtfCreds notifierId rcvPubDhKey)
+                    -- TODO [notifications]
+                    -- ntf <- forM ntfKeys_ $ \(notifierKey, rcvNtfDhSecret, rcvPubDhKey) -> do
+                    --   notifierId <- randId
+                    --   pure (NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}, ServerNtfCreds notifierId rcvPubDhKey)
                     let queueMode = queueReqMode <$> queueReqData
                         qr =
                           QueueRec
@@ -1312,7 +1316,8 @@ client
                               senderKey = Nothing,
                               queueMode,
                               queueData,
-                              notifier = fst <$> ntf,
+                              -- TODO [notifications]
+                              notifier = Nothing, -- fst <$> ntf,
                               status = EntityActive,
                               updatedAt
                             }
@@ -1325,11 +1330,12 @@ client
                         stats <- asks serverStats
                         incStat $ qCreated stats
                         incStat $ qCount stats
-                        when (isJust ntf) $ incStat $ ntfCreated stats
+                        -- TODO [notifications]
+                        -- when (isJust ntf) $ incStat $ ntfCreated stats
                         case subMode of
                           SMOnlyCreate -> pure ()
                           SMSubscribe -> void $ subscribeQueue q qr
-                        pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId = fst <$> queueData, serverNtfCreds = snd <$> ntf}
+                        pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId = fst <$> queueData} -- , serverNtfCreds = snd <$> ntf
           (corrId,entId,) <$> tryCreate (3 :: Int)
 
         checkMode :: QueueMode -> QueueRec -> M (Either ErrorType BrokerMsg) -> M (Transmission BrokerMsg)

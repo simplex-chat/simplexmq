@@ -719,10 +719,11 @@ createSMPQueue ::
   Maybe BasicAuth ->
   SubscriptionMode ->
   QueueReqData ->
-  Maybe NewNtfCreds ->
+  -- TODO [notifications]
+  -- Maybe NewNtfCreds ->
   ExceptT SMPClientError IO QueueIdsKeys
-createSMPQueue c nonce_ (rKey, rpKey) dhKey auth subMode qrd ntfCreds =
-  sendProtocolCommand_ c nonce_ Nothing (Just rpKey) NoEntity (Cmd SRecipient $ NEW $ NewQueueReq rKey dhKey auth subMode (Just qrd) ntfCreds) >>= \case
+createSMPQueue c nonce_ (rKey, rpKey) dhKey auth subMode qrd =
+  sendProtocolCommand_ c nonce_ Nothing (Just rpKey) NoEntity (Cmd SRecipient $ NEW $ NewQueueReq rKey dhKey auth subMode (Just qrd)) >>= \case
     IDS qik -> pure qik
     r -> throwE $ unexpectedResponse r
 

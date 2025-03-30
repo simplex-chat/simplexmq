@@ -908,8 +908,9 @@ newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys s
     createRcvQueue :: Maybe C.CbNonce -> ClntQueueReqData -> C.KeyPairX25519 -> AM (RcvQueue, SMPQueueUri)
     createRcvQueue nonce_ qd e2eKeys = do
       AgentConfig {smpClientVRange = vr} <- asks config
-      let ntfCreds_ = Nothing -- TODO [short links]
-      (rq, qUri, tSess, sessId) <- newRcvQueue_ c userId connId srvWithAuth vr qd subMode ntfCreds_ nonce_ e2eKeys `catchAgentError` \e -> liftIO (print e) >> throwE e
+      -- TODO [notifications] send correct NTF credentials here
+      -- let ntfCreds_ = Nothing 
+      (rq, qUri, tSess, sessId) <- newRcvQueue_ c userId connId srvWithAuth vr qd subMode nonce_ e2eKeys `catchAgentError` \e -> liftIO (print e) >> throwE e
       atomically $ incSMPServerStat c userId srv connCreated
       rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
       lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
@@ -934,7 +935,8 @@ newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys s
       nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
       sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
       AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
-      let sndId = SMP.EntityId $ C.sha3_256 corrId
+      -- TODO [notifications] the remaining 24 bytes are reserved for notifier ID
+      let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
           sndSecure = case cMode of SCMContact -> False; SCMInvitation -> True
           qUri = SMPQueueUri vr $ SMPQueueAddress srv sndId e2eDhKey sndSecure
       connReq <- createConnReq qUri
@@ -1117,8 +1119,8 @@ joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode
 
 createReplyQueue :: AgentClient -> ConnData -> SndQueue -> SubscriptionMode -> SMPServerWithAuth -> AM SMPQueueInfo
 createReplyQueue c ConnData {userId, connId, enableNtfs} SndQueue {smpClientVersion} subMode srv = do
-  -- TODO [short links] ntf credentials
-  (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srv (versionToRange smpClientVersion) SCMInvitation subMode Nothing
+  -- TODO [notifications] send correct NTF credentials here
+  (rq, qUri, tSess, sessId) <- newRcvQueue c userId connId srv (versionToRange smpClientVersion) SCMInvitation subMode -- Nothing
   atomically $ incSMPServerStat c userId (qServer rq) connCreated
   let qInfo = toVersionT qUri smpClientVersion
   rq' <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq
@@ -1886,8 +1888,8 @@ switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs s
   -- try to get the server that is different from all queues, or at least from the primary rcv queue
   srvAuth@(ProtoServerWithAuth srv _) <- getNextSMPServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
   srv' <- if srv == server then getNextSMPServer c userId [server] else pure srvAuth
-  -- TODO [short links] send correct NTF credentials here
-  (q, qUri, tSess, sessId) <- newRcvQueue c userId connId srv' clientVRange SCMInvitation SMSubscribe Nothing
+  -- TODO [notifications] send correct NTF credentials here
+  (q, qUri, tSess, sessId) <- newRcvQueue c userId connId srv' clientVRange SCMInvitation SMSubscribe -- Nothing
   let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
   rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq'
   lift $ addNewQueueSubscription c rq'' tSess sessId
