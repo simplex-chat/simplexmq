@@ -302,10 +302,15 @@ printServerConfig transports logFile = do
   printServerTransports transports
 
 printServerTransports :: [(ServiceName, ATransport, AddHTTP)] -> IO ()
-printServerTransports = mapM_ $ \(p, ATransport t, addHTTP) -> do
-  let descr = p <> " (" <> transportName t <> ")..."
-  putStrLn $ "Serving SMP protocol on port " <> descr
-  when addHTTP $ putStrLn $ "Serving static site on port " <> descr
+printServerTransports ts = do
+  forM_ ts $ \(p, ATransport t, addHTTP) -> do
+    let descr = p <> " (" <> transportName t <> ")..."
+    putStrLn $ "Serving SMP protocol on port " <> descr
+    when addHTTP $ putStrLn $ "Serving static site on port " <> descr
+  unless (any (\(p, _, _) -> p == "443") ts) $
+    putStrLn
+      "\nWARNING: the clients will use port 443 by default soon.\n\
+      \Set `port` in smp-server.ini section [TRANSPORT] to `5223,443`\n"
 
 printSMPServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> AServerStoreCfg -> IO ()
 printSMPServerConfig transports (ASSCfg _ _ cfg) = case cfg of
