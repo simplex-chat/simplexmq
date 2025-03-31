@@ -65,7 +65,7 @@ queueStr :: ByteString
 queueStr = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-4&dh=" <> url testDhKeyStr <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"
 
 queueStrSK :: ByteString
-queueStrSK = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-4&dh=" <> url testDhKeyStr <> "&k=s" <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"
+queueStrSK = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-4&dh=" <> url testDhKeyStr <> "&q=m&k=s" <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"
 
 queue1 :: SMPQueueUri
 queue1 = SMPQueueUri supportedSMPClientVRange queueAddr1
