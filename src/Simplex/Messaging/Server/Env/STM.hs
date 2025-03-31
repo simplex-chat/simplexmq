@@ -384,8 +384,10 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
     getCredentials protocol creds = do
       files <- missingCreds
       unless (null files) $ do
-        putStrLn $ "Error: no " <> protocol <> " credentials: " <> intercalate ", " files
-        when (protocol == "HTTPS") $ putStrLn letsEncrypt
+        putStrLn $ "----------\nError: no " <> protocol <> " credentials: " <> intercalate ", " files
+        when (protocol == "HTTPS") $ do
+          putStrLn "Server should serve static pages to show connection links in the browser."
+          putStrLn letsEncrypt
         exitFailure
       loadServerCredential creds
       where
@@ -400,7 +402,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
         _ -> do
           putStrLn $ "Error: unsupported HTTPS credentials, required 4096-bit RSA\n" <> letsEncrypt
           exitFailure
-    letsEncrypt = "Use Let's Encrypt to generate: certbot certonly --standalone -d yourdomainname --key-type rsa --rsa-key-size 4096"
+    letsEncrypt = "Use Let's Encrypt to generate: certbot certonly --standalone -d yourdomainname --key-type rsa --rsa-key-size 4096\n----------"
     serverInfo =
       ServerInformation
         { information,

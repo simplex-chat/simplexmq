@@ -1,3 +1,4 @@
+{-# LANGUAGE ApplicativeDo #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -220,14 +221,19 @@ cliCommandP cfgPath logPath iniFile =
     )
   where
     initP :: Parser InitOptions
-    initP =
-      InitOptions
-        <$> switch
-          ( long "store-log"
-              <> short 'l'
-              <> help "Enable store log for persistence"
+    initP = do
+      enableStoreLog <-
+        flag' False
+          ( long "disable-store-log"
+              <> help "Disable store log for persistence (enabled by default)"
           )
-        <*> option
+          <|> flag True True
+            ( long "store-log"
+                <> short 'l'
+                <> help "Enable store log for persistence (DEPRECATED, enabled by default)"
+            )
+      signAlgorithm <-
+        option
           (maybeReader readMaybe)
           ( long "sign-algorithm"
               <> short 'a'
@@ -236,7 +242,8 @@ cliCommandP cfgPath logPath iniFile =
               <> showDefault
               <> metavar "ALG"
           )
-        <*> strOption
+      ip <-
+        strOption
           ( long "ip"
               <> help
                 "Server IP address, used as Common Name for TLS online certificate if FQDN is not supplied"
@@ -244,22 +251,26 @@ cliCommandP cfgPath logPath iniFile =
               <> showDefault
               <> metavar "IP"
           )
-        <*> (optional . strOption)
+      fqdn <-
+        (optional . strOption)
           ( long "fqdn"
               <> short 'n'
               <> help "Server FQDN used as Common Name for TLS online certificate"
               <> showDefault
               <> metavar "FQDN"
           )
-        <*> strOption
+      filesPath <-
+        strOption
           ( long "path"
               <> short 'p'
               <> help "Path to the directory to store files"
               <> metavar "PATH"
           )
-        <*> strOption
+      fileSizeQuota <-
+        strOption
           ( long "quota"
               <> short 'q'
               <> help "File storage quota (e.g. 100gb)"
               <> metavar "QUOTA"
           )
+      pure InitOptions {enableStoreLog, signAlgorithm, ip, fqdn, filesPath, fileSizeQuota}

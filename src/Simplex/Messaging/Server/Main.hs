@@ -281,11 +281,11 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           enableStoreLog <- onOffPrompt "Enable store log to restore queues and messages on server restart" True
           logStats <- onOffPrompt "Enable logging daily statistics" False
           putStrLn "Require a password to create new messaging queues?"
-          password <- withPrompt "'r' for random (default), 'n' - no password, or enter password: " serverPassword
+          password <- withPrompt "'r' for random (default), 'n' - no password (recommended for public servers), or enter password: " serverPassword
           let host = fromMaybe ip fqdn
           host' <- withPrompt ("Enter server FQDN or IP address for certificate (" <> host <> "): ") getLine
           sourceCode' <- withPrompt ("Enter server source code URI (" <> maybe simplexmqSource T.unpack src' <> "): ") getServerSourceCode
-          staticPath' <- withPrompt ("Enter path to store generated static site with server information (" <> fromMaybe defaultStaticPath sp' <> "): ") getLine
+          staticPath' <- withPrompt ("Enter path to store generated server pages to show connection links (" <> fromMaybe defaultStaticPath sp' <> "): ") getLine
           initialize
             opts
               { enableStoreLog,
@@ -659,11 +659,15 @@ cliCommandP cfgPath logPath iniFile =
     initP :: Parser InitOptions
     initP = do
       enableStoreLog <-
-        switch
-          ( long "store-log"
-              <> short 'l'
-              <> help "Enable store log for persistence"
+        flag' False
+          ( long "disable-store-log"
+              <> help "Disable store log for persistence (enabled by default)"
           )
+          <|> flag True True
+            ( long "store-log"
+                <> short 'l'
+                <> help "Enable store log for persistence (DEPRECATED, enabled by default)"
+            )
       dbOptions <- dbOptsP
       logStats <-
         switch
