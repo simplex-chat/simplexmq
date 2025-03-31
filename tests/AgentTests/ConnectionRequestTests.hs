@@ -22,7 +22,7 @@ import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (EntityId (..), ProtocolServer (..), currentSMPClientVersion, supportedSMPClientVRange, pattern VersionSMPC)
+import Simplex.Messaging.Protocol (EntityId (..), ProtocolServer (..), QueueMode (..), currentSMPClientVersion, supportedSMPClientVRange, pattern VersionSMPC)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Version
 import Test.Hspec
@@ -39,11 +39,11 @@ queueAddr =
     { smpServer = srv,
       senderId = EntityId "\223\142z\251",
       dhPublicKey = testDhKey,
-      sndSecure = False
+      queueMode = Nothing
     }
 
 queueAddrSK :: SMPQueueAddress
-queueAddrSK = queueAddr {sndSecure = True}
+queueAddrSK = queueAddr {queueMode = Just QMMessaging}
 
 queueAddr1 :: SMPQueueAddress
 queueAddr1 = queueAddr {smpServer = srv1}
@@ -62,16 +62,16 @@ queueSK :: SMPQueueUri
 queueSK = SMPQueueUri supportedSMPClientVRange queueAddrSK
 
 queueStr :: ByteString
-queueStr = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-3&dh=" <> url testDhKeyStr <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"
+queueStr = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-4&dh=" <> url testDhKeyStr <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"
 
 queueStrSK :: ByteString
-queueStrSK = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-3&dh=" <> url testDhKeyStr <> "&k=s" <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"
+queueStrSK = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-4&dh=" <> url testDhKeyStr <> "&k=s" <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"
 
 queue1 :: SMPQueueUri
 queue1 = SMPQueueUri supportedSMPClientVRange queueAddr1
 
 queue1Str :: ByteString
-queue1Str = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-3&dh=" <> url testDhKeyStr
+queue1Str = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-4&dh=" <> url testDhKeyStr
 
 queueV1 :: SMPQueueUri
 queueV1 = SMPQueueUri (mkVersionRange (VersionSMPC 1) (VersionSMPC 1)) queueAddr
@@ -85,10 +85,10 @@ queueNew :: SMPQueueUri
 queueNew = SMPQueueUri (mkVersionRange (VersionSMPC 2) currentSMPClientVersion) queueAddr
 
 queueNewStr :: ByteString
-queueNewStr = "smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion:5223/3456-w==#/?v=2-3&dh=" <> url testDhKeyStr
+queueNewStr = "smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion:5223/3456-w==#/?v=2-4&dh=" <> url testDhKeyStr
 
 queueNewStr' :: ByteString
-queueNewStr' = "smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion:5223/3456-w==#/?v=2-3&dh=" <> testDhKeyStr
+queueNewStr' = "smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion:5223/3456-w==#/?v=2-4&dh=" <> testDhKeyStr
 
 queueNewNoPort :: SMPQueueUri
 queueNewNoPort = (queueNew :: SMPQueueUri) {queueAddress = queueAddrNoPort}
@@ -97,7 +97,7 @@ queueNew1 :: SMPQueueUri
 queueNew1 = SMPQueueUri (mkVersionRange (VersionSMPC 2) currentSMPClientVersion) queueAddr1
 
 queueNew1Str :: ByteString
-queueNew1Str = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=2-3&dh=" <> url testDhKeyStr
+queueNew1Str = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=2-4&dh=" <> url testDhKeyStr
 
 queueNew1NoPort :: SMPQueueUri
 queueNew1NoPort = (queueNew1 :: SMPQueueUri) {queueAddress = queueAddrNoPort1}
@@ -217,14 +217,14 @@ connectionRequestTests =
   describe "connection request parsing / serializing" $ do
     it "should serialize and parse SMP queue URIs" $ do
       queue #==# queueStr
-      queue #== ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=1-3&extra_param=abc&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion")
+      queue #== ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=1-4&extra_param=abc&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion")
       queueSK #==# queueStrSK
       queue1 #==# queue1Str
       queueNew #==# queueNewStr
       queueNew #== queueNewStr'
       queueNew1 #==# queueNew1Str
-      queueNewNoPort #==# ("smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion/3456-w==#/?v=2-3&dh=" <> url testDhKeyStr)
-      queueNew1NoPort #==# ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=2-3&dh=" <> url testDhKeyStr)
+      queueNewNoPort #==# ("smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion/3456-w==#/?v=2-4&dh=" <> url testDhKeyStr)
+      queueNew1NoPort #==# ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=2-4&dh=" <> url testDhKeyStr)
       queueV1 #==# ("smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1&dh=" <> url testDhKeyStr <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion")
       queueV1 #== ("smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion:5223/3456-w==#" <> testDhKeyStr)
       queueV1 #== ("smp://1234-w==@smp.simplex.im:5223/3456-w==#/?extra_param=abc&v=1&dh=" <> testDhKeyStr <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion")

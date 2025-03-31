@@ -57,7 +57,6 @@ module Simplex.Messaging.Protocol
     ProtocolEncoding (..),
     Command (..),
     SubscriptionMode (..),
-    SenderCanSecure,
     NewQueueReq (..),
     QueueReqData (..),
     QueueMode (..),
@@ -171,6 +170,7 @@ module Simplex.Messaging.Protocol
     legacyStrEncodeServer,
     srvHostnamesSMPClientVersion,
     sndAuthKeySMPClientVersion,
+    shortLinksSMPClientVersion,
     sameSrvAddr,
     sameSrvAddr',
     noAuthSrv,
@@ -262,8 +262,11 @@ srvHostnamesSMPClientVersion = VersionSMPC 2
 sndAuthKeySMPClientVersion :: VersionSMPC
 sndAuthKeySMPClientVersion = VersionSMPC 3
 
+shortLinksSMPClientVersion :: VersionSMPC
+shortLinksSMPClientVersion = VersionSMPC 4
+
 currentSMPClientVersion :: VersionSMPC
-currentSMPClientVersion = VersionSMPC 3
+currentSMPClientVersion = VersionSMPC 4
 
 supportedSMPClientVRange :: VersionRangeSMPC
 supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClientVersion
@@ -537,8 +540,6 @@ instance Encoding QueueReqData where
 -- instance Encoding NewNtfCreds where
 --   smpEncode (NewNtfCreds authKey dhKey) = smpEncode (authKey, dhKey)
 --   smpP = NewNtfCreds <$> smpP <*> smpP
-
-type SenderCanSecure = Bool
 
 newtype EncTransmission = EncTransmission ByteString
   deriving (Show)

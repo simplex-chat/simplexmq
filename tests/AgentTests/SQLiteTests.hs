@@ -52,7 +52,7 @@ import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Protocol (EntityId (..), SubscriptionMode (..), pattern VersionSMPC)
+import Simplex.Messaging.Protocol (EntityId (..), SubscriptionMode (..), QueueMode (..), pattern VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
 import System.Random
 import Test.Hspec
@@ -226,7 +226,7 @@ rcvQueue1 =
       e2ePrivKey = testPrivDhKey,
       e2eDhSecret = Nothing,
       sndId = EntityId "2345",
-      sndSecure = True,
+      queueMode = Just QMMessaging,
       shortLink = Nothing,
       status = New,
       dbQueueId = DBNewQueue,
@@ -245,7 +245,7 @@ sndQueue1 =
       connId = "conn1",
       server = smpServer1,
       sndId = EntityId "3456",
-      sndSecure = True,
+      queueMode = Just QMMessaging,
       sndPublicKey = testPublicAuthKey,
       sndPrivateKey = testPrivateAuthKey,
       e2ePubKey = Nothing,
@@ -405,7 +405,7 @@ testUpgradeRcvConnToDuplex =
               connId = "conn1",
               server = SMPServer "smp.simplex.im" "5223" testKeyHash,
               sndId = EntityId "2345",
-              sndSecure = True,
+              queueMode = Just QMMessaging,
               sndPublicKey = testPublicAuthKey,
               sndPrivateKey = testPrivateAuthKey,
               e2ePubKey = Nothing,
@@ -439,7 +439,7 @@ testUpgradeSndConnToDuplex =
               e2ePrivKey = testPrivDhKey,
               e2eDhSecret = Nothing,
               sndId = EntityId "4567",
-              sndSecure = True,
+              queueMode = Just QMMessaging,
               shortLink = Nothing,
               status = New,
               dbQueueId = DBNewQueue,
