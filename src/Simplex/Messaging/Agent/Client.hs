@@ -1390,7 +1390,7 @@ newRcvQueue_ c userId connId (ProtoServerWithAuth srv auth) vRange cqrd subMode 
             e2ePrivKey,
             e2eDhSecret = Nothing,
             sndId,
-            sndSecure,
+            queueMode,
             shortLink,
             status = New,
             dbQueueId = DBNewQueue,
@@ -1401,9 +1401,7 @@ newRcvQueue_ c userId connId (ProtoServerWithAuth srv auth) vRange cqrd subMode 
             clientNtfCreds = Nothing,
             deleteErrors = 0
           }
-      qUri = SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey sndSecure
-      -- TODO [short links] maybe switch to queue mode?
-      sndSecure = senderCanSecure queueMode
+      qUri = SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey queueMode
   pure (rq, qUri, tSess, sessionId thParams')
   where
     mkShortLinkCreds :: (THandleParams SMPVersion 'TClient, QueueIdsKeys) -> AM (Maybe ShortLinkCreds)
@@ -1621,8 +1619,8 @@ logSecret' = B64.encode . B.take 3
 {-# INLINE logSecret' #-}
 
 sendConfirmation :: AgentClient -> SndQueue -> ByteString -> AM (Maybe SMPServer)
-sendConfirmation c sq@SndQueue {userId, server, connId, sndId, sndSecure, sndPublicKey, sndPrivateKey, e2ePubKey = e2ePubKey@Just {}} agentConfirmation = do
-  let (privHdr, spKey) = if sndSecure then (SMP.PHEmpty, Just sndPrivateKey) else (SMP.PHConfirmation sndPublicKey, Nothing)
+sendConfirmation c sq@SndQueue {userId, server, connId, sndId, queueMode, sndPublicKey, sndPrivateKey, e2ePubKey = e2ePubKey@Just {}} agentConfirmation = do
+  let (privHdr, spKey) = if senderCanSecure queueMode then (SMP.PHEmpty, Just sndPrivateKey) else (SMP.PHConfirmation sndPublicKey, Nothing)
       clientMsg = SMP.ClientMessage privHdr agentConfirmation
   msg <- agentCbEncrypt sq e2ePubKey $ smpEncode clientMsg
   sendOrProxySMPMessage c userId server connId "<CONF>" spKey sndId (MsgFlags {notification = True}) msg

@@ -192,7 +192,27 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, PNMessageData (..), pnMessagesP)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parse)
-import Simplex.Messaging.Protocol (BrokerMsg, Cmd (..), ErrorType (AUTH), MsgBody, MsgFlags (..), NtfServer, ProtoServerWithAuth (..), ProtocolType (..), ProtocolTypeI (..), QueueLinkData, SMPMsgMeta, SParty (..), SProtocolType (..), SndPublicAuthKey, SubscriptionMode (..), UserProtocol, VersionSMPC)
+import Simplex.Messaging.Protocol
+  ( BrokerMsg,
+    Cmd (..),
+    ErrorType (AUTH),
+    MsgBody,
+    MsgFlags (..),
+    NtfServer,
+    ProtoServerWithAuth (..),
+    ProtocolType (..),
+    ProtocolTypeI (..),
+    QueueLinkData,
+    QueueMode (..),
+    SMPMsgMeta,
+    SParty (..),
+    SProtocolType (..),
+    SndPublicAuthKey,
+    SubscriptionMode (..),
+    UserProtocol,
+    VersionSMPC,
+    senderCanSecure,
+  )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import qualified Simplex.Messaging.TMap as TM
@@ -831,7 +851,7 @@ setContactShortLink' c connId userData =
           pure (linkId, shortLinkKey, (linkEncFixedData, d))
         Nothing -> do
           sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
-          let qUri = SMPQueueUri vr $ SMPQueueAddress server sndId (C.publicKey e2ePrivKey) False
+          let qUri = SMPQueueUri vr $ SMPQueueAddress server sndId (C.publicKey e2ePrivKey) (Just QMContact)
               connReq = CRContactUri $ ConnReqUriData SSSimplex smpAgentVRange [qUri] Nothing
               (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq userData
               (linkId, k) = SL.contactShortLinkKdf linkKey
@@ -937,8 +957,8 @@ newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys s
       AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
       -- TODO [notifications] the remaining 24 bytes are reserved for notifier ID
       let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
-          sndSecure = case cMode of SCMContact -> False; SCMInvitation -> True
-          qUri = SMPQueueUri vr $ SMPQueueAddress srv sndId e2eDhKey sndSecure
+          qm = case cMode of SCMContact -> QMContact; SCMInvitation -> QMMessaging
+          qUri = SMPQueueUri vr $ SMPQueueAddress srv sndId e2eDhKey (Just qm)
       connReq <- createConnReq qUri
       let (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq userData
       qd <- case cMode of
@@ -1647,7 +1667,7 @@ submitPendingMsg c cData sq = do
   void $ getDeliveryWorker True c cData sq
 
 runSmpQueueMsgDelivery :: AgentClient -> ConnData -> SndQueue -> (Worker, TMVar ()) -> AM ()
-runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userId, server, sndSecure} (Worker {doWork}, qLock) = do
+runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userId, server, queueMode} (Worker {doWork}, qLock) = do
   AgentConfig {messageRetryInterval = ri, messageTimeout, helloTimeout, quotaExceededTimeout} <- asks config
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
@@ -1733,7 +1753,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
             Right proxySrv_ -> do
               case msgType of
                 AM_CONN_INFO
-                  | sndSecure -> notify (CON pqEncryption) >> setStatus Active
+                  | senderCanSecure queueMode -> notify (CON pqEncryption) >> setStatus Active
                   | otherwise -> setStatus Confirmed
                 AM_CONN_INFO_REPLY -> setStatus Confirmed
                 AM_RATCHET_INFO -> pure ()
@@ -2558,7 +2578,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
       mapM_ (atomically . writeTBQueue subQ) . reverse =<< readTVarIO pending
     processSMP :: forall c. RcvQueue -> Connection c -> ConnData -> BrokerMsg -> TVar [ATransmission] -> AM ()
     processSMP
-      rq@RcvQueue {rcvId = rId, sndSecure, e2ePrivKey, e2eDhSecret, status}
+      rq@RcvQueue {rcvId = rId, queueMode, e2ePrivKey, e2eDhSecret, status}
       conn
       cData@ConnData {connId, connAgentVersion, ratchetSyncState = rss}
       smpMsg
@@ -2587,7 +2607,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                       (SMP.PHConfirmation senderKey, AgentConfirmation {e2eEncryption_, encConnInfo, agentVersion}) ->
                         smpConfirmation srvMsgId conn (Just senderKey) e2ePubKey e2eEncryption_ encConnInfo phVer agentVersion >> ack
                       (SMP.PHEmpty, AgentConfirmation {e2eEncryption_, encConnInfo, agentVersion})
-                        | sndSecure -> smpConfirmation srvMsgId conn Nothing e2ePubKey e2eEncryption_ encConnInfo phVer agentVersion >> ack
+                        | senderCanSecure queueMode -> smpConfirmation srvMsgId conn Nothing e2ePubKey e2eEncryption_ encConnInfo phVer agentVersion >> ack
                         | otherwise -> prohibited "handshake: missing sender key" >> ack
                       (SMP.PHEmpty, AgentInvitation {connReq, connInfo}) ->
                         smpInvitation srvMsgId conn connReq connInfo >> ack
@@ -3133,7 +3153,7 @@ secureConfirmQueue c cData@ConnData {connId, connAgentVersion, pqSupport} sq srv
         pure . smpEncode $ AgentConfirmation {agentVersion = connAgentVersion, e2eEncryption_, encConnInfo}
 
 agentSecureSndQueue :: AgentClient -> ConnData -> SndQueue -> AM SndQueueSecured
-agentSecureSndQueue c ConnData {connAgentVersion} sq@SndQueue {sndSecure, status}
+agentSecureSndQueue c ConnData {connAgentVersion} sq@SndQueue {queueMode, status}
   | sndSecure && status == New = do
       secureSndQueue c sq
       withStore' c $ \db -> setSndQueueStatus db sq Secured
@@ -3142,6 +3162,7 @@ agentSecureSndQueue c ConnData {connAgentVersion} sq@SndQueue {sndSecure, status
   | sndSecure && status == Secured = pure initiatorRatchetOnConf
   | otherwise = pure False
   where
+    sndSecure = senderCanSecure queueMode
     initiatorRatchetOnConf = connAgentVersion >= ratchetOnConfSMPAgentVersion
 
 mkAgentConfirmation :: AgentClient -> ConnData -> SndQueue -> SMPServerWithAuth -> ConnInfo -> SubscriptionMode -> AM AgentMessage
@@ -3226,7 +3247,7 @@ agentRatchetDecrypt' g db connId rc encAgentMsg = do
   liftEither $ bimap (SEAgentError . cryptoError) (,CR.rcRcvKEM rc') agentMsgBody_
 
 newSndQueue :: UserId -> ConnId -> Compatible SMPQueueInfo -> Maybe (C.AAuthKeyPair) -> AM' (NewSndQueue, C.PublicKeyX25519)
-newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, sndSecure, dhPublicKey = rcvE2ePubDhKey})) sndKeys_ = do
+newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAddress {smpServer, senderId, queueMode, dhPublicKey = rcvE2ePubDhKey})) sndKeys_ = do
   C.AuthAlg a <- asks $ sndAuthAlg . config
   g <- asks random
   (sndPublicKey, sndPrivateKey) <- maybe (atomically $ C.generateAuthKeyPair a g) pure sndKeys_
@@ -3237,7 +3258,7 @@ newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAdd
             connId,
             server = smpServer,
             sndId = senderId,
-            sndSecure,
+            queueMode,
             sndPublicKey,
             sndPrivateKey,
             e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey,

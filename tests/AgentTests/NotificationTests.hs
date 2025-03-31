@@ -175,15 +175,15 @@ testNtfMatrix :: HasCallStack => (ATransport, AStoreType) -> (APNSMockServer -> 
 testNtfMatrix ps@(_, msType) runTest = do
   describe "next and current" $ do
     it "curr servers; curr clients" $ runNtfTestCfg ps 1 cfg' ntfServerCfg agentCfg agentCfg runTest
-    it "curr servers; prev clients" $ runNtfTestCfg ps 3 cfg' ntfServerCfg agentCfgVPrevPQ agentCfgVPrevPQ runTest
-    it "prev servers; prev clients" $ runNtfTestCfg ps 3 cfgVPrev' ntfServerCfgVPrev agentCfgVPrevPQ agentCfgVPrevPQ runTest
+    it "curr servers; prev clients" $ runNtfTestCfg ps 1 cfg' ntfServerCfg agentCfgVPrevPQ agentCfgVPrevPQ runTest
+    it "prev servers; prev clients" $ runNtfTestCfg ps 1 cfgVPrev' ntfServerCfgVPrev agentCfgVPrevPQ agentCfgVPrevPQ runTest
     it "prev servers; curr clients" $ runNtfTestCfg ps 1 cfgVPrev' ntfServerCfgVPrev agentCfg agentCfg runTest
     -- servers can be upgraded in any order
-    it "servers: curr SMP, prev NTF; prev clients" $ runNtfTestCfg ps 3 cfg' ntfServerCfgVPrev agentCfgVPrevPQ agentCfgVPrevPQ runTest
-    it "servers: prev SMP, curr NTF; prev clients" $ runNtfTestCfg ps 3 cfgVPrev' ntfServerCfg agentCfgVPrevPQ agentCfgVPrevPQ runTest
+    it "servers: curr SMP, prev NTF; prev clients" $ runNtfTestCfg ps 1 cfg' ntfServerCfgVPrev agentCfgVPrevPQ agentCfgVPrevPQ runTest
+    it "servers: prev SMP, curr NTF; prev clients" $ runNtfTestCfg ps 1 cfgVPrev' ntfServerCfg agentCfgVPrevPQ agentCfgVPrevPQ runTest
     -- one of two clients can be upgraded
-    it "servers: curr SMP, curr NTF; clients: curr/prev" $ runNtfTestCfg ps 3 cfg' ntfServerCfg agentCfg agentCfgVPrevPQ runTest
-    it "servers: curr SMP, curr NTF; clients: prev/curr" $ runNtfTestCfg ps 3 cfg' ntfServerCfg agentCfgVPrevPQ agentCfg runTest
+    it "servers: curr SMP, curr NTF; clients: curr/prev" $ runNtfTestCfg ps 1 cfg' ntfServerCfg agentCfg agentCfgVPrevPQ runTest
+    it "servers: curr SMP, curr NTF; clients: prev/curr" $ runNtfTestCfg ps 1 cfg' ntfServerCfg agentCfgVPrevPQ agentCfg runTest
   where
     cfg' = cfgMS msType
     cfgVPrev' = cfgVPrev msType

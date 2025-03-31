@@ -43,10 +43,10 @@ import Simplex.Messaging.Protocol
     NotifierId,
     NtfPrivateAuthKey,
     NtfPublicAuthKey,
+    QueueMode,
     RcvDhSecret,
     RcvNtfDhSecret,
     RcvPrivateAuthKey,
-    SenderCanSecure,
     SndPrivateAuthKey,
     SndPublicAuthKey,
     VersionSMPC,
@@ -92,7 +92,7 @@ data StoredRcvQueue (q :: QueueStored) = RcvQueue
     -- | sender queue ID
     sndId :: SMP.SenderId,
     -- | sender can secure the queue
-    sndSecure :: SenderCanSecure,
+    queueMode :: Maybe QueueMode,
     -- | short link ID and credentials
     shortLink :: Maybe ShortLinkCreds,
     -- | queue status
@@ -172,7 +172,7 @@ data StoredSndQueue (q :: QueueStored) = SndQueue
     -- | sender queue ID
     sndId :: SMP.SenderId,
     -- | sender can secure the queue
-    sndSecure :: SenderCanSecure,
+    queueMode :: Maybe QueueMode,
     -- | key pair used by the sender to authorize transmissions
     -- TODO combine keys to key pair so that types match
     sndPublicKey :: SndPublicAuthKey,

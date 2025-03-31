@@ -207,6 +207,7 @@ import Simplex.Messaging.Protocol
     MsgId,
     NMsgMeta,
     ProtocolServer (..),
+    QueueMode (..),
     SMPClientVersion,
     SMPServer,
     SMPServerWithAuth,
@@ -222,6 +223,8 @@ import Simplex.Messaging.Protocol
     sameSrvAddr,
     sndAuthKeySMPClientVersion,
     srvHostnamesSMPClientVersion,
+    shortLinksSMPClientVersion,
+    senderCanSecure,
     pattern ProtoServerWithAuth,
     pattern SMPServer,
   )
@@ -1166,16 +1169,20 @@ data SMPQueueInfo = SMPQueueInfo {clientVersion :: VersionSMPC, queueAddress :: 
   deriving (Eq, Show)
 
 instance Encoding SMPQueueInfo where
-  smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure})
-    | clientVersion >= sndAuthKeySMPClientVersion && sndSecure = smpEncode (clientVersion, smpServer, senderId, dhPublicKey, sndSecure)
-    | clientVersion > initialSMPClientVersion = smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
+  smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode})
+    | clientVersion >= shortLinksSMPClientVersion = addrEnc <> smpEncode queueMode
+    | clientVersion >= sndAuthKeySMPClientVersion && sndSecure = addrEnc <> smpEncode sndSecure
+    | clientVersion > initialSMPClientVersion = addrEnc
     | otherwise = smpEncode clientVersion <> legacyEncodeServer smpServer <> smpEncode (senderId, dhPublicKey)
+    where
+      addrEnc = smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
+      sndSecure = senderCanSecure queueMode
   smpP = do
     clientVersion <- smpP
     smpServer <- if clientVersion > initialSMPClientVersion then smpP else updateSMPServerHosts <$> legacyServerP
     (senderId, dhPublicKey) <- smpP
-    sndSecure <- fromMaybe False <$> optional smpP
-    pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure}
+    queueMode <- smpP <|> optional ((\ss -> if ss then QMMessaging else QMContact) <$> smpP)
+    pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode}
 
 -- This instance seems contrived and there was a temptation to split a common part of both types.
 -- But this is created to allow backward and forward compatibility where SMPQueueUri
@@ -1202,7 +1209,7 @@ data SMPQueueAddress = SMPQueueAddress
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,
     dhPublicKey :: C.PublicKeyX25519,
-    sndSecure :: Bool -- TODO [short links] replace with queueMode?
+    queueMode :: Maybe QueueMode
   }
   deriving (Eq, Show)
 
@@ -1229,42 +1236,57 @@ sameQAddress (srv, qId) (srv', qId') = sameSrvAddr srv srv' && qId == qId'
 {-# INLINE sameQAddress #-}
 
 instance StrEncoding SMPQueueUri where
-  strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey, sndSecure})
+  strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey, queueMode})
     | minVersion vr >= srvHostnamesSMPClientVersion = strEncode srv <> "/" <> strEncode qId <> "#/?" <> query queryParams
     | otherwise = legacyStrEncodeServer srv <> "/" <> strEncode qId <> "#/?" <> query (queryParams <> srvParam)
     where
       query = strEncode . QSP QEscape
-      queryParams = [("v", strEncode vr), ("dh", strEncode dhPublicKey)] <> [("k", "s") | sndSecure]
+      queryParams = [("v", strEncode vr), ("dh", strEncode dhPublicKey)] <> queueModeParam <> sndSecureParam
+        where
+          queueModeParam = case queueMode of
+            Just QMMessaging -> [("q", "m")]
+            Just QMContact -> [("q", "c")]
+            Nothing -> []
+          sndSecureParam = [("k", "s") | senderCanSecure queueMode && minVersion vr < shortLinksSMPClientVersion]
       srvParam = [("srv", strEncode $ TransportHosts_ hs) | not (null hs)]
       hs = L.tail $ host srv
   strP = do
     srv@ProtocolServer {host = h :| host} <- strP <* A.char '/'
     senderId <- strP <* optional (A.char '/') <* A.char '#'
-    (vr, hs, dhPublicKey, sndSecure) <- versioned <|> unversioned
+    (vr, hs, dhPublicKey, queueMode) <- versioned <|> unversioned
     let srv' = srv {host = h :| host <> hs}
         smpServer = if maxVersion vr < srvHostnamesSMPClientVersion then updateSMPServerHosts srv' else srv'
-    pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure}
+    pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode}
     where
-      unversioned = (versionToRange initialSMPClientVersion,[],,False) <$> strP <* A.endOfInput
+      unversioned = (versionToRange initialSMPClientVersion,[],,Nothing) <$> strP <* A.endOfInput
       versioned = do
         dhKey_ <- optional strP
         query <- optional (A.char '/') *> A.char '?' *> strP
         vr <- queryParam "v" query
         dhKey <- maybe (queryParam "dh" query) pure dhKey_
         hs_ <- queryParam_ "srv" query
-        let sndSecure = queryParamStr "k" query == Just "s"
-        pure (vr, maybe [] thList_ hs_, dhKey, sndSecure)
+        let queueMode = case queryParamStr "q" query of
+              Just "m" -> Just QMMessaging
+              Just "c" -> Just QMContact
+              _ | queryParamStr "k" query == Just "s" -> Just QMMessaging
+              _ -> Nothing
+        pure (vr, maybe [] thList_ hs_, dhKey, queueMode)
 
 instance Encoding SMPQueueUri where
-  smpEncode (SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure})
-    | maxVersion clientVRange >= sndAuthKeySMPClientVersion && sndSecure =
-        smpEncode (clientVRange, smpServer, senderId, dhPublicKey, sndSecure)
-    | otherwise =
-        smpEncode (clientVRange, smpServer, senderId, dhPublicKey)
+  smpEncode (SMPQueueUri clientVRange@(VersionRange minV maxV) SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode})
+    -- The condition is for minVersion as earlier clients won't be able to support it.
+    -- The alternative would be to encode both queueMode and sndSecure
+    | minV >= shortLinksSMPClientVersion = addrEnc <> smpEncode queueMode
+    -- Earlier versions won't be able to ignore sndSecure, so we don't include it when it is False
+    | minV >= sndAuthKeySMPClientVersion || (maxV >= sndAuthKeySMPClientVersion && sndSecure) = addrEnc <> smpEncode sndSecure
+    | otherwise = addrEnc
+    where
+      addrEnc = smpEncode (clientVRange, smpServer, senderId, dhPublicKey)
+      sndSecure = senderCanSecure queueMode
   smpP = do
     (clientVRange, smpServer, senderId, dhPublicKey) <- smpP
-    sndSecure <- fromMaybe False <$> optional smpP
-    pure $ SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure}
+    queueMode <- smpP <|> optional ((\ss -> if ss then QMMessaging else QMContact) <$> smpP)
+    pure $ SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode}
 
 data ConnectionRequestUri (m :: ConnectionMode) where
   CRInvitationUri :: ConnReqUriData -> RcvE2ERatchetParamsUri 'C.X448 -> ConnectionRequestUri CMInvitation
