@@ -80,7 +80,7 @@ cliTests = do
 smpServerTest :: Bool -> Bool -> IO ()
 smpServerTest storeLog basicAuth = do
   -- init
-  capture_ (withArgs (["init", "-y"] <> ["-l" | storeLog] <> ["--no-password" | not basicAuth]) $ smpServerCLI cfgPath logPath)
+  capture_ (withArgs (["init", "-y"] <> ["--disable-store-log" | not storeLog] <> ["--no-password" | not basicAuth]) $ smpServerCLI cfgPath logPath)
     >>= (`shouldSatisfy` (("Server initialized, please provide additional server information in " <> cfgPath <> "/smp-server.ini") `isPrefixOf`))
   Right ini <- readIniFile $ cfgPath <> "/smp-server.ini"
   lookupValue "STORE_LOG" "enable" ini `shouldBe` Right (if storeLog then "on" else "off")
@@ -184,7 +184,7 @@ smpServerTestStatic = do
 
 ntfServerTest :: Bool -> IO ()
 ntfServerTest storeLog = do
-  capture_ (withArgs (["init"] <> ["-l" | storeLog]) $ ntfServerCLI ntfCfgPath ntfLogPath)
+  capture_ (withArgs (["init"] <> ["--disable-store-log" | not storeLog]) $ ntfServerCLI ntfCfgPath ntfLogPath)
     >>= (`shouldSatisfy` (("Server initialized, you can modify configuration in " <> ntfCfgPath <> "/ntf-server.ini") `isPrefixOf`))
   Right ini <- readIniFile $ ntfCfgPath <> "/ntf-server.ini"
   lookupValue "STORE_LOG" "enable" ini `shouldBe` Right (if storeLog then "on" else "off")
@@ -202,7 +202,7 @@ ntfServerTest storeLog = do
 
 xftpServerTest :: Bool -> IO ()
 xftpServerTest storeLog = do
-  capture_ (withArgs (["init", "-p", "tests/tmp", "-q", "10gb"] <> ["-l" | storeLog]) $ xftpServerCLI fileCfgPath fileLogPath)
+  capture_ (withArgs (["init", "-p", "tests/tmp", "-q", "10gb"] <> ["--disable-store-log" | not storeLog]) $ xftpServerCLI fileCfgPath fileLogPath)
     >>= (`shouldSatisfy` (("Server initialized, you can modify configuration in " <> fileCfgPath <> "/file-server.ini") `isPrefixOf`))
   Right ini <- readIniFile $ fileCfgPath <> "/file-server.ini"
   lookupValue "STORE_LOG" "enable" ini `shouldBe` Right (if storeLog then "on" else "off")
