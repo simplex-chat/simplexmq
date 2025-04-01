@@ -254,5 +254,29 @@ connectionRequestTests =
       contactAddressV2 #== ("https://simplex.chat/contact#/?v=1-2&smp=" <> url queueStr) -- adjusted to v2
       contactAddressV2 #== ("https://simplex.chat/contact#/?v=2-2&smp=" <> url queueStr)
       contactAddressClientData #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueStr <> "&data=" <> url "{\"type\":\"group_link\", \"group_link_id\":\"abc\"}")
-    it "should serialize / parse connection invitations and contact addresses as binary" $ do
-      smpDecode (smpEncode connectionRequest) `shouldBe` Right connectionRequest
+    it "should serialize / parse queue address, connection invitations and contact addresses as binary" $ do
+      smpEncodingTest queue
+      smpEncodingTest queueSK
+      smpEncodingTest queue1
+      smpEncodingTest queueNew
+      smpEncodingTest queueNew1
+      smpEncodingTest queueNewNoPort
+      smpEncodingTest queueNew1NoPort
+      smpEncodingTest queueV1
+      smpEncodingTest queueV1NoPort
+      smpEncodingTest connectionRequest
+      smpEncodingTest connectionRequestSK
+      smpEncodingTest connectionRequest1
+      smpEncodingTest connectionRequest2queues
+      smpEncodingTest connectionRequestNew
+      smpEncodingTest connectionRequestNew1
+      smpEncodingTest connectionRequest2queuesNew
+      smpEncodingTest connectionRequestClientDataEmpty
+      smpEncodingTest contactAddress
+      smpEncodingTest contactAddress2queues
+      smpEncodingTest contactAddressNew
+      smpEncodingTest contactAddress2queuesNew
+      smpEncodingTest contactAddressV2
+      smpEncodingTest contactAddressClientData
+  where
+    smpEncodingTest a = smpDecode (smpEncode a) `shouldBe` Right a

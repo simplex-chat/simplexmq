@@ -1077,8 +1077,7 @@ instance Encoding ConnReqUriData where
   smpEncode ConnReqUriData {crAgentVRange, crSmpQueues, crClientData} =
     smpEncode (crAgentVRange, crSmpQueues, Large . encodeUtf8 <$> crClientData)
   smpP = do
-    (crAgentVRange, crSmpQueues) <- smpP
-    clientData <- smpP
+    (crAgentVRange, crSmpQueues, clientData) <- smpP
     pure ConnReqUriData {crScheme = SSSimplex, crAgentVRange, crSmpQueues, crClientData = safeDecodeUtf8 . unLarge <$> clientData}
 
 connReqUriP' :: forall m. ConnectionModeI m => Maybe ServiceScheme -> Parser (ConnectionRequestUri m)
