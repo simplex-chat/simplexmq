@@ -309,7 +309,7 @@ functionalAPITests ps = do
       testAsyncServerOffline ps
     it "should restore confirmation after client restart" $
       testAllowConnectionClientRestart ps
-  fdescribe "Short connection links" $ do
+  describe "Short connection links" $ do
     it "should connect via 1-time short link" $ testInviationShortLink ps
     it "should connect via 1-time short link with async join" $ testInviationShortLinkAsync ps
     it "should connect via contact short link" $ testContactShortLink ps

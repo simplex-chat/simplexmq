@@ -254,5 +254,5 @@ connectionRequestTests =
       contactAddressV2 #== ("https://simplex.chat/contact#/?v=1-2&smp=" <> url queueStr) -- adjusted to v2
       contactAddressV2 #== ("https://simplex.chat/contact#/?v=2-2&smp=" <> url queueStr)
       contactAddressClientData #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueStr <> "&data=" <> url "{\"type\":\"group_link\", \"group_link_id\":\"abc\"}")
-    fit "should serialize / parse connection invitations and contact addresses as binary" $ do
+    it "should serialize / parse connection invitations and contact addresses as binary" $ do
       smpDecode (smpEncode connectionRequest) `shouldBe` Right connectionRequest
