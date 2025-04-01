@@ -690,19 +690,23 @@ instance Eq AConnectionMode where
 
 cmInvitation :: AConnectionMode
 cmInvitation = ACM SCMInvitation
+{-# INLINE cmInvitation #-}
 
 cmContact :: AConnectionMode
 cmContact = ACM SCMContact
+{-# INLINE cmContact #-}
 
 deriving instance Show AConnectionMode
 
 connMode :: SConnectionMode m -> ConnectionMode
 connMode SCMInvitation = CMInvitation
 connMode SCMContact = CMContact
+{-# INLINE connMode #-}
 
 connMode' :: ConnectionMode -> AConnectionMode
 connMode' CMInvitation = cmInvitation
 connMode' CMContact = cmContact
+{-# INLINE connMode' #-}
 
 class ConnectionModeI (m :: ConnectionMode) where sConnectionMode :: SConnectionMode m
 
@@ -1054,10 +1058,27 @@ instance ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
                 <> maybe [] (\cd -> [("data", encodeUtf8 cd)]) crClientData
   strP = connReqUriP' (Just SSSimplex)
 
--- TODO [short links] do not use StrEncoding instance
 instance ConnectionModeI m => Encoding (ConnectionRequestUri m) where
-  smpEncode = smpEncode . Large . strEncode
-  smpP = strDecode . unLarge <$?> smpP
+  smpEncode = \case
+    CRInvitationUri crData e2eParams -> smpEncode (CMInvitation, crData, e2eParams)
+    CRContactUri crData -> smpEncode (CMContact, crData)
+  smpP = (\(ACR _ cr) -> checkConnMode cr) <$?> smpP
+  {-# INLINE smpP #-}
+
+instance Encoding AConnectionRequestUri where
+  smpEncode (ACR _ cr) = smpEncode cr
+  {-# INLINE smpEncode #-}
+  smpP =
+    smpP >>= \case
+      CMInvitation -> ACR SCMInvitation <$> (CRInvitationUri <$> smpP <*> smpP)
+      CMContact -> ACR SCMContact . CRContactUri <$> smpP
+
+instance Encoding ConnReqUriData where
+  smpEncode ConnReqUriData {crAgentVRange, crSmpQueues, crClientData} =
+    smpEncode (crAgentVRange, crSmpQueues, Large . encodeUtf8 <$> crClientData)
+  smpP = do
+    (crAgentVRange, crSmpQueues, clientData) <- smpP
+    pure ConnReqUriData {crScheme = SSSimplex, crAgentVRange, crSmpQueues, crClientData = safeDecodeUtf8 . unLarge <$> clientData}
 
 connReqUriP' :: forall m. ConnectionModeI m => Maybe ServiceScheme -> Parser (ConnectionRequestUri m)
 connReqUriP' overrideScheme = do
@@ -1122,6 +1143,16 @@ instance StrEncoding AConnectionMode where
   strEncode (ACM cMode) = strEncode $ connMode cMode
   strP = connMode' <$> strP
 
+instance Encoding ConnectionMode where
+  smpEncode = \case
+    CMInvitation -> "I"
+    CMContact -> "C"
+  smpP =
+    A.anyChar >>= \case
+      'I' -> pure CMInvitation
+      'C' -> pure CMContact
+      _ -> fail "bad connection mode"
+
 connModeT :: Text -> Maybe ConnectionMode
 connModeT = \case
   "INV" -> Just CMInvitation
@@ -1170,7 +1201,7 @@ data SMPQueueInfo = SMPQueueInfo {clientVersion :: VersionSMPC, queueAddress :: 
 
 instance Encoding SMPQueueInfo where
   smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode})
-    | clientVersion >= shortLinksSMPClientVersion = addrEnc <> smpEncode queueMode
+    | clientVersion >= shortLinksSMPClientVersion = addrEnc <> maybe "" smpEncode queueMode
     | clientVersion >= sndAuthKeySMPClientVersion && sndSecure = addrEnc <> smpEncode sndSecure
     | clientVersion > initialSMPClientVersion = addrEnc
     | otherwise = smpEncode clientVersion <> legacyEncodeServer smpServer <> smpEncode (senderId, dhPublicKey)
@@ -1181,7 +1212,7 @@ instance Encoding SMPQueueInfo where
     clientVersion <- smpP
     smpServer <- if clientVersion > initialSMPClientVersion then smpP else updateSMPServerHosts <$> legacyServerP
     (senderId, dhPublicKey) <- smpP
-    queueMode <- smpP <|> optional ((\ss -> if ss then QMMessaging else QMContact) <$> smpP)
+    queueMode <- queueModeP
     pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode}
 
 -- This instance seems contrived and there was a temptation to split a common part of both types.
@@ -1276,7 +1307,7 @@ instance Encoding SMPQueueUri where
   smpEncode (SMPQueueUri clientVRange@(VersionRange minV maxV) SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode})
     -- The condition is for minVersion as earlier clients won't be able to support it.
     -- The alternative would be to encode both queueMode and sndSecure
-    | minV >= shortLinksSMPClientVersion = addrEnc <> smpEncode queueMode
+    | minV >= shortLinksSMPClientVersion = addrEnc <> maybe "" smpEncode queueMode
     -- Earlier versions won't be able to ignore sndSecure, so we don't include it when it is False
     | minV >= sndAuthKeySMPClientVersion || (maxV >= sndAuthKeySMPClientVersion && sndSecure) = addrEnc <> smpEncode sndSecure
     | otherwise = addrEnc
@@ -1285,8 +1316,11 @@ instance Encoding SMPQueueUri where
       sndSecure = senderCanSecure queueMode
   smpP = do
     (clientVRange, smpServer, senderId, dhPublicKey) <- smpP
-    queueMode <- smpP <|> optional ((\ss -> if ss then QMMessaging else QMContact) <$> smpP)
+    queueMode <- queueModeP
     pure $ SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode}
+
+queueModeP :: Parser (Maybe QueueMode)
+queueModeP = Just <$> smpP <|> optional ((\case True -> QMMessaging; _ -> QMContact) <$> smpP)
 
 data ConnectionRequestUri (m :: ConnectionMode) where
   CRInvitationUri :: ConnReqUriData -> RcvE2ERatchetParamsUri 'C.X448 -> ConnectionRequestUri CMInvitation
@@ -1373,6 +1407,12 @@ sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUr
   L.length qs == L.length qs' && all same (L.zip qs qs')
   where
     same (q, q') = sameQAddress (qAddress q) (qAddress q')
+
+checkConnMode :: forall t m m'. (ConnectionModeI m, ConnectionModeI m') => t m' -> Either String (t m)
+checkConnMode c = case testEquality (sConnectionMode @m) (sConnectionMode @m') of
+  Just Refl -> Right c
+  Nothing -> Left "bad connection mode"
+{-# INLINE checkConnMode #-}
 
 data ConnReqUriData = ConnReqUriData
   { crScheme :: ServiceScheme,

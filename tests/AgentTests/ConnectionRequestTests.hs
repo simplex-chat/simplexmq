@@ -21,6 +21,7 @@ import Network.HTTP.Types (urlEncode)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId (..), ProtocolServer (..), QueueMode (..), currentSMPClientVersion, supportedSMPClientVRange, pattern VersionSMPC)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
@@ -253,3 +254,29 @@ connectionRequestTests =
       contactAddressV2 #== ("https://simplex.chat/contact#/?v=1-2&smp=" <> url queueStr) -- adjusted to v2
       contactAddressV2 #== ("https://simplex.chat/contact#/?v=2-2&smp=" <> url queueStr)
       contactAddressClientData #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueStr <> "&data=" <> url "{\"type\":\"group_link\", \"group_link_id\":\"abc\"}")
+    it "should serialize / parse queue address, connection invitations and contact addresses as binary" $ do
+      smpEncodingTest queue
+      smpEncodingTest queueSK
+      smpEncodingTest queue1
+      smpEncodingTest queueNew
+      smpEncodingTest queueNew1
+      smpEncodingTest queueNewNoPort
+      smpEncodingTest queueNew1NoPort
+      smpEncodingTest queueV1
+      smpEncodingTest queueV1NoPort
+      smpEncodingTest connectionRequest
+      smpEncodingTest connectionRequestSK
+      smpEncodingTest connectionRequest1
+      smpEncodingTest connectionRequest2queues
+      smpEncodingTest connectionRequestNew
+      smpEncodingTest connectionRequestNew1
+      smpEncodingTest connectionRequest2queuesNew
+      smpEncodingTest connectionRequestClientDataEmpty
+      smpEncodingTest contactAddress
+      smpEncodingTest contactAddress2queues
+      smpEncodingTest contactAddressNew
+      smpEncodingTest contactAddress2queuesNew
+      smpEncodingTest contactAddressV2
+      smpEncodingTest contactAddressClientData
+  where
+    smpEncodingTest a = smpDecode (smpEncode a) `shouldBe` Right a

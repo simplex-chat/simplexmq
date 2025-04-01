@@ -306,11 +306,13 @@ instance (RatchetKEMStateI s, AlgorithmI a) => StrEncoding (E2ERatchetParamsUri 
         | otherwise = case kem of
             RKParamsProposed k -> [("kem_key", strEncode k)]
             RKParamsAccepted ct k -> [("kem_ct", strEncode ct), ("kem_key", strEncode k)]
-  strP = toParamsURI <$?> strP
-    where
-      toParamsURI = \case
-        AE2ERatchetParamsUri _ (E2ERatchetParamsUri vr k1 k2 Nothing) -> Right $ E2ERatchetParamsUri vr k1 k2 Nothing
-        AE2ERatchetParamsUri _ ps -> checkRatchetKEMState ps
+  strP = toE2ERatchetParamsUri <$?> strP
+  {-# INLINE strP #-}
+    
+toE2ERatchetParamsUri :: RatchetKEMStateI s => AE2ERatchetParamsUri a -> Either String (E2ERatchetParamsUri s a)
+toE2ERatchetParamsUri = \case
+  AE2ERatchetParamsUri _ (E2ERatchetParamsUri vr k1 k2 Nothing) -> Right $ E2ERatchetParamsUri vr k1 k2 Nothing
+  AE2ERatchetParamsUri _ ps -> checkRatchetKEMState ps
 
 instance AlgorithmI a => StrEncoding (AE2ERatchetParamsUri a) where
   strEncode (AE2ERatchetParamsUri _ ps) = strEncode ps
@@ -339,6 +341,33 @@ instance StrEncoding AnyE2ERatchetParamsUri where
       kemParams k = \case
         Nothing -> ARKP SRKSProposed $ RKParamsProposed k
         Just ct -> ARKP SRKSAccepted $ RKParamsAccepted ct k
+
+instance (RatchetKEMStateI s, AlgorithmI a) => Encoding (E2ERatchetParamsUri s a) where
+  smpEncode (E2ERatchetParamsUri vr k1 k2 kem_) = smpEncode (vr, k1, k2, kem_)
+  {-# INLINE smpEncode #-}
+  smpP = toE2ERatchetParamsUri <$?> smpP
+  {-# INLINE smpP #-}
+
+instance AlgorithmI a => Encoding (AE2ERatchetParamsUri a) where
+  smpEncode (AE2ERatchetParamsUri _ ps) = smpEncode ps
+  {-# INLINE smpEncode #-}
+  smpP = (\(AnyE2ERatchetParamsUri s _ ps) -> AE2ERatchetParamsUri s <$> checkAlgorithm ps) <$?> smpP
+  {-# INLINE smpP #-}
+
+instance Encoding AnyE2ERatchetParamsUri where
+  smpEncode (AnyE2ERatchetParamsUri _ _ ps) = smpEncode ps
+  {-# INLINE smpEncode #-}
+  smpP = do
+    vr <- smpP @VersionRangeE2E
+    APublicDhKey a k1 <- smpP
+    APublicDhKey a' k2 <- smpP
+    case testEquality a a' of
+      Nothing -> fail "bad e2e params: different key algorithms"
+      Just Refl ->
+        let result = \case
+              Just (ARKP s kem) -> AnyE2ERatchetParamsUri s a $ E2ERatchetParamsUri vr k1 k2 (Just kem)
+              Nothing -> AnyE2ERatchetParamsUri SRKSProposed a $ E2ERatchetParamsUri vr k1 k2 Nothing
+         in result <$> smpP
 
 type RcvE2ERatchetParams a = E2ERatchetParams 'RKSProposed a
 

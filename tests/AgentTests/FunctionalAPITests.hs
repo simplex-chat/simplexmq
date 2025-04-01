@@ -93,6 +93,7 @@ import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientConfig (..), 
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (NTFVersion, pattern VersionNTF)
 import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), initialSMPClientVersion, srvHostnamesSMPClientVersion, supportedSMPClientVRange)
@@ -1132,7 +1133,7 @@ testContactShortLink ps =
   withAgentClients3 $ \a b c -> withSmpServer ps $ do
     let userData = "some user data"
     (contactId, (connReq0, Just shortLink)) <- runRight $ A.createConnection a 1 True SCMContact (Just userData) Nothing CR.IKPQOn SMSubscribe
-    Right connReq <- pure $ strDecode (strEncode connReq0)
+    Right connReq <- pure $ smpDecode (smpEncode connReq0)
     (connReq', userData') <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
     connReq' `shouldBe` connReq
@@ -1177,7 +1178,7 @@ testAddContactShortLink :: HasCallStack => (ATransport, AStoreType) -> IO ()
 testAddContactShortLink ps =
   withAgentClients3 $ \a b c -> withSmpServer ps $ do
     (contactId, (connReq0, Nothing)) <- runRight $ A.createConnection a 1 True SCMContact Nothing Nothing CR.IKPQOn SMSubscribe
-    Right connReq <- pure $ strDecode (strEncode connReq0)
+    Right connReq <- pure $ smpDecode (smpEncode connReq0) --
     let userData = "some user data"
     shortLink <- runRight $ setContactShortLink a contactId userData
     (connReq', userData') <- runRight $ getConnShortLink b 1 shortLink
