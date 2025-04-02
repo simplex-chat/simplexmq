@@ -365,7 +365,7 @@ deleteConnectionsAsync c waitDelivery = withAgentEnv c . deleteConnectionsAsync'
 {-# INLINE deleteConnectionsAsync #-}
 
 -- | Create SMP agent connection (NEW command)
-createConnection :: ConnectionModeI c => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe ConnInfo -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, (ConnectionRequestUri c, Maybe (ConnShortLink c)))
+createConnection :: ConnectionModeI c => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe ConnInfo -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, CreatedConnLink c)
 createConnection c userId enableNtfs = withAgentEnv c .::. newConn c userId enableNtfs
 {-# INLINE createConnection #-}
 
@@ -400,10 +400,12 @@ changeConnectionUser c oldUserId connId newUserId = withAgentEnv c $ changeConne
 -- "link deleted" (SMP AUTH) interactively, so this approach is simpler overall.
 prepareConnectionToJoin :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> PQSupport -> AE ConnId
 prepareConnectionToJoin c userId enableNtfs = withAgentEnv c .: newConnToJoin c userId "" enableNtfs
+{-# INLINE prepareConnectionToJoin #-}
 
 -- | Create SMP agent connection without queue (to be joined with acceptContact passing invitation ID).
 prepareConnectionToAccept :: AgentClient -> Bool -> ConfirmationId -> PQSupport -> AE ConnId
 prepareConnectionToAccept c enableNtfs = withAgentEnv c .: newConnToAccept c "" enableNtfs
+{-# INLINE prepareConnectionToAccept #-}
 
 -- | Join SMP agent connection (JOIN command).
 joinConnection :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE SndQueueSecured
@@ -822,7 +824,7 @@ switchConnectionAsync' c corrId connId =
             pure . connectionStats $ DuplexConnection cData rqs' sqs
       _ -> throwE $ CMD PROHIBITED "switchConnectionAsync: not duplex"
 
-newConn :: ConnectionModeI c => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe ConnInfo -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AM (ConnId, (ConnectionRequestUri c, Maybe (ConnShortLink c)))
+newConn :: ConnectionModeI c => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe ConnInfo -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AM (ConnId, CreatedConnLink c)
 newConn c userId enableNtfs cMode userData_ clientData pqInitKeys subMode = do
   srv <- getSMPServer c userId
   connId <- newConnNoQueues c userId enableNtfs cMode (CR.connPQEncryption pqInitKeys)
@@ -909,7 +911,7 @@ changeConnectionUser' c oldUserId connId newUserId = do
   where
     updateConn = withStore' c $ \db -> setConnUserId db oldUserId connId newUserId
 
-newRcvConnSrv :: forall c. ConnectionModeI c => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe ConnInfo -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> SMPServerWithAuth -> AM (ConnectionRequestUri c, Maybe (ConnShortLink c))
+newRcvConnSrv :: forall c. ConnectionModeI c => AgentClient -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe ConnInfo -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> SMPServerWithAuth -> AM (CreatedConnLink c)
 newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys subMode srvWithAuth@(ProtoServerWithAuth srv _) = do
   case (cMode, pqInitKeys) of
     (SCMContact, CR.IKUsePQ) -> throwE $ CMD PROHIBITED "newRcvConnSrv"
@@ -923,7 +925,7 @@ newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys s
     Nothing -> do
       let qd = case cMode of SCMContact -> CQRContact Nothing; SCMInvitation -> CQRMessaging Nothing
       (_, qUri) <- createRcvQueue Nothing qd e2eKeys
-      (,Nothing) <$> createConnReq qUri
+      (`CCLink` Nothing) <$> createConnReq qUri
   where
     createRcvQueue :: Maybe C.CbNonce -> ClntQueueReqData -> C.KeyPairX25519 -> AM (RcvQueue, SMPQueueUri)
     createRcvQueue nonce_ qd e2eKeys = do
@@ -971,21 +973,21 @@ newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys s
           srvData <- liftIO $ SL.encryptLinkData g k linkData
           pure $ CQRMessaging $ Just CQRData {linkKey, privSigKey, srvReq = (sndId, srvData)}
       pure (nonce, qUri, connReq, qd)
-    connReqWithShortLink :: SMPQueueUri -> ConnectionRequestUri c -> SMPQueueUri -> Maybe ShortLinkCreds -> AM (ConnectionRequestUri c, Maybe (ConnShortLink c))
+    connReqWithShortLink :: SMPQueueUri -> ConnectionRequestUri c -> SMPQueueUri -> Maybe ShortLinkCreds -> AM (CreatedConnLink c)
     connReqWithShortLink qUri cReq qUri' shortLink = case shortLink of
       Just ShortLinkCreds {shortLinkId, shortLinkKey}
         | qUri == qUri'  ->
             let link = case cReq of
                   CRContactUri _ -> CSLContact srv CCTContact shortLinkKey
                   CRInvitationUri {} -> CSLInvitation srv shortLinkId shortLinkKey
-             in pure (cReq, Just link)
+             in pure $ CCLink cReq (Just link)
         | otherwise -> throwE $ INTERNAL "different rcv queue address"
       Nothing ->
         let updated (ConnReqUriData _ vr _ _) = (ConnReqUriData SSSimplex vr [qUri] clientData)
             cReq' = case cReq of
               CRContactUri crData -> CRContactUri (updated crData)
               CRInvitationUri crData e2eParams -> CRInvitationUri (updated crData) e2eParams
-         in pure (cReq', Nothing)
+         in pure $ CCLink cReq' Nothing
 
 newConnToJoin :: forall c. AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> PQSupport -> AM ConnId
 newConnToJoin c userId connId enableNtfs cReq pqSup = case cReq of
@@ -1111,7 +1113,7 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMod
 joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode srv =
   lift (compatibleContactUri cReqUri) >>= \case
     Just (qInfo, vrsn) -> do
-      (cReq, _) <- newRcvConnSrv c userId connId enableNtfs SCMInvitation Nothing Nothing (CR.IKNoPQ pqSup) subMode srv
+      CCLink cReq _ <- newRcvConnSrv c userId connId enableNtfs SCMInvitation Nothing Nothing (CR.IKNoPQ pqSup) subMode srv
       void $ sendInvitation c userId connId qInfo vrsn cReq cInfo
       pure False
     Nothing -> throwE $ AGENT A_VERSION
@@ -1421,7 +1423,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         NEW enableNtfs (ACM cMode) pqEnc subMode -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [] $ \srv -> do
-            (cReq, _) <- newRcvConnSrv c userId connId enableNtfs cMode Nothing Nothing pqEnc subMode srv
+            CCLink cReq _ <- newRcvConnSrv c userId connId enableNtfs cMode Nothing Nothing pqEnc subMode srv
             notify $ INV (ACR cMode cReq)
         JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
