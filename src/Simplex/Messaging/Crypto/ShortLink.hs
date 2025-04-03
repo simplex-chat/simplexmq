@@ -59,7 +59,7 @@ encodeSign :: C.PrivateKeyEd25519 -> ByteString -> ByteString
 encodeSign pk s = smpEncode (C.signatureBytes $ C.sign' pk s) <> s
 
 encryptLinkData :: TVar ChaChaDRG -> C.SbKey -> (ByteString, ByteString) -> ExceptT AgentErrorType IO QueueLinkData
-encryptLinkData g k = bimapM (\s -> encrypt fixedDataPaddedLength s) (\s -> encrypt userDataPaddedLength s)
+encryptLinkData g k = bimapM (encrypt fixedDataPaddedLength) (encrypt userDataPaddedLength)
   where
     encrypt len = encryptData g k len
 
