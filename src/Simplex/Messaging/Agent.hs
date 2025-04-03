@@ -849,7 +849,7 @@ setContactShortLink' c connId userData =
         Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData} -> do
           let (linkId, k) = SL.contactShortLinkKdf shortLinkKey
           unless (shortLinkId == linkId) $ throwE $ INTERNAL "setContactShortLink: link ID is not derived from link"
-          d <- liftIO $ SL.encryptData g k $ SL.encodeSignUserData linkPrivSigKey smpAgentVRange userData
+          d <- liftError id $ SL.encryptUserData g k $ SL.encodeSignUserData linkPrivSigKey smpAgentVRange userData
           pure (linkId, shortLinkKey, (linkEncFixedData, d))
         Nothing -> do
           sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
@@ -857,7 +857,7 @@ setContactShortLink' c connId userData =
               connReq = CRContactUri $ ConnReqUriData SSSimplex smpAgentVRange [qUri] Nothing
               (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq userData
               (linkId, k) = SL.contactShortLinkKdf linkKey
-          srvData <- liftIO $ SL.encryptLinkData g k linkData
+          srvData <- liftError id $ SL.encryptLinkData g k linkData
           let slCreds = ShortLinkCreds linkId linkKey privSigKey (fst srvData)
           withStore' c $ \db -> updateShortLinkCreds db rq slCreds
           pure (linkId, linkKey, srvData)
@@ -966,11 +966,11 @@ newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys s
       qd <- case cMode of
         SCMContact -> do
           let (linkId, k) = SL.contactShortLinkKdf linkKey
-          srvData <- liftIO $ SL.encryptLinkData g k linkData
+          srvData <- liftError id $ SL.encryptLinkData g k linkData
           pure $ CQRContact $ Just CQRData {linkKey, privSigKey, srvReq = (linkId, (sndId, srvData))}
         SCMInvitation -> do
           let k = SL.invShortLinkKdf linkKey
-          srvData <- liftIO $ SL.encryptLinkData g k linkData
+          srvData <- liftError id $ SL.encryptLinkData g k linkData
           pure $ CQRMessaging $ Just CQRData {linkKey, privSigKey, srvReq = (sndId, srvData)}
       pure (nonce, qUri, connReq, qd)
     connReqWithShortLink :: SMPQueueUri -> ConnectionRequestUri c -> SMPQueueUri -> Maybe ShortLinkCreds -> AM (CreatedConnLink c)
