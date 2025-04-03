@@ -112,7 +112,11 @@ module Simplex.Messaging.Agent.Protocol
     ServiceScheme,
     FixedLinkData (..),
     UserLinkData (..),
+    ConnectionLink (..),
+    AConnectionLink (..),
     ConnShortLink (..),
+    AConnShortLink (..),
+    CreatedConnLink (..),
     ContactConnType (..),
     LinkKey (..),
     sameConnReqContact,
@@ -175,7 +179,7 @@ import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.Type.Equality
-import Data.Typeable ()
+import Data.Typeable (Typeable)
 import Data.Word (Word16, Word32)
 import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder, fromTextField_)
 import Simplex.FileTransfer.Description
@@ -1129,6 +1133,13 @@ instance ToJSON AConnectionRequestUri where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
+instance ConnectionModeI m => FromJSON (ConnShortLink m) where
+  parseJSON = strParseJSON "ConnShortLink"
+
+instance ConnectionModeI m => ToJSON (ConnShortLink m) where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
 -- debug :: Show a => String -> a -> a
 -- debug name value = unsafePerformIO (putStrLn $ name <> ": " <> show value) `seq` value
 -- {-# INLINE debug #-}
@@ -1345,6 +1356,8 @@ data ConnShortLink (m :: ConnectionMode) where
   CSLInvitation :: SMPServer -> SMP.LinkId -> LinkKey -> ConnShortLink 'CMInvitation
   CSLContact :: SMPServer -> ContactConnType -> LinkKey -> ConnShortLink 'CMContact
 
+deriving instance Eq (ConnShortLink m)
+
 deriving instance Show (ConnShortLink m)
 
 newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
@@ -1353,14 +1366,48 @@ newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
 
 instance ToField LinkKey where toField (LinkKey s) = toField $ Binary s
 
-data ContactConnType = CCTContact | CCTGroup deriving (Show)
+instance ConnectionModeI c => ToField (ConnectionLink c) where toField = toField . Binary . strEncode
+
+instance (Typeable c, ConnectionModeI c) => FromField (ConnectionLink c) where fromField = blobFieldDecoder strDecode
+
+instance ConnectionModeI c => ToField (ConnShortLink c) where toField = toField . Binary . strEncode
+
+instance (Typeable c, ConnectionModeI c) => FromField (ConnShortLink c) where fromField = blobFieldDecoder strDecode
+
+data ContactConnType = CCTContact | CCTGroup deriving (Eq, Show)
 
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
 
--- TODO [short link] parser, parsing tests
 data ConnectionLink m = CLFull (ConnectionRequestUri m) | CLShort (ConnShortLink m)
+  deriving (Eq, Show)
+
+data CreatedConnLink m = CCLink {connFullLink :: ConnectionRequestUri m, connShortLink :: Maybe (ConnShortLink m)}
+  deriving (Eq, Show)
 
 data AConnectionLink = forall m. ConnectionModeI m => ACL (SConnectionMode m) (ConnectionLink m)
+
+deriving instance Show AConnectionLink
+
+instance ConnectionModeI m => StrEncoding (ConnectionLink m) where
+  strEncode = \case
+    CLFull cr -> strEncode cr
+    CLShort sl -> strEncode sl
+  strP = (\(ACL _ cl) -> checkConnMode cl) <$?> strP
+  {-# INLINE strP #-}
+
+instance StrEncoding AConnectionLink where
+  strEncode (ACL _ cl) = strEncode cl
+  {-# INLINE strEncode #-}
+  strP =
+    (\(ACR m cr) -> ACL m (CLFull cr)) <$> strP
+      <|> (\(ACSL m sl) -> ACL m (CLShort sl)) <$> strP
+
+instance ConnectionModeI m => ToJSON (ConnectionLink m) where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance ConnectionModeI m => FromJSON (ConnectionLink m) where
+  parseJSON = strParseJSON "ConnectionLink"
 
 instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
   strEncode = \case
@@ -1695,3 +1742,10 @@ $(J.deriveJSON (sumTypeJSON id) ''AgentErrorType)
 $(J.deriveJSON (enumJSON $ dropPrefix "QD") ''QueueDirection)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "SP") ''SwitchPhase)
+
+instance ConnectionModeI m => FromJSON (CreatedConnLink m) where
+  parseJSON = $(J.mkParseJSON defaultJSON ''CreatedConnLink)
+
+instance ConnectionModeI m => ToJSON (CreatedConnLink m) where
+  toEncoding = $(J.mkToEncoding defaultJSON ''CreatedConnLink)
+  toJSON = $(J.mkToJSON defaultJSON ''CreatedConnLink)
