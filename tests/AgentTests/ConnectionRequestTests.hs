@@ -278,5 +278,28 @@ connectionRequestTests =
       smpEncodingTest contactAddress2queuesNew
       smpEncodingTest contactAddressV2
       smpEncodingTest contactAddressClientData
+    it "should serialize / parse short links" $ do
+      CSLContact srv CCTContact (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im:5223/c#1234-w@jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion/MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
+      CSLContact srv CCTGroup (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im:5223/g#1234-w@jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion/MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
+      CSLContact shortSrv CCTContact (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/c#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
+      CSLInvitation srv (EntityId "0123456789abcdef01234567") (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im:5223/i#1234-w@jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion/MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
+      CSLInvitation shortSrv (EntityId "0123456789abcdef01234567") (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/i#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
+    it "should shorten / restore short links" $ do
+      shortenShortLink [srv] (CSLContact srv CCTContact (LinkKey "0123456789abcdef0123456789abcdef"))
+        `shouldBe` CSLContact shortSrv CCTContact (LinkKey "0123456789abcdef0123456789abcdef")
+      shortenShortLink [srv] (CSLContact srv2 CCTContact (LinkKey "0123456789abcdef0123456789abcdef"))
+        `shouldBe` CSLContact srv2 CCTContact (LinkKey "0123456789abcdef0123456789abcdef")
+      restoreShortLink [srv] (CSLContact shortSrv CCTContact (LinkKey "0123456789abcdef0123456789abcdef"))
+        `shouldBe` CSLContact srv CCTContact (LinkKey "0123456789abcdef0123456789abcdef")
+      restoreShortLink [srv2] (CSLContact shortSrv CCTContact (LinkKey "0123456789abcdef0123456789abcdef"))
+        `shouldBe` CSLContact shortSrv CCTContact (LinkKey "0123456789abcdef0123456789abcdef")
+      restoreShortLink [srv] (CSLContact srv2 CCTContact (LinkKey "0123456789abcdef0123456789abcdef"))
+        `shouldBe` CSLContact srv2 CCTContact (LinkKey "0123456789abcdef0123456789abcdef")
   where
     smpEncodingTest a = smpDecode (smpEncode a) `shouldBe` Right a
+
+shortSrv :: SMPServer
+shortSrv = SMPServer "smp.simplex.im" "" (C.KeyHash "")
+
+srv2 :: SMPServer
+srv2 = SMPServer "smp2.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion" "" (C.KeyHash "\215m\248\251")

@@ -6,7 +6,6 @@ module AgentTests.EqInstances where
 
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Client (ProxiedRelay (..))
 
 instance Eq SomeConn where

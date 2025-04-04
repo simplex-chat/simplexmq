@@ -154,6 +154,8 @@ module Simplex.Messaging.Agent.Protocol
     aMessageType,
     extraSMPServerHosts,
     updateSMPServerHosts,
+    shortenShortLink,
+    restoreShortLink,
   )
 where
 
@@ -166,6 +168,7 @@ import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isDigit)
+import Data.Foldable (find)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Type)
@@ -1415,10 +1418,11 @@ instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
     CSLContact srv ct (LinkKey k) -> encLink srv k $ case ct of CCTContact -> "c"; CCTGroup -> "g"
     where
       encLink (SMPServer (h :| hs) port (C.KeyHash kh)) linkUri linkType =
-        "https://" <> strEncode h <> port' <> "/" <> linkType <> "#" <> B64.encodeUnpadded kh <> "@" <> hosts <> B64.encodeUnpadded linkUri
+        "https://" <> strEncode h <> port' <> "/" <> linkType <> "#" <> khStr <> hosts <> B64.encodeUnpadded linkUri
         where
           port' = if null port then "" else B.pack (':' : port)
           hosts = if null hs then "" else strEncode (TransportHosts_ hs) <> "/"
+          khStr = if B.null kh then "" else B64.encodeUnpadded kh <> "@"
   strP = do
     ACSL m l <- strP
     case testEquality m $ sConnectionMode @m of
@@ -1431,7 +1435,7 @@ instance StrEncoding AConnShortLink where
     h <- "https://" *> strP
     port <- A.char ':' *> (B.unpack <$> A.takeWhile1 isDigit) <|> pure ""
     linkType <- A.char '/' *> A.anyChar
-    keyHash <- optional (A.char '/') *> A.char '#' *> strP <* A.char '@'
+    keyHash <- optional (A.char '/') *> A.char '#' *> (strP <* A.char '@' <|> pure (C.KeyHash ""))
     TransportHosts_ hs <- strP <* "/" <|> pure (TransportHosts_ [])
     linkUri <- strP
     let srv = SMPServer (h :| hs) port keyHash
@@ -1448,6 +1452,36 @@ instance StrEncoding AConnShortLink where
       contactP srv ct k
         | B.length k == 32 = pure $ ACSL SCMContact $ CSLContact srv ct (LinkKey k)
         | otherwise = fail "bad ConnShortLink: incorrect key length"
+
+-- the servers passed to this function should be all preset servers, not servers configured by the user.
+shortenShortLink :: NonEmpty SMPServer -> ConnShortLink m -> ConnShortLink m
+shortenShortLink presetSrvs = \case
+  CSLInvitation srv lnkId linkKey -> CSLInvitation (shortServer srv) lnkId linkKey
+  CSLContact srv ct linkKey -> CSLContact (shortServer srv) ct linkKey
+  where
+    shortServer srv@(SMPServer hs@(h :| _) p kh) =
+      if isPresetServer then SMPServer [h] "" (C.KeyHash "") else srv
+      where
+        isPresetServer = case findPresetServer srv presetSrvs of
+          Just (SMPServer hs' p' kh') ->
+            all (`elem` hs') hs
+              && (p == p' || (null p' && (p == "443" || p == "5223")))
+              && kh == kh'
+          Nothing -> False
+
+-- the servers passed to this function should be all preset servers, not servers configured by the user.
+restoreShortLink :: NonEmpty SMPServer -> ConnShortLink m -> ConnShortLink m
+restoreShortLink presetSrvs = \case
+  CSLInvitation srv lnkId linkKey -> CSLInvitation (fullServer srv) lnkId linkKey
+  CSLContact srv ct linkKey -> CSLContact (fullServer srv) ct linkKey
+  where
+    fullServer = \case
+      s@(SMPServer [_] "" (C.KeyHash "")) -> fromMaybe s $ findPresetServer s presetSrvs
+      s -> s
+
+findPresetServer :: SMPServer -> NonEmpty SMPServer -> Maybe SMPServer
+findPresetServer ProtocolServer {host = h :| _} = find (\ProtocolServer {host = h' :| _} -> h == h')
+{-# INLINE findPresetServer #-}
 
 sameConnReqContact :: ConnectionRequestUri 'CMContact -> ConnectionRequestUri 'CMContact -> Bool
 sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUri ConnReqUriData {crSmpQueues = qs'}) =
