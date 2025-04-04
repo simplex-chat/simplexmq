@@ -53,7 +53,6 @@ import Fixtures
 import Simplex.Messaging.Agent.Store.Postgres.Util (dropAllSchemasExceptSystem)
 #endif
 
--- TODO [short links] secure and get links via proxy
 smpProxyTests :: SpecWith AStoreType
 smpProxyTests = do
   describe "server configuration" $ do

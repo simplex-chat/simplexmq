@@ -59,6 +59,12 @@ storeLogTests =
     ((rId, qr), ntfCreds, date) <- runIO $ do
       g <- C.newRandom
       (,,) <$> testNewQueueRec g qm <*> testNtfCreds g <*> getSystemDate
+    ((rId', qr'), lnkId, qd) <- runIO $ do
+      g <- C.newRandom
+      lnkId <- atomically $ EntityId <$> C.randomBytes 24 g
+      let qd = (EncDataBytes "fixed data", EncDataBytes "user data")
+      q <- testNewQueueRecData g qm (Just (lnkId, qd))
+      pure (q, lnkId, qd)
     testSMPStoreLog
       ("SMP server store log, queueMode = " <> show qm)
       [ SLTC
@@ -67,6 +73,24 @@ storeLogTests =
             compacted = [CreateQueue rId qr],
             state = M.fromList [(rId, qr)]
           },
+        SLTC
+          { name = "create new queue with link data",
+            saved = [CreateQueue rId' qr'],
+            compacted = [CreateQueue rId' qr'],
+            state = M.fromList [(rId', qr')]
+          },          
+        SLTC
+          { name = "create new queue, add link data",
+            saved = [CreateQueue rId' qr' {queueData = Nothing}, CreateLink rId' lnkId qd],
+            compacted = [CreateQueue rId' qr'],
+            state = M.fromList [(rId', qr')]
+          },          
+        SLTC
+          { name = "create new queue with link data, delete data",
+            saved = [CreateQueue rId' qr', DeleteLink rId'],
+            compacted = [CreateQueue rId' qr' {queueData = Nothing}],
+            state = M.fromList [(rId', qr' {queueData = Nothing})]
+          },          
         SLTC
           { name = "secure queue",
             saved = [CreateQueue rId qr, SecureQueue rId testPublicAuthKey],

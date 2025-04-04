@@ -315,6 +315,10 @@ functionalAPITests ps = do
     describe "should connect via 1-time short link with async join" $ testProxyMatrix ps testInviationShortLinkAsync
     describe "should connect via contact short link" $ testProxyMatrix ps testContactShortLink
     describe "should add short link to existing contact and connect" $ testProxyMatrix ps testAddContactShortLink
+    describe "server restart" $ do
+      it "should get 1-time link data after restart" $ testInviationShortLinkRestart ps
+      it "should connect via contact short link after restart" $ testContactShortLinkRestart ps
+      it "should connect via added contact short link after restart" $ testAddContactShortLinkRestart ps
   describe "Message delivery" $ do
     describe "update connection agent version on received messages" $ do
       it "should increase if compatible, shouldn'ps decrease" $
@@ -1222,6 +1226,59 @@ testAddContactShortLink viaProxy a b =
     shortLink' <- runRight $ setContactShortLink a contactId updatedData
     shortLink' `shouldBe` shortLink
     (connReq4, updatedData') <- runRight $ getConnShortLink c 1 shortLink
+    connReq4 `shouldBe` connReq
+    updatedData' `shouldBe` updatedData
+
+testInviationShortLinkRestart :: HasCallStack => (ATransport, AStoreType) -> IO ()
+testInviationShortLinkRestart ps = withAgentClients2 $ \a b -> do
+  let userData = "some user data"
+  (bId, CCLink connReq (Just shortLink)) <- withSmpServer ps $
+    runRight $ A.createConnection a 1 True SCMInvitation (Just userData) Nothing CR.IKUsePQ SMOnlyCreate
+  withSmpServer ps $ do
+    runRight_ $ subscribeConnection a bId
+    (connReq', userData') <- runRight $ getConnShortLink b 1 shortLink
+    strDecode (strEncode shortLink) `shouldBe` Right shortLink
+    connReq' `shouldBe` connReq
+    userData' `shouldBe` userData
+
+testContactShortLinkRestart :: HasCallStack => (ATransport, AStoreType) -> IO ()
+testContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
+  let userData = "some user data"
+  (contactId, CCLink connReq0 (Just shortLink)) <- withSmpServer ps $
+    runRight $ A.createConnection a 1 True SCMContact (Just userData) Nothing CR.IKPQOn SMOnlyCreate
+  Right connReq <- pure $ smpDecode (smpEncode connReq0)
+  let updatedData = "updated user data"
+  withSmpServer ps $ do
+    (connReq', userData') <- runRight $ getConnShortLink b 1 shortLink
+    strDecode (strEncode shortLink) `shouldBe` Right shortLink
+    connReq' `shouldBe` connReq
+    userData' `shouldBe` userData
+    -- update user data
+    shortLink' <- runRight $ setContactShortLink a contactId updatedData
+    shortLink' `shouldBe` shortLink
+  withSmpServer ps $ do
+    (connReq4, updatedData') <- runRight $ getConnShortLink b 1 shortLink
+    connReq4 `shouldBe` connReq
+    updatedData' `shouldBe` updatedData
+
+testAddContactShortLinkRestart :: HasCallStack => (ATransport, AStoreType) -> IO ()
+testAddContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
+  let userData = "some user data"
+  ((contactId, CCLink connReq0 Nothing), shortLink) <- withSmpServer ps $ runRight $ do
+    r@(contactId, _) <- A.createConnection a 1 True SCMContact Nothing Nothing CR.IKPQOn SMOnlyCreate
+    (r,) <$> setContactShortLink a contactId userData
+  Right connReq <- pure $ smpDecode (smpEncode connReq0)
+  let updatedData = "updated user data"
+  withSmpServer ps $ do
+    (connReq', userData') <- runRight $ getConnShortLink b 1 shortLink
+    strDecode (strEncode shortLink) `shouldBe` Right shortLink
+    connReq' `shouldBe` connReq
+    userData' `shouldBe` userData
+    -- update user data
+    shortLink' <- runRight $ setContactShortLink a contactId updatedData
+    shortLink' `shouldBe` shortLink
+  withSmpServer ps $ do
+    (connReq4, updatedData') <- runRight $ getConnShortLink b 1 shortLink
     connReq4 `shouldBe` connReq
     updatedData' `shouldBe` updatedData
 

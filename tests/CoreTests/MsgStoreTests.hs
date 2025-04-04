@@ -31,7 +31,7 @@ import Data.Time.Clock (addUTCTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (EntityId (..), Message (..), RecipientId, SParty (..), noMsgFlags)
+import Simplex.Messaging.Protocol (EntityId (..), LinkId, Message (..), QueueLinkData, RecipientId, SParty (..), noMsgFlags)
 import Simplex.Messaging.Server (exportMessages, importMessages, printMessageStats)
 import Simplex.Messaging.Server.Env.STM (journalMsgStoreDepth, readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..), expireBeforeEpoch)
@@ -111,9 +111,12 @@ deriving instance Eq (JournalState t)
 deriving instance Eq (SJournalType t)
 
 testNewQueueRec :: TVar ChaChaDRG -> QueueMode -> IO (RecipientId, QueueRec)
-testNewQueueRec g qm = do
-  rId <- atomically $ EntityId <$> C.randomBytes 24 g
-  senderId <- atomically $ EntityId <$> C.randomBytes 24 g
+testNewQueueRec g qm = testNewQueueRecData g qm Nothing
+
+testNewQueueRecData :: TVar ChaChaDRG -> QueueMode -> Maybe (LinkId, QueueLinkData) -> IO (RecipientId, QueueRec)
+testNewQueueRecData g qm queueData = do
+  rId <- rndId
+  senderId <- rndId
   (recipientKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
   (k, pk) <- atomically $ C.generateKeyPair @'C.X25519 g
   let qr =
@@ -123,12 +126,14 @@ testNewQueueRec g qm = do
             senderId,
             senderKey = Nothing,
             queueMode = Just qm,
-            queueData = Nothing,
+            queueData,
             notifier = Nothing,
             status = EntityActive,
             updatedAt = Nothing
           }
   pure (rId, qr)
+  where
+    rndId = atomically $ EntityId <$> C.randomBytes 24 g
 
 -- TODO constrain to STM stores
 testGetQueue :: MsgStoreClass s => s -> IO ()
