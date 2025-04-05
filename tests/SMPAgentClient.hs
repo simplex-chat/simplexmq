@@ -20,7 +20,7 @@ import SMPClient (proxyVRangeV8, testPort)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
-import Simplex.Messaging.Client (ProtocolClientConfig (..), SMPProxyFallback, SMPProxyMode, defaultNetworkConfig, defaultSMPClientConfig)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), SMPProxyFallback (..), SMPProxyMode (..), defaultNetworkConfig, defaultSMPClientConfig)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth (..), ProtocolServer)
 import Simplex.Messaging.Transport
@@ -71,9 +71,15 @@ initAgentServers =
 initAgentServers2 :: InitialAgentServers
 initAgentServers2 = initAgentServers {smp = userServers [testSMPServer, testSMPServer2]}
 
-initAgentServersProxy :: SMPProxyMode -> SMPProxyFallback -> InitialAgentServers
-initAgentServersProxy smpProxyMode smpProxyFallback =
+initAgentServersProxy :: InitialAgentServers
+initAgentServersProxy = initAgentServersProxy_ SPMAlways SPFProhibit
+
+initAgentServersProxy_ :: SMPProxyMode -> SMPProxyFallback -> InitialAgentServers
+initAgentServersProxy_ smpProxyMode smpProxyFallback =
   initAgentServers {netCfg = (netCfg initAgentServers) {smpProxyMode, smpProxyFallback}}
+
+initAgentServersProxy2 :: InitialAgentServers
+initAgentServersProxy2 = initAgentServersProxy {smp = userServers [testSMPServer2]}
 
 agentCfg :: AgentConfig
 agentCfg =

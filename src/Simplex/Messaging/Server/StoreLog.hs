@@ -116,7 +116,7 @@ instance StrEncoding QueueRec where
       toQueueMode <$> (" sndSecure=" *> strP)
         <|> Just <$> (" queue_mode=" *> smpP)
         <|> pure Nothing -- unknown queue mode, we cannot imply that it is contact address
-    queueData <- optional $ (,) <$> (" link_id" *> strP) <*> (" queue_data" *> strP)
+    queueData <- optional $ (,) <$> (" link_id=" *> strP) <*> (" queue_data=" *> strP)
     notifier <- optional $ " notifier=" *> strP
     updatedAt <- optional $ " updated_at=" *> strP
     status <- (" status=" *> strP) <|> pure EntityActive
@@ -127,8 +127,8 @@ instance StrEncoding QueueRec where
 instance StrEncoding SLRTag where
   strEncode = \case
     CreateQueue_ -> "CREATE"
-    CreateLink_ -> "CREATE_LINK"
-    DeleteLink_ -> "DELETE_LINK"
+    CreateLink_ -> "LINK"
+    DeleteLink_ -> "LDELETE"
     SecureQueue_ -> "SECURE"
     AddNotifier_ -> "NOTIFIER"
     SuspendQueue_ -> "SUSPEND"
@@ -141,8 +141,8 @@ instance StrEncoding SLRTag where
   strP =
     A.choice
       [ "CREATE" $> CreateQueue_,
-        "CREATE_LINK" $> CreateLink_,
-        "DELETE_LINK" $> DeleteLink_,
+        "LINK" $> CreateLink_,
+        "LDELETE" $> DeleteLink_,
         "SECURE" $> SecureQueue_,
         "NOTIFIER" $> AddNotifier_,
         "SUSPEND" $> SuspendQueue_,

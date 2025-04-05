@@ -53,7 +53,6 @@ import Fixtures
 import Simplex.Messaging.Agent.Store.Postgres.Util (dropAllSchemasExceptSystem)
 #endif
 
--- TODO [short links] secure and get links via proxy
 smpProxyTests :: SpecWith AStoreType
 smpProxyTests = do
   describe "server configuration" $ do
@@ -258,7 +257,7 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
   where
     msgId = subtract baseId . fst
     aCfg = agentCfg {sndAuthAlg = C.AuthAlg alg, rcvAuthAlg = C.AuthAlg alg}
-    servers (srvs, smpProxyMode, _) = (initAgentServersProxy smpProxyMode SPFAllow) {smp = userServers srvs}
+    servers (srvs, smpProxyMode, _) = (initAgentServersProxy_ smpProxyMode SPFAllow) {smp = userServers srvs}
 
 agentDeliverMessagesViaProxyConc :: [NonEmpty SMPServer] -> [MsgBody] -> IO ()
 agentDeliverMessagesViaProxyConc agentServers msgs =
@@ -325,7 +324,7 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
       logDebug "run finished"
     pqEnc = CR.PQEncOn
     aCfg = agentCfg {sndAuthAlg = C.AuthAlg C.SEd448, rcvAuthAlg = C.AuthAlg C.SEd448}
-    servers srvs = (initAgentServersProxy SPMAlways SPFAllow) {smp = userServers srvs}
+    servers srvs = (initAgentServersProxy_ SPMAlways SPFAllow) {smp = userServers srvs}
 
 agentViaProxyVersionError :: IO ()
 agentViaProxyVersionError =
@@ -337,7 +336,7 @@ agentViaProxyVersionError =
         A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     pure ()
   where
-    servers srvs = (initAgentServersProxy SPMUnknown SPFProhibit) {smp = userServers srvs}
+    servers srvs = (initAgentServersProxy_ SPMUnknown SPFProhibit) {smp = userServers srvs}
 
 agentViaProxyRetryOffline :: IO ()
 agentViaProxyRetryOffline = do
@@ -409,7 +408,7 @@ agentViaProxyRetryOffline = do
     aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
     baseId = 1
     msgId = subtract baseId . fst
-    servers srv = (initAgentServersProxy SPMAlways SPFProhibit) {smp = userServers [srv]}
+    servers srv = initAgentServersProxy {smp = userServers [srv]}
 
 agentViaProxyRetryNoSession :: IO ()
 agentViaProxyRetryNoSession = do
@@ -429,7 +428,7 @@ agentViaProxyRetryNoSession = do
           pure ()
   where
     withServer2 = withSmpServerConfigOn (transport @TLS) proxyCfgJ2 testPort2
-    servers srv = (initAgentServersProxy SPMAlways SPFProhibit) {smp = userServers [srv]}
+    servers srv = initAgentServersProxy {smp = userServers [srv]}
 
 testNoProxy :: AStoreType -> IO ()
 testNoProxy msType = do

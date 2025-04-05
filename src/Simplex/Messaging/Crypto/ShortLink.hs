@@ -5,9 +5,20 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 
-module Simplex.Messaging.Crypto.ShortLink where
+module Simplex.Messaging.Crypto.ShortLink
+  ( contactShortLinkKdf,
+    invShortLinkKdf,
+    encodeSignLinkData,
+    encodeSignUserData,
+    encryptLinkData,
+    encryptUserData,
+    decryptLinkData,
+  )
+where
 
 import Control.Concurrent.STM
+import Control.Monad.Except
+import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
@@ -18,6 +29,13 @@ import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol (EntityId (..), LinkId, EncDataBytes (..), QueueLinkData)
+import Simplex.Messaging.Util (liftEitherWith)
+
+fixedDataPaddedLength :: Int
+fixedDataPaddedLength = 2008 -- 2048 - 24 (nonce) - 16 (auth tag)
+
+userDataPaddedLength :: Int
+userDataPaddedLength = 13784 -- 13824 - 24 - 16
 
 contactShortLinkKdf :: LinkKey -> (LinkId, C.SbKey)
 contactShortLinkKdf (LinkKey k) =
@@ -40,16 +58,19 @@ encodeSignUserData pk agentVRange userData =
 encodeSign :: C.PrivateKeyEd25519 -> ByteString -> ByteString
 encodeSign pk s = smpEncode (C.signatureBytes $ C.sign' pk s) <> s
 
--- TODO [short links] possibly use padded encryption for fixed and for user data
-encryptLinkData :: TVar ChaChaDRG -> C.SbKey -> (ByteString, ByteString) -> IO QueueLinkData
-encryptLinkData g k = bimapM encrypt encrypt
+encryptLinkData :: TVar ChaChaDRG -> C.SbKey -> (ByteString, ByteString) -> ExceptT AgentErrorType IO QueueLinkData
+encryptLinkData g k = bimapM (encrypt fixedDataPaddedLength) (encrypt userDataPaddedLength)
   where
-    encrypt = encryptData g k
+    encrypt len = encryptData g k len
 
-encryptData :: TVar ChaChaDRG -> C.SbKey -> ByteString -> IO EncDataBytes
-encryptData g k s = do
-  nonce <- atomically $ C.randomCbNonce g
-  pure $ EncDataBytes $ smpEncode nonce <> C.sbEncryptNoPad k nonce s
+encryptUserData :: TVar ChaChaDRG -> C.SbKey -> ByteString -> ExceptT AgentErrorType IO EncDataBytes
+encryptUserData g k s = encryptData g k userDataPaddedLength s
+
+encryptData :: TVar ChaChaDRG -> C.SbKey -> Int -> ByteString -> ExceptT AgentErrorType IO EncDataBytes
+encryptData g k len s = do
+  nonce <- liftIO $ atomically $ C.randomCbNonce g
+  ct <- liftEitherWith cryptoError $ C.sbEncrypt k nonce s len
+  pure $ EncDataBytes $ smpEncode nonce <> ct
 
 decryptLinkData :: ConnectionModeI c => LinkKey -> C.SbKey -> QueueLinkData -> Either AgentErrorType (ConnectionRequestUri c, ConnInfo)
 decryptLinkData linkKey k (encFD, encUD) = do
@@ -65,7 +86,7 @@ decryptLinkData linkKey k (encFD, encUD) = do
   where
     decrypt (EncDataBytes d) = do
       (nonce, Tail ct) <- decode d
-      (sigBytes, Tail s) <- decode =<< first cryptoError (C.sbDecryptNoPad k nonce ct)
+      (sigBytes, Tail s) <- decode =<< first cryptoError (C.sbDecrypt k nonce ct)
       (,s) <$> msgErr (C.decodeSignature sigBytes)
     decode :: Encoding a => ByteString -> Either AgentErrorType a
     decode = msgErr . smpDecode
