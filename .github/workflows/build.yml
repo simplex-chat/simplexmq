@@ -46,10 +46,10 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: simplex-chat/docker-setup-buildx-action@v3
 
       - name: Build and cache Docker image
-        uses: docker/build-push-action@v6
+        uses: simplex-chat/docker-build-push-action@v6
         with:
           context: .
           load: true
@@ -127,7 +127,7 @@ jobs:
       - name: Build changelog
         if: startsWith(github.ref, 'refs/tags/v')
         id: build_changelog
-        uses: mikepenz/release-changelog-builder-action@v5
+        uses: simplex-chat/release-changelog-builder-action@v5
         with:
           configuration: .github/changelog_conf.json
           failOnError: true
@@ -138,7 +138,7 @@ jobs:
 
       - name: Create release
         if: startsWith(github.ref, 'refs/tags/v') && matrix.ghc != '8.10.7'
-        uses: softprops/action-gh-release@v2
+        uses: simplex-chat/action-gh-release@v2
         with:
           body: |
             See full changelog [here](https://github.com/simplex-chat/simplexmq/blob/master/CHANGELOG.md).

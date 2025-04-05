@@ -259,6 +259,11 @@ proxyCfgMS msType =
 proxyCfgJ2 :: ServerConfig
 proxyCfgJ2 = journalCfg proxyCfg testStoreLogFile2 testStoreMsgsDir2
 
+proxyCfgJ2QS :: SQSType s -> ServerConfig
+proxyCfgJ2QS = \case
+  SQSMemory -> journalCfg (proxyCfgMS $ ASType SQSMemory SMSJournal) testStoreLogFile2 testStoreMsgsDir2
+  SQSPostgres -> journalCfgDB (proxyCfgMS $ ASType SQSPostgres SMSJournal) testStoreDBOpts2 testStoreMsgsDir2
+
 proxyVRangeV8 :: VersionRangeSMP
 proxyVRangeV8 = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion
 
@@ -304,6 +309,12 @@ withSmpServer ps = withSmpServerOn ps testPort
 
 withSmpServerProxy :: HasCallStack => (ATransport, AStoreType) -> IO a -> IO a
 withSmpServerProxy (t, msType) = withSmpServerConfigOn t (proxyCfgMS msType) testPort . const
+
+withSmpServers2 :: HasCallStack => (ATransport, AStoreType) -> IO a -> IO a
+withSmpServers2 ps@(t, ASType qs _ms) = withSmpServer ps . withSmpServerConfigOn t (cfgJ2QS qs) testPort2 . const
+
+withSmpServersProxy2 :: HasCallStack => (ATransport, AStoreType) -> IO a -> IO a
+withSmpServersProxy2 ps@(t, ASType qs _ms) = withSmpServerProxy ps . withSmpServerConfigOn t (proxyCfgJ2QS qs) testPort2 . const
 
 runSmpTest :: forall c a. (HasCallStack, Transport c) => AStoreType -> (HasCallStack => THandleSMP c 'TClient -> IO a) -> IO a
 runSmpTest msType test = withSmpServerConfigOn (transport @c) (cfgMS msType) testPort $ \_ -> testSMPClient test

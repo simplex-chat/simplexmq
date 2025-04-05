@@ -25,6 +25,8 @@ deriving instance Eq (DBQueueId q)
 
 deriving instance Eq ClientNtfCreds
 
+deriving instance Eq ShortLinkCreds
+
 deriving instance Show ProxiedRelay
 
 deriving instance Eq ProxiedRelay

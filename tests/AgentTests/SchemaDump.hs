@@ -115,7 +115,9 @@ testUsersMigrationOld = do
 skipComparisonForDownMigrations :: [String]
 skipComparisonForDownMigrations =
   [ -- on down migration idx_messages_internal_snd_id_ts index moves down to the end of the file
-    "m20230814_indexes"
+    "m20230814_indexes",
+    -- snd_secure and last_broker_ts columns swap order on down migration
+    "m20250322_short_links"
   ]
 
 getSchema :: FilePath -> FilePath -> IO String
