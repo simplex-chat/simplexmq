@@ -102,8 +102,6 @@ module Simplex.Messaging.Agent.Protocol
     ConnectionMode (..),
     SConnectionMode (..),
     AConnectionMode (..),
-    cmInvitation,
-    cmContact,
     ConnectionModeI (..),
     ConnectionRequestUri (..),
     AConnectionRequestUri (..),
@@ -112,6 +110,8 @@ module Simplex.Messaging.Agent.Protocol
     ServiceScheme,
     FixedLinkData (..),
     UserLinkData (..),
+    OwnerAuth (..),
+    OwnerId,
     ConnectionLink (..),
     AConnectionLink (..),
     ConnShortLink (..),
@@ -119,7 +119,7 @@ module Simplex.Messaging.Agent.Protocol
     CreatedConnLink (..),
     ContactConnType (..),
     LinkKey (..),
-    sameConnReqContact,
+    sameConnReqAddress,
     simplexChat,
     connReqUriP',
     AgentErrorType (..),
@@ -695,14 +695,6 @@ data AConnectionMode = forall m. ConnectionModeI m => ACM (SConnectionMode m)
 instance Eq AConnectionMode where
   ACM m == ACM m' = isJust $ testEquality m m'
 
-cmInvitation :: AConnectionMode
-cmInvitation = ACM SCMInvitation
-{-# INLINE cmInvitation #-}
-
-cmContact :: AConnectionMode
-cmContact = ACM SCMContact
-{-# INLINE cmContact #-}
-
 deriving instance Show AConnectionMode
 
 connMode :: SConnectionMode m -> ConnectionMode
@@ -711,8 +703,8 @@ connMode SCMContact = CMContact
 {-# INLINE connMode #-}
 
 connMode' :: ConnectionMode -> AConnectionMode
-connMode' CMInvitation = cmInvitation
-connMode' CMContact = cmContact
+connMode' CMInvitation = ACM SCMInvitation
+connMode' CMContact = ACM SCMContact
 {-# INLINE connMode' #-}
 
 class ConnectionModeI (m :: ConnectionMode) where sConnectionMode :: SConnectionMode m
@@ -1483,8 +1475,8 @@ findPresetServer :: SMPServer -> NonEmpty SMPServer -> Maybe SMPServer
 findPresetServer ProtocolServer {host = h :| _} = find (\ProtocolServer {host = h' :| _} -> h == h')
 {-# INLINE findPresetServer #-}
 
-sameConnReqContact :: ConnectionRequestUri 'CMContact -> ConnectionRequestUri 'CMContact -> Bool
-sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUri ConnReqUriData {crSmpQueues = qs'}) =
+sameConnReqAddress :: ConnectionRequestUri 'CMContact -> ConnectionRequestUri 'CMContact -> Bool
+sameConnReqAddress (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUri ConnReqUriData {crSmpQueues = qs'}) =
   L.length qs == L.length qs' && all same (L.zip qs qs')
   where
     same (q, q') = sameQAddress (qAddress q) (qAddress q')
@@ -1507,28 +1499,55 @@ type CRClientData = Text
 
 data FixedLinkData c = FixedLinkData
   { agentVRange :: VersionRangeSMPA,
-    sigKey :: C.PublicKeyEd25519,
-    connReq :: ConnectionRequestUri c
+    rootKey :: C.PublicKeyEd25519,
+    connReq :: Maybe (ConnectionRequestUri c)
   }
 
 data UserLinkData = UserLinkData
   { agentVRange :: VersionRangeSMPA,
+    owners :: [OwnerAuth],
     userData :: ConnInfo
   }
 
-instance ConnectionModeI c => Encoding (FixedLinkData c) where
-  smpEncode FixedLinkData {agentVRange, sigKey, connReq} =
-    smpEncode (agentVRange, sigKey, connReq)
+type OwnerId = ByteString
+
+data OwnerAuth = OwnerAuth
+  { ownerId :: OwnerId, -- unique in the list, application specific - e.g., MemberId
+    ownerKey :: C.PublicKeyEd25519,
+    -- sender ID signed with ownerKey,
+    -- confirms that the owner accepts being the owner.
+    -- sender ID is used here as it is immutable for the queue, link data can be removed.
+    ownerSig :: C.Signature 'C.Ed25519,
+    -- null for root key authorization
+    authOwnerId :: OwnerId,
+    -- owner authorization, sig(ownerId || ownerKey, key(authOwnerId)),
+    -- where authOwnerId is either null for a root key or some other owner authorized by root key, etc.
+    -- Owner validation should detect and reject loops.
+    authOwnerSig :: C.Signature 'C.Ed25519
+  }
+
+instance Encoding OwnerAuth where
+  smpEncode OwnerAuth {ownerId, ownerKey, ownerSig, authOwnerId, authOwnerSig} =
+    smpEncode (ownerId, ownerKey, C.signatureBytes ownerSig, authOwnerId, C.signatureBytes authOwnerSig)
   smpP = do
-    (agentVRange, sigKey, connReq) <- smpP
-    pure FixedLinkData {agentVRange, sigKey, connReq}
+    (ownerId, ownerKey, ownerSig, authOwnerId, authOwnerSig) <- smpP
+    pure OwnerAuth {ownerId, ownerKey, ownerSig, authOwnerId, authOwnerSig}
+
+instance ConnectionModeI c => Encoding (FixedLinkData c) where
+  smpEncode FixedLinkData {agentVRange, rootKey, connReq} =
+    smpEncode (agentVRange, rootKey, connReq)
+  smpP = do
+    (agentVRange, rootKey, connReq) <- smpP
+    pure FixedLinkData {agentVRange, rootKey, connReq}
 
 instance Encoding UserLinkData where
-  smpEncode UserLinkData {agentVRange, userData} =
-    smpEncode (agentVRange, Large userData)
+  smpEncode UserLinkData {agentVRange, owners, userData} =
+    smpEncode agentVRange <> smpEncodeList owners <> smpEncode (Large userData)
   smpP = do
-    (agentVRange, Large userData) <- smpP
-    pure UserLinkData {agentVRange, userData}
+    agentVRange <- smpP
+    owners <- smpListP
+    Large userData <- smpP
+    pure UserLinkData {agentVRange, owners, userData}
 
 -- | SMP queue status.
 data QueueStatus

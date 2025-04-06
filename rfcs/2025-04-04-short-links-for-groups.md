@@ -103,7 +103,7 @@ We still need to bind the mutable data updates to the "genesis" signature key (t
 The proposed design:
 
 - when mutable data is signed by genesis key, then it is bound, and no changes is needed.
-- mutable data may be signed by the key of the new owner, in which case mutable part itself must contain the binding.
+- mutable data may be signed by the key of the new owner, in which case mutable part itself must contain the binding. We could also use ring signature to sign the mutable data, concealing which owner signed the data - that would increase the signature size from 64 bytes to `32 * (n + 1)` bytes.
 
 Current mutable data:
 
@@ -128,13 +128,13 @@ type OwnerId = ByteString
 data OwnerInfo = OwnerInfo
   { ownerId :: OwnerId, -- unique in the list, application specific - e.g., MemberId
     ownerKey :: PublicKeyEd25519,
-    -- owner signature of immutable data,
+    -- owner signature of sender ID,
     -- confirms that the owner agreed with being the owner,
     -- prevents a member being added as an owner without consent.
     ownerSig :: SignatureEd25519,
     -- owner authorization, sig(ownerId || ownerKey, prevKey), where prevKey is either a "genesis key" or some other key previously signed by the genesis key.
-    ownerAuthId :: OwnerId, -- null for "genesis"
-    ownerAuthSig :: SignatureEd25519
+    authOwnerId :: OwnerId, -- null for "genesis"
+    authOwnerSig :: SignatureEd25519
   }
 ```
 
@@ -147,7 +147,7 @@ The size of the OwnerInfo record encoding is:
 
 ~189 bytes, so we should practically limit the number of owners to say 8 - 1 original + 7 addiitonal. Original creator could use a different key as a "genesis" key, to conceal creator identity from other members, and it needs to include the record with memberId anyway.
 
-The structure is simplified, and it does not allow arbitrary ownership changes. Its purpose is not to comprehensively manage ownership changes - while it is possible with a generic blockchain, it seems not appropriate at this stage, - but rather to ensure access continuity.
+The structure is simplified, and it does not allow arbitrary ownership changes. Its purpose is not to comprehensively manage ownership changes - while it is possible with a generic blockchain, it seems not appropriate at this stage, - but rather to ensure access continuity and that the server cannot modify the data (although nothing prevents the server from removing the data completely or from serving the previous version of the data).
 
 For example it would only allow any given owner to remove subsequenty added owners, preserving the group link and identity, but it won't allow removing owners that signed this owner authorization. So owners are not equal, with the creator having the highest rank and being able to remove all additional owners, and owners authorise by creator can remove all other owners but themselves and creator, and so on - they have to maintain the chain that authorized themselves, at least. We could explicitely include owner rank into OwnerInfo, or we could require that they are sorted by rank, or the rank can be simply derived from signatures.
 

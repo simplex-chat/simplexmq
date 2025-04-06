@@ -3,6 +3,7 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Crypto.ShortLink
@@ -46,17 +47,17 @@ invShortLinkKdf :: LinkKey -> C.SbKey
 invShortLinkKdf (LinkKey k) = C.unsafeSbKey $ C.hkdf "" k "SimpleXInvLink" 32
 
 encodeSignLinkData :: ConnectionModeI c => C.KeyPair 'C.Ed25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> ConnInfo -> (LinkKey, (ByteString, ByteString))
-encodeSignLinkData (sigKey, pk) agentVRange connReq userData =
-  let fd = smpEncode FixedLinkData {agentVRange, sigKey, connReq}
-      ud = smpEncode UserLinkData {agentVRange, userData}
+encodeSignLinkData (rootKey, pk) agentVRange connReq userData =
+  let fd = smpEncode FixedLinkData {agentVRange, rootKey, connReq = Just connReq}
+      ud = smpEncode UserLinkData {agentVRange, owners = [], userData}
    in (LinkKey (C.sha3_256 fd), (encodeSign pk fd, encodeSign pk ud))
 
 encodeSignUserData :: C.PrivateKeyEd25519 -> VersionRangeSMPA -> ConnInfo -> ByteString
 encodeSignUserData pk agentVRange userData =
-  encodeSign pk $ smpEncode UserLinkData {agentVRange, userData}
+  encodeSign pk $ smpEncode UserLinkData {agentVRange, owners = [], userData}
 
 encodeSign :: C.PrivateKeyEd25519 -> ByteString -> ByteString
-encodeSign pk s = smpEncode (C.signatureBytes $ C.sign' pk s) <> s
+encodeSign pk s = smpEncode (C.sign' pk s) <> s
 
 encryptLinkData :: TVar ChaChaDRG -> C.SbKey -> (ByteString, ByteString) -> ExceptT AgentErrorType IO QueueLinkData
 encryptLinkData g k = bimapM (encrypt fixedDataPaddedLength) (encrypt userDataPaddedLength)
@@ -72,22 +73,22 @@ encryptData g k len s = do
   ct <- liftEitherWith cryptoError $ C.sbEncrypt k nonce s len
   pure $ EncDataBytes $ smpEncode nonce <> ct
 
-decryptLinkData :: ConnectionModeI c => LinkKey -> C.SbKey -> QueueLinkData -> Either AgentErrorType (ConnectionRequestUri c, ConnInfo)
+decryptLinkData :: ConnectionModeI c => LinkKey -> C.SbKey -> QueueLinkData -> Either AgentErrorType (Maybe (ConnectionRequestUri c), ConnInfo)
 decryptLinkData linkKey k (encFD, encUD) = do
   (sig1, fd) <- decrypt encFD
   (sig2, ud) <- decrypt encUD
-  FixedLinkData {sigKey, connReq} <- decode fd
+  FixedLinkData {rootKey, connReq} <- decode fd
   UserLinkData {userData} <- decode ud
   if
     | LinkKey (C.sha3_256 fd) /= linkKey -> linkErr "link data hash"
-    | not (C.verify' sigKey sig1 fd) -> linkErr "link data signature"
-    | not (C.verify' sigKey sig2 ud) -> linkErr "user data signature"
+    | not (C.verify' rootKey sig1 fd) -> linkErr "link data signature"
+    | not (C.verify' rootKey sig2 ud) -> linkErr "user data signature"
     | otherwise -> Right (connReq, userData)
   where
     decrypt (EncDataBytes d) = do
       (nonce, Tail ct) <- decode d
-      (sigBytes, Tail s) <- decode =<< first cryptoError (C.sbDecrypt k nonce ct)
-      (,s) <$> msgErr (C.decodeSignature sigBytes)
+      (sig, Tail s) <- decode =<< first cryptoError (C.sbDecrypt k nonce ct)
+      pure (sig, s)
     decode :: Encoding a => ByteString -> Either AgentErrorType a
     decode = msgErr . smpDecode
     msgErr = first (const $ AGENT A_MESSAGE)

@@ -1263,6 +1263,7 @@ client
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
           KEY sKey -> withQueue $ \q _ -> (corrId,entId,) . either ERR id <$> secureQueue_ q sKey
+          RKEY _ks -> undefined -- TODO [short links]
           LSET lnkId d ->
             withQueue $ \q qr -> checkMode QMContact qr $ liftIO $ case queueData qr of
               Just (lnkId', _) | lnkId' /= lnkId -> pure $ Left AUTH

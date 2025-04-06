@@ -791,10 +791,19 @@ class CryptoSignature s where
 
 instance CryptoSignature (Signature s) => StrEncoding (Signature s) where
   strEncode = serializeSignature
+  {-# INLINE strEncode #-}
   strDecode = decodeSignature
+  {-# INLINE strDecode #-}
+
+instance CryptoSignature (Signature s) => Encoding (Signature s) where
+  smpEncode = smpEncode . signatureBytes
+  {-# INLINE smpEncode #-}
+  smpP = decodeSignature <$?> smpP
+  {-# INLINE smpP #-}
 
 instance CryptoSignature ASignature where
   signatureBytes (ASignature _ sig) = signatureBytes sig
+  {-# INLINE signatureBytes #-}
   decodeSignature s
     | B.length s == Ed25519.signatureSize =
         ASignature SEd25519 . SignatureEd25519 <$> ed Ed25519.signature s
@@ -806,6 +815,7 @@ instance CryptoSignature ASignature where
 
 instance CryptoSignature (Maybe ASignature) where
   signatureBytes = maybe "" signatureBytes
+  {-# INLINE signatureBytes #-}
   decodeSignature s
     | B.null s = Right Nothing
     | otherwise = Just <$> decodeSignature s
@@ -814,6 +824,7 @@ instance AlgorithmI a => CryptoSignature (Signature a) where
   signatureBytes = \case
     SignatureEd25519 s -> BA.convert s
     SignatureEd448 s -> BA.convert s
+  {-# INLINE signatureBytes #-}
   decodeSignature s = do
     ASignature _ sig <- decodeSignature s
     checkAlgorithm sig
@@ -824,25 +835,31 @@ instance SignatureSize (Signature a) where
   signatureSize = \case
     SignatureEd25519 _ -> Ed25519.signatureSize
     SignatureEd448 _ -> Ed448.signatureSize
+  {-# INLINE signatureSize #-}
 
 instance SignatureSize ASignature where
   signatureSize (ASignature _ s) = signatureSize s
+  {-# INLINE signatureSize #-}
 
 instance SignatureSize APrivateSignKey where
   signatureSize (APrivateSignKey _ k) = signatureSize k
+  {-# INLINE signatureSize #-}
 
 instance SignatureSize APublicVerifyKey where
   signatureSize (APublicVerifyKey _ k) = signatureSize k
+  {-# INLINE signatureSize #-}
 
 instance SignatureAlgorithm a => SignatureSize (PrivateKey a) where
   signatureSize = \case
     PrivateKeyEd25519 _ _ -> Ed25519.signatureSize
     PrivateKeyEd448 _ _ -> Ed448.signatureSize
+  {-# INLINE signatureSize #-}
 
 instance SignatureAlgorithm a => SignatureSize (PublicKey a) where
   signatureSize = \case
     PublicKeyEd25519 _ -> Ed25519.signatureSize
     PublicKeyEd448 _ -> Ed448.signatureSize
+  {-# INLINE signatureSize #-}
 
 -- | Various cryptographic or related errors.
 data CryptoError

@@ -33,7 +33,7 @@ testInvShortLink = do
       k = SL.invShortLinkKdf linkKey
   Right srvData <- runExceptT $ SL.encryptLinkData g k linkData
   -- decrypt
-  Right (connReq, userData') <- pure $ SL.decryptLinkData linkKey k srvData
+  Right (Just connReq, userData') <- pure $ SL.decryptLinkData linkKey k srvData
   connReq `shouldBe` invConnRequest
   userData' `shouldBe` userData
 
@@ -62,7 +62,7 @@ testContactShortLink = do
       (_linkId, k) = SL.contactShortLinkKdf linkKey
   Right srvData <- runExceptT $ SL.encryptLinkData g k linkData
   -- decrypt
-  Right (connReq, userData') <- pure $ SL.decryptLinkData linkKey k srvData
+  Right (Just connReq, userData') <- pure $ SL.decryptLinkData linkKey k srvData
   connReq `shouldBe` contactConnRequest
   userData' `shouldBe` userData
 
@@ -80,7 +80,7 @@ testUpdateContactShortLink = do
       signed = SL.encodeSignUserData (snd sigKeys) supportedSMPAgentVRange updatedUserData
   Right ud' <- runExceptT $ SL.encryptUserData g k signed
   -- decrypt
-  Right (connReq, userData') <- pure $ SL.decryptLinkData linkKey k (fd, ud')
+  Right (Just connReq, userData') <- pure $ SL.decryptLinkData linkKey k (fd, ud')
   connReq `shouldBe` contactConnRequest
   userData' `shouldBe` updatedUserData
 

@@ -419,6 +419,7 @@ data Command (p :: Party) where
   NEW :: NewQueueReq -> Command Recipient
   SUB :: Command Recipient
   KEY :: SndPublicAuthKey -> Command Recipient
+  RKEY :: NonEmpty RcvPublicAuthKey -> Command Recipient
   LSET :: LinkId -> QueueLinkData -> Command Recipient
   LDEL :: Command Recipient
   NKEY :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> Command Recipient
@@ -770,6 +771,7 @@ data CommandTag (p :: Party) where
   NEW_ :: CommandTag Recipient
   SUB_ :: CommandTag Recipient
   KEY_ :: CommandTag Recipient
+  RKEY_ :: CommandTag Recipient
   LSET_ :: CommandTag Recipient
   LDEL_ :: CommandTag Recipient
   NKEY_ :: CommandTag Recipient
@@ -825,6 +827,7 @@ instance PartyI p => Encoding (CommandTag p) where
     NEW_ -> "NEW"
     SUB_ -> "SUB"
     KEY_ -> "KEY"
+    RKEY_ -> "RKEY"
     LSET_ -> "LSET"
     LDEL_ -> "LDEL"
     NKEY_ -> "NKEY"
@@ -850,6 +853,7 @@ instance ProtocolMsgTag CmdTag where
     "NEW" -> Just $ CT SRecipient NEW_
     "SUB" -> Just $ CT SRecipient SUB_
     "KEY" -> Just $ CT SRecipient KEY_
+    "RKEY" -> Just $ CT SRecipient RKEY_
     "LSET" -> Just $ CT SRecipient LSET_
     "LDEL" -> Just $ CT SRecipient LDEL_
     "NKEY" -> Just $ CT SRecipient NKEY_
@@ -1494,6 +1498,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
         auth = maybe "" (e . ('A',)) auth_
     SUB -> e SUB_
     KEY k -> e (KEY_, ' ', k)
+    RKEY ks -> e (RKEY_, ' ', ks)
     LSET lnkId d -> e (LSET_, ' ', lnkId, d)
     LDEL -> e LDEL_
     NKEY k dhKey -> e (NKEY_, ' ', k, dhKey)
@@ -1577,6 +1582,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
             qReq sndSecure = Just $ if sndSecure then QRMessaging Nothing else QRContact Nothing
         SUB_ -> pure SUB
         KEY_ -> KEY <$> _smpP
+        RKEY_ -> RKEY <$> _smpP
         LSET_ -> LSET <$> _smpP <*> smpP
         LDEL_ -> pure LDEL
         NKEY_ -> NKEY <$> _smpP <*> smpP
