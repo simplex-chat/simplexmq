@@ -21,6 +21,7 @@ module Simplex.Messaging.Server.StoreLog
     logCreateLink,
     logDeleteLink,
     logSecureQueue,
+    logUpdateKeys,
     logAddNotifier,
     logSuspendQueue,
     logBlockQueue,
@@ -43,6 +44,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.List (sort, stripPrefix)
+import Data.List.NonEmpty (NonEmpty)
 import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime, nominalDay)
@@ -64,6 +66,7 @@ data StoreLogRecord
   | CreateLink RecipientId LinkId QueueLinkData
   | DeleteLink RecipientId
   | SecureQueue QueueId SndPublicAuthKey
+  | UpdateKeys RecipientId (NonEmpty RcvPublicAuthKey)
   | AddNotifier QueueId NtfCreds
   | SuspendQueue QueueId
   | BlockQueue QueueId BlockingInfo
@@ -78,6 +81,7 @@ data SLRTag
   | CreateLink_
   | DeleteLink_
   | SecureQueue_
+  | UpdateKeys_
   | AddNotifier_
   | SuspendQueue_
   | BlockQueue_
@@ -87,9 +91,9 @@ data SLRTag
   | UpdateTime_
 
 instance StrEncoding QueueRec where
-  strEncode QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt} =
+  strEncode QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt} =
     B.unwords
-      [ "rk=" <> strEncode recipientKey,
+      [ "rk=" <> strEncode recipientKeys,
         "rdh=" <> strEncode rcvDhSecret,
         "sid=" <> strEncode senderId,
         "sk=" <> strEncode senderKey
@@ -108,7 +112,7 @@ instance StrEncoding QueueRec where
         _ -> " status=" <> strEncode status
 
   strP = do
-    recipientKey <- "rk=" *> strP_
+    recipientKeys <- "rk=" *> strP_
     rcvDhSecret <- "rdh=" *> strP_
     senderId <- "sid=" *> strP_
     senderKey <- "sk=" *> strP
@@ -120,7 +124,7 @@ instance StrEncoding QueueRec where
     notifier <- optional $ " notifier=" *> strP
     updatedAt <- optional $ " updated_at=" *> strP
     status <- (" status=" *> strP) <|> pure EntityActive
-    pure QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt}
+    pure QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt}
     where
       toQueueMode sndSecure = Just $ if sndSecure then QMMessaging else QMContact
 
@@ -130,6 +134,7 @@ instance StrEncoding SLRTag where
     CreateLink_ -> "LINK"
     DeleteLink_ -> "LDELETE"
     SecureQueue_ -> "SECURE"
+    UpdateKeys_ -> "KEYS"
     AddNotifier_ -> "NOTIFIER"
     SuspendQueue_ -> "SUSPEND"
     BlockQueue_ -> "BLOCK"
@@ -159,6 +164,7 @@ instance StrEncoding StoreLogRecord where
     CreateLink rId lnkId d -> strEncode (CreateLink_, rId, lnkId, d)
     DeleteLink rId -> strEncode (DeleteLink_, rId)
     SecureQueue rId sKey -> strEncode (SecureQueue_, rId, sKey)
+    UpdateKeys rId rKeys -> strEncode (UpdateKeys_, rId, rKeys)
     AddNotifier rId ntfCreds -> strEncode (AddNotifier_, rId, ntfCreds)
     SuspendQueue rId -> strEncode (SuspendQueue_, rId)
     BlockQueue rId info -> strEncode (BlockQueue_, rId, info)
@@ -173,6 +179,7 @@ instance StrEncoding StoreLogRecord where
       CreateLink_ -> CreateLink <$> strP_ <*> strP_ <*> strP
       DeleteLink_ -> DeleteLink <$> strP
       SecureQueue_ -> SecureQueue <$> strP_ <*> strP
+      UpdateKeys_ -> UpdateKeys <$> strP_ <*> strP
       AddNotifier_ -> AddNotifier <$> strP_ <*> strP
       SuspendQueue_ -> SuspendQueue <$> strP
       BlockQueue_ -> BlockQueue <$> strP_ <*> strP
@@ -220,6 +227,9 @@ logDeleteLink s = writeStoreLogRecord s . DeleteLink
 
 logSecureQueue :: StoreLog 'WriteMode -> QueueId -> SndPublicAuthKey -> IO ()
 logSecureQueue s qId sKey = writeStoreLogRecord s $ SecureQueue qId sKey
+
+logUpdateKeys :: StoreLog 'WriteMode -> QueueId -> NonEmpty RcvPublicAuthKey -> IO ()
+logUpdateKeys s rId rKeys = writeStoreLogRecord s $ UpdateKeys rId rKeys
 
 logAddNotifier :: StoreLog 'WriteMode -> QueueId -> NtfCreds -> IO ()
 logAddNotifier s qId ntfCreds = writeStoreLogRecord s $ AddNotifier qId ntfCreds

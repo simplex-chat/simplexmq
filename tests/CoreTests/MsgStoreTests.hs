@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
@@ -117,11 +118,11 @@ testNewQueueRecData :: TVar ChaChaDRG -> QueueMode -> Maybe (LinkId, QueueLinkDa
 testNewQueueRecData g qm queueData = do
   rId <- rndId
   senderId <- rndId
-  (recipientKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
+  (rKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
   (k, pk) <- atomically $ C.generateKeyPair @'C.X25519 g
   let qr =
         QueueRec
-          { recipientKey,
+          { recipientKeys = [rKey],
             rcvDhSecret = C.dh' k pk,
             senderId,
             senderKey = Nothing,

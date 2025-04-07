@@ -41,6 +41,7 @@ import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (intersperse)
+import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.Text as T
@@ -257,6 +258,16 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         Just k | sKey /= k -> throwE AUTH
         _ -> pure ()
 
+  updateKeys :: PostgresQueueStore q -> q -> NonEmpty RcvPublicAuthKey -> IO (Either ErrorType ())
+  updateKeys st sq rKeys =
+    withQueueRec sq "updateKeys" $ \q -> do
+      assertUpdated $ withDB' "updateKeys" st $ \db ->
+        DB.execute db "UPDATE msg_queues SET recipient_keys = ? WHERE recipient_id = ? AND deleted_at IS NULL" (rKeys, rId)
+      atomically $ writeTVar (queueRec sq) $ Just q {recipientKeys = rKeys}
+      withLog "updateKeys" st $ \s -> logUpdateKeys s rId rKeys
+    where
+      rId = recipientId sq
+
   addQueueNotifier :: PostgresQueueStore q -> q -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
   addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId, notifierKey, rcvNtfDhSecret} =
     withQueueRec sq "addQueueNotifier" $ \q ->
@@ -362,7 +373,7 @@ batchInsertQueues tty queues toStore = do
   let st = dbStore toStore
   count <-
     withConnection st $ \db -> do
-      DB.copy_ db "COPY msg_queues (recipient_id, recipient_key, rcv_dh_secret, sender_id, sender_key, snd_secure, notifier_id, notifier_key, rcv_ntf_dh_secret, status, updated_at) FROM STDIN WITH (FORMAT CSV)"
+      DB.copy_ db "COPY msg_queues (recipient_id, recipient_keys, rcv_dh_secret, sender_id, sender_key, snd_secure, notifier_id, notifier_key, rcv_ntf_dh_secret, status, updated_at) FROM STDIN WITH (FORMAT CSV)"
       mapM_ (putQueue db) (zip [1..] qs)
       DB.putCopyEnd db
   Only qCnt : _ <- withConnection st (`DB.query_` "SELECT count(*) FROM msg_queues")
@@ -378,7 +389,7 @@ insertQueueQuery :: Query
 insertQueueQuery =
   [sql|
     INSERT INTO msg_queues
-      (recipient_id, recipient_key, rcv_dh_secret, sender_id, sender_key, queue_mode, notifier_id, notifier_key, rcv_ntf_dh_secret, status, updated_at, link_id, fixed_data, user_data)
+      (recipient_id, recipient_keys, rcv_dh_secret, sender_id, sender_key, queue_mode, notifier_id, notifier_key, rcv_ntf_dh_secret, status, updated_at, link_id, fixed_data, user_data)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   |]
 
@@ -407,7 +418,7 @@ foldQueueRecs tty withData st skipOld_ f = do
 queueRecQuery :: Query
 queueRecQuery =
   [sql|
-    SELECT recipient_id, recipient_key, rcv_dh_secret,
+    SELECT recipient_id, recipient_keys, rcv_dh_secret,
       sender_id, sender_key, queue_mode,
       notifier_id, notifier_key, rcv_ntf_dh_secret,
       status, updated_at,
@@ -418,7 +429,7 @@ queueRecQuery =
 queueRecQueryWithData :: Query
 queueRecQueryWithData =
   [sql|
-    SELECT recipient_id, recipient_key, rcv_dh_secret,
+    SELECT recipient_id, recipient_keys, rcv_dh_secret,
       sender_id, sender_key, queue_mode,
       notifier_id, notifier_key, rcv_ntf_dh_secret,
       status, updated_at,
@@ -426,23 +437,23 @@ queueRecQueryWithData =
     FROM msg_queues
   |]
 
-type QueueRecRow = (RecipientId, RcvPublicAuthKey, RcvDhSecret, SenderId, Maybe SndPublicAuthKey, Maybe QueueMode, Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret, ServerEntityStatus, Maybe RoundedSystemTime, Maybe LinkId)
+type QueueRecRow = (RecipientId, NonEmpty RcvPublicAuthKey, RcvDhSecret, SenderId, Maybe SndPublicAuthKey, Maybe QueueMode, Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret, ServerEntityStatus, Maybe RoundedSystemTime, Maybe LinkId)
 
 queueRecToRow :: (RecipientId, QueueRec) -> QueueRecRow :. (Maybe EncDataBytes, Maybe EncDataBytes)
-queueRecToRow (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier = n, status, updatedAt}) =
-  (rId, recipientKey, rcvDhSecret, senderId, senderKey, queueMode, notifierId <$> n, notifierKey <$> n, rcvNtfDhSecret <$> n, status, updatedAt, linkId_)
+queueRecToRow (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier = n, status, updatedAt}) =
+  (rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId <$> n, notifierKey <$> n, rcvNtfDhSecret <$> n, status, updatedAt, linkId_)
     :. (fst <$> queueData_, snd <$> queueData_)
   where
     (linkId_, queueData_) = queueDataColumns queueData
 
 queueRecToText :: (RecipientId, QueueRec) -> ByteString
-queueRecToText (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier = n, status, updatedAt}) =
+queueRecToText (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier = n, status, updatedAt}) =
   LB.toStrict $ BB.toLazyByteString $ mconcat tabFields <> BB.char7 '\n'
   where
     tabFields = BB.char7 ',' `intersperse` fields
     fields =
       [ renderField (toField rId),
-        renderField (toField recipientKey),
+        renderField (toField recipientKeys),
         renderField (toField rcvDhSecret),
         renderField (toField senderId),
         nullable senderKey,
@@ -473,17 +484,17 @@ queueDataColumns = \case
   Nothing -> (Nothing, Nothing)
 
 rowToQueueRec :: QueueRecRow -> (RecipientId, QueueRec)
-rowToQueueRec (rId, recipientKey, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) =
+rowToQueueRec (rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) =
   let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
       queueData = (,(EncDataBytes "", EncDataBytes "")) <$> linkId_
-   in (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt})
+   in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt})
 
 rowToQueueRecWithData :: QueueRecRow :. (Maybe EncDataBytes, Maybe EncDataBytes) -> (RecipientId, QueueRec)
-rowToQueueRecWithData ((rId, recipientKey, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) :. (immutableData_, userData_)) =
+rowToQueueRecWithData ((rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) :. (immutableData_, userData_)) =
   let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
       encData =  fromMaybe (EncDataBytes "")
       queueData = (,(encData immutableData_, encData userData_)) <$> linkId_
-   in (rId, QueueRec {recipientKey, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt})
+   in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt})
 
 setStatusDB :: StoreQueueClass q => String -> PostgresQueueStore q -> q -> ServerEntityStatus -> ExceptT ErrorType IO () -> IO (Either ErrorType ())
 setStatusDB op st sq status writeLog =
@@ -527,6 +538,10 @@ handleDuplicate e = case constraintViolation e of
 instance ToField EntityId where toField (EntityId s) = toField $ Binary s
 
 deriving newtype instance FromField EntityId
+
+instance ToField (NonEmpty C.APublicAuthKey) where toField = toField . Binary . smpEncode
+
+instance FromField (NonEmpty C.APublicAuthKey) where fromField = blobFieldDecoder smpDecode
 
 #if !defined(dbPostgres)
 instance FromField QueueMode where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8

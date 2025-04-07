@@ -77,6 +77,10 @@ UPDATE msg_queues SET queue_mode = 'M' WHERE snd_secure IS TRUE;
 
 ALTER TABLE msg_queues DROP COLUMN snd_secure;
 
+UPDATE msg_queues SET recipient_key = ('\x01'::BYTEA || chr(length(recipient_key))::BYTEA || recipient_key);
+
+ALTER TABLE msg_queues RENAME COLUMN recipient_key TO recipient_keys;
+
 CREATE UNIQUE INDEX idx_msg_queues_link_id ON msg_queues(link_id);
     |]
 
@@ -87,6 +91,21 @@ down_m20250320_short_links =
 ALTER TABLE msg_queues ADD COLUMN snd_secure BOOLEAN NOT NULL DEFAULT FALSE;
 
 UPDATE msg_queues SET snd_secure = TRUE WHERE queue_mode = 'M';
+
+ALTER TABLE msg_queues DROP COLUMN queue_mode;
+
+UPDATE msg_queues 
+SET recipient_keys = (
+    CASE 
+        WHEN get_byte(recipient_keys, 0) != 1 
+        THEN RAISE EXCEPTION 'Cannot downgrade: more than one recipient key for recipient_id %', encode(recipient_id, 'base64')
+        WHEN get_byte(recipient_keys, 1) != length(recipient_keys) - 2 
+        THEN RAISE EXCEPTION 'Cannot downgrade: incorrect recipient key length for recipient_id %', encode(recipient_id, 'base64')
+        ELSE substring(recipient_keys from 3)
+    END
+);
+
+ALTER TABLE msg_queues RENAME COLUMN recipient_keys TO recipient_key;
 
 ALTER TABLE
   DROP COLUMN queue_mode,

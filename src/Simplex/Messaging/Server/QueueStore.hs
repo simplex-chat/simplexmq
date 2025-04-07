@@ -13,6 +13,7 @@ module Simplex.Messaging.Server.QueueStore where
 import Control.Applicative ((<|>))
 import Data.Functor (($>))
 import Data.Int (Int64)
+import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
@@ -25,7 +26,7 @@ import Simplex.Messaging.Util (eitherToMaybe)
 #endif
 
 data QueueRec = QueueRec
-  { recipientKey :: RcvPublicAuthKey,
+  { recipientKeys :: NonEmpty RcvPublicAuthKey,
     rcvDhSecret :: RcvDhSecret,
     senderId :: SenderId,
     senderKey :: Maybe SndPublicAuthKey,
