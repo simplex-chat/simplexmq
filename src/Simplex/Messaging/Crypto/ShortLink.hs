@@ -80,7 +80,7 @@ encryptData g k len s = do
   ct <- liftEitherWith cryptoError $ C.sbEncrypt k nonce s len
   pure $ EncDataBytes $ smpEncode nonce <> ct
 
-decryptLinkData :: forall c. ConnectionModeI c => LinkKey -> C.SbKey -> QueueLinkData -> Either AgentErrorType (ConnectionRequestUri c, ConnInfo)
+decryptLinkData :: forall c. ConnectionModeI c => LinkKey -> C.SbKey -> QueueLinkData -> Either AgentErrorType (ConnectionRequestUri c, ConnLinkData c)
 decryptLinkData linkKey k (encFD, encMD) = do
   (sig1, fd) <- decrypt encFD
   (sig2, md) <- decrypt encMD
@@ -90,7 +90,7 @@ decryptLinkData linkKey k (encFD, encMD) = do
     | LinkKey (C.sha3_256 fd) /= linkKey -> linkErr "link data hash"
     | not (C.verify' rootKey sig1 fd) -> linkErr "link data signature"
     | not (C.verify' rootKey sig2 md) -> linkErr "user data signature"
-    | otherwise -> Right (connReq, linkUserData md')
+    | otherwise -> Right (connReq, md')
   where
     decrypt (EncDataBytes d) = do
       (nonce, Tail ct) <- decode d

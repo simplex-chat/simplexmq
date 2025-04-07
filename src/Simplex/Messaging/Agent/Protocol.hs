@@ -119,7 +119,7 @@ module Simplex.Messaging.Agent.Protocol
     CreatedConnLink (..),
     ContactConnType (..),
     LinkKey (..),
-    sameConnReqAddress,
+    sameConnReqContact,
     simplexChat,
     connReqUriP',
     AgentErrorType (..),
@@ -1510,8 +1510,8 @@ findPresetServer :: SMPServer -> NonEmpty SMPServer -> Maybe SMPServer
 findPresetServer ProtocolServer {host = h :| _} = find (\ProtocolServer {host = h' :| _} -> h == h')
 {-# INLINE findPresetServer #-}
 
-sameConnReqAddress :: ConnectionRequestUri 'CMContact -> ConnectionRequestUri 'CMContact -> Bool
-sameConnReqAddress (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUri ConnReqUriData {crSmpQueues = qs'}) =
+sameConnReqContact :: ConnectionRequestUri 'CMContact -> ConnectionRequestUri 'CMContact -> Bool
+sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUri ConnReqUriData {crSmpQueues = qs'}) =
   L.length qs == L.length qs' && all same (L.zip qs qs')
   where
     same (q, q') = sameQAddress (qAddress q) (qAddress q')

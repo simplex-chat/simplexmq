@@ -5,9 +5,10 @@
 module AgentTests.ShortLinkTests (shortLinkTests) where
 
 import AgentTests.ConnectionRequestTests (contactConnRequest, invConnRequest)
+import AgentTests.EqInstances ()
 import Control.Concurrent.STM
 import Control.Monad.Except
-import Simplex.Messaging.Agent.Protocol (AgentErrorType (..), ConnectionMode (..), LinkKey (..), SMPAgentError (..), supportedSMPAgentVRange)
+import Simplex.Messaging.Agent.Protocol (AgentErrorType (..), ConnectionMode (..), LinkKey (..), SMPAgentError (..), linkUserData, supportedSMPAgentVRange)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.ShortLink as SL
 import Test.Hspec
@@ -33,9 +34,9 @@ testInvShortLink = do
       k = SL.invShortLinkKdf linkKey
   Right srvData <- runExceptT $ SL.encryptLinkData g k linkData
   -- decrypt
-  Right (connReq, userData') <- pure $ SL.decryptLinkData linkKey k srvData
+  Right (connReq, connData') <- pure $ SL.decryptLinkData linkKey k srvData
   connReq `shouldBe` invConnRequest
-  userData' `shouldBe` userData
+  linkUserData connData' `shouldBe` userData
 
 testInvShortLinkBadDataHash :: IO ()
 testInvShortLinkBadDataHash = do
@@ -62,9 +63,9 @@ testContactShortLink = do
       (_linkId, k) = SL.contactShortLinkKdf linkKey
   Right srvData <- runExceptT $ SL.encryptLinkData g k linkData
   -- decrypt
-  Right (connReq, userData') <- pure $ SL.decryptLinkData linkKey k srvData
+  Right (connReq, connData') <- pure $ SL.decryptLinkData linkKey k srvData
   connReq `shouldBe` contactConnRequest
-  userData' `shouldBe` userData
+  linkUserData connData' `shouldBe` userData
 
 testUpdateContactShortLink :: IO ()
 testUpdateContactShortLink = do
@@ -80,9 +81,9 @@ testUpdateContactShortLink = do
       signed = SL.encodeSignUserData (snd sigKeys) supportedSMPAgentVRange updatedUserData
   Right ud' <- runExceptT $ SL.encryptUserData g k signed
   -- decrypt
-  Right (connReq, userData') <- pure $ SL.decryptLinkData linkKey k (fd, ud')
+  Right (connReq, connData') <- pure $ SL.decryptLinkData linkKey k (fd, ud')
   connReq `shouldBe` contactConnRequest
-  userData' `shouldBe` updatedUserData
+  linkUserData connData' `shouldBe` updatedUserData
 
 testContactShortLinkBadDataHash :: IO ()
 testContactShortLinkBadDataHash = do
