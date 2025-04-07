@@ -87,7 +87,7 @@ main = do
           describe "Agent core tests" agentCoreTests
 #if defined(dbServerPostgres)
         around_ (postgressBracket testServerDBConnectInfo) $
-          fdescribe "Server schema dump" serverSchemaDumpTest
+          describe "Server schema dump" serverSchemaDumpTest
         aroundAll_ (postgressBracket testServerDBConnectInfo) $
           describe "SMP server via TLS, postgres+jornal message store" $
               before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests

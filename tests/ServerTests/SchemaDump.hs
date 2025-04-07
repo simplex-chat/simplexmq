@@ -20,7 +20,7 @@ import System.Process (readCreateProcess, shell)
 import Test.Hspec
 
 testDBSchema :: B.ByteString
-testDBSchema = "smp_server_schema"
+testDBSchema = "smp_server"
 
 serverSchemaPath :: FilePath
 serverSchemaPath = "src/Simplex/Messaging/Server/QueueStore/Postgres/server_schema.sql"
@@ -80,7 +80,10 @@ skipComparisonForDownMigrations =
 
 getSchema :: FilePath -> IO String
 getSchema schemaPath = do
-    -- pg_dump postgresql://smp@/smp_server_store -n smp_server --schema-only
-  void $ readCreateProcess (shell $ "pg_dump " <> B.unpack testServerDBConnstr <> " -n " <> B.unpack testDBSchema <> " --schema-only > " <> schemaPath) ""
+  let cmd =
+        ("pg_dump " <> B.unpack testServerDBConnstr <> " --schema " <> B.unpack testDBSchema)
+          <> " --schema-only --no-comments --no-owner --no-privileges --no-acl --no-subscriptions --no-tablespaces --no-table-access-method > "
+          <> schemaPath
+  void $ readCreateProcess (shell cmd) ""
   sch <- readFile schemaPath
   sch `deepseq` pure sch
