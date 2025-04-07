@@ -25,6 +25,7 @@ import NtfServerTests (ntfServerTests)
 import RemoteControl (remoteControlTests)
 import SMPProxyTests (smpProxyTests)
 import ServerTests
+import ServerTests.SchemaDump
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Transport (TLS, Transport (..))
@@ -85,8 +86,10 @@ main = do
           describe "Util tests" utilTests
           describe "Agent core tests" agentCoreTests
 #if defined(dbServerPostgres)
-        aroundAll_ (postgressBracket testServerDBConnectInfo)
-          $ describe "SMP server via TLS, postgres+jornal message store" $
+        around_ (postgressBracket testServerDBConnectInfo) $
+          fdescribe "Server schema dump" serverSchemaDumpTest
+        aroundAll_ (postgressBracket testServerDBConnectInfo) $
+          describe "SMP server via TLS, postgres+jornal message store" $
               before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests
 #endif
         describe "SMP server via TLS, jornal message store" $ do

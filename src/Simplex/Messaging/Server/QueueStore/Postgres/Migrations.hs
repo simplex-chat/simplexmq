@@ -92,26 +92,30 @@ ALTER TABLE msg_queues ADD COLUMN snd_secure BOOLEAN NOT NULL DEFAULT FALSE;
 
 UPDATE msg_queues SET snd_secure = TRUE WHERE queue_mode = 'M';
 
-ALTER TABLE msg_queues DROP COLUMN queue_mode;
+DROP INDEX idx_msg_queues_link_id;
 
-UPDATE msg_queues 
-SET recipient_keys = (
-    CASE 
-        WHEN get_byte(recipient_keys, 0) != 1 
-        THEN RAISE EXCEPTION 'Cannot downgrade: more than one recipient key for recipient_id %', encode(recipient_id, 'base64')
-        WHEN get_byte(recipient_keys, 1) != length(recipient_keys) - 2 
-        THEN RAISE EXCEPTION 'Cannot downgrade: incorrect recipient key length for recipient_id %', encode(recipient_id, 'base64')
-        ELSE substring(recipient_keys from 3)
-    END
-);
-
-ALTER TABLE msg_queues RENAME COLUMN recipient_keys TO recipient_key;
-
-ALTER TABLE
+ALTER TABLE msg_queues
   DROP COLUMN queue_mode,
   DROP COLUMN link_id,
   DROP COLUMN fixed_data,
   DROP COLUMN user_data;
 
-DROP INDEX idx_msg_queues_link_id;
+DO $$
+  DECLARE bad_id BYTEA;
+  BEGIN
+    SELECT recipient_id INTO bad_id
+    FROM msg_queues
+    WHERE get_byte(recipient_keys, 0) != 1
+      OR get_byte(recipient_keys, 1) != length(recipient_keys) - 2
+    LIMIT 1;
+
+    IF bad_id IS NOT NULL
+    THEN RAISE EXCEPTION 'Cannot downgrade: many keys or incorrect length in recipient_keys for %', encode(bad_id, 'base64');
+    END IF;
+  END;
+$$;
+
+UPDATE msg_queues SET recipient_keys = substring(recipient_keys from 3);
+
+ALTER TABLE msg_queues RENAME COLUMN recipient_keys TO recipient_key;
     |]

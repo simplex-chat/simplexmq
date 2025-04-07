@@ -63,12 +63,6 @@ testVerifyLintFKeyIndexes = do
   getLintFKeyIndexes testDB "tests/tmp/agent_lint.sql" `shouldReturn` savedLint
   removeFile testDB
 
-withTmpFiles :: IO () -> IO ()
-withTmpFiles =
-  bracket_
-    (createDirectoryIfMissing False "tests/tmp")
-    (removeDirectoryRecursive "tests/tmp")
-
 testSchemaMigrations :: IO ()
 testSchemaMigrations = do
   let noDownMigrations = dropWhileEnd (\Migration {down} -> isJust down) appMigrations
