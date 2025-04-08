@@ -84,11 +84,16 @@ generateSite si onionHost sitePath = do
   B.writeFile (sitePath </> "index.html") $ serverInformation si onionHost
   createDirectoryIfMissing True $ sitePath </> "media"
   forM_ E.mediaContent $ \(path, bs) -> B.writeFile (sitePath </> "media" </> path) bs
-  createDirectoryIfMissing True $ sitePath </> "contact"
-  B.writeFile (sitePath </> "contact" </> "index.html") E.linkHtml
-  createDirectoryIfMissing True $ sitePath </> "invitation"
-  B.writeFile (sitePath </> "invitation" </> "index.html") E.linkHtml
+  createLinkPage "contact"
+  createLinkPage "invitation"
+  createLinkPage "a"
+  createLinkPage "c"
+  createLinkPage "i"
   logInfo $ "Generated static site contents at " <> tshow sitePath
+  where
+    createLinkPage path = do
+      createDirectoryIfMissing True $ sitePath </> path
+      B.writeFile (sitePath </> path </> "index.html") E.linkHtml
 
 serverInformation :: ServerInformation -> Maybe TransportHost -> ByteString
 serverInformation ServerInformation {config, information} onionHost = render E.indexHtml substs

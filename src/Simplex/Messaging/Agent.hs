@@ -200,6 +200,7 @@ import Simplex.Messaging.Protocol
     MsgFlags (..),
     NtfServer,
     ProtoServerWithAuth (..),
+    ProtocolServer (..),
     ProtocolType (..),
     ProtocolTypeI (..),
     QueueLinkData,
@@ -838,7 +839,7 @@ setContactShortLink' c connId userData =
       SomeConn _ (ContactConnection _ rq) -> do
         (lnkId, linkKey, d) <- prepareLinkData rq
         addQueueLink c rq lnkId d
-        pure $ CSLContact CCTContact (qServer rq) linkKey
+        pure $ CSLContact SLSServer CCTContact (qServer rq) linkKey
       _ -> throwE $ CMD PROHIBITED "setContactShortLink: not contact address"
   where
     prepareLinkData :: RcvQueue -> AM (SMP.LinkId, LinkKey, QueueLinkData)
@@ -872,7 +873,7 @@ deleteContactShortLink' c connId =
 -- TODO [short links] remove 1-time invitation data and link ID from the server after the message is sent.
 getConnShortLink' :: forall c. AgentClient -> UserId -> ConnShortLink c -> AM (ConnectionRequestUri c, ConnLinkData c)
 getConnShortLink' c userId = \case
-  CSLInvitation srv linkId linkKey -> do
+  CSLInvitation _ srv linkId linkKey -> do
     g <- asks random
     invLink <- withStore' c $ \db -> do
       getInvShortLink db srv linkId >>= \case
@@ -886,7 +887,7 @@ getConnShortLink' c userId = \case
     ld@(sndId, _) <- secureGetQueueLink c userId invLink
     withStore' c $ \db -> setInvShortLinkSndId db invLink sndId
     decryptData srv linkKey k ld
-  CSLContact _ srv linkKey -> do
+  CSLContact _ _ srv linkKey -> do
     let (linkId, k) = SL.contactShortLinkKdf linkKey
     ld <- getQueueLink c userId srv linkId
     decryptData srv linkKey k ld
@@ -894,12 +895,14 @@ getConnShortLink' c userId = \case
     decryptData :: ConnectionModeI c => SMPServer -> LinkKey -> C.SbKey -> (SMP.SenderId, QueueLinkData) -> AM (ConnectionRequestUri c, ConnLinkData c)
     decryptData srv linkKey k (sndId, d) = do
       r@(cReq, _) <- liftEither $ SL.decryptLinkData @c linkKey k d
-      unless ((srv, sndId) `sameQAddress` qAddress (connReqQueue cReq)) $
+      let (srv', sndId') = qAddress (connReqQueue cReq)
+      unless (srv `sameSrvHost` srv' && sndId == sndId') $
         throwE $ AGENT $ A_LINK "different address"
       pure r
+    sameSrvHost ProtocolServer {host = h :| _} ProtocolServer {host = hs} = h `elem` hs
 
 deleteLocalInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
-deleteLocalInvShortLink' c (CSLInvitation srv linkId _) = withStore' c $ \db -> deleteInvShortLink db srv linkId
+deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -> deleteInvShortLink db srv linkId
 
 changeConnectionUser' :: AgentClient -> UserId -> ConnId -> UserId -> AM ()
 changeConnectionUser' c oldUserId connId newUserId = do
@@ -978,8 +981,8 @@ newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys s
       Just ShortLinkCreds {shortLinkId, shortLinkKey}
         | qUri == qUri'  ->
             let link = case cReq of
-                  CRContactUri _ -> CSLContact CCTContact srv shortLinkKey
-                  CRInvitationUri {} -> CSLInvitation srv shortLinkId shortLinkKey
+                  CRContactUri _ -> CSLContact SLSServer CCTContact srv shortLinkKey
+                  CRInvitationUri {} -> CSLInvitation SLSServer srv shortLinkId shortLinkKey
              in pure $ CCLink cReq (Just link)
         | otherwise -> throwE $ INTERNAL "different rcv queue address"
       Nothing ->

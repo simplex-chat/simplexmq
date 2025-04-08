@@ -279,22 +279,28 @@ connectionRequestTests =
       smpEncodingTest contactAddressV2
       smpEncodingTest contactAddressClientData
     it "should serialize / parse short links" $ do
-      CSLContact CCTContact srv (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im:5223/a#1234-w&jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion/MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
-      CSLContact CCTGroup srv (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im:5223/g#1234-w&jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion/MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
-      CSLContact CCTContact shortSrv (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/a#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
-      CSLInvitation srv (EntityId "0123456789abcdef01234567") (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im:5223/i#1234-w&jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion/MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3.MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
-      CSLInvitation shortSrv (EntityId "0123456789abcdef01234567") (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/i#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3.MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
+      CSLContact SLSServer CCTContact srv (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/a#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"
+      CSLContact SLSServer CCTGroup srv (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/g#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"
+      CSLContact SLSServer CCTContact shortSrv (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/a#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
+      CSLInvitation SLSServer srv (EntityId "0123456789abcdef01234567") (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/i#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3/MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"
+      CSLInvitation SLSServer shortSrv (EntityId "0123456789abcdef01234567") (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/i#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3/MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
+      CSLContact SLSSimplex CCTContact srv (LinkKey "0123456789abcdef0123456789abcdef") #==# "simplex:/a#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=smp.simplex.im%2Cjjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"
+      CSLContact SLSSimplex CCTGroup srv (LinkKey "0123456789abcdef0123456789abcdef") #==# "simplex:/g#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=smp.simplex.im%2Cjjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"
+      CSLContact SLSSimplex CCTContact shortSrv (LinkKey "0123456789abcdef0123456789abcdef") #==# "simplex:/a#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=smp.simplex.im"
+      CSLInvitation SLSSimplex srv (EntityId "0123456789abcdef01234567") (LinkKey "0123456789abcdef0123456789abcdef") #==# "simplex:/i#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3/MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=smp.simplex.im%2Cjjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"
+      CSLInvitation SLSSimplex shortSrv (EntityId "0123456789abcdef01234567") (LinkKey "0123456789abcdef0123456789abcdef") #==# "simplex:/i#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3/MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=smp.simplex.im"
     it "should shorten / restore short links" $ do
-      shortenShortLink [srv] (CSLContact CCTContact srv (LinkKey "0123456789abcdef0123456789abcdef"))
-        `shouldBe` CSLContact CCTContact shortSrv (LinkKey "0123456789abcdef0123456789abcdef")
-      shortenShortLink [srv] (CSLContact CCTContact srv2 (LinkKey "0123456789abcdef0123456789abcdef"))
-        `shouldBe` CSLContact CCTContact srv2 (LinkKey "0123456789abcdef0123456789abcdef")
-      restoreShortLink [srv] (CSLContact CCTContact shortSrv (LinkKey "0123456789abcdef0123456789abcdef"))
-        `shouldBe` CSLContact CCTContact srv (LinkKey "0123456789abcdef0123456789abcdef")
-      restoreShortLink [srv2] (CSLContact CCTContact shortSrv (LinkKey "0123456789abcdef0123456789abcdef"))
-        `shouldBe` CSLContact CCTContact shortSrv (LinkKey "0123456789abcdef0123456789abcdef")
-      restoreShortLink [srv] (CSLContact CCTContact srv2 (LinkKey "0123456789abcdef0123456789abcdef"))
-        `shouldBe` CSLContact CCTContact srv2 (LinkKey "0123456789abcdef0123456789abcdef")
+      let contact = CSLContact SLSServer CCTContact
+      shortenShortLink [srv] (contact srv (LinkKey "0123456789abcdef0123456789abcdef"))
+        `shouldBe` contact shortSrv (LinkKey "0123456789abcdef0123456789abcdef")
+      shortenShortLink [srv] (contact srv2 (LinkKey "0123456789abcdef0123456789abcdef"))
+        `shouldBe` contact srv2 (LinkKey "0123456789abcdef0123456789abcdef")
+      restoreShortLink [srv] (contact shortSrv (LinkKey "0123456789abcdef0123456789abcdef"))
+        `shouldBe` contact srv (LinkKey "0123456789abcdef0123456789abcdef")
+      restoreShortLink [srv2] (contact shortSrv (LinkKey "0123456789abcdef0123456789abcdef"))
+        `shouldBe` contact shortSrv (LinkKey "0123456789abcdef0123456789abcdef")
+      restoreShortLink [srv] (contact srv2 (LinkKey "0123456789abcdef0123456789abcdef"))
+        `shouldBe` contact srv2 (LinkKey "0123456789abcdef0123456789abcdef")
   where
     smpEncodingTest a = smpDecode (smpEncode a) `shouldBe` Right a
 

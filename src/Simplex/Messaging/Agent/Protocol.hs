@@ -118,10 +118,13 @@ module Simplex.Messaging.Agent.Protocol
     AConnShortLink (..),
     CreatedConnLink (..),
     ContactConnType (..),
+    ShortLinkScheme (..),
     LinkKey (..),
     sameConnReqContact,
     simplexChat,
     connReqUriP',
+    simplexConnReqUri,
+    simplexShortLink,
     AgentErrorType (..),
     CommandErrorType (..),
     ConnectionErrorType (..),
@@ -168,7 +171,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (isDigit, toLower, toUpper)
+import Data.Char (toLower, toUpper)
 import Data.Foldable (find)
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -1335,6 +1338,11 @@ data ConnectionRequestUri (m :: ConnectionMode) where
   -- they are passed in AgentInvitation message
   CRContactUri :: ConnReqUriData -> ConnectionRequestUri CMContact
 
+simplexConnReqUri :: ConnectionRequestUri m -> ConnectionRequestUri m
+simplexConnReqUri = \case
+  CRInvitationUri crData e2eParams -> CRInvitationUri crData {crScheme = SSSimplex} e2eParams
+  CRContactUri crData -> CRContactUri crData {crScheme = SSSimplex}
+
 deriving instance Eq (ConnectionRequestUri m)
 
 deriving instance Show (ConnectionRequestUri m)
@@ -1348,13 +1356,20 @@ instance Eq AConnectionRequestUri where
 
 deriving instance Show AConnectionRequestUri
 
+data ShortLinkScheme = SLSSimplex | SLSServer deriving (Eq, Show)
+
 data ConnShortLink (m :: ConnectionMode) where
-  CSLInvitation :: SMPServer -> SMP.LinkId -> LinkKey -> ConnShortLink 'CMInvitation
-  CSLContact :: ContactConnType -> SMPServer -> LinkKey -> ConnShortLink 'CMContact
+  CSLInvitation :: ShortLinkScheme -> SMPServer -> SMP.LinkId -> LinkKey -> ConnShortLink 'CMInvitation
+  CSLContact :: ShortLinkScheme -> ContactConnType -> SMPServer -> LinkKey -> ConnShortLink 'CMContact
 
 deriving instance Eq (ConnShortLink m)
 
 deriving instance Show (ConnShortLink m)
+
+simplexShortLink :: ConnShortLink m -> ConnShortLink m
+simplexShortLink = \case
+  CSLInvitation _ srv lnkId k -> CSLInvitation SLSSimplex srv lnkId k
+  CSLContact _ ct srv k -> CSLContact SLSSimplex ct srv k
 
 newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
   deriving (Eq, Show)
@@ -1407,16 +1422,22 @@ instance ConnectionModeI m => FromJSON (ConnectionLink m) where
 
 instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
   strEncode = \case
-    CSLInvitation srv (SMP.EntityId lnkId) (LinkKey k) -> encLink srv lnkId k 'i'
-    CSLContact ct srv (LinkKey k) -> encLink srv "" k $ toLower $ ctTypeChar ct
+    CSLInvitation sch srv (SMP.EntityId lnkId) (LinkKey k) -> slEncode sch srv 'i' lnkId k
+    CSLContact sch ct srv (LinkKey k) -> slEncode sch srv (toLower $ ctTypeChar ct) "" k
     where
-      encLink (SMPServer (h :| hs) port (C.KeyHash kh)) lnkId k linkType =
-        B.concat ["https://", strEncode h, port', "/", B.singleton linkType, "#", khStr, hosts, lnkIdStr, B64.encodeUnpadded k]
+      slEncode sch (SMPServer (h :| hs) port (C.KeyHash kh)) linkType lnkId k =
+        B.concat [authority, "/", B.singleton linkType, "#", lnkIdStr, B64.encodeUnpadded k, queryStr]
         where
-          port' = if null port then "" else B.pack (':' : port)
-          khStr = if B.null kh then "" else B64.encodeUnpadded kh <> "&"
-          hosts = if null hs then "" else strEncode (TransportHosts_ hs) <> "/"
-          lnkIdStr = if B.null lnkId then "" else B64.encodeUnpadded lnkId <> "."
+          (authority, paramHosts) = case sch of
+            SLSSimplex -> ("simplex:", h : hs)
+            SLSServer -> ("https://" <> strEncode h, hs)
+          lnkIdStr = if B.null lnkId then "" else B64.encodeUnpadded lnkId <> "/"
+          queryStr = if B.null query then "" else "?" <> query
+          query =
+            strEncode . QSP QEscape $
+              [("h", strEncode (TransportHosts_ paramHosts)) | not (null paramHosts)]
+                <> [("p", B.pack port) | not (null port)]
+                <> [("c", B64.encodeUnpadded kh) | not (B.null kh)]
   strP = (\(ACSL _ l) -> checkConnMode l) <$?> strP
   {-# INLINE strP #-}
 
@@ -1424,30 +1445,41 @@ instance StrEncoding AConnShortLink where
   strEncode (ACSL _ l) = strEncode l
   {-# INLINE strEncode #-}
   strP = do
-    h <- "https://" *> strP
-    port <- A.char ':' *> (B.unpack <$> A.takeWhile1 isDigit) <|> pure ""
-    contactType <- A.char '/' *> contactTypeP
-    keyHash <- optional (A.char '/') *> A.char '#' *> (strP <* A.char '&' <|> pure (C.KeyHash ""))
-    TransportHosts_ hs <- strP <* "/" <|> pure (TransportHosts_ [])
-    let srv = SMPServer (h :| hs) port keyHash
-    case contactType of
+    (sch, h_) <- authorityP <* A.char '/'
+    ct_ <- contactTypeP <* optional (A.char '/') <* A.char '#'
+    case ct_ of
       Nothing -> do
-        lnkId <- strP <* A.char '.'
+        lnkId <- strP <* A.char '/'
         k <- strP
-        pure $ ACSL SCMInvitation $ CSLInvitation srv (SMP.EntityId lnkId) (LinkKey k)
+        srv <- serverQueryP h_
+        pure $ ACSL SCMInvitation $ CSLInvitation sch srv (SMP.EntityId lnkId) (LinkKey k)
       Just ct -> do
         k <- strP
-        pure $ ACSL SCMContact $ CSLContact ct srv (LinkKey k)
+        srv <- serverQueryP h_
+        pure $ ACSL SCMContact $ CSLContact sch ct srv (LinkKey k)
     where
+      authorityP =
+        "simplex:" $> (SLSSimplex, Nothing)
+          <|> "https://" *> ((SLSServer,) . Just <$> strP)
+          <|> fail "bad short link scheme"
       contactTypeP = do
         Just <$> (A.anyChar >>= ctTypeP . toUpper)        
           <|> A.char 'i' $> Nothing
-          <|> fail "unknown link type"
+          <|> fail "unknown short link type"
+      serverQueryP h_ =
+        optional (A.char '?' *> strP) >>= \case
+          Nothing -> maybe noServer (pure . SMPServerOnlyHost) h_
+          Just query -> do
+            hs <- maybe noServer pure . L.nonEmpty . maybe id (:) h_ . maybe [] thList_ =<< queryParam_ "h" query
+            p <- maybe "" show <$> queryParam_ @Word16 "p" query
+            kh <- fromMaybe (C.KeyHash "") <$> queryParam_ "c" query
+            pure $ SMPServer hs p kh
+      noServer = fail "short link without server"
 
 instance ConnectionModeI m => Encoding (ConnShortLink m) where
   smpEncode = \case
-    CSLInvitation srv lnkId (LinkKey k) -> smpEncode (CMInvitation, srv, lnkId, k)
-    CSLContact ct srv (LinkKey k) -> smpEncode (CMContact, ctTypeChar ct, srv, k)
+    CSLInvitation _ srv lnkId (LinkKey k) -> smpEncode (CMInvitation, srv, lnkId, k)
+    CSLContact _ ct srv (LinkKey k) -> smpEncode (CMContact, ctTypeChar ct, srv, k)
   smpP = (\(ACSL _ l) -> checkConnMode l) <$?> smpP
   {-# INLINE smpP #-}
 
@@ -1458,11 +1490,11 @@ instance Encoding AConnShortLink where
     smpP >>= \case
       CMInvitation -> do
         (srv, lnkId, k) <- smpP
-        pure $ ACSL SCMInvitation $ CSLInvitation srv lnkId (LinkKey k)
+        pure $ ACSL SCMInvitation $ CSLInvitation SLSServer srv lnkId (LinkKey k)
       CMContact -> do
         ct <- ctTypeP =<< A.anyChar
         (srv, k) <- smpP
-        pure $ ACSL SCMContact $ CSLContact ct srv (LinkKey k)
+        pure $ ACSL SCMContact $ CSLContact SLSServer ct srv (LinkKey k)
 
 ctTypeP :: Char -> Parser ContactConnType
 ctTypeP = \case
@@ -1482,11 +1514,11 @@ ctTypeChar = \case
 -- the servers passed to this function should be all preset servers, not servers configured by the user.
 shortenShortLink :: NonEmpty SMPServer -> ConnShortLink m -> ConnShortLink m
 shortenShortLink presetSrvs = \case
-  CSLInvitation srv lnkId linkKey -> CSLInvitation (shortServer srv) lnkId linkKey
-  CSLContact ct srv linkKey -> CSLContact ct (shortServer srv) linkKey
+  CSLInvitation sch srv lnkId linkKey -> CSLInvitation sch (shortServer srv) lnkId linkKey
+  CSLContact sch ct srv linkKey -> CSLContact sch ct (shortServer srv) linkKey
   where
     shortServer srv@(SMPServer hs@(h :| _) p kh) =
-      if isPresetServer then SMPServer [h] "" (C.KeyHash "") else srv
+      if isPresetServer then SMPServerOnlyHost h else srv
       where
         isPresetServer = case findPresetServer srv presetSrvs of
           Just (SMPServer hs' p' kh') ->
@@ -1495,14 +1527,17 @@ shortenShortLink presetSrvs = \case
               && kh == kh'
           Nothing -> False
 
+pattern SMPServerOnlyHost :: TransportHost -> SMPServer
+pattern SMPServerOnlyHost h = SMPServer [h] "" (C.KeyHash "")
+
 -- the servers passed to this function should be all preset servers, not servers configured by the user.
 restoreShortLink :: NonEmpty SMPServer -> ConnShortLink m -> ConnShortLink m
 restoreShortLink presetSrvs = \case
-  CSLInvitation srv lnkId linkKey -> CSLInvitation (fullServer srv) lnkId linkKey
-  CSLContact ct srv linkKey -> CSLContact ct (fullServer srv) linkKey
+  CSLInvitation sch srv lnkId linkKey -> CSLInvitation sch (fullServer srv) lnkId linkKey
+  CSLContact sch ct srv linkKey -> CSLContact sch ct (fullServer srv) linkKey
   where
     fullServer = \case
-      s@(SMPServer [_] "" (C.KeyHash "")) -> fromMaybe s $ findPresetServer s presetSrvs
+      s@(SMPServerOnlyHost _) -> fromMaybe s $ findPresetServer s presetSrvs
       s -> s
 
 findPresetServer :: SMPServer -> NonEmpty SMPServer -> Maybe SMPServer

@@ -41,8 +41,8 @@ testServerDBOpts =
 
 serverSchemaDumpTest :: Spec
 serverSchemaDumpTest = do
-  fit "verify and overwrite schema dump" testVerifySchemaDump
-  fit "verify schema down migrations" testSchemaMigrations
+  it "verify and overwrite schema dump" testVerifySchemaDump
+  it "verify schema down migrations" testSchemaMigrations
 
 testVerifySchemaDump :: IO ()
 testVerifySchemaDump = do
