@@ -1407,15 +1407,16 @@ instance ConnectionModeI m => FromJSON (ConnectionLink m) where
 
 instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
   strEncode = \case
-    CSLInvitation srv (SMP.EntityId lnkId) (LinkKey k) -> encLink srv (lnkId <> k) 'i'
-    CSLContact ct srv (LinkKey k) -> encLink srv k $ toLower $ ctTypeChar ct
+    CSLInvitation srv (SMP.EntityId lnkId) (LinkKey k) -> encLink srv lnkId k 'i'
+    CSLContact ct srv (LinkKey k) -> encLink srv "" k $ toLower $ ctTypeChar ct
     where
-      encLink (SMPServer (h :| hs) port (C.KeyHash kh)) linkUri linkType =
-        B.concat ["https://", strEncode h, port', "/", B.singleton linkType, "#", khStr, hosts, B64.encodeUnpadded linkUri]
+      encLink (SMPServer (h :| hs) port (C.KeyHash kh)) lnkId k linkType =
+        B.concat ["https://", strEncode h, port', "/", B.singleton linkType, "#", khStr, hosts, lnkIdStr, B64.encodeUnpadded k]
         where
           port' = if null port then "" else B.pack (':' : port)
+          khStr = if B.null kh then "" else B64.encodeUnpadded kh <> "&"
           hosts = if null hs then "" else strEncode (TransportHosts_ hs) <> "/"
-          khStr = if B.null kh then "" else B64.encodeUnpadded kh <> "@"
+          lnkIdStr = if B.null lnkId then "" else B64.encodeUnpadded lnkId <> "."
   strP = (\(ACSL _ l) -> checkConnMode l) <$?> strP
   {-# INLINE strP #-}
 
@@ -1426,19 +1427,17 @@ instance StrEncoding AConnShortLink where
     h <- "https://" *> strP
     port <- A.char ':' *> (B.unpack <$> A.takeWhile1 isDigit) <|> pure ""
     contactType <- A.char '/' *> contactTypeP
-    keyHash <- optional (A.char '/') *> A.char '#' *> (strP <* A.char '@' <|> pure (C.KeyHash ""))
+    keyHash <- optional (A.char '/') *> A.char '#' *> (strP <* A.char '&' <|> pure (C.KeyHash ""))
     TransportHosts_ hs <- strP <* "/" <|> pure (TransportHosts_ [])
-    linkUri <- strP
     let srv = SMPServer (h :| hs) port keyHash
     case contactType of
-      Nothing
-        | B.length linkUri == 56 ->
-            let (lnkId, k) = B.splitAt 24 linkUri
-             in pure $ ACSL SCMInvitation $ CSLInvitation srv (SMP.EntityId lnkId) (LinkKey k)
-        | otherwise -> fail "bad ConnShortLink: incorrect linkID and key length"
-      Just ct
-        | B.length linkUri == 32 -> pure $ ACSL SCMContact $ CSLContact ct srv (LinkKey linkUri)
-        | otherwise -> fail "bad ConnShortLink: incorrect key length"
+      Nothing -> do
+        lnkId <- strP <* A.char '.'
+        k <- strP
+        pure $ ACSL SCMInvitation $ CSLInvitation srv (SMP.EntityId lnkId) (LinkKey k)
+      Just ct -> do
+        k <- strP
+        pure $ ACSL SCMContact $ CSLContact ct srv (LinkKey k)
     where
       contactTypeP = do
         Just <$> (A.anyChar >>= ctTypeP . toUpper)        
