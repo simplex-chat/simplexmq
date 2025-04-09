@@ -1528,8 +1528,11 @@ shortenShortLink presetSrvs = \case
               && kh == kh'
           Nothing -> False
 
+-- explicit bidirectional is used for ghc 8.10.7 compatibility, [h]/[] patterns are not reversible.
 pattern SMPServerOnlyHost :: TransportHost -> SMPServer
-pattern SMPServerOnlyHost h = SMPServer (h :| []) "" (C.KeyHash "")
+pattern SMPServerOnlyHost h <- SMPServer [h] "" (C.KeyHash "")
+  where
+    SMPServerOnlyHost h = SMPServer [h] "" (C.KeyHash "")
 
 -- the servers passed to this function should be all preset servers, not servers configured by the user.
 restoreShortLink :: NonEmpty SMPServer -> ConnShortLink m -> ConnShortLink m
