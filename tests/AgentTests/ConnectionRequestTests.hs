@@ -293,10 +293,19 @@ connectionRequestTests =
       let contact = CSLContact SLSServer CCTContact
       shortenShortLink [srv] (contact srv (LinkKey "0123456789abcdef0123456789abcdef"))
         `shouldBe` contact shortSrv (LinkKey "0123456789abcdef0123456789abcdef")
+      -- won't shorten link that uses only onion host from preset server
+      shortenShortLink [srv] (contact srvOnion (LinkKey "0123456789abcdef0123456789abcdef"))
+        `shouldBe` contact srvOnion (LinkKey "0123456789abcdef0123456789abcdef")
+      -- will shorten link that uses only public host from preset server
+      shortenShortLink [srv] (contact srv1 (LinkKey "0123456789abcdef0123456789abcdef"))
+        `shouldBe` contact shortSrv (LinkKey "0123456789abcdef0123456789abcdef")
       shortenShortLink [srv] (contact srv2 (LinkKey "0123456789abcdef0123456789abcdef"))
         `shouldBe` contact srv2 (LinkKey "0123456789abcdef0123456789abcdef")
       restoreShortLink [srv] (contact shortSrv (LinkKey "0123456789abcdef0123456789abcdef"))
         `shouldBe` contact srv (LinkKey "0123456789abcdef0123456789abcdef")
+      -- won't change link that has only public host of preset server with keyhash
+      restoreShortLink [srv] (contact srv1 (LinkKey "0123456789abcdef0123456789abcdef"))
+        `shouldBe` contact srv1 (LinkKey "0123456789abcdef0123456789abcdef")
       restoreShortLink [srv2] (contact shortSrv (LinkKey "0123456789abcdef0123456789abcdef"))
         `shouldBe` contact shortSrv (LinkKey "0123456789abcdef0123456789abcdef")
       restoreShortLink [srv] (contact srv2 (LinkKey "0123456789abcdef0123456789abcdef"))
@@ -306,6 +315,9 @@ connectionRequestTests =
 
 shortSrv :: SMPServer
 shortSrv = SMPServer "smp.simplex.im" "" (C.KeyHash "")
+
+srvOnion :: SMPServer
+srvOnion = SMPServer "jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion" "" (C.KeyHash "\215m\248\251")
 
 srv2 :: SMPServer
 srv2 = SMPServer "smp2.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion" "" (C.KeyHash "\215m\248\251")
