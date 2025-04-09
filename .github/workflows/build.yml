@@ -95,7 +95,7 @@ jobs:
             build/${{ matrix.platform_name }}:latest
 
       - name: Build smp-server (postgresql) and tests
-        shell: docker exec -t builder sh {0}
+        shell: docker exec -t builder sh -eu {0}
         run: |
           cabal update
           cabal build --jobs=$(nproc) --enable-tests -fserver_postgres
@@ -119,7 +119,7 @@ jobs:
           docker cp builder:/out/smp-server ./smp-server-postgres-ubuntu-${{ matrix.platform_name }}
 
       - name: Build everything else (standard)
-        shell: docker exec -t builder sh {0}
+        shell: docker exec -t builder sh -eu {0}
         run: |
           cabal build --jobs=$(nproc)
           mkdir -p /out
