@@ -986,7 +986,7 @@ newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys s
              in pure $ CCLink cReq (Just link)
         | otherwise -> throwE $ INTERNAL "different rcv queue address"
       Nothing ->
-        let updated (ConnReqUriData _ vr _ _) = (ConnReqUriData SSSimplex vr [qUri] clientData)
+        let updated (ConnReqUriData _ vr _ _) = (ConnReqUriData SSSimplex vr [qUri'] clientData)
             cReq' = case cReq of
               CRContactUri crData -> CRContactUri (updated crData)
               CRInvitationUri crData e2eParams -> CRInvitationUri (updated crData) e2eParams

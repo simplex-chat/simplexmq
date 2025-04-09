@@ -255,6 +255,7 @@ import UnliftIO.Exception (Exception)
 -- 4 - delivery receipts (7/13/2023)
 -- 5 - post-quantum double ratchet (3/14/2024)
 -- 6 - secure reply queues with provided keys (6/14/2024)
+-- 7 - initialize ratchet on processing confirmation (7/18/2024)
 
 data SMPAgentVersion
 
