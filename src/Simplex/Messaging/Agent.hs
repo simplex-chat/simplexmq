@@ -2583,9 +2583,9 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
       mapM_ (atomically . writeTBQueue subQ) . reverse =<< readTVarIO pending
     processSMP :: forall c. RcvQueue -> Connection c -> ConnData -> BrokerMsg -> TVar [ATransmission] -> AM ()
     processSMP
-      rq@RcvQueue {rcvId = rId, queueMode, e2ePrivKey, e2eDhSecret, status}
+      rq@RcvQueue {rcvId = rId, queueMode, e2ePrivKey, e2eDhSecret, status, smpClientVersion = agreedClientVerion}
       conn
-      cData@ConnData {connId, connAgentVersion, ratchetSyncState = rss}
+      cData@ConnData {connId, connAgentVersion = agreedAgentVersion, ratchetSyncState = rss}
       smpMsg
       pendingMsgs =
         withConnLock c connId "processSMP" $ case smpMsg of
@@ -2604,7 +2604,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                 clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader phVer e2ePubKey_} <-
                   parseMessage msgBody
                 clientVRange <- asks $ smpClientVRange . config
-                unless (phVer `isCompatible` clientVRange) . throwE $ AGENT A_VERSION
+                unless (phVer `isCompatible` clientVRange || phVer <= agreedClientVerion) . throwE $ AGENT A_VERSION
                 case (e2eDhSecret, e2ePubKey_) of
                   (Nothing, Just e2ePubKey) -> do
                     let e2eDh = C.dh' e2ePubKey e2ePrivKey
@@ -2737,7 +2737,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                 let msgAVRange = fromMaybe (versionToRange msgAgentVersion) $ safeVersionRange (minVersion aVRange) msgAgentVersion
                 case msgAVRange `compatibleVersion` aVRange of
                   Just (Compatible av)
-                    | av > connAgentVersion -> do
+                    | av > agreedAgentVersion -> do
                         withStore' c $ \db -> setConnAgentVersion db connId av
                         let cData'' = cData' {connAgentVersion = av} :: ConnData
                         pure $ updateConnection cData'' conn'
@@ -2797,13 +2797,15 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
           parseMessage = liftEither . parse smpP (AGENT A_MESSAGE)
 
           smpConfirmation :: SMP.MsgId -> Connection c -> Maybe C.APublicAuthKey -> C.PublicKeyX25519 -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> ByteString -> VersionSMPC -> VersionSMPA -> AM ()
-          smpConfirmation srvMsgId conn' senderKey e2ePubKey e2eEncryption encConnInfo smpClientVersion agentVersion = do
+          smpConfirmation srvMsgId conn' senderKey e2ePubKey e2eEncryption encConnInfo phVer agentVersion = do
             logServer "<--" c srv rId $ "MSG <CONF>:" <> logSecret' srvMsgId
             AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
             let ConnData {pqSupport} = toConnData conn'
-            unless
-              (agentVersion `isCompatible` smpAgentVRange && smpClientVersion `isCompatible` smpClientVRange)
-              (throwE $ AGENT A_VERSION)
+                -- checking agreed versions to continue connection in case of client/agent version downgrades
+                compatible =
+                  (agentVersion `isCompatible` smpAgentVRange || agentVersion <= agreedAgentVersion)
+                    && (phVer `isCompatible` smpClientVRange || phVer <= agreedClientVerion)
+            unless compatible $ throwE $ AGENT A_VERSION
             case status of
               New -> case (conn', e2eEncryption) of
                 -- party initiating connection
@@ -2820,7 +2822,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                     (Right agentMsgBody, CR.SMDNoChange) ->
                       parseMessage agentMsgBody >>= \case
                         AgentConnInfoReply smpQueues connInfo -> do
-                          processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion}
+                          processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion = phVer}
                           withStore' c $ \db -> updateRcvMsgHash db connId 1 (InternalRcvId 0) (C.sha256Hash agentMsgBody)
                         _ -> prohibited "conf: not AgentConnInfoReply" -- including AgentConnInfo, that is prohibited here in v2
                       where
@@ -2854,7 +2856,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                       notify $ INFO pqSupport connInfo
                       let dhSecret = C.dh' e2ePubKey e2ePrivKey
                       withStore' c $ \db -> do
-                        setRcvQueueConfirmedE2E db rq dhSecret $ min v' smpClientVersion
+                        setRcvQueueConfirmedE2E db rq dhSecret $ min v' phVer
                         updateRcvMsgHash db connId 1 (InternalRcvId 0) (C.sha256Hash agentMsgBody)
                       case senderKey of
                         Just k -> enqueueCmd $ ICDuplexSecure rId k
