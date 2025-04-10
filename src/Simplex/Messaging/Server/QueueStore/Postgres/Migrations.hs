@@ -77,6 +77,10 @@ UPDATE msg_queues SET queue_mode = 'M' WHERE snd_secure IS TRUE;
 
 ALTER TABLE msg_queues DROP COLUMN snd_secure;
 
+UPDATE msg_queues SET recipient_key = ('\x01'::BYTEA || chr(length(recipient_key))::BYTEA || recipient_key);
+
+ALTER TABLE msg_queues RENAME COLUMN recipient_key TO recipient_keys;
+
 CREATE UNIQUE INDEX idx_msg_queues_link_id ON msg_queues(link_id);
     |]
 
@@ -88,11 +92,30 @@ ALTER TABLE msg_queues ADD COLUMN snd_secure BOOLEAN NOT NULL DEFAULT FALSE;
 
 UPDATE msg_queues SET snd_secure = TRUE WHERE queue_mode = 'M';
 
-ALTER TABLE
+DROP INDEX idx_msg_queues_link_id;
+
+ALTER TABLE msg_queues
   DROP COLUMN queue_mode,
   DROP COLUMN link_id,
   DROP COLUMN fixed_data,
   DROP COLUMN user_data;
 
-DROP INDEX idx_msg_queues_link_id;
+DO $$
+  DECLARE bad_id BYTEA;
+  BEGIN
+    SELECT recipient_id INTO bad_id
+    FROM msg_queues
+    WHERE get_byte(recipient_keys, 0) != 1
+      OR get_byte(recipient_keys, 1) != length(recipient_keys) - 2
+    LIMIT 1;
+
+    IF bad_id IS NOT NULL
+    THEN RAISE EXCEPTION 'Cannot downgrade: many keys or incorrect length in recipient_keys for %', encode(bad_id, 'base64');
+    END IF;
+  END;
+$$;
+
+UPDATE msg_queues SET recipient_keys = substring(recipient_keys from 3);
+
+ALTER TABLE msg_queues RENAME COLUMN recipient_keys TO recipient_key;
     |]

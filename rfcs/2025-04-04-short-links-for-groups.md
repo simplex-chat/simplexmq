@@ -59,45 +59,101 @@ While the server domain would be used as the hostname in group link, it may cont
 Pros: separates additional complexity to where it is needed, allowing reliability and redundancy for group ownership.
 Cons: complexity, coupling between SMP and chat protocol.
 
-## Design ideas for group as a separate entity type
+## Design for channel/group as a separate queue mode
 
-The last solution approach seems both the most long-term and also provides the best functionality, so maybe it could be an extensible base.
+Option 1.
 
-Its advantage is that it does not require e2e encryption between owners, as only public keys are shared (although MITM is still possible without verification, mitigated by using multiple chat relays).
+A queue mode "channel" when owners are represented by their individual queues (either a separate mode, or a submode of "channel", or just normal contact address queues). In this case sending message to channel queue would broadcast message to queue owners, without exposing even the number of owners.
 
-The proposal is to have a new entity "asset", and a queue mode "asset". This entity represents a reference to some kind of digital asset, not part of SMP spec. Each link is managed by multiple owners, each represented with "asset" queue.
+Pros:
+- allows chat relays to send messages to all owners (e.g., channel can be secured with the list of snd keys, one per relay).
+- quite easy to evolve from the current design.
+- extensible.
+Cons:
+- close to "solution in search of a problem".
+- does not require data model changes - channel queue would simply have a list of owner "recipient IDs", and each owner queue would also point to channel.
 
-The change from the current design is simple - splitting the link and data from the queue table/record into a separate table, so that the same link can be referenced by multiple queues with different owner IDs. Any of the linked asset queue recipients can modify link data and delete link. The protocol encoding could support multisig, but it can be added later with a separate protocol version. But it would alread allow having multiple owners for link.
+Option 2.
 
-It is also probably correct to require that Ed25519 is used for recipient/owner authorization (and not X25519 authenticators that are used for senders).
+Also a separate queue mode "channel", but instead of having a linked owner queues, it would simply maintain a list of owner keys to maintain the data. In this case, messages cannot be sent to this "queue" at all.
 
-Question 1: should the same signature key be used for signing server commands and owner-owner comms? There may be a benefit in having two different keys, and in contexts visible to both server and owners use server key, and in contexts visible to owners only use signature key inside data.
+Pros:
+- simpler design.
+- we could allow sending messages to it too, with the "main" owner receiving them. This could be negotiated in the protocol.
+- it may be easier to migrate the current groups, as the admin link would be this queue (although for public groups in directory it would have to be recreated anyway).
+- Possibly, when queue is created there should be a flag whether it should accept unsigned messages - then contact addresses would be created with unsigned messages ON, messages queues, once SKEY is universally supported, with unsigned messages OFF, and channel queues with unsigned messages OFF too for new public queues.
+Cons:
+- if no messages are accepted, this is not even a queue.
+- no way to directly contact owners (maybe it is not a downside, as for relays there would be a communication channel anyway as part of the group).
 
-Question 2: should non-owners see server keys of owners? If not, does it suggest a third owner-only data blob? Or should the server simply maintain the currently signed ownership agreement? Or even the history of the agreement changes?
+Option 2 looks more simple and attractive, implementing server broadcast for SMP seems unnecessary, as while it could have been used for simple groups, it does not solve such problems as spam and pre-moderation anyway - it requires a higher level protocol.
 
-Question 3: how would the owner validate the correctness of ownership changes - where this chain will be maintained? Should it maybe be replicated to all owners' "asset" queues? Or will it be a separate "chain" that will be truncated once all owners acknowledge the change? Almost like a separate queue?
+The command to update owner keys would be `RKEY` with the list of keys, and we can make `NEW` accept multiple keys too, although the use case here is less clear.
 
-The protocol change required would be to make sender ID optional in LNK response. Alternatively, link could have its own sender ID and broadcast messages to link owners, and a rule whether messages can be sent without key, and whether this link can be secured with SKEY. Depending on queue type it would be:
+## Multiple owners managing queue data.
 
-- "messaging" queue: can secure, can send messages.
-- "contact" queue: cannot secure (only owner can secure), can send unsigned messages.
-- "asset" queue: cannot secure, cannot send unsigned messages.
+Option 1: Use the same keys in SMP as when signing queue data.
 
-To allow multiple delegates the queue could allow multiple send keys. In case of delegates (chat relays), we could require that only Ed25519 keys are used (for non-repudiation).
+Option 2: Use different keys.
 
-The additional commands required would be to add, get and delete link owners:
-- invite owner (OADD): adds some random server-generated new owner ID to link - this token with the current owner's signature will be included in NEW command (the signed token to be passed out of band). Separate table?
-- remove owner (ODEL): remove owner from link by owner ID (both before and after new owner accepted ownership).
-- get owners (OGET): get current owner IDs and their public keys.
-- how would notification be delivered to the owner when s/he is removed? Some event? Possibly all changes are delivered as messages to each "owner's" asset queue, probably with longer expiration periods?
+The value here could be that the server could validate these signatures too, and also maintain the chain of key changes. While tempting, it is probably unnecessary, and this chain of ownership is better to be maintained on chat relay level, as there are no size constraints on the size of this chain. Also, it is better for metadata privacy to not couple transport and chat protocol keys.
 
-While initially we don't need to build support for multisig in UX, it can be easily added later with this design.
+We still need to bind the mutable data updates to the "genesis" signature key (the one included in the immutable data).
 
-The flow then would be, for new "asset" queue with link - it is created as usual, with "NEW" command, and queueMode QMAsset that is passed linkId and link data.
+The proposed design:
 
-When additional owners want to be added to the group, they would have to create "link" type queue without link ID (thus preventing non-consensual ownership transfer). The flow would be this:
-- group owner(s) offer to become additional owner with the specific new multisig rule, this is sent as a message in chat with signed ID from `OADD` command.
-- the proposed owner will validate that this offer is signed according to the current multisig rule, by loading queue data and current owners (possibly via its ID from `OADD` command, that would also secure this owner ID).
-- if the proposed owner accepts it, s/he will create a new "asset" queue linking it with the same link ID - the server would also accept signed owner ID as a confirmation.
+- when mutable data is signed by genesis key, then it is bound, and no changes is needed.
+- mutable data may be signed by the key of the new owner, in which case mutable part itself must contain the binding. We could also use ring signature to sign the mutable data, concealing which owner signed the data - that would increase the signature size from 64 bytes to `32 * (n + 1)` bytes.
 
-Alternatively, it could be an out-of-band exchange first, when existing owner sends an offer, the new owner accepts it and returns the key (and signed offer), and then this key is sent to the server by the old owner, returning owner ID to the new owner.
+Current mutable data:
+
+```haskell
+data UserLinkData = UserLinkData
+  { agentVRange :: VersionRangeSMPA,
+    userData :: ConnInfo
+  }
+```
+
+Proposed mutable data:
+
+```haskell
+data UserLinkData = UserLinkData
+  { agentVRange :: VersionRangeSMPA,
+    owners :: [OwnerInfo]
+    userData :: ConnInfo
+  }
+
+type OwnerId = ByteString
+
+data OwnerInfo = OwnerInfo
+  { ownerId :: OwnerId, -- unique in the list, application specific - e.g., MemberId
+    ownerKey :: PublicKeyEd25519,
+    -- owner signature of sender ID,
+    -- confirms that the owner agreed with being the owner,
+    -- prevents a member being added as an owner without consent.
+    ownerSig :: SignatureEd25519,
+    -- owner authorization, sig(ownerId || ownerKey, prevKey), where prevKey is either a "genesis key" or some other key previously signed by the genesis key.
+    authOwnerId :: OwnerId, -- null for "genesis"
+    authOwnerSig :: SignatureEd25519
+  }
+```
+
+The size of the OwnerInfo record encoding is:
+- ownerId: 1 + 12
+- ownerKey: 1 + 32
+- ownerSig: 1 + 64
+- ownerAuthId: 1 + 12
+- ownerAuthSig: 1 + 64
+
+~189 bytes, so we should practically limit the number of owners to say 8 - 1 original + 7 addiitonal. Original creator could use a different key as a "genesis" key, to conceal creator identity from other members, and it needs to include the record with memberId anyway.
+
+The structure is simplified, and it does not allow arbitrary ownership changes. Its purpose is not to comprehensively manage ownership changes - while it is possible with a generic blockchain, it seems not appropriate at this stage, - but rather to ensure access continuity and that the server cannot modify the data (although nothing prevents the server from removing the data completely or from serving the previous version of the data).
+
+For example it would only allow any given owner to remove subsequenty added owners, preserving the group link and identity, but it won't allow removing owners that signed this owner authorization. So owners are not equal, with the creator having the highest rank and being able to remove all additional owners, and owners authorise by creator can remove all other owners but themselves and creator, and so on - they have to maintain the chain that authorized themselves, at least. We could explicitely include owner rank into OwnerInfo, or we could require that they are sorted by rank, or the rank can be simply derived from signatures.
+
+When additional owners want to be added to the group, they would have to provide any of the current owners:
+- the key for SMP commands authorization - this will be passed to SMP server together with other keys. There could be either RKEY to pass all keys (some risk to miss some, or of race conditions), or RADD/RGET/RDEL to add and remove recipient keys, which has no risk of race conditions.
+- the signature of the immutable data by their member key included in their profile.
+- the current owner would then include their member key into the queue data, and update it with LSET command. In any case there should be some simple consensus protocol between owners for owner changes, and it has to be maintained as a blockchain by owners and by chat relays, as otherwise it may lead to race conditions with LSET command.
+
+Potentially, there could be one command to update keys and link data, so that they are consistent.

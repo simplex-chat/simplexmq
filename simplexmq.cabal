@@ -482,6 +482,9 @@ test-suite simplexmq-test
       other-modules:
           AgentTests.SchemaDump
           AgentTests.SQLiteTests
+  if flag(server_postgres)
+      other-modules:
+          ServerTests.SchemaDump  
   hs-source-dirs:
       tests
       apps/smp-server/web
@@ -538,10 +541,12 @@ test-suite simplexmq-test
     cpp-options: -DdbPostgres
   else
     build-depends:
-        deepseq ==1.4.*
-      , memory
-      , process
+        memory
       , sqlcipher-simple
+  if !flag(client_postgres) || flag(server_postgres)
+    build-depends:
+        deepseq ==1.4.*
+      , process
   if flag(client_postgres) || flag(server_postgres)
     build-depends:
         postgresql-simple ==0.7.*

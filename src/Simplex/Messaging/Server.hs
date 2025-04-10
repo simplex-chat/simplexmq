@@ -1062,7 +1062,7 @@ verifyTransmission :: forall s. MsgStoreClass s => s -> Maybe (THandleAuth 'TSer
 verifyTransmission ms auth_ tAuth authorized queueId cmd =
   case cmd of
     Cmd SRecipient (NEW NewQueueReq {rcvAuthKey = k}) -> pure $ Nothing `verifiedWith` k
-    Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWith` recipientKey (snd q)) <$> get SRecipient
+    Cmd SRecipient _ -> verifyQueue (\q -> Just q `verifiedWithKeys` recipientKeys (snd q)) <$> get SRecipient
     Cmd SSender (SKEY k) -> verifySecure SSender k
     -- SEND will be accepted without authorization before the queue is secured with KEY, SKEY or LSKEY command
     Cmd SSender SEND {} -> verifyQueue (\q -> if maybe (isNothing tAuth) verify (senderKey $ snd q) then VRVerified (Just q) else VRFailed) <$> get SSender
@@ -1082,6 +1082,8 @@ verifyTransmission ms auth_ tAuth authorized queueId cmd =
     verifySecure p k = verifyQueue (\q -> if k `allowedKey` snd q then Just q `verifiedWith` k else dummyVerify) <$> get p
     verifiedWith :: Maybe (StoreQueue s, QueueRec) -> C.APublicAuthKey -> VerificationResult s
     verifiedWith q_ k = if verify k then VRVerified q_ else VRFailed
+    verifiedWithKeys :: Maybe (StoreQueue s, QueueRec) -> NonEmpty C.APublicAuthKey -> VerificationResult s
+    verifiedWithKeys q_ ks = if any verify ks then VRVerified q_ else VRFailed
     allowedKey k = \case
       QueueRec {queueMode = Just QMMessaging, senderKey} -> maybe True (k ==) senderKey
       _ -> False
@@ -1262,7 +1264,8 @@ client
           SUB -> withQueue subscribeQueue
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
-          KEY sKey -> withQueue $ \q _ -> (corrId,entId,) . either ERR id <$> secureQueue_ q sKey
+          KEY sKey -> withQueue $ \q _ -> either err (corrId,entId,) <$> secureQueue_ q sKey
+          RKEY rKeys -> withQueue $ \q qr -> checkMode QMContact qr $ OK <$$ liftIO (updateKeys (queueStore ms) q rKeys)
           LSET lnkId d ->
             withQueue $ \q qr -> checkMode QMContact qr $ liftIO $ case queueData qr of
               Just (lnkId', _) | lnkId' /= lnkId -> pure $ Left AUTH
@@ -1311,7 +1314,7 @@ client
                         qr =
                           QueueRec
                             { senderId = sndId,
-                              recipientKey = rcvAuthKey,
+                              recipientKeys = [rcvAuthKey],
                               rcvDhSecret = C.dh' rcvDhKey privDhKey,
                               senderKey = Nothing,
                               queueMode,
@@ -1340,7 +1343,7 @@ client
 
         checkMode :: QueueMode -> QueueRec -> M (Either ErrorType BrokerMsg) -> M (Transmission BrokerMsg)
         checkMode qm QueueRec {queueMode} a =
-          (corrId,entId,) . either ERR id
+          either err (corrId,entId,)
             <$> if queueMode == Just qm then a else pure $ Left AUTH
 
         secureQueue_ :: StoreQueue s -> SndPublicAuthKey -> M (Either ErrorType BrokerMsg)

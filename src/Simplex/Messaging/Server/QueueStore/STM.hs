@@ -28,6 +28,7 @@ import Control.Logger.Simple
 import Control.Monad
 import Data.Bitraversable (bimapM)
 import Data.Functor (($>))
+import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Simplex.Messaging.Protocol
@@ -140,6 +141,14 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       delete q = forM (queueData q) $ \(lnkId, _) -> do
         TM.delete lnkId $ links st
         writeTVar qr $ Just q {queueData = Nothing}
+
+  updateKeys :: STMQueueStore q -> q -> NonEmpty RcvPublicAuthKey -> IO (Either ErrorType ())
+  updateKeys st sq rKeys =
+    withQueueRec qr update
+      $>> withLog "updateKeys" st (\s -> logUpdateKeys s (recipientId sq) rKeys)
+    where
+      qr = queueRec sq
+      update q = writeTVar qr $ Just q {recipientKeys = rKeys}
 
   secureQueue :: STMQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   secureQueue st sq sKey =
