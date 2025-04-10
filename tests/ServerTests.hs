@@ -60,6 +60,8 @@ serverTests = do
     describe "NEW and SKEY commands" $ do
       testCreateSndSecure
       testSndSecureProhibited
+    describe "RKEY command to add additional recipient keys" $
+      testCreateUpdateKeys
     describe "NEW, OFF and DEL commands, SEND messages" testCreateDelete
     describe "Stress test" stressTest
     describe "allowNewQueues setting" testAllowNewQueues
@@ -271,6 +273,38 @@ testSndSecureProhibited =
       Resp "dabc" sId2 err <- signSendRecv s sKey ("dabc", sId, SKEY sPub)
       (sId2, sId) #== "secures queue, same queue ID in response"
       (err, ERR AUTH) #== "rejects SKEY when not allowed in NEW command"
+
+testCreateUpdateKeys :: SpecWith (ATransport, AStoreType)
+testCreateUpdateKeys =
+  it "should create (NEW) and updated recipient keys (RKEY)" $ \(ATransport t, msType) ->
+    smpTest t msType $ \h -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "1" NoEntity (Ids rId _sId _srvDh) <- signSendRecv h rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRContact Nothing))))
+      (rPub', rKey') <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      Resp "2" rId1 OK <- signSendRecv h rKey ("2", rId, RKEY [rPub, rPub'])
+      rId1 `shouldBe` rId
+      -- old key still works
+      Resp "3" rId2 (INFO _) <- signSendRecv h rKey ("3", rId, QUE)
+      rId2 `shouldBe` rId
+      -- new key works too
+      Resp "4" _ (INFO _) <- signSendRecv h rKey ("4", rId, QUE)
+      -- remove old key, only keep the new one
+      Resp "5" _ OK <- signSendRecv h rKey' ("5", rId, RKEY [rPub'])
+      -- old key no longer works
+      Resp "6" _ (ERR AUTH) <- signSendRecv h rKey ("6", rId, QUE)
+      -- add old key back
+      Resp "7" _ OK <- signSendRecv h rKey' ("7", rId, RKEY [rPub, rPub'])
+      -- old key works again
+      Resp "8" _ (INFO _) <- signSendRecv h rKey ("8", rId, QUE)
+      -- key can remove itself
+      Resp "9" _ OK <- signSendRecv h rKey ("9", rId, RKEY [rPub'])
+      -- old key does not work
+      Resp "10" _ (ERR AUTH) <- signSendRecv h rKey ("10", rId, QUE)
+      -- new key works
+      Resp "11" _ (INFO _) <- signSendRecv h rKey' ("11", rId, QUE)
+      pure ()
 
 testCreateDelete :: SpecWith (ATransport, AStoreType)
 testCreateDelete =

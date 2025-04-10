@@ -45,7 +45,6 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Database.PostgreSQL.Simple (Binary (..), Only (..), Query, SqlError, (:.) (..))
 import qualified Database.PostgreSQL.Simple as DB
@@ -59,6 +58,8 @@ import Simplex.Messaging.Agent.Client (withLockMap)
 import Simplex.Messaging.Agent.Lock (Lock)
 import Simplex.Messaging.Agent.Store.Postgres (createDBStore, closeDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common
+import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder)
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
@@ -75,8 +76,8 @@ import System.IO (IOMode (..), hFlush, stdout)
 import UnliftIO.STM
 
 #if !defined(dbPostgres)
-import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder, fromTextField_)
-import qualified Simplex.Messaging.Crypto as C
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Simplex.Messaging.Agent.Store.Postgres.DB (fromTextField_)
 import Simplex.Messaging.Encoding.String
 #endif
 
