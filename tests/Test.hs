@@ -25,7 +25,6 @@ import NtfServerTests (ntfServerTests)
 import RemoteControl (remoteControlTests)
 import SMPProxyTests (smpProxyTests)
 import ServerTests
-import ServerTests.SchemaDump
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Transport (TLS, Transport (..))
@@ -45,6 +44,7 @@ import AgentTests.SchemaDump (schemaDumpTest)
 
 #if defined(dbServerPostgres)
 import SMPClient (testServerDBConnectInfo)
+import ServerTests.SchemaDump
 #endif
 
 #if defined(dbPostgres) || defined(dbServerPostgres)

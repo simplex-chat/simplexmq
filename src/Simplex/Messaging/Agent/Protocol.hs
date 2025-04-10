@@ -1081,8 +1081,16 @@ instance Encoding ConnReqUriData where
   smpEncode ConnReqUriData {crAgentVRange, crSmpQueues, crClientData} =
     smpEncode (crAgentVRange, crSmpQueues, Large . encodeUtf8 <$> crClientData)
   smpP = do
-    (crAgentVRange, crSmpQueues, clientData) <- smpP
+    (crAgentVRange, smpQueues, clientData) <- smpP
+    -- This patch to compensate for the fact that queueMode QMContact won't be included in queue encoding,
+    -- until min SMP client version is >= 3 (sndAuthKeySMPClientVersion).
+    -- This is possible because SMP encoding of ConnReqUriData was not used prior to SMP client version 4.
+    let crSmpQueues = L.map patchQueueMode smpQueues
     pure ConnReqUriData {crScheme = SSSimplex, crAgentVRange, crSmpQueues, crClientData = safeDecodeUtf8 . unLarge <$> clientData}
+    where
+      patchQueueMode q@SMPQueueUri {queueAddress = a} = case a of
+        SMPQueueAddress {queueMode = Nothing} -> q {queueAddress = a {queueMode = Just QMContact}} :: SMPQueueUri
+        _ -> q
 
 connReqUriP' :: forall m. ConnectionModeI m => Maybe ServiceScheme -> Parser (ConnectionRequestUri m)
 connReqUriP' overrideScheme = do

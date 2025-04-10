@@ -241,6 +241,8 @@ import Simplex.Messaging.Version.Internal
 -- SMP client protocol version history:
 -- 1 - binary protocol encoding (1/1/2022)
 -- 2 - multiple server hostnames and versioned queue addresses (8/12/2022)
+-- 3 - faster handshake: SKEY command for sender to secure queue (6/30/2024, SMP protocol version 9)
+-- 4 - short connection links with stored data (3/30/2025, SMP protocol version 15)
 
 data SMPClientVersion
 

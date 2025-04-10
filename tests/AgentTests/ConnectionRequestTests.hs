@@ -4,6 +4,7 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
@@ -40,17 +41,23 @@ queueAddr =
     { smpServer = srv,
       senderId = EntityId "\223\142z\251",
       dhPublicKey = testDhKey,
-      queueMode = Nothing
+      queueMode = Just QMMessaging
     }
 
-queueAddrSK :: SMPQueueAddress
-queueAddrSK = queueAddr {queueMode = Just QMMessaging}
+queueAddrNoQM :: SMPQueueAddress
+queueAddrNoQM = queueAddr {queueMode = Nothing}
+
+queueAddrContact :: SMPQueueAddress
+queueAddrContact = queueAddr {queueMode = Just QMContact}
 
 queueAddr1 :: SMPQueueAddress
 queueAddr1 = queueAddr {smpServer = srv1}
 
 queueAddrNoPort :: SMPQueueAddress
 queueAddrNoPort = queueAddr {smpServer = srv {port = ""}}
+
+queueAddrNoPortNoQM :: SMPQueueAddress
+queueAddrNoPortNoQM = queueAddrNoQM {smpServer = srv {port = ""}}
 
 queueAddrNoPort1 :: SMPQueueAddress
 queueAddrNoPort1 = queueAddr {smpServer = srv1 {port = ""}}
@@ -59,26 +66,32 @@ queueAddrNoPort1 = queueAddr {smpServer = srv1 {port = ""}}
 queue :: SMPQueueUri
 queue = SMPQueueUri supportedSMPClientVRange queueAddr
 
-queueSK :: SMPQueueUri
-queueSK = SMPQueueUri supportedSMPClientVRange queueAddrSK
+queueNoQM :: SMPQueueUri
+queueNoQM = SMPQueueUri supportedSMPClientVRange queueAddrNoQM
+
+queueContact :: SMPQueueUri
+queueContact = SMPQueueUri supportedSMPClientVRange queueAddrContact
 
 queueStr :: ByteString
-queueStr = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-4&dh=" <> url testDhKeyStr <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"
+queueStr = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-4&dh=" <> url testDhKeyStr <> "&q=m&k=s" <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"
 
-queueStrSK :: ByteString
-queueStrSK = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-4&dh=" <> url testDhKeyStr <> "&q=m&k=s" <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"
+queueStrNoQM :: ByteString
+queueStrNoQM = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-4&dh=" <> url testDhKeyStr <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"
+
+queueStrContact :: ByteString
+queueStrContact = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-4&dh=" <> url testDhKeyStr <> "&q=c" <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"
 
 queue1 :: SMPQueueUri
 queue1 = SMPQueueUri supportedSMPClientVRange queueAddr1
 
 queue1Str :: ByteString
-queue1Str = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-4&dh=" <> url testDhKeyStr
+queue1Str = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-4&dh=" <> url testDhKeyStr <> "&q=m&k=s"
 
 queueV1 :: SMPQueueUri
-queueV1 = SMPQueueUri (mkVersionRange (VersionSMPC 1) (VersionSMPC 1)) queueAddr
+queueV1 = SMPQueueUri (mkVersionRange (VersionSMPC 1) (VersionSMPC 1)) queueAddrNoQM
 
 queueV1NoPort :: SMPQueueUri
-queueV1NoPort = (queueV1 :: SMPQueueUri) {queueAddress = queueAddrNoPort}
+queueV1NoPort = (queueV1 :: SMPQueueUri) {queueAddress = queueAddrNoPortNoQM}
 
 -- version range 2-3 uses new encoding
 -- it is fixed/changed in v5.8.2.
@@ -86,10 +99,10 @@ queueNew :: SMPQueueUri
 queueNew = SMPQueueUri (mkVersionRange (VersionSMPC 2) currentSMPClientVersion) queueAddr
 
 queueNewStr :: ByteString
-queueNewStr = "smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion:5223/3456-w==#/?v=2-4&dh=" <> url testDhKeyStr
+queueNewStr = "smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion:5223/3456-w==#/?v=2-4&dh=" <> url testDhKeyStr <> "&q=m&k=s"
 
 queueNewStr' :: ByteString
-queueNewStr' = "smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion:5223/3456-w==#/?v=2-4&dh=" <> testDhKeyStr
+queueNewStr' = "smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion:5223/3456-w==#/?v=2-4&dh=" <> testDhKeyStr <> "&q=m&k=s"
 
 queueNewNoPort :: SMPQueueUri
 queueNewNoPort = (queueNew :: SMPQueueUri) {queueAddress = queueAddrNoPort}
@@ -98,7 +111,7 @@ queueNew1 :: SMPQueueUri
 queueNew1 = SMPQueueUri (mkVersionRange (VersionSMPC 2) currentSMPClientVersion) queueAddr1
 
 queueNew1Str :: ByteString
-queueNew1Str = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=2-4&dh=" <> url testDhKeyStr
+queueNew1Str = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=2-4&dh=" <> url testDhKeyStr <> "&q=m&k=s"
 
 queueNew1NoPort :: SMPQueueUri
 queueNew1NoPort = (queueNew1 :: SMPQueueUri) {queueAddress = queueAddrNoPort1}
@@ -118,8 +131,11 @@ connReqData =
       crClientData = Nothing
     }
 
-connReqDataSK :: ConnReqUriData
-connReqDataSK = connReqData {crSmpQueues = [queueSK]}
+connReqDataNoQM :: ConnReqUriData
+connReqDataNoQM = connReqData {crSmpQueues = [queueNoQM]}
+
+connReqDataContact :: ConnReqUriData
+connReqDataContact = connReqData {crSmpQueues = [queueContact]}
 
 connReqData1 :: ConnReqUriData
 connReqData1 = connReqData {crSmpQueues = [queue1]}
@@ -154,8 +170,11 @@ connectionRequest = ACR SCMInvitation invConnRequest
 invConnRequest :: ConnectionRequestUri 'CMInvitation
 invConnRequest = CRInvitationUri connReqData testE2ERatchetParams
 
-connectionRequestSK :: AConnectionRequestUri
-connectionRequestSK = ACR SCMInvitation $ CRInvitationUri connReqDataSK testE2ERatchetParams
+connectionRequestNoQM :: AConnectionRequestUri
+connectionRequestNoQM = ACR SCMInvitation $ CRInvitationUri connReqDataNoQM testE2ERatchetParams
+
+connectionRequestContact :: AConnectionRequestUri
+connectionRequestContact = ACR SCMContact $ CRContactUri connReqDataContact
 
 connectionRequestV1 :: AConnectionRequestUri
 connectionRequestV1 = ACR SCMInvitation $ CRInvitationUri connReqDataV1 testE2ERatchetParams
@@ -218,14 +237,15 @@ connectionRequestTests =
   describe "connection request parsing / serializing" $ do
     it "should serialize and parse SMP queue URIs" $ do
       queue #==# queueStr
-      queue #== ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=1-4&extra_param=abc&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion")
-      queueSK #==# queueStrSK
+      queue #== ("smp://1234-w==@smp.simplex.im:5223/3456-w==#" <> testDhKeyStr <> "/?v=1-4&extra_param=abc&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&q=m&k=s")
+      queueNoQM #==# queueStrNoQM
+      queueContact #==# queueStrContact
       queue1 #==# queue1Str
       queueNew #==# queueNewStr
       queueNew #== queueNewStr'
       queueNew1 #==# queueNew1Str
-      queueNewNoPort #==# ("smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion/3456-w==#/?v=2-4&dh=" <> url testDhKeyStr)
-      queueNew1NoPort #==# ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=2-4&dh=" <> url testDhKeyStr)
+      queueNewNoPort #==# ("smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion/3456-w==#/?v=2-4&dh=" <> url testDhKeyStr <> "&q=m&k=s")
+      queueNew1NoPort #==# ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=2-4&dh=" <> url testDhKeyStr <> "&q=m&k=s")
       queueV1 #==# ("smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1&dh=" <> url testDhKeyStr <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion")
       queueV1 #== ("smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion:5223/3456-w==#" <> testDhKeyStr)
       queueV1 #== ("smp://1234-w==@smp.simplex.im:5223/3456-w==#/?extra_param=abc&v=1&dh=" <> testDhKeyStr <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion")
@@ -236,7 +256,7 @@ connectionRequestTests =
     it "should serialize and parse connection invitations and contact addresses" $ do
       connectionRequest #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
       connectionRequest #== ("https://simplex.chat/invitation#/?v=2-7&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequestSK #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueStrSK <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequestNoQM #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueStrNoQM <> "&e2e=" <> testE2ERatchetParamsStrUri)
       connectionRequest1 #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queue1Str <> "&e2e=" <> testE2ERatchetParamsStrUri)
       connectionRequest2queues #==# ("simplex:/invitation#/?v=2-7&smp=" <> url (queueStr <> ";" <> queueStr) <> "&e2e=" <> testE2ERatchetParamsStrUri)
       connectionRequestNew #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueNewStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
@@ -256,7 +276,8 @@ connectionRequestTests =
       contactAddressClientData #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueStr <> "&data=" <> url "{\"type\":\"group_link\", \"group_link_id\":\"abc\"}")
     it "should serialize / parse queue address, connection invitations and contact addresses as binary" $ do
       smpEncodingTest queue
-      smpEncodingTest queueSK
+      smpEncodingTest queueNoQM -- this passes, no queue mode patch in SMPQueueUri encoding
+      -- smpEncodingTest queueContact -- this fails until SMP client min version is >= sndAuthKeySMPClientVersion
       smpEncodingTest queue1
       smpEncodingTest queueNew
       smpEncodingTest queueNew1
@@ -265,7 +286,8 @@ connectionRequestTests =
       smpEncodingTest queueV1
       smpEncodingTest queueV1NoPort
       smpEncodingTest connectionRequest
-      smpEncodingTest connectionRequestSK
+      -- smpEncodingTest connectionRequestNoQM -- this fails, because of queue mode patch
+      smpEncodingTest connectionRequestContact  -- this passes because of queue mode patch in ConnReqUriData encoding
       smpEncodingTest connectionRequest1
       smpEncodingTest connectionRequest2queues
       smpEncodingTest connectionRequestNew
@@ -311,6 +333,7 @@ connectionRequestTests =
       restoreShortLink [srv] (contact srv2 (LinkKey "0123456789abcdef0123456789abcdef"))
         `shouldBe` contact srv2 (LinkKey "0123456789abcdef0123456789abcdef")
   where
+    smpEncodingTest :: (Encoding a, Eq a, Show a, HasCallStack) => a -> Expectation
     smpEncodingTest a = smpDecode (smpEncode a) `shouldBe` Right a
 
 shortSrv :: SMPServer
