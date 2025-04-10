@@ -149,6 +149,7 @@ instance StrEncoding SLRTag where
         "LINK" $> CreateLink_,
         "LDELETE" $> DeleteLink_,
         "SECURE" $> SecureQueue_,
+        "KEYS" $> UpdateKeys_,
         "NOTIFIER" $> AddNotifier_,
         "SUSPEND" $> SuspendQueue_,
         "BLOCK" $> BlockQueue_,

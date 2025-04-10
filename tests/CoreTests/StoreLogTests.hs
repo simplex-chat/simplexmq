@@ -14,6 +14,7 @@ import CoreTests.MsgStoreTests
 import Crypto.Random (ChaChaDRG)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (partitionEithers)
+import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
@@ -56,15 +57,16 @@ deriving instance Eq NtfCreds
 storeLogTests :: Spec
 storeLogTests =
   forM_ [QMMessaging, QMContact] $ \qm -> do
-    ((rId, qr), ntfCreds, date) <- runIO $ do
-      g <- C.newRandom
+    g <- runIO C.newRandom
+    ((rId, qr), ntfCreds, date) <- runIO $
       (,,) <$> testNewQueueRec g qm <*> testNtfCreds g <*> getSystemDate
     ((rId', qr'), lnkId, qd) <- runIO $ do
-      g <- C.newRandom
       lnkId <- atomically $ EntityId <$> C.randomBytes 24 g
       let qd = (EncDataBytes "fixed data", EncDataBytes "user data")
       q <- testNewQueueRecData g qm (Just (lnkId, qd))
       pure (q, lnkId, qd)
+    let pubKey = fst <$> atomically (C.generateAuthKeyPair C.SEd25519 g)
+    newKeys <- runIO $ L.fromList <$> sequence [pubKey, pubKey]
     testSMPStoreLog
       ("SMP server store log, queueMode = " <> show qm)
       [ SLTC
@@ -120,6 +122,12 @@ storeLogTests =
             saved = [CreateQueue rId qr, UpdateTime rId date],
             compacted = [CreateQueue rId qr {updatedAt = Just date}],
             state = M.fromList [(rId, qr {updatedAt = Just date})]
+          },
+        SLTC
+          { name = "update recipient keys",
+            saved = [CreateQueue rId qr, UpdateKeys rId newKeys],
+            compacted = [CreateQueue rId qr {recipientKeys = newKeys}],
+            state = M.fromList [(rId, qr {recipientKeys = newKeys})]
           }
       ]
 
