@@ -142,7 +142,7 @@
     class="hidden xl:block h-screen pt-[66px] bg-white dark:bg-gradient-radial-mobile dark:lg:bg-gradient-radial">
     <div class="container m-auto h-full flex items-center justify-between px-5">
       <div class="flex flex-col items-start justify-center w-full">
-        <h1 class="text-[38px] leading-[43px] font-bold max-w-[500px] mb-[30px] primary-header-contact">1-time link to connect on SimpleX&nbsp;network</h1>
+        <h1 class="text-[38px] leading-[43px] font-bold max-w-[500px] mb-[30px] primary-header-contact">This is a one-time link of the SimpleX&nbsp;network user</h1>
         <h2
           class="text-[20px] leading-[28px] text-[#606C71] dark:text-white font-bold max-w-[475px] mb-[80px] secondary-header-contact">
           Scan the QR code with the SimpleX Chat app on your phone or tablet.</h2>
@@ -183,7 +183,7 @@
     class="block xl:hidden pt-[106px] py-[90px] bg-white dark:bg-gradient-radial-mobile dark:lg:bg-gradient-radial">
     <div class="container m-auto px-5">
       <div class="flex flex-col items-center">
-        <h1 class="text-[28px] font-bold text-center max-w-[602px] mb-[40px] primary-header-contact">1-time link to connect on SimpleX&nbsp;network</h1>
+        <h1 class="text-[28px] font-bold text-center max-w-[602px] mb-[40px] primary-header-contact">This is a one-time link of the SimpleX&nbsp;network user</h1>
         <p class="text-[20px] leading-[28px] text-grey-black dark:text-white font-medium mb-[30px]">To make a connection:</p>
         <div
           class="flex flex-col justify-center items-center p-4 w-full max-w-[468px] min-h-[131px] rounded-[30px] border-[1px] border-[#A8B0B4] dark:border-white border-opacity-60 mb-6 relative">
@@ -507,9 +507,9 @@
       if (url.includes('/g') || url.includes('&data=%7B%22groupLinkId%22%3A')) {
         element.innerHTML = 'This is a public group address on SimpleX&nbsp;network'
       } else if (url.includes('/a') || url.includes('/contact')) {
-        element.innerHTML = 'This is a public user address on SimpleX&nbsp;network'
+        element.innerHTML = 'This is a public address of the SimpleX&nbsp;network user'
       } else if (url.includes('/i') || url.includes('/invitation')) {
-        element.innerHTML = '1-time link to connect on SimpleX&nbsp;network'
+        element.innerHTML = 'This is a one-time link of the SimpleX&nbsp;network user'
       } else if (url.includes('/c')) {
         element.innerHTML = 'This is a public channel address on SimpleX&nbsp;network'
       }
