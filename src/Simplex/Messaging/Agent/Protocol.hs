@@ -21,6 +21,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 -- |
 -- Module      : Simplex.Messaging.Agent.Protocol
@@ -117,6 +118,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnShortLink (..),
     AConnShortLink (..),
     CreatedConnLink (..),
+    ACreatedConnLink (..),
     ContactConnType (..),
     ShortLinkScheme (..),
     LinkKey (..),
@@ -164,8 +166,9 @@ module Simplex.Messaging.Agent.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
-import Data.Aeson (FromJSON (..), ToJSON (..))
+import Data.Aeson (FromJSON (..), ToJSON (..), Value (..), (.:), (.:?))
 import qualified Data.Aeson.TH as J
+import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Base64.URL as B64
@@ -1404,6 +1407,10 @@ data ConnectionLink m = CLFull (ConnectionRequestUri m) | CLShort (ConnShortLink
 data CreatedConnLink m = CCLink {connFullLink :: ConnectionRequestUri m, connShortLink :: Maybe (ConnShortLink m)}
   deriving (Eq, Show)
 
+data ACreatedConnLink = forall m. ConnectionModeI m => ACCL (SConnectionMode m) (CreatedConnLink m)
+
+deriving instance Show ACreatedConnLink
+
 data AConnectionLink = forall m. ConnectionModeI m => ACL (SConnectionMode m) (ConnectionLink m)
 
 deriving instance Show AConnectionLink
@@ -1911,3 +1918,15 @@ instance ConnectionModeI m => FromJSON (CreatedConnLink m) where
 instance ConnectionModeI m => ToJSON (CreatedConnLink m) where
   toEncoding = $(J.mkToEncoding defaultJSON ''CreatedConnLink)
   toJSON = $(J.mkToJSON defaultJSON ''CreatedConnLink)
+
+instance FromJSON ACreatedConnLink where
+  parseJSON (Object v) = do
+    ACR m cReq <- v .: "connFullLink"
+    shortLink <- v .:? "connShortLink"
+    pure $ ACCL m $ CCLink cReq shortLink
+  parseJSON invalid =
+    JT.prependFailure "bad ACreatedConnLink, " (JT.typeMismatch "Object" invalid)
+
+instance ToJSON ACreatedConnLink where
+  toEncoding (ACCL _ ccLink) = toEncoding ccLink
+  toJSON (ACCL _ ccLink) = toJSON ccLink
