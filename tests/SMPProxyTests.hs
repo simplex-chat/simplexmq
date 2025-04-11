@@ -36,7 +36,7 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
-import Simplex.Messaging.Protocol (EncRcvMsgBody (..), MsgBody, RcvMessage (..), SubscriptionMode (..), maxMessageLength, noMsgFlags, pattern NoEntity)
+import Simplex.Messaging.Protocol (EncRcvMsgBody (..), MsgBody, QueueReqData (..), RcvMessage (..), SubscriptionMode (..), maxMessageLength, noMsgFlags, pattern NoEntity)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (SQSType (..))
@@ -177,7 +177,7 @@ deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   -- prepare receiving queue
   (rPub, rPriv) <- atomically $ C.generateAuthKeyPair alg g
   (rdhPub, rdhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-  SMP.QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- runExceptT' $ createSMPQueue rc (rPub, rPriv) rdhPub (Just "correct") SMSubscribe False
+  SMP.QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- runExceptT' $ createSMPQueue rc Nothing (rPub, rPriv) rdhPub (Just "correct") SMSubscribe (QRMessaging Nothing)
   let dec = decryptMsgV3 $ C.dh' srvDh rdhPriv
   -- get proxy session
   sess0 <- runExceptT' $ connectSMPProxiedRelay pc relayServ (Just "correct")
@@ -224,7 +224,7 @@ agentDeliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => (NonEmpty 
 agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, bViaProxy) alg msg1 msg2 baseId =
   withAgent 1 aCfg (servers aTestCfg) testDB $ \alice ->
     withAgent 2 aCfg (servers bTestCfg) testDB2 $ \bob -> runRight_ $ do
-      (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
+      (bobId, CCLink qInfo Nothing) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
       aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
       sqSecured <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
@@ -257,7 +257,7 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
   where
     msgId = subtract baseId . fst
     aCfg = agentCfg {sndAuthAlg = C.AuthAlg alg, rcvAuthAlg = C.AuthAlg alg}
-    servers (srvs, smpProxyMode, _) = (initAgentServersProxy smpProxyMode SPFAllow) {smp = userServers srvs}
+    servers (srvs, smpProxyMode, _) = (initAgentServersProxy_ smpProxyMode SPFAllow) {smp = userServers srvs}
 
 agentDeliverMessagesViaProxyConc :: [NonEmpty SMPServer] -> [MsgBody] -> IO ()
 agentDeliverMessagesViaProxyConc agentServers msgs =
@@ -280,7 +280,7 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
     -- agent connections have to be set up in advance
     -- otherwise the CONF messages would get mixed with MSG
     prePair alice bob = do
-      (bobId, qInfo) <- runExceptT' $ A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
+      (bobId, CCLink qInfo Nothing) <- runExceptT' $ A.createConnection alice 1 True SCMInvitation Nothing Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
       aliceId <- runExceptT' $ A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
       sqSecured <- runExceptT' $ A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
@@ -324,19 +324,19 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
       logDebug "run finished"
     pqEnc = CR.PQEncOn
     aCfg = agentCfg {sndAuthAlg = C.AuthAlg C.SEd448, rcvAuthAlg = C.AuthAlg C.SEd448}
-    servers srvs = (initAgentServersProxy SPMAlways SPFAllow) {smp = userServers srvs}
+    servers srvs = (initAgentServersProxy_ SPMAlways SPFAllow) {smp = userServers srvs}
 
 agentViaProxyVersionError :: IO ()
 agentViaProxyVersionError =
   withAgent 1 agentCfg (servers [SMPServer testHost testPort testKeyHash]) testDB $ \alice -> do
     Left (A.BROKER _ (TRANSPORT TEVersion)) <-
       withAgent 2 agentCfg (servers [SMPServer testHost2 testPort2 testKeyHash]) testDB2 $ \bob -> runExceptT $ do
-        (_bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
+        (_bobId, CCLink qInfo Nothing) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
         aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
         A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     pure ()
   where
-    servers srvs = (initAgentServersProxy SPMUnknown SPFProhibit) {smp = userServers srvs}
+    servers srvs = (initAgentServersProxy_ SPMUnknown SPFProhibit) {smp = userServers srvs}
 
 agentViaProxyRetryOffline :: IO ()
 agentViaProxyRetryOffline = do
@@ -351,7 +351,7 @@ agentViaProxyRetryOffline = do
       let pqEnc = CR.PQEncOn
       withServer $ \_ -> do
         (aliceId, bobId) <- withServer2 $ \_ -> runRight $ do
-          (bobId, qInfo) <- A.createConnection alice 1 True SCMInvitation Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
+          (bobId, CCLink qInfo Nothing) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
           aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
           sqSecured <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
           liftIO $ sqSecured `shouldBe` True
@@ -408,7 +408,7 @@ agentViaProxyRetryOffline = do
     aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
     baseId = 1
     msgId = subtract baseId . fst
-    servers srv = (initAgentServersProxy SPMAlways SPFProhibit) {smp = userServers [srv]}
+    servers srv = initAgentServersProxy {smp = userServers [srv]}
 
 agentViaProxyRetryNoSession :: IO ()
 agentViaProxyRetryNoSession = do
@@ -428,7 +428,7 @@ agentViaProxyRetryNoSession = do
           pure ()
   where
     withServer2 = withSmpServerConfigOn (transport @TLS) proxyCfgJ2 testPort2
-    servers srv = (initAgentServersProxy SPMAlways SPFProhibit) {smp = userServers [srv]}
+    servers srv = initAgentServersProxy {smp = userServers [srv]}
 
 testNoProxy :: AStoreType -> IO ()
 testNoProxy msType = do

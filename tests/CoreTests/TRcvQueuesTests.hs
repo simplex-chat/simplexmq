@@ -17,7 +17,7 @@ import Simplex.Messaging.Agent.Protocol (ConnId, QueueStatus (..), UserId)
 import Simplex.Messaging.Agent.Store (DBQueueId (..), RcvQueue, StoredRcvQueue (..))
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (EntityId (..), RecipientId, SMPServer, pattern NoEntity, pattern VersionSMPC)
+import Simplex.Messaging.Protocol (EntityId (..), RecipientId, SMPServer, QueueMode (..), pattern NoEntity, pattern VersionSMPC)
 import Test.Hspec
 import UnliftIO
 
@@ -197,7 +197,8 @@ dummyRQ userId server connId rcvId =
       e2ePrivKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOpk",
       e2eDhSecret = Nothing,
       sndId = NoEntity,
-      sndSecure = True,
+      queueMode = Just QMMessaging,
+      shortLink = Nothing,
       status = New,
       dbQueueId = DBQueueId 0,
       primary = True,

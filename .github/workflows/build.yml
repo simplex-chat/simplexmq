@@ -46,10 +46,23 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: simplex-chat/docker-setup-buildx-action@v3
+
+      - name: Install PostgreSQL 15 client tools
+        if: matrix.os == '22.04'
+        shell: bash
+        run: |
+          # Import the repository signing key
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          # Add the PostgreSQL APT repository
+          sudo sh -c 'echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          # Update repository and install postgresql tools
+          sudo apt update
+          sudo apt -y install postgresql-client-15
 
       - name: Build and cache Docker image
-        uses: docker/build-push-action@v6
+        uses: simplex-chat/docker-build-push-action@v6
         with:
           context: .
           load: true
@@ -82,7 +95,7 @@ jobs:
             build/${{ matrix.platform_name }}:latest
 
       - name: Build smp-server (postgresql) and tests
-        shell: docker exec -t builder sh {0}
+        shell: docker exec -t builder sh -eu {0}
         run: |
           cabal update
           cabal build --jobs=$(nproc) --enable-tests -fserver_postgres
@@ -106,7 +119,7 @@ jobs:
           docker cp builder:/out/smp-server ./smp-server-postgres-ubuntu-${{ matrix.platform_name }}
 
       - name: Build everything else (standard)
-        shell: docker exec -t builder sh {0}
+        shell: docker exec -t builder sh -eu {0}
         run: |
           cabal build --jobs=$(nproc)
           mkdir -p /out
@@ -127,7 +140,7 @@ jobs:
       - name: Build changelog
         if: startsWith(github.ref, 'refs/tags/v')
         id: build_changelog
-        uses: mikepenz/release-changelog-builder-action@v5
+        uses: simplex-chat/release-changelog-builder-action@v5
         with:
           configuration: .github/changelog_conf.json
           failOnError: true
@@ -138,7 +151,7 @@ jobs:
 
       - name: Create release
         if: startsWith(github.ref, 'refs/tags/v') && matrix.ghc != '8.10.7'
-        uses: softprops/action-gh-release@v2
+        uses: simplex-chat/action-gh-release@v2
         with:
           body: |
             See full changelog [here](https://github.com/simplex-chat/simplexmq/blob/master/CHANGELOG.md).

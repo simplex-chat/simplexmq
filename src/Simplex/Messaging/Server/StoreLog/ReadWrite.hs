@@ -16,7 +16,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol
+import Simplex.Messaging.Protocol (ErrorType, RecipientId, SParty (..))
 import Simplex.Messaging.Server.QueueStore (QueueRec)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
@@ -42,7 +42,10 @@ readQueueStore tty mkQ f st = readLogLines tty f $ \_ -> processLine
         procLogRecord :: StoreLogRecord -> IO ()
         procLogRecord = \case
           CreateQueue rId qr -> addQueue_ st mkQ rId qr >>= qError rId "CreateQueue"
+          CreateLink rId lnkId d -> withQueue rId "CreateLink" $ \q -> addQueueLinkData st q lnkId d
+          DeleteLink rId -> withQueue rId "DeleteLink" $ \q -> deleteQueueLinkData st q
           SecureQueue qId sKey -> withQueue qId "SecureQueue" $ \q -> secureQueue st q sKey
+          UpdateKeys rId rKeys -> withQueue rId "UpdateKeys" $ \q -> updateKeys st q rKeys
           AddNotifier qId ntfCreds -> withQueue qId "AddNotifier" $ \q -> addQueueNotifier st q ntfCreds
           SuspendQueue qId -> withQueue qId "SuspendQueue" $ suspendQueue st
           BlockQueue qId info -> withQueue qId "BlockQueue" $ \q -> blockQueue st q info

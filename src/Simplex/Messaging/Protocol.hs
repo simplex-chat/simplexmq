@@ -57,7 +57,13 @@ module Simplex.Messaging.Protocol
     ProtocolEncoding (..),
     Command (..),
     SubscriptionMode (..),
-    SenderCanSecure,
+    NewQueueReq (..),
+    QueueReqData (..),
+    QueueMode (..),
+    QueueLinkData,
+    EncFixedDataBytes,
+    EncUserDataBytes,
+    EncDataBytes (..),
     Party (..),
     Cmd (..),
     DirectParty,
@@ -108,6 +114,7 @@ module Simplex.Messaging.Protocol
     QueueId,
     RecipientId,
     SenderId,
+    LinkId,
     NotifierId,
     RcvPrivateAuthKey,
     RcvPublicAuthKey,
@@ -140,6 +147,8 @@ module Simplex.Messaging.Protocol
     MsgFlags (..),
     initialSMPClientVersion,
     currentSMPClientVersion,
+    senderCanSecure,
+    queueReqMode,
     userProtocol,
     rcvMessageMeta,
     noMsgFlags,
@@ -161,6 +170,7 @@ module Simplex.Messaging.Protocol
     legacyStrEncodeServer,
     srvHostnamesSMPClientVersion,
     sndAuthKeySMPClientVersion,
+    shortLinksSMPClientVersion,
     sameSrvAddr,
     sameSrvAddr',
     noAuthSrv,
@@ -215,6 +225,7 @@ import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import qualified GHC.TypeLits as TE
 import qualified GHC.TypeLits as Type
 import Network.Socket (ServiceName)
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -230,6 +241,8 @@ import Simplex.Messaging.Version.Internal
 -- SMP client protocol version history:
 -- 1 - binary protocol encoding (1/1/2022)
 -- 2 - multiple server hostnames and versioned queue addresses (8/12/2022)
+-- 3 - faster handshake: SKEY command for sender to secure queue (6/30/2024, SMP protocol version 9)
+-- 4 - short connection links with stored data (3/30/2025, SMP protocol version 15)
 
 data SMPClientVersion
 
@@ -251,8 +264,11 @@ srvHostnamesSMPClientVersion = VersionSMPC 2
 sndAuthKeySMPClientVersion :: VersionSMPC
 sndAuthKeySMPClientVersion = VersionSMPC 3
 
+shortLinksSMPClientVersion :: VersionSMPC
+shortLinksSMPClientVersion = VersionSMPC 4
+
 currentSMPClientVersion :: VersionSMPC
-currentSMPClientVersion = VersionSMPC 3
+currentSMPClientVersion = VersionSMPC 4
 
 supportedSMPClientVRange :: VersionRangeSMPC
 supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClientVersion
@@ -281,7 +297,7 @@ e2eEncMessageLength :: Int
 e2eEncMessageLength = 16000 -- 15988 .. 16005
 
 -- | SMP protocol clients
-data Party = Recipient | Sender | Notifier | ProxiedClient
+data Party = Recipient | Sender | Notifier | LinkClient | ProxiedClient
   deriving (Show)
 
 -- | Singleton types for SMP protocol clients
@@ -289,12 +305,14 @@ data SParty :: Party -> Type where
   SRecipient :: SParty Recipient
   SSender :: SParty Sender
   SNotifier :: SParty Notifier
+  SSenderLink :: SParty LinkClient 
   SProxiedClient :: SParty ProxiedClient
 
 instance TestEquality SParty where
   testEquality SRecipient SRecipient = Just Refl
   testEquality SSender SSender = Just Refl
   testEquality SNotifier SNotifier = Just Refl
+  testEquality SSenderLink SSenderLink = Just Refl
   testEquality SProxiedClient SProxiedClient = Just Refl
   testEquality _ _ = Nothing
 
@@ -308,12 +326,15 @@ instance PartyI Sender where sParty = SSender
 
 instance PartyI Notifier where sParty = SNotifier
 
+instance PartyI LinkClient where sParty = SSenderLink
+
 instance PartyI ProxiedClient where sParty = SProxiedClient
 
 type family DirectParty (p :: Party) :: Constraint where
   DirectParty Recipient = ()
   DirectParty Sender = ()
   DirectParty Notifier = ()
+  DirectParty LinkClient = ()
   DirectParty p =
     (Int ~ Bool, TypeError (Type.Text "Party " :<>: ShowType p :<>: Type.Text " is not direct"))
 
@@ -377,6 +398,8 @@ type SenderId = QueueId
 -- | SMP queue ID for notifications.
 type NotifierId = QueueId
 
+type LinkId = QueueId
+
 -- | SMP queue ID on the server.
 type QueueId = EntityId
 
@@ -395,9 +418,12 @@ data Command (p :: Party) where
   -- v6 of SMP servers only support signature algorithm for command authorization.
   -- v7 of SMP servers additionally support additional layer of authenticated encryption.
   -- RcvPublicAuthKey is defined as C.APublicKey - it can be either signature or DH public keys.
-  NEW :: RcvPublicAuthKey -> RcvPublicDhKey -> Maybe BasicAuth -> SubscriptionMode -> SenderCanSecure -> Command Recipient
+  NEW :: NewQueueReq -> Command Recipient
   SUB :: Command Recipient
   KEY :: SndPublicAuthKey -> Command Recipient
+  RKEY :: NonEmpty RcvPublicAuthKey -> Command Recipient
+  LSET :: LinkId -> QueueLinkData -> Command Recipient
+  LDEL :: Command Recipient
   NKEY :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> Command Recipient
   NDEL :: Command Recipient
   GET :: Command Recipient
@@ -411,6 +437,9 @@ data Command (p :: Party) where
   -- SEND :: MsgBody -> Command Sender
   SEND :: MsgFlags -> MsgBody -> Command Sender
   PING :: Command Sender
+  -- Client accessing short links
+  LKEY :: SndPublicAuthKey -> Command LinkClient
+  LGET :: Command LinkClient
   -- SMP notification subscriber commands
   NSUB :: Command Notifier
   PRXY :: SMPServer -> Maybe BasicAuth -> Command ProxiedClient -- request a relay server connection by URI
@@ -427,8 +456,59 @@ data Command (p :: Party) where
 
 deriving instance Show (Command p)
 
+data NewQueueReq = NewQueueReq
+  { rcvAuthKey :: RcvPublicAuthKey,
+    rcvDhKey :: RcvPublicDhKey,
+    auth_ :: Maybe BasicAuth,
+    subMode :: SubscriptionMode,
+    queueReqData :: Maybe QueueReqData
+    -- TODO [notifications]
+    -- ntfCreds :: Maybe NewNtfCreds
+  }
+  deriving (Show)
+
 data SubscriptionMode = SMSubscribe | SMOnlyCreate
   deriving (Eq, Show)
+
+-- SenderId must be computed client-side as `sha3-256(corr_id)`, `corr_id` - a random transmission ID.
+-- The server must verify and reject it if it does not match (and in case of collision).
+-- This allows to include SenderId in FixedDataBytes in full connection request,
+-- and at the same time prevents the possibility of checking whether a queue with a known ID exists.
+data QueueReqData = QRMessaging (Maybe (SenderId, QueueLinkData)) | QRContact (Maybe (LinkId, (SenderId, QueueLinkData)))
+  deriving (Show)
+
+queueReqMode :: QueueReqData -> QueueMode
+queueReqMode = \case
+  QRMessaging _ -> QMMessaging
+  QRContact _ -> QMContact
+
+senderCanSecure :: Maybe QueueMode -> Bool
+senderCanSecure = \case
+  Just QMMessaging -> True
+  _ -> False
+
+type QueueLinkData = (EncFixedDataBytes, EncUserDataBytes)
+
+type EncFixedDataBytes = EncDataBytes
+
+type EncUserDataBytes = EncDataBytes
+
+newtype EncDataBytes = EncDataBytes ByteString
+  deriving (Eq, Show)
+  deriving newtype (FromField, StrEncoding)
+
+instance Encoding EncDataBytes where
+  smpEncode (EncDataBytes s) = smpEncode (Large s)
+  {-# INLINE smpEncode #-}
+  smpP = EncDataBytes . unLarge <$> smpP
+  {-# INLINE smpP #-}
+
+instance ToField EncDataBytes where
+  toField (EncDataBytes s) = toField (Binary s)
+  {-# INLINE toField #-}
+
+-- TODO [notifications]
+-- data NewNtfCreds = NewNtfCreds NtfPublicAuthKey RcvNtfPublicDhKey deriving (Show)
 
 instance StrEncoding SubscriptionMode where
   strEncode = \case
@@ -449,7 +529,20 @@ instance Encoding SubscriptionMode where
       'C' -> pure SMOnlyCreate
       _ -> fail "bad SubscriptionMode"
 
-type SenderCanSecure = Bool
+instance Encoding QueueReqData where
+  smpEncode = \case
+    QRMessaging d -> smpEncode ('M', d)
+    QRContact d -> smpEncode ('C', d)
+  smpP =
+    A.anyChar >>= \case
+      'M' -> QRMessaging <$> smpP
+      'C' -> QRContact <$> smpP
+      _ -> fail "bad QueueReqData"
+
+-- TODO [notifications]
+-- instance Encoding NewNtfCreds where
+--   smpEncode (NewNtfCreds authKey dhKey) = smpEncode (authKey, dhKey)
+--   smpP = NewNtfCreds <$> smpP <*> smpP
 
 newtype EncTransmission = EncTransmission ByteString
   deriving (Show)
@@ -474,6 +567,7 @@ newtype EncFwdTransmission = EncFwdTransmission ByteString
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
   IDS :: QueueIdsKeys -> BrokerMsg
+  LNK :: SenderId -> QueueLinkData -> BrokerMsg
   -- MSG v1/2 has to be supported for encoding/decoding
   -- v1: MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
   -- v2: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
@@ -679,6 +773,9 @@ data CommandTag (p :: Party) where
   NEW_ :: CommandTag Recipient
   SUB_ :: CommandTag Recipient
   KEY_ :: CommandTag Recipient
+  RKEY_ :: CommandTag Recipient
+  LSET_ :: CommandTag Recipient
+  LDEL_ :: CommandTag Recipient
   NKEY_ :: CommandTag Recipient
   NDEL_ :: CommandTag Recipient
   GET_ :: CommandTag Recipient
@@ -689,6 +786,8 @@ data CommandTag (p :: Party) where
   SKEY_ :: CommandTag Sender
   SEND_ :: CommandTag Sender
   PING_ :: CommandTag Sender
+  LKEY_ :: CommandTag LinkClient
+  LGET_ :: CommandTag LinkClient
   PRXY_ :: CommandTag ProxiedClient
   PFWD_ :: CommandTag ProxiedClient
   RFWD_ :: CommandTag Sender
@@ -702,6 +801,7 @@ deriving instance Show CmdTag
 
 data BrokerMsgTag
   = IDS_
+  | LNK_
   | MSG_
   | NID_
   | NMSG_
@@ -729,6 +829,9 @@ instance PartyI p => Encoding (CommandTag p) where
     NEW_ -> "NEW"
     SUB_ -> "SUB"
     KEY_ -> "KEY"
+    RKEY_ -> "RKEY"
+    LSET_ -> "LSET"
+    LDEL_ -> "LDEL"
     NKEY_ -> "NKEY"
     NDEL_ -> "NDEL"
     GET_ -> "GET"
@@ -739,6 +842,8 @@ instance PartyI p => Encoding (CommandTag p) where
     SKEY_ -> "SKEY"
     SEND_ -> "SEND"
     PING_ -> "PING"
+    LKEY_ -> "LKEY"
+    LGET_ -> "LGET"
     PRXY_ -> "PRXY"
     PFWD_ -> "PFWD"
     RFWD_ -> "RFWD"
@@ -750,6 +855,9 @@ instance ProtocolMsgTag CmdTag where
     "NEW" -> Just $ CT SRecipient NEW_
     "SUB" -> Just $ CT SRecipient SUB_
     "KEY" -> Just $ CT SRecipient KEY_
+    "RKEY" -> Just $ CT SRecipient RKEY_
+    "LSET" -> Just $ CT SRecipient LSET_
+    "LDEL" -> Just $ CT SRecipient LDEL_
     "NKEY" -> Just $ CT SRecipient NKEY_
     "NDEL" -> Just $ CT SRecipient NDEL_
     "GET" -> Just $ CT SRecipient GET_
@@ -760,6 +868,8 @@ instance ProtocolMsgTag CmdTag where
     "SKEY" -> Just $ CT SSender SKEY_
     "SEND" -> Just $ CT SSender SEND_
     "PING" -> Just $ CT SSender PING_
+    "LKEY" -> Just $ CT SSenderLink LKEY_
+    "LGET" -> Just $ CT SSenderLink LGET_
     "PRXY" -> Just $ CT SProxiedClient PRXY_
     "PFWD" -> Just $ CT SProxiedClient PFWD_
     "RFWD" -> Just $ CT SSender RFWD_
@@ -776,6 +886,7 @@ instance PartyI p => ProtocolMsgTag (CommandTag p) where
 instance Encoding BrokerMsgTag where
   smpEncode = \case
     IDS_ -> "IDS"
+    LNK_ -> "LNK"
     MSG_ -> "MSG"
     NID_ -> "NID"
     NMSG_ -> "NMSG"
@@ -793,6 +904,7 @@ instance Encoding BrokerMsgTag where
 instance ProtocolMsgTag BrokerMsgTag where
   decodeTag = \case
     "IDS" -> Just IDS_
+    "LNK" -> Just LNK_
     "MSG" -> Just MSG_
     "NID" -> Just NID_
     "NMSG" -> Just NMSG_
@@ -1138,9 +1250,20 @@ data QueueIdsKeys = QIK
   { rcvId :: RecipientId,
     sndId :: SenderId,
     rcvPublicDhKey :: RcvPublicDhKey,
-    sndSecure :: SenderCanSecure
+    queueMode :: Maybe QueueMode, -- TODO remove Maybe when min version is 9 (sndAuthKeySMPVersion)
+    linkId :: Maybe LinkId
+    -- TODO [notifications]
+    -- serverNtfCreds :: Maybe ServerNtfCreds
   }
   deriving (Eq, Show)
+
+-- TODO [notifications]
+-- data ServerNtfCreds = ServerNtfCreds NotifierId RcvNtfPublicDhKey
+--   deriving (Eq, Show)
+
+-- instance Encoding ServerNtfCreds where
+--   smpEncode (ServerNtfCreds nId dhKey) = smpEncode (nId, dhKey)
+--   smpP = ServerNtfCreds <$> smpP <*> smpP
 
 -- | Recipient's private key used by the recipient to authorize (v6: sign, v7: encrypt hash) SMP commands.
 --
@@ -1368,14 +1491,18 @@ class ProtocolMsgTag (Tag msg) => ProtocolEncoding v err msg | msg -> err, msg -
 instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol v = \case
-    NEW rKey dhKey auth_ subMode sndSecure
-      | v >= sndAuthKeySMPVersion -> new <> e (auth_, subMode, sndSecure)
+    NEW NewQueueReq {rcvAuthKey = rKey, rcvDhKey = dhKey, auth_, subMode, queueReqData}
+      | v >= shortLinksSMPVersion -> new <> e (auth_, subMode, queueReqData)
+      | v >= sndAuthKeySMPVersion -> new <> e (auth_, subMode, senderCanSecure (queueReqMode <$> queueReqData))
       | otherwise -> new <> auth <> e subMode
       where
         new = e (NEW_, ' ', rKey, dhKey)
         auth = maybe "" (e . ('A',)) auth_
     SUB -> e SUB_
     KEY k -> e (KEY_, ' ', k)
+    RKEY ks -> e (RKEY_, ' ', ks)
+    LSET lnkId d -> e (LSET_, ' ', lnkId, d)
+    LDEL -> e LDEL_
     NKEY k dhKey -> e (NKEY_, ' ', k, dhKey)
     NDEL -> e NDEL_
     GET -> e GET_
@@ -1387,6 +1514,8 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
+    LKEY k -> e (LKEY_, ' ', k)
+    LGET -> e LGET_
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
     PFWD fwdV pubKey (EncTransmission s) -> e (PFWD_, ' ', fwdV, pubKey, Tail s)
     RFWD (EncFwdTransmission s) -> e (RFWD_, ' ', Tail s)
@@ -1409,15 +1538,10 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     SEND {}
       | B.null entId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
-    SKEY _
-      | isNothing auth || B.null entId -> Left $ CMD NO_AUTH
-      | otherwise -> Right cmd
+    LGET -> entityCmd
     PING -> noAuthCmd
     PRXY {} -> noAuthCmd
-    PFWD {}
-      | B.null entId -> Left $ CMD NO_ENTITY
-      | isNothing auth -> Right cmd
-      | otherwise -> Left $ CMD HAS_AUTH
+    PFWD {} -> entityCmd
     RFWD _ -> noAuthCmd
     -- other client commands must have both signature and queue ID
     _
@@ -1429,6 +1553,11 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
       noAuthCmd
         | isNothing auth && B.null entId = Right cmd
         | otherwise = Left $ CMD HAS_AUTH
+      entityCmd :: Either ErrorType (Command p)
+      entityCmd
+        | B.null entId = Left $ CMD NO_ENTITY
+        | isNothing auth = Right cmd
+        | otherwise = Left $ CMD HAS_AUTH
 
 instance ProtocolEncoding SMPVersion ErrorType Cmd where
   type Tag Cmd = CmdTag
@@ -1438,13 +1567,26 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
         NEW_
-          | v >= sndAuthKeySMPVersion -> new <*> smpP <*> smpP <*> smpP
-          | otherwise -> new <*> auth <*> smpP <*> pure False
+          | v >= shortLinksSMPVersion -> NEW <$> new smpP smpP
+          | v >= sndAuthKeySMPVersion -> NEW <$> new smpP (qReq <$> smpP)
+          | otherwise -> NEW <$> new auth (pure Nothing)
           where
-            new = NEW <$> _smpP <*> smpP
+            new p1 p2 = do
+              rcvAuthKey <- _smpP
+              rcvDhKey <- smpP
+              auth_ <- p1
+              subMode <- smpP
+              queueReqData <- p2
+              -- TODO [notifications]
+              -- ntfCreds <- p3
+              pure NewQueueReq {rcvAuthKey, rcvDhKey, auth_, subMode, queueReqData} -- ntfCreds
             auth = optional (A.char 'A' *> smpP)
+            qReq sndSecure = Just $ if sndSecure then QRMessaging Nothing else QRContact Nothing
         SUB_ -> pure SUB
         KEY_ -> KEY <$> _smpP
+        RKEY_ -> RKEY <$> _smpP
+        LSET_ -> LSET <$> _smpP <*> smpP
+        LDEL_ -> pure LDEL
         NKEY_ -> NKEY <$> _smpP <*> smpP
         NDEL_ -> pure NDEL
         GET_ -> pure GET
@@ -1458,6 +1600,10 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
         SEND_ -> SEND <$> _smpP <*> (unTail <$> _smpP)
         PING_ -> pure PING
         RFWD_ -> RFWD <$> (EncFwdTransmission . unTail <$> _smpP)
+    CT SSenderLink tag ->
+      Cmd SSenderLink <$> case tag of
+        LKEY_ -> LKEY <$> _smpP
+        LGET_ -> pure LGET
     CT SProxiedClient tag ->
       Cmd SProxiedClient <$> case tag of
         PFWD_ -> PFWD <$> _smpP <*> smpP <*> (EncTransmission . unTail <$> smpP)
@@ -1472,11 +1618,13 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
 instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
   encodeProtocol v = \case
-    IDS (QIK rcvId sndId srvDh sndSecure)
-      | v >= sndAuthKeySMPVersion -> ids <> e sndSecure
+    IDS QIK {rcvId, sndId, rcvPublicDhKey = srvDh, queueMode, linkId}
+      | v >= shortLinksSMPVersion -> ids <> e queueMode <> e linkId
+      | v >= sndAuthKeySMPVersion -> ids <> e (senderCanSecure queueMode)
       | otherwise -> ids
       where
         ids = e (IDS_, ' ', rcvId, sndId, srvDh)
+    LNK sId d -> e (LNK_, ' ', sId, d)
     MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body} ->
       e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
@@ -1505,10 +1653,22 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       where
         bodyP = EncRcvMsgBody . unTail <$> smpP
     IDS_
-      | v >= sndAuthKeySMPVersion -> ids smpP
-      | otherwise -> ids $ pure False
+      | v >= shortLinksSMPVersion -> ids smpP smpP
+      | v >= sndAuthKeySMPVersion -> ids (qm <$> smpP) nothing
+      | otherwise -> ids nothing nothing
       where
-        ids p = IDS <$> (QIK <$> _smpP <*> smpP <*> smpP <*> p)
+        qm sndSecure = Just $ if sndSecure then QMMessaging else QMContact
+        nothing = pure Nothing
+        ids p1 p2 = do
+          rcvId <- _smpP
+          sndId <- smpP
+          rcvPublicDhKey <- smpP
+          queueMode <- p1
+          linkId <- p2
+          -- TODO [notifications]
+          -- serverNtfCreds <- p3
+          pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId}
+    LNK_ -> LNK <$> _smpP <*> smpP
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> ((,) <$> C.certChainP <*> (C.getSignedExact <$> smpP))

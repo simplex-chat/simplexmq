@@ -63,12 +63,6 @@ testVerifyLintFKeyIndexes = do
   getLintFKeyIndexes testDB "tests/tmp/agent_lint.sql" `shouldReturn` savedLint
   removeFile testDB
 
-withTmpFiles :: IO () -> IO ()
-withTmpFiles =
-  bracket_
-    (createDirectoryIfMissing False "tests/tmp")
-    (removeDirectoryRecursive "tests/tmp")
-
 testSchemaMigrations :: IO ()
 testSchemaMigrations = do
   let noDownMigrations = dropWhileEnd (\Migration {down} -> isJust down) appMigrations
@@ -115,7 +109,9 @@ testUsersMigrationOld = do
 skipComparisonForDownMigrations :: [String]
 skipComparisonForDownMigrations =
   [ -- on down migration idx_messages_internal_snd_id_ts index moves down to the end of the file
-    "m20230814_indexes"
+    "m20230814_indexes",
+    -- snd_secure and last_broker_ts columns swap order on down migration
+    "m20250322_short_links"
   ]
 
 getSchema :: FilePath -> FilePath -> IO String

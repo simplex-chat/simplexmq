@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
@@ -31,7 +32,7 @@ import Data.Time.Clock (addUTCTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (EntityId (..), Message (..), RecipientId, SParty (..), noMsgFlags)
+import Simplex.Messaging.Protocol (EntityId (..), LinkId, Message (..), QueueLinkData, RecipientId, SParty (..), noMsgFlags)
 import Simplex.Messaging.Server (exportMessages, importMessages, printMessageStats)
 import Simplex.Messaging.Server.Env.STM (journalMsgStoreDepth, readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..), expireBeforeEpoch)
@@ -39,6 +40,7 @@ import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue)
 import SMPClient (testStoreLogFile, testStoreMsgsDir, testStoreMsgsDir2, testStoreMsgsFile, testStoreMsgsFile2)
@@ -109,30 +111,36 @@ deriving instance Eq (JournalState t)
 
 deriving instance Eq (SJournalType t)
 
-testNewQueueRec :: TVar ChaChaDRG -> Bool -> IO (RecipientId, QueueRec)
-testNewQueueRec g sndSecure = do
-  rId <- atomically $ EntityId <$> C.randomBytes 24 g
-  senderId <- atomically $ EntityId <$> C.randomBytes 24 g
-  (recipientKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
+testNewQueueRec :: TVar ChaChaDRG -> QueueMode -> IO (RecipientId, QueueRec)
+testNewQueueRec g qm = testNewQueueRecData g qm Nothing
+
+testNewQueueRecData :: TVar ChaChaDRG -> QueueMode -> Maybe (LinkId, QueueLinkData) -> IO (RecipientId, QueueRec)
+testNewQueueRecData g qm queueData = do
+  rId <- rndId
+  senderId <- rndId
+  (rKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   (k, pk) <- atomically $ C.generateKeyPair @'C.X25519 g
   let qr =
         QueueRec
-          { recipientKey,
+          { recipientKeys = [rKey],
             rcvDhSecret = C.dh' k pk,
             senderId,
             senderKey = Nothing,
-            sndSecure,
+            queueMode = Just qm,
+            queueData,
             notifier = Nothing,
             status = EntityActive,
             updatedAt = Nothing
           }
   pure (rId, qr)
+  where
+    rndId = atomically $ EntityId <$> C.randomBytes 24 g
 
 -- TODO constrain to STM stores
 testGetQueue :: MsgStoreClass s => s -> IO ()
 testGetQueue ms = do
   g <- C.newRandom
-  (rId, qr) <- testNewQueueRec g True
+  (rId, qr) <- testNewQueueRec g QMMessaging
   runRight_ $ do
     q <- ExceptT $ addQueue ms rId qr
     let write s = writeMsg ms q True =<< mkMessage s
@@ -175,7 +183,7 @@ testGetQueue ms = do
 testChangeReadJournal :: MsgStoreClass s => s -> IO ()
 testChangeReadJournal ms = do
   g <- C.newRandom
-  (rId, qr) <- testNewQueueRec g True
+  (rId, qr) <- testNewQueueRec g QMMessaging
   runRight_ $ do
     q <- ExceptT $ addQueue ms rId qr
     let write s = writeMsg ms q True =<< mkMessage s
@@ -194,8 +202,8 @@ testChangeReadJournal ms = do
 testExportImportStore :: JournalMsgStore 'QSMemory -> IO ()
 testExportImportStore ms = do
   g <- C.newRandom
-  (rId1, qr1) <- testNewQueueRec g True
-  (rId2, qr2) <- testNewQueueRec g True
+  (rId1, qr1) <- testNewQueueRec g QMMessaging
+  (rId2, qr2) <- testNewQueueRec g QMMessaging
   sl <- readWriteQueueStore True (mkQueue ms True) testStoreLogFile $ queueStore ms
   runRight_ $ do
     let write q s = writeMsg ms q True =<< mkMessage s
@@ -302,7 +310,7 @@ testQueueState ms = do
 testMessageState :: JournalMsgStore s -> IO ()
 testMessageState ms = do
   g <- C.newRandom
-  (rId, qr) <- testNewQueueRec g True
+  (rId, qr) <- testNewQueueRec g QMMessaging
   let dir = msgQueueDirectory ms rId
       statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
       write q s = writeMsg ms q True =<< mkMessage s
@@ -327,7 +335,7 @@ testMessageState ms = do
 testRemoveJournals :: JournalMsgStore s -> IO ()
 testRemoveJournals ms = do
   g <- C.newRandom
-  (rId, qr) <- testNewQueueRec g True
+  (rId, qr) <- testNewQueueRec g QMMessaging
   let dir = msgQueueDirectory ms rId
       statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
       write q s = writeMsg ms q True =<< mkMessage s
@@ -393,7 +401,7 @@ testRemoveJournals ms = do
 testRemoveQueueStateBackups :: IO ()
 testRemoveQueueStateBackups = do
   g <- C.newRandom
-  (rId, qr) <- testNewQueueRec g True
+  (rId, qr) <- testNewQueueRec g QMMessaging
 
   ms' <- newMsgStore (testJournalStoreCfg MQStoreCfg) {maxStateLines = 1, expireBackupsAfter = 0, keepMinBackups = 0}
   -- set expiration time 1 second ahead
@@ -429,7 +437,7 @@ testRemoveQueueStateBackups = do
 testExpireIdleQueues :: IO ()
 testExpireIdleQueues = do
   g <- C.newRandom
-  (rId, qr) <- testNewQueueRec g True
+  (rId, qr) <- testNewQueueRec g QMMessaging
 
   ms <- newMsgStore (testJournalStoreCfg MQStoreCfg) {idleInterval = 0}
 
@@ -462,7 +470,7 @@ testExpireIdleQueues = do
 testReadFileMissing :: JournalMsgStore s -> IO ()
 testReadFileMissing ms = do
   g <- C.newRandom
-  (rId, qr) <- testNewQueueRec g True
+  (rId, qr) <- testNewQueueRec g QMMessaging
   let write q s = writeMsg ms q True =<< mkMessage s
   q <- runRight $ do
     q <- ExceptT $ addQueue ms rId qr
@@ -486,7 +494,7 @@ testReadFileMissing ms = do
 testReadFileMissingSwitch :: JournalMsgStore s -> IO ()
 testReadFileMissingSwitch ms = do
   g <- C.newRandom
-  (rId, qr) <- testNewQueueRec g True
+  (rId, qr) <- testNewQueueRec g QMMessaging
   q <- writeMessages ms rId qr
 
   mq <- fromJust <$> readTVarIO (msgQueue q)
@@ -504,7 +512,7 @@ testReadFileMissingSwitch ms = do
 testWriteFileMissing :: JournalMsgStore s -> IO ()
 testWriteFileMissing ms = do
   g <- C.newRandom
-  (rId, qr) <- testNewQueueRec g True
+  (rId, qr) <- testNewQueueRec g QMMessaging
   q <- writeMessages ms rId qr
 
   mq <- fromJust <$> readTVarIO (msgQueue q)
@@ -527,7 +535,7 @@ testWriteFileMissing ms = do
 testReadAndWriteFilesMissing :: JournalMsgStore s -> IO ()
 testReadAndWriteFilesMissing ms = do
   g <- C.newRandom
-  (rId, qr) <- testNewQueueRec g True
+  (rId, qr) <- testNewQueueRec g QMMessaging
   q <- writeMessages ms rId qr
 
   mq <- fromJust <$> readTVarIO (msgQueue q)
