@@ -20,7 +20,18 @@
     parsedURI.pathname = "/" + action
     connURI = parsedURI.toString()
     console.log("connection URI: ", connURI)
-    mobileConnURIanchor.href = "simplex:" + parsedURI.pathname + parsedURI.hash
+    const hash = parsedURI.hash
+    const hostname = parsedURI.hostname
+    let appURI = "simplex:" + parsedURI.pathname
+    appURI += action.length > 1 // not short link
+              ? hash
+              : !hash.includes("?") // otherwise add server hostname
+              ? hash + "?h=" + hostname // no parameters
+              : !hash.includes("?h=") && !hash.includes("&h=")
+              ? hash + "&h=" + hostname // no "h" parameter
+              : hash.replace(/([?&])h=([^&]+)/, `$1h=${hostname},$2`) // add as the first hostname to "h" parameter
+    mobileConnURIanchor.href = appURI
+    console.log("app URI: ", appURI)
     connURIel.innerText = "/c " + connURI
     for (const connQRCode of connQRCodes) {
       try {
