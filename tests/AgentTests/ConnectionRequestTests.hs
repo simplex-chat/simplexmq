@@ -4,6 +4,7 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
@@ -332,6 +333,15 @@ connectionRequestTests =
         `shouldBe` contact shortSrv (LinkKey "0123456789abcdef0123456789abcdef")
       restoreShortLink [srv] (contact srv2 (LinkKey "0123456789abcdef0123456789abcdef"))
         `shouldBe` contact srv2 (LinkKey "0123456789abcdef0123456789abcdef")
+      Right (lnk :: ConnShortLink 'CMContact) <- pure $ strDecode "https://localhost/a#4AkRDmhf64tdRlN406g8lJRg5OCmhD6ynIhi6glOcCM?p=7001&c=LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI"
+      Right (lnk' :: ConnShortLink 'CMContact) <- pure $ strDecode  "https://localhost/a#4AkRDmhf64tdRlN406g8lJRg5OCmhD6ynIhi6glOcCM"
+      let presetSrv :: SMPServer = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7001"
+      shortenShortLink [presetSrv] lnk `shouldBe` lnk'
+      restoreShortLink [presetSrv] lnk' `shouldBe` lnk
+      Right (inv :: ConnShortLink 'CMInvitation) <- pure $ strDecode "https://localhost/i#tnUaHYp8saREmyEHR93SBpl8ySHBchOt/LJ1ZQUzxH9Udb0jw5wmJACv5o6oe8e7BsX_hUCUMTSY?p=7001&c=LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI"
+      Right (inv' :: ConnShortLink 'CMInvitation) <- pure $ strDecode  "https://localhost/i#tnUaHYp8saREmyEHR93SBpl8ySHBchOt/LJ1ZQUzxH9Udb0jw5wmJACv5o6oe8e7BsX_hUCUMTSY"
+      shortenShortLink [presetSrv] inv `shouldBe` inv'
+      restoreShortLink [presetSrv] inv' `shouldBe` inv
   where
     smpEncodingTest :: (Encoding a, Eq a, Show a, HasCallStack) => a -> Expectation
     smpEncodingTest a = smpDecode (smpEncode a) `shouldBe` Right a

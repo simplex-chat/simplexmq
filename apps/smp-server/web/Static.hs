@@ -82,8 +82,8 @@ generateSite :: ServerInformation -> Maybe TransportHost -> FilePath -> IO ()
 generateSite si onionHost sitePath = do
   createDirectoryIfMissing True sitePath
   B.writeFile (sitePath </> "index.html") $ serverInformation si onionHost
-  createDirectoryIfMissing True $ sitePath </> "media"
-  forM_ E.mediaContent $ \(path, bs) -> B.writeFile (sitePath </> "media" </> path) bs
+  copyDir "media" E.mediaContent
+  copyDir ".well-known" E.wellKnown
   createLinkPage "contact"
   createLinkPage "invitation"
   createLinkPage "a"
@@ -91,6 +91,11 @@ generateSite si onionHost sitePath = do
   createLinkPage "i"
   logInfo $ "Generated static site contents at " <> tshow sitePath
   where
+    copyDir dir content = do
+      createDirectoryIfMissing True $ sitePath </> dir
+      forM_ content $ \(path, s) -> do
+        createDirectoryIfMissing True $ sitePath </> dir </> takeDirectory path
+        B.writeFile (sitePath </> dir </> path) s
     createLinkPage path = do
       createDirectoryIfMissing True $ sitePath </> path
       B.writeFile (sitePath </> path </> "index.html") E.linkHtml
