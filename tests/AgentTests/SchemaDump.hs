@@ -4,7 +4,6 @@
 module AgentTests.SchemaDump where
 
 import Control.DeepSeq
-import Control.Exception (bracket_)
 import Control.Monad (unless, void)
 import Data.List (dropWhileEnd)
 import Data.Maybe (fromJust, isJust)
@@ -17,7 +16,7 @@ import Simplex.Messaging.Agent.Store.SQLite.DB (TrackQueries (..))
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationsToRun (..), toDownMigration)
 import Simplex.Messaging.Util (ifM)
-import System.Directory (createDirectoryIfMissing, doesFileExist, removeDirectoryRecursive, removeFile)
+import System.Directory (doesFileExist, removeFile)
 import System.Process (readCreateProcess, shell)
 import Test.Hspec
 

@@ -123,6 +123,7 @@ module Simplex.Messaging.Agent.Protocol
     ShortLinkScheme (..),
     LinkKey (..),
     sameConnReqContact,
+    sameShortLinkContact,
     simplexChat,
     connReqUriP',
     simplexConnReqUri,
@@ -1413,6 +1414,11 @@ deriving instance Show ACreatedConnLink
 
 data AConnectionLink = forall m. ConnectionModeI m => ACL (SConnectionMode m) (ConnectionLink m)
 
+instance Eq AConnectionLink where
+  ACL m cl == ACL m' cl' = case testEquality m m' of
+    Just Refl -> cl == cl'
+    _ -> False
+
 deriving instance Show AConnectionLink
 
 instance ConnectionModeI m => StrEncoding (ConnectionLink m) where
@@ -1435,6 +1441,13 @@ instance ConnectionModeI m => ToJSON (ConnectionLink m) where
 
 instance ConnectionModeI m => FromJSON (ConnectionLink m) where
   parseJSON = strParseJSON "ConnectionLink"
+
+instance ToJSON AConnectionLink where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance FromJSON AConnectionLink where
+  parseJSON = strParseJSON "AConnectionLink"
 
 instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
   strEncode = \case
@@ -1568,6 +1581,10 @@ sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUr
   L.length qs == L.length qs' && all same (L.zip qs qs')
   where
     same (q, q') = sameQAddress (qAddress q) (qAddress q')
+
+sameShortLinkContact :: ConnShortLink 'CMContact -> ConnShortLink 'CMContact -> Bool
+sameShortLinkContact (CSLContact _ ct srv k) (CSLContact _ ct' srv' k') =
+  ct == ct' && sameSrvAddr srv srv' && k == k'
 
 checkConnMode :: forall t m m'. (ConnectionModeI m, ConnectionModeI m') => t m' -> Either String (t m)
 checkConnMode c = case testEquality (sConnectionMode @m) (sConnectionMode @m') of
