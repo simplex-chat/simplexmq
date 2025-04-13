@@ -14,7 +14,8 @@ import Data.Maybe (fromMaybe)
 import Data.String (fromString)
 import Data.Text.Encoding (encodeUtf8)
 import Network.Socket (getPeerName)
-import Network.Wai (Application)
+import Network.Wai (Application, Request (..))
+import Network.Wai.Application.Static (StaticSettings (..))
 import qualified Network.Wai.Application.Static as S
 import qualified Network.Wai.Handler.Warp as W
 import qualified Network.Wai.Handler.Warp.Internal as WI
@@ -31,12 +32,13 @@ import System.Directory (createDirectoryIfMissing)
 import System.FilePath
 import UnliftIO.Concurrent (forkFinally)
 import UnliftIO.Exception (bracket, finally)
+import qualified WaiAppStatic.Types as WAT
 
 serveStaticFiles :: EmbeddedWebParams -> IO ()
 serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} = do
   forM_ webHttpPort $ \port -> flip forkFinally (\e -> logError $ "HTTP server crashed: " <> tshow e) $ do
     logInfo $ "Serving static site on port " <> tshow port
-    W.runSettings (mkSettings port) (S.staticApp $ S.defaultFileServerSettings webStaticPath)
+    W.runSettings (mkSettings port) app
   forM_ webHttpsParams $ \WebHttpsParams {port, cert, key} -> flip forkFinally (\e -> logError $ "HTTPS server crashed: " <> tshow e) $ do
     logInfo $ "Serving static site on port " <> tshow port <> " (TLS)"
     WT.runTLS (WT.tlsSettings cert key) (mkSettings port) app
@@ -72,18 +74,30 @@ warpSettings :: W.Settings
 warpSettings = W.setGracefulShutdownTimeout (Just 1) W.defaultSettings
 
 staticFiles :: FilePath -> Application
-staticFiles root = S.staticApp settings
+staticFiles root = S.staticApp settings . changeWellKnownPath
   where
-    settings = (S.defaultFileServerSettings root)
-      { S.ssListing = Nothing
-      }
+    settings = defSettings {ssListing = Nothing, ssGetMimeType = getMimeType}
+    defSettings = S.defaultFileServerSettings root
+    getMimeType f
+      | WAT.fromPiece (WAT.fileName f) == "apple-app-site-association" = pure "application/json"
+      | otherwise = (ssGetMimeType defSettings) f
+    changeWellKnownPath req = case pathInfo req of
+      ".well-known" : rest ->
+        req
+          { pathInfo = "well-known" : rest,
+            rawPathInfo = "/well-known/" <> B.drop pfxLen (rawPathInfo req)
+          }
+      _ -> req
+    pfxLen = B.length "/.well-known/"
 
 generateSite :: ServerInformation -> Maybe TransportHost -> FilePath -> IO ()
 generateSite si onionHost sitePath = do
   createDirectoryIfMissing True sitePath
   B.writeFile (sitePath </> "index.html") $ serverInformation si onionHost
   copyDir "media" E.mediaContent
-  copyDir ".well-known" E.wellKnown
+  -- `.well-known` path is re-written in changeWellKnownPath,
+  -- staticApp does not allow hidden folders.
+  copyDir "well-known" E.wellKnown
   createLinkPage "contact"
   createLinkPage "invitation"
   createLinkPage "a"
@@ -94,9 +108,7 @@ generateSite si onionHost sitePath = do
   where
     copyDir dir content = do
       createDirectoryIfMissing True $ sitePath </> dir
-      forM_ content $ \(path, s) -> do
-        createDirectoryIfMissing True $ sitePath </> dir </> takeDirectory path
-        B.writeFile (sitePath </> dir </> path) s
+      forM_ content $ \(path, s) -> B.writeFile (sitePath </> dir </> path) s
     createLinkPage path = do
       createDirectoryIfMissing True $ sitePath </> path
       B.writeFile (sitePath </> path </> "index.html") E.linkHtml
