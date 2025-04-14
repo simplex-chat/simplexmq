@@ -1,3 +1,45 @@
+# 6.3.2
+
+Servers:
+- enable store log by default (#1501).
+
+SMP server:
+- reduce memory usage (#1498)
+
+SMP agent:
+- handle client/agent version downgrades after connection was established (#1508).
+
+# 6.3.1
+
+Servers:
+- handle ECONNABORTED error on client connections.
+- reproducible builds.
+- blocking records for content moderation.
+- update script (simplex-servers-update) downloads scripts from the specified or the latest stable tag.
+
+SMP server:
+- support for PostrgreSQL database for queue records for higher traffic servers.
+- fix old clients sending messages to new servers (#1443)
+- remove empty journals when opening message queues and expiring idle queues (#1456, #1458).
+- additional start options (#1465):
+  - `maintenance` to run all start/stop operations without starting server.
+  - `skip-warnings` to ignore the last corrupted line in store log (can happen on abnormal termination).
+
+Ntf server:
+- record date of last token activity, to allow expiring inactive tokens.
+- additional token invalidation reasons in logs.
+
+SMP agent:
+- store message sent to multiple connections only once, to reduce storage when sending to groups (#1453).
+- encrypt messages on delivery, to reduce database writes (#1446).
+- don't block method calls on congested sockets for better concurrency (#1454).
+- check notification token status on client connection.
+- option to skip SQLite vacuum on migrations.
+
+# 6.3.0
+
+SMP agent: fix joining connection after failure by using the same ratchet.
+
 # 6.2.2
 
 SMP server:
