@@ -58,6 +58,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getRcvQueueById,
     getSndQueueById,
     deleteConn,
+    deleteConnRecord,
     upgradeRcvConnToDuplex,
     upgradeSndConnToDuplex,
     addConnRcvQueue,
@@ -88,6 +89,12 @@ module Simplex.Messaging.Agent.Store.AgentStore
     acceptInvitation,
     unacceptInvitation,
     deleteInvitation,
+    getInvShortLink,
+    getInvShortLinkKeys,
+    deleteInvShortLink,
+    createInvShortLink,
+    setInvShortLinkSndId,
+    updateShortLinkCreds,
     -- Messages
     updateRcvIds,
     createRcvMsg,
@@ -410,6 +417,9 @@ createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSup
     |]
     (userId, connId, cMode, connAgentVersion, BI enableNtfs, pqSupport, BI True)
 
+deleteConnRecord :: DB.Connection -> ConnId -> IO ()
+deleteConnRecord db connId = DB.execute db "DELETE FROM connections WHERE conn_id = ?" (Only connId)
+
 checkConfirmedSndQueueExists_ :: DB.Connection -> NewSndQueue -> IO Bool
 checkConfirmedSndQueueExists_ db SndQueue {server, sndId} = do
   fromMaybe False
@@ -442,7 +452,7 @@ deleteConn db waitDeliveryTimeout_ connId = case waitDeliveryTimeout_ of
           (pure Nothing)
       )
   where
-    delete = DB.execute db "DELETE FROM connections WHERE conn_id = ?" (Only connId) $> Just connId
+    delete = deleteConnRecord db connId $> Just connId
     checkNoPendingDeliveries_ = do
       r :: (Maybe Int64) <-
         maybeFirstRow fromOnly $
@@ -755,6 +765,82 @@ deleteInvitation db contactConnId invId =
     SomeConn SCContact _ ->
       Right <$> DB.execute db "DELETE FROM conn_invitations WHERE contact_conn_id = ? AND invitation_id = ?" (contactConnId, Binary invId)
     _ -> pure $ Left SEConnNotFound
+
+getInvShortLink :: DB.Connection -> SMPServer -> LinkId -> IO (Maybe InvShortLink)
+getInvShortLink db server linkId =
+  maybeFirstRow toInvShortLink $
+    DB.query
+      db
+      [sql|
+        SELECT link_key, snd_private_key, snd_id
+        FROM inv_short_links
+        WHERE host = ? AND port = ? AND link_id = ?
+      |]
+      (host server, port server, linkId)
+  where
+    toInvShortLink :: (LinkKey, C.APrivateAuthKey, Maybe SenderId) -> InvShortLink
+    toInvShortLink (linkKey, sndPrivateKey@(C.APrivateAuthKey a pk), sndId) =
+      let sndPublicKey = C.APublicAuthKey a $ C.publicKey pk
+       in InvShortLink {server, linkId, linkKey, sndPrivateKey, sndPublicKey, sndId}
+
+getInvShortLinkKeys :: DB.Connection -> SMPServer -> SenderId -> IO (Maybe (LinkId, C.AAuthKeyPair))
+getInvShortLinkKeys db srv sndId =
+  maybeFirstRow toSndKeys $
+    DB.query
+      db
+      [sql|
+        SELECT link_id, snd_private_key
+        FROM inv_short_links
+        WHERE host = ? AND port = ? AND snd_id = ?
+      |]
+      (host srv, port srv, sndId)
+  where
+    toSndKeys :: (LinkId, C.APrivateAuthKey) -> (LinkId, C.AAuthKeyPair)
+    toSndKeys (linkId, privKey@(C.APrivateAuthKey a pk)) = (linkId, (C.APublicAuthKey a $ C.publicKey pk, privKey))
+
+deleteInvShortLink :: DB.Connection -> SMPServer -> LinkId -> IO ()
+deleteInvShortLink db srv lnkId =
+  DB.execute db "DELETE FROM inv_short_links WHERE host = ? AND port = ? AND link_id = ?" (host srv, port srv, lnkId)
+
+createInvShortLink :: DB.Connection -> InvShortLink -> IO ()
+createInvShortLink db InvShortLink {server, linkId, linkKey, sndPrivateKey, sndId} = do
+  serverKeyHash_ <- createServer_ db server
+  DB.execute
+    db
+    [sql|
+      INSERT INTO inv_short_links
+        (host, port, server_key_hash, link_id, link_key, snd_private_key, snd_id)
+      VALUES (?,?,?,?,?,?,?)
+      ON CONFLICT (host, port, link_id)
+      DO UPDATE SET
+        server_key_hash = EXCLUDED.server_key_hash,
+        link_key = EXCLUDED.link_key,
+        snd_private_key = EXCLUDED.snd_private_key,
+        snd_id = EXCLUDED.snd_id
+    |]
+    (host server, port server, serverKeyHash_, linkId, linkKey, sndPrivateKey, sndId)
+
+setInvShortLinkSndId :: DB.Connection -> InvShortLink -> SenderId -> IO ()
+setInvShortLinkSndId db InvShortLink {server, linkId} sndId =
+  DB.execute
+    db
+    [sql|
+      UPDATE inv_short_links
+      SET snd_id = ?
+      WHERE host = ? AND port = ? AND link_id = ?
+    |]
+    (sndId, host server, port server, linkId)
+
+updateShortLinkCreds :: DB.Connection -> RcvQueue -> ShortLinkCreds -> IO ()
+updateShortLinkCreds db RcvQueue {server, rcvId} ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData} =
+  DB.execute
+    db
+    [sql|
+      UPDATE rcv_queues
+      SET link_id = ?, link_key = ?, link_priv_sig_key = ?, link_enc_fixed_data = ?
+      WHERE host = ? AND port = ? AND rcv_id = ?
+    |]
+    (shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData, host server, port server, rcvId)
 
 updateRcvIds :: DB.Connection -> ConnId -> IO (InternalId, InternalRcvId, PrevExternalSndId, PrevRcvMsgHash)
 updateRcvIds db connId = do
@@ -1884,9 +1970,15 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
     db
     [sql|
       INSERT INTO rcv_queues
-        (host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret, snd_id, snd_secure, status, rcv_queue_id, rcv_primary, replace_rcv_queue_id, smp_client_version, server_key_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+        ( host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret,
+          snd_id, queue_mode, status, rcv_queue_id, rcv_primary, replace_rcv_queue_id, smp_client_version, server_key_hash,
+          link_id, link_key, link_priv_sig_key, link_enc_fixed_data
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
-    ((host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret) :. (sndId, BI sndSecure, status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
+    ( (host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret)
+        :. (sndId, queueMode, status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_)
+        :. (shortLinkId <$> shortLink, shortLinkKey <$> shortLink, linkPrivSigKey <$> shortLink, linkEncFixedData <$> shortLink)
+    )
   pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId}
 
 -- * createSndConn helpers
@@ -1901,14 +1993,14 @@ insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
     db
     [sql|
       INSERT INTO snd_queues
-        (host, port, snd_id, snd_secure, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret,
+        (host, port, snd_id, queue_mode, conn_id, snd_public_key, snd_private_key, e2e_pub_key, e2e_dh_secret,
          status, snd_queue_id, snd_primary, replace_snd_queue_id, smp_client_version, server_key_hash)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT (host, port, snd_id) DO UPDATE SET
         host=EXCLUDED.host,
         port=EXCLUDED.port,
         snd_id=EXCLUDED.snd_id,
-        snd_secure=EXCLUDED.snd_secure,
+        queue_mode=EXCLUDED.queue_mode,
         conn_id=EXCLUDED.conn_id,
         snd_public_key=EXCLUDED.snd_public_key,
         snd_private_key=EXCLUDED.snd_private_key,
@@ -1921,7 +2013,7 @@ insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
         smp_client_version=EXCLUDED.smp_client_version,
         server_key_hash=EXCLUDED.server_key_hash
     |]
-    ((host server, port server, sndId, BI sndSecure, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) 
+    ((host server, port server, sndId, queueMode, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) 
     :. (status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
   pure (sq :: NewSndQueue) {connId = connId', dbQueueId = qId}
 
@@ -2052,26 +2144,36 @@ rcvQueueQuery :: Query
 rcvQueueQuery =
   [sql|
     SELECT c.user_id, COALESCE(q.server_key_hash, s.key_hash), q.conn_id, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
-      q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.snd_secure, q.status,
+      q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.queue_mode, q.status,
       q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id, q.switch_status, q.smp_client_version, q.delete_errors,
-      q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret
+      q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret,
+      q.link_id, q.link_key, q.link_priv_sig_key, q.link_enc_fixed_data
     FROM rcv_queues q
     JOIN servers s ON q.host = s.host AND q.port = s.port
     JOIN connections c ON q.conn_id = c.conn_id
   |]
 
 toRcvQueue ::
-  (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateAuthKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, BoolInt)
+  (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateAuthKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, Maybe QueueMode)
     :. (QueueStatus, DBQueueId 'QSStored, BoolInt, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int)
-    :. (Maybe SMP.NtfPublicAuthKey, Maybe SMP.NtfPrivateAuthKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret) ->
+    :. (Maybe SMP.NtfPublicAuthKey, Maybe SMP.NtfPrivateAuthKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret)
+    :. (Maybe SMP.LinkId, Maybe LinkKey, Maybe C.PrivateKeyEd25519, Maybe EncDataBytes) ->
   RcvQueue
-toRcvQueue ((userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, BI sndSecure) :. (status, dbQueueId, BI primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors) :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)) =
+toRcvQueue
+  ( (userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode)
+      :. (status, dbQueueId, BI primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors)
+      :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)
+      :. (shortLinkId_, shortLinkKey_, linkPrivSigKey_, linkEncFixedData_)
+  ) =
   let server = SMPServer host port keyHash
       smpClientVersion = fromMaybe initialSMPClientVersion smpClientVersion_
       clientNtfCreds = case (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) of
-        (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just $ ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
+        (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
         _ -> Nothing
-   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, sndSecure, status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
+      shortLink = case (shortLinkId_, shortLinkKey_, linkPrivSigKey_, linkEncFixedData_) of
+        (Just shortLinkId, Just shortLinkKey, Just linkPrivSigKey, Just linkEncFixedData) -> Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData}
+        _ -> Nothing
+   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
 
 getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById db connId dbRcvId =
@@ -2092,7 +2194,7 @@ sndQueueQuery :: Query
 sndQueueQuery =
   [sql|
     SELECT
-      c.user_id, COALESCE(q.server_key_hash, s.key_hash), q.conn_id, q.host, q.port, q.snd_id, q.snd_secure,
+      c.user_id, COALESCE(q.server_key_hash, s.key_hash), q.conn_id, q.host, q.port, q.snd_id, q.queue_mode,
       q.snd_public_key, q.snd_private_key, q.e2e_pub_key, q.e2e_dh_secret, q.status,
       q.snd_queue_id, q.snd_primary, q.replace_snd_queue_id, q.switch_status, q.smp_client_version
     FROM snd_queues q
@@ -2101,18 +2203,18 @@ sndQueueQuery =
   |]
 
 toSndQueue ::
-  (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SenderId, BoolInt)
+  (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SenderId, Maybe QueueMode)
     :. (Maybe SndPublicAuthKey, SndPrivateAuthKey, Maybe C.PublicKeyX25519, C.DhSecretX25519, QueueStatus)
     :. (DBQueueId 'QSStored, BoolInt, Maybe Int64, Maybe SndSwitchStatus, VersionSMPC) ->
   SndQueue
 toSndQueue
-  ( (userId, keyHash, connId, host, port, sndId, BI sndSecure)
+  ( (userId, keyHash, connId, host, port, sndId, queueMode)
       :. (sndPubKey, sndPrivateKey@(C.APrivateAuthKey a pk), e2ePubKey, e2eDhSecret, status)
       :. (dbQueueId, BI primary, dbReplaceQueueId, sndSwchStatus, smpClientVersion)
     ) =
     let server = SMPServer host port keyHash
         sndPublicKey = fromMaybe (C.APublicAuthKey a (C.publicKey pk)) sndPubKey
-     in SndQueue {userId, connId, server, sndId, sndSecure, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbQueueId, primary, dbReplaceQueueId, sndSwchStatus, smpClientVersion}
+     in SndQueue {userId, connId, server, sndId, queueMode, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbQueueId, primary, dbReplaceQueueId, sndSwchStatus, smpClientVersion}
 
 getSndQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError SndQueue)
 getSndQueueById db connId dbSndId =

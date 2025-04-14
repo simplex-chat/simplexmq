@@ -60,6 +60,8 @@ serverTests = do
     describe "NEW and SKEY commands" $ do
       testCreateSndSecure
       testSndSecureProhibited
+    describe "RKEY command to add additional recipient keys" $
+      testCreateUpdateKeys
     describe "NEW, OFF and DEL commands, SEND messages" testCreateDelete
     describe "Stress test" stressTest
     describe "allowNewQueues setting" testAllowNewQueues
@@ -80,12 +82,18 @@ serverTests = do
     testMsgExpireOnInterval
     testMsgNOTExpireOnInterval
   describe "Blocking queues" $ testBlockMessageQueue
+  describe "Short links" $ do
+    testInvQueueLinkData
+    testContactQueueLinkData
 
 pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmission ErrorType BrokerMsg
 pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
 
+pattern New :: RcvPublicAuthKey -> RcvPublicDhKey -> Command 'Recipient
+pattern New rPub dhPub = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRMessaging Nothing)))
+
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> BrokerMsg
-pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure)
+pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure _linkId)
 
 pattern Msg :: MsgId -> MsgBody -> BrokerMsg
 pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
@@ -146,7 +154,7 @@ testCreateSecure =
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv r rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
+      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv r rKey ("abcd", NoEntity, New rPub dhPub)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       (rId1, NoEntity) #== "creates queue"
 
@@ -211,7 +219,7 @@ testCreateSndSecure =
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv r rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe True)
+      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv r rKey ("abcd", NoEntity, New rPub dhPub)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       (rId1, NoEntity) #== "creates queue"
 
@@ -225,8 +233,8 @@ testCreateSndSecure =
       Resp "dabc" sId2 OK <- signSendRecv s sKey ("dabc", sId, SKEY sPub)
       (sId2, sId) #== "secures queue, same queue ID in response"
 
-      (sPub', _) <- atomically $ C.generateAuthKeyPair C.SEd448 g
-      Resp "abcd" _ err4 <- signSendRecv s sKey ("abcd", sId, SKEY sPub')
+      (sPub', sKey') <- atomically $ C.generateAuthKeyPair C.SEd448 g
+      Resp "abcd" _ err4 <- signSendRecv s sKey' ("abcd", sId, SKEY sPub')
       (err4, ERR AUTH) #== "rejects if secured with different key"
       Resp "abcd" _ OK <- signSendRecv s sKey ("abcd", sId, SKEY sPub)
 
@@ -258,13 +266,45 @@ testSndSecureProhibited =
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" rId1 (Ids _rId sId _srvDh) <- signSendRecv r rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
+      Resp "abcd" rId1 (Ids _rId sId _srvDh) <- signSendRecv r rKey ("abcd", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRContact Nothing))))
       (rId1, NoEntity) #== "creates queue"
 
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       Resp "dabc" sId2 err <- signSendRecv s sKey ("dabc", sId, SKEY sPub)
       (sId2, sId) #== "secures queue, same queue ID in response"
       (err, ERR AUTH) #== "rejects SKEY when not allowed in NEW command"
+
+testCreateUpdateKeys :: SpecWith (ATransport, AStoreType)
+testCreateUpdateKeys =
+  it "should create (NEW) and updated recipient keys (RKEY)" $ \(ATransport t, msType) ->
+    smpTest t msType $ \h -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "1" NoEntity (Ids rId _sId _srvDh) <- signSendRecv h rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRContact Nothing))))
+      (rPub', rKey') <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      Resp "2" rId1 OK <- signSendRecv h rKey ("2", rId, RKEY [rPub, rPub'])
+      rId1 `shouldBe` rId
+      -- old key still works
+      Resp "3" rId2 (INFO _) <- signSendRecv h rKey ("3", rId, QUE)
+      rId2 `shouldBe` rId
+      -- new key works too
+      Resp "4" _ (INFO _) <- signSendRecv h rKey ("4", rId, QUE)
+      -- remove old key, only keep the new one
+      Resp "5" _ OK <- signSendRecv h rKey' ("5", rId, RKEY [rPub'])
+      -- old key no longer works
+      Resp "6" _ (ERR AUTH) <- signSendRecv h rKey ("6", rId, QUE)
+      -- add old key back
+      Resp "7" _ OK <- signSendRecv h rKey' ("7", rId, RKEY [rPub, rPub'])
+      -- old key works again
+      Resp "8" _ (INFO _) <- signSendRecv h rKey ("8", rId, QUE)
+      -- key can remove itself
+      Resp "9" _ OK <- signSendRecv h rKey ("9", rId, RKEY [rPub'])
+      -- old key does not work
+      Resp "10" _ (ERR AUTH) <- signSendRecv h rKey ("10", rId, QUE)
+      -- new key works
+      Resp "11" _ (INFO _) <- signSendRecv h rKey' ("11", rId, QUE)
+      pure ()
 
 testCreateDelete :: SpecWith (ATransport, AStoreType)
 testCreateDelete =
@@ -273,7 +313,7 @@ testCreateDelete =
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
+      Resp "abcd" rId1 (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", NoEntity, New rPub dhPub)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       (rId1, NoEntity) #== "creates queue"
 
@@ -345,7 +385,7 @@ stressTest =
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       rIds <- forM ([1 .. 50] :: [Int]) . const $ do
-        Resp "" NoEntity (Ids rId _ _) <- signSendRecv h1 rKey ("", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
+        Resp "" NoEntity (Ids rId _ _) <- signSendRecv h1 rKey ("", NoEntity, New rPub dhPub)
         pure rId
       let subscribeQueues h = forM_ rIds $ \rId -> do
             Resp "" rId' OK <- signSendRecv h rKey ("", rId, SUB)
@@ -363,7 +403,7 @@ testAllowNewQueues =
         g <- C.newRandom
         (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
         (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-        Resp "abcd" NoEntity (ERR AUTH) <- signSendRecv h rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
+        Resp "abcd" NoEntity (ERR AUTH) <- signSendRecv h rKey ("abcd", NoEntity, New rPub dhPub)
         pure ()
 
 testDuplex :: SpecWith (ATransport, AStoreType)
@@ -373,7 +413,7 @@ testDuplex =
       g <- C.newRandom
       (arPub, arKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (aDhPub, aDhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" _ (Ids aRcv aSnd aSrvDh) <- signSendRecv alice arKey ("abcd", NoEntity, NEW arPub aDhPub Nothing SMSubscribe False)
+      Resp "abcd" _ (Ids aRcv aSnd aSrvDh) <- signSendRecv alice arKey ("abcd", NoEntity, New arPub aDhPub)
       let aDec = decryptMsgV3 $ C.dh' aSrvDh aDhPriv
       -- aSnd ID is passed to Bob out-of-band
 
@@ -389,7 +429,7 @@ testDuplex =
 
       (brPub, brKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (bDhPub, bDhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" _ (Ids bRcv bSnd bSrvDh) <- signSendRecv bob brKey ("abcd", NoEntity, NEW brPub bDhPub Nothing SMSubscribe False)
+      Resp "abcd" _ (Ids bRcv bSnd bSrvDh) <- signSendRecv bob brKey ("abcd", NoEntity, New brPub bDhPub)
       let bDec = decryptMsgV3 $ C.dh' bSrvDh bDhPriv
       Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, _SEND $ "reply_id " <> encode (unEntityId bSnd))
       -- "reply_id ..." is ad-hoc, not a part of SMP protocol
@@ -428,7 +468,7 @@ testSwitchSub =
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" _ (Ids rId sId srvDh) <- signSendRecv rh1 rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
+      Resp "abcd" _ (Ids rId sId srvDh) <- signSendRecv rh1 rKey ("abcd", NoEntity, New rPub dhPub)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       Resp "bcda" _ ok1 <- sendRecv sh ("", "bcda", sId, _SEND "test1")
       (ok1, OK) #== "sent test message 1"
@@ -849,7 +889,7 @@ createAndSecureQueue h sPub = do
   g <- C.newRandom
   (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
   (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-  Resp "abcd" NoEntity (Ids rId sId srvDh) <- signSendRecv h rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
+  Resp "abcd" NoEntity (Ids rId sId srvDh) <- signSendRecv h rKey ("abcd", NoEntity, New rPub dhPub)
   let dhShared = C.dh' srvDh dhPriv
   Resp "dabc" rId' OK <- signSendRecv h rKey ("dabc", rId, KEY sPub)
   (rId', rId) #== "same queue ID"
@@ -884,7 +924,7 @@ testTiming =
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" NoEntity (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe False)
+      Resp "abcd" NoEntity (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", NoEntity, New rPub dhPub)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
       Resp "cdab" _ OK <- signSendRecv rh rKey ("cdab", rId, SUB)
 
@@ -1032,7 +1072,7 @@ testBlockMessageQueue =
     (rId, sId) <- withSmpServerStoreLogOn ps testPort $ runTest t $ \h -> do
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" rId1 (Ids rId sId _srvDh) <- signSendRecv h rKey ("abcd", NoEntity, NEW rPub dhPub Nothing SMSubscribe True)
+      Resp "abcd" rId1 (Ids rId sId _srvDh) <- signSendRecv h rKey ("abcd", NoEntity, New rPub dhPub)
       (rId1, NoEntity) #== "creates queue"
       pure (rId, sId)
 
@@ -1049,6 +1089,119 @@ testBlockMessageQueue =
       a <- testSMPClient test'
       killThread server
       pure a
+
+testInvQueueLinkData :: SpecWith (ATransport, AStoreType)
+testInvQueueLinkData = 
+  it "create and access queue short link data for 1-time invitation"  $ \(ATransport t, msType) ->
+    smpTest2 t msType $ \r s -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      C.CbNonce corrId <- atomically $ C.randomCbNonce g
+      let sId = EntityId $ B.take 24 $ C.sha3_384 corrId
+          ld = (EncDataBytes "fixed data", EncDataBytes "user data")
+          qrd = QRMessaging $ Just (sId, ld)
+      -- sender ID must be derived from corrId
+      Resp "1" NoEntity (ERR (CMD PROHIBITED)) <-
+        signSendRecv r rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
+      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMMessaging) (Just lnkId))) <-
+        signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
+      (sId', sId) #== "should return the same sender ID"
+      corrId' `shouldBe` CorrId corrId
+      -- can't read link data with LGET
+      Resp "2" lnkId' (ERR AUTH) <- sendRecv s ("", "2", lnkId, LGET)
+      lnkId' `shouldBe` lnkId
+
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+
+      Resp "3a" _ err2 <- sendRecv s ("", "3a", lnkId, LKEY sPub)
+      (err2, ERR (CMD NO_AUTH)) #== "rejects LKEY without signature"
+
+      Resp "3b" _ err2' <- sendRecv s (sampleSig, "3b", lnkId, LKEY sPub)
+      (err2', ERR AUTH) #== "rejects LKEY with wrong signature"
+
+      Resp "4" _ err3 <- signSendRecv s sKey ("4", rId, LKEY sPub)
+      (err3, ERR AUTH) #== "rejects LKEY with recipients's ID"
+
+      Resp "5" lnkId2 (LNK sId2 ld') <- signSendRecv s sKey ("5", lnkId, LKEY sPub)
+      (lnkId2, lnkId) #== "secures queue and returns link data, same link ID in response"
+      (sId2, sId) #== "same sender ID in response"
+      (ld', ld) #== "returns stored data"
+
+      (sPub', sKey') <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      Resp "6" _ err4 <- signSendRecv s sKey' ("6", lnkId, LKEY sPub')
+      (err4, ERR AUTH) #== "rejects if secured with different key"
+
+      Resp "7" _ (LNK sId3 ld2) <- signSendRecv s sKey ("7", lnkId, LKEY sPub)
+      sId3 `shouldBe` sId
+      ld2 `shouldBe` ld
+
+      let newLD = (EncDataBytes "fixed data", EncDataBytes "updated user data")
+      Resp "8" rId' (ERR AUTH) <- signSendRecv r rKey ("8", rId, LSET lnkId newLD)
+      rId' `shouldBe` rId
+
+      Resp "9" rId2 (ERR AUTH) <- signSendRecv r rKey ("9", rId, LDEL)
+      rId2 `shouldBe` rId
+
+testContactQueueLinkData :: SpecWith (ATransport, AStoreType)
+testContactQueueLinkData = 
+  it "create and access queue short link data for contact address"  $ \(ATransport t, msType) ->
+    smpTest2 t msType $ \r s -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      C.CbNonce corrId <- atomically $ C.randomCbNonce g
+      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      let sId = EntityId $ B.take 24 $ C.sha3_384 corrId
+          ld = (EncDataBytes "fixed data", EncDataBytes "user data")
+          qrd = QRContact $ Just (lnkId, (sId, ld))
+      -- sender ID must be derived from corrId
+      Resp "1" NoEntity (ERR (CMD PROHIBITED)) <-
+        signSendRecv r rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
+      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMContact) (Just lnkId'))) <-
+        signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
+      (lnkId', lnkId) #== "should return the same link ID"
+      (sId', sId) #== "should return the same sender ID"
+      corrId' `shouldBe` CorrId corrId
+      -- can't secure queue and read link data with LKEY
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      Resp "2" _ (ERR AUTH) <- signSendRecv s sKey ("2", lnkId, LKEY sPub)
+
+      Resp "3" _ err2 <- sendRecv s (sampleSig, "3", lnkId, LGET)
+      (err2, ERR (CMD HAS_AUTH)) #== "rejects LGET with signature"
+
+      Resp "4" _ err3 <- sendRecv s ("", "4", rId, LGET)
+      (err3, ERR AUTH) #== "rejects LGET with recipients's ID"
+
+      Resp "5" lnkId2 (LNK sId2 ld') <- sendRecv s ("", "5", lnkId, LGET)
+      (lnkId2, lnkId) #== "returns link data, same link ID in response"
+      (sId2, sId) #== "same sender ID in response"
+      (ld', ld) #== "returns stored data"
+
+      Resp "6" _ (LNK sId3 ld2) <- sendRecv s ("", "6", lnkId, LGET)
+      sId3 `shouldBe` sId
+      ld2 `shouldBe` ld
+
+      let newLD = (EncDataBytes "fixed data", EncDataBytes "updated user data")
+      Resp "7" rId' OK <- signSendRecv r rKey ("7", rId, LSET lnkId newLD)
+      rId' `shouldBe` rId
+
+      Resp "8" _ (LNK sId4 ld3) <- sendRecv s ("", "8", lnkId, LGET)
+      sId4 `shouldBe` sId
+      ld3 `shouldBe` newLD
+
+      badLnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      Resp "9" _ (ERR AUTH) <- signSendRecv r rKey ("9", rId, LSET badLnkId newLD)
+
+      let badLD = (EncDataBytes "changed fixed data", EncDataBytes "updated user data 2")
+      Resp "10" _ (ERR AUTH) <- signSendRecv r rKey ("10", rId, LSET lnkId badLD)
+
+      Resp "11" rId2 OK <- signSendRecv r rKey ("11", rId, LDEL)
+      rId2 `shouldBe` rId
+      Resp "11a" _ OK <- signSendRecv r rKey ("11a", rId, LDEL)
+
+      Resp "12" lnkId3 (ERR AUTH) <- sendRecv s ("", "12", lnkId, LGET)
+      lnkId3 `shouldBe` lnkId
 
 samplePubKey :: C.APublicVerifyKey
 samplePubKey = C.APublicVerifyKey C.SEd25519 "MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ6buiZJVgSpQWsucXq7U6zjMgY="
@@ -1075,8 +1228,8 @@ serverSyntaxTests (ATransport t) = do
   describe "NEW" $ do
     it "no parameters" $ (sampleSig, "bcda", "", NEW_) >#> ("", "bcda", "", ERR $ CMD SYNTAX)
     it "many parameters" $ (sampleSig, "cdab", "", (NEW_, ' ', ('\x01', 'A'), samplePubKey, sampleDhPubKey)) >#> ("", "cdab", "", ERR $ CMD SYNTAX)
-    it "no signature" $ ("", "dabc", "", (NEW_, ' ', samplePubKey, sampleDhPubKey, '0', SMSubscribe, False)) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
-    it "queue ID" $ (sampleSig, "abcd", "12345678", (NEW_, ' ', samplePubKey, sampleDhPubKey, '0', SMSubscribe, False)) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
+    it "no signature" $ ("", "dabc", "", ((NEW_, ' ', samplePubKey, sampleDhPubKey), ('0', SMSubscribe, Just (QRMessaging Nothing)))) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
+    it "queue ID" $ (sampleSig, "abcd", "12345678", ((NEW_, ' ', samplePubKey, sampleDhPubKey), ('0', SMSubscribe, Just (QRMessaging Nothing)))) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
   describe "KEY" $ do
     it "valid syntax" $ (sampleSig, "bcda", "12345678", (KEY_, ' ', samplePubKey)) >#> ("", "bcda", "12345678", ERR AUTH)
     it "no parameters" $ (sampleSig, "cdab", "12345678", KEY_) >#> ("", "cdab", "12345678", ERR $ CMD SYNTAX)

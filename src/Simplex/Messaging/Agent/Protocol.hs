@@ -1,8 +1,10 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -19,6 +21,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 -- |
 -- Module      : Simplex.Messaging.Agent.Protocol
@@ -100,17 +103,31 @@ module Simplex.Messaging.Agent.Protocol
     ConnectionMode (..),
     SConnectionMode (..),
     AConnectionMode (..),
-    cmInvitation,
-    cmContact,
     ConnectionModeI (..),
     ConnectionRequestUri (..),
     AConnectionRequestUri (..),
     ConnReqUriData (..),
     CRClientData,
     ServiceScheme,
+    FixedLinkData (..),
+    ConnLinkData (..),
+    OwnerAuth (..),
+    OwnerId,
+    ConnectionLink (..),
+    AConnectionLink (..),
+    ConnShortLink (..),
+    AConnShortLink (..),
+    CreatedConnLink (..),
+    ACreatedConnLink (..),
+    ContactConnType (..),
+    ShortLinkScheme (..),
+    LinkKey (..),
     sameConnReqContact,
+    sameShortLinkContact,
     simplexChat,
     connReqUriP',
+    simplexConnReqUri,
+    simplexShortLink,
     AgentErrorType (..),
     CommandErrorType (..),
     ConnectionErrorType (..),
@@ -143,16 +160,23 @@ module Simplex.Messaging.Agent.Protocol
     aMessageType,
     extraSMPServerHosts,
     updateSMPServerHosts,
+    shortenShortLink,
+    restoreShortLink,
+    linkUserData,
   )
 where
 
 import Control.Applicative (optional, (<|>))
-import Data.Aeson (FromJSON (..), ToJSON (..))
+import Data.Aeson (FromJSON (..), ToJSON (..), Value (..), (.:), (.:?))
 import qualified Data.Aeson.TH as J
+import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Char (toLower, toUpper)
+import Data.Foldable (find)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Type)
@@ -166,7 +190,7 @@ import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime)
 import Data.Type.Equality
-import Data.Typeable ()
+import Data.Typeable (Typeable)
 import Data.Word (Word16, Word32)
 import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder, fromTextField_)
 import Simplex.FileTransfer.Description
@@ -198,6 +222,7 @@ import Simplex.Messaging.Protocol
     MsgId,
     NMsgMeta,
     ProtocolServer (..),
+    QueueMode (..),
     SMPClientVersion,
     SMPServer,
     SMPServerWithAuth,
@@ -213,6 +238,8 @@ import Simplex.Messaging.Protocol
     sameSrvAddr,
     sndAuthKeySMPClientVersion,
     srvHostnamesSMPClientVersion,
+    shortLinksSMPClientVersion,
+    senderCanSecure,
     pattern ProtoServerWithAuth,
     pattern SMPServer,
   )
@@ -232,6 +259,7 @@ import UnliftIO.Exception (Exception)
 -- 4 - delivery receipts (7/13/2023)
 -- 5 - post-quantum double ratchet (3/14/2024)
 -- 6 - secure reply queues with provided keys (6/14/2024)
+-- 7 - initialize ratchet on processing confirmation (7/18/2024)
 
 data SMPAgentVersion
 
@@ -676,21 +704,17 @@ data AConnectionMode = forall m. ConnectionModeI m => ACM (SConnectionMode m)
 instance Eq AConnectionMode where
   ACM m == ACM m' = isJust $ testEquality m m'
 
-cmInvitation :: AConnectionMode
-cmInvitation = ACM SCMInvitation
-
-cmContact :: AConnectionMode
-cmContact = ACM SCMContact
-
 deriving instance Show AConnectionMode
 
 connMode :: SConnectionMode m -> ConnectionMode
 connMode SCMInvitation = CMInvitation
 connMode SCMContact = CMContact
+{-# INLINE connMode #-}
 
 connMode' :: ConnectionMode -> AConnectionMode
-connMode' CMInvitation = cmInvitation
-connMode' CMContact = cmContact
+connMode' CMInvitation = ACM SCMInvitation
+connMode' CMContact = ACM SCMContact
+{-# INLINE connMode' #-}
 
 class ConnectionModeI (m :: ConnectionMode) where sConnectionMode :: SConnectionMode m
 
@@ -1042,6 +1066,36 @@ instance ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
                 <> maybe [] (\cd -> [("data", encodeUtf8 cd)]) crClientData
   strP = connReqUriP' (Just SSSimplex)
 
+instance ConnectionModeI m => Encoding (ConnectionRequestUri m) where
+  smpEncode = \case
+    CRInvitationUri crData e2eParams -> smpEncode (CMInvitation, crData, e2eParams)
+    CRContactUri crData -> smpEncode (CMContact, crData)
+  smpP = (\(ACR _ cr) -> checkConnMode cr) <$?> smpP
+  {-# INLINE smpP #-}
+
+instance Encoding AConnectionRequestUri where
+  smpEncode (ACR _ cr) = smpEncode cr
+  {-# INLINE smpEncode #-}
+  smpP =
+    smpP >>= \case
+      CMInvitation -> ACR SCMInvitation <$> (CRInvitationUri <$> smpP <*> smpP)
+      CMContact -> ACR SCMContact . CRContactUri <$> smpP
+
+instance Encoding ConnReqUriData where
+  smpEncode ConnReqUriData {crAgentVRange, crSmpQueues, crClientData} =
+    smpEncode (crAgentVRange, crSmpQueues, Large . encodeUtf8 <$> crClientData)
+  smpP = do
+    (crAgentVRange, smpQueues, clientData) <- smpP
+    -- This patch to compensate for the fact that queueMode QMContact won't be included in queue encoding,
+    -- until min SMP client version is >= 3 (sndAuthKeySMPClientVersion).
+    -- This is possible because SMP encoding of ConnReqUriData was not used prior to SMP client version 4.
+    let crSmpQueues = L.map patchQueueMode smpQueues
+    pure ConnReqUriData {crScheme = SSSimplex, crAgentVRange, crSmpQueues, crClientData = safeDecodeUtf8 . unLarge <$> clientData}
+    where
+      patchQueueMode q@SMPQueueUri {queueAddress = a} = case a of
+        SMPQueueAddress {queueMode = Nothing} -> q {queueAddress = a {queueMode = Just QMContact}} :: SMPQueueUri
+        _ -> q
+
 connReqUriP' :: forall m. ConnectionModeI m => Maybe ServiceScheme -> Parser (ConnectionRequestUri m)
 connReqUriP' overrideScheme = do
   ACR m cr <- connReqUriP overrideScheme
@@ -1091,6 +1145,13 @@ instance ToJSON AConnectionRequestUri where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
+instance ConnectionModeI m => FromJSON (ConnShortLink m) where
+  parseJSON = strParseJSON "ConnShortLink"
+
+instance ConnectionModeI m => ToJSON (ConnShortLink m) where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
 -- debug :: Show a => String -> a -> a
 -- debug name value = unsafePerformIO (putStrLn $ name <> ": " <> show value) `seq` value
 -- {-# INLINE debug #-}
@@ -1104,6 +1165,16 @@ instance StrEncoding ConnectionMode where
 instance StrEncoding AConnectionMode where
   strEncode (ACM cMode) = strEncode $ connMode cMode
   strP = connMode' <$> strP
+
+instance Encoding ConnectionMode where
+  smpEncode = \case
+    CMInvitation -> "I"
+    CMContact -> "C"
+  smpP =
+    A.anyChar >>= \case
+      'I' -> pure CMInvitation
+      'C' -> pure CMContact
+      _ -> fail "bad connection mode"
 
 connModeT :: Text -> Maybe ConnectionMode
 connModeT = \case
@@ -1152,16 +1223,20 @@ data SMPQueueInfo = SMPQueueInfo {clientVersion :: VersionSMPC, queueAddress :: 
   deriving (Eq, Show)
 
 instance Encoding SMPQueueInfo where
-  smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure})
-    | clientVersion >= sndAuthKeySMPClientVersion && sndSecure = smpEncode (clientVersion, smpServer, senderId, dhPublicKey, sndSecure)
-    | clientVersion > initialSMPClientVersion = smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
+  smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode})
+    | clientVersion >= shortLinksSMPClientVersion = addrEnc <> maybe "" smpEncode queueMode
+    | clientVersion >= sndAuthKeySMPClientVersion && sndSecure = addrEnc <> smpEncode sndSecure
+    | clientVersion > initialSMPClientVersion = addrEnc
     | otherwise = smpEncode clientVersion <> legacyEncodeServer smpServer <> smpEncode (senderId, dhPublicKey)
+    where
+      addrEnc = smpEncode (clientVersion, smpServer, senderId, dhPublicKey)
+      sndSecure = senderCanSecure queueMode
   smpP = do
     clientVersion <- smpP
     smpServer <- if clientVersion > initialSMPClientVersion then smpP else updateSMPServerHosts <$> legacyServerP
     (senderId, dhPublicKey) <- smpP
-    sndSecure <- fromMaybe False <$> optional smpP
-    pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure}
+    queueMode <- queueModeP
+    pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode}
 
 -- This instance seems contrived and there was a temptation to split a common part of both types.
 -- But this is created to allow backward and forward compatibility where SMPQueueUri
@@ -1188,7 +1263,7 @@ data SMPQueueAddress = SMPQueueAddress
   { smpServer :: SMPServer,
     senderId :: SMP.SenderId,
     dhPublicKey :: C.PublicKeyX25519,
-    sndSecure :: Bool
+    queueMode :: Maybe QueueMode
   }
   deriving (Eq, Show)
 
@@ -1215,48 +1290,71 @@ sameQAddress (srv, qId) (srv', qId') = sameSrvAddr srv srv' && qId == qId'
 {-# INLINE sameQAddress #-}
 
 instance StrEncoding SMPQueueUri where
-  strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey, sndSecure})
+  strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey, queueMode})
     | minVersion vr >= srvHostnamesSMPClientVersion = strEncode srv <> "/" <> strEncode qId <> "#/?" <> query queryParams
     | otherwise = legacyStrEncodeServer srv <> "/" <> strEncode qId <> "#/?" <> query (queryParams <> srvParam)
     where
       query = strEncode . QSP QEscape
-      queryParams = [("v", strEncode vr), ("dh", strEncode dhPublicKey)] <> [("k", "s") | sndSecure]
+      queryParams = [("v", strEncode vr), ("dh", strEncode dhPublicKey)] <> queueModeParam <> sndSecureParam
+        where
+          queueModeParam = case queueMode of
+            Just QMMessaging -> [("q", "m")]
+            Just QMContact -> [("q", "c")]
+            Nothing -> []
+          sndSecureParam = [("k", "s") | senderCanSecure queueMode && minVersion vr < shortLinksSMPClientVersion]
       srvParam = [("srv", strEncode $ TransportHosts_ hs) | not (null hs)]
       hs = L.tail $ host srv
   strP = do
     srv@ProtocolServer {host = h :| host} <- strP <* A.char '/'
     senderId <- strP <* optional (A.char '/') <* A.char '#'
-    (vr, hs, dhPublicKey, sndSecure) <- versioned <|> unversioned
+    (vr, hs, dhPublicKey, queueMode) <- versioned <|> unversioned
     let srv' = srv {host = h :| host <> hs}
         smpServer = if maxVersion vr < srvHostnamesSMPClientVersion then updateSMPServerHosts srv' else srv'
-    pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure}
+    pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode}
     where
-      unversioned = (versionToRange initialSMPClientVersion,[],,False) <$> strP <* A.endOfInput
+      unversioned = (versionToRange initialSMPClientVersion,[],,Nothing) <$> strP <* A.endOfInput
       versioned = do
         dhKey_ <- optional strP
         query <- optional (A.char '/') *> A.char '?' *> strP
         vr <- queryParam "v" query
         dhKey <- maybe (queryParam "dh" query) pure dhKey_
         hs_ <- queryParam_ "srv" query
-        let sndSecure = queryParamStr "k" query == Just "s"
-        pure (vr, maybe [] thList_ hs_, dhKey, sndSecure)
+        let queueMode = case queryParamStr "q" query of
+              Just "m" -> Just QMMessaging
+              Just "c" -> Just QMContact
+              _ | queryParamStr "k" query == Just "s" -> Just QMMessaging
+              _ -> Nothing
+        pure (vr, maybe [] thList_ hs_, dhKey, queueMode)
 
 instance Encoding SMPQueueUri where
-  smpEncode (SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure})
-    | maxVersion clientVRange >= sndAuthKeySMPClientVersion && sndSecure =
-        smpEncode (clientVRange, smpServer, senderId, dhPublicKey, sndSecure)
-    | otherwise =
-        smpEncode (clientVRange, smpServer, senderId, dhPublicKey)
+  smpEncode (SMPQueueUri clientVRange@(VersionRange minV maxV) SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode})
+    -- The condition is for minVersion as earlier clients won't be able to support it.
+    -- The alternative would be to encode both queueMode and sndSecure
+    | minV >= shortLinksSMPClientVersion = addrEnc <> maybe "" smpEncode queueMode
+    -- Earlier versions won't be able to ignore sndSecure, so we don't include it when it is False
+    | minV >= sndAuthKeySMPClientVersion || (maxV >= sndAuthKeySMPClientVersion && sndSecure) = addrEnc <> smpEncode sndSecure
+    | otherwise = addrEnc
+    where
+      addrEnc = smpEncode (clientVRange, smpServer, senderId, dhPublicKey)
+      sndSecure = senderCanSecure queueMode
   smpP = do
     (clientVRange, smpServer, senderId, dhPublicKey) <- smpP
-    sndSecure <- fromMaybe False <$> optional smpP
-    pure $ SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey, sndSecure}
+    queueMode <- queueModeP
+    pure $ SMPQueueUri clientVRange SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode}
+
+queueModeP :: Parser (Maybe QueueMode)
+queueModeP = Just <$> smpP <|> optional ((\case True -> QMMessaging; _ -> QMContact) <$> smpP)
 
 data ConnectionRequestUri (m :: ConnectionMode) where
   CRInvitationUri :: ConnReqUriData -> RcvE2ERatchetParamsUri 'C.X448 -> ConnectionRequestUri CMInvitation
   -- contact connection request does NOT contain E2E encryption parameters for double ratchet -
   -- they are passed in AgentInvitation message
   CRContactUri :: ConnReqUriData -> ConnectionRequestUri CMContact
+
+simplexConnReqUri :: ConnectionRequestUri m -> ConnectionRequestUri m
+simplexConnReqUri = \case
+  CRInvitationUri crData e2eParams -> CRInvitationUri crData {crScheme = SSSimplex} e2eParams
+  CRContactUri crData -> CRContactUri crData {crScheme = SSSimplex}
 
 deriving instance Eq (ConnectionRequestUri m)
 
@@ -1271,11 +1369,228 @@ instance Eq AConnectionRequestUri where
 
 deriving instance Show AConnectionRequestUri
 
+data ShortLinkScheme = SLSSimplex | SLSServer deriving (Eq, Show)
+
+data ConnShortLink (m :: ConnectionMode) where
+  CSLInvitation :: ShortLinkScheme -> SMPServer -> SMP.LinkId -> LinkKey -> ConnShortLink 'CMInvitation
+  CSLContact :: ShortLinkScheme -> ContactConnType -> SMPServer -> LinkKey -> ConnShortLink 'CMContact
+
+deriving instance Eq (ConnShortLink m)
+
+deriving instance Show (ConnShortLink m)
+
+simplexShortLink :: ConnShortLink m -> ConnShortLink m
+simplexShortLink = \case
+  CSLInvitation _ srv lnkId k -> CSLInvitation SLSSimplex srv lnkId k
+  CSLContact _ ct srv k -> CSLContact SLSSimplex ct srv k
+
+newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
+  deriving (Eq, Show)
+  deriving newtype (FromField, StrEncoding)
+
+instance ToField LinkKey where toField (LinkKey s) = toField $ Binary s
+
+instance ConnectionModeI c => ToField (ConnectionLink c) where toField = toField . Binary . strEncode
+
+instance (Typeable c, ConnectionModeI c) => FromField (ConnectionLink c) where fromField = blobFieldDecoder strDecode
+
+instance ConnectionModeI c => ToField (ConnShortLink c) where toField = toField . Binary . strEncode
+
+instance (Typeable c, ConnectionModeI c) => FromField (ConnShortLink c) where fromField = blobFieldDecoder strDecode
+
+data ContactConnType = CCTContact | CCTChannel | CCTGroup deriving (Eq, Show)
+
+data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
+
+data ConnectionLink m = CLFull (ConnectionRequestUri m) | CLShort (ConnShortLink m)
+  deriving (Eq, Show)
+
+data CreatedConnLink m = CCLink {connFullLink :: ConnectionRequestUri m, connShortLink :: Maybe (ConnShortLink m)}
+  deriving (Eq, Show)
+
+data ACreatedConnLink = forall m. ConnectionModeI m => ACCL (SConnectionMode m) (CreatedConnLink m)
+
+deriving instance Show ACreatedConnLink
+
+data AConnectionLink = forall m. ConnectionModeI m => ACL (SConnectionMode m) (ConnectionLink m)
+
+instance Eq AConnectionLink where
+  ACL m cl == ACL m' cl' = case testEquality m m' of
+    Just Refl -> cl == cl'
+    _ -> False
+
+deriving instance Show AConnectionLink
+
+instance ConnectionModeI m => StrEncoding (ConnectionLink m) where
+  strEncode = \case
+    CLFull cr -> strEncode cr
+    CLShort sl -> strEncode sl
+  strP = (\(ACL _ cl) -> checkConnMode cl) <$?> strP
+  {-# INLINE strP #-}
+
+instance StrEncoding AConnectionLink where
+  strEncode (ACL _ cl) = strEncode cl
+  {-# INLINE strEncode #-}
+  strP =
+    (\(ACR m cr) -> ACL m (CLFull cr)) <$> strP
+      <|> (\(ACSL m sl) -> ACL m (CLShort sl)) <$> strP
+
+instance ConnectionModeI m => ToJSON (ConnectionLink m) where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance ConnectionModeI m => FromJSON (ConnectionLink m) where
+  parseJSON = strParseJSON "ConnectionLink"
+
+instance ToJSON AConnectionLink where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance FromJSON AConnectionLink where
+  parseJSON = strParseJSON "AConnectionLink"
+
+instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
+  strEncode = \case
+    CSLInvitation sch srv (SMP.EntityId lnkId) (LinkKey k) -> slEncode sch srv 'i' lnkId k
+    CSLContact sch ct srv (LinkKey k) -> slEncode sch srv (toLower $ ctTypeChar ct) "" k
+    where
+      slEncode sch (SMPServer (h :| hs) port (C.KeyHash kh)) linkType lnkId k =
+        B.concat [authority, "/", B.singleton linkType, "#", lnkIdStr, B64.encodeUnpadded k, queryStr]
+        where
+          (authority, paramHosts) = case sch of
+            SLSSimplex -> ("simplex:", h : hs)
+            SLSServer -> ("https://" <> strEncode h, hs)
+          lnkIdStr = if B.null lnkId then "" else B64.encodeUnpadded lnkId <> "/"
+          queryStr = if B.null query then "" else "?" <> query
+          query =
+            strEncode . QSP QEscape $
+              [("h", strEncode (TransportHosts_ paramHosts)) | not (null paramHosts)]
+                <> [("p", B.pack port) | not (null port)]
+                <> [("c", B64.encodeUnpadded kh) | not (B.null kh)]
+  strP = (\(ACSL _ l) -> checkConnMode l) <$?> strP
+  {-# INLINE strP #-}
+
+instance StrEncoding AConnShortLink where
+  strEncode (ACSL _ l) = strEncode l
+  {-# INLINE strEncode #-}
+  strP = do
+    (sch, h_) <- authorityP <* A.char '/'
+    ct_ <- contactTypeP <* optional (A.char '/') <* A.char '#'
+    case ct_ of
+      Nothing -> do
+        lnkId <- strP <* A.char '/'
+        k <- strP
+        srv <- serverQueryP h_
+        pure $ ACSL SCMInvitation $ CSLInvitation sch srv (SMP.EntityId lnkId) (LinkKey k)
+      Just ct -> do
+        k <- strP
+        srv <- serverQueryP h_
+        pure $ ACSL SCMContact $ CSLContact sch ct srv (LinkKey k)
+    where
+      authorityP =
+        "simplex:" $> (SLSSimplex, Nothing)
+          <|> "https://" *> ((SLSServer,) . Just <$> strP)
+          <|> fail "bad short link scheme"
+      contactTypeP = do
+        Just <$> (A.anyChar >>= ctTypeP . toUpper)        
+          <|> A.char 'i' $> Nothing
+          <|> fail "unknown short link type"
+      serverQueryP h_ =
+        optional (A.char '?' *> strP) >>= \case
+          Nothing -> maybe noServer (pure . SMPServerOnlyHost) h_
+          Just query -> do
+            hs <- maybe noServer pure . L.nonEmpty . maybe id (:) h_ . maybe [] thList_ =<< queryParam_ "h" query
+            p <- maybe "" show <$> queryParam_ @Word16 "p" query
+            kh <- fromMaybe (C.KeyHash "") <$> queryParam_ "c" query
+            pure $ SMPServer hs p kh
+      noServer = fail "short link without server"
+
+instance ConnectionModeI m => Encoding (ConnShortLink m) where
+  smpEncode = \case
+    CSLInvitation _ srv lnkId (LinkKey k) -> smpEncode (CMInvitation, srv, lnkId, k)
+    CSLContact _ ct srv (LinkKey k) -> smpEncode (CMContact, ctTypeChar ct, srv, k)
+  smpP = (\(ACSL _ l) -> checkConnMode l) <$?> smpP
+  {-# INLINE smpP #-}
+
+instance Encoding AConnShortLink where
+  smpEncode (ACSL _ l) = smpEncode l
+  {-# INLINE smpEncode #-}
+  smpP =
+    smpP >>= \case
+      CMInvitation -> do
+        (srv, lnkId, k) <- smpP
+        pure $ ACSL SCMInvitation $ CSLInvitation SLSServer srv lnkId (LinkKey k)
+      CMContact -> do
+        ct <- ctTypeP =<< A.anyChar
+        (srv, k) <- smpP
+        pure $ ACSL SCMContact $ CSLContact SLSServer ct srv (LinkKey k)
+
+ctTypeP :: Char -> Parser ContactConnType
+ctTypeP = \case
+  'A' -> pure CCTContact
+  'C' -> pure CCTChannel
+  'G' -> pure CCTGroup 
+  _ -> fail "unknown contact address type"
+{-# INLINE ctTypeP #-}
+
+ctTypeChar :: ContactConnType -> Char
+ctTypeChar = \case
+  CCTContact -> 'A'
+  CCTChannel -> 'C'
+  CCTGroup -> 'G'
+{-# INLINE ctTypeChar #-}
+
+-- the servers passed to this function should be all preset servers, not servers configured by the user.
+shortenShortLink :: NonEmpty SMPServer -> ConnShortLink m -> ConnShortLink m
+shortenShortLink presetSrvs = \case
+  CSLInvitation sch srv lnkId linkKey -> CSLInvitation sch (shortServer srv) lnkId linkKey
+  CSLContact sch ct srv linkKey -> CSLContact sch ct (shortServer srv) linkKey
+  where
+    shortServer srv@(SMPServer hs@(h :| _) p kh) =
+      if isPresetServer then SMPServerOnlyHost h else srv
+      where
+        isPresetServer = case findPresetServer srv presetSrvs of
+          Just (SMPServer hs' p' kh') ->
+            all (`elem` hs') hs
+              && (p == p' || (null p' && (p == "443" || p == "5223")))
+              && kh == kh'
+          Nothing -> False
+
+-- explicit bidirectional is used for ghc 8.10.7 compatibility, [h]/[] patterns are not reversible.
+pattern SMPServerOnlyHost :: TransportHost -> SMPServer
+pattern SMPServerOnlyHost h <- SMPServer [h] "" (C.KeyHash "")
+  where
+    SMPServerOnlyHost h = SMPServer [h] "" (C.KeyHash "")
+
+-- the servers passed to this function should be all preset servers, not servers configured by the user.
+restoreShortLink :: NonEmpty SMPServer -> ConnShortLink m -> ConnShortLink m
+restoreShortLink presetSrvs = \case
+  CSLInvitation sch srv lnkId linkKey -> CSLInvitation sch (fullServer srv) lnkId linkKey
+  CSLContact sch ct srv linkKey -> CSLContact sch ct (fullServer srv) linkKey
+  where
+    fullServer = \case
+      s@(SMPServerOnlyHost _) -> fromMaybe s $ findPresetServer s presetSrvs
+      s -> s
+
+findPresetServer :: SMPServer -> NonEmpty SMPServer -> Maybe SMPServer
+findPresetServer ProtocolServer {host = h :| _} = find (\ProtocolServer {host = h' :| _} -> h == h')
+{-# INLINE findPresetServer #-}
+
 sameConnReqContact :: ConnectionRequestUri 'CMContact -> ConnectionRequestUri 'CMContact -> Bool
 sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUri ConnReqUriData {crSmpQueues = qs'}) =
   L.length qs == L.length qs' && all same (L.zip qs qs')
   where
     same (q, q') = sameQAddress (qAddress q) (qAddress q')
+
+sameShortLinkContact :: ConnShortLink 'CMContact -> ConnShortLink 'CMContact -> Bool
+sameShortLinkContact (CSLContact _ ct srv k) (CSLContact _ ct' srv' k') =
+  ct == ct' && sameSrvAddr srv srv' && k == k'
+
+checkConnMode :: forall t m m'. (ConnectionModeI m, ConnectionModeI m') => t m' -> Either String (t m)
+checkConnMode c = case testEquality (sConnectionMode @m) (sConnectionMode @m') of
+  Just Refl -> Right c
+  Nothing -> Left "bad connection mode"
+{-# INLINE checkConnMode #-}
 
 data ConnReqUriData = ConnReqUriData
   { crScheme :: ServiceScheme,
@@ -1286,6 +1601,86 @@ data ConnReqUriData = ConnReqUriData
   deriving (Eq, Show)
 
 type CRClientData = Text
+
+data FixedLinkData c = FixedLinkData
+  { agentVRange :: VersionRangeSMPA,
+    rootKey :: C.PublicKeyEd25519,
+    connReq :: ConnectionRequestUri c
+  }
+
+data ConnLinkData c where
+  InvitationLinkData :: VersionRangeSMPA -> ConnInfo -> ConnLinkData 'CMInvitation
+  ContactLinkData ::
+    { agentVRange :: VersionRangeSMPA,
+      -- direct connection via connReq in fixed data is allowed.
+      direct :: Bool,
+      -- additional owner keys to sign changes of mutable data.
+      owners :: [OwnerAuth],
+      -- alternative addresses of chat relays that receive requests for this contact address.
+      relays :: [ConnShortLink 'CMContact],
+      userData :: ConnInfo
+    } -> ConnLinkData 'CMContact
+
+data AConnLinkData = forall m. ConnectionModeI m => ACLD (SConnectionMode m) (ConnLinkData m)
+
+linkUserData :: ConnLinkData c -> ConnInfo
+linkUserData = \case
+  InvitationLinkData _ d -> d
+  ContactLinkData {userData} -> userData
+
+type OwnerId = ByteString
+
+data OwnerAuth = OwnerAuth
+  { ownerId :: OwnerId, -- unique in the list, application specific - e.g., MemberId
+    ownerKey :: C.PublicKeyEd25519,
+    -- sender ID signed with ownerKey,
+    -- confirms that the owner accepts being the owner.
+    -- sender ID is used here as it is immutable for the queue, link data can be removed.
+    ownerSig :: C.Signature 'C.Ed25519,
+    -- null for root key authorization
+    authOwnerId :: OwnerId,
+    -- owner authorization, sig(ownerId || ownerKey, key(authOwnerId)),
+    -- where authOwnerId is either null for a root key or some other owner authorized by root key, etc.
+    -- Owner validation should detect and reject loops.
+    authOwnerSig :: C.Signature 'C.Ed25519
+  }
+
+instance Encoding OwnerAuth where
+  smpEncode OwnerAuth {ownerId, ownerKey, ownerSig, authOwnerId, authOwnerSig} =
+    smpEncode (ownerId, ownerKey, C.signatureBytes ownerSig, authOwnerId, C.signatureBytes authOwnerSig)
+  smpP = do
+    (ownerId, ownerKey, ownerSig, authOwnerId, authOwnerSig) <- smpP
+    pure OwnerAuth {ownerId, ownerKey, ownerSig, authOwnerId, authOwnerSig}
+
+instance ConnectionModeI c => Encoding (FixedLinkData c) where
+  smpEncode FixedLinkData {agentVRange, rootKey, connReq} =
+    smpEncode (agentVRange, rootKey, connReq)
+  smpP = do
+    (agentVRange, rootKey, connReq) <- smpP
+    pure FixedLinkData {agentVRange, rootKey, connReq}
+
+instance ConnectionModeI c => Encoding (ConnLinkData c) where
+  smpEncode = \case
+    InvitationLinkData vr userData -> smpEncode (CMInvitation, vr, userData)
+    ContactLinkData {agentVRange, direct, owners, relays, userData} ->
+      B.concat [smpEncode (CMContact, agentVRange, direct), smpEncodeList owners, smpEncodeList relays, smpEncode userData]
+  smpP = (\(ACLD _ d) -> checkConnMode d) <$?> smpP
+  {-# INLINE smpP #-}
+
+instance Encoding AConnLinkData where
+  smpEncode (ACLD _ d) = smpEncode d
+  {-# INLINE smpEncode #-}
+  smpP =
+    smpP >>= \case
+      CMInvitation -> do
+        (vr, userData) <- smpP
+        pure $ ACLD SCMInvitation $ InvitationLinkData vr userData
+      CMContact -> do
+        (agentVRange, direct) <- smpP
+        owners <- smpListP
+        relays <- smpListP
+        userData <- smpP
+        pure $ ACLD SCMContact ContactLinkData {agentVRange, direct, owners, relays, userData}
 
 -- | SMP queue status.
 data QueueStatus
@@ -1419,6 +1814,8 @@ data SMPAgentError
     A_PROHIBITED {prohibitedErr :: String}
   | -- | incompatible version of SMP client, agent or encryption protocols
     A_VERSION
+  | -- | failed signature, hash or senderId verification of retrieved link data
+    A_LINK {linkErr :: String}
   | -- | cannot decrypt message
     A_CRYPTO {cryptoErr :: AgentCryptoError}
   | -- | duplicate message - this error is detected by ratchet decryption - this message will be ignored and not shown
@@ -1531,3 +1928,22 @@ $(J.deriveJSON (sumTypeJSON id) ''AgentErrorType)
 $(J.deriveJSON (enumJSON $ dropPrefix "QD") ''QueueDirection)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "SP") ''SwitchPhase)
+
+instance ConnectionModeI m => FromJSON (CreatedConnLink m) where
+  parseJSON = $(J.mkParseJSON defaultJSON ''CreatedConnLink)
+
+instance ConnectionModeI m => ToJSON (CreatedConnLink m) where
+  toEncoding = $(J.mkToEncoding defaultJSON ''CreatedConnLink)
+  toJSON = $(J.mkToJSON defaultJSON ''CreatedConnLink)
+
+instance FromJSON ACreatedConnLink where
+  parseJSON (Object v) = do
+    ACR m cReq <- v .: "connFullLink"
+    shortLink <- v .:? "connShortLink"
+    pure $ ACCL m $ CCLink cReq shortLink
+  parseJSON invalid =
+    JT.prependFailure "bad ACreatedConnLink, " (JT.typeMismatch "Object" invalid)
+
+instance ToJSON ACreatedConnLink where
+  toEncoding (ACCL _ ccLink) = toEncoding ccLink
+  toJSON (ACCL _ ccLink) = toJSON ccLink

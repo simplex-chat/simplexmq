@@ -4,7 +4,6 @@
 module AgentTests.SchemaDump where
 
 import Control.DeepSeq
-import Control.Exception (bracket_)
 import Control.Monad (unless, void)
 import Data.List (dropWhileEnd)
 import Data.Maybe (fromJust, isJust)
@@ -17,7 +16,7 @@ import Simplex.Messaging.Agent.Store.SQLite.DB (TrackQueries (..))
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationsToRun (..), toDownMigration)
 import Simplex.Messaging.Util (ifM)
-import System.Directory (createDirectoryIfMissing, doesFileExist, removeDirectoryRecursive, removeFile)
+import System.Directory (doesFileExist, removeFile)
 import System.Process (readCreateProcess, shell)
 import Test.Hspec
 
@@ -62,12 +61,6 @@ testVerifyLintFKeyIndexes = do
   void $ createDBStore (DBOpts testDB "" False True TQOff) appMigrations MCConsole
   getLintFKeyIndexes testDB "tests/tmp/agent_lint.sql" `shouldReturn` savedLint
   removeFile testDB
-
-withTmpFiles :: IO () -> IO ()
-withTmpFiles =
-  bracket_
-    (createDirectoryIfMissing False "tests/tmp")
-    (removeDirectoryRecursive "tests/tmp")
 
 testSchemaMigrations :: IO ()
 testSchemaMigrations = do
@@ -115,7 +108,9 @@ testUsersMigrationOld = do
 skipComparisonForDownMigrations :: [String]
 skipComparisonForDownMigrations =
   [ -- on down migration idx_messages_internal_snd_id_ts index moves down to the end of the file
-    "m20230814_indexes"
+    "m20230814_indexes",
+    -- snd_secure and last_broker_ts columns swap order on down migration
+    "m20250322_short_links"
   ]
 
 getSchema :: FilePath -> FilePath -> IO String
