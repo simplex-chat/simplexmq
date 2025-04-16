@@ -691,9 +691,10 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
           TDEL -> do
             logDebug "TDEL"
             st <- asks store
-            qs <- atomically $ deleteNtfToken st tknId
-            forM_ qs $ \SMPQueueNtf {smpServer, notifierId} ->
-              atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
+            ss <- atomically $ deleteNtfToken st tknId
+            forM_ (M.assocs ss) $ \(smpServer, nIds) -> do
+              atomically $ removeSubscriptions ca smpServer SPNotifier nIds
+              atomically $ removePendingSubs ca smpServer SPNotifier nIds
             cancelInvervalNotifications tknId
             withNtfLog (`logDeleteToken` tknId)
             incNtfStatT token tknDeleted
@@ -756,6 +757,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             st <- asks store
             atomically $ deleteNtfSubscription st subId
             atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
+            atomically $ removePendingSub ca smpServer (SPNotifier, notifierId)
             withNtfLog (`logDeleteSubscription` subId)
             incNtfStat subDeleted
             pure NROk

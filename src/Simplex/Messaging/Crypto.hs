@@ -179,8 +179,6 @@ module Simplex.Messaging.Crypto
     unPad,
 
     -- * X509 Certificates
-    SignedCertificate,
-    Certificate,
     signCertificate,
     signX509,
     verifyX509,

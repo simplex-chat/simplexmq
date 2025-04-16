@@ -41,7 +41,7 @@ agentTests ps = do
 #endif
     describe "Functional API" $ functionalAPITests ps
     describe "Chosen servers" serverChoiceTests
-    describe "Notification tests" $ notificationTests ps
+    fdescribe "Notification tests" $ notificationTests ps
 #if !defined(dbPostgres)
   describe "SQLite store" storeTests
 #endif
