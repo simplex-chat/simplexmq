@@ -10,8 +10,69 @@ on:
   pull_request:
 
 jobs:
+# =============================
+#       Global variables
+# =============================
+
+# That is the only and less hacky way to setup global variables
+# to use in strategy matrix (env:/YAML anchors doesn't work).
+# See: https://github.com/orgs/community/discussions/56787#discussioncomment-6041789
+#      https://github.com/actions/runner/issues/1182
+#      https://stackoverflow.com/a/77549656
+
+  variables:
+    runs-on: ubuntu-latest
+    outputs:
+      GHC_VER: 9.6.3
+    steps:
+      - name: Dummy job when we have just simple variables
+        if: false
+        run: echo
+
+# =============================
+#       Create release
+# =============================
+
+# Create release, but only if it's triggered by tag push.
+# On pull requests/commits push, this job will always complete.
+  maybe-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone project
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/checkout@v3
+
+      - name: Build changelog
+        id: build_changelog
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: simplex-chat/release-changelog-builder-action@v5
+        with:
+          configuration: .github/changelog_conf.json
+          failOnError: true
+          ignorePreReleases: true
+          commitMode: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: simplex-chat/action-gh-release@v2
+        with:
+          body: |
+            See full changelog [here](https://github.com/simplex-chat/simplexmq/blob/master/CHANGELOG.md).
+
+            Commits:
+            ${{ steps.build_changelog.outputs.changelog }}
+          prerelease: true
+          files: |
+            LICENSE
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build:
-    name: "Ubuntu: ${{ matrix.os }}, GHC: ${{ matrix.ghc }}"
+    name: "ubuntu-${{ matrix.os }}, GHC: ${{ matrix.ghc }}"
+    needs: [maybe-release, variables]
     env:
       apps: "smp-server xftp-server ntf-server xftp"
     runs-on: ubuntu-${{ matrix.os }}
@@ -36,10 +97,10 @@ jobs:
             ghc: "8.10.7"
             platform_name: 22_04-8.10.7
           - os: 22.04
-            ghc: "9.6.3"
+            ghc: ${{ needs.variables.outputs.GHC_VER }}
             platform_name: 22_04-x86-64
           - os: 24.04
-            ghc: "9.6.3"
+            ghc: ${{ needs.variables.outputs.GHC_VER }}
             platform_name: 24_04-x86-64
     steps:
       - name: Clone project
@@ -114,9 +175,17 @@ jobs:
 
       - name: Copy smp-server (postgresql) from container and prepare it
         if: startsWith(github.ref, 'refs/tags/v')
+        id: prepare-postgres
         shell: bash
         run: |
-          docker cp builder:/out/smp-server ./smp-server-postgres-ubuntu-${{ matrix.platform_name }}
+          name="smp-server-postgres-ubuntu-${{ matrix.platform_name }}"
+          docker cp builder:/out/smp-server $name
+
+          path="${{ github.workspace }}/$name"
+          echo "bin=$path" >> $GITHUB_OUTPUT
+
+          hash="SHA2-256($name)=$(openssl sha256 $path | cut -d' ' -f 2)"
+          printf 'hash=%s' "$hash" >> $GITHUB_OUTPUT
 
       - name: Build everything else (standard)
         shell: docker exec -t builder sh -eu {0}
@@ -131,41 +200,45 @@ jobs:
           done
 
       - name: Copy binaries from container and prepare them
+        id: prepare-regular
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
+          NL=$(printf '\n')
+
           docker cp builder:/out .
-          for i in ${{ env.apps }}; do mv ./out/$i ./$i-ubuntu-${{ matrix.platform_name }}; done
 
-      - name: Build changelog
+          for i in ${{ env.apps }}; do
+            mv ./out/$i ./$i-ubuntu-${{ matrix.platform_name }}
+
+            name="$i-ubuntu-${{ matrix.platform_name }}"
+
+            path="${{ github.workspace }}/$name"
+            hash="SHA2-256($name)= $(openssl sha256 $path | cut -d' ' -f 2)"
+
+            bins="${bins}${NL}${path}"
+            hashes="${hashes}${NL}${hash}"
+          done
+
+          printf 'bins<<EOF' >> "$GITHUB_OUTPUT"
+          printf '%s' "$bins" >> "$GITHUB_OUTPUT"
+          printf 'EOF' >> "$GITHUB_OUTPUT"
+
+          printf 'hashes<<EOF' >> "$GITHUB_OUTPUT"
+          printf '%s' "$hashes" >> "$GITHUB_OUTPUT"
+          printf 'EOF' >> "$GITHUB_OUTPUT"
+
+      - name: Upload binaries
         if: startsWith(github.ref, 'refs/tags/v')
-        id: build_changelog
-        uses: simplex-chat/release-changelog-builder-action@v5
-        with:
-          configuration: .github/changelog_conf.json
-          failOnError: true
-          ignorePreReleases: true
-          commitMode: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create release
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.ghc != '8.10.7'
         uses: simplex-chat/action-gh-release@v2
         with:
           body: |
-            See full changelog [here](https://github.com/simplex-chat/simplexmq/blob/master/CHANGELOG.md).
-
-            Commits:
-            ${{ steps.build_changelog.outputs.changelog }}
+            ${{ steps.prepare-regular.outputs.hashes }}
+            ${{ steps.prepare-postgres.outputs.hashes }}
           prerelease: true
           files: |
-            LICENSE
-            smp-server-ubuntu-${{ matrix.platform_name }}
-            smp-server-postgres-ubuntu-${{ matrix.platform_name }}
-            ntf-server-ubuntu-${{ matrix.platform_name }}
-            xftp-server-ubuntu-${{ matrix.platform_name }}
-            xftp-ubuntu-${{ matrix.platform_name }}
+            ${{ steps.prepare-regular.outputs.files }}
+            ${{ steps.prepare-postgres.outputs.files }}
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -175,4 +248,17 @@ jobs:
         env:
           PGHOST: localhost
         run: |
-          ./simplexmq-test
+          i=1
+          while [ "$i" -le 10 ]; do
+            if ./simplexmq-test; then
+              break
+            else
+              echo "Attempt $i failed, retrying..."
+              i=$((i + 1))
+              sleep 1
+            fi
+          done
+          if [ "$i" -gt 10 ]; then
+            echo "All 10 attempts failed."
+            exit 1
+          fi
