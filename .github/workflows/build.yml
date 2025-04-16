@@ -10,6 +10,7 @@ on:
   pull_request:
 
 jobs:
+
 # =============================
 #       Global variables
 # =============================
@@ -35,6 +36,7 @@ jobs:
 
 # Create release, but only if it's triggered by tag push.
 # On pull requests/commits push, this job will always complete.
+
   maybe-release:
     runs-on: ubuntu-latest
     steps:
@@ -92,6 +94,10 @@ jobs:
           '
           printf 'jobs=[%s]' "$includeJobs" | tr -d '[:space:]' >> $GITHUB_OUTPUT
 
+# =============================
+#        Main build job
+# =============================
+
   build:
     name: "ubuntu-${{ matrix.os }}, GHC: ${{ matrix.ghc }}"
     needs: [maybe-release, linux_prep]
@@ -121,6 +127,12 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: simplex-chat/docker-setup-buildx-action@v3
+
+      - name: Setup swap
+        if: matrix.ghc == '8.10.7'
+        uses: ./.github/actions/swap
+        with:
+          swap-size-gb: 20
 
       - name: Install PostgreSQL 15 client tools
         if: matrix.os == '22.04'
