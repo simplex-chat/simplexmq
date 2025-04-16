@@ -36,7 +36,8 @@ data NtfStore = NtfStore
     -- multiple registrations exist to protect from malicious registrations if token is compromised
     tokenRegistrations :: TMap DeviceToken (TMap ByteString NtfTokenId),
     subscriptions :: TMap NtfSubscriptionId NtfSubData,
-    -- the first set is used to delete from `subscriptions` when token is deleted, the second - to cancel subsriptions.
+    -- the first set is used to delete from `subscriptions` when token is deleted, the second - to cancel SMP subsriptions.
+    -- TODO [notifications] it can be simplified once NtfSubData is fully removed.
     tokenSubscriptions :: TMap NtfTokenId (TMap SMPServer (TVar (Set NtfSubscriptionId), TVar (Set NotifierId))),
     -- TODO [notifications] for subscriptions that "migrated" to server subscription, we may replace NtfSubData with NtfTokenId here (Either NtfSubData NtfTokenId).
     subscriptionLookup :: TMap SMPServer (TMap NotifierId NtfSubData),

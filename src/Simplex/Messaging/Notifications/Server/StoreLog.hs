@@ -236,7 +236,8 @@ readNtfStore f st = mapM_ (addNtfLogRecord . LB.toStrict) . LB.lines =<< LB.read
             >>= mapM_ (\NtfTknData {tknUpdatedAt} -> atomically $ writeTVar tknUpdatedAt $ Just t)
         CreateSubscription r@NtfSubRec {ntfSubId} -> do
           sub <- mkSubData r
-          atomically (addNtfSubscription st ntfSubId sub) >>= mapM_ (\_ -> logWarn $ "subscription " <> tshow (B64.encode $ unEntityId ntfSubId) <> " already exists")
+          atomically (addNtfSubscription st ntfSubId sub)
+            >>= mapM_ (\_ -> logWarn $ "subscription " <> tshow (B64.encode $ unEntityId ntfSubId) <> " already exists")
         SubscriptionStatus subId status -> do
           getNtfSubscriptionIO st subId
             >>= mapM_ (\NtfSubData {subStatus} -> atomically $ writeTVar subStatus status)

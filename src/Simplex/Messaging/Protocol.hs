@@ -559,7 +559,7 @@ instance Encoding QueueReqData where
 
 data NtfServerCreds = NtfServerCreds
   { ntfServer :: NtfServer,
-    -- ntf server certificate chain that should match fingerpring in address
+    -- ntf server certificate chain that should match fingerprint in address
     -- and Ed25519 key to verify server command NRDY, signed by key from certificate.
     ntfAuthPubKey :: (X.CertificateChain, X.SignedExact X.PubKey)
   }

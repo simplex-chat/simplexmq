@@ -44,8 +44,8 @@ data QueueRec = QueueRec
 
 data NtfCreds = NtfCreds
   { notifierId :: NotifierId,
-    -- `notifierKey` and `ntfServer` are mutually exclusive (and one of them is required),
-    -- but for some period of time from switching to `ntfServer`
+    -- `notifierKey` and `ntfServerHost` are mutually exclusive (and one of them is required),
+    -- but for some period of time from switching to `ntfServerHost`
     -- we will continue storing `notifierKey` to allow ntf/smp server downgrades.
     -- we could use `These NtfPublicAuthKey TransportHost` type here (https://hackage.haskell.org/package/these-1.2.1/docs/Data-These.html)
     notifierKey :: Maybe NtfPublicAuthKey,
