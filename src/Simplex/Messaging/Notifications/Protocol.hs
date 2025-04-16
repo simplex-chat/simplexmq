@@ -543,7 +543,7 @@ instance Encoding NtfTknStatus where
     NTActive -> "ACTIVE"
     NTExpired -> "EXPIRED"
   smpP =
-    A.takeTill (== ' ') >>= \case
+    A.takeTill (\c -> c == ' ' || c == ',') >>= \case
       "NEW" -> pure NTNew
       "REGISTERED" -> pure NTRegistered
       "INVALID" -> NTInvalid <$> optional (A.char ',' *> strP)
