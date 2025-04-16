@@ -88,9 +88,6 @@ getSchema schemaPath = do
           <> " --schema-only --no-owner --no-privileges --no-acl --no-subscriptions --no-tablespaces > "
           <> schemaPath
   (code, out, err) <- readCreateProcessWithExitCode (shell cmd) ""
-  print code
-  putStrLn $ "out: " <> out
-  putStrLn $ "err: " <> err
   threadDelay 20000
   let sed = (if ci then "sed -i" else "sed -i ''")
   void $ readCreateProcess (shell $ sed <> " '/^--/d' " <> schemaPath) ""
