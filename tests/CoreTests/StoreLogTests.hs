@@ -34,12 +34,13 @@ testPublicAuthKey = C.APublicAuthKey C.SEd25519 (C.publicKey "MC4CAQAwBQYDK2VwBC
 
 testNtfCreds :: TVar ChaChaDRG -> IO NtfCreds
 testNtfCreds g = do
-  (notifierKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
+  (nKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
   (k, pk) <- atomically $ C.generateKeyPair @'C.X25519 g
   pure
     NtfCreds
       { notifierId = EntityId "ijkl",
-        notifierKey,
+        notifierKey = Just nKey,
+        ntfServerHost = Nothing,
         rcvNtfDhSecret = C.dh' k pk
       }
 
