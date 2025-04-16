@@ -209,7 +209,7 @@ jobs:
           path="${{ github.workspace }}/$name"
           echo "bin=$path" >> $GITHUB_OUTPUT
 
-          hash="SHA2-256($name)=$(openssl sha256 $path | cut -d' ' -f 2)"
+          hash="SHA2-256($name)= $(openssl sha256 $path | cut -d' ' -f 2)"
           printf 'hash=%s' "$hash" >> $GITHUB_OUTPUT
 
       - name: Build everything else (standard)
@@ -254,14 +254,15 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: simplex-chat/action-gh-release@v2
         with:
+          append_body: true
+          prerelease: true
+          fail_on_unmatched_files: true
           body: |
             ${{ steps.prepare-regular.outputs.hashes }}
             ${{ steps.prepare-postgres.outputs.hash }}
-          prerelease: true
           files: |
             ${{ steps.prepare-regular.outputs.bins }}
             ${{ steps.prepare-postgres.outputs.bin }}
-          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
