@@ -217,10 +217,10 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
-          NL=$(printf '\n')
-
           docker cp builder:/out .
 
+          printf 'bins<<EOF\n' > bins.output
+          printf 'hashes<<EOF\n' > hashes.output
           for i in ${{ env.apps }}; do
             mv ./out/$i ./$i-ubuntu-${{ matrix.platform_name }}
 
@@ -229,12 +229,14 @@ jobs:
             path="${{ github.workspace }}/$name"
             hash="SHA2-256($name)= $(openssl sha256 $path | cut -d' ' -f 2)"
 
-            bins="${bins}${NL}${path}"
-            hashes="${hashes}${NL}${hash}"
+            printf '%s\n' "$path" >> bins.output
+            printf '%s\n' "$hash" >> hashes.output
           done
+          printf 'EOF\n' >> bins.output
+          printf 'EOF\n' >> hashes.output
 
-          printf "bins<<EOF\n%s\nEOF\n" "$bins" >> "$GITHUB_OUTPUT"
-          printf "hashes<<EOF\n%s\nEOF\n" "$hashes" >> "$GITHUB_OUTPUT"
+          cat bins.output >> "$GITHUB_OUTPUT"
+          cat hashes.output >> "$GITHUB_OUTPUT"
 
       - name: Upload binaries
         if: startsWith(github.ref, 'refs/tags/v')
@@ -242,11 +244,11 @@ jobs:
         with:
           body: |
             ${{ steps.prepare-regular.outputs.hashes }}
-            ${{ steps.prepare-postgres.outputs.hashes }}
+            ${{ steps.prepare-postgres.outputs.hash }}
           prerelease: true
           files: |
-            ${{ steps.prepare-regular.outputs.files }}
-            ${{ steps.prepare-postgres.outputs.files }}
+            ${{ steps.prepare-regular.outputs.bins }}
+            ${{ steps.prepare-postgres.outputs.bin }}
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
