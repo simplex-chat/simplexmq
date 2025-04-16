@@ -358,7 +358,7 @@ smpSubscribeQueues party ca smp srv subs = do
       pending <- maybe (pure M.empty) readTVar =<< TM.lookup srv (pendingSrvSubs ca)
       let acc@(_, _, oks, notPending) = foldr (groupSub pending) (False, [], [], []) (L.zip subs rs)
       unless (null oks) $ addSubscriptions ca srv party oks
-      unless (null notPending) $ removePendingSubs ca srv party notPending
+      unless (null notPending) $ removePendingSubs ca srv party $ S.fromList notPending
       pure acc
     sessId = sessionId $ thParams smp
     groupSub :: Map SMPSub C.APrivateAuthKey -> ((QueueId, C.APrivateAuthKey), Either SMPClientError ()) -> (Bool, [(QueueId, SMPClientError)], [(QueueId, (SessionId, C.APrivateAuthKey))], [QueueId]) -> (Bool, [(QueueId, SMPClientError)], [(QueueId, (SessionId, C.APrivateAuthKey))], [QueueId])
@@ -412,14 +412,22 @@ removeSubscription :: SMPClientAgent -> SMPServer -> SMPSub -> STM ()
 removeSubscription = removeSub_ . srvSubs
 {-# INLINE removeSubscription #-}
 
+removePendingSub :: SMPClientAgent -> SMPServer -> SMPSub -> STM ()
+removePendingSub = removeSub_ . pendingSrvSubs
+{-# INLINE removePendingSub #-}
+
 removeSub_ :: TMap SMPServer (TMap SMPSub s) -> SMPServer -> SMPSub -> STM ()
 removeSub_ subs srv s = TM.lookup srv subs >>= mapM_ (TM.delete s)
 
-removePendingSubs :: SMPClientAgent -> SMPServer -> SMPSubParty -> [QueueId] -> STM ()
+removeSubscriptions :: SMPClientAgent -> SMPServer -> SMPSubParty -> Set QueueId -> STM ()
+removeSubscriptions = removeSubs_ . srvSubs
+{-# INLINE removeSubscriptions #-}
+
+removePendingSubs :: SMPClientAgent -> SMPServer -> SMPSubParty -> Set QueueId -> STM ()
 removePendingSubs = removeSubs_ . pendingSrvSubs
 {-# INLINE removePendingSubs #-}
 
-removeSubs_ :: TMap SMPServer (TMap SMPSub C.APrivateAuthKey) -> SMPServer -> SMPSubParty -> [QueueId] -> STM ()
+removeSubs_ :: TMap SMPServer (TMap SMPSub s) -> SMPServer -> SMPSubParty -> Set QueueId -> STM ()
 removeSubs_ subs srv party qs = TM.lookup srv subs >>= mapM_ (`modifyTVar'` (`M.withoutKeys` ss))
   where
-    ss = S.fromList $ map (party,) qs
+    ss = S.map (party,) qs
