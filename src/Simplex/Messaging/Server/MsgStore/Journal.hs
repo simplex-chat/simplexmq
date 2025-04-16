@@ -422,16 +422,18 @@ instance MsgStoreClass (JournalMsgStore s) where
         q <- mkQueue ms False rId qr
         withSharedWaitLock rId queueLocks sharedLock $ run $ tryStore' "deleteExpiredMsgs" rId $
           getLoadedQueue q >>= unStoreIO . expireQueueMsgs ms now old
-#endif
     where
-      old = now - ttl
-      veryOld = now - 2 * ttl - 86400
-      run :: ExceptT ErrorType IO MessageStats -> IO MessageStats
-      run = fmap (fromRight newMessageStats) . runExceptT
       -- Use cached queue if available.
       -- Also see the comment in loadQueue in PostgresQueueStore
       getLoadedQueue :: JournalQueue s -> IO (JournalQueue s)
       getLoadedQueue q = fromMaybe q <$> TM.lookupIO (recipientId q) (loadedQueues $ queueStore_ ms)
+#else
+    where
+#endif
+      old = now - ttl
+      veryOld = now - 2 * ttl - 86400
+      run :: ExceptT ErrorType IO MessageStats -> IO MessageStats
+      run = fmap (fromRight newMessageStats) . runExceptT
 
   logQueueStates :: JournalMsgStore s -> IO ()
   logQueueStates ms = withActiveMsgQueues ms $ unStoreIO . logQueueState

@@ -29,6 +29,7 @@ import Control.Concurrent.STM
 import Control.Logger.Simple
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.ByteString.Base64 as B64 
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.Text as T
@@ -37,10 +38,10 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store
-import Simplex.Messaging.Protocol (NtfPrivateAuthKey)
+import Simplex.Messaging.Protocol (EntityId (..), NtfPrivateAuthKey)
 import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Util (safeDecodeUtf8)
+import Simplex.Messaging.Util (safeDecodeUtf8, tshow)
 import System.IO
 
 data NtfStoreLogRecord
@@ -235,7 +236,7 @@ readNtfStore f st = mapM_ (addNtfLogRecord . LB.toStrict) . LB.lines =<< LB.read
             >>= mapM_ (\NtfTknData {tknUpdatedAt} -> atomically $ writeTVar tknUpdatedAt $ Just t)
         CreateSubscription r@NtfSubRec {ntfSubId} -> do
           sub <- mkSubData r
-          void $ atomically $ addNtfSubscription st ntfSubId sub
+          atomically (addNtfSubscription st ntfSubId sub) >>= mapM_ (\_ -> logWarn $ "subscription " <> tshow (B64.encode $ unEntityId ntfSubId) <> " already exists")
         SubscriptionStatus subId status -> do
           getNtfSubscriptionIO st subId
             >>= mapM_ (\NtfSubData {subStatus} -> atomically $ writeTVar subStatus status)

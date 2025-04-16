@@ -41,7 +41,20 @@ CREATE TABLE smp_server.msg_queues (
     queue_mode text,
     link_id bytea,
     fixed_data bytea,
-    user_data bytea
+    user_data bytea,
+    ntf_server_host bytea
+);
+
+
+
+CREATE TABLE smp_server.ntf_servers (
+    ntf_server_host bytea NOT NULL,
+    additional_hosts bytea,
+    port text NOT NULL,
+    key_hash bytea NOT NULL,
+    cert_chain bytea NOT NULL,
+    signed_auth_key bytea NOT NULL,
+    auth_key bytea NOT NULL
 );
 
 
@@ -56,6 +69,11 @@ ALTER TABLE ONLY smp_server.msg_queues
 
 
 
+ALTER TABLE ONLY smp_server.ntf_servers
+    ADD CONSTRAINT ntf_servers_pkey PRIMARY KEY (ntf_server_host);
+
+
+
 CREATE UNIQUE INDEX idx_msg_queues_link_id ON smp_server.msg_queues USING btree (link_id);
 
 
@@ -64,11 +82,20 @@ CREATE UNIQUE INDEX idx_msg_queues_notifier_id ON smp_server.msg_queues USING bt
 
 
 
+CREATE INDEX idx_msg_queues_ntf_server_host ON smp_server.msg_queues USING btree (ntf_server_host);
+
+
+
 CREATE UNIQUE INDEX idx_msg_queues_sender_id ON smp_server.msg_queues USING btree (sender_id);
 
 
 
 CREATE INDEX idx_msg_queues_updated_at ON smp_server.msg_queues USING btree (deleted_at, updated_at);
+
+
+
+ALTER TABLE ONLY smp_server.msg_queues
+    ADD CONSTRAINT msg_queues_ntf_server_host_fkey FOREIGN KEY (ntf_server_host) REFERENCES smp_server.ntf_servers(ntf_server_host);
 
 
 

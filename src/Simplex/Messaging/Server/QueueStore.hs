@@ -10,13 +10,17 @@
 
 module Simplex.Messaging.Server.QueueStore where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (optional, (<|>))
+import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Transport.Client (TransportHost)
 #if defined(dbServerPostgres)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Database.PostgreSQL.Simple.FromField (FromField (..))
@@ -39,17 +43,32 @@ data QueueRec = QueueRec
   deriving (Show)
 
 data NtfCreds = NtfCreds
-  { notifierId :: !NotifierId,
-    notifierKey :: !NtfPublicAuthKey,
-    rcvNtfDhSecret :: !RcvNtfDhSecret
+  { notifierId :: NotifierId,
+    -- `notifierKey` and `ntfServer` are mutually exclusive (and one of them is required),
+    -- but for some period of time from switching to `ntfServer`
+    -- we will continue storing `notifierKey` to allow ntf/smp server downgrades.
+    -- we could use `These NtfPublicAuthKey TransportHost` type here (https://hackage.haskell.org/package/these-1.2.1/docs/Data-These.html)
+    notifierKey :: Maybe NtfPublicAuthKey,
+    ntfServerHost :: Maybe TransportHost,
+    rcvNtfDhSecret :: RcvNtfDhSecret
   }
   deriving (Show)
 
 instance StrEncoding NtfCreds where
-  strEncode NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} = strEncode (notifierId, notifierKey, rcvNtfDhSecret)
+  strEncode NtfCreds {notifierId = nId, notifierKey = nKey, ntfServerHost = nsrv, rcvNtfDhSecret} =
+    strEncode nId <> opt " nkey=" nKey <> opt " nsrv=" nsrv <> " ndhs=" <> strEncode rcvNtfDhSecret
+    where
+      opt :: StrEncoding a => ByteString -> Maybe a -> ByteString
+      opt param = maybe B.empty ((param <>) . strEncode)
   strP = do
-    (notifierId, notifierKey, rcvNtfDhSecret) <- strP
-    pure NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}
+    notifierId <- strP
+    (notifierKey, ntfServerHost, rcvNtfDhSecret) <- newP <|> legacyP
+    pure NtfCreds {notifierId, notifierKey, ntfServerHost, rcvNtfDhSecret}
+    where
+      newP = (,,) <$> optional (" nkey=" *> strP) <*> optional (" nsrv=" *> strP) <*> (" ndhs=" *> strP)
+      legacyP = do
+        (nKey, rcvNtfDhSecret) <- A.space *> strP
+        pure (Just nKey, Nothing, rcvNtfDhSecret)
 
 data ServerEntityStatus
   = EntityActive

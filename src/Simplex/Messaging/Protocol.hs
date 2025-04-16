@@ -116,6 +116,8 @@ module Simplex.Messaging.Protocol
     SenderId,
     LinkId,
     NotifierId,
+    NtfServerHost,
+    NtfServerCreds (..),
     RcvPrivateAuthKey,
     RcvPublicAuthKey,
     RcvPublicDhKey,
@@ -297,7 +299,7 @@ e2eEncMessageLength :: Int
 e2eEncMessageLength = 16000 -- 15988 .. 16005
 
 -- | SMP protocol clients
-data Party = Recipient | Sender | Notifier | LinkClient | ProxiedClient
+data Party = Recipient | Sender | Notifier | LinkClient | ProxiedClient | NtfSrvClient
   deriving (Show)
 
 -- | Singleton types for SMP protocol clients
@@ -307,6 +309,7 @@ data SParty :: Party -> Type where
   SNotifier :: SParty Notifier
   SSenderLink :: SParty LinkClient 
   SProxiedClient :: SParty ProxiedClient
+  SNtfSrvClient :: SParty NtfSrvClient
 
 instance TestEquality SParty where
   testEquality SRecipient SRecipient = Just Refl
@@ -314,6 +317,7 @@ instance TestEquality SParty where
   testEquality SNotifier SNotifier = Just Refl
   testEquality SSenderLink SSenderLink = Just Refl
   testEquality SProxiedClient SProxiedClient = Just Refl
+  testEquality SNtfSrvClient SNtfSrvClient = Just Refl
   testEquality _ _ = Nothing
 
 deriving instance Show (SParty p)
@@ -329,6 +333,8 @@ instance PartyI Notifier where sParty = SNotifier
 instance PartyI LinkClient where sParty = SSenderLink
 
 instance PartyI ProxiedClient where sParty = SProxiedClient
+
+instance PartyI NtfSrvClient where sParty = SNtfSrvClient
 
 type family DirectParty (p :: Party) :: Constraint where
   DirectParty Recipient = ()
@@ -400,6 +406,11 @@ type NotifierId = QueueId
 
 type LinkId = QueueId
 
+-- A server transport host will be used as entity ID in transmissions.
+-- While we could assign some IDs, that requires some unnecessary tracking of these IDs,
+-- both in SMP and in Ntf servers, so it's simpler to just use transport host.
+type NtfServerHost = EntityId
+
 -- | SMP queue ID on the server.
 type QueueId = EntityId
 
@@ -442,6 +453,8 @@ data Command (p :: Party) where
   LGET :: Command LinkClient
   -- SMP notification subscriber commands
   NSUB :: Command Notifier
+  NSRV :: NtfServerCreds -> Command NtfSrvClient
+  NRDY :: Command NtfSrvClient -- NtfServerHost is used as transmission entity ID
   PRXY :: SMPServer -> Maybe BasicAuth -> Command ProxiedClient -- request a relay server connection by URI
   -- Transmission to proxy:
   -- - entity ID: ID of the session with relay returned in PKEY (response to PRXY)
@@ -543,6 +556,23 @@ instance Encoding QueueReqData where
 -- instance Encoding NewNtfCreds where
 --   smpEncode (NewNtfCreds authKey dhKey) = smpEncode (authKey, dhKey)
 --   smpP = NewNtfCreds <$> smpP <*> smpP
+
+data NtfServerCreds = NtfServerCreds
+  { ntfServer :: NtfServer,
+    -- ntf server certificate chain that should match fingerpring in address
+    -- and Ed25519 key to verify server command NRDY, signed by key from certificate.
+    ntfAuthPubKey :: (X.CertificateChain, X.SignedExact X.PubKey)
+  }
+  deriving (Show)
+
+instance Encoding NtfServerCreds where
+  smpEncode NtfServerCreds {ntfServer, ntfAuthPubKey = (cert, key)} =
+    smpEncode (ntfServer, C.encodeCertChain cert, C.SignedObject key)
+  smpP = do
+    ntfServer <- smpP
+    cert <- C.certChainP
+    C.SignedObject key <- smpP
+    pure NtfServerCreds {ntfServer, ntfAuthPubKey = (cert, key)}
 
 newtype EncTransmission = EncTransmission ByteString
   deriving (Show)
@@ -792,6 +822,8 @@ data CommandTag (p :: Party) where
   PFWD_ :: CommandTag ProxiedClient
   RFWD_ :: CommandTag Sender
   NSUB_ :: CommandTag Notifier
+  NSRV_ :: CommandTag NtfSrvClient
+  NRDY_ :: CommandTag NtfSrvClient
 
 data CmdTag = forall p. PartyI p => CT (SParty p) (CommandTag p)
 
@@ -848,6 +880,8 @@ instance PartyI p => Encoding (CommandTag p) where
     PFWD_ -> "PFWD"
     RFWD_ -> "RFWD"
     NSUB_ -> "NSUB"
+    NSRV_ -> "NSRV"
+    NRDY_ -> "NRDY"
   smpP = messageTagP
 
 instance ProtocolMsgTag CmdTag where
@@ -874,6 +908,8 @@ instance ProtocolMsgTag CmdTag where
     "PFWD" -> Just $ CT SProxiedClient PFWD_
     "RFWD" -> Just $ CT SSender RFWD_
     "NSUB" -> Just $ CT SNotifier NSUB_
+    "NSRV" -> Just $ CT SNtfSrvClient NSRV_
+    "NRDY" -> Just $ CT SNtfSrvClient NRDY_
     _ -> Nothing
 
 instance Encoding CmdTag where
@@ -1514,6 +1550,8 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
+    NSRV creds -> e (NSRV_, creds)
+    NRDY -> e NRDY_
     LKEY k -> e (LKEY_, ' ', k)
     LGET -> e LGET_
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
@@ -1609,6 +1647,10 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
         PFWD_ -> PFWD <$> _smpP <*> smpP <*> (EncTransmission . unTail <$> smpP)
         PRXY_ -> PRXY <$> _smpP <*> smpP
     CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
+    CT SNtfSrvClient tag -> 
+      Cmd SNtfSrvClient <$> case tag of
+        NSRV_ -> NSRV <$> _smpP
+        NRDY_ -> pure NRDY
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}

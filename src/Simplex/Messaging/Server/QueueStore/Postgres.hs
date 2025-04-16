@@ -438,11 +438,14 @@ queueRecQueryWithData =
     FROM msg_queues
   |]
 
-type QueueRecRow = (RecipientId, NonEmpty RcvPublicAuthKey, RcvDhSecret, SenderId, Maybe SndPublicAuthKey, Maybe QueueMode, Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret, ServerEntityStatus, Maybe RoundedSystemTime, Maybe LinkId)
+type QueueRecRow = (RecipientId, NonEmpty RcvPublicAuthKey, RcvDhSecret, SenderId, Maybe SndPublicAuthKey, Maybe QueueMode) :. NotifierRow :. (ServerEntityStatus, Maybe RoundedSystemTime, Maybe LinkId)
+
+-- TODO [notifications] add ntf server
+type NotifierRow = (Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret)
 
 queueRecToRow :: (RecipientId, QueueRec) -> QueueRecRow :. (Maybe EncDataBytes, Maybe EncDataBytes)
 queueRecToRow (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier = n, status, updatedAt}) =
-  (rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId <$> n, notifierKey <$> n, rcvNtfDhSecret <$> n, status, updatedAt, linkId_)
+  ((rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode) :. (notifierId <$> n, notifierKey =<< n, rcvNtfDhSecret <$> n) :. (status, updatedAt, linkId_))
     :. (fst <$> queueData_, snd <$> queueData_)
   where
     (linkId_, queueData_) = queueDataColumns queueData
@@ -460,7 +463,8 @@ queueRecToText (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, 
         nullable senderKey,
         nullable queueMode,
         nullable (notifierId <$> n),
-        nullable (notifierKey <$> n),
+        nullable (notifierKey =<< n),
+        -- TODO [notifications] add ntf server ID
         nullable (rcvNtfDhSecret <$> n),
         BB.char7 '"' <> renderField (toField status) <> BB.char7 '"',
         nullable updatedAt,
@@ -485,17 +489,23 @@ queueDataColumns = \case
   Nothing -> (Nothing, Nothing)
 
 rowToQueueRec :: QueueRecRow -> (RecipientId, QueueRec)
-rowToQueueRec (rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) =
-  let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
+rowToQueueRec ((rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode) :. notifierRow :. (status, updatedAt, linkId_)) =
+  let notifier = toNotifier notifierRow
       queueData = (,(EncDataBytes "", EncDataBytes "")) <$> linkId_
    in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt})
 
 rowToQueueRecWithData :: QueueRecRow :. (Maybe EncDataBytes, Maybe EncDataBytes) -> (RecipientId, QueueRec)
-rowToQueueRecWithData ((rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) :. (immutableData_, userData_)) =
-  let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
+rowToQueueRecWithData (((rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode) :. notifierRow :. (status, updatedAt, linkId_)) :. (immutableData_, userData_)) =
+  let notifier = toNotifier notifierRow
       encData =  fromMaybe (EncDataBytes "")
       queueData = (,(encData immutableData_, encData userData_)) <$> linkId_
    in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt})
+
+-- TODO [notifications] add ntf server
+toNotifier :: NotifierRow -> Maybe NtfCreds
+toNotifier (notifierId_, notifierKey, rcvNtfDhSecret_) = case (notifierId_, rcvNtfDhSecret_) of
+  (Just notifierId, Just rcvNtfDhSecret) -> Just NtfCreds {notifierId, notifierKey, ntfServerHost = Nothing, rcvNtfDhSecret}
+  _ -> Nothing
 
 setStatusDB :: StoreQueueClass q => String -> PostgresQueueStore q -> q -> ServerEntityStatus -> ExceptT ErrorType IO () -> IO (Either ErrorType ())
 setStatusDB op st sq status writeLog =
