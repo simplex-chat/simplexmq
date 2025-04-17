@@ -9,7 +9,6 @@ module Simplex.Messaging.Notifications.Server.Env where
 
 import Control.Concurrent (ThreadId)
 import Control.Concurrent.Async (Async)
-import Control.Logger.Simple
 import Crypto.Random
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
@@ -25,16 +24,15 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Stats
-import Simplex.Messaging.Notifications.Server.Store
-import Simplex.Messaging.Notifications.Server.StoreLog
+import Simplex.Messaging.Notifications.Server.Store.Postgres
 import Simplex.Messaging.Notifications.Transport (NTFVersion, VersionRangeNTF)
 import Simplex.Messaging.Protocol (BasicAuth, CorrId, SMPServer, Transmission)
+import Simplex.Messaging.Server.Env.STM (StartOptions)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, THandleParams, TransportPeer (..))
 import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, TransportServerConfig, loadFingerprint, loadServerCredential)
-import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
 
@@ -52,8 +50,9 @@ data NtfServerConfig = NtfServerConfig
     apnsConfig :: APNSPushClientConfig,
     subsBatchSize :: Int,
     inactiveClientExpiration :: Maybe ExpirationConfig,
-    storeLogFile :: Maybe FilePath,
-    storeLastNtfsFile :: Maybe FilePath,
+    dbStoreConfig :: NtfPostgresStoreCfg,
+    -- TODO [ntfdb] import/export instead
+    -- storeLastNtfsFile :: Maybe FilePath,
     ntfCredentials :: ServerCredentials,
     -- stats config - see SMP server config
     logStatsInterval :: Maybe Int64,
@@ -61,7 +60,8 @@ data NtfServerConfig = NtfServerConfig
     serverStatsLogFile :: FilePath,
     serverStatsBackupFile :: Maybe FilePath,
     ntfServerVRange :: VersionRangeNTF,
-    transportConfig :: TransportServerConfig
+    transportConfig :: TransportServerConfig,
+    startOptions :: StartOptions
   }
 
 defaultInactiveClientExpiration :: ExpirationConfig
@@ -75,8 +75,7 @@ data NtfEnv = NtfEnv
   { config :: NtfServerConfig,
     subscriber :: NtfSubscriber,
     pushServer :: NtfPushServer,
-    store :: NtfStore,
-    storeLog :: Maybe (StoreLog 'WriteMode),
+    store :: NtfPostgresStore,
     random :: TVar ChaChaDRG,
     tlsServerCreds :: T.Credential,
     serverIdentity :: C.KeyHash,
@@ -84,22 +83,23 @@ data NtfEnv = NtfEnv
   }
 
 newNtfServerEnv :: NtfServerConfig -> IO NtfEnv
-newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, storeLogFile, ntfCredentials} = do
+newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials} = do
   random <- C.newRandom
-  store <- newNtfStore
-  logInfo "restoring subscriptions..."
-  storeLog <- mapM (`readWriteNtfStore` store) storeLogFile
-  logInfo "restored subscriptions"
+  store <- newNtfDbStore dbStoreConfig
+  -- TODO [notifications] this should happen with compacting on start
+  -- logInfo "restoring subscriptions..."
+  -- storeLog <- mapM (`readWriteNtfStore` store) storeLogFile
+  -- logInfo "restored subscriptions"
   subscriber <- newNtfSubscriber subQSize smpAgentCfg random
   pushServer <- newNtfPushServer pushQSize apnsConfig
   tlsServerCreds <- loadServerCredential ntfCredentials
   Fingerprint fp <- loadFingerprint ntfCredentials
   serverStats <- newNtfServerStats =<< getCurrentTime
-  pure NtfEnv {config, subscriber, pushServer, store, storeLog, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
+  pure NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriber,
-    newSubQ :: TBQueue [NtfEntityRec 'Subscription],
+    newSubQ :: TBQueue (SMPServer, NonEmpty NtfSubData'), -- should match SMPServer
     smpAgent :: SMPClientAgent
   }
 
@@ -111,18 +111,19 @@ newNtfSubscriber qSize smpAgentCfg random = do
   pure NtfSubscriber {smpSubscribers, newSubQ, smpAgent}
 
 data SMPSubscriber = SMPSubscriber
-  { newSubQ :: TQueue (NonEmpty (NtfEntityRec 'Subscription)),
+  { smpServer :: SMPServer,
+    subscriberSubQ :: TQueue (NonEmpty NtfSubData'), -- should match SMPServer
     subThreadId :: TVar (Maybe (Weak ThreadId))
   }
 
-newSMPSubscriber :: IO SMPSubscriber
-newSMPSubscriber = do
-  newSubQ <- newTQueueIO
+newSMPSubscriber :: SMPServer -> IO SMPSubscriber
+newSMPSubscriber smpServer = do
+  subscriberSubQ <- newTQueueIO
   subThreadId <- newTVarIO Nothing
-  pure SMPSubscriber {newSubQ, subThreadId}
+  pure SMPSubscriber {smpServer, subscriberSubQ, subThreadId}
 
 data NtfPushServer = NtfPushServer
-  { pushQ :: TBQueue (NtfTknData, PushNotification),
+  { pushQ :: TBQueue (NtfTknData', PushNotification),
     pushClients :: TMap PushProvider PushProviderClient,
     intervalNotifiers :: TMap NtfTokenId IntervalNotifier,
     apnsConfig :: APNSPushClientConfig
@@ -130,7 +131,7 @@ data NtfPushServer = NtfPushServer
 
 data IntervalNotifier = IntervalNotifier
   { action :: Async (),
-    token :: NtfTknData,
+    token :: NtfTknData',
     interval :: Word16
   }
 
@@ -155,11 +156,11 @@ getPushClient s@NtfPushServer {pushClients} pp =
 
 data NtfRequest
   = NtfReqNew CorrId ANewNtfEntity
-  | forall e. NtfEntityI e => NtfReqCmd (SNtfEntity e) (NtfEntityRec e) (Transmission (NtfCommand e))
+  | forall e. NtfEntityI e => NtfReqCmd (SNtfEntity e) (NtfEntityRec' e) (Transmission (NtfCommand e))
   | NtfReqPing CorrId NtfEntityId
 
 data NtfServerClient = NtfServerClient
-  { rcvQ :: TBQueue (NonEmpty (Maybe NtfTknData, NtfRequest)),
+  { rcvQ :: TBQueue (NonEmpty NtfRequest),
     sndQ :: TBQueue (NonEmpty (Transmission NtfResponse)),
     ntfThParams :: THandleParams NTFVersion 'TServer,
     connected :: TVar Bool,

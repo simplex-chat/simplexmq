@@ -216,15 +216,6 @@ library
           Simplex.FileTransfer.Server.Stats
           Simplex.FileTransfer.Server.Store
           Simplex.FileTransfer.Server.StoreLog
-          Simplex.Messaging.Notifications.Server
-          Simplex.Messaging.Notifications.Server.Control
-          Simplex.Messaging.Notifications.Server.Env
-          Simplex.Messaging.Notifications.Server.Main
-          Simplex.Messaging.Notifications.Server.Push.APNS
-          Simplex.Messaging.Notifications.Server.Push.APNS.Internal
-          Simplex.Messaging.Notifications.Server.Stats
-          Simplex.Messaging.Notifications.Server.Store
-          Simplex.Messaging.Notifications.Server.StoreLog
           Simplex.Messaging.Server
           Simplex.Messaging.Server.CLI
           Simplex.Messaging.Server.Control
@@ -257,6 +248,17 @@ library
 
       if flag(server_postgres)
           exposed-modules:
+              Simplex.Messaging.Notifications.Server
+              Simplex.Messaging.Notifications.Server.Control
+              Simplex.Messaging.Notifications.Server.Env
+              Simplex.Messaging.Notifications.Server.Main
+              Simplex.Messaging.Notifications.Server.Push.APNS
+              Simplex.Messaging.Notifications.Server.Push.APNS.Internal
+              Simplex.Messaging.Notifications.Server.Stats
+              Simplex.Messaging.Notifications.Server.Store
+              Simplex.Messaging.Notifications.Server.Store.Migrations
+              Simplex.Messaging.Notifications.Server.Store.Postgres
+              Simplex.Messaging.Notifications.Server.StoreLog
               Simplex.Messaging.Server.QueueStore.Postgres
               Simplex.Messaging.Server.QueueStore.Postgres.Migrations
   other-modules:
@@ -352,6 +354,10 @@ library
 executable ntf-server
   if flag(client_library)
       buildable: False
+  if flag(server_postgres)
+    cpp-options: -DdbServerPostgres
+  else
+    buildable: False
   main-is: Main.hs
   other-modules:
       Paths_simplexmq

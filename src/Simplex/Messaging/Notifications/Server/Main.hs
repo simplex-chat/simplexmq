@@ -11,6 +11,7 @@
 module Simplex.Messaging.Notifications.Server.Main where
 
 import Control.Monad ((<$!>))
+import Data.ByteString.Char8 (ByteString)
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Maybe (fromMaybe)
@@ -18,16 +19,21 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.IO as T
 import Network.Socket (HostName)
+import Numeric.Natural (Natural)
 import Options.Applicative
+import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig, textToHostMode)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server (runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..), defaultInactiveClientExpiration)
 import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientConfig)
+import Simplex.Messaging.Notifications.Server.Store.Postgres (NtfPostgresStoreCfg (..))
 import Simplex.Messaging.Notifications.Transport (supportedServerNTFVRange)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
+import Simplex.Messaging.Server.Env.STM (StartOptions)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
@@ -49,9 +55,9 @@ ntfServerCLI cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> genOnline cfgPath certOpts
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
-    Start ->
+    Start opts ->
       doesFileExist iniFile >>= \case
-        True -> readIniFile iniFile >>= either exitError runServer
+        True -> readIniFile iniFile >>= either exitError (runServer opts)
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     Delete -> do
       confirmOrExit
@@ -60,6 +66,8 @@ ntfServerCLI cfgPath logPath =
       deleteDirIfExists cfgPath
       deleteDirIfExists logPath
       putStrLn "Deleted configuration and log files"
+    Database SCImport _dbOpts -> undefined
+    Database SCExport _dbOpts -> undefined
   where
     iniFile = combine cfgPath "ntf-server.ini"
     serverVersion = "SMP notifications server v" <> simplexMQVersion
@@ -125,26 +133,28 @@ ntfServerCLI cfgPath logPath =
                \disconnect: off\n"
             <> ("# ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
             <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
-    runServer ini = do
+    runServer startOptions ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
-          cfg@NtfServerConfig {transports, storeLogFile} = serverConfig
+          cfg@NtfServerConfig {transports} = serverConfig
           srv = ProtoServerWithAuth (NtfServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp)) Nothing
       printServiceInfo serverVersion srv
-      printServerConfig transports storeLogFile
+      -- TODO [ntfdb] get storeLogFile from NtfPostgresStoreCfg
+      -- printServerConfig transports storeLogFile
       runNtfServer cfg
       where
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
-        restoreLastNtfsFile path = case iniOnOff "STORE_LOG" "restore_last_notifications" ini of
-          Just True -> Just path
-          Just False -> Nothing
-          -- if the setting is not set, it is enabled when store log is enabled
-          _ -> enableStoreLog $> path
+        -- TODO [ntfdb] remove?
+        -- restoreLastNtfsFile path = case iniOnOff "STORE_LOG" "restore_last_notifications" ini of
+        --   Just True -> Just path
+        --   Just False -> Nothing
+        --   -- if the setting is not set, it is enabled when store log is enabled
+        --   _ -> enableStoreLog $> path
         serverConfig =
           NtfServerConfig
             { transports = iniTransports ini,
@@ -180,8 +190,9 @@ ntfServerCLI cfgPath logPath =
                     { ttl = readStrictIni "INACTIVE_CLIENTS" "ttl" ini,
                       checkInterval = readStrictIni "INACTIVE_CLIENTS" "check_interval" ini
                     },
-              storeLogFile = enableStoreLog $> storeLogFilePath,
-              storeLastNtfsFile = restoreLastNtfsFile $ combine logPath "ntf-server-last-notifications.log",
+              dbStoreConfig = 
+                let dbStoreLogPath = enableStoreLog $> storeLogFilePath
+                 in NtfPostgresStoreCfg {dbOpts = iniDBOptions ini, dbStoreLogPath, confirmMigrations = MCYesUp, tokenNtfsTTL = iniTokenNtfsTTL ini},
               ntfCredentials =
                 ServerCredentials
                   { caCertificateFile = Just $ c caCrtFile,
@@ -196,32 +207,65 @@ ntfServerCLI cfgPath logPath =
               transportConfig =
                 defaultTransportServerConfig
                   { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
-                  }
+                  },
+              startOptions
             }
+        -- TODO [ntfdb]
+        iniDBOptions = undefined
+        -- TODO [ntfdb]
+        iniTokenNtfsTTL = undefined
 
 data CliCommand
   = Init InitOptions
   | OnlineCert CertOptions
-  | Start
+  | Start StartOptions
   | Delete
+  | Database StoreCmd DBOpts
+
+data StoreCmd = SCImport | SCExport
 
 data InitOptions = InitOptions
   { enableStoreLog :: Bool,
+    dbOptions :: DBOpts,
     signAlgorithm :: SignAlgorithm,
     ip :: HostName,
     fqdn :: Maybe HostName
   }
   deriving (Show)
 
+defaultNtfDBOpts :: DBOpts
+defaultNtfDBOpts =
+  DBOpts
+    { connstr = defaultNtfDBConnStr,
+      schema = defaultNtfDBSchema,
+      poolSize = defaultNtfDBPoolSize,
+      createSchema = False
+    }
+
+defaultNtfDBConnStr :: ByteString
+defaultNtfDBConnStr = "postgresql://ntf@/ntf_server_store"
+
+defaultNtfDBSchema :: ByteString
+defaultNtfDBSchema = "ntf_server"
+
+defaultNtfDBPoolSize :: Natural
+defaultNtfDBPoolSize = 10
+
 cliCommandP :: FilePath -> FilePath -> FilePath -> Parser CliCommand
 cliCommandP cfgPath logPath iniFile =
   hsubparser
     ( command "init" (info (Init <$> initP) (progDesc $ "Initialize server - creates " <> cfgPath <> " and " <> logPath <> " directories and configuration files"))
         <> command "cert" (info (OnlineCert <$> certOptionsP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
-        <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
+        <> command "start" (info (Start <$> startOptionsP) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
+        <> command "database" (info (Database <$> databaseCmdP <*> dbOptsP defaultNtfDBOpts) (progDesc "Import/export notifications server store to/from PostgreSQL database"))
     )
   where
+    databaseCmdP =
+      hsubparser
+        ( command "import" (info (pure SCImport) (progDesc $ "Import store logs into a new PostgreSQL database schema"))
+            <> command "export" (info (pure SCExport) (progDesc $ "Export PostgreSQL database schema to store logs"))
+        )
     initP :: Parser InitOptions
     initP = do
       enableStoreLog <-
@@ -234,6 +278,7 @@ cliCommandP cfgPath logPath iniFile =
                 <> short 'l'
                 <> help "Enable store log for persistence (DEPRECATED, enabled by default)"
             )
+      dbOptions <- dbOptsP defaultNtfDBOpts
       signAlgorithm <-
         option
           (maybeReader readMaybe)
@@ -261,4 +306,4 @@ cliCommandP cfgPath logPath iniFile =
               <> showDefault
               <> metavar "FQDN"
           )
-      pure InitOptions {enableStoreLog, signAlgorithm, ip, fqdn}
+      pure InitOptions {enableStoreLog, dbOptions, signAlgorithm, ip, fqdn}
