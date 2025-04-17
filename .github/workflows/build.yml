@@ -242,7 +242,7 @@ jobs:
             hash="SHA2-256($name)= $(openssl sha256 $path | cut -d' ' -f 2)"
 
             printf '%s\n' "$path" >> bins.output
-            printf '%s\n' "$hash" >> hashes.output
+            printf '%s\n\n' "$hash" >> hashes.output
           done
           printf 'EOF\n' >> bins.output
           printf 'EOF\n' >> hashes.output
