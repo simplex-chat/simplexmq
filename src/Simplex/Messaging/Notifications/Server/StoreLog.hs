@@ -10,7 +10,7 @@
 module Simplex.Messaging.Notifications.Server.StoreLog
   ( StoreLog,
     NtfStoreLogRecord (..),
-    readWriteNtfStore,
+    readWriteNtfSTMStore,
     logCreateToken,
     logTokenStatus,
     logUpdateToken,
@@ -200,10 +200,11 @@ logSubscriptionStatus s subId subStatus = logNtfStoreRecord s $ SubscriptionStat
 logDeleteSubscription :: StoreLog 'WriteMode -> NtfSubscriptionId -> IO ()
 logDeleteSubscription s subId = logNtfStoreRecord s $ DeleteSubscription subId
 
-readWriteNtfStore :: FilePath -> NtfStore -> IO (StoreLog 'WriteMode)
-readWriteNtfStore = readWriteStoreLog readNtfStore writeNtfStore
+readWriteNtfSTMStore :: FilePath -> NtfSTMStore -> IO (StoreLog 'WriteMode)
+readWriteNtfSTMStore = readWriteStoreLog readNtfStore writeNtfStore
 
-readNtfStore :: FilePath -> NtfStore -> IO ()
+-- TODO [ntfdb] there is no need to read into lookup indices, and the functions and NtfSMPStore type can be moved here
+readNtfStore :: FilePath -> NtfSTMStore -> IO ()
 readNtfStore f st = mapM_ (addNtfLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f
   where
     addNtfLogRecord s = case strDecode s of
@@ -242,7 +243,7 @@ readNtfStore f st = mapM_ (addNtfLogRecord . LB.toStrict) . LB.lines =<< LB.read
         DeleteSubscription subId ->
           atomically $ deleteNtfSubscription st subId
 
-writeNtfStore :: StoreLog 'WriteMode -> NtfStore -> IO ()
-writeNtfStore s NtfStore {tokens, subscriptions} = do
+writeNtfStore :: StoreLog 'WriteMode -> NtfSTMStore -> IO ()
+writeNtfStore s NtfSTMStore {tokens, subscriptions} = do
   mapM_ (logCreateToken s) =<< readTVarIO tokens
   mapM_ (logCreateSubscription s) =<< readTVarIO subscriptions
