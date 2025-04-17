@@ -12,6 +12,7 @@ module Simplex.Messaging.Notifications.Server.Main where
 
 import Control.Monad ((<$!>))
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Maybe (fromMaybe)
@@ -21,6 +22,7 @@ import qualified Data.Text.IO as T
 import Network.Socket (HostName)
 import Numeric.Natural (Natural)
 import Options.Applicative
+import Simplex.Messaging.Agent.Store.Postgres (checkSchemaExists)
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig, textToHostMode)
@@ -29,17 +31,22 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Server (runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..), defaultInactiveClientExpiration)
 import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientConfig)
-import Simplex.Messaging.Notifications.Server.Store.Postgres (NtfPostgresStoreCfg (..))
+import Simplex.Messaging.Notifications.Server.Store (newNtfSTMStore)
+import Simplex.Messaging.Notifications.Server.Store.Postgres (NtfPostgresStoreCfg (..), exportNtfDbStore, importNtfSTMStore, newNtfDbStore)
+import Simplex.Messaging.Notifications.Server.StoreLog (readWriteNtfSTMStore)
 import Simplex.Messaging.Notifications.Transport (supportedServerNTFVRange)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM (StartOptions)
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.Main.Init (optDisabled')
+import Simplex.Messaging.Server.StoreLog (closeStoreLog)
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
-import Simplex.Messaging.Util (tshow)
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import Simplex.Messaging.Util (ifM, safeDecodeUtf8, tshow)
+import System.Directory (createDirectoryIfMissing, doesFileExist, renameFile)
+import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
@@ -51,14 +58,8 @@ ntfServerCLI cfgPath logPath =
       doesFileExist iniFile >>= \case
         True -> exitError $ "Error: server is already initialized (" <> iniFile <> " exists).\nRun `" <> executableName <> " start`."
         _ -> initializeServer opts
-    OnlineCert certOpts ->
-      doesFileExist iniFile >>= \case
-        True -> genOnline cfgPath certOpts
-        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
-    Start opts ->
-      doesFileExist iniFile >>= \case
-        True -> readIniFile iniFile >>= either exitError (runServer opts)
-        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
+    OnlineCert certOpts -> withIniFile $ \_ -> genOnline cfgPath certOpts
+    Start opts -> withIniFile $ runServer opts
     Delete -> do
       confirmOrExit
         "WARNING: deleting the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
@@ -66,15 +67,69 @@ ntfServerCLI cfgPath logPath =
       deleteDirIfExists cfgPath
       deleteDirIfExists logPath
       putStrLn "Deleted configuration and log files"
-    Database SCImport _dbOpts -> undefined
-    Database SCExport _dbOpts -> undefined
+    Database cmd dbOpts@DBOpts {connstr, schema} -> withIniFile $ \ini -> do
+      schemaExists <- checkSchemaExists connstr schema
+      storeLogExists <- doesFileExist storeLogFilePath
+      case cmd of
+        SCImport
+          | schemaExists && storeLogExists -> exitConfigureNtfStore connstr schema
+          | schemaExists -> do
+              putStrLn $ "Schema " <> B.unpack schema <> " already exists in PostrgreSQL database: " <> B.unpack connstr
+              exitFailure
+          | not storeLogExists -> do
+              putStrLn $ storeLogFilePath <> " file does not exist."
+              exitFailure
+          | otherwise -> do
+              storeLogFile <- getRequiredStoreLogFile ini
+              -- TODO [ntfdb] get and read file with last notifications
+              confirmOrExit
+                ("WARNING: store log file " <> storeLogFile <> " will be compacted and imported to PostrgreSQL database: " <> B.unpack connstr <> ", schema: " <> B.unpack schema)
+                "Notification server store not imported"
+              stmStore <- newNtfSTMStore
+              sl <- readWriteNtfSTMStore storeLogFile stmStore
+              closeStoreLog sl
+              let storeCfg = NtfPostgresStoreCfg {dbOpts = dbOpts {createSchema = True}, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, tokenNtfsTTL = iniTokenNtfsTTL ini}
+              ps <- newNtfDbStore storeCfg
+              (tCnt, sCnt, nCnt) <- importNtfSTMStore ps stmStore
+              renameFile storeLogFile $ storeLogFile <> ".bak"
+              -- TODO [ntfdb] rename file with last notifications
+              putStrLn $ "Import completed: " <> show tCnt <> " tokens, " <> show sCnt <> " subscriptions, " <> show nCnt <> " last token notifications."
+              putStrLn "Configure database options in INI file."
+        SCExport
+          | schemaExists && storeLogExists -> exitConfigureNtfStore connstr schema
+          | not schemaExists -> do
+              putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
+              exitFailure
+          | storeLogExists -> do
+              putStrLn $ storeLogFilePath <> " file already exists."
+              exitFailure
+          | otherwise -> do
+              confirmOrExit
+                ("WARNING: PostrgreSQL database schema " <> B.unpack schema <> " (database: " <> B.unpack connstr <> ") will be exported to store log file " <> storeLogFilePath)
+                "Notification server store not imported"
+              let storeCfg = NtfPostgresStoreCfg {dbOpts, dbStoreLogPath = Just storeLogFilePath, confirmMigrations = MCConsole, tokenNtfsTTL = iniTokenNtfsTTL ini}
+              st <- newNtfDbStore storeCfg
+              (tCnt, sCnt, nCnt) <- exportNtfDbStore st storeLogFilePath
+              putStrLn $ "Export completed: " <> show tCnt <> " tokens, " <> show sCnt <> " subscriptions, " <> show nCnt <> " last token notifications."
   where
+    withIniFile a =
+      doesFileExist iniFile >>= \case
+        True -> readIniFile iniFile >>= either exitError a
+        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
+    getRequiredStoreLogFile ini = do
+      case enableStoreLog' ini $> storeLogFilePath of
+        Just storeLogFile -> do
+          ifM
+            (doesFileExist storeLogFile)
+            (pure storeLogFile)
+            (putStrLn ("Store log file " <> storeLogFile <> " not found") >> exitFailure)
+        Nothing -> putStrLn "Store log disabled, see `[STORE_LOG] enable`" >> exitFailure
     iniFile = combine cfgPath "ntf-server.ini"
     serverVersion = "SMP notifications server v" <> simplexMQVersion
     defaultServerPort = "443"
     executableName = "ntf-server"
     storeLogFilePath = combine logPath "ntf-server-store.log"
-    initializeServer InitOptions {enableStoreLog, signAlgorithm, ip, fqdn} = do
+    initializeServer InitOptions {enableStoreLog, dbOptions, signAlgorithm, ip, fqdn} = do
       clearDirIfExists cfgPath
       clearDirIfExists logPath
       createDirectoryIfMissing True cfgPath
@@ -96,6 +151,10 @@ ntfServerCLI cfgPath logPath =
           \# and restoring it when the server is started.\n\
           \# Log is compacted on start (deleted objects are removed).\n"
             <> ("enable: " <> onOff enableStoreLog <> "\n\n")
+            <> "# Database connection settings for PostgreSQL database (`store_queues: database`).\n"
+            <> (optDisabled' (connstr == defaultNtfDBConnStr) <> "db_connection: " <> safeDecodeUtf8 connstr <> "\n")
+            <> (optDisabled' (schema == defaultNtfDBSchema) <> "db_schema: " <> safeDecodeUtf8 schema <> "\n")
+            <> (optDisabled' (poolSize == defaultNtfDBPoolSize) <> "db_pool_size: " <> tshow poolSize <> "\n\n")
             <> "# Last notifications are optionally saved and restored when the server restarts,\n\
                \# they are preserved in the .bak file until the next restart.\n"
             <> ("restore_last_notifications: " <> onOff enableStoreLog <> "\n\n")
@@ -133,6 +192,8 @@ ntfServerCLI cfgPath logPath =
                \disconnect: off\n"
             <> ("# ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
             <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
+        DBOpts {connstr, schema, poolSize} = dbOptions
+    enableStoreLog' = settingIsOn "STORE_LOG" "enable"
     runServer startOptions ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -146,7 +207,6 @@ ntfServerCLI cfgPath logPath =
       -- printServerConfig transports storeLogFile
       runNtfServer cfg
       where
-        enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
         -- TODO [ntfdb] remove?
@@ -191,7 +251,7 @@ ntfServerCLI cfgPath logPath =
                       checkInterval = readStrictIni "INACTIVE_CLIENTS" "check_interval" ini
                     },
               dbStoreConfig = 
-                let dbStoreLogPath = enableStoreLog $> storeLogFilePath
+                let dbStoreLogPath = enableStoreLog' ini $> storeLogFilePath
                  in NtfPostgresStoreCfg {dbOpts = iniDBOptions ini, dbStoreLogPath, confirmMigrations = MCYesUp, tokenNtfsTTL = iniTokenNtfsTTL ini},
               ntfCredentials =
                 ServerCredentials
@@ -210,10 +270,16 @@ ntfServerCLI cfgPath logPath =
                   },
               startOptions
             }
-        -- TODO [ntfdb]
-        iniDBOptions = undefined
-        -- TODO [ntfdb]
-        iniTokenNtfsTTL = undefined
+
+    -- TODO [ntfdb]
+    iniDBOptions = undefined
+    -- TODO [ntfdb]
+    iniTokenNtfsTTL = undefined
+
+    exitConfigureNtfStore connstr schema = do
+      putStrLn $ "Error: both " <> storeLogFilePath <> " file and " <> B.unpack schema <> " schema are present (database: " <> B.unpack connstr <> ")."
+      putStrLn "Configure notification server storage."
+      exitFailure
 
 data CliCommand
   = Init InitOptions

@@ -7,6 +7,7 @@
 
 module Simplex.Messaging.Notifications.Server.Store.Postgres where
 
+import Control.Concurrent.STM
 import Control.Logger.Simple
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
@@ -18,6 +19,7 @@ import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore (..))
 import Simplex.Messaging.Notifications.Server.Store.Migrations
 import Simplex.Messaging.Protocol (NotifierId, NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer)
 import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
@@ -347,3 +349,16 @@ addTokenLastNtf = undefined
 --     insertForExistingToken =
 --       whenM (TM.member tknId tokens) $
 --         TM.insertM tknId (newTVar [ntf]) tokenLastNtfs
+
+-- TODO [ntfdb]
+importNtfSTMStore :: NtfPostgresStore -> NtfSTMStore -> IO (Int, Int, Int)
+importNtfSTMStore _st stmStore = do
+  _tokens <- readTVarIO $ tokens stmStore
+  _subs <- readTVarIO $ subscriptions stmStore
+  _ntfs <- readTVarIO $ tokenLastNtfs stmStore
+  pure (0, 0, 0)
+
+exportNtfDbStore :: NtfPostgresStore -> FilePath -> IO (Int, Int, Int)
+exportNtfDbStore _st storeLogFilePath = do
+  _sl <- openWriteStoreLog False storeLogFilePath
+  undefined

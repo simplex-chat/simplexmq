@@ -32,7 +32,7 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (whenM, ($>>=))
 
-data NtfStore = NtfStore
+data NtfSTMStore = NtfSTMStore
   { tokens :: TMap NtfTokenId NtfTknData,
     -- multiple registrations exist to protect from malicious registrations if token is compromised
     tokenRegistrations :: TMap DeviceToken (TMap ByteString NtfTokenId),
@@ -45,15 +45,15 @@ data NtfStore = NtfStore
     tokenLastNtfs :: TMap NtfTokenId (TVar (NonEmpty PNMessageData))
   }
 
-newNtfStore :: IO NtfStore
-newNtfStore = do
+newNtfSTMStore :: IO NtfSTMStore
+newNtfSTMStore = do
   tokens <- TM.emptyIO
   tokenRegistrations <- TM.emptyIO
   subscriptions <- TM.emptyIO
   tokenSubscriptions <- TM.emptyIO
   subscriptionLookup <- TM.emptyIO
   tokenLastNtfs <- TM.emptyIO
-  pure NtfStore {tokens, tokenRegistrations, subscriptions, tokenSubscriptions, subscriptionLookup, tokenLastNtfs}
+  pure NtfSTMStore {tokens, tokenRegistrations, subscriptions, tokenSubscriptions, subscriptionLookup, tokenLastNtfs}
 
 data NtfTknData = NtfTknData
   { ntfTknId :: NtfTokenId,
@@ -89,13 +89,13 @@ data NtfEntityRec (e :: NtfEntity) where
   NtfTkn :: NtfTknData -> NtfEntityRec 'Token
   NtfSub :: NtfSubData -> NtfEntityRec 'Subscription
 
-getNtfToken :: NtfStore -> NtfTokenId -> STM (Maybe NtfTknData)
+getNtfToken :: NtfSTMStore -> NtfTokenId -> STM (Maybe NtfTknData)
 getNtfToken st tknId = TM.lookup tknId (tokens st)
 
-getNtfTokenIO :: NtfStore -> NtfTokenId -> IO (Maybe NtfTknData)
+getNtfTokenIO :: NtfSTMStore -> NtfTokenId -> IO (Maybe NtfTknData)
 getNtfTokenIO st tknId = TM.lookupIO tknId (tokens st)
 
-addNtfToken :: NtfStore -> NtfTokenId -> NtfTknData -> STM ()
+addNtfToken :: NtfSTMStore -> NtfTokenId -> NtfTknData -> STM ()
 addNtfToken st tknId tkn@NtfTknData {token, tknVerifyKey} = do
   TM.insert tknId tkn $ tokens st
   TM.lookup token regs >>= \case
@@ -107,7 +107,7 @@ addNtfToken st tknId tkn@NtfTknData {token, tknVerifyKey} = do
     regs = tokenRegistrations st
     regKey = C.toPubKey C.pubKeyBytes tknVerifyKey
 
-getNtfTokenRegistration :: NtfStore -> NewNtfEntity 'Token -> STM (Maybe NtfTknData)
+getNtfTokenRegistration :: NtfSTMStore -> NewNtfEntity 'Token -> STM (Maybe NtfTknData)
 getNtfTokenRegistration st (NewNtfTkn token tknVerifyKey _) =
   TM.lookup token (tokenRegistrations st)
     $>>= TM.lookup regKey
@@ -115,7 +115,7 @@ getNtfTokenRegistration st (NewNtfTkn token tknVerifyKey _) =
   where
     regKey = C.toPubKey C.pubKeyBytes tknVerifyKey
 
-removeInactiveTokenRegistrations :: NtfStore -> NtfTknData -> STM [NtfTokenId]
+removeInactiveTokenRegistrations :: NtfSTMStore -> NtfTknData -> STM [NtfTokenId]
 removeInactiveTokenRegistrations st NtfTknData {ntfTknId = tId, token} =
   TM.lookup token (tokenRegistrations st)
     >>= maybe (pure []) removeRegs
@@ -130,7 +130,7 @@ removeInactiveTokenRegistrations st NtfTknData {ntfTknId = tId, token} =
         void $ deleteTokenSubs st tId'
       pure $ map snd tIds
 
-removeTokenRegistration :: NtfStore -> NtfTknData -> STM ()
+removeTokenRegistration :: NtfSTMStore -> NtfTknData -> STM ()
 removeTokenRegistration st NtfTknData {ntfTknId = tId, token, tknVerifyKey} =
   TM.lookup token (tokenRegistrations st) >>= mapM_ removeReg
   where
@@ -139,7 +139,7 @@ removeTokenRegistration st NtfTknData {ntfTknId = tId, token, tknVerifyKey} =
         >>= mapM_ (\tId' -> when (tId == tId') $ TM.delete k regs)
     k = C.toPubKey C.pubKeyBytes tknVerifyKey
 
-deleteNtfToken :: NtfStore -> NtfTokenId -> STM (Map SMPServer (Set NotifierId))
+deleteNtfToken :: NtfSTMStore -> NtfTokenId -> STM (Map SMPServer (Set NotifierId))
 deleteNtfToken st tknId = do
   void $
     TM.lookupDelete tknId (tokens st) $>>= \NtfTknData {token, tknVerifyKey} ->
@@ -152,7 +152,7 @@ deleteNtfToken st tknId = do
     regs = tokenRegistrations st
     regKey = C.toPubKey C.pubKeyBytes
 
-deleteTokenSubs :: NtfStore -> NtfTokenId -> STM (Map SMPServer (Set NotifierId))
+deleteTokenSubs :: NtfSTMStore -> NtfTokenId -> STM (Map SMPServer (Set NotifierId))
 deleteTokenSubs st tknId =
   TM.lookupDelete tknId (tokenSubscriptions st)
     >>= maybe (pure M.empty) (readTVar >=> deleteSrvSubs)
@@ -165,19 +165,19 @@ deleteTokenSubs st tknId =
       TM.lookup smpServer (subscriptionLookup st) >>= mapM_ (`modifyTVar'` (`M.withoutKeys` nIds))
       pure nIds    
 
-getNtfSubscriptionIO :: NtfStore -> NtfSubscriptionId -> IO (Maybe NtfSubData)
+getNtfSubscriptionIO :: NtfSTMStore -> NtfSubscriptionId -> IO (Maybe NtfSubData)
 getNtfSubscriptionIO st subId = TM.lookupIO subId (subscriptions st)
 
-findNtfSubscription :: NtfStore -> SMPQueueNtf -> STM (Maybe NtfSubData)
+findNtfSubscription :: NtfSTMStore -> SMPQueueNtf -> STM (Maybe NtfSubData)
 findNtfSubscription st SMPQueueNtf {smpServer, notifierId} =
   TM.lookup smpServer (subscriptionLookup st) $>>= TM.lookup notifierId 
 
-findNtfSubscriptionToken :: NtfStore -> SMPQueueNtf -> STM (Maybe NtfTknData)
+findNtfSubscriptionToken :: NtfSTMStore -> SMPQueueNtf -> STM (Maybe NtfTknData)
 findNtfSubscriptionToken st smpQueue = do
   findNtfSubscription st smpQueue
     $>>= \NtfSubData {tokenId} -> getActiveNtfToken st tokenId
 
-getActiveNtfToken :: NtfStore -> NtfTokenId -> STM (Maybe NtfTknData)
+getActiveNtfToken :: NtfSTMStore -> NtfTokenId -> STM (Maybe NtfTknData)
 getActiveNtfToken st tknId =
   getNtfToken st tknId $>>= \tkn@NtfTknData {tknStatus} -> do
     tStatus <- readTVar tknStatus
@@ -189,7 +189,7 @@ mkNtfSubData ntfSubId (NewNtfSub tokenId smpQueue notifierKey) = do
   pure NtfSubData {ntfSubId, smpQueue, tokenId, subStatus, notifierKey}
 
 -- returns False if subscription existed before
-addNtfSubscription :: NtfStore -> NtfSubscriptionId -> NtfSubData -> STM Bool
+addNtfSubscription :: NtfSTMStore -> NtfSubscriptionId -> NtfSubData -> STM Bool
 addNtfSubscription st subId sub@NtfSubData {smpQueue = SMPQueueNtf {smpServer, notifierId}, tokenId} =
   TM.lookup tokenId (tokenSubscriptions st)
     >>= maybe newTokenSubs pure
@@ -218,7 +218,7 @@ addNtfSubscription st subId sub@NtfSubData {smpQueue = SMPQueueNtf {smpServer, n
       TM.insert smpServer ss $ subscriptionLookup st
       pure ss
 
-deleteNtfSubscription :: NtfStore -> NtfSubscriptionId -> STM ()
+deleteNtfSubscription :: NtfSTMStore -> NtfSubscriptionId -> STM ()
 deleteNtfSubscription st subId = TM.lookupDelete subId (subscriptions st) >>= mapM_ deleteSubIndices
   where
     deleteSubIndices NtfSubData {smpQueue = SMPQueueNtf {smpServer, notifierId}, tokenId} = do
@@ -228,7 +228,7 @@ deleteNtfSubscription st subId = TM.lookupDelete subId (subscriptions st) >>= ma
         modifyTVar' sIds $ S.delete subId
         modifyTVar' nIds $ S.delete notifierId
 
-addTokenLastNtf :: NtfStore -> NtfTokenId -> PNMessageData -> IO (NonEmpty PNMessageData)
+addTokenLastNtf :: NtfSTMStore -> NtfTokenId -> PNMessageData -> IO (NonEmpty PNMessageData)
 addTokenLastNtf st tknId newNtf =
   TM.lookupIO tknId (tokenLastNtfs st) >>= maybe (atomically maybeNewTokenLastNtfs) (atomically . addNtf)
   where
@@ -252,8 +252,8 @@ addTokenLastNtf st tknId newNtf =
 
 -- This function is expected to be called after store log is read,
 -- as it checks for token existence when adding last notification.
-storeTokenLastNtf :: NtfStore -> NtfTokenId -> PNMessageData -> IO ()
-storeTokenLastNtf (NtfStore {tokens, tokenLastNtfs}) tknId ntf = do
+storeTokenLastNtf :: NtfSTMStore -> NtfTokenId -> PNMessageData -> IO ()
+storeTokenLastNtf (NtfSTMStore {tokens, tokenLastNtfs}) tknId ntf = do
   TM.lookupIO tknId tokenLastNtfs >>= atomically . maybe newTokenLastNtfs (`modifyTVar'` (ntf <|))
   where
     newTokenLastNtfs = TM.lookup tknId tokenLastNtfs >>= maybe insertForExistingToken (`modifyTVar'` (ntf <|))
