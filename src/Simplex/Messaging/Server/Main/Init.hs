@@ -27,6 +27,15 @@ import System.FilePath ((</>))
 defaultControlPort :: Int
 defaultControlPort = 5224
 
+defaultDBOpts :: DBOpts
+defaultDBOpts =
+  DBOpts
+    { connstr = defaultDBConnStr,
+      schema = defaultDBSchema,
+      poolSize = defaultDBPoolSize,
+      createSchema = False
+    }
+
 defaultDBConnStr :: ByteString
 defaultDBConnStr = "postgresql://smp@/smp_server_store"
 

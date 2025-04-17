@@ -50,7 +50,7 @@ import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
-import Simplex.Messaging.Notifications.Server.Store (NtfTknData (..))
+import Simplex.Messaging.Notifications.Server.Store.Postgres (NtfTknData' (..))
 import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import Simplex.Messaging.Transport.HTTP2.Client
@@ -263,8 +263,8 @@ disconnectApnsHTTP2Client APNSPushClient {https2Client} =
 ntfCategoryCheckMessage :: Text
 ntfCategoryCheckMessage = "NTF_CAT_CHECK_MESSAGE"
 
-apnsNotification :: NtfTknData -> C.CbNonce -> Int -> PushNotification -> Either C.CryptoError APNSNotification
-apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
+apnsNotification :: NtfTknData' -> C.CbNonce -> Int -> PushNotification -> Either C.CryptoError APNSNotification
+apnsNotification NtfTknData' {tknDhSecret} nonce paddedLen = \case
   PNVerification (NtfRegCode code) ->
     encrypt code $ \code' ->
       apn APNSBackground {contentAvailable = 1} . Just $ J.object ["nonce" .= nonce, "verification" .= code']
@@ -313,7 +313,7 @@ data PushProviderError
   | PPPermanentError
   deriving (Show, Exception)
 
-type PushProviderClient = NtfTknData -> PushNotification -> ExceptT PushProviderError IO ()
+type PushProviderClient = NtfTknData' -> PushNotification -> ExceptT PushProviderError IO ()
 
 -- this is not a newtype on purpose to have a correct JSON encoding as a record
 data APNSErrorResponse = APNSErrorResponse {reason :: Text}
@@ -321,7 +321,7 @@ data APNSErrorResponse = APNSErrorResponse {reason :: Text}
 $(JQ.deriveFromJSON defaultJSON ''APNSErrorResponse)
 
 apnsPushProviderClient :: APNSPushClient -> PushProviderClient
-apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {token = DeviceToken _ tknStr} pn = do
+apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData' {token = DeviceToken _ tknStr} pn = do
   http2 <- liftHTTPS2 $ getApnsHTTP2Client c
   nonce <- atomically $ C.randomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
