@@ -6,7 +6,8 @@ TAG="$1"
 tempdir="$(mktemp -d)"
 init_dir="$PWD"
 
-repo="https://github.com/simplex-chat/simplexmq"
+repo_name="simplexmq"
+repo="https://github.com/simplex-chat/${repo_name}"
 export DOCKER_BUILDKIT=1
 
 cleanup() {
@@ -18,10 +19,10 @@ cleanup() {
 }
 trap 'cleanup' EXIT INT
 
-mkdir -p "$init_dir/$TAG/from-source" "$init_dir/$TAG/prebuilt"
+mkdir -p "$init_dir/$TAG-$repo_name/from-source" "$init_dir/$TAG-$repo_name/prebuilt"
 
 git -C "$tempdir" clone "$repo.git" &&\
-	cd "$tempdir/simplexmq" &&\
+	cd "$tempdir/${repo_name}" &&\
 	git checkout "$TAG"
 
 for os in 22.04 24.04; do
@@ -39,7 +40,7 @@ for os in 22.04 24.04; do
 	# Run container in background
 	docker run -t -d \
 		--name builder \
-		-v "$tempdir/simplexmq:/project" \
+		-v "$tempdir/${repo_name}:/project" \
 		local
 
 	# PostgreSQL build (only smp-server)
@@ -51,11 +52,11 @@ for os in 22.04 24.04; do
 	# Copy smp-server postgresql binary and prepare it
 	docker cp \
 		builder:/out/smp-server \
-		"$init_dir/$TAG/from-source/smp-server-postgres-ubuntu-${os_url}-x86-64"
+		"$init_dir/$TAG-$repo_name/from-source/smp-server-postgres-ubuntu-${os_url}-x86-64"
 
 	# Download prebuilt postgresql binary
 	curl -L \
-		--output-dir "$init_dir/$TAG/prebuilt/" \
+		--output-dir "$init_dir/$TAG-$repo_name/prebuilt/" \
 		-O \
 		"$repo/releases/download/${TAG}/smp-server-postgres-ubuntu-${os_url}-x86-64"
 	
@@ -76,11 +77,11 @@ for os in 22.04 24.04; do
 	# Prepare regular binaries and download the prebuilt ones
 	for app in $apps; do
 		curl -L \
-			--output-dir "$init_dir/$TAG/prebuilt/" \
+			--output-dir "$init_dir/$TAG-$repo_name/prebuilt/" \
 			-O \
 		       	"$repo/releases/download/${TAG}/${app}-ubuntu-${os_url}-x86-64"
 
-		mv "./out-${os}/$app" "$init_dir/$TAG/from-source/${app}-ubuntu-${os_url}-x86-64"
+		mv "./out-${os}/$app" "$init_dir/$TAG-$repo_name/from-source/${app}-ubuntu-${os_url}-x86-64"
 	done
 
 	# Important! Remove dist-newstyle for the next interation
@@ -105,7 +106,7 @@ cd "$init_dir"
 # Final stage: compare hashes
 
 # Path to binaries
-path_bin="$init_dir/$TAG"
+path_bin="$init_dir/$TAG-$repo_name"
 
 # Assume everything is okay for now
 bad=0
@@ -122,7 +123,7 @@ for file in "$path_bin"/from-source/*; do
 
 	# Compare
 	if [ "$compiled" != "$prebuilt" ]; then
-		# If hashes doesn't match, sed bad...
+		# If hashes doesn't match, set bad...
 		bad=1
 
 		# ... and print affected binary
@@ -132,7 +133,7 @@ done
 
 # If everything is still okay, compute checksums file
 if [ "$bad" = 0 ]; then
-	sha256sum "$path_bin"/from-source/* | sed -e "s|$PWD/||g" -e 's|from-source/||g' > "$path_bin/_sha256sums"
+	sha256sum "$path_bin"/from-source/* | sed -e "s|$PWD/||g" -e 's|from-source/||g' -e "s|-$repo_name||g" > "$path_bin/_sha256sums"
 
 	printf 'Checksums computed - %s\n' "$path_bin/_sha256sums"
 fi
