@@ -28,7 +28,7 @@ data MsgNtf = MsgNtf
 storeNtf :: NtfStore -> NotifierId -> MsgNtf -> IO ()
 storeNtf (NtfStore ns) nId ntf = do
   TM.lookupIO nId ns >>= atomically . maybe newNtfs (`modifyTVar'` (ntf :))
-  -- TODO coalesce messages here once the client is updated to process multiple messages
+  -- TODO [ntfdb] coalesce messages here once the client is updated to process multiple messages
   -- for single notification.
   -- when (isJust prevNtf) $ incStat $ msgNtfReplaced stats
   where

@@ -23,6 +23,7 @@ module Simplex.Messaging.Server.QueueStore.Postgres
     PostgresStoreCfg (..),
     batchInsertQueues,
     foldQueueRecs,
+    handleDuplicate,
   )
 where
 
