@@ -28,7 +28,7 @@ CREATE TABLE tokens(
   token_id BYTEA NOT NULL,
   push_provider TEXT NOT NULL,
   push_provider_token BYTEA NOT NULL,
-  status BYTEA NOT NULL,
+  status TEXT NOT NULL,
   verify_key BYTEA NOT NULL,
   dh_priv_key BYTEA NOT NULL,
   dh_secret BYTEA NOT NULL,
@@ -57,7 +57,7 @@ CREATE TABLE subscriptions(
   smp_server_id BIGINT REFERENCES smp_servers ON DELETE RESTRICT ON UPDATE RESTRICT,
   smp_notifier_id BYTEA NOT NULL,
   smp_notifier_key BYTEA NOT NULL,
-  status BYTEA NOT NULL,
+  status TEXT NOT NULL,
   PRIMARY KEY (subscription_id)
 );
 

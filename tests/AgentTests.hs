@@ -27,6 +27,8 @@ import AgentTests.SQLiteTests (storeTests)
 
 #if defined(dbServerPostgres)
 import AgentTests.NotificationTests (notificationTests)
+import SMPClient (postgressBracket)
+import NtfClient (ntfTestServerDBConnectInfo)
 #endif
 
 agentCoreTests :: Spec
@@ -46,7 +48,8 @@ agentTests ps = do
     describe "Functional API" $ functionalAPITests ps
     describe "Chosen servers" serverChoiceTests
 #if defined(dbServerPostgres)    
-    describe "Notification tests" $ notificationTests ps
+    around_ (postgressBracket ntfTestServerDBConnectInfo) $
+      describe "Notification tests" $ notificationTests ps
 #endif
 #if !defined(dbPostgres)
   describe "SQLite store" storeTests

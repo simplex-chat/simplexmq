@@ -57,6 +57,7 @@ import Database.PostgreSQL.Simple.SqlQQ (sql)
 import GHC.IO (catchAny)
 import Simplex.Messaging.Agent.Client (withLockMap)
 import Simplex.Messaging.Agent.Lock (Lock)
+import Simplex.Messaging.Agent.Store.AgentStore ()
 import Simplex.Messaging.Agent.Store.Postgres (createDBStore, closeDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder)
@@ -537,15 +538,15 @@ handleDuplicate e = case constraintViolation e of
 
 -- The orphan instances below are copy-pasted, but here they are defined specifically for PostgreSQL
 
-instance ToField EntityId where toField (EntityId s) = toField $ Binary s
-
-deriving newtype instance FromField EntityId
-
 instance ToField (NonEmpty C.APublicAuthKey) where toField = toField . Binary . smpEncode
 
 instance FromField (NonEmpty C.APublicAuthKey) where fromField = blobFieldDecoder smpDecode
 
 #if !defined(dbPostgres)
+instance ToField EntityId where toField (EntityId s) = toField $ Binary s
+
+deriving newtype instance FromField EntityId
+
 instance FromField QueueMode where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
 
 instance ToField QueueMode where toField = toField . decodeLatin1 . smpEncode

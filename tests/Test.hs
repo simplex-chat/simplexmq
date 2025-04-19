@@ -49,8 +49,7 @@ import ServerTests.SchemaDump
 #endif
 
 #if defined(dbPostgres) || defined(dbServerPostgres)
-import Database.PostgreSQL.Simple (ConnectInfo (..))
-import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists, dropDatabaseAndUser)
+import SMPClient (postgressBracket)
 #endif
 
 logCfg :: LogConfig
@@ -91,7 +90,7 @@ main = do
           describe "Server schema dump" serverSchemaDumpTest
         aroundAll_ (postgressBracket testServerDBConnectInfo) $
           describe "SMP server via TLS, postgres+jornal message store" $
-              before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests
+            before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests
 #endif
         describe "SMP server via TLS, jornal message store" $ do
           describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
@@ -105,8 +104,7 @@ main = do
         aroundAll_ (postgressBracket ntfTestServerDBConnectInfo) $ do
           describe "Notifications server" $ ntfServerTests (transport @TLS)
         aroundAll_ (postgressBracket testServerDBConnectInfo) $ do
-          aroundAll_ (postgressBracket ntfTestServerDBConnectInfo) $ do
-            describe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
+          describe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
           describe "SMP proxy, postgres+jornal message store" $
             before (pure $ ASType SQSPostgres SMSJournal) smpProxyTests
 #endif
@@ -130,11 +128,3 @@ eventuallyRemove path retries = case retries of
       _ -> E.throwIO ioe
   where
     action = removeDirectoryRecursive path
-
-#if defined(dbPostgres) || defined(dbServerPostgres)
-postgressBracket :: ConnectInfo -> IO a -> IO a
-postgressBracket connInfo =
-  E.bracket_
-    (dropDatabaseAndUser connInfo >> createDBAndUserIfNotExists connInfo)
-    (dropDatabaseAndUser connInfo)
-#endif

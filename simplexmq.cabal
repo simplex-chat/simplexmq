@@ -545,6 +545,8 @@ test-suite simplexmq-test
     , warp-tls
     , yaml
   default-language: Haskell2010
+  if flag(server_postgres)
+    cpp-options: -DdbServerPostgres
   if flag(client_postgres)
     cpp-options: -DdbPostgres
   else
@@ -558,5 +560,3 @@ test-suite simplexmq-test
   if flag(client_postgres) || flag(server_postgres)
     build-depends:
         postgresql-simple ==0.7.*
-  if flag(server_postgres)
-    cpp-options: -DdbServerPostgres

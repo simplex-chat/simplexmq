@@ -34,7 +34,7 @@ import Network.HTTP.Types (Status)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket
-import SMPClient (prevRange, serverBracket)
+import SMPClient (ntfTestPort, prevRange, serverBracket)
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
@@ -65,12 +65,6 @@ import UnliftIO.STM
 testHost :: NonEmpty TransportHost
 testHost = "localhost"
 
-ntfTestPort :: ServiceName
-ntfTestPort = "6001"
-
-ntfTestPort2 :: ServiceName
-ntfTestPort2 = "6002"
-
 apnsTestPort :: ServiceName
 apnsTestPort = "6010"
 
@@ -79,6 +73,9 @@ testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 
 ntfTestStoreLogFile :: FilePath
 ntfTestStoreLogFile = "tests/tmp/ntf-server-store.log"
+
+ntfTestStoreLogFile2 :: FilePath
+ntfTestStoreLogFile2 = "tests/tmp/ntf-server-store.log.2"
 
 ntfTestStoreLastNtfsFile :: FilePath
 ntfTestStoreLastNtfsFile = "tests/tmp/ntf-server-last-notifications.log"
@@ -92,6 +89,9 @@ ntfTestStoreDBOpts =
       createSchema = True
     }
 
+ntfTestStoreDBOpts2 :: DBOpts
+ntfTestStoreDBOpts2 = ntfTestStoreDBOpts {schema = "smp_server2"}
+
 ntfTestServerDBConnstr :: ByteString
 ntfTestServerDBConnstr = "postgresql://ntf_test_server_user@/ntf_test_server_db"
 
@@ -101,6 +101,18 @@ ntfTestServerDBConnectInfo =
     connectUser = "ntf_test_server_user",
     connectDatabase = "ntf_test_server_db"
   }
+
+ntfTestDBCfg :: NtfPostgresStoreCfg
+ntfTestDBCfg =
+  NtfPostgresStoreCfg
+    { dbOpts = ntfTestStoreDBOpts,
+      dbStoreLogPath = Just ntfTestStoreLogFile,
+      confirmMigrations = MCYesUp,
+      tokenNtfsTTL = 86400
+    }
+
+ntfTestDBCfg2 :: NtfPostgresStoreCfg
+ntfTestDBCfg2 = ntfTestDBCfg {dbOpts = ntfTestStoreDBOpts2, dbStoreLogPath = Just ntfTestStoreLogFile2}
 
 testNtfClient :: Transport c => (THandleNTF c 'TClient -> IO a) -> IO a
 testNtfClient client = do
@@ -130,13 +142,7 @@ ntfServerCfg =
           },
       subsBatchSize = 900,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
-      dbStoreConfig =
-        NtfPostgresStoreCfg
-          { dbOpts = ntfTestStoreDBOpts,
-            dbStoreLogPath = Just ntfTestStoreLogFile,
-            confirmMigrations = MCYesUp,
-            tokenNtfsTTL = 86400
-          },
+      dbStoreConfig = ntfTestDBCfg,
       ntfCredentials =
         ServerCredentials
           { caCertificateFile = Just "tests/fixtures/ca.crt",
@@ -164,8 +170,9 @@ ntfServerCfgVPrev =
     smpCfg' = smpCfg smpAgentCfg'
     serverVRange' = serverVRange smpCfg'
 
-withNtfServerThreadOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withNtfServerThreadOn t port' = withNtfServerCfg ntfServerCfg {transports = [(port', t, False)]}
+withNtfServerThreadOn :: HasCallStack => ATransport -> ServiceName -> NtfPostgresStoreCfg -> (HasCallStack => ThreadId -> IO a) -> IO a
+withNtfServerThreadOn t port' dbStoreConfig =
+  withNtfServerCfg ntfServerCfg {transports = [(port', t, False)], dbStoreConfig}
 
 withNtfServerCfg :: HasCallStack => NtfServerConfig -> (ThreadId -> IO a) -> IO a
 withNtfServerCfg cfg@NtfServerConfig {transports} =
@@ -176,11 +183,11 @@ withNtfServerCfg cfg@NtfServerConfig {transports} =
         (\started -> runNtfServerBlocking started cfg)
         (pure ())
 
-withNtfServerOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => IO a) -> IO a
-withNtfServerOn t port' = withNtfServerThreadOn t port' . const
+withNtfServerOn :: HasCallStack => ATransport -> ServiceName -> NtfPostgresStoreCfg -> (HasCallStack => IO a) -> IO a
+withNtfServerOn t port' dbStoreConfig = withNtfServerThreadOn t port' dbStoreConfig . const
 
 withNtfServer :: HasCallStack => ATransport -> (HasCallStack => IO a) -> IO a
-withNtfServer t = withNtfServerOn t ntfTestPort
+withNtfServer t = withNtfServerOn t ntfTestPort ntfTestDBCfg
 
 runNtfTest :: forall c a. Transport c => (THandleNTF c 'TClient -> IO a) -> IO a
 runNtfTest test = withNtfServer (transport @c) $ testNtfClient test
