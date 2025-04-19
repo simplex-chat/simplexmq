@@ -21,7 +21,6 @@ import CoreTests.VersionRangeTests
 import FileDescriptionTests (fileDescriptionTests)
 import GHC.IO.Exception (IOException (..))
 import qualified GHC.IO.Exception as IOException
-import NtfServerTests (ntfServerTests)
 import RemoteControl (remoteControlTests)
 import SMPProxyTests (smpProxyTests)
 import ServerTests
@@ -43,6 +42,8 @@ import AgentTests.SchemaDump (schemaDumpTest)
 #endif
 
 #if defined(dbServerPostgres)
+import NtfServerTests (ntfServerTests)
+import NtfClient (ntfTestServerDBConnectInfo)
 import SMPClient (testServerDBConnectInfo)
 import ServerTests.SchemaDump
 #endif
@@ -100,10 +101,12 @@ main = do
         -- xdescribe "SMP server via WebSockets" $ do
         --   describe "SMP syntax" $ serverSyntaxTests (transport @WS)
         --   before (pure (transport @WS, ASType SQSMemory SMSJournal)) serverTests
-        describe "Notifications server" $ ntfServerTests (transport @TLS)
 #if defined(dbServerPostgres)
+        aroundAll_ (postgressBracket ntfTestServerDBConnectInfo) $ do
+          describe "Notifications server" $ ntfServerTests (transport @TLS)
         aroundAll_ (postgressBracket testServerDBConnectInfo) $ do
-          describe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
+          aroundAll_ (postgressBracket ntfTestServerDBConnectInfo) $ do
+            describe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
           describe "SMP proxy, postgres+jornal message store" $
             before (pure $ ASType SQSPostgres SMSJournal) smpProxyTests
 #endif

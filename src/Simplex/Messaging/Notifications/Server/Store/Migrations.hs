@@ -27,8 +27,8 @@ m20250417_initial =
 CREATE TABLE tokens(
   token_id BYTEA NOT NULL,
   push_provider TEXT NOT NULL,
-  push_provider_token TEXT NOT NULL,
-  status TEXT NOT NULL,
+  push_provider_token BYTEA NOT NULL,
+  status BYTEA NOT NULL,
   verify_key BYTEA NOT NULL,
   dh_priv_key BYTEA NOT NULL,
   dh_secret BYTEA NOT NULL,
@@ -39,17 +39,17 @@ CREATE TABLE tokens(
   PRIMARY KEY (token_id)
 );
 
-CREATE UNIQUE INDEX idx_tokens_push_provider_token ON tokens(push_provider, push_provider_token, verify_key)
-CREATE INDEX idx_tokens_cron_sent_at ON tokens(cron_sent_at + cron_interval);
+CREATE UNIQUE INDEX idx_tokens_push_provider_token ON tokens(push_provider, push_provider_token, verify_key);
+CREATE INDEX idx_tokens_cron_sent_at ON tokens((cron_sent_at + cron_interval));
 
 CREATE TABLE smp_servers(
   smp_server_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   smp_host TEXT NOT NULL,
   smp_port TEXT NOT NULL,
   smp_keyhash BYTEA NOT NULL
-)
+);
 
-CREATE UNIQUE INDEX idx_smp_servers ON smp_servers(smp_host, smp_port, smp_key_hash);
+CREATE UNIQUE INDEX idx_smp_servers ON smp_servers(smp_host, smp_port, smp_keyhash);
 
 CREATE TABLE subscriptions(
   subscription_id BYTEA NOT NULL,
@@ -57,7 +57,7 @@ CREATE TABLE subscriptions(
   smp_server_id BIGINT REFERENCES smp_servers ON DELETE RESTRICT ON UPDATE RESTRICT,
   smp_notifier_id BYTEA NOT NULL,
   smp_notifier_key BYTEA NOT NULL,
-  status TEXT NOT NULL,
+  status BYTEA NOT NULL,
   PRIMARY KEY (subscription_id)
 );
 

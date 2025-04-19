@@ -452,7 +452,6 @@ test-suite simplexmq-test
       AgentTests.EqInstances
       AgentTests.FunctionalAPITests
       AgentTests.MigrationTests
-      AgentTests.NotificationTests
       AgentTests.ServerChoice
       AgentTests.ShortLinkTests
       CLITests
@@ -468,8 +467,6 @@ test-suite simplexmq-test
       CoreTests.UtilTests
       CoreTests.VersionRangeTests
       FileDescriptionTests
-      NtfClient
-      NtfServerTests
       RemoteControl
       ServerTests
       SMPAgentClient
@@ -492,6 +489,9 @@ test-suite simplexmq-test
           AgentTests.SQLiteTests
   if flag(server_postgres)
       other-modules:
+          AgentTests.NotificationTests
+          NtfClient
+          NtfServerTests
           ServerTests.SchemaDump  
   hs-source-dirs:
       tests

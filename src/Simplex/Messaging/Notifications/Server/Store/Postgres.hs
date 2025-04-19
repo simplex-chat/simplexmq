@@ -34,7 +34,6 @@ import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
-import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16)
 import Database.PostgreSQL.Simple (Binary (..), In (..), Only (..), Query, ToRow, (:.) (..))
@@ -56,7 +55,7 @@ import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore (..))
 import Simplex.Messaging.Notifications.Server.Store.Migrations
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (EntityId (..), EncNMsgMeta, ErrorType (..), NotifierId, NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer, pattern SMPServer)
-import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
+import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, getSystemDate)
 import Simplex.Messaging.Server.QueueStore.Postgres (handleDuplicate)
 import Simplex.Messaging.Server.StoreLog (closeStoreLog, openWriteStoreLog)
 import Simplex.Messaging.Server.StoreLog.Types
@@ -90,6 +89,7 @@ data NtfTknData' = NtfTknData'
     tknCronInterval :: Word16,
     tknUpdatedAt :: Maybe RoundedSystemTime
   }
+  deriving (Show)
 
 mkNtfTknData :: NtfTokenId -> NewNtfEntity 'Token -> C.PrivateKeyX25519 -> C.DhSecretX25519 -> NtfRegCode -> RoundedSystemTime -> NtfTknData'
 mkNtfTknData ntfTknId (NewNtfTkn token tknVerifyKey _) tknDhPrivKey tknDhSecret tknRegCode ts =
@@ -102,6 +102,7 @@ data NtfSubData' = NtfSubData'
     notifierKey :: NtfPrivateAuthKey,
     subStatus :: NtfSubStatus
   }
+  deriving (Show)
 
 data NtfEntityRec' (e :: NtfEntity) where
   NtfTkn' :: NtfTknData' -> NtfEntityRec' 'Token
@@ -122,11 +123,11 @@ closeNtfDbStore NtfPostgresStore {dbStore, dbStoreLog} = do
   closeDBStore dbStore
   mapM_ closeStoreLog dbStoreLog
 
-addNtfToken :: NtfPostgresStore -> NtfTknData' -> IO ()
+addNtfToken :: NtfPostgresStore -> NtfTknData' -> IO (Either ErrorType ())
 addNtfToken st tkn =
-  void $ withDB "addNtfToken" st $ \db ->
+  withDB "addNtfToken" st $ \db ->
     E.try (DB.execute db insertNtfTknQuery $ ntfTknToRow tkn)
-      >>= bimapM handleDuplicate pure
+      >>= bimapM handleDuplicate (\_ -> pure ())
 
 insertNtfTknQuery :: Query
 insertNtfTknQuery =
@@ -135,6 +136,19 @@ insertNtfTknQuery =
       (token_id, push_provider, push_provider_token, status, verify_key, dh_priv_key, dh_secret, reg_code, cron_interval, updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?)
   |]
+
+replaceNtfToken :: NtfPostgresStore -> NtfTknData' -> IO (Either ErrorType ())
+replaceNtfToken st NtfTknData' {ntfTknId, token = DeviceToken pp ppToken, tknStatus, tknRegCode = NtfRegCode regCode} =
+  withDB "replaceNtfToken" st $ \db ->
+    assertUpdated <$>
+      DB.execute
+        db
+        [sql|
+          UPDATE tokens
+          SET push_provider = ?, push_provider_token = ?, status = ?, reg_code = ?
+          WHERE token_id = ?
+        |]
+        (pp, Binary ppToken, tknStatus, Binary regCode, ntfTknId)
 
 ntfTknToRow :: NtfTknData' -> NtfTknRow
 ntfTknToRow NtfTknData' {ntfTknId, token, tknStatus, tknVerifyKey, tknDhPrivKey, tknDhSecret, tknRegCode, tknCronInterval, tknUpdatedAt} =
@@ -155,7 +169,7 @@ getNtfToken_ st cond params =
     tkn@NtfTknData' {ntfTknId} <-
       ExceptT $ firstRow rowToNtfTkn AUTH $
         DB.query db (ntfTknQuery <> cond) params
-    ts <- liftIO getCurrentTime
+    ts <- liftIO getSystemDate
     liftIO $ void $ DB.execute db "UPDATE tokens SET updated_at = ? WHERE token_id = ?" (ts, ntfTknId)
     pure tkn
 
@@ -189,7 +203,7 @@ deleteNtfToken st tknId =
             SELECT p.smp_host, p.smp_port, p.smp_keyhash,
               string_agg(sub.smp_notifier_id :: TEXT, ',') AS notifier_ids
             FROM smp_servers p
-            JOIN subscriptions s USING (smp_server_id)
+            JOIN subscriptions s ON s.smp_server_id = p.smp_server_id
             WHERE s.token_id = ?
             GROUP BY p.smp_host, p.smp_port, p.smp_keyhash;
           |]
@@ -232,6 +246,7 @@ getUsedSMPServers st =
         db
         [sql|
           SELECT smp_host, smp_port, smp_keyhash
+          FROM smp_servers
           WHERE EXISTS (SELECT 1 FROM subscriptions WHERE status IN ?)
         |]
         (Only (In [NSNew, NSPending, NSActive, NSInactive]))
@@ -252,13 +267,15 @@ findNtfSubscription st tknId q =
           db
           [sql|
             SELECT t.token_id, t.push_provider, t.push_provider_token, t.status, t.verify_key, t.dh_priv_key, t.dh_secret, t.reg_code, t.cron_interval, t.updated_at,
-              s.subscription_id, s.smp_notifier_id, s.smp_notifier_key, s.status,
-              p.smp_host, p.smp_port, p.smp_keyhash
+              s.subscription_id, s.smp_notifier_id, s.smp_notifier_key, s.status
             FROM tokens t
-            LEFT JOIN subscriptions s USING (token_id)
-            LEFT JOIN smp_servers p USING (smp_server_id)
+            LEFT JOIN subscriptions s ON s.token_id = t.token_id
+            LEFT JOIN smp_servers p ON p.smp_server_id = s.smp_server_id
             WHERE t.token_id = ?
-              AND p.smp_host = ? AND p.smp_port = ? AND p.smp_keyhash = ? AND s.smp_notifier_id = ?
+              AND (
+                (p.smp_host = ? AND p.smp_port = ? AND p.smp_keyhash = ? AND s.smp_notifier_id = ?)
+                OR s.smp_notifier_id IS NULL
+              )
           |]          
           (Only tknId :. smpQueueToRow q)
     unless (allowNtfSubCommands $ tknStatus tkn) $ throwE AUTH
@@ -276,8 +293,8 @@ getNtfSubscription st subId =
               s.subscription_id, s.smp_notifier_id, s.smp_notifier_key, s.status,
               p.smp_host, p.smp_port, p.smp_keyhash
             FROM subscriptions s
-            JOIN tokens t USING (token_id)
-            JOIN smp_servers p USING (smp_server_id)
+            JOIN tokens t ON t.token_id = s.token_id
+            JOIN smp_servers p ON p.smp_server_id = s.smp_server_id
             WHERE s.subscription_id = ?
           |]          
           (Only subId)
@@ -315,13 +332,13 @@ mkNtfSubData ntfSubId (NewNtfSub tokenId smpQueue notifierKey) =
 updateTknStatus :: NtfPostgresStore -> NtfTknData' -> NtfTknStatus -> IO (Either ErrorType ())
 updateTknStatus st NtfTknData' {ntfTknId} status =
   withDB "updateTknStatus" st $ \db ->
-    assertUpdated <$> DB.execute db "UPDATE tokens SET status = ? WHERE token_id = ?" (ntfTknId, status)
+    assertUpdated <$> DB.execute db "UPDATE tokens SET status = ? WHERE token_id = ?" (status, ntfTknId)
 
 -- this is updateTknStatus combined with removeInactiveTokenRegistrations
 setTknStatusActive :: NtfPostgresStore -> NtfTknData' -> IO (Either ErrorType [NtfTokenId])
 setTknStatusActive st NtfTknData' {ntfTknId, token = DeviceToken pp ppToken} =
   withDB "setTknStatusActive" st $ \db -> runExceptT $ do
-    ExceptT $ assertUpdated <$> DB.execute db "UPDATE tokens SET status = ? WHERE token_id = ?" (ntfTknId, NTActive)
+    ExceptT $ assertUpdated <$> DB.execute db "UPDATE tokens SET status = ? WHERE token_id = ?" (NTActive, ntfTknId)
     -- this removes other instances of the same token, e.g. because of repeated token registration attempts
     liftIO $
       map fromOnly <$>
@@ -350,7 +367,8 @@ addNtfSubscription st sub@NtfSubData' {smpQueue = SMPQueueNtf srv _} =
           db
           [sql|
             WITH existing AS (
-              SELECT smp_server_id FROM smp_servers
+              SELECT smp_server_id
+              FROM smp_servers
               WHERE smp_host = ? AND smp_port = ? AND smp_keyhash = ?
             ),
             inserted AS (
@@ -388,9 +406,10 @@ updateSrvSubStatus st q status =
       db
       [sql|
         UPDATE subscriptions s
-        JOIN smp_servers p USING (smp_server_id)
-        SET s.status = ?
-        WHERE p.smp_host = ? AND p.smp_port = ? AND p.smp_keyhash = ? AND s.smp_notifier_id = ?
+        SET status = ?
+        FROM smp_servers p
+        WHERE p.smp_server_id = s.smp_server_id
+          AND p.smp_host = ? AND p.smp_port = ? AND p.smp_keyhash = ? AND s.smp_notifier_id = ?
       |]
       (Only status :. smpQueueToRow q)
 
@@ -406,23 +425,27 @@ batchUpdateStatus_ :: NtfPostgresStore -> SMPServer -> (Int64 -> [(NtfSubStatus,
 batchUpdateStatus_ st srv mkParams =
   fmap (fromRight (-1)) $ withDB "batchUpdateStatus_" st $ \db -> runExceptT $ do
     srvId :: Int64 <- ExceptT $ getSMPServerId db
-    liftIO $ DB.executeMany db "UPDATE subscriptions SET status = ? WHERE smp_server_id = ? AND smp_notifier_id = ?" (mkParams srvId)
+    let params = mkParams srvId
+    liftIO $ forM_ params $ void . DB.execute db "UPDATE subscriptions SET status = ? WHERE smp_server_id = ? AND smp_notifier_id = ?"
+    pure $ fromIntegral $ length params
   where
     getSMPServerId db =
       firstRow fromOnly AUTH $
         DB.query
           db
           [sql|
-            SELECT smp_server_id FROM smp_servers
+            SELECT smp_server_id
+            FROM smp_servers
             WHERE smp_host = ? AND smp_port = ? AND smp_keyhash = ?
           |]
           (smpServerToRow srv)
 
 batchUpdateSubStatus :: NtfPostgresStore -> NonEmpty NtfSubData' -> NtfSubStatus -> IO Int64
 batchUpdateSubStatus st subs status =
-  fmap (fromRight (-1)) $ withDB' "batchUpdateSubStatus" st $ \db ->
+  fmap (fromRight (-1)) $ withDB' "batchUpdateSubStatus" st $ \db -> do
     let params = L.toList $ L.map (\s -> (status, ntfSubId s)) subs
-     in DB.executeMany db "UPDATE subscriptions SET status = ? WHERE subscription_id = ?" params
+    forM_ params $ void . DB.execute db "UPDATE subscriptions SET status = ? WHERE subscription_id = ?"
+    pure $ fromIntegral $ length params
 
 addTokenLastNtf :: NtfPostgresStore -> PNMessageData -> IO (Either ErrorType (NtfTknData', NonEmpty PNMessageData))
 addTokenLastNtf st newNtf =
@@ -436,9 +459,9 @@ addTokenLastNtf st newNtf =
               s.subscription_id
             FROM tokens t
             JOIN subscriptions s ON s.token_id = t.token_id
-            JOIN smp_servers p USING p.smp_server_id = s.smp_server_id
+            JOIN smp_servers p ON p.smp_server_id = s.smp_server_id
             WHERE p.smp_host = ? AND p.smp_port = ? AND p.smp_keyhash = ? AND s.smp_notifier_id = ?
-            FOR UPDATE t, s
+            FOR UPDATE OF t, s
           |]
           (smpQueueToRow q)
     unless (allowNtfSubCommands $ tknStatus tkn) $ throwE AUTH
@@ -475,7 +498,7 @@ addTokenLastNtf st newNtf =
               JOIN smp_servers p ON p.smp_server_id = s.smp_server_id
               ORDER BY token_ntf_id DESC
             |]
-            (tId, sId, ntfTs, nmsgNonce, encNMsgMeta, tId, maxNtfs, tId)
+            (tId, sId, ntfTs, nmsgNonce, Binary encNMsgMeta, tId, maxNtfs, tId)
     let lastNtfs = fromMaybe (newNtf :| []) (L.nonEmpty lastNtfs_)
     pure (tkn, lastNtfs)
   where
@@ -483,8 +506,8 @@ addTokenLastNtf st newNtf =
     PNMessageData {smpQueue = q, ntfTs, nmsgNonce, encNMsgMeta} = newNtf
     toTokenSubId :: NtfTknRow :. Only NtfSubscriptionId -> (NtfTknData', NtfSubscriptionId)
     toTokenSubId (tknRow :. Only sId) = (rowToNtfTkn tknRow, sId)
-    toNtf :: SMPQueueNtfRow :. (SystemTime, C.CbNonce, EncNMsgMeta) -> PNMessageData
-    toNtf (qRow :. (ts, nonce, encMeta)) =
+    toNtf :: SMPQueueNtfRow :. (SystemTime, C.CbNonce, Binary EncNMsgMeta) -> PNMessageData
+    toNtf (qRow :. (ts, nonce, Binary encMeta)) =
       PNMessageData {smpQueue = rowToSMPQueue qRow, ntfTs = ts, nmsgNonce = nonce, encNMsgMeta = encMeta}
 
 -- storeTokenLastNtf -- is it needed?
@@ -541,9 +564,9 @@ instance FromField PushProvider where fromField = fromTextField_ $ eitherToMaybe
 
 instance ToField PushProvider where toField = toField . decodeLatin1 . strEncode
 
-instance FromField NtfTknStatus where fromField = fromTextField_ $ either (const Nothing) Just . smpDecode . encodeUtf8
+instance FromField NtfTknStatus where fromField = blobFieldDecoder $ parseAll smpP
 
-instance ToField NtfTknStatus where toField = toField . decodeLatin1 . smpEncode
+instance ToField NtfTknStatus where toField = toField . Binary . smpEncode
 
 instance FromField (C.PrivateKey 'C.X25519) where fromField = blobFieldDecoder C.decodePrivKey
 
@@ -568,5 +591,4 @@ instance ToField NtfSubStatus where toField = toField . Binary . smpEncode
 instance FromField C.CbNonce where fromField = blobFieldDecoder $ parseAll smpP
 
 instance ToField C.CbNonce where toField = toField . Binary . smpEncode
-
 #endif

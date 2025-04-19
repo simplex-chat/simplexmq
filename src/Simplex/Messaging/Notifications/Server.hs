@@ -75,6 +75,8 @@ import UnliftIO.STM
 import GHC.Conc (listThreads)
 #endif
 
+import qualified Data.ByteString.Base64 as B64
+
 runNtfServer :: NtfServerConfig -> IO ()
 runNtfServer cfg = do
   started <- newEmptyTMVarIO
@@ -331,11 +333,15 @@ resubscribe NtfSubscriber {newSubQ} = do
   st <- asks store
   batchSize <- asks $ subsBatchSize . config
   srvs <- liftIO $ getUsedSMPServers st
+  logError "skipping resubscribe"
   -- TODO [ntfdb] possibly, forConcurrently or forConcurrentlyN can be used here
   -- ntfShouldSubscribe should be applied in WHERE in db
-  liftIO $ forM_ srvs $ \srv ->
+
+  -- TODO [ntfdb] remove when False, implement processNtfSubscriptions
+  when False $ liftIO $ forM_ srvs $ \srv ->
     processNtfSubscriptions st srv batchSize $ \subs ->
       atomically $ writeTBQueue newSubQ (srv, subs)
+
   -- subs <- readTVarIO =<< asks (subscriptions . store)
   -- subs' <- filterM (fmap ntfShouldSubscribe . readTVarIO . subStatus) $ M.elems subs
   -- atomically . writeTBQueue newSubQ $ map NtfSub subs'
@@ -656,7 +662,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
     --   unless (t' == t) $ withNtfLog $ \s -> logUpdateTokenTime s ntfTknId ts'
     processCommand :: NtfRequest -> M (Transmission NtfResponse)
     processCommand = \case
-      NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> do
+      NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> (corrId,NoEntity,) <$> do
         logDebug "TNEW - new token"
         st <- asks store
         (srvDhPubKey, srvDhPrivKey) <- atomically . C.generateKeyPair =<< asks random
@@ -665,13 +671,15 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         regCode <- getRegCode
         ts <- liftIO $ getSystemDate
         let tkn = mkNtfTknData tknId newTkn srvDhPrivKey dhSecret regCode ts
-        liftIO $ addNtfToken st tkn
-        atomically $ writeTBQueue pushQ (tkn, PNVerification regCode)
-        incNtfStatT token ntfVrfQueued
-        -- TODO [ntfdb] move to store
-        -- withNtfLog (`logCreateToken` tkn)
-        incNtfStatT token tknCreated
-        pure (corrId, NoEntity, NRTknId tknId srvDhPubKey)
+        liftIO (addNtfToken st tkn) >>= \case
+          Left e -> pure $ NRErr e
+          Right () -> do
+            atomically $ writeTBQueue pushQ (tkn, PNVerification regCode)
+            incNtfStatT token ntfVrfQueued
+            -- TODO [ntfdb] move to store
+            -- withNtfLog (`logCreateToken` tkn)
+            incNtfStatT token tknCreated
+            pure $ NRTknId tknId srvDhPubKey
       NtfReqCmd SToken (NtfTkn' tkn@NtfTknData' {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhPrivKey}) (corrId, tknId, cmd) -> do
         (corrId,tknId,) <$> case cmd of
           TNEW (NewNtfTkn _ _ dhPubKey) -> do
@@ -697,6 +705,9 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
                     pure NROk
             | otherwise -> do
                 logDebug "TVFY - incorrect code or token status"
+                liftIO $ print tkn
+                let NtfRegCode c = code
+                liftIO $ print $ B64.encode c
                 pure $ NRErr AUTH
           TCHK -> do
             logDebug "TCHK"
@@ -706,13 +717,15 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             st <- asks store
             regCode <- getRegCode
             let tkn' = tkn {token = token', tknStatus = NTRegistered, tknRegCode = regCode}
-            liftIO $ addNtfToken st tkn'
-            atomically $ writeTBQueue pushQ (tkn', PNVerification regCode)
-            incNtfStatT token ntfVrfQueued
-            -- TODO [ntfdb] move to store
-            -- withNtfLog $ \s -> logUpdateToken s tknId token' regCode
-            incNtfStatT token tknReplaced
-            pure NROk
+            liftIO (replaceNtfToken st tkn') >>= \case
+              Left e -> pure $ NRErr e
+              Right () -> do
+                atomically $ writeTBQueue pushQ (tkn', PNVerification regCode)
+                incNtfStatT token ntfVrfQueued
+                -- TODO [ntfdb] move to store
+                -- withNtfLog $ \s -> logUpdateToken s tknId token' regCode
+                incNtfStatT token tknReplaced
+                pure NROk
           TDEL -> do
             logDebug "TDEL"
             st <- asks store
