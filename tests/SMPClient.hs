@@ -45,7 +45,12 @@ import UnliftIO.Timeout (timeout)
 import Util
 
 #if defined(dbServerPostgres)
-import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
+import Database.PostgreSQL.Simple (defaultConnectInfo)
+#endif
+
+#if defined(dbPostgres) || defined(dbServerPostgres)
+import Database.PostgreSQL.Simple (ConnectInfo (..))
+import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists, dropDatabaseAndUser)
 #endif
 
 testHost :: NonEmpty TransportHost
@@ -59,6 +64,12 @@ testPort = "5001"
 
 testPort2 :: ServiceName
 testPort2 = "5002"
+
+ntfTestPort :: ServiceName
+ntfTestPort = "6001"
+
+ntfTestPort2 :: ServiceName
+ntfTestPort2 = "6002"
 
 testKeyHash :: C.KeyHash
 testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
@@ -381,3 +392,11 @@ smpTest4 _ msType test' = smpTestN msType 4 _test
 
 unexpected :: (HasCallStack, Show a) => a -> Expectation
 unexpected r = expectationFailure $ "unexpected response " <> show r
+
+#if defined(dbPostgres) || defined(dbServerPostgres)
+postgressBracket :: ConnectInfo -> IO a -> IO a
+postgressBracket connInfo =
+  E.bracket_
+    (dropDatabaseAndUser connInfo >> createDBAndUserIfNotExists connInfo)
+    (dropDatabaseAndUser connInfo)
+#endif

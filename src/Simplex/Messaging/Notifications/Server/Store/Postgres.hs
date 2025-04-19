@@ -48,7 +48,6 @@ import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder, fromTextField_)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.String
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore (..))
@@ -60,10 +59,15 @@ import Simplex.Messaging.Server.QueueStore.Postgres (handleDuplicate)
 import Simplex.Messaging.Server.StoreLog (closeStoreLog, openWriteStoreLog)
 import Simplex.Messaging.Server.StoreLog.Types
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (eitherToMaybe, firstRow, tshow)
+import Simplex.Messaging.Util (firstRow, tshow)
 import System.Exit (exitFailure)
 import System.IO (IOMode (..))
 import Text.Hex (decodeHex)
+
+#if !defined(dbPostgres)
+import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Util (eitherToMaybe)
+#endif
 
 data NtfPostgresStore = NtfPostgresStore
   { dbStore :: DBStore,
@@ -201,7 +205,7 @@ deleteNtfToken st tknId =
           db
           [sql|
             SELECT p.smp_host, p.smp_port, p.smp_keyhash,
-              string_agg(sub.smp_notifier_id :: TEXT, ',') AS notifier_ids
+              string_agg(s.smp_notifier_id :: TEXT, ',') AS notifier_ids
             FROM smp_servers p
             JOIN subscriptions s ON s.smp_server_id = p.smp_server_id
             WHERE s.token_id = ?
@@ -222,8 +226,8 @@ type SMPQueueNtfRow = (NonEmpty TransportHost, ServiceName, C.KeyHash, NotifierI
 rowToSMPServer :: SMPServerRow -> SMPServer
 rowToSMPServer (host, port, kh) = SMPServer host port kh
 
-smpServerToRow :: SMPServer -> SMPServerRow
-smpServerToRow (SMPServer host port kh) = (host, port, kh)
+srvToRow :: SMPServer -> SMPServerRow
+srvToRow (SMPServer host port kh) = (host, port, kh)
 
 smpQueueToRow :: SMPQueueNtf -> SMPQueueNtfRow
 smpQueueToRow (SMPQueueNtf (SMPServer host port kh) nId) = (host, port, kh, nId)
@@ -255,11 +259,26 @@ getUsedSMPServers st =
 -- possibly, action can be called for each row and batching to be done outside
 
 -- ntfShouldSubscribe should be used directly in DB
-processNtfSubscriptions :: NtfPostgresStore -> SMPServer -> Int -> (NonEmpty NtfSubData' -> IO ()) -> IO ()
-processNtfSubscriptions _st _smpServer _batchSize _action = undefined
+foldNtfSubscriptions :: NtfPostgresStore -> SMPServer -> Int -> s -> (s -> NtfSubData' -> IO s) -> IO s
+foldNtfSubscriptions st srv fetchCount state action =
+  withConnection (dbStore st) $ \db ->
+    DB.foldWithOptions opts db query params state $ \s -> action s . toNtwSub
+  where
+    query =
+      [sql|
+        SELECT s.subscription_id, s.token_id, s.smp_notifier_id, s.status, s.smp_notifier_key
+        FROM subscriptions s
+        JOIN smp_servers p ON p.smp_server_id = s.smp_server_id
+        WHERE p.smp_host = ? AND p.smp_port = ? AND p.smp_keyhash = ?
+          AND s.status IN ?
+      |]
+    params = srvToRow srv :. Only (In [NSNew, NSPending, NSActive, NSInactive])
+    opts = DB.defaultFoldOptions {DB.fetchQuantity = DB.Fixed fetchCount}
+    toNtwSub (ntfSubId, tokenId, nId, subStatus, notifierKey) =
+      NtfSubData' {ntfSubId, tokenId, smpQueue = SMPQueueNtf srv nId, subStatus, notifierKey}
 
 findNtfSubscription :: NtfPostgresStore -> NtfTokenId -> SMPQueueNtf -> IO (Either ErrorType (NtfTknData', Maybe NtfSubData'))
-findNtfSubscription st tknId q =
+findNtfSubscription st tknId q@(SMPQueueNtf srv nId) =
   withDB "findNtfSubscription" st $ \db -> runExceptT $ do
     r@(tkn, _) <-
       ExceptT $ firstRow (rowToNtfTknMaybeSub q) AUTH $
@@ -267,17 +286,14 @@ findNtfSubscription st tknId q =
           db
           [sql|
             SELECT t.token_id, t.push_provider, t.push_provider_token, t.status, t.verify_key, t.dh_priv_key, t.dh_secret, t.reg_code, t.cron_interval, t.updated_at,
-              s.subscription_id, s.smp_notifier_id, s.smp_notifier_key, s.status
+              s.subscription_id, s.smp_notifier_key, s.status
             FROM tokens t
-            LEFT JOIN subscriptions s ON s.token_id = t.token_id
+            LEFT JOIN subscriptions s ON s.token_id = t.token_id AND s.smp_notifier_id = ?
             LEFT JOIN smp_servers p ON p.smp_server_id = s.smp_server_id
+              AND p.smp_host = ? AND p.smp_port = ? AND p.smp_keyhash = ?
             WHERE t.token_id = ?
-              AND (
-                (p.smp_host = ? AND p.smp_port = ? AND p.smp_keyhash = ? AND s.smp_notifier_id = ?)
-                OR s.smp_notifier_id IS NULL
-              )
           |]          
-          (Only tknId :. smpQueueToRow q)
+          (Only nId :. srvToRow srv :. Only tknId)
     unless (allowNtfSubCommands $ tknStatus tkn) $ throwE AUTH
     pure r
 
@@ -308,7 +324,7 @@ getNtfSubscription st subId =
 
 type NtfSubRow = (NtfSubscriptionId, NotifierId, NtfPrivateAuthKey, NtfSubStatus)
 
-type MaybeNtfSubRow = (Maybe NtfSubscriptionId, Maybe NotifierId, Maybe NtfPrivateAuthKey, Maybe NtfSubStatus)
+type MaybeNtfSubRow = (Maybe NtfSubscriptionId, Maybe NtfPrivateAuthKey, Maybe NtfSubStatus)
 
 rowToNtfTknSub :: NtfTknRow :. NtfSubRow :. SMPServerRow -> (NtfTknData', NtfSubData')
 rowToNtfTknSub (tknRow :. (ntfSubId, nId, notifierKey, subStatus) :. srv)  =
@@ -317,11 +333,11 @@ rowToNtfTknSub (tknRow :. (ntfSubId, nId, notifierKey, subStatus) :. srv)  =
    in (tkn, NtfSubData' {ntfSubId, tokenId, smpQueue, notifierKey, subStatus})
 
 rowToNtfTknMaybeSub :: SMPQueueNtf -> NtfTknRow :. MaybeNtfSubRow -> (NtfTknData', Maybe NtfSubData')
-rowToNtfTknMaybeSub (SMPQueueNtf srv _) (tknRow :. subRow)  =
+rowToNtfTknMaybeSub smpQueue (tknRow :. subRow)  =
   let tkn@NtfTknData' {ntfTknId = tokenId} = rowToNtfTkn tknRow
       sub_ = case subRow of
-        (Just ntfSubId, Just nId, Just notifierKey, Just subStatus) ->
-          Just NtfSubData' {ntfSubId, tokenId, smpQueue = SMPQueueNtf srv nId, notifierKey, subStatus}
+        (Just ntfSubId, Just notifierKey, Just subStatus) ->
+          Just NtfSubData' {ntfSubId, tokenId, smpQueue, notifierKey, subStatus}
         _ -> Nothing
    in (tkn, sub_)
 
@@ -333,6 +349,16 @@ updateTknStatus :: NtfPostgresStore -> NtfTknData' -> NtfTknStatus -> IO (Either
 updateTknStatus st NtfTknData' {ntfTknId} status =
   withDB "updateTknStatus" st $ \db ->
     assertUpdated <$> DB.execute db "UPDATE tokens SET status = ? WHERE token_id = ?" (status, ntfTknId)
+
+-- unless it was already active
+setTknStatusConfirmed :: NtfPostgresStore -> NtfTknData' -> IO (Either ErrorType ())
+setTknStatusConfirmed st NtfTknData' {ntfTknId} =
+  withDB "updateTknStatus" st $ \db -> runExceptT $ do
+    status <-
+      ExceptT $ firstRow fromOnly AUTH $
+        DB.query db "SELECT status FROM tokens WHERE token_id = ? FOR UPDATE" (Only ntfTknId)
+    when (status /= NTActive && status /= NTConfirmed) $
+      ExceptT $ assertUpdated <$> DB.execute db "UPDATE tokens SET status = ? WHERE token_id = ?" (NTConfirmed, ntfTknId)
 
 -- this is updateTknStatus combined with removeInactiveTokenRegistrations
 setTknStatusActive :: NtfPostgresStore -> NtfTknData' -> IO (Either ErrorType [NtfTokenId])
@@ -382,7 +408,7 @@ addNtfSubscription st sub@NtfSubData' {smpQueue = SMPQueueNtf srv _} =
               (SELECT smp_server_id FROM inserted)
             ) AS smp_server_id;
           |]
-          (smpServerToRow srv :. smpServerToRow srv)
+          (srvToRow srv :. srvToRow srv)
     insertNtfSubQuery =
       [sql|
         INSERT INTO subscriptions
@@ -438,7 +464,7 @@ batchUpdateStatus_ st srv mkParams =
             FROM smp_servers
             WHERE smp_host = ? AND smp_port = ? AND smp_keyhash = ?
           |]
-          (smpServerToRow srv)
+          (srvToRow srv)
 
 batchUpdateSubStatus :: NtfPostgresStore -> NonEmpty NtfSubData' -> NtfSubStatus -> IO Int64
 batchUpdateSubStatus st subs status =
@@ -543,7 +569,7 @@ withDB' op st action = withDB op st $ fmap Right . action
 -- also check SMP server too
 withDB :: forall a. String -> NtfPostgresStore -> (DB.Connection -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
 withDB op st action =
-  E.try (withTransaction (dbStore st) action) >>= either logErr pure
+  E.uninterruptibleMask_ $ E.try (withTransaction (dbStore st) action) >>= either logErr pure
   where
     logErr :: E.SomeException -> IO (Either ErrorType a)
     logErr e = logError ("STORE: " <> T.pack err) $> Left (STORE err)
@@ -559,14 +585,18 @@ instance FromField SystemTime where fromField f = fmap (`MkSystemTime` 0) . from
 
 instance ToField SystemTime where toField = toField . systemSeconds
 
+instance FromField NtfSubStatus where fromField = fromTextField_ $ either (const Nothing) Just . smpDecode . encodeUtf8
+
+instance ToField NtfSubStatus where toField = toField . decodeLatin1 . smpEncode
+
 #if !defined(dbPostgres)
 instance FromField PushProvider where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
 instance ToField PushProvider where toField = toField . decodeLatin1 . strEncode
 
-instance FromField NtfTknStatus where fromField = blobFieldDecoder $ parseAll smpP
+instance FromField NtfTknStatus where fromField = fromTextField_ $ either (const Nothing) Just . smpDecode . encodeUtf8
 
-instance ToField NtfTknStatus where toField = toField . Binary . smpEncode
+instance ToField NtfTknStatus where toField = toField . decodeLatin1 . smpEncode
 
 instance FromField (C.PrivateKey 'C.X25519) where fromField = blobFieldDecoder C.decodePrivKey
 
@@ -583,10 +613,6 @@ instance ToField (NonEmpty TransportHost) where toField = toField . decodeLatin1
 instance FromField C.KeyHash where fromField = blobFieldDecoder $ parseAll strP
 
 instance ToField C.KeyHash where toField = toField . Binary . strEncode
-
-instance FromField NtfSubStatus where fromField = blobFieldDecoder $ parseAll smpP
-
-instance ToField NtfSubStatus where toField = toField . Binary . smpEncode
 
 instance FromField C.CbNonce where fromField = blobFieldDecoder $ parseAll smpP
 

@@ -332,15 +332,22 @@ resubscribe NtfSubscriber {newSubQ} = do
   logInfo "Preparing SMP resubscriptions..."
   st <- asks store
   batchSize <- asks $ subsBatchSize . config
-  srvs <- liftIO $ getUsedSMPServers st
-  logError "skipping resubscribe"
-  -- TODO [ntfdb] possibly, forConcurrently or forConcurrentlyN can be used here
-  -- ntfShouldSubscribe should be applied in WHERE in db
-
-  -- TODO [ntfdb] remove when False, implement processNtfSubscriptions
-  when False $ liftIO $ forM_ srvs $ \srv ->
-    processNtfSubscriptions st srv batchSize $ \subs ->
-      atomically $ writeTBQueue newSubQ (srv, subs)
+  liftIO $ do
+    srvs <- getUsedSMPServers st
+    -- TODO [ntfdb] possibly, forConcurrently or forConcurrentlyN can be used here
+    count <- foldM (subscribeSrvSubs st batchSize) (0 :: Int) srvs
+    logInfo $ "SMP resubscriptions queued (" <> tshow count <> " subscriptions)"
+  where
+    subscribeSrvSubs st batchSize !count srv = do
+      (n, subs_) <-
+        foldNtfSubscriptions st srv batchSize (0, []) $ \(!i, subs) sub ->
+          if length subs == batchSize
+            then write (L.fromList subs) $> (i + 1, [])
+            else pure (i + 1, sub : subs)
+      mapM_ write $ L.nonEmpty subs_
+      pure $ count + n
+      where
+        write subs = atomically $ writeTBQueue newSubQ (srv, subs)
 
   -- subs <- readTVarIO =<< asks (subscriptions . store)
   -- subs' <- filterM (fmap ntfShouldSubscribe . readTVarIO . subStatus) $ M.elems subs
@@ -359,7 +366,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
       (srv, subs) <- atomically $ readTBQueue newSubQ
       -- TODO [ntfdb] batching should move to the point of reading from DB using postgres fold.
       -- TODO [ntfdb] as we now group by server before putting subs to queue,
-      -- maybe ntfSubcriber can be removed completely,
+      -- maybe this "subscribe" thread can be removed completely,
       -- and the caller would directly write to SMPSubscriber queues
       SMPSubscriber {subscriberSubQ} <- getSMPSubscriber srv
       atomically $ writeTQueue subscriberSubQ subs
@@ -372,6 +379,9 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
       --   SMPSubscriber {subscriberSubQ} <- getSMPSubscriber srv
       --   mapM_ (atomically . writeTQueue subscriberSubQ) batches
 
+    -- TODO [ntfdb] this does not guarantee that only one subscriber per server is created
+    -- there should be TMVar in the map
+    -- This does not need changing if single newSubQ remains, but if it is removed, it need to change
     getSMPSubscriber :: SMPServer -> M SMPSubscriber
     getSMPSubscriber smpServer =
       liftIO (TM.lookupIO smpServer smpSubscribers) >>= maybe createSMPSubscriber pure
@@ -387,6 +397,8 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     runSMPSubscriber SMPSubscriber {smpServer, subscriberSubQ} = do
       st <- asks store
       forever $ do
+        -- TODO [ntfdb] possibly, the subscriptions can be batched here and sent every say 5 seconds
+        -- this should be analysed once we have prometheus stats
         subs <- atomically $ readTQueue subscriberSubQ
         -- let subs' = L.map (\(NtfSub sub) -> sub) subs
         --     srv = server $ L.head subs
@@ -495,11 +507,8 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
     PNVerification _ ->
       deliverNotification pp tkn ntf >>= \case
         Right _ -> do
-          -- TODO [ntfdb] this should update status in the database instead
-          -- status_ <- atomically $ stateTVar tknStatus $ \case
-          --   NTActive -> (Nothing, NTActive)
-          --   NTConfirmed -> (Nothing, NTConfirmed)
-          --   _ -> (Just NTConfirmed, NTConfirmed)
+          st <- asks store
+          void $ liftIO $ setTknStatusConfirmed st tkn
           -- TODO [ntfdb] move to store
           -- forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
           incNtfStatT t ntfVrfDelivered
