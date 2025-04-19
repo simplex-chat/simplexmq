@@ -325,8 +325,6 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
                       logError "Unauthorized control port command"
                       hPutStrLn h "AUTH"
 
--- TODO [ntfdb] instead of grouping by server on the receiving end of newSubQ,
--- we should read servers first, and then run them in the loop.
 resubscribe :: NtfSubscriber -> M ()
 resubscribe NtfSubscriber {newSubQ} = do
   logInfo "Preparing SMP resubscriptions..."
@@ -334,14 +332,15 @@ resubscribe NtfSubscriber {newSubQ} = do
   batchSize <- asks $ subsBatchSize . config
   srvs <- liftIO $ getUsedSMPServers st
   -- TODO [ntfdb] possibly, forConcurrently or forConcurrentlyN can be used here
+  -- ntfShouldSubscribe should be applied in WHERE in db
   liftIO $ forM_ srvs $ \srv ->
-    getNtfSubscriptions st srv batchSize $ \subs ->
+    processNtfSubscriptions st srv batchSize $ \subs ->
       atomically $ writeTBQueue newSubQ (srv, subs)
   -- subs <- readTVarIO =<< asks (subscriptions . store)
   -- subs' <- filterM (fmap ntfShouldSubscribe . readTVarIO . subStatus) $ M.elems subs
   -- atomically . writeTBQueue newSubQ $ map NtfSub subs'
 
-  -- TODO [ntfdb] this could foldM results of getNtfSubscriptions to log total subscriptions,
+  -- TODO [ntfdb] this could foldM results of processNtfSubscriptions to log total subscriptions,
   -- or it could log by server.
   -- logInfo $ "SMP resubscriptions queued (" <> tshow (length subs') <> " subscriptions)"
 
@@ -386,8 +385,8 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
         -- let subs' = L.map (\(NtfSub sub) -> sub) subs
         --     srv = server $ L.head subs
         -- TODO [ntfdb] validate/partition that SMP server matches and log internal error if not
-        logSubStatus smpServer "subscribing" $ length subs
-        liftIO $ batchUpdateSubStatus st subs NSPending
+        updated <- liftIO $ batchUpdateSubStatus st subs NSPending
+        logSubStatus smpServer "subscribing" (L.length subs) updated
         -- mapM_ (\NtfSubData {smpQueue} -> updateSubStatus smpQueue NSPending) subs'
         liftIO $ subscribeQueues smpServer subs
 
@@ -412,20 +411,18 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
               NtfPushServer {pushQ} <- asks pushServer
               stats <- asks serverStats
               liftIO $ updatePeriodStats (activeSubs stats) ntfId
-              -- TODO [ntfdb] possibly, combine findNtfSubscriptionToken and addTokenLastNtf to one call
-              tkn_ <- liftIO $ findNtfSubscriptionToken st smpQueue
-              forM_ tkn_ $ \tkn -> do
-                let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
-                lastNtfs <- liftIO $ addTokenLastNtf st (ntfTknId tkn) newNtf
-                atomically (writeTBQueue pushQ (tkn, PNMessage lastNtfs))
+              let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
+              ntfs_ <- liftIO $ addTokenLastNtf st newNtf
+              forM_ ntfs_ $ \(tkn, lastNtfs) -> atomically $ writeTBQueue pushQ (tkn, PNMessage lastNtfs)
+              -- TODO [ntfdb] track queued notifications separately?
               incNtfStat ntfReceived
             Right SMP.END -> do
               whenM (atomically $ activeClientSession' ca sessionId srv) $ do
                 st <- asks store
-                liftIO $ updateSrvSubStatus st smpQueue NSEnd
+                void $ liftIO $ updateSrvSubStatus st smpQueue NSEnd
             Right SMP.DELD -> do 
               st <- asks store
-              liftIO $ updateSrvSubStatus st smpQueue NSDeleted
+              void $ liftIO $ updateSrvSubStatus st smpQueue NSDeleted
             Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
             Right _ -> logError "SMP server unexpected response"
             Left e -> logError $ "SMP client error: " <> tshow e
@@ -438,23 +435,23 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
             logInfo $ "SMP server reconnected " <> showServer' srv
           CADisconnected srv subs -> do
             forM_ (L.nonEmpty $ map snd $ S.toList subs) $ \nIds -> do
-              logSubStatus srv "disconnected" $ length subs
-              liftIO $ batchUpdateSrvSubStatus st srv nIds NSInactive
+              updated <- liftIO $ batchUpdateSrvSubStatus st srv nIds NSInactive
+              logSubStatus srv "disconnected" (L.length nIds) updated
           CASubscribed srv _ nIds -> do
-            liftIO $ batchUpdateSrvSubStatus st srv nIds NSActive
-            logSubStatus srv "subscribed" $ length nIds
+            updated <- liftIO $ batchUpdateSrvSubStatus st srv nIds NSActive
+            logSubStatus srv "subscribed" (L.length nIds) updated
           CASubError srv _ errs -> do
             forM_ (L.nonEmpty $ mapMaybe (\(nId, err) -> (nId,) <$> subErrorStatus err) $ L.toList errs) $ \subStatuses -> do
-              liftIO $ batchUpdateSrvSubStatuses st srv subStatuses
-              logSubErrors srv subStatuses
+              updated <- liftIO $ batchUpdateSrvSubStatuses st srv subStatuses
+              logSubErrors srv subStatuses updated
 
-    logSubStatus srv event n =
-      when (n > 0) . logInfo $
-        "SMP server " <> event <> " " <> showServer' srv <> " (" <> tshow n <> " subscriptions)"
+    logSubStatus :: SMPServer -> T.Text -> Int -> Int64 -> M ()
+    logSubStatus srv event n updated =
+      logInfo $ "SMP server " <> event <> " " <> showServer' srv <> " (" <> tshow n <> " subs, " <> tshow updated <> " subs updated)"
 
-    logSubErrors :: SMPServer -> NonEmpty (SMP.NotifierId, NtfSubStatus) -> M ()
-    logSubErrors srv subs = forM_ (L.group $ L.sort $ L.map snd subs) $ \ss -> do
-      logError $ "SMP subscription errors on server " <> showServer' srv <> ": " <> tshow (L.head ss) <> " (" <> tshow (length ss) <> " errors)"
+    logSubErrors :: SMPServer -> NonEmpty (SMP.NotifierId, NtfSubStatus) -> Int64 -> M ()
+    logSubErrors srv subs updated = forM_ (L.group $ L.sort $ L.map snd subs) $ \ss -> do
+      logError $ "SMP server subscription errors " <> showServer' srv <> ": " <> tshow (L.head ss) <> " (" <> tshow (length ss) <> " errors, " <> tshow updated <> " subs updated)"
 
     showServer' = decodeLatin1 . strEncode . host
 
@@ -526,7 +523,7 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
           PPResponseError {} -> err e
           PPTokenInvalid r -> do
             st <- asks store
-            liftIO $ updateTknStatus st tkn $ NTInvalid $ Just r
+            void $ liftIO $ updateTknStatus st tkn $ NTInvalid $ Just r
             err e
           PPPermanentError -> err e
       where
@@ -538,7 +535,7 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
             Left e -> case e of
               PPTokenInvalid r -> do
                 st <- asks store
-                liftIO $ updateTknStatus st tkn $ NTInvalid $ Just r
+                void $ liftIO $ updateTknStatus st tkn $ NTInvalid $ Just r
                 err e
               _ -> err e
         err e = logError ("Push provider error (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> tshow e) $> Left e
@@ -601,59 +598,48 @@ verifyNtfTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> SignedTransm
 verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
   st <- asks store
   case cmd of
+    -- TODO [ntfdb] this looks suspicious, as if it can prevent repeated registrations
     NtfCmd SToken c@(TNEW tkn@(NewNtfTkn _ k _)) -> do
       r_ <- liftIO $ getNtfTokenRegistration st tkn
       pure $
         if verifyCmdAuthorization auth_ tAuth authorized k
           then case r_ of
-            Just t@NtfTknData' {tknVerifyKey}
-              | k == tknVerifyKey -> verifiedTknCmd t c
+            Right t@NtfTknData' {tknVerifyKey}
+              | k == tknVerifyKey -> VRVerified $ tknCmd t c
               | otherwise -> VRFailed
-            Nothing -> VRVerified (NtfReqNew corrId (ANE SToken tkn))
+            Left _ -> VRVerified (NtfReqNew corrId (ANE SToken tkn))
           else VRFailed
     NtfCmd SToken c -> do
       t_ <- liftIO $ getNtfToken st entId
-      verifyToken t_ (`verifiedTknCmd` c)
-    NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId smpQueue _)) -> do
-      -- TODO [ntfdb] see both comments below about combining calls and allowing inactive tokens
-      s_ <- liftIO $ findNtfSubscription st smpQueue
-      case s_ of
-        Nothing -> do
-          t_ <- liftIO $ getActiveNtfToken st tknId
-          verifyToken' t_ $ VRVerified $ NtfReqNew corrId (ANE SSubscription sub)
-        Just s@NtfSubData' {tokenId = subTknId} ->
-          if subTknId == tknId
-            then do
-              t_ <- liftIO $ getActiveNtfToken st subTknId
-              verifyToken' t_ $ verifiedSubCmd s c
-            else pure $ maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
+      verifyToken_' t_ (`tknCmd` c)
+    NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId smpQueue _)) ->
+      liftIO $ verify <$> findNtfSubscription st tknId smpQueue
+      where
+        verify = \case
+          Right (t, s_) -> verifyToken t $ case s_ of
+            Nothing -> NtfReqNew corrId (ANE SSubscription sub)
+            Just s -> subCmd s c
+          -- TODO [ntfdb] it should simply return error if it is not AUTH
+          Left _ -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
     NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
-    NtfCmd SSubscription c -> do
-      -- TODO [ntfdb] combine getNtfSubscription and getActiveNtfToken into one call
-      -- TODO [ntfdb] Also, currently we seem to reject commands for subscriptions when token is inactive (because of getActiveNtfToken).
-      -- Probably this needs to change - e.g., it can be subscription creation command,
-      -- or subscription deletion command, and these commands would permanently fail (?)
-      -- if token is temporarily inactive/invalidated/pending/etc., that happens a lot of time
-      -- when server is simply restarting / resubscribing - this could be a root cause for many malfunctions.
-      s_ <- liftIO $ getNtfSubscription st entId
-      case s_ of
-        Just s@NtfSubData' {tokenId = subTknId} -> do
-          t_ <- liftIO $ getActiveNtfToken st subTknId
-          verifyToken' t_ $ verifiedSubCmd s c
-        _ -> pure $ maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
+    NtfCmd SSubscription c -> liftIO $ verify <$> getNtfSubscription st entId
+      where
+        verify = \case
+          Right (t, s) -> verifyToken t $ subCmd s c
+          -- TODO [ntfdb] it should simply return error if it is not AUTH
+          Left _ -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
   where
-    verifiedTknCmd t c = VRVerified $ NtfReqCmd SToken (NtfTkn' t) (corrId, entId, c)
-    verifiedSubCmd s c = VRVerified $ NtfReqCmd SSubscription (NtfSub' s) (corrId, entId, c)
-    verifyToken :: Maybe NtfTknData' -> (NtfTknData' -> VerificationResult) -> M VerificationResult
-    verifyToken t_ positiveVerificationResult =
-      pure $ case t_ of
-        Just t@NtfTknData' {tknVerifyKey} ->
-          if verifyCmdAuthorization auth_ tAuth authorized tknVerifyKey
-            then positiveVerificationResult t
-            else VRFailed
-        _ -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
-    verifyToken' :: Maybe NtfTknData' -> VerificationResult -> M VerificationResult
-    verifyToken' t_ = verifyToken t_ . const
+    tknCmd t c = NtfReqCmd SToken (NtfTkn' t) (corrId, entId, c)
+    subCmd s c = NtfReqCmd SSubscription (NtfSub' s) (corrId, entId, c)
+    verifyToken_' :: Either ErrorType NtfTknData' -> (NtfTknData' -> NtfRequest) -> M VerificationResult
+    verifyToken_' t_ result = pure $ case t_ of
+      Right t -> verifyToken t $ result t
+      -- TODO [ntfdb] it should simply return error if it is not AUTH
+      Left _ -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
+    verifyToken :: NtfTknData' -> NtfRequest -> VerificationResult
+    verifyToken NtfTknData' {tknVerifyKey} r
+      | verifyCmdAuthorization auth_ tAuth authorized tknVerifyKey = VRVerified r
+      | otherwise = VRFailed
 
 client :: NtfServerClient -> NtfSubscriber -> NtfPushServer -> M ()
 client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPushServer {pushQ, intervalNotifiers} =
@@ -673,42 +659,42 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
       NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> do
         logDebug "TNEW - new token"
         st <- asks store
-        ks@(srvDhPubKey, srvDhPrivKey) <- atomically . C.generateKeyPair =<< asks random
+        (srvDhPubKey, srvDhPrivKey) <- atomically . C.generateKeyPair =<< asks random
         let dhSecret = C.dh' dhPubKey srvDhPrivKey
         tknId <- getId
         regCode <- getRegCode
         ts <- liftIO $ getSystemDate
-        let tkn = mkNtfTknData tknId newTkn ks dhSecret regCode ts
-        liftIO $ addNtfToken st tknId tkn
+        let tkn = mkNtfTknData tknId newTkn srvDhPrivKey dhSecret regCode ts
+        liftIO $ addNtfToken st tkn
         atomically $ writeTBQueue pushQ (tkn, PNVerification regCode)
         incNtfStatT token ntfVrfQueued
         -- TODO [ntfdb] move to store
         -- withNtfLog (`logCreateToken` tkn)
         incNtfStatT token tknCreated
         pure (corrId, NoEntity, NRTknId tknId srvDhPubKey)
-      NtfReqCmd SToken (NtfTkn' tkn@NtfTknData' {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhKeys = (srvDhPubKey, srvDhPrivKey)}) (corrId, tknId, cmd) -> do
+      NtfReqCmd SToken (NtfTkn' tkn@NtfTknData' {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhPrivKey}) (corrId, tknId, cmd) -> do
         (corrId,tknId,) <$> case cmd of
           TNEW (NewNtfTkn _ _ dhPubKey) -> do
             logDebug "TNEW - registered token"
-            let dhSecret = C.dh' dhPubKey srvDhPrivKey
+            let dhSecret = C.dh' dhPubKey tknDhPrivKey
             -- it is required that DH secret is the same, to avoid failed verifications if notification is delaying
             if tknDhSecret == dhSecret
               then do
                 atomically $ writeTBQueue pushQ (tkn, PNVerification tknRegCode)
                 incNtfStatT token ntfVrfQueued
-                pure $ NRTknId ntfTknId srvDhPubKey
+                pure $ NRTknId ntfTknId $ C.publicKey tknDhPrivKey
               else pure $ NRErr AUTH
           TVFY code -- this allows repeated verification for cases when client connection dropped before server response
             | (tknStatus == NTRegistered || tknStatus == NTConfirmed || tknStatus == NTActive) && tknRegCode == code -> do
                 logDebug "TVFY - token verified"
                 st <- asks store
-                -- TODO [ntfdb] possibly, combine updateTknStatus and removeInactiveTokenRegistrations
-                -- into setTokenActive (new function)
-                liftIO $ updateTknStatus st tkn NTActive
-                tIds <- liftIO $ removeInactiveTokenRegistrations st tkn
-                forM_ tIds cancelInvervalNotifications
-                incNtfStatT token tknVerified
-                pure NROk
+                liftIO (setTknStatusActive st tkn) >>= \case
+                  Left e -> pure $ NRErr e
+                  Right tIds -> do
+                    -- TODO [ntfdb] this will be unnecessary if all cron notifications move to one thread
+                    forM_ tIds cancelInvervalNotifications
+                    incNtfStatT token tknVerified
+                    pure NROk
             | otherwise -> do
                 logDebug "TVFY - incorrect code or token status"
                 pure $ NRErr AUTH
@@ -719,16 +705,8 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             logDebug "TRPL - replace token"
             st <- asks store
             regCode <- getRegCode
-            -- TODO [ntfdb] removeTokenRegistration should be done inside addNtfToken
-            -- atomically $ do
-            --   removeTokenRegistration st tkn
-            --   writeTVar tknStatus NTRegistered
-            --   let tkn' = tkn {token = token', tknRegCode = regCode}
-            --   addNtfToken st tknId tkn'
-
-            -- TODO [ntfdb] possibly status could be assigned outside, in verification block?
             let tkn' = tkn {token = token', tknStatus = NTRegistered, tknRegCode = regCode}
-            liftIO $ addNtfToken st tknId tkn'
+            liftIO $ addNtfToken st tkn'
             atomically $ writeTBQueue pushQ (tkn', PNVerification regCode)
             incNtfStatT token ntfVrfQueued
             -- TODO [ntfdb] move to store
@@ -738,38 +716,46 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
           TDEL -> do
             logDebug "TDEL"
             st <- asks store
-            ss <- liftIO $ deleteNtfToken st tknId
-            forM_ (M.assocs ss) $ \(smpServer, nIds) -> do
-              atomically $ removeSubscriptions ca smpServer SPNotifier nIds
-              atomically $ removePendingSubs ca smpServer SPNotifier nIds
-            cancelInvervalNotifications tknId
-            -- TODO [ntfdb] move to store
-            -- withNtfLog (`logDeleteToken` tknId)
-            incNtfStatT token tknDeleted
-            pure NROk
+            liftIO (deleteNtfToken st tknId) >>= \case
+              Left e -> pure $ NRErr e
+              Right ss -> do
+                forM_ ss $ \(smpServer, nIds) -> do
+                  atomically $ removeSubscriptions ca smpServer SPNotifier nIds
+                  atomically $ removePendingSubs ca smpServer SPNotifier nIds
+                cancelInvervalNotifications tknId
+                -- TODO [ntfdb] move to store
+                -- withNtfLog (`logDeleteToken` tknId)
+                incNtfStatT token tknDeleted
+                pure NROk
           TCRN 0 -> do
             logDebug "TCRN 0"
             st <- asks store
-            liftIO $ updateTknCronInterval st tkn 0
-            cancelInvervalNotifications tknId
-            -- TODO [ntfdb] move to store
-            -- withNtfLog $ \s -> logTokenCron s tknId 0
-            pure NROk
+            liftIO (updateTknCronInterval st ntfTknId 0) >>= \case
+              Left e -> pure $ NRErr e
+              Right () -> do
+                -- TODO [ntfdb] move cron intervals to one thread
+                cancelInvervalNotifications tknId
+                -- TODO [ntfdb] move to store
+                -- withNtfLog $ \s -> logTokenCron s tknId 0
+                pure NROk
           TCRN int
             | int < 20 -> pure $ NRErr QUOTA
             | otherwise -> do
                 logDebug "TCRN"
                 st <- asks store
-                liftIO $ updateTknCronInterval st tkn int
-                liftIO (TM.lookupIO tknId intervalNotifiers) >>= \case
-                  Nothing -> runIntervalNotifier int
-                  Just IntervalNotifier {interval, action} ->
-                    unless (interval == int) $ do
-                      uninterruptibleCancel action
-                      runIntervalNotifier int
-                -- TODO [ntfdb] move to store
-                -- withNtfLog $ \s -> logTokenCron s tknId int
-                pure NROk
+                liftIO (updateTknCronInterval st ntfTknId int) >>= \case
+                  Left e -> pure $ NRErr e
+                  Right () -> do
+                    -- TODO [ntfdb] move cron intervals to one thread
+                    liftIO (TM.lookupIO tknId intervalNotifiers) >>= \case
+                      Nothing -> runIntervalNotifier int
+                      Just IntervalNotifier {interval, action} ->
+                        unless (interval == int) $ do
+                          uninterruptibleCancel action
+                          runIntervalNotifier int
+                    -- TODO [ntfdb] move to store
+                    -- withNtfLog $ \s -> logTokenCron s tknId int
+                    pure NROk
             where
               runIntervalNotifier interval = do
                 action <- async . intervalNotifier $ fromIntegral interval * 1000000 * 60
@@ -783,16 +769,18 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         logDebug "SNEW - new subscription"
         st <- asks store
         subId <- getId
-        -- TODO [ntfdb] combine mkNtfSubData with addNtfSubscription (just pass subId and newSub)
         let sub = mkNtfSubData subId newSub
         resp <-
-          ifM
-            (liftIO $ addNtfSubscription st subId sub)
-            (atomically (writeTBQueue newSubQ (srv, [sub])) $> NRSubId subId)
-            (pure $ NRErr AUTH)
+          liftIO (addNtfSubscription st sub) >>= \case
+            Left e -> pure $ NRErr e
+            Right True -> do
+              atomically $ writeTBQueue newSubQ (srv, [sub])
+              incNtfStat subCreated
+              pure $ NRSubId subId
+            -- TODO [ntfdb] we must allow repeated inserts that don't change credentials
+            Right False -> pure $ NRErr AUTH
         -- TODO [ntfdb] move to store
         -- withNtfLog (`logCreateSubscription` sub)
-        incNtfStat subCreated
         pure (corrId, NoEntity, resp)
       NtfReqCmd SSubscription (NtfSub' NtfSubData' {smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
         (corrId,subId,) <$> case cmd of
@@ -809,13 +797,15 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
           SDEL -> do
             logDebug "SDEL"
             st <- asks store
-            liftIO $ deleteNtfSubscription st subId
-            atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
-            atomically $ removePendingSub ca smpServer (SPNotifier, notifierId)
-            -- TODO [ntfdb] move to store
-            -- withNtfLog (`logDeleteSubscription` subId)
-            incNtfStat subDeleted
-            pure NROk
+            liftIO (deleteNtfSubscription st subId) >>= \case
+              Left e -> pure $ NRErr e
+              Right () -> do
+                atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
+                atomically $ removePendingSub ca smpServer (SPNotifier, notifierId)
+                -- TODO [ntfdb] move to store
+                -- withNtfLog (`logDeleteSubscription` subId)
+                incNtfStat subDeleted
+                pure NROk
           PING -> pure NRPong
       NtfReqPing corrId entId -> pure (corrId, entId, NRPong)
     getId :: M NtfEntityId

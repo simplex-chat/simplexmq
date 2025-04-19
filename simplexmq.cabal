@@ -342,6 +342,8 @@ library
       , sqlcipher-simple ==0.4.*
   if flag(server_postgres)
     cpp-options: -DdbServerPostgres
+    build-depends:
+        hex-text ==0.1.*
   if impl(ghc >= 9.6.2)
     build-depends:
         bytestring ==0.11.*
