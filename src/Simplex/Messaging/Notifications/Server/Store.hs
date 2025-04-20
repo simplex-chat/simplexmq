@@ -85,18 +85,11 @@ data NtfSubData = NtfSubData
 ntfSubServer :: NtfSubData -> SMPServer
 ntfSubServer NtfSubData {smpQueue = SMPQueueNtf {smpServer}} = smpServer
 
-data NtfEntityRec (e :: NtfEntity) where
-  NtfTkn :: NtfTknData -> NtfEntityRec 'Token
-  NtfSub :: NtfSubData -> NtfEntityRec 'Subscription
+stmGetNtfTokenIO :: NtfSTMStore -> NtfTokenId -> IO (Maybe NtfTknData)
+stmGetNtfTokenIO st tknId = TM.lookupIO tknId (tokens st)
 
-getNtfToken :: NtfSTMStore -> NtfTokenId -> STM (Maybe NtfTknData)
-getNtfToken st tknId = TM.lookup tknId (tokens st)
-
-getNtfTokenIO :: NtfSTMStore -> NtfTokenId -> IO (Maybe NtfTknData)
-getNtfTokenIO st tknId = TM.lookupIO tknId (tokens st)
-
-addNtfToken :: NtfSTMStore -> NtfTokenId -> NtfTknData -> STM ()
-addNtfToken st tknId tkn@NtfTknData {token, tknVerifyKey} = do
+stmAddNtfToken :: NtfSTMStore -> NtfTokenId -> NtfTknData -> STM ()
+stmAddNtfToken st tknId tkn@NtfTknData {token, tknVerifyKey} = do
   TM.insert tknId tkn $ tokens st
   TM.lookup token regs >>= \case
     Just tIds -> TM.insert regKey tknId tIds
@@ -107,16 +100,8 @@ addNtfToken st tknId tkn@NtfTknData {token, tknVerifyKey} = do
     regs = tokenRegistrations st
     regKey = C.toPubKey C.pubKeyBytes tknVerifyKey
 
-getNtfTokenRegistration :: NtfSTMStore -> NewNtfEntity 'Token -> STM (Maybe NtfTknData)
-getNtfTokenRegistration st (NewNtfTkn token tknVerifyKey _) =
-  TM.lookup token (tokenRegistrations st)
-    $>>= TM.lookup regKey
-    $>>= (`TM.lookup` tokens st)
-  where
-    regKey = C.toPubKey C.pubKeyBytes tknVerifyKey
-
-removeInactiveTokenRegistrations :: NtfSTMStore -> NtfTknData -> STM [NtfTokenId]
-removeInactiveTokenRegistrations st NtfTknData {ntfTknId = tId, token} =
+stmRemoveInactiveTokenRegistrations :: NtfSTMStore -> NtfTknData -> STM [NtfTokenId]
+stmRemoveInactiveTokenRegistrations st NtfTknData {ntfTknId = tId, token} =
   TM.lookup token (tokenRegistrations st)
     >>= maybe (pure []) removeRegs
   where
@@ -130,8 +115,8 @@ removeInactiveTokenRegistrations st NtfTknData {ntfTknId = tId, token} =
         void $ deleteTokenSubs st tId'
       pure $ map snd tIds
 
-removeTokenRegistration :: NtfSTMStore -> NtfTknData -> STM ()
-removeTokenRegistration st NtfTknData {ntfTknId = tId, token, tknVerifyKey} =
+stmRemoveTokenRegistration :: NtfSTMStore -> NtfTknData -> STM ()
+stmRemoveTokenRegistration st NtfTknData {ntfTknId = tId, token, tknVerifyKey} =
   TM.lookup token (tokenRegistrations st) >>= mapM_ removeReg
   where
     removeReg regs =
@@ -139,8 +124,8 @@ removeTokenRegistration st NtfTknData {ntfTknId = tId, token, tknVerifyKey} =
         >>= mapM_ (\tId' -> when (tId == tId') $ TM.delete k regs)
     k = C.toPubKey C.pubKeyBytes tknVerifyKey
 
-deleteNtfToken :: NtfSTMStore -> NtfTokenId -> STM (Map SMPServer (Set NotifierId))
-deleteNtfToken st tknId = do
+stmDeleteNtfToken :: NtfSTMStore -> NtfTokenId -> STM (Map SMPServer (Set NotifierId))
+stmDeleteNtfToken st tknId = do
   void $
     TM.lookupDelete tknId (tokens st) $>>= \NtfTknData {token, tknVerifyKey} ->
       TM.lookup token regs $>>= \tIds ->
@@ -165,32 +150,12 @@ deleteTokenSubs st tknId =
       TM.lookup smpServer (subscriptionLookup st) >>= mapM_ (`modifyTVar'` (`M.withoutKeys` nIds))
       pure nIds    
 
-getNtfSubscriptionIO :: NtfSTMStore -> NtfSubscriptionId -> IO (Maybe NtfSubData)
-getNtfSubscriptionIO st subId = TM.lookupIO subId (subscriptions st)
-
-findNtfSubscription :: NtfSTMStore -> SMPQueueNtf -> STM (Maybe NtfSubData)
-findNtfSubscription st SMPQueueNtf {smpServer, notifierId} =
-  TM.lookup smpServer (subscriptionLookup st) $>>= TM.lookup notifierId 
-
-findNtfSubscriptionToken :: NtfSTMStore -> SMPQueueNtf -> STM (Maybe NtfTknData)
-findNtfSubscriptionToken st smpQueue = do
-  findNtfSubscription st smpQueue
-    $>>= \NtfSubData {tokenId} -> getActiveNtfToken st tokenId
-
-getActiveNtfToken :: NtfSTMStore -> NtfTokenId -> STM (Maybe NtfTknData)
-getActiveNtfToken st tknId =
-  getNtfToken st tknId $>>= \tkn@NtfTknData {tknStatus} -> do
-    tStatus <- readTVar tknStatus
-    pure $ if tStatus == NTActive then Just tkn else Nothing
-
-mkNtfSubData :: NtfSubscriptionId -> NewNtfEntity 'Subscription -> STM NtfSubData
-mkNtfSubData ntfSubId (NewNtfSub tokenId smpQueue notifierKey) = do
-  subStatus <- newTVar NSNew
-  pure NtfSubData {ntfSubId, smpQueue, tokenId, subStatus, notifierKey}
+stmGetNtfSubscriptionIO :: NtfSTMStore -> NtfSubscriptionId -> IO (Maybe NtfSubData)
+stmGetNtfSubscriptionIO st subId = TM.lookupIO subId (subscriptions st)
 
 -- returns False if subscription existed before
-addNtfSubscription :: NtfSTMStore -> NtfSubscriptionId -> NtfSubData -> STM Bool
-addNtfSubscription st subId sub@NtfSubData {smpQueue = SMPQueueNtf {smpServer, notifierId}, tokenId} =
+stmAddNtfSubscription :: NtfSTMStore -> NtfSubscriptionId -> NtfSubData -> STM Bool
+stmAddNtfSubscription st subId sub@NtfSubData {smpQueue = SMPQueueNtf {smpServer, notifierId}, tokenId} =
   TM.lookup tokenId (tokenSubscriptions st)
     >>= maybe newTokenSubs pure
     >>= \ts -> TM.lookup smpServer ts
@@ -218,8 +183,8 @@ addNtfSubscription st subId sub@NtfSubData {smpQueue = SMPQueueNtf {smpServer, n
       TM.insert smpServer ss $ subscriptionLookup st
       pure ss
 
-deleteNtfSubscription :: NtfSTMStore -> NtfSubscriptionId -> STM ()
-deleteNtfSubscription st subId = TM.lookupDelete subId (subscriptions st) >>= mapM_ deleteSubIndices
+stmDeleteNtfSubscription :: NtfSTMStore -> NtfSubscriptionId -> STM ()
+stmDeleteNtfSubscription st subId = TM.lookupDelete subId (subscriptions st) >>= mapM_ deleteSubIndices
   where
     deleteSubIndices NtfSubData {smpQueue = SMPQueueNtf {smpServer, notifierId}, tokenId} = do
       TM.lookup smpServer (subscriptionLookup st) >>= mapM_ (TM.delete notifierId)
@@ -228,32 +193,10 @@ deleteNtfSubscription st subId = TM.lookupDelete subId (subscriptions st) >>= ma
         modifyTVar' sIds $ S.delete subId
         modifyTVar' nIds $ S.delete notifierId
 
-addTokenLastNtf :: NtfSTMStore -> NtfTokenId -> PNMessageData -> IO (NonEmpty PNMessageData)
-addTokenLastNtf st tknId newNtf =
-  TM.lookupIO tknId (tokenLastNtfs st) >>= maybe (atomically maybeNewTokenLastNtfs) (atomically . addNtf)
-  where
-    maybeNewTokenLastNtfs =
-      TM.lookup tknId (tokenLastNtfs st) >>= maybe newTokenLastNtfs addNtf
-    newTokenLastNtfs = do
-      v <- newTVar [newNtf]
-      TM.insert tknId v $ tokenLastNtfs st
-      pure [newNtf]
-    addNtf v =
-      stateTVar v $ \ntfs -> let !ntfs' = rebuildList ntfs in (ntfs', ntfs')
-      where
-        rebuildList :: NonEmpty PNMessageData -> NonEmpty PNMessageData
-        rebuildList = foldr keepPrevNtf [newNtf]
-          where
-            PNMessageData {smpQueue = newNtfQ} = newNtf
-            keepPrevNtf ntf@PNMessageData {smpQueue} ntfs
-              | smpQueue /= newNtfQ && length ntfs < maxNtfs = ntf <| ntfs
-              | otherwise = ntfs
-        maxNtfs = 6
-
 -- This function is expected to be called after store log is read,
 -- as it checks for token existence when adding last notification.
-storeTokenLastNtf :: NtfSTMStore -> NtfTokenId -> PNMessageData -> IO ()
-storeTokenLastNtf (NtfSTMStore {tokens, tokenLastNtfs}) tknId ntf = do
+stmStoreTokenLastNtf :: NtfSTMStore -> NtfTokenId -> PNMessageData -> IO ()
+stmStoreTokenLastNtf (NtfSTMStore {tokens, tokenLastNtfs}) tknId ntf = do
   TM.lookupIO tknId tokenLastNtfs >>= atomically . maybe newTokenLastNtfs (`modifyTVar'` (ntf <|))
   where
     newTokenLastNtfs = TM.lookup tknId tokenLastNtfs >>= maybe insertForExistingToken (`modifyTVar'` (ntf <|))

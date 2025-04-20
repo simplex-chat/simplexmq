@@ -19,6 +19,7 @@ import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
+import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (partitionEithers)
@@ -49,7 +50,9 @@ import Simplex.Messaging.Notifications.Server.Control
 import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Push.APNS (PushNotification (..), PushProviderError (..))
 import Simplex.Messaging.Notifications.Server.Stats
+import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore, TokenNtfMessageRecord (..), stmStoreTokenLastNtf)
 import Simplex.Messaging.Notifications.Server.Store.Postgres
+import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, pattern NoEntity, pattern SMPServer, encodeTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -409,10 +412,10 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
         liftIO $ subscribeQueues smpServer subs
 
     -- \| Subscribe to queues. The list of results can have a different order.
-    subscribeQueues :: SMPServer -> NonEmpty NtfSubData' -> IO ()
+    subscribeQueues :: SMPServer -> NonEmpty NtfSubRec -> IO ()
     subscribeQueues srv subs = subscribeQueuesNtfs ca srv (L.map sub subs)
       where
-        sub NtfSubData' {smpQueue = SMPQueueNtf {notifierId}, notifierKey} = (notifierId, notifierKey)
+        sub NtfSubRec {smpQueue = SMPQueueNtf {notifierId}, notifierKey} = (notifierId, notifierKey)
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
@@ -501,7 +504,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
 
 ntfPush :: NtfPushServer -> M ()
 ntfPush s@NtfPushServer {pushQ} = forever $ do
-  (tkn@NtfTknData' {ntfTknId, token = t@(DeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue pushQ)
+  (tkn@NtfTknRec {ntfTknId, token = t@(DeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue pushQ)
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
   case ntf of
     PNVerification _ ->
@@ -526,8 +529,8 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
     checkActiveTkn status action
       | status == NTActive = action
       | otherwise = liftIO $ logError "bad notification token status"
-    deliverNotification :: PushProvider -> NtfTknData' -> PushNotification -> M (Either PushProviderError ())
-    deliverNotification pp tkn@NtfTknData' {ntfTknId} ntf = do
+    deliverNotification :: PushProvider -> NtfTknRec -> PushNotification -> M (Either PushProviderError ())
+    deliverNotification pp tkn@NtfTknRec {ntfTknId} ntf = do
       deliver <- liftIO $ getPushClient s pp
       liftIO (runExceptT $ deliver tkn ntf) >>= \case
         Right _ -> pure $ Right ()
@@ -619,7 +622,7 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
       pure $
         if verifyCmdAuthorization auth_ tAuth authorized k
           then case r_ of
-            Right t@NtfTknData' {tknVerifyKey}
+            Right t@NtfTknRec {tknVerifyKey}
               | k == tknVerifyKey -> VRVerified $ tknCmd t c
               | otherwise -> VRFailed
             Left _ -> VRVerified (NtfReqNew corrId (ANE SToken tkn))
@@ -644,15 +647,15 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
           -- TODO [ntfdb] it should simply return error if it is not AUTH
           Left _ -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
   where
-    tknCmd t c = NtfReqCmd SToken (NtfTkn' t) (corrId, entId, c)
-    subCmd s c = NtfReqCmd SSubscription (NtfSub' s) (corrId, entId, c)
-    verifyToken_' :: Either ErrorType NtfTknData' -> (NtfTknData' -> NtfRequest) -> M VerificationResult
+    tknCmd t c = NtfReqCmd SToken (NtfTkn t) (corrId, entId, c)
+    subCmd s c = NtfReqCmd SSubscription (NtfSub s) (corrId, entId, c)
+    verifyToken_' :: Either ErrorType NtfTknRec -> (NtfTknRec -> NtfRequest) -> M VerificationResult
     verifyToken_' t_ result = pure $ case t_ of
       Right t -> verifyToken t $ result t
       -- TODO [ntfdb] it should simply return error if it is not AUTH
       Left _ -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
-    verifyToken :: NtfTknData' -> NtfRequest -> VerificationResult
-    verifyToken NtfTknData' {tknVerifyKey} r
+    verifyToken :: NtfTknRec -> NtfRequest -> VerificationResult
+    verifyToken NtfTknRec {tknVerifyKey} r
       | verifyCmdAuthorization auth_ tAuth authorized tknVerifyKey = VRVerified r
       | otherwise = VRFailed
 
@@ -679,7 +682,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         tknId <- getId
         regCode <- getRegCode
         ts <- liftIO $ getSystemDate
-        let tkn = mkNtfTknData tknId newTkn srvDhPrivKey dhSecret regCode ts
+        let tkn = mkNtfTknRec tknId newTkn srvDhPrivKey dhSecret regCode ts
         liftIO (addNtfToken st tkn) >>= \case
           Left e -> pure $ NRErr e
           Right () -> do
@@ -689,7 +692,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             -- withNtfLog (`logCreateToken` tkn)
             incNtfStatT token tknCreated
             pure $ NRTknId tknId srvDhPubKey
-      NtfReqCmd SToken (NtfTkn' tkn@NtfTknData' {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhPrivKey}) (corrId, tknId, cmd) -> do
+      NtfReqCmd SToken (NtfTkn tkn@NtfTknRec {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhPrivKey}) (corrId, tknId, cmd) -> do
         (corrId,tknId,) <$> case cmd of
           TNEW (NewNtfTkn _ _ dhPubKey) -> do
             logDebug "TNEW - registered token"
@@ -804,7 +807,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         -- TODO [ntfdb] move to store
         -- withNtfLog (`logCreateSubscription` sub)
         pure (corrId, NoEntity, resp)
-      NtfReqCmd SSubscription (NtfSub' NtfSubData' {smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
+      NtfReqCmd SSubscription (NtfSub NtfSubRec {smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
         (corrId,subId,) <$> case cmd of
           SNEW (NewNtfSub _ _ notifierKey) -> do
             logDebug "SNEW - existing subscription"
@@ -869,30 +872,24 @@ incNtfStat statSel = do
 --         saveTokenLastNtfs h (tknId, v) = BLD.hPutBuilder h . encodeLastNtfs tknId . L.reverse =<< readTVarIO v
 --         encodeLastNtfs tknId = mconcat . L.toList . L.map (\ntf -> BLD.byteString (strEncode $ TNMRv1 tknId ntf) <> BLD.char8 '\n')
 
--- TODO [ntfdb] import them instead
--- restoreServerLastNtfs :: M ()
--- restoreServerLastNtfs =
---   asks (storeLastNtfsFile . config) >>= mapM_ restoreLastNtfs
---   where
---     restoreLastNtfs f =
---       whenM (doesFileExist f) $ do
---         logInfo $ "restoring last notifications from file " <> T.pack f
---         st <- asks store
---         runExceptT (liftIO (LB.readFile f) >>= mapM (restoreNtf st) . LB.lines) >>= \case
---           Left e -> do
---             logError . T.pack $ "error restoring last notifications: " <> e
---             liftIO exitFailure
---           Right _ -> do
---             renameFile f $ f <> ".bak"
---             logInfo "last notifications restored"
---       where
---         restoreNtf st s' = do
---           TNMRv1 tknId ntf <- liftEither . first (ntfErr "parsing") $ strDecode s
---           liftIO $ storeTokenLastNtf st tknId ntf
---           where
---             s = LB.toStrict s'
---             ntfErr :: Show e => String -> e -> String
---             ntfErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
+restoreServerLastNtfs :: NtfSTMStore -> FilePath -> IO ()
+restoreServerLastNtfs st f =
+  whenM (doesFileExist f) $ do
+    logInfo $ "restoring last notifications from file " <> T.pack f
+    runExceptT (liftIO (B.readFile f) >>= mapM restoreNtf . B.lines) >>= \case
+      Left e -> do
+        logError . T.pack $ "error restoring last notifications: " <> e
+        exitFailure
+      Right _ -> do
+        renameFile f $ f <> ".bak"
+        logInfo "last notifications restored"
+  where
+    restoreNtf s = do
+      TNMRv1 tknId ntf <- liftEither . first (ntfErr "parsing") $ strDecode s
+      liftIO $ stmStoreTokenLastNtf st tknId ntf
+      where
+        ntfErr :: Show e => String -> e -> String
+        ntfErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
 
 saveServerStats :: M ()
 saveServerStats =

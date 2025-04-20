@@ -25,6 +25,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store.Postgres
+import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Transport (NTFVersion, VersionRangeNTF)
 import Simplex.Messaging.Protocol (BasicAuth, CorrId, SMPServer, Transmission)
 import Simplex.Messaging.Server.Env.STM (StartOptions)
@@ -86,7 +87,7 @@ newNtfServerEnv :: NtfServerConfig -> IO NtfEnv
 newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials} = do
   random <- C.newRandom
   store <- newNtfDbStore dbStoreConfig
-  -- TODO [notifications] this should happen with compacting on start
+  -- TODO [ntfdb] this should happen with compacting on start
   -- logInfo "restoring subscriptions..."
   -- storeLog <- mapM (`readWriteNtfStore` store) storeLogFile
   -- logInfo "restored subscriptions"
@@ -99,7 +100,7 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriber,
-    newSubQ :: TBQueue (SMPServer, NonEmpty NtfSubData'), -- should match SMPServer
+    newSubQ :: TBQueue (SMPServer, NonEmpty NtfSubRec), -- should match SMPServer
     smpAgent :: SMPClientAgent
   }
 
@@ -112,7 +113,7 @@ newNtfSubscriber qSize smpAgentCfg random = do
 
 data SMPSubscriber = SMPSubscriber
   { smpServer :: SMPServer,
-    subscriberSubQ :: TQueue (NonEmpty NtfSubData'), -- should match SMPServer
+    subscriberSubQ :: TQueue (NonEmpty NtfSubRec), -- TODO [ntfdb] should match SMPServer
     subThreadId :: TVar (Maybe (Weak ThreadId))
   }
 
@@ -123,7 +124,7 @@ newSMPSubscriber smpServer = do
   pure SMPSubscriber {smpServer, subscriberSubQ, subThreadId}
 
 data NtfPushServer = NtfPushServer
-  { pushQ :: TBQueue (NtfTknData', PushNotification),
+  { pushQ :: TBQueue (NtfTknRec, PushNotification),
     pushClients :: TMap PushProvider PushProviderClient,
     intervalNotifiers :: TMap NtfTokenId IntervalNotifier,
     apnsConfig :: APNSPushClientConfig
@@ -131,7 +132,7 @@ data NtfPushServer = NtfPushServer
 
 data IntervalNotifier = IntervalNotifier
   { action :: Async (),
-    token :: NtfTknData',
+    token :: NtfTknRec,
     interval :: Word16
   }
 
@@ -156,7 +157,7 @@ getPushClient s@NtfPushServer {pushClients} pp =
 
 data NtfRequest
   = NtfReqNew CorrId ANewNtfEntity
-  | forall e. NtfEntityI e => NtfReqCmd (SNtfEntity e) (NtfEntityRec' e) (Transmission (NtfCommand e))
+  | forall e. NtfEntityI e => NtfReqCmd (SNtfEntity e) (NtfEntityRec e) (Transmission (NtfCommand e))
   | NtfReqPing CorrId NtfEntityId
 
 data NtfServerClient = NtfServerClient
