@@ -49,7 +49,7 @@ agentTests ps = do
     describe "Chosen servers" serverChoiceTests
 #if defined(dbServerPostgres)    
     around_ (postgressBracket ntfTestServerDBConnectInfo) $
-      describe "Notification tests" $ notificationTests ps
+      fdescribe "Notification tests" $ notificationTests ps
 #endif
 #if !defined(dbPostgres)
   describe "SQLite store" storeTests

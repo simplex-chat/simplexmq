@@ -434,22 +434,49 @@ updateSrvSubStatus st q status =
 
 batchUpdateSrvSubStatus :: NtfPostgresStore -> SMPServer -> NonEmpty NotifierId -> NtfSubStatus -> IO Int64
 batchUpdateSrvSubStatus st srv nIds status =
-  batchUpdateStatus_ st srv $ \srvId -> L.toList $ L.map (status,srvId,,status) nIds
+  batchUpdateStatus_ st srv $ \srvId ->
+    -- without executeMany
+    -- L.toList $ L.map (status,srvId,,status) nIds
+    L.toList $ L.map (status,srvId,) nIds
 
 batchUpdateSrvSubStatuses :: NtfPostgresStore -> SMPServer -> NonEmpty (NotifierId, NtfSubStatus) -> IO Int64
 batchUpdateSrvSubStatuses st srv subs =
-  batchUpdateStatus_ st srv $ \srvId -> L.toList $ L.map (\(nId, status) -> (status, srvId, nId, status)) subs
+  batchUpdateStatus_ st srv $ \srvId ->
+    -- without executeMany
+    -- L.toList $ L.map (\(nId, status) -> (status, srvId, nId, status)) subs
+    L.toList $ L.map (\(nId, status) -> (status, srvId, nId)) subs
 
-batchUpdateStatus_ :: NtfPostgresStore -> SMPServer -> (Int64 -> [(NtfSubStatus, Int64, NotifierId, NtfSubStatus)]) -> IO Int64
+-- without executeMany
+-- batchUpdateStatus_ :: NtfPostgresStore -> SMPServer -> (Int64 -> [(NtfSubStatus, Int64, NotifierId, NtfSubStatus)]) -> IO Int64
+batchUpdateStatus_ :: NtfPostgresStore -> SMPServer -> (Int64 -> [(NtfSubStatus, Int64, NotifierId)]) -> IO Int64
 batchUpdateStatus_ st srv mkParams =
   fmap (fromRight (-1)) $ withDB "batchUpdateStatus_" st $ \db -> runExceptT $ do
-    srvId :: Int64 <- ExceptT $ getSMPServerId db
+    srvId <- ExceptT $ getSMPServerId db
     let params = mkParams srvId
     subs <-
-      liftIO $ fmap catMaybes $ forM params $
-        maybeFirstRow id . DB.query db "UPDATE subscriptions SET status = ? WHERE smp_server_id = ? AND smp_notifier_id = ? AND status != ? RETURNING subscription_id, status"
+      liftIO $
+        DB.returning
+          db
+          [sql|
+            UPDATE subscriptions s
+            SET status = upd.status
+            FROM (VALUES(?, ?, ?)) AS upd(status, smp_server_id, smp_notifier_id)
+            WHERE s.smp_server_id = upd.smp_server_id
+              AND s.smp_notifier_id = (upd.smp_notifier_id :: BYTEA)
+              AND s.status != upd.status
+            RETURNING s.subscription_id, s.status
+          |]
+          params
+    -- TODO [ntfdb] below is equivalent without using executeMany.
+    -- executeMany "works", and logs updates.
+    -- We do not have tests that validate correct subscription status,
+    -- and the potential problem is BYTEA conversation - VALUES are inserted as TEXT in this case for some reason.
+    -- subs <-
+    --   liftIO $ fmap catMaybes $ forM params $
+    --     maybeFirstRow id . DB.query db "UPDATE subscriptions SET status = ? WHERE smp_server_id = ? AND smp_notifier_id = ? AND status != ? RETURNING subscription_id, status"
+    -- logWarn $ "batchUpdateStatus_: " <> tshow (length subs)
     withLog "batchUpdateStatus_" st $ forM_ subs . uncurry . logSubscriptionStatus
-    pure $ fromIntegral $ length params
+    pure $ fromIntegral $ length subs
   where
     getSMPServerId db =
       firstRow fromOnly AUTH $
@@ -465,13 +492,28 @@ batchUpdateStatus_ st srv mkParams =
 batchUpdateSubStatus :: NtfPostgresStore -> NonEmpty NtfSubRec -> NtfSubStatus -> IO Int64
 batchUpdateSubStatus st subs status =
   fmap (fromRight (-1)) $ withDB' "batchUpdateSubStatus" st $ \db -> do
-    let params = L.toList $ L.map (\NtfSubRec {ntfSubId} -> (status, ntfSubId, status)) subs
-    subIds :: [NtfSubscriptionId] <-
-      fmap catMaybes $ forM params $
-        maybeFirstRow fromOnly . DB.query db "UPDATE subscriptions SET status = ? WHERE subscription_id = ? AND status != ? RETURNING subscription_id"
+    let params = L.toList $ L.map (\NtfSubRec {ntfSubId} -> (status, ntfSubId)) subs
+    subIds <-
+      DB.returning
+        db
+        [sql|
+          UPDATE subscriptions s
+          SET status = upd.status
+          FROM (VALUES(?, ?)) AS upd(status, subscription_id)
+          WHERE s.subscription_id = (upd.subscription_id :: BYTEA)
+            AND s.status != upd.status
+          RETURNING s.subscription_id
+        |]
+        params
+    -- TODO [ntfdb] below is equivalent without using executeMany - see comment above.
+    -- let params = L.toList $ L.map (\NtfSubRec {ntfSubId} -> (status, ntfSubId, status)) subs
+    -- subIds <-
+    --   fmap catMaybes $ forM params $
+    --     maybeFirstRow id . DB.query db "UPDATE subscriptions SET status = ? WHERE subscription_id = ? AND status != ? RETURNING subscription_id"
+    -- logWarn $ "batchUpdateSubStatus: " <> tshow (length subIds)
     withLog "batchUpdateSubStatus" st $ \sl ->
-      forM_ subIds $ \subId -> logSubscriptionStatus sl subId status
-    pure $ fromIntegral $ length params
+      forM_ subIds $ \(Only subId) -> logSubscriptionStatus sl subId status
+    pure $ fromIntegral $ length subIds
 
 addTokenLastNtf :: NtfPostgresStore -> PNMessageData -> IO (Either ErrorType (NtfTknRec, NonEmpty PNMessageData))
 addTokenLastNtf st newNtf =

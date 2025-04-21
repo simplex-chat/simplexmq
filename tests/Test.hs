@@ -57,6 +57,7 @@ logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 
 main :: IO ()
 main = do
+  -- TODO [ntfdb] running wiht LogWarn level shows potential issue "Queue count differs"
   setLogLevel LogError -- LogInfo
   withGlobalLogging logCfg $ do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
