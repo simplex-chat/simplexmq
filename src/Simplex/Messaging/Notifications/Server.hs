@@ -475,15 +475,6 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
         updateErr :: Show e => ByteString -> e -> Maybe NtfSubStatus
         updateErr errType e = Just $ NSErr $ errType <> bshow e
 
-    -- TODO [ntfdb] move to store
-    -- updateSubStatus smpQueue status = do
-    --   st <- asks store
-    --   atomically (findNtfSubscription st smpQueue) >>= mapM_ update
-    --   where
-    --     update NtfSubData {ntfSubId, subStatus} = do
-    --       old <- atomically $ stateTVar subStatus (,status)
-    --       when (old /= status) $ withNtfLog $ \sl -> logSubscriptionStatus sl ntfSubId status
-
 ntfPush :: NtfPushServer -> M ()
 ntfPush s@NtfPushServer {pushQ} = forever $ do
   (tkn@NtfTknRec {ntfTknId, token = t@(DeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue pushQ)
@@ -494,8 +485,6 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
         Right _ -> do
           st <- asks store
           void $ liftIO $ setTknStatusConfirmed st tkn
-          -- TODO [ntfdb] move to store
-          -- forM_ status_ $ \status' -> withNtfLog $ \sl -> logTokenStatus sl ntfTknId status'
           incNtfStatT t ntfVrfDelivered
         Left _ -> incNtfStatT t ntfVrfFailed
     PNCheckMessages -> checkActiveTkn tknStatus $ do
@@ -539,12 +528,6 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
                 err e
               _ -> err e
         err e = logError ("Push provider error (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> tshow e) $> Left e
-
--- TODO [ntfdb] move to store
--- updateTknStatus :: NtfTknData -> NtfTknStatus -> M ()
--- updateTknStatus NtfTknData {ntfTknId, tknStatus} status = do
---   old <- atomically $ stateTVar tknStatus (,status)
---   when (old /= status) $ withNtfLog $ \sl -> logTokenStatus sl ntfTknId status
 
 runNtfClientTransport :: Transport c => THandleNTF c 'TServer -> M ()
 runNtfClientTransport th@THandle {params} = do
@@ -648,12 +631,6 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
       >>= mapM processCommand
       >>= atomically . writeTBQueue sndQ
   where
-    -- TODO [ntfdb] move to store, updating timestamp when token is read
-    -- updateTokenDate :: RoundedSystemTime -> Maybe NtfTknData -> M ()
-    -- updateTokenDate ts' = mapM_ $ \NtfTknData {ntfTknId, tknUpdatedAt} -> do
-    --   let t' = Just ts'
-    --   t <- atomically $ swapTVar tknUpdatedAt t'
-    --   unless (t' == t) $ withNtfLog $ \s -> logUpdateTokenTime s ntfTknId ts'
     processCommand :: NtfRequest -> M (Transmission NtfResponse)
     processCommand = \case
       NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> (corrId,NoEntity,) <$> do
@@ -670,8 +647,6 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
           Right () -> do
             atomically $ writeTBQueue pushQ (tkn, PNVerification regCode)
             incNtfStatT token ntfVrfQueued
-            -- TODO [ntfdb] move to store
-            -- withNtfLog (`logCreateToken` tkn)
             incNtfStatT token tknCreated
             pure $ NRTknId tknId srvDhPubKey
       NtfReqCmd SToken (NtfTkn tkn@NtfTknRec {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhPrivKey}) (corrId, tknId, cmd) -> do
@@ -716,8 +691,6 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               Right () -> do
                 atomically $ writeTBQueue pushQ (tkn', PNVerification regCode)
                 incNtfStatT token ntfVrfQueued
-                -- TODO [ntfdb] move to store
-                -- withNtfLog $ \s -> logUpdateToken s tknId token' regCode
                 incNtfStatT token tknReplaced
                 pure NROk
           TDEL -> do
@@ -730,8 +703,6 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
                   atomically $ removeSubscriptions ca smpServer SPNotifier nIds
                   atomically $ removePendingSubs ca smpServer SPNotifier nIds
                 cancelInvervalNotifications tknId
-                -- TODO [ntfdb] move to store
-                -- withNtfLog (`logDeleteToken` tknId)
                 incNtfStatT token tknDeleted
                 pure NROk
           TCRN 0 -> do
@@ -742,8 +713,6 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               Right () -> do
                 -- TODO [ntfdb] move cron intervals to one thread
                 cancelInvervalNotifications tknId
-                -- TODO [ntfdb] move to store
-                -- withNtfLog $ \s -> logTokenCron s tknId 0
                 pure NROk
           TCRN int
             | int < 20 -> pure $ NRErr QUOTA
@@ -760,8 +729,6 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
                         unless (interval == int) $ do
                           uninterruptibleCancel action
                           runIntervalNotifier int
-                    -- TODO [ntfdb] move to store
-                    -- withNtfLog $ \s -> logTokenCron s tknId int
                     pure NROk
             where
               runIntervalNotifier interval = do
@@ -786,8 +753,6 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               pure $ NRSubId subId
             -- TODO [ntfdb] we must allow repeated inserts that don't change credentials
             Right False -> pure $ NRErr AUTH
-        -- TODO [ntfdb] move to store
-        -- withNtfLog (`logCreateSubscription` sub)
         pure (corrId, NoEntity, resp)
       NtfReqCmd SSubscription (NtfSub NtfSubRec {smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
         (corrId,subId,) <$> case cmd of
@@ -809,8 +774,6 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               Right () -> do
                 atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
                 atomically $ removePendingSub ca smpServer (SPNotifier, notifierId)
-                -- TODO [ntfdb] move to store
-                -- withNtfLog (`logDeleteSubscription` subId)
                 incNtfStat subDeleted
                 pure NROk
           PING -> pure NRPong
@@ -825,10 +788,6 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
     cancelInvervalNotifications tknId =
       atomically (TM.lookupDelete tknId intervalNotifiers)
         >>= mapM_ (uninterruptibleCancel . action)
-
--- TODO [ntfdb] move to postgres store
--- withNtfLog :: (StoreLog 'WriteMode -> IO a) -> M ()
--- withNtfLog action = liftIO . mapM_ action =<< asks storeLog
 
 incNtfStatT :: DeviceToken -> (NtfServerStats -> IORef Int) -> M ()
 incNtfStatT (DeviceToken PPApnsNull _) _ = pure ()

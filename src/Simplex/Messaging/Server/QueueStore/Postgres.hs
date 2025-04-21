@@ -24,6 +24,7 @@ module Simplex.Messaging.Server.QueueStore.Postgres
     batchInsertQueues,
     foldQueueRecs,
     handleDuplicate,
+    withLog_,
   )
 where
 
@@ -527,8 +528,12 @@ withDB op st action =
         err = op <> ", withDB, " <> show e
 
 withLog :: MonadIO m => String -> PostgresQueueStore q -> (StoreLog 'WriteMode -> IO ()) -> m ()
-withLog op PostgresQueueStore {dbStoreLog} action =
-  forM_ dbStoreLog $ \sl -> liftIO $ action sl `catchAny` \e ->
+withLog op PostgresQueueStore {dbStoreLog} = withLog_ op dbStoreLog
+{-# INLINE withLog #-}
+
+withLog_ :: MonadIO m => String -> Maybe (StoreLog 'WriteMode) -> (StoreLog 'WriteMode -> IO ()) -> m ()
+withLog_ op sl_ action =
+  forM_ sl_ $ \sl -> liftIO $ action sl `catchAny` \e ->
     logWarn $ "STORE: " <> T.pack (op <> ", withLog, " <> show e)
 
 handleDuplicate :: SqlError -> IO ErrorType
