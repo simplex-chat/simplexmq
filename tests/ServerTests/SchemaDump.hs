@@ -18,7 +18,7 @@ import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations
 import Simplex.Messaging.Util (ifM)
 import System.Directory (doesFileExist, removeFile)
 import System.Environment (lookupEnv)
-import System.Process (readCreateProcess, shell)
+import System.Process (readCreateProcess, readCreateProcessWithExitCode, shell)
 import Test.Hspec
 
 testDBSchema :: B.ByteString
@@ -87,7 +87,10 @@ getSchema schemaPath = do
         ("pg_dump " <> B.unpack testServerDBConnstr <> " --schema " <> B.unpack testDBSchema)
           <> " --schema-only --no-owner --no-privileges --no-acl --no-subscriptions --no-tablespaces > "
           <> schemaPath
-  void $ readCreateProcess (shell cmd) ""
+  (code, out, err) <- readCreateProcessWithExitCode (shell cmd) ""
+  print code
+  putStrLn $ "out: " <> out
+  putStrLn $ "err: " <> err
   threadDelay 20000
   let sed = (if ci then "sed -i" else "sed -i ''")
   void $ readCreateProcess (shell $ sed <> " '/^--/d' " <> schemaPath) ""

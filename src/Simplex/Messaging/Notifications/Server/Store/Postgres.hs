@@ -53,7 +53,7 @@ import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder, fromTextFiel
 import Simplex.Messaging.Encoding
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore (..), NtfSubData (..), TokenNtfMessageRecord (..), ntfSubServer)
+import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore (..), TokenNtfMessageRecord (..), ntfSubServer)
 import Simplex.Messaging.Notifications.Server.Store.Migrations
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Server.StoreLog
@@ -621,18 +621,18 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore =
         srvQuery = "INSERT INTO smp_servers (smp_host, smp_port, smp_keyhash) VALUES (?, ?, ?) RETURNING smp_server_id"
         srvs = nubOrd $ map ntfSubServer subs
     importLastNtfs = do
-      subLookup <- mapM readTVarIO =<< readTVarIO (subscriptionLookup stmStore)
+      subLookup <- readTVarIO $ subscriptionLookup stmStore
       ntfRows <- fmap concat . mapM (lastNtfRows subLookup) . M.assocs =<< readTVarIO (tokenLastNtfs stmStore)
       nCnt <- withConnection s $ \db -> DB.executeMany db lastNtfQuery ntfRows
       checkCount "last notification" (length ntfRows) nCnt
       where
         lastNtfQuery = "INSERT INTO last_notifications(token_id, subscription_id, sent_at, nmsg_nonce, nmsg_data) VALUES (?,?,?,?,?)"
-        lastNtfRows :: M.Map SMPServer (M.Map NotifierId NtfSubData) -> (NtfTokenId, TVar (NonEmpty PNMessageData)) -> IO [(NtfTokenId, NtfSubscriptionId, SystemTime, C.CbNonce, Binary ByteString)]
+        lastNtfRows :: M.Map SMPQueueNtf NtfSubscriptionId -> (NtfTokenId, TVar (NonEmpty PNMessageData)) -> IO [(NtfTokenId, NtfSubscriptionId, SystemTime, C.CbNonce, Binary ByteString)]
         lastNtfRows subLookup (tId, ntfs) = fmap catMaybes . mapM ntfRow . L.toList =<< readTVarIO ntfs
           where
-            ntfRow PNMessageData {smpQueue = q@(SMPQueueNtf srv nId), ntfTs, nmsgNonce, encNMsgMeta} = case M.lookup nId =<< M.lookup srv subLookup of
-              Just NtfSubData {ntfSubId} -> pure $ Just (tId, ntfSubId, ntfTs, nmsgNonce, Binary encNMsgMeta)
-              Nothing -> Nothing <$ putStrLn ("Error: no subscription " <> show q <> " for notification of token " <> show (B64.encode $ unEntityId tId))
+            ntfRow PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = case M.lookup smpQueue subLookup of
+              Just ntfSubId -> pure $ Just (tId, ntfSubId, ntfTs, nmsgNonce, Binary encNMsgMeta)
+              Nothing -> Nothing <$ putStrLn ("Error: no subscription " <> show smpQueue <> " for notification of token " <> show (B64.encode $ unEntityId tId))
     checkCount name expected inserted
       | fromIntegral expected == inserted = do
           putStrLn $ "Imported " <> show inserted <> " " <> name <> "s."
