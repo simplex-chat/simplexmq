@@ -260,13 +260,6 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       where
         iniStoreQueues = fromRight "memory" $ lookupValue "STORE_LOG" "store_queues" ini
         iniStoreMessage = fromRight "memory" $ lookupValue "STORE_LOG" "store_messages" ini
-    iniDBOptions ini =
-      DBOpts
-        { connstr = either (const defaultDBConnStr) encodeUtf8 $ lookupValue "STORE_LOG" "db_connection" ini,
-          schema = either (const defaultDBSchema) encodeUtf8 $ lookupValue "STORE_LOG" "db_schema" ini,
-          poolSize = readIniDefault defaultDBPoolSize "STORE_LOG" "db_pool_size" ini,
-          createSchema = False
-        }
     iniDeletedTTL ini = readIniDefault (86400 * defaultDeletedTTL) "STORE_LOG" "db_deleted_ttl" ini
     defaultStaticPath = combine logPath "www"
     enableStoreLog' = settingIsOn "STORE_LOG" "enable"
@@ -424,7 +417,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = storeLogFilePath, storeMsgsPath = storeMsgsJournalDir}
                 ASType SQSPostgres SMSJournal ->
                   let dbStoreLogPath = enableDbStoreLog' ini $> storeLogFilePath
-                      storeCfg = PostgresStoreCfg {dbOpts = iniDBOptions ini, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
+                      storeCfg = PostgresStoreCfg {dbOpts = iniDBOptions ini defaultDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
                    in ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeCfg, storeMsgsPath' = storeMsgsJournalDir},
               storeNtfsFile = restoreMessagesFile storeNtfsFilePath,
               -- allow creating new queues by default
@@ -525,7 +518,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 unless (storeLogExists) $ putStrLn $ "store_queues is `memory`, " <> storeLogFilePath <> " file will be created."
 #if defined(dbServerPostgres)
               SQSPostgres -> do
-                let DBOpts {connstr, schema} = iniDBOptions ini
+                let DBOpts {connstr, schema} = iniDBOptions ini defaultDBOpts
                 schemaExists <- checkSchemaExists connstr schema
                 case enableDbStoreLog' ini of
                   Just ()

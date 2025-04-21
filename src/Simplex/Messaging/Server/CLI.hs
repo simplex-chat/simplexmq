@@ -359,18 +359,27 @@ iniTransports ini =
     webPort = T.unpack <$> eitherToMaybe (lookupValue "WEB" "https" ini)
     ports = map T.unpack . T.splitOn ","
 
-printServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> Maybe FilePath -> IO ()
-printServerConfig transports logFile = do
+iniDBOptions :: Ini -> DBOpts -> DBOpts
+iniDBOptions ini _default@DBOpts {connstr, schema, poolSize} =
+  DBOpts
+    { connstr = either (const connstr) encodeUtf8 $ lookupValue "STORE_LOG" "db_connection" ini,
+      schema = either (const schema) encodeUtf8 $ lookupValue "STORE_LOG" "db_schema" ini,
+      poolSize = readIniDefault poolSize "STORE_LOG" "db_pool_size" ini,
+      createSchema = False
+    }
+
+printServerConfig :: String -> [(ServiceName, ATransport, AddHTTP)] -> Maybe FilePath -> IO ()
+printServerConfig protocol transports logFile = do
   putStrLn $ case logFile of
     Just f -> "Store log: " <> f
     _ -> "Store log disabled."
-  printServerTransports transports
+  printServerTransports protocol transports
 
-printServerTransports :: [(ServiceName, ATransport, AddHTTP)] -> IO ()
-printServerTransports ts = do
+printServerTransports :: String -> [(ServiceName, ATransport, AddHTTP)] -> IO ()
+printServerTransports protocol ts = do
   forM_ ts $ \(p, ATransport t, addHTTP) -> do
     let descr = p <> " (" <> transportName t <> ")..."
-    putStrLn $ "Serving SMP protocol on port " <> descr
+    putStrLn $ "Serving " <> protocol <> " protocol on port " <> descr
     when addHTTP $ putStrLn $ "Serving static site on port " <> descr
   unless (any (\(p, _, _) -> p == "443") ts) $
     putStrLn
@@ -379,11 +388,11 @@ printServerTransports ts = do
 
 printSMPServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> AServerStoreCfg -> IO ()
 printSMPServerConfig transports (ASSCfg _ _ cfg) = case cfg of
-  SSCMemory sp_ -> printServerConfig transports $ (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
-  SSCMemoryJournal {storeLogFile} -> printServerConfig transports $ Just storeLogFile
+  SSCMemory sp_ -> printServerConfig "SMP" transports $ (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
+  SSCMemoryJournal {storeLogFile} -> printServerConfig "SMP" transports $ Just storeLogFile
   SSCDatabaseJournal {storeCfg = PostgresStoreCfg {dbOpts = DBOpts {connstr, schema}}} -> do
     B.putStrLn $ "PostgreSQL database: " <> connstr <> ", schema: " <> schema
-    printServerTransports transports
+    printServerTransports "SMP" transports
 
 deleteDirIfExists :: FilePath -> IO ()
 deleteDirIfExists path = whenM (doesDirectoryExist path) $ removeDirectoryRecursive path

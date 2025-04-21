@@ -30,6 +30,7 @@ import Simplex.Messaging.Notifications.Transport (NTFVersion, VersionRangeNTF)
 import Simplex.Messaging.Protocol (BasicAuth, CorrId, SMPServer, Transmission)
 import Simplex.Messaging.Server.Env.STM (StartOptions)
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, THandleParams, TransportPeer (..))
@@ -51,9 +52,7 @@ data NtfServerConfig = NtfServerConfig
     apnsConfig :: APNSPushClientConfig,
     subsBatchSize :: Int,
     inactiveClientExpiration :: Maybe ExpirationConfig,
-    dbStoreConfig :: NtfPostgresStoreCfg,
-    -- TODO [ntfdb] import/export instead
-    -- storeLastNtfsFile :: Maybe FilePath,
+    dbStoreConfig :: PostgresStoreCfg,
     ntfCredentials :: ServerCredentials,
     -- stats config - see SMP server config
     logStatsInterval :: Maybe Int64,
@@ -113,7 +112,7 @@ newNtfSubscriber qSize smpAgentCfg random = do
 
 data SMPSubscriber = SMPSubscriber
   { smpServer :: SMPServer,
-    subscriberSubQ :: TQueue (NonEmpty NtfSubRec), -- TODO [ntfdb] should match SMPServer
+    subscriberSubQ :: TQueue (NonEmpty NtfSubRec),
     subThreadId :: TVar (Maybe (Weak ThreadId))
   }
 

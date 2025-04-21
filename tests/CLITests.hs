@@ -41,6 +41,8 @@ import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Exception (bracket)
 
 #if defined(dbServerPostgres)
+import NtfClient (ntfTestServerDBConnectInfo)
+import SMPClient (postgressBracket)
 import Simplex.Messaging.Notifications.Server.Main
 #endif
 
@@ -75,10 +77,10 @@ cliTests = do
       it "with store log, no password" $ smpServerTest True False
       it "static files" smpServerTestStatic
 #if defined(dbServerPostgres)
-  -- TODO [ntfdb] fix
-  xdescribe "Ntf server CLI" $ do
-    it "should initialize, start and delete the server (no store log)" $ ntfServerTest False
-    it "should initialize, start and delete the server (with store log)" $ ntfServerTest True
+  aroundAll_ (postgressBracket ntfTestServerDBConnectInfo) $
+    describe "Ntf server CLI" $ do
+      it "should initialize, start and delete the server (no store log)" $ ntfServerTest False
+      it "should initialize, start and delete the server (with store log)" $ ntfServerTest True
 #endif
   describe "XFTP server CLI" $ do
     it "should initialize, start and delete the server (no store log)" $ xftpServerTest False
@@ -203,7 +205,7 @@ ntfServerTest storeLog = do
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` ntfServerCLI ntfCfgPath ntfLogPath) `catchAll_` pure (Just ()))
   r `shouldContain` ["SMP notifications server v" <> simplexMQVersion]
   r `shouldContain` (if storeLog then ["Store log: " <> ntfLogPath <> "/ntf-server-store.log"] else ["Store log disabled."])
-  r `shouldContain` ["Serving SMP protocol on port 443 (TLS)..."]
+  r `shouldContain` ["Serving NTF protocol on port 443 (TLS)..."]
   capture_ (withStdin "Y" . withArgs ["delete"] $ ntfServerCLI ntfCfgPath ntfLogPath)
     >>= (`shouldSatisfy` ("WARNING: deleting the server will make all queues inaccessible" `isPrefixOf`))
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` False

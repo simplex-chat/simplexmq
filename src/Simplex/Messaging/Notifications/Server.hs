@@ -58,6 +58,7 @@ import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), ProtocolServer
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Control (CPClientRole (..))
+import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.QueueStore (getSystemDate)
 import Simplex.Messaging.Server.Stats (PeriodStats (..), PeriodStatCounts (..), periodStatCounts, updatePeriodStats)
 import Simplex.Messaging.TMap (TMap)
@@ -66,7 +67,7 @@ import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server (AddHTTP, runTransportServer, runLocalTCPServer)
 import Simplex.Messaging.Util
-import System.Exit (exitFailure)
+import System.Exit (exitFailure, exitSuccess)
 import System.IO (BufferMode (..), hClose, hPrint, hPutStrLn, hSetBuffering, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (IOMode (..), UnliftIO, askUnliftIO, async, uninterruptibleCancel, unliftIO, withFile)
@@ -91,12 +92,14 @@ runNtfServerBlocking started cfg = runReaderT (ntfServer cfg started) =<< newNtf
 type M a = ReaderT NtfEnv IO a
 
 ntfServer :: NtfServerConfig -> TMVar Bool -> M ()
-ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg} started = do
-  -- restoreServerLastNtfs
+ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions} started = do
   restoreServerStats
-  -- TODO [ntfdb] do not start in maintenance mode
   s <- asks subscriber
   ps <- asks pushServer
+  when (maintenance startOptions) $ do
+    liftIO $ putStrLn "Server started in 'maintenance' mode, exiting"
+    stopServer
+    liftIO $ exitSuccess
   resubscribe s
   raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports <> serverStatsThread_ cfg <> controlPortThread_ cfg) `finally` stopServer
   where
@@ -337,7 +340,6 @@ resubscribe NtfSubscriber {newSubQ} = do
   batchSize <- asks $ subsBatchSize . config
   liftIO $ do
     srvs <- getUsedSMPServers st
-    -- TODO [ntfdb] possibly, forConcurrently or forConcurrentlyN can be used here
     count <- foldM (subscribeSrvSubs st batchSize) (0 :: Int) srvs
     logInfo $ "SMP resubscriptions queued (" <> tshow count <> " subscriptions)"
   where
@@ -352,14 +354,6 @@ resubscribe NtfSubscriber {newSubQ} = do
       where
         write subs = atomically $ writeTBQueue newSubQ (srv, subs)
 
-  -- subs <- readTVarIO =<< asks (subscriptions . store)
-  -- subs' <- filterM (fmap ntfShouldSubscribe . readTVarIO . subStatus) $ M.elems subs
-  -- atomically . writeTBQueue newSubQ $ map NtfSub subs'
-
-  -- TODO [ntfdb] this could foldM results of processNtfSubscriptions to log total subscriptions,
-  -- or it could log by server.
-  -- logInfo $ "SMP resubscriptions queued (" <> tshow (length subs') <> " subscriptions)"
-
 ntfSubscriber :: NtfSubscriber -> M ()
 ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
   raceAny_ [subscribe, receiveSMP, receiveAgent]
@@ -367,20 +361,11 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     subscribe :: M ()
     subscribe = forever $ do
       (srv, subs) <- atomically $ readTBQueue newSubQ
-      -- TODO [ntfdb] batching should move to the point of reading from DB using postgres fold.
       -- TODO [ntfdb] as we now group by server before putting subs to queue,
       -- maybe this "subscribe" thread can be removed completely,
       -- and the caller would directly write to SMPSubscriber queues
       SMPSubscriber {subscriberSubQ} <- getSMPSubscriber srv
       atomically $ writeTQueue subscriberSubQ subs
-
-      -- let ss = L.groupAllWith server subs
-      -- batchSize <- asks $ subsBatchSize . config
-      -- forM_ ss $ \serverSubs -> do
-      --   let srv = server $ L.head serverSubs
-      --       batches = toChunks batchSize $ L.toList serverSubs
-      --   SMPSubscriber {subscriberSubQ} <- getSMPSubscriber srv
-      --   mapM_ (atomically . writeTQueue subscriberSubQ) batches
 
     -- TODO [ntfdb] this does not guarantee that only one subscriber per server is created
     -- there should be TMVar in the map
@@ -403,12 +388,9 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
         -- TODO [ntfdb] possibly, the subscriptions can be batched here and sent every say 5 seconds
         -- this should be analysed once we have prometheus stats
         subs <- atomically $ readTQueue subscriberSubQ
-        -- let subs' = L.map (\(NtfSub sub) -> sub) subs
-        --     srv = server $ L.head subs
         -- TODO [ntfdb] validate/partition that SMP server matches and log internal error if not
         updated <- liftIO $ batchUpdateSubStatus st subs NSPending
         logSubStatus smpServer "subscribing" (L.length subs) updated
-        -- mapM_ (\NtfSubData {smpQueue} -> updateSubStatus smpQueue NSPending) subs'
         liftIO $ subscribeQueues smpServer subs
 
     -- \| Subscribe to queues. The list of results can have a different order.
@@ -856,21 +838,6 @@ incNtfStat :: (NtfServerStats -> IORef Int) -> M ()
 incNtfStat statSel = do
   stats <- asks serverStats
   liftIO $ atomicModifyIORef'_ (statSel stats) (+ 1)
-
--- TODO [ntfdb] export them instead
--- saveServerLastNtfs :: M ()
--- saveServerLastNtfs = asks (storeLastNtfsFile . config) >>= mapM_ saveLastNtfs
---   where
---     saveLastNtfs f = do
---       logInfo $ "saving last notifications to file " <> T.pack f
---       NtfStore {tokenLastNtfs} <- asks store
---       liftIO . withFile f WriteMode $ \h ->
---         readTVarIO tokenLastNtfs >>= mapM_ (saveTokenLastNtfs h) . M.assocs
---       logInfo "notifications saved"
---       where
---         -- reverse on save, to save notifications in order, will become reversed again when restoring.
---         saveTokenLastNtfs h (tknId, v) = BLD.hPutBuilder h . encodeLastNtfs tknId . L.reverse =<< readTVarIO v
---         encodeLastNtfs tknId = mconcat . L.toList . L.map (\ntf -> BLD.byteString (strEncode $ TNMRv1 tknId ntf) <> BLD.char8 '\n')
 
 restoreServerLastNtfs :: NtfSTMStore -> FilePath -> IO ()
 restoreServerLastNtfs st f =

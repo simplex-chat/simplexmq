@@ -4,11 +4,9 @@
 
 module Simplex.Messaging.Server.Main.Init where
 
-import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe, isNothing)
-import Numeric.Natural (Natural)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
@@ -30,20 +28,11 @@ defaultControlPort = 5224
 defaultDBOpts :: DBOpts
 defaultDBOpts =
   DBOpts
-    { connstr = defaultDBConnStr,
-      schema = defaultDBSchema,
-      poolSize = defaultDBPoolSize,
+    { connstr = "postgresql://smp@/smp_server_store",
+      schema = "smp_server",
+      poolSize = 10,
       createSchema = False
     }
-
-defaultDBConnStr :: ByteString
-defaultDBConnStr = "postgresql://smp@/smp_server_store"
-
-defaultDBSchema :: ByteString
-defaultDBSchema = "smp_server"
-
-defaultDBPoolSize :: Natural
-defaultDBPoolSize = 10
 
 -- time to retain deleted queues in the database (days), for debugging
 defaultDeletedTTL :: Int64
@@ -86,13 +75,11 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# `database`- PostgreSQL databass (requires `store_messages: journal`).\n\
         \store_queues: memory\n\n\
         \# Database connection settings for PostgreSQL database (`store_queues: database`).\n"
-    <> (optDisabled' (connstr == defaultDBConnStr) <> "db_connection: " <> safeDecodeUtf8 connstr <> "\n")
-    <> (optDisabled' (schema == defaultDBSchema) <> "db_schema: " <> safeDecodeUtf8 schema <> "\n")
-    <> (optDisabled' (poolSize == defaultDBPoolSize) <> "db_pool_size: " <> tshow poolSize <> "\n\n")
+    <> iniDbOpts dbOptions defaultDBOpts
     <> "# Write database changes to store log file\n\
         \# db_store_log: off\n\n\
         \# Time to retain deleted queues in the database, days.\n"
-    <> ("db_deleted_ttl: " <> tshow defaultDeletedTTL <> "\n\n")
+    <> ("# db_deleted_ttl: " <> tshow defaultDeletedTTL <> "\n\n")
     <> "# Message storage mode: `memory` or `journal`.\n\
         \store_messages: memory\n\n\
         \# When store_messages is `memory`, undelivered messages are optionally saved and restored\n\
@@ -173,7 +160,6 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> (webDisabled <> "key: " <> T.pack httpsKeyFile <> "\n")
   where
     InitOptions {enableStoreLog, dbOptions, socksProxy, ownDomains, controlPort, webStaticPath, disableWeb, logStats} = opts
-    DBOpts {connstr, schema, poolSize} = dbOptions
     defaultServerPorts = "5223,443"
     defaultStaticPath = logPath </> "www"
     httpsCertFile = cfgPath </> "web.crt"
@@ -229,6 +215,12 @@ informationIniContent InitOptions {sourceCode, serverInfo} =
         <> maybe "entity (organization or person name)" name entity
         <> "\n"
         <> countryStr optName (country =<< entity)
+
+iniDbOpts :: DBOpts -> DBOpts -> Text
+iniDbOpts DBOpts {connstr, schema, poolSize} DBOpts {connstr = defConnstr, schema = defSchema, poolSize = defPoolSize} =
+  (optDisabled' (connstr == defConnstr) <> "db_connection: " <> safeDecodeUtf8 connstr <> "\n")
+    <> (optDisabled' (schema == defSchema) <> "db_schema: " <> safeDecodeUtf8 schema <> "\n")
+    <> (optDisabled' (poolSize == defPoolSize) <> "db_pool_size: " <> tshow poolSize <> "\n\n")
 
 optDisabled :: Maybe a -> Text
 optDisabled = optDisabled' . isNothing

@@ -50,7 +50,6 @@ import Simplex.Messaging.Agent.Store.AgentStore ()
 import Simplex.Messaging.Agent.Store.Postgres (closeDBStore, createDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder, fromTextField_)
-import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Encoding
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
@@ -62,6 +61,7 @@ import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (EntityId (..), EncNMsgMeta, ErrorType (..), NotifierId, NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer, pattern SMPServer)
 import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, getSystemDate)
 import Simplex.Messaging.Server.QueueStore.Postgres (handleDuplicate)
+import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Server.StoreLog (openWriteStoreLog)
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (firstRow, tshow)
@@ -77,14 +77,7 @@ import Simplex.Messaging.Util (eitherToMaybe)
 data NtfPostgresStore = NtfPostgresStore
   { dbStore :: DBStore,
     dbStoreLog :: Maybe (StoreLog 'WriteMode),
-    tokenNtfsTTL :: Int64
-  }
-
-data NtfPostgresStoreCfg = NtfPostgresStoreCfg
-  { dbOpts :: DBOpts,
-    dbStoreLogPath :: Maybe FilePath,
-    confirmMigrations :: MigrationConfirmation,
-    tokenNtfsTTL :: Int64
+    deletedTTL :: Int64
   }
 
 mkNtfTknRec :: NtfTokenId -> NewNtfEntity 'Token -> C.PrivateKeyX25519 -> C.DhSecretX25519 -> NtfRegCode -> RoundedSystemTime -> NtfTknRec
@@ -98,11 +91,11 @@ data NtfEntityRec (e :: NtfEntity) where
   NtfTkn :: NtfTknRec -> NtfEntityRec 'Token
   NtfSub :: NtfSubRec -> NtfEntityRec 'Subscription
 
-newNtfDbStore :: NtfPostgresStoreCfg -> IO NtfPostgresStore
-newNtfDbStore NtfPostgresStoreCfg {dbOpts, dbStoreLogPath, confirmMigrations, tokenNtfsTTL} = do
+newNtfDbStore :: PostgresStoreCfg -> IO NtfPostgresStore
+newNtfDbStore PostgresStoreCfg {dbOpts, dbStoreLogPath, confirmMigrations, deletedTTL} = do
   dbStore <- either err pure =<< createDBStore dbOpts ntfServerMigrations confirmMigrations
   dbStoreLog <- mapM (openWriteStoreLog True) dbStoreLogPath
-  pure NtfPostgresStore {dbStore, dbStoreLog, tokenNtfsTTL}
+  pure NtfPostgresStore {dbStore, dbStoreLog, deletedTTL}
   where
     err e = do
       logError $ "STORE: newNtfStore, error opening PostgreSQL database, " <> tshow e
@@ -241,10 +234,6 @@ getUsedSMPServers st =
         |]
         (Only (In [NSNew, NSPending, NSActive, NSInactive]))
 
--- TODO [ntfdb] this function should read all subscriptions for a given SMP server and stream them to action in batches of specified size
--- possibly, action can be called for each row and batching to be done outside
-
--- ntfShouldSubscribe should be used directly in DB
 foldNtfSubscriptions :: NtfPostgresStore -> SMPServer -> Int -> s -> (s -> NtfSubRec -> IO s) -> IO s
 foldNtfSubscriptions st srv fetchCount state action =
   withConnection (dbStore st) $ \db ->
@@ -302,11 +291,6 @@ getNtfSubscription st subId =
           (Only subId)
     unless (allowNtfSubCommands tknStatus) $ throwE AUTH
     pure r
-
--- TODO [ntfdb] Currently we seem to reject commands for subscriptions when token is inactive (because of getActiveNtfToken).
--- Probably this needs to change - e.g., it can be subscription creation command,
--- or subscription deletion command, and these commands would permanently fail (?)
--- See comment at NtfTknStatus
 
 type NtfSubRow = (NtfSubscriptionId, NtfPrivateAuthKey, NtfSubStatus)
 
@@ -572,8 +556,10 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore =
           putStrLn $ "incorrect " <> name <> " count: expected " <> show expected <> ", inserted " <> show inserted
           exitFailure
 
-exportNtfDbStore :: NtfPostgresStore -> StoreLog 'WriteMode -> FilePath -> IO (Int, Int, Int)
-exportNtfDbStore NtfPostgresStore {dbStore = s} sl lastNtfsFile =
+exportNtfDbStore :: NtfPostgresStore -> FilePath -> IO (Int, Int, Int)
+exportNtfDbStore NtfPostgresStore {dbStoreLog = Nothing} _ =
+  putStrLn "Internal error: export requires store log" >> exitFailure
+exportNtfDbStore NtfPostgresStore {dbStore = s, dbStoreLog = Just sl} lastNtfsFile =
   (,,) <$> exportTokens <*> exportSubscriptions <*> exportLastNtfs
   where
     exportTokens =
@@ -614,8 +600,6 @@ exportNtfDbStore NtfPostgresStore {dbStore = s} sl lastNtfsFile =
 withDB' :: String -> NtfPostgresStore -> (DB.Connection -> IO a) -> IO (Either ErrorType a)
 withDB' op st action = withDB op st $ fmap Right . action
 
--- TODO [ntfdb] withTransaction?
--- also check SMP server too
 withDB :: forall a. String -> NtfPostgresStore -> (DB.Connection -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
 withDB op st action =
   E.uninterruptibleMask_ $ E.try (withTransaction (dbStore st) action) >>= either logErr pure

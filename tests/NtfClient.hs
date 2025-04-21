@@ -46,10 +46,10 @@ import Simplex.Messaging.Notifications.Server (runNtfServerBlocking)
 import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
-import Simplex.Messaging.Notifications.Server.Store.Postgres (NtfPostgresStoreCfg (..))
 import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM (StartOptions (..))
+import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
@@ -102,16 +102,16 @@ ntfTestServerDBConnectInfo =
     connectDatabase = "ntf_test_server_db"
   }
 
-ntfTestDBCfg :: NtfPostgresStoreCfg
+ntfTestDBCfg :: PostgresStoreCfg
 ntfTestDBCfg =
-  NtfPostgresStoreCfg
+  PostgresStoreCfg
     { dbOpts = ntfTestStoreDBOpts,
       dbStoreLogPath = Just ntfTestStoreLogFile,
       confirmMigrations = MCYesUp,
-      tokenNtfsTTL = 86400
+      deletedTTL = 86400
     }
 
-ntfTestDBCfg2 :: NtfPostgresStoreCfg
+ntfTestDBCfg2 :: PostgresStoreCfg
 ntfTestDBCfg2 = ntfTestDBCfg {dbOpts = ntfTestStoreDBOpts2, dbStoreLogPath = Just ntfTestStoreLogFile2}
 
 testNtfClient :: Transport c => (THandleNTF c 'TClient -> IO a) -> IO a
@@ -170,7 +170,7 @@ ntfServerCfgVPrev =
     smpCfg' = smpCfg smpAgentCfg'
     serverVRange' = serverVRange smpCfg'
 
-withNtfServerThreadOn :: HasCallStack => ATransport -> ServiceName -> NtfPostgresStoreCfg -> (HasCallStack => ThreadId -> IO a) -> IO a
+withNtfServerThreadOn :: HasCallStack => ATransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => ThreadId -> IO a) -> IO a
 withNtfServerThreadOn t port' dbStoreConfig =
   withNtfServerCfg ntfServerCfg {transports = [(port', t, False)], dbStoreConfig}
 
@@ -183,7 +183,7 @@ withNtfServerCfg cfg@NtfServerConfig {transports} =
         (\started -> runNtfServerBlocking started cfg)
         (pure ())
 
-withNtfServerOn :: HasCallStack => ATransport -> ServiceName -> NtfPostgresStoreCfg -> (HasCallStack => IO a) -> IO a
+withNtfServerOn :: HasCallStack => ATransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => IO a) -> IO a
 withNtfServerOn t port' dbStoreConfig = withNtfServerThreadOn t port' dbStoreConfig . const
 
 withNtfServer :: HasCallStack => ATransport -> (HasCallStack => IO a) -> IO a

@@ -119,7 +119,6 @@ logDeleteSubscription s subId = logNtfStoreRecord s $ DeleteSubscription subId
 readWriteNtfSTMStore :: FilePath -> NtfSTMStore -> IO (StoreLog 'WriteMode)
 readWriteNtfSTMStore = readWriteStoreLog readNtfStore writeNtfStore
 
--- TODO [ntfdb] there is no need to read into lookup indices, and the functions and NtfSMPStore type can be moved here
 readNtfStore :: FilePath -> NtfSTMStore -> IO ()
 readNtfStore f st = mapM_ (addNtfLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f
   where
