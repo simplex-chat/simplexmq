@@ -635,20 +635,17 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
     processCommand = \case
       NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> (corrId,NoEntity,) <$> do
         logDebug "TNEW - new token"
-        st <- asks store
         (srvDhPubKey, srvDhPrivKey) <- atomically . C.generateKeyPair =<< asks random
         let dhSecret = C.dh' dhPubKey srvDhPrivKey
         tknId <- getId
         regCode <- getRegCode
         ts <- liftIO $ getSystemDate
         let tkn = mkNtfTknRec tknId newTkn srvDhPrivKey dhSecret regCode ts
-        liftIO (addNtfToken st tkn) >>= \case
-          Left e -> pure $ NRErr e
-          Right () -> do
-            atomically $ writeTBQueue pushQ (tkn, PNVerification regCode)
-            incNtfStatT token ntfVrfQueued
-            incNtfStatT token tknCreated
-            pure $ NRTknId tknId srvDhPubKey
+        withNtfStore (`addNtfToken` tkn) $ \_ -> do
+          atomically $ writeTBQueue pushQ (tkn, PNVerification regCode)
+          incNtfStatT token ntfVrfQueued
+          incNtfStatT token tknCreated
+          pure $ NRTknId tknId srvDhPubKey
       NtfReqCmd SToken (NtfTkn tkn@NtfTknRec {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhPrivKey}) (corrId, tknId, cmd) -> do
         (corrId,tknId,) <$> case cmd of
           TNEW (NewNtfTkn _ _ dhPubKey) -> do
@@ -664,14 +661,11 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
           TVFY code -- this allows repeated verification for cases when client connection dropped before server response
             | (tknStatus == NTRegistered || tknStatus == NTConfirmed || tknStatus == NTActive) && tknRegCode == code -> do
                 logDebug "TVFY - token verified"
-                st <- asks store
-                liftIO (setTknStatusActive st tkn) >>= \case
-                  Left e -> pure $ NRErr e
-                  Right tIds -> do
-                    -- TODO [ntfdb] this will be unnecessary if all cron notifications move to one thread
-                    forM_ tIds cancelInvervalNotifications
-                    incNtfStatT token tknVerified
-                    pure NROk
+                withNtfStore (`setTknStatusActive` tkn) $ \tIds -> do
+                  -- TODO [ntfdb] this will be unnecessary if all cron notifications move to one thread
+                  forM_ tIds cancelInvervalNotifications
+                  incNtfStatT token tknVerified
+                  pure NROk
             | otherwise -> do
                 logDebug "TVFY - incorrect code or token status"
                 liftIO $ print tkn
@@ -683,53 +677,41 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             pure $ NRTkn tknStatus
           TRPL token' -> do
             logDebug "TRPL - replace token"
-            st <- asks store
             regCode <- getRegCode
             let tkn' = tkn {token = token', tknStatus = NTRegistered, tknRegCode = regCode}
-            liftIO (replaceNtfToken st tkn') >>= \case
-              Left e -> pure $ NRErr e
-              Right () -> do
-                atomically $ writeTBQueue pushQ (tkn', PNVerification regCode)
-                incNtfStatT token ntfVrfQueued
-                incNtfStatT token tknReplaced
-                pure NROk
+            withNtfStore (`replaceNtfToken` tkn') $ \_ -> do
+              atomically $ writeTBQueue pushQ (tkn', PNVerification regCode)
+              incNtfStatT token ntfVrfQueued
+              incNtfStatT token tknReplaced
+              pure NROk
           TDEL -> do
             logDebug "TDEL"
-            st <- asks store
-            liftIO (deleteNtfToken st tknId) >>= \case
-              Left e -> pure $ NRErr e
-              Right ss -> do
-                forM_ ss $ \(smpServer, nIds) -> do
-                  atomically $ removeSubscriptions ca smpServer SPNotifier nIds
-                  atomically $ removePendingSubs ca smpServer SPNotifier nIds
-                cancelInvervalNotifications tknId
-                incNtfStatT token tknDeleted
-                pure NROk
+            withNtfStore (`deleteNtfToken` tknId) $ \ss -> do
+              forM_ ss $ \(smpServer, nIds) -> do
+                atomically $ removeSubscriptions ca smpServer SPNotifier nIds
+                atomically $ removePendingSubs ca smpServer SPNotifier nIds
+              cancelInvervalNotifications tknId
+              incNtfStatT token tknDeleted
+              pure NROk
           TCRN 0 -> do
             logDebug "TCRN 0"
-            st <- asks store
-            liftIO (updateTknCronInterval st ntfTknId 0) >>= \case
-              Left e -> pure $ NRErr e
-              Right () -> do
-                -- TODO [ntfdb] move cron intervals to one thread
-                cancelInvervalNotifications tknId
-                pure NROk
+            withNtfStore (\st -> updateTknCronInterval st ntfTknId 0) $ \_ -> do
+              -- TODO [ntfdb] move cron intervals to one thread
+              cancelInvervalNotifications tknId
+              pure NROk
           TCRN int
             | int < 20 -> pure $ NRErr QUOTA
             | otherwise -> do
                 logDebug "TCRN"
-                st <- asks store
-                liftIO (updateTknCronInterval st ntfTknId int) >>= \case
-                  Left e -> pure $ NRErr e
-                  Right () -> do
-                    -- TODO [ntfdb] move cron intervals to one thread
-                    liftIO (TM.lookupIO tknId intervalNotifiers) >>= \case
-                      Nothing -> runIntervalNotifier int
-                      Just IntervalNotifier {interval, action} ->
-                        unless (interval == int) $ do
-                          uninterruptibleCancel action
-                          runIntervalNotifier int
-                    pure NROk
+                withNtfStore (\st -> updateTknCronInterval st ntfTknId int) $ \_ -> do
+                  -- TODO [ntfdb] move cron intervals to one thread
+                  liftIO (TM.lookupIO tknId intervalNotifiers) >>= \case
+                    Nothing -> runIntervalNotifier int
+                    Just IntervalNotifier {interval, action} ->
+                      unless (interval == int) $ do
+                        uninterruptibleCancel action
+                        runIntervalNotifier int
+                  pure NROk
             where
               runIntervalNotifier interval = do
                 action <- async . intervalNotifier $ fromIntegral interval * 1000000 * 60
@@ -741,18 +723,16 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
                     atomically $ writeTBQueue pushQ (tkn, PNCheckMessages)
       NtfReqNew corrId (ANE SSubscription newSub@(NewNtfSub _ (SMPQueueNtf srv _) _)) -> do
         logDebug "SNEW - new subscription"
-        st <- asks store
         subId <- getId
         let sub = mkNtfSubData subId newSub
         resp <-
-          liftIO (addNtfSubscription st sub) >>= \case
-            Left e -> pure $ NRErr e
-            Right True -> do
+          withNtfStore (`addNtfSubscription` sub) $ \case
+            True -> do
               atomically $ writeTBQueue newSubQ (srv, [sub])
               incNtfStat subCreated
               pure $ NRSubId subId
             -- TODO [ntfdb] we must allow repeated inserts that don't change credentials
-            Right False -> pure $ NRErr AUTH
+            False -> pure $ NRErr AUTH
         pure (corrId, NoEntity, resp)
       NtfReqCmd SSubscription (NtfSub NtfSubRec {smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
         (corrId,subId,) <$> case cmd of
@@ -768,14 +748,11 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             pure $ NRSub subStatus
           SDEL -> do
             logDebug "SDEL"
-            st <- asks store
-            liftIO (deleteNtfSubscription st subId) >>= \case
-              Left e -> pure $ NRErr e
-              Right () -> do
-                atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
-                atomically $ removePendingSub ca smpServer (SPNotifier, notifierId)
-                incNtfStat subDeleted
-                pure NROk
+            withNtfStore (`deleteNtfSubscription` subId) $ \_ -> do
+              atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
+              atomically $ removePendingSub ca smpServer (SPNotifier, notifierId)
+              incNtfStat subDeleted
+              pure NROk
           PING -> pure NRPong
       NtfReqPing corrId entId -> pure (corrId, entId, NRPong)
     getId :: M NtfEntityId
@@ -788,6 +765,13 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
     cancelInvervalNotifications tknId =
       atomically (TM.lookupDelete tknId intervalNotifiers)
         >>= mapM_ (uninterruptibleCancel . action)
+
+withNtfStore :: (NtfPostgresStore -> IO (Either ErrorType a)) -> (a -> M NtfResponse) -> M NtfResponse
+withNtfStore stAction continue = do
+  st <- asks store
+  liftIO (stAction st) >>= \case
+    Left e -> pure $ NRErr e
+    Right a -> continue a
 
 incNtfStatT :: DeviceToken -> (NtfServerStats -> IORef Int) -> M ()
 incNtfStatT (DeviceToken PPApnsNull _) _ = pure ()
