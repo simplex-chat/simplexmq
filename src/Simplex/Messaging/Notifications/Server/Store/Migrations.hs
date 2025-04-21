@@ -35,7 +35,7 @@ CREATE TABLE tokens(
   reg_code BYTEA NOT NULL,
   cron_interval BIGINT NOT NULL,
   cron_sent_at BIGINT,
-  updated_at BIGINT NOT NULL,
+  updated_at BIGINT,
   PRIMARY KEY (token_id)
 );
 

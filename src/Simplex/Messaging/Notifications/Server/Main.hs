@@ -70,14 +70,18 @@ ntfServerCLI cfgPath logPath =
     Database cmd dbOpts@DBOpts {connstr, schema} -> withIniFile $ \ini -> do
       schemaExists <- checkSchemaExists connstr schema
       storeLogExists <- doesFileExist storeLogFilePath
+      lastNtfsExists <- doesFileExist defaultLastNtfsFile
       case cmd of
         SCImport
-          | schemaExists && storeLogExists -> exitConfigureNtfStore connstr schema
+          | schemaExists && (storeLogExists || lastNtfsExists) -> exitConfigureNtfStore connstr schema
           | schemaExists -> do
               putStrLn $ "Schema " <> B.unpack schema <> " already exists in PostrgreSQL database: " <> B.unpack connstr
               exitFailure
           | not storeLogExists -> do
               putStrLn $ storeLogFilePath <> " file does not exist."
+              exitFailure
+          | not lastNtfsExists -> do
+              putStrLn $ defaultLastNtfsFile <> " file does not exist."
               exitFailure
           | otherwise -> do
               storeLogFile <- getRequiredStoreLogFile ini
@@ -85,14 +89,13 @@ ntfServerCLI cfgPath logPath =
                 ("WARNING: store log file " <> storeLogFile <> " will be compacted and imported to PostrgreSQL database: " <> B.unpack connstr <> ", schema: " <> B.unpack schema)
                 "Notification server store not imported"
               stmStore <- newNtfSTMStore
-              sl <- readWriteNtfSTMStore storeLogFile stmStore
+              sl <- readWriteNtfSTMStore True storeLogFile stmStore
               closeStoreLog sl
               restoreServerLastNtfs stmStore defaultLastNtfsFile
               let storeCfg = PostgresStoreCfg {dbOpts = dbOpts {createSchema = True}, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}
               ps <- newNtfDbStore storeCfg
               (tCnt, sCnt, nCnt) <- importNtfSTMStore ps stmStore
               renameFile storeLogFile $ storeLogFile <> ".bak"
-              renameFile defaultLastNtfsFile $ defaultLastNtfsFile <> ".bak"
               putStrLn $ "Import completed: " <> show tCnt <> " tokens, " <> show sCnt <> " subscriptions, " <> show nCnt <> " last token notifications."
               putStrLn "Configure database options in INI file."
         SCExport
@@ -102,6 +105,9 @@ ntfServerCLI cfgPath logPath =
               exitFailure
           | storeLogExists -> do
               putStrLn $ storeLogFilePath <> " file already exists."
+              exitFailure
+          | lastNtfsExists -> do
+              putStrLn $ defaultLastNtfsFile <> " file already exists."
               exitFailure
           | otherwise -> do
               confirmOrExit

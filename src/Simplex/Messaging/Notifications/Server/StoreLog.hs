@@ -27,12 +27,9 @@ module Simplex.Messaging.Notifications.Server.StoreLog
 where
 
 import Control.Concurrent.STM
-import Control.Logger.Simple
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
-import qualified Data.Text as T
 import Data.Word (Word16)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
@@ -40,7 +37,6 @@ import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
 import Simplex.Messaging.Server.StoreLog
-import Simplex.Messaging.Util (safeDecodeUtf8)
 import System.IO
 
 data NtfStoreLogRecord
@@ -116,47 +112,48 @@ logSubscriptionStatus s subId subStatus = logNtfStoreRecord s $ SubscriptionStat
 logDeleteSubscription :: StoreLog 'WriteMode -> NtfSubscriptionId -> IO ()
 logDeleteSubscription s subId = logNtfStoreRecord s $ DeleteSubscription subId
 
-readWriteNtfSTMStore :: FilePath -> NtfSTMStore -> IO (StoreLog 'WriteMode)
-readWriteNtfSTMStore = readWriteStoreLog readNtfStore writeNtfStore
+readWriteNtfSTMStore :: Bool -> FilePath -> NtfSTMStore -> IO (StoreLog 'WriteMode)
+readWriteNtfSTMStore tty = readWriteStoreLog (readNtfStore tty) writeNtfStore
 
-readNtfStore :: FilePath -> NtfSTMStore -> IO ()
-readNtfStore f st = mapM_ (addNtfLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f
+readNtfStore :: Bool -> FilePath -> NtfSTMStore -> IO ()
+readNtfStore tty f st = readLogLines tty f $ \_ -> processLine
   where
-    addNtfLogRecord s = case strDecode s of
-      Left e -> logError $ "Log parsing error (" <> T.pack e <> "): " <> safeDecodeUtf8 (B.take 100 s)
-      Right lr -> case lr of
-        CreateToken r@NtfTknRec {ntfTknId} -> do
-          tkn <- mkTknData r
-          atomically $ stmAddNtfToken st ntfTknId tkn
-        TokenStatus tknId status -> do
-          tkn_ <- stmGetNtfTokenIO st tknId
-          forM_ tkn_ $ \tkn@NtfTknData {tknStatus} -> do
-            atomically $ writeTVar tknStatus status
-            when (status == NTActive) $ void $ atomically $ stmRemoveInactiveTokenRegistrations st tkn
-        UpdateToken tknId token' tknRegCode -> do
-          stmGetNtfTokenIO st tknId
-            >>= mapM_
-              ( \tkn@NtfTknData {tknStatus} -> do
-                  atomically $ stmRemoveTokenRegistration st tkn
-                  atomically $ writeTVar tknStatus NTRegistered
-                  atomically $ stmAddNtfToken st tknId tkn {token = token', tknRegCode}
-              )
-        TokenCron tknId cronInt ->
-          stmGetNtfTokenIO st tknId
-            >>= mapM_ (\NtfTknData {tknCronInterval} -> atomically $ writeTVar tknCronInterval cronInt)
-        DeleteToken tknId ->
-          atomically $ void $ stmDeleteNtfToken st tknId
-        UpdateTokenTime tknId t ->
-          stmGetNtfTokenIO st tknId
-            >>= mapM_ (\NtfTknData {tknUpdatedAt} -> atomically $ writeTVar tknUpdatedAt $ Just t)
-        CreateSubscription r@NtfSubRec {ntfSubId} -> do
-          sub <- mkSubData r
-          void $ atomically $ stmAddNtfSubscription st ntfSubId sub
-        SubscriptionStatus subId status -> do
-          stmGetNtfSubscriptionIO st subId
-            >>= mapM_ (\NtfSubData {subStatus} -> atomically $ writeTVar subStatus status)
-        DeleteSubscription subId ->
-          atomically $ stmDeleteNtfSubscription st subId
+    processLine s = either printError procNtfLogRecord (strDecode s)
+      where
+        printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> B.take 100 s
+        procNtfLogRecord = \case
+          CreateToken r@NtfTknRec {ntfTknId} -> do
+            tkn <- mkTknData r
+            atomically $ stmAddNtfToken st ntfTknId tkn
+          TokenStatus tknId status -> do
+            tkn_ <- stmGetNtfTokenIO st tknId
+            forM_ tkn_ $ \tkn@NtfTknData {tknStatus} -> do
+              atomically $ writeTVar tknStatus status
+              when (status == NTActive) $ void $ atomically $ stmRemoveInactiveTokenRegistrations st tkn
+          UpdateToken tknId token' tknRegCode -> do
+            stmGetNtfTokenIO st tknId
+              >>= mapM_
+                ( \tkn@NtfTknData {tknStatus} -> do
+                    atomically $ stmRemoveTokenRegistration st tkn
+                    atomically $ writeTVar tknStatus NTRegistered
+                    atomically $ stmAddNtfToken st tknId tkn {token = token', tknRegCode}
+                )
+          TokenCron tknId cronInt ->
+            stmGetNtfTokenIO st tknId
+              >>= mapM_ (\NtfTknData {tknCronInterval} -> atomically $ writeTVar tknCronInterval cronInt)
+          DeleteToken tknId ->
+            atomically $ void $ stmDeleteNtfToken st tknId
+          UpdateTokenTime tknId t ->
+            stmGetNtfTokenIO st tknId
+              >>= mapM_ (\NtfTknData {tknUpdatedAt} -> atomically $ writeTVar tknUpdatedAt $ Just t)
+          CreateSubscription r@NtfSubRec {ntfSubId} -> do
+            sub <- mkSubData r
+            void $ atomically $ stmAddNtfSubscription st ntfSubId sub
+          SubscriptionStatus subId status -> do
+            stmGetNtfSubscriptionIO st subId
+              >>= mapM_ (\NtfSubData {subStatus} -> atomically $ writeTVar subStatus status)
+          DeleteSubscription subId ->
+            atomically $ stmDeleteNtfSubscription st subId
 
 writeNtfStore :: StoreLog 'WriteMode -> NtfSTMStore -> IO ()
 writeNtfStore s NtfSTMStore {tokens, subscriptions} = do
