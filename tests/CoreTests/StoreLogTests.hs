@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -21,6 +22,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM (readWriteQueueStore)
+import Simplex.Messaging.Server.Main
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
@@ -53,7 +55,6 @@ deriving instance Eq StoreLogRecord
 
 deriving instance Eq NtfCreds
 
--- TODO [short links] test store log with queue data
 storeLogTests :: Spec
 storeLogTests =
   forM_ [QMMessaging, QMContact] $ \qm -> do
@@ -138,6 +139,15 @@ testSMPStoreLog testSuite tests =
     mapM_ (writeStoreLogRecord l) saved
     closeStoreLog l
     replicateM_ 3 $ testReadWrite t
+#if defined(dbServerPostgres)
+    qCnt <- fromIntegral <$> importStoreLogToDatabase "tests/tmp/" testStoreLogFile testStoreDBOpts
+    qCnt `shouldBe` length (compacted t)
+    imported <- B.readFile $ testStoreLogFile <> ".bak"
+    qCnt' <- exportDatabaseToStoreLog "tests/tmp/" testStoreDBOpts testStoreLogFile
+    qCnt' `shouldBe` qCnt
+    exported <- B.readFile testStoreLogFile
+    imported `shouldBe` exported
+#endif
   where
     testReadWrite SLTC {compacted, state} = do
       st <- newMsgStore $ testJournalStoreCfg MQStoreCfg

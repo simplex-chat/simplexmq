@@ -374,7 +374,12 @@ batchInsertQueues tty queues toStore = do
   let st = dbStore toStore
   count <-
     withConnection st $ \db -> do
-      DB.copy_ db "COPY msg_queues (recipient_id, recipient_keys, rcv_dh_secret, sender_id, sender_key, snd_secure, notifier_id, notifier_key, rcv_ntf_dh_secret, status, updated_at) FROM STDIN WITH (FORMAT CSV)"
+      DB.copy_
+        db
+        [sql|
+          COPY msg_queues (recipient_id, recipient_keys, rcv_dh_secret, sender_id, sender_key, queue_mode, notifier_id, notifier_key, rcv_ntf_dh_secret, status, updated_at, link_id, fixed_data, user_data)
+          FROM STDIN WITH (FORMAT CSV)
+        |]
       mapM_ (putQueue db) (zip [1..] qs)
       DB.putCopyEnd db
   Only qCnt : _ <- withConnection st (`DB.query_` "SELECT count(*) FROM msg_queues")
