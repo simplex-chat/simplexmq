@@ -12,14 +12,12 @@ module Simplex.Messaging.Notifications.Server.StoreLog
     NtfStoreLogRecord (..),
     readWriteNtfSTMStore,
     logCreateToken,
-    logCreateTokenRec,
     logTokenStatus,
     logUpdateToken,
     logTokenCron,
     logDeleteToken,
     logUpdateTokenTime,
     logCreateSubscription,
-    logCreateSubscriptionRec,
     logSubscriptionStatus,
     logDeleteSubscription,
     closeStoreLog,
@@ -29,12 +27,14 @@ where
 import Control.Concurrent.STM
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.ByteString.Base64.URL as B64
 import qualified Data.ByteString.Char8 as B
 import Data.Word (Word16)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.Store.Types
+import Simplex.Messaging.Protocol (EntityId (..))
 import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
 import Simplex.Messaging.Server.StoreLog
 import System.IO
@@ -79,11 +79,8 @@ logNtfStoreRecord :: StoreLog 'WriteMode -> NtfStoreLogRecord -> IO ()
 logNtfStoreRecord = writeStoreLogRecord
 {-# INLINE logNtfStoreRecord #-}
 
-logCreateToken :: StoreLog 'WriteMode -> NtfTknData -> IO ()
-logCreateToken s tkn = logNtfStoreRecord s . CreateToken =<< mkTknRec tkn
-
-logCreateTokenRec :: StoreLog 'WriteMode -> NtfTknRec -> IO ()
-logCreateTokenRec s = logNtfStoreRecord s . CreateToken
+logCreateToken :: StoreLog 'WriteMode -> NtfTknRec -> IO ()
+logCreateToken s = logNtfStoreRecord s . CreateToken
 
 logTokenStatus :: StoreLog 'WriteMode -> NtfTokenId -> NtfTknStatus -> IO ()
 logTokenStatus s tknId tknStatus = logNtfStoreRecord s $ TokenStatus tknId tknStatus
@@ -100,11 +97,8 @@ logDeleteToken s tknId = logNtfStoreRecord s $ DeleteToken tknId
 logUpdateTokenTime :: StoreLog 'WriteMode -> NtfTokenId -> RoundedSystemTime -> IO ()
 logUpdateTokenTime s tknId t = logNtfStoreRecord s $ UpdateTokenTime tknId t
 
-logCreateSubscription :: StoreLog 'WriteMode -> NtfSubData -> IO ()
-logCreateSubscription s sub = logNtfStoreRecord s . CreateSubscription =<< mkSubRec sub
-
-logCreateSubscriptionRec :: StoreLog 'WriteMode -> NtfSubRec -> IO ()
-logCreateSubscriptionRec s = logNtfStoreRecord s . CreateSubscription
+logCreateSubscription :: StoreLog 'WriteMode -> NtfSubRec -> IO ()
+logCreateSubscription s = logNtfStoreRecord s . CreateSubscription
 
 logSubscriptionStatus :: StoreLog 'WriteMode -> NtfSubscriptionId -> NtfSubStatus -> IO ()
 logSubscriptionStatus s subId subStatus = logNtfStoreRecord s $ SubscriptionStatus subId subStatus
@@ -146,9 +140,13 @@ readNtfStore tty f st = readLogLines tty f $ \_ -> processLine
           UpdateTokenTime tknId t ->
             stmGetNtfTokenIO st tknId
               >>= mapM_ (\NtfTknData {tknUpdatedAt} -> atomically $ writeTVar tknUpdatedAt $ Just t)
-          CreateSubscription r@NtfSubRec {ntfSubId} -> do
+          CreateSubscription r@NtfSubRec {tokenId, ntfSubId} -> do
             sub <- mkSubData r
-            void $ atomically $ stmAddNtfSubscription st ntfSubId sub
+            atomically (stmAddNtfSubscription st ntfSubId sub) >>= \case
+              Just () -> pure ()
+              Nothing -> B.putStrLn $ "Warning: no token " <> enc tokenId <> ", subscription " <> enc ntfSubId
+            where
+              enc = B64.encode . unEntityId
           SubscriptionStatus subId status -> do
             stmGetNtfSubscriptionIO st subId
               >>= mapM_ (\NtfSubData {subStatus} -> atomically $ writeTVar subStatus status)
@@ -157,5 +155,5 @@ readNtfStore tty f st = readLogLines tty f $ \_ -> processLine
 
 writeNtfStore :: StoreLog 'WriteMode -> NtfSTMStore -> IO ()
 writeNtfStore s NtfSTMStore {tokens, subscriptions} = do
-  mapM_ (logCreateToken s) =<< readTVarIO tokens
-  mapM_ (logCreateSubscription s) =<< readTVarIO subscriptions
+  mapM_ (logCreateToken s <=< mkTknRec) =<< readTVarIO tokens
+  mapM_ (logCreateSubscription s <=< mkSubRec) =<< readTVarIO subscriptions

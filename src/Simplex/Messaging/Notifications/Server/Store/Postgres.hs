@@ -110,16 +110,23 @@ addNtfToken :: NtfPostgresStore -> NtfTknRec -> IO (Either ErrorType ())
 addNtfToken st tkn =
   withDB "addNtfToken" st $ \db ->
     E.try (DB.execute db insertNtfTknQuery $ ntfTknToRow tkn)
-      >>= bimapM handleDuplicate (\_ -> withLog "addNtfToken" st (`logCreateTokenRec` tkn))
+      >>= bimapM handleDuplicate (\_ -> withLog "addNtfToken" st (`logCreateToken` tkn))
 
--- TODO [ntfdb] this conflict resolution is incorrect
 insertNtfTknQuery :: Query
 insertNtfTknQuery =
   [sql|
     INSERT INTO tokens
       (token_id, push_provider, push_provider_token, status, verify_key, dh_priv_key, dh_secret, reg_code, cron_interval, updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?)
-    ON CONFLICT DO NOTHING
+    ON CONFLICT (push_provider, push_provider_token, verify_key)
+    DO UPDATE SET
+      token_id = EXCLUDED.token_id,
+      status = EXCLUDED.status,
+      dh_priv_key = EXCLUDED.dh_priv_key,
+      dh_secret = EXCLUDED.dh_secret,
+      reg_code = EXCLUDED.reg_code,
+      cron_interval = EXCLUDED.cron_interval,
+      updated_at = EXCLUDED.updated_at
   |]
 
 replaceNtfToken :: NtfPostgresStore -> NtfTknRec -> IO (Either ErrorType ())
@@ -239,9 +246,13 @@ getUsedSMPServers st =
       DB.query
         db
         [sql|
-          SELECT smp_host, smp_port, smp_keyhash
-          FROM smp_servers
-          WHERE EXISTS (SELECT 1 FROM subscriptions WHERE status IN ?)
+          SELECT p.smp_host, p.smp_port, p.smp_keyhash
+          FROM smp_servers p
+          WHERE EXISTS (
+            SELECT 1 FROM subscriptions s
+            WHERE s.smp_server_id = p.smp_server_id
+              AND s.status IN ?
+          )
         |]
         (Only (In [NSNew, NSPending, NSActive, NSInactive]))
 
@@ -324,8 +335,8 @@ rowToNtfTknMaybeSub smpQueue (tknRow :. subRow)  =
         _ -> Nothing
    in (tkn, sub_)
 
-mkNtfSubData :: NtfSubscriptionId -> NewNtfEntity 'Subscription -> NtfSubRec
-mkNtfSubData ntfSubId (NewNtfSub tokenId smpQueue notifierKey) =
+mkNtfSubRec :: NtfSubscriptionId -> NewNtfEntity 'Subscription -> NtfSubRec
+mkNtfSubRec ntfSubId (NewNtfSub tokenId smpQueue notifierKey) =
   NtfSubRec {ntfSubId, tokenId, smpQueue, subStatus = NSNew, notifierKey}
 
 updateTknStatus :: NtfPostgresStore -> NtfTknRec -> NtfTknStatus -> IO (Either ErrorType ())
@@ -366,43 +377,46 @@ addNtfSubscription :: NtfPostgresStore -> NtfSubRec -> IO (Either ErrorType Bool
 addNtfSubscription st sub =
   withDB "addNtfSubscription" st $ \db -> runExceptT $ do
     srvId :: Int64 <- ExceptT $ upsertServer db $ ntfSubServer' sub
-    n <- liftIO $ DB.execute db insertNtfSubQuery (ntfSubToRow srvId sub)
-    withLog "addNtfSubscription" st (`logCreateSubscriptionRec` sub)
+    n <- liftIO $ DB.execute db insertNtfSubQuery $ ntfSubToRow srvId sub
+    withLog "addNtfSubscription" st (`logCreateSubscription` sub)
     pure $ n > 0
   where
-    -- SELECT ... - to avoid writes in case row exists, this is the most common scenario for this table.
-    -- COALESCE prevents evaluation of INSERT when row exists.
-    -- ON CONFLICT ... UPDATE ... RETURNING - to return row ID created by a concurrent transaction after SELECT.
-    -- no-op update instead of DO NOTHING - for RETURNING to work when row exists.
-    upsertServer db srv =
+    upsertServer db srv = do
       firstRow fromOnly (STORE "error inserting SMP server when adding subscription") $
         DB.query
           db
           [sql|
-            WITH existing AS (
+            WITH inserted AS (
+              INSERT INTO smp_servers (smp_host, smp_port, smp_keyhash) VALUES (?, ?, ?)
+              ON CONFLICT (smp_host, smp_port, smp_keyhash) DO NOTHING
+              RETURNING smp_server_id
+            ),
+            existing AS (
               SELECT smp_server_id
               FROM smp_servers
               WHERE smp_host = ? AND smp_port = ? AND smp_keyhash = ?
-            ),
-            inserted AS (
-              INSERT INTO smp_servers (smp_host, smp_port, smp_keyhash) VALUES (?, ?, ?)
-              ON CONFLICT (smp_host, smp_port, smp_keyhash)
-              DO UPDATE SET smp_host = EXCLUDED.smp_host
-              RETURNING smp_server_id
             )
             SELECT COALESCE(
-              (SELECT smp_server_id FROM existing),
-              (SELECT smp_server_id FROM inserted)
+              (SELECT smp_server_id FROM inserted),
+              (SELECT smp_server_id FROM existing)
             ) AS smp_server_id;
           |]
           (srvToRow srv :. srvToRow srv)
 
+-- TODO [ntfdb] can they be incorrectly replaced
 insertNtfSubQuery :: Query
 insertNtfSubQuery =
   [sql|
     INSERT INTO subscriptions (token_id, smp_server_id, smp_notifier_id, subscription_id, smp_notifier_key, status)
     VALUES (?,?,?,?,?,?)
-    ON CONFLICT (smp_server_id, smp_notifier_id) DO NOTHING
+    ON CONFLICT (smp_server_id, smp_notifier_id)
+    DO UPDATE SET
+      token_id = EXCLUDED.token_id,
+      smp_server_id = EXCLUDED.smp_server_id,
+      smp_notifier_id = EXCLUDED.smp_notifier_id,
+      subscription_id = EXCLUDED.subscription_id,
+      smp_notifier_key = EXCLUDED.smp_notifier_key,
+      status = EXCLUDED.status
   |]
 
 ntfSubToRow :: Int64 -> NtfSubRec -> (NtfTokenId, Int64, NotifierId) :. NtfSubRow
@@ -536,7 +550,7 @@ addTokenLastNtf st newNtf =
             FOR UPDATE OF t, s
           |]
           (smpQueueToRow q)
-    unless (allowNtfSubCommands tknStatus) $ throwE AUTH
+    unless (tknStatus == NTActive) $ throwE AUTH
     lastNtfs_ <-
       liftIO $ map toLastNtf <$>
         DB.query
@@ -555,13 +569,13 @@ addTokenLastNtf st newNtf =
                 SELECT token_ntf_id, subscription_id, sent_at, nmsg_nonce, nmsg_data
                 FROM last_notifications
                 WHERE token_id = ?
-                ORDER BY token_ntf_id DESC
+                ORDER BY sent_at DESC
                 LIMIT ?
               ),
               delete AS (
                 DELETE FROM last_notifications
                 WHERE token_id = ?
-                  AND token_ntf_id < (SELECT min(token_ntf_id) FROM last)
+                  AND sent_at < (SELECT min(sent_at) FROM last)
               )
               SELECT p.smp_host, p.smp_port, p.smp_keyhash, s.smp_notifier_id,
                 l.sent_at, l.nmsg_nonce, l.nmsg_data
@@ -591,9 +605,7 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore =
       tokens <- M.elems <$> readTVarIO (tokens stmStore)
       tknRows <- mapM (fmap ntfTknToRow . mkTknRec) tokens
       tCnt <- withConnection s $ \db -> DB.executeMany db insertNtfTknQuery tknRows
-      pure tCnt
-      -- TODO [ntfdb] the first 100k rows from ntf3 have 2 duplicate tokens that are currently ignored
-      -- checkCount "token" (length tokens) tCnt
+      checkCount "token" (length tokens) tCnt
     importSubscriptions = do
       subs <- M.elems <$> readTVarIO (subscriptions stmStore)
       srvIds <- importServers subs
@@ -639,6 +651,7 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore =
           pure inserted
       | otherwise = do
           putStrLn $ "Incorrect " <> name <> " count: expected " <> show expected <> ", imported " <> show inserted
+          putStrLn "Import aborted, fix data and repeat"
           exitFailure
 
 exportNtfDbStore :: NtfPostgresStore -> FilePath -> IO (Int, Int, Int)
@@ -649,10 +662,10 @@ exportNtfDbStore NtfPostgresStore {dbStore = s, dbStoreLog = Just sl} lastNtfsFi
   where
     exportTokens =
       withConnection s $ \db -> DB.fold_ db ntfTknQuery 0 $ \i tkn ->
-        logCreateTokenRec sl (rowToNtfTkn tkn) $> (i + 1)
+        logCreateToken sl (rowToNtfTkn tkn) $> (i + 1)
     exportSubscriptions =
       withConnection s $ \db -> DB.fold_ db ntfSubQuery 0 $ \i sub ->
-        logCreateSubscriptionRec sl (toNtfSub sub) $> (i + 1)
+        logCreateSubscription sl (toNtfSub sub) $> (i + 1)
       where
         ntfSubQuery =
           [sql|

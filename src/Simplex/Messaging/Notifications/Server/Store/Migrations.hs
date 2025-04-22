@@ -53,7 +53,7 @@ CREATE UNIQUE INDEX idx_smp_servers ON smp_servers(smp_host, smp_port, smp_keyha
 
 CREATE TABLE subscriptions(
   subscription_id BYTEA NOT NULL,
-  token_id BYTEA NOT NULL REFERENCES tokens ON DELETE CASCADE ON UPDATE RESTRICT,
+  token_id BYTEA NOT NULL REFERENCES tokens ON DELETE CASCADE ON UPDATE CASCADE,
   smp_server_id BIGINT REFERENCES smp_servers ON DELETE RESTRICT ON UPDATE RESTRICT,
   smp_notifier_id BYTEA NOT NULL,
   smp_notifier_key BYTEA NOT NULL,
@@ -61,19 +61,20 @@ CREATE TABLE subscriptions(
   PRIMARY KEY (subscription_id)
 );
 
-CREATE UNIQUE INDEX idx_subscriptions_smp_notifier ON subscriptions(smp_server_id, smp_notifier_id);
+CREATE UNIQUE INDEX idx_subscriptions_smp_server_id_notifier_id ON subscriptions(smp_server_id, smp_notifier_id);
+CREATE INDEX idx_subscriptions_smp_server_id_status ON subscriptions(smp_server_id, status);
 CREATE INDEX idx_subscriptions_token_id ON subscriptions(token_id);
 
 CREATE TABLE last_notifications(
   token_ntf_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-  token_id BYTEA NOT NULL REFERENCES tokens ON DELETE CASCADE ON UPDATE RESTRICT,
+  token_id BYTEA NOT NULL REFERENCES tokens ON DELETE CASCADE ON UPDATE CASCADE,
   subscription_id BYTEA NOT NULL REFERENCES subscriptions ON DELETE CASCADE ON UPDATE RESTRICT,
   sent_at BIGINT NOT NULL,
   nmsg_nonce BYTEA NOT NULL,
   nmsg_data BYTEA NOT NULL
 );
 
-CREATE INDEX idx_last_notifications_token_id ON last_notifications(token_id);
+CREATE INDEX idx_last_notifications_token_id ON last_notifications(token_id, sent_at);
 CREATE INDEX idx_last_notifications_subscription_id ON last_notifications(subscription_id);
 
 CREATE UNIQUE INDEX idx_last_notifications_token_subscription ON last_notifications(token_id, subscription_id);

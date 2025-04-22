@@ -724,7 +724,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
       NtfReqNew corrId (ANE SSubscription newSub@(NewNtfSub _ (SMPQueueNtf srv _) _)) -> do
         logDebug "SNEW - new subscription"
         subId <- getId
-        let sub = mkNtfSubData subId newSub
+        let sub = mkNtfSubRec subId newSub
         resp <-
           withNtfStore (`addNtfSubscription` sub) $ \case
             True -> do
