@@ -82,7 +82,12 @@ main = do
           describe "Message store tests" msgStoreTests
           describe "Retry interval tests" retryIntervalTests
           describe "SOCKS settings tests" socksSettingsTests
+#if defined(dbServerPostgres)
+          around_ (postgressBracket testServerDBConnectInfo) $
+            describe "Store log tests" storeLogTests
+#else
           describe "Store log tests" storeLogTests
+#endif
           describe "TRcvQueues tests" tRcvQueuesTests
           describe "Util tests" utilTests
           describe "Agent core tests" agentCoreTests
