@@ -96,7 +96,8 @@ data InitialAgentServers = InitialAgentServers
   { smp :: Map UserId (NonEmpty (ServerCfg 'PSMP)),
     ntf :: [NtfServer],
     xftp :: Map UserId (NonEmpty (ServerCfg 'PXFTP)),
-    netCfg :: NetworkConfig
+    netCfg :: NetworkConfig,
+    presets :: [SMPServer]
   }
 
 data ServerCfg p = ServerCfg

@@ -61,7 +61,8 @@ initServers =
     { smp = M.fromList [(1, testSMPServers)],
       ntf = [testNtfServer],
       xftp = userServers [testXFTPServer],
-      netCfg = defaultNetworkConfig
+      netCfg = defaultNetworkConfig,
+      presets = []
     }
 
 testChooseDifferentOperator :: IO ()

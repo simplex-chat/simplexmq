@@ -176,7 +176,6 @@ import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (toLower, toUpper)
-import Data.Foldable (find)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind (Type)
@@ -198,7 +197,7 @@ import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType)
 import Simplex.FileTransfer.Types (FileErrorType)
 import Simplex.Messaging.Agent.QueryString
-import Simplex.Messaging.Client (ProxyClientError)
+import Simplex.Messaging.Client (ProxyClientError, findPresetSMPServer, isPresetSMPServer)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
   ( InitialKeys (..),
@@ -1541,20 +1540,13 @@ ctTypeChar = \case
 {-# INLINE ctTypeChar #-}
 
 -- the servers passed to this function should be all preset servers, not servers configured by the user.
-shortenShortLink :: NonEmpty SMPServer -> ConnShortLink m -> ConnShortLink m
+shortenShortLink :: [SMPServer] -> ConnShortLink m -> ConnShortLink m
 shortenShortLink presetSrvs = \case
   CSLInvitation sch srv lnkId linkKey -> CSLInvitation sch (shortServer srv) lnkId linkKey
   CSLContact sch ct srv linkKey -> CSLContact sch ct (shortServer srv) linkKey
   where
-    shortServer srv@(SMPServer hs@(h :| _) p kh) =
-      if isPresetServer then SMPServerOnlyHost h else srv
-      where
-        isPresetServer = case findPresetServer srv presetSrvs of
-          Just (SMPServer hs' p' kh') ->
-            all (`elem` hs') hs
-              && (p == p' || (null p' && (p == "443" || p == "5223")))
-              && kh == kh'
-          Nothing -> False
+    shortServer srv@(SMPServer (h :| _) _ _) =
+      if isPresetSMPServer srv presetSrvs then SMPServerOnlyHost h else srv
 
 -- explicit bidirectional is used for ghc 8.10.7 compatibility, [h]/[] patterns are not reversible.
 pattern SMPServerOnlyHost :: TransportHost -> SMPServer
@@ -1563,18 +1555,14 @@ pattern SMPServerOnlyHost h <- SMPServer [h] "" (C.KeyHash "")
     SMPServerOnlyHost h = SMPServer [h] "" (C.KeyHash "")
 
 -- the servers passed to this function should be all preset servers, not servers configured by the user.
-restoreShortLink :: NonEmpty SMPServer -> ConnShortLink m -> ConnShortLink m
+restoreShortLink :: [SMPServer] -> ConnShortLink m -> ConnShortLink m
 restoreShortLink presetSrvs = \case
   CSLInvitation sch srv lnkId linkKey -> CSLInvitation sch (fullServer srv) lnkId linkKey
   CSLContact sch ct srv linkKey -> CSLContact sch ct (fullServer srv) linkKey
   where
     fullServer = \case
-      s@(SMPServerOnlyHost _) -> fromMaybe s $ findPresetServer s presetSrvs
+      s@(SMPServerOnlyHost _) -> fromMaybe s $ findPresetSMPServer s presetSrvs
       s -> s
-
-findPresetServer :: SMPServer -> NonEmpty SMPServer -> Maybe SMPServer
-findPresetServer ProtocolServer {host = h :| _} = find (\ProtocolServer {host = h' :| _} -> h == h')
-{-# INLINE findPresetServer #-}
 
 sameConnReqContact :: ConnectionRequestUri 'CMContact -> ConnectionRequestUri 'CMContact -> Bool
 sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUri ConnReqUriData {crSmpQueues = qs'}) =
