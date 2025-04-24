@@ -62,7 +62,7 @@ initServers =
       ntf = [testNtfServer],
       xftp = userServers [testXFTPServer],
       netCfg = defaultNetworkConfig,
-      presets = []
+      presetDomains = []
     }
 
 testChooseDifferentOperator :: IO ()

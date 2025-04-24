@@ -123,7 +123,6 @@ import Control.Monad.Except
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
-import Data.Aeson (FromJSON (..), withBool)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
@@ -140,7 +139,7 @@ import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
-import Network.Socket (ServiceName)
+import Network.Socket (HostName, ServiceName)
 import Network.Socks5 (SocksCredentials (..))
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
@@ -293,7 +292,7 @@ data NetworkConfig = NetworkConfig
     -- | Fallback to direct connection when destination SMP relay does not support SMP proxy protocol extensions
     smpProxyFallback :: SMPProxyFallback,
     -- | use web port 443 for SMP protocol
-    smpWebPort :: SMPWebPortServers,
+    smpWebPortServers :: SMPWebPortServers,
     -- | timeout for the initial client TCP/TLS connection (microseconds)
     tcpConnectTimeout :: Int,
     -- | timeout of protocol commands (microseconds)
@@ -383,7 +382,7 @@ defaultNetworkConfig =
       sessionMode = TSMSession,
       smpProxyMode = SPMNever,
       smpProxyFallback = SPFAllow,
-      smpWebPort = SWPPreset,
+      smpWebPortServers = SWPPreset,
       tcpConnectTimeout = defaultTcpConnectTimeout,
       tcpTimeout = 15_000_000,
       tcpTimeoutPerKb = 5_000,
@@ -518,7 +517,7 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe ByteString)
 --
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
-getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> [String] -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
+getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> [HostName] -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
 getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
@@ -526,7 +525,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
-    NetworkConfig {smpWebPort, tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
+    NetworkConfig {smpWebPortServers, tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
     mkProtocolClient :: TransportHost -> UTCTime -> IO (PClient v err msg)
     mkProtocolClient transportHost ts = do
       connected <- newTVarIO False
@@ -571,16 +570,16 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     useTransport :: (ServiceName, ATransport)
     useTransport = case port srv of
       "" -> case protocolTypeI @(ProtoType msg) of
-        SPSMP -> case smpWebPort of
-          SWPAll -> ("443", transport @TLS)
-          SWPPreset -> if presetSrv then ("443", transport @TLS) else defaultTransport cfg
-            where
-              presetSrv = case srv of
-                ProtocolServer {host = THDomainName h :| _} -> any (`isSuffixOf` h) presetDomains
-                _ -> False
-          SWPOff -> defaultTransport cfg
+        SPSMP | smpWebPort -> ("443", transport @TLS)
         _ -> defaultTransport cfg
       p -> (p, transport @TLS)
+      where
+        smpWebPort = case smpWebPortServers of
+          SWPAll -> True
+          SWPPreset -> case srv of
+            ProtocolServer {host = THDomainName h :| _} -> any (`isSuffixOf` h) presetDomains
+            _ -> False
+          SWPOff -> False
 
     client :: forall c. Transport c => TProxy c -> PClient v err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient v err msg)) -> c -> IO ()
     client _ c cVar h = do
@@ -1289,13 +1288,7 @@ $(J.deriveJSON (enumJSON $ dropPrefix "SPM") ''SMPProxyMode)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "SPF") ''SMPProxyFallback)
 
-$(J.deriveToJSON (enumJSON $ dropPrefix "SWP") ''SMPWebPortServers)
-
--- for backwards compatibility with exported app settings
-instance FromJSON SMPWebPortServers where
-  parseJSON v =
-    $(J.mkParseJSON (enumJSON $ dropPrefix "SWP") ''SMPWebPortServers) v
-      <|> withBool "SMPWebPortServers" (\on -> pure $ if on then SWPAll else SWPPreset) v
+$(J.deriveJSON (enumJSON $ dropPrefix "SWP") ''SMPWebPortServers)
 
 $(J.deriveJSON defaultJSON ''NetworkConfig)
 
