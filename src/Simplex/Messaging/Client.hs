@@ -86,6 +86,7 @@ module Simplex.Messaging.Client
     SocksMode (..),
     SMPProxyMode (..),
     SMPProxyFallback (..),
+    SMPWebPortServers (..),
     defaultClientConfig,
     defaultSMPClientConfig,
     defaultNetworkConfig,
@@ -332,7 +333,7 @@ data SMPProxyFallback
 data SMPWebPortServers
   = SWPAll
   | SWPPreset
-  | SWPNone
+  | SWPOff
   deriving (Eq, Show)
 
 instance StrEncoding SMPProxyMode where
@@ -360,6 +361,18 @@ instance StrEncoding SMPProxyFallback where
       "protected" -> pure SPFAllowProtected
       "no" -> pure SPFProhibit
       _ -> fail "Invalid SMP proxy fallback mode"
+
+instance StrEncoding SMPWebPortServers where
+  strEncode = \case
+    SWPAll -> "all"
+    SWPPreset -> "preset"
+    SWPOff -> "off"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "all" -> pure SWPAll
+      "preset" -> pure SWPPreset
+      "off" -> pure SWPOff
+      _ -> fail "Invalid SMP wep port setting"
 
 defaultNetworkConfig :: NetworkConfig
 defaultNetworkConfig =
@@ -564,7 +577,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
           SWPPreset
             | isPresetSMPServer srv presetSrvs -> ("443", transport @TLS)
             | otherwise -> defaultTransport cfg
-          SWPNone -> defaultTransport cfg
+          SWPOff -> defaultTransport cfg
         _ -> defaultTransport cfg
       p -> (p, transport @TLS)
 
