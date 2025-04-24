@@ -326,7 +326,7 @@ data AgentClient = AgentClient
     xftpServers :: TMap UserId (UserServers 'PXFTP),
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
     useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
-    presetSMPServers :: [SMPServer],
+    presetSMPDomains :: [HostName],
     userNetworkInfo :: TVar UserNetworkInfo,
     userNetworkUpdated :: TVar (Maybe UTCTime),
     subscrConns :: TVar (Set ConnId),
@@ -479,7 +479,7 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Env -> IO AgentClient
-newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presets} currentTs agentEnv = do
+newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomains} currentTs agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
   proxySessTs <- newTVarIO =<< getCurrentTime
@@ -533,7 +533,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presets} cu
         xftpServers,
         xftpClients,
         useNetworkConfig,
-        presetSMPServers = presets,
+        presetSMPDomains = presetDomains,
         userNetworkInfo,
         userNetworkUpdated,
         subscrConns,
@@ -692,7 +692,7 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs} tSess@(_, srv, _)
       env <- ask
       liftError (protocolClientError SMP $ B.unpack $ strEncode srv) $ do
         ts <- readTVarIO proxySessTs
-        smp <- ExceptT $ getProtocolClient g tSess cfg (presetSMPServers c) (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
+        smp <- ExceptT $ getProtocolClient g tSess cfg (presetSMPDomains c) (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
         pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
 
 smpClientDisconnected :: AgentClient -> SMPTransportSession -> Env -> SMPClientVar -> TMap SMPServer ProxiedRelayVar -> SMPClient -> IO ()
@@ -1227,7 +1227,7 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
   liftIO $ do
     let tSess = (userId, srv, Nothing)
     ts <- readTVarIO $ proxySessTs c
-    getProtocolClient g tSess cfg (presetSMPServers c) Nothing ts (\_ -> pure ()) >>= \case
+    getProtocolClient g tSess cfg (presetSMPDomains c) Nothing ts (\_ -> pure ()) >>= \case
       Right smp -> do
         rKeys@(_, rpKey) <- atomically $ C.generateAuthKeyPair ra g
         (sKey, spKey) <- atomically $ C.generateAuthKeyPair sa g

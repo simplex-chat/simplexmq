@@ -872,7 +872,7 @@ deleteContactShortLink' c connId =
 
 -- TODO [short links] remove 1-time invitation data and link ID from the server after the message is sent.
 getConnShortLink' :: forall c. AgentClient -> UserId -> ConnShortLink c -> AM (ConnectionRequestUri c, ConnLinkData c)
-getConnShortLink' c userId sLink = case restoreShortLink (presetSMPServers c) sLink of
+getConnShortLink' c userId = \case
   CSLInvitation _ srv linkId linkKey -> do
     g <- asks random
     invLink <- withStore' c $ \db -> do
@@ -980,7 +980,7 @@ newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys s
     connReqWithShortLink qUri cReq qUri' shortLink = case shortLink of
       Just ShortLinkCreds {shortLinkId, shortLinkKey}
         | qUri == qUri'  ->
-            let link = shortenShortLink (presetSMPServers c) $ case cReq of
+            let link = case cReq of
                   CRContactUri _ -> CSLContact SLSServer CCTContact srv shortLinkKey
                   CRInvitationUri {} -> CSLInvitation SLSServer srv shortLinkId shortLinkKey
              in pure $ CCLink cReq (Just link)

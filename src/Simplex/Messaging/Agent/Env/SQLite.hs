@@ -97,7 +97,7 @@ data InitialAgentServers = InitialAgentServers
     ntf :: [NtfServer],
     xftp :: Map UserId (NonEmpty (ServerCfg 'PXFTP)),
     netCfg :: NetworkConfig,
-    presets :: [SMPServer]
+    presetDomains :: [HostName]
   }
 
 data ServerCfg p = ServerCfg

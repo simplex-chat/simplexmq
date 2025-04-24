@@ -37,8 +37,6 @@ module Simplex.Messaging.Client
     protocolClientServer',
     transportHost',
     transportSession',
-    isPresetSMPServer,
-    findPresetSMPServer,
 
     -- * SMP protocol command functions
     createSMPQueue,
@@ -125,6 +123,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
+import Data.Aeson (FromJSON (..), withBool)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
@@ -132,7 +131,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Base64 as B64
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (find)
+import Data.List (find, isSuffixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (catMaybes, fromMaybe)
@@ -519,8 +518,8 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe ByteString)
 --
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
-getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> [ProtoServer msg] -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret, proxyServer, useSNI} presetSrvs msgQ proxySessTs disconnected = do
+getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> [String] -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
+getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
@@ -574,9 +573,11 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
       "" -> case protocolTypeI @(ProtoType msg) of
         SPSMP -> case smpWebPort of
           SWPAll -> ("443", transport @TLS)
-          SWPPreset
-            | isPresetSMPServer srv presetSrvs -> ("443", transport @TLS)
-            | otherwise -> defaultTransport cfg
+          SWPPreset -> if presetSrv then ("443", transport @TLS) else defaultTransport cfg
+            where
+              presetSrv = case srv of
+                ProtocolServer {host = THDomainName h :| _} -> any (`isSuffixOf` h) presetDomains
+                _ -> False
           SWPOff -> defaultTransport cfg
         _ -> defaultTransport cfg
       p -> (p, transport @TLS)
@@ -672,18 +673,6 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             Nothing <$ case clientResp of
               Left e -> logError $ "SMP client error: " <> tshow e
               Right _ -> logWarn "SMP client unprocessed event"
-
-isPresetSMPServer :: SMPServer -> [SMPServer] -> Bool
-isPresetSMPServer srv@(SMPServer hs p kh) presetSrvs = case findPresetSMPServer srv presetSrvs of
-  Just (SMPServer hs' p' kh') ->
-    all (`elem` hs') hs
-      && (p == p' || (null p' && (p == "443" || p == "5223")))
-      && kh == kh'
-  Nothing -> False
-
-findPresetSMPServer :: SMPServer -> [SMPServer] -> Maybe SMPServer
-findPresetSMPServer ProtocolServer {host = h :| _} = find (\ProtocolServer {host = h' :| _} -> h == h')
-{-# INLINE findPresetSMPServer #-}
 
 unexpectedResponse :: Show r => r -> ProtocolClientError err
 unexpectedResponse = PCEUnexpectedResponse . B.pack . take 32 . show
@@ -1300,7 +1289,13 @@ $(J.deriveJSON (enumJSON $ dropPrefix "SPM") ''SMPProxyMode)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "SPF") ''SMPProxyFallback)
 
-$(J.deriveJSON (enumJSON $ dropPrefix "SWP") ''SMPWebPortServers)
+$(J.deriveToJSON (enumJSON $ dropPrefix "SWP") ''SMPWebPortServers)
+
+-- for backwards compatibility with exported app settings
+instance FromJSON SMPWebPortServers where
+  parseJSON v =
+    $(J.mkParseJSON (enumJSON $ dropPrefix "SWP") ''SMPWebPortServers) v
+      <|> withBool "SMPWebPortServers" (\on -> pure $ if on then SWPAll else SWPPreset) v
 
 $(J.deriveJSON defaultJSON ''NetworkConfig)
 
