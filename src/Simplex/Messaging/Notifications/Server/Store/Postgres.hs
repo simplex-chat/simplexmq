@@ -769,7 +769,7 @@ assertUpdated :: Int64 -> Either ErrorType ()
 assertUpdated 0 = Left AUTH
 assertUpdated _ = Right ()
 
--- SystemTime instances round to a second, as message time everywhere in transmission flow is rounded to second
+-- TODO [ntfdb] change instance and maybe field type to not round to a second, for more reliable sorting of the most recent notifications
 instance FromField SystemTime where fromField f = fmap (`MkSystemTime` 0) . fromField f
 
 instance ToField SystemTime where toField = toField . systemSeconds
