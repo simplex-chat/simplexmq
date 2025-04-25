@@ -1,8 +1,10 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -24,17 +26,19 @@ import Control.Monad.Except
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Data.Bitraversable (bimapM)
-import qualified Data.ByteString.Base64 as B64
+import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Containers.ListUtils (nubOrd)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Int (Int64)
+import Data.List (foldl', intercalate)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
+import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -53,7 +57,7 @@ import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder, fromTextFiel
 import Simplex.Messaging.Encoding
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore (..), TokenNtfMessageRecord (..), ntfSubServer)
+import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore (..), NtfSubData (..), NtfTknData (..), TokenNtfMessageRecord (..), ntfSubServer)
 import Simplex.Messaging.Notifications.Server.Store.Migrations
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Server.StoreLog
@@ -64,7 +68,7 @@ import Simplex.Messaging.Server.QueueStore.Postgres (handleDuplicate, withLog_)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Server.StoreLog (openWriteStoreLog)
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (firstRow, maybeFirstRow, toChunks, tshow)
+import Simplex.Messaging.Util (anyM, firstRow, maybeFirstRow, toChunks, tshow)
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hFlush, stdout, withFile)
 import Text.Hex (decodeHex)
@@ -118,15 +122,6 @@ insertNtfTknQuery =
     INSERT INTO tokens
       (token_id, push_provider, push_provider_token, status, verify_key, dh_priv_key, dh_secret, reg_code, cron_interval, updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?)
-    ON CONFLICT (push_provider, push_provider_token, verify_key)
-    DO UPDATE SET
-      token_id = EXCLUDED.token_id,
-      status = EXCLUDED.status,
-      dh_priv_key = EXCLUDED.dh_priv_key,
-      dh_secret = EXCLUDED.dh_secret,
-      reg_code = EXCLUDED.reg_code,
-      cron_interval = EXCLUDED.cron_interval,
-      updated_at = EXCLUDED.updated_at
   |]
 
 replaceNtfToken :: NtfPostgresStore -> NtfTknRec -> IO (Either ErrorType ())
@@ -355,9 +350,9 @@ setTknStatusConfirmed st NtfTknRec {ntfTknId} =
     updated <- DB.execute db "UPDATE tokens SET status = ? WHERE token_id = ? AND status != ? AND status != ?" (NTConfirmed, ntfTknId, NTConfirmed, NTActive)
     when (updated > 0) $ withLog "updateTknStatus" st $ \sl -> logTokenStatus sl ntfTknId NTConfirmed
 
-setTknStatusActive :: NtfPostgresStore -> NtfTknRec -> IO (Either ErrorType [NtfTokenId])
-setTknStatusActive st tkn@NtfTknRec {ntfTknId, token = DeviceToken pp ppToken} =
-  withDB' "setTknStatusActive" st $ \db -> do
+setTokenActive :: NtfPostgresStore -> NtfTknRec -> IO (Either ErrorType [NtfTokenId])
+setTokenActive st tkn@NtfTknRec {ntfTknId, token = DeviceToken pp ppToken} =
+  withDB' "setTokenActive" st $ \db -> do
     updateTknStatus_ st db tkn NTActive
     -- this removes other instances of the same token, e.g. because of repeated token registration attempts
     tknIds <-
@@ -381,42 +376,38 @@ addNtfSubscription st sub =
     withLog "addNtfSubscription" st (`logCreateSubscription` sub)
     pure $ n > 0
   where
-    upsertServer db srv = do
-      firstRow fromOnly (STORE "error inserting SMP server when adding subscription") $
-        DB.query
-          db
-          [sql|
-            WITH inserted AS (
-              INSERT INTO smp_servers (smp_host, smp_port, smp_keyhash) VALUES (?, ?, ?)
-              ON CONFLICT (smp_host, smp_port, smp_keyhash) DO NOTHING
-              RETURNING smp_server_id
-            ),
-            existing AS (
-              SELECT smp_server_id
-              FROM smp_servers
-              WHERE smp_host = ? AND smp_port = ? AND smp_keyhash = ?
-            )
-            SELECT COALESCE(
-              (SELECT smp_server_id FROM inserted),
-              (SELECT smp_server_id FROM existing)
-            ) AS smp_server_id;
-          |]
-          (srvToRow srv :. srvToRow srv)
+    -- It is possible to combine these two statements into one with CTEs,
+    -- to reduce roundtrips in case of `insert`, but it would be making 2 queries in all cases.
+    -- With 2 statements it will succeed on the first `select` in most cases.
+    upsertServer db srv = getServer >>= maybe insertServer (pure . Right)
+      where
+        getServer =
+          maybeFirstRow fromOnly $
+            DB.query
+              db 
+              [sql|
+                SELECT smp_server_id
+                FROM smp_servers
+                WHERE smp_host = ? AND smp_port = ? AND smp_keyhash = ?
+              |]
+              (srvToRow srv)
+        insertServer = 
+          firstRow fromOnly (STORE "error inserting SMP server when adding subscription") $
+            DB.query
+              db
+              [sql|
+                INSERT INTO smp_servers (smp_host, smp_port, smp_keyhash) VALUES (?, ?, ?)
+                ON CONFLICT (smp_host, smp_port, smp_keyhash)
+                DO UPDATE SET smp_host = EXCLUDED.smp_host
+                RETURNING smp_server_id
+              |]
+              (srvToRow srv)
 
--- TODO [ntfdb] can they be incorrectly replaced
 insertNtfSubQuery :: Query
 insertNtfSubQuery =
   [sql|
     INSERT INTO subscriptions (token_id, smp_server_id, smp_notifier_id, subscription_id, smp_notifier_key, status)
     VALUES (?,?,?,?,?,?)
-    ON CONFLICT (smp_server_id, smp_notifier_id)
-    DO UPDATE SET
-      token_id = EXCLUDED.token_id,
-      smp_server_id = EXCLUDED.smp_server_id,
-      smp_notifier_id = EXCLUDED.smp_notifier_id,
-      subscription_id = EXCLUDED.subscription_id,
-      smp_notifier_key = EXCLUDED.smp_notifier_key,
-      status = EXCLUDED.status
   |]
 
 ntfSubToRow :: Int64 -> NtfSubRec -> (NtfTokenId, Int64, NotifierId) :. NtfSubRow
@@ -598,28 +589,90 @@ toLastNtf (qRow :. (ts, nonce, Binary encMeta)) =
   PNMessageData {smpQueue = rowToSMPQueue qRow, ntfTs = ts, nmsgNonce = nonce, encNMsgMeta = encMeta}
 
 importNtfSTMStore :: NtfPostgresStore -> NtfSTMStore -> IO (Int64, Int64, Int64)
-importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore =
-  (,,) <$> importTokens <*> importSubscriptions <*> importLastNtfs
+importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore = do
+  (tCnt, tIds) <- importTokens
+  sCnt <- importSubscriptions tIds
+  nCnt <- importLastNtfs
+  pure (tCnt, sCnt, nCnt)
   where
     importTokens = do
-      tokens <- M.elems <$> readTVarIO (tokens stmStore)
-      tknRows <- mapM (fmap ntfTknToRow . mkTknRec) tokens
-      tCnt <- withConnection s $ \db -> DB.executeMany db insertNtfTknQuery tknRows
-      checkCount "token" (length tokens) tCnt
-    importSubscriptions = do
-      subs <- M.elems <$> readTVarIO (subscriptions stmStore)
+      allTokens <- M.elems <$> readTVarIO (tokens stmStore)
+      tokens <- filterTokens allTokens
+      let skipped = length allTokens - length tokens
+      when (skipped /= 0) $ putStrLn $ "Total skipped tokens " <> show skipped
+      tCnt <- withConnection s $ \db -> foldM (insertToken db) 0 tokens
+      void $ checkCount "token" (length tokens) tCnt
+      let tokenIds = S.fromList $ map (\NtfTknData {ntfTknId} -> ntfTknId) tokens
+      pure (tCnt, tokenIds)
+      where
+        filterTokens tokens = do
+          let deviceTokens = foldl' (\m t -> M.alter (Just . (t :) . fromMaybe []) (tokenKey t) m) M.empty tokens
+          tokenSubs <- readTVarIO (tokenSubscriptions stmStore)
+          filterM (keepTokenRegistration deviceTokens tokenSubs) tokens
+        tokenKey NtfTknData {token, tknVerifyKey} = strEncode token <> ":" <> C.toPubKey C.pubKeyBytes tknVerifyKey
+        keepTokenRegistration deviceTokens tokenSubs tkn@NtfTknData {ntfTknId, token, tknStatus} =
+          case M.lookup (tokenKey tkn) deviceTokens of
+            Just ts
+              | length ts >= 2 ->
+                  readTVarIO tknStatus >>= \case
+                    NTConfirmed -> do
+                      anyActive <- anyM $ map (\NtfTknData {tknStatus = tknStatus'} -> (NTActive ==) <$> readTVarIO tknStatus') ts
+                      noSubs <- S.null <$> maybe (pure S.empty) readTVarIO (M.lookup ntfTknId tokenSubs)
+                      if anyActive
+                        then (
+                          if noSubs
+                            then False <$ putStrLn ("Skipped inactive token " <> enc ntfTknId <> " (no subscriptions)")
+                            else pure True
+                        )
+                        else do
+                          let noSubsStr = if noSubs then " no subscriptions" else " has subscriptions"
+                          putStrLn $ "Error: more than one registration for token " <> enc ntfTknId <> " " <> show token <> noSubsStr
+                          pure True
+                    _ -> pure True
+              | otherwise -> pure True
+            Nothing -> True <$ putStrLn "Error: no device token in lookup map"
+        insertToken db !n tkn@NtfTknData {ntfTknId} = do
+          tknRow <- ntfTknToRow <$> mkTknRec tkn
+          (DB.execute db insertNtfTknQuery tknRow >>= pure . (n + )) `E.catch` \(e :: E.SomeException) ->
+            putStrLn ("Error inserting token " <> enc ntfTknId <> " " <> show e) $> n
+    importSubscriptions tIds = do
+      allSubs <- M.elems <$> readTVarIO (subscriptions stmStore)
+      let subs = filter (\NtfSubData {tokenId} -> S.member tokenId tIds) allSubs
+          skipped = length allSubs - length subs
+      when (skipped /= 0) $ putStrLn $ "Skipped subscriptions (no tokens) " <> show skipped
       srvIds <- importServers subs
-      subRows <- mapM (ntfSubRow srvIds) subs
-      putStrLn $ "Importing " <> show (length subRows) <> " subscriptions..."
-      sCnt <- foldM importSubs (0 :: Int64) $ toChunks 500000 subRows
+      putStrLn $ "Importing " <> show (length subs) <> " subscriptions..."
+      -- uncomment this line instead of the next 2 lines to import subs one by one.
+      (sCnt, missingTkns) <- withConnection s $ \db -> foldM (importSub db srvIds) (0, M.empty) subs
+      -- sCnt <- foldM (importSubs srvIds) 0 $ toChunks 100000 subs
+      -- let missingTkns = M.empty
+      putStrLn $ "Imported " <> show sCnt <> " subscriptions"
+      unless (M.null missingTkns) $ do
+        putStrLn $ show (M.size missingTkns) <> " missing tokens:"
+        forM_ (M.assocs missingTkns) $ \(tId, sIds) ->
+          putStrLn $ "Token " <> enc tId <> " " <> show (length sIds) <> " subscriptions: " <> intercalate ", " (map enc sIds)
       checkCount "subscription" (length subs) sCnt
       where
-        importSubs n rows = do
+        importSubs srvIds !n subs = do
+          rows <- mapM (ntfSubRow srvIds) subs
           cnt <- withConnection s $ \db -> DB.executeMany db insertNtfSubQuery $ L.toList rows
           let n' = n + cnt
-          putStr $ "Imported " <> show n <> "subscriptions" <> "\r"
+          putStr $ "Imported " <> show n' <> " subscriptions" <> "\r"
           hFlush stdout
           pure n'
+        importSub db srvIds (!n, !missingTkns) sub@NtfSubData {ntfSubId = sId, tokenId} = do
+          subRow <- ntfSubRow srvIds sub
+          E.try (DB.execute db insertNtfSubQuery subRow) >>= \case
+            Right i -> do
+              let n' = n + i
+              when (n' `mod` 100000 == 0) $ do
+                putStr $ "Imported " <> show n' <> " subscriptions" <> "\r"
+                hFlush stdout
+              pure (n', missingTkns)
+            Left (e :: E.SomeException) -> do
+              when (n `mod` 100000 == 0) $ putStrLn ""
+              putStrLn $ "Error inserting subscription " <> enc sId <> " for token " <> enc tokenId <> " " <> show e
+              pure (n, M.alter (Just . (sId :) . fromMaybe []) tokenId missingTkns)
         ntfSubRow srvIds sub = case M.lookup srv srvIds of
           Just sId -> ntfSubToRow sId <$> mkSubRec sub
           Nothing -> E.throwIO $ userError $ "no matching server ID for server " <> show srv
@@ -644,7 +697,7 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore =
           where
             ntfRow PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = case M.lookup smpQueue subLookup of
               Just ntfSubId -> pure $ Just (tId, ntfSubId, ntfTs, nmsgNonce, Binary encNMsgMeta)
-              Nothing -> Nothing <$ putStrLn ("Error: no subscription " <> show smpQueue <> " for notification of token " <> show (B64.encode $ unEntityId tId))
+              Nothing -> Nothing <$ putStrLn ("Error: no subscription " <> show smpQueue <> " for notification of token " <> enc tId)
     checkCount name expected inserted
       | fromIntegral expected == inserted = do
           putStrLn $ "Imported " <> show inserted <> " " <> name <> "s."
@@ -653,6 +706,7 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore =
           putStrLn $ "Incorrect " <> name <> " count: expected " <> show expected <> ", imported " <> show inserted
           putStrLn "Import aborted, fix data and repeat"
           exitFailure
+    enc = B.unpack . B64.encode . unEntityId
 
 exportNtfDbStore :: NtfPostgresStore -> FilePath -> IO (Int, Int, Int)
 exportNtfDbStore NtfPostgresStore {dbStoreLog = Nothing} _ =
@@ -661,10 +715,10 @@ exportNtfDbStore NtfPostgresStore {dbStore = s, dbStoreLog = Just sl} lastNtfsFi
   (,,) <$> exportTokens <*> exportSubscriptions <*> exportLastNtfs
   where
     exportTokens =
-      withConnection s $ \db -> DB.fold_ db ntfTknQuery 0 $ \i tkn ->
+      withConnection s $ \db -> DB.fold_ db ntfTknQuery 0 $ \ !i tkn ->
         logCreateToken sl (rowToNtfTkn tkn) $> (i + 1)
     exportSubscriptions =
-      withConnection s $ \db -> DB.fold_ db ntfSubQuery 0 $ \i sub ->
+      withConnection s $ \db -> DB.fold_ db ntfSubQuery 0 $ \ !i sub ->
         logCreateSubscription sl (toNtfSub sub) $> (i + 1)
       where
         ntfSubQuery =
@@ -680,7 +734,7 @@ exportNtfDbStore NtfPostgresStore {dbStore = s, dbStoreLog = Just sl} lastNtfsFi
            in NtfSubRec {ntfSubId, tokenId, smpQueue, notifierKey, subStatus}
     exportLastNtfs =
       withFile lastNtfsFile WriteMode $ \h ->
-        withConnection s $ \db -> DB.fold_ db lastNtfsQuery 0 $ \i (Only tknId :. ntfRow) ->
+        withConnection s $ \db -> DB.fold_ db lastNtfsQuery 0 $ \ !i (Only tknId :. ntfRow) ->
           B.hPutStr h (encodeLastNtf tknId $ toLastNtf ntfRow) $> (i + 1)
       where
         -- Note that the order here is ascending, to be compatible with how it is imported

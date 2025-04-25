@@ -588,6 +588,7 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
         if verifyCmdAuthorization auth_ tAuth authorized k
           then case r_ of
             Right t@NtfTknRec {tknVerifyKey}
+              -- keys will be the same because of condition in `getNtfTokenRegistration`
               | k == tknVerifyKey -> VRVerified $ tknCmd t c
               | otherwise -> VRFailed
             Left _ -> VRVerified (NtfReqNew corrId (ANE SToken tkn))
@@ -661,7 +662,7 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
           TVFY code -- this allows repeated verification for cases when client connection dropped before server response
             | (tknStatus == NTRegistered || tknStatus == NTConfirmed || tknStatus == NTActive) && tknRegCode == code -> do
                 logDebug "TVFY - token verified"
-                withNtfStore (`setTknStatusActive` tkn) $ \tIds -> do
+                withNtfStore (`setTokenActive` tkn) $ \tIds -> do
                   -- TODO [ntfdb] this will be unnecessary if all cron notifications move to one thread
                   forM_ tIds cancelInvervalNotifications
                   incNtfStatT token tknVerified
