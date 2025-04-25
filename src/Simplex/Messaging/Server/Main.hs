@@ -247,13 +247,6 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       where
         iniStoreQueues = fromRight "memory" $ lookupValue "STORE_LOG" "store_queues" ini
         iniStoreMessage = fromRight "memory" $ lookupValue "STORE_LOG" "store_messages" ini
-    iniDBOptions ini =
-      DBOpts
-        { connstr = either (const defaultDBConnStr) encodeUtf8 $ lookupValue "STORE_LOG" "db_connection" ini,
-          schema = either (const defaultDBSchema) encodeUtf8 $ lookupValue "STORE_LOG" "db_schema" ini,
-          poolSize = readIniDefault defaultDBPoolSize "STORE_LOG" "db_pool_size" ini,
-          createSchema = False
-        }
     iniDeletedTTL ini = readIniDefault (86400 * defaultDeletedTTL) "STORE_LOG" "db_deleted_ttl" ini
     defaultStaticPath = combine logPath "www"
     enableStoreLog' = settingIsOn "STORE_LOG" "enable"
@@ -411,7 +404,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = storeLogFilePath, storeMsgsPath = storeMsgsJournalDir}
                 ASType SQSPostgres SMSJournal ->
                   let dbStoreLogPath = enableDbStoreLog' ini $> storeLogFilePath
-                      storeCfg = PostgresStoreCfg {dbOpts = iniDBOptions ini, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
+                      storeCfg = PostgresStoreCfg {dbOpts = iniDBOptions ini defaultDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
                    in ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeCfg, storeMsgsPath' = storeMsgsJournalDir},
               storeNtfsFile = restoreMessagesFile storeNtfsFilePath,
               -- allow creating new queues by default
@@ -512,7 +505,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 unless (storeLogExists) $ putStrLn $ "store_queues is `memory`, " <> storeLogFilePath <> " file will be created."
 #if defined(dbServerPostgres)
               SQSPostgres -> do
-                let DBOpts {connstr, schema} = iniDBOptions ini
+                let DBOpts {connstr, schema} = iniDBOptions ini defaultDBOpts
                 schemaExists <- checkSchemaExists connstr schema
                 case enableDbStoreLog' ini of
                   Just ()
@@ -669,7 +662,7 @@ cliCommandP cfgPath logPath iniFile =
         <> command "start" (info (Start <$> startOptionsP) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
         <> command "journal" (info (Journal <$> journalCmdP) (progDesc "Import/export messages to/from journal storage"))
-        <> command "database" (info (Database <$> databaseCmdP <*> dbOptsP) (progDesc "Import/export queues to/from PostgreSQL database storage"))
+        <> command "database" (info (Database <$> databaseCmdP <*> dbOptsP defaultDBOpts) (progDesc "Import/export queues to/from PostgreSQL database storage"))
     )
   where
     initP :: Parser InitOptions
@@ -684,7 +677,7 @@ cliCommandP cfgPath logPath iniFile =
                 <> short 'l'
                 <> help "Enable store log for persistence (DEPRECATED, enabled by default)"
             )
-      dbOptions <- dbOptsP
+      dbOptions <- dbOptsP defaultDBOpts
       logStats <-
         switch
           ( long "daily-stats"
@@ -815,32 +808,6 @@ cliCommandP cfgPath logPath iniFile =
             disableWeb,
             scripted
           }
-    startOptionsP = do
-      maintenance <-
-        switch
-          ( long "maintenance"
-              <> short 'm'
-              <> help "Do not start the server, only perform start and stop tasks"
-          )
-      compactLog <-
-        switch
-          ( long "compact-log"
-              <> help "Compact store log (always enabled with `memory` storage for queues)"
-          )
-      skipWarnings <-
-        switch
-          ( long "skip-warnings"
-              <> help "Start the server with non-critical start warnings"
-          )
-      confirmMigrations <-
-        option
-          parseConfirmMigrations
-          ( long "confirm-migrations"
-              <> metavar "CONFIRM_MIGRATIONS"
-              <> help "Confirm PostgreSQL database migration: up, down (default is manual confirmation)"
-              <> value MCConsole
-          )
-      pure StartOptions {maintenance, compactLog, skipWarnings, confirmMigrations}
     journalCmdP = storeCmdP "message log file" "journal storage"
     databaseCmdP = storeCmdP "queue store log file" "PostgreSQL database schema"
     storeCmdP src dest =
@@ -849,39 +816,6 @@ cliCommandP cfgPath logPath iniFile =
             <> command "export" (info (pure SCExport) (progDesc $ "Export " <> dest <> " to " <> src))
             <> command "delete" (info (pure SCDelete) (progDesc $ "Delete " <> dest))
         )
-    dbOptsP = do
-      connstr <-
-        strOption
-          ( long "database"
-              <> short 'd'
-              <> metavar "DB_CONN"
-              <> help "Database connection string"
-              <> value defaultDBConnStr
-              <> showDefault
-          )
-      schema <-
-        strOption
-          ( long "schema"
-              <> metavar "DB_SCHEMA"
-              <> help "Database schema"
-              <> value defaultDBSchema
-              <> showDefault
-          )
-      poolSize <-
-        option
-          auto
-          ( long "pool-size"
-              <> metavar "POOL_SIZE"
-              <> help "Database pool size"
-              <> value defaultDBPoolSize
-              <> showDefault
-          )
-      pure DBOpts {connstr, schema, poolSize, createSchema = False}
-    parseConfirmMigrations :: ReadM MigrationConfirmation
-    parseConfirmMigrations = eitherReader $ \case
-      "up" -> Right MCYesUp
-      "down" -> Right MCYesUpDown
-      _ -> Left "invalid migration confirmation, pass 'up' or 'down'"
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack
     entityP :: String -> String -> String -> Parser (Maybe Entity, Maybe Text)

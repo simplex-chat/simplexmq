@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -19,7 +20,6 @@ import qualified Network.HTTP.Client as H1
 import qualified Network.HTTP2.Client as H2
 import Simplex.FileTransfer.Server.Main (xftpServerCLI)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Server.Main
 import Simplex.Messaging.Server.Main (smpServerCLI, smpServerCLI_)
 import Simplex.Messaging.Transport (TLS (..), defaultSupportedParams, defaultSupportedParamsHTTPS, simplexMQVersion, supportedClientSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTransportClientConfig, runTLSTransportClient, smpClientHandshake)
@@ -39,6 +39,12 @@ import UnliftIO (catchAny)
 import UnliftIO.Async (async, cancel)
 import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Exception (bracket)
+
+#if defined(dbServerPostgres)
+import NtfClient (ntfTestServerDBConnectInfo)
+import SMPClient (postgressBracket)
+import Simplex.Messaging.Notifications.Server.Main
+#endif
 
 cfgPath :: FilePath
 cfgPath = "tests/tmp/cli/etc/opt/simplex"
@@ -70,9 +76,12 @@ cliTests = do
       it "no store log, no password" $ smpServerTest False False
       it "with store log, no password" $ smpServerTest True False
       it "static files" smpServerTestStatic
-  describe "Ntf server CLI" $ do
-    it "should initialize, start and delete the server (no store log)" $ ntfServerTest False
-    it "should initialize, start and delete the server (with store log)" $ ntfServerTest True
+#if defined(dbServerPostgres)
+  aroundAll_ (postgressBracket ntfTestServerDBConnectInfo) $
+    describe "Ntf server CLI" $ do
+      it "should initialize, start and delete the server (no store log)" $ ntfServerTest False
+      it "should initialize, start and delete the server (with store log)" $ ntfServerTest True
+#endif
   describe "XFTP server CLI" $ do
     it "should initialize, start and delete the server (no store log)" $ xftpServerTest False
     it "should initialize, start and delete the server (with store log)" $ xftpServerTest True
@@ -182,6 +191,7 @@ smpServerTestStatic = do
       let X.CertificateChain cc = tlsServerCerts tls
        in map (X.signedObject . X.getSigned) cc
 
+#if defined(dbServerPostgres)
 ntfServerTest :: Bool -> IO ()
 ntfServerTest storeLog = do
   capture_ (withArgs (["init"] <> ["--disable-store-log" | not storeLog]) $ ntfServerCLI ntfCfgPath ntfLogPath)
@@ -195,10 +205,11 @@ ntfServerTest storeLog = do
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` ntfServerCLI ntfCfgPath ntfLogPath) `catchAll_` pure (Just ()))
   r `shouldContain` ["SMP notifications server v" <> simplexMQVersion]
   r `shouldContain` (if storeLog then ["Store log: " <> ntfLogPath <> "/ntf-server-store.log"] else ["Store log disabled."])
-  r `shouldContain` ["Serving SMP protocol on port 443 (TLS)..."]
+  r `shouldContain` ["Serving NTF protocol on port 443 (TLS)..."]
   capture_ (withStdin "Y" . withArgs ["delete"] $ ntfServerCLI ntfCfgPath ntfLogPath)
     >>= (`shouldSatisfy` ("WARNING: deleting the server will make all queues inaccessible" `isPrefixOf`))
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` False
+#endif
 
 xftpServerTest :: Bool -> IO ()
 xftpServerTest storeLog = do

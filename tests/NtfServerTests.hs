@@ -13,6 +13,7 @@
 module NtfServerTests where
 
 import Control.Concurrent (threadDelay)
+import Control.Monad (void)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
@@ -113,9 +114,20 @@ testNotificationSubscription (ATransport t) createQueue =
           APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
             getMockNotification apns tkn
           let dhSecret = C.dh' ntfDh dhPriv
-              Right verification = ntfData .-> "verification"
-              Right nonce = C.cbNonce <$> ntfData .-> "nonce"
-              Right code = NtfRegCode <$> C.cbDecrypt dhSecret nonce verification
+              decryptCode nd =
+                let Right verification = nd .-> "verification"
+                    Right nonce = C.cbNonce <$> nd .-> "nonce"
+                    Right pt = C.cbDecrypt dhSecret nonce verification
+                 in NtfRegCode pt
+          let code = decryptCode ntfData
+          -- test repeated request - should return the same token ID
+          RespNtf "1a" NoEntity (NRTknId tId1 ntfDh1) <- signSendRecvNtf nh tknKey ("1a", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
+          tId1 `shouldBe` tId
+          ntfDh1 `shouldBe` ntfDh
+          APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData1}} <-
+            getMockNotification apns tkn
+          let code1 = decryptCode ntfData1
+          code `shouldBe` code1
           RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey ("2", tId, TVFY code)
           RespNtf "2a" _ (NRTkn NTActive) <- signSendRecvNtf nh tknKey ("2a", tId, TCHK)
           -- ntf server subscribes to queue notifications

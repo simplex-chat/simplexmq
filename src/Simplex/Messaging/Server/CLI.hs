@@ -28,9 +28,10 @@ import Data.X509.Validation (Fingerprint (..))
 import Network.Socket (HostName, ServiceName)
 import Options.Applicative
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
-import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), ServerStoreCfg (..), StorePaths (..))
+import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), ServerStoreCfg (..), StartOptions (..), StorePaths (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
 import Simplex.Messaging.Transport.Server (AddHTTP, loadFileFingerprint)
@@ -174,6 +175,70 @@ certOptionsP = do
         )
   pure CertOptions {signAlgorithm_, commonName_}
 
+dbOptsP :: DBOpts -> Parser DBOpts
+dbOptsP DBOpts {connstr = defDBConnStr, schema = defDBSchema, poolSize = defDBPoolSize} = do
+  connstr <-
+    strOption
+      ( long "database"
+          <> short 'd'
+          <> metavar "DB_CONN"
+          <> help "Database connection string"
+          <> value defDBConnStr
+          <> showDefault
+      )
+  schema <-
+    strOption
+      ( long "schema"
+          <> metavar "DB_SCHEMA"
+          <> help "Database schema"
+          <> value defDBSchema
+          <> showDefault
+      )
+  poolSize <-
+    option
+      auto
+      ( long "pool-size"
+          <> metavar "POOL_SIZE"
+          <> help "Database pool size"
+          <> value defDBPoolSize
+          <> showDefault
+      )
+  pure DBOpts {connstr, schema, poolSize, createSchema = False}
+
+startOptionsP :: Parser StartOptions
+startOptionsP = do
+  maintenance <-
+    switch
+      ( long "maintenance"
+          <> short 'm'
+          <> help "Do not start the server, only perform start and stop tasks"
+      )
+  compactLog <-
+    switch
+      ( long "compact-log"
+          <> help "Compact store log (always enabled with `memory` storage for queues)"
+      )
+  skipWarnings <-
+    switch
+      ( long "skip-warnings"
+          <> help "Start the server with non-critical start warnings"
+      )
+  confirmMigrations <-
+    option
+      parseConfirmMigrations
+      ( long "confirm-migrations"
+          <> metavar "CONFIRM_MIGRATIONS"
+          <> help "Confirm PostgreSQL database migration: up, down (default is manual confirmation)"
+          <> value MCConsole
+      )
+  pure StartOptions {maintenance, compactLog, skipWarnings, confirmMigrations}
+    where
+      parseConfirmMigrations :: ReadM MigrationConfirmation
+      parseConfirmMigrations = eitherReader $ \case
+        "up" -> Right MCYesUp
+        "down" -> Right MCYesUpDown
+        _ -> Left "invalid migration confirmation, pass 'up' or 'down'"
+
 genOnline :: FilePath -> CertOptions -> IO ()
 genOnline cfgPath CertOptions {signAlgorithm_, commonName_} = do
   (signAlgorithm, commonName) <-
@@ -294,18 +359,27 @@ iniTransports ini =
     webPort = T.unpack <$> eitherToMaybe (lookupValue "WEB" "https" ini)
     ports = map T.unpack . T.splitOn ","
 
-printServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> Maybe FilePath -> IO ()
-printServerConfig transports logFile = do
+iniDBOptions :: Ini -> DBOpts -> DBOpts
+iniDBOptions ini _default@DBOpts {connstr, schema, poolSize} =
+  DBOpts
+    { connstr = either (const connstr) encodeUtf8 $ lookupValue "STORE_LOG" "db_connection" ini,
+      schema = either (const schema) encodeUtf8 $ lookupValue "STORE_LOG" "db_schema" ini,
+      poolSize = readIniDefault poolSize "STORE_LOG" "db_pool_size" ini,
+      createSchema = False
+    }
+
+printServerConfig :: String -> [(ServiceName, ATransport, AddHTTP)] -> Maybe FilePath -> IO ()
+printServerConfig protocol transports logFile = do
   putStrLn $ case logFile of
     Just f -> "Store log: " <> f
     _ -> "Store log disabled."
-  printServerTransports transports
+  printServerTransports protocol transports
 
-printServerTransports :: [(ServiceName, ATransport, AddHTTP)] -> IO ()
-printServerTransports ts = do
+printServerTransports :: String -> [(ServiceName, ATransport, AddHTTP)] -> IO ()
+printServerTransports protocol ts = do
   forM_ ts $ \(p, ATransport t, addHTTP) -> do
     let descr = p <> " (" <> transportName t <> ")..."
-    putStrLn $ "Serving SMP protocol on port " <> descr
+    putStrLn $ "Serving " <> protocol <> " protocol on port " <> descr
     when addHTTP $ putStrLn $ "Serving static site on port " <> descr
   unless (any (\(p, _, _) -> p == "443") ts) $
     putStrLn
@@ -314,11 +388,11 @@ printServerTransports ts = do
 
 printSMPServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> AServerStoreCfg -> IO ()
 printSMPServerConfig transports (ASSCfg _ _ cfg) = case cfg of
-  SSCMemory sp_ -> printServerConfig transports $ (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
-  SSCMemoryJournal {storeLogFile} -> printServerConfig transports $ Just storeLogFile
+  SSCMemory sp_ -> printServerConfig "SMP" transports $ (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
+  SSCMemoryJournal {storeLogFile} -> printServerConfig "SMP" transports $ Just storeLogFile
   SSCDatabaseJournal {storeCfg = PostgresStoreCfg {dbOpts = DBOpts {connstr, schema}}} -> do
     B.putStrLn $ "PostgreSQL database: " <> connstr <> ", schema: " <> schema
-    printServerTransports transports
+    printServerTransports "SMP" transports
 
 deleteDirIfExists :: FilePath -> IO ()
 deleteDirIfExists path = whenM (doesDirectoryExist path) $ removeDirectoryRecursive path

@@ -59,7 +59,7 @@ import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.IO as TIO
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testNtfServer, testNtfServer2)
-import SMPClient (cfgMS, cfgJ2QS, cfgVPrev, serverStoreConfig, testPort, testPort2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, xit'')
+import SMPClient (cfgMS, cfgJ2QS, cfgVPrev, ntfTestPort, ntfTestPort2, serverStoreConfig, testPort, testPort2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, xit'')
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
@@ -120,10 +120,12 @@ notificationTests ps@(t, _) = do
     it "should keep working with active token until replaced" $
       withAPNSMockServer $ \apns ->
         testNtfTokenChangeServers t apns
-    xit'' "should re-register token in NTInvalid status after register attempt" $
+    -- TODO [ntfdb] modify database in the test
+    xit "should re-register token in NTInvalid status after register attempt" $
       withAPNSMockServer $ \apns ->
         testNtfTokenReRegisterInvalid t apns
-    xit'' "should re-register token in NTInvalid status after checking token" $
+    -- TODO [ntfdb] modify database in the test
+    xit "should re-register token in NTInvalid status after checking token" $
       withAPNSMockServer $ \apns ->
         testNtfTokenReRegisterInvalidOnCheck t apns
   describe "notification server tests" $ do
@@ -163,12 +165,12 @@ notificationTests ps@(t, _) = do
   it "should keep sending notifications for old token" $
     withSmpServer ps $
       withAPNSMockServer $ \apns ->
-        withNtfServerOn t ntfTestPort $
+        withNtfServer t $
           testNotificationsOldToken apns
   it "should update server from new token" $
     withSmpServer ps $
       withAPNSMockServer $ \apns ->
-        withNtfServerOn t ntfTestPort2 . withNtfServerThreadOn t ntfTestPort $ \ntf ->
+        withNtfServerOn t ntfTestPort2 ntfTestDBCfg2 . withNtfServerThreadOn t ntfTestPort ntfTestDBCfg $ \ntf ->
           testNotificationsNewToken apns ntf
 
 testNtfMatrix :: HasCallStack => (ATransport, AStoreType) -> (APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()) -> Spec
@@ -278,7 +280,7 @@ testNtfTokenServerRestart :: ATransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestart t apns = do
   let tkn = DeviceToken PPApnsTest "abcd"
   ntfData <- withAgent 1 agentCfg initAgentServers testDB $ \a ->
-    withNtfServerStoreLog t $ \_ -> runRight $ do
+    withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
         getMockNotification apns tkn
@@ -288,7 +290,7 @@ testNtfTokenServerRestart t apns = do
   withAgent 2 agentCfg initAgentServers testDB $ \a' ->
     -- server stopped before token is verified, so now the attempt to verify it will return AUTH error but re-register token,
     -- so that repeat verification happens without restarting the clients, when notification arrives
-    withNtfServerStoreLog t $ \_ -> runRight_ $ do
+    withNtfServer t $ runRight_ $ do
       verification <- ntfData .-> "verification"
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
       verifyNtfToken a' tkn nonce verification
@@ -299,7 +301,7 @@ testNtfTokenServerRestartReverify :: ATransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestartReverify t apns = do
   let tkn = DeviceToken PPApnsTest "abcd"
   withAgent 1 agentCfg initAgentServers testDB $ \a -> do
-    ntfData <- withNtfServerStoreLog t $ \_ -> runRight $ do
+    ntfData <- withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
         getMockNotification apns tkn
@@ -309,11 +311,11 @@ testNtfTokenServerRestartReverify t apns = do
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
       Left (BROKER _ NETWORK) <- tryE $ verifyNtfToken a tkn nonce verification
       pure ()
-  threadDelay 1000000
+  threadDelay 1500000
   withAgent 2 agentCfg initAgentServers testDB $ \a' ->
     -- server stopped before token is verified, so now the attempt to verify it will return AUTH error but re-register token,
     -- so that repeat verification happens without restarting the clients, when notification arrives
-    withNtfServerStoreLog t $ \_ -> runRight_ $ do
+    withNtfServer t $ runRight_ $ do
       NTActive <- registerNtfToken a' tkn NMPeriodic
       NTActive <- checkNtfToken a' tkn
       pure ()
@@ -322,7 +324,7 @@ testNtfTokenServerRestartReverifyTimeout :: ATransport -> APNSMockServer -> IO (
 testNtfTokenServerRestartReverifyTimeout t apns = do
   let tkn = DeviceToken PPApnsTest "abcd"
   withAgent 1 agentCfg initAgentServers testDB $ \a@AgentClient {agentEnv = Env {store}} -> do
-    (nonce, verification) <- withNtfServerStoreLog t $ \_ -> runRight $ do
+    (nonce, verification) <- withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
         getMockNotification apns tkn
@@ -344,11 +346,11 @@ testNtfTokenServerRestartReverifyTimeout t apns = do
         (NTConfirmed, Just (NTAVerify code), PPApnsTest, "abcd" :: ByteString)
     Just NtfToken {ntfTknStatus = NTConfirmed, ntfTknAction = Just (NTAVerify _)} <- withTransaction store getSavedNtfToken
     pure ()
-  threadDelay 1000000
+  threadDelay 1500000
   withAgent 2 agentCfg initAgentServers testDB $ \a' ->
     -- server stopped before token is verified, so now the attempt to verify it will return AUTH error but re-register token,
     -- so that repeat verification happens without restarting the clients, when notification arrives
-    withNtfServerStoreLog t $ \_ -> runRight_ $ do
+    withNtfServer t $ runRight_ $ do
       NTActive <- registerNtfToken a' tkn NMPeriodic
       NTActive <- checkNtfToken a' tkn
       pure ()
@@ -357,7 +359,7 @@ testNtfTokenServerRestartReregister :: ATransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestartReregister t apns = do
   let tkn = DeviceToken PPApnsTest "abcd"
   withAgent 1 agentCfg initAgentServers testDB $ \a ->
-    withNtfServerStoreLog t $ \_ -> runRight $ do
+    withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just _}} <-
         getMockNotification apns tkn
@@ -367,7 +369,7 @@ testNtfTokenServerRestartReregister t apns = do
   withAgent 2 agentCfg initAgentServers testDB $ \a' ->
     -- server stopped before token is verified, and client might have lost verification notification.
     -- so that repeat registration happens when client is restarted.
-    withNtfServerStoreLog t $ \_ -> runRight_ $ do
+    withNtfServer t $ runRight_ $ do
       NTRegistered <- registerNtfToken a' tkn NMPeriodic
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
         getMockNotification apns tkn
@@ -381,7 +383,7 @@ testNtfTokenServerRestartReregisterTimeout :: ATransport -> APNSMockServer -> IO
 testNtfTokenServerRestartReregisterTimeout t apns = do
   let tkn = DeviceToken PPApnsTest "abcd"
   withAgent 1 agentCfg initAgentServers testDB $ \a@AgentClient {agentEnv = Env {store}} -> do
-    withNtfServerStoreLog t $ \_ -> runRight $ do
+    withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just _}} <-
         getMockNotification apns tkn
@@ -402,7 +404,7 @@ testNtfTokenServerRestartReregisterTimeout t apns = do
   withAgent 2 agentCfg initAgentServers testDB $ \a' ->
     -- server stopped before token is verified, and client might have lost verification notification.
     -- so that repeat registration happens when client is restarted.
-    withNtfServerStoreLog t $ \_ -> runRight_ $ do
+    withNtfServer t $ runRight_ $ do
       NTRegistered <- registerNtfToken a' tkn NMPeriodic
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
         getMockNotification apns tkn
@@ -422,8 +424,8 @@ testNtfTokenMultipleServers :: ATransport -> APNSMockServer -> IO ()
 testNtfTokenMultipleServers t apns = do
   let tkn = DeviceToken PPApnsTest "abcd"
   withAgent 1 agentCfg initAgentServers2 testDB $ \a ->
-    withNtfServerThreadOn t ntfTestPort $ \ntf ->
-      withNtfServerThreadOn t ntfTestPort2 $ \ntf2 -> runRight_ $ do
+    withNtfServerThreadOn t ntfTestPort ntfTestDBCfg $ \ntf ->
+      withNtfServerThreadOn t ntfTestPort2 ntfTestDBCfg2 $ \ntf2 -> runRight_ $ do
         -- register a new token, the agent picks a server and stores its choice
         NTRegistered <- registerNtfToken a tkn NMPeriodic
         APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
@@ -444,7 +446,7 @@ testNtfTokenMultipleServers t apns = do
 
 testNtfTokenChangeServers :: ATransport -> APNSMockServer -> IO ()
 testNtfTokenChangeServers t apns =
-  withNtfServerThreadOn t ntfTestPort $ \ntf -> do
+  withNtfServerThreadOn t ntfTestPort ntfTestDBCfg $ \ntf -> do
     tkn1 <- withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ do
       tkn <- registerTestToken a "abcd" NMInstant apns
       NTActive <- checkNtfToken a tkn
@@ -467,14 +469,14 @@ testNtfTokenChangeServers t apns =
         Left BROKER {brokerErr = NETWORK} <- tryError $ registerTestToken a "qwer" NMInstant apns -- ok, it's down for now
         getTestNtfTokenPort a >>= \port2 -> liftIO $ port2 `shouldBe` ntfTestPort2 -- but the token got updated
       killThread ntf
-      withNtfServerOn t ntfTestPort2 $ runRight_ $ do
+      withNtfServerOn t ntfTestPort2 ntfTestDBCfg2 $ runRight_ $ do
         liftIO $ threadDelay 1000000 -- for notification server to reconnect
         tkn <- registerTestToken a "qwer" NMInstant apns
         checkNtfToken a tkn >>= \r -> liftIO $ r `shouldBe` NTActive
 
 testNtfTokenReRegisterInvalid :: ATransport -> APNSMockServer -> IO ()
 testNtfTokenReRegisterInvalid t apns = do
-  tkn <- withNtfServerStoreLog t $ \_ -> do
+  tkn <- withNtfServer t $ do
     withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ do
       tkn <- registerTestToken a "abcd" NMInstant apns
       NTActive <- checkNtfToken a tkn
@@ -482,13 +484,13 @@ testNtfTokenReRegisterInvalid t apns = do
 
   threadDelay 250000
   -- start server to compact
-  withNtfServerStoreLog t $ \_ -> pure ()
+  withNtfServer t $ pure ()
 
   threadDelay 250000
   replaceSubstringInFile ntfTestStoreLogFile "tokenStatus=ACTIVE" "tokenStatus=INVALID"
 
   threadDelay 250000
-  withNtfServerStoreLog t $ \_ -> do
+  withNtfServer t $ do
     withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
       NTInvalid Nothing <- registerNtfToken a tkn NMInstant
       tkn1 <- registerTestToken a "abcd" NMInstant apns
@@ -503,7 +505,7 @@ replaceSubstringInFile filePath oldText newText = do
 
 testNtfTokenReRegisterInvalidOnCheck :: ATransport -> APNSMockServer -> IO ()
 testNtfTokenReRegisterInvalidOnCheck t apns = do
-  tkn <- withNtfServerStoreLog t $ \_ -> do
+  tkn <- withNtfServer t $ do
     withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ do
       tkn <- registerTestToken a "abcd" NMInstant apns
       NTActive <- checkNtfToken a tkn
@@ -511,13 +513,13 @@ testNtfTokenReRegisterInvalidOnCheck t apns = do
 
   threadDelay 250000
   -- start server to compact
-  withNtfServerStoreLog t $ \_ -> pure ()
+  withNtfServer t $ pure ()
 
   threadDelay 250000
   replaceSubstringInFile ntfTestStoreLogFile "tokenStatus=ACTIVE" "tokenStatus=INVALID"
 
   threadDelay 250000
-  withNtfServerStoreLog t $ \_ -> do
+  withNtfServer t $ do
     withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
       NTInvalid Nothing <- checkNtfToken a tkn
       tkn1 <- registerTestToken a "abcd" NMInstant apns
@@ -526,7 +528,7 @@ testNtfTokenReRegisterInvalidOnCheck t apns = do
 
 testRunNTFServerTests :: ATransport -> NtfServer -> IO (Maybe ProtocolTestFailure)
 testRunNTFServerTests t srv =
-  withNtfServerOn t ntfTestPort $
+  withNtfServer t $
     withAgent 1 agentCfg initAgentServers testDB $ \a ->
       testProtocolServer a 1 $ ProtoServerWithAuth srv Nothing
 
@@ -567,7 +569,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
   threadDelay 500000
   suspendAgent alice 0
   closeDBStore store
-  threadDelay 1000000
+  threadDelay 1500000
   putStrLn "before opening the database from another agent"
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
@@ -575,7 +577,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     (Just SMPMsgMeta {msgFlags = MsgFlags True}) :| _ <- getConnectionMessages aliceNtf [cId]
     pure ()
 
-  threadDelay 1000000
+  threadDelay 1500000
   putStrLn "after closing the database in another agent"
   reopenDBStore store
   foregroundAgent alice
@@ -753,7 +755,7 @@ testChangeToken apns = withAgent 1 agentCfg initAgentServers testDB2 $ \bob -> d
 testNotificationsStoreLog :: (ATransport, AStoreType) -> APNSMockServer -> IO ()
 testNotificationsStoreLog ps@(t, _) apns = withAgentClients2 $ \alice bob -> do
   withSmpServerStoreMsgLogOn ps testPort $ \_ -> do
-    (aliceId, bobId) <- withNtfServerStoreLog t $ \threadId -> runRight $ do
+    (aliceId, bobId) <- withNtfServer t $ runRight $ do
       (aliceId, bobId) <- makeConnection alice bob
       _ <- registerTestToken alice "abcd" NMInstant apns
       liftIO $ threadDelay 250000
@@ -762,19 +764,17 @@ testNotificationsStoreLog ps@(t, _) apns = withAgentClients2 $ \alice bob -> do
       void $ messageNotificationData alice apns
       get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
       ackMessage alice bobId 2 Nothing
-      liftIO $ killThread threadId
       pure (aliceId, bobId)
 
     liftIO $ threadDelay 250000
 
-    withNtfServerStoreLog t $ \threadId -> runRight_ $ do
+    withNtfServer t $ runRight_ $ do
       liftIO $ threadDelay 250000
       3 <- sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
       get bob ##> ("", aliceId, SENT 3)
       void $ messageNotificationData alice apns
       get alice =##> \case ("", c, Msg "hello again") -> c == bobId; _ -> False
       ackMessage alice bobId 3 Nothing
-      liftIO $ killThread threadId
 
     runRight_ $ do
       4 <- sendMessage bob aliceId (SMP.MsgFlags True) "message 4"
@@ -784,7 +784,7 @@ testNotificationsStoreLog ps@(t, _) apns = withAgentClients2 $ \alice bob -> do
       noNotifications apns
 
   withSmpServerStoreMsgLogOn ps testPort $ \_ ->
-    withNtfServerStoreLog t $ \_ -> runRight_ $ do
+    withNtfServer t $ runRight_ $ do
       void $ messageNotificationData alice apns
 
 testNotificationsSMPRestart :: (ATransport, AStoreType) -> APNSMockServer -> IO ()

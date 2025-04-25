@@ -370,6 +370,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       logInfo $ "restoring queues from file " <> T.pack f
       sl <- readWriteQueueStore False mkQ f st
       setStoreLog st sl
+#if defined(dbServerPostgres)
     compactDbStoreLog = \case
       Just f -> do
         logInfo $ "compacting queues in file " <> T.pack f
@@ -381,6 +382,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       Nothing -> do
         logError "Error: `--compact-log` used without `db_store_log` INI option"
         exitFailure
+#endif
     getCredentials protocol creds = do
       files <- missingCreds
       unless (null files) $ do
