@@ -311,7 +311,7 @@ testNtfTokenServerRestartReverify t apns = do
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
       Left (BROKER _ NETWORK) <- tryE $ verifyNtfToken a tkn nonce verification
       pure ()
-  threadDelay 1000000
+  threadDelay 1500000
   withAgent 2 agentCfg initAgentServers testDB $ \a' ->
     -- server stopped before token is verified, so now the attempt to verify it will return AUTH error but re-register token,
     -- so that repeat verification happens without restarting the clients, when notification arrives
@@ -346,7 +346,7 @@ testNtfTokenServerRestartReverifyTimeout t apns = do
         (NTConfirmed, Just (NTAVerify code), PPApnsTest, "abcd" :: ByteString)
     Just NtfToken {ntfTknStatus = NTConfirmed, ntfTknAction = Just (NTAVerify _)} <- withTransaction store getSavedNtfToken
     pure ()
-  threadDelay 1000000
+  threadDelay 1500000
   withAgent 2 agentCfg initAgentServers testDB $ \a' ->
     -- server stopped before token is verified, so now the attempt to verify it will return AUTH error but re-register token,
     -- so that repeat verification happens without restarting the clients, when notification arrives
@@ -569,7 +569,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
   threadDelay 500000
   suspendAgent alice 0
   closeDBStore store
-  threadDelay 1000000
+  threadDelay 1500000
   putStrLn "before opening the database from another agent"
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
@@ -577,7 +577,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     (Just SMPMsgMeta {msgFlags = MsgFlags True}) :| _ <- getConnectionMessages aliceNtf [cId]
     pure ()
 
-  threadDelay 1000000
+  threadDelay 1500000
   putStrLn "after closing the database in another agent"
   reopenDBStore store
   foregroundAgent alice
