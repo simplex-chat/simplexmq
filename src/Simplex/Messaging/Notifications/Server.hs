@@ -537,7 +537,8 @@ runNtfClientTransport th@THandle {params} = do
   s <- asks subscriber
   ps <- asks pushServer
   expCfg <- asks $ inactiveClientExpiration . config
-  raceAny_ ([liftIO $ send th c, client c s ps, receive th c] <> disconnectThread_ c expCfg)
+  st <- asks store
+  raceAny_ ([liftIO $ send th c, client c s ps, liftIO $ receive st th c] <> disconnectThread_ c expCfg)
     `finally` liftIO (clientDisconnected c)
   where
     disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (rcvActiveAt c) (sndActiveAt c) expCfg (pure True)]
@@ -546,10 +547,10 @@ runNtfClientTransport th@THandle {params} = do
 clientDisconnected :: NtfServerClient -> IO ()
 clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connected False
 
-receive :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> M ()
-receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
-  ts <- L.toList <$> liftIO (tGet th)
-  atomically . (writeTVar rcvActiveAt $!) =<< liftIO getSystemTime
+receive :: Transport c => NtfPostgresStore -> THandleNTF c 'TServer -> NtfServerClient -> IO ()
+receive st th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
+  ts <- L.toList <$> tGet th
+  atomically . (writeTVar rcvActiveAt $!) =<< getSystemTime
   (errs, cmds) <- partitionEithers <$> mapM cmdAction ts
   write sndQ errs
   write rcvQ cmds
@@ -560,70 +561,60 @@ receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ
           logError $ "invalid client request: " <> tshow e
           pure $ Left (corrId, entId, NRErr e)
         Right cmd ->
-          verified =<< verifyNtfTransmission ((,C.cbNonce (SMP.bs corrId)) <$> thAuth) t cmd
+          verified =<< verifyNtfTransmission st ((,C.cbNonce (SMP.bs corrId)) <$> thAuth) t cmd
           where
             verified = \case
               VRVerified req -> pure $ Right req
-              VRFailed -> do
+              VRFailed e -> do
                 logError "unauthorized client request"
-                pure $ Left (corrId, entId, NRErr AUTH)
+                pure $ Left (corrId, entId, NRErr e)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> IO ()
 send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
   ts <- atomically $ readTBQueue sndQ
-  void . liftIO $ tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
-  atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
+  void $ tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
+  atomically . (writeTVar sndActiveAt $!) =<< getSystemTime
 
-data VerificationResult = VRVerified NtfRequest | VRFailed
+data VerificationResult = VRVerified NtfRequest | VRFailed ErrorType
 
-verifyNtfTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
-verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
-  st <- asks store
-  case cmd of
-    -- TODO [ntfdb] this looks suspicious, as if it can prevent repeated registrations
-    NtfCmd SToken c@(TNEW tkn@(NewNtfTkn _ k _)) -> do
-      r_ <- liftIO $ getNtfTokenRegistration st tkn
-      pure $
-        if verifyCmdAuthorization auth_ tAuth authorized k
-          then case r_ of
-            Right t@NtfTknRec {tknVerifyKey}
-              -- keys will be the same because of condition in `getNtfTokenRegistration`
-              | k == tknVerifyKey -> VRVerified $ tknCmd t c
-              | otherwise -> VRFailed
-            Left _ -> VRVerified (NtfReqNew corrId (ANE SToken tkn))
-          else VRFailed
-    NtfCmd SToken c -> do
-      t_ <- liftIO $ getNtfToken st entId
-      verifyToken_' t_ (`tknCmd` c)
-    NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId smpQueue _)) ->
-      liftIO $ verify <$> findNtfSubscription st tknId smpQueue
-      where
-        verify = \case
-          Right (t, s_) -> verifyToken t $ case s_ of
-            Nothing -> NtfReqNew corrId (ANE SSubscription sub)
-            Just s -> subCmd s c
-          -- TODO [ntfdb] it should simply return error if it is not AUTH
-          Left _ -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
-    NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
-    NtfCmd SSubscription c -> liftIO $ verify <$> getNtfSubscription st entId
-      where
-        verify = \case
-          Right (t, s) -> verifyToken t $ subCmd s c
-          -- TODO [ntfdb] it should simply return error if it is not AUTH
-          Left _ -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
+verifyNtfTransmission :: NtfPostgresStore -> Maybe (THandleAuth 'TServer, C.CbNonce) -> SignedTransmission ErrorType NtfCmd -> NtfCmd -> IO VerificationResult
+verifyNtfTransmission st auth_ (tAuth, authorized, (corrId, entId, _)) = \case
+  NtfCmd SToken c@(TNEW tkn@(NewNtfTkn _ k _))
+    | verifyCmdAuthorization auth_ tAuth authorized k ->
+        result <$> findNtfTokenRegistration st tkn
+    | otherwise -> pure $ VRFailed AUTH
+    where
+      result = \case
+        Right (Just t@NtfTknRec {tknVerifyKey})
+          -- keys will be the same because of condition in `findNtfTokenRegistration`
+          | k == tknVerifyKey -> VRVerified $ tknCmd t c
+          | otherwise -> VRFailed AUTH
+        Right Nothing -> VRVerified (NtfReqNew corrId (ANE SToken tkn))
+        Left e -> VRFailed e
+  NtfCmd SToken c -> either err verify <$> getNtfToken st entId
+    where
+      verify t = verifyToken t $ tknCmd t c
+  NtfCmd SSubscription c@(SNEW sub@(NewNtfSub tknId smpQueue _)) ->
+    either err verify <$> findNtfSubscription st tknId smpQueue
+    where
+      verify (t, s_) = verifyToken t $ case s_ of
+        Nothing -> NtfReqNew corrId (ANE SSubscription sub)
+        Just s -> subCmd s c
+  NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
+  NtfCmd SSubscription c -> either err verify <$> getNtfSubscription st entId
+    where
+      verify (t, s) = verifyToken t $ subCmd s c
   where
     tknCmd t c = NtfReqCmd SToken (NtfTkn t) (corrId, entId, c)
     subCmd s c = NtfReqCmd SSubscription (NtfSub s) (corrId, entId, c)
-    verifyToken_' :: Either ErrorType NtfTknRec -> (NtfTknRec -> NtfRequest) -> M VerificationResult
-    verifyToken_' t_ result = pure $ case t_ of
-      Right t -> verifyToken t $ result t
-      -- TODO [ntfdb] it should simply return error if it is not AUTH
-      Left _ -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
     verifyToken :: NtfTknRec -> NtfRequest -> VerificationResult
     verifyToken NtfTknRec {tknVerifyKey} r
       | verifyCmdAuthorization auth_ tAuth authorized tknVerifyKey = VRVerified r
-      | otherwise = VRFailed
+      | otherwise = VRFailed AUTH
+    err = \case -- signature verification for AUTH errors mitigates timing attacks for existence checks
+      AUTH -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed AUTH
+      e -> VRFailed e
 
 client :: NtfServerClient -> NtfSubscriber -> NtfPushServer -> M ()
 client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPushServer {pushQ, intervalNotifiers} =
@@ -669,9 +660,6 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
                   pure NROk
             | otherwise -> do
                 logDebug "TVFY - incorrect code or token status"
-                liftIO $ print tkn
-                let NtfRegCode c = code
-                liftIO $ print $ B64.encode c
                 pure $ NRErr AUTH
           TCHK -> do
             logDebug "TCHK"
@@ -732,17 +720,15 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               atomically $ writeTBQueue newSubQ (srv, [sub])
               incNtfStat subCreated
               pure $ NRSubId subId
-            -- TODO [ntfdb] we must allow repeated inserts that don't change credentials
             False -> pure $ NRErr AUTH
         pure (corrId, NoEntity, resp)
-      NtfReqCmd SSubscription (NtfSub NtfSubRec {smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
+      NtfReqCmd SSubscription (NtfSub NtfSubRec {ntfSubId, smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
         (corrId,subId,) <$> case cmd of
           SNEW (NewNtfSub _ _ notifierKey) -> do
             logDebug "SNEW - existing subscription"
-            -- possible improvement: retry if subscription failed, if pending or AUTH do nothing
             pure $
               if notifierKey == registeredNKey
-                then NRSubId subId
+                then NRSubId ntfSubId
                 else NRErr AUTH
           SCHK -> do
             logDebug "SCHK"

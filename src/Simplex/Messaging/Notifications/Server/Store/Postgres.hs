@@ -145,18 +145,20 @@ ntfTknToRow NtfTknRec {ntfTknId, token, tknStatus, tknVerifyKey, tknDhPrivKey, t
    in (ntfTknId, pp, Binary ppToken, tknStatus, tknVerifyKey, tknDhPrivKey, tknDhSecret, Binary regCode, tknCronInterval, tknUpdatedAt)
 
 getNtfToken :: NtfPostgresStore -> NtfTokenId -> IO (Either ErrorType NtfTknRec)
-getNtfToken st tknId = getNtfToken_ st " WHERE token_id = ?" (Only tknId)
+getNtfToken st tknId =
+  (maybe (Left AUTH) Right =<<) <$>
+    getNtfToken_ st " WHERE token_id = ?" (Only tknId)
 
-getNtfTokenRegistration :: NtfPostgresStore -> NewNtfEntity 'Token -> IO (Either ErrorType NtfTknRec)
-getNtfTokenRegistration st (NewNtfTkn (DeviceToken pp ppToken) tknVerifyKey _) =
+findNtfTokenRegistration :: NtfPostgresStore -> NewNtfEntity 'Token -> IO (Either ErrorType (Maybe NtfTknRec))
+findNtfTokenRegistration st (NewNtfTkn (DeviceToken pp ppToken) tknVerifyKey _) =
   getNtfToken_ st " WHERE push_provider = ? AND push_provider_token = ? AND verify_key = ?" (pp, Binary ppToken, tknVerifyKey)
 
-getNtfToken_ :: ToRow q => NtfPostgresStore -> Query -> q -> IO (Either ErrorType NtfTknRec)
+getNtfToken_ :: ToRow q => NtfPostgresStore -> Query -> q -> IO (Either ErrorType (Maybe NtfTknRec))
 getNtfToken_ st cond params =
-  withDB "getNtfToken" st $ \db -> runExceptT $ do
-    tkn <- ExceptT $ firstRow rowToNtfTkn AUTH $ DB.query db (ntfTknQuery <> cond) params
-    liftIO $ updateTokenDate st db tkn
-    pure tkn
+  withDB' "getNtfToken" st $ \db -> do
+    tkn_ <- maybeFirstRow rowToNtfTkn $ DB.query db (ntfTknQuery <> cond) params
+    mapM_ (updateTokenDate st db) tkn_
+    pure tkn_
 
 updateTokenDate :: NtfPostgresStore -> DB.Connection -> NtfTknRec -> IO ()
 updateTokenDate st db NtfTknRec {ntfTknId, tknUpdatedAt} = do
@@ -269,26 +271,28 @@ foldNtfSubscriptions st srv fetchCount state action =
     toNtfSub (ntfSubId, tokenId, nId, subStatus, notifierKey) =
       NtfSubRec {ntfSubId, tokenId, smpQueue = SMPQueueNtf srv nId, subStatus, notifierKey}
 
+-- Returns token and subscription.
+-- If subscription exists but belongs to another token, returns Left AUTH
 findNtfSubscription :: NtfPostgresStore -> NtfTokenId -> SMPQueueNtf -> IO (Either ErrorType (NtfTknRec, Maybe NtfSubRec))
-findNtfSubscription st tknId q@(SMPQueueNtf srv nId) =
+findNtfSubscription st tknId q =
   withDB "findNtfSubscription" st $ \db -> runExceptT $ do
-    r@(tkn@NtfTknRec {tknStatus}, _) <-
-      ExceptT $ firstRow (rowToNtfTknMaybeSub q) AUTH $
+    tkn@NtfTknRec {ntfTknId, tknStatus} <- ExceptT $ getNtfToken st tknId
+    unless (allowNtfSubCommands tknStatus) $ throwE AUTH
+    liftIO $ updateTokenDate st db tkn
+    sub_ <-
+      liftIO $ maybeFirstRow (rowToNtfSub q) $
         DB.query
           db
           [sql|
-            SELECT t.token_id, t.push_provider, t.push_provider_token, t.status, t.verify_key, t.dh_priv_key, t.dh_secret, t.reg_code, t.cron_interval, t.updated_at,
-              s.subscription_id, s.smp_notifier_key, s.status
-            FROM tokens t
-            LEFT JOIN subscriptions s ON s.token_id = t.token_id AND s.smp_notifier_id = ?
-            LEFT JOIN smp_servers p ON p.smp_server_id = s.smp_server_id
-              AND p.smp_host = ? AND p.smp_port = ? AND p.smp_keyhash = ?
-            WHERE t.token_id = ?
-          |]          
-          (Only nId :. srvToRow srv :. Only tknId)
-    liftIO $ updateTokenDate st db tkn
-    unless (allowNtfSubCommands tknStatus) $ throwE AUTH
-    pure r
+            SELECT s.token_id, s.subscription_id, s.smp_notifier_key, s.status
+            FROM subscriptions s
+            JOIN smp_servers p ON p.smp_server_id = s.smp_server_id
+            WHERE p.smp_host = ? AND p.smp_port = ? AND p.smp_keyhash = ?
+              AND s.smp_notifier_id = ?
+          |]
+          (smpQueueToRow q)
+    forM_ sub_ $ \NtfSubRec {tokenId} -> unless (ntfTknId == tokenId) $ throwE AUTH
+    pure (tkn, sub_)
 
 getNtfSubscription :: NtfPostgresStore -> NtfSubscriptionId -> IO (Either ErrorType (NtfTknRec, NtfSubRec))
 getNtfSubscription st subId =
@@ -313,22 +317,15 @@ getNtfSubscription st subId =
 
 type NtfSubRow = (NtfSubscriptionId, NtfPrivateAuthKey, NtfSubStatus)
 
-type MaybeNtfSubRow = (Maybe NtfSubscriptionId, Maybe NtfPrivateAuthKey, Maybe NtfSubStatus)
-
 rowToNtfTknSub :: NtfTknRow :. NtfSubRow :. SMPQueueNtfRow -> (NtfTknRec, NtfSubRec)
 rowToNtfTknSub (tknRow :. (ntfSubId, notifierKey, subStatus) :. qRow)  =
   let tkn@NtfTknRec {ntfTknId = tokenId} = rowToNtfTkn tknRow
       smpQueue = rowToSMPQueue qRow
    in (tkn, NtfSubRec {ntfSubId, tokenId, smpQueue, notifierKey, subStatus})
 
-rowToNtfTknMaybeSub :: SMPQueueNtf -> NtfTknRow :. MaybeNtfSubRow -> (NtfTknRec, Maybe NtfSubRec)
-rowToNtfTknMaybeSub smpQueue (tknRow :. subRow)  =
-  let tkn@NtfTknRec {ntfTknId = tokenId} = rowToNtfTkn tknRow
-      sub_ = case subRow of
-        (Just ntfSubId, Just notifierKey, Just subStatus) ->
-          Just NtfSubRec {ntfSubId, tokenId, smpQueue, notifierKey, subStatus}
-        _ -> Nothing
-   in (tkn, sub_)
+rowToNtfSub :: SMPQueueNtf -> Only NtfTokenId :. NtfSubRow -> NtfSubRec
+rowToNtfSub smpQueue (Only tokenId :. (ntfSubId, notifierKey, subStatus)) =
+  NtfSubRec {ntfSubId, tokenId, smpQueue, notifierKey, subStatus}
 
 mkNtfSubRec :: NtfSubscriptionId -> NewNtfEntity 'Subscription -> NtfSubRec
 mkNtfSubRec ntfSubId (NewNtfSub tokenId smpQueue notifierKey) =
