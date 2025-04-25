@@ -33,7 +33,7 @@ import Data.Containers.ListUtils (nubOrd)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (foldl', intercalate)
+import Data.List (findIndex, foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -597,7 +597,10 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore = do
       tokens <- filterTokens allTokens
       let skipped = length allTokens - length tokens
       when (skipped /= 0) $ putStrLn $ "Total skipped tokens " <> show skipped
-      tCnt <- withConnection s $ \db -> foldM (insertToken db) 0 tokens
+      -- uncomment this line instead of the next to import tokens one by one.
+      -- tCnt <- withConnection s $ \db -> foldM (importTkn db) 0 tokens
+      tRows <- mapM (fmap ntfTknToRow . mkTknRec) tokens
+      tCnt <- withConnection s $ \db -> DB.executeMany db insertNtfTknQuery tRows
       void $ checkCount "token" (length tokens) tCnt
       let tokenIds = S.fromList $ map (\NtfTknData {ntfTknId} -> ntfTknId) tokens
       pure (tCnt, tokenIds)
@@ -607,48 +610,54 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore = do
           tokenSubs <- readTVarIO (tokenSubscriptions stmStore)
           filterM (keepTokenRegistration deviceTokens tokenSubs) tokens
         tokenKey NtfTknData {token, tknVerifyKey} = strEncode token <> ":" <> C.toPubKey C.pubKeyBytes tknVerifyKey
-        keepTokenRegistration deviceTokens tokenSubs tkn@NtfTknData {ntfTknId, token, tknStatus} =
+        keepTokenRegistration deviceTokens tokenSubs tkn@NtfTknData {ntfTknId, tknStatus} =
           case M.lookup (tokenKey tkn) deviceTokens of
             Just ts
-              | length ts >= 2 ->
+              | length ts < 2 -> pure True
+              | otherwise ->
                   readTVarIO tknStatus >>= \case
                     NTConfirmed -> do
-                      anyActive <- anyM $ map (\NtfTknData {tknStatus = tknStatus'} -> (NTActive ==) <$> readTVarIO tknStatus') ts
-                      noSubs <- S.null <$> maybe (pure S.empty) readTVarIO (M.lookup ntfTknId tokenSubs)
-                      if anyActive
-                        then (
-                          if noSubs
-                            then False <$ putStrLn ("Skipped inactive token " <> enc ntfTknId <> " (no subscriptions)")
-                            else pure True
-                        )
+                      hasSubs <- maybe (pure False) (\v -> not . S.null <$> readTVarIO v) $ M.lookup ntfTknId tokenSubs
+                      if hasSubs
+                        then pure True
                         else do
-                          let noSubsStr = if noSubs then " no subscriptions" else " has subscriptions"
-                          putStrLn $ "Error: more than one registration for token " <> enc ntfTknId <> " " <> show token <> noSubsStr
-                          pure True
+                          anyActive <- anyM $ map (\NtfTknData {tknStatus = tknStatus'} -> (NTActive ==) <$> readTVarIO tknStatus') ts
+                          if anyActive
+                            then False <$ putStrLn ("Skipped duplicate inactive token " <> enc ntfTknId)
+                            else case findIndex (\NtfTknData {ntfTknId = tId} -> tId == ntfTknId) ts of
+                              Just 0 -> pure True -- keeping the first token
+                              Just _ -> False <$ putStrLn ("Skipped duplicate inactive token " <> enc ntfTknId <> " (no active token)")
+                              Nothing -> True <$ putStrLn "Error: no device token in the list"
                     _ -> pure True
-              | otherwise -> pure True
             Nothing -> True <$ putStrLn "Error: no device token in lookup map"
-        insertToken db !n tkn@NtfTknData {ntfTknId} = do
-          tknRow <- ntfTknToRow <$> mkTknRec tkn
-          (DB.execute db insertNtfTknQuery tknRow >>= pure . (n + )) `E.catch` \(e :: E.SomeException) ->
-            putStrLn ("Error inserting token " <> enc ntfTknId <> " " <> show e) $> n
+        -- importTkn db !n tkn@NtfTknData {ntfTknId} = do
+        --   tknRow <- ntfTknToRow <$> mkTknRec tkn
+        --   (DB.execute db insertNtfTknQuery tknRow >>= pure . (n + )) `E.catch` \(e :: E.SomeException) ->
+        --     putStrLn ("Error inserting token " <> enc ntfTknId <> " " <> show e) $> n
     importSubscriptions tIds = do
       allSubs <- M.elems <$> readTVarIO (subscriptions stmStore)
       let subs = filter (\NtfSubData {tokenId} -> S.member tokenId tIds) allSubs
           skipped = length allSubs - length subs
-      when (skipped /= 0) $ putStrLn $ "Skipped subscriptions (no tokens) " <> show skipped
-      srvIds <- importServers subs
-      putStrLn $ "Importing " <> show (length subs) <> " subscriptions..."
-      -- uncomment this line instead of the next 2 lines to import subs one by one.
-      (sCnt, missingTkns) <- withConnection s $ \db -> foldM (importSub db srvIds) (0, M.empty) subs
-      -- sCnt <- foldM (importSubs srvIds) 0 $ toChunks 100000 subs
-      -- let missingTkns = M.empty
-      putStrLn $ "Imported " <> show sCnt <> " subscriptions"
-      unless (M.null missingTkns) $ do
-        putStrLn $ show (M.size missingTkns) <> " missing tokens:"
-        forM_ (M.assocs missingTkns) $ \(tId, sIds) ->
-          putStrLn $ "Token " <> enc tId <> " " <> show (length sIds) <> " subscriptions: " <> intercalate ", " (map enc sIds)
-      checkCount "subscription" (length subs) sCnt
+      when (skipped /= 0) $ putStrLn $ "Skipped " <> show skipped <> " subscriptions of missing tokens" 
+      let (_, (removedSubTokens, removeSubs, dupQueues)) =
+            foldl'
+              ( \ acc@(!m, ids@(!stIds, !sIds, !qs)) NtfSubData {ntfSubId, smpQueue, tokenId, notifierKey} -> case M.lookup smpQueue m of
+                  Just (tId, nKey)
+                    | tokenId == tId && notifierKey == nKey ->
+                        let ids' = (S.insert tId stIds, S.insert ntfSubId sIds, S.insert smpQueue qs) in (m, ids')
+                    | otherwise -> acc
+                  Nothing -> let m' = M.insert smpQueue (tokenId, notifierKey) m in (m', ids)
+              )
+              (M.empty, (S.empty, S.empty, S.empty))
+              subs
+      unless (null removeSubs) $ putStrLn $ "Skipped " <> show (S.size removeSubs) <> " duplicate subscriptions of " <> show (S.size removedSubTokens) <> " tokens for " <> show (S.size dupQueues) <> " queues"
+      let subs' = filter (\NtfSubData {ntfSubId} -> S.notMember ntfSubId removeSubs) subs
+      srvIds <- importServers subs'
+      putStrLn $ "Importing " <> show (length subs') <> " subscriptions..."
+      -- uncomment this line instead of the next to import subs one by one.
+      -- (sCnt, errTkns) <- withConnection s $ \db -> foldM (importSub db srvIds) (0, M.empty) subs'
+      sCnt <- foldM (importSubs srvIds) 0 $ toChunks 500000 subs'
+      checkCount "subscription" (length subs') sCnt
       where
         importSubs srvIds !n subs = do
           rows <- mapM (ntfSubRow srvIds) subs
@@ -657,19 +666,19 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore = do
           putStr $ "Imported " <> show n' <> " subscriptions" <> "\r"
           hFlush stdout
           pure n'
-        importSub db srvIds (!n, !missingTkns) sub@NtfSubData {ntfSubId = sId, tokenId} = do
-          subRow <- ntfSubRow srvIds sub
-          E.try (DB.execute db insertNtfSubQuery subRow) >>= \case
-            Right i -> do
-              let n' = n + i
-              when (n' `mod` 100000 == 0) $ do
-                putStr $ "Imported " <> show n' <> " subscriptions" <> "\r"
-                hFlush stdout
-              pure (n', missingTkns)
-            Left (e :: E.SomeException) -> do
-              when (n `mod` 100000 == 0) $ putStrLn ""
-              putStrLn $ "Error inserting subscription " <> enc sId <> " for token " <> enc tokenId <> " " <> show e
-              pure (n, M.alter (Just . (sId :) . fromMaybe []) tokenId missingTkns)
+        -- importSub db srvIds (!n, !errTkns) sub@NtfSubData {ntfSubId = sId, tokenId} = do
+        --   subRow <- ntfSubRow srvIds sub
+        --   E.try (DB.execute db insertNtfSubQuery subRow) >>= \case
+        --     Right i -> do
+        --       let n' = n + i
+        --       when (n' `mod` 100000 == 0) $ do
+        --         putStr $ "Imported " <> show n' <> " subscriptions" <> "\r"
+        --         hFlush stdout
+        --       pure (n', errTkns)
+        --     Left (e :: E.SomeException) -> do
+        --       when (n `mod` 100000 == 0) $ putStrLn ""
+        --       putStrLn $ "Error inserting subscription " <> enc sId <> " for token " <> enc tokenId <> " " <> show e
+        --       pure (n, M.alter (Just . maybe [sId] (sId :)) tokenId errTkns)
         ntfSubRow srvIds sub = case M.lookup srv srvIds of
           Just sId -> ntfSubToRow sId <$> mkSubRec sub
           Nothing -> E.throwIO $ userError $ "no matching server ID for server " <> show srv
