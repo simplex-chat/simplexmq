@@ -564,9 +564,9 @@ receive th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ
           where
             verified = \case
               VRVerified req -> pure $ Right req
-              VRFailed -> do
+              VRFailed e -> do
                 logError "unauthorized client request"
-                pure $ Left (corrId, entId, NRErr AUTH)
+                pure $ Left (corrId, entId, NRErr e)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> IO ()
@@ -575,24 +575,24 @@ send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
   void . liftIO $ tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
   atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
 
-data VerificationResult = VRVerified NtfRequest | VRFailed
+data VerificationResult = VRVerified NtfRequest | VRFailed ErrorType
 
 verifyNtfTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> SignedTransmission ErrorType NtfCmd -> NtfCmd -> M VerificationResult
 verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
   st <- asks store
   case cmd of
-    -- TODO [ntfdb] this looks suspicious, as if it can prevent repeated registrations
     NtfCmd SToken c@(TNEW tkn@(NewNtfTkn _ k _)) -> do
-      r_ <- liftIO $ getNtfTokenRegistration st tkn
+      r_ <- liftIO $ findNtfTokenRegistration st tkn
       pure $
         if verifyCmdAuthorization auth_ tAuth authorized k
           then case r_ of
-            Right t@NtfTknRec {tknVerifyKey}
-              -- keys will be the same because of condition in `getNtfTokenRegistration`
+            Right (Just t@NtfTknRec {tknVerifyKey})
+              -- keys will be the same because of condition in `findNtfTokenRegistration`
               | k == tknVerifyKey -> VRVerified $ tknCmd t c
-              | otherwise -> VRFailed
-            Left _ -> VRVerified (NtfReqNew corrId (ANE SToken tkn))
-          else VRFailed
+              | otherwise -> VRFailed AUTH
+            Right Nothing -> VRVerified (NtfReqNew corrId (ANE SToken tkn))
+            Left e -> VRFailed e
+          else VRFailed AUTH
     NtfCmd SToken c -> do
       t_ <- liftIO $ getNtfToken st entId
       verifyToken_' t_ (`tknCmd` c)
@@ -603,27 +603,27 @@ verifyNtfTransmission auth_ (tAuth, authorized, (corrId, entId, _)) cmd = do
           Right (t, s_) -> verifyToken t $ case s_ of
             Nothing -> NtfReqNew corrId (ANE SSubscription sub)
             Just s -> subCmd s c
-          -- TODO [ntfdb] it should simply return error if it is not AUTH
-          Left _ -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
+          Left AUTH -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed AUTH
+          Left e -> VRFailed e
     NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
     NtfCmd SSubscription c -> liftIO $ verify <$> getNtfSubscription st entId
       where
         verify = \case
           Right (t, s) -> verifyToken t $ subCmd s c
-          -- TODO [ntfdb] it should simply return error if it is not AUTH
-          Left _ -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
+          Left AUTH -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed AUTH
+          Left e -> VRFailed e
   where
     tknCmd t c = NtfReqCmd SToken (NtfTkn t) (corrId, entId, c)
     subCmd s c = NtfReqCmd SSubscription (NtfSub s) (corrId, entId, c)
     verifyToken_' :: Either ErrorType NtfTknRec -> (NtfTknRec -> NtfRequest) -> M VerificationResult
     verifyToken_' t_ result = pure $ case t_ of
       Right t -> verifyToken t $ result t
-      -- TODO [ntfdb] it should simply return error if it is not AUTH
-      Left _ -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed
+      Left AUTH -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed AUTH
+      Left e -> VRFailed e
     verifyToken :: NtfTknRec -> NtfRequest -> VerificationResult
     verifyToken NtfTknRec {tknVerifyKey} r
       | verifyCmdAuthorization auth_ tAuth authorized tknVerifyKey = VRVerified r
-      | otherwise = VRFailed
+      | otherwise = VRFailed AUTH
 
 client :: NtfServerClient -> NtfSubscriber -> NtfPushServer -> M ()
 client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPushServer {pushQ, intervalNotifiers} =
@@ -735,14 +735,13 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             -- TODO [ntfdb] we must allow repeated inserts that don't change credentials
             False -> pure $ NRErr AUTH
         pure (corrId, NoEntity, resp)
-      NtfReqCmd SSubscription (NtfSub NtfSubRec {smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
+      NtfReqCmd SSubscription (NtfSub NtfSubRec {ntfSubId, smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
         (corrId,subId,) <$> case cmd of
           SNEW (NewNtfSub _ _ notifierKey) -> do
             logDebug "SNEW - existing subscription"
-            -- possible improvement: retry if subscription failed, if pending or AUTH do nothing
             pure $
               if notifierKey == registeredNKey
-                then NRSubId subId
+                then NRSubId ntfSubId
                 else NRErr AUTH
           SCHK -> do
             logDebug "SCHK"
