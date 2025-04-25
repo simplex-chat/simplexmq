@@ -74,7 +74,7 @@ CREATE TABLE last_notifications(
   nmsg_data BYTEA NOT NULL
 );
 
-CREATE INDEX idx_last_notifications_token_id ON last_notifications(token_id, sent_at);
+CREATE INDEX idx_last_notifications_token_id_sent_at ON last_notifications(token_id, sent_at);
 CREATE INDEX idx_last_notifications_subscription_id ON last_notifications(subscription_id);
 
 CREATE UNIQUE INDEX idx_last_notifications_token_subscription ON last_notifications(token_id, subscription_id);
