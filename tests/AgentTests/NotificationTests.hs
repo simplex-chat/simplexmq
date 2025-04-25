@@ -79,6 +79,7 @@ import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), NtfSer
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
 import Simplex.Messaging.Transport (ATransport)
+import System.Process (callCommand)
 import Test.Hspec
 import UnliftIO
 #if defined(dbPostgres)
@@ -569,7 +570,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
   threadDelay 500000
   suspendAgent alice 0
   closeDBStore store
-  threadDelay 1500000
+  callCommand "sync"
   putStrLn "before opening the database from another agent"
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
@@ -577,7 +578,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     (Just SMPMsgMeta {msgFlags = MsgFlags True}) :| _ <- getConnectionMessages aliceNtf [cId]
     pure ()
 
-  threadDelay 1500000
+  callCommand "sync"
   putStrLn "after closing the database in another agent"
   reopenDBStore store
   foregroundAgent alice

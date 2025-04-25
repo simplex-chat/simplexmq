@@ -732,7 +732,6 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
               atomically $ writeTBQueue newSubQ (srv, [sub])
               incNtfStat subCreated
               pure $ NRSubId subId
-            -- TODO [ntfdb] we must allow repeated inserts that don't change credentials
             False -> pure $ NRErr AUTH
         pure (corrId, NoEntity, resp)
       NtfReqCmd SSubscription (NtfSub NtfSubRec {ntfSubId, smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do

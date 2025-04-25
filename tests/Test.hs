@@ -108,7 +108,7 @@ main = do
         --   before (pure (transport @WS, ASType SQSMemory SMSJournal)) serverTests
 #if defined(dbServerPostgres)
         aroundAll_ (postgressBracket ntfTestServerDBConnectInfo) $ do
-          fdescribe "Notifications server" $ ntfServerTests (transport @TLS)
+          describe "Notifications server" $ ntfServerTests (transport @TLS)
         aroundAll_ (postgressBracket testServerDBConnectInfo) $ do
           describe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
           describe "SMP proxy, postgres+jornal message store" $
