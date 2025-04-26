@@ -123,7 +123,7 @@ main = do
           describe "XFTP CLI" xftpCLITests
           describe "XFTP agent" xftpAgentTests
         describe "XRCP" remoteControlTests
-        fdescribe "Server CLIs" cliTests
+        describe "Server CLIs" cliTests
 
 eventuallyRemove :: FilePath -> Int -> IO ()
 eventuallyRemove path retries = case retries of
