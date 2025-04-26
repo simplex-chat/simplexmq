@@ -1,6 +1,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
 module CLITests where
 
@@ -8,6 +9,7 @@ import AgentTests.FunctionalAPITests (runRight_)
 import Control.Logger.Simple
 import Control.Monad
 import qualified Crypto.PubKey.RSA as RSA
+import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashMap.Strict as HM
 import Data.Ini (Ini (..), lookupValue, readIniFile, writeIniFile)
@@ -41,8 +43,11 @@ import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Exception (bracket)
 
 #if defined(dbServerPostgres)
-import NtfClient (ntfTestServerDBConnectInfo)
+import qualified Database.PostgreSQL.Simple as PSQL
+import Database.PostgreSQL.Simple.Types (Query (..))
+import NtfClient (ntfTestServerDBConnectInfo, ntfTestServerDBConnstr, ntfTestStoreDBOpts)
 import SMPClient (postgressBracket)
+import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Notifications.Server.Main
 #endif
 
@@ -77,7 +82,7 @@ cliTests = do
       it "with store log, no password" $ smpServerTest True False
       it "static files" smpServerTestStatic
 #if defined(dbServerPostgres)
-  aroundAll_ (postgressBracket ntfTestServerDBConnectInfo) $
+  around_ (postgressBracket ntfTestServerDBConnectInfo) $ before_ (createNtfSchema ntfTestServerDBConnectInfo ntfTestStoreDBOpts) $
     describe "Ntf server CLI" $ do
       it "should initialize, start and delete the server (no store log)" $ ntfServerTest False
       it "should initialize, start and delete the server (with store log)" $ ntfServerTest True
@@ -192,9 +197,15 @@ smpServerTestStatic = do
        in map (X.signedObject . X.getSigned) cc
 
 #if defined(dbServerPostgres)
+createNtfSchema :: PSQL.ConnectInfo -> DBOpts -> IO ()
+createNtfSchema connInfo DBOpts {schema} = do
+  db <- PSQL.connect connInfo
+  void $ PSQL.execute_ db $ Query $ "CREATE SCHEMA " <> schema
+  PSQL.close db
+
 ntfServerTest :: Bool -> IO ()
 ntfServerTest storeLog = do
-  capture_ (withArgs (["init"] <> ["--disable-store-log" | not storeLog]) $ ntfServerCLI ntfCfgPath ntfLogPath)
+  capture_ (withArgs (["init", "--database=" <> B.unpack ntfTestServerDBConnstr] <> ["--disable-store-log" | not storeLog]) $ ntfServerCLI ntfCfgPath ntfLogPath)
     >>= (`shouldSatisfy` (("Server initialized, you can modify configuration in " <> ntfCfgPath <> "/ntf-server.ini") `isPrefixOf`))
   Right ini <- readIniFile $ ntfCfgPath <> "/ntf-server.ini"
   lookupValue "STORE_LOG" "enable" ini `shouldBe` Right (if storeLog then "on" else "off")

@@ -79,8 +79,6 @@ import UnliftIO.STM
 import GHC.Conc (listThreads)
 #endif
 
-import qualified Data.ByteString.Base64 as B64
-
 runNtfServer :: NtfServerConfig -> IO ()
 runNtfServer cfg = do
   started <- newEmptyTMVarIO
