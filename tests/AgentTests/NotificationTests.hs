@@ -570,7 +570,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
   threadDelay 500000
   suspendAgent alice 0
   closeDBStore store
-  callCommand "sync"
+  threadDelay 500000 >> callCommand "sync" >> threadDelay 500000
   putStrLn "before opening the database from another agent"
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
@@ -578,7 +578,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     (Just SMPMsgMeta {msgFlags = MsgFlags True}) :| _ <- getConnectionMessages aliceNtf [cId]
     pure ()
 
-  callCommand "sync"
+  threadDelay 500000 >> callCommand "sync" >> threadDelay 500000
   putStrLn "after closing the database in another agent"
   reopenDBStore store
   foregroundAgent alice

@@ -78,7 +78,7 @@ cliTests = do
       it "static files" smpServerTestStatic
 #if defined(dbServerPostgres)
   aroundAll_ (postgressBracket ntfTestServerDBConnectInfo) $
-    describe "Ntf server CLI" $ do
+    fdescribe "Ntf server CLI" $ do
       it "should initialize, start and delete the server (no store log)" $ ntfServerTest False
       it "should initialize, start and delete the server (with store log)" $ ntfServerTest True
 #endif

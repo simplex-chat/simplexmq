@@ -698,16 +698,17 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore = do
       where
         lastNtfQuery = "INSERT INTO last_notifications(token_id, subscription_id, sent_at, nmsg_nonce, nmsg_data) VALUES (?,?,?,?,?)"
         filterLastNtfRows ntfs = do
-          (skippedTkns, (skippedQueues, ntfRows)) <- foldM lastNtfRows (S.empty, (S.empty, [])) $ M.assocs ntfs
-          let skipped = length ntfRows - M.size ntfs
+          (skippedTkns, ntfCnt, (skippedQueues, ntfRows)) <- foldM lastNtfRows (S.empty, 0, (S.empty, [])) $ M.assocs ntfs
+          let skipped = ntfCnt - length ntfRows
           when (skipped /= 0) $ putStrLn $ "Skipped last notifications " <> show skipped <> " for " <> show (S.size skippedTkns) <> " missing tokens and " <> show (S.size skippedQueues) <> " missing subscriptions with token present"
           pure ntfRows
-        lastNtfRows (!stIds, !acc) (tId, ntfVar) = do
+        lastNtfRows (!stIds, !cnt, !acc) (tId, ntfVar) = do
           ntfs <- L.toList <$> readTVarIO ntfVar
+          let cnt' = cnt + length ntfs
           pure $
             if S.member tId tIds
-              then (stIds, foldl' ntfRow acc ntfs)
-              else (S.insert tId stIds, acc)
+              then (stIds, cnt', foldl' ntfRow acc ntfs)
+              else (S.insert tId stIds, cnt', acc)
           where
             ntfRow (!qs, !rows) PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = case M.lookup smpQueue subLookup of
               Just ntfSubId -> 
@@ -730,12 +731,21 @@ exportNtfDbStore NtfPostgresStore {dbStoreLog = Nothing} _ =
 exportNtfDbStore NtfPostgresStore {dbStore = s, dbStoreLog = Just sl} lastNtfsFile =
   (,,) <$> exportTokens <*> exportSubscriptions <*> exportLastNtfs
   where
-    exportTokens =
-      withConnection s $ \db -> DB.fold_ db ntfTknQuery 0 $ \ !i tkn ->
+    exportTokens = do
+      tCnt <- withConnection s $ \db -> DB.fold_ db ntfTknQuery 0 $ \ !i tkn ->
         logCreateToken sl (rowToNtfTkn tkn) $> (i + 1)
-    exportSubscriptions =
-      withConnection s $ \db -> DB.fold_ db ntfSubQuery 0 $ \ !i sub ->
-        logCreateSubscription sl (toNtfSub sub) $> (i + 1)
+      putStrLn $ "Exported " <> show tCnt <> " tokens"
+      pure tCnt
+    exportSubscriptions = do
+      sCnt <- withConnection s $ \db -> DB.fold_ db ntfSubQuery 0 $ \ !i sub -> do
+        let i' = i + 1
+        logCreateSubscription sl (toNtfSub sub)
+        when (i' `mod` 500000 == 0) $ do
+          putStr $ "Exported " <> show i' <> " subscriptions" <> "\r"
+          hFlush stdout
+        pure i'
+      putStrLn $ "Exported " <> show sCnt <> " subscriptions"
+      pure sCnt
       where
         ntfSubQuery =
           [sql|
