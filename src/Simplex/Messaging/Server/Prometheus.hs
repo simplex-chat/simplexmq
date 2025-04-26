@@ -14,6 +14,7 @@ import Data.Time.Format.ISO8601 (iso8601Show)
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Server.MsgStore.Types (LoadedQueueCounts (..))
 import Simplex.Messaging.Server.Stats
+import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Server (SocketStats (..))
 
 data ServerMetrics = ServerMetrics
@@ -21,7 +22,8 @@ data ServerMetrics = ServerMetrics
     activeQueueCounts :: PeriodStatCounts,
     activeNtfCounts :: PeriodStatCounts,
     queueCount :: Int,
-    notifierCount :: Int
+    notifierCount :: Int,
+    exeArgs :: Text
   }
 
 data RealTimeMetrics = RealTimeMetrics
@@ -40,7 +42,7 @@ prometheusMetrics :: ServerMetrics -> RealTimeMetrics -> UTCTime -> Text
 prometheusMetrics sm rtm ts =
   time <> queues <> subscriptions <> messages <> ntfMessages <> ntfs <> relays <> info
   where
-    ServerMetrics {statsData, activeQueueCounts = ps, activeNtfCounts = psNtf, queueCount, notifierCount} = sm
+    ServerMetrics {statsData, activeQueueCounts = ps, activeNtfCounts = psNtf, queueCount, notifierCount, exeArgs} = sm
     RealTimeMetrics
       { socketStats,
         threadsCount,
@@ -87,10 +89,8 @@ prometheusMetrics sm rtm ts =
         _msgGetDuplicate,
         _msgGetProhibited,
         _msgExpired,
-        _activeQueues,
         _msgSentNtf,
         _msgRecvNtf,
-        _activeQueuesNtf,
         _msgNtfs,
         _msgNtfsB,
         _msgNtfNoSub,
@@ -347,6 +347,10 @@ prometheusMetrics sm rtm ts =
     info =
       "# Info\n\
       \# ----\n\
+      \\n\
+      \# HELP simplex_smp_info A metric with constant '1' value, labeled by server info\n\
+      \# TYPE simplex_smp_info gauge\n\
+      \simplex_smp_info{version=\"" <> T.pack simplexMQVersion <> "\",exe_args=\"" <> exeArgs <> "\"} 1\n\
       \\n"
       <> socketsMetric socketsAccepted "simplex_smp_sockets_accepted" "Accepted sockets"
       <> socketsMetric socketsClosed "simplex_smp_sockets_closed" "Closed sockets"

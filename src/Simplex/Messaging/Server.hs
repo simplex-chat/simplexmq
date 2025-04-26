@@ -114,6 +114,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
+import System.Environment (getArgs)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
@@ -576,7 +577,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       let ps = periodStatDataCounts $ _activeQueues d
           psNtf = periodStatDataCounts $ _activeQueuesNtf d
       QueueCounts {queueCount, notifierCount} <- queueCounts @(StoreQueue s) $ queueStore st
-      pure ServerMetrics {statsData = d, activeQueueCounts = ps, activeNtfCounts = psNtf, queueCount, notifierCount}
+      exeArgs <- T.unwords . map T.pack <$> getArgs
+      pure ServerMetrics {statsData = d, activeQueueCounts = ps, activeNtfCounts = psNtf, queueCount, notifierCount, exeArgs}
 
     getRealTimeMetrics :: Env -> IO RealTimeMetrics
     getRealTimeMetrics Env {clients, sockets, msgStore = AMS _ _ ms, server = Server {subscribers, notifiers, subClients, ntfSubClients}} = do

@@ -44,7 +44,7 @@ import Simplex.Messaging.Server.StoreLog (closeStoreLog)
 import Simplex.Messaging.Transport (ATransport, simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
-import Simplex.Messaging.Util (ifM, tshow)
+import Simplex.Messaging.Util (eitherToMaybe, ifM, tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist, renameFile)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
@@ -267,6 +267,8 @@ ntfServerCLI cfgPath logPath =
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "ntf-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "ntf-server-stats.log",
+              prometheusInterval = eitherToMaybe $ read . T.unpack <$> lookupValue "STORE_LOG" "prometheus_interval" ini,
+              prometheusMetricsFile = combine logPath "ntf-server-metrics.txt",
               ntfServerVRange = supportedServerNTFVRange,
               transportConfig =
                 defaultTransportServerConfig

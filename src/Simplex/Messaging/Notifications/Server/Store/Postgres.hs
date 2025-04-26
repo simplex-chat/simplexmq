@@ -585,6 +585,9 @@ toLastNtf :: SMPQueueNtfRow :. (SystemTime, C.CbNonce, Binary EncNMsgMeta) -> PN
 toLastNtf (qRow :. (ts, nonce, Binary encMeta)) =
   PNMessageData {smpQueue = rowToSMPQueue qRow, ntfTs = ts, nmsgNonce = nonce, encNMsgMeta = encMeta}
 
+getEntityCounts :: NtfPostgresStore -> IO (Int, Int, Int)
+getEntityCounts = undefined
+
 importNtfSTMStore :: NtfPostgresStore -> NtfSTMStore -> IO (Int64, Int64, Int64)
 importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore = do
   (tIds, tCnt) <- importTokens

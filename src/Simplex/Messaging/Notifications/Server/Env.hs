@@ -59,6 +59,9 @@ data NtfServerConfig = NtfServerConfig
     logStatsStartTime :: Int64,
     serverStatsLogFile :: FilePath,
     serverStatsBackupFile :: Maybe FilePath,
+    -- | interval and file to save prometheus metrics
+    prometheusInterval :: Maybe Int,
+    prometheusMetricsFile :: FilePath,
     ntfServerVRange :: VersionRangeNTF,
     transportConfig :: TransportServerConfig,
     startOptions :: StartOptions
