@@ -13,7 +13,6 @@ import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffUTCTime)
 import Data.Time.Clock.System (systemEpochDay)
 import Data.Time.Format.ISO8601 (iso8601Show)
-import Network.Socket (ServiceName)
 import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Server.Stats (PeriodStatCounts (..))
 import Simplex.Messaging.Transport (simplexMQVersion)
@@ -22,11 +21,14 @@ data NtfServerMetrics = NtfServerMetrics
   { statsData :: NtfServerStatsData,
     activeTokensCounts :: PeriodStatCounts,
     activeSubsCounts :: PeriodStatCounts,
-    tokenCount :: Int,
-    subCount :: Int,
-    ntfCount :: Int,
-    exeArgs :: Text
+    tokenCount :: Int64,
+    approxSubCount :: Int64,
+    lastNtfCount :: Int64,
+    rtsOptions :: Text
   }
+
+rtsOptionsEnv :: Text
+rtsOptionsEnv = "NTF_RTS_OPTIONS"
 
 data NtfRealTimeMetrics = NtfRealTimeMetrics
   { threadsCount :: Int,
@@ -35,20 +37,20 @@ data NtfRealTimeMetrics = NtfRealTimeMetrics
     srvSubWorkers :: NtfSMPWorkerMetrics, -- smpSubWorkers
     ntfActiveSubs :: NtfSMPSubMetrics, -- srvSubs
     ntfPendingSubs :: NtfSMPSubMetrics, -- pendingSrvSubs
-    sessionCount :: Int, -- smpSessions
-    pushQLength :: Int -- lengthTBQueue pushQ
+    smpSessionCount :: Int, -- smpSessions
+    apnsPushQLength :: Int -- lengthTBQueue pushQ
   }
 
 data NtfSMPWorkerMetrics = NtfSMPWorkerMetrics {ownServers :: [Text], otherServers :: Int}
 
-data NtfSMPSubMetrics = NtfSMPSubMetrics {ownSrvSubs :: M.Map Text Int, ownSrvSubCount :: Int, otherServers :: Int, otherSrvSubCount :: Int}
+data NtfSMPSubMetrics = NtfSMPSubMetrics {ownSrvSubs :: M.Map Text Int, otherServers :: Int, otherSrvSubCount :: Int}
 
 {-# FOURMOLU_DISABLE\n#-}
 ntfPrometheusMetrics :: NtfServerMetrics -> NtfRealTimeMetrics -> UTCTime -> Text
 ntfPrometheusMetrics sm rtm ts =
   time <> tokens <> subscriptions <> notifications <> info
   where
-    NtfServerMetrics {statsData, activeTokensCounts = psTkns, activeSubsCounts = psSubs, tokenCount, subCount, ntfCount, exeArgs} = sm
+    NtfServerMetrics {statsData, activeTokensCounts = psTkns, activeSubsCounts = psSubs, tokenCount, approxSubCount, lastNtfCount, rtsOptions} = sm
     NtfRealTimeMetrics
       { threadsCount,
         srvSubscribers,
@@ -56,8 +58,8 @@ ntfPrometheusMetrics sm rtm ts =
         srvSubWorkers,
         ntfActiveSubs,
         ntfPendingSubs,
-        sessionCount,
-        pushQLength
+        smpSessionCount,
+        apnsPushQLength
       } = rtm
     NtfServerStatsData
       { _fromTime,
@@ -86,19 +88,19 @@ ntfPrometheusMetrics sm rtm ts =
       \# ------\n\
       \\n\
       \# HELP simplex_ntf_tokens_created Created tokens\n\
-      \# TYPE simplex_ntf_tokens_created gauge\n\
+      \# TYPE simplex_ntf_tokens_created counter\n\
       \simplex_ntf_tokens_created " <> mshow _tknCreated <> "\n# tknCreated\n\
       \\n\
       \# HELP simplex_ntf_tokens_verified Verified tokens\n\
-      \# TYPE simplex_ntf_tokens_verified gauge\n\
+      \# TYPE simplex_ntf_tokens_verified counter\n\
       \simplex_ntf_tokens_verified " <> mshow _tknVerified <> "\n# tknVerified\n\
       \\n\
       \# HELP simplex_ntf_tokens_deleted Deleted tokens\n\
-      \# TYPE simplex_ntf_tokens_deleted gauge\n\
+      \# TYPE simplex_ntf_tokens_deleted counter\n\
       \simplex_ntf_tokens_deleted " <> mshow _tknDeleted <> "\n# tknDeleted\n\
       \\n\
       \# HELP simplex_ntf_tokens_replaced Deleted tokens\n\
-      \# TYPE simplex_ntf_tokens_replaced gauge\n\
+      \# TYPE simplex_ntf_tokens_replaced counter\n\
       \simplex_ntf_tokens_replaced " <> mshow _tknReplaced <> "\n# tknReplaced\n\
       \\n\
       \# HELP simplex_ntf_tokens_count_daily Daily active tokens\n\
@@ -112,85 +114,135 @@ ntfPrometheusMetrics sm rtm ts =
       \# HELP simplex_ntf_tokens_count_monthly Monthly active tokens\n\
       \# TYPE simplex_ntf_tokens_count_monthly gauge\n\
       \simplex_ntf_tokens_count_monthly " <> mstr (monthCount psTkns) <> "\n# monthCountTkn\n\
+      \\n\
+      \# HELP simplex_ntf_tokens_total Total number of tokens stored.\n\
+      \# TYPE simplex_ntf_tokens_total gauge\n\
+      \simplex_ntf_tokens_total " <> mshow tokenCount <> "\n# tokenCount\n\
       \\n"
     subscriptions =
       "# Subscriptions\n\
       \# -------------\n\
       \\n\
-      \# HELP simplex_ntf_subscription_created Created subscriptions\n\
-      \# TYPE simplex_ntf_subscription_created gauge\n\
-      \simplex_ntf_subscription_created " <> mshow _subCreated <> "\n# subCreated\n\
+      \# HELP simplex_ntf_subscriptions_created Created subscriptions\n\
+      \# TYPE simplex_ntf_subscriptions_created counter\n\
+      \simplex_ntf_subscriptions_created " <> mshow _subCreated <> "\n# subCreated\n\
       \\n\
-      \# HELP simplex_ntf_subscription_deleted Deleted subscriptions\n\
-      \# TYPE simplex_ntf_subscription_deleted gauge\n\
-      \simplex_ntf_subscription_deleted " <> mshow _subDeleted <> "\n# subDeleted\n\
+      \# HELP simplex_ntf_subscriptions_deleted Deleted subscriptions\n\
+      \# TYPE simplex_ntf_subscriptions_deleted counter\n\
+      \simplex_ntf_subscriptions_deleted " <> mshow _subDeleted <> "\n# subDeleted\n\
       \\n\
-      \# HELP simplex_ntf_subscription_count_daily Daily subscriptions count\n\
-      \# TYPE simplex_ntf_subscription_count_daily gauge\n\
-      \simplex_ntf_subscription_count_daily " <> mstr (dayCount psSubs) <> "\n# dayCountSub\n\
+      \# HELP simplex_ntf_subscriptions_count_daily Daily subscriptions count\n\
+      \# TYPE simplex_ntf_subscriptions_count_daily gauge\n\
+      \simplex_ntf_subscriptions_count_daily " <> mstr (dayCount psSubs) <> "\n# dayCountSub\n\
       \\n\
-      \# HELP simplex_ntf_subscription_count_weekly Weekly subscriptions count\n\
-      \# TYPE simplex_ntf_subscription_count_weekly gauge\n\
-      \simplex_ntf_subscription_count_weekly " <> mstr (weekCount psSubs) <> "\n# weekCountSub\n\
+      \# HELP simplex_ntf_subscriptions_count_weekly Weekly subscriptions count\n\
+      \# TYPE simplex_ntf_subscriptions_count_weekly gauge\n\
+      \simplex_ntf_subscriptions_count_weekly " <> mstr (weekCount psSubs) <> "\n# weekCountSub\n\
       \\n\
-      \# HELP simplex_ntf_subscription_count_monthly Monthly subscriptions count\n\
-      \# TYPE simplex_ntf_subscription_count_monthly gauge\n\
-      \simplex_ntf_subscription_count_monthly " <> mstr (monthCount psSubs) <> "\n# monthCountSub\n\
+      \# HELP simplex_ntf_subscriptions_count_monthly Monthly subscriptions count\n\
+      \# TYPE simplex_ntf_subscriptions_count_monthly gauge\n\
+      \simplex_ntf_subscriptions_count_monthly " <> mstr (monthCount psSubs) <> "\n# monthCountSub\n\
+      \\n\
+      \# HELP simplex_ntf_subscriptions_approx_total Approximate total number of subscriptions stored.\n\
+      \# TYPE simplex_ntf_subscriptions_approx_total gauge\n\
+      \simplex_ntf_subscriptions_approx_total " <> mshow approxSubCount <> "\n# approxSubCount\n\
       \\n"
+      <> showSubMetric ntfActiveSubs "simplex_ntf_smp_subscription_active_" "Active"
+      <> showSubMetric ntfPendingSubs "simplex_ntf_smp_subscription_pending_" "Pending"
     notifications =
       "# Notifications\n\
       \# -------------\n\
       \\n\
       \# HELP simplex_ntf_notifications_received Received notifications\n\
-      \# TYPE simplex_ntf_notifications_received gauge\n\
+      \# TYPE simplex_ntf_notifications_received counter\n\
       \simplex_ntf_notifications_received " <> mshow _ntfReceived <> "\n# ntfReceived\n\
       \\n\
       \# HELP simplex_ntf_notifications_delivered Delivered notifications\n\
-      \# TYPE simplex_ntf_notifications_delivered gauge\n\
+      \# TYPE simplex_ntf_notifications_delivered counter\n\
       \simplex_ntf_notifications_delivered " <> mshow _ntfDelivered <> "\n# ntfDelivered\n\
       \\n\
       \# HELP simplex_ntf_notifications_failed Failed notifications\n\
-      \# TYPE simplex_ntf_notifications_failed gauge\n\
+      \# TYPE simplex_ntf_notifications_failed counter\n\
       \simplex_ntf_notifications_failed " <> mshow _ntfFailed <> "\n# ntfFailed\n\
       \\n\
       \# HELP simplex_ntf_notifications_periodic_delivered Delivered periodic notifications\n\
-      \# TYPE simplex_ntf_notifications_periodic_delivered 123 gauge\n\
+      \# TYPE simplex_ntf_notifications_periodic_delivered counter\n\
       \simplex_ntf_notifications_periodic_delivered " <> mshow _ntfCronDelivered <> "\n# ntfCronDelivered\n\
       \\n\
       \# HELP simplex_ntf_notifications_periodic_failed Failed periodic notifications\n\
-      \# TYPE simplex_ntf_notifications_periodic_failed gauge\n\
+      \# TYPE simplex_ntf_notifications_periodic_failed counter\n\
       \simplex_ntf_notifications_periodic_failed " <> mshow _ntfCronFailed <> "\n# ntfCronFailed\n\
       \\n\
-      \# HELP simplex_ntf_tokens_verification_queued Count of verification tokens queued\n\
-      \# TYPE simplex_ntf_tokens_verification_queued gauge\n\
-      \simplex_ntf_tokens_verification_queued " <> mshow _ntfVrfQueued <> "\n# ntfVrfQueued\n\
+      \# HELP simplex_ntf_notifications_verification_queued Token verifications queued\n\
+      \# TYPE simplex_ntf_notifications_verification_queued counter\n\
+      \simplex_ntf_notifications_verification_queued " <> mshow _ntfVrfQueued <> "\n# ntfVrfQueued\n\
       \\n\
-      \# HELP simplex_ntf_tokens_verification_delivered Delivered verification tokens\n\
-      \# TYPE simplex_ntf_tokens_verification_delivered gauge\n\
-      \simplex_ntf_tokens_verification_delivered " <> mshow _ntfVrfDelivered <> "\n# ntfVrfDelivered\n\
+      \# HELP simplex_ntf_notifications_verification_delivered Delivered token verifications\n\
+      \# TYPE simplex_ntf_notifications_verification_delivered counter\n\
+      \simplex_ntf_notifications_verification_delivered " <> mshow _ntfVrfDelivered <> "\n# ntfVrfDelivered\n\
       \\n\
-      \# HELP simplex_ntf_tokens_verification_failed Failed verification tokens\n\
-      \# TYPE simplex_ntf_tokens_verification_failed gauge\n\
-      \simplex_ntf_tokens_verification_failed " <> mshow _ntfVrfFailed <> "\n# ntfVrfFailed\n\
+      \# HELP simplex_ntf_notifications_verification_failed Failed token verification deliveries\n\
+      \# TYPE simplex_ntf_notifications_verification_failed counter\n\
+      \simplex_ntf_notifications_verification_failed " <> mshow _ntfVrfFailed <> "\n# ntfVrfFailed\n\
       \\n\
-      \# HELP simplex_ntf_tokens_verification_invalid Invalid verification tokens\n\
-      \# TYPE simplex_ntf_tokens_verification_invalid gauge\n\
-      \simplex_ntf_tokens_verification_delivered " <> mshow _ntfVrfInvalidTkn <> "\n# ntfVrfInvalidTkn\n\
+      \# HELP simplex_ntf_notifications_verification_invalid_tkn Invalid token errors while delivering verifications\n\
+      \# TYPE simplex_ntf_notifications_verification_invalid_tkn counter\n\
+      \simplex_ntf_notifications_verification_invalid_tkn " <> mshow _ntfVrfInvalidTkn <> "\n# ntfVrfInvalidTkn\n\
+      \\n\
+      \# HELP simplex_ntf_notifications_total Total number of last notifications stored.\n\
+      \# TYPE simplex_ntf_notifications_total gauge\n\
+      \simplex_ntf_notifications_total " <> mshow lastNtfCount <> "\n# lastNtfCount\n\
       \\n"
     info =
       "# Info\n\
       \# ----\n\
       \\n\
-      \# HELP simplex_ntf_info A metric with constant '1' value, labeled by server info\n\
+      \# HELP simplex_ntf_info Server information. RTS options have to be passed via " <> rtsOptionsEnv <> " env var\n\
       \# TYPE simplex_ntf_info gauge\n\
-      \simplex_ntf_info{version=\"" <> T.pack simplexMQVersion <> "\",exe_args=\"" <> exeArgs <> "\"} 1\n\
+      \simplex_ntf_info{version=\"" <> T.pack simplexMQVersion <> "\",rts_options=\"" <> rtsOptions <> "\"} 1\n\
+      \\n\
+      \# HELP simplex_ntf_threads_total Thread count\n\
+      \# TYPE simplex_ntf_threads_total gauge\n\
+      \simplex_ntf_threads_total " <> mshow threadsCount <> "\n# threadsCount\n\
       \\n"
-
-      -- \# HELP simplex_ntf_notifications_queued Count of Notification count queued\n\
-      -- \# TYPE simplex_ntf_notifications_queued gauge\n\
-      -- \simplex_ntf_notifications_queued " <> mshow ? <> "\n# Push notifications queue length\n\
-      -- \\n\
-
+      <> showWorkerMetric srvSubscribers "simplex_ntf_smp_subscribers_" "SMP subcscribers"
+      <> showWorkerMetric srvClients "simplex_ntf_smp_agent_clients_" "SMP agent clients"
+      <> showWorkerMetric srvSubWorkers "simplex_ntf_smp_agent_sub_workers_" "SMP agent subscription workers"
+      <> "# HELP simplex_ntf_smp_sessions_count SMP sessions count\n\
+      \# TYPE simplex_ntf_smp_sessions_count gauge\n\
+      \simplex_ntf_smp_sessions_count " <> mshow smpSessionCount <> "\n# smpSessionCount\n\
+      \\n\
+      \# HELP simplex_ntf_apns_queue_length Count of notifications in push queue\n\
+      \# TYPE simplex_ntf_apns_queue_length gauge\n\
+      \simplex_ntf_apns_queue_length " <> mshow apnsPushQLength <> "\n# apnsPushQLength\n\
+      \\n"
+    showSubMetric NtfSMPSubMetrics {ownSrvSubs, otherServers, otherSrvSubCount} mPfx descrPfx =
+      showOwnSrvSubs <> showOtherSrvSubs
+      where
+        showOwnSrvSubs
+          | M.null ownSrvSubs = showOwn_ "" 0 0
+          | otherwise = T.concat $ map (\(host, cnt) -> showOwn_ (metricHost host) 1 cnt) $ M.assocs ownSrvSubs
+        showOwn_ param srvCnt subCnt =
+          gaugeMetric (mPfx <> "server_count_own") param srvCnt (descrPfx <> " SMP subscriptions, own server count") "ownSrvSubs server"
+            <> gaugeMetric (mPfx <> "sub_count_own") param subCnt (descrPfx <> " SMP subscriptions count for own servers") "ownSrvSubs count"
+        showOtherSrvSubs =
+          gaugeMetric (mPfx <> "server_count_other") "" otherServers (descrPfx <> " SMP subscriptions, other server count") "otherServers"
+            <> gaugeMetric (mPfx <> "sub_count_other") "" otherSrvSubCount (descrPfx <> " SMP subscriptions count for other servers") "otherSrvSubCount"
+    showWorkerMetric NtfSMPWorkerMetrics {ownServers, otherServers} mPfx descrPfx =
+      showOwnServers <> showOtherServers
+      where
+        showOwnServers
+          | null ownServers = showOwn_ "" 0
+          | otherwise = T.concat $ map (\host -> showOwn_ (metricHost host) 1) ownServers
+        showOwn_ param cnt = gaugeMetric (mPfx <> "count_own") param cnt (descrPfx <> " count for own servers") "ownServers"
+        showOtherServers = gaugeMetric (mPfx <> "count_other") "" otherServers (descrPfx <> " count for other servers") "otherServers"
+    gaugeMetric :: Text -> Text -> Int -> Text -> Text -> Text
+    gaugeMetric name param value descr codeRef =
+      "# HELP " <> name <> " " <> descr <> "\n\
+      \# TYPE " <> name <> " gauge\n\
+      \" <> name <> param <> " " <> mshow value <> "\n# " <> codeRef <> "\n\
+      \\n"
+    metricHost host = "{server=\"" <> host <> "\"}"
     mstr a = T.pack a <> " " <> tsEpoch
     mshow :: Show a => a -> Text
     mshow = mstr . show

@@ -585,8 +585,16 @@ toLastNtf :: SMPQueueNtfRow :. (SystemTime, C.CbNonce, Binary EncNMsgMeta) -> PN
 toLastNtf (qRow :. (ts, nonce, Binary encMeta)) =
   PNMessageData {smpQueue = rowToSMPQueue qRow, ntfTs = ts, nmsgNonce = nonce, encNMsgMeta = encMeta}
 
-getEntityCounts :: NtfPostgresStore -> IO (Int, Int, Int)
-getEntityCounts = undefined
+getEntityCounts :: NtfPostgresStore -> IO (Int64, Int64, Int64)
+getEntityCounts st =
+  fmap (fromRight (0, 0, 0)) $ withDB' "getEntityCounts" st $ \db -> do
+    tCnt <- count <$> DB.query_ db "SELECT count(1) FROM tokens"
+    sCnt <- count <$> DB.query_ db "SELECT reltuples::BIGINT FROM pg_class WHERE relname = 'subscriptions' AND relkind = 'r'"
+    nCnt <- count <$> DB.query_ db "SELECT count(1) FROM last_notifications"
+    pure (tCnt, sCnt, nCnt)
+  where
+    count (Only n : _) = n
+    count [] = 0    
 
 importNtfSTMStore :: NtfPostgresStore -> NtfSTMStore -> IO (Int64, Int64, Int64)
 importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore = do
