@@ -12,9 +12,11 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Notifications.Server where
 
+import Control.Concurrent (threadDelay)
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -27,13 +29,15 @@ import Data.Functor (($>))
 import Data.IORef
 import Data.Int (Int64)
 import qualified Data.IntSet as IS
-import Data.List (intercalate, partition, sort)
+import Data.List (foldl', intercalate)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (mapMaybe)
 import qualified Data.Set as S
+import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
@@ -48,6 +52,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Control
 import Simplex.Messaging.Notifications.Server.Env
+import Simplex.Messaging.Notifications.Server.Prometheus
 import Simplex.Messaging.Notifications.Server.Push.APNS (PushNotification (..), PushProviderError (..))
 import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore, TokenNtfMessageRecord (..), stmStoreTokenLastNtf)
@@ -60,13 +65,14 @@ import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.QueueStore (getSystemDate)
-import Simplex.Messaging.Server.Stats (PeriodStats (..), PeriodStatCounts (..), periodStatCounts, updatePeriodStats)
+import Simplex.Messaging.Server.Stats (PeriodStats (..), PeriodStatCounts (..), periodStatCounts, periodStatDataCounts, updatePeriodStats)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server (AddHTTP, runTransportServer, runLocalTCPServer)
 import Simplex.Messaging.Util
+import System.Environment (lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (BufferMode (..), hClose, hPrint, hPutStrLn, hSetBuffering, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
@@ -99,7 +105,15 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
     stopServer
     liftIO $ exitSuccess
   resubscribe s
-  raceAny_ (ntfSubscriber s : ntfPush ps : map runServer transports <> serverStatsThread_ cfg <> controlPortThread_ cfg) `finally` stopServer
+  raceAny_
+    ( ntfSubscriber s
+        : ntfPush ps
+        : map runServer transports
+          <> serverStatsThread_ cfg
+          <> prometheusMetricsThread_ cfg
+          <> controlPortThread_ cfg
+    )
+    `finally` stopServer
   where
     runServer :: (ServiceName, ATransport, AddHTTP) -> M ()
     runServer (tcpPort, ATransport t, _addHTTP) = do
@@ -193,6 +207,90 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
               ]
         liftIO $ threadDelay' interval
 
+    prometheusMetricsThread_ :: NtfServerConfig -> [M ()]
+    prometheusMetricsThread_ NtfServerConfig {prometheusInterval = Just interval, prometheusMetricsFile} =
+      [savePrometheusMetrics interval prometheusMetricsFile]
+    prometheusMetricsThread_ _ = []
+
+    savePrometheusMetrics :: Int -> FilePath -> M ()
+    savePrometheusMetrics saveInterval metricsFile = do
+      labelMyThread "savePrometheusMetrics"
+      liftIO $ putStrLn $ "Prometheus metrics saved every " <> show saveInterval <> " seconds to " <> metricsFile
+      st <- asks store
+      ss <- asks serverStats
+      env <- ask
+      rtsOpts <- liftIO $ maybe ("set " <> rtsOptionsEnv) T.pack <$> lookupEnv (T.unpack rtsOptionsEnv)
+      let interval = 1000000 * saveInterval
+      liftIO $ forever $ do
+        threadDelay interval
+        ts <- getCurrentTime
+        sm <- getNtfServerMetrics st ss rtsOpts
+        rtm <- getNtfRealTimeMetrics env
+        T.writeFile metricsFile $ ntfPrometheusMetrics sm rtm ts
+
+    getNtfServerMetrics :: NtfPostgresStore -> NtfServerStats -> Text -> IO NtfServerMetrics
+    getNtfServerMetrics st ss rtsOptions = do
+      d <- getNtfServerStatsData ss
+      let psTkns = periodStatDataCounts $ _activeTokens d
+          psSubs = periodStatDataCounts $ _activeSubs d
+      (tokenCount, approxSubCount, lastNtfCount) <- getEntityCounts st
+      pure NtfServerMetrics {statsData = d, activeTokensCounts = psTkns, activeSubsCounts = psSubs, tokenCount, approxSubCount, lastNtfCount, rtsOptions}
+
+    getNtfRealTimeMetrics :: NtfEnv -> IO NtfRealTimeMetrics
+    getNtfRealTimeMetrics NtfEnv {subscriber, pushServer} = do
+#if MIN_VERSION_base(4,18,0)
+      threadsCount <- length <$> listThreads
+#else
+      let threadsCount = 0
+#endif
+      let NtfSubscriber {smpSubscribers, smpAgent = a} = subscriber
+          NtfPushServer {pushQ} = pushServer
+          SMPClientAgent {smpClients, smpSessions, srvSubs, pendingSrvSubs, smpSubWorkers} = a
+      srvSubscribers <- getSMPWorkerMetrics a smpSubscribers
+      srvClients <- getSMPWorkerMetrics a smpClients
+      srvSubWorkers <- getSMPWorkerMetrics a smpSubWorkers
+      ntfActiveSubs <- getSMPSubMetrics a srvSubs
+      ntfPendingSubs <- getSMPSubMetrics a pendingSrvSubs
+      smpSessionCount <- M.size <$> readTVarIO smpSessions
+      apnsPushQLength <- fromIntegral <$> atomically (lengthTBQueue pushQ)
+      pure NtfRealTimeMetrics {threadsCount, srvSubscribers, srvClients, srvSubWorkers, ntfActiveSubs, ntfPendingSubs, smpSessionCount, apnsPushQLength}
+      where
+        getSMPSubMetrics :: SMPClientAgent -> TMap SMPServer (TMap SMPSub a) -> IO NtfSMPSubMetrics
+        getSMPSubMetrics a v = do
+          subs <- readTVarIO v
+          let metrics = NtfSMPSubMetrics {ownSrvSubs = M.empty, otherServers = 0, otherSrvSubCount = 0}
+          (metrics', otherSrvs) <- foldM countSubs (metrics, S.empty) $ M.assocs subs
+          pure (metrics' :: NtfSMPSubMetrics) {otherServers = S.size otherSrvs}
+          where
+            countSubs :: (NtfSMPSubMetrics, S.Set Text) -> (SMPServer, TMap SMPSub a) -> IO (NtfSMPSubMetrics, S.Set Text)
+            countSubs acc@(metrics, !otherSrvs) (srv@(SMPServer (h :| _) _ _), srvSubs) =
+              result . M.size <$> readTVarIO srvSubs
+              where
+                result 0 = acc
+                result cnt
+                  | isOwnServer a srv =
+                      let !ownSrvSubs' = M.alter (Just . maybe cnt (+ cnt)) host ownSrvSubs
+                          metrics' = metrics {ownSrvSubs = ownSrvSubs'} :: NtfSMPSubMetrics
+                       in (metrics', otherSrvs)
+                  | otherwise =
+                      let metrics' = metrics {otherSrvSubCount = otherSrvSubCount + cnt} :: NtfSMPSubMetrics
+                       in (metrics', S.insert host otherSrvs)
+                NtfSMPSubMetrics {ownSrvSubs, otherSrvSubCount} = metrics
+                host = safeDecodeUtf8 $ strEncode h
+
+        getSMPWorkerMetrics :: SMPClientAgent -> TMap SMPServer a -> IO NtfSMPWorkerMetrics
+        getSMPWorkerMetrics a v = workerMetrics a . M.keys <$> readTVarIO v
+        workerMetrics :: SMPClientAgent -> [SMPServer] -> NtfSMPWorkerMetrics
+        workerMetrics a srvs = NtfSMPWorkerMetrics {ownServers = reverse ownSrvs, otherServers}
+          where
+            (ownSrvs, otherServers) = foldl' countSrv ([], 0) srvs
+            countSrv (!own, !other) srv@(SMPServer (h :| _) _ _)
+              | isOwnServer a srv = (host : own, other)
+              | otherwise = (own, other + 1)
+              where
+                host = safeDecodeUtf8 $ strEncode h
+            
+
     controlPortThread_ :: NtfServerConfig -> [M ()]
     controlPortThread_ NtfServerConfig {controlPort = Just port} = [runCPServer port]
     controlPortThread_ _ = []
@@ -266,59 +364,38 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
                   logError "Unauthorized control port command"
                   hPutStrLn h "AUTH"
                 r -> do
+                  NtfRealTimeMetrics {threadsCount, srvSubscribers, srvClients, srvSubWorkers, ntfActiveSubs, ntfPendingSubs, smpSessionCount, apnsPushQLength} <-
+                    getNtfRealTimeMetrics =<< unliftIO u ask
 #if MIN_VERSION_base(4,18,0)
-                  threads <- liftIO listThreads
-                  hPutStrLn h $ "Threads: " <> show (length threads)
+                  hPutStrLn h $ "Threads: " <> show threadsCount
 #else
                   hPutStrLn h "Threads: not available on GHC 8.10"
 #endif
-                  NtfEnv {subscriber, pushServer} <-  unliftIO u ask
-                  let NtfSubscriber {smpSubscribers, smpAgent = a} = subscriber
-                      NtfPushServer {pushQ} = pushServer
-                      SMPClientAgent {smpClients, smpSessions, srvSubs, pendingSrvSubs, smpSubWorkers} = a
-                  putSMPWorkers a "SMP subcscribers" smpSubscribers
-                  putSMPWorkers a "SMP clients" smpClients
-                  putSMPWorkers a "SMP subscription workers" smpSubWorkers
-                  sessions <- readTVarIO smpSessions
-                  hPutStrLn h $ "SMP sessions count: " <> show (M.size sessions)
-                  putSMPSubs a "SMP subscriptions" srvSubs
-                  putSMPSubs a "Pending SMP subscriptions" pendingSrvSubs
-                  sz <- atomically $ lengthTBQueue pushQ
-                  hPutStrLn h $ "Push notifications queue length: " <> show sz
+                  putSMPWorkers "SMP subcscribers" srvSubscribers
+                  putSMPWorkers "SMP clients" srvClients
+                  putSMPWorkers "SMP subscription workers" srvSubWorkers
+                  hPutStrLn h $ "SMP sessions count: " <> show smpSessionCount
+                  putSMPSubs "SMP subscriptions" ntfActiveSubs
+                  putSMPSubs "Pending SMP subscriptions" ntfPendingSubs
+                  hPutStrLn h $ "Push notifications queue length: " <> show apnsPushQLength
                   where
-                    putSMPSubs :: SMPClientAgent -> String -> TMap SMPServer (TMap SMPSub a) -> IO ()
-                    putSMPSubs a name v = do
-                      subs <- readTVarIO v
-                      (totalCnt, ownCount, otherCnt, servers, ownByServer) <- foldM countSubs (0, 0, 0, [], M.empty) $ M.assocs subs
-                      showServers a name servers
-                      hPutStrLn h $ name <> " total: " <> show totalCnt
-                      hPutStrLn h $ name <> " on own servers: " <> show ownCount
-                      when (r == CPRAdmin && not (null ownByServer)) $
-                        forM_ (M.assocs ownByServer) $ \(SMPServer (host :| _) _ _, cnt) ->
-                          hPutStrLn h $ name <> " on " <> B.unpack (strEncode host) <> ": " <> show cnt
-                      hPutStrLn h $ name <> " on other servers: " <> show otherCnt
-                      where
-                        countSubs :: (Int, Int, Int, [SMPServer], M.Map SMPServer Int) -> (SMPServer, TMap SMPSub a) -> IO (Int, Int, Int, [SMPServer], M.Map SMPServer Int)
-                        countSubs (!totalCnt, !ownCount, !otherCnt, !servers, !ownByServer) (srv, srvSubs) = do
-                          cnt <- M.size <$> readTVarIO srvSubs
-                          let totalCnt' = totalCnt + cnt
-                              ownServer = isOwnServer a srv
-                              (ownCount', otherCnt')
-                                | ownServer = (ownCount + cnt, otherCnt)
-                                | otherwise = (ownCount, otherCnt + cnt)
-                              servers' = if cnt > 0 then srv : servers else servers
-                              ownByServer'
-                                | r == CPRAdmin && ownServer && cnt > 0 = M.alter (Just . maybe cnt (+ cnt)) srv ownByServer
-                                | otherwise = ownByServer
-                          pure (totalCnt', ownCount', otherCnt', servers', ownByServer')
-                    putSMPWorkers :: SMPClientAgent -> String -> TMap SMPServer a -> IO ()
-                    putSMPWorkers a name v = readTVarIO v >>= showServers a name . M.keys
-                    showServers :: SMPClientAgent -> String -> [SMPServer] -> IO ()
-                    showServers a name srvs = do
-                      let (ownSrvs, otherSrvs) = partition (isOwnServer a) srvs
-                      hPutStrLn h $ name <> " own servers count: " <> show (length ownSrvs)
-                      when (r == CPRAdmin) $ hPutStrLn h $ name <> " own servers: " <> intercalate "," (sort $ map (\(SMPServer (host :| _) _ _) -> B.unpack $ strEncode host) ownSrvs)
-                      hPutStrLn h $ name <> " other servers count: " <> show (length otherSrvs)
+                    putSMPSubs :: Text -> NtfSMPSubMetrics -> IO ()
+                    putSMPSubs name NtfSMPSubMetrics {ownSrvSubs, otherServers, otherSrvSubCount} = do
+                      showServers name (M.keys ownSrvSubs) otherServers
+                      let ownSrvSubCount = M.foldl' (+) 0 ownSrvSubs
+                      T.hPutStrLn h $ name <> " total: " <> tshow (ownSrvSubCount + otherSrvSubCount)
+                      T.hPutStrLn h $ name <> " on own servers: " <> tshow ownSrvSubCount
+                      when (r == CPRAdmin && not (M.null ownSrvSubs)) $
+                        forM_ (M.assocs ownSrvSubs) $ \(host, cnt) ->
+                          T.hPutStrLn h $ name <> " on " <> host <> ": " <> tshow cnt
+                      T.hPutStrLn h $ name <> " on other servers: " <> tshow otherSrvSubCount
+                    putSMPWorkers :: Text -> NtfSMPWorkerMetrics -> IO ()
+                    putSMPWorkers name NtfSMPWorkerMetrics {ownServers, otherServers} = showServers name ownServers otherServers
+                    showServers :: Text -> [Text] -> Int -> IO ()
+                    showServers name ownServers otherServers = do
+                      T.hPutStrLn h $ name <> " own servers count: " <> tshow (length ownServers)
+                      when (r == CPRAdmin) $ T.hPutStrLn h $ name <> " own servers: " <> T.intercalate "," ownServers
+                      T.hPutStrLn h $ name <> " other servers count: " <> tshow otherServers
               CPHelp -> hPutStrLn h "commands: stats, stats-rts, server-info, help, quit"
               CPQuit -> pure ()
               CPSkip -> pure ()

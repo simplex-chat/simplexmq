@@ -114,6 +114,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
+import System.Environment (lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
@@ -562,21 +563,22 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       AMS _ _ st <- asks msgStore
       ss <- asks serverStats
       env <- ask
+      rtsOpts <- liftIO $ maybe ("set " <> rtsOptionsEnv) T.pack <$> lookupEnv (T.unpack rtsOptionsEnv)
       let interval = 1000000 * saveInterval
       liftIO $ forever $ do
         threadDelay interval
         ts <- getCurrentTime
-        sm <- getServerMetrics st ss
+        sm <- getServerMetrics st ss rtsOpts
         rtm <- getRealTimeMetrics env
         T.writeFile metricsFile $ prometheusMetrics sm rtm ts
 
-    getServerMetrics :: forall s. MsgStoreClass s => s -> ServerStats -> IO ServerMetrics
-    getServerMetrics st ss = do
+    getServerMetrics :: forall s. MsgStoreClass s => s -> ServerStats -> Text -> IO ServerMetrics
+    getServerMetrics st ss rtsOptions = do
       d <- getServerStatsData ss
       let ps = periodStatDataCounts $ _activeQueues d
           psNtf = periodStatDataCounts $ _activeQueuesNtf d
       QueueCounts {queueCount, notifierCount} <- queueCounts @(StoreQueue s) $ queueStore st
-      pure ServerMetrics {statsData = d, activeQueueCounts = ps, activeNtfCounts = psNtf, queueCount, notifierCount}
+      pure ServerMetrics {statsData = d, activeQueueCounts = ps, activeNtfCounts = psNtf, queueCount, notifierCount, rtsOptions}
 
     getRealTimeMetrics :: Env -> IO RealTimeMetrics
     getRealTimeMetrics Env {clients, sockets, msgStore = AMS _ _ ms, server = Server {subscribers, notifiers, subClients, ntfSubClients}} = do
