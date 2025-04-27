@@ -13,6 +13,7 @@ import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffUTCTime)
 import Data.Time.Clock.System (systemEpochDay)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import Numeric.Natural (Natural)
 import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Server.Stats (PeriodStatCounts (..))
 import Simplex.Messaging.Transport (simplexMQVersion)
@@ -32,13 +33,13 @@ rtsOptionsEnv = "NTF_RTS_OPTIONS"
 
 data NtfRealTimeMetrics = NtfRealTimeMetrics
   { threadsCount :: Int,
-    srvSubscribers :: NtfSMPWorkerMetrics, -- smpSubscribers
-    srvClients :: NtfSMPWorkerMetrics, -- smpClients
-    srvSubWorkers :: NtfSMPWorkerMetrics, -- smpSubWorkers
-    ntfActiveSubs :: NtfSMPSubMetrics, -- srvSubs
-    ntfPendingSubs :: NtfSMPSubMetrics, -- pendingSrvSubs
-    smpSessionCount :: Int, -- smpSessions
-    apnsPushQLength :: Int -- lengthTBQueue pushQ
+    srvSubscribers :: NtfSMPWorkerMetrics,
+    srvClients :: NtfSMPWorkerMetrics,
+    srvSubWorkers :: NtfSMPWorkerMetrics,
+    ntfActiveSubs :: NtfSMPSubMetrics,
+    ntfPendingSubs :: NtfSMPSubMetrics,
+    smpSessionCount :: Int,
+    apnsPushQLength :: Natural
   }
 
 data NtfSMPWorkerMetrics = NtfSMPWorkerMetrics {ownServers :: [Text], otherServers :: Int}
@@ -212,9 +213,9 @@ ntfPrometheusMetrics sm rtm ts =
       \# TYPE simplex_ntf_smp_sessions_count gauge\n\
       \simplex_ntf_smp_sessions_count " <> mshow smpSessionCount <> "\n# smpSessionCount\n\
       \\n\
-      \# HELP simplex_ntf_apns_queue_length Count of notifications in push queue\n\
-      \# TYPE simplex_ntf_apns_queue_length gauge\n\
-      \simplex_ntf_apns_queue_length " <> mshow apnsPushQLength <> "\n# apnsPushQLength\n\
+      \# HELP simplex_ntf_apns_push_queue_length Count of notifications in push queue\n\
+      \# TYPE simplex_ntf_apns_push_queue_length gauge\n\
+      \simplex_ntf_apns_push_queue_length " <> mshow apnsPushQLength <> "\n# apnsPushQLength\n\
       \\n"
     showSubMetric NtfSMPSubMetrics {ownSrvSubs, otherServers, otherSrvSubCount} mPfx descrPfx =
       showOwnSrvSubs <> showOtherSrvSubs

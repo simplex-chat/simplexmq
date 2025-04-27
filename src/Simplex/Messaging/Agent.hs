@@ -2197,10 +2197,9 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
               atomically $ nsUpdateToken ns tkn'
               agentNtfCheckToken c tknId tkn' >>= \case
                 NTActive -> do
-                  cron <- asks $ ntfCron . config
-                  agentNtfEnableCron c tknId tkn cron
                   when (suppliedNtfMode == NMInstant) $ initializeNtfSubs c
                   when (suppliedNtfMode == NMPeriodic && savedNtfMode == NMInstant) $ deleteNtfSubs c NSCSmpDelete
+                  lift $ setCronInterval c tknId tkn
                   t tkn' (NTActive, Just NTACheck) $ pure ()
                 status -> t tkn' (status, Nothing) $ pure ()
           | otherwise -> replaceToken tknId
@@ -2261,10 +2260,16 @@ verifyNtfToken' c deviceToken nonce code =
         withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
           agentNtfVerifyToken c tknId tkn code'
       when (toStatus == NTActive) $ do
-        cron <- asks $ ntfCron . config
-        agentNtfEnableCron c tknId tkn cron
+        lift $ setCronInterval c tknId tkn
         when (ntfMode == NMInstant) $ initializeNtfSubs c
     _ -> throwE $ CMD PROHIBITED "verifyNtfToken: no token"
+
+setCronInterval :: AgentClient -> NtfTokenId -> NtfToken -> AM' ()
+setCronInterval c tknId tkn@NtfToken {ntfMode} = do
+  cron <- case ntfMode of
+    NMPeriodic -> asks $ ntfCron . config
+    _ -> pure 0
+  void $ forkIO $ void $ runExceptT $ agentNtfSetCronInterval c tknId tkn cron
 
 checkNtfToken' :: AgentClient -> DeviceToken -> AM NtfTknStatus
 checkNtfToken' c deviceToken =

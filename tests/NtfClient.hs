@@ -152,6 +152,7 @@ ntfServerCfg =
             privateKeyFile = "tests/fixtures/server.key",
             certificateFile = "tests/fixtures/server.crt"
           },
+      periodicNtfsInterval = 1,
       -- stats config
       logStatsInterval = Nothing,
       logStatsStartTime = 0,

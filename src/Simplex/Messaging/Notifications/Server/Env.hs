@@ -8,13 +8,11 @@
 module Simplex.Messaging.Notifications.Server.Env where
 
 import Control.Concurrent (ThreadId)
-import Control.Concurrent.Async (Async)
 import Crypto.Random
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
-import Data.Word (Word16)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
@@ -54,6 +52,7 @@ data NtfServerConfig = NtfServerConfig
     inactiveClientExpiration :: Maybe ExpirationConfig,
     dbStoreConfig :: PostgresStoreCfg,
     ntfCredentials :: ServerCredentials,
+    periodicNtfsInterval :: Int, -- seconds
     -- stats config - see SMP server config
     logStatsInterval :: Maybe Int64,
     logStatsStartTime :: Int64,
@@ -128,22 +127,14 @@ newSMPSubscriber smpServer = do
 data NtfPushServer = NtfPushServer
   { pushQ :: TBQueue (NtfTknRec, PushNotification),
     pushClients :: TMap PushProvider PushProviderClient,
-    intervalNotifiers :: TMap NtfTokenId IntervalNotifier,
     apnsConfig :: APNSPushClientConfig
-  }
-
-data IntervalNotifier = IntervalNotifier
-  { action :: Async (),
-    token :: NtfTknRec,
-    interval :: Word16
   }
 
 newNtfPushServer :: Natural -> APNSPushClientConfig -> IO NtfPushServer
 newNtfPushServer qSize apnsConfig = do
   pushQ <- newTBQueueIO qSize
   pushClients <- TM.emptyIO
-  intervalNotifiers <- TM.emptyIO
-  pure NtfPushServer {pushQ, pushClients, intervalNotifiers, apnsConfig}
+  pure NtfPushServer {pushQ, pushClients, apnsConfig}
 
 newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 newPushClient NtfPushServer {apnsConfig, pushClients} pp = do

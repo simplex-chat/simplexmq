@@ -14,7 +14,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# OPTIONS_GHC -fno-warn-orphans -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Notifications.Server.Store.Postgres where
 
@@ -42,7 +42,8 @@ import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
-import Data.Time.Clock.System (SystemTime (..))
+import Data.Time.Clock (UTCTime)
+import Data.Time.Clock.System (SystemTime (..), systemToUTCTime, utcToSystemTime)
 import Data.Word (Word16)
 import Database.PostgreSQL.Simple (Binary (..), In (..), Only (..), Query, ToRow, (:.) (..))
 import qualified Database.PostgreSQL.Simple as DB
@@ -347,7 +348,7 @@ setTknStatusConfirmed st NtfTknRec {ntfTknId} =
     updated <- DB.execute db "UPDATE tokens SET status = ? WHERE token_id = ? AND status != ? AND status != ?" (NTConfirmed, ntfTknId, NTConfirmed, NTActive)
     when (updated > 0) $ withLog "updateTknStatus" st $ \sl -> logTokenStatus sl ntfTknId NTConfirmed
 
-setTokenActive :: NtfPostgresStore -> NtfTknRec -> IO (Either ErrorType [NtfTokenId])
+setTokenActive :: NtfPostgresStore -> NtfTknRec -> IO (Either ErrorType ())
 setTokenActive st tkn@NtfTknRec {ntfTknId, token = DeviceToken pp ppToken} =
   withDB' "setTokenActive" st $ \db -> do
     updateTknStatus_ st db tkn NTActive
@@ -363,7 +364,17 @@ setTokenActive st tkn@NtfTknRec {ntfTknId, token = DeviceToken pp ppToken} =
           |]
           (pp, Binary ppToken, ntfTknId)
     withLog "deleteNtfToken" st $ \sl -> mapM_ (logDeleteToken sl) tknIds
-    pure tknIds
+
+withPeriodicNtfTokens :: NtfPostgresStore -> Int64 -> (NtfTknRec -> IO ()) -> IO Int
+withPeriodicNtfTokens st now notify =
+  fmap (fromRight 0) $ withDB' "withPeriodicNtfTokens" st $ \db ->
+    DB.fold db (ntfTknQuery <> " WHERE status = ? AND cron_interval != 0 AND (cron_sent_at + cron_interval * 60) < ?") (NTActive, now) 0 $ \ !n row -> do
+      notify (rowToNtfTkn row) $> (n + 1)
+
+updateTokenCronSentAt :: NtfPostgresStore -> NtfTokenId -> Int64 -> IO (Either ErrorType ())
+updateTokenCronSentAt st tknId now =
+  withDB' "updateTokenCronSentAt" st $ \db ->
+    void $ DB.execute db "UPDATE tokens t SET cron_sent_at = ? WHERE token_id = ?" (now, tknId)
 
 addNtfSubscription :: NtfPostgresStore -> NtfSubRec -> IO (Either ErrorType Bool)
 addNtfSubscription st sub =
@@ -572,7 +583,7 @@ addTokenLastNtf st newNtf =
               JOIN smp_servers p ON p.smp_server_id = s.smp_server_id
               ORDER BY token_ntf_id DESC
             |]
-            (tId, sId, ntfTs, nmsgNonce, Binary encNMsgMeta, tId, maxNtfs, tId)
+            (tId, sId, systemToUTCTime ntfTs, nmsgNonce, Binary encNMsgMeta, tId, maxNtfs, tId)
     let lastNtfs = fromMaybe (newNtf :| []) (L.nonEmpty lastNtfs_)
     pure (tkn, lastNtfs)
   where
@@ -581,9 +592,10 @@ addTokenLastNtf st newNtf =
     toTokenSubId :: NtfTknRow :. Only NtfSubscriptionId -> (NtfTknRec, NtfSubscriptionId)
     toTokenSubId (tknRow :. Only sId) = (rowToNtfTkn tknRow, sId)
 
-toLastNtf :: SMPQueueNtfRow :. (SystemTime, C.CbNonce, Binary EncNMsgMeta) -> PNMessageData
+toLastNtf :: SMPQueueNtfRow :. (UTCTime, C.CbNonce, Binary EncNMsgMeta) -> PNMessageData
 toLastNtf (qRow :. (ts, nonce, Binary encMeta)) =
-  PNMessageData {smpQueue = rowToSMPQueue qRow, ntfTs = ts, nmsgNonce = nonce, encNMsgMeta = encMeta}
+  let ntfTs = MkSystemTime (systemSeconds $ utcToSystemTime ts) 0
+   in PNMessageData {smpQueue = rowToSMPQueue qRow, ntfTs, nmsgNonce = nonce, encNMsgMeta = encMeta}
 
 getEntityCounts :: NtfPostgresStore -> IO (Int64, Int64, Int64)
 getEntityCounts st =
@@ -609,9 +621,11 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore = do
       tokens <- filterTokens allTokens
       let skipped = length allTokens - length tokens
       when (skipped /= 0) $ putStrLn $ "Total skipped tokens " <> show skipped
-      -- uncomment this line instead of the next to import tokens one by one.
+      -- uncomment this line instead of the next two to import tokens one by one.
       -- tCnt <- withConnection s $ \db -> foldM (importTkn db) 0 tokens
-      tRows <- mapM (fmap ntfTknToRow . mkTknRec) tokens
+      -- token interval is reset to 0 to only send notifications to devices with periodic mode,
+      -- and before clients are upgraded - to all active devices.
+      tRows <- mapM (fmap (ntfTknToRow . (\t -> t {tknCronInterval = 0} :: NtfTknRec)) . mkTknRec) tokens
       tCnt <- withConnection s $ \db -> DB.executeMany db insertNtfTknQuery tRows
       let tokenIds = S.fromList $ map (\NtfTknData {ntfTknId} -> ntfTknId) tokens
       (tokenIds,) <$> checkCount "token" (length tokens) tCnt
@@ -723,7 +737,7 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore = do
           where
             ntfRow (!qs, !rows) PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = case M.lookup smpQueue subLookup of
               Just ntfSubId -> 
-                let row = (tId, ntfSubId, ntfTs, nmsgNonce, Binary encNMsgMeta)
+                let row = (tId, ntfSubId, systemToUTCTime ntfTs, nmsgNonce, Binary encNMsgMeta)
                  in (qs, row : rows)
               Nothing -> (S.insert smpQueue qs, rows)
     checkCount name expected inserted
@@ -805,11 +819,6 @@ withLog op NtfPostgresStore {dbStoreLog} = withLog_ op dbStoreLog
 assertUpdated :: Int64 -> Either ErrorType ()
 assertUpdated 0 = Left AUTH
 assertUpdated _ = Right ()
-
--- TODO [ntfdb] change instance and maybe field type to not round to a second, for more reliable sorting of the most recent notifications
-instance FromField SystemTime where fromField f = fmap (`MkSystemTime` 0) . fromField f
-
-instance ToField SystemTime where toField = toField . systemSeconds
 
 instance FromField NtfSubStatus where fromField = fromTextField_ $ either (const Nothing) Just . smpDecode . encodeUtf8
 
