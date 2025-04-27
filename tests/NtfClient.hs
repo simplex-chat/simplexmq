@@ -80,6 +80,9 @@ ntfTestStoreLogFile2 = "tests/tmp/ntf-server-store.log.2"
 ntfTestStoreLastNtfsFile :: FilePath
 ntfTestStoreLastNtfsFile = "tests/tmp/ntf-server-last-notifications.log"
 
+ntfTestPrometheusMetricsFile :: FilePath
+ntfTestPrometheusMetricsFile = "tests/tmp/ntf-server-metrics.txt"
+
 ntfTestStoreDBOpts :: DBOpts
 ntfTestStoreDBOpts = 
   DBOpts
@@ -154,6 +157,8 @@ ntfServerCfg =
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/ntf-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
+      prometheusInterval = Nothing,
+      prometheusMetricsFile = ntfTestPrometheusMetricsFile,
       ntfServerVRange = supportedServerNTFVRange,
       transportConfig = defaultTransportServerConfig,
       startOptions = StartOptions {maintenance = False, compactLog = False, skipWarnings = False, confirmMigrations = MCYesUp}
