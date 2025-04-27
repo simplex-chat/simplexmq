@@ -254,14 +254,14 @@ getUsedSMPServers st =
         |]
         (Only (In [NSNew, NSPending, NSActive, NSInactive]))
 
-foldNtfSubscriptions :: NtfPostgresStore -> SMPServer -> Int -> s -> (s -> NtfSubRec -> IO s) -> IO s
+foldNtfSubscriptions :: NtfPostgresStore -> SMPServer -> Int -> s -> (s -> ServerNtfSub -> IO s) -> IO s
 foldNtfSubscriptions st srv fetchCount state action =
   withConnection (dbStore st) $ \db ->
-    DB.foldWithOptions opts db query params state $ \s -> action s . toNtfSub
+    DB.foldWithOptions opts db query params state $ \s -> action s . toServerNtfSub
   where
     query =
       [sql|
-        SELECT s.subscription_id, s.token_id, s.smp_notifier_id, s.status, s.smp_notifier_key
+        SELECT s.subscription_id, s.smp_notifier_id, s.smp_notifier_key
         FROM subscriptions s
         JOIN smp_servers p ON p.smp_server_id = s.smp_server_id
         WHERE p.smp_host = ? AND p.smp_port = ? AND p.smp_keyhash = ?
@@ -269,8 +269,7 @@ foldNtfSubscriptions st srv fetchCount state action =
       |]
     params = srvToRow srv :. Only (In [NSNew, NSPending, NSActive, NSInactive])
     opts = DB.defaultFoldOptions {DB.fetchQuantity = DB.Fixed fetchCount}
-    toNtfSub (ntfSubId, tokenId, nId, subStatus, notifierKey) =
-      NtfSubRec {ntfSubId, tokenId, smpQueue = SMPQueueNtf srv nId, subStatus, notifierKey}
+    toServerNtfSub (ntfSubId, notifierId, notifierKey) = (ntfSubId, (notifierId, notifierKey))
 
 -- Returns token and subscription.
 -- If subscription exists but belongs to another token, returns Left AUTH
@@ -506,10 +505,10 @@ batchUpdateStatus_ st srv mkParams =
           |]
           (srvToRow srv)
 
-batchUpdateSubStatus :: NtfPostgresStore -> NonEmpty NtfSubRec -> NtfSubStatus -> IO Int64
+batchUpdateSubStatus :: NtfPostgresStore -> NonEmpty ServerNtfSub -> NtfSubStatus -> IO Int64
 batchUpdateSubStatus st subs status =
   fmap (fromRight (-1)) $ withDB' "batchUpdateSubStatus" st $ \db -> do
-    let params = L.toList $ L.map (\NtfSubRec {ntfSubId} -> (status, ntfSubId)) subs
+    let params = L.toList $ L.map (\(subId, _) -> (status, subId)) subs
     subIds <-
       DB.returning
         db

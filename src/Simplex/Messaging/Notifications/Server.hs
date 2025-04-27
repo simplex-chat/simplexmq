@@ -464,16 +464,12 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
         -- TODO [ntfdb] possibly, the subscriptions can be batched here and sent every say 5 seconds
         -- this should be analysed once we have prometheus stats
         subs <- atomically $ readTQueue subscriberSubQ
-        -- TODO [ntfdb] validate/partition that SMP server matches and log internal error if not
         updated <- liftIO $ batchUpdateSubStatus st subs NSPending
         logSubStatus smpServer "subscribing" (L.length subs) updated
         liftIO $ subscribeQueues smpServer subs
 
-    -- \| Subscribe to queues. The list of results can have a different order.
-    subscribeQueues :: SMPServer -> NonEmpty NtfSubRec -> IO ()
-    subscribeQueues srv subs = subscribeQueuesNtfs ca srv (L.map sub subs)
-      where
-        sub NtfSubRec {smpQueue = SMPQueueNtf {notifierId}, notifierKey} = (notifierId, notifierKey)
+    subscribeQueues :: SMPServer -> NonEmpty ServerNtfSub -> IO ()
+    subscribeQueues srv subs = subscribeQueuesNtfs ca srv (L.map snd subs)
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
@@ -493,7 +489,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
               let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
               ntfs_ <- liftIO $ addTokenLastNtf st newNtf
               forM_ ntfs_ $ \(tkn, lastNtfs) -> atomically $ writeTBQueue pushQ (tkn, PNMessage lastNtfs)
-              -- TODO [ntfdb] track queued notifications separately?
+              -- TODO [ntfdb] count queued notifications separately?
               incNtfStat ntfReceived
             Right SMP.END -> do
               whenM (atomically $ activeClientSession' ca sessionId srv) $ do
@@ -775,14 +771,14 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             | otherwise -> do
                 logDebug "TCRN"
                 withNtfStore (\st -> updateTknCronInterval st ntfTknId int) $ \_ -> pure NROk
-      NtfReqNew corrId (ANE SSubscription newSub@(NewNtfSub _ (SMPQueueNtf srv _) _)) -> do
+      NtfReqNew corrId (ANE SSubscription newSub@(NewNtfSub _ (SMPQueueNtf srv nId) nKey)) -> do
         logDebug "SNEW - new subscription"
         subId <- getId
         let sub = mkNtfSubRec subId newSub
         resp <-
           withNtfStore (`addNtfSubscription` sub) $ \case
             True -> do
-              atomically $ writeTBQueue newSubQ (srv, [sub])
+              atomically $ writeTBQueue newSubQ (srv, [(subId, (nId, nKey))])
               incNtfStat subCreated
               pure $ NRSubId subId
             False -> pure $ NRErr AUTH

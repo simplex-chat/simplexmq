@@ -101,7 +101,7 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriber,
-    newSubQ :: TBQueue (SMPServer, NonEmpty NtfSubRec), -- should match SMPServer
+    newSubQ :: TBQueue (SMPServer, NonEmpty ServerNtfSub),
     smpAgent :: SMPClientAgent
   }
 
@@ -114,7 +114,7 @@ newNtfSubscriber qSize smpAgentCfg random = do
 
 data SMPSubscriber = SMPSubscriber
   { smpServer :: SMPServer,
-    subscriberSubQ :: TQueue (NonEmpty NtfSubRec),
+    subscriberSubQ :: TQueue (NonEmpty ServerNtfSub),
     subThreadId :: TVar (Maybe (Weak ThreadId))
   }
 
