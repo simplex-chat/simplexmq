@@ -494,7 +494,7 @@ test-suite simplexmq-test
           AgentTests.NotificationTests
           NtfClient
           NtfServerTests
-          ServerTests.SchemaDump  
+          PostgresSchemaDump
   hs-source-dirs:
       tests
       apps/smp-server/web
