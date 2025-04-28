@@ -650,7 +650,7 @@ data CliCommand
   | Start StartOptions
   | Delete
   | Journal StoreCmd
-  | Database StoreCmd DBOpts
+  | Database StoreCmd DBOpts 
 
 data StoreCmd = SCImport | SCExport | SCDelete
 
@@ -835,5 +835,6 @@ cliCommandP cfgPath logPath iniFile =
             <> metavar (metavar' <> "_COUNTRY")
             <> help (help' <> " country")
         )
-    strParse :: StrEncoding a => ReadM a
-    strParse = eitherReader $ parseAll strP . encodeUtf8 . T.pack
+
+strParse :: StrEncoding a => ReadM a
+strParse = eitherReader $ parseAll strP . encodeUtf8 . T.pack

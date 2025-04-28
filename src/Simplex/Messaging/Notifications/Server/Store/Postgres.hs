@@ -607,8 +607,8 @@ getEntityCounts st =
     count (Only n : _) = n
     count [] = 0    
 
-importNtfSTMStore :: NtfPostgresStore -> NtfSTMStore -> IO (Int64, Int64, Int64)
-importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore = do
+importNtfSTMStore :: NtfPostgresStore -> NtfSTMStore -> S.Set NtfTokenId -> IO (Int64, Int64, Int64)
+importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore skipTokens = do
   (tIds, tCnt) <- importTokens
   subLookup <- readTVarIO $ subscriptionLookup stmStore
   sCnt <- importSubscriptions tIds subLookup
@@ -638,6 +638,7 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore = do
           case M.lookup (tokenKey tkn) deviceTokens of
             Just ts
               | length ts < 2 -> pure True
+              | ntfTknId `S.member` skipTokens -> False <$ putStrLn ("Skipped token " <> enc ntfTknId <> " from --skip-tokens")
               | otherwise ->
                   readTVarIO tknStatus >>= \case
                     NTConfirmed -> do
@@ -645,8 +646,8 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore = do
                       if hasSubs
                         then pure True
                         else do
-                          anyActive <- anyM $ map (\NtfTknData {tknStatus = tknStatus'} -> (NTActive ==) <$> readTVarIO tknStatus') ts
-                          if anyActive
+                          anyBetterToken <- anyM $ map (\NtfTknData {tknStatus = tknStatus'} -> activeOrInvalid <$> readTVarIO tknStatus') ts
+                          if anyBetterToken
                             then False <$ putStrLn ("Skipped duplicate inactive token " <> enc ntfTknId)
                             else case findIndex (\NtfTknData {ntfTknId = tId} -> tId == ntfTknId) ts of
                               Just 0 -> pure True -- keeping the first token
@@ -654,6 +655,10 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore = do
                               Nothing -> True <$ putStrLn "Error: no device token in the list"
                     _ -> pure True
             Nothing -> True <$ putStrLn "Error: no device token in lookup map"
+        activeOrInvalid = \case
+          NTActive -> True
+          NTInvalid _ -> True
+          _ -> False
         -- importTkn db !n tkn@NtfTknData {ntfTknId} = do
         --   tknRow <- ntfTknToRow <$> mkTknRec tkn
         --   (DB.execute db insertNtfTknQuery tknRow >>= pure . (n + )) `E.catch` \(e :: E.SomeException) ->
