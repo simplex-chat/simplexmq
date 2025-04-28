@@ -33,14 +33,14 @@ CREATE TABLE tokens(
   dh_priv_key BYTEA NOT NULL,
   dh_secret BYTEA NOT NULL,
   reg_code BYTEA NOT NULL,
-  cron_interval BIGINT NOT NULL,
-  cron_sent_at BIGINT,
+  cron_interval BIGINT NOT NULL, -- minutes
+  cron_sent_at BIGINT, -- seconds
   updated_at BIGINT,
   PRIMARY KEY (token_id)
 );
 
 CREATE UNIQUE INDEX idx_tokens_push_provider_token ON tokens(push_provider, push_provider_token, verify_key);
-CREATE INDEX idx_tokens_cron_sent_at ON tokens((cron_sent_at + cron_interval));
+CREATE INDEX idx_tokens_status_cron_interval_sent_at ON tokens(status, cron_interval, (cron_sent_at + cron_interval * 60));
 
 CREATE TABLE smp_servers(
   smp_server_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -69,7 +69,7 @@ CREATE TABLE last_notifications(
   token_ntf_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   token_id BYTEA NOT NULL REFERENCES tokens ON DELETE CASCADE ON UPDATE RESTRICT,
   subscription_id BYTEA NOT NULL REFERENCES subscriptions ON DELETE CASCADE ON UPDATE RESTRICT,
-  sent_at BIGINT NOT NULL,
+  sent_at TIMESTAMPTZ NOT NULL,
   nmsg_nonce BYTEA NOT NULL,
   nmsg_data BYTEA NOT NULL
 );

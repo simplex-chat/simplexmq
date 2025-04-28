@@ -14,7 +14,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode, NtfSubStatus, NtfSubscriptionId, NtfTokenId, NtfTknStatus, SMPQueueNtf)
 import Simplex.Messaging.Notifications.Server.Store (NtfSubData (..), NtfTknData (..))
-import Simplex.Messaging.Protocol (NtfPrivateAuthKey, NtfPublicAuthKey)
+import Simplex.Messaging.Protocol (NotifierId, NtfPrivateAuthKey, NtfPublicAuthKey)
 import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
 
 data NtfTknRec = NtfTknRec
@@ -80,6 +80,8 @@ data NtfSubRec = NtfSubRec
     subStatus :: NtfSubStatus
   }
   deriving (Show)
+
+type ServerNtfSub = (NtfSubscriptionId, (NotifierId, NtfPrivateAuthKey))
 
 mkSubData :: NtfSubRec -> IO NtfSubData
 mkSubData NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus = status} = do

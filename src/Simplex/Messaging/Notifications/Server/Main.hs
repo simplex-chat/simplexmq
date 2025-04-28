@@ -263,6 +263,7 @@ ntfServerCLI cfgPath logPath =
                     privateKeyFile = c serverKeyFile,
                     certificateFile = c serverCrtFile
                   },
+              periodicNtfsInterval = 5 * 60, -- 5 minutes
               logStatsInterval = logStats $> 86400, -- seconds
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "ntf-server-stats.daily.log",
