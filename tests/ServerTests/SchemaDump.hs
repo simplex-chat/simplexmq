@@ -28,7 +28,7 @@ serverSchemaPath :: FilePath
 serverSchemaPath = "src/Simplex/Messaging/Server/QueueStore/Postgres/server_schema.sql"
 
 testSchemaPath :: FilePath
-testSchemaPath = "tests/tmp/test_server_schema.sql"
+testSchemaPath = "tests/tmp/test_smp_server_schema.sql"
 
 testServerDBOpts :: DBOpts
 testServerDBOpts = 
@@ -39,10 +39,10 @@ testServerDBOpts =
       createSchema = True
     }
 
-serverSchemaDumpTest :: Spec
-serverSchemaDumpTest = do
-  it "verify and overwrite schema dump" testVerifySchemaDump
-  it "verify schema down migrations" testSchemaMigrations
+smpServerSchemaDumpTest :: Spec
+smpServerSchemaDumpTest = do
+  it "verify and overwrite SMP server schema dump" testVerifySchemaDump
+  it "verify SMP server schema down migrations" testSchemaMigrations
 
 testVerifySchemaDump :: IO ()
 testVerifySchemaDump = do

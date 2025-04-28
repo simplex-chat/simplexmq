@@ -420,15 +420,19 @@ resubscribe NtfSubscriber {newSubQ} = do
     logInfo $ "SMP resubscriptions queued (" <> tshow count <> " subscriptions)"
   where
     subscribeSrvSubs st batchSize !count srv = do
+      let srvStr = safeDecodeUtf8 (strEncode $ host srv)
+      logInfo $ "Preparing subscriptions for " <> srvStr
       (n, subs_) <-
         foldNtfSubscriptions st srv batchSize (0, []) $ \(!i, subs) sub ->
           if length subs == batchSize
-            then write (L.fromList subs) $> (i + 1, [])
+            then write srvStr (L.fromList subs) $> (i + 1, [])
             else pure (i + 1, sub : subs)
-      mapM_ write $ L.nonEmpty subs_
+      mapM_ (write srvStr) $ L.nonEmpty subs_
       pure $ count + n
       where
-        write subs = atomically $ writeTBQueue newSubQ (srv, subs)
+        write srvStr subs = do
+          atomically $ writeTBQueue newSubQ (srv, subs)
+          logInfo $ "Queued " <> tshow (L.length subs) <> " subscriptions for " <> srvStr
 
 ntfSubscriber :: NtfSubscriber -> M ()
 ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
