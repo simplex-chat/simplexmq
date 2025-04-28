@@ -413,26 +413,21 @@ resubscribe :: NtfSubscriber -> M ()
 resubscribe NtfSubscriber {newSubQ} = do
   logInfo "Preparing SMP resubscriptions..."
   st <- asks store
-  batchSize <- asks $ subsBatchSize . config
   liftIO $ do
     srvs <- getUsedSMPServers st
-    count <- foldM (subscribeSrvSubs st batchSize) (0 :: Int) srvs
+    count <- foldM (subscribeSrvSubs st) (0 :: Int) srvs
     logInfo $ "SMP resubscriptions queued (" <> tshow count <> " subscriptions)"
   where
-    subscribeSrvSubs st batchSize !count srv = do
+    subscribeSrvSubs st !count srv = do
       let srvStr = safeDecodeUtf8 (strEncode $ host srv)
       logInfo $ "Preparing subscriptions for " <> srvStr
-      (n, subs_) <-
-        foldNtfSubscriptions st srv batchSize (0, []) $ \(!i, subs) sub ->
-          if length subs == batchSize
-            then write srvStr (L.fromList subs) $> (i + 1, [])
-            else pure (i + 1, sub : subs)
-      mapM_ (write srvStr) $ L.nonEmpty subs_
+      subs_ <- foldNtfSubscriptions st srv [] $ \ subs sub -> pure $ sub : subs
+      mapM_ write $ L.nonEmpty subs_
+      let n = length subs_
+      logInfo $ "Queued " <> tshow n <> " subscriptions for " <> srvStr
       pure $ count + n
       where
-        write srvStr subs = do
-          atomically $ writeTBQueue newSubQ (srv, subs)
-          logInfo $ "Queued " <> tshow (L.length subs) <> " subscriptions for " <> srvStr
+        write subs = atomically $ writeTBQueue newSubQ (srv, subs)
 
 ntfSubscriber :: NtfSubscriber -> M ()
 ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
@@ -441,11 +436,13 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     subscribe :: M ()
     subscribe = forever $ do
       (srv, subs) <- atomically $ readTBQueue newSubQ
+      batchSize <- asks $ subsBatchSize . config
+      let batches = toChunks batchSize $ L.toList subs
       -- TODO [ntfdb] as we now group by server before putting subs to queue,
       -- maybe this "subscribe" thread can be removed completely,
       -- and the caller would directly write to SMPSubscriber queues
       SMPSubscriber {subscriberSubQ} <- getSMPSubscriber srv
-      atomically $ writeTQueue subscriberSubQ subs
+      mapM_ (atomically . writeTQueue subscriberSubQ) batches
 
     -- TODO [ntfdb] this does not guarantee that only one subscriber per server is created
     -- there should be TMVar in the map

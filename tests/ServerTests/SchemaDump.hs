@@ -39,8 +39,8 @@ testServerDBOpts =
       createSchema = True
     }
 
-smpServerSchemaDumpTest :: Spec
-smpServerSchemaDumpTest = do
+serverSchemaDumpTest :: Spec
+serverSchemaDumpTest = do
   it "verify and overwrite SMP server schema dump" testVerifySchemaDump
   it "verify SMP server schema down migrations" testSchemaMigrations
 

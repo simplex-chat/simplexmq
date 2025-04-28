@@ -254,10 +254,10 @@ getUsedSMPServers st =
         |]
         (Only (In [NSNew, NSPending, NSActive, NSInactive]))
 
-foldNtfSubscriptions :: NtfPostgresStore -> SMPServer -> Int -> s -> (s -> ServerNtfSub -> IO s) -> IO s
-foldNtfSubscriptions st srv fetchCount state action =
+foldNtfSubscriptions :: NtfPostgresStore -> SMPServer ->s -> (s -> ServerNtfSub -> IO s) -> IO s
+foldNtfSubscriptions st srv state action =
   withConnection (dbStore st) $ \db ->
-    DB.foldWithOptions opts db query params state $ \s -> action s . toServerNtfSub
+    DB.fold db query params state $ \s -> action s . toServerNtfSub
   where
     query =
       [sql|
@@ -268,7 +268,6 @@ foldNtfSubscriptions st srv fetchCount state action =
           AND s.status IN ?
       |]
     params = srvToRow srv :. Only (In [NSNew, NSPending, NSActive, NSInactive])
-    opts = DB.defaultFoldOptions {DB.fetchQuantity = DB.Fixed fetchCount}
     toServerNtfSub (ntfSubId, notifierId, notifierKey) = (ntfSubId, (notifierId, notifierKey))
 
 -- Returns token and subscription.
