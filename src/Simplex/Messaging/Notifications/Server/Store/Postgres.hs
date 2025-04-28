@@ -254,10 +254,14 @@ getUsedSMPServers st =
         |]
         (Only (In [NSNew, NSPending, NSActive, NSInactive]))
 
-foldNtfSubscriptions :: NtfPostgresStore -> SMPServer ->s -> (s -> ServerNtfSub -> IO s) -> IO s
-foldNtfSubscriptions st srv state action =
-  withConnection (dbStore st) $ \db ->
-    DB.fold db query params state $ \s -> action s . toServerNtfSub
+getServerNtfSubscriptions :: NtfPostgresStore -> SMPServer -> Maybe NtfSubscriptionId -> Int -> IO (Either ErrorType [ServerNtfSub])
+getServerNtfSubscriptions st srv afterSubId_ count =
+  withDB' "getServerNtfSubscriptions" st $ \db ->
+    map toServerNtfSub <$> case afterSubId_ of
+      Nothing ->
+        DB.query db (query <> orderLimit) (srvToRow srv :. (statusIn, count))
+      Just afterSubId ->
+        DB.query db (query <> " AND s.subscription_id > ?" <> orderLimit) (srvToRow srv :. (statusIn, afterSubId, count))
   where
     query =
       [sql|
@@ -267,7 +271,8 @@ foldNtfSubscriptions st srv state action =
         WHERE p.smp_host = ? AND p.smp_port = ? AND p.smp_keyhash = ?
           AND s.status IN ?
       |]
-    params = srvToRow srv :. Only (In [NSNew, NSPending, NSActive, NSInactive])
+    orderLimit = " ORDER BY s.subscription_id LIMIT ?"
+    statusIn = In [NSNew, NSPending, NSActive, NSInactive]
     toServerNtfSub (ntfSubId, notifierId, notifierKey) = (ntfSubId, (notifierId, notifierKey))
 
 -- Returns token and subscription.

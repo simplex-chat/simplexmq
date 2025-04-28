@@ -17,6 +17,7 @@
 module Simplex.Messaging.Notifications.Server where
 
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (mapConcurrently)
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -77,7 +78,6 @@ import System.Exit (exitFailure, exitSuccess)
 import System.IO (BufferMode (..), hClose, hPrint, hPutStrLn, hSetBuffering, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (IOMode (..), UnliftIO, askUnliftIO, unliftIO, withFile)
-import UnliftIO.Async (pooledMapConcurrentlyN)
 import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
@@ -105,7 +105,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
     liftIO $ putStrLn "Server started in 'maintenance' mode, exiting"
     stopServer
     liftIO $ exitSuccess
-  resubscribe s
+  void $ forkIO $ resubscribe s
   raceAny_
     ( ntfSubscriber s
         : ntfPush ps
@@ -268,12 +268,12 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
             countSubs acc@(metrics, !otherSrvs) (srv@(SMPServer (h :| _) _ _), srvSubs) =
               result . M.size <$> readTVarIO srvSubs
               where
-                result 0 = acc
                 result cnt
                   | isOwnServer a srv =
                       let !ownSrvSubs' = M.alter (Just . maybe cnt (+ cnt)) host ownSrvSubs
                           metrics' = metrics {ownSrvSubs = ownSrvSubs'} :: NtfSMPSubMetrics
                        in (metrics', otherSrvs)
+                  | cnt == 0 = acc
                   | otherwise =
                       let metrics' = metrics {otherSrvSubCount = otherSrvSubCount + cnt} :: NtfSMPSubMetrics
                        in (metrics', S.insert host otherSrvs)
@@ -411,24 +411,33 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
                       hPutStrLn h "AUTH"
 
 resubscribe :: NtfSubscriber -> M ()
-resubscribe NtfSubscriber {newSubQ} = do
-  logInfo "Preparing SMP resubscriptions..."
+resubscribe NtfSubscriber {smpAgent = ca} = do
   st <- asks store
+  batchSize <- asks $ subsBatchSize . config
   liftIO $ do
     srvs <- getUsedSMPServers st
-    counts <- pooledMapConcurrentlyN 10 (subscribeSrvSubs st) srvs
-    logInfo $ "SMP resubscriptions queued for " <> tshow (length srvs) <> " (" <> tshow (sum counts) <> " subscriptions)"
+    logInfo $ "Starting SMP resubscriptions for " <> tshow (length srvs) <> " servers..."
+    counts <- mapConcurrently (subscribeSrvSubs st batchSize) srvs
+    logInfo $ "Completed all SMP resubscriptions for " <> tshow (length srvs) <> " servers (" <> tshow (sum counts) <> " subscriptions)"
   where
-    subscribeSrvSubs st srv = do
-      let srvStr = safeDecodeUtf8 (strEncode $ host srv)
-      logInfo $ "Preparing subscriptions for " <> srvStr
-      subs_ <- foldNtfSubscriptions st srv [] $ \ subs sub -> pure $ sub : subs
-      mapM_ write $ L.nonEmpty subs_
-      let n = length subs_
-      logInfo $ "Queued " <> tshow n <> " subscriptions for " <> srvStr
+    subscribeSrvSubs st batchSize srv = do
+      let srvStr = safeDecodeUtf8 (strEncode $ L.head $ host srv)
+      logInfo $ "Starting SMP resubscriptions for " <> srvStr
+      n <- loop 0 Nothing
+      logInfo $ "Completed SMP resubscriptions for " <> srvStr <> " (" <> tshow n <> " subscriptions)"
       pure n
       where
-        write subs = atomically $ writeTBQueue newSubQ (srv, subs)
+        loop n afterSubId_ =
+          getServerNtfSubscriptions st srv afterSubId_ batchSize >>= \case
+            Left _ -> exitFailure
+            Right subs_ -> case L.nonEmpty subs_ of
+              Nothing -> pure 0
+              Just subs -> do
+                subscribeQueuesNtfs ca srv $ L.map snd subs
+                let len = L.length subs
+                    n' = n + len
+                    afterSubId_' = Just $ fst $ L.last subs
+                if len < batchSize then pure n' else loop n' afterSubId_'
 
 ntfSubscriber :: NtfSubscriber -> M ()
 ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
@@ -437,16 +446,10 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     subscribe :: M ()
     subscribe = forever $ do
       (srv, subs) <- atomically $ readTBQueue newSubQ
-      batchSize <- asks $ subsBatchSize . config
-      let batches = toChunks batchSize $ L.toList subs
-      -- TODO [ntfdb] as we now group by server before putting subs to queue,
-      -- maybe this "subscribe" thread can be removed completely,
-      -- and the caller would directly write to SMPSubscriber queues
       SMPSubscriber {subscriberSubQ} <- getSMPSubscriber srv
-      mapM_ (atomically . writeTQueue subscriberSubQ) batches
+      atomically $ writeTQueue subscriberSubQ subs
 
-    -- TODO [ntfdb] this does not guarantee that only one subscriber per server is created
-    -- there should be TMVar in the map
+    -- TODO [ntfdb] this does not guarantee that only one subscriber per server is created (there should be TMVar in the map)
     -- This does not need changing if single newSubQ remains, but if it is removed, it need to change
     getSMPSubscriber :: SMPServer -> M SMPSubscriber
     getSMPSubscriber smpServer =
@@ -468,10 +471,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
         subs <- atomically $ readTQueue subscriberSubQ
         updated <- liftIO $ batchUpdateSubStatus st subs NSPending
         logSubStatus smpServer "subscribing" (L.length subs) updated
-        liftIO $ subscribeQueues smpServer subs
-
-    subscribeQueues :: SMPServer -> NonEmpty ServerNtfSub -> IO ()
-    subscribeQueues srv subs = subscribeQueuesNtfs ca srv (L.map snd subs)
+        liftIO $ subscribeQueuesNtfs ca smpServer $ L.map snd subs
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
