@@ -77,6 +77,7 @@ import System.Exit (exitFailure, exitSuccess)
 import System.IO (BufferMode (..), hClose, hPrint, hPutStrLn, hSetBuffering, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (IOMode (..), UnliftIO, askUnliftIO, unliftIO, withFile)
+import UnliftIO.Async (pooledMapConcurrentlyN)
 import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
@@ -415,17 +416,17 @@ resubscribe NtfSubscriber {newSubQ} = do
   st <- asks store
   liftIO $ do
     srvs <- getUsedSMPServers st
-    count <- foldM (subscribeSrvSubs st) (0 :: Int) srvs
-    logInfo $ "SMP resubscriptions queued (" <> tshow count <> " subscriptions)"
+    counts <- pooledMapConcurrentlyN 10 (subscribeSrvSubs st) srvs
+    logInfo $ "SMP resubscriptions queued for " <> tshow (length srvs) <> " (" <> tshow (sum counts) <> " subscriptions)"
   where
-    subscribeSrvSubs st !count srv = do
+    subscribeSrvSubs st srv = do
       let srvStr = safeDecodeUtf8 (strEncode $ host srv)
       logInfo $ "Preparing subscriptions for " <> srvStr
       subs_ <- foldNtfSubscriptions st srv [] $ \ subs sub -> pure $ sub : subs
       mapM_ write $ L.nonEmpty subs_
       let n = length subs_
       logInfo $ "Queued " <> tshow n <> " subscriptions for " <> srvStr
-      pure $ count + n
+      pure n
       where
         write subs = atomically $ writeTBQueue newSubQ (srv, subs)
 
