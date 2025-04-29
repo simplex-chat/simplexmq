@@ -105,7 +105,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
     liftIO $ putStrLn "Server started in 'maintenance' mode, exiting"
     stopServer
     liftIO $ exitSuccess
-  void $ forkIO $ resubscribe s
+  resubscribe s
   raceAny_
     ( ntfSubscriber s
         : ntfPush ps
