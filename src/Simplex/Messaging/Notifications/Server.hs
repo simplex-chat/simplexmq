@@ -17,6 +17,7 @@
 module Simplex.Messaging.Notifications.Server where
 
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (mapConcurrently)
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -76,7 +77,7 @@ import System.Environment (lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (BufferMode (..), hClose, hPrint, hPutStrLn, hSetBuffering, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
-import UnliftIO (IOMode (..), UnliftIO, askUnliftIO, pooledMapConcurrentlyN, unliftIO, withFile)
+import UnliftIO (IOMode (..), UnliftIO, askUnliftIO, unliftIO, withFile)
 import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
@@ -416,7 +417,7 @@ resubscribe NtfSubscriber {smpAgent = ca} = do
   liftIO $ do
     srvs <- getUsedSMPServers st
     logNote $ "Starting SMP resubscriptions for " <> tshow (length srvs) <> " servers..."
-    counts <- pooledMapConcurrentlyN 5 (subscribeSrvSubs st batchSize) srvs
+    counts <- mapConcurrently (subscribeSrvSubs st batchSize) srvs
     logNote $ "Completed all SMP resubscriptions for " <> tshow (length srvs) <> " servers (" <> tshow (sum counts) <> " subscriptions)"
   where
     subscribeSrvSubs st batchSize srv = do

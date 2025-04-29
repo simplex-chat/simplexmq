@@ -113,7 +113,7 @@ closeNtfDbStore NtfPostgresStore {dbStore, dbStoreLog} = do
 
 addNtfToken :: NtfPostgresStore -> NtfTknRec -> IO (Either ErrorType ())
 addNtfToken st tkn =
-  withDB "addNtfToken" st $ \db ->
+  withFastDB "addNtfToken" st $ \db ->
     E.try (DB.execute db insertNtfTknQuery $ ntfTknToRow tkn)
       >>= bimapM handleDuplicate (\_ -> withLog "addNtfToken" st (`logCreateToken` tkn))
 
@@ -127,7 +127,7 @@ insertNtfTknQuery =
 
 replaceNtfToken :: NtfPostgresStore -> NtfTknRec -> IO (Either ErrorType ())
 replaceNtfToken st NtfTknRec {ntfTknId, token = token@(DeviceToken pp ppToken), tknStatus, tknRegCode = code@(NtfRegCode regCode)} =
-  withDB "replaceNtfToken" st $ \db -> runExceptT $ do
+  withFastDB "replaceNtfToken" st $ \db -> runExceptT $ do
     ExceptT $ assertUpdated <$>
       DB.execute
         db
@@ -156,7 +156,7 @@ findNtfTokenRegistration st (NewNtfTkn (DeviceToken pp ppToken) tknVerifyKey _) 
 
 getNtfToken_ :: ToRow q => NtfPostgresStore -> Query -> q -> IO (Either ErrorType (Maybe NtfTknRec))
 getNtfToken_ st cond params =
-  withDB' "getNtfToken" st $ \db -> do
+  withFastDB' "getNtfToken" st $ \db -> do
     tkn_ <- maybeFirstRow rowToNtfTkn $ DB.query db (ntfTknQuery <> cond) params
     mapM_ (updateTokenDate st db) tkn_
     pure tkn_
@@ -185,7 +185,7 @@ rowToNtfTkn (ntfTknId, pp, Binary ppToken, tknStatus, tknVerifyKey, tknDhPrivKey
 
 deleteNtfToken :: NtfPostgresStore -> NtfTokenId -> IO (Either ErrorType [(SMPServer, [NotifierId])])
 deleteNtfToken st tknId =
-  withDB "deleteNtfToken" st $ \db -> runExceptT $ do
+  withFastDB "deleteNtfToken" st $ \db -> runExceptT $ do
     -- This SELECT obtains exclusive lock on token row and prevents any inserts
     -- into other tables for this token ID until the deletion completes.
     _ <- ExceptT $ firstRow (fromOnly @Int) AUTH $
@@ -230,7 +230,7 @@ rowToSMPQueue (host, port, kh, nId) = SMPQueueNtf (SMPServer host port kh) nId
 
 updateTknCronInterval :: NtfPostgresStore -> NtfTokenId -> Word16 -> IO (Either ErrorType ())
 updateTknCronInterval st tknId cronInt =
-  withDB "updateTknCronInterval" st $ \db -> runExceptT $ do
+  withFastDB "updateTknCronInterval" st $ \db -> runExceptT $ do
     ExceptT $ assertUpdated <$>
       DB.execute db "UPDATE tokens SET cron_interval = ? WHERE token_id = ?" (cronInt, tknId)
     withLog "updateTknCronInterval" st $ \sl -> logTokenCron sl tknId 0
@@ -256,12 +256,25 @@ getUsedSMPServers st =
 
 getServerNtfSubscriptions :: NtfPostgresStore -> SMPServer -> Maybe NtfSubscriptionId -> Int -> IO (Either ErrorType [ServerNtfSub])
 getServerNtfSubscriptions st srv afterSubId_ count =
-  withDB' "getServerNtfSubscriptions" st $ \db ->
-    map toServerNtfSub <$> case afterSubId_ of
-      Nothing ->
-        DB.query db (query <> orderLimit) (srvToRow srv :. (statusIn, count))
-      Just afterSubId ->
-        DB.query db (query <> " AND s.subscription_id > ?" <> orderLimit) (srvToRow srv :. (statusIn, afterSubId, count))
+  withDB' "getServerNtfSubscriptions" st $ \db -> do
+    subs <-
+      map toServerNtfSub <$> case afterSubId_ of
+        Nothing ->
+          DB.query db (query <> orderLimit) (srvToRow srv :. (statusIn, count))
+        Just afterSubId ->
+          DB.query db (query <> " AND s.subscription_id > ?" <> orderLimit) (srvToRow srv :. (statusIn, afterSubId, count))
+    void $
+      DB.executeMany
+        db
+        [sql|
+          UPDATE subscriptions s
+          SET status = upd.status
+          FROM (VALUES(?, ?)) AS upd(status, subscription_id)
+          WHERE s.subscription_id = (upd.subscription_id :: BYTEA)
+            AND s.status != upd.status
+        |]
+        (map ((NSPending,) . fst) subs)
+    pure subs
   where
     query =
       [sql|
@@ -279,7 +292,7 @@ getServerNtfSubscriptions st srv afterSubId_ count =
 -- If subscription exists but belongs to another token, returns Left AUTH
 findNtfSubscription :: NtfPostgresStore -> NtfTokenId -> SMPQueueNtf -> IO (Either ErrorType (NtfTknRec, Maybe NtfSubRec))
 findNtfSubscription st tknId q =
-  withDB "findNtfSubscription" st $ \db -> runExceptT $ do
+  withFastDB "findNtfSubscription" st $ \db -> runExceptT $ do
     tkn@NtfTknRec {ntfTknId, tknStatus} <- ExceptT $ getNtfToken st tknId
     unless (allowNtfSubCommands tknStatus) $ throwE AUTH
     liftIO $ updateTokenDate st db tkn
@@ -300,7 +313,7 @@ findNtfSubscription st tknId q =
 
 getNtfSubscription :: NtfPostgresStore -> NtfSubscriptionId -> IO (Either ErrorType (NtfTknRec, NtfSubRec))
 getNtfSubscription st subId =
-  withDB "getNtfSubscription" st $ \db -> runExceptT $ do
+  withFastDB "getNtfSubscription" st $ \db -> runExceptT $ do
     r@(tkn@NtfTknRec {tknStatus}, _) <-
       ExceptT $ firstRow rowToNtfTknSub AUTH $
         DB.query
@@ -337,7 +350,7 @@ mkNtfSubRec ntfSubId (NewNtfSub tokenId smpQueue notifierKey) =
 
 updateTknStatus :: NtfPostgresStore -> NtfTknRec -> NtfTknStatus -> IO (Either ErrorType ())
 updateTknStatus st tkn status =
-  withDB' "updateTknStatus" st $ \db -> updateTknStatus_ st db tkn status
+  withFastDB' "updateTknStatus" st $ \db -> updateTknStatus_ st db tkn status
 
 updateTknStatus_ :: NtfPostgresStore -> DB.Connection -> NtfTknRec -> NtfTknStatus -> IO ()
 updateTknStatus_ st db NtfTknRec {ntfTknId} status = do
@@ -347,13 +360,13 @@ updateTknStatus_ st db NtfTknRec {ntfTknId} status = do
 -- unless it was already active
 setTknStatusConfirmed :: NtfPostgresStore -> NtfTknRec -> IO (Either ErrorType ())
 setTknStatusConfirmed st NtfTknRec {ntfTknId} =
-  withDB' "updateTknStatus" st $ \db -> do
+  withFastDB' "updateTknStatus" st $ \db -> do
     updated <- DB.execute db "UPDATE tokens SET status = ? WHERE token_id = ? AND status != ? AND status != ?" (NTConfirmed, ntfTknId, NTConfirmed, NTActive)
     when (updated > 0) $ withLog "updateTknStatus" st $ \sl -> logTokenStatus sl ntfTknId NTConfirmed
 
 setTokenActive :: NtfPostgresStore -> NtfTknRec -> IO (Either ErrorType ())
 setTokenActive st tkn@NtfTknRec {ntfTknId, token = DeviceToken pp ppToken} =
-  withDB' "setTokenActive" st $ \db -> do
+  withFastDB' "setTokenActive" st $ \db -> do
     updateTknStatus_ st db tkn NTActive
     -- this removes other instances of the same token, e.g. because of repeated token registration attempts
     tknIds <-
@@ -381,7 +394,7 @@ updateTokenCronSentAt st tknId now =
 
 addNtfSubscription :: NtfPostgresStore -> NtfSubRec -> IO (Either ErrorType Bool)
 addNtfSubscription st sub =
-  withDB "addNtfSubscription" st $ \db -> runExceptT $ do
+  withFastDB "addNtfSubscription" st $ \db -> runExceptT $ do
     srvId :: Int64 <- ExceptT $ upsertServer db $ ntfSubServer' sub
     n <- liftIO $ DB.execute db insertNtfSubQuery $ ntfSubToRow srvId sub
     withLog "addNtfSubscription" st (`logCreateSubscription` sub)
@@ -427,14 +440,14 @@ ntfSubToRow srvId NtfSubRec {ntfSubId, tokenId, smpQueue = SMPQueueNtf _ nId, no
 
 deleteNtfSubscription :: NtfPostgresStore -> NtfSubscriptionId -> IO (Either ErrorType ())
 deleteNtfSubscription st subId =
-  withDB "deleteNtfSubscription" st $ \db -> runExceptT $ do
+  withFastDB "deleteNtfSubscription" st $ \db -> runExceptT $ do
     ExceptT $ assertUpdated <$>
       DB.execute db "DELETE FROM subscriptions WHERE subscription_id = ?" (Only subId)
     withLog "deleteNtfSubscription" st (`logDeleteSubscription` subId)
 
 updateSrvSubStatus :: NtfPostgresStore -> SMPQueueNtf -> NtfSubStatus -> IO (Either ErrorType ())
 updateSrvSubStatus st q status =
-  withDB' "updateSrvSubStatus" st $ \db -> do
+  withFastDB' "updateSrvSubStatus" st $ \db -> do
     subId_ :: Maybe NtfSubscriptionId <-
       maybeFirstRow fromOnly $
         DB.query
@@ -511,7 +524,7 @@ batchUpdateStatus_ st srv mkParams =
 
 batchUpdateSubStatus :: NtfPostgresStore -> NonEmpty ServerNtfSub -> NtfSubStatus -> IO Int64
 batchUpdateSubStatus st subs status =
-  fmap (fromRight (-1)) $ withDB' "batchUpdateSubStatus" st $ \db -> do
+  fmap (fromRight (-1)) $ withFastDB' "batchUpdateSubStatus" st $ \db -> do
     let params = L.toList $ L.map (\(subId, _) -> (status, subId)) subs
     subIds <-
       DB.returning
@@ -537,7 +550,7 @@ batchUpdateSubStatus st subs status =
 
 addTokenLastNtf :: NtfPostgresStore -> PNMessageData -> IO (Either ErrorType (NtfTknRec, NonEmpty PNMessageData))
 addTokenLastNtf st newNtf =
-  withDB "addTokenLastNtf" st $ \db -> runExceptT $ do
+  withFastDB "addTokenLastNtf" st $ \db -> runExceptT $ do
     (tkn@NtfTknRec {ntfTknId = tId, tknStatus}, sId) <-
       ExceptT $ firstRow toTokenSubId AUTH $
         DB.query
@@ -808,12 +821,25 @@ exportNtfDbStore NtfPostgresStore {dbStore = s, dbStoreLog = Just sl} lastNtfsFi
           |]
         encodeLastNtf tknId ntf = strEncode (TNMRv1 tknId ntf) `B.snoc` '\n'
 
+withFastDB' :: String -> NtfPostgresStore -> (DB.Connection -> IO a) -> IO (Either ErrorType a)
+withFastDB' op st action = withFastDB op st $ fmap Right . action
+{-# INLINE withFastDB' #-}
+
 withDB' :: String -> NtfPostgresStore -> (DB.Connection -> IO a) -> IO (Either ErrorType a)
 withDB' op st action = withDB op st $ fmap Right . action
+{-# INLINE withDB' #-}
+
+withFastDB :: forall a. String -> NtfPostgresStore -> (DB.Connection -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
+withFastDB op st = withDB_ op st True
+{-# INLINE withFastDB #-}
 
 withDB :: forall a. String -> NtfPostgresStore -> (DB.Connection -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
-withDB op st action =
-  E.uninterruptibleMask_ $ E.try (withTransaction (dbStore st) action) >>= either logErr pure
+withDB op st = withDB_ op st False
+{-# INLINE withDB #-}
+
+withDB_ :: forall a. String -> NtfPostgresStore -> Bool -> (DB.Connection -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
+withDB_ op st priority action =
+  E.uninterruptibleMask_ $ E.try (withTransactionPriority (dbStore st) priority action) >>= either logErr pure
   where
     logErr :: E.SomeException -> IO (Either ErrorType a)
     logErr e = logError ("STORE: " <> T.pack err) $> Left (STORE err)
