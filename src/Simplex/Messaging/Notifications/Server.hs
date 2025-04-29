@@ -427,8 +427,9 @@ resubscribe NtfSubscriber {smpAgent = ca} = do
       logNote $ "Completed SMP resubscriptions for " <> srvStr <> " (" <> tshow n <> " subscriptions)"
       pure n
       where
+        dbBatchSize = batchSize * 100
         loop n afterSubId_ =
-          getServerNtfSubscriptions st srv afterSubId_ (batchSize * 100) >>= \case
+          getServerNtfSubscriptions st srv afterSubId_ dbBatchSize >>= \case
             Left _ -> exitFailure
             Right [] -> pure n
             Right subs -> do
@@ -436,7 +437,7 @@ resubscribe NtfSubscriber {smpAgent = ca} = do
               let len = length subs
                   n' = n + len
                   afterSubId_' = Just $ fst $ last subs
-              if len < batchSize then pure n' else loop n' afterSubId_'
+              if len < dbBatchSize then pure n' else loop n' afterSubId_'
 
 ntfSubscriber :: NtfSubscriber -> M ()
 ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
