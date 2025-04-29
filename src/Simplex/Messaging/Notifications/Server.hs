@@ -428,16 +428,15 @@ resubscribe NtfSubscriber {smpAgent = ca} = do
       pure n
       where
         loop n afterSubId_ =
-          getServerNtfSubscriptions st srv afterSubId_ batchSize >>= \case
+          getServerNtfSubscriptions st srv afterSubId_ (batchSize * 100) >>= \case
             Left _ -> exitFailure
-            Right subs_ -> case L.nonEmpty subs_ of
-              Nothing -> pure 0
-              Just subs -> do
-                subscribeQueuesNtfs ca srv $ L.map snd subs
-                let len = L.length subs
-                    n' = n + len
-                    afterSubId_' = Just $ fst $ L.last subs
-                if len < batchSize then pure n' else loop n' afterSubId_'
+            Right [] -> pure n
+            Right subs -> do
+              mapM_ (subscribeQueuesNtfs ca srv . L.map snd) $ toChunks batchSize subs
+              let len = length subs
+                  n' = n + len
+                  afterSubId_' = Just $ fst $ last subs
+              if len < batchSize then pure n' else loop n' afterSubId_'
 
 ntfSubscriber :: NtfSubscriber -> M ()
 ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
