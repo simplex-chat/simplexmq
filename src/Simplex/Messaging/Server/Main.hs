@@ -320,6 +320,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               SPRandom -> BasicAuth <$> randomBase64 32
             randomBase64 n = strEncode <$> (atomically . C.randomBytes n =<< C.newRandom)
     runServer startOptions ini = do
+      setLogLevel $ logLevel startOptions
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config

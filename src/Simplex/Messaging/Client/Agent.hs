@@ -42,7 +42,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_, ifM, toChunks, whenM, ($>>=), (<$$>))
+import Simplex.Messaging.Util (catchAll_, ifM, safeDecodeUtf8, toChunks, tshow, whenM, ($>>=), (<$$>))
 import System.Timeout (timeout)
 import UnliftIO (async)
 import qualified UnliftIO.Exception as E
@@ -321,7 +321,7 @@ withSMP ca srv action = (getSMPServerClient' ca srv >>= action) `catchE` logSMPE
   where
     logSMPError :: SMPClientError -> ExceptT SMPClientError IO a
     logSMPError e = do
-      liftIO $ putStrLn $ "SMP error (" <> show srv <> "): " <> show e
+      logInfo $ "SMP error (" <> safeDecodeUtf8 (strEncode $ host srv) <> "): " <> tshow e
       throwE e
 
 subscribeQueuesSMP :: SMPClientAgent -> SMPServer -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> IO ()

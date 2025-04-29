@@ -10,6 +10,7 @@
 
 module Simplex.Messaging.Notifications.Server.Main where
 
+import Control.Logger.Simple (setLogLevel)
 import Control.Monad ((<$!>))
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -39,7 +40,7 @@ import Simplex.Messaging.Notifications.Server.StoreLog (readWriteNtfSTMStore)
 import Simplex.Messaging.Notifications.Transport (supportedServerNTFVRange)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
-import Simplex.Messaging.Server.Env.STM (StartOptions)
+import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Main (strParse)
 import Simplex.Messaging.Server.Main.Init (iniDbOpts)
@@ -201,6 +202,7 @@ ntfServerCLI cfgPath logPath =
             <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
     enableStoreLog' = settingIsOn "STORE_LOG" "enable"
     runServer startOptions ini = do
+      setLogLevel $ logLevel startOptions
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config

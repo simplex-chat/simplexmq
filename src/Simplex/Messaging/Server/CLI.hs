@@ -12,6 +12,7 @@
 
 module Simplex.Messaging.Server.CLI where
 
+import Control.Logger.Simple (LogLevel (..))
 import Control.Monad
 import Data.ASN1.Types (asn1CharacterToString)
 import Data.ByteString.Char8 (ByteString)
@@ -218,6 +219,14 @@ startOptionsP = do
       ( long "compact-log"
           <> help "Compact store log (always enabled with `memory` storage for queues)"
       )
+  logLevel <-
+    option
+      parseLogLevel
+      ( long "log-level"
+          <> metavar "LOG_LEVEL"
+          <> help "Logging level"
+          <> value LogInfo
+      )
   skipWarnings <-
     switch
       ( long "skip-warnings"
@@ -231,13 +240,23 @@ startOptionsP = do
           <> help "Confirm PostgreSQL database migration: up, down (default is manual confirmation)"
           <> value MCConsole
       )
-  pure StartOptions {maintenance, compactLog, skipWarnings, confirmMigrations}
+  pure StartOptions {maintenance, compactLog, logLevel, skipWarnings, confirmMigrations}
     where
       parseConfirmMigrations :: ReadM MigrationConfirmation
       parseConfirmMigrations = eitherReader $ \case
         "up" -> Right MCYesUp
         "down" -> Right MCYesUpDown
         _ -> Left "invalid migration confirmation, pass 'up' or 'down'"
+
+parseLogLevel :: ReadM LogLevel
+parseLogLevel = eitherReader $ \case
+  "trace" -> Right LogTrace
+  "debug" -> Right LogDebug
+  "info" -> Right LogInfo
+  "note" -> Right LogNote
+  "warn" -> Right LogWarn
+  "error" -> Right LogError
+  _ -> Left "Invalid log level"
 
 genOnline :: FilePath -> CertOptions -> IO ()
 genOnline cfgPath CertOptions {signAlgorithm_, commonName_} = do
