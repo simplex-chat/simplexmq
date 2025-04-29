@@ -416,7 +416,7 @@ resubscribe NtfSubscriber {smpAgent = ca} = do
   liftIO $ do
     srvs <- getUsedSMPServers st
     logNote $ "Starting SMP resubscriptions for " <> tshow (length srvs) <> " servers..."
-    counts <- pooledMapConcurrentlyN 10 (subscribeSrvSubs st batchSize) srvs
+    counts <- pooledMapConcurrentlyN 5 (subscribeSrvSubs st batchSize) srvs
     logNote $ "Completed all SMP resubscriptions for " <> tshow (length srvs) <> " servers (" <> tshow (sum counts) <> " subscriptions)"
   where
     subscribeSrvSubs st batchSize srv = do
