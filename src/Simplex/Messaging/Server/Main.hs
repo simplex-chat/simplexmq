@@ -320,6 +320,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               SPRandom -> BasicAuth <$> randomBase64 32
             randomBase64 n = strEncode <$> (atomically . C.randomBytes n =<< C.newRandom)
     runServer startOptions ini = do
+      setLogLevel $ logLevel startOptions
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
@@ -650,7 +651,7 @@ data CliCommand
   | Start StartOptions
   | Delete
   | Journal StoreCmd
-  | Database StoreCmd DBOpts
+  | Database StoreCmd DBOpts 
 
 data StoreCmd = SCImport | SCExport | SCDelete
 
@@ -835,5 +836,6 @@ cliCommandP cfgPath logPath iniFile =
             <> metavar (metavar' <> "_COUNTRY")
             <> help (help' <> " country")
         )
-    strParse :: StrEncoding a => ReadM a
-    strParse = eitherReader $ parseAll strP . encodeUtf8 . T.pack
+
+strParse :: StrEncoding a => ReadM a
+strParse = eitherReader $ parseAll strP . encodeUtf8 . T.pack

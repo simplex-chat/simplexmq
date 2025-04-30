@@ -33,15 +33,19 @@ import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as LB
+import qualified Data.CaseInsensitive as CI
 import Data.Int (Int64)
+import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict (Map)
 import Data.Maybe (isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock.System
 import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
+import Network.HPACK.Token as HT
 import Network.HTTP.Types (Status)
 import qualified Network.HTTP.Types as N
 import Network.HTTP2.Client (Request)
@@ -330,9 +334,16 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token
   HTTP2Response {response, respBody = HTTP2Body {bodyHead}} <- liftHTTPS2 $ sendRequest http2 req Nothing
   let status = H.responseStatus response
       reason' = maybe "" reason $ J.decodeStrict' bodyHead
-  logDebug $ "APNS response: " <> T.pack (show status) <> " " <> reason'
+  if status == Just N.ok200
+    then logDebug $ "APNS response: ok" <> apnsIds response
+    else logWarn $ "APNS error: " <> T.pack (show status) <> " " <> reason' <> apnsIds response
   result status reason'
   where
+    apnsIds response = headerStr "apns-id" <> headerStr "apns-unique-id"
+      where
+        headerStr name =
+          maybe "" (\(_, v) -> ", " <> name <> ": " <> safeDecodeUtf8 v) $
+            find (\(t, _) -> HT.tokenKey t == CI.mk (encodeUtf8 name)) (fst (H.responseHeaders response))
     result :: Maybe Status -> Text -> ExceptT PushProviderError IO ()
     result status reason'
       | status == Just N.ok200 = pure ()

@@ -34,7 +34,7 @@ import Network.HTTP.Types (Status)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket
-import SMPClient (ntfTestPort, prevRange, serverBracket)
+import SMPClient (defaultStartOptions, ntfTestPort, prevRange, serverBracket)
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
@@ -48,7 +48,6 @@ import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
 import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -162,7 +161,7 @@ ntfServerCfg =
       prometheusMetricsFile = ntfTestPrometheusMetricsFile,
       ntfServerVRange = supportedServerNTFVRange,
       transportConfig = defaultTransportServerConfig,
-      startOptions = StartOptions {maintenance = False, compactLog = False, skipWarnings = False, confirmMigrations = MCYesUp}
+      startOptions = defaultStartOptions
     }
 
 ntfServerCfgVPrev :: NtfServerConfig

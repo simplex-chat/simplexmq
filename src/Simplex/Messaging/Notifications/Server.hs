@@ -17,6 +17,7 @@
 module Simplex.Messaging.Notifications.Server where
 
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (mapConcurrently)
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -104,7 +105,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
     liftIO $ putStrLn "Server started in 'maintenance' mode, exiting"
     stopServer
     liftIO $ exitSuccess
-  resubscribe s
+  void $ forkIO $ resubscribe s
   raceAny_
     ( ntfSubscriber s
         : ntfPush ps
@@ -135,12 +136,12 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
 
     stopServer :: M ()
     stopServer = do
-      logInfo "Saving server state..."
+      logNote "Saving server state..."
       saveServer
       NtfSubscriber {smpSubscribers, smpAgent} <- asks subscriber
       liftIO $ readTVarIO smpSubscribers >>= mapM_ (\SMPSubscriber {subThreadId} -> readTVarIO subThreadId >>= mapM_ (deRefWeak >=> mapM_ killThread))
       liftIO $ closeSMPClientAgent smpAgent
-      logInfo "Server stopped"
+      logNote "Server stopped"
 
     saveServer :: M ()
     saveServer = asks store >>= liftIO . closeNtfDbStore >> saveServerStats
@@ -153,7 +154,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
     logServerStats :: Int64 -> Int64 -> FilePath -> M ()
     logServerStats startAt logInterval statsFilePath = do
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
-      logInfo $ "server stats log enabled: " <> T.pack statsFilePath
+      logNote $ "server stats log enabled: " <> T.pack statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
       NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, tknReplaced, subCreated, subDeleted, ntfReceived, ntfDelivered, ntfFailed, ntfCronDelivered, ntfCronFailed, ntfVrfQueued, ntfVrfDelivered, ntfVrfFailed, ntfVrfInvalidTkn, activeTokens, activeSubs} <-
         asks serverStats
@@ -267,12 +268,12 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
             countSubs acc@(metrics, !otherSrvs) (srv@(SMPServer (h :| _) _ _), srvSubs) =
               result . M.size <$> readTVarIO srvSubs
               where
-                result 0 = acc
                 result cnt
                   | isOwnServer a srv =
                       let !ownSrvSubs' = M.alter (Just . maybe cnt (+ cnt)) host ownSrvSubs
                           metrics' = metrics {ownSrvSubs = ownSrvSubs'} :: NtfSMPSubMetrics
                        in (metrics', otherSrvs)
+                  | cnt == 0 = acc
                   | otherwise =
                       let metrics' = metrics {otherSrvSubCount = otherSrvSubCount + cnt} :: NtfSMPSubMetrics
                        in (metrics', S.insert host otherSrvs)
@@ -410,25 +411,33 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
                       hPutStrLn h "AUTH"
 
 resubscribe :: NtfSubscriber -> M ()
-resubscribe NtfSubscriber {newSubQ} = do
-  logInfo "Preparing SMP resubscriptions..."
+resubscribe NtfSubscriber {smpAgent = ca} = do
   st <- asks store
   batchSize <- asks $ subsBatchSize . config
   liftIO $ do
     srvs <- getUsedSMPServers st
-    count <- foldM (subscribeSrvSubs st batchSize) (0 :: Int) srvs
-    logInfo $ "SMP resubscriptions queued (" <> tshow count <> " subscriptions)"
+    logNote $ "Starting SMP resubscriptions for " <> tshow (length srvs) <> " servers..."
+    counts <- mapConcurrently (subscribeSrvSubs st batchSize) srvs
+    logNote $ "Completed all SMP resubscriptions for " <> tshow (length srvs) <> " servers (" <> tshow (sum counts) <> " subscriptions)"
   where
-    subscribeSrvSubs st batchSize !count srv = do
-      (n, subs_) <-
-        foldNtfSubscriptions st srv batchSize (0, []) $ \(!i, subs) sub ->
-          if length subs == batchSize
-            then write (L.fromList subs) $> (i + 1, [])
-            else pure (i + 1, sub : subs)
-      mapM_ write $ L.nonEmpty subs_
-      pure $ count + n
+    subscribeSrvSubs st batchSize srv = do
+      let srvStr = safeDecodeUtf8 (strEncode $ L.head $ host srv)
+      logNote $ "Starting SMP resubscriptions for " <> srvStr
+      n <- loop 0 Nothing
+      logNote $ "Completed SMP resubscriptions for " <> srvStr <> " (" <> tshow n <> " subscriptions)"
+      pure n
       where
-        write subs = atomically $ writeTBQueue newSubQ (srv, subs)
+        dbBatchSize = batchSize * 100
+        loop n afterSubId_ =
+          getServerNtfSubscriptions st srv afterSubId_ dbBatchSize >>= \case
+            Left _ -> exitFailure
+            Right [] -> pure n
+            Right subs -> do
+              mapM_ (subscribeQueuesNtfs ca srv . L.map snd) $ toChunks batchSize subs
+              let len = length subs
+                  n' = n + len
+                  afterSubId_' = Just $ fst $ last subs
+              if len < dbBatchSize then pure n' else loop n' afterSubId_'
 
 ntfSubscriber :: NtfSubscriber -> M ()
 ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
@@ -437,14 +446,10 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
     subscribe :: M ()
     subscribe = forever $ do
       (srv, subs) <- atomically $ readTBQueue newSubQ
-      -- TODO [ntfdb] as we now group by server before putting subs to queue,
-      -- maybe this "subscribe" thread can be removed completely,
-      -- and the caller would directly write to SMPSubscriber queues
       SMPSubscriber {subscriberSubQ} <- getSMPSubscriber srv
       atomically $ writeTQueue subscriberSubQ subs
 
-    -- TODO [ntfdb] this does not guarantee that only one subscriber per server is created
-    -- there should be TMVar in the map
+    -- TODO [ntfdb] this does not guarantee that only one subscriber per server is created (there should be TMVar in the map)
     -- This does not need changing if single newSubQ remains, but if it is removed, it need to change
     getSMPSubscriber :: SMPServer -> M SMPSubscriber
     getSMPSubscriber smpServer =
@@ -466,10 +471,7 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
         subs <- atomically $ readTQueue subscriberSubQ
         updated <- liftIO $ batchUpdateSubStatus st subs NSPending
         logSubStatus smpServer "subscribing" (L.length subs) updated
-        liftIO $ subscribeQueues smpServer subs
-
-    subscribeQueues :: SMPServer -> NonEmpty ServerNtfSub -> IO ()
-    subscribeQueues srv subs = subscribeQueuesNtfs ca srv (L.map snd subs)
+        liftIO $ subscribeQueuesNtfs ca smpServer $ L.map snd subs
 
     receiveSMP :: M ()
     receiveSMP = forever $ do
@@ -613,7 +615,7 @@ periodicNtfsThread NtfPushServer {pushQ} = do
     threadDelay interval
     now <- systemSeconds <$> getSystemTime
     cnt <- withPeriodicNtfTokens st now $ \tkn -> atomically $ writeTBQueue pushQ (tkn, PNCheckMessages)
-    logInfo $ "Scheduled periodic notifications: " <> tshow cnt
+    logNote $ "Scheduled periodic notifications: " <> tshow cnt
 
 runNtfClientTransport :: Transport c => THandleNTF c 'TServer -> M ()
 runNtfClientTransport th@THandle {params} = do
@@ -829,14 +831,14 @@ incNtfStat statSel = do
 restoreServerLastNtfs :: NtfSTMStore -> FilePath -> IO ()
 restoreServerLastNtfs st f =
   whenM (doesFileExist f) $ do
-    logInfo $ "restoring last notifications from file " <> T.pack f
+    logNote $ "restoring last notifications from file " <> T.pack f
     runExceptT (liftIO (B.readFile f) >>= mapM restoreNtf . B.lines) >>= \case
       Left e -> do
         logError . T.pack $ "error restoring last notifications: " <> e
         exitFailure
       Right _ -> do
         renameFile f $ f <> ".bak"
-        logInfo "last notifications restored"
+        logNote "last notifications restored"
   where
     restoreNtf s = do
       TNMRv1 tknId ntf <- liftEither . first (ntfErr "parsing") $ strDecode s
@@ -851,21 +853,21 @@ saveServerStats =
     >>= mapM_ (\f -> asks serverStats >>= liftIO . getNtfServerStatsData >>= liftIO . saveStats f)
   where
     saveStats f stats = do
-      logInfo $ "saving server stats to file " <> T.pack f
+      logNote $ "saving server stats to file " <> T.pack f
       B.writeFile f $ strEncode stats
-      logInfo "server stats saved"
+      logNote "server stats saved"
 
 restoreServerStats :: M ()
 restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
   where
     restoreStats f = whenM (doesFileExist f) $ do
-      logInfo $ "restoring server stats from file " <> T.pack f
+      logNote $ "restoring server stats from file " <> T.pack f
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d -> do
           s <- asks serverStats
           liftIO $ setNtfServerStats s d
           renameFile f $ f <> ".bak"
-          logInfo "server stats restored"
+          logNote "server stats restored"
         Left e -> do
-          logInfo $ "error restoring server stats: " <> T.pack e
+          logNote $ "error restoring server stats: " <> T.pack e
           liftIO exitFailure

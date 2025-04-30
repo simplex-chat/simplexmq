@@ -106,7 +106,7 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
   where
     compactDbStoreLog = \case
       Just f -> do
-        logInfo $ "compacting store log " <> T.pack f
+        logNote $ "compacting store log " <> T.pack f
         newNtfSTMStore >>= readWriteNtfSTMStore False f >>= closeStoreLog
       Nothing -> do
         logError "Error: `--compact-log` used without `enable: on` option in STORE_LOG section of INI file"

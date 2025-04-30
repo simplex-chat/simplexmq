@@ -10,12 +10,15 @@
 
 module Simplex.Messaging.Notifications.Server.Main where
 
+import Control.Logger.Simple (setLogLevel)
 import Control.Monad ((<$!>))
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Int (Int64)
 import Data.Maybe (fromMaybe)
+import Data.Set (Set)
+import qualified Data.Set as S
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.IO as T
@@ -27,6 +30,7 @@ import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig, textToHostMode)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Notifications.Protocol (NtfTokenId)
 import Simplex.Messaging.Notifications.Server (runNtfServer, restoreServerLastNtfs)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..), defaultInactiveClientExpiration)
 import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientConfig)
@@ -36,8 +40,9 @@ import Simplex.Messaging.Notifications.Server.StoreLog (readWriteNtfSTMStore)
 import Simplex.Messaging.Notifications.Transport (supportedServerNTFVRange)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
-import Simplex.Messaging.Server.Env.STM (StartOptions)
+import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.Main (strParse)
 import Simplex.Messaging.Server.Main.Init (iniDbOpts)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Server.StoreLog (closeStoreLog)
@@ -72,7 +77,7 @@ ntfServerCLI cfgPath logPath =
       storeLogExists <- doesFileExist storeLogFilePath
       lastNtfsExists <- doesFileExist defaultLastNtfsFile
       case cmd of
-        SCImport
+        SCImport skipTokens
           | schemaExists && (storeLogExists || lastNtfsExists) -> exitConfigureNtfStore connstr schema
           | schemaExists -> do
               putStrLn $ "Schema " <> B.unpack schema <> " already exists in PostrgreSQL database: " <> B.unpack connstr
@@ -94,7 +99,7 @@ ntfServerCLI cfgPath logPath =
               restoreServerLastNtfs stmStore defaultLastNtfsFile
               let storeCfg = PostgresStoreCfg {dbOpts = dbOpts {createSchema = True}, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}
               ps <- newNtfDbStore storeCfg
-              (tCnt, sCnt, nCnt) <- importNtfSTMStore ps stmStore
+              (tCnt, sCnt, nCnt) <- importNtfSTMStore ps stmStore skipTokens
               renameFile storeLogFile $ storeLogFile <> ".bak"
               putStrLn $ "Import completed: " <> show tCnt <> " tokens, " <> show sCnt <> " subscriptions, " <> show nCnt <> " last token notifications."
               putStrLn "Configure database options in INI file."
@@ -161,9 +166,6 @@ ntfServerCLI cfgPath logPath =
             <> iniDbOpts dbOptions defaultNtfDBOpts
             <> "Time to retain deleted entities in the database, days.\n"
             <> ("# db_deleted_ttl: " <> tshow defaultDeletedTTL <> "\n\n")
-            <> "# Last notifications are optionally saved and restored when the server restarts,\n\
-               \# they are preserved in the .bak file until the next restart.\n"
-            <> ("restore_last_notifications: " <> onOff enableStoreLog <> "\n\n")
             <> "log_stats: off\n\n\
                \[AUTH]\n\
                \# control_port_admin_password:\n\
@@ -200,6 +202,7 @@ ntfServerCLI cfgPath logPath =
             <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
     enableStoreLog' = settingIsOn "STORE_LOG" "enable"
     runServer startOptions ini = do
+      setLogLevel $ logLevel startOptions
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
@@ -230,8 +233,8 @@ ntfServerCLI cfgPath logPath =
               subIdBytes = 24,
               regCodeBytes = 32,
               clientQSize = 64,
-              subQSize = 512,
-              pushQSize = 16384,
+              subQSize = 2048,
+              pushQSize = 32768,
               smpAgentCfg =
                 defaultSMPClientAgentConfig
                   { smpCfg =
@@ -296,7 +299,7 @@ data CliCommand
   | Delete
   | Database StoreCmd DBOpts
 
-data StoreCmd = SCImport | SCExport
+data StoreCmd = SCImport (Set NtfTokenId) | SCExport
 
 data InitOptions = InitOptions
   { enableStoreLog :: Bool,
@@ -332,9 +335,17 @@ cliCommandP cfgPath logPath iniFile =
   where
     databaseCmdP =
       hsubparser
-        ( command "import" (info (pure SCImport) (progDesc $ "Import store logs into a new PostgreSQL database schema"))
+        ( command "import" (info (SCImport <$> skipTokensP) (progDesc $ "Import store logs into a new PostgreSQL database schema"))
             <> command "export" (info (pure SCExport) (progDesc $ "Export PostgreSQL database schema to store logs"))
         )
+    skipTokensP :: Parser (Set NtfTokenId)
+    skipTokensP =
+      option
+        strParse
+          ( long "skip-tokens"
+              <> help "Skip tokens during import"
+              <> value S.empty
+          )
     initP :: Parser InitOptions
     initP = do
       enableStoreLog <-

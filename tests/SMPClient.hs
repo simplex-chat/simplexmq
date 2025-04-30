@@ -14,6 +14,7 @@
 
 module SMPClient where
 
+import Control.Logger.Simple (LogLevel (..))
 import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
@@ -223,8 +224,11 @@ cfgMS msType =
       allowSMPProxy = False,
       serverClientConcurrency = 2,
       information = Nothing,
-      startOptions = StartOptions {maintenance = False, compactLog = False, skipWarnings = False, confirmMigrations = MCYesUp}
+      startOptions = defaultStartOptions
     }
+
+defaultStartOptions :: StartOptions
+defaultStartOptions = StartOptions {maintenance = False, compactLog = False, logLevel = LogError, skipWarnings = False, confirmMigrations = MCYesUp} 
 
 serverStoreConfig :: AStoreType -> AServerStoreCfg
 serverStoreConfig = serverStoreConfig_ False

@@ -208,14 +208,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           sigIntHandler = Just (sigIntAction, toDyn ())
       void $ liftIO $ setHandler sigINT sigIntHandler
       atomically $ readTMVar flagINT
-      logInfo "Received SIGINT, stopping server..."
+      logNote "Received SIGINT, stopping server..."
 
     stopServer :: Server -> M ()
     stopServer s = do
       asks serverActive >>= atomically . (`writeTVar` False)
-      logInfo "Saving server state..."
+      logNote "Saving server state..."
       withLock' (savingLock s) "final" $ saveServer True >> closeServer
-      logInfo "Server stopped"
+      logNote "Server stopped"
 
     saveServer :: Bool -> M ()
     saveServer drainMsgs = do
@@ -383,9 +383,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         expire :: forall s. MsgStoreClass s => s -> ServerStats -> Int64 -> IO ()
         expire ms stats interval = do
           threadDelay' interval
-          logInfo "Started expiring messages..."
+          logNote "Started expiring messages..."
           n <- compactQueues @(StoreQueue s) $ queueStore ms
-          when (n > 0) $ logInfo $ "Removed " <> tshow n <> " old deleted queues from the database."
+          when (n > 0) $ logNote $ "Removed " <> tshow n <> " old deleted queues from the database."
           now <- systemSeconds <$> getSystemTime
           tryAny (expireOldMessages False ms now ttl) >>= \case
             Right msgStats@MessageStats {storedMsgsCount = stored, expiredMsgsCount = expired} -> do
@@ -1827,15 +1827,15 @@ saveServerMessages :: Bool -> AMsgStore -> IO ()
 saveServerMessages drainMsgs = \case
   AMS SQSMemory SMSMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
     Just f -> exportMessages False ms f drainMsgs
-    Nothing -> logInfo "undelivered messages are not saved"
-  AMS _ SMSJournal _ -> logInfo "closed journal message storage"
+    Nothing -> logNote "undelivered messages are not saved"
+  AMS _ SMSJournal _ -> logNote "closed journal message storage"
 
 exportMessages :: MsgStoreClass s => Bool -> s -> FilePath -> Bool -> IO ()
 exportMessages tty ms f drainMsgs = do
-  logInfo $ "saving messages to file " <> T.pack f
+  logNote $ "saving messages to file " <> T.pack f
   liftIO $ withFile f WriteMode $ \h ->
     tryAny (unsafeWithAllMsgQueues tty True ms $ saveQueueMsgs h) >>= \case
-      Right (Sum total) -> logInfo $ "messages saved: " <> tshow total
+      Right (Sum total) -> logNote $ "messages saved: " <> tshow total
       Left e -> do
         logError $ "error exporting messages: " <> tshow e
         exitFailure
@@ -1864,10 +1864,10 @@ processServerMessages StartOptions {skipWarnings} = do
       processJournalMessages old_ expire ms
         | expire = Just <$> case old_ of
             Just old -> do
-              logInfo "expiring journal store messages..."
+              logNote "expiring journal store messages..."
               run $ processExpireQueue old
             Nothing -> do
-              logInfo "validating journal store messages..."
+              logNote "validating journal store messages..."
               run processValidateQueue
         | otherwise = logWarn "skipping message expiration" $> Nothing
         where
@@ -1885,7 +1885,7 @@ processServerMessages StartOptions {skipWarnings} = do
 
 importMessages :: forall s. MsgStoreClass s => Bool -> s -> FilePath -> Maybe Int64 -> Bool -> IO MessageStats
 importMessages tty ms f old_ skipWarnings  = do
-  logInfo $ "restoring messages from file " <> T.pack f
+  logNote $ "restoring messages from file " <> T.pack f
   (_, (storedMsgsCount, expiredMsgsCount, overQuota)) <-
     foldLogLines tty f restoreMsg (Nothing, (0, 0, M.empty))
   renameFile f $ f <> ".bak"
@@ -1950,17 +1950,17 @@ importMessages tty ms f old_ skipWarnings  = do
 
 printMessageStats :: T.Text -> MessageStats -> IO ()
 printMessageStats name MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues} =
-  logInfo $ name <> " stored: " <> tshow storedMsgsCount <> ", expired: " <> tshow expiredMsgsCount <> ", queues: " <> tshow storedQueues
+  logNote $ name <> " stored: " <> tshow storedMsgsCount <> ", expired: " <> tshow expiredMsgsCount <> ", queues: " <> tshow storedQueues
 
 saveServerNtfs :: M ()
 saveServerNtfs = asks (storeNtfsFile . config) >>= mapM_ saveNtfs
   where
     saveNtfs f = do
-      logInfo $ "saving notifications to file " <> T.pack f
+      logNote $ "saving notifications to file " <> T.pack f
       NtfStore ns <- asks ntfStore
       liftIO . withFile f WriteMode $ \h ->
         readTVarIO ns >>= mapM_ (saveQueueNtfs h) . M.assocs
-      logInfo "notifications saved"
+      logNote "notifications saved"
       where
         -- reverse on save, to save notifications in order, will become reversed again when restoring.
         saveQueueNtfs h (nId, v) = BLD.hPutBuilder h . encodeNtfs nId . reverse =<< readTVarIO v
@@ -1973,7 +1973,7 @@ restoreServerNtfs =
     Nothing -> pure newMessageStats
   where
     restoreNtfs f = do
-      logInfo $ "restoring notifications from file " <> T.pack f
+      logNote $ "restoring notifications from file " <> T.pack f
       ns <- asks ntfStore
       old <- asks (notificationExpiration . config) >>= liftIO . expireBeforeEpoch
       liftIO $
@@ -1985,7 +1985,7 @@ restoreServerNtfs =
             renameFile f $ f <> ".bak"
             let NtfStore ns' = ns
             storedQueues <- M.size <$> readTVarIO ns'
-            logInfo $ "notifications restored, " <> tshow lineCount <> " lines processed" 
+            logNote $ "notifications restored, " <> tshow lineCount <> " lines processed" 
             pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues}
       where
         restoreNtf :: NtfStore -> Int64 -> (Int, Int, Int) -> LB.ByteString -> ExceptT String IO (Int, Int, Int)
@@ -2006,15 +2006,15 @@ saveServerStats =
     >>= mapM_ (\f -> asks serverStats >>= liftIO . getServerStatsData >>= liftIO . saveStats f)
   where
     saveStats f stats = do
-      logInfo $ "saving server stats to file " <> T.pack f
+      logNote $ "saving server stats to file " <> T.pack f
       B.writeFile f $ strEncode stats
-      logInfo "server stats saved"
+      logNote "server stats saved"
 
 restoreServerStats :: Maybe MessageStats -> MessageStats -> M ()
 restoreServerStats msgStats_ ntfStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
   where
     restoreStats f = whenM (doesFileExist f) $ do
-      logInfo $ "restoring server stats from file " <> T.pack f
+      logNote $ "restoring server stats from file " <> T.pack f
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d@ServerStatsData {_qCount = statsQCount, _msgCount = statsMsgCount, _ntfCount = statsNtfCount} -> do
           s <- asks serverStats
@@ -2026,12 +2026,12 @@ restoreServerStats msgStats_ ntfStats = asks (serverStatsBackupFile . config) >>
               _msgNtfExpired' = _msgNtfExpired d + expiredMsgsCount ntfStats
           liftIO $ setServerStats s d {_qCount, _msgCount, _ntfCount, _msgExpired = _msgExpired', _msgNtfExpired = _msgNtfExpired'}
           renameFile f $ f <> ".bak"
-          logInfo "server stats restored"
+          logNote "server stats restored"
           compareCounts "Queue" statsQCount _qCount
           compareCounts "Message" statsMsgCount _msgCount
           compareCounts "Notification" statsNtfCount _ntfCount
         Left e -> do
-          logInfo $ "error restoring server stats: " <> T.pack e
+          logNote $ "error restoring server stats: " <> T.pack e
           liftIO exitFailure
     compareCounts name statsCnt storeCnt =
       when (statsCnt /= storeCnt) $ logWarn $ name <> " count differs: stats: " <> tshow statsCnt <> ", store: " <> tshow storeCnt

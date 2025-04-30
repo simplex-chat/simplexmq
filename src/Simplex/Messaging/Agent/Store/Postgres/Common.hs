@@ -6,7 +6,9 @@
 
 module Simplex.Messaging.Agent.Store.Postgres.Common
   ( DBStore (..),
+    DBStorePool (..),
     DBOpts (..),
+    newDBStorePool,
     withConnection,
     withConnection',
     withTransaction,
@@ -20,6 +22,7 @@ import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Data.ByteString (ByteString)
 import qualified Database.PostgreSQL.Simple as PSQL
+import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Store.Postgres.Options
 
 -- TODO [postgres] use log_min_duration_statement instead of custom slow queries (SQLite's Connection type)
@@ -27,19 +30,40 @@ data DBStore = DBStore
   { dbConnstr :: ByteString,
     dbSchema :: ByteString,
     dbPoolSize :: Int,
-    dbPool :: TBQueue PSQL.Connection,
-    -- MVar is needed for fair pool distribution, without STM retry contention.
-    -- Only one thread can be blocked on STM read.
-    dbSem :: MVar (),
+    dbPriorityPool :: DBStorePool,
+    dbPool :: DBStorePool,
+    -- dbPoolSize :: Int,
+    -- dbPool :: TBQueue PSQL.Connection,
+    -- -- MVar is needed for fair pool distribution, without STM retry contention.
+    -- -- Only one thread can be blocked on STM read.
+    -- dbSem :: MVar (),
     dbClosed :: TVar Bool,
     dbNew :: Bool
   }
 
+newDBStorePool :: Natural -> IO DBStorePool
+newDBStorePool poolSize = do
+  dbSem <- newMVar ()
+  dbPoolConns <- newTBQueueIO poolSize
+  pure DBStorePool {dbSem, dbPoolConns}
+
+data DBStorePool = DBStorePool
+  { dbPoolConns :: TBQueue PSQL.Connection,
+    -- MVar is needed for fair pool distribution, without STM retry contention.
+    -- Only one thread can be blocked on STM read.
+    dbSem :: MVar ()
+  }
+
 withConnectionPriority :: DBStore -> Bool -> (PSQL.Connection -> IO a) -> IO a
-withConnectionPriority DBStore {dbPool, dbSem} _priority =
+withConnectionPriority DBStore {dbPriorityPool, dbPool} priority =
+  withConnectionPool $ if priority then dbPriorityPool else dbPool
+{-# INLINE withConnectionPriority #-}
+
+withConnectionPool :: DBStorePool -> (PSQL.Connection -> IO a) -> IO a
+withConnectionPool DBStorePool {dbPoolConns, dbSem} =
   bracket
-    (withMVar dbSem $ \_ -> atomically $ readTBQueue dbPool)
-    (atomically . writeTBQueue dbPool)
+    (withMVar dbSem $ \_ -> atomically $ readTBQueue dbPoolConns)
+    (atomically . writeTBQueue dbPoolConns)
 
 withConnection :: DBStore -> (PSQL.Connection -> IO a) -> IO a
 withConnection st = withConnectionPriority st False

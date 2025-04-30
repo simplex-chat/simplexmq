@@ -43,9 +43,11 @@ import AgentTests.SchemaDump (schemaDumpTest)
 
 #if defined(dbServerPostgres)
 import NtfServerTests (ntfServerTests)
-import NtfClient (ntfTestServerDBConnectInfo)
-import SMPClient (testServerDBConnectInfo)
-import ServerTests.SchemaDump
+import NtfClient (ntfTestServerDBConnectInfo, ntfTestStoreDBOpts)
+import PostgresSchemaDump (postgresSchemaDumpTest)
+import SMPClient (testServerDBConnectInfo, testStoreDBOpts)
+import Simplex.Messaging.Notifications.Server.Store.Migrations (ntfServerMigrations)
+import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
 #endif
 
 #if defined(dbPostgres) || defined(dbServerPostgres)
@@ -58,7 +60,7 @@ logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 main :: IO ()
 main = do
   -- TODO [ntfdb] running wiht LogWarn level shows potential issue "Queue count differs"
-  setLogLevel LogError -- LogInfo
+  setLogLevel LogError -- LogInfo -- also change in SMPClient.hs in defaultStartOptions
   withGlobalLogging logCfg $ do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
@@ -93,7 +95,13 @@ main = do
           describe "Agent core tests" agentCoreTests
 #if defined(dbServerPostgres)
         around_ (postgressBracket testServerDBConnectInfo) $
-          describe "Server schema dump" serverSchemaDumpTest
+          describe "SMP server schema dump" $
+            postgresSchemaDumpTest
+              serverMigrations
+              [ "20250320_short_links" -- snd_secure moves to the bottom on down migration
+              ] -- skipComparisonForDownMigrations
+              testStoreDBOpts
+              "src/Simplex/Messaging/Server/QueueStore/Postgres/server_schema.sql"
         aroundAll_ (postgressBracket testServerDBConnectInfo) $
           describe "SMP server via TLS, postgres+jornal message store" $
             before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests
@@ -107,6 +115,13 @@ main = do
         --   describe "SMP syntax" $ serverSyntaxTests (transport @WS)
         --   before (pure (transport @WS, ASType SQSMemory SMSJournal)) serverTests
 #if defined(dbServerPostgres)
+        around_ (postgressBracket ntfTestServerDBConnectInfo) $
+          describe "Ntf server schema dump" $
+            postgresSchemaDumpTest
+              ntfServerMigrations
+              [] -- skipComparisonForDownMigrations
+              ntfTestStoreDBOpts
+              "src/Simplex/Messaging/Notifications/Server/Store/ntf_server_schema.sql"
         aroundAll_ (postgressBracket ntfTestServerDBConnectInfo) $ do
           describe "Notifications server" $ ntfServerTests (transport @TLS)
         aroundAll_ (postgressBracket testServerDBConnectInfo) $ do
