@@ -1946,7 +1946,7 @@ testOnlyCreatePullSlowHandshake = withAgentClientsCfg2 agentProxyCfgV8 agentProx
 getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO a -> ExceptT AgentErrorType IO a
 getMsg c cId action = do
   liftIO $ noMessages c "nothing should be delivered before GET"
-  [Just _] <- lift $ getConnectionMessages c [cId]
+  [Just _] <- lift $ getConnectionMessages c [ConnMsgReq cId Nothing]
   action
 
 getMSGNTF :: AgentClient -> ConnId -> ExceptT AgentErrorType IO ()

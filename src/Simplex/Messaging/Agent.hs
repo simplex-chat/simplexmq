@@ -224,6 +224,7 @@ import Simplex.RemoteControl.Client
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
 import System.Mem.Weak (deRefWeak)
+import UnliftIO.Async (mapConcurrently)
 import UnliftIO.Concurrent (forkFinally, forkIO, killThread, mkWeakThreadId, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -439,7 +440,7 @@ subscribeConnections c = withAgentEnv c . subscribeConnections' c
 {-# INLINE subscribeConnections #-}
 
 -- | Get messages for connections (GET commands)
-getConnectionMessages :: AgentClient -> NonEmpty ConnId -> IO (NonEmpty (Maybe SMPMsgMeta))
+getConnectionMessages :: AgentClient -> NonEmpty ConnMsgReq -> IO (NonEmpty (Maybe SMPMsgMeta))
 getConnectionMessages c = withAgentEnv' c . getConnectionMessages' c
 {-# INLINE getConnectionMessages #-}
 
@@ -1276,24 +1277,26 @@ resubscribeConnections' c connIds = do
   -- union is left-biased, so results returned by subscribeConnections' take precedence
   (`M.union` r) <$> subscribeConnections' c connIds'
 
-getConnectionMessages' :: AgentClient -> NonEmpty ConnId -> AM' (NonEmpty (Maybe SMPMsgMeta))
-getConnectionMessages' c = mapM getMsg
+getConnectionMessages' :: AgentClient -> NonEmpty ConnMsgReq -> AM' (NonEmpty (Maybe SMPMsgMeta))
+getConnectionMessages' c =
+  mapConcurrently $ \cmr ->
+    getConnectionMessage cmr `catchAgentError'` \e -> do
+      logError $ "Error loading message: " <> tshow e
+      pure Nothing
   where
-    getMsg :: ConnId -> AM' (Maybe SMPMsgMeta)
-    getMsg connId =
-      getConnectionMessage connId `catchAgentError'` \e -> do
-        logError $ "Error loading message: " <> tshow e
-        pure Nothing
-    getConnectionMessage :: ConnId -> AM (Maybe SMPMsgMeta)
-    getConnectionMessage connId = do
+    getConnectionMessage :: ConnMsgReq -> AM (Maybe SMPMsgMeta)
+    getConnectionMessage (ConnMsgReq connId msgTs_) = do
       whenM (atomically $ hasActiveSubscription c connId) . throwE $ CMD PROHIBITED "getConnectionMessage: subscribed"
       SomeConn _ conn <- withStore c (`getConn` connId)
-      case conn of
+      msg_ <- case conn of
         DuplexConnection _ (rq :| _) _ -> getQueueMessage c rq
         RcvConnection _ rq -> getQueueMessage c rq
         ContactConnection _ rq -> getQueueMessage c rq
         SndConnection _ _ -> throwE $ CONN SIMPLEX
         NewConnection _ -> throwE $ CMD PROHIBITED "getConnectionMessage: NewConnection"
+      when (isNothing msg_) $
+        forM_ msgTs_ $ \msgTs -> withStore' c $ \db -> setLastBrokerTs db connId msgTs
+      pure msg_
 
 getNotificationConns' :: AgentClient -> C.CbNonce -> ByteString -> AM (NonEmpty NotificationInfo)
 getNotificationConns' c nonce encNtfInfo =
@@ -1322,10 +1325,10 @@ getNotificationConns' c nonce encNtfInfo =
       pure (ntfInfo, lastBrokerTs_)
     getInitNtfInfo :: DB.Connection -> PNMessageData -> IO (Either AgentErrorType (Maybe NotificationInfo))
     getInitNtfInfo db msgData = runExceptT $ do
-      (nftInfo, lastBrokerTs_) <- ExceptT $ getNtfInfo db msgData
-      pure $ case (ntfMsgMeta nftInfo, lastBrokerTs_) of
-        (Just SMP.NMsgMeta {msgTs}, Just lastBrokerTs)
-          | systemToUTCTime msgTs > lastBrokerTs -> Just nftInfo
+      (ntfInfo, lastBrokerTs_) <- ExceptT $ getNtfInfo db msgData
+      pure $ case ntfMsgMeta ntfInfo of
+        Just SMP.NMsgMeta {msgTs}
+          | maybe True (systemToUTCTime msgTs >) lastBrokerTs_ -> Just ntfInfo
         _ -> Nothing
 
 -- | Send message to the connection (SEND command) in Reader monad

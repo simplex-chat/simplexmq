@@ -98,6 +98,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     -- Messages
     updateRcvIds,
     createRcvMsg,
+    setLastBrokerTs,
     updateRcvMsgHash,
     createSndMsgBody,
     updateSndIds,
@@ -851,11 +852,16 @@ updateRcvIds db connId = do
   pure (internalId, internalRcvId, lastExternalSndId, lastRcvHash)
 
 createRcvMsg :: DB.Connection -> ConnId -> RcvQueue -> RcvMsgData -> IO ()
-createRcvMsg db connId rq@RcvQueue {dbQueueId} rcvMsgData@RcvMsgData {msgMeta = MsgMeta {sndMsgId, broker = (_, brokerTs)}, internalRcvId, internalHash} = do
+createRcvMsg db connId rq rcvMsgData@RcvMsgData {msgMeta = MsgMeta {sndMsgId, broker = (_, brokerTs)}, internalRcvId, internalHash} = do
   insertRcvMsgBase_ db connId rcvMsgData
   insertRcvMsgDetails_ db connId rq rcvMsgData
   updateRcvMsgHash db connId sndMsgId internalRcvId internalHash
-  DB.execute db "UPDATE rcv_queues SET last_broker_ts = ? WHERE conn_id = ? AND rcv_queue_id = ?" (brokerTs, connId, dbQueueId)
+  setLastBrokerTs db connId brokerTs
+
+-- last_broker_ts probably must be on connection, it does not make much sense to have it different per queue?
+setLastBrokerTs :: DB.Connection -> ConnId -> UTCTime -> IO ()
+setLastBrokerTs db connId brokerTs =
+  DB.execute db "UPDATE rcv_queues SET last_broker_ts = ? WHERE conn_id = ? AND last_broker_ts < ?" (brokerTs, connId, brokerTs)
 
 createSndMsgBody :: DB.Connection -> AMessage -> IO Int64
 createSndMsgBody db aMessage =
