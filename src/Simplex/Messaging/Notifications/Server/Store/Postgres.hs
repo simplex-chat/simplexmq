@@ -579,11 +579,15 @@ addTokenLastNtf st newNtf =
                   sent_at = EXCLUDED.sent_at,
                   nmsg_nonce = EXCLUDED.nmsg_nonce,
                   nmsg_data = EXCLUDED.nmsg_data
+                RETURNING subscription_id, sent_at, nmsg_nonce, nmsg_data
               ),
               last AS (
-                SELECT token_ntf_id, subscription_id, sent_at, nmsg_nonce, nmsg_data
+                SELECT subscription_id, sent_at, nmsg_nonce, nmsg_data
                 FROM last_notifications
-                WHERE token_id = ?
+                WHERE token_id = ? AND subscription_id != (SELECT subscription_id FROM new)
+                UNION
+                SELECT subscription_id, sent_at, nmsg_nonce, nmsg_data
+                FROM new
                 ORDER BY sent_at DESC
                 LIMIT ?
               ),
@@ -597,7 +601,7 @@ addTokenLastNtf st newNtf =
               FROM last l
               JOIN subscriptions s ON s.subscription_id = l.subscription_id
               JOIN smp_servers p ON p.smp_server_id = s.smp_server_id
-              ORDER BY token_ntf_id DESC
+              ORDER BY sent_at ASC
             |]
             (tId, sId, systemToUTCTime ntfTs, nmsgNonce, Binary encNMsgMeta, tId, maxNtfs, tId)
     let lastNtfs = fromMaybe (newNtf :| []) (L.nonEmpty lastNtfs_)
