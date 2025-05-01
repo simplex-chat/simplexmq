@@ -1311,7 +1311,7 @@ getNotificationConns' c nonce encNtfInfo =
               lastNtfInfo = Just . fst <$$> getNtfInfo db lastNtf
            in initNtfInfos <> [lastNtfInfo]
       let (errs, ntfInfos_) = partitionEithers rs
-      logError $ "Error(s) loading notifications: " <> tshow errs
+      unless (null errs) $ logError $ "Error(s) loading notifications: " <> tshow errs
       case L.nonEmpty $ catMaybes ntfInfos_ of
         Just r -> pure r
         Nothing -> throwE $ INTERNAL "getNotificationConns: couldn't get conn info"
