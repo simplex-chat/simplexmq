@@ -98,6 +98,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     -- Messages
     updateRcvIds,
     createRcvMsg,
+    setLastBrokerTs,
     updateRcvMsgHash,
     createSndMsgBody,
     updateSndIds,
@@ -855,7 +856,11 @@ createRcvMsg db connId rq@RcvQueue {dbQueueId} rcvMsgData@RcvMsgData {msgMeta = 
   insertRcvMsgBase_ db connId rcvMsgData
   insertRcvMsgDetails_ db connId rq rcvMsgData
   updateRcvMsgHash db connId sndMsgId internalRcvId internalHash
-  DB.execute db "UPDATE rcv_queues SET last_broker_ts = ? WHERE conn_id = ? AND rcv_queue_id = ?" (brokerTs, connId, dbQueueId)
+  setLastBrokerTs db connId dbQueueId brokerTs
+
+setLastBrokerTs :: DB.Connection -> ConnId -> DBQueueId 'QSStored -> UTCTime -> IO ()
+setLastBrokerTs db connId dbQueueId brokerTs =
+  DB.execute db "UPDATE rcv_queues SET last_broker_ts = ? WHERE conn_id = ? AND rcv_queue_id = ? AND last_broker_ts < ?" (brokerTs, connId, dbQueueId, brokerTs)
 
 createSndMsgBody :: DB.Connection -> AMessage -> IO Int64
 createSndMsgBody db aMessage =
@@ -1781,19 +1786,19 @@ getActiveNtfToken db =
           ntfMode = fromMaybe NMPeriodic ntfMode_
        in NtfToken {deviceToken = DeviceToken provider dt, ntfServer, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhKeys, ntfDhSecret, ntfTknStatus, ntfTknAction, ntfMode}
 
-getNtfRcvQueue :: DB.Connection -> SMPQueueNtf -> IO (Either StoreError (ConnId, RcvNtfDhSecret, Maybe UTCTime))
+getNtfRcvQueue :: DB.Connection -> SMPQueueNtf -> IO (Either StoreError (ConnId, Int64, RcvNtfDhSecret, Maybe UTCTime))
 getNtfRcvQueue db SMPQueueNtf {smpServer = (SMPServer host port _), notifierId} =
   firstRow' res SEConnNotFound $
     DB.query
       db
       [sql|
-        SELECT conn_id, rcv_ntf_dh_secret, last_broker_ts
+        SELECT conn_id, rcv_queue_id, rcv_ntf_dh_secret, last_broker_ts
         FROM rcv_queues
         WHERE host = ? AND port = ? AND ntf_id = ? AND deleted = 0
       |]
       (host, port, notifierId)
   where
-    res (connId, Just rcvNtfDhSecret, lastBrokerTs_) = Right (connId, rcvNtfDhSecret, lastBrokerTs_)
+    res (connId, dbQueueId, Just rcvNtfDhSecret, lastBrokerTs_) = Right (connId, dbQueueId, rcvNtfDhSecret, lastBrokerTs_)
     res _ = Left SEConnNotFound
 
 setConnectionNtfs :: DB.Connection -> ConnId -> Bool -> IO ()
