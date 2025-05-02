@@ -1285,7 +1285,7 @@ getConnectionMessages' c =
       pure Nothing
   where
     getConnectionMessage :: ConnMsgReq -> AM (Maybe SMPMsgMeta)
-    getConnectionMessage (ConnMsgReq connId msgTs_) = do
+    getConnectionMessage (ConnMsgReq connId dbQueueId msgTs_) = do
       whenM (atomically $ hasActiveSubscription c connId) . throwE $ CMD PROHIBITED "getConnectionMessage: subscribed"
       SomeConn _ conn <- withStore c (`getConn` connId)
       msg_ <- case conn of
@@ -1295,7 +1295,7 @@ getConnectionMessages' c =
         SndConnection _ _ -> throwE $ CONN SIMPLEX
         NewConnection _ -> throwE $ CMD PROHIBITED "getConnectionMessage: NewConnection"
       when (isNothing msg_) $
-        forM_ msgTs_ $ \msgTs -> withStore' c $ \db -> setLastBrokerTs db connId msgTs
+        forM_ msgTs_ $ \msgTs -> withStore' c $ \db -> setLastBrokerTs db connId (DBQueueId dbQueueId) msgTs
       pure msg_
 
 getNotificationConns' :: AgentClient -> C.CbNonce -> ByteString -> AM (NonEmpty NotificationInfo)
@@ -1319,9 +1319,9 @@ getNotificationConns' c nonce encNtfInfo =
   where
     getNtfInfo :: DB.Connection -> PNMessageData -> IO (Either AgentErrorType (NotificationInfo, Maybe UTCTime))
     getNtfInfo db PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = runExceptT $ do
-      (ntfConnId, rcvNtfDhSecret, lastBrokerTs_) <- liftError' storeError $ getNtfRcvQueue db smpQueue
+      (ntfConnId, ntfDbQueueId, rcvNtfDhSecret, lastBrokerTs_) <- liftError' storeError $ getNtfRcvQueue db smpQueue
       let ntfMsgMeta = eitherToMaybe $ smpDecode =<< first show (C.cbDecrypt rcvNtfDhSecret nmsgNonce encNMsgMeta)
-          ntfInfo = NotificationInfo {ntfConnId, ntfTs, ntfMsgMeta}
+          ntfInfo = NotificationInfo {ntfConnId, ntfDbQueueId, ntfTs, ntfMsgMeta}
       pure (ntfInfo, lastBrokerTs_)
     getInitNtfInfo :: DB.Connection -> PNMessageData -> IO (Either AgentErrorType (Maybe NotificationInfo))
     getInitNtfInfo db msgData = runExceptT $ do

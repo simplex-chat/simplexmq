@@ -679,6 +679,7 @@ instance FromField NotificationsMode where fromField = blobFieldDecoder $ parseA
 
 data NotificationInfo = NotificationInfo
   { ntfConnId :: ConnId,
+    ntfDbQueueId :: Int64,
     ntfTs :: SystemTime,
     -- Nothing means that the message failed to decrypt or to decode,
     -- we can still show event notification
@@ -688,6 +689,7 @@ data NotificationInfo = NotificationInfo
 
 data ConnMsgReq = ConnMsgReq
   { msgConnId :: ConnId,
+    msgDbQueueId :: Int64,
     msgTs :: Maybe UTCTime
   }
   deriving (Show)
