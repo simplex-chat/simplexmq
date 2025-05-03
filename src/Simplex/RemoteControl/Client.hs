@@ -190,7 +190,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
               }
       pure $ signInvitation (snd sessKeys) idPrivKey inv
 
-genTLSCredentials :: TVar ChaChaDRG -> C.APrivateSignKey -> C.SignedCertificate -> IO TLS.Credential
+genTLSCredentials :: TVar ChaChaDRG -> C.APrivateSignKey -> X509.SignedCertificate -> IO TLS.Credential
 genTLSCredentials drg caKey caCert = do
   let caCreds = (C.signatureKeyPair caKey, caCert)
   leaf <- genCredentials drg (Just caCreds) (0, 24 * 999999) "localhost" -- session-signing cert

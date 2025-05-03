@@ -37,6 +37,7 @@ import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (anyM, ifM, ($>>), ($>>=), (<$$))
 import System.IO
 import UnliftIO.STM
@@ -46,6 +47,7 @@ data STMQueueStore q = STMQueueStore
     senders :: TMap SenderId RecipientId,
     notifiers :: TMap NotifierId RecipientId,
     links :: TMap LinkId RecipientId,
+    ntfServers :: TMap TransportHost NtfServerCreds,
     storeLog :: TVar (Maybe (StoreLog 'WriteMode))
   }
 
@@ -61,8 +63,9 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     senders <- TM.emptyIO
     notifiers <- TM.emptyIO
     links <- TM.emptyIO
+    ntfServers <- TM.emptyIO
     storeLog <- newTVarIO Nothing
-    pure STMQueueStore {queues, senders, notifiers, links, storeLog}
+    pure STMQueueStore {queues, senders, notifiers, links, ntfServers, storeLog}
 
   closeQueueStore :: STMQueueStore q -> IO ()
   closeQueueStore STMQueueStore {queues, senders, notifiers, storeLog} = do

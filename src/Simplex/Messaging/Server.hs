@@ -1071,7 +1071,9 @@ verifyTransmission ms auth_ tAuth authorized queueId cmd =
     Cmd SSenderLink (LKEY k) -> verifySecure SSenderLink k
     Cmd SSenderLink LGET -> verifyQueue (\q -> if isContact (snd q) then VRVerified (Just q) else VRFailed) <$> get SSenderLink
     -- NSUB will not be accepted without authorization
-    Cmd SNotifier NSUB -> verifyQueue (\q -> maybe dummyVerify (\n -> Just q `verifiedWith` notifierKey n) (notifier $ snd q)) <$> get SNotifier
+    Cmd SNotifier NSUB -> verifyQueue (\q -> maybe dummyVerify (Just q `verifiedWith`) (notifierKey =<< notifier (snd q))) <$> get SNotifier
+    Cmd SNtfSrvClient (NSRV _creds) -> undefined -- TODO [notifications]
+    Cmd SNtfSrvClient NRDY -> undefined -- TODO [notifications]
     Cmd SProxiedClient _ -> pure $ VRVerified Nothing
   where
     verify = verifyCmdAuthorization auth_ tAuth authorized
@@ -1253,6 +1255,9 @@ client
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkMode QMContact qr $ getQueueLink_ q qr
       Cmd SNotifier NSUB -> Just <$> subscribeNotifications
+      Cmd SNtfSrvClient command -> Just <$> case command of
+        NSRV _creds -> undefined -- TODO [notifications]
+        NRDY -> undefined -- TODO [notifications]
       Cmd SRecipient command ->
         Just <$> case command of
           NEW nqr@NewQueueReq {auth_} ->
@@ -1355,7 +1360,7 @@ client
         getQueueLink_ q qr = liftIO $ LNK (senderId qr) <$$> getQueueLinkData (queueStore ms) q entId
 
         addQueueNotifier_ :: StoreQueue s -> NtfPublicAuthKey -> RcvNtfPublicDhKey -> M (Transmission BrokerMsg)
-        addQueueNotifier_ q notifierKey dhKey = time "NKEY" $ do
+        addQueueNotifier_ q nKey dhKey = time "NKEY" $ do
           (rcvPublicDhKey, privDhKey) <- atomically . C.generateKeyPair =<< asks random
           let rcvNtfDhSecret = C.dh' dhKey privDhKey
           (corrId,entId,) <$> addNotifierRetry 3 rcvPublicDhKey rcvNtfDhSecret
@@ -1364,7 +1369,8 @@ client
             addNotifierRetry 0 _ _ = pure $ ERR INTERNAL
             addNotifierRetry n rcvPublicDhKey rcvNtfDhSecret = do
               notifierId <- randomId =<< asks (queueIdBytes . config)
-              let ntfCreds = NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}
+              -- TODO [notifications] receive server in NEW command (and in NKEY)
+              let ntfCreds = NtfCreds {notifierId, notifierKey = Just nKey, ntfServerHost = Nothing, rcvNtfDhSecret}
               liftIO (addQueueNotifier (queueStore ms) q ntfCreds) >>= \case
                 Left DUPLICATE_ -> addNotifierRetry (n - 1) rcvPublicDhKey rcvNtfDhSecret
                 Left e -> pure $ ERR e

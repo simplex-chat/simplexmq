@@ -13,7 +13,8 @@ serverSchemaMigrations :: [(String, Text, Maybe Text)]
 serverSchemaMigrations =
   [ ("20250207_initial", m20250207_initial, Nothing),
     ("20250319_updated_index", m20250319_updated_index, Just down_m20250319_updated_index),
-    ("20250320_short_links", m20250320_short_links, Just down_m20250320_short_links)
+    ("20250320_short_links", m20250320_short_links, Just down_m20250320_short_links),
+    ("20250415_ntf_servers", m20250415_ntf_servers, Just down_m20250415_ntf_servers)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -118,4 +119,36 @@ $$;
 UPDATE msg_queues SET recipient_keys = substring(recipient_keys from 3);
 
 ALTER TABLE msg_queues RENAME COLUMN recipient_keys TO recipient_key;
+    |]
+
+m20250415_ntf_servers :: Text
+m20250415_ntf_servers =
+  T.pack
+    [r|
+CREATE TABLE ntf_servers(
+  ntf_server_host BYTEA NOT NULL,
+  additional_hosts BYTEA,
+  port TEXT NOT NULL,
+  key_hash BYTEA NOT NULL,
+  cert_chain BYTEA NOT NULL,
+  signed_auth_key BYTEA NOT NULL,
+  auth_key BYTEA NOT NULL,
+  PRIMARY KEY (ntf_server_host)
+);
+
+ALTER TABLE msg_queues ADD COLUMN ntf_server_host BYTEA REFERENCES ntf_servers(ntf_server_host);
+
+CREATE INDEX idx_msg_queues_ntf_server_host ON msg_queues(ntf_server_host);
+    |]
+
+
+down_m20250415_ntf_servers :: Text
+down_m20250415_ntf_servers =
+  T.pack
+    [r|
+DROP INDEX idx_msg_queues_ntf_server_host;
+
+ALTER TABLE msg_queues DROP COLUMN ntf_server_host;
+
+DROP TABLE ntf_servers;
     |]

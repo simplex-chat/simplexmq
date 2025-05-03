@@ -46,7 +46,7 @@ NSUB :: Maybe NtfServerId -> Command Notifier
 -- subscribe to notificaions from all queues associated with the server
 -- should be signed with server key
 -- entity ID - NtfServerId
-NSSUB :: Command NtfServer
+NRDY :: Command NtfServer
 
 data NtfServerCreds = NtfServerCreds
   { server :: NtfServer,
