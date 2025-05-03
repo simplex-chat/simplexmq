@@ -140,7 +140,7 @@ instance StrEncoding Int64 where
 
 instance StrEncoding SystemTime where
   strEncode = strEncode . systemSeconds
-  strP = MkSystemTime <$> strP <*> pure 0
+  strP = (`MkSystemTime` 0) <$> strP
 
 instance StrEncoding UTCTime where
   strEncode = B.pack . iso8601Show

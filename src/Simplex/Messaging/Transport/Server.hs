@@ -202,7 +202,7 @@ startTCPServer started host port = withSocketsDo $ resolve >>= open >>= setStart
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       setSocketOption sock ReuseAddr 1
       withFdSocket sock setCloseOnExecIfNeeded
-      logInfo $ "binding to " <> tshow (addrAddress addr)
+      logNote $ "binding to " <> tshow (addrAddress addr)
       bind sock $ addrAddress addr
       listen sock 1024
       pure sock

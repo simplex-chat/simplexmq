@@ -517,8 +517,11 @@ instance Encoding NtfSubStatus where
 
 instance StrEncoding NtfSubStatus where
   strEncode = smpEncode
+  {-# INLINE strEncode #-}
   strP = smpP
+  {-# INLINE strP #-}
 
+-- TODO [ntfdb] check what happens in agent when token in not yet registered
 data NtfTknStatus
   = -- | Token created in DB
     NTNew
@@ -533,6 +536,17 @@ data NtfTknStatus
   | -- | after it is no longer valid (push provider error)
     NTExpired
   deriving (Eq, Show)
+
+allowNtfSubCommands :: NtfTknStatus -> Bool
+allowNtfSubCommands = \case
+  NTNew -> False
+  NTRegistered -> False
+  -- TODO [ntfdb] we could have separate statuses to show whether it became invalid
+  -- after verification (allow commands) or before (do not allow)
+  NTInvalid _ -> True
+  NTConfirmed -> False
+  NTActive -> True
+  NTExpired -> True
 
 instance Encoding NtfTknStatus where
   smpEncode = \case

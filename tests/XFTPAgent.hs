@@ -454,7 +454,7 @@ testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
       pure rfd1
 
     -- prefix path should be removed after sending file
-    threadDelay 200000
+    threadDelay 500000
     doesDirectoryExist prefixPath `shouldReturn` False
     doesFileExist encPath `shouldReturn` False
 

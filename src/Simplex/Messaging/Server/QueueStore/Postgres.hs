@@ -23,6 +23,8 @@ module Simplex.Messaging.Server.QueueStore.Postgres
     PostgresStoreCfg (..),
     batchInsertQueues,
     foldQueueRecs,
+    handleDuplicate,
+    withLog_,
   )
 where
 
@@ -56,6 +58,7 @@ import Database.PostgreSQL.Simple.SqlQQ (sql)
 import GHC.IO (catchAny)
 import Simplex.Messaging.Agent.Client (withLockMap)
 import Simplex.Messaging.Agent.Lock (Lock)
+import Simplex.Messaging.Agent.Store.AgentStore ()
 import Simplex.Messaging.Agent.Store.Postgres (createDBStore, closeDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder)
@@ -530,8 +533,12 @@ withDB op st action =
         err = op <> ", withDB, " <> show e
 
 withLog :: MonadIO m => String -> PostgresQueueStore q -> (StoreLog 'WriteMode -> IO ()) -> m ()
-withLog op PostgresQueueStore {dbStoreLog} action =
-  forM_ dbStoreLog $ \sl -> liftIO $ action sl `catchAny` \e ->
+withLog op PostgresQueueStore {dbStoreLog} = withLog_ op dbStoreLog
+{-# INLINE withLog #-}
+
+withLog_ :: MonadIO m => String -> Maybe (StoreLog 'WriteMode) -> (StoreLog 'WriteMode -> IO ()) -> m ()
+withLog_ op sl_ action =
+  forM_ sl_ $ \sl -> liftIO $ action sl `catchAny` \e ->
     logWarn $ "STORE: " <> T.pack (op <> ", withLog, " <> show e)
 
 handleDuplicate :: SqlError -> IO ErrorType
@@ -541,15 +548,15 @@ handleDuplicate e = case constraintViolation e of
 
 -- The orphan instances below are copy-pasted, but here they are defined specifically for PostgreSQL
 
-instance ToField EntityId where toField (EntityId s) = toField $ Binary s
-
-deriving newtype instance FromField EntityId
-
 instance ToField (NonEmpty C.APublicAuthKey) where toField = toField . Binary . smpEncode
 
 instance FromField (NonEmpty C.APublicAuthKey) where fromField = blobFieldDecoder smpDecode
 
 #if !defined(dbPostgres)
+instance ToField EntityId where toField (EntityId s) = toField $ Binary s
+
+deriving newtype instance FromField EntityId
+
 instance FromField QueueMode where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
 
 instance ToField QueueMode where toField = toField . decodeLatin1 . smpEncode

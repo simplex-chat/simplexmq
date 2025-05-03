@@ -14,6 +14,7 @@ import Data.Time.Format.ISO8601 (iso8601Show)
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Server.MsgStore.Types (LoadedQueueCounts (..))
 import Simplex.Messaging.Server.Stats
+import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Server (SocketStats (..))
 
 data ServerMetrics = ServerMetrics
@@ -21,8 +22,12 @@ data ServerMetrics = ServerMetrics
     activeQueueCounts :: PeriodStatCounts,
     activeNtfCounts :: PeriodStatCounts,
     queueCount :: Int,
-    notifierCount :: Int
+    notifierCount :: Int,
+    rtsOptions :: Text
   }
+
+rtsOptionsEnv :: Text
+rtsOptionsEnv = "SMP_RTS_OPTIONS"
 
 data RealTimeMetrics = RealTimeMetrics
   { socketStats :: [(ServiceName, SocketStats)],
@@ -40,7 +45,7 @@ prometheusMetrics :: ServerMetrics -> RealTimeMetrics -> UTCTime -> Text
 prometheusMetrics sm rtm ts =
   time <> queues <> subscriptions <> messages <> ntfMessages <> ntfs <> relays <> info
   where
-    ServerMetrics {statsData, activeQueueCounts = ps, activeNtfCounts = psNtf, queueCount, notifierCount} = sm
+    ServerMetrics {statsData, activeQueueCounts = ps, activeNtfCounts = psNtf, queueCount, notifierCount, rtsOptions} = sm
     RealTimeMetrics
       { socketStats,
         threadsCount,
@@ -87,10 +92,8 @@ prometheusMetrics sm rtm ts =
         _msgGetDuplicate,
         _msgGetProhibited,
         _msgExpired,
-        _activeQueues,
         _msgSentNtf,
         _msgRecvNtf,
-        _activeQueuesNtf,
         _msgNtfs,
         _msgNtfsB,
         _msgNtfNoSub,
@@ -347,6 +350,10 @@ prometheusMetrics sm rtm ts =
     info =
       "# Info\n\
       \# ----\n\
+      \\n\
+      \# HELP simplex_smp_info Server information. RTS options have to be passed via " <> rtsOptionsEnv <> " env var\n\
+      \# TYPE simplex_smp_info gauge\n\
+      \simplex_smp_info{version=\"" <> T.pack simplexMQVersion <> "\",rts_options=\"" <> rtsOptions <> "\"} 1\n\
       \\n"
       <> socketsMetric socketsAccepted "simplex_smp_sockets_accepted" "Accepted sockets"
       <> socketsMetric socketsClosed "simplex_smp_sockets_closed" "Closed sockets"

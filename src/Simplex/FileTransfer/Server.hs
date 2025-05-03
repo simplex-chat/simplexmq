@@ -181,7 +181,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
     stopServer = do
       withFileLog closeStoreLog
       saveServerStats
-      logInfo "Server stopped"
+      logNote "Server stopped"
 
     expireFilesThread_ :: XFTPServerConfig -> [M ()]
     expireFilesThread_ XFTPServerConfig {fileExpiration = Just fileExp} = [expireFiles fileExp]
@@ -560,13 +560,13 @@ expireServerFiles itemDelay expCfg = do
   usedStart <- readTVarIO $ usedStorage st
   old <- liftIO $ expireBeforeEpoch expCfg
   files' <- readTVarIO (files st)
-  logInfo $ "Expiration check: " <> tshow (M.size files') <> " files"
+  logNote $ "Expiration check: " <> tshow (M.size files') <> " files"
   forM_ (M.keys files') $ \sId -> do
     mapM_ threadDelay itemDelay
     atomically (expiredFilePath st sId old)
       >>= mapM_ (maybeRemove $ delete st sId)
   usedEnd <- readTVarIO $ usedStorage st
-  logInfo $ "Used " <> mbs usedStart <> " -> " <> mbs usedEnd <> ", " <> mbs (usedStart - usedEnd) <> " reclaimed."
+  logNote $ "Used " <> mbs usedStart <> " -> " <> mbs usedEnd <> ", " <> mbs (usedStart - usedEnd) <> " reclaimed."
   where
     mbs bs = tshow (bs `div` 1048576) <> "mb"
     maybeRemove del = maybe del (remove del)
@@ -600,15 +600,15 @@ saveServerStats =
     >>= mapM_ (\f -> asks serverStats >>= liftIO . getFileServerStatsData >>= liftIO . saveStats f)
   where
     saveStats f stats = do
-      logInfo $ "saving server stats to file " <> T.pack f
+      logNote $ "saving server stats to file " <> T.pack f
       B.writeFile f $ strEncode stats
-      logInfo "server stats saved"
+      logNote "server stats saved"
 
 restoreServerStats :: M ()
 restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
   where
     restoreStats f = whenM (doesFileExist f) $ do
-      logInfo $ "restoring server stats from file " <> T.pack f
+      logNote $ "restoring server stats from file " <> T.pack f
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d@FileServerStatsData {_filesCount = statsFilesCount, _filesSize = statsFilesSize} -> do
           s <- asks serverStats
@@ -617,10 +617,10 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
           _filesSize <- readTVarIO usedStorage
           liftIO $ setFileServerStats s d {_filesCount, _filesSize}
           renameFile f $ f <> ".bak"
-          logInfo "server stats restored"
+          logNote "server stats restored"
           when (statsFilesCount /= _filesCount) $ logWarn $ "Files count differs: stats: " <> tshow statsFilesCount <> ", store: " <> tshow _filesCount
           when (statsFilesSize /= _filesSize) $ logWarn $ "Files size differs: stats: " <> tshow statsFilesSize <> ", store: " <> tshow _filesSize
-          logInfo $ "Restored " <> tshow (_filesSize `div` 1048576) <> " MBs in " <> tshow _filesCount <> " files"
+          logNote $ "Restored " <> tshow (_filesSize `div` 1048576) <> " MBs in " <> tshow _filesCount <> " files"
         Left e -> do
-          logInfo $ "error restoring server stats: " <> T.pack e
+          logNote $ "error restoring server stats: " <> T.pack e
           liftIO exitFailure

@@ -224,6 +224,7 @@ groupOn = groupBy . eqOn
 groupAllOn :: Ord k => (a -> k) -> [a] -> [[a]]
 groupAllOn f = groupOn f . sortOn f
 
+-- n must be > 0
 toChunks :: Int -> [a] -> [NonEmpty a]
 toChunks _ [] = []
 toChunks n xs =

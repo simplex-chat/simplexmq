@@ -49,8 +49,9 @@ ntfReplaceToken c pKey tknId token = okNtfCommand (TRPL token) c pKey tknId
 ntfDeleteToken :: NtfClient -> C.APrivateAuthKey -> NtfTokenId -> ExceptT NtfClientError IO ()
 ntfDeleteToken = okNtfCommand TDEL
 
-ntfEnableCron :: NtfClient -> C.APrivateAuthKey -> NtfTokenId -> Word16 -> ExceptT NtfClientError IO ()
-ntfEnableCron c pKey tknId int = okNtfCommand (TCRN int) c pKey tknId
+-- set to 0 to disable
+ntfSetCronInterval :: NtfClient -> C.APrivateAuthKey -> NtfTokenId -> Word16 -> ExceptT NtfClientError IO ()
+ntfSetCronInterval c pKey tknId int = okNtfCommand (TCRN int) c pKey tknId
 
 ntfCreateSubscription :: NtfClient -> C.APrivateAuthKey -> NewNtfEntity 'Subscription -> ExceptT NtfClientError IO NtfSubscriptionId
 ntfCreateSubscription c pKey newSub =

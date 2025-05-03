@@ -14,6 +14,7 @@
 
 module SMPClient where
 
+import Control.Logger.Simple (LogLevel (..))
 import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
@@ -45,7 +46,12 @@ import UnliftIO.Timeout (timeout)
 import Util
 
 #if defined(dbServerPostgres)
-import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
+import Database.PostgreSQL.Simple (defaultConnectInfo)
+#endif
+
+#if defined(dbPostgres) || defined(dbServerPostgres)
+import Database.PostgreSQL.Simple (ConnectInfo (..))
+import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists, dropDatabaseAndUser)
 #endif
 
 testHost :: NonEmpty TransportHost
@@ -59,6 +65,12 @@ testPort = "5001"
 
 testPort2 :: ServiceName
 testPort2 = "5002"
+
+ntfTestPort :: ServiceName
+ntfTestPort = "6001"
+
+ntfTestPort2 :: ServiceName
+ntfTestPort2 = "6002"
 
 testKeyHash :: C.KeyHash
 testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
@@ -212,8 +224,11 @@ cfgMS msType =
       allowSMPProxy = False,
       serverClientConcurrency = 2,
       information = Nothing,
-      startOptions = StartOptions {maintenance = False, compactLog = False, skipWarnings = False, confirmMigrations = MCYesUp}
+      startOptions = defaultStartOptions
     }
+
+defaultStartOptions :: StartOptions
+defaultStartOptions = StartOptions {maintenance = False, compactLog = False, logLevel = LogError, skipWarnings = False, confirmMigrations = MCYesUp} 
 
 serverStoreConfig :: AStoreType -> AServerStoreCfg
 serverStoreConfig = serverStoreConfig_ False
@@ -349,6 +364,9 @@ smpServerTest _ t = runSmpTest (ASType SQSMemory SMSJournal) $ \h -> tPut' h t >
 smpTest :: (HasCallStack, Transport c) => TProxy c -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> IO ()) -> Expectation
 smpTest _ msType test' = runSmpTest msType test' `shouldReturn` ()
 
+smpTest' :: forall c. (HasCallStack, Transport c) => TProxy c -> (HasCallStack => THandleSMP c 'TClient -> IO ()) -> Expectation
+smpTest' = (`smpTest` ASType SQSMemory SMSJournal)
+
 smpTestN :: (HasCallStack, Transport c) => AStoreType -> Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO ()) -> Expectation
 smpTestN msType n test' = runSmpTestN msType n test' `shouldReturn` ()
 
@@ -381,3 +399,11 @@ smpTest4 _ msType test' = smpTestN msType 4 _test
 
 unexpected :: (HasCallStack, Show a) => a -> Expectation
 unexpected r = expectationFailure $ "unexpected response " <> show r
+
+#if defined(dbPostgres) || defined(dbServerPostgres)
+postgressBracket :: ConnectInfo -> IO a -> IO a
+postgressBracket connInfo =
+  E.bracket_
+    (dropDatabaseAndUser connInfo >> createDBAndUserIfNotExists connInfo)
+    (dropDatabaseAndUser connInfo)
+#endif
