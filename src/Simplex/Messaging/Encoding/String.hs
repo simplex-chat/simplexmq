@@ -144,7 +144,7 @@ instance StrEncoding SystemTime where
 
 instance StrEncoding UTCTime where
   strEncode = B.pack . iso8601Show
-  strP = maybe (Left "bad UTCTime") Right . iso8601ParseM . B.unpack <$?> A.takeTill (\c -> c == ' ' || c == '\n')
+  strP = maybe (Left "bad UTCTime") Right . iso8601ParseM . B.unpack <$?> A.takeTill (\c -> c == ' ' || c == '\n' || c == ',' || c == ';')
 
 -- lists encode/parse as comma-separated strings
 strEncodeList :: StrEncoding a => [a] -> ByteString
