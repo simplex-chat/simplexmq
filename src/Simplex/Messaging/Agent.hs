@@ -440,7 +440,7 @@ subscribeConnections c = withAgentEnv c . subscribeConnections' c
 {-# INLINE subscribeConnections #-}
 
 -- | Get messages for connections (GET commands)
-getConnectionMessages :: AgentClient -> NonEmpty ConnMsgReq -> IO (NonEmpty (Maybe SMPMsgMeta))
+getConnectionMessages :: AgentClient -> NonEmpty ConnMsgReq -> IO (NonEmpty (Either AgentErrorType (Maybe SMPMsgMeta)))
 getConnectionMessages c = withAgentEnv' c . getConnectionMessages' c
 {-# INLINE getConnectionMessages #-}
 
@@ -1277,12 +1277,8 @@ resubscribeConnections' c connIds = do
   -- union is left-biased, so results returned by subscribeConnections' take precedence
   (`M.union` r) <$> subscribeConnections' c connIds'
 
-getConnectionMessages' :: AgentClient -> NonEmpty ConnMsgReq -> AM' (NonEmpty (Maybe SMPMsgMeta))
-getConnectionMessages' c =
-  mapConcurrently $ \cmr ->
-    getConnectionMessage cmr `catchAgentError'` \e -> do
-      logError $ "Error loading message: " <> tshow e
-      pure Nothing
+getConnectionMessages' :: AgentClient -> NonEmpty ConnMsgReq -> AM' (NonEmpty (Either AgentErrorType (Maybe SMPMsgMeta)))
+getConnectionMessages' c = mapConcurrently $ tryAgentError' . getConnectionMessage
   where
     getConnectionMessage :: ConnMsgReq -> AM (Maybe SMPMsgMeta)
     getConnectionMessage (ConnMsgReq connId dbQueueId msgTs_) = do
