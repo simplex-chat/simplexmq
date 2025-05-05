@@ -562,8 +562,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
   Right [NotificationInfo {ntfConnId = cId, ntfMsgMeta = Just NMsgMeta {msgTs}}] <- runExceptT $ getNotificationConns alice nonce message
   cId `shouldBe` bobId
   -- alice client already has subscription for the connection,
-  -- so get fails with CMD PROHIBITED (transformed into Nothing in catch)
-  [Right Nothing] <- getConnectionMessages alice [ConnMsgReq cId 1 $ Just $ systemToUTCTime msgTs]
+  [Left (CMD PROHIBITED _)] <- getConnectionMessages alice [ConnMsgReq cId 1 $ Just $ systemToUTCTime msgTs]
 
   threadDelay 500000
   suspendAgent alice 0
