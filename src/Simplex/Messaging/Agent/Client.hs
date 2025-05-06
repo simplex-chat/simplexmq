@@ -1654,6 +1654,7 @@ getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do
           l <- maybe (newTMVar ()) pure l_
           takeTMVar l
           pure $ Just l
+{-# INLINE getQueueMessage #-}
 
 decryptSMPMessage :: RcvQueue -> SMP.RcvMessage -> AM SMP.ClientRcvMsgBody
 decryptSMPMessage rq SMP.RcvMessage {msgId, msgBody = SMP.EncRcvMsgBody body} =
@@ -1743,10 +1744,12 @@ sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId =
 hasGetLock :: AgentClient -> RcvQueue -> IO Bool
 hasGetLock c RcvQueue {server, rcvId} =
   TM.memberIO (server, rcvId) $ getMsgLocks c
+{-# INLINE hasGetLock #-}
 
 releaseGetLock :: AgentClient -> RcvQueue -> STM ()
 releaseGetLock c RcvQueue {server, rcvId} =
   TM.lookup (server, rcvId) (getMsgLocks c) >>= mapM_ (`tryPutTMVar` ())
+{-# INLINE releaseGetLock #-}
 
 suspendQueue :: AgentClient -> RcvQueue -> AM ()
 suspendQueue c rq@RcvQueue {rcvId, rcvPrivateKey} =
