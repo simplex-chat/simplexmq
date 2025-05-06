@@ -801,6 +801,7 @@ getSMPMessage c rpKey rId =
     OK -> pure Nothing
     cmd@(MSG msg) -> liftIO (writeSMPMessage c rId cmd) $> Just msg
     r -> throwE $ unexpectedResponse r
+{-# INLINE getSMPMessage #-}
 
 -- | Subscribe to the SMP queue notifications.
 --
