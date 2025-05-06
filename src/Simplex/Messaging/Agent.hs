@@ -224,7 +224,6 @@ import Simplex.RemoteControl.Client
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
 import System.Mem.Weak (deRefWeak)
-import UnliftIO.Async (mapConcurrently)
 import UnliftIO.Concurrent (forkFinally, forkIO, killThread, mkWeakThreadId, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -1277,8 +1276,9 @@ resubscribeConnections' c connIds = do
   -- union is left-biased, so results returned by subscribeConnections' take precedence
   (`M.union` r) <$> subscribeConnections' c connIds'
 
+-- requesting messages sequentially, to reduce memory usage
 getConnectionMessages' :: AgentClient -> NonEmpty ConnMsgReq -> AM' (NonEmpty (Either AgentErrorType (Maybe SMPMsgMeta)))
-getConnectionMessages' c = mapConcurrently $ tryAgentError' . getConnectionMessage
+getConnectionMessages' c = mapM $ tryAgentError' . getConnectionMessage
   where
     getConnectionMessage :: ConnMsgReq -> AM (Maybe SMPMsgMeta)
     getConnectionMessage (ConnMsgReq connId dbQueueId msgTs_) = do
