@@ -860,7 +860,7 @@ createRcvMsg db connId rq@RcvQueue {dbQueueId} rcvMsgData@RcvMsgData {msgMeta = 
 
 setLastBrokerTs :: DB.Connection -> ConnId -> DBQueueId 'QSStored -> UTCTime -> IO ()
 setLastBrokerTs db connId dbQueueId brokerTs =
-  DB.execute db "UPDATE rcv_queues SET last_broker_ts = ? WHERE conn_id = ? AND rcv_queue_id = ? AND last_broker_ts < ?" (brokerTs, connId, dbQueueId, brokerTs)
+  DB.execute db "UPDATE rcv_queues SET last_broker_ts = ? WHERE conn_id = ? AND rcv_queue_id = ? AND (last_broker_ts IS NULL OR last_broker_ts < ?)" (brokerTs, connId, dbQueueId, brokerTs)
 
 createSndMsgBody :: DB.Connection -> AMessage -> IO Int64
 createSndMsgBody db aMessage =
