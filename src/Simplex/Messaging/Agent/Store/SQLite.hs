@@ -108,7 +108,7 @@ connectDB path key track = do
       exec . fromQuery $
         [sql|
           PRAGMA busy_timeout = 100;
-          PRAGMA foreign_keys = ON;
+          PRAGMA foreign_keys = OFF;
           -- PRAGMA trusted_schema = OFF;
           PRAGMA secure_delete = ON;
           PRAGMA auto_vacuum = FULL;
